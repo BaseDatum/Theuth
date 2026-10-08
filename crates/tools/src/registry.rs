@@ -116,6 +116,13 @@ pub struct ToolRegistry {
     /// `tools.pty_idle_secs`, shared with the `start` tool (61 §1.6); the
     /// persistent knob is [`SetPtyIdle`].
     pty_idle: Arc<AtomicU64>,
+    /// 145 §0.4: per-session promotion delay from [`SetPromoteAfter`]; a
+    /// session absent here never promotes. Read by [`Invoke`] only.
+    promote_after: HashMap<SessionId, Duration>,
+    /// 145 §0.5: the [`ToolCx::cancel`] of every inline call still running,
+    /// by `(session, call_id)`; [`CancelCalls`] fires them. A promoted call
+    /// leaves the map (its token is the job's from then on).
+    inflight: Arc<Mutex<HashMap<(SessionId, String), CancellationToken>>>,
 }
 
 /// One [`RegisterLifecycle`] entry: owner name, its `TreeOpened` recipient, its `CloseTree` reply recipient.
@@ -496,6 +503,51 @@ impl Message<SetCap> for ToolRegistry {
             Some(cap) => self.cap.insert(m.session, cap),
             None => self.cap.remove(&m.session),
         };
+    }
+}
+
+/// `tell` (145 §0.4): inline calls of `session` whose body has not returned
+/// after `after` are promoted to background jobs ([`crate::Adopt`]); `None`
+/// never promotes. The agent sets it from `TalkLive.promote_after_ms` and
+/// clears it when the talk ends. Not inherited by subagents.
+#[derive(Clone, Copy, Debug)]
+pub struct SetPromoteAfter {
+    /// The talk's session.
+    pub session: SessionId,
+    /// Promotion delay; `None` clears it.
+    pub after: Option<Duration>,
+}
+
+impl Message<SetPromoteAfter> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetPromoteAfter, _: &mut Context<Self, Self::Reply>) {
+        match m.after {
+            Some(after) => self.promote_after.insert(m.session, after),
+            None => self.promote_after.remove(&m.session),
+        };
+    }
+}
+
+/// `tell` (145 §0.5): the turn running `session`'s inline calls was
+/// cancelled — fire the [`ToolCx::cancel`] of every call still in flight,
+/// before the caller writes its synthetic results. Promoted jobs are not
+/// touched (their token is `cancel_job`'s).
+#[derive(Clone, Copy, Debug)]
+pub struct CancelCalls {
+    /// The cancelled turn's session.
+    pub session: SessionId,
+}
+
+impl Message<CancelCalls> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: CancelCalls, _: &mut Context<Self, Self::Reply>) {
+        for ((s, _), token) in lock(&self.inflight).iter() {
+            if *s == m.session {
+                token.cancel();
+            }
+        }
     }
 }
 
@@ -1054,7 +1106,10 @@ impl ToolRegistry {
     /// entry only ever arrives here with `approval == None`, its `Ask`
     /// already answered by the activation in [`Self::admit_app`]. `admitted`
     /// is the communication admission from [`Self::admit`], re-checked in
-    /// [`invoke`] once approval resolved (50 §8).
+    /// [`invoke`] once approval resolved (50 §8). `promote_after` is the
+    /// session's promotion delay (145 §0.4) — [`Invoke`] only; an app call
+    /// is never promoted.
+    #[allow(clippy::too_many_arguments)]
     fn dispatch(
         &mut self,
         tool: DynTool,
@@ -1062,6 +1117,7 @@ impl ToolRegistry {
         call: ToolCall,
         approval: Option<ActorRef<Approval>>,
         admitted: Option<Admitted>,
+        promote_after: Option<Duration>,
         done: impl FnOnce(ToolOutput) + Send + 'static,
     ) {
         // Everything that awaits leaves the mailbox: admission (so `Agents`
@@ -1073,6 +1129,7 @@ impl ToolRegistry {
         let gate = self.gate.clone();
         let journal = self.journal.clone();
         let resources = self.resources_for(call.session);
+        let inflight = self.inflight.clone();
         let kind = Kind::Invoke {
             tool: call.name.clone(),
             call_id: call.id.clone(),
@@ -1107,7 +1164,17 @@ impl ToolRegistry {
             let out = activity
                 .clone()
                 .scope(invoke(
-                    tool, spec, call, approval, admitted, activity, gate, resources, journal,
+                    tool,
+                    spec,
+                    call,
+                    approval,
+                    admitted,
+                    activity,
+                    gate,
+                    resources,
+                    journal,
+                    promote_after,
+                    inflight,
                 ))
                 .await;
             drop(running);
@@ -1127,7 +1194,7 @@ impl Message<AppInvoke> for ToolRegistry {
         match self.admit_app(&m.call, m.activation.as_ref(), &m.expected_identity) {
             Err(r) => tx.send(r.into()),
             Ok((tool, spec, admitted)) => {
-                self.dispatch(tool, spec, m.call, None, admitted, move |out| {
+                self.dispatch(tool, spec, m.call, None, admitted, None, move |out| {
                     tx.send(AppInvoked::Completed(out));
                 });
             }
@@ -1505,9 +1572,16 @@ impl Message<Invoke> for ToolRegistry {
                 return reply;
             }
         };
-        self.dispatch(tool, spec, call, approval, admitted, move |out| {
-            tx.send(out)
-        });
+        let promote_after = self.promote_after.get(&call.session).copied();
+        self.dispatch(
+            tool,
+            spec,
+            call,
+            approval,
+            admitted,
+            promote_after,
+            move |out| tx.send(out),
+        );
         reply
     }
 }
@@ -1557,7 +1631,10 @@ impl Drop for Held {
 /// has resolved, before anything is expanded or dispatched (50 §8). `gate`
 /// is the caller's execution bound: an approval wait, and the body of a tool
 /// that is itself a human wait (`ask_user`), run suspended, and nothing of
-/// the body runs before the suspension resumed.
+/// the body runs before the suspension resumed. `promote_after` (145 §0.4):
+/// a promotable body still running after it is handed to `Jobs` as a
+/// promoted job and the call returns a `{job}` stub. `inflight` holds the
+/// call's token while the body runs inline ([`CancelCalls`]).
 // Every argument is a distinct per-call input; a bundling struct would only be built at the one call site.
 #[allow(clippy::too_many_arguments)]
 async fn invoke(
@@ -1570,6 +1647,8 @@ async fn invoke(
     gate: Option<Arc<dyn ExecutionGate>>,
     resources: Arc<SessionResources>,
     journal: Arc<dyn Journal>,
+    promote_after: Option<Duration>,
+    inflight: Arc<Mutex<HashMap<(SessionId, String), CancellationToken>>>,
 ) -> ToolOutput {
     let session = call.session;
     let call_id = call.id.clone();
@@ -1613,13 +1692,15 @@ async fn invoke(
     {
         return ToolOutput::err(e);
     }
+    let cancel = CancellationToken::new();
+    let promote_after = promote_after.filter(|_| tool.promotable());
     let cx = ToolCx {
         session: call.session,
         call_id: call.id,
         quiet: call.quiet,
         resources,
-        cancel: CancellationToken::new(),
-        promote_after: None,
+        cancel: cancel.clone(),
+        promote_after,
     };
     // A tool whose whole body is a human wait executes nothing bounded; the
     // suspension ends with the body (the next call in the batch, or the
@@ -1639,11 +1720,41 @@ async fn invoke(
     let body = activity.scope(communication::scope(admitted, async move {
         tool.call(call.args, cx).await
     }));
-    let mut out = match tokio::spawn(body).await {
+    let key = (session, call_id.clone());
+    lock(&inflight).insert(key.clone(), cancel.clone());
+    let mut handle = tokio::spawn(body);
+    let name = spec.name;
+    let finished = |r: Result<anyhow::Result<ToolOutput>, tokio::task::JoinError>| match r {
         Ok(Ok(out)) => out,
-        Ok(Err(e)) => ToolOutput::err(format!("{}: {e:#}", spec.name)),
-        Err(e) => ToolOutput::err(format!("{}: tool panicked: {e}", spec.name)),
+        Ok(Err(e)) => ToolOutput::err(format!("{name}: {e:#}")),
+        Err(e) => ToolOutput::err(format!("{name}: tool panicked: {e}")),
     };
+    // Promotion (145 §0.4): a promotable body still running after the delay,
+    // with a `Jobs` actor to adopt it. Its token leaves `inflight` first — a
+    // turn cancel after this is not the job's business.
+    let mut out = match promote_after {
+        Some(after) => match tokio::time::timeout(after, &mut handle).await {
+            Ok(r) => finished(r),
+            Err(_) => match ActorRef::<Jobs>::lookup(JOBS_ACTOR) {
+                Ok(Some(jobs)) => {
+                    lock(&inflight).remove(&key);
+                    promote(
+                        &jobs,
+                        session,
+                        call_id.clone(),
+                        &name,
+                        cancel,
+                        handle,
+                        after,
+                    )
+                    .await
+                }
+                _ => finished(handle.await),
+            },
+        },
+        None => finished(handle.await),
+    };
+    lock(&inflight).remove(&key);
     if let Some(w) = waiting {
         // Nothing runs after this in the invocation; resuming only puts the
         // batch's accounting back (a cancelled turn makes it a no-op).
@@ -1654,6 +1765,64 @@ async fn invoke(
     // 109 §3.3 step 7: the result row is per call, committed as it returns.
     journal.call_finished(session, &call_id, &out).await;
     out
+}
+
+/// 145 §0.4: hand a body that outlived `promote_after` to `Jobs` and answer
+/// the call with the `{job}` stub. The job owns the body from here: dropping
+/// its future (a `cancel_job`) aborts the task. An adoption the jobs actor
+/// refused is an error output — the body was dropped with the message.
+#[allow(clippy::too_many_arguments)]
+async fn promote(
+    jobs: &ActorRef<Jobs>,
+    session: SessionId,
+    call_id: String,
+    tool: &str,
+    cancel: CancellationToken,
+    handle: tokio::task::JoinHandle<anyhow::Result<ToolOutput>>,
+    after: Duration,
+) -> ToolOutput {
+    let after = u64::try_from(after.as_millis()).unwrap_or(u64::MAX);
+    let work = Box::pin(async move {
+        let _abort = AbortOnDrop(handle.abort_handle());
+        handle
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("tool panicked: {e}")))
+    });
+    match jobs
+        .ask(jobs::Adopt {
+            session,
+            call_id,
+            tool: tool.to_owned(),
+            cancel,
+            work,
+        })
+        .await
+    {
+        Ok(id) => {
+            let v = serde_json::json!({
+                "job": id,
+                "tool": tool,
+                "promoted_after_ms": after,
+                "note": "the result arrives later as <job_result>; do not wait or poll",
+            });
+            ToolOutput {
+                content: v.to_string(),
+                is_error: false,
+                structured: Some(v),
+                files: Vec::new(),
+            }
+        }
+        Err(e) => ToolOutput::err(format!("{tool}: promotion failed: {e}")),
+    }
+}
+
+/// Aborts the body's task when the adopted future is dropped unfinished.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// The `tools` section, defaults when absent.
@@ -1764,6 +1933,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             shells,
             close_timeout: CLOSE_TIMEOUT,
             pty_idle,
+            promote_after: HashMap::new(),
+            inflight: Arc::default(),
         },
         runtime::subscriber_mailbox(),
     );
@@ -1831,6 +2002,8 @@ mod tests {
             shells: Arc::default(),
             close_timeout: Duration::from_millis(100),
             pty_idle: Arc::default(),
+            promote_after: HashMap::new(),
+            inflight: Arc::default(),
         }
     }
 
@@ -1879,6 +2052,144 @@ mod tests {
         let out = reg.ask(Invoke(with("literal"))).await.unwrap();
         assert!(!out.is_error, "{out:?}");
         assert_eq!(out.content, "find {{secret:GITHUB}} usage");
+    }
+
+    /// Sleeps `ms` from its args unless its token fires first; `promotable`
+    /// as configured (145 T1/T2/T4).
+    struct Sleeper {
+        promotable: bool,
+        /// Bodies entered so far.
+        entered: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for Sleeper {
+        const NAME: &'static str = "sleeper";
+        const RISK: Risk = Risk::ReadOnly;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn promotable(&self) -> bool {
+            self.promotable
+        }
+        async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            let ms = args["ms"].as_u64().unwrap_or(0);
+            tokio::select! {
+                () = cx.cancel.cancelled() => Ok(ToolOutput::ok("cancelled")),
+                () = tokio::time::sleep(Duration::from_millis(ms)) => Ok(ToolOutput::ok("slept")),
+            }
+        }
+    }
+
+    fn sleeper(promotable: bool) -> (DynTool, Arc<std::sync::atomic::AtomicUsize>) {
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        (
+            Arc::new(Sleeper {
+                promotable,
+                entered: entered.clone(),
+            }),
+            entered,
+        )
+    }
+
+    fn sleep_call(session: SessionId, ms: u64) -> ToolCall {
+        ToolCall {
+            args: serde_json::json!({ "ms": ms }),
+            ..call("sleeper", session)
+        }
+    }
+
+    /// 145 T1: a body still running after `promote_after` comes back at once
+    /// as the `{job}` stub; the job then finishes with the tool's output. The
+    /// one test that registers a `Jobs` actor under [`JOBS_ACTOR`].
+    #[tokio::test]
+    async fn slow_call_is_promoted_to_a_job() {
+        let fx = jobs::tests::fixture(Duration::from_secs(1), Duration::from_secs(5)).await;
+        fx.jobs.register(JOBS_ACTOR).unwrap();
+        let (tool, _) = sleeper(true);
+        let reg = registry(vec![tool], None);
+        let session = fx.session;
+        reg.tell(SetPromoteAfter {
+            session,
+            after: Some(Duration::from_millis(100)),
+        })
+        .await
+        .unwrap();
+        let started = std::time::Instant::now();
+        let out = reg.ask(Invoke(sleep_call(session, 600))).await.unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500), "{out:?}");
+        assert!(!out.is_error, "{out:?}");
+        let v = out.structured.expect("the stub is structured");
+        assert_eq!(v["job"], "j1");
+        assert_eq!(v["tool"], "sleeper");
+        assert_eq!(v["promoted_after_ms"], 100);
+        assert_eq!(
+            v["note"],
+            "the result arrives later as <job_result>; do not wait or poll"
+        );
+        assert_eq!(out.content, v.to_string());
+        let (exit, output, inline) = jobs::tests::finished(&fx).await;
+        assert_eq!(
+            (exit, output.as_str(), inline),
+            (jobs::JobExit::Exited(0), "slept", false)
+        );
+        // Promotion off again: the same call waits for its body.
+        reg.tell(SetPromoteAfter {
+            session,
+            after: None,
+        })
+        .await
+        .unwrap();
+        let out = reg.ask(Invoke(sleep_call(session, 150))).await.unwrap();
+        assert_eq!(out.content, "slept");
+    }
+
+    /// 145 T2: a `promotable() == false` tool is awaited to completion
+    /// whatever `promote_after` says.
+    #[tokio::test]
+    async fn unpromotable_call_is_awaited() {
+        let (tool, _) = sleeper(false);
+        let reg = registry(vec![tool], None);
+        let session = SessionId::new();
+        reg.tell(SetPromoteAfter {
+            session,
+            after: Some(Duration::from_millis(20)),
+        })
+        .await
+        .unwrap();
+        let started = std::time::Instant::now();
+        let out = reg.ask(Invoke(sleep_call(session, 250))).await.unwrap();
+        assert_eq!(out.content, "slept");
+        assert!(started.elapsed() >= Duration::from_millis(250));
+    }
+
+    /// 145 T4: `CancelCalls` fires the token of every in-flight call of the
+    /// session — the body sees it and returns — and touches no other session.
+    #[tokio::test]
+    async fn cancel_calls_fires_inflight_tokens() {
+        let (tool, entered) = sleeper(true);
+        let reg = registry(vec![tool], None);
+        let (session, other) = (SessionId::new(), SessionId::new());
+        let mine = tokio::spawn({
+            let reg = reg.clone();
+            async move { reg.ask(Invoke(sleep_call(session, 5_000))).await.unwrap() }
+        });
+        let theirs = tokio::spawn({
+            let reg = reg.clone();
+            async move { reg.ask(Invoke(sleep_call(other, 300))).await.unwrap() }
+        });
+        while entered.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        reg.tell(CancelCalls { session }).await.unwrap();
+        let out = tokio::time::timeout(Duration::from_secs(2), mine)
+            .await
+            .expect("the cancelled body returns at once")
+            .unwrap();
+        assert_eq!(out.content, "cancelled");
+        assert_eq!(theirs.await.unwrap().content, "slept");
     }
 
     /// Blocks until released; reports the `current()` op it ran under.

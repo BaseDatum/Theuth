@@ -446,6 +446,11 @@ impl Tool for AskUserTool {
     const RETURNS: &'static str = "dict[str, str | None]";
     const DIRECT: bool = true;
 
+    /// A human wait (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
+
     fn description(&self) -> String {
         "Ask the user one or more multiple-choice questions and wait for the answers. Use only when \
          options have materially different tradeoffs the user must weigh; resolve everything else \
