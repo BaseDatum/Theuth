@@ -134,6 +134,10 @@ pub(super) struct Fake {
     /// `(name, arguments JSON)`: the first main call of a turn (no `tool`
     /// message yet) replies with this one tool call (runtime-bridge scenarios).
     tool_call: Option<(&'static str, String)>,
+    /// 137 D11: a main call carrying a `tool` message but no
+    /// `<context_summary` head is refused as a context overflow (400); the
+    /// retry after the cut, head in place, answers [`FINAL`].
+    overflow_until_head: bool,
 }
 
 /// The harvest call's reply: one well-formed concept.
@@ -209,6 +213,11 @@ impl Respond for Fake {
                 .is_some_and(|m| m.iter().any(|m| m["role"] == "tool"))
         {
             return sse_tool_call(name, arguments);
+        }
+        if self.overflow_until_head && !text.contains("<context_summary") {
+            return ResponseTemplate::new(400).set_body_string(
+                "{\"error\":{\"message\":\"This model's maximum context length is 1000 tokens (context_length_exceeded)\"}}",
+            );
         }
         sse(FINAL, "stop", MAIN_USAGE)
     }
@@ -715,6 +724,7 @@ fn fake() -> Fake {
         compact_delay: None,
         compact_status: None,
         tool_call: None,
+        overflow_until_head: false,
     }
 }
 
@@ -761,6 +771,15 @@ impl Fake {
         Self {
             tool_call: Some((name, arguments.to_string())),
             ..fake()
+        }
+    }
+
+    /// [`Fake::tool_call`] whose follow-up call overflows until a
+    /// `<context_summary` head is in the request (137 D11 scenarios).
+    pub(super) fn tool_call_then_overflow(name: &'static str, arguments: &Value) -> Self {
+        Self {
+            overflow_until_head: true,
+            ..Self::tool_call(name, arguments)
         }
     }
 }

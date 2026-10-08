@@ -11806,6 +11806,94 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    /// 137 §11.2 / §14: `session_memory` of an epochs session is `mode:
+    /// epochs` with an empty view; `create_session.options.memory` lands in
+    /// the column; `/endless` flips an idle session both ways; `view_bytes`
+    /// is range-checked. The tree itself is the service's (W1).
+    #[tokio::test]
+    async fn memory_mode_is_created_queried_and_switched() {
+        let agents = Agents::spawn(agents_with(false).await);
+        let open = |memory| {
+            agents.ask(CreateSession {
+                options: crate::CreateSessionOptions {
+                    memory,
+                    ..Default::default()
+                },
+                peer: None,
+            })
+        };
+        let plain = open(None).await.unwrap().session;
+        let m = agents
+            .ask(SessionMemoryQuery { session: plain })
+            .await
+            .unwrap();
+        assert_eq!(m.mode, MemoryMode::Epochs);
+        assert!(m.view.is_empty() && m.backfill.is_none());
+        assert_eq!(m.stats, crate::EndlessStats::default());
+
+        let endless = open(Some(MemoryMode::Endless)).await.unwrap().session;
+        let m = agents
+            .ask(SessionMemoryQuery { session: endless })
+            .await
+            .unwrap();
+        assert_eq!(m.mode, MemoryMode::Endless);
+        // Idle: `off` then `on` again, each a store write the query reflects.
+        let m = agents
+            .ask(SetSessionMemory {
+                session: endless,
+                mode: MemoryMode::Epochs,
+            })
+            .await
+            .unwrap();
+        assert_eq!(m.mode, MemoryMode::Epochs);
+        let m = agents
+            .ask(SetSessionMemory {
+                session: plain,
+                mode: MemoryMode::Endless,
+            })
+            .await
+            .unwrap();
+        assert_eq!(m.mode, MemoryMode::Endless);
+        assert_eq!(
+            agents
+                .ask(SessionMemoryQuery { session: plain })
+                .await
+                .unwrap()
+                .mode,
+            MemoryMode::Endless
+        );
+        // R1-D2b: the view budget is range-checked.
+        let e = agents
+            .ask(SetSessionViewBytes {
+                session: plain,
+                bytes: 1_000,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("out of range"), "{e}");
+        assert_eq!(
+            agents
+                .ask(SetSessionViewBytes {
+                    session: plain,
+                    bytes: 128_000,
+                })
+                .await
+                .unwrap()
+                .mode,
+            MemoryMode::Endless
+        );
+        // An unknown session is refused, not created.
+        assert!(
+            agents
+                .ask(SessionMemoryQuery {
+                    session: SessionId::new(),
+                })
+                .await
+                .is_err()
+        );
+    }
+
     /// 67 §8: a root opened for a remote parent carries its `tools` ceiling
     /// and effort like a local subagent; a plain create carries neither.
     #[tokio::test]

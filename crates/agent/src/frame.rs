@@ -689,6 +689,78 @@ mod tests {
         );
     }
 
+    /// 137 §7.2: one user message per view block; on Anthropic at most
+    /// `VIEW_MARKS` marks, on the latest marked blocks before the final one
+    /// (system 1 h + tail 5 min take the other two breakpoints); other
+    /// transports get no message marks. The final block never carries one.
+    #[test]
+    fn view_blocks_become_marked_user_messages() {
+        let block = |t: &str, mark| ViewBlock {
+            text: t.into(),
+            mark,
+        };
+        let blocks = [
+            block("<chat>\na\n", true),
+            block("b\n", true),
+            block("c\n", true),
+            block("d\n</chat>", true),
+        ];
+        let marks = |t| -> Vec<bool> {
+            view_messages(&blocks, t)
+                .iter()
+                .map(|m| m.options.as_ref().is_some_and(|o| o.cache_control == Some(CacheControl::Ephemeral)))
+                .collect()
+        };
+        assert_eq!(marks(Transport::Anthropic), [false, true, true, false]);
+        assert_eq!(marks(Transport::OpenAiLike), [false; 4]);
+        assert_eq!(marks(Transport::Plain), [false; 4]);
+        let msgs = view_messages(&blocks, Transport::Anthropic);
+        assert!(msgs.iter().all(|m| m.role == ChatRole::User));
+        assert_eq!(msgs[0].content.joined_texts().as_deref(), Some("<chat>\na\n"));
+        // A single block is the final block: no mark; an unmarked block is skipped.
+        assert_eq!(marks_of(&[block("x", true)]), [false]);
+        assert_eq!(
+            marks_of(&[block("a", false), block("b", true), block("c", true)]),
+            [false, true, false]
+        );
+        // With the view in front, the Anthropic frame keeps system (1 h) first and the tail (5 min) last.
+        let mut history = view_messages(&blocks, Transport::Anthropic);
+        history.push(ChatMessage::user("input"));
+        let (req, _) = Frame {
+            tools: &[],
+            system: "sys",
+            head: None,
+            history: &history,
+            vision: true,
+            strip_reasoning: false,
+            max_tokens: None,
+        }
+        .request(Transport::Anthropic, SessionId::new(), None);
+        let cc: Vec<Option<CacheControl>> = req
+            .messages
+            .iter()
+            .map(|m| m.options.as_ref().and_then(|o| o.cache_control))
+            .collect();
+        assert_eq!(
+            cc,
+            [
+                Some(CacheControl::Ephemeral1h),
+                None,
+                Some(CacheControl::Ephemeral),
+                Some(CacheControl::Ephemeral),
+                None,
+                Some(CacheControl::Ephemeral)
+            ]
+        );
+    }
+
+    fn marks_of(blocks: &[ViewBlock]) -> Vec<bool> {
+        view_messages(blocks, Transport::Anthropic)
+            .iter()
+            .map(|m| m.options.is_some())
+            .collect()
+    }
+
     #[test]
     fn text_only_model_strips_user_images() {
         let history = [ChatMessage::user(MessageContent::from_parts(vec![

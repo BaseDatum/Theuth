@@ -6118,40 +6118,54 @@ impl Turn {
                 tracing::info!(session = %session, units = est.units, eta_secs = est.eta_secs, model = %est.model, "context_edit: endless on");
             }
             MemoryMode::Epochs => {
-                let folded = self.state.history.len();
-                if let (Some(text), Some((at_seq, _))) = (&r.head, self.state.history.last()) {
-                    let at_seq = *at_seq;
-                    let head = ChatMessage::user(text.clone());
-                    self.shared
-                        .store
-                        .compact(session, n, at_seq, at_seq + 1, &head)
-                        .await
-                        .map_err(|e| format!("store: {e:#}"))?;
-                    self.state.history.clear();
-                    self.state.head = Some(head);
-                    self.state.epoch = n;
-                    self.state.used = self.calibrated(self.est_frame());
-                    self.state.pressure_sent = false;
-                    self.state.last_after = None;
-                    self.reset_this_round = true;
-                    self.since = 0;
-                    self.hint_since = 0;
-                    self.publish(AgentEvent::Compacted {
-                        session,
-                        turn: None,
-                        epoch: n,
-                        before: self.state.last_provider.unwrap_or(0),
-                        after: self.state.used,
-                        folded: folded as u32,
-                        style: CompactStyle::Summary,
-                    })
-                    .await;
-                }
+                let folded = match &r.head {
+                    Some(text) => self.install_view_head(n, text).await?,
+                    None => 0,
+                };
                 self.state.last_view = None;
                 tracing::info!(session = %session, epoch = n, folded, head = r.head.is_some(), "context_edit: endless off");
             }
         }
         Ok(r.memory)
+    }
+
+    /// `/endless off` (8.6): `text` (the `<context_summary epoch=n
+    /// style="endless">` the service rendered) becomes epoch `n`'s head with
+    /// an empty tail — one `epochs` row, as a compaction writes it, no model
+    /// call. Returns how many rows the head now stands for; a session with
+    /// no rows gets no head (nothing to stand for).
+    async fn install_view_head(&mut self, n: u32, text: &str) -> Result<u32, String> {
+        let session = self.shared.id;
+        let Some(&(at_seq, _)) = self.state.history.last() else {
+            return Ok(0);
+        };
+        let folded = self.state.history.len();
+        let head = ChatMessage::user(text.to_owned());
+        self.shared
+            .store
+            .compact(session, n, at_seq, at_seq + 1, &head)
+            .await
+            .map_err(|e| format!("store: {e:#}"))?;
+        self.state.history.clear();
+        self.state.head = Some(head);
+        self.state.epoch = n;
+        self.state.used = self.calibrated(self.est_frame());
+        self.state.pressure_sent = false;
+        self.state.last_after = None;
+        self.reset_this_round = true;
+        self.since = 0;
+        self.hint_since = 0;
+        self.publish(AgentEvent::Compacted {
+            session,
+            turn: None,
+            epoch: n,
+            before: self.state.last_provider.unwrap_or(0),
+            after: self.state.used,
+            folded: folded as u32,
+            style: CompactStyle::Summary,
+        })
+        .await;
+        Ok(folded as u32)
     }
 
     /// `/knowledge harvest` between turns (10 §5.2): rebase, then
@@ -7550,6 +7564,10 @@ mod runtime_bridge_tests;
 /// REGEN-STAMP: a regenerated opener replays its `<time …/>` stamp to the model only.
 #[cfg(test)]
 mod regen_stamp_tests;
+
+/// 137 §14: the endless frame — fresh turns, the view before the input, D11 cut, `/endless off` head.
+#[cfg(test)]
+mod endless_tests;
 
 /// 109 W1: the journal's write points, the §4.2 resume rules and the §11.1 crash matrix.
 #[cfg(test)]

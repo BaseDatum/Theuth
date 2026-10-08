@@ -343,6 +343,12 @@ pub struct Desk {
     /// The wake the desk is handling (70 DESK-PROTOCOL 3): set at delivery,
     /// judged at every turn end by [`nudges::TABLE`], cleared when handled.
     pub serving: Option<Serving>,
+    /// 137 D12: `sessions.memory` of the desk session as last seen; an
+    /// endless desk skips the context episode trigger (its frame is bounded).
+    pub memory: agent::MemoryMode,
+    /// 137 R1-D7 / D14: the mode the agents file (or the default) wants and
+    /// the session does not have yet — applied at the next idle moment.
+    pub pending_memory: Option<agent::MemoryMode>,
 }
 
 /// What a desk was woken for, as it stood at delivery (70 DESK-PROTOCOL 3).

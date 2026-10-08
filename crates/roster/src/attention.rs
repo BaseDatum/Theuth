@@ -1640,6 +1640,8 @@ mod tests {
                 paused,
                 proposed_by: proposed_by.map(Into::into),
                 runs_in: Default::default(),
+                memory: None,
+                view_bytes: None,
                 body: "x".into(),
             },
             status,
