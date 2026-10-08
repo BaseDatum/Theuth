@@ -6,6 +6,8 @@
 //! carry drift information from day one. `knowledge` / `sessions` / `meetings` targets are checked
 //! for existence only (no text, no hash).
 
+use std::collections::HashMap;
+
 use codeindex::LocateStatus;
 use kameo::actor::ActorRef;
 use surface::anchor::{Locator, THEUTH_SCHEME, TheuthAnchor};
@@ -29,8 +31,8 @@ pub fn check_theuth_links(markdown: &str) -> Vec<TheuthAnchor> {
     out
 }
 
-/// Every `](theuth://…)` href as written, with its parse.
-fn links(markdown: &str) -> Vec<(&str, Result<TheuthAnchor, String>)> {
+/// Every `](theuth://…)` href as written, once each, with its parse.
+pub fn links(markdown: &str) -> Vec<(&str, Result<TheuthAnchor, String>)> {
     let mut out: Vec<(&str, Result<TheuthAnchor, String>)> = Vec::new();
     for (i, _) in markdown.match_indices("](") {
         let Some(href) = markdown[i + 2..].split(')').next() else {
@@ -57,16 +59,16 @@ pub async fn check(
     if links.is_empty() {
         return None;
     }
-    let mut s = String::new();
+    let mut bad = String::new();
     let mut good: Vec<(&str, TheuthAnchor)> = Vec::new();
     for (raw, parsed) in links {
         match parsed {
             Ok(a) => good.push((raw, a)),
-            Err(e) => s.push_str(&format!("- `{raw}`: {e}\n")),
+            Err(e) => bad.push_str(&format!("- `{raw}`: {e}\n")),
         }
     }
-    if !s.is_empty() {
-        return Some(refused(s));
+    if !bad.is_empty() {
+        return Some(refused(bad));
     }
     let hrefs = good.iter().map(|(_, a)| a.href()).collect();
     let cites = match actor.ask(CiteResolve { hrefs, by }).await {
@@ -76,26 +78,56 @@ pub async fn check(
             return None;
         }
     };
-    let mut rewrites: Vec<(String, String)> = Vec::new();
-    for ((raw, anchor), cite) in good.iter().zip(&cites) {
-        if let Some(line) = dead(actor, anchor, cite).await {
-            s.push_str(&format!("- {line}\n"));
+    // The refusal names the last block ids of every document a missing block citation points at.
+    let mut near: HashMap<String, Vec<String>> = HashMap::new();
+    for ((_, a), c) in good.iter().zip(&cites) {
+        if c.available
+            && c.status == LocateStatus::Missing
+            && matches!(a.locator, Some(Locator::Block(_)))
+            && !near.contains_key(&a.id)
+            && let Some(doc) = DocId::parse(&a.id)
+        {
+            near.insert(a.id.clone(), nearby_blocks(actor, doc).await);
+        }
+    }
+    match judge(&good, &cites, &near) {
+        Err(lines) => Some(refused(lines)),
+        Ok(rewrites) => {
+            for (from, to) in rewrites {
+                *markdown = markdown.replace(&from, &to);
+            }
+            None
+        }
+    }
+}
+
+/// The pure core of [`check`]: `links` (as written, parsed) against their resolved `cites` (positionally
+/// aligned). `Err` is the refusal body — one line per dead target; `Ok` the `(from, to)` rewrites that add
+/// `?s=` to block citations that lack one. `near` maps a document id to its last block ids for the message.
+pub fn judge(
+    links: &[(&str, TheuthAnchor)],
+    cites: &[Citation],
+    near: &HashMap<String, Vec<String>>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut lines = String::new();
+    let mut rewrites = Vec::new();
+    for ((raw, a), c) in links.iter().zip(cites) {
+        if let Some(line) = dead(a, c, near) {
+            lines.push_str(&format!("- {line}\n"));
             continue;
         }
-        if anchor.sha8.is_none()
-            && matches!(anchor.locator, Some(Locator::Block(_)))
-            && let Some(text) = &cite.text
+        if a.sha8.is_none()
+            && matches!(a.locator, Some(Locator::Block(_)))
+            && let Some(text) = &c.text
         {
             rewrites.push((format!("]({raw})"), format!("]({raw}?s={})", sha8(text))));
         }
     }
-    if !s.is_empty() {
-        return Some(refused(s));
+    if lines.is_empty() {
+        Ok(rewrites)
+    } else {
+        Err(lines)
     }
-    for (from, to) in rewrites {
-        *markdown = markdown.replace(&from, &to);
-    }
-    None
 }
 
 /// First 8 hex of `sha256(text)` with trailing whitespace trimmed — the `?s=` drift hash (§6.4).
@@ -104,7 +136,7 @@ pub fn sha8(text: &str) -> String {
 }
 
 /// The refusal line for a citation whose target is gone, `None` for `same` / `changed` / `moved`.
-async fn dead(actor: &ActorRef<DocumentActor>, a: &TheuthAnchor, c: &Citation) -> Option<String> {
+fn dead(a: &TheuthAnchor, c: &Citation, near: &HashMap<String, Vec<String>>) -> Option<String> {
     let href = a.href();
     if !c.available {
         return Some(format!(
@@ -116,20 +148,13 @@ async fn dead(actor: &ActorRef<DocumentActor>, a: &TheuthAnchor, c: &Citation) -
         return None;
     }
     Some(match &a.locator {
-        Some(Locator::Block(_)) => {
-            let near = match DocId::parse(&a.id) {
-                Some(doc) => nearby_blocks(actor, doc).await,
-                None => Vec::new(),
-            };
-            if near.is_empty() {
-                format!("{href}: block not found")
-            } else {
-                format!(
-                    "{href}: block not found; blocks near the end are {}",
-                    near.join(", ")
-                )
-            }
-        }
+        Some(Locator::Block(_)) => match near.get(&a.id).filter(|n| !n.is_empty()) {
+            Some(ids) => format!(
+                "{href}: block not found; blocks near the end are {}",
+                ids.join(", ")
+            ),
+            None => format!("{href}: block not found"),
+        },
         Some(Locator::Time(_)) => format!("{href}: no segment at that time (past the end)"),
         Some(Locator::Turn(_)) => format!("{href}: no such turn"),
         None => format!("{href}: not found"),
@@ -161,37 +186,4 @@ fn refused(lines: String) -> ToolOutput {
     ToolOutput::err(format!(
         "nothing changed: a theuth:// citation has no live target — cite a block you were given or read back the document and retry\n{lines}"
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use surface::anchor::TheuthKind;
-
-    #[test]
-    fn finds_every_theuth_link_once_and_skips_other_schemes() {
-        let md = "See [runbook §4.2](theuth://sources/01S1#b12) and [again](theuth://sources/01S1#b12), \
-                  a [note](theuth://notes/01N1#x?s=0123abcd), [code](code:src/a.rs#L1) and [web](https://x.y/).";
-        let got = check_theuth_links(md);
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].kind, TheuthKind::Sources);
-        assert_eq!(got[0].locator, Some(Locator::Block("b12".into())));
-        assert_eq!(got[1].sha8.as_deref(), Some("0123abcd"));
-    }
-
-    #[test]
-    fn malformed_links_are_listed_not_parsed() {
-        let md = "[bad](theuth://pages/01#x) [ok](theuth://sessions/01S#3)";
-        assert_eq!(check_theuth_links(md).len(), 1);
-        let l = links(md);
-        assert_eq!(l.len(), 2);
-        assert!(l[0].1.is_err());
-    }
-
-    #[test]
-    fn sha8_is_the_locate_convention_cut_to_eight() {
-        // The trailing newline is not part of the hash (`text_sha` over the trimmed text).
-        assert_eq!(sha8("pub fn helper() -> u32 {\n    1\n}\n"), "c6529027");
-        assert_eq!(sha8("pub fn helper() -> u32 {\n    1\n}"), "c6529027");
-    }
 }

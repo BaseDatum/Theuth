@@ -4111,17 +4111,20 @@ impl Turn {
                 .unattended(self.shared.id)
                 .await
                 .unwrap_or(false);
-        let mut blocks = prompt_blocks(
-            registry.ask(ListPrompts).await.unwrap_or_default(),
-            toolset.as_ref(),
-            attended,
-        );
         // 144 §5.3: the `notebooks` contract block only in a bound session; a (un)binding mid-session
         // changes the baseline like any other block.
-        if let Ok(Some(_)) = self.shared.store.effective_notebook(self.shared.id).await {
-            blocks.push_str("\n\n");
-            blocks.push_str(crate::notebooks::PROMPT);
-        }
+        let bound = matches!(
+            self.shared.store.effective_notebook(self.shared.id).await,
+            Ok(Some(_))
+        );
+        let blocks = crate::notebooks::prompt_blocks(
+            prompt_blocks(
+                registry.ask(ListPrompts).await.unwrap_or_default(),
+                toolset.as_ref(),
+                attended,
+            ),
+            bound,
+        );
         let genai = self.model().model.genai;
         let claude_code = ns(&genai) == "anthropic" && self.shared.auth.login("anthropic");
         let subagent_model = self
