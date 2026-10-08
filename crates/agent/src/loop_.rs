@@ -1091,7 +1091,12 @@ impl Session {
     /// it. Callers check `idle()` first — except for a masked row (R1.4 step
     /// 6, `model_visible: false`), which is never model context and so lands
     /// here busy or idle.
-    async fn append_advisory_idle(&mut self, advisory: Advisory, text: String, model_visible: bool) {
+    async fn append_advisory_idle(
+        &mut self,
+        advisory: Advisory,
+        text: String,
+        model_visible: bool,
+    ) {
         let id = self.shared.id;
         match self
             .shared
@@ -3371,9 +3376,7 @@ impl Turn {
             }
             Ok(Err(e)) => ToolOutput::ok(err_unavailable(&e.to_string())),
             Err(_) => {
-                let _ = advisors
-                    .tell(advisor::CancelConsult(self.shared.id))
-                    .await;
+                let _ = advisors.tell(advisor::CancelConsult(self.shared.id)).await;
                 ToolOutput::ok(ERR_TIMEOUT.to_owned())
             }
         }
@@ -3383,9 +3386,7 @@ impl Turn {
     /// actor drops the consultation — no card, no counters.
     async fn cancel_consult(&self) {
         if let Some(advisors) = ActorRef::<Advisors>::lookup(ADVISORS_ACTOR).ok().flatten() {
-            let _ = advisors
-                .tell(advisor::CancelConsult(self.shared.id))
-                .await;
+            let _ = advisors.tell(advisor::CancelConsult(self.shared.id)).await;
         }
     }
 
@@ -4229,9 +4230,7 @@ impl Turn {
         if self.shared.kind == SessionKind::Chat
             && (self.shared.depth > 0 || self.shared.advisor.load(Ordering::Relaxed))
             && let Some(advisors) = ActorRef::<Advisors>::lookup(ADVISORS_ACTOR).ok().flatten()
-            && let Ok(Some(src)) = advisors
-                .ask(advisor::ConsultSource(self.shared.id))
-                .await
+            && let Ok(Some(src)) = advisors.ask(advisor::ConsultSource(self.shared.id)).await
             && src.cap > 0
         {
             self.consult = Some(src);

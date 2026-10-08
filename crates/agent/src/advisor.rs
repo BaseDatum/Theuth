@@ -692,14 +692,10 @@ impl Advisors {
             return;
         }
         let preface = link.preface.take();
-        let block = link
-            .consult
-            .as_mut()
-            .filter(|_| consult)
-            .map(|pc| {
-                pc.parked = false;
-                pc.block.clone()
-            });
+        let block = link.consult.as_mut().filter(|_| consult).map(|pc| {
+            pc.parked = false;
+            pc.block.clone()
+        });
         let steps = if fresh.is_empty() {
             0
         } else {
@@ -866,7 +862,10 @@ impl Advisors {
             Pause(String),
             RetryLater(SessionId),
             Dropped(String),
-            Quarantine { warn: bool, text: String },
+            Quarantine {
+                warn: bool,
+                text: String,
+            },
             Good {
                 held: Vec<AdvisoryNote>,
                 next: bool,

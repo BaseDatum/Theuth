@@ -488,7 +488,10 @@ mod tests {
             &s[..200]
         );
         assert!(s.contains("earlier rows elided)_\nrow"));
-        assert!(!s.contains("row1 "), "the oldest rows after the brief go first");
+        assert!(
+            !s.contains("row1 "),
+            "the oldest rows after the brief go first"
+        );
         assert!(s.contains("row12 "));
     }
 

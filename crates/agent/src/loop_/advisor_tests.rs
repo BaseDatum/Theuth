@@ -531,7 +531,10 @@ fn masked_card_lands_at_once_and_stays_out_of_context() {
             .drain_until(|e| matches!(e, AgentEvent::AdvisoryAdded { .. }))
             .await;
         assert_eq!(
-            count(&events, |e| matches!(e, AgentEvent::ToolCallFinished { .. })),
+            count(&events, |e| matches!(
+                e,
+                AgentEvent::ToolCallFinished { .. }
+            )),
             0,
             "{events:?}"
         );

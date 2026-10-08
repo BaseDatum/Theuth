@@ -69,8 +69,7 @@ pub(crate) fn pairing_warning(
 }
 
 /// The D-R1.5 warning text.
-pub const PAIRING_WARNING: &str =
-    "advisor model prices below the session model (crude signal)";
+pub const PAIRING_WARNING: &str = "advisor model prices below the session model (crude signal)";
 
 impl Agents {
     fn write_advisor_key(&self, key: &str, value: &str) {
