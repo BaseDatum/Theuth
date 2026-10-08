@@ -952,7 +952,7 @@ pub async fn run(
     study: &StudyRecord,
     reason: StopReason,
     rt: &runtime::Runtime,
-) -> Result<(Headline, String)> {
+) -> Result<(Headline, Option<String>)> {
     let cfg: AutoresearchConfig = rt.section("autoresearch").unwrap_or_default();
     let root = cfg.root(&rt.data_dir);
     run_with(store, study, reason, cfg, &root, rt.shutdown.clone()).await
@@ -968,7 +968,7 @@ pub async fn run_with(
     cfg: AutoresearchConfig,
     root: &Path,
     cancel: tokio_util::sync::CancellationToken,
-) -> Result<(Headline, String)> {
+) -> Result<(Headline, Option<String>)> {
     let (Some(base), Some(final_sha), Some(worktree)) =
         (&study.base_sha, &study.incumbent_sha, &study.worktree)
     else {
@@ -1001,8 +1001,10 @@ pub async fn run_with(
         k
     };
     let (changesets, notes) = cx.changesets(&kept, &headline).await?;
+    // R-98: the document id, or `None` when no documents actor took the report
+    // (the tables still land in `<study_dir>/report.md`); never a file path.
     let doc = match cx.step_done("report").await? {
-        Some(p) => p["doc"].as_str().unwrap_or_default().to_owned(),
+        Some(p) => p["doc"].as_str().map(str::to_owned),
         None => {
             let report = assemble(
                 study,
@@ -1016,9 +1018,7 @@ pub async fn run_with(
             std::fs::create_dir_all(&cx.study_dir)?;
             let path = cx.study_dir.join("report.md");
             std::fs::write(&path, &text)?;
-            let doc = create_document(&study.slug, &text)
-                .await
-                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            let doc = create_document(&study.slug, &text).await;
             cx.record_step(
                 "report",
                 serde_json::json!({ "doc": doc, "report": report }),

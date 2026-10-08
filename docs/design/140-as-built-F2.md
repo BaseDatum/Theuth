@@ -83,7 +83,27 @@ Fixer 140-F2, branch `feat/140-f2` from 78411fb3. Owns `crates/autoresearch/src/
 - `wave::is_child(session) -> bool`: a registered wave child (for F3's `tools.rs` root-only refusals).
 - R-8 rule as the skill states it: `custody::check_commands(spec, repo, drafts)` (pub, for Create-time validation in `study_draft`/`tools`) — a script token must be a repo file (relative or `./x`) or a draft script (by name or by its absolute path under `<root>/drafts/<slug>/`); a script path resolving anywhere else, including an absolute path outside the drafts dir, is refused; program paths (`/usr/bin/env`, `python3`) are not scripts. `take` calls it first, so prepare refuses what Create missed. Test `dot_slash_and_absolute_draft_tokens_enter_custody` extended.
 
-## Gates
+## R2 (orchestrator 20:25 — F1's hand-offs; F1 is idle, actor.rs / actor/tests.rs / store.rs / types.rs owned here this round)
+
+`git merge --ff-only feat/140-f1` (57cbd54b) then one R2 commit. Build moved to `mbx` (own managed target; `target` symlink unlinked).
+
+| item | change | test |
+|---|---|---|
+| R-4 `on_fired` | `binding.rs:103` — `store.patch_study(slug, &StudyPatch { session: Some(Some(session)), .. })`; no whole-row study write left in binding | `confinement_resolves_live_studies_only` (binding), F1's `pause_during_a_run_survives_the_runs_write_back` |
+| R-48 / R-115 | already in from round 1: `after_experiment` spawned (`binding.rs:197`), no `SetToolset` ask on the actor mailbox (the schedule applies it) | `cancelled_turn_records_timeout` |
+| R-14 wave | `wave.rs:535` — `actor::study_spend(env, study).await?` (closed rows + live tree); `Backend::spend_usd` deleted (actor.rs, the wave test double) | existing wave tests |
+| R-3 wave | `wave.rs:745` — `actor::incumbent_samples(env, study, incumbent)` (holdout excluded, segment-scoped) in the promote confirm | existing wave tests |
+| R-46 | closed by F1's R3 merge (`hours_live` → `stop::hours_running_live`); nothing left | `view_reads_overfit_streaks_and_pauses_from_the_ledger` |
+| R-98 finalize | `finalize::run` / `run_with` → `Result<(Headline, Option<String>)>`: the document id or `None` when no documents actor took the report (tables still in `<study_dir>/report.md`), never a file path; `Backend::finalize` (actor.rs:384) and the test double follow; `finalize_task` runs `report_turn` only on `Some` and stores `report_doc` directly — the `starts_with('/')` heuristic is gone | `report_doc_is_none_when_finalize_has_no_document` (double returns `None`) |
+| R-33 / R-41 | one commit, F1's snippets: `types.rs` `Sample.slot_holders: Vec<String>`, `Sample.failure: Option<String>`; `migrations/0002_sample_detail.sql`; `store.rs` `SAMPLE_COLS`/`SampleRaw`/`From`/`insert_sample`/`update_sample`; `runner.rs::sample` fills both (`slot::build_slot_holders()`; `bad number <name>=<v>` / `no METRIC <name> line` / `exit <n>` / `killed`); `actor.rs` crash closure prefers `s.failure` | `a_good_sample_parses_metrics_and_sees_the_environment` (runner), `crashes_are_samples_without_a_value` |
+| store test | `migrates_and_reopens` now expects 2 migrations (0001 + 0002) |
+| schedule flake | `watch_tests::expires_ends_the_file_and_still_running_is_a_row` — the second case's clock now starts from the `created:` stamp first load wrote (max with the armed `next`), not `Local::now()`: a slow load under machine load can no longer run the 1 m ttl out before the first tick. Assertions unchanged | that test |
+
+## Gates (R2, mbx)
+
+`BUILD_LABEL=140-F2 build-lock mbx test -p autoresearch -p schedule --no-run`, then bare `mbx test`: **autoresearch 151 passed / 0 failed; schedule 76 / 0**. `build-lock mbx clippy -p autoresearch -p schedule --all-targets -- -D warnings`: `Finished`, 0 findings (`/tmp/140-F2-clippy.log`). `rustfmt --edition 2024 --check` on the nine touched files: clean.
+
+## Gates (rounds 1 and R1)
 
 All through `BUILD_LABEL=140-F2 build-lock`, stable rustc 1.96.1, `CARGO_BUILD_JOBS=4`, after `cargo clean -p autoresearch -p schedule` in the same slot.
 

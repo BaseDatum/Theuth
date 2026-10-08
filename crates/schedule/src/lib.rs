@@ -4507,7 +4507,10 @@ mod watch_tests {
         assert!(sched.consumed.contains("w") && sched.entries["w"].next.is_none());
         assert!(rec.calls.lock().unwrap().is_empty());
 
-        // no `created:` → the file's mtime stands in: not expired now, expired 2m on
+        // no `created:` → first load stamps it (else the file's mtime stands in):
+        // not expired at that instant, expired 2m on. The test clock starts from
+        // the stamp itself, not the wall clock, so a slow load (machine under
+        // load) cannot run the 1m ttl out before the first tick.
         let dir = tempfile::tempdir().unwrap();
         let (mut sched, _) = watcher(
             dir.path(),
@@ -4515,9 +4518,16 @@ mod watch_tests {
             fs_exists_true(),
         )
         .await;
-        let t0 = Local::now();
+        let spec = sched.entries["w"].spec.clone().unwrap();
+        let t0 = sched
+            .created_of(&spec)
+            .expect("first load stamps created:")
+            .max(sched.entries["w"].next.expect("armed at load"));
         assert_eq!(step(&mut sched, t0).await, Some(CheckOutcome::Fired));
-        assert!(sched.tick(t0 + s(120)).await.is_empty(), "past mtime + 1m");
+        assert!(
+            sched.tick(t0 + s(120)).await.is_empty(),
+            "past created + 1m"
+        );
         assert_eq!(results(&sched, 1).await, ["expired"]);
 
         // a check still in flight is a row, not a second check

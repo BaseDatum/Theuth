@@ -44,7 +44,7 @@ struct Fake {
     tried: Mutex<Vec<(u32, String)>>,
     custody_from: Mutex<Vec<std::path::PathBuf>>,
     /// What `finalize` returns as the report document (a path = the no-documents-actor fallback).
-    doc: Mutex<String>,
+    doc: Mutex<Option<String>>,
 }
 
 impl Default for Fake {
@@ -74,7 +74,7 @@ impl Default for Fake {
             confirm_once: Default::default(),
             tried: Default::default(),
             custody_from: Default::default(),
-            doc: Mutex::new("doc-1".into()),
+            doc: Mutex::new(Some("doc-1".into())),
         }
     }
 }
@@ -336,7 +336,7 @@ impl Backend for Fake {
         _: &AutoresearchConfig,
         _: &Path,
         _: &runtime::Runtime,
-    ) -> Result<(Headline, String)> {
+    ) -> Result<(Headline, Option<String>)> {
         let headline = Headline {
             text: "time_ms 100 → 90 (−10.0 %)".into(),
             base_mean: 100.0,
@@ -2466,7 +2466,7 @@ async fn stop_now_while_preparing_cancels_the_baseline() {
 #[tokio::test]
 async fn report_doc_is_none_when_finalize_has_no_document() {
     let fake = Fake::with_values(&[100.0, 100.0, 100.0, 95.0]);
-    *fake.doc.lock() = "/tmp/t1/report.md".into();
+    *fake.doc.lock() = None;
     let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
     let session = started(&mut h, "t1", 1).await;
     begin(&mut h.studies, b(session)).await.unwrap();

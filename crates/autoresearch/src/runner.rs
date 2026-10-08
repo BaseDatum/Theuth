@@ -98,6 +98,15 @@ pub async fn sample(
     } else {
         None
     };
+    // R-41: why a finished run is not a sample, for the verdict line.
+    let failure = value
+        .is_none()
+        .then(|| match (run.exit, &scanned.bad_number) {
+            (Some(0), Some(b)) => format!("bad number {b}"),
+            (Some(0), None) => format!("no METRIC {} line", spec.metric.name),
+            (Some(e), _) => format!("exit {e}"),
+            (None, _) => "killed".to_owned(),
+        });
     Ok(Sample {
         n: req.n,
         k: req.k,
@@ -114,6 +123,8 @@ pub async fn sample(
         lost: false,
         log_path: Some(root_relative(&log)),
         at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        slot_holders: slot::build_slot_holders(),
+        failure,
     })
 }
 

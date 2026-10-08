@@ -532,7 +532,7 @@ pub(crate) async fn settle(
     if !did {
         return Ok((None, notes));
     }
-    let spend = env.backend.spend_usd(study.session).await;
+    let spend = actor::study_spend(env, study).await?;
     Ok((actor::apply_rules(env, slug, spend).await?, notes))
 }
 
@@ -742,7 +742,7 @@ async fn confirm(
     let runs = env.runs_dir(slug, exp.n);
     std::fs::create_dir_all(&runs)?;
     let cancel = actor::cancel_token(&env.root, slug);
-    let inc_samples = env.store.samples_of_tree(slug, incumbent).await?;
+    let inc_samples = actor::incumbent_samples(env, study, incumbent).await?;
     let combined = prior.is_none();
     let prior: Vec<Sample> = match prior {
         Some(t) => env.store.samples_of_tree(slug, t).await?,
@@ -1031,9 +1031,6 @@ mod tests {
         }
         async fn seed_playbook(&self, _: &str, _: &runtime::Runtime) -> Result<Option<String>> {
             Ok(None)
-        }
-        async fn spend_usd(&self, _: Option<SessionId>) -> f64 {
-            0.0
         }
         async fn code_map(
             &self,

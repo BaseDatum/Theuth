@@ -389,7 +389,7 @@ pub trait Backend: Send + Sync {
         cfg: &AutoresearchConfig,
         root: &Path,
         rt: &runtime::Runtime,
-    ) -> Result<(Headline, String)> {
+    ) -> Result<(Headline, Option<String>)> {
         crate::finalize::run_with(store, study, reason, cfg.clone(), root, rt.shutdown.clone())
             .await
     }
@@ -464,10 +464,6 @@ pub trait Backend: Send + Sync {
             .filter(|m| m.currency == "USD")
             .map(|m| m.nanos as f64 / 1e9)
             .sum())
-    }
-    /// Study spend as a plain number for callers that cannot refuse (W5's wave settle); `0.0` on error.
-    async fn spend_usd(&self, session: Option<SessionId>) -> f64 {
-        self.session_cost(session).await.unwrap_or(0.0)
     }
     /// `code_map(focus=scope, budget=…)` through the tool registry; `None` when unavailable.
     async fn code_map(
@@ -2590,13 +2586,16 @@ async fn measure_env(
             .as_deref()
             .map(|p| env.backend.tail(&env.root.join(p)))
             .unwrap_or_default();
-        // Exit 0 without a value = the primary line was missing or not a finite number (R-41).
-        exp.line = match s.exit {
-            Some(0) => format!(
-                "crash: exit 0 but no usable `METRIC {metric_name}=<number>` line (missing, nan or inf; tail below)"
-            ),
-            Some(e) => format!("crash: exit {e} (tail below)"),
-            None => "crash: killed (timeout or signal; tail below)".to_owned(),
+        // The runner's reason (R-41: `exit 1`, `bad number time_ms=nan`, `no METRIC time_ms line`).
+        exp.line = match &s.failure {
+            Some(f) => format!("crash: {f} (tail below)"),
+            None => match s.exit {
+                Some(0) => format!(
+                    "crash: exit 0 but no usable `METRIC {metric_name}=<number>` line (missing, nan or inf; tail below)"
+                ),
+                Some(e) => format!("crash: exit {e} (tail below)"),
+                None => "crash: killed (timeout or signal; tail below)".to_owned(),
+            },
         };
         report.verdict = Verdict::Crash;
         report.line = exp.line.clone();
@@ -3824,13 +3823,14 @@ pub async fn finalize_task(env: Env, slug: String) {
         )
         .await
     {
-        Ok((headline, doc)) => {
-            if let Err(e) = report_turn(&env, &study, &doc).await {
+        Ok((headline, report_doc)) => {
+            // R-98: `report_doc` is a document id or nothing (no documents actor:
+            // the tables sit in `<study_dir>/report.md`, no turn to wrap them).
+            if let Some(doc) = &report_doc
+                && let Err(e) = report_turn(&env, &study, doc).await
+            {
                 tracing::warn!(%slug, "report prose not written (tables stand): {e}");
             }
-            // R-98: `report_doc` is a document id or nothing — finalize's file-path fallback
-            // (no documents actor) is not a document the UI can open.
-            let report_doc = (!doc.starts_with('/')).then(|| doc.clone());
             let p = StudyPatch {
                 state: Some(StudyState::Finished),
                 finished_at: Some(now()),
