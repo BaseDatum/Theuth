@@ -43,6 +43,10 @@ test('routeOf per kind; times become t<ms> hashes, a session turn is dropped', (
   expect(routeOf(cite('theuth://sessions/s1#7'))).toEqual({ to: '/c/$session', params: { session: 's1' }, search: {} })
   expect(routeOf(cite('theuth://knowledge/ops/dr'))).toEqual({ to: '/knowledge/$', params: { _splat: 'ops/dr' }, search: {} })
   expect(locatorMs('@1:05:00')).toBe(3_900_000)
+  // 144 §4: inside a notebook chat, notes and sources carry the way back; other kinds do not take `?nb`.
+  expect(routeOf(cite('theuth://notes/n1#b7'), 'nb1')).toEqual({ to: '/notes/$id', params: { id: 'n1' }, search: { nb: 'nb1' }, hash: 'b7' })
+  expect(routeOf(cite('theuth://sources/s1'), 'nb1')).toEqual({ to: '/sources/$id', params: { id: 's1' }, search: { nb: 'nb1' }, hash: undefined })
+  expect(routeOf(cite('theuth://knowledge/ops/dr'), 'nb1').search).toEqual({})
 })
 
 test('locatorLabel and provenance detection', () => {

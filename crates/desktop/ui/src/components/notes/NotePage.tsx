@@ -5,7 +5,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { BoardReader } from '@/components/board/BoardReader'
 import { prefillDraft } from '@/components/chat/Composer'
-import { Action, DocumentPage } from '@/components/editor/DocumentPage'
+import { Action, DocumentPage, useNotebookBack } from '@/components/editor/DocumentPage'
 import { useDocument } from '@/components/editor/useDocument'
 import { UndoAgentAction } from '@/components/knowledge/Document'
 import { ChatPicker } from '@/components/notes/ChatPicker'
@@ -26,11 +26,11 @@ import { on } from '@/store/sessions'
 
 const route = getRouteApi('/notes_/$id')
 
-/** `/notes/$id` (59 §7.3): the note in BlockNote, its title inline in the bar, the chat panel below. */
+/** `/notes/$id` (59 §7.3): the note in BlockNote, its title inline in the bar, the chat panel below. `?nb` (144 §4): the notebook to go back to. */
 export function NotePage() {
   const { id } = route.useParams()
-  const { new: isNew } = route.useSearch()
-  return <Note key={id} id={id} isNew={isNew === true} />
+  const { new: isNew, nb } = route.useSearch()
+  return <Note key={id} id={id} isNew={isNew === true} nb={nb} />
 }
 
 /**
@@ -62,7 +62,7 @@ function useTitle(provider: EngineProvider | null): [string, (t: string) => void
   ]
 }
 
-function Note({ id, isNew }: { id: string; isNew: boolean }) {
+function Note({ id, isNew, nb }: { id: string; isNew: boolean; nb: string | undefined }) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -81,13 +81,15 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
     document.title = title
   }, [title])
   // A just-created note (`?new`, from New note): the title is selected for typing over once the document is live
-  // (`meta`, and so the title, lands with `doc_open` just before); the flag is dropped from the URL.
+  // (`meta`, and so the title, lands with `doc_open` just before); the flag is dropped from the URL, `?nb` stays.
   const ready = live.status.kind === 'live'
   useEffect(() => {
     if (!isNew || !ready) return
     titleInput.current?.select()
-    void navigate({ to: '/notes/$id', params: { id }, search: {}, replace: true })
-  }, [isNew, ready, id, navigate])
+    void navigate({ to: '/notes/$id', params: { id }, search: nb ? { nb } : {}, replace: true })
+  }, [isNew, ready, id, nb, navigate])
+  // 144 §4: back to the notebook this note was opened from (or belongs to) at every width.
+  const wayBack = useNotebookBack('note', id, nb)
 
   const rename = useMutation({
     mutationFn: (t: string) => api.doc_rename(id, t),
@@ -130,6 +132,7 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
     <DocumentPage
       backTo="/notes"
       backLabel="Back to notes"
+      back={wayBack.back}
       title={
         <>
           <TitleInput
@@ -139,6 +142,7 @@ function Note({ id, isNew }: { id: string; isNew: boolean }) {
             onCommit={(t) => t !== title && rename.mutate(t)}
           />
           {!deleted && <DictationButton field={titleInput} />}
+          {wayBack.chip}
         </>
       }
       actions={

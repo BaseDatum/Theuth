@@ -1,21 +1,31 @@
 import { Link } from '@tanstack/react-router'
-import { ChevronLeft } from 'lucide-react'
+import { ChevronDown, ChevronLeft } from 'lucide-react'
 import { type ComponentType, type ReactNode, type Ref } from 'react'
 import { Editor as BlockEditor } from '@/components/editor/Editor'
 import type { LiveDocument } from '@/components/editor/useDocument'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
+import { useItemNotebooks, useNotebook } from '@/components/notebooks/useNotebook'
 import { ParticipantStrip } from '@/components/share/ParticipantStrip'
 import { ShareAction } from '@/components/share/ShareDialog'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { groupOf } from '@/lib/nav'
 import { isPopout } from '@/lib/popout'
+import type { ItemKind } from '@/rpc/bindings/ItemKind'
 import { cn } from 'cn'
+
+/**
+ * 144 §4 (Sky's ruling, 2026-10-08): the way back from a note or source to the notebook it was opened from — chevron
+ * + "Back to <title>" at EVERY width, at the left of the `SectionRow`, in place of the phone-only list chevron.
+ * `search.tab` lands the phone on the right column; the desktop restores the three columns.
+ */
+export type NotebookBack = { to: '/notebooks/$id'; params: { id: string }; search: { tab: 'notes' | 'sources' }; label: string; always: true }
 
 /**
  * The bars over a document pane's body. In the shell (97b): the section's `SectionBand` (unless the page's explorer
@@ -24,11 +34,14 @@ import { cn } from 'cn'
  * `title` is the caller's own node (an `h2`, a `code`, a title input) and sits in the row as-is.
  * 118: the back chevron hides from `md` up because Notes/Knowledge have their list pane beside the document there;
  * a page without one (a task) passes `backAlways` and keeps its back at every width, in both shells.
+ * 144 §4: `back` (a `NotebookBack`) replaces the row's list chevron with the always-visible notebook control; the
+ * popped window keeps 143's rule (no band, no back) and ignores it.
  */
 export function Frame({
   backTo,
   backLabel,
   backAlways = false,
+  back,
   title,
   actions,
   band = true,
@@ -37,6 +50,7 @@ export function Frame({
   backTo: '/knowledge' | '/notes' | '/notebooks' | '/tasks' | '/agents'
   backLabel: string
   backAlways?: boolean
+  back?: NotebookBack
   title: ReactNode
   actions?: ReactNode
   band?: boolean
@@ -62,7 +76,15 @@ export function Frame({
       ) : (
         <>
           {band && <SectionBand group={groupOf(backTo) ?? 'library'} />}
-          <SectionRow back={{ to: backTo, label: backLabel, className: backClass }}>
+          <SectionRow back={back ? undefined : { to: backTo, label: backLabel, className: backClass }}>
+            {back && (
+              <Button asChild variant="ghost" size="sm" className="-ml-1 shrink-0 px-1.5" aria-label={back.label} data-testid="notebook-back">
+                <Link to={back.to} params={back.params} search={back.search}>
+                  <ChevronLeft />
+                  <span className="hidden max-w-[220px] truncate md:inline">{back.label}</span>
+                </Link>
+              </Button>
+            )}
             {title}
             {actions}
           </SectionRow>
@@ -71,6 +93,42 @@ export function Frame({
       {children}
     </article>
   )
+}
+
+/**
+ * 144 §4: the back control for a note (`tab: 'notes'`) or source (`tab: 'sources'`) page. With `?nb` the control
+ * goes there ("Back to <title>", "Back to notebook" while the row loads). Without it, an item that belongs to
+ * notebooks goes back to its first one, and `chip` is the `in <N notebooks> ▾` menu listing all of them (the way
+ * back exists from Library too). A popped window gets neither (143's rule).
+ */
+export function useNotebookBack(kind: ItemKind, item: string, nb: string | undefined): { back: NotebookBack | undefined; chip: ReactNode } {
+  const tab = kind === 'note' ? 'notes' : 'sources'
+  const member = useItemNotebooks(kind, item)
+  const target = nb ?? member?.[0]?.doc.id
+  const row = useNotebook(target ?? '', target !== undefined).data
+  if (isPopout() || target === undefined) return { back: undefined, chip: null }
+  const title = row?.doc.title
+  const back: NotebookBack = { to: '/notebooks/$id', params: { id: target }, search: { tab }, label: title ? `Back to ${title}` : 'Back to notebook', always: true }
+  const chip =
+    !nb && member && member.length > 0 ? (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="xs" className="shrink-0 rounded-full text-[11px] font-normal text-fg-tertiary" aria-label={`In ${member.length} ${member.length === 1 ? 'notebook' : 'notebooks'}`}>
+            in {member.length} {member.length === 1 ? 'notebook' : 'notebooks'} <ChevronDown />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          {member.map((n) => (
+            <DropdownMenuItem key={n.doc.id} asChild>
+              <Link to="/notebooks/$id" params={{ id: n.doc.id }} search={{ tab }}>
+                {n.doc.title || 'Untitled'}
+              </Link>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ) : null
+  return { back, chip }
 }
 
 /** One icon action in the frame's bar. */
@@ -155,6 +213,7 @@ export function DocumentPage({
   title: ReactNode
   actions?: ReactNode
   band?: boolean
+  back?: NotebookBack
 }) {
   const mobile = useIsMobile()
   // 59 §8.2, §8.5: who is here, and the owner's "Share…" — every document page alike.
