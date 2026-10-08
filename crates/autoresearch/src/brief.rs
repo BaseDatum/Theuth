@@ -12,7 +12,10 @@ use std::collections::BTreeMap;
 use crate::config::{BriefConfig, GateConfig};
 use crate::error::Result;
 use crate::store::{ExperimentRecord, Store, StudyRecord};
-use crate::types::{Brief, Direction, Effect, ExperimentState, IdeaSource, IdeaStatus, Sample, SampleRole, StudySpec};
+use crate::types::{
+    Brief, Direction, Effect, ExperimentState, IdeaSource, IdeaStatus, Sample, SampleRole,
+    StudySpec,
+};
 
 /// Everything the renderer needs that is not in the ledger.
 #[derive(Clone, Debug, Default)]
@@ -53,7 +56,12 @@ fn protocol(crash_retries: u8) -> String {
 }
 
 /// Render the brief for `study` at experiment `cx.n` (140 §7.2).
-pub async fn render(store: &Store, study: &StudyRecord, cfg: &BriefConfig, cx: &Context) -> Result<Brief> {
+pub async fn render(
+    store: &Store,
+    study: &StudyRecord,
+    cfg: &BriefConfig,
+    cx: &Context,
+) -> Result<Brief> {
     let slug = study.slug.as_str();
     let spec = &study.spec;
     let segment = store.get_segment(slug, study.segment).await?;
@@ -71,7 +79,8 @@ pub async fn render(store: &Store, study: &StudyRecord, cfg: &BriefConfig, cx: &
 
     let x_i = study.incumbent_mean;
     let base = segment.as_ref().and_then(|s| s.baseline_mean);
-    let closed: Vec<&ExperimentRecord> = experiments.iter().filter(|e| is_closed(e.state)).collect();
+    let closed: Vec<&ExperimentRecord> =
+        experiments.iter().filter(|e| is_closed(e.state)).collect();
     let kept: Vec<&ExperimentRecord> = closed
         .iter()
         .copied()
@@ -102,7 +111,9 @@ pub async fn render(store: &Store, study: &StudyRecord, cfg: &BriefConfig, cx: &
 
     // From the user.
     let last_seen = steers.iter().filter_map(|s| s.seen_in).max().unwrap_or(0);
-    out.push_str(&format!("\nFrom the user (since experiment {last_seen}):\n"));
+    out.push_str(&format!(
+        "\nFrom the user (since experiment {last_seen}):\n"
+    ));
     let unseen: Vec<String> = steers
         .iter()
         .filter(|s| s.seen_in.is_none())
@@ -166,13 +177,21 @@ pub async fn render(store: &Store, study: &StudyRecord, cfg: &BriefConfig, cx: &
             format!(
                 "{}{} [{}] {}",
                 i.id,
-                if i.source == IdeaSource::User { " ★" } else { "" },
+                if i.source == IdeaSource::User {
+                    " ★"
+                } else {
+                    ""
+                },
                 cat(&i.category),
                 one_line(&i.text)
             )
         })
         .collect();
-    push_list(&mut out, &idea_lines, "- none; add some with experiment_notes");
+    push_list(
+        &mut out,
+        &idea_lines,
+        "- none; add some with experiment_notes",
+    );
 
     // Cases that moved most.
     if let Some(last) = closed.iter().find(|e| e.n_samples > 0) {
@@ -180,7 +199,11 @@ pub async fn render(store: &Store, study: &StudyRecord, cfg: &BriefConfig, cx: &
         let before = store.samples_of_tree(slug, &last.parent_sha).await?;
         let moved = cases_moved(&candidate, &before, spec.metric.direction);
         if !moved.is_empty() {
-            out.push_str(&format!("\nCases that moved most last time (#{}): {}\n", last.n, moved.join(", ")));
+            out.push_str(&format!(
+                "\nCases that moved most last time (#{}): {}\n",
+                last.n,
+                moved.join(", ")
+            ));
         }
     }
 
@@ -205,7 +228,10 @@ pub async fn render(store: &Store, study: &StudyRecord, cfg: &BriefConfig, cx: &
         "Mode: exploit.\n"
     });
     if cx.explore {
-        let since = closed.iter().take_while(|e| e.state != ExperimentState::Kept).count();
+        let since = closed
+            .iter()
+            .take_while(|e| e.state != ExperimentState::Kept)
+            .count();
         out.push_str(&format!(
             "{since} experiments without a keep. Propose a substantially different approach; the ideas above include the advisor's suggestions.\n"
         ));
@@ -217,7 +243,12 @@ pub async fn render(store: &Store, study: &StudyRecord, cfg: &BriefConfig, cx: &
     }
 
     // Code map.
-    if let Some(map) = cx.code_map.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+    if let Some(map) = cx
+        .code_map
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+    {
         out.push_str("\nCode map of the scope (ranked):\n");
         for l in map.lines().filter(|l| !l.trim().is_empty()) {
             out.push_str(l);
@@ -226,7 +257,11 @@ pub async fn render(store: &Store, study: &StudyRecord, cfg: &BriefConfig, cx: &
     }
 
     out.push('\n');
-    out.push_str(&protocol(if cx.crash_retries == 0 { 2 } else { cx.crash_retries }));
+    out.push_str(&protocol(if cx.crash_retries == 0 {
+        2
+    } else {
+        cx.crash_retries
+    }));
     out.push_str("\n</study>\n");
 
     Ok(Brief {
@@ -284,7 +319,10 @@ pub fn trim(text: &str, max_bytes: usize) -> String {
 }
 
 fn is_closed(s: ExperimentState) -> bool {
-    !matches!(s, ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured)
+    !matches!(
+        s,
+        ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
+    )
 }
 
 fn is_dead_end(s: ExperimentState) -> bool {
@@ -310,15 +348,27 @@ fn push_list(out: &mut String, lines: &[String], empty: &str) {
 }
 
 fn list_or_none(v: &[String]) -> String {
-    if v.is_empty() { "none".into() } else { v.join(", ") }
+    if v.is_empty() {
+        "none".into()
+    } else {
+        v.join(", ")
+    }
 }
 
 fn cat(c: &str) -> &str {
-    if c.trim().is_empty() { "uncategorised" } else { c.trim() }
+    if c.trim().is_empty() {
+        "uncategorised"
+    } else {
+        c.trim()
+    }
 }
 
 fn desc_or_idea(e: &ExperimentRecord) -> &str {
-    if e.description.trim().is_empty() { &e.idea } else { &e.description }
+    if e.description.trim().is_empty() {
+        &e.idea
+    } else {
+        &e.description
+    }
 }
 
 fn verdict_tag(e: &ExperimentRecord) -> String {
@@ -339,7 +389,11 @@ fn one_line(s: &str) -> String {
 /// `+2.4 %` / `−0.3 %` / `—`.
 fn pct(v: Option<f64>) -> String {
     match v {
-        Some(v) if v.is_finite() => format!("{}{} %", if v < 0.0 { "−" } else { "+" }, trim_float(v.abs(), 1)),
+        Some(v) if v.is_finite() => format!(
+            "{}{} %",
+            if v < 0.0 { "−" } else { "+" },
+            trim_float(v.abs(), 1)
+        ),
         _ => "—".into(),
     }
 }
@@ -374,7 +428,13 @@ fn trim_float(v: f64, d: usize) -> String {
     }
 }
 
-fn metric_line(spec: &StudySpec, x_i: Option<f64>, base: Option<f64>, kept: usize, total: usize) -> String {
+fn metric_line(
+    spec: &StudySpec,
+    x_i: Option<f64>,
+    base: Option<f64>,
+    kept: usize,
+    total: usize,
+) -> String {
     let dir = match spec.metric.direction {
         Direction::Lower => "lower",
         Direction::Higher => "higher",
@@ -382,7 +442,11 @@ fn metric_line(spec: &StudySpec, x_i: Option<f64>, base: Option<f64>, kept: usiz
     let unit = &spec.metric.unit;
     let incumbent = match (x_i, base) {
         (Some(x), Some(b)) if b != 0.0 => {
-            format!("Incumbent {} {unit} = {} vs base", num(x), pct(Some((x - b) / b.abs() * 100.0)))
+            format!(
+                "Incumbent {} {unit} = {} vs base",
+                num(x),
+                pct(Some((x - b) / b.abs() * 100.0))
+            )
         }
         (Some(x), _) => format!("Incumbent {} {unit} (= base)", num(x)),
         (None, _) => "Incumbent not measured yet".to_owned(),
@@ -393,11 +457,25 @@ fn metric_line(spec: &StudySpec, x_i: Option<f64>, base: Option<f64>, kept: usiz
     )
 }
 
-fn noise_line(spec: &StudySpec, sigma: Option<f64>, x_i: Option<f64>, n_i: usize, gate: &GateConfig) -> String {
+fn noise_line(
+    spec: &StudySpec,
+    sigma: Option<f64>,
+    x_i: Option<f64>,
+    n_i: usize,
+    gate: &GateConfig,
+) -> String {
     let unit = &spec.metric.unit;
     let x = x_i.unwrap_or(0.0);
-    let min_effect = Effect::parse(&spec.metric.min_effect).unwrap_or(Effect::Absolute(0.0)).against(x);
-    let rel = |v: f64| if x != 0.0 { format!(" ({} %)", trim_float(v / x.abs() * 100.0, 2)) } else { String::new() };
+    let min_effect = Effect::parse(&spec.metric.min_effect)
+        .unwrap_or(Effect::Absolute(0.0))
+        .against(x);
+    let rel = |v: f64| {
+        if x != 0.0 {
+            format!(" ({} %)", trim_float(v / x.abs() * 100.0, 2))
+        } else {
+            String::new()
+        }
+    };
     match sigma {
         Some(s) if s > 0.0 && s.is_finite() => {
             let fast = gate.z_fast * s * (1.0 + 1.0 / n_i.max(1) as f64).sqrt();
@@ -430,12 +508,16 @@ fn dead_ends(closed: &[&ExperimentRecord], cap: usize) -> Vec<String> {
     let mut groups: Vec<Group<'_>> = Vec::new();
     for e in closed.iter().copied().filter(|e| is_dead_end(e.state)) {
         let tokens = tokens(&format!("{} {}", e.idea, e.description));
-        match groups
-            .iter_mut()
-            .find(|g| cat(&g.head.category) == cat(&e.category) && jaccard(&g.tokens, &tokens) >= DEAD_END_SIMILARITY)
-        {
+        match groups.iter_mut().find(|g| {
+            cat(&g.head.category) == cat(&e.category)
+                && jaccard(&g.tokens, &tokens) >= DEAD_END_SIMILARITY
+        }) {
             Some(g) => g.count += 1,
-            None => groups.push(Group { head: e, tokens, count: 1 }),
+            None => groups.push(Group {
+                head: e,
+                tokens,
+                count: 1,
+            }),
         }
     }
     // Group by category, keep newest-first order within (stable sort).
@@ -445,7 +527,13 @@ fn dead_ends(closed: &[&ExperimentRecord], cap: usize) -> Vec<String> {
         .take(cap)
         .map(|g| {
             let e = g.head;
-            let mut line = format!("[{}] #{} {} — {}", cat(&e.category), e.n, one_line(&e.idea), verdict_tag(e));
+            let mut line = format!(
+                "[{}] #{} {} — {}",
+                cat(&e.category),
+                e.n,
+                one_line(&e.idea),
+                verdict_tag(e)
+            );
             if e.delta_pct.is_some() {
                 line.push(' ');
                 line.push_str(&pct(e.delta_pct));
@@ -481,7 +569,11 @@ pub(crate) fn jaccard(a: &[String], b: &[String]) -> f64 {
     }
     let inter = a.iter().filter(|t| b.binary_search(t).is_ok()).count();
     let union = a.len() + b.len() - inter;
-    if union == 0 { 0.0 } else { inter as f64 / union as f64 }
+    if union == 0 {
+        0.0
+    } else {
+        inter as f64 / union as f64
+    }
 }
 
 /// `id −12.3 %` for the `CASES_SHOWN` cases whose candidate mean moved most against the incumbent's.
@@ -497,7 +589,9 @@ fn cases_moved(candidate: &[Sample], before: &[Sample], direction: Direction) ->
         }
         m
     }
-    let after = means(candidate, |s| s.role == Some(SampleRole::Candidate) || s.role.is_none());
+    let after = means(candidate, |s| {
+        s.role == Some(SampleRole::Candidate) || s.role.is_none()
+    });
     let before = means(before, |s| s.role != Some(SampleRole::Candidate));
     let mut rows: Vec<(f64, String)> = after
         .iter()
@@ -548,7 +642,10 @@ fn balance_line(closed: &[&ExperimentRecord]) -> String {
                     a.n
                 )
             } else {
-                format!(" The last two were [{}]; pick another category.", cat(&a.category))
+                format!(
+                    " The last two were [{}]; pick another category.",
+                    cat(&a.category)
+                )
             }
         }
         _ => String::new(),
@@ -578,7 +675,12 @@ mod tests {
     use crate::store::SegmentRecord;
     use crate::types::*;
 
-    async fn fixture(recent: u32, dead: u32, ideas: u32, playbook_kib: usize) -> (tempfile::TempDir, Store, StudyRecord) {
+    async fn fixture(
+        recent: u32,
+        dead: u32,
+        ideas: u32,
+        playbook_kib: usize,
+    ) -> (tempfile::TempDir, Store, StudyRecord) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).await.unwrap();
         let spec = StudySpec {
@@ -630,7 +732,11 @@ mod tests {
                         tree_sha: "inc".into(),
                         role: Some(SampleRole::Baseline),
                         value: Some(42.3),
-                        cases: [("fixture_a".to_owned(), 10.0), ("fixture_b".to_owned(), 20.0)].into(),
+                        cases: [
+                            ("fixture_a".to_owned(), 10.0),
+                            ("fixture_b".to_owned(), 20.0),
+                        ]
+                        .into(),
                         ..Default::default()
                     },
                 )
@@ -642,9 +748,20 @@ mod tests {
         for i in 0..dead {
             n += 1;
             let mut e = ExperimentRecord::open("sort-speed", n, 0, "inc");
-            e.state = if i % 3 == 0 { ExperimentState::Crashed } else { ExperimentState::Discarded };
-            e.verdict = Some(if i % 3 == 0 { Verdict::Crash } else { Verdict::NoGain });
-            e.idea = format!("dead end idea number {i} about {} in the parser", cats[(i % 4) as usize]);
+            e.state = if i % 3 == 0 {
+                ExperimentState::Crashed
+            } else {
+                ExperimentState::Discarded
+            };
+            e.verdict = Some(if i % 3 == 0 {
+                Verdict::Crash
+            } else {
+                Verdict::NoGain
+            });
+            e.idea = format!(
+                "dead end idea number {i} about {} in the parser",
+                cats[(i % 4) as usize]
+            );
             e.category = cats[(i % 4) as usize].into();
             e.description = format!("tried variant {i}");
             e.learned = "nothing measurable".into();
@@ -656,8 +773,16 @@ mod tests {
             n += 1;
             let mut e = ExperimentRecord::open("sort-speed", n, 0, "inc");
             let kept = i % 2 == 0;
-            e.state = if kept { ExperimentState::Kept } else { ExperimentState::Discarded };
-            e.verdict = Some(if kept { Verdict::Improved } else { Verdict::NoGain });
+            e.state = if kept {
+                ExperimentState::Kept
+            } else {
+                ExperimentState::Discarded
+            };
+            e.verdict = Some(if kept {
+                Verdict::Improved
+            } else {
+                Verdict::NoGain
+            });
             e.idea = format!("recent idea {i}: memoise the token table slice {i}");
             e.category = "caching".into();
             e.description = format!("memoised slice {i}");
@@ -675,7 +800,11 @@ mod tests {
                         tree_sha: format!("cand{n}"),
                         role: Some(SampleRole::Candidate),
                         value: Some(41.2),
-                        cases: [("fixture_a".to_owned(), 9.0), ("fixture_b".to_owned(), 21.0)].into(),
+                        cases: [
+                            ("fixture_a".to_owned(), 9.0),
+                            ("fixture_b".to_owned(), 21.0),
+                        ]
+                        .into(),
                         ..Default::default()
                     },
                 )
@@ -688,14 +817,21 @@ mod tests {
                     slug: "sort-speed".into(),
                     text: format!("idea {i}: try a different hashing strategy for symbol {i}"),
                     category: "algorithm".into(),
-                    source: if i == 0 { IdeaSource::User } else { IdeaSource::Model },
+                    source: if i == 0 {
+                        IdeaSource::User
+                    } else {
+                        IdeaSource::Model
+                    },
                     priority: if i == 0 { 3 } else { 1 },
                     ..Default::default()
                 })
                 .await
                 .unwrap();
         }
-        store.insert_steer("sort-speed", "try SIMD for the scanner", By::User).await.unwrap();
+        store
+            .insert_steer("sort-speed", "try SIMD for the scanner", By::User)
+            .await
+            .unwrap();
         (dir, store, study)
     }
 
@@ -703,7 +839,14 @@ mod tests {
         Context {
             n,
             budget_left: (106, 7.5, 14.25),
-            code_map: Some((0..60).map(|i| format!("lib/liquid/file{i}.rb — Parser#parse_{i} (hot, 1{i} callers)")).collect::<Vec<_>>().join("\n")),
+            code_map: Some(
+                (0..60)
+                    .map(|i| {
+                        format!("lib/liquid/file{i}.rb — Parser#parse_{i} (hot, 1{i} callers)")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
             ..Default::default()
         }
     }
@@ -712,7 +855,9 @@ mod tests {
     #[tokio::test]
     async fn fixture_brief_fits_and_has_every_section() {
         let (_d, store, study) = fixture(8, 30, 12, 4).await;
-        let b = render(&store, &study, &BriefConfig::default(), &cx(39)).await.unwrap();
+        let b = render(&store, &study, &BriefConfig::default(), &cx(39))
+            .await
+            .unwrap();
         assert!(b.text.len() <= 12288, "{} bytes", b.text.len());
         assert_eq!(b.n, 39);
         for needle in [
@@ -742,7 +887,11 @@ mod tests {
             "(at most 2 times)",
             "</study>",
         ] {
-            assert!(b.text.contains(needle), "missing {needle:?} in:\n{}", b.text);
+            assert!(
+                b.text.contains(needle),
+                "missing {needle:?} in:\n{}",
+                b.text
+            );
         }
         // The ★ marks only the user idea (plus the section header's legend).
         assert_eq!(b.text.matches('★').count(), 2);
@@ -752,7 +901,9 @@ mod tests {
     #[tokio::test]
     async fn dead_ends_collapse_and_group() {
         let (_d, store, study) = fixture(0, 12, 0, 0).await;
-        let b = render(&store, &study, &BriefConfig::default(), &cx(13)).await.unwrap();
+        let b = render(&store, &study, &BriefConfig::default(), &cx(13))
+            .await
+            .unwrap();
         let section: Vec<&str> = b
             .text
             .lines()
@@ -763,7 +914,10 @@ mod tests {
         // 12 dead ends over 4 categories with near-identical text → 4 lines, each ×3.
         assert_eq!(section.len(), 4, "{section:?}");
         assert!(section.iter().all(|l| l.ends_with("×3")), "{section:?}");
-        let cats: Vec<&str> = section.iter().map(|l| l.split(']').next().unwrap()).collect();
+        let cats: Vec<&str> = section
+            .iter()
+            .map(|l| l.split(']').next().unwrap())
+            .collect();
         assert_eq!(cats, ["[algorithm", "[allocation", "[caching", "[io"]);
     }
 
@@ -776,9 +930,21 @@ mod tests {
             incidents: vec!["the worktree had uncommitted changes at the start of this experiment; they were saved and removed.".into()],
             ..cx(1)
         };
-        let b = render(&store, &study, &BriefConfig::default(), &c).await.unwrap();
-        assert!(b.text.contains("Mode: explore — 0 experiments without a keep."), "{}", b.text);
-        assert!(b.text.contains("Note: the worktree had uncommitted changes"), "{}", b.text);
+        let b = render(&store, &study, &BriefConfig::default(), &c)
+            .await
+            .unwrap();
+        assert!(
+            b.text
+                .contains("Mode: explore — 0 experiments without a keep."),
+            "{}",
+            b.text
+        );
+        assert!(
+            b.text
+                .contains("Note: the worktree had uncommitted changes"),
+            "{}",
+            b.text
+        );
         assert!(b.text.contains("- none yet (the incumbent is the base)"));
         assert!(b.text.contains("Category balance: no experiments yet."));
         assert!(b.text.contains("(empty)"));
@@ -787,7 +953,12 @@ mod tests {
     /// Caps hold at every list size: total ≤ max_bytes and no line is ever cut.
     #[tokio::test]
     async fn caps_at_every_list_size() {
-        for (recent, dead, ideas, pb) in [(0, 0, 0, 0), (1, 1, 1, 1), (8, 30, 12, 4), (40, 120, 60, 16)] {
+        for (recent, dead, ideas, pb) in [
+            (0, 0, 0, 0),
+            (1, 1, 1, 1),
+            (8, 30, 12, 4),
+            (40, 120, 60, 16),
+        ] {
             let (_d, store, study) = fixture(recent, dead, ideas, pb).await;
             for max in [3072u32, 4096, 8192, 12288] {
                 let cfg = BriefConfig {
@@ -795,7 +966,11 @@ mod tests {
                     ..Default::default()
                 };
                 let b = render(&store, &study, &cfg, &cx(200)).await.unwrap();
-                assert!(b.text.len() <= max as usize, "{recent}/{dead}/{ideas}/{pb} @ {max}: {}", b.text.len());
+                assert!(
+                    b.text.len() <= max as usize,
+                    "{recent}/{dead}/{ideas}/{pb} @ {max}: {}",
+                    b.text.len()
+                );
                 let full = render(
                     &store,
                     &study,
@@ -820,9 +995,15 @@ mod tests {
     fn trim_drops_whole_lines_from_the_bottom_in_order() {
         let text = "head\n\nCode map of the scope (ranked):\na\nb\nc\n\nDead ends (do not repeat without a new reason):\nx\ny\n\nProtocol:\n1.\n";
         let t = trim(text, text.len() - 4);
-        assert_eq!(t, "head\n\nCode map of the scope (ranked):\na\n\nDead ends (do not repeat without a new reason):\nx\ny\n\nProtocol:\n1.\n");
+        assert_eq!(
+            t,
+            "head\n\nCode map of the scope (ranked):\na\n\nDead ends (do not repeat without a new reason):\nx\ny\n\nProtocol:\n1.\n"
+        );
         let t = trim(text, text.len() - 8);
-        assert!(!t.contains("\na\n") && t.contains("\nx\n") && !t.contains("\ny\n"), "{t}");
+        assert!(
+            !t.contains("\na\n") && t.contains("\nx\n") && !t.contains("\ny\n"),
+            "{t}"
+        );
         assert_eq!(trim(text, 10_000), text);
     }
 

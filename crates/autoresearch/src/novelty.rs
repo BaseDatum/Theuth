@@ -26,7 +26,8 @@ pub struct Novelty {
 }
 
 /// Experiment states that count as dead ends (140 §7.3).
-const DEAD_ENDS: &str = "('discarded', 'crashed', 'checks_failed', 'rejected_by_review', 'refused')";
+const DEAD_ENDS: &str =
+    "('discarded', 'crashed', 'checks_failed', 'rejected_by_review', 'refused')";
 /// FTS candidates examined per check.
 const CANDIDATES: i64 = 20;
 
@@ -103,7 +104,7 @@ pub async fn check(
             out.similar.push(similar_row(r)?);
         }
     }
-    out.similar.sort_by(|a, b| b.n.cmp(&a.n));
+    out.similar.sort_by_key(|s| std::cmp::Reverse(s.n));
     if !forced && flagged_before && !out.similar.is_empty() {
         let s = &out.similar[0];
         out.refused = Some(format!(
@@ -161,7 +162,11 @@ fn similar_row(r: &sqlx::sqlite::SqliteRow) -> Result<SimilarExperiment> {
 fn verdict_words(s: &SimilarExperiment) -> String {
     let mut w = s.verdict.replace('_', " ");
     if let Some(d) = s.delta_pct.filter(|d| d.is_finite()) {
-        w.push_str(&format!(", {}{:.1} %", if d < 0.0 { "−" } else { "+" }, d.abs()));
+        w.push_str(&format!(
+            ", {}{:.1} %",
+            if d < 0.0 { "−" } else { "+" },
+            d.abs()
+        ));
     }
     w
 }
@@ -217,13 +222,38 @@ mod tests {
     #[tokio::test]
     async fn identical_patch_refused_unless_forced() {
         let (_d, s) = store().await;
-        past(&s, 12, ExperimentState::Discarded, "cache the parsed template", "caching", "h1").await;
-        past(&s, 13, ExperimentState::Kept, "inline the hot loop", "algorithm", "h2").await;
-        let n = check(&s, "s", &args("something new", "io"), "h1", 0.6, false).await.unwrap();
-        assert_eq!(n.refused.as_deref(), Some("duplicate of #12 (no gain, −0.3 %): the same patch was already measured — pass force: true with a reason to re-measure it"));
+        past(
+            &s,
+            12,
+            ExperimentState::Discarded,
+            "cache the parsed template",
+            "caching",
+            "h1",
+        )
+        .await;
+        past(
+            &s,
+            13,
+            ExperimentState::Kept,
+            "inline the hot loop",
+            "algorithm",
+            "h2",
+        )
+        .await;
+        let n = check(&s, "s", &args("something new", "io"), "h1", 0.6, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            n.refused.as_deref(),
+            Some(
+                "duplicate of #12 (no gain, −0.3 %): the same patch was already measured — pass force: true with a reason to re-measure it"
+            )
+        );
         assert_eq!(n.similar.len(), 1);
         // A kept experiment's hash is not a dead end.
-        let n = check(&s, "s", &args("something new", "io"), "h2", 0.6, false).await.unwrap();
+        let n = check(&s, "s", &args("something new", "io"), "h2", 0.6, false)
+            .await
+            .unwrap();
         assert_eq!(n, Novelty::default());
         // Forced with a reason: proceeds, the duplicate still named.
         let mut a = args("something new", "io");
@@ -234,27 +264,72 @@ mod tests {
         assert_eq!(n.similar[0].n, 12);
         // Forced without a reason is not forced.
         a.reason = None;
-        assert!(check(&s, "s", &a, "h1", 0.6, false).await.unwrap().refused.is_some());
+        assert!(
+            check(&s, "s", &a, "h1", 0.6, false)
+                .await
+                .unwrap()
+                .refused
+                .is_some()
+        );
     }
 
     /// A similar idea in the same category is named but proceeds; flagged twice in a row it is refused; another category never matches.
     #[tokio::test]
     async fn similar_idea_warned_then_refused() {
         let (_d, s) = store().await;
-        past(&s, 3, ExperimentState::Discarded, "cache the parsed template between renders", "caching", "x").await;
-        past(&s, 4, ExperimentState::Crashed, "memoise the lexer token table", "caching", "y").await;
+        past(
+            &s,
+            3,
+            ExperimentState::Discarded,
+            "cache the parsed template between renders",
+            "caching",
+            "x",
+        )
+        .await;
+        past(
+            &s,
+            4,
+            ExperimentState::Crashed,
+            "memoise the lexer token table",
+            "caching",
+            "y",
+        )
+        .await;
         let a = args("cache the parsed template across renders", "caching");
         let n = check(&s, "s", &a, "fresh", 0.6, false).await.unwrap();
         assert!(n.refused.is_none(), "{n:?}");
         assert_eq!(n.similar.iter().map(|x| x.n).collect::<Vec<_>>(), [3]);
         assert_eq!(n.similar[0].verdict, "no_gain");
         let n = check(&s, "s", &a, "fresh", 0.6, true).await.unwrap();
-        assert!(n.refused.as_deref().unwrap().starts_with("similar to #3 (no gain, −0.3 %) and the previous experiment was flagged"), "{n:?}");
+        assert!(
+            n.refused.as_deref().unwrap().starts_with(
+                "similar to #3 (no gain, −0.3 %) and the previous experiment was flagged"
+            ),
+            "{n:?}"
+        );
         // Same words, another category: not similar.
-        let n = check(&s, "s", &args("cache the parsed template across renders", "io"), "fresh", 0.6, true).await.unwrap();
+        let n = check(
+            &s,
+            "s",
+            &args("cache the parsed template across renders", "io"),
+            "fresh",
+            0.6,
+            true,
+        )
+        .await
+        .unwrap();
         assert_eq!(n, Novelty::default());
         // Unrelated idea in the same category: not similar.
-        let n = check(&s, "s", &args("use SIMD for whitespace scanning", "caching"), "fresh", 0.6, true).await.unwrap();
+        let n = check(
+            &s,
+            "s",
+            &args("use SIMD for whitespace scanning", "caching"),
+            "fresh",
+            0.6,
+            true,
+        )
+        .await
+        .unwrap();
         assert_eq!(n, Novelty::default());
     }
 
@@ -280,12 +355,17 @@ mod tests {
             })
             .await
             .unwrap();
-        let ids = mark_tried(&s, "s", "cache the parsed template between renders", 7).await.unwrap();
+        let ids = mark_tried(&s, "s", "cache the parsed template between renders", 7)
+            .await
+            .unwrap();
         assert_eq!(ids, [a]);
         let ia = s.get_idea(a).await.unwrap().unwrap();
         assert_eq!(ia.status, IdeaStatus::Tried);
         assert_eq!(ia.tried_in, [7]);
-        assert_eq!(s.get_idea(b).await.unwrap().unwrap().status, IdeaStatus::Open);
+        assert_eq!(
+            s.get_idea(b).await.unwrap().unwrap().status,
+            IdeaStatus::Open
+        );
         assert!(mark_tried(&s, "s", "", 8).await.unwrap().is_empty());
     }
 }

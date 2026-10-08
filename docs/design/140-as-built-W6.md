@@ -15,7 +15,13 @@ Worker 140-W6, branch `feat/140-w6`, cut from C's skeleton 4aa41bdc. Owns only t
 
 ## Gates (through build-lock, stable 1.96.1, warm target)
 
-Filled in below after the runs.
+- `cargo test -p autoresearch` — 30 passed, 0 failed (14 new: brief 6, novelty 3, review 6 incl. malformed replies and fail-open, tools 6 incl. arg limits; plus C's 16).
+- `cargo test -p app` — 46 unit + 1 integration passed, 0 failed (3 new: the five lines, the warning matrix, the press wiring/approval map).
+- `cargo check -p tui` — exit 0.
+- `cargo clippy -p autoresearch -p app --tests` — clean on W6's files; the only findings are `clippy::derivable_impls` on C's `config.rs:314,362,368` and `types.rs:975` (not W6's files; with `-A clippy::derivable_impls` the run exits 0).
+- `rustfmt --edition 2024` on `brief.rs`, `novelty.rs`, `review.rs`, `tools.rs`, `study_draft.rs` (not `cargo fmt -p`: C's other files are unformatted and were left alone).
+- The warm target's APFS clone had stale fingerprints (`rayon`/`lopdf`/`libsqlite3-sys`, then the `sqlx` chain claimed fresh with missing or newer rlibs); `cargo clean -p <those crates>` and a rebuild fixed it — no cold build.
+- `bun run check` not run (W4/closer); the `slash.ts` change is one table row, `run()` already handles a known skill in its default branch.
 
 ## Deviations (and why)
 

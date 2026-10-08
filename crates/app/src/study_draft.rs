@@ -63,11 +63,21 @@ pub fn lines(spec: &StudySpec) -> [String; 5] {
     };
     let holdout = match &spec.holdout {
         Some(h) if !h.command.trim().is_empty() => {
-            format!("holdout `{}` every {} keeps", h.command.trim(), h.every.max(1))
+            format!(
+                "holdout `{}` every {} keeps",
+                h.command.trim(),
+                h.every.max(1)
+            )
         }
         _ => "no holdout".to_owned(),
     };
-    let list = |v: &[String], none: &str| if v.is_empty() { none.to_owned() } else { v.join(", ") };
+    let list = |v: &[String], none: &str| {
+        if v.is_empty() {
+            none.to_owned()
+        } else {
+            v.join(", ")
+        }
+    };
     let b = &spec.budget;
     let when = match &spec.window {
         Some(w) if !w.trim().is_empty() => format!("starts in the idle window (`{}`)", w.trim()),
@@ -101,17 +111,28 @@ pub fn lines(spec: &StudySpec) -> [String; 5] {
             spec.bench.repeats,
             spec.bench.timeout.trim()
         ),
-        format!("{when} · branch autoresearch/{} in its own worktree", spec.slug),
+        format!(
+            "{when} · branch autoresearch/{} in its own worktree",
+            spec.slug
+        ),
     ]
 }
 
 /// The §4.1 warnings: no check, no holdout, wall-clock without `exclusive`, empty scope, budget over the threshold, review off.
 pub fn warnings(spec: &StudySpec, cfg: &AutoresearchConfig) -> Vec<String> {
     let mut w = Vec::new();
-    if spec.checks.as_ref().is_none_or(|c| c.command.trim().is_empty()) {
+    if spec
+        .checks
+        .as_ref()
+        .is_none_or(|c| c.command.trim().is_empty())
+    {
         w.push("No correctness check: only the metric and the reviewer stand between a gaming change and a keep.".into());
     }
-    if spec.holdout.as_ref().is_none_or(|h| h.command.trim().is_empty()) {
+    if spec
+        .holdout
+        .as_ref()
+        .is_none_or(|h| h.command.trim().is_empty())
+    {
         w.push("No holdout: overfitting to the benchmark's inputs will not be detected.".into());
     }
     if is_time_unit(&spec.metric.unit) && !spec.bench.exclusive {
@@ -139,7 +160,26 @@ pub fn warnings(spec: &StudySpec, cfg: &AutoresearchConfig) -> Vec<String> {
 fn is_time_unit(unit: &str) -> bool {
     matches!(
         unit.trim().to_ascii_lowercase().as_str(),
-        "ns" | "us" | "µs" | "μs" | "ms" | "s" | "sec" | "secs" | "seconds" | "min" | "minutes" | "ops/s" | "op/s" | "qps" | "rps" | "req/s" | "it/s" | "tok/s" | "tokens/s" | "mb/s" | "gb/s"
+        "ns" | "us"
+            | "µs"
+            | "μs"
+            | "ms"
+            | "s"
+            | "sec"
+            | "secs"
+            | "seconds"
+            | "min"
+            | "minutes"
+            | "ops/s"
+            | "op/s"
+            | "qps"
+            | "rps"
+            | "req/s"
+            | "it/s"
+            | "tok/s"
+            | "tokens/s"
+            | "mb/s"
+            | "gb/s"
     )
 }
 
@@ -172,7 +212,10 @@ pub fn source(spec: &StudySpec, warnings: &[String]) -> String {
         lit(slug),
         lit(&format!("study draft {slug}"))
     ));
-    out.push_str(&format!("l1 = TextContent({})\n", lit(&format!("**{l1}**"))));
+    out.push_str(&format!(
+        "l1 = TextContent({})\n",
+        lit(&format!("**{l1}**"))
+    ));
     for (name, text) in [("l2", &l2), ("l3", &l3), ("l4", &l4), ("l5", &l5)] {
         out.push_str(&format!("{name} = TextContent({}, \"small\")\n", lit(text)));
     }
@@ -184,7 +227,11 @@ pub fn source(spec: &StudySpec, warnings: &[String]) -> String {
             .join("\n\n");
         out.push_str(&format!(
             "warn = Callout(\"warning\", {}, {})\n",
-            lit(if warnings.len() == 1 { "1 warning" } else { "Warnings" }),
+            lit(if warnings.len() == 1 {
+                "1 warning"
+            } else {
+                "Warnings"
+            }),
             lit(&text)
         ));
     }
@@ -258,7 +305,15 @@ impl Tool for StudyDraftTool {
             edit: false,
             base_call_id: None,
         };
-        let (loaded, _) = match commit_source(&self.core, app, cx.session, cx.call_id.clone(), Origin::Tool).await {
+        let (loaded, _) = match commit_source(
+            &self.core,
+            app,
+            cx.session,
+            cx.call_id.clone(),
+            Origin::Tool,
+        )
+        .await
+        {
             Ok(v) => v,
             Err(e) => return Ok(ToolOutput::err(format!("autoresearch_draft: {e}"))),
         };
@@ -327,11 +382,26 @@ mod tests {
     #[test]
     fn five_lines_read_as_the_design_says() {
         let l = lines(&spec());
-        assert_eq!(l[0], "Optimise `time_ms` (lower is better; keep from 0.5%) of `bench.sh` in liquid (base HEAD)");
-        assert_eq!(l[1], "check `bundle exec rake test` · holdout `holdout.sh` every 5 keeps");
-        assert_eq!(l[2], "may edit lib/liquid/** · never keeps fixtures/**, test/** · evaluator files fixtures/, test/");
-        assert_eq!(l[3], "up to 120 experiments, 10 h, $20 ($1.5 per experiment) · 3 baseline samples, 600s per sample");
-        assert_eq!(l[4], "starts now · branch autoresearch/sort-speed in its own worktree");
+        assert_eq!(
+            l[0],
+            "Optimise `time_ms` (lower is better; keep from 0.5%) of `bench.sh` in liquid (base HEAD)"
+        );
+        assert_eq!(
+            l[1],
+            "check `bundle exec rake test` · holdout `holdout.sh` every 5 keeps"
+        );
+        assert_eq!(
+            l[2],
+            "may edit lib/liquid/** · never keeps fixtures/**, test/** · evaluator files fixtures/, test/"
+        );
+        assert_eq!(
+            l[3],
+            "up to 120 experiments, 10 h, $20 ($1.5 per experiment) · 3 baseline samples, 600s per sample"
+        );
+        assert_eq!(
+            l[4],
+            "starts now · branch autoresearch/sort-speed in its own worktree"
+        );
         let bare = StudySpec {
             checks: None,
             holdout: None,
@@ -375,7 +445,10 @@ mod tests {
         assert!(w[1].starts_with("No holdout"));
         assert!(w[2].contains("wall-clock") && w[2].contains("exclusive: false"));
         assert!(w[3].starts_with("Scope is empty"));
-        assert_eq!(w[4], "Budget $80 is above the confirmation threshold ($50).");
+        assert_eq!(
+            w[4],
+            "Budget $80 is above the confirmation threshold ($50)."
+        );
         assert!(w[5].starts_with("Review is off"));
         // A non-time unit without the slot is fine.
         let bytes = StudySpec {
@@ -396,7 +469,10 @@ mod tests {
     #[test]
     fn source_wires_presses_and_approval_maps_them() {
         let s = source(&spec(), &["No holdout".into()]);
-        assert!(s.starts_with("root = Card([head, l1, l2, l3, l4, l5, warn, buttons, result])\n"), "{s}");
+        assert!(
+            s.starts_with("root = Card([head, l1, l2, l3, l4, l5, warn, buttons, result])\n"),
+            "{s}"
+        );
         assert!(s.contains("head = CardHeader(\"sort-speed\", \"study draft sort-speed\")\n"));
         assert!(s.contains("start = Mutation(\"autoresearch_control\", {slug: \"sort-speed\", op: \"start\"})\n"), "{s}");
         assert!(s.contains("startWindow = Mutation(\"autoresearch_control\", {slug: \"sort-speed\", op: \"start_window\", text: \"sensors/idle.py\"})\n"), "{s}");
@@ -404,7 +480,10 @@ mod tests {
         assert!(s.contains("bWindow = Button(\"Start in idle window\", Action([@Run(startWindow), @ToAssistant(\"study draft sort-speed: started\")]), \"secondary\")\n"), "{s}");
         assert!(s.contains("bEdit = Button(\"Edit\", Action([@ToAssistant(\"study draft sort-speed: edit\")]), \"tertiary\")\n"));
         assert!(s.contains("bDiscard = Button(\"Discard\", Action([@ToAssistant(\"study draft sort-speed: discarded\")]), \"tertiary\", \"destructive\")\n"));
-        assert!(s.contains("warn = Callout(\"warning\", \"1 warning\", \"⚠ No holdout\")\n"), "{s}");
+        assert!(
+            s.contains("warn = Callout(\"warning\", \"1 warning\", \"⚠ No holdout\")\n"),
+            "{s}"
+        );
         // The spec's own sensor wins for the window button; no warnings → no callout member.
         let s2 = source(
             &StudySpec {
