@@ -4,7 +4,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/endless-stubs'
-import { Memory, tokenEstimate } from './Memory'
+import { tokenEstimate } from '@/lib/endless'
+import { Memory } from './Memory'
 
 const config: EndlessConfig = { default_chat: true, default_desk: true, default_meeting: false, view_bytes: 128_000, meeting_view_bytes: 32_000, node_bytes: 512, slack: 0.25, settle_secs: 60, jobs: 8, tries: 5, retry_secs: 10, cap_chars: 30_000, backfill_max_units: 2_000, model: null }
 

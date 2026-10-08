@@ -21,6 +21,7 @@ const memory: SessionMemory = {
   units: 67,
   stats: { calls: 12, guard_trips: { copy: 1, grounding: 0, status: 0, format: 2, empty: 0, size: 0 }, input_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0, usd_estimate: 0.12 },
   model: 'anthropic/claude-haiku-4-5',
+  view_bytes: 128_000,
   backfill: null,
 }
 

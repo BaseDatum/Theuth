@@ -71,3 +71,12 @@ Esc: closes the sheet from the tree (verified). The recall box is `type="text"` 
 4. **Memory panel.** Footer while `backfill` is present: `Building memory · <done>/<total> · ~<eta> · ≈ $<usd>` (`Backfill.usd_estimate` added to the stub); a first view line equal to `(earlier history, not summarized; recall searches it)` (`EARLIER_HISTORY` in `lib/endless.ts`) renders as a muted italic note row (`role="note"`, `id+n` + the engine's text) above the bands and is excluded from the keyboard rows and band labels. Verified with the fixture's `backfill` mode (`localStorage.endless-fixture = "backfill"`): tooltip `… · backfill 812/2000`, note `0+2412(earlier history, …)`, first band `×64` with first key `2412+64`, footer `Building memory · 812/2000 · ~59 min · ≈ $2.90 · 41%` → `memory-panel-backfill-light.png`.
 
 Gates after Revision 1 (same commands, plus `src/components/meeting/StartForm.test.ts`): tsc `TSC-EXIT=0`; vitest `Test Files 9 passed (9)` · `Tests 45 passed (45)`; `bun run build` `✓ built in 3.51s`, `BUILD-EXIT=0`.
+
+## Revision 1b (Sky 03:09, per-session view budget)
+
+- `MemoryPanel.tsx` `Stats`: a compact `Select` (`size="sm"`, aria-label "View size") between the compactor model and the call count — trigger `view <kb> KB` (token estimate on `title`), rows `view 32 / 64 / 128 / 192 / 256 KB ≈ N k tokens` (`VIEW_SIZES_KB`; a stored value off the list is added as its own row). Current value from `SessionMemory.view_bytes`; picking calls `set_session_view_bytes(session, bytes)` and writes the reply into the `sessionMemory` query (no extra refetch). Errors toast.
+- Stub file: `SessionMemory.view_bytes: number`, `set_session_view_bytes(session, bytes): SessionMemory` (+ `ENDLESS_METHODS`). `tokenEstimate` moved to `lib/endless.ts` (shared with Settings).
+- Defaults unchanged: Settings slider = the default for new sessions (128 KB).
+- Verified in Chromium with the fixture: trigger `view 128 KB`; options `view 32 KB ≈ 11 k tokens | 64 ≈ 21 | 128 ≈ 43 | 192 ≈ 64 | 256 ≈ 85`; picking 64 then 192 updated the trigger → `memory-panel-view-size-dark.png`.
+- Gates: tsc `TSC-EXIT=0`; vitest `Test Files 9 passed (9)` · `Tests 45 passed (45)`; `bun run build` `✓ built in 3.19s`, `BUILD-EXIT=0`.
+- Hand-off (engine): `set_session_view_bytes(session, bytes: u32) -> SessionMemory`, clamped to 16,000..=256,000; `SessionMemory.view_bytes`.

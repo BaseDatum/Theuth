@@ -14,3 +14,6 @@ export function useCompactorLabel(model: string | null | undefined): string {
   if (model) return model
   return title.data ? `Same as title model · ${title.data.id}` : 'Same as the session'
 }
+
+/** `≈ 21 k tokens` for 64,000 bytes: content runs at ~3 bytes per token (137 §2). */
+export const tokenEstimate = (bytes: number): string => `≈ ${Math.round(bytes / 3 / 1000)} k tokens`

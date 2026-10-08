@@ -64,6 +64,7 @@ const memory: SessionMemory = {
     usd_estimate: 4.37,
   },
   model: 'anthropic/claude-haiku-4-5',
+  view_bytes: 128_000,
   backfill: null,
 }
 
@@ -119,6 +120,10 @@ export function endlessFixture(api: Api): Api {
       )
     },
     set_session_memory: () => Promise.resolve(memory),
+    set_session_view_bytes: (_s, bytes) => {
+      memory.view_bytes = bytes
+      return Promise.resolve(memory)
+    },
     endless_settings_get: () => Promise.resolve(settings),
     endless_settings_set: (next) => {
       settings = next

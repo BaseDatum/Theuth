@@ -3,12 +3,10 @@ import { useState } from 'react'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Count, Row, Section, useAction } from '@/components/settings/shared'
 import { Switch } from '@/components/ui/switch'
-import { useCompactorLabel } from '@/lib/endless'
+import { tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { EndlessConfig } from '@/rpc/endless-stubs'
 
-/** `≈ 21 k tokens` for 64,000 bytes: content runs at ~3 bytes per token (137 §2). */
-export const tokenEstimate = (bytes: number): string => `≈ ${Math.round(bytes / 3 / 1000)} k tokens`
 
 /** A native range: `onChange` follows the pointer (the label beside it previews), `onCommit` fires on release so a drag is one write. */
 function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-label': ariaLabel }: { value: number; min: number; max: number; step: number; onChange(v: number): void; onCommit(v: number): void; disabled: boolean; 'aria-label': string }) {

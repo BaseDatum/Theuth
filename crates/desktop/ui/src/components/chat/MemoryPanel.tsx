@@ -1,13 +1,14 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { fmtBytes } from '@/lib/files'
-import { EARLIER_HISTORY } from '@/lib/endless'
+import { EARLIER_HISTORY, tokenEstimate } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
@@ -136,11 +137,23 @@ export function MemoryBadge({ session, summary, row, open, onToggle }: { session
   )
 }
 
-/** Mode · compactor model · calls · guard trips (hover: per guard) · cost estimate. */
-function Stats({ m }: { m: SessionMemory }) {
+/** R1b: the view budgets the compact control offers; a stored value outside the list is shown as its own row. */
+export const VIEW_SIZES_KB = [32, 64, 128, 192, 256] as const
+
+/** Mode · compactor model · view size (per-session, R1b) · calls · guard trips (hover: per guard) · cost estimate. */
+function Stats({ session, m }: { session: string; m: SessionMemory }) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const setViewBytes = useMutation({
+    mutationFn: (bytes: number) => api.set_session_view_bytes(session, bytes),
+    onSuccess: (next) => qc.setQueryData(queryKeys.sessionMemory(session), next),
+    onError: (e) => toast.error(e.message),
+  })
   const g = m.stats.guard_trips
   const trips = guardTotal(g)
   const usd = m.stats.usd_estimate
+  const kb = m.view_bytes / 1000
+  const sizes = VIEW_SIZES_KB.includes(kb as (typeof VIEW_SIZES_KB)[number]) ? VIEW_SIZES_KB : [...VIEW_SIZES_KB, kb].sort((a, b) => a - b)
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-secondary">
       <Badge variant="outline" className="text-fg-secondary">
@@ -149,6 +162,18 @@ function Stats({ m }: { m: SessionMemory }) {
       <span className="truncate" title="Compactor model">
         {m.model}
       </span>
+      <Select value={String(kb)} disabled={setViewBytes.isPending} onValueChange={(v) => setViewBytes.mutate(Number(v) * 1000)}>
+        <SelectTrigger size="sm" className="h-6 gap-1 px-2 text-xs text-fg-secondary" aria-label="View size" title={tokenEstimate(m.view_bytes)}>
+          <SelectValue>view {kb} KB</SelectValue>
+        </SelectTrigger>
+        <SelectContent align="start">
+          {sizes.map((s) => (
+            <SelectItem key={s} value={String(s)} className="text-xs">
+              view {s} KB <span className="text-fg-tertiary">{tokenEstimate(s * 1000)}</span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
       <span className="tabular-nums">{m.stats.calls.toLocaleString('en-US')} calls</span>
       <Tooltip>
         <TooltipTrigger asChild>
@@ -360,7 +385,7 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
         <SheetHeader className="pb-3">
           <SheetTitle>Memory</SheetTitle>
           <SheetDescription className="sr-only">The session's view by band; open a line to see what it summarises.</SheetDescription>
-          {m && m.mode === 'endless' && <Stats m={m} />}
+          {m && m.mode === 'endless' && <Stats session={session} m={m} />}
         </SheetHeader>
         <div className="px-4 pb-3">
           <Input

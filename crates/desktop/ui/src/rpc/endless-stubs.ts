@@ -54,6 +54,8 @@ export type SessionMemory = {
   stats: EndlessStats
   /** The compactor model in use (D8: `agent.endless.model` or the session's). */
   model: string
+  /** R1b: this session's view budget in bytes (the Settings slider is the default for new sessions). */
+  view_bytes: number
   backfill: Backfill | null
 }
 
@@ -102,6 +104,8 @@ export interface EndlessApi {
   endless_recall(session: SessionId, query: string, limit: number | null): Promise<ViewLine[]>
   /** The `/endless on|off` semantics; idle sessions only (`busy` otherwise). */
   set_session_memory(session: SessionId, mode: MemoryMode): Promise<SessionMemory>
+  /** R1b: this session's view budget; the next fold uses it. */
+  set_session_view_bytes(session: SessionId, bytes: number): Promise<SessionMemory>
   /** The `agent.endless` section, read and written whole like `search_settings_get/set`. */
   endless_settings_get(): Promise<EndlessConfig>
   endless_settings_set(settings: EndlessConfig): Promise<EndlessConfig>
@@ -114,6 +118,7 @@ export const ENDLESS_METHODS = [
   'endless_zoom',
   'session_memory',
   'set_session_memory',
+  'set_session_view_bytes',
 ] as const satisfies readonly (keyof EndlessApi)[]
 
 /** Bind the 137 methods onto `api` (called from `makeApi`). */
