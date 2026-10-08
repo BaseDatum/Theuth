@@ -601,7 +601,10 @@ html .bn-root[data-color-scheme="dark"] {
    §24.8: the canvas is a column flex and the paper its one growing item, so an empty note is still a page — the
    paper fills the canvas below the bar (minus the canvas padding, the status line and the mobile toolbar's
    clearance; the pane already follows the keyboard) and grows with content. Every point of it is the editable
-   element, so a click anywhere on the page puts the caret in the nearest (last) block. */
+   element, so a click anywhere on the page puts the caret in the nearest (last) block.
+   143 D6: the sheet is a portrait page (A4, 1:√2) — `aspect-ratio` sets its minimum shape; `flex: 1 0 auto` still fills
+   a taller canvas and longer content still grows it (the automatic minimum height of an `aspect-ratio` box is
+   content-based). The dense meeting pane is a box beside a transcript, not a sheet. */
 html .bn-container {
   display: flex;
   flex-direction: column;
@@ -617,6 +620,13 @@ html .theuth-paper {
   border: 1px solid var(--border-subtle);
   border-radius: 0;
   box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.06);
+}
+html .bn-editor,
+html .theuth-paper {
+  aspect-ratio: 1 / 1.4142;
+}
+html [data-paper="dense"] .bn-editor {
+  aspect-ratio: auto;
 }
 @media (min-width: 768px) {
   /* Side padding follows the pane (8% of the paper): 64 px at full width, less beside an open rail. */

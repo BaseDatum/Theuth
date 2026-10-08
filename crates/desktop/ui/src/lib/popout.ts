@@ -10,8 +10,8 @@ import { isTauri } from '@/lib/tauri'
 export type PopoutTarget =
   | { kind: 'chat'; session: string }
   | { kind: 'artifact'; callId: string }
-  /** `/notes/$id`: the note's editor alone. */
-  | { kind: 'note'; doc: string }
+  /** `/notes/$id`: the note's editor alone; `fresh` (a note just created) adds `?new=true` so the page selects the title. */
+  | { kind: 'note'; doc: string; fresh?: true }
   /** `/meetings/$id`: the control center alone. */
   | { kind: 'meeting'; meeting: string }
   /** `/meetings/$id?pane=note`: the meeting's note editor alone (`?pane` is what tells it from `meeting`). */
@@ -46,7 +46,7 @@ const pathOf = (t: PopoutTarget): string =>
     : t.kind === 'artifact'
       ? `/artifacts/${encodeURIComponent(t.callId)}`
       : t.kind === 'note'
-        ? `/notes/${encodeURIComponent(t.doc)}`
+        ? `/notes/${encodeURIComponent(t.doc)}${t.fresh ? '?new=true' : ''}`
         : t.kind === 'vm'
           ? `/vm/${encodeURIComponent(t.name)}`
           : t.kind === 'pty'
@@ -60,7 +60,13 @@ const safe = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_')
 
 export const popoutLabel = (t: PopoutTarget): string => `popout-${t.kind}-${safe(idOf(t))}`
 
-export const popoutUrl = (t: PopoutTarget): string => `${pathOf(t)}${t.kind === 'meeting-note' ? '&' : '?'}window=${popoutLabel(t)}`
+export const popoutUrl = (t: PopoutTarget): string => {
+  const path = pathOf(t)
+  return `${path}${path.includes('?') ? '&' : '?'}window=${popoutLabel(t)}`
+}
+
+/** 143 D3: where a just-created note opens — its own window on a desktop (or a browser), the page itself on a phone or iOS. */
+export const noteOpenMode = (isMobile: boolean, canPopout: boolean): 'popout' | 'navigate' => (!isMobile && canPopout ? 'popout' : 'navigate')
 
 /** What a window at `href` shows alone, or `null` for the ordinary shell (no `?window=` or a route that has no popped form). */
 export function popoutTarget(href: string): PopoutTarget | null {

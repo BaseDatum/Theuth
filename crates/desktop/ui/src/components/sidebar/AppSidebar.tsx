@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { AudioLines, Bell, Bot, Library, Megaphone, Mic, PanelLeft, Settings, SquarePen } from 'lucide-react'
+import { AudioLines, Bell, Bot, Library, Megaphone, Mic, PanelLeft, Plus, Settings, SquarePen, StickyNote } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Mark } from '@/components/Mark'
@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/sidebar'
 import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/BroadcastDialog'
 import { openNewChat } from '@/components/chat/NewChatPane'
+import { createNote } from '@/components/notes/create'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { AttentionBadge } from '@/components/hud/AttentionBadge'
 import { useCanRecord } from '@/components/meeting/MeetingList'
@@ -28,6 +29,7 @@ import { THEUTH } from '@/components/tasks/helpers'
 import { keys, useAgents } from '@/components/tasks/queries'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { sectionOf } from '@/lib/nav'
+import { canPopout, noteOpenMode, openPopout } from '@/lib/popout'
 import { label } from '@/lib/chord'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { subtrees } from '@/lib/session-tree'
@@ -35,6 +37,7 @@ import { useShortcuts } from '@/lib/shortcuts'
 import * as talk from '@/lib/talk'
 import { useUpdate } from '@/lib/update'
 import { cn } from '@/lib/utils'
+import type { DocSummary } from '@/rpc/bindings/DocSummary'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { useSessionField } from '@/store/sessions'
 import { AgentTree } from './AgentTree'
@@ -44,6 +47,9 @@ import { SessionList } from './SessionList'
 
 /** Injected by vite `define` from tauri.conf.json. */
 declare const __APP_VERSION__: string
+
+/** 143 D2: the plus on the Note row — malachite (`--status-success-fg`); one token to swap for `text-project-nile` (olive). */
+export const NOTE_PLUS = 'text-success'
 
 /**
  * One row per active roster agent (not proposed, not invalid), theuth first, whether or not its desk session exists
@@ -138,7 +144,7 @@ function DeskRow({
 }
 
 /**
- * ChatGPT's left rail: Chat, Talk, Agents, Attention, Library, Meeting, the desks, the chat list, Settings; Search sits in
+ * ChatGPT's left rail: Chat, Talk, Note, Meeting, Attention, Agents, Library, the desks, the chat list, Settings; Search sits in
  * the header beside the toggle (49 §5.1). 97: Agents/Tasks/Routines and the seven Library pages are one row each; the
  * page under it carries the tab band (`SectionBand`), so the rail stays short.
  */
@@ -172,6 +178,16 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // Dragged onto a pane, New chat opens as a draft pane in the split (25 §12.3); a click opens the draft in the
   // focused pane when the view is split, else goes to `/` (the THEUTH mark above always does).
   const dragNew = useSessionDrag(null, 'New chat')
+  // 143 D3: Note creates then opens — its own window on a desktop (the shell stays put), the note page on a phone/iOS
+  // (the sheet closes on the href change above). Reads the notes cache rather than `useNotes()`: no permanent subscription.
+  const createNoteAndOpen = useMutation({
+    mutationFn: () => createNote(api, queryClient, queryClient.getQueryData<DocSummary[]>(queryKeys.notes) ?? []),
+    onSuccess: (n) => {
+      if (noteOpenMode(isMobile, canPopout()) === 'popout') void openPopout({ kind: 'note', doc: n.id, fresh: true })
+      else void navigate({ to: '/notes/$id', params: { id: n.id }, search: { new: true } })
+    },
+    onError: (e) => toast.error(errorText(e)),
+  })
 
   return (
     <>
@@ -251,26 +267,15 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={section === 'agents'} className="h-9 rounded-[10px] px-2.5">
-              <Link to="/agents">
-                <Bot /> Agents
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={section === 'attention'} className="h-9 rounded-[10px] px-2.5">
-              <Link to="/attention">
-                <Bell /> Attention
-                <AttentionBadge />
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          {/* Artifacts first (Sky, 2026-09-27): the most-opened Library entry; `/library` redirects there too. */}
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={section === 'library'} className="h-9 rounded-[10px] px-2.5">
-              <Link to="/artifacts">
-                <Library /> Library
-              </Link>
+            <SidebarMenuButton asChild className="h-9 rounded-[10px] px-2.5">
+              <button type="button" aria-label="New note" disabled={createNoteAndOpen.isPending} onClick={() => createNoteAndOpen.mutate()}>
+                {/* Label in a span (see the Meeting row); the plus overhangs the icon wrapper like the Meeting dot. */}
+                <span className="relative inline-flex">
+                  <StickyNote className="size-4" />
+                  <Plus className={cn('absolute -top-1 -right-1 size-2.5', NOTE_PLUS)} strokeWidth={3.5} aria-hidden />
+                </span>
+                <span>Note</span>
+              </button>
             </SidebarMenuButton>
           </SidebarMenuItem>
           {canRecord && (
@@ -287,6 +292,29 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
           )}
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild isActive={section === 'attention'} className="h-9 rounded-[10px] px-2.5">
+              <Link to="/attention">
+                <Bell /> Attention
+                <AttentionBadge />
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild isActive={section === 'agents'} className="h-9 rounded-[10px] px-2.5">
+              <Link to="/agents">
+                <Bot /> Agents
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          {/* Artifacts first (Sky, 2026-09-27): the most-opened Library entry; `/library` redirects there too. */}
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild isActive={section === 'library'} className="h-9 rounded-[10px] px-2.5">
+              <Link to="/artifacts">
+                <Library /> Library
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <Desks active={session} />
         </SidebarMenu>
         <SessionList scrollEl={scrollEl} barEl={barEl} active={session} />
