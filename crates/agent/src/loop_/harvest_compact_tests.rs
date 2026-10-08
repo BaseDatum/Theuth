@@ -161,9 +161,24 @@ async fn compaction_returns_before_the_harvest() {
         harvest[0]
     );
     let knowledge = turn.knowledge().expect("knowledge is on");
+    let concept = knowledge
+        .get("facts/detached-harvest")
+        .await
+        .expect("the put landed");
+    let (meta, body) = (&concept.meta, &concept.text);
+    // 136 §0.14: the harvest's puts carry evidence + fresh, a ≤ 120-char
+    // title, the rest of the statement as a Summary paragraph, `type: record`.
+    assert_eq!(meta.type_, "record");
+    assert_eq!(meta.title, "Detached harvest landed on 2026-10-08");
+    assert_eq!(meta.status, knowledge::Status::Fresh);
+    assert_eq!(meta.evidence, [turn.shared.id.to_string()]);
     assert!(
-        knowledge.get("facts/detached-harvest").await.is_ok(),
-        "the put landed"
+        body.contains("\nSummary: The harvest instruction was answered by the fake provider"),
+        "{body}"
+    );
+    assert!(
+        body.contains("The fake provider answered the harvest instruction."),
+        "{body}"
     );
 }
 

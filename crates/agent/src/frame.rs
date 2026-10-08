@@ -381,7 +381,8 @@ pub fn baseline(
              `model` only when a task clearly needs something else)"
         ));
     }
-    let skills = skills::index(&skills::dir(data_dir));
+    let skills_dir = skills::dir(data_dir);
+    let skills = skills::index(&skills_dir);
     let guidance = [
         GUIDANCE_HEAD,
         if attended { REPORT_VISUALLY } else { "" },
@@ -396,7 +397,7 @@ pub fn baseline(
         },
         header.as_str(),
         &standing,
-        &skills::always_bodies(&skills),
+        &skills::always_bodies(&skills_dir, &skills),
         &skills::prompt_index(&skills),
         peer_line,
         plugin_blocks,

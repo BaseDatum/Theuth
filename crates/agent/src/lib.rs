@@ -37,6 +37,7 @@ pub mod continuation;
 pub mod dreaming_ledger;
 pub mod durability;
 pub mod frame;
+pub mod harvest;
 pub mod loop_;
 pub mod peers;
 pub mod project;
