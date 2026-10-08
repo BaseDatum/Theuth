@@ -6422,7 +6422,10 @@ impl Model {
                 ));
             }
             // 125: handled before the streaming-tail bookkeeping above.
-            AgentEvent::AdvisorChanged { .. } | AgentEvent::AdvisoryAdded { .. } => {}
+            // 145 §0.3: parked harness inputs are the talk's business; no transcript row.
+            AgentEvent::AdvisorChanged { .. }
+            | AgentEvent::AdvisoryAdded { .. }
+            | AgentEvent::InputsParked { .. } => {}
             // 109 §10.3 / 139 §9.3: the divider and the status-line note, with
             // the previous owner after a transfer / takeover.
             AgentEvent::TurnResumed {

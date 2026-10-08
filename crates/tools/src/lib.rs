@@ -61,8 +61,8 @@ pub use jobs::CloseSessions;
 /// crates that build a `ToolCx` need no `tokio-util` dependency of their own.
 pub use tokio_util::sync::CancellationToken;
 pub use jobs::{
-    CancelJob, CancelOrigin, InstallActivity, JOBS_ACTOR, JobCounts, JobEvent, JobExit, JobId,
-    JobView, Jobs, ListJobs, LiveCounts, LiveCountsRow,
+    Adopt, CancelJob, CancelOrigin, InstallActivity, JOBS_ACTOR, JobCounts, JobEvent, JobExit,
+    JobId, JobView, Jobs, ListJobs, LiveCounts, LiveCountsRow,
 };
 pub use journal::{
     Answerer, InstallJournal, JobKind, JobRow, JobState, Journal, NoopJournal, PtyScreenRow,
@@ -84,15 +84,19 @@ pub use registry::{
     SetHidden, SetParent, SetPtyIdle, ToolInspection, ToolRegistry, UnregisterPrompt,
     UnregisterTool, UserActivation,
 };
+pub use registry::{CancelCalls, InstallResources, RemoveResources, SetPromoteAfter};
 pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,
 };
-pub use registry::{InstallResources, RemoveResources};
 pub use reminder::{
     CancelReminder, CancelReminders, RearmReminder, ReminderEvent, ReminderView, SetReminder,
 };
 pub use resources::{CloseAck, CloseTree, TreeOpened};
 pub use resources::{Retention, SessionResources};
+
+/// What a tool body fails with (`Tool::call`'s error); the type a promoted
+/// call's future resolves to (145 §2.2).
+pub type ToolError = anyhow::Error;
 
 /// Registry name of the [`ToolRegistry`] actor.
 pub const REGISTRY_ACTOR: &str = "tools";
