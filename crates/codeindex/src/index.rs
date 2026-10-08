@@ -151,6 +151,11 @@ impl Codeindex {
         self.dir.join(root::db_file_name(root)).is_file()
     }
 
+    /// `<data_dir>/codeindex/`: where the index and map files live (147 §9).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// Publish on the bus when the plugin owns one.
     pub(crate) async fn publish(&self, ev: CodeindexEvent) {
         if let Some(rt) = &self.rt {

@@ -311,7 +311,7 @@ pub struct ChangeLens {
 /// Open an already-indexed root; the panel never triggers a first index.
 /// `codeindex_stats` creates an empty database on open, so the check is the
 /// first write's `meta.last_reconcile_at`, not the file.
-async fn open_indexed(ix: &Codeindex, root: &Path) -> anyhow::Result<Arc<RootIndex>> {
+pub(crate) async fn open_indexed(ix: &Codeindex, root: &Path) -> anyhow::Result<Arc<RootIndex>> {
     let root = root::discover(Some(root))?;
     let ri = if ix.indexed(&root) {
         Some(ix.open_root(&root).await?)

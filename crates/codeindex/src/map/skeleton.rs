@@ -95,12 +95,15 @@ mod tests {
             "imports".to_owned(),
             3_u32,
         );
-        let h1 = facts_hash(&[a.clone(), b.clone()], &[e.clone()]);
-        let h2 = facts_hash(&[b.clone(), a.clone()], &[e.clone()]);
+        let h1 = facts_hash(&[a.clone(), b.clone()], std::slice::from_ref(&e));
+        let h2 = facts_hash(&[b.clone(), a.clone()], std::slice::from_ref(&e));
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 64);
         let touched = ("a.rs".to_owned(), 5_i64, 10_i64);
-        assert_ne!(h1, facts_hash(&[touched, b.clone()], &[e.clone()]));
+        assert_ne!(
+            h1,
+            facts_hash(&[touched, b.clone()], std::slice::from_ref(&e))
+        );
         let recount = (
             "u1".to_owned(),
             "u2".to_owned(),

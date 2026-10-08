@@ -23,6 +23,8 @@ use crate::profile::Profile;
 pub mod detect;
 pub mod export;
 pub mod generator;
+pub mod generator_facts;
+pub mod generator_write;
 pub mod import;
 pub mod skeleton;
 pub mod store;

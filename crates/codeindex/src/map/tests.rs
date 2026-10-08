@@ -207,13 +207,6 @@ async fn stubs_report_their_owner() {
         e.to_string(),
         "codemap: skeleton::overview not built (147 W1)"
     );
-    let e = generator::cancel(&ix, Cancel { root: dir.clone() })
-        .await
-        .unwrap_err();
-    assert_eq!(
-        e.to_string(),
-        "codemap: generator::cancel not built (147 W2)"
-    );
     let e = export::export(&ix, Export { root: dir.clone() })
         .await
         .unwrap_err();
