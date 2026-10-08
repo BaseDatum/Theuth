@@ -8,6 +8,7 @@ import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { RpcClient } from '@/rpc/client'
 import { useConnection } from '@/store/connection'
 import type { Citation, ContextEstimate, ContextLevel, ItemKind, Notebook, NotebookItem, Source } from '@/lib/notebooks-types'
+import { notebooksFixture, notebooksFixtureOn } from '@/dev/notebooks-fixture'
 
 /** What `source_add` takes besides the notebook: exactly one of these (§13.2). */
 export type SourceSpec =
@@ -59,11 +60,16 @@ export function notebooksApi(client: Pick<RpcClient, 'call'>): NotebooksApi {
   return api as NotebooksApi
 }
 
-/** The connected engine's notebook RPCs; like `useApi`, only rendered once connected. */
+const wrapped = new WeakMap<RpcClient, NotebooksApi>()
+
+/** The connected engine's notebook RPCs; like `useApi`, only rendered once connected. In dev the 144 fixture may answer instead. */
 export function useNotebooksApi(): NotebooksApi {
   const client = useConnection((s) => s.client)
-  if (!client) throw new Error('useNotebooksApi before the connection opened')
-  return notebooksApi(client)
+  const api = useConnection((s) => s.api)
+  if (!client || !api) throw new Error('useNotebooksApi before the connection opened')
+  let hit = wrapped.get(client)
+  if (!hit) wrapped.set(client, (hit = notebooksFixtureOn() ? notebooksFixture(api) : notebooksApi(client)))
+  return hit
 }
 
 export const notebookKeys = {

@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import type { Source, SourceEvent, SourceStatus } from '@/lib/notebooks-types'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { useApi } from '@/lib/rpc'
+import { fixtureMarkdown } from '@/dev/notebooks-fixture'
 import { on } from '@/store/sessions'
 import type { WireEvent } from '@/rpc/events'
 
@@ -55,7 +56,7 @@ export function useNotebookChats(id: string) {
 /** The notebook document's markdown — the description (§3.2). */
 export function useDescription(id: string) {
   const api = useApi()
-  return useQuery({ queryKey: notebookKeys.description(id), queryFn: () => api.doc_markdown(id) })
+  return useQuery({ queryKey: notebookKeys.description(id), queryFn: () => fixtureMarkdown(id) ?? api.doc_markdown(id) })
 }
 
 /** First non-empty, non-heading line of a markdown body, for the header and the Library row. */
