@@ -101,6 +101,7 @@ Plus `window_crossing_midnight` (23:00–05:00: a 23:30 dream counts at 00:30; t
 - **W4**: `DreamStatus.backlog` is live from the actor (`fresh`, `untidied` = retitle + duplicate-stem members + archive-by-use, `open_cases`); `Proposal.body` of a `routine` proposal carries the draft in a ```markdown fence; `proposal_act` choices are matched by words (`start` / `paused`; `not` / `no` / `never` = decline).
 - **Z — attention rows**: proposals are rows in `proposals.jsonl` + `DreamNightFinished.proposals`; the attention plugin's subscription (design §9.3) is not in this crate.
 - **Schedule (optional)**: a permanent watcher still relies on `max_runs: 100000` (C's open item).
+- **Z — `Cargo.lock`** (outside W3's list, left uncommitted): the only diff is the six new dependency edges of `dreaming` (`genai`, `regex`, `roster`, `sha2`, `sqlx`, `uuid`; no new external crate versions). `cargo check -p dreaming` on the merged tree regenerates it.
 
 ## 6. Not verified
 
