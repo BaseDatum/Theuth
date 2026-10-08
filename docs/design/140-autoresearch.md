@@ -236,6 +236,7 @@ Goal: {goal}
 Metric: {metric.name} ({unit}, {direction} is better). Incumbent {x_i} {unit} = {delta_vs_base} vs base, after {kept} keeps in {total} experiments.
 Noise: sigma {sigma} {unit} ({sigma_pct} %). A keep needs about {threshold} {unit} ({threshold_pct} %) on one clear sample, or a confirmed {z}-sigma gain.
 Scope: {scope}. Never keep changes to: {off_limits}. Evaluator files (refused if changed): {evaluator_paths}.
+Worktree: {worktree} — read and edit files by ABSOLUTE path under this directory only (relative paths and the frame's working directory are not the worktree; the session shell already runs in it). Never touch the repository the study was created from.
 Budget left: {experiments_left} experiments, {hours_left} h, ${usd_left} (this experiment: ${per_experiment_usd}).
 
 From the user (since experiment {last_seen}):
@@ -309,6 +310,8 @@ Run the next experiment of autoresearch study `sort-speed`. Call experiment_begi
 
 Every key is an existing 33/34 key plus 136's `budget:`; the schedule crate learns nothing about studies. The plugin rewrites only `enabled:` (pause/resume via the schedule actor's `SetEnabled`, 33 §3.5) and deletes the file through `schedule::Done` when the study stops.
 
+**As built (live proof P):** `schedule_file::write` asks `schedule::Reconcile` after the atomic write — the dir watcher is a convenience (FSEvents is not delivered in every launch environment) and a study's start may not depend on it; `prepare` sets `running` *before* writing the file (a fire can follow the write at once and the confinement resolver ends the loop of a study that is not running); `recover` re-writes a live study's missing file. A fire is one experiment in code too: `experiment_begin` refuses a second begin in the same `<schedule>` turn (`turn` event from `TurnStarted`).
+
 ### 8.2 Binding a session to a study
 
 The plugin subscribes to `ScheduleEvent::Fired { name, session, … }`. **As built (fix round R-5/R-115):** confinement is applied by the schedule, not after the fact — the plugin registers a `ToolsetResolver` for the `autoresearch-` prefix (`schedule::confine`, `binding::confinement`); before a fire the schedule asks it for the study's `Toolset` (§8.3), *asks* `agent::SetToolset`, then publishes `Fired` and only then sends the prompt, so the first turn's rebase already reads the allowlist; a study the plugin no longer knows ends the loop (`toolset gone`), a failed `SetToolset` refuses the fire. On `Fired` the plugin only records `studies.session` (34: one session per schedule, so this happens once, and again only if the session is re-created). The study tools resolve their study from the calling session (or from the parent session plus `slot` for wave children, §10); a call from any other session is refused with `not an autoresearch session`; `autoresearch_control` is refused the other way round (a bound session or a wave child, R-13).
@@ -341,6 +344,7 @@ The per-experiment money cap is 136's `budget:` key: `Reserved::open` refuses a 
 ### 8.5 Restarts and failures
 
 - An engine restart kills the bench runner's process group with the engine; the sample row is `lost`, the experiment `interrupted`. The schedule treats the lost run as a fire and, being `every: 0s`, fires again at boot (33 §3.5); `experiment_begin` sees the dangling experiment, resets the worktree to the incumbent and says so in the brief.
+- **As built (live proof P):** 109's durability resumes the interrupted turn at boot *with none of the fire's in-memory settings* (toolset, approvals-off); the plugin's `recover` re-applies the study toolset and cancels that turn, so the schedule closes the run and the loop fires fresh and confined, as this bullet intends.
 - A turn that ends without `experiment_log` closes the experiment `abandoned` at the next `experiment_begin` (and the brief says "experiment 13 was not logged; its change was discarded").
 - A run that hits `run_timeout` is cancelled as a tree (133); the plugin records `timeout` on the experiment and resets the worktree at the next begin.
 - The ledger is written before and after every step (sqlite, WAL, `synchronous=NORMAL`); the actor holds no state that is not a row (`140-recon-theuth.md` §15.4: restarts are routine on this machine).
@@ -399,7 +403,7 @@ All three are pickers in Settings › Autoresearch (`ModelCombobox` over `list_m
 
 ## 10. Waves (parallel mode, built as W4)
 
-`parallel: N` (2 ≤ N ≤ `autoresearch.max_parallel`, default 4) changes one fire from "one experiment" to "one wave":
+`parallel: N` (2 ≤ N ≤ `autoresearch.max_parallel`, default 4) changes one fire from "one experiment" to "one wave". **As built (live proof P):** `spawn_subagent` exists only under `agent.communication: true` (50 §2.1, a ceiling no session overrides), so `Create` refuses `parallel > 1` without it; the slot child's brief names the slot worktree (`cand-<k>`) in its `Worktree:` line; and because `spawn_subagent` returns at once (the supervisor's turn ends while the slots work; results arrive as later turns), a wave settles when the *last slot child's* turn ends, not at the supervisor's turn end:
 1. `experiment_begin` (in the study session, now a supervisor) creates N candidate worktrees from the incumbent (`<slug>/cand-<k>`, `git worktree add --detach`), allocates experiment numbers, and returns the brief plus `slots: [{k, worktree, category, idea_id?}]` — the plugin assigns distinct categories (rotation over the categories seen in the study, user ideas first), so a wave is diverse by construction (AlphaEvolve islands in miniature).
 2. The supervisor spawns N native children (`spawn_subagent`, `cwd` = the slot worktree, model = executor) bound to the study `Toolset` (§8.3; as built by W5 — `tools: mutating` would remove `shell`), each told its slot and to follow the protocol; children call `experiment_run{slot}` / `experiment_log{slot}`; the plugin maps a child to its slot through the parent session and the slot number.
 3. Scored samples go through the bench queue: serial when `bench.exclusive`, concurrent otherwise (deterministic metrics, or slots placed on separate engines — a later doc). Smoke tests and edits run in parallel.
