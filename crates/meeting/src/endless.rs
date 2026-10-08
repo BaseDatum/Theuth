@@ -14,9 +14,9 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use agent::endless::ViewBlock;
 use agent::{MemoryMode, ViewLine};
 use runtime::SessionId;
-use serde::Deserialize;
 
 use crate::head::Earlier;
 
@@ -45,10 +45,9 @@ gives message id in full. recall(words) searches every message's summary line. d
 gives the date and time of message id. Zoom or recall when a topic was raised earlier in \
 the meeting and the summary only hints at it.";
 
-/// The `agent.endless` keys the meeting reads (137 R1-D2, R1-D6 f). Read from
-/// the agent's section directly; the other keys are the agent's business.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(default)]
+/// The two `agent.endless` keys the meeting uses (137 R1-D2, R1-D6 f), taken
+/// from the agent's own `EndlessConfig` so one YAML section serves both.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
     /// A meeting started without `memory` uses the endless mode.
     pub default_meeting: bool,
@@ -58,17 +57,26 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
+        Self::from(&agent::EndlessConfig::default())
+    }
+}
+
+impl From<&agent::EndlessConfig> for Config {
+    fn from(c: &agent::EndlessConfig) -> Self {
         Self {
-            default_meeting: false,
-            meeting_view_bytes: 32_000,
+            default_meeting: c.default_meeting,
+            meeting_view_bytes: c.meeting_view_bytes,
         }
     }
 }
 
 impl Config {
-    /// `agent.endless` from the merged config; defaults when the section is absent.
+    /// `agent.endless` from the merged config; the agent's defaults when absent.
     pub fn load(rt: &runtime::Runtime) -> Self {
-        rt.section("agent.endless").unwrap_or_default()
+        Self::from(
+            &rt.section::<agent::EndlessConfig>("agent.endless")
+                .unwrap_or_default(),
+        )
     }
 
     /// The mode a meeting starts in: the start option, else the configured default.
@@ -114,6 +122,28 @@ pub fn toolset(base: &agent::Toolset) -> agent::Toolset {
         }
     }
     t
+}
+
+/// The view lines of `render_with_budget`'s blocks (137 §7.2: `<chat>\n`, one
+/// `id+n|text` per line, `</chat>`). A line that is not `id+n|…` is skipped;
+/// `built` is not knowable from the text and is reported `true`.
+pub fn lines_of(blocks: &[ViewBlock]) -> Vec<ViewLine> {
+    blocks
+        .iter()
+        .flat_map(|b| b.text.lines())
+        .filter_map(|l| {
+            let (addr, text) = l.split_once('|')?;
+            let (id, n) = addr.split_once('+')?;
+            let (id, n) = (id.parse().ok()?, n.parse::<u64>().ok()?);
+            Some(ViewLine {
+                id,
+                n,
+                level: n.trailing_zeros() as u8,
+                text: text.to_owned(),
+                built: true,
+            })
+        })
+        .collect()
 }
 
 /// The head's `## Earlier in this meeting` input: the view within [`RENDER_WAIT`],
@@ -212,6 +242,40 @@ mod tests {
         assert_eq!(
             Config::default().resolve(Some(MemoryMode::Endless)),
             MemoryMode::Endless
+        );
+    }
+
+    /// `render_with_budget` blocks → view lines: tags and the cut between blocks are
+    /// transparent, `id+n` parsed, the backfill base line kept, junk skipped.
+    #[test]
+    fn lines_of_reads_the_rendered_blocks() {
+        let blocks = [
+            ViewBlock {
+                text: "<chat>\n0+2|(earlier history, not summarized; recall searches it)\n2+4|user: a | b\n".into(),
+                mark: true,
+            },
+            ViewBlock {
+                text: "6+1|tool: meeting_topic {\"label\":\"x\"}\nnot a line\n</chat>".into(),
+                mark: true,
+            },
+        ];
+        let lines = lines_of(&blocks);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|l| (l.id, l.n, l.level))
+                .collect::<Vec<_>>(),
+            [(0, 2, 1), (2, 4, 2), (6, 1, 0)]
+        );
+        assert_eq!(lines[1].text, "user: a | b");
+        assert_eq!(lines[2].text, "tool: meeting_topic {\"label\":\"x\"}");
+        assert!(lines_of(&[]).is_empty());
+        assert_eq!(
+            Config::default(),
+            Config {
+                default_meeting: false,
+                meeting_view_bytes: 32_000
+            }
         );
     }
 

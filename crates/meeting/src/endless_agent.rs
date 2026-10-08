@@ -3,8 +3,10 @@
 //! (consistent with `SetCompaction` / `SetToolset`):
 //!
 //! - `agent::SetSessionMemory { session, mode: MemoryMode, filter: UnitFilter }`
-//!   → `anyhow::Result<agent::SetMode>`
-//! - `agent::RenderMemoryView { session, bytes: u32 }` → `anyhow::Result<Vec<agent::ViewLine>>`
+//!   → `anyhow::Result<agent::SetMode>` (the agent passes `epoch` itself: a meeting
+//!   session has no epoch head to write)
+//! - `agent::RenderMemoryView { session, bytes: u32 }` → `anyhow::Result<Vec<agent::endless::ViewBlock>>`
+//!   (mapped to lines by [`crate::endless::lines_of`])
 //!
 //! Enabled by the closer once W2's commit is on the branch: `mod endless_agent;`
 //! in `lib.rs` and `endless_agent::install()` in `MeetingPlugin::start`
@@ -35,7 +37,7 @@ impl Memory for AgentsMemory {
             .ask(agent::SetSessionMemory {
                 session,
                 mode: MemoryMode::Endless,
-                filter: agent::endless::UnitFilter::Meeting,
+                filter: agent::UnitFilter::Meeting,
             })
             .await
             .map(|_| ())
@@ -46,6 +48,7 @@ impl Memory for AgentsMemory {
         agents()?
             .ask(agent::RenderMemoryView { session, bytes })
             .await
+            .map(|blocks| crate::endless::lines_of(&blocks))
             .map_err(|e| e.to_string())
     }
 }
