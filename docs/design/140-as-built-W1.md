@@ -35,9 +35,17 @@ additions are listed under hand-offs.
   texts are frozen in `commands.json`. Map keys: repo-relative path for repo files,
   `custody/<name>` for custody-only files (draft scripts, `commands.json`). `verify` hashes the
   worktree's copy of every repo key (missing or different → listed) and skips `custody/` keys.
-  `scope_diff` left as C's stub (W2 owns it, per brief). Tests: copy + verify + edit/remove
+  Tests: copy + verify + edit/remove
   detection, non-path command frozen only, missing/`..` evaluator path refused, new segment
   re-copies.
+  **R1 (orchestrator 12:01): `scope_diff` is W1's.** `git status --porcelain=v2 --untracked-files=all -z`
+  (ordinary, renamed pairs, unmerged, untracked) + `git diff --numstat -w --ignore-blank-lines HEAD`
+  (HEAD = incumbent; whitespace-only hunks not counted; untracked files add their non-blank lines);
+  `deviations` = outside `scope` globs (empty scope → none), `off_limits` = `off_limits` globs **or**
+  under an `evaluator_paths` entry (ScopeDiff has no evaluator field; both make a keep impossible).
+  Globs via `globset` (literal separator; `dir/` and plain paths also match their subtree). No patch
+  hash / file listing (W2's `git::patch_hash`, `git::files_of`). Test: temp git repo with in-scope,
+  untracked, off-limits and evaluator edits, line counts, empty scope, staged rename.
 - **`slot.rs`** (§5.5). Builtin lock: `mkdir /tmp/theuth-bench-slots/0`, owner file `pid label
   epoch bench`, dead-pid reclaim (build-lock's rule: only when an owner pid exists and is
   dead), 5–10 s polling, cancel → `Refused`, released on `Drop`. Wrapper lock: `acquire`
@@ -69,7 +77,7 @@ additions are listed under hand-offs.
 
 All through `BUILD_LABEL=140-W1 build-lock`, stable rustc 1.96.1, `CARGO_BUILD_JOBS=4`.
 
-- `cargo test -p autoresearch`: **43 passed, 0 failed** (W1: 6 scanner, 11 gate, 4 custody,
+- `cargo test -p autoresearch`: **44 passed, 0 failed** (W1: 6 scanner, 11 gate, 5 custody,
   5 slot, 8 runner; C's 9 config/types/store/stub tests still green).
 - Simulation table (seeded LCG + Box-Muller, defaults z 2.0 / z_fast 3.5 / z_discard 1.0 /
   confirm 2 / remeasure_after 6, σ = 1 % of the metric, `min_effect` 0.5 %):
@@ -129,8 +137,8 @@ All through `BUILD_LABEL=140-W1 build-lock`, stable rustc 1.96.1, `CARGO_BUILD_J
 
 ## Hand-offs
 
-- `Cargo.toml` (C's): added `platform` (ProcessTree/killpg, `pid_alive`, `load1`) and `humantime`
-  — both already in the workspace lock, no new crates.
+- `Cargo.toml` (C's): added `platform` (ProcessTree/killpg, `pid_alive`, `load1`), `humantime` and
+  `globset` — all already in the workspace lock, no new crates.
 - New public helpers (additive): `gate::guard_failures`, `gate::ROBUST_AFTER`,
   `runner::parse_duration`, `slot::{wait_budget, charge_wait, Slot::held, BUILTIN, SLOT_DIR,
   BUILD_SLOT_DIR}`, `custody::CUSTODY_ONLY`, `scanner::ASI_CAP`.

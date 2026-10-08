@@ -1414,6 +1414,7 @@ dependencies = [
  "codeindex",
  "document",
  "figment",
+ "globset",
  "humantime",
  "kameo",
  "knowledge",
