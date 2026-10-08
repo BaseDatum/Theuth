@@ -101,12 +101,13 @@ Branch `feat/140-f1`, cut from the integration head 78411fb3. Work list: `~/.the
 | R-117 | RISK | fixed |
 | R-120 | POLISH | fixed — dead guard dropped; `first_run` → closer (main.rs) if the skill should be written while disabled |
 | R-38 | POLISH | declined — `BenchSpec`'s serde default cannot see the metric unit; the draft (`study_draft.rs:160`) already derives `exclusive` from `is_time_unit`, so the only path that gets the unconditional default is a hand-written spec |
+| R-85 | BUG (StudyView first) | actor side fixed: `StopNow` on a `preparing` study cancels the baseline (the study ends `failed` with the cancellation as reason) instead of being refused; the button can stay |
 
 ## Gates (through build-lock, stable 1.96.1)
 
-- `cargo test -p autoresearch`: see the final message (numbers filled at the end of the round).
-- `cargo clippy -p autoresearch --all-targets -- -D warnings`: see the final message.
-- `cargo fmt -p autoresearch`: run on my files.
+- `cargo test -p autoresearch`: **127 passed, 0 failed** (the 110 inherited tests incl. W5's wave end-to-ends + 17 new: `keep_refuses_a_tree_changed_after_the_measurement`, `confirm_incumbent_sample_measures_the_incumbent_tree`, `holdout_values_never_enter_incumbent_statistics`, `pause_during_a_run_survives_the_runs_write_back`, `begin_refuses_when_the_spend_is_unknown`, `study_spend_sums_closed_rows_plus_the_live_tree`, `scheduled_remeasure_is_counted_by_its_own_event`, `keep_simpler_takes_confirm_samples_before_judging`, `overfit_event_feeds_the_stop_view`, `finalize_writes_the_report_prose_before_the_tables`, `begin_cancels_a_dangling_measurement`, `keep_commit_without_ledger_is_adopted_at_begin`, `paused_study_accepts_only_a_run_once_fire`, `failed_measurement_reopens_the_experiment`, `refused_runs_do_not_mark_ideas_tried`, `create_and_discard_use_the_worktree_and_the_repo_cleanup`, lib `settings_refuse_a_root_change_at_runtime`, `disabled_plugin_pauses_study_schedule_files`; `restart_recovery_marks_interrupted_and_lost` rewritten to drive the production path). Each new test drives the exact path the review cited and pins the behaviour 78411fb3 lacked (they do not compile against the old `Backend`, so "fails before" is by construction, not by a run).
+- `cargo clippy -p autoresearch --all-targets -- -D warnings`: clean.
+- `cargo fmt -p autoresearch` on my five files: clean (`rustfmt --check`).
 
 ## Deviations
 
@@ -115,6 +116,7 @@ Branch `feat/140-f1`, cut from the integration head 78411fb3. Work list: `~/.the
 3. **R-14's study total** is Σ closed `cost_nanos` plus the live tree's spend since its last `begin`/`closed` mark (both marks store the tree's total). Pre-begin tokens of a fire are attributed to the next close; a re-created session reads below its mark and adds nothing (small undercount in that minute, never a double count).
 4. **R-45 is a side call, not a schedule-session turn.** `begin_finalize` already ended the loop (`schedule::Done`/`Delete`), so there is no live study turn to send the protocol to; the executor model answers one `SideCall` charged to the study session (as the reviewer does) and the plugin inserts the tables after the prose. Without a bound session or agent actor the tables stand alone (warned).
 5. **R-50 adoption** needs the commit's parent; `Backend::commit_parent` is one read-only `git rev-parse <sha>^` in actor.rs because git.rs's read helpers are private (R-18 is F2's).
+6. **`session_cost` without an agent actor is `0`, not an error**: no agent actor means no model call can be made, so nothing is spent; a failed `SessionCostQuery` or an unknown session is still `Err` and refuses the fire. (W5's wave tests run without the agent actor and would otherwise never begin.)
 
 ## Hand-offs
 

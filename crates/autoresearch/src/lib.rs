@@ -378,9 +378,18 @@ mod tests {
     async fn settings_refuse_a_root_change_at_runtime() {
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-        let actor = start(&rt, AutoresearchConfig::default(), Default::default())
-            .await
-            .unwrap();
+        let cfg = AutoresearchConfig::default();
+        let root = cfg.root(&rt.data_dir);
+        // Unregistered: the sibling test holds the registry name.
+        let actor = Studies::spawn(Studies {
+            data_dir: rt.data_dir.clone(),
+            root,
+            cfg: cfg.clone(),
+            agent: Default::default(),
+            rt,
+            store: Store::open(&dir.path().join("autoresearch")).await.unwrap(),
+            backend: Arc::new(actor::Real),
+        });
         let mut cfg = actor.ask(Settings).await.unwrap();
         cfg.root = Some(dir.path().join("elsewhere").display().to_string());
         let e = actor.ask(SetSettings(cfg)).await.unwrap_err().to_string();

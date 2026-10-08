@@ -441,12 +441,12 @@ pub trait Backend: Send + Sync {
     // ── the engine ──
     /// The session tree's spend in USD (128's ledger via `SessionCostQuery`):
     /// provider-returned money plus the estimates for calls without one. `Err`
-    /// when the agent actor or the session is unknown — the money stop must not fail open (R-14).
+    /// when the query fails or the session is unknown — the money stop must not fail
+    /// open (R-14). Without an agent actor no model call can happen at all, so that is `0`.
     async fn session_cost(&self, session: Option<SessionId>) -> Result<f64> {
-        let Some(session) = session else {
+        let (Some(session), Some(agents)) = (session, agents()) else {
             return Ok(0.0);
         };
-        let agents = agents().ok_or_else(|| Error::refused("agent actor is not running"))?;
         let cost = agents
             .ask(agent::SessionCostQuery(session))
             .await
@@ -1269,7 +1269,7 @@ pub(crate) async fn bench_sample(
 
 /// What the live-tail ticks of a sample publish (`ExperimentProgress` every [`SAMPLE_TICK`]).
 #[derive(Clone, Copy)]
-struct Ticks<'a> {
+pub(crate) struct Ticks<'a> {
     started_at: &'a str,
     sample: u8,
     of: u8,
@@ -4078,6 +4078,13 @@ pub async fn control_env(env: &Env, m: Control) -> Result<StudyInfo> {
             }
         }
         ControlOp::StopNow => {
+            if study.state == StudyState::Preparing {
+                // R-85: the Study view offers Stop now while preparing — cancel the baseline;
+                // `prepare` then ends the study `failed` with the cancellation as its reason.
+                cancel(&env.root, &slug);
+                let study = study_by_slug(&env.store, &slug).await?;
+                return info_full(&env, &study).await;
+            }
             if !matches!(study.state, StudyState::Running | StudyState::Paused { .. }) {
                 return Err(Error::refused(format!(
                     "cannot stop a study that is {}",
@@ -4404,7 +4411,7 @@ pub async fn status_env(env: &Env, m: Status) -> Result<Vec<StudyInfo>> {
     };
     let mut out = Vec::with_capacity(studies.len());
     for s in &studies {
-        out.push(info_full(&env, s).await?);
+        out.push(info_full(env, s).await?);
     }
     Ok(out)
 }
@@ -4514,7 +4521,7 @@ pub async fn detail_env(env: &Env, m: Detail) -> Result<StudyDetail> {
         )
     });
     let steers = env.store.list_steers(&study.slug, false).await?;
-    let changesets = changesets_of(&env, &study.slug).await;
+    let changesets = changesets_of(env, &study.slug).await;
     let mut needs_eyes = Vec::new();
     let dismissed = dismissed_reverts(&env.store, &study.slug).await;
     for e in env
