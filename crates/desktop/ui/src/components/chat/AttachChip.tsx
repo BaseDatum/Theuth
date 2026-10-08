@@ -1,5 +1,5 @@
 import { useNavigate } from '@tanstack/react-router'
-import { AppWindow, BookOpen, Copy, ExternalLink, FileText, type LucideIcon, MessageSquare, Mic, Paperclip, StickyNote, X } from 'lucide-react'
+import { AppWindow, BookOpen, Copy, ExternalLink, FileSearch, FileText, type LucideIcon, MessageSquare, Mic, NotebookText, Paperclip, StickyNote, X } from 'lucide-react'
 import type { DragEvent } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,8 @@ export const KIND_ICON: Record<Kind, LucideIcon> = {
   artifact: FileText,
   session: MessageSquare,
   meeting: Mic,
+  notebook: NotebookText,
+  source: FileSearch,
 }
 
 /** Props that make a row a drag source for the composer's drop (§7.8); desktop only — no HTML5 drag on iOS Safari. */
@@ -66,6 +68,8 @@ export function popoutOf(ref: AttachRef): PopoutTarget | null {
     case 'meeting':
       return { kind: 'meeting', meeting: ref.id }
     case 'knowledge':
+    case 'notebook':
+    case 'source':
       return null
   }
 }

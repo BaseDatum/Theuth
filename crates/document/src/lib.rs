@@ -21,10 +21,15 @@ use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
 pub mod actor;
+pub mod cite_check;
 pub mod helper;
 pub mod hub;
+pub mod index;
+pub mod ingest;
 pub mod meta;
 pub mod mirror;
+pub mod nb_tools;
+pub mod notebook;
 pub mod relay;
 pub mod search;
 pub mod share;
@@ -45,6 +50,7 @@ pub use helper::{
 };
 pub use hub::{DocError, HUB_MOVED};
 pub use meta::*;
+pub use notebook::*;
 pub use share::{
     Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName, proof,
     secret_hash,
@@ -279,7 +285,9 @@ impl runtime::Plugin for DocumentPlugin {
                 .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
                 .await
             {
-                tools::register(&reg, a, rt2.data_dir.clone()).await;
+                tools::register(&reg, a.clone(), rt2.data_dir.clone()).await;
+                // 144 §13.2: the wave-1 notebook tools beside the `doc_*` ones.
+                nb_tools::register(&reg, a).await;
             }
         });
         // 69: the derived-file watcher, exports and every write are hub duties. `Reconcile` starts the

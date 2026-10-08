@@ -25,6 +25,7 @@ use agent::{
     CostScope, Coverage, CreateSessionOptions, MemoryMode, Money, Retention, SessionCost,
     SessionOpen,
 };
+use double::{DoubleAnswered, DoublePredicted};
 use iocraft::{KeyCode, KeyModifiers};
 use knowledge::{Change, ChangeStatus, HarvestResult, History, Meta, Revision};
 use models::Catalog;
@@ -38,7 +39,6 @@ use tools::{
 };
 use tools::{JobId, Key, PtyPage, PtyScreenReply, PtyViewport, TerminalSummary};
 use uuid::Uuid;
-use double::{DoubleAnswered, DoublePredicted};
 
 use crate::broadcast::{Broadcast, BroadcastStage};
 use crate::clip::Image;
@@ -3917,7 +3917,8 @@ impl Model {
 
     /// The shown card is in an L2 grace: frames are needed for the countdown.
     fn double_counting_down(&self) -> bool {
-        self.shown_prediction().is_some_and(|p| p.will_act_at.is_some())
+        self.shown_prediction()
+            .is_some_and(|p| p.will_act_at.is_some())
     }
 
     /// The `secret_request` currently shown, if any.
@@ -12891,9 +12892,12 @@ mod tests {
         assert_eq!(m.session, Some(hit));
         assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == hit));
         // Chips survive the reset a session switch performs.
-        m.search.selected = [true, false, false, false, false, false];
+        m.search.selected = [true, false, false, false, false, false, false, false];
         m.resume(SessionId::new(), &tx);
-        assert_eq!(m.search.selected, [true, false, false, false, false, false]);
+        assert_eq!(
+            m.search.selected,
+            [true, false, false, false, false, false, false, false]
+        );
     }
 
     /// 66 §10: `/attach q` opens the search menu in pick mode; Enter on a hit
@@ -18272,11 +18276,17 @@ mod tests {
         assert_eq!(DoubleCmd::parse("pause off"), Some(DoubleCmd::Pause(false)));
         assert_eq!(
             DoubleCmd::parse("train"),
-            Some(DoubleCmd::Train { tier: Tier::A, venue: Venue::Auto })
+            Some(DoubleCmd::Train {
+                tier: Tier::A,
+                venue: Venue::Auto
+            })
         );
         assert_eq!(
             DoubleCmd::parse("train b node:gpu"),
-            Some(DoubleCmd::Train { tier: Tier::B, venue: Venue::Node("gpu".into()) })
+            Some(DoubleCmd::Train {
+                tier: Tier::B,
+                venue: Venue::Node("gpu".into())
+            })
         );
         assert_eq!(
             DoubleCmd::parse("cap approval:shell:mutating:git push:root 2 opt-in"),
@@ -18286,8 +18296,20 @@ mod tests {
                 opt_in: true
             })
         );
-        assert_eq!(DoubleCmd::parse("rollback v3"), Some(DoubleCmd::Rollback("v3".into())));
-        for bad in ["train c", "train a off", "cap k 4", "cap k", "cap 2", "pause maybe", "rollback", "x"] {
+        assert_eq!(
+            DoubleCmd::parse("rollback v3"),
+            Some(DoubleCmd::Rollback("v3".into()))
+        );
+        for bad in [
+            "train c",
+            "train a off",
+            "cap k 4",
+            "cap k",
+            "cap 2",
+            "pause maybe",
+            "rollback",
+            "x",
+        ] {
             assert_eq!(DoubleCmd::parse(bad), None, "{bad}");
         }
     }
@@ -18334,7 +18356,11 @@ mod tests {
         m.apply(UiEvent::DoublePredicted(p));
         assert!(m.animating());
         // Resolution drops it; a later answer line names the choice.
-        m.apply(UiEvent::Resolved(ApprovalResolved { id, decision: Decision::Allow, timed_out: false }));
+        m.apply(UiEvent::Resolved(ApprovalResolved {
+            id,
+            decision: Decision::Allow,
+            timed_out: false,
+        }));
         assert_eq!(m.double_chip(), None);
         assert!(m.double.is_empty());
         m.apply(UiEvent::DoubleAnswered(double::DoubleAnswered {

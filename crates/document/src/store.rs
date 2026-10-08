@@ -20,6 +20,7 @@ use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 use crate::meta::{Binding, DocId, DocKind, DocMeta, DocSummary, Principal, SnapshotInfo};
 use crate::mirror::{self, MirrorFile};
+use crate::notebook::{ItemKind, NotebookItem, SourceOrigin, SourceStatus};
 
 /// Directory under the data dir.
 pub const DIR: &str = "documents";
@@ -40,8 +41,28 @@ const CREATE_BINDING: &str = "CREATE INDEX IF NOT EXISTS docs_binding ON docs(bi
 /// 69: the replica's clock column on a table created before it existed (a no-op error otherwise).
 const ADD_HLC: &str = "ALTER TABLE docs ADD COLUMN hlc TEXT";
 
-/// The replicated table (69 §5): attached to the record replica by the plugin.
-pub const TABLES: &[&str] = &["docs"];
+/// 144 §3.3: the notebook's columns that are not the document (the document carries name + description).
+const CREATE_NOTEBOOKS: &str = "CREATE TABLE IF NOT EXISTS notebooks (id TEXT PRIMARY KEY, project TEXT, archived_ms INTEGER, hlc TEXT)";
+/// 144 §3.3: membership, one row per `<notebook>:<kind>:<item>`; soft removal via `removed_ms`.
+const CREATE_NOTEBOOK_ITEMS: &str = "CREATE TABLE IF NOT EXISTS notebook_items (\
+    id TEXT PRIMARY KEY, \
+    notebook TEXT NOT NULL, kind TEXT NOT NULL, item TEXT NOT NULL, \
+    added_ms INTEGER NOT NULL, added_by TEXT NOT NULL, \
+    removed_ms INTEGER, hlc TEXT)";
+const CREATE_NBI_NOTEBOOK: &str =
+    "CREATE INDEX IF NOT EXISTS nbi_notebook ON notebook_items(notebook)";
+const CREATE_NBI_ITEM: &str = "CREATE INDEX IF NOT EXISTS nbi_item ON notebook_items(kind, item)";
+/// 144 §3.3: the ingest state and provenance of a `DocKind::Source` document.
+const CREATE_SOURCES: &str = "CREATE TABLE IF NOT EXISTS sources (\
+    id TEXT PRIMARY KEY, origin TEXT NOT NULL, status TEXT NOT NULL, \
+    error TEXT, attempts INTEGER NOT NULL DEFAULT 0, blob TEXT, \
+    fetched_ms INTEGER, content_sha TEXT, changed_since INTEGER, \
+    bytes INTEGER, words INTEGER, duration_ms INTEGER, pages INTEGER, meta TEXT, \
+    insights INTEGER NOT NULL DEFAULT 0, hlc TEXT)";
+
+/// The replicated tables (69 §5, 144 §3.3): attached to the record replica by the plugin; per-column
+/// LWW under the replica's HLC (the engine stamps `hlc`, the store never writes it).
+pub const TABLES: &[&str] = &["docs", "notebooks", "notebook_items", "sources"];
 
 /// Unix milliseconds now.
 pub fn now_ms() -> i64 {
@@ -156,6 +177,15 @@ impl Store {
             .await?;
         sqlx::query(CREATE).execute(&db).await?;
         sqlx::query(CREATE_BINDING).execute(&db).await?;
+        for sql in [
+            CREATE_NOTEBOOKS,
+            CREATE_NOTEBOOK_ITEMS,
+            CREATE_NBI_NOTEBOOK,
+            CREATE_NBI_ITEM,
+            CREATE_SOURCES,
+        ] {
+            sqlx::query(sql).execute(&db).await?;
+        }
         if let Err(e) = sqlx::query(ADD_HLC).execute(&db).await
             && !e.to_string().contains("duplicate column")
         {
@@ -216,7 +246,7 @@ impl Store {
             let Ok(binding) = serde_json::from_str::<Binding>(&binding) else {
                 continue;
             };
-            if matches!(binding, Binding::Note | Binding::TaskThread(_)) {
+            if binding.keyless() || matches!(binding, Binding::TaskThread(_)) {
                 continue;
             }
             match groups.last_mut() {
@@ -344,7 +374,7 @@ impl Store {
     /// Directory, meta, empty log, index row. Fails if the binding is already bound. A row under
     /// the same id (a soft-deleted document with this deterministic id) is revived.
     pub async fn create(&self, meta: &DocMeta) -> anyhow::Result<()> {
-        if meta.binding != Binding::Note
+        if !meta.binding.keyless()
             && let Some(existing) = self.lookup(&meta.binding).await?
         {
             bail!("{:?} is already document {existing}", meta.binding);
@@ -878,6 +908,343 @@ impl Store {
             }
         }
         Ok(n)
+    }
+}
+
+/// One `notebooks` row (144 §3.3); the name and description live on the `DocKind::Notebook` document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotebookRow {
+    /// The notebook document.
+    pub id: DocId,
+    /// Optional `project` label.
+    pub project: Option<String>,
+    /// Archived, unix ms.
+    pub archived_ms: Option<i64>,
+}
+
+/// One `sources` row (144 §3.3): ingest state and provenance of a `DocKind::Source` document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceRow {
+    /// The source document.
+    pub id: DocId,
+    /// Where it came from.
+    pub origin: SourceOrigin,
+    /// Ingest state.
+    pub status: SourceStatus,
+    /// Failure text.
+    pub error: Option<String>,
+    /// Ingest attempts.
+    pub attempts: u32,
+    /// Attachment path of the original bytes on the hub (`api.rs` `put_attachment`).
+    pub blob: Option<String>,
+    /// Last successful fetch, unix ms.
+    pub fetched_ms: Option<i64>,
+    /// sha256 of the derived markdown at the last success.
+    pub content_sha: Option<String>,
+    /// §4.2 freshness: the previous `fetched_ms` after a refresh changed the text.
+    pub changed_since: Option<i64>,
+    /// Original size.
+    pub bytes: Option<u64>,
+    /// Word count.
+    pub words: Option<u32>,
+    /// Media length, ms.
+    pub duration_ms: Option<u64>,
+    /// Page count.
+    pub pages: Option<u32>,
+    /// Extractor metadata, JSON.
+    pub meta: serde_json::Value,
+    /// Insight sections written.
+    pub insights: u32,
+}
+
+type SourceTuple = (
+    String,
+    String,
+    String,
+    Option<String>,
+    i64,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    i64,
+);
+
+/// The `sources` columns of [`SourceTuple`], qualified for `FROM sources s` (a macro: sqlx 0.9 takes
+/// only `&'static str` SQL, so the list is spliced with `concat!`).
+macro_rules! source_columns {
+    () => {
+        "s.id, s.origin, s.status, s.error, s.attempts, s.blob, s.fetched_ms, s.content_sha, \
+         s.changed_since, s.bytes, s.words, s.duration_ms, s.pages, s.meta, s.insights"
+    };
+}
+
+fn source_row(t: SourceTuple) -> Option<SourceRow> {
+    let (
+        id,
+        origin,
+        status,
+        error,
+        attempts,
+        blob,
+        fetched_ms,
+        content_sha,
+        changed_since,
+        bytes,
+        words,
+        duration_ms,
+        pages,
+        meta,
+        insights,
+    ) = t;
+    Some(SourceRow {
+        id: DocId(id),
+        origin: serde_json::from_str(&origin).ok()?,
+        status: SourceStatus::parse(&status)?,
+        error,
+        attempts: attempts.try_into().unwrap_or_default(),
+        blob,
+        fetched_ms,
+        content_sha,
+        changed_since,
+        bytes: bytes.and_then(|v| v.try_into().ok()),
+        words: words.and_then(|v| v.try_into().ok()),
+        duration_ms: duration_ms.and_then(|v| v.try_into().ok()),
+        pages: pages.and_then(|v| v.try_into().ok()),
+        meta: meta
+            .and_then(|m| serde_json::from_str(&m).ok())
+            .unwrap_or(serde_json::Value::Null),
+        insights: insights.try_into().unwrap_or_default(),
+    })
+}
+
+/// 144 §3.3: the three replicated tables beside `docs`. Every write is a column write the replica
+/// merges per column (a removal is `removed_ms`, never a `DELETE`); the engine stamps `hlc`.
+impl Store {
+    /// Insert or update the `notebooks` row.
+    pub async fn notebook_upsert(&self, row: &NotebookRow) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO notebooks (id, project, archived_ms) VALUES (?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET project = excluded.project, archived_ms = excluded.archived_ms",
+        )
+        .bind(row.id.as_str())
+        .bind(&row.project)
+        .bind(row.archived_ms)
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+
+    /// The `notebooks` row, when there is one.
+    pub async fn notebook_row(&self, id: &DocId) -> anyhow::Result<Option<NotebookRow>> {
+        let row: Option<(String, Option<String>, Option<i64>)> =
+            sqlx::query_as("SELECT id, project, archived_ms FROM notebooks WHERE id = ?")
+                .bind(id.as_str())
+                .fetch_optional(&self.db)
+                .await?;
+        Ok(row.map(|(id, project, archived_ms)| NotebookRow {
+            id: DocId(id),
+            project,
+            archived_ms,
+        }))
+    }
+
+    /// Live notebooks (document not trashed), newest update first; `archived` includes archived ones.
+    pub async fn notebook_rows(&self, archived: bool) -> anyhow::Result<Vec<NotebookRow>> {
+        let rows: Vec<(String, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT n.id, n.project, n.archived_ms FROM notebooks n JOIN docs d ON d.id = n.id \
+             WHERE d.deleted_ms IS NULL AND (? OR n.archived_ms IS NULL) ORDER BY d.updated_ms DESC, d.rowid DESC",
+        )
+        .bind(archived)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, project, archived_ms)| NotebookRow {
+                id: DocId(id),
+                project,
+                archived_ms,
+            })
+            .collect())
+    }
+
+    /// Insert or revive one membership row (`removed_ms` back to NULL; `added_ms`/`added_by` kept from
+    /// the first add so the row merges as a column write, §3.3).
+    pub async fn item_add(&self, item: &NotebookItem) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO notebook_items (id, notebook, kind, item, added_ms, added_by, removed_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, NULL) ON CONFLICT (id) DO UPDATE SET removed_ms = NULL",
+        )
+        .bind(NotebookItem::row_id(&item.notebook, item.kind, &item.item))
+        .bind(item.notebook.as_str())
+        .bind(item.kind.as_str())
+        .bind(&item.item)
+        .bind(item.added_ms)
+        .bind(&item.added_by)
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+
+    /// Soft-remove one membership row at `removed_ms`. `Ok(false)` when there was no live row.
+    pub async fn item_remove(
+        &self,
+        notebook: &DocId,
+        kind: ItemKind,
+        item: &str,
+        removed_ms: i64,
+    ) -> anyhow::Result<bool> {
+        let r = sqlx::query(
+            "UPDATE notebook_items SET removed_ms = ? WHERE id = ? AND removed_ms IS NULL",
+        )
+        .bind(removed_ms)
+        .bind(NotebookItem::row_id(notebook, kind, item))
+        .execute(&self.db)
+        .await?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    /// Live items of `notebook`, oldest first.
+    pub async fn items(&self, notebook: &DocId) -> anyhow::Result<Vec<NotebookItem>> {
+        let rows: Vec<(String, String, String, i64, String, Option<i64>)> = sqlx::query_as(
+            "SELECT notebook, kind, item, added_ms, added_by, removed_ms FROM notebook_items \
+             WHERE notebook = ? AND removed_ms IS NULL ORDER BY added_ms, rowid",
+        )
+        .bind(notebook.as_str())
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(notebook, kind, item, added_ms, added_by, removed_ms)| {
+                Some(NotebookItem {
+                    notebook: DocId(notebook),
+                    kind: ItemKind::parse(&kind)?,
+                    item,
+                    added_ms,
+                    added_by,
+                    removed_ms,
+                })
+            })
+            .collect())
+    }
+
+    /// Live notebooks (not trashed, not archived unless `archived`) holding `(kind, item)` through a live
+    /// row — the `nbi_item` lookup of the derived share grant (§11) and of "also in N" (§3.4).
+    pub async fn notebooks_of(
+        &self,
+        kind: ItemKind,
+        item: &str,
+        archived: bool,
+    ) -> anyhow::Result<Vec<DocId>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT i.notebook FROM notebook_items i JOIN docs d ON d.id = i.notebook \
+             LEFT JOIN notebooks n ON n.id = i.notebook \
+             WHERE i.kind = ? AND i.item = ? AND i.removed_ms IS NULL AND d.deleted_ms IS NULL \
+             AND (? OR n.archived_ms IS NULL) ORDER BY i.added_ms",
+        )
+        .bind(kind.as_str())
+        .bind(item)
+        .bind(archived)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| DocId(id)).collect())
+    }
+
+    /// Insert or update the whole `sources` row.
+    pub async fn source_upsert(&self, row: &SourceRow) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO sources (id, origin, status, error, attempts, blob, fetched_ms, content_sha, changed_since, \
+             bytes, words, duration_ms, pages, meta, insights) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET origin = excluded.origin, status = excluded.status, error = excluded.error, \
+             attempts = excluded.attempts, blob = excluded.blob, fetched_ms = excluded.fetched_ms, \
+             content_sha = excluded.content_sha, changed_since = excluded.changed_since, bytes = excluded.bytes, \
+             words = excluded.words, duration_ms = excluded.duration_ms, pages = excluded.pages, meta = excluded.meta, \
+             insights = excluded.insights",
+        )
+        .bind(row.id.as_str())
+        .bind(serde_json::to_string(&row.origin)?)
+        .bind(row.status.as_str())
+        .bind(&row.error)
+        .bind(i64::from(row.attempts))
+        .bind(&row.blob)
+        .bind(row.fetched_ms)
+        .bind(&row.content_sha)
+        .bind(row.changed_since)
+        .bind(row.bytes.map(|v| v as i64))
+        .bind(row.words.map(i64::from))
+        .bind(row.duration_ms.map(|v| v as i64))
+        .bind(row.pages.map(i64::from))
+        .bind(serde_json::to_string(&row.meta)?)
+        .bind(i64::from(row.insights))
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+
+    /// Status, error and attempts only — what the ingest job writes between `new` and `completed`.
+    pub async fn source_set_status(
+        &self,
+        id: &DocId,
+        status: SourceStatus,
+        error: Option<&str>,
+        attempts: u32,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE sources SET status = ?, error = ?, attempts = ? WHERE id = ?")
+            .bind(status.as_str())
+            .bind(error)
+            .bind(i64::from(attempts))
+            .bind(id.as_str())
+            .execute(&self.db)
+            .await?;
+        Ok(())
+    }
+
+    /// The `sources` row, when there is one.
+    pub async fn source_row(&self, id: &DocId) -> anyhow::Result<Option<SourceRow>> {
+        let row: Option<SourceTuple> = sqlx::query_as(concat!(
+            "SELECT ",
+            source_columns!(),
+            " FROM sources s WHERE s.id = ?"
+        ))
+        .bind(id.as_str())
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.and_then(source_row))
+    }
+
+    /// Sources whose document is live: those of `notebook` (live items, oldest first), or every one
+    /// (newest update first) — the unfiled ones included.
+    pub async fn source_rows(&self, notebook: Option<&DocId>) -> anyhow::Result<Vec<SourceRow>> {
+        let rows: Vec<SourceTuple> = match notebook {
+            Some(nb) => {
+                sqlx::query_as(concat!(
+                    "SELECT ",
+                    source_columns!(),
+                    " FROM sources s JOIN docs d ON d.id = s.id \
+                     JOIN notebook_items i ON i.kind = 'source' AND i.item = s.id \
+                     WHERE i.notebook = ? AND i.removed_ms IS NULL AND d.deleted_ms IS NULL ORDER BY i.added_ms, i.rowid"
+                ))
+                .bind(nb.as_str())
+                .fetch_all(&self.db)
+                .await?
+            }
+            None => {
+                sqlx::query_as(concat!(
+                    "SELECT ",
+                    source_columns!(),
+                    " FROM sources s JOIN docs d ON d.id = s.id \
+                     WHERE d.deleted_ms IS NULL ORDER BY d.updated_ms DESC, d.rowid DESC"
+                ))
+                .fetch_all(&self.db)
+                .await?
+            }
+        };
+        Ok(rows.into_iter().filter_map(source_row).collect())
     }
 }
 

@@ -1056,6 +1056,121 @@ pub trait Api {
     /// A member renames themself (59 §8.5; editors only — `viewer_readonly` otherwise).
     #[method(name = "doc_set_name", with_extensions)]
     async fn doc_set_name(&self, doc: document::DocId, name: String) -> RpcResult<()>;
+    /// Notebooks (144 §13.3): live ones newest first; `archived` includes archived. Any engine, from the replica.
+    #[method(name = "notebook_list")]
+    async fn notebook_list(&self, archived: Option<bool>) -> RpcResult<Vec<document::Notebook>>;
+    /// One notebook with counts and its live items. Any engine; mode-2 guests see the notebooks they are members of.
+    #[method(name = "notebook_get", with_extensions)]
+    async fn notebook_get(&self, id: document::DocId) -> RpcResult<document::NotebookDetail>;
+    /// A new notebook (144 §3.2): a `DocKind::Notebook` document named `title` whose body is `description`,
+    /// plus its `notebooks` row. Hub only (`-32011` → forwarded).
+    #[method(name = "notebook_create", with_extensions)]
+    async fn notebook_create(
+        &self,
+        title: String,
+        description: Option<String>,
+        project: Option<String>,
+    ) -> RpcResult<document::Notebook>;
+    /// Rename, re-project (`project: ""` clears) or (un)archive a notebook. Hub only.
+    #[method(name = "notebook_update", with_extensions)]
+    async fn notebook_update(
+        &self,
+        id: document::DocId,
+        title: Option<String>,
+        project: Option<String>,
+        archived: Option<bool>,
+    ) -> RpcResult<()>;
+    /// What `notebook_delete` would do (144 §3.4): note count, exclusive sources, sources also in other notebooks.
+    #[method(name = "notebook_delete_preview")]
+    async fn notebook_delete_preview(
+        &self,
+        id: document::DocId,
+    ) -> RpcResult<document::DeletePreview>;
+    /// Trash the notebook document, soft-remove its items and, when `delete_exclusive_sources`, the sources no
+    /// other live notebook holds. Notes are never deleted; members get `Closed{deleted}`. Hub only.
+    #[method(name = "notebook_delete", with_extensions)]
+    async fn notebook_delete(
+        &self,
+        id: document::DocId,
+        delete_exclusive_sources: bool,
+    ) -> RpcResult<()>;
+    /// Live items of a notebook, oldest first. Any engine; membership-checked for guests.
+    #[method(name = "notebook_items_list", with_extensions)]
+    async fn notebook_items_list(
+        &self,
+        notebook: document::DocId,
+    ) -> RpcResult<Vec<document::NotebookItem>>;
+    /// Add (or revive) one item row. Hub only.
+    #[method(name = "notebook_item_add", with_extensions)]
+    async fn notebook_item_add(
+        &self,
+        notebook: document::DocId,
+        kind: document::ItemKind,
+        item: String,
+    ) -> RpcResult<document::NotebookItem>;
+    /// Soft-remove one item row; answers how many other live notebooks still hold the item. Hub only.
+    #[method(name = "notebook_item_remove", with_extensions)]
+    async fn notebook_item_remove(
+        &self,
+        notebook: document::DocId,
+        kind: document::ItemKind,
+        item: String,
+    ) -> RpcResult<document::ItemRemoved>;
+    /// Sessions bound to `notebook`, newest first (144 §8). Owner only — never on the guest allow-list (D13).
+    #[method(name = "notebook_chats", with_extensions)]
+    async fn notebook_chats(&self, notebook: document::DocId) -> RpcResult<Vec<SessionSummary>>;
+    /// Bind `session` to a notebook (`sessions.notebook`), or unbind with `None`. Owner only.
+    #[method(name = "session_set_notebook", with_extensions)]
+    async fn session_set_notebook(
+        &self,
+        session: SessionId,
+        notebook: Option<document::DocId>,
+    ) -> RpcResult<()>;
+    /// Add a source to a notebook (144 §4): pre-flight, the `new` row and card at once, then the ingest job
+    /// (`SourceEvent` on `subscribe_events`). Exactly one origin field. Hub only.
+    #[method(name = "source_add", with_extensions)]
+    async fn source_add(
+        &self,
+        args: document::ingest::SourceAddArgs,
+    ) -> RpcResult<document::Source>;
+    /// One source's card. Any engine; membership-checked for guests.
+    #[method(name = "source_get", with_extensions)]
+    async fn source_get(&self, id: document::DocId) -> RpcResult<document::Source>;
+    /// Sources of `notebook`, or every source (unfiled included). Any engine.
+    #[method(name = "source_list")]
+    async fn source_list(
+        &self,
+        notebook: Option<document::DocId>,
+    ) -> RpcResult<Vec<document::Source>>;
+    /// Re-run the ingest from the origin or the blob (144 §4.2); refused while queued or running. Hub only.
+    #[method(name = "source_refresh", with_extensions)]
+    async fn source_refresh(&self, id: document::DocId) -> RpcResult<document::Source>;
+    /// Resolve `theuth://` hrefs (144 §6.4) to citations with their drift status, positionally. Any engine;
+    /// `available: false` for trashed targets or ones the caller may not read.
+    #[method(name = "cite_resolve", with_extensions)]
+    async fn cite_resolve(&self, hrefs: Vec<String>) -> RpcResult<Vec<document::Citation>>;
+    /// Hybrid block search over notes, sources, insights and notebook descriptions (144 §7.4). Any engine.
+    #[method(name = "nb_search")]
+    async fn nb_search(
+        &self,
+        args: document::index::NbSearchArgs,
+    ) -> RpcResult<Vec<document::index::BlockHit>>;
+    /// Save the assistant message at `turn` of `session` as a new note in `notebook`, chips intact (144 §8). Owner only.
+    #[method(name = "save_answer_as_note", with_extensions)]
+    async fn save_answer_as_note(
+        &self,
+        session: SessionId,
+        turn: u32,
+        notebook: document::DocId,
+    ) -> RpcResult<agent::notebooks::SavedAnswer>;
+    /// Append the assistant message at `turn` of `session` to `note` under `## From chat · <date>` (144 §8). Owner only.
+    #[method(name = "promote_answer", with_extensions)]
+    async fn promote_answer(
+        &self,
+        session: SessionId,
+        turn: u32,
+        note: document::DocId,
+    ) -> RpcResult<()>;
     /// Row counts and freshness of the code index for `root` (default: the
     /// git top-level of the process cwd; design doc 60 §10). Opens the
     /// index without reconciling it.
@@ -2592,6 +2707,18 @@ async fn doc_forward<T: DeserializeOwned>(
         Some(v) => Ok(v),
         None => r,
     }
+}
+
+/// [`doc_send`]'s error mapping for the 144 delegation functions that answer `anyhow::Result`: a
+/// `NotHub:<id>` message becomes [`NOT_HUB`] with the typed payload (so [`doc_forward`] re-issues the
+/// call), anything else `ASK_FAILED` with the message.
+fn nb_result<T>(r: anyhow::Result<T>) -> RpcResult<T> {
+    r.map_err(|e| match document::DocError::parse(&format!("{e:#}")) {
+        err @ document::DocError::NotHub { .. } => {
+            ErrorObjectOwned::owned(NOT_HUB, "another engine holds the hub lease", Some(err))
+        }
+        document::DocError::Other(msg) => failed(msg),
+    })
 }
 
 /// The knowledge actor; `knowledge.enabled: false` means it was never
@@ -4805,6 +4932,290 @@ impl ApiServer for Server {
         let r = doc_send(&documents()?, document::SetName { doc, by, name }).await;
         member_outcome(&peer, &r);
         r
+    }
+
+    async fn notebook_list(&self, archived: Option<bool>) -> RpcResult<Vec<document::Notebook>> {
+        doc_send(
+            &documents()?,
+            document::NotebookList {
+                archived: archived.unwrap_or(false),
+            },
+        )
+        .await
+    }
+
+    async fn notebook_get(
+        &self,
+        ext: &Extensions,
+        id: document::DocId,
+    ) -> RpcResult<document::NotebookDetail> {
+        let (peer, _by) = principal(ext)?;
+        let r = doc_send(&documents()?, document::NotebookGet { id }).await;
+        member_outcome(&peer, &r);
+        r
+    }
+
+    async fn notebook_create(
+        &self,
+        ext: &Extensions,
+        title: String,
+        description: Option<String>,
+        project: Option<String>,
+    ) -> RpcResult<document::Notebook> {
+        owner(ext)?;
+        if title.trim().is_empty() {
+            return Err(ErrorObjectOwned::owned(
+                jsonrpsee::types::error::INVALID_PARAMS_CODE,
+                "title must not be empty",
+                None::<()>,
+            ));
+        }
+        let r = doc_send(
+            &documents()?,
+            document::NotebookCreate {
+                title: title.trim().to_owned(),
+                description: description.clone().unwrap_or_default(),
+                project: project.clone().filter(|p| !p.trim().is_empty()),
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await;
+        doc_forward(ext, "notebook_create", (&title, &description, &project), r).await
+    }
+
+    async fn notebook_update(
+        &self,
+        ext: &Extensions,
+        id: document::DocId,
+        title: Option<String>,
+        project: Option<String>,
+        archived: Option<bool>,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let r = doc_send(
+            &documents()?,
+            document::NotebookUpdate {
+                id: id.clone(),
+                title: title.clone().filter(|t| !t.trim().is_empty()),
+                project: project
+                    .clone()
+                    .map(|p| Some(p).filter(|p| !p.trim().is_empty())),
+                archived,
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await;
+        doc_forward(
+            ext,
+            "notebook_update",
+            (&id, &title, &project, &archived),
+            r,
+        )
+        .await
+    }
+
+    async fn notebook_delete_preview(
+        &self,
+        id: document::DocId,
+    ) -> RpcResult<document::DeletePreview> {
+        doc_send(&documents()?, document::NotebookDeletePreview { id }).await
+    }
+
+    async fn notebook_delete(
+        &self,
+        ext: &Extensions,
+        id: document::DocId,
+        delete_exclusive_sources: bool,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let r = doc_send(
+            &documents()?,
+            document::NotebookDelete {
+                id: id.clone(),
+                delete_exclusive_sources,
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await;
+        doc_forward(ext, "notebook_delete", (&id, &delete_exclusive_sources), r).await
+    }
+
+    async fn notebook_items_list(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+    ) -> RpcResult<Vec<document::NotebookItem>> {
+        let (peer, _by) = principal(ext)?;
+        let r = doc_send(&documents()?, document::NotebookItemsList { notebook }).await;
+        member_outcome(&peer, &r);
+        r
+    }
+
+    async fn notebook_item_add(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+        kind: document::ItemKind,
+        item: String,
+    ) -> RpcResult<document::NotebookItem> {
+        owner(ext)?;
+        let r = doc_send(
+            &documents()?,
+            document::NotebookItemAdd {
+                notebook: notebook.clone(),
+                kind,
+                item: item.clone(),
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await;
+        doc_forward(ext, "notebook_item_add", (&notebook, &kind, &item), r).await
+    }
+
+    async fn notebook_item_remove(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+        kind: document::ItemKind,
+        item: String,
+    ) -> RpcResult<document::ItemRemoved> {
+        owner(ext)?;
+        let r = doc_send(
+            &documents()?,
+            document::NotebookItemRemove {
+                notebook: notebook.clone(),
+                kind,
+                item: item.clone(),
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await;
+        doc_forward(ext, "notebook_item_remove", (&notebook, &kind, &item), r).await
+    }
+
+    async fn notebook_chats(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+    ) -> RpcResult<Vec<SessionSummary>> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(agent::notebooks::notebook_chats(&agents, notebook.to_string()).await)
+    }
+
+    async fn session_set_notebook(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        notebook: Option<document::DocId>,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(
+            agent::notebooks::session_set_notebook(
+                &agents,
+                session,
+                notebook.map(|n| n.to_string()),
+            )
+            .await,
+        )
+    }
+
+    async fn source_add(
+        &self,
+        ext: &Extensions,
+        args: document::ingest::SourceAddArgs,
+    ) -> RpcResult<document::Source> {
+        owner(ext)?;
+        let r = nb_result(
+            document::ingest::source_add(
+                &documents()?,
+                args.clone(),
+                document::Principal::Owner { device: None },
+            )
+            .await,
+        );
+        doc_forward(ext, "source_add", (&args,), r).await
+    }
+
+    async fn source_get(
+        &self,
+        ext: &Extensions,
+        id: document::DocId,
+    ) -> RpcResult<document::Source> {
+        let (peer, _by) = principal(ext)?;
+        let r = nb_result(document::ingest::source_get(&documents()?, id).await);
+        member_outcome(&peer, &r);
+        r
+    }
+
+    async fn source_list(
+        &self,
+        notebook: Option<document::DocId>,
+    ) -> RpcResult<Vec<document::Source>> {
+        nb_result(document::ingest::source_list(&documents()?, notebook).await)
+    }
+
+    async fn source_refresh(
+        &self,
+        ext: &Extensions,
+        id: document::DocId,
+    ) -> RpcResult<document::Source> {
+        owner(ext)?;
+        let r = nb_result(
+            document::ingest::source_refresh(
+                &documents()?,
+                id.clone(),
+                document::Principal::Owner { device: None },
+            )
+            .await,
+        );
+        doc_forward(ext, "source_refresh", (&id,), r).await
+    }
+
+    async fn cite_resolve(
+        &self,
+        ext: &Extensions,
+        hrefs: Vec<String>,
+    ) -> RpcResult<Vec<document::Citation>> {
+        let (peer, by) = principal(ext)?;
+        let r = doc_send(&documents()?, document::CiteResolve { hrefs, by }).await;
+        member_outcome(&peer, &r);
+        r
+    }
+
+    async fn nb_search(
+        &self,
+        args: document::index::NbSearchArgs,
+    ) -> RpcResult<Vec<document::index::BlockHit>> {
+        nb_result(document::index::nb_search(&documents()?, args).await)
+    }
+
+    async fn save_answer_as_note(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        turn: u32,
+        notebook: document::DocId,
+    ) -> RpcResult<agent::notebooks::SavedAnswer> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(
+            agent::notebooks::save_answer_as_note(&agents, session, turn, notebook.to_string())
+                .await,
+        )
+    }
+
+    async fn promote_answer(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        turn: u32,
+        note: document::DocId,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(agent::notebooks::promote_answer(&agents, session, turn, note.to_string()).await)
     }
 
     async fn doc_snapshots(&self, doc: document::DocId) -> RpcResult<Vec<document::SnapshotInfo>> {

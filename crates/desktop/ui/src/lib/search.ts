@@ -25,6 +25,8 @@ export const CATEGORY_LABEL: Record<SearchCategory, string> = {
   knowledge_history: 'Knowledge history',
   notes: 'Notes',
   meetings: 'Meetings',
+  sources: 'Sources',
+  notebooks: 'Notebooks',
 }
 
 /** Per-group page sizes Show more steps through (49 §2.3); the last is the backend cap. */
@@ -39,6 +41,8 @@ export const DEFAULT_LIMITS: Limits = {
   knowledge_history: 10,
   notes: 10,
   meetings: 10,
+  sources: 10,
+  notebooks: 10,
 }
 
 /** Dedupe into fixed order, dropping unknown values — the request identity the backend also computes. */

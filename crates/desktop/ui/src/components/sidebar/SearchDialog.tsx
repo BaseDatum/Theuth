@@ -61,6 +61,9 @@ const ICON: Record<SearchCategory, typeof Search> = {
   knowledge_history: History,
   notes: StickyNote,
   meetings: Mic,
+  // 144 §7.4: rows for the two block-level groups land with the notebook UI (W4).
+  sources: FileText,
+  notebooks: StickyNote,
 }
 
 /** Show more steps 10 → 30 → 50; the cap stays put. */
@@ -123,6 +126,9 @@ function items(g: SearchGroup): Item[] {
         node: <MeetingRow hit={h} />,
         ref: toRef({ kind: 'meeting', meeting: h.meeting }),
       }))
+    case 'sources':
+    case 'notebooks':
+      return []
   }
 }
 

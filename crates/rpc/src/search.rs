@@ -15,6 +15,7 @@ use std::time::Duration;
 use ::search::{Coverage, PageState, SearchCategory, SearchNotice, SearchPage, TextMatch};
 use agent::search::SearchHit;
 use artifact::search::ArtifactSearchHit;
+use document::index::BlockHit;
 use document::search::NoteSearchHit;
 use futures::future::BoxFuture;
 use kameo::actor::{Actor, ActorRef, Spawn as _};
@@ -64,6 +65,16 @@ pub enum SearchGroup {
         /// The page.
         page: SearchPage<MeetingSearchHit>,
     },
+    /// Sources, block-level (document owner; 144 §7.4).
+    Sources {
+        /// The page.
+        page: SearchPage<BlockHit>,
+    },
+    /// Notebooks (document owner; 144 §7.4).
+    Notebooks {
+        /// The page.
+        page: SearchPage<BlockHit>,
+    },
 }
 
 impl SearchGroup {
@@ -76,6 +87,8 @@ impl SearchGroup {
             SearchGroup::KnowledgeHistory { .. } => SearchCategory::KnowledgeHistory,
             SearchGroup::Notes { .. } => SearchCategory::Notes,
             SearchGroup::Meetings { .. } => SearchCategory::Meetings,
+            SearchGroup::Sources { .. } => SearchCategory::Sources,
+            SearchGroup::Notebooks { .. } => SearchCategory::Notebooks,
         }
     }
 
@@ -88,6 +101,7 @@ impl SearchGroup {
             SearchGroup::KnowledgeHistory { page } => page.state,
             SearchGroup::Notes { page } => page.state,
             SearchGroup::Meetings { page } => page.state,
+            SearchGroup::Sources { page } | SearchGroup::Notebooks { page } => page.state,
         }
     }
 
@@ -100,6 +114,7 @@ impl SearchGroup {
             SearchGroup::KnowledgeHistory { page } => &mut page.notices,
             SearchGroup::Notes { page } => &mut page.notices,
             SearchGroup::Meetings { page } => &mut page.notices,
+            SearchGroup::Sources { page } | SearchGroup::Notebooks { page } => &mut page.notices,
         }
     }
 
@@ -123,6 +138,12 @@ impl SearchGroup {
                 page: SearchPage::indexing(),
             },
             SearchCategory::Meetings => SearchGroup::Meetings {
+                page: SearchPage::indexing(),
+            },
+            SearchCategory::Sources => SearchGroup::Sources {
+                page: SearchPage::indexing(),
+            },
+            SearchCategory::Notebooks => SearchGroup::Notebooks {
                 page: SearchPage::indexing(),
             },
         }
@@ -183,7 +204,7 @@ pub async fn run(
     }
     let want = |c: SearchCategory| selected.contains(&c);
     let q = &query;
-    let (sessions, artifacts, concepts, history, notes, meetings) = tokio::join!(
+    let (sessions, artifacts, concepts, history, notes, meetings, sources, notebooks) = tokio::join!(
         maybe(
             want(SearchCategory::Sessions),
             || page::<agent::Agents, _, _>(
@@ -255,6 +276,30 @@ pub async fn run(
                 limit,
             },
         )),
+        maybe(want(SearchCategory::Sources), || page::<
+            document::DocumentActor,
+            _,
+            _,
+        >(
+            document::DOCUMENT_ACTOR,
+            "document",
+            document::index::SearchSources {
+                query: q.clone(),
+                limit,
+            },
+        )),
+        maybe(want(SearchCategory::Notebooks), || page::<
+            document::DocumentActor,
+            _,
+            _,
+        >(
+            document::DOCUMENT_ACTOR,
+            "document",
+            document::index::SearchNotebooks {
+                query: q.clone(),
+                limit,
+            },
+        )),
     );
     let mut groups = Vec::with_capacity(selected.len());
     if let Some(page) = sessions {
@@ -274,6 +319,12 @@ pub async fn run(
     }
     if let Some(page) = meetings {
         groups.push(SearchGroup::Meetings { page });
+    }
+    if let Some(page) = sources {
+        groups.push(SearchGroup::Sources { page });
+    }
+    if let Some(page) = notebooks {
+        groups.push(SearchGroup::Notebooks { page });
     }
     Ok(SearchResponse { groups })
 }
@@ -716,6 +767,10 @@ fn redact(resp: &mut SearchResponse) {
                 .hits
                 .iter_mut()
                 .for_each(|h| text_match(&mut h.r#match)),
+            SearchGroup::Sources { page } | SearchGroup::Notebooks { page } => page
+                .hits
+                .iter_mut()
+                .for_each(|h| text_match(&mut h.r#match)),
         }
     }
 }
@@ -863,6 +918,33 @@ fn render(query: &str, resp: &SearchResponse, stop: Option<Stop>) -> String {
                     );
                 }
             }
+            SearchGroup::Sources { page } => {
+                header(&mut s, "Sources", page);
+                for h in &page.hits {
+                    let _ = writeln!(
+                        s,
+                        "- source {} {:?} #{} ({}): {}",
+                        h.doc,
+                        clean(&h.title),
+                        h.block,
+                        h.href,
+                        clean(&h.r#match.snippet)
+                    );
+                }
+            }
+            SearchGroup::Notebooks { page } => {
+                header(&mut s, "Notebooks", page);
+                for h in &page.hits {
+                    let _ = writeln!(
+                        s,
+                        "- notebook {} {:?} ({}): {}",
+                        h.doc,
+                        clean(&h.title),
+                        h.href,
+                        clean(&h.r#match.snippet)
+                    );
+                }
+            }
         }
     }
     let pending = resp.indexing();
@@ -899,6 +981,8 @@ fn wire(c: SearchCategory) -> &'static str {
         SearchCategory::Meetings => "meetings",
         SearchCategory::Knowledge => "knowledge",
         SearchCategory::KnowledgeHistory => "knowledge_history",
+        SearchCategory::Sources => "sources",
+        SearchCategory::Notebooks => "notebooks",
     }
 }
 

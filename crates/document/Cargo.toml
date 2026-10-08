@@ -45,7 +45,7 @@ figment = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "search/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "search/ts", "codeindex/ts"]
 
 [lints]
 workspace = true

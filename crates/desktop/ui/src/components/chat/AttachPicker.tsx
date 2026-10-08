@@ -269,6 +269,10 @@ export function AttachPicker({
       case 'meetings':
         rows = g.page.hits.map((h) => row({ kind: 'meeting', meeting: h.meeting }, now))
         break
+      case 'sources':
+      case 'notebooks':
+        rows = []
+        break
     }
     const limit = limits[c] ?? LIMITS[0]
     const loadingMore = !!m && !m.data && !m.error

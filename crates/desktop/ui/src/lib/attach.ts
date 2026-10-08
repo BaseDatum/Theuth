@@ -12,9 +12,9 @@ import type { SearchHit } from '@/rpc/bindings/SearchHit'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { Artifact } from '@/rpc/extra'
 
-export type Kind = 'note' | 'knowledge' | 'artifact' | 'session' | 'meeting'
+export type Kind = 'note' | 'knowledge' | 'artifact' | 'session' | 'meeting' | 'notebook' | 'source'
 
-export const KINDS: readonly Kind[] = ['note', 'knowledge', 'artifact', 'session', 'meeting']
+export const KINDS: readonly Kind[] = ['note', 'knowledge', 'artifact', 'session', 'meeting', 'notebook', 'source']
 
 export type AttachRef = {
   kind: Kind
@@ -33,6 +33,8 @@ export const KIND_LABEL: Record<Kind, string> = {
   artifact: 'Artifact',
   session: 'Chat',
   meeting: 'Meeting',
+  notebook: 'Notebook',
+  source: 'Source',
 }
 
 /** Identity for dedupe: the same thing attached twice is one chip. */
@@ -49,7 +51,7 @@ export function marker(ref: AttachRef): string {
   return `[attached ${ref.kind} ${ref.id} "${title}"${ref.meta ? ` · ${ref.meta}` : ''}]`
 }
 
-const ATTACHED = /^\[attached (note|knowledge|artifact|session|meeting) (\S+) "((?:[^"\\]|\\.)*)"(?: · ([^\]]*))?\]$/
+const ATTACHED = /^\[attached (note|knowledge|artifact|session|meeting|notebook|source) (\S+) "((?:[^"\\]|\\.)*)"(?: · ([^\]]*))?\]$/
 /** 59 §5.4's spelling: `[doc <DocId> "<title>"]` is a note, `[doc knowledge:<id> "<title>"]` a knowledge concept. */
 const LEGACY = /^\[doc (\S+) "((?:[^"\\]|\\.)*)"\]$/
 

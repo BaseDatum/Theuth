@@ -52,6 +52,8 @@ pub fn label(c: SearchCategory) -> &'static str {
         SearchCategory::KnowledgeHistory => "Knowledge history",
         SearchCategory::Notes => "Notes",
         SearchCategory::Meetings => "Meetings",
+        SearchCategory::Sources => "Sources",
+        SearchCategory::Notebooks => "Notebooks",
     }
 }
 
@@ -64,6 +66,8 @@ pub fn wire(c: SearchCategory) -> &'static str {
         SearchCategory::KnowledgeHistory => "knowledge_history",
         SearchCategory::Notes => "notes",
         SearchCategory::Meetings => "meetings",
+        SearchCategory::Sources => "sources",
+        SearchCategory::Notebooks => "notebooks",
     }
 }
 
@@ -480,6 +484,27 @@ impl Group {
             SearchGroup::Meetings { page: p } => {
                 page(SearchCategory::Meetings, p, Hit::Meeting, generation, limit)
             }
+            // 144 §7.4: block-level groups; the TUI rows for them land with the index (W2/W4).
+            SearchGroup::Sources { page: p } => Group {
+                category: SearchCategory::Sources,
+                generation,
+                limit,
+                state: p.state,
+                hits: Vec::new(),
+                has_more: p.has_more,
+                coverage: p.coverage,
+                notices: p.notices,
+            },
+            SearchGroup::Notebooks { page: p } => Group {
+                category: SearchCategory::Notebooks,
+                generation,
+                limit,
+                state: p.state,
+                hits: Vec::new(),
+                has_more: p.has_more,
+                coverage: p.coverage,
+                notices: p.notices,
+            },
         }
     }
 
@@ -2141,6 +2166,8 @@ mod tests {
                 SearchCategory::KnowledgeHistory,
                 SearchCategory::Notes,
                 SearchCategory::Meetings,
+                SearchCategory::Sources,
+                SearchCategory::Notebooks,
             ]
         );
     }

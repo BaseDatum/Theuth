@@ -40,6 +40,7 @@ pub mod endless;
 pub mod endless_ext;
 pub mod frame;
 pub mod loop_;
+pub mod notebooks;
 pub mod peers;
 pub mod project;
 pub mod providers;
