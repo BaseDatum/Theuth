@@ -104,6 +104,25 @@ pub struct TheuthAnchor {
     pub sha8: Option<String>,
 }
 
+impl Locator {
+    /// The locator as written: `#<block>`, `@mm:ss` / `@h:mm:ss`, `#<turn>`.
+    pub fn text(&self) -> String {
+        match self {
+            Locator::Block(b) => format!("#{b}"),
+            Locator::Turn(t) => format!("#{t}"),
+            Locator::Time(ms) => {
+                let secs = ms / 1000;
+                let (h, m, sec) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+                if h > 0 {
+                    format!("@{h}:{m:02}:{sec:02}")
+                } else {
+                    format!("@{m:02}:{sec:02}")
+                }
+            }
+        }
+    }
+}
+
 /// The scheme every citation starts with.
 pub const THEUTH_SCHEME: &str = "theuth://";
 
@@ -203,22 +222,8 @@ impl TheuthAnchor {
     /// Render back to the canonical href.
     pub fn href(&self) -> String {
         let mut s = format!("{THEUTH_SCHEME}{}/{}", self.kind.as_str(), self.id);
-        match &self.locator {
-            Some(Locator::Block(b)) => {
-                s.push('#');
-                s.push_str(b);
-            }
-            Some(Locator::Turn(t)) => s.push_str(&format!("#{t}")),
-            Some(Locator::Time(ms)) => {
-                let secs = ms / 1000;
-                let (h, m, sec) = (secs / 3600, (secs % 3600) / 60, secs % 60);
-                if h > 0 {
-                    s.push_str(&format!("@{h}:{m:02}:{sec:02}"));
-                } else {
-                    s.push_str(&format!("@{m:02}:{sec:02}"));
-                }
-            }
-            None => {}
+        if let Some(l) = &self.locator {
+            s.push_str(&l.text());
         }
         if let Some(sha) = &self.sha8 {
             s.push_str("?s=");

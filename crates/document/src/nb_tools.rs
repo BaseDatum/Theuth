@@ -224,9 +224,9 @@ impl Tool for NotebookGetTool {
             .into()
     }
 
-    async fn call(&self, a: NotebookGetArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: NotebookGetArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let id = doc_id(&a.id)?;
-        let d = handler(self.0.actor.ask(NotebookGet { id }).await)?;
+        let d = handler(self.0.actor.ask(NotebookGet { id, by: agent(&cx) }).await)?;
         let mut text = format!(
             "notebook {} {:?} · {} sources · {} notes · {} chats\n",
             d.notebook.doc.id,

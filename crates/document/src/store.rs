@@ -1133,6 +1133,67 @@ impl Store {
             .collect())
     }
 
+    /// Soft-remove every live item of `notebook` at `removed_ms` (notebook delete, §3.4); the rows removed.
+    pub async fn items_remove_all(
+        &self,
+        notebook: &DocId,
+        removed_ms: i64,
+    ) -> anyhow::Result<Vec<NotebookItem>> {
+        let items = self.items(notebook).await?;
+        sqlx::query(
+            "UPDATE notebook_items SET removed_ms = ? WHERE notebook = ? AND removed_ms IS NULL",
+        )
+        .bind(removed_ms)
+        .bind(notebook.as_str())
+        .execute(&self.db)
+        .await?;
+        Ok(items)
+    }
+
+    /// `(sources, notes)` live-item counts per notebook, for every notebook with items.
+    pub async fn item_counts(&self) -> anyhow::Result<HashMap<String, (u32, u32)>> {
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT notebook, kind, COUNT(*) FROM notebook_items WHERE removed_ms IS NULL \
+             AND kind IN ('source', 'note') GROUP BY notebook, kind",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        let mut out: HashMap<String, (u32, u32)> = HashMap::new();
+        for (nb, kind, n) in rows {
+            let e = out.entry(nb).or_default();
+            let n = u32::try_from(n).unwrap_or(u32::MAX);
+            if kind == "source" {
+                e.0 = n;
+            } else {
+                e.1 = n;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The index row of a live document as `doc_list` shows it; `None` when absent or trashed.
+    pub async fn summary(&self, id: &DocId) -> anyhow::Result<Option<DocSummary>> {
+        let row: Option<(String, String, String, String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT id, kind, title, binding, created_ms, updated_ms, bytes FROM docs WHERE id = ? AND deleted_ms IS NULL",
+        )
+        .bind(id.as_str())
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.and_then(
+            |(id, kind, title, binding, created_ms, updated_ms, bytes)| {
+                Some(DocSummary {
+                    id: DocId(id),
+                    kind: serde_json::from_value(serde_json::Value::String(kind)).ok()?,
+                    title,
+                    binding: serde_json::from_str(&binding).ok()?,
+                    created_ms,
+                    updated_ms,
+                    bytes,
+                })
+            },
+        ))
+    }
+
     /// Live notebooks (not trashed, not archived unless `archived`) holding `(kind, item)` through a live
     /// row — the `nbi_item` lookup of the derived share grant (§11) and of "also in N" (§3.4).
     pub async fn notebooks_of(
@@ -1402,6 +1463,184 @@ mod tests {
         let len = t.len(&txn);
         t.insert(&mut txn, len, s);
         txn.encode_update_v1()
+    }
+
+    /// 144 §3.3: the three tables open beside `docs`; items are deterministic rows that revive on
+    /// re-add, "also in" and the grant lookup read live notebooks only, sources list per notebook.
+    #[tokio::test]
+    async fn notebook_tables_items_revive_and_live_lookups() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        let nb_a = meta(Binding::Notebook);
+        let nb_b = meta(Binding::Notebook);
+        let mut src = meta(Binding::Source("url:http://x/".into()));
+        src.id = DocId::for_binding(&src.binding);
+        let note = meta(Binding::Note);
+        for m in [&nb_a, &nb_b, &src, &note] {
+            store.create(m).await.unwrap();
+        }
+        assert_eq!(src.kind, DocKind::Source);
+        assert_eq!(
+            src.id,
+            DocId::for_binding(&src.binding),
+            "a source id is the v5 of its origin key: the same on every engine"
+        );
+        assert_ne!(
+            DocId::for_binding(&Binding::Notebook),
+            DocId::for_binding(&Binding::Notebook),
+            "notebooks are keyless"
+        );
+        assert!(
+            store
+                .create(&meta(Binding::Source("url:http://x/".into())))
+                .await
+                .is_err(),
+            "one document per origin key"
+        );
+        store
+            .notebook_upsert(&NotebookRow {
+                id: nb_a.id.clone(),
+                project: Some("p".into()),
+                archived_ms: None,
+            })
+            .await
+            .unwrap();
+        store
+            .notebook_upsert(&NotebookRow {
+                id: nb_b.id.clone(),
+                project: None,
+                archived_ms: Some(5),
+            })
+            .await
+            .unwrap();
+        assert_eq!(store.notebook_rows(false).await.unwrap().len(), 1);
+        assert_eq!(store.notebook_rows(true).await.unwrap().len(), 2);
+
+        let item = |nb: &DocMeta, kind, item: &DocMeta| NotebookItem {
+            notebook: nb.id.clone(),
+            kind,
+            item: item.id.to_string(),
+            added_ms: 10,
+            added_by: "owner".into(),
+            removed_ms: None,
+        };
+        store
+            .item_add(&item(&nb_a, ItemKind::Source, &src))
+            .await
+            .unwrap();
+        store
+            .item_add(&item(&nb_b, ItemKind::Source, &src))
+            .await
+            .unwrap();
+        store
+            .item_add(&item(&nb_a, ItemKind::Note, &note))
+            .await
+            .unwrap();
+        assert_eq!(store.items(&nb_a.id).await.unwrap().len(), 2);
+        assert_eq!(store.item_counts().await.unwrap()[nb_a.id.as_str()], (1, 1));
+        assert_eq!(
+            store
+                .notebooks_of(ItemKind::Source, src.id.as_str(), true)
+                .await
+                .unwrap(),
+            vec![nb_a.id.clone(), nb_b.id.clone()]
+        );
+        assert_eq!(
+            store
+                .notebooks_of(ItemKind::Source, src.id.as_str(), false)
+                .await
+                .unwrap(),
+            vec![nb_a.id.clone()],
+            "archived notebooks are left out when asked"
+        );
+        assert_eq!(
+            store.source_rows(Some(&nb_a.id)).await.unwrap().len(),
+            0,
+            "no sources row yet"
+        );
+        store
+            .source_upsert(&SourceRow {
+                id: src.id.clone(),
+                origin: SourceOrigin::Url {
+                    url: "http://x/".into(),
+                    canonical: None,
+                },
+                status: SourceStatus::New,
+                error: None,
+                attempts: 0,
+                blob: None,
+                fetched_ms: None,
+                content_sha: None,
+                changed_since: None,
+                bytes: Some(7),
+                words: None,
+                duration_ms: Some(1000),
+                pages: None,
+                meta: serde_json::json!({ "a": 1 }),
+                insights: 0,
+            })
+            .await
+            .unwrap();
+        store
+            .source_set_status(&src.id, SourceStatus::Failed, Some("boom"), 2)
+            .await
+            .unwrap();
+        let row = store.source_row(&src.id).await.unwrap().unwrap();
+        assert_eq!(
+            (
+                row.status,
+                row.error.as_deref(),
+                row.attempts,
+                row.bytes,
+                row.duration_ms
+            ),
+            (SourceStatus::Failed, Some("boom"), 2, Some(7), Some(1000))
+        );
+        assert_eq!(row.meta["a"], 1);
+        assert_eq!(store.source_rows(Some(&nb_a.id)).await.unwrap().len(), 1);
+        assert_eq!(store.source_rows(None).await.unwrap().len(), 1);
+
+        // Soft removal, then revival keeps the first add.
+        assert!(
+            store
+                .item_remove(&nb_a.id, ItemKind::Source, src.id.as_str(), 20)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .item_remove(&nb_a.id, ItemKind::Source, src.id.as_str(), 21)
+                .await
+                .unwrap(),
+            "already removed"
+        );
+        assert_eq!(store.items(&nb_a.id).await.unwrap().len(), 1);
+        assert_eq!(store.source_rows(Some(&nb_a.id)).await.unwrap().len(), 0);
+        let mut again = item(&nb_a, ItemKind::Source, &src);
+        again.added_ms = 99;
+        again.added_by = "agent:x".into();
+        store.item_add(&again).await.unwrap();
+        let items = store.items(&nb_a.id).await.unwrap();
+        let revived = items.iter().find(|i| i.kind == ItemKind::Source).unwrap();
+        assert_eq!((revived.added_ms, revived.added_by.as_str()), (10, "owner"));
+
+        // A trashed notebook stops holding its items; items_remove_all empties it.
+        store.delete(&nb_b.id).await.unwrap();
+        assert_eq!(
+            store
+                .notebooks_of(ItemKind::Source, src.id.as_str(), true)
+                .await
+                .unwrap(),
+            vec![nb_a.id.clone()]
+        );
+        let removed = store.items_remove_all(&nb_a.id, 30).await.unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(store.items(&nb_a.id).await.unwrap().is_empty());
+        assert_eq!(store.summary(&nb_b.id).await.unwrap(), None);
+        assert_eq!(
+            store.summary(&nb_a.id).await.unwrap().map(|s| s.kind),
+            Some(DocKind::Notebook)
+        );
     }
 
     /// SEAL: a pre-SEAL `meta.json` with a plaintext `links[].secret_hash` is sealed on first read —

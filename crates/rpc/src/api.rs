@@ -4949,8 +4949,8 @@ impl ApiServer for Server {
         ext: &Extensions,
         id: document::DocId,
     ) -> RpcResult<document::NotebookDetail> {
-        let (peer, _by) = principal(ext)?;
-        let r = doc_send(&documents()?, document::NotebookGet { id }).await;
+        let (peer, by) = principal(ext)?;
+        let r = doc_send(&documents()?, document::NotebookGet { id, by }).await;
         member_outcome(&peer, &r);
         r
     }
@@ -5045,8 +5045,8 @@ impl ApiServer for Server {
         ext: &Extensions,
         notebook: document::DocId,
     ) -> RpcResult<Vec<document::NotebookItem>> {
-        let (peer, _by) = principal(ext)?;
-        let r = doc_send(&documents()?, document::NotebookItemsList { notebook }).await;
+        let (peer, by) = principal(ext)?;
+        let r = doc_send(&documents()?, document::NotebookItemsList { notebook, by }).await;
         member_outcome(&peer, &r);
         r
     }
@@ -5143,8 +5143,20 @@ impl ApiServer for Server {
         ext: &Extensions,
         id: document::DocId,
     ) -> RpcResult<document::Source> {
-        let (peer, _by) = principal(ext)?;
-        let r = nb_result(document::ingest::source_get(&documents()?, id).await);
+        let (peer, by) = principal(ext)?;
+        // 144 §11: readable by the owner, a member of the source, or a member of a notebook holding it.
+        let docs = documents()?;
+        let may = doc_send(
+            &docs,
+            document::MayRead {
+                doc: id.clone(),
+                by,
+            },
+        )
+        .await;
+        member_outcome(&peer, &may);
+        may?;
+        let r = nb_result(document::ingest::source_get(&docs, id).await);
         member_outcome(&peer, &r);
         r
     }
