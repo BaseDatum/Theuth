@@ -1,0 +1,14 @@
+{
+  "meeting": "0199a000-0000-7000-8000-000000000001",
+  "speakers": [
+    {"id": "me", "name": "Sky", "profile": null, "proposed": null},
+    {"id": "s1", "name": "Ana", "profile": null, "proposed": null}
+  ],
+  "segments": [
+    {"id": 1, "track": "Mic", "speaker": "me", "t0_ms": 0, "t1_ms": 4200, "text": "Welcome, let's start with failover.", "words": []},
+    {"id": 2, "track": "System", "speaker": "s1", "t0_ms": 4500, "t1_ms": 9800, "text": "The primary flapped twice last week.", "words": []},
+    {"id": 3, "track": "Mic", "speaker": "me", "t0_ms": 65000, "t1_ms": 70000, "text": "   ", "words": []},
+    {"id": 4, "track": "System", "speaker": "s2", "t0_ms": 125000, "t1_ms": 131000, "text": "We should add a health check.", "words": []}
+  ],
+  "reviewed_at": null, "summarized_at": null, "diarized": true, "note": null
+}

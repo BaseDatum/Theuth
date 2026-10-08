@@ -1,0 +1,8 @@
+{"wireMagic":"pb3","pens":[{}],"wsWinStyles":[{}],"wpWinPositions":[{}],"events":[
+ {"tStartMs":0,"dDurationMs":2000,"id":1,"wpWinPosId":1,"wsWinStyleId":1},
+ {"tStartMs":120,"dDurationMs":3500,"wWinId":1,"segs":[{"utf8":"Welcome","acAsrConf":0},{"utf8":" to","tOffsetMs":400},{"utf8":" the","tOffsetMs":600},{"utf8":" talk.","tOffsetMs":900}]},
+ {"tStartMs":3620,"dDurationMs":10,"wWinId":1,"aAppend":1,"segs":[{"utf8":"\n"}]},
+ {"tStartMs":58000,"dDurationMs":2000,"wWinId":1,"segs":[{"utf8":"Still"},{"utf8":" first","tOffsetMs":500},{"utf8":" minute.","tOffsetMs":900}]},
+ {"tStartMs":61000,"dDurationMs":2000,"wWinId":1,"segs":[{"utf8":"Second"},{"utf8":" minute","tOffsetMs":500},{"utf8":" begins.","tOffsetMs":900}]},
+ {"tStartMs":200000,"dDurationMs":2000,"wWinId":1,"segs":[{"utf8":"Much"},{"utf8":" later.","tOffsetMs":500}]}
+]}

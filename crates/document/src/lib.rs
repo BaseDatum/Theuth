@@ -254,6 +254,10 @@ impl runtime::Plugin for DocumentPlugin {
         let actor =
             DocumentActor::spawn(DocumentActor::new(store.clone(), helper, cfg, rt.clone()));
         actor.register(DOCUMENT_ACTOR)?;
+        // 144 §4.2: the ingest job runner beside the document actor (hub-only by its writes).
+        if let Err(e) = ingest::IngestActor::start(rt, store.clone(), actor.clone()) {
+            tracing::warn!("documents: ingest unavailable: {e:#}");
+        }
 
         let a = actor.clone();
         tokio::spawn(async move {
