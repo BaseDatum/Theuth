@@ -6686,10 +6686,19 @@ impl Message<SetEndlessSettings> for Agents {
             return Err(format!("model: {e}"));
         }
         let path = self.rt.data_dir.join("config.yaml");
-        let keys: [(&str, String); 11] = [
+        if !(16_000..=256_000).contains(&c.meeting_view_bytes) {
+            return Err(format!(
+                "meeting_view_bytes {} out of range 16000..=256000",
+                c.meeting_view_bytes
+            ));
+        }
+        let keys: [(&str, String); 14] = [
             ("default_chat", c.default_chat.to_string()),
             ("default_desk", c.default_desk.to_string()),
+            ("default_meeting", c.default_meeting.to_string()),
             ("view_bytes", c.view_bytes.to_string()),
+            ("meeting_view_bytes", c.meeting_view_bytes.to_string()),
+            ("backfill_max_units", c.backfill_max_units.to_string()),
             ("node_bytes", c.node_bytes.to_string()),
             ("slack", c.slack.to_string()),
             ("settle_secs", c.settle_secs.to_string()),
@@ -11938,6 +11947,8 @@ pub(crate) mod tests {
             "default_chat: true",
             "view_bytes: 96000",
             "slack: 0.25",
+            "meeting_view_bytes:",
+            "backfill_max_units:",
             "model: null",
         ] {
             assert!(yaml.contains(needle), "{needle} in {yaml}");
