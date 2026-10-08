@@ -37,7 +37,10 @@ Unchanged: C's delegation is complete; every method now has an actor body behind
 
 ## Gates
 
-Filled in at the end of the run (see the DONE message): `cargo test -p autoresearch`, `cargo check -p autoresearch -p theuth`, `cargo clippy -p autoresearch --tests`, `cargo fmt -p autoresearch -- --check`.
+- `cargo test -p autoresearch`: 34 passed, 0 failed (actor 15 end-to-end scenarios on the fake backend: create → running with baseline/σ/schedule file, noisy refusal with numbers, invalid specs, foreign-session refusal on all four tools, keep moves the incumbent, discard/custody/off-limits/justification, abandon-don't-block + TurnFinished, experiment-budget stop → finished + attention row + discard, budget re-check at begin, crash-streak pause → resume → re-pause, plateau explore-then-stop with the advisor idea, review revert + Restore, controls, StopNow, restart recovery, notes caps, cards; stop 2; schedule_file 4; binding 2; lib 1; C's config/store/types 10).
+- `cargo check -p autoresearch -p theuth`: Finished.
+- `cargo clippy -p autoresearch --tests`: 0 findings in `actor.rs`, `actor/tests.rs`, `binding.rs`, `schedule_file.rs`, `stop.rs`, `lib.rs`; 5 remain in C's/W6's files (`config.rs` derivable `Default` ×3, `types.rs` derivable `Default`, `review.rs` too-many-arguments) — closer's.
+- `rustfmt --check` on my files: clean (`cargo fmt -p autoresearch` would also rewrap C's and the siblings' stubs; not done).
 
 ## Deviations (closest correct thing; each recorded here)
 
@@ -50,6 +53,7 @@ Filled in at the end of the run (see the DONE message): `cargo test -p autoresea
 7. **Per-experiment `cost_nanos` stays 0.** The ledger has no per-turn attribution to copy into the row; the study total is live through `SessionCostQuery`.
 8. **Typing in the study session is not recorded as a steer** (§8.6): that needs an agent input event the plugin does not receive; steers come through `Steer`, the tool and RPC.
 9. **A pause/stop when the schedule actor is absent** logs a warning; the ledger state is authoritative and `Begin` refuses fires for a study that is not running/paused, so the loop stops either way.
+10. **`window:` / `StartWhen::Window.sensor` must be a bare sensor file name** (`idle.py`): 40's `when:` grammar refuses path separators, so the design's `sensors/idle.py` example does not parse. `schedule_file::write` refuses the file with the parser's message and the study ends `failed` with it; the draft card should offer the sensor file name (hand-off W6/W4).
 
 ## Hand-offs
 

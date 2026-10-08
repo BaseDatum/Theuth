@@ -41,7 +41,8 @@ use crate::{binding, schedule_file, stop};
 // ───────────────────────────── transient process state ─────────────────────────────
 
 /// Per-study cancellation of the bench group (`StopNow`, a dropped tool call). Not a row: it is process state.
-static CANCELS: LazyLock<Mutex<HashMap<String, CancellationToken>>> = LazyLock::new(Default::default);
+static CANCELS: LazyLock<Mutex<HashMap<String, CancellationToken>>> =
+    LazyLock::new(Default::default);
 /// The experiment in flight and its phase, for `StudyInfo.current/phase` (derived display state).
 static PHASES: LazyLock<Mutex<HashMap<String, (u32, Phase)>>> = LazyLock::new(Default::default);
 
@@ -125,7 +126,9 @@ impl Env {
     }
 
     fn evaluator_dir(&self, slug: &str, segment: u32) -> PathBuf {
-        self.study_dir(slug).join("evaluator").join(segment.to_string())
+        self.study_dir(slug)
+            .join("evaluator")
+            .join(segment.to_string())
     }
 }
 
@@ -135,37 +138,66 @@ impl Env {
 #[async_trait::async_trait]
 pub trait Backend: Send + Sync {
     // ── W2 git ──
+    /// A git repository (colocated jj counts)?
     fn is_git_repo(&self, repo: &Path) -> bool {
         crate::git::is_git_repo(repo)
     }
+    /// `base` → sha; a dirty tree is refused.
     fn resolve_base(&self, repo: &Path, base: &str) -> Result<String> {
         crate::git::resolve_base(repo, base, false)
     }
-    fn worktree_add(&self, repo: &Path, spec: &StudySpec, worktree: &Path, base_sha: &str) -> Result<String> {
+    /// `git worktree add -b autoresearch/<slug>`; returns HEAD.
+    fn worktree_add(
+        &self,
+        repo: &Path,
+        spec: &StudySpec,
+        worktree: &Path,
+        base_sha: &str,
+    ) -> Result<String> {
         crate::git::worktree_add(repo, spec, worktree, base_sha)
     }
+    /// `git worktree remove --force` + prune.
     fn worktree_remove(&self, repo: &Path, worktree: &Path) -> Result<()> {
         crate::git::worktree_remove(repo, worktree)
     }
-    fn keep(&self, worktree: &Path, spec: &StudySpec, meta: &KeepMeta, author: Option<&str>) -> Result<String> {
+    /// `add -A` (evaluator paths excluded) + commit with trailers; the new sha.
+    fn keep(
+        &self,
+        worktree: &Path,
+        spec: &StudySpec,
+        meta: &KeepMeta,
+        author: Option<&str>,
+    ) -> Result<String> {
         crate::git::keep(worktree, spec, meta, author)
     }
+    /// Save the candidate patch, `reset --hard`, `clean -fd`; the patch's sha256.
     fn discard(&self, worktree: &Path, incumbent: &str, patch_path: &Path) -> Result<String> {
         crate::git::discard(worktree, incumbent, patch_path)
     }
-    fn repair(&self, worktree: &Path, spec: &StudySpec, incumbent: &str, stray: &Path) -> Result<Option<String>> {
+    /// Drift repair at begin; `Some(what)` when something was wrong.
+    fn repair(
+        &self,
+        worktree: &Path,
+        spec: &StudySpec,
+        incumbent: &str,
+        stray: &Path,
+    ) -> Result<Option<String>> {
         crate::git::repair(worktree, spec, incumbent, stray)
     }
+    /// Revert a reviewed keep; the commit stays as a rejected ref.
     fn reject(&self, worktree: &Path, slug: &str, n: u32, previous: &str) -> Result<()> {
         crate::git::reject(worktree, slug, n, previous)
     }
+    /// Normalised patch hash of the worktree vs the incumbent.
     fn patch_hash(&self, worktree: &Path, incumbent: &str) -> Result<String> {
         crate::git::patch_hash(worktree, incumbent)
     }
+    /// `git diff a b`, capped.
     fn diff_text(&self, worktree: &Path, a: &str, b: &str, max_bytes: usize) -> Result<String> {
         crate::git::diff_text(worktree, a, b, max_bytes)
     }
     // ── W1 measure ──
+    /// One scored sample through the slot and the load check.
     async fn sample(
         &self,
         spec: &StudySpec,
@@ -175,6 +207,7 @@ pub trait Backend: Send + Sync {
     ) -> Result<Sample> {
         crate::runner::sample(spec, cfg, req, cancel).await
     }
+    /// Checks / smoke / warm / holdout: `(exit, tail, wall_ms)`.
     async fn command(
         &self,
         command: &str,
@@ -184,34 +217,60 @@ pub trait Backend: Send + Sync {
     ) -> Result<(Option<i32>, String, u64)> {
         crate::runner::command(command, timeout, req, cancel).await
     }
+    /// Last 30 lines / 4 KiB of a sample log.
     fn tail(&self, log: &Path) -> String {
         crate::runner::tail(log)
     }
-    fn custody_take(&self, spec: &StudySpec, repo: &Path, evaluator_dir: &Path) -> Result<BTreeMap<String, String>> {
+    /// Copy the evaluator into custody; `{path: sha256}`.
+    fn custody_take(
+        &self,
+        spec: &StudySpec,
+        repo: &Path,
+        evaluator_dir: &Path,
+    ) -> Result<BTreeMap<String, String>> {
         crate::custody::take(spec, repo, evaluator_dir)
     }
-    fn custody_verify(&self, custody: &BTreeMap<String, String>, worktree: &Path) -> Result<Vec<String>> {
+    /// Changed custody paths in the worktree (empty = intact).
+    fn custody_verify(
+        &self,
+        custody: &BTreeMap<String, String>,
+        worktree: &Path,
+    ) -> Result<Vec<String>> {
         crate::custody::verify(custody, worktree)
     }
+    /// What the worktree changed vs the incumbent, classified.
     fn scope_diff(&self, spec: &StudySpec, worktree: &Path) -> Result<ScopeDiff> {
         crate::custody::scope_diff(spec, worktree)
     }
+    /// Pooled within-tree σ.
     fn pooled_sigma(&self, trees: &[Vec<f64>]) -> f64 {
         gate::pooled_sigma(trees)
     }
+    /// One step of the sequential decision.
     fn gate_step(&self, cfg: &GateCfg, input: &GateInput) -> GateStep {
         gate::step(cfg, input)
     }
+    /// The keep-simpler criterion.
     fn keep_simpler(&self, cfg: &GateCfg, input: &GateInput, added: u32, removed: u32) -> bool {
         gate::keep_simpler(cfg, input, added, removed)
     }
+    /// A re-measure outside 3σ.
     fn drifted(&self, sigma: f64, incumbent_mean: f64, sample: f64) -> bool {
         gate::drifted(sigma, incumbent_mean, sample)
     }
-    fn gate_line(&self, step: &GateStep, unit: &str, candidate_mean: f64, incumbent_mean: f64, n: usize) -> String {
+    /// The verdict in words and numbers.
+    fn gate_line(
+        &self,
+        step: &GateStep,
+        unit: &str,
+        candidate_mean: f64,
+        incumbent_mean: f64,
+        n: usize,
+    ) -> String {
         gate::line(step, unit, candidate_mean, incumbent_mean, n)
     }
     // ── W6 memory ──
+    /// Render the §7.2 brief.
     async fn brief(
         &self,
         store: &Store,
@@ -221,6 +280,7 @@ pub trait Backend: Send + Sync {
     ) -> Result<Brief> {
         crate::brief::render(store, study, cfg, cx).await
     }
+    /// The novelty check.
     async fn novelty(
         &self,
         store: &Store,
@@ -232,22 +292,53 @@ pub trait Backend: Send + Sync {
     ) -> Result<Novelty> {
         crate::novelty::check(store, slug, args, patch_hash, threshold, flagged_before).await
     }
+    /// Mark matching backlog ideas `tried`.
     async fn mark_tried(&self, store: &Store, slug: &str, idea: &str, n: u32) -> Result<Vec<i64>> {
         crate::novelty::mark_tried(store, slug, idea, n).await
     }
-    async fn review(&self, store: &Store, study: &StudyRecord, n: u32, model: &str, rt: &runtime::Runtime) -> Result<ReviewVerdict> {
+    /// The reviewer's word on a keep.
+    async fn review(
+        &self,
+        store: &Store,
+        study: &StudyRecord,
+        n: u32,
+        model: &str,
+        rt: &runtime::Runtime,
+    ) -> Result<ReviewVerdict> {
         crate::review::review(store, study, n, model, rt).await
     }
-    async fn advise(&self, store: &Store, study: &StudyRecord, model: Option<&str>, rt: &runtime::Runtime) -> Result<Vec<IdeaDraft>> {
+    /// The plateau consult.
+    async fn advise(
+        &self,
+        store: &Store,
+        study: &StudyRecord,
+        model: Option<&str>,
+        rt: &runtime::Runtime,
+    ) -> Result<Vec<IdeaDraft>> {
         crate::review::advise(store, study, model, rt).await
     }
     // ── W2 finalize / record ──
-    async fn finalize(&self, store: &Store, study: &StudyRecord, reason: StopReason, rt: &runtime::Runtime) -> Result<(Headline, String)> {
+    /// Every §11 step; the headline and the report document id.
+    async fn finalize(
+        &self,
+        store: &Store,
+        study: &StudyRecord,
+        reason: StopReason,
+        rt: &runtime::Runtime,
+    ) -> Result<(Headline, String)> {
         crate::finalize::run(store, study, reason, rt).await
     }
-    async fn record(&self, store: &Store, study: &StudyRecord, headline: &str, rt: &runtime::Runtime) -> Result<String> {
+    /// The cross-study knowledge record.
+    async fn record(
+        &self,
+        store: &Store,
+        study: &StudyRecord,
+        headline: &str,
+        rt: &runtime::Runtime,
+    ) -> Result<String> {
         crate::record::write(store, study, headline, rt).await
     }
+    /// The playbook of the last record for this repo.
     async fn seed_playbook(&self, repo: &str, rt: &runtime::Runtime) -> Result<Option<String>> {
         crate::record::seed_playbook(repo, rt).await
     }
@@ -268,9 +359,17 @@ pub trait Backend: Send + Sync {
         }
     }
     /// `code_map(focus=scope, budget=…)` through the tool registry; `None` when unavailable.
-    async fn code_map(&self, rt: &runtime::Runtime, repo: &str, scope: &[String], budget: u32) -> Option<String> {
+    async fn code_map(
+        &self,
+        rt: &runtime::Runtime,
+        repo: &str,
+        scope: &[String],
+        budget: u32,
+    ) -> Option<String> {
         let _ = rt;
-        let reg = ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR).ok().flatten()?;
+        let reg = ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR)
+            .ok()
+            .flatten()?;
         let call = ::tools::ToolCall {
             id: format!("autoresearch-code-map-{}", now()),
             name: "code_map".into(),
@@ -291,7 +390,9 @@ pub struct Real;
 impl Backend for Real {}
 
 fn agents() -> Option<ActorRef<agent::Agents>> {
-    ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()
+    ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+        .ok()
+        .flatten()
 }
 
 // ───────────────────────────── small helpers ─────────────────────────────
@@ -313,7 +414,10 @@ async fn study_by_slug(store: &Store, slug: &str) -> Result<StudyRecord> {
 
 /// Finished, failed or discarded: nothing moves any more.
 pub fn is_terminal(state: &StudyState) -> bool {
-    matches!(state, StudyState::Finished | StudyState::Failed { .. } | StudyState::Discarded)
+    matches!(
+        state,
+        StudyState::Finished | StudyState::Failed { .. } | StudyState::Discarded
+    )
 }
 
 /// The directories one experiment's samples and commands run in.
@@ -417,9 +521,17 @@ async fn counts(store: &Store, slug: &str) -> Result<(u32, u32)> {
     let all = store.list_experiments(slug, None, u32::MAX).await?;
     let closed = all
         .iter()
-        .filter(|e| !matches!(e.state, ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured))
+        .filter(|e| {
+            !matches!(
+                e.state,
+                ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
+            )
+        })
         .count() as u32;
-    let kept = all.iter().filter(|e| e.state == ExperimentState::Kept).count() as u32;
+    let kept = all
+        .iter()
+        .filter(|e| e.state == ExperimentState::Kept)
+        .count() as u32;
     Ok((closed, kept))
 }
 
@@ -500,12 +612,19 @@ pub fn info(a: &Studies, study: &StudyRecord) -> StudyInfo {
     info_from(study, &a.root, None, 0, 0.0)
 }
 
-fn info_from(study: &StudyRecord, root: &Path, base_mean: Option<f64>, closed: u32, spend: f64) -> StudyInfo {
+fn info_from(
+    study: &StudyRecord,
+    root: &Path,
+    base_mean: Option<f64>,
+    closed: u32,
+    spend: f64,
+) -> StudyInfo {
     let delta_pct = match (study.incumbent_mean, base_mean) {
         (Some(i), Some(b)) => pct(gate::normalise(study.spec.metric.direction, i, b), b),
         _ => None,
     };
-    let (current, phase) = phase_of(root, &study.slug).map_or((None, None), |(n, p)| (Some(n), Some(p)));
+    let (current, phase) =
+        phase_of(root, &study.slug).map_or((None, None), |(n, p)| (Some(n), Some(p)));
     let hours = stop::hours_running(study, chrono::Utc::now());
     StudyInfo {
         slug: study.slug.clone(),
@@ -566,7 +685,12 @@ pub async fn info_full(env: &Env, study: &StudyRecord) -> Result<StudyInfo> {
     Ok(i)
 }
 
-async fn set_state(env: &Env, study: &mut StudyRecord, state: StudyState, reason: Option<String>) -> Result<()> {
+async fn set_state(
+    env: &Env,
+    study: &mut StudyRecord,
+    state: StudyState,
+    reason: Option<String>,
+) -> Result<()> {
     study.state = state.clone();
     env.store.update_study(study).await?;
     env.publish(StudyEvent::StudyChanged {
@@ -578,10 +702,22 @@ async fn set_state(env: &Env, study: &mut StudyRecord, state: StudyState, reason
     Ok(())
 }
 
-async fn progress(env: &Env, slug: &str, n: u32, started_at: &str, phase: Phase, sample: u8, of: u8) {
+async fn progress(
+    env: &Env,
+    slug: &str,
+    n: u32,
+    started_at: &str,
+    phase: Phase,
+    sample: u8,
+    of: u8,
+) {
     set_phase(&env.root, slug, n, phase);
     let elapsed_ms = chrono::DateTime::parse_from_rfc3339(started_at)
-        .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_milliseconds().max(0) as u64)
+        .map(|t| {
+            (chrono::Utc::now() - t.with_timezone(&chrono::Utc))
+                .num_milliseconds()
+                .max(0) as u64
+        })
         .unwrap_or(0);
     env.publish(StudyEvent::ExperimentProgress {
         slug: slug.to_owned(),
@@ -655,7 +791,11 @@ pub fn start_card(study: &StudyRecord, base_mean: f64, sigma: f64, sched: &str) 
             Direction::Higher => "higher is better",
         },
         repo_name(&study.repo),
-        study.base_sha.as_deref().map(|s| &s[..s.len().min(10)]).unwrap_or("?"),
+        study
+            .base_sha
+            .as_deref()
+            .map(|s| &s[..s.len().min(10)])
+            .unwrap_or("?"),
         sched,
         card(elements, "c"),
         study.slug
@@ -663,7 +803,14 @@ pub fn start_card(study: &StudyRecord, base_mean: f64, sigma: f64, sched: &str) 
 }
 
 /// The result card (140 §11.4): headline, MetricGrid, LineChart, changesets, report link.
-pub fn result_card(study: &StudyRecord, headline: &Headline, series: &ChartSeries, changesets: &[Changeset], closed: u32, kept: u32) -> String {
+pub fn result_card(
+    study: &StudyRecord,
+    headline: &Headline,
+    series: &ChartSeries,
+    changesets: &[Changeset],
+    closed: u32,
+    kept: u32,
+) -> String {
     let m = &study.spec.metric;
     let items = serde_json::json!([
         { "label": m.name, "value": format!("{} → {} {}", fmt_num(headline.base_mean), fmt_num(headline.final_mean), m.unit),
@@ -725,7 +872,12 @@ pub fn result_card(study: &StudyRecord, headline: &Headline, series: &ChartSerie
     let report = study
         .report_doc
         .as_deref()
-        .map(|d| format!("\n\nReport: `{d}` · Study view: /autoresearch/{}", study.slug))
+        .map(|d| {
+            format!(
+                "\n\nReport: `{d}` · Study view: /autoresearch/{}",
+                study.slug
+            )
+        })
         .unwrap_or_default();
     let holdout = headline
         .holdout
@@ -751,17 +903,26 @@ fn validate(spec: &StudySpec, cfg: &AutoresearchConfig, backend: &dyn Backend) -
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
     if !slug_ok {
-        return Err(Error::refused(format!("slug `{}`: use [a-z0-9-]{{1,32}}", spec.slug)));
+        return Err(Error::refused(format!(
+            "slug `{}`: use [a-z0-9-]{{1,32}}",
+            spec.slug
+        )));
     }
     if spec.goal.trim().is_empty() {
         return Err(Error::refused("goal is empty"));
     }
     let repo = Path::new(&spec.repo);
     if spec.repo.trim().is_empty() || !repo.is_dir() {
-        return Err(Error::refused(format!("repo `{}` is not a directory", spec.repo)));
+        return Err(Error::refused(format!(
+            "repo `{}` is not a directory",
+            spec.repo
+        )));
     }
     if !backend.is_git_repo(repo) {
-        return Err(Error::refused(format!("repo `{}` is not a git repository (a pure jj repo needs git colocation)", spec.repo)));
+        return Err(Error::refused(format!(
+            "repo `{}` is not a git repository (a pure jj repo needs git colocation)",
+            spec.repo
+        )));
     }
     if spec.metric.name.trim().is_empty() {
         return Err(Error::refused("metric.name is empty"));
@@ -781,16 +942,23 @@ fn validate(spec: &StudySpec, cfg: &AutoresearchConfig, backend: &dyn Backend) -
         humantime::parse_duration(c.timeout.trim())
             .map_err(|e| Error::refused(format!("checks.timeout `{}`: {e}", c.timeout)))?;
     }
-    Effect::parse(&spec.metric.min_effect).map_err(|e| Error::refused(format!("metric.min_effect: {e}")))?;
+    Effect::parse(&spec.metric.min_effect)
+        .map_err(|e| Error::refused(format!("metric.min_effect: {e}")))?;
     for g in &spec.secondary_guards {
-        Effect::parse(&g.max_regression).map_err(|e| Error::refused(format!("guard {}: {e}", g.name)))?;
+        Effect::parse(&g.max_regression)
+            .map_err(|e| Error::refused(format!("guard {}: {e}", g.name)))?;
     }
     if spec.parallel == 0 || spec.parallel > cfg.max_parallel.max(1) {
-        return Err(Error::refused(format!("parallel must be 1..={}", cfg.max_parallel.max(1))));
+        return Err(Error::refused(format!(
+            "parallel must be 1..={}",
+            cfg.max_parallel.max(1)
+        )));
     }
     let b = &spec.budget;
     if !(b.usd > 0.0 && b.per_experiment_usd > 0.0 && b.hours > 0.0 && b.experiments > 0) {
-        return Err(Error::refused("budget: usd, per_experiment_usd, hours and experiments must be positive"));
+        return Err(Error::refused(
+            "budget: usd, per_experiment_usd, hours and experiments must be positive",
+        ));
     }
     Ok(())
 }
@@ -832,14 +1000,33 @@ pub async fn prepare(env: Env, mut study: StudyRecord, start: StartWhen) {
         Err(e) => {
             let reason = e.to_string();
             tracing::warn!(slug = %study.slug, "study did not start: {reason}");
-            let _ = env.store.append_event(&study.slug, "failed", &serde_json::json!({ "reason": reason })).await;
-            if let Err(e2) = set_state(&env, &mut study, StudyState::Failed { reason: reason.clone() }, Some(reason.clone())).await {
+            let _ = env
+                .store
+                .append_event(
+                    &study.slug,
+                    "failed",
+                    &serde_json::json!({ "reason": reason }),
+                )
+                .await;
+            if let Err(e2) = set_state(
+                &env,
+                &mut study,
+                StudyState::Failed {
+                    reason: reason.clone(),
+                },
+                Some(reason.clone()),
+            )
+            .await
+            {
                 tracing::warn!("failed state not recorded: {e2}");
             }
             deliver(
                 study.origin,
                 &study.slug,
-                format!("**Autoresearch study `{}` did not start** — {reason}", study.slug),
+                format!(
+                    "**Autoresearch study `{}` did not start** — {reason}",
+                    study.slug
+                ),
             );
         }
     }
@@ -854,7 +1041,9 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     let base_sha = env.backend.resolve_base(&repo, &spec.base)?;
     let worktree = env.study_dir(&slug).join("worktree");
     std::fs::create_dir_all(env.study_dir(&slug))?;
-    let head = env.backend.worktree_add(&repo, &spec, &worktree, &base_sha)?;
+    let head = env
+        .backend
+        .worktree_add(&repo, &spec, &worktree, &base_sha)?;
     study.base_sha = Some(base_sha.clone());
     study.branch = Some(format!("autoresearch/{slug}"));
     study.worktree = Some(worktree.display().to_string());
@@ -864,14 +1053,32 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     let evaluator = env.evaluator_dir(&slug, 0);
     let runs = env.runs_dir(&slug, 0);
     std::fs::create_dir_all(&runs)?;
-    let paths = Paths { slug: &slug, n: 0, worktree: &worktree, evaluator: &evaluator, runs: &runs };
-    if let Some(warm) = spec.warm.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+    let paths = Paths {
+        slug: &slug,
+        n: 0,
+        worktree: &worktree,
+        evaluator: &evaluator,
+        runs: &runs,
+    };
+    if let Some(warm) = spec
+        .warm
+        .as_deref()
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+    {
         let (exit, tail, _) = env
             .backend
-            .command(warm, Duration::from_secs(30 * 60), paths.req(0, &head, SampleRole::Baseline), &cancel)
+            .command(
+                warm,
+                Duration::from_secs(30 * 60),
+                paths.req(0, &head, SampleRole::Baseline),
+                &cancel,
+            )
             .await?;
         if exit != Some(0) {
-            return Err(Error::refused(format!("warm `{warm}` failed (exit {exit:?}): {tail}")));
+            return Err(Error::refused(format!(
+                "warm `{warm}` failed (exit {exit:?}): {tail}"
+            )));
         }
     }
 
@@ -893,7 +1100,10 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     }
 
     let values = baseline(env, study, &head, 0, SampleRole::Baseline, &cancel).await?;
-    let (m, sigma) = (mean(&values), env.backend.pooled_sigma(&[values.clone()]));
+    let (m, sigma) = (
+        mean(&values),
+        env.backend.pooled_sigma(std::slice::from_ref(&values)),
+    );
     let cv = if m != 0.0 { sigma / m.abs() } else { 0.0 };
     if cv > env.cfg.noise.max_cv {
         return Err(Error::refused(format!(
@@ -921,7 +1131,14 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
 }
 
 /// `repeats` samples of `tree` through the slot; a crash fails the whole thing.
-async fn baseline(env: &Env, study: &StudyRecord, tree: &str, n: u32, role: SampleRole, cancel: &CancellationToken) -> Result<Vec<f64>> {
+async fn baseline(
+    env: &Env,
+    study: &StudyRecord,
+    tree: &str,
+    n: u32,
+    role: SampleRole,
+    cancel: &CancellationToken,
+) -> Result<Vec<f64>> {
     let spec = &study.spec;
     let worktree = worktree_of(study)?;
     let evaluator = env.evaluator_dir(&study.slug, study.segment);
@@ -951,8 +1168,15 @@ async fn baseline(env: &Env, study: &StudyRecord, tree: &str, n: u32, role: Samp
         match s.value {
             Some(v) => values.push(v),
             None => {
-                let tail = s.log_path.as_deref().map(|p| env.backend.tail(&env.root.join(p))).unwrap_or_default();
-                return Err(Error::refused(format!("baseline sample {k} crashed (exit {:?}): {tail}", s.exit)));
+                let tail = s
+                    .log_path
+                    .as_deref()
+                    .map(|p| env.backend.tail(&env.root.join(p)))
+                    .unwrap_or_default();
+                return Err(Error::refused(format!(
+                    "baseline sample {k} crashed (exit {:?}): {tail}",
+                    s.exit
+                )));
             }
         }
     }
@@ -970,11 +1194,24 @@ pub async fn start_draft(a: &mut Studies, m: StartDraft) -> Result<StudyInfo> {
         origin: Option<SessionId>,
     }
     let path = crate::drafts_dir(&a.root, &m.draft_id).join("spec.json");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| Error::refused(format!("draft `{}` not found ({}): {e}", m.draft_id, path.display())))?;
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        Error::refused(format!(
+            "draft `{}` not found ({}): {e}",
+            m.draft_id,
+            path.display()
+        ))
+    })?;
     let d: Draft = serde_json::from_str(&text)?;
-    let origin = d.origin.unwrap_or_else(SessionId::new);
-    create(a, Create { spec: d.spec, origin, start: m.start }).await
+    let origin = d.origin.unwrap_or_default();
+    create(
+        a,
+        Create {
+            spec: d.spec,
+            origin,
+            start: m.start,
+        },
+    )
+    .await
 }
 
 // ───────────────────────────── Begin ─────────────────────────────
@@ -992,7 +1229,13 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     let mut study = study_of(env, m.session).await?;
     match &study.state {
         StudyState::Running | StudyState::Paused { .. } => {}
-        s => return Err(Error::refused(format!("study `{}` is {}; nothing to run", study.slug, state_word(s)))),
+        s => {
+            return Err(Error::refused(format!(
+                "study `{}` is {}; nothing to run",
+                study.slug,
+                state_word(s)
+            )));
+        }
     }
     if study.spec.parallel > 1 {
         return Err(Error::NotBuilt("W5"));
@@ -1010,11 +1253,19 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     // §4.3 invariant: close a dangling experiment instead of blocking.
     if let Some(mut dangling) = env.store.dangling_experiment(&slug, None).await? {
         let was_measuring = dangling.state == ExperimentState::Measuring;
-        dangling.state = if was_measuring { ExperimentState::Interrupted } else { ExperimentState::Abandoned };
+        dangling.state = if was_measuring {
+            ExperimentState::Interrupted
+        } else {
+            ExperimentState::Abandoned
+        };
         dangling.finished_at = Some(now());
         env.store.update_experiment(&dangling).await?;
         env.store
-            .append_event(&slug, "incident", &serde_json::json!({ "n": dangling.n, "what": dangling.state }))
+            .append_event(
+                &slug,
+                "incident",
+                &serde_json::json!({ "n": dangling.n, "what": dangling.state }),
+            )
             .await?;
         incidents.push(format!(
             "experiment {} was not logged; its change was discarded.",
@@ -1028,23 +1279,36 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     let n = env.store.next_experiment_n(&slug).await?;
     let runs = env.runs_dir(&slug, n);
     std::fs::create_dir_all(&runs)?;
-    match env.backend.repair(&worktree, &study.spec, &incumbent, &runs.join("stray.patch")) {
+    match env.backend.repair(
+        &worktree,
+        &study.spec,
+        &incumbent,
+        &runs.join("stray.patch"),
+    ) {
         Ok(None) => {}
         Ok(Some(what)) => {
             env.store
-                .append_event(&slug, "incident", &serde_json::json!({ "n": n, "what": what }))
+                .append_event(
+                    &slug,
+                    "incident",
+                    &serde_json::json!({ "n": n, "what": what }),
+                )
                 .await?;
             incidents.push(format!(
                 "the worktree had {what} at the start of this experiment; it was saved and removed."
             ));
         }
-        Err(e) => return Err(Error::refused(format!("worktree `{}` cannot be repaired: {e}", worktree.display()))),
+        Err(e) => {
+            return Err(Error::refused(format!(
+                "worktree `{}` cannot be repaired: {e}",
+                worktree.display()
+            )));
+        }
     }
 
     // §5.2 step 4: one incumbent sample every `remeasure_every` keeps.
     let (closed, kept) = counts(&env.store, &slug).await?;
-    let every = env.cfg.gate.remeasure_every;
-    if every > 0 {
+    if let Some(due) = kept.checked_div(env.cfg.gate.remeasure_every) {
         let remeasures = env
             .store
             .list_samples(&slug, None)
@@ -1052,7 +1316,7 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
             .iter()
             .filter(|s| s.role == Some(SampleRole::Incumbent))
             .count() as u32;
-        if kept / every > remeasures {
+        if due > remeasures {
             let evaluator = env.evaluator_dir(&slug, study.segment);
             let s = env
                 .backend
@@ -1073,11 +1337,16 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
                 )
                 .await?;
             env.store.insert_sample(&slug, &s).await?;
-            if let (Some(v), Some(mean_i), Some(sigma)) = (s.value, study.incumbent_mean, study.sigma)
+            if let (Some(v), Some(mean_i), Some(sigma)) =
+                (s.value, study.incumbent_mean, study.sigma)
                 && env.backend.drifted(sigma, mean_i, v)
             {
                 env.store
-                    .append_event(&slug, "drift", &serde_json::json!({ "n": n, "value": v, "mean": mean_i, "sigma": sigma }))
+                    .append_event(
+                        &slug,
+                        "drift",
+                        &serde_json::json!({ "n": n, "value": v, "mean": mean_i, "sigma": sigma }),
+                    )
                     .await?;
                 incidents.push(format!(
                     "an incumbent re-measure landed at {} {} vs mean {} (drift); the next confirm takes more samples.",
@@ -1112,12 +1381,23 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     let explore = events
         .iter()
         .find(|e| e.kind == "explore")
-        .is_some_and(|e| e.payload.get("after_n").and_then(|v| v.as_u64()).unwrap_or(0) as u32 >= last_keep_n);
+        .is_some_and(|e| {
+            e.payload
+                .get("after_n")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32
+                >= last_keep_n
+        });
     let hours = stop::hours_running(&study, chrono::Utc::now());
     let left = budget_left(&study.spec, closed, hours, spend);
     let code_map = env
         .backend
-        .code_map(&env.rt, &study.repo, &study.spec.scope, env.cfg.brief.code_map_tokens)
+        .code_map(
+            &env.rt,
+            &study.repo,
+            &study.spec.scope,
+            env.cfg.brief.code_map_tokens,
+        )
         .await;
     let cx = crate::brief::Context {
         n,
@@ -1126,11 +1406,19 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
         budget_left: (left.experiments, left.hours, left.usd),
         code_map,
     };
-    let mut brief = env.backend.brief(&env.store, &study, &env.cfg.brief, &cx).await?;
+    let mut brief = env
+        .backend
+        .brief(&env.store, &study, &env.cfg.brief, &cx)
+        .await?;
     brief.n = n;
     brief.segment = study.segment;
     env.store.mark_steers_seen(&slug, n).await?;
-    env.publish(StudyEvent::ExperimentStarted { slug: slug.clone(), n, slot: None }).await;
+    env.publish(StudyEvent::ExperimentStarted {
+        slug: slug.clone(),
+        n,
+        slot: None,
+    })
+    .await;
     Ok(brief)
 }
 
@@ -1150,8 +1438,16 @@ async fn current_experiment(env: &Env, study: &StudyRecord) -> Result<Experiment
 }
 
 /// Refused before a sample: record and return.
-async fn refuse_run(env: &Env, exp: &mut ExperimentRecord, reason: String, deviations: Vec<String>, similar: Vec<SimilarExperiment>) -> Result<RunReport> {
-    let verdict = Verdict::Refused { reason: reason.clone() };
+async fn refuse_run(
+    env: &Env,
+    exp: &mut ExperimentRecord,
+    reason: String,
+    deviations: Vec<String>,
+    similar: Vec<SimilarExperiment>,
+) -> Result<RunReport> {
+    let verdict = Verdict::Refused {
+        reason: reason.clone(),
+    };
     exp.state = ExperimentState::Measured;
     exp.verdict = Some(verdict.clone());
     exp.line = format!("refused: {reason}");
@@ -1159,7 +1455,11 @@ async fn refuse_run(env: &Env, exp: &mut ExperimentRecord, reason: String, devia
     env.store.update_experiment(exp).await?;
     if stop::is_custody_refusal(&verdict) {
         env.store
-            .append_event(&exp.slug, "custody_refusal", &serde_json::json!({ "n": exp.n }))
+            .append_event(
+                &exp.slug,
+                "custody_refusal",
+                &serde_json::json!({ "n": exp.n }),
+            )
             .await?;
     }
     Ok(RunReport {
@@ -1196,10 +1496,16 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             )));
         }
         (ExperimentState::Measured, _) => {
-            return Err(Error::refused("this experiment is already measured; call experiment_log"));
+            return Err(Error::refused(
+                "this experiment is already measured; call experiment_log",
+            ));
         }
         (ExperimentState::Measuring, _) => return Err(Error::refused("already measuring")),
-        _ => return Err(Error::refused("no experiment is open: call experiment_begin first")),
+        _ => {
+            return Err(Error::refused(
+                "no experiment is open: call experiment_begin first",
+            ));
+        }
     }
     let a = &m.args;
     if a.idea.trim().is_empty() {
@@ -1208,7 +1514,9 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     if a.force && a.reason.as_deref().map(str::trim).unwrap_or("").is_empty() {
         return Err(Error::refused("force needs a reason"));
     }
-    env.store.append_event(&slug, "run", &serde_json::json!({ "n": exp.n })).await?;
+    env.store
+        .append_event(&slug, "run", &serde_json::json!({ "n": exp.n }))
+        .await?;
     exp.idea = a.idea.chars().take(300).collect();
     exp.category = a.category.chars().take(40).collect();
     exp.hypothesis = a.hypothesis.chars().take(300).collect();
@@ -1220,24 +1528,41 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     let incumbent = incumbent_of(&study)?;
     let cancel = cancel_token(&env.root, &slug);
     let retries_left = retries.saturating_sub(runs_so_far);
-    let _ = env.backend.mark_tried(&env.store, &slug, &exp.idea, n).await;
+    let _ = env
+        .backend
+        .mark_tried(&env.store, &slug, &exp.idea, n)
+        .await;
 
     // Novelty (§7.3).
     progress(env, &slug, n, &started, Phase::Novelty, 0, 1).await;
-    let patch_hash = env.backend.patch_hash(&worktree, &incumbent).unwrap_or_default();
+    let patch_hash = env
+        .backend
+        .patch_hash(&worktree, &incumbent)
+        .unwrap_or_default();
     exp.patch_hash = Some(patch_hash.clone());
     let flagged_before = env
         .store
         .list_events(&slug, Some("novelty_flag"), 1)
         .await?
         .first()
-        .is_some_and(|e| e.payload.get("n").and_then(|v| v.as_u64()) == Some(u64::from(n.saturating_sub(1))));
+        .is_some_and(|e| {
+            e.payload.get("n").and_then(|v| v.as_u64()) == Some(u64::from(n.saturating_sub(1)))
+        });
     let novelty = env
         .backend
-        .novelty(&env.store, &slug, a, &patch_hash, env.cfg.novelty.threshold, flagged_before)
+        .novelty(
+            &env.store,
+            &slug,
+            a,
+            &patch_hash,
+            env.cfg.novelty.threshold,
+            flagged_before,
+        )
         .await?;
     if !novelty.similar.is_empty() {
-        env.store.append_event(&slug, "novelty_flag", &serde_json::json!({ "n": n })).await?;
+        env.store
+            .append_event(&slug, "novelty_flag", &serde_json::json!({ "n": n }))
+            .await?;
     }
     if let Some(reason) = novelty.refused.filter(|_| !a.force) {
         return refuse_run(env, &mut exp, reason, vec![], novelty.similar).await;
@@ -1266,7 +1591,14 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     let scope = env.backend.scope_diff(&study.spec, &worktree)?;
     if !scope.off_limits.is_empty() {
         let reason = format!("touches off-limits {}", scope.off_limits.join(", "));
-        return refuse_run(env, &mut exp, reason, scope.deviations.clone(), novelty.similar).await;
+        return refuse_run(
+            env,
+            &mut exp,
+            reason,
+            scope.deviations.clone(),
+            novelty.similar,
+        )
+        .await;
     }
     exp.deviations = scope.deviations.clone();
     env.store.update_experiment(&exp).await?;
@@ -1276,7 +1608,13 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     let runs = env.runs_dir(&slug, n);
     std::fs::create_dir_all(&runs)?;
     let cand_tree = format!("exp:{n}");
-    let paths = Paths { slug: &slug, n, worktree: &worktree, evaluator: &evaluator, runs: &runs };
+    let paths = Paths {
+        slug: &slug,
+        n,
+        worktree: &worktree,
+        evaluator: &evaluator,
+        runs: &runs,
+    };
     let gcfg = gate_cfg(&env.cfg, &study.spec)?;
     let mut taken: Vec<Sample> = Vec::new();
     let mut report = RunReport {
@@ -1291,17 +1629,32 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             .as_deref()
             .map(|p| env.backend.tail(&env.root.join(p)))
             .unwrap_or_default();
-        exp.line = format!("crash: exit {} (tail below)", s.exit.map_or("killed".to_owned(), |e| e.to_string()));
+        exp.line = format!(
+            "crash: exit {} (tail below)",
+            s.exit.map_or("killed".to_owned(), |e| e.to_string())
+        );
         report.verdict = Verdict::Crash;
         report.line = exp.line.clone();
         report.tail = Some(tail);
     };
 
-    if let Some(smoke) = study.spec.bench.smoke.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(smoke) = study
+        .spec
+        .bench
+        .smoke
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         progress(env, &slug, n, &started, Phase::Sampling, 0, 1).await;
         let (exit, tail, _) = env
             .backend
-            .command(smoke, Duration::from_secs(120), paths.req(0, &cand_tree, SampleRole::Candidate), &cancel)
+            .command(
+                smoke,
+                Duration::from_secs(120),
+                paths.req(0, &cand_tree, SampleRole::Candidate),
+                &cancel,
+            )
             .await?;
         if exit != Some(0) {
             exp.line = format!("crash: smoke `{smoke}` exit {exit:?}");
@@ -1329,10 +1682,24 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             return interrupted(env, &mut exp, taken).await;
         }
         k += 1;
-        progress(env, &slug, n, &started, Phase::Sampling, k as u8, planned.max(k as u8)).await;
+        progress(
+            env,
+            &slug,
+            n,
+            &started,
+            Phase::Sampling,
+            k as u8,
+            planned.max(k as u8),
+        )
+        .await;
         let s = env
             .backend
-            .sample(&study.spec, &env.cfg.bench, paths.req(k, &cand_tree, SampleRole::Candidate), &cancel)
+            .sample(
+                &study.spec,
+                &env.cfg.bench,
+                paths.req(k, &cand_tree, SampleRole::Candidate),
+                &cancel,
+            )
             .await?;
         env.store.insert_sample(&slug, &s).await?;
         if cancel.is_cancelled() || s.lost {
@@ -1364,12 +1731,20 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             secondaries,
         };
         match env.backend.gate_step(&gcfg, &input) {
-            GateStep::Confirm { more, incumbent_sample } => {
+            GateStep::Confirm {
+                more,
+                incumbent_sample,
+            } => {
                 planned = (k as u8).saturating_add(more);
                 if incumbent_sample {
                     let si = env
                         .backend
-                        .sample(&study.spec, &env.cfg.bench, paths.req(k, &incumbent, SampleRole::Incumbent), &cancel)
+                        .sample(
+                            &study.spec,
+                            &env.cfg.bench,
+                            paths.req(k, &incumbent, SampleRole::Incumbent),
+                            &cancel,
+                        )
                         .await?;
                     env.store.insert_sample(&slug, &si).await?;
                     taken.push(si);
@@ -1390,18 +1765,34 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             d @ GateStep::Decide { .. } => decision = Some(d),
         }
     }
-    let GateStep::Decide { verdict, delta, delta_pct, z } = decision.unwrap_or(GateStep::Decide {
+    let GateStep::Decide {
+        verdict,
+        delta,
+        delta_pct,
+        z,
+    } = decision.unwrap_or(GateStep::Decide {
         verdict: Verdict::NoGain,
         delta: 0.0,
         delta_pct: 0.0,
         z: None,
-    }) else {
+    })
+    else {
         unreachable!()
     };
-    let cand_vals = clean_values(&taken.iter().filter(|s| s.role == Some(SampleRole::Candidate)).cloned().collect::<Vec<_>>());
+    let cand_vals = clean_values(
+        &taken
+            .iter()
+            .filter(|s| s.role == Some(SampleRole::Candidate))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     let inc_vals = clean_values(&env.store.samples_of_tree(&slug, &incumbent).await?);
     let cand_mean = mean(&cand_vals);
-    let inc_mean = if inc_vals.is_empty() { study.incumbent_mean.unwrap_or(0.0) } else { mean(&inc_vals) };
+    let inc_mean = if inc_vals.is_empty() {
+        study.incumbent_mean.unwrap_or(0.0)
+    } else {
+        mean(&inc_vals)
+    };
     let step = GateStep::Decide {
         verdict: verdict.clone(),
         delta,
@@ -1412,11 +1803,20 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     report.delta = Some(delta);
     report.delta_pct = Some(delta_pct);
     report.z = z;
-    report.line = env
-        .backend
-        .gate_line(&step, &study.spec.metric.unit, cand_mean, inc_mean, cand_vals.len());
+    report.line = env.backend.gate_line(
+        &step,
+        &study.spec.metric.unit,
+        cand_mean,
+        inc_mean,
+        cand_vals.len(),
+    );
     if report.line.is_empty() {
-        report.line = format!("{}: {:+.2} % ({} samples)", verdict.tag(), delta_pct, cand_vals.len());
+        report.line = format!(
+            "{}: {:+.2} % ({} samples)",
+            verdict.tag(),
+            delta_pct,
+            cand_vals.len()
+        );
     }
     report.cases_moved = cases_moved(&taken, &env.store.samples_of_tree(&slug, &incumbent).await?);
     exp.metric = Some(cand_mean);
@@ -1429,7 +1829,12 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
         let timeout = schedule_file::duration(&c.timeout, Duration::from_secs(300));
         let (exit, tail, wall_ms) = env
             .backend
-            .command(&c.command, timeout, paths.req(0, &cand_tree, SampleRole::Candidate), &cancel)
+            .command(
+                &c.command,
+                timeout,
+                paths.req(0, &cand_tree, SampleRole::Candidate),
+                &cancel,
+            )
             .await?;
         let passed = exit == Some(0);
         report.checks = Some(CheckResult {
@@ -1458,10 +1863,17 @@ fn secondary_means(candidate: &[Sample], incumbent: &[Sample]) -> Vec<(String, f
         .filter(|s| s.role == Some(SampleRole::Candidate) && s.value.is_some())
         .collect();
     let incs: Vec<&Sample> = incumbent.iter().filter(|s| s.value.is_some()).collect();
-    let names: std::collections::BTreeSet<&String> = cands.iter().flat_map(|s| s.secondaries.keys()).collect();
+    let names: std::collections::BTreeSet<&String> =
+        cands.iter().flat_map(|s| s.secondaries.keys()).collect();
     for name in names {
-        let c: Vec<f64> = cands.iter().filter_map(|s| s.secondaries.get(name).copied()).collect();
-        let i: Vec<f64> = incs.iter().filter_map(|s| s.secondaries.get(name).copied()).collect();
+        let c: Vec<f64> = cands
+            .iter()
+            .filter_map(|s| s.secondaries.get(name).copied())
+            .collect();
+        let i: Vec<f64> = incs
+            .iter()
+            .filter_map(|s| s.secondaries.get(name).copied())
+            .collect();
         if !c.is_empty() && !i.is_empty() {
             out.push((name.clone(), mean(&c), mean(&i)));
         }
@@ -1503,13 +1915,22 @@ fn cases_moved(candidate: &[Sample], incumbent: &[Sample]) -> Vec<CaseDelta> {
     out
 }
 
-async fn finish_measure(env: &Env, exp: &mut ExperimentRecord, mut report: RunReport, taken: Vec<Sample>, metric: Option<f64>) -> Result<RunReport> {
+async fn finish_measure(
+    env: &Env,
+    exp: &mut ExperimentRecord,
+    mut report: RunReport,
+    taken: Vec<Sample>,
+    metric: Option<f64>,
+) -> Result<RunReport> {
     exp.state = ExperimentState::Measured;
     exp.verdict = Some(report.verdict.clone());
     exp.delta = report.delta;
     exp.delta_pct = report.delta_pct;
     exp.z = report.z;
-    exp.n_samples += taken.iter().filter(|s| s.role == Some(SampleRole::Candidate)).count() as u32;
+    exp.n_samples += taken
+        .iter()
+        .filter(|s| s.role == Some(SampleRole::Candidate))
+        .count() as u32;
     exp.metric = metric.or(exp.metric);
     exp.line = report.line.clone();
     env.store.update_experiment(exp).await?;
@@ -1517,7 +1938,11 @@ async fn finish_measure(env: &Env, exp: &mut ExperimentRecord, mut report: RunRe
     Ok(report)
 }
 
-async fn interrupted(env: &Env, exp: &mut ExperimentRecord, taken: Vec<Sample>) -> Result<RunReport> {
+async fn interrupted(
+    env: &Env,
+    exp: &mut ExperimentRecord,
+    taken: Vec<Sample>,
+) -> Result<RunReport> {
     exp.state = ExperimentState::Interrupted;
     exp.finished_at = Some(now());
     exp.line = "interrupted".into();
@@ -1530,22 +1955,26 @@ async fn interrupted(env: &Env, exp: &mut ExperimentRecord, taken: Vec<Sample>) 
 
 /// Samples of `(slug, n)` that never finished → `lost` (§8.5).
 async fn mark_lost(store: &Store, slug: &str, n: u32) -> Result<()> {
-    sqlx::query("UPDATE samples SET lost = 1 WHERE slug = ?1 AND n = ?2 AND value IS NULL AND exit IS NULL")
-        .bind(slug)
-        .bind(i64::from(n))
-        .execute(store.pool())
-        .await?;
+    sqlx::query(
+        "UPDATE samples SET lost = 1 WHERE slug = ?1 AND n = ?2 AND value IS NULL AND exit IS NULL",
+    )
+    .bind(slug)
+    .bind(i64::from(n))
+    .execute(store.pool())
+    .await?;
     Ok(())
 }
 
 /// After a keep the candidate's samples belong to the new incumbent tree.
 async fn retag_samples(store: &Store, slug: &str, n: u32, sha: &str) -> Result<()> {
-    sqlx::query("UPDATE samples SET tree_sha = ?3 WHERE slug = ?1 AND n = ?2 AND role = 'candidate'")
-        .bind(slug)
-        .bind(i64::from(n))
-        .bind(sha)
-        .execute(store.pool())
-        .await?;
+    sqlx::query(
+        "UPDATE samples SET tree_sha = ?3 WHERE slug = ?1 AND n = ?2 AND role = 'candidate'",
+    )
+    .bind(slug)
+    .bind(i64::from(n))
+    .bind(sha)
+    .execute(store.pool())
+    .await?;
     Ok(())
 }
 
@@ -1565,7 +1994,9 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
     let slug = study.slug.clone();
     let mut exp = current_experiment(env, &study).await?;
     if exp.state == ExperimentState::Measuring {
-        return Err(Error::refused("still measuring; wait for experiment_run to return"));
+        return Err(Error::refused(
+            "still measuring; wait for experiment_run to return",
+        ));
     }
     let a = m.args;
     let worktree = worktree_of(&study)?;
@@ -1578,7 +2009,9 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
     exp.justification = a.justification.clone();
 
     // What the verdict and the decision make of it.
-    let verdict = exp.verdict.clone().unwrap_or(Verdict::Refused { reason: "not measured".into() });
+    let verdict = exp.verdict.clone().unwrap_or(Verdict::Refused {
+        reason: "not measured".into(),
+    });
     let mut keep = verdict.is_keep_candidate() && a.decision != Decision::Discard;
     if a.decision == Decision::KeepSimpler && !verdict.is_keep_candidate() {
         keep = keep_simpler_granted(env, &study, &exp, &worktree, &incumbent).await?;
@@ -1589,7 +2022,14 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
             exp.line = format!("keep-simpler refused; {}", exp.line);
         }
     }
-    if keep && !exp.deviations.is_empty() && a.justification.as_deref().map(str::trim).unwrap_or("").is_empty() {
+    if keep
+        && !exp.deviations.is_empty()
+        && a.justification
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
         return Err(Error::refused(format!(
             "a keep that touches paths outside scope needs a justification: {}",
             exp.deviations.join(", ")
@@ -1624,12 +2064,20 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         // §9.1: review inside the call, before the next fire can build on it.
         if let Some(model) = env.cfg.reviewer(&study.spec.models, &env.agent) {
             progress(env, &slug, n, &exp.started_at, Phase::Review, 0, 1).await;
-            let rv = match env.backend.review(&env.store, &study, n, &model, &env.rt).await {
+            let rv = match env
+                .backend
+                .review(&env.store, &study, n, &model, &env.rt)
+                .await
+            {
                 Ok(v) => v,
-                Err(e) => ReviewVerdict::Error { reason: e.to_string() },
+                Err(e) => ReviewVerdict::Error {
+                    reason: e.to_string(),
+                },
             };
             let rv = match rv {
-                ReviewVerdict::Flagged { reason } if env.cfg.review.on_suspicious == OnSuspicious::Revert => {
+                ReviewVerdict::Flagged { reason }
+                    if env.cfg.review.on_suspicious == OnSuspicious::Revert =>
+                {
                     // Revert: incumbent ← previous, the commit stays as a rejected ref, the patch is kept.
                     let patch = runs.join("candidate.patch");
                     if let Ok(diff) = env.backend.diff_text(&worktree, &incumbent, &sha, 4 << 20) {
@@ -1642,7 +2090,11 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
                     exp.state = ExperimentState::RejectedByReview;
                     report.commit = None;
                     env.store
-                        .append_event(&slug, "review", &serde_json::json!({ "n": n, "reason": reason, "reverted": true }))
+                        .append_event(
+                            &slug,
+                            "review",
+                            &serde_json::json!({ "n": n, "reason": reason, "reverted": true }),
+                        )
                         .await?;
                     ReviewVerdict::Reverted { reason }
                 }
@@ -1665,7 +2117,11 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
             Err(e) => {
                 tracing::warn!(%slug, n, "discard failed: {e}");
                 env.store
-                    .append_event(&slug, "incident", &serde_json::json!({ "n": n, "what": format!("discard failed: {e}") }))
+                    .append_event(
+                        &slug,
+                        "incident",
+                        &serde_json::json!({ "n": n, "what": format!("discard failed: {e}") }),
+                    )
                     .await?;
             }
         }
@@ -1705,7 +2161,12 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         mean: study.incumbent_mean,
         kept,
     };
-    report.budget_left = budget_left(&study.spec, closed, stop::hours_running(&study, chrono::Utc::now()), spend);
+    report.budget_left = budget_left(
+        &study.spec,
+        closed,
+        stop::hours_running(&study, chrono::Utc::now()),
+        spend,
+    );
 
     // §8.4 stop rules after the experiment closed.
     report.stop = apply_rules(env, &slug, spend).await?;
@@ -1717,16 +2178,27 @@ fn metric_line(study: &StudyRecord, exp: &ExperimentRecord) -> String {
     format!(
         "{} {} -> {} ({:+.1}%, {} sigma, n={})",
         study.spec.metric.name,
-        study.incumbent_mean.map(fmt_num).unwrap_or_else(|| "?".into()),
+        study
+            .incumbent_mean
+            .map(fmt_num)
+            .unwrap_or_else(|| "?".into()),
         exp.metric.map(fmt_num).unwrap_or_else(|| "?".into()),
         exp.delta_pct.unwrap_or(0.0),
-        exp.z.map(|z| format!("{z:.1}")).unwrap_or_else(|| "—".into()),
+        exp.z
+            .map(|z| format!("{z:.1}"))
+            .unwrap_or_else(|| "—".into()),
         exp.n_samples
     )
 }
 
 /// §5.2 keep-simpler: not significantly worse, fewer lines, guards hold, checks pass.
-async fn keep_simpler_granted(env: &Env, study: &StudyRecord, exp: &ExperimentRecord, worktree: &Path, incumbent: &str) -> Result<bool> {
+async fn keep_simpler_granted(
+    env: &Env,
+    study: &StudyRecord,
+    exp: &ExperimentRecord,
+    worktree: &Path,
+    incumbent: &str,
+) -> Result<bool> {
     let gcfg = gate_cfg(&env.cfg, &study.spec)?;
     let cand: Vec<Sample> = env
         .store
@@ -1749,7 +2221,10 @@ async fn keep_simpler_granted(env: &Env, study: &StudyRecord, exp: &ExperimentRe
         secondaries: secondary_means(&cand, &inc),
     };
     let scope = env.backend.scope_diff(&study.spec, worktree)?;
-    if !env.backend.keep_simpler(&gcfg, &input, scope.added, scope.removed) {
+    if !env
+        .backend
+        .keep_simpler(&gcfg, &input, scope.added, scope.removed)
+    {
         return Ok(false);
     }
     let Some(c) = study.spec.checks.as_ref() else {
@@ -1795,7 +2270,11 @@ async fn apply_rules(env: &Env, slug: &str, spend: f64) -> Result<Option<StopRea
                 .await?;
             // §9.2: one advisor consult; its ideas enter the backlog as `advisor`, priority 2.
             let model = env.cfg.advisor(&study.spec.models);
-            match env.backend.advise(&env.store, &study, model.as_deref(), &env.rt).await {
+            match env
+                .backend
+                .advise(&env.store, &study, model.as_deref(), &env.rt)
+                .await
+            {
                 Ok(ideas) => {
                     for d in ideas {
                         let _ = env
@@ -1843,7 +2322,11 @@ async fn pause(env: &Env, study: &mut StudyRecord, reason: PauseReason) -> Resul
         tracing::warn!(slug = %study.slug, "schedule not disabled (the ledger state still refuses fires): {e}");
     }
     env.store
-        .append_event(&study.slug, "paused", &serde_json::json!({ "reason": pause_tag(&reason), "at": now() }))
+        .append_event(
+            &study.slug,
+            "paused",
+            &serde_json::json!({ "reason": pause_tag(&reason), "at": now() }),
+        )
         .await?;
     let word = pause_word(&reason);
     set_state(env, study, StudyState::Paused { reason }, Some(word)).await
@@ -1864,7 +2347,11 @@ async fn resume(env: &Env, study: &mut StudyRecord) -> Result<()> {
     }
     let (closed, _) = counts(&env.store, &study.slug).await?;
     env.store
-        .append_event(&study.slug, "resumed", &serde_json::json!({ "after_n": closed }))
+        .append_event(
+            &study.slug,
+            "resumed",
+            &serde_json::json!({ "after_n": closed }),
+        )
         .await?;
     if let Err(e) = schedule_file::set_enabled(&study.slug, true).await {
         tracing::warn!(slug = %study.slug, "schedule not enabled: {e}");
@@ -1880,12 +2367,24 @@ pub async fn begin_finalize(env: &Env, mut study: StudyRecord, reason: StopReaso
     cancel(&env.root, &study.slug);
     study.stop_reason = Some(reason.clone());
     env.store
-        .append_event(&study.slug, "stop", &serde_json::json!({ "reason": reason }))
+        .append_event(
+            &study.slug,
+            "stop",
+            &serde_json::json!({ "reason": reason }),
+        )
         .await?;
-    set_state(env, &mut study, StudyState::Finalizing, Some(stop_word(&reason))).await?;
+    set_state(
+        env,
+        &mut study,
+        StudyState::Finalizing,
+        Some(stop_word(&reason)),
+    )
+    .await?;
     // End the loop: `Done` from inside the run when it is still open, else delete the file.
     let ended = match study.session {
-        Some(s) => schedule_file::done_run(s, &stop_word(&reason)).await.is_ok(),
+        Some(s) => schedule_file::done_run(s, &stop_word(&reason))
+            .await
+            .is_ok(),
         None => false,
     };
     if !ended && let Err(e) = schedule_file::done(&study.slug, &stop_word(&reason)).await {
@@ -1898,22 +2397,43 @@ pub async fn begin_finalize(env: &Env, mut study: StudyRecord, reason: StopReaso
 
 /// §11 steps through W2's `finalize::run`, then the record, the result card, the event.
 pub async fn finalize_task(env: Env, slug: String) {
-    let Ok(Some(mut study)) = env.store.get_study(&slug).await else { return };
+    let Ok(Some(mut study)) = env.store.get_study(&slug).await else {
+        return;
+    };
     let reason = study.stop_reason.clone().unwrap_or(StopReason::User);
-    match env.backend.finalize(&env.store, &study, reason.clone(), &env.rt).await {
+    match env
+        .backend
+        .finalize(&env.store, &study, reason.clone(), &env.rt)
+        .await
+    {
         Ok((headline, doc)) => {
             study.finished_at = Some(now());
             study.report_doc = Some(doc.clone());
-            if let Err(e) = set_state(&env, &mut study, StudyState::Finished, Some(headline.text.clone())).await {
+            if let Err(e) = set_state(
+                &env,
+                &mut study,
+                StudyState::Finished,
+                Some(headline.text.clone()),
+            )
+            .await
+            {
                 tracing::warn!(%slug, "finished state not recorded: {e}");
             }
-            if let Err(e) = env.backend.record(&env.store, &study, &headline.text, &env.rt).await {
+            if let Err(e) = env
+                .backend
+                .record(&env.store, &study, &headline.text, &env.rt)
+                .await
+            {
                 tracing::warn!(%slug, "knowledge record not written: {e}");
             }
             let series = chart_series(&env, &study).await.unwrap_or_default();
             let (closed, kept) = counts(&env.store, &slug).await.unwrap_or((0, 0));
             let changesets = changesets_of(&env, &slug).await;
-            deliver(study.origin, &slug, result_card(&study, &headline, &series, &changesets, closed, kept));
+            deliver(
+                study.origin,
+                &slug,
+                result_card(&study, &headline, &series, &changesets, closed, kept),
+            );
             env.publish(StudyEvent::StudyFinished {
                 slug: slug.clone(),
                 reason,
@@ -1925,8 +2445,20 @@ pub async fn finalize_task(env: Env, slug: String) {
         Err(e) => {
             let reason = format!("finalize: {e}");
             tracing::warn!(%slug, "{reason}");
-            let _ = set_state(&env, &mut study, StudyState::Failed { reason: reason.clone() }, Some(reason.clone())).await;
-            deliver(study.origin, &slug, format!("**Autoresearch study `{slug}` could not finalize** — {reason}"));
+            let _ = set_state(
+                &env,
+                &mut study,
+                StudyState::Failed {
+                    reason: reason.clone(),
+                },
+                Some(reason.clone()),
+            )
+            .await;
+            deliver(
+                study.origin,
+                &slug,
+                format!("**Autoresearch study `{slug}` could not finalize** — {reason}"),
+            );
         }
     }
     clear_phase(&env.root, &slug);
@@ -1994,7 +2526,7 @@ pub async fn steer(a: &mut Studies, m: SteerMsg) -> Result<SteerId> {
         return Err(Error::refused("steer text is empty"));
     }
     study_by_slug(&a.store, &m.slug).await?;
-    Ok(a.store.insert_steer(&m.slug, text, m.by).await?)
+    a.store.insert_steer(&m.slug, text, m.by).await
 }
 
 /// `IdeaOp` → `Idea` (140 §7.3 Ideas).
@@ -2008,12 +2540,23 @@ pub async fn idea(a: &mut Studies, m: IdeaOp) -> Result<Idea> {
             .ok_or_else(|| Error::refused(format!("no idea {id} in `{slug}`")))
     };
     match m.op {
-        IdeaChange::Add { text, category, priority } => {
+        IdeaChange::Add {
+            text,
+            category,
+            priority,
+        } => {
             if text.trim().is_empty() {
                 return Err(Error::refused("idea text is empty"));
             }
             let (source, priority) = match m.by {
-                By::User | By::Setup => (if m.by == By::User { IdeaSource::User } else { IdeaSource::Setup }, 3),
+                By::User | By::Setup => (
+                    if m.by == By::User {
+                        IdeaSource::User
+                    } else {
+                        IdeaSource::Setup
+                    },
+                    3,
+                ),
                 By::Advisor => (IdeaSource::Advisor, priority.unwrap_or(2).min(3)),
                 By::Model | By::Plugin => (IdeaSource::Model, priority.unwrap_or(1).min(3)),
             };
@@ -2026,7 +2569,11 @@ pub async fn idea(a: &mut Studies, m: IdeaOp) -> Result<Idea> {
                 ..Idea::default()
             };
             let id = a.store.insert_idea(&idea).await?;
-            Ok(Idea { id, at: now(), ..idea })
+            Ok(Idea {
+                id,
+                at: now(),
+                ..idea
+            })
         }
         IdeaChange::Priority { id, priority } => {
             let mut i = fetch(id, a.store.clone(), m.slug).await?;
@@ -2060,25 +2607,43 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
         ControlOp::Pause => match study.state {
             StudyState::Running => pause(&env, &mut study, PauseReason::User).await?,
             StudyState::Paused { .. } => {}
-            ref s => return Err(Error::refused(format!("cannot pause a study that is {}", state_word(s)))),
+            ref s => {
+                return Err(Error::refused(format!(
+                    "cannot pause a study that is {}",
+                    state_word(s)
+                )));
+            }
         },
         ControlOp::Resume => match study.state {
             StudyState::Paused { .. } => resume(&env, &mut study).await?,
             StudyState::Running => {}
-            ref s => return Err(Error::refused(format!("cannot resume a study that is {}", state_word(s)))),
+            ref s => {
+                return Err(Error::refused(format!(
+                    "cannot resume a study that is {}",
+                    state_word(s)
+                )));
+            }
         },
         ControlOp::StopAfter => {
             if !matches!(study.state, StudyState::Running | StudyState::Paused { .. }) {
-                return Err(Error::refused(format!("cannot stop a study that is {}", state_word(&study.state))));
+                return Err(Error::refused(format!(
+                    "cannot stop a study that is {}",
+                    state_word(&study.state)
+                )));
             }
-            env.store.append_event(&slug, "stop_after", &serde_json::json!({ "by": m.by })).await?;
+            env.store
+                .append_event(&slug, "stop_after", &serde_json::json!({ "by": m.by }))
+                .await?;
             if env.store.dangling_experiment(&slug, None).await?.is_none() {
                 begin_finalize(&env, study.clone(), StopReason::User).await?;
             }
         }
         ControlOp::StopNow => {
             if !matches!(study.state, StudyState::Running | StudyState::Paused { .. }) {
-                return Err(Error::refused(format!("cannot stop a study that is {}", state_word(&study.state))));
+                return Err(Error::refused(format!(
+                    "cannot stop a study that is {}",
+                    state_word(&study.state)
+                )));
             }
             cancel(&env.root, &slug);
             if let Some(session) = study.session
@@ -2113,16 +2678,24 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
         ControlOp::RunOnce => {
             let paused = matches!(study.state, StudyState::Paused { .. });
             if !paused && study.state != StudyState::Running {
-                return Err(Error::refused(format!("cannot run a study that is {}", state_word(&study.state))));
+                return Err(Error::refused(format!(
+                    "cannot run a study that is {}",
+                    state_word(&study.state)
+                )));
             }
             schedule_file::fire(&slug, paused).await?;
         }
         ControlOp::Segment { reason } => {
             if !matches!(study.state, StudyState::Running | StudyState::Paused { .. }) {
-                return Err(Error::refused(format!("cannot re-baseline a study that is {}", state_word(&study.state))));
+                return Err(Error::refused(format!(
+                    "cannot re-baseline a study that is {}",
+                    state_word(&study.state)
+                )));
             }
             if env.store.dangling_experiment(&slug, None).await?.is_some() {
-                return Err(Error::refused("an experiment is in flight; pause or wait for it, then open the segment"));
+                return Err(Error::refused(
+                    "an experiment is in flight; pause or wait for it, then open the segment",
+                ));
             }
             let env2 = env.clone();
             let study2 = study.clone();
@@ -2130,7 +2703,10 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
         }
         ControlOp::Finalize => {
             if !matches!(study.state, StudyState::Running | StudyState::Paused { .. }) {
-                return Err(Error::refused(format!("cannot finalize a study that is {}", state_word(&study.state))));
+                return Err(Error::refused(format!(
+                    "cannot finalize a study that is {}",
+                    state_word(&study.state)
+                )));
             }
             begin_finalize(&env, study.clone(), StopReason::User).await?;
         }
@@ -2141,7 +2717,9 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
                 .await?
                 .ok_or_else(|| Error::refused(format!("no experiment #{n}")))?;
             if exp.state != ExperimentState::RejectedByReview {
-                return Err(Error::refused(format!("experiment #{n} was not reverted by review")));
+                return Err(Error::refused(format!(
+                    "experiment #{n} was not reverted by review"
+                )));
             }
             let patch = exp
                 .patch_path
@@ -2162,10 +2740,15 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
                     ..Idea::default()
                 })
                 .await?;
-            env.store.append_event(&slug, "restore", &serde_json::json!({ "n": n })).await?;
+            env.store
+                .append_event(&slug, "restore", &serde_json::json!({ "n": n }))
+                .await?;
         }
         ControlOp::Discard => {
-            if matches!(study.state, StudyState::Running | StudyState::Preparing | StudyState::Finalizing) {
+            if matches!(
+                study.state,
+                StudyState::Running | StudyState::Preparing | StudyState::Finalizing
+            ) {
                 return Err(Error::refused(format!(
                     "stop the study before discarding it (it is {})",
                     state_word(&study.state)
@@ -2194,7 +2777,9 @@ async fn segment_task(env: Env, mut study: StudyRecord, reason: String, by: By) 
     let r: Result<()> = async {
         let segment = study.segment + 1;
         let evaluator = env.evaluator_dir(&slug, segment);
-        let custody = env.backend.custody_take(&study.spec, Path::new(&study.repo), &evaluator)?;
+        let custody = env
+            .backend
+            .custody_take(&study.spec, Path::new(&study.repo), &evaluator)?;
         let mut seg = SegmentRecord {
             slug: slug.clone(),
             segment,
@@ -2209,14 +2794,24 @@ async fn segment_task(env: Env, mut study: StudyRecord, reason: String, by: By) 
         study.segment = segment;
         env.store.update_study(&study).await?;
         let incumbent = incumbent_of(&study)?;
-        let values = baseline(&env, &study, &incumbent, 0, SampleRole::Baseline, &cancel_token(&env.root, &slug)).await?;
+        let values = baseline(
+            &env,
+            &study,
+            &incumbent,
+            0,
+            SampleRole::Baseline,
+            &cancel_token(&env.root, &slug),
+        )
+        .await?;
         seg.baseline_mean = Some(mean(&values));
         seg.baseline_n = values.len() as u32;
         env.store.put_segment(&seg).await?;
         study.incumbent_mean = Some(mean(&values));
         study.sigma = Some(segment_sigma(&env, &study).await?);
         env.store.update_study(&study).await?;
-        env.store.append_event(&slug, "segment", &serde_json::json!({ "segment": segment })).await?;
+        env.store
+            .append_event(&slug, "segment", &serde_json::json!({ "segment": segment }))
+            .await?;
         env.publish(StudyEvent::StudyChanged {
             slug: slug.clone(),
             state: study.state.clone(),
@@ -2230,7 +2825,11 @@ async fn segment_task(env: Env, mut study: StudyRecord, reason: String, by: By) 
         tracing::warn!(%slug, "segment not opened: {e}");
         let _ = env
             .store
-            .append_event(&slug, "incident", &serde_json::json!({ "what": format!("segment failed: {e}") }))
+            .append_event(
+                &slug,
+                "incident",
+                &serde_json::json!({ "what": format!("segment failed: {e}") }),
+            )
             .await;
     }
 }
@@ -2252,7 +2851,10 @@ pub async fn status(a: &mut Studies, m: Status) -> Result<Vec<StudyInfo>> {
 }
 
 async fn chart_series(env: &Env, study: &StudyRecord) -> Result<ChartSeries> {
-    let mut exps = env.store.list_experiments(&study.slug, None, u32::MAX).await?;
+    let mut exps = env
+        .store
+        .list_experiments(&study.slug, None, u32::MAX)
+        .await?;
     exps.reverse();
     let seg = env.store.get_segment(&study.slug, study.segment).await?;
     let mut series = ChartSeries {
@@ -2265,19 +2867,29 @@ async fn chart_series(env: &Env, study: &StudyRecord) -> Result<ChartSeries> {
             n: 0,
             verdict: String::new(),
             metric: Some(b),
-            at: seg.as_ref().map(|s| s.opened_at.clone()).unwrap_or_default(),
+            at: seg
+                .as_ref()
+                .map(|s| s.opened_at.clone())
+                .unwrap_or_default(),
         });
     }
     for e in &exps {
-        let at = e.finished_at.clone().unwrap_or_else(|| e.started_at.clone());
+        let at = e
+            .finished_at
+            .clone()
+            .unwrap_or_else(|| e.started_at.clone());
         series.experiments.push(ChartPoint {
             n: e.n,
-            verdict: e.verdict.as_ref().map(Verdict::tag).unwrap_or(match e.state {
-                ExperimentState::Interrupted | ExperimentState::Timeout => "interrupted",
-                ExperimentState::Abandoned => "abandoned",
-                _ => "",
-            })
-            .to_owned(),
+            verdict: e
+                .verdict
+                .as_ref()
+                .map(Verdict::tag)
+                .unwrap_or(match e.state {
+                    ExperimentState::Interrupted | ExperimentState::Timeout => "interrupted",
+                    ExperimentState::Abandoned => "abandoned",
+                    _ => "",
+                })
+                .to_owned(),
             metric: e.metric,
             at: at.clone(),
         });
@@ -2300,7 +2912,11 @@ async fn chart_series(env: &Env, study: &StudyRecord) -> Result<ChartSeries> {
             });
         }
     }
-    for e in env.store.list_events(&study.slug, Some("drift"), 100).await? {
+    for e in env
+        .store
+        .list_events(&study.slug, Some("drift"), 100)
+        .await?
+    {
         series.drift.push(ChartPoint {
             n: e.payload.get("n").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             verdict: String::new(),
@@ -2318,16 +2934,28 @@ pub async fn detail(a: &mut Studies, m: Detail) -> Result<StudyDetail> {
     let info = info_full(&env, &study).await?;
     let series = chart_series(&env, &study).await?;
     let mut ideas = env.store.list_ideas(&study.slug, None).await?;
-    ideas.sort_by_key(|i| (i.status != IdeaStatus::Open, std::cmp::Reverse(i.priority), i.id));
+    ideas.sort_by_key(|i| {
+        (
+            i.status != IdeaStatus::Open,
+            std::cmp::Reverse(i.priority),
+            i.id,
+        )
+    });
     let steers = env.store.list_steers(&study.slug, false).await?;
     let changesets = changesets_of(&env, &study.slug).await;
     let mut needs_eyes = Vec::new();
-    for e in env.store.list_experiments(&study.slug, None, u32::MAX).await? {
+    for e in env
+        .store
+        .list_experiments(&study.slug, None, u32::MAX)
+        .await?
+    {
         match (&e.state, &e.review) {
             (ExperimentState::RejectedByReview, Some(ReviewVerdict::Reverted { reason })) => {
                 needs_eyes.push(format!("#{} reverted by review — {reason} · Restore", e.n));
             }
-            (_, Some(ReviewVerdict::Flagged { reason })) => needs_eyes.push(format!("#{} flagged by review — {reason}", e.n)),
+            (_, Some(ReviewVerdict::Flagged { reason })) => {
+                needs_eyes.push(format!("#{} flagged by review — {reason}", e.n))
+            }
             (_, Some(ReviewVerdict::Error { reason })) if e.state == ExperimentState::Kept => {
                 needs_eyes.push(format!("#{} kept unreviewed — {reason}", e.n));
             }
@@ -2388,9 +3016,10 @@ pub async fn experiment(a: &mut Studies, m: Experiment) -> Result<ExperimentDeta
     let samples = env.store.list_samples(&m.slug, Some(m.n)).await?;
     const MAX_DIFF: usize = 256 * 1024;
     let diff = match (&e.commit_sha, &e.patch_path, study.worktree.as_deref()) {
-        (Some(sha), _, Some(w)) if e.state == ExperimentState::Kept => {
-            env.backend.diff_text(Path::new(w), &e.parent_sha, sha, MAX_DIFF).ok()
-        }
+        (Some(sha), _, Some(w)) if e.state == ExperimentState::Kept => env
+            .backend
+            .diff_text(Path::new(w), &e.parent_sha, sha, MAX_DIFF)
+            .ok(),
         (_, Some(p), _) => std::fs::read_to_string(env.root.join(p)).ok().map(|mut s| {
             if s.len() > MAX_DIFF {
                 let mut cut = MAX_DIFF;
@@ -2439,8 +3068,18 @@ pub async fn recover(env: &Env) -> Result<()> {
         let slug = study.slug.clone();
         match study.state {
             StudyState::Preparing => {
-                let reason = "engine restarted while preparing; discard the study and start it again".to_owned();
-                set_state(env, &mut study, StudyState::Failed { reason: reason.clone() }, Some(reason)).await?;
+                let reason =
+                    "engine restarted while preparing; discard the study and start it again"
+                        .to_owned();
+                set_state(
+                    env,
+                    &mut study,
+                    StudyState::Failed {
+                        reason: reason.clone(),
+                    },
+                    Some(reason),
+                )
+                .await?;
             }
             StudyState::Running | StudyState::Paused { .. } => {
                 if let Some(mut exp) = env.store.dangling_experiment(&slug, None).await? {
@@ -2481,7 +3120,12 @@ fn ms_of(at: &str) -> u64 {
 impl roster::attention::Source for AttentionSource {
     async fn items(&self) -> Vec<roster::attention::AttentionItem> {
         use roster::attention::{AttentionItem, AttentionKind};
-        let item = |id: String, kind: AttentionKind, title: String, detail: Option<String>, at: &str, session: Option<SessionId>| AttentionItem {
+        let item = |id: String,
+                    kind: AttentionKind,
+                    title: String,
+                    detail: Option<String>,
+                    at: &str,
+                    session: Option<SessionId>| AttentionItem {
             id,
             kind,
             title,
@@ -2502,12 +3146,24 @@ impl roster::attention::Source for AttentionSource {
             rank: 5,
         };
         let mut out = Vec::new();
-        let Ok(studies) = self.0.list_studies().await else { return out };
+        let Ok(studies) = self.0.list_studies().await else {
+            return out;
+        };
         for s in studies {
             match &s.state {
                 StudyState::Finished => {
-                    let delta = match (s.incumbent_mean, self.0.get_segment(&s.slug, 0).await.ok().flatten().and_then(|g| g.baseline_mean)) {
-                        (Some(i), Some(b)) => fmt_pct(pct(gate::normalise(s.spec.metric.direction, i, b), b)),
+                    let delta = match (
+                        s.incumbent_mean,
+                        self.0
+                            .get_segment(&s.slug, 0)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|g| g.baseline_mean),
+                    ) {
+                        (Some(i), Some(b)) => {
+                            fmt_pct(pct(gate::normalise(s.spec.metric.direction, i, b), b))
+                        }
                         _ => "—".into(),
                     };
                     out.push(item(
@@ -2542,8 +3198,14 @@ impl roster::attention::Source for AttentionSource {
                 .iter()
                 .filter_map(|e| e.payload.get("n").and_then(|v| v.as_u64()))
                 .collect();
-            for e in self.0.list_experiments(&s.slug, None, u32::MAX).await.unwrap_or_default() {
-                if let (ExperimentState::RejectedByReview, Some(ReviewVerdict::Reverted { reason })) = (&e.state, &e.review)
+            for e in self
+                .0
+                .list_experiments(&s.slug, None, u32::MAX)
+                .await
+                .unwrap_or_default()
+            {
+                if let (ExperimentState::RejectedByReview, Some(ReviewVerdict::Reverted { reason })) =
+                    (&e.state, &e.review)
                     && !restored.contains(&u64::from(e.n))
                 {
                     out.push(item(

@@ -222,7 +222,8 @@ pub async fn start(
     let actor = Studies::spawn_with_mailbox(studies, runtime::subscriber_mailbox());
     actor.register(AUTORESEARCH_ACTOR)?;
     // §8.2 / §12.3 subscriptions: binding on `Fired`, dangling experiments on `TurnFinished`.
-    rt.subscribe::<Studies, schedule::ScheduleEvent>(&actor).await;
+    rt.subscribe::<Studies, schedule::ScheduleEvent>(&actor)
+        .await;
     rt.subscribe::<Studies, agent::AgentEvent>(&actor).await;
     // §8.5 restart recovery, then the attention source (§13.1).
     if let Err(e) = actor::recover(&env).await {
@@ -236,7 +237,9 @@ pub async fn start(
             .await
         {
             let _ = inbox
-                .tell(roster::attention::RegisterSource(Arc::new(actor::AttentionSource(store))))
+                .tell(roster::attention::RegisterSource(Arc::new(
+                    actor::AttentionSource(store),
+                )))
                 .await;
         }
     });
@@ -259,7 +262,9 @@ impl runtime::Plugin for AutoresearchPlugin {
             AutoresearchConfig::default()
         });
         if !cfg.enabled {
-            tracing::info!("autoresearch disabled by config; no tools, no actor, study files stay as they are");
+            tracing::info!(
+                "autoresearch disabled by config; no tools, no actor, study files stay as they are"
+            );
             return Ok(());
         }
         match install_skill(&rt.data_dir) {
@@ -306,7 +311,10 @@ mod tests {
             .unwrap();
         assert!(actor.ask(Status::default()).await.unwrap().is_empty());
         let e = actor
-            .ask(Begin { session: runtime::SessionId::new(), slot: None })
+            .ask(Begin {
+                session: runtime::SessionId::new(),
+                slot: None,
+            })
             .await
             .unwrap_err()
             .to_string();

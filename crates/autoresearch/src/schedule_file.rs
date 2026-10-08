@@ -1,9 +1,9 @@
 //! W3 LOOP — the study's schedule file (design doc 140 §8.1):
 //! `<data_dir>/schedules/autoresearch-<slug>.md` with `every: 0s`,
 //! `max_runs`, `budget:`, `run_timeout:`, `approvals: false`, `quiet: true`,
-//! `runtime: clear`, `cwd:`, `model:`, `enabled:` (and `when:` + `every: 1m`
-//! + `memory: clear` with a `window:`). The plugin rewrites only `enabled:`
-//! and deletes the file through the schedule actor when the study stops.
+//! `runtime: clear`, `cwd:`, `model:`, `enabled:` (with a `window:` also
+//! `when:`, `every: 1m` and `memory: clear`). The plugin rewrites only
+//! `enabled:`; it deletes the file through the schedule actor when the study stops.
 //!
 //! Deviation from §8.1's listing: `memory: clear` is only legal with `when:`
 //! (`crates/schedule/src/file.rs` "memory: needs when:"); a clock-only file
@@ -49,7 +49,13 @@ pub fn budget_line(usd: f64) -> String {
 }
 
 /// The file text for `spec` (140 §8.1).
-pub fn text(spec: &StudySpec, cfg: &crate::config::AutoresearchConfig, worktree: &Path, model: &str, start: &StartWhen) -> String {
+pub fn text(
+    spec: &StudySpec,
+    cfg: &crate::config::AutoresearchConfig,
+    worktree: &Path,
+    model: &str,
+    start: &StartWhen,
+) -> String {
     let mut s = String::from("---\n");
     let sensor = match start {
         StartWhen::Window { sensor } => Some(sensor.as_str()),
@@ -58,17 +64,33 @@ pub fn text(spec: &StudySpec, cfg: &crate::config::AutoresearchConfig, worktree:
     .map(str::trim)
     .filter(|w| !w.is_empty());
     // A sensor needs a cadence (40 §2: `when:` wants `every:` ≥ 30 s).
-    s.push_str(if sensor.is_some() { "every: 1m\n" } else { "every: 0s\n" });
-    s.push_str(&format!("max_runs: {}\n", spec.budget.experiments.saturating_add(EXTRA_RUNS).max(1)));
-    s.push_str(&format!("budget: {}\n", budget_line(spec.budget.per_experiment_usd)));
-    s.push_str(&format!("run_timeout: {}m\n", run_timeout(spec, cfg).as_secs().div_ceil(60)));
+    s.push_str(if sensor.is_some() {
+        "every: 1m\n"
+    } else {
+        "every: 0s\n"
+    });
+    s.push_str(&format!(
+        "max_runs: {}\n",
+        spec.budget.experiments.saturating_add(EXTRA_RUNS).max(1)
+    ));
+    s.push_str(&format!(
+        "budget: {}\n",
+        budget_line(spec.budget.per_experiment_usd)
+    ));
+    s.push_str(&format!(
+        "run_timeout: {}m\n",
+        run_timeout(spec, cfg).as_secs().div_ceil(60)
+    ));
     s.push_str("approvals: false\n");
     s.push_str("quiet: true\n");
     if sensor.is_some() {
         s.push_str("memory: clear\n");
     }
     s.push_str("runtime: clear\n");
-    s.push_str(&format!("cwd: {}\n", yaml_str(&worktree.display().to_string())));
+    s.push_str(&format!(
+        "cwd: {}\n",
+        yaml_str(&worktree.display().to_string())
+    ));
     if !model.trim().is_empty() {
         s.push_str(&format!("model: {}\n", model.trim()));
     }
@@ -93,10 +115,9 @@ fn yaml_str(v: &str) -> String {
 /// `run_timeout` = `(crash_retries + confirm_runs + 2) × bench.timeout + checks.timeout + bench.wait + 15m`, at least 30 m.
 pub fn run_timeout(spec: &StudySpec, cfg: &crate::config::AutoresearchConfig) -> Duration {
     let bench = duration(&spec.bench.timeout, Duration::from_secs(600));
-    let checks = spec
-        .checks
-        .as_ref()
-        .map_or(Duration::ZERO, |c| duration(&c.timeout, Duration::from_secs(300)));
+    let checks = spec.checks.as_ref().map_or(Duration::ZERO, |c| {
+        duration(&c.timeout, Duration::from_secs(300))
+    });
     let wait = duration(&cfg.bench.wait, Duration::from_secs(20 * 60));
     let samples = u32::from(cfg.defaults.crash_retries) + u32::from(cfg.gate.confirm_runs) + 2;
     (bench * samples + checks + wait + SLACK).max(MIN_RUN_TIMEOUT)
@@ -106,7 +127,8 @@ pub fn run_timeout(spec: &StudySpec, cfg: &crate::config::AutoresearchConfig) ->
 /// parser accepted it — a broken file would otherwise sit silently in the dir.
 pub fn write(data_dir: &Path, slug: &str, text: &str) -> Result<()> {
     let name = name(slug);
-    schedule::file::parse(&name, text).map_err(|e| Error::refused(format!("schedule file {name}: {e}")))?;
+    schedule::file::parse(&name, text)
+        .map_err(|e| Error::refused(format!("schedule file {name}: {e}")))?;
     schedule::file::write_atomic(&data_dir.join(schedule::DIR), &name, text)?;
     Ok(())
 }
@@ -121,7 +143,10 @@ fn schedule_actor() -> Result<ActorRef<schedule::Schedule>> {
 /// Flip `enabled:` through the schedule actor's `SetEnabled` (pause/resume, 140 §4.2).
 pub async fn set_enabled(slug: &str, enabled: bool) -> Result<()> {
     schedule_actor()?
-        .ask(schedule::SetEnabled { name: name(slug), enabled })
+        .ask(schedule::SetEnabled {
+            name: name(slug),
+            enabled,
+        })
         .await
         .map_err(|e| Error::refused(e.to_string()))?;
     Ok(())
@@ -133,14 +158,24 @@ pub async fn fire(slug: &str, paused: bool) -> Result<runtime::SessionId> {
     let sched = schedule_actor()?;
     let n = name(slug);
     if paused {
-        let _ = sched.ask(schedule::SetEnabled { name: n.clone(), enabled: true }).await;
+        let _ = sched
+            .ask(schedule::SetEnabled {
+                name: n.clone(),
+                enabled: true,
+            })
+            .await;
     }
     let fired = sched
         .ask(schedule::Fire { name: n.clone() })
         .await
         .map_err(|e| Error::refused(e.to_string()));
     if paused {
-        let _ = sched.ask(schedule::SetEnabled { name: n, enabled: false }).await;
+        let _ = sched
+            .ask(schedule::SetEnabled {
+                name: n,
+                enabled: false,
+            })
+            .await;
     }
     fired
 }
@@ -150,7 +185,10 @@ pub async fn fire(slug: &str, paused: bool) -> Result<runtime::SessionId> {
 /// running schedule session (the run already settled) — then [`done`].
 pub async fn done_run(session: runtime::SessionId, reason: &str) -> Result<()> {
     schedule_actor()?
-        .ask(schedule::Done { session, why: reason.to_owned() })
+        .ask(schedule::Done {
+            session,
+            why: reason.to_owned(),
+        })
         .await
         .map_err(|e| Error::refused(e.to_string()))?;
     Ok(())
@@ -196,7 +234,10 @@ mod tests {
         cfg2.bench.wait = "1s".into();
         assert_eq!(run_timeout(&quick, &cfg2), MIN_RUN_TIMEOUT);
         let mut checked = spec();
-        checked.checks = Some(crate::types::CommandSpec { command: "t".into(), timeout: "5m".into() });
+        checked.checks = Some(crate::types::CommandSpec {
+            command: "t".into(),
+            timeout: "5m".into(),
+        });
         assert_eq!(run_timeout(&checked, &cfg), Duration::from_secs(100 * 60));
     }
 
@@ -211,14 +252,27 @@ mod tests {
     fn text_parses_with_the_schedule_crate() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = AutoresearchConfig::default();
-        let t = text(&spec(), &cfg, dir.path(), "openai/gpt-5.6-sol", &StartWhen::Now);
+        let t = text(
+            &spec(),
+            &cfg,
+            dir.path(),
+            "openai/gpt-5.6-sol",
+            &StartWhen::Now,
+        );
         assert!(t.contains("every: 0s\n"), "{t}");
         assert!(t.contains("max_runs: 130\n"));
         assert!(t.contains("budget: 1.5 USD\n"));
         assert!(t.contains("run_timeout: 95m\n"));
-        assert!(t.contains("approvals: false\n") && t.contains("quiet: true\n") && t.contains("runtime: clear\n"));
+        assert!(
+            t.contains("approvals: false\n")
+                && t.contains("quiet: true\n")
+                && t.contains("runtime: clear\n")
+        );
         assert!(t.contains("model: openai/gpt-5.6-sol\n") && t.contains("enabled: true\n"));
-        assert!(!t.contains("memory:"), "memory: needs when: in the schedule parser");
+        assert!(
+            !t.contains("memory:"),
+            "memory: needs when: in the schedule parser"
+        );
         let parsed = schedule::file::parse("autoresearch-sort-speed", &t).unwrap();
         assert_eq!(parsed.max_runs, Some(130));
         assert!(!parsed.approvals && parsed.quiet && parsed.enabled);
@@ -231,21 +285,34 @@ mod tests {
             &cfg,
             dir.path(),
             "m",
-            &StartWhen::Window { sensor: "sensors/idle.py".into() },
+            &StartWhen::Window {
+                sensor: "idle.py".into(),
+            },
         );
-        assert!(w.contains("every: 1m\n") && w.contains("memory: clear\n") && w.contains("when: \"sensors/idle.py\"\n"));
-        assert!(schedule::file::parse("autoresearch-sort-speed", &w).is_ok(), "{w}");
+        assert!(
+            w.contains("every: 1m\n")
+                && w.contains("memory: clear\n")
+                && w.contains("when: \"idle.py\"\n")
+        );
+        assert!(
+            schedule::file::parse("autoresearch-sort-speed", &w).is_ok(),
+            "{w}"
+        );
     }
 
     #[test]
     fn write_refuses_a_broken_file_and_writes_a_good_one() {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
-        assert!(write(&data, "x", "---\nevery: 0s\n---\n\nhi\n").is_err(), "0s needs max_runs");
+        assert!(
+            write(&data, "x", "---\nevery: 0s\n---\n\nhi\n").is_err(),
+            "0s needs max_runs"
+        );
         let cfg = AutoresearchConfig::default();
         let t = text(&spec(), &cfg, dir.path(), "", &StartWhen::Now);
         write(&data, "sort-speed", &t).unwrap();
-        let on_disk = std::fs::read_to_string(data.join("schedules/autoresearch-sort-speed.md")).unwrap();
+        let on_disk =
+            std::fs::read_to_string(data.join("schedules/autoresearch-sort-speed.md")).unwrap();
         assert_eq!(on_disk, t);
     }
 }

@@ -47,7 +47,11 @@ pub fn toolset(parallel: u8) -> agent::Toolset {
     agent::Toolset {
         tools,
         // The autoresearch block plus the blocks of the plugins whose tools are listed.
-        prompts: vec![crate::PLUGIN.to_owned(), "codeindex".to_owned(), "knowledge".to_owned()],
+        prompts: vec![
+            crate::PLUGIN.to_owned(),
+            "codeindex".to_owned(),
+            "knowledge".to_owned(),
+        ],
         runtime: false,
         hint_limit: Some(0),
     }
@@ -55,7 +59,9 @@ pub fn toolset(parallel: u8) -> agent::Toolset {
 
 /// The agent supervisor, when running.
 fn agents() -> Option<ActorRef<agent::Agents>> {
-    ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok().flatten()
+    ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+        .ok()
+        .flatten()
 }
 
 /// `ScheduleEvent::Fired` for one of ours → bind (140 §8.2). The toolset is
@@ -125,9 +131,16 @@ pub async fn on_turn_finished(a: &mut Studies, session: runtime::SessionId) -> R
     a.publish(crate::types::StudyEvent::ExperimentFinished {
         slug: study.slug.clone(),
         n: exp.n,
-        verdict: exp.verdict.clone().unwrap_or(crate::types::Verdict::Refused {
-            reason: if interrupted { "interrupted".into() } else { "abandoned".into() },
-        }),
+        verdict: exp
+            .verdict
+            .clone()
+            .unwrap_or(crate::types::Verdict::Refused {
+                reason: if interrupted {
+                    "interrupted".into()
+                } else {
+                    "abandoned".into()
+                },
+            }),
         metric: exp.metric,
         delta_pct: exp.delta_pct,
         z: exp.z,
@@ -138,7 +151,8 @@ pub async fn on_turn_finished(a: &mut Studies, session: runtime::SessionId) -> R
 
 /// The slug of a schedule name `autoresearch-<slug>`, if it is one of ours.
 pub fn slug_of(name: &str) -> Option<&str> {
-    name.strip_prefix(crate::SCHEDULE_PREFIX).filter(|s| !s.is_empty())
+    name.strip_prefix(crate::SCHEDULE_PREFIX)
+        .filter(|s| !s.is_empty())
 }
 
 /// The refusal every study tool gives a session that is not bound to a study (140 §8.2).
@@ -178,9 +192,15 @@ mod tests {
     #[test]
     fn toolset_is_the_section_8_3_list() {
         let t = toolset(1);
-        assert!(t.tools.iter().any(|x| x == "experiment_begin") && t.tools.iter().any(|x| x == "shell"));
+        assert!(
+            t.tools.iter().any(|x| x == "experiment_begin") && t.tools.iter().any(|x| x == "shell")
+        );
         assert!(!t.tools.iter().any(|x| x == "spawn_subagent"));
-        assert!(!t.tools.iter().any(|x| x == "message_user" || x == "ask_user" || x == "schedule"));
+        assert!(
+            !t.tools
+                .iter()
+                .any(|x| x == "message_user" || x == "ask_user" || x == "schedule")
+        );
         assert!(!t.runtime && t.hint_limit == Some(0));
         assert_eq!(t.prompts[0], "autoresearch");
         assert!(toolset(2).tools.iter().any(|x| x == "spawn_subagent"));

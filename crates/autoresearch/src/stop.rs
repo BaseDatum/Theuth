@@ -52,7 +52,11 @@ pub struct View {
 }
 
 /// The §8.4 table over `view` for `spec`'s budgets and `cfg`'s thresholds; first match wins.
-pub fn decide(view: &View, spec: &crate::types::StudySpec, cfg: &crate::config::AutoresearchConfig) -> Rule {
+pub fn decide(
+    view: &View,
+    spec: &crate::types::StudySpec,
+    cfg: &crate::config::AutoresearchConfig,
+) -> Rule {
     if view.stop_after {
         return Rule::Stop(StopReason::User);
     }
@@ -103,7 +107,12 @@ pub async fn view(store: &Store, study: &StudyRecord, spend_usd: f64) -> Result<
     let all = store.list_experiments(&study.slug, None, u32::MAX).await?; // newest first
     let closed: Vec<_> = all
         .iter()
-        .filter(|e| !matches!(e.state, ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured))
+        .filter(|e| {
+            !matches!(
+                e.state,
+                ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
+            )
+        })
         .collect();
     let last_keep_n = closed
         .iter()
@@ -121,10 +130,12 @@ pub async fn view(store: &Store, study: &StudyRecord, spend_usd: f64) -> Result<
 
     let events = store.list_events(&study.slug, None, 10_000).await?; // newest first
     let after_n = |kind: &str| -> Option<u32> {
-        events
-            .iter()
-            .find(|e| e.kind == kind)
-            .map(|e| e.payload.get("after_n").and_then(|v| v.as_u64()).unwrap_or(0) as u32)
+        events.iter().find(|e| e.kind == kind).map(|e| {
+            e.payload
+                .get("after_n")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32
+        })
     };
     // A stop_after is consumed when the study resumes or finalizes; here it is any row after the last resume.
     let last_resume = events.iter().position(|e| e.kind == "resumed");
@@ -141,7 +152,10 @@ pub async fn view(store: &Store, study: &StudyRecord, spend_usd: f64) -> Result<
         .filter(|e| {
             matches!(
                 e.review,
-                Some(crate::types::ReviewVerdict::Reverted { .. } | crate::types::ReviewVerdict::Flagged { .. })
+                Some(
+                    crate::types::ReviewVerdict::Reverted { .. }
+                        | crate::types::ReviewVerdict::Flagged { .. }
+                )
             )
         })
         .count() as u32;
@@ -161,7 +175,12 @@ pub async fn view(store: &Store, study: &StudyRecord, spend_usd: f64) -> Result<
 }
 
 /// Evaluate §8.4 for `study` from the ledger and `spend_usd` (the session tree's ledger sum).
-pub async fn evaluate(store: &Store, study: &StudyRecord, cfg: &crate::config::AutoresearchConfig, spend_usd: f64) -> Result<Rule> {
+pub async fn evaluate(
+    store: &Store,
+    study: &StudyRecord,
+    cfg: &crate::config::AutoresearchConfig,
+    spend_usd: f64,
+) -> Result<Rule> {
     let v = view(store, study, spend_usd).await?;
     Ok(decide(&v, &study.spec, cfg))
 }
@@ -175,7 +194,9 @@ pub fn hours_running(study: &StudyRecord, now: chrono::DateTime<chrono::Utc>) ->
     else {
         return 0.0;
     };
-    let elapsed_ms = (now - started.with_timezone(&chrono::Utc)).num_milliseconds().max(0) as u64;
+    let elapsed_ms = (now - started.with_timezone(&chrono::Utc))
+        .num_milliseconds()
+        .max(0) as u64;
     elapsed_ms.saturating_sub(study.paused_ms) as f64 / 3_600_000.0
 }
 
@@ -204,33 +225,165 @@ mod tests {
         let s = spec();
         let base = View::default();
         assert_eq!(decide(&base, &s, &cfg), Rule::Continue);
-        assert_eq!(decide(&View { stop_after: true, ..base.clone() }, &s, &cfg), Rule::Stop(StopReason::User));
-        assert_eq!(decide(&View { closed: 120, ..base.clone() }, &s, &cfg), Rule::Stop(StopReason::Experiments));
-        assert_eq!(decide(&View { spend_usd: 20.0, ..base.clone() }, &s, &cfg), Rule::Stop(StopReason::Budget));
-        assert_eq!(decide(&View { hours: 10.01, ..base.clone() }, &s, &cfg), Rule::Stop(StopReason::Hours));
-        // plateau: first window → explore; explored but under 2 windows → continue; 2 windows → stop.
-        assert_eq!(decide(&View { since_keep: 12, ..base.clone() }, &s, &cfg), Rule::Explore);
-        assert_eq!(decide(&View { since_keep: 18, explored: true, ..base.clone() }, &s, &cfg), Rule::Continue);
         assert_eq!(
-            decide(&View { since_keep: 24, explored: true, ..base.clone() }, &s, &cfg),
+            decide(
+                &View {
+                    stop_after: true,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
+            Rule::Stop(StopReason::User)
+        );
+        assert_eq!(
+            decide(
+                &View {
+                    closed: 120,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
+            Rule::Stop(StopReason::Experiments)
+        );
+        assert_eq!(
+            decide(
+                &View {
+                    spend_usd: 20.0,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
+            Rule::Stop(StopReason::Budget)
+        );
+        assert_eq!(
+            decide(
+                &View {
+                    hours: 10.01,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
+            Rule::Stop(StopReason::Hours)
+        );
+        // plateau: first window → explore; explored but under 2 windows → continue; 2 windows → stop.
+        assert_eq!(
+            decide(
+                &View {
+                    since_keep: 12,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
+            Rule::Explore
+        );
+        assert_eq!(
+            decide(
+                &View {
+                    since_keep: 18,
+                    explored: true,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
+            Rule::Continue
+        );
+        assert_eq!(
+            decide(
+                &View {
+                    since_keep: 24,
+                    explored: true,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
             Rule::Stop(StopReason::Plateau)
         );
         // overfit is a plateau: explore first, then stop with its own reason.
-        assert_eq!(decide(&View { overfit: true, ..base.clone() }, &s, &cfg), Rule::Explore);
         assert_eq!(
-            decide(&View { overfit: true, explored: true, ..base.clone() }, &s, &cfg),
+            decide(
+                &View {
+                    overfit: true,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
+            Rule::Explore
+        );
+        assert_eq!(
+            decide(
+                &View {
+                    overfit: true,
+                    explored: true,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
             Rule::Stop(StopReason::Overfit)
         );
-        assert_eq!(decide(&View { crash_streak: 4, ..base.clone() }, &s, &cfg), Rule::Pause(PauseReason::CrashStreak));
-        assert_eq!(decide(&View { crash_streak: 3, ..base.clone() }, &s, &cfg), Rule::Continue);
         assert_eq!(
-            decide(&View { custody_refusals: 2, ..base.clone() }, &s, &cfg),
+            decide(
+                &View {
+                    crash_streak: 4,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
+            Rule::Pause(PauseReason::CrashStreak)
+        );
+        assert_eq!(
+            decide(
+                &View {
+                    crash_streak: 3,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
+            Rule::Continue
+        );
+        assert_eq!(
+            decide(
+                &View {
+                    custody_refusals: 2,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
             Rule::Pause(PauseReason::CustodyRefusals)
         );
-        assert_eq!(decide(&View { review_flags: 3, ..base.clone() }, &s, &cfg), Rule::Pause(PauseReason::ReviewFlags));
+        assert_eq!(
+            decide(
+                &View {
+                    review_flags: 3,
+                    ..base.clone()
+                },
+                &s,
+                &cfg
+            ),
+            Rule::Pause(PauseReason::ReviewFlags)
+        );
         // Precedence: a stop beats a pause.
         assert_eq!(
-            decide(&View { stop_after: true, crash_streak: 9, ..base }, &s, &cfg),
+            decide(
+                &View {
+                    stop_after: true,
+                    crash_streak: 9,
+                    ..base
+                },
+                &s,
+                &cfg
+            ),
             Rule::Stop(StopReason::User)
         );
     }
