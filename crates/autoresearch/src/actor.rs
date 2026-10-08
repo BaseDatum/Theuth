@@ -4814,12 +4814,44 @@ pub async fn recover(env: &Env) -> Result<()> {
                         tracing::warn!(%slug, "stop rules after recovery: {e}");
                     }
                 }
+                // 140-P live: a loop the schedule ended (or a file removed by hand) left a
+                // live study with no file — nothing would ever fire again. Re-write it.
+                let file = env
+                    .data_dir
+                    .join(schedule::DIR)
+                    .join(format!("{}.md", schedule_file::name(&slug)));
+                if !file.exists() {
+                    if let Err(e) = rewrite_schedule_file(env, &study).await {
+                        tracing::warn!(%slug, "schedule file not restored: {e}");
+                    } else {
+                        env.store
+                            .append_event(&slug, "incident", &serde_json::json!({ "what": "schedule file missing at restart; re-written" }))
+                            .await?;
+                    }
+                }
             }
             StudyState::Finalizing => spawn_finalize(env, &slug).await?,
             _ => {}
         }
     }
     Ok(())
+}
+
+/// The study's schedule file as `prepare` writes it, `enabled:` per the study state.
+async fn rewrite_schedule_file(env: &Env, study: &StudyRecord) -> Result<()> {
+    let worktree = worktree_of(study)?;
+    let start = match &study.spec.window {
+        Some(sensor) => StartWhen::Window {
+            sensor: sensor.clone(),
+        },
+        None => StartWhen::Now,
+    };
+    let model = env.cfg.executor(&study.spec.models, &env.agent);
+    let mut text = schedule_file::text(&study.spec, &env.cfg, &worktree, &model, &start);
+    if matches!(study.state, StudyState::Paused { .. }) {
+        text = schedule::file::set_enabled(&text, false);
+    }
+    schedule_file::write(&env.data_dir, &study.slug, &text).await
 }
 
 // ───────────────────────────── attention rows (§13.1) ─────────────────────────────

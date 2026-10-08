@@ -1733,8 +1733,14 @@ async fn restart_recovery_marks_interrupted_and_lost() {
     let mut preparing = StudyRecord::new(spec(&h, "p", 5), None);
     preparing.state = StudyState::Preparing;
     h.studies.store.create_study(&preparing).await.unwrap();
+    // 140-P: the loop ended and took the file with it (or the user deleted it).
+    let file = h._dir.path().join("schedules/autoresearch-t1.md");
+    std::fs::remove_file(&file).unwrap();
 
     recover(&h.studies.env()).await.unwrap();
+
+    let text = std::fs::read_to_string(&file).expect("schedule file re-written at recovery");
+    assert!(text.contains("enabled: true"), "{text}");
 
     let e = h
         .studies
