@@ -3,4 +3,4 @@
 /**
  * Where a concept is in its life (frontmatter `status`, 136 §5.1). Absent = `tidy`.
  */
-export type Status = "fresh" | "tidy" | "merged" | "archived" | "stale" | "retired";
+export type KnowledgeStatus = "fresh" | "tidy" | "merged" | "archived" | "stale" | "retired";

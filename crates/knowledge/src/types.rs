@@ -305,6 +305,34 @@ pub struct Meta {
     pub merged_into: Option<String>,
 }
 
+impl Default for Meta {
+    /// The frontmatter nobody wrote: empty id/type/title, the user's, shared,
+    /// `tidy`, hinted — exactly what a file without the optional keys reads
+    /// as. For test fixtures (`..Default::default()`); a real concept always
+    /// has an id and a type.
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            type_: String::new(),
+            title: String::new(),
+            description: String::new(),
+            tags: Vec::new(),
+            scope: None,
+            source: None,
+            timestamp: None,
+            owner: default_owner(),
+            visibility: Visibility::default(),
+            status: Status::default(),
+            hint: true,
+            evidence: Vec::new(),
+            verified: None,
+            valid_until: None,
+            superseded_by: None,
+            merged_into: None,
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
