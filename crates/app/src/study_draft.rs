@@ -60,6 +60,29 @@ pub fn lines(spec: &StudySpec) -> [String; 5] {
         }
         _ => "no holdout".to_owned(),
     };
+    // R-19: each guard carries its own direction; the card shows it (read-only — Edit re-drafts).
+    let guards = if spec.secondary_guards.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " · guards {}",
+            spec.secondary_guards
+                .iter()
+                .map(|g| {
+                    format!(
+                        "{} ≤ {} worse ({} is better)",
+                        g.name.trim(),
+                        g.max_regression.trim(),
+                        match g.direction {
+                            Direction::Lower => "lower",
+                            Direction::Higher => "higher",
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let list = |v: &[String], none: &str| {
         if v.is_empty() {
             none.to_owned()
@@ -84,7 +107,7 @@ pub fn lines(spec: &StudySpec) -> [String; 5] {
             spec.bench.command.trim(),
             spec.base.trim()
         ),
-        format!("{check} · {holdout}"),
+        format!("{check} · {holdout}{guards}"),
         format!(
             "may edit {} · never keeps {} · evaluator files {}",
             list(&spec.scope, "anything (scope empty)"),
@@ -344,7 +367,9 @@ impl Tool for StudyDraftTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autoresearch::{BenchSpec, BudgetSpec, CommandSpec, HoldoutSpec, MetricSpec, ModelsSpec};
+    use autoresearch::{
+        BenchSpec, BudgetSpec, CommandSpec, Guard, HoldoutSpec, MetricSpec, ModelsSpec,
+    };
 
     fn spec() -> StudySpec {
         StudySpec {
@@ -413,6 +438,26 @@ mod tests {
         assert!(l[2].starts_with("may edit anything (scope empty)"));
         assert!(l[3].ends_with("· waves of 3"));
         assert!(l[4].starts_with("starts in the idle window (`sensors/idle.py`)"));
+        // R-19: a guard says which way it improves, independent of the primary.
+        let guarded = StudySpec {
+            secondary_guards: vec![
+                Guard {
+                    name: "alloc_mb".into(),
+                    max_regression: "5%".into(),
+                    direction: Direction::Lower,
+                },
+                Guard {
+                    name: "hit_rate".into(),
+                    max_regression: "0.01".into(),
+                    direction: Direction::Higher,
+                },
+            ],
+            ..spec()
+        };
+        assert_eq!(
+            lines(&guarded)[1],
+            "check `bundle exec rake test` · holdout `holdout.sh` every 5 keeps · guards alloc_mb ≤ 5% worse (lower is better), hit_rate ≤ 0.01 worse (higher is better)"
+        );
     }
 
     #[test]
