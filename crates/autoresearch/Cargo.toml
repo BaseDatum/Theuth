@@ -1,0 +1,40 @@
+[package]
+name = "autoresearch"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Autoresearch: a measured experiment loop whose noise gate, evaluator custody and git ratchet the harness owns (design doc 140)"
+
+[dependencies]
+runtime = { workspace = true }
+tools = { workspace = true }  # 140 §12.4 the seven tools, `RegisterPrompt`, `Risk`
+agent = { workspace = true }  # 140 §8.2 `SetToolset`, §8.4 the spend ledger, `AgentConfig` model defaults
+schedule = { workspace = true }  # 140 §8.1 the study's schedule file, `ScheduleEvent::Fired`, `SetEnabled`, `Done`
+knowledge = { workspace = true }  # 140 §7.3 the cross-study record (W2 `record.rs`)
+document = { workspace = true }  # 140 §11.3 the report document (W2 `finalize.rs`)
+codeindex = { workspace = true }  # 140 §7.2 `code_map` of the scope in the brief (W6 `brief.rs`)
+kameo = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }  # `CancellationToken` for the bench runner (W1 `runner.rs`)
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }  # `autoresearch.settings.set` persists the section
+schemars = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }  # 140 §5.3 custody hashes, §7.3 patch hashes
+sqlx = { workspace = true }  # 140 §12.6 `autoresearch.sqlite` (the workspace's sqlite crate)
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+figment = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "agent/ts", "schedule/ts"]
+
+[lints]
+workspace = true

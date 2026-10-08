@@ -294,6 +294,7 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         dreaming::DreamNightStarted,
         dreaming::DreamNightFinished,
         dreaming::DreamUndone,
+        autoresearch::StudyEvent,
     );
     tracing::debug!(
         tag = v["type"].as_str().unwrap_or("?"),
