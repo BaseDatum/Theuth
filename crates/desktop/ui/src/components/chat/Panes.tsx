@@ -1,8 +1,10 @@
 import { useNavigate } from '@tanstack/react-router'
-import type { PointerEvent, ReactNode } from 'react'
+import { type ReactNode, useRef } from 'react'
+import { ResizeHandle } from '@/components/ui/resize-handle'
 import { useSidebar } from '@/components/ui/sidebar'
 import { usePressDrag } from '@/hooks/use-press-drag'
 import { isDraft, type Node, newDraft, type Path, shown, usePanes, zone } from '@/lib/panes'
+import { clampRatio, RATIO_MAX, RATIO_MIN, RATIO_STEP } from '@/lib/resize-drag'
 import { cn } from '@/lib/utils'
 
 /**
@@ -67,34 +69,22 @@ function Leaf({ session, first, render }: { session: string; first: boolean; ren
   )
 }
 
-/** Between two flex children sized `flex: r 1 0%` / `flex: 1-r 1 0%`; drag reports the new first-child share (0.15–0.85) to `onRatio`. */
-export function Divider({ dir, onRatio }: { dir: 'row' | 'col'; onRatio: (ratio: number) => void }) {
-  // ponytail: plain pointer events like ArtifactPanel's strip; react-resizable-panels if this grows.
-  const drag = (e: PointerEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.parentElement?.getBoundingClientRect()
-    if (!rect) return
-    e.preventDefault()
-    e.currentTarget.setPointerCapture(e.pointerId)
-    const move = (ev: globalThis.PointerEvent) => {
-      const r = dir === 'row' ? (ev.clientX - rect.left) / rect.width : (ev.clientY - rect.top) / rect.height
-      onRatio(Math.min(0.85, Math.max(0.15, r)))
-    }
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-  }
+/**
+ * Between two flex children sized `flex: r 1 0%` / `flex: 1-r 1 0%`; a drag reports the new first-child share
+ * (0.15–0.85) to `onRatio`. With `ratio` the separator also exposes its value and nudges it by 5 % per arrow key.
+ */
+export function Divider({ dir, ratio, onRatio }: { dir: 'row' | 'col'; ratio?: number; onRatio: (ratio: number) => void }) {
+  const rect = useRef<DOMRect>(null)
   return (
-    <div
-      role="separator"
-      aria-orientation={dir === 'row' ? 'vertical' : 'horizontal'}
-      onPointerDown={drag}
-      className={cn(
-        'z-10 shrink-0 bg-border-subtle transition-colors hover:bg-fg-accent/60',
-        dir === 'row' ? 'w-1 cursor-col-resize' : 'h-1 cursor-row-resize',
-      )}
+    <ResizeHandle
+      orientation={dir === 'row' ? 'vertical' : 'horizontal'}
+      value={ratio === undefined ? undefined : { now: Math.round(ratio * 100), min: RATIO_MIN * 100, max: RATIO_MAX * 100 }}
+      onStart={(_, el) => (rect.current = el.parentElement?.getBoundingClientRect() ?? null)}
+      onMove={(x, y) => {
+        const r = rect.current
+        if (r) onRatio(clampRatio(dir === 'row' ? (x - r.left) / r.width : (y - r.top) / r.height))
+      }}
+      onNudge={ratio === undefined ? undefined : (d) => onRatio(clampRatio(ratio + d * RATIO_STEP))}
     />
   )
 }
@@ -106,7 +96,7 @@ function Branch({ node, path, render }: { node: Node; path: Path; render(session
       <div className="flex min-h-0 min-w-0 flex-col" style={{ flex: `${node.ratio} 1 0%` }}>
         <Branch node={node.a} path={[...path, 'a']} render={render} />
       </div>
-      <Divider dir={node.dir} onRatio={(r) => usePanes.getState().resize(path, r)} />
+      <Divider dir={node.dir} ratio={node.ratio} onRatio={(r) => usePanes.getState().resize(path, r)} />
       <div className="flex min-h-0 min-w-0 flex-col" style={{ flex: `${1 - node.ratio} 1 0%` }}>
         <Branch node={node.b} path={[...path, 'b']} render={render} />
       </div>
