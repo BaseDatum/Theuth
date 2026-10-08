@@ -17,10 +17,15 @@ use crate::endless::{EndlessStats, GuardTrips, MemoryMode};
 /// One `endless_units` row (the unit without its text).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnitRow {
+    /// Unit index (0-based, never renumbered).
     pub i: u64,
+    /// The `messages.seq` of the row.
     pub seq: i64,
+    /// Part index within the row.
     pub part: u16,
+    /// Unit kind.
     pub kind: Kind,
+    /// UTF-8 bytes of `kind: text`.
     pub size: u32,
     /// Rendered-turn counter when the unit committed (D6 frozen-context key).
     pub turn: u32,
@@ -29,23 +34,33 @@ pub struct UnitRow {
 /// An endless session at engine start (`resume_all`).
 #[derive(Clone, Debug, FromRow)]
 pub struct EndlessSessionRow {
+    /// Session id as text.
     pub id: String,
+    /// `sessions.model`.
     pub model: String,
+    /// `sessions.effort`.
     pub effort: Option<String>,
+    /// `sessions.desk` (the agent name for a desk).
     pub desk: Option<String>,
 }
 
 /// A `messages` row as the unit deriver needs it.
 pub struct EndlessMessage {
+    /// The `messages.seq` of the row.
     pub seq: i64,
+    /// The decoded `ChatMessage`.
     pub message: ChatMessage,
     /// The whole row is excluded (07 §0): no units.
     pub excluded: bool,
+    /// `messages.at`, when recorded.
     pub at: Option<DateTime<Utc>>,
 }
 
 /// Delete every endless row of `sid` (session deletion).
-pub(crate) async fn delete_endless_in(conn: &mut SqliteConnection, sid: &str) -> anyhow::Result<()> {
+pub(crate) async fn delete_endless_in(
+    conn: &mut SqliteConnection,
+    sid: &str,
+) -> anyhow::Result<()> {
     for sql in [
         "DELETE FROM endless_calls WHERE session_id = ?",
         "DELETE FROM endless_nodes WHERE session_id = ?",
@@ -147,7 +162,8 @@ impl Store {
 
     /// Every built node of the session.
     pub async fn endless_nodes(&self, id: SessionId) -> anyhow::Result<Vec<Node>> {
-        let rows: Vec<(i64, i64, String, i64, bool, Option<String>, i64)> = sqlx::query_as(
+        type Row = (i64, i64, String, i64, bool, Option<String>, i64);
+        let rows: Vec<Row> = sqlx::query_as(
             "SELECT l, i, text, size, free, model, tries FROM endless_nodes WHERE session_id = ? ORDER BY l, i",
         )
         .bind(id.to_string())
@@ -256,11 +272,12 @@ impl Store {
                 _ => {}
             }
         }
-        let usages: Vec<String> =
-            sqlx::query_scalar("SELECT usage_json FROM endless_calls WHERE session_id = ? AND usage_json IS NOT NULL")
-                .bind(&sid)
-                .fetch_all(&self.read)
-                .await?;
+        let usages: Vec<String> = sqlx::query_scalar(
+            "SELECT usage_json FROM endless_calls WHERE session_id = ? AND usage_json IS NOT NULL",
+        )
+        .bind(&sid)
+        .fetch_all(&self.read)
+        .await?;
         let mut stats = EndlessStats {
             calls: calls as u32,
             guard_trips,
@@ -313,7 +330,10 @@ impl Store {
     ) -> anyhow::Result<Vec<u64>> {
         let pat = format!(
             "%{}%",
-            needle.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+            needle
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
         );
         let rows: Vec<i64> = sqlx::query_scalar(
             "SELECT u.i FROM endless_units u JOIN messages m ON m.session_id = u.session_id AND m.seq = u.seq \
@@ -400,12 +420,21 @@ mod tests {
     async fn endless_rows_round_trip_and_fts_follows_level0() {
         let store = fresh().await;
         let id = SessionId::new();
-        store.create_session(id, "m", None, None, None).await.unwrap();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
         assert_eq!(store.session_memory(id).await.unwrap(), MemoryMode::Epochs);
-        store.set_session_memory(id, MemoryMode::Endless).await.unwrap();
+        store
+            .set_session_memory(id, MemoryMode::Endless)
+            .await
+            .unwrap();
         assert_eq!(store.session_memory(id).await.unwrap(), MemoryMode::Endless);
         assert_eq!(store.endless_sessions().await.unwrap().len(), 1);
-        assert_eq!(store.session(id).await.unwrap().unwrap().memory, MemoryMode::Endless);
+        assert_eq!(
+            store.session(id).await.unwrap().unwrap().memory,
+            MemoryMode::Endless
+        );
 
         store
             .endless_units_put(
@@ -432,14 +461,40 @@ mod tests {
             model: Some("m".into()),
             tries: 1,
         };
-        store.endless_node_put(id, &node(0, 0, "user: rename the config loader")).await.unwrap();
-        store.endless_node_put(id, &node(0, 1, "echo: nginx reload failed")).await.unwrap();
-        store.endless_node_put(id, &node(1, 0, "user: rename loader; echo: nginx failed")).await.unwrap();
+        store
+            .endless_node_put(id, &node(0, 0, "user: rename the config loader"))
+            .await
+            .unwrap();
+        store
+            .endless_node_put(id, &node(0, 1, "echo: nginx reload failed"))
+            .await
+            .unwrap();
+        store
+            .endless_node_put(id, &node(1, 0, "user: rename loader; echo: nginx failed"))
+            .await
+            .unwrap();
         let hits = store.endless_recall(id, "nginx", 8).await.unwrap();
-        assert_eq!(hits, vec![(1, "echo: nginx reload failed".to_owned())], "level 1 is not indexed");
-        store.endless_node_put(id, &node(0, 1, "echo: apache reload failed")).await.unwrap();
-        assert!(store.endless_recall(id, "nginx", 8).await.unwrap().is_empty(), "replace re-indexes");
-        assert_eq!(store.endless_recall(id, "apache", 8).await.unwrap().len(), 1);
+        assert_eq!(
+            hits,
+            vec![(1, "echo: nginx reload failed".to_owned())],
+            "level 1 is not indexed"
+        );
+        store
+            .endless_node_put(id, &node(0, 1, "echo: apache reload failed"))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .endless_recall(id, "nginx", 8)
+                .await
+                .unwrap()
+                .is_empty(),
+            "replace re-indexes"
+        );
+        assert_eq!(
+            store.endless_recall(id, "apache", 8).await.unwrap().len(),
+            1
+        );
         assert!(store.endless_recall(id, "", 8).await.unwrap().is_empty());
         assert_eq!(store.endless_nodes(id).await.unwrap().len(), 3);
 
@@ -472,12 +527,29 @@ mod tests {
         let stats = store.endless_stats(id).await.unwrap();
         assert_eq!((stats.calls, stats.guard_trips.size), (2, 1));
         assert!((stats.usd_estimate - 0.003).abs() < 1e-9);
-        assert_eq!((stats.input_tokens, stats.cache_read_tokens, stats.output_tokens), (100, 80, 20));
+        assert_eq!(
+            (
+                stats.input_tokens,
+                stats.cache_read_tokens,
+                stats.output_tokens
+            ),
+            (100, 80, 20)
+        );
 
         store.endless_fts_sync().await.unwrap();
-        assert_eq!(store.endless_recall(id, "apache", 8).await.unwrap().len(), 1);
+        assert_eq!(
+            store.endless_recall(id, "apache", 8).await.unwrap().len(),
+            1
+        );
         store.delete_session(id).await.unwrap();
         assert!(store.endless_nodes(id).await.unwrap().is_empty());
-        assert!(store.endless_recall(id, "apache", 8).await.unwrap().is_empty(), "delete trigger");
+        assert!(
+            store
+                .endless_recall(id, "apache", 8)
+                .await
+                .unwrap()
+                .is_empty(),
+            "delete trigger"
+        );
     }
 }

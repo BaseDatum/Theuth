@@ -8,7 +8,9 @@ use super::{ViewLine, tree::Unit};
 /// Fold parameters (clamped by `EndlessConfig::fold_cfg`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FoldCfg {
+    /// The view budget in bytes (D5).
     pub view_bytes: u32,
+    /// Fold band half-width as a fraction of `view_bytes`.
     pub slack: f32,
 }
 
@@ -26,11 +28,14 @@ impl FoldCfg {
 /// A view entry: node `(l, i)`, built or not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Part {
+    /// Level.
     pub l: u8,
+    /// Index within the level.
     pub i: u64,
 }
 
 impl Part {
+    /// `(id, n)` of the part.
     pub fn id_n(self) -> (u64, u64) {
         id_n(self.l, self.i)
     }
@@ -87,13 +92,17 @@ fn part_len(tree: &Tree, part: Part, units: &[Unit]) -> usize {
 /// The view: parts tiling `[0, T)` with their rendered byte sizes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fold {
+    /// The parts, oldest first; they tile `[0, T)`.
     pub parts: Vec<Part>,
     sizes: Vec<usize>,
+    /// Units so far.
     pub t: u64,
+    /// Fold parameters.
     pub cfg: FoldCfg,
 }
 
 impl Fold {
+    /// An empty view (`T = 0`).
     pub fn new(cfg: FoldCfg) -> Self {
         Self {
             parts: Vec::new(),
@@ -170,10 +179,7 @@ impl Fold {
 
     /// Parts not yet built (what `settle` waits for).
     pub fn unbuilt(&self, tree: &Tree) -> u32 {
-        self.parts
-            .iter()
-            .filter(|p| !tree.built(p.l, p.i))
-            .count() as u32
+        self.parts.iter().filter(|p| !tree.built(p.l, p.i)).count() as u32
     }
 
     /// Mergeable now or later: parent exists over `[0, T)`.
@@ -185,6 +191,7 @@ impl Fold {
 /// One cache-marked text block of the rendered view (§7.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewBlock {
+    /// The block's text.
     pub text: String,
     /// Place a cache mark at the end of this block.
     pub mark: bool,
@@ -193,8 +200,11 @@ pub struct ViewBlock {
 /// What a turn gets from `render_for_turn`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewRender {
+    /// The cache-marked blocks, in order.
     pub blocks: Vec<ViewBlock>,
+    /// Every part is a built line.
     pub settled: bool,
+    /// Parts rendered per D10.
     pub unbuilt: u32,
 }
 
@@ -334,7 +344,10 @@ mod tests {
 
     fn mergeable_pair(f: &Fold, tree: &Tree) -> bool {
         f.parts.windows(2).any(|w| {
-            w[0].l == w[1].l && w[0].i % 2 == 0 && w[1].i == w[0].i + 1 && tree.built(w[0].l + 1, w[0].i / 2)
+            w[0].l == w[1].l
+                && w[0].i % 2 == 0
+                && w[1].i == w[0].i + 1
+                && tree.built(w[0].l + 1, w[0].i / 2)
         })
     }
 
@@ -351,12 +364,20 @@ mod tests {
             assert!(exists(p.l, p.i, t), "a part is a whole node over [0, T)");
         }
         let size = f.size();
-        assert!(size <= CFG.high(), "size {size} within the upper band {}", CFG.high());
+        assert!(
+            size <= CFG.high(),
+            "size {size} within the upper band {}",
+            CFG.high()
+        );
         assert!(
             size <= CFG.low() || !mergeable_pair(&f, &tree),
             "after fit: under the lower band or nothing left to merge"
         );
-        assert!(f.parts.len() > 20 && f.parts.len() < 200, "{} parts", f.parts.len());
+        assert!(
+            f.parts.len() > 20 && f.parts.len() < 200,
+            "{} parts",
+            f.parts.len()
+        );
         assert!(f.parts.iter().any(|p| p.l >= 4), "deep bands exist");
 
         // Purity: the same function twice, and incremental append == rebuild.
@@ -419,7 +440,10 @@ mod tests {
         let mut at = 0;
         for b in &r.blocks[..r.blocks.len() - 1] {
             at += b.text.lines().count() - usize::from(b.text.starts_with("<chat>"));
-            assert!(f.parts[at].l < f.parts[at - 1].l, "cut {at} at a band boundary");
+            assert!(
+                f.parts[at].l < f.parts[at - 1].l,
+                "cut {at} at a band boundary"
+            );
         }
         assert!(r.settled && r.unbuilt == 0);
     }

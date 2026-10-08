@@ -12,11 +12,17 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
+    /// The user's words.
     User,
+    /// The agent's reply text.
     Talk,
+    /// A tool call: `fn_name` + compact JSON arguments.
     Tool,
+    /// A tool result (capped, §4).
     Echo,
+    /// A subagent's report.
     Work,
+    /// Imported memory (reserved).
     Note,
 }
 
@@ -58,6 +64,7 @@ pub struct Unit {
     pub seq: i64,
     /// Part index within the row.
     pub part: u16,
+    /// Kind of the part.
     pub kind: Kind,
     /// The unit's text (without the `kind: ` tag).
     pub text: String,
@@ -77,8 +84,11 @@ impl Unit {
 /// One built line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Node {
+    /// Level (`n = 2^l`).
     pub l: u8,
+    /// Index within the level.
     pub i: u64,
+    /// The summary line.
     pub text: String,
     /// UTF-8 bytes of `text`.
     pub size: u32,
@@ -98,7 +108,7 @@ pub fn id_n(l: u8, i: u64) -> (u64, u64) {
 
 /// `(l, i)` of a valid `id+n` (n a power of two, `id % n == 0`), else `None`.
 pub fn addr(id: u64, n: u64) -> Option<(u8, u64)> {
-    if n == 0 || !n.is_power_of_two() || id % n != 0 {
+    if n == 0 || !n.is_power_of_two() || !id.is_multiple_of(n) {
         return None;
     }
     Some((n.trailing_zeros() as u8, id / n))
@@ -119,32 +129,39 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// A tree from stored nodes.
     pub fn from_nodes(nodes: impl IntoIterator<Item = Node>) -> Self {
         Self {
             nodes: nodes.into_iter().map(|n| ((n.l, n.i), n)).collect(),
         }
     }
 
+    /// The node at `(l, i)`, if built.
     pub fn get(&self, l: u8, i: u64) -> Option<&Node> {
         self.nodes.get(&(l, i))
     }
 
+    /// Whether `(l, i)` is built.
     pub fn built(&self, l: u8, i: u64) -> bool {
         self.nodes.contains_key(&(l, i))
     }
 
+    /// Add or replace a node.
     pub fn insert(&mut self, node: Node) {
         self.nodes.insert((node.l, node.i), node);
     }
 
+    /// Built nodes.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
+    /// No node built yet.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
 
+    /// Every built node, by `(l, i)`.
     pub fn iter(&self) -> impl Iterator<Item = &Node> {
         self.nodes.values()
     }

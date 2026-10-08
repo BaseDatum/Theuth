@@ -18,8 +18,7 @@ use super::compactor::{self, Compactor, ModelCompactor, Step};
 use super::fold::{self, Fold, FoldCfg, Part, ViewRender};
 use super::tree::{self, Node, Tree, Unit, exists, id_n};
 use super::{
-    Attached, Backfill, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode, ViewLine,
-    units,
+    Attached, Backfill, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode, ViewLine, units,
 };
 use crate::backend::Backend;
 use crate::cost::{CallKind, CallStatus};
@@ -192,6 +191,16 @@ impl Live {
     fn unit_turn(&self, i: u64) -> u32 {
         self.turns.get(&i).copied().unwrap_or(0)
     }
+
+    /// D14: one past the last history unit (`turn == 0`) without a line; 0 = none.
+    fn history_unbuilt(&self) -> u64 {
+        self.units
+            .iter()
+            .filter(|u| self.unit_turn(u.i) == 0 && !self.tree.built(0, u.i))
+            .map(|u| u.i + 1)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 impl Live {
@@ -254,10 +263,10 @@ pub(crate) async fn resume_all(inner: &Inner) -> anyhow::Result<usize> {
         let Ok(session) = row.id.parse::<SessionId>() else {
             continue;
         };
-        let model = match inner
-            .catalog
-            .resolve(&row.model, &*crate::supervisor::configured(inner.auth.clone()))
-        {
+        let model = match inner.catalog.resolve(
+            &row.model,
+            &*crate::supervisor::configured(inner.auth.clone()),
+        ) {
             Ok(m) => m,
             Err(e) => {
                 tracing::warn!(%session, error = %e, "endless: cannot resume (model)");
@@ -278,8 +287,15 @@ pub(crate) async fn resume_all(inner: &Inner) -> anyhow::Result<usize> {
     Ok(n)
 }
 
-pub(crate) async fn attach(inner: &Inner, session: SessionId, attached: Attached) -> anyhow::Result<()> {
-    let store = attached.store.clone().unwrap_or_else(|| inner.store.clone());
+pub(crate) async fn attach(
+    inner: &Inner,
+    session: SessionId,
+    attached: Attached,
+) -> anyhow::Result<()> {
+    let store = attached
+        .store
+        .clone()
+        .unwrap_or_else(|| inner.store.clone());
     let mode = store.session_memory(session).await?;
     let existing = inner.sessions.lock().get(&session).map(|h| h.state.clone());
     let state = match existing {
@@ -345,21 +361,16 @@ async fn load(state: &State) -> anyhow::Result<()> {
         max_turn = max_turn.max(r.turn);
     }
     let nodes = state.store.endless_nodes(state.session).await?;
-    let mut live = state.live.lock();
-    live.units = units;
-    live.turns = turns;
-    live.last_seq = last_seq;
-    live.turn = max_turn;
-    live.tree = Tree::from_nodes(nodes);
-    live.backfill_total = live
-        .units
-        .iter()
-        .filter(|u| live.unit_turn(u.i) == 0 && !live.tree.built(0, u.i))
-        .map(|u| u.i + 1)
-        .max()
-        .unwrap_or(0);
-    live.invalidate();
-    drop(live);
+    {
+        let mut live = state.live.lock();
+        live.units = units;
+        live.turns = turns;
+        live.last_seq = last_seq;
+        live.turn = max_turn;
+        live.tree = Tree::from_nodes(nodes);
+        live.backfill_total = live.history_unbuilt();
+        live.invalidate();
+    }
     // Rows that landed after the cache (or a cache that never existed).
     ingest(state).await
 }
@@ -368,7 +379,10 @@ async fn load(state: &State) -> anyhow::Result<()> {
 async fn ingest(state: &State) -> anyhow::Result<()> {
     let _guard = state.ingest.lock().await;
     let from = state.live.lock().last_seq + 1;
-    let rows = state.store.endless_messages_from(state.session, from).await?;
+    let rows = state
+        .store
+        .endless_messages_from(state.session, from)
+        .await?;
     if rows.is_empty() {
         return Ok(());
     }
@@ -397,7 +411,10 @@ async fn ingest(state: &State) -> anyhow::Result<()> {
             turn,
         })
         .collect();
-    state.store.endless_units_put(state.session, &unit_rows).await?;
+    state
+        .store
+        .endless_units_put(state.session, &unit_rows)
+        .await?;
     let mut live = state.live.lock();
     for u in new_units {
         live.turns.insert(u.i, turn);
@@ -499,8 +516,16 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
             ),
         }
     } else {
-        let a = live.tree.get(l - 1, 2 * i).map(|n| n.text.clone()).unwrap_or_default();
-        let b = live.tree.get(l - 1, 2 * i + 1).map(|n| n.text.clone()).unwrap_or_default();
+        let a = live
+            .tree
+            .get(l - 1, 2 * i)
+            .map(|n| n.text.clone())
+            .unwrap_or_default();
+        let b = live
+            .tree
+            .get(l - 1, 2 * i + 1)
+            .map(|n| n.text.clone())
+            .unwrap_or_default();
         match tree::free_merge(&a, &b, node_bytes) {
             Some(text) => (Some(text), None),
             None => (
@@ -611,11 +636,17 @@ async fn finish(state: &State, key: (u8, u64), outcome: Result<Node, String>, to
             state.built_tx.send_modify(|v| *v += 1);
         }
         Err(e) => {
-            live.failed
-                .insert(key, Instant::now() + Duration::from_secs(u64::from(state.cfg.retry_secs)));
+            live.failed.insert(
+                key,
+                Instant::now() + Duration::from_secs(u64::from(state.cfg.retry_secs)),
+            );
             if live.reported.insert(key) {
                 tracing::warn!(session = %state.session, l = key.0, i = key.1, error = %e, "endless: node failed (will retry)");
-                live.pending_error = Some(format!("{}+{}: {e}", id_n(key.0, key.1).0, id_n(key.0, key.1).1));
+                live.pending_error = Some(format!(
+                    "{}+{}: {e}",
+                    id_n(key.0, key.1).0,
+                    id_n(key.0, key.1).1
+                ));
             }
         }
     }
@@ -639,7 +670,9 @@ fn emit_progress(state: &Arc<State>) -> Duration {
     if let Some(last) = live.last_progress
         && last.elapsed() < PROGRESS_EVERY
     {
-        return (PROGRESS_EVERY - last.elapsed()).min(next_retry).max(Duration::from_millis(20));
+        return (PROGRESS_EVERY - last.elapsed())
+            .min(next_retry)
+            .max(Duration::from_millis(20));
     }
     live.dirty = false;
     live.last_progress = Some(Instant::now());
@@ -690,7 +723,10 @@ pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> 
     }
 }
 
-pub(crate) async fn render_for_turn(inner: &Inner, session: SessionId) -> anyhow::Result<ViewRender> {
+pub(crate) async fn render_for_turn(
+    inner: &Inner,
+    session: SessionId,
+) -> anyhow::Result<ViewRender> {
     let Some(state) = state_of(inner, session) else {
         anyhow::bail!("session {session} is not attached to endless");
     };
@@ -725,7 +761,12 @@ fn view_line(part: Part, text: String, built: bool) -> ViewLine {
     }
 }
 
-pub(crate) async fn zoom(inner: &Inner, session: SessionId, id: u64, n: u64) -> Result<Vec<ViewLine>, String> {
+pub(crate) async fn zoom(
+    inner: &Inner,
+    session: SessionId,
+    id: u64,
+    n: u64,
+) -> Result<Vec<ViewLine>, String> {
     let Some(state) = state_of(inner, session) else {
         return Err("this session has no endless memory".into());
     };
@@ -799,7 +840,11 @@ pub(crate) async fn recall(
     Ok(out)
 }
 
-pub(crate) async fn date(inner: &Inner, session: SessionId, id: u64) -> Result<Option<DateTime<Utc>>, String> {
+pub(crate) async fn date(
+    inner: &Inner,
+    session: SessionId,
+    id: u64,
+) -> Result<Option<DateTime<Utc>>, String> {
     let Some(state) = state_of(inner, session) else {
         return Err("this session has no endless memory".into());
     };
@@ -825,7 +870,11 @@ pub(crate) async fn set_mode(
     match mode {
         MemoryMode::Endless => {
             store.set_session_memory(session, mode).await?;
-            let attached = inner.sessions.lock().get(&session).map(|h| h.attached.clone());
+            let attached = inner
+                .sessions
+                .lock()
+                .get(&session)
+                .map(|h| h.attached.clone());
             let attached = match attached {
                 Some(a) => a,
                 None => {
@@ -836,7 +885,10 @@ pub(crate) async fn set_mode(
                     Attached {
                         model: inner
                             .catalog
-                            .resolve(&row.model, &*crate::supervisor::configured(inner.auth.clone()))
+                            .resolve(
+                                &row.model,
+                                &*crate::supervisor::configured(inner.auth.clone()),
+                            )
                             .map_err(anyhow::Error::msg)?,
                         effort: row.effort.as_deref().and_then(crate::effort_of),
                         agent: row.desk.unwrap_or_else(|| "theuth".to_owned()),
@@ -847,16 +899,11 @@ pub(crate) async fn set_mode(
             // A fresh pump: `attach` reloads nothing for a known state but restarts the task.
             attach(inner, session, attached).await?;
             if let Some(state) = state_of(inner, session) {
-                let mut live = state.live.lock();
-                live.backfill_total = live
-                    .units
-                    .iter()
-                    .filter(|u| live.unit_turn(u.i) == 0 && !live.tree.built(0, u.i))
-                    .map(|u| u.i + 1)
-                    .max()
-                    .unwrap_or(0);
-                live.dirty = true;
-                drop(live);
+                {
+                    let mut live = state.live.lock();
+                    live.backfill_total = live.history_unbuilt();
+                    live.dirty = true;
+                }
                 state.wake.notify_one();
             }
             Ok(SetMode {
