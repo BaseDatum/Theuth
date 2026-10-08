@@ -146,7 +146,7 @@ export function QuestionBlock({
               aria-label="Use your answer"
               aria-pressed={typing}
               onClick={() => chooseOwn(true)}
-              className="text-xs text-fg-tertiary"
+              className="ml-0.5 text-xs text-fg-tertiary"
             >
               {typing ? '●' : '○'}
             </Button>
