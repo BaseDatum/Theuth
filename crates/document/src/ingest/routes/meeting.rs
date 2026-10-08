@@ -124,3 +124,26 @@ pub(crate) fn render(t: &Transcript) -> (String, Vec<serde_json::Value>) {
     }
     (md, segs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn segments_become_speaker_blocks_and_blank_ones_are_dropped() {
+        let t: Transcript = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/ingest/transcript.json"
+        ))
+        .unwrap();
+        let (md, segs) = render(&t);
+        assert_eq!(
+            md,
+            "## [00:00] Sky\n\nWelcome, let's start with failover.\n\n\
+             ## [00:04] Ana\n\nThe primary flapped twice last week.\n\n\
+             ## [02:05] s2\n\nWe should add a health check.\n\n"
+        );
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[1]["t0_ms"], 4500);
+        assert_eq!(segs[2]["speaker"], "s2");
+    }
+}

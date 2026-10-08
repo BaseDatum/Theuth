@@ -225,4 +225,37 @@ mod tests {
         );
         assert!(pick(&[], &["en".into()]).is_none());
     }
+
+    #[test]
+    fn a_saved_watch_page_yields_tracks_and_details() {
+        let html = include_str!("../../tests/fixtures/ingest/watch.html");
+        let t = tracks(html);
+        assert_eq!(t.len(), 3);
+        assert_eq!(t[1].kind.as_deref(), Some("asr"));
+        assert_eq!(pick(&t, &["en".into()]).unwrap().lang, "en-GB");
+        assert!(
+            pick(&t, &["en".into()])
+                .unwrap()
+                .base_url
+                .ends_with("&lang=en-GB")
+        );
+        let d = details(html);
+        assert_eq!(d.title.as_deref(), Some("Failover in practice"));
+        assert_eq!(d.channel.as_deref(), Some("Ops Channel"));
+        assert_eq!(d.length_ms, Some(2_461_000));
+        assert!(tracks("<html>no player json</html>").is_empty());
+    }
+
+    #[test]
+    fn json3_words_become_minute_blocks() {
+        let words =
+            json3_words(include_str!("../../tests/fixtures/ingest/captions.json3")).unwrap();
+        assert_eq!(words.len(), 12);
+        assert_eq!(words[1], (520, " to".into()));
+        let md = crate::ingest::timed_blocks(words, 60_000);
+        assert_eq!(
+            md,
+            "## [00:00]\n\nWelcome to the talk. Still first minute.\n\n## [01:01]\n\nSecond minute begins.\n\n## [03:20]\n\nMuch later.\n\n"
+        );
+    }
 }

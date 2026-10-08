@@ -145,3 +145,27 @@ pub fn pdf_pages(bytes: &[u8]) -> Option<u32> {
         .count() as u32;
     (n > 0).then_some(n)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PDF: &[u8] = include_bytes!("../../../tests/fixtures/ingest/two-pages.pdf");
+
+    #[test]
+    fn pdf_pages_counts_page_objects_not_the_tree() {
+        assert_eq!(pdf_pages(PDF), Some(2));
+        assert_eq!(pdf_pages(b"%PDF-1.4 nothing"), None);
+    }
+
+    #[tokio::test]
+    async fn the_two_page_pdf_converts_to_markdown_with_both_pages() {
+        let t = std::time::Instant::now();
+        let md = tools::doc::to_markdown(PDF.to_vec(), Format::Pdf)
+            .await
+            .unwrap();
+        eprintln!("pdf → markdown in {:?}: {md:?}", t.elapsed());
+        assert!(md.contains("Hello notebooks"), "{md}");
+        assert!(md.contains("Second page here"), "{md}");
+    }
+}

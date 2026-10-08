@@ -1,0 +1,1 @@
+{"id": "0199a000-0000-7000-8000-000000000001", "session": "0199a000-0000-7000-8000-000000000002", "title": "Failover sync", "context": null, "started_at": "2026-02-03T10:00:00Z", "ended_at": "2026-02-03T10:30:00Z", "duration_ms": 1800000, "process": {"name": "zoom"}, "consent_at": "2026-02-03T10:00:00Z", "gaps": [], "degraded": [], "state": "done", "failure": null}
