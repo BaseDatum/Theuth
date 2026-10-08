@@ -234,12 +234,22 @@ fn ids_follow_the_grammar() {
 async fn stubs_report_their_owner() {
     let dir = std::env::temp_dir().join(format!("codemap-stubs-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(&dir).unwrap();
-    let ix = crate::Codeindex::new(crate::CodeindexConfig::default(), &dir).unwrap();
+    let ix = std::sync::Arc::new(
+        crate::Codeindex::new(crate::CodeindexConfig::default(), &dir).unwrap(),
+    );
     // W1 built: an unindexed root is refused, never indexed (§10.2).
     let e = skeleton::overview(&ix, Overview { root: dir.clone() })
         .await
         .unwrap_err();
     assert!(e.to_string().contains("not indexed"), "{e}");
+    // W2 built: a root without a job cannot be cancelled.
+    let e = generator::cancel(&ix, Cancel { root: dir.clone() })
+        .await
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("no generation job is running"),
+        "{e}"
+    );
     // W4 built: export refuses an unindexed root the same way (§10.2).
     let e = export::export(&ix, Export { root: dir.clone() })
         .await

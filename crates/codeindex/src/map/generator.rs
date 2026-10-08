@@ -26,8 +26,9 @@ use sqlx::SqlitePool;
 use surface::{GraphDirection, GraphEdge, GraphEdgeStyle, GraphKind, GraphNode};
 
 use super::detect::{Detection, FLOW_PERSPECTIVES, PERSPECTIVES};
-use super::generator_facts::{Child, Facts, Flow, UnitEdge, cut, evidence_summary};
+use super::generator_facts::{Facts, Flow, cut};
 use super::generator_write::{self as w, ElementRow};
+use super::skeleton::Child;
 use super::validate::{self, Located, check_description, check_diagram, check_edge_label};
 use super::{
     CALL_BUDGET, Cancel, DIAGRAM_NODES, Generate, GraphProps, MAX_DEPTH, MapEdge, MapEvidence,
@@ -35,7 +36,6 @@ use super::{
 };
 use crate::event::CodeindexEvent;
 use crate::index::{Codeindex, RootIndex};
-use crate::map::store;
 
 /// Stage-B calls in flight at once (§6.7).
 pub const TOP_CONCURRENCY: usize = 3;
@@ -106,7 +106,7 @@ pub async fn generate(ix: &Arc<Codeindex>, m: Generate) -> anyhow::Result<MapJob
     let caller = SIDE_CALLER.get().cloned().ok_or_else(|| {
         anyhow::anyhow!("codemap generation needs the agent plugin (no side caller installed)")
     })?;
-    let pool = store::open(&store::path(ix.dir(), &ri.root), &ri.root).await?;
+    let pool = ix.map_pool(&ri).await?;
     let job = MapJob {
         id: new_id(),
         session: m.session,
@@ -455,7 +455,7 @@ impl Job {
     // --- the pipeline ---------------------------------------------------------
 
     async fn run(self: &Arc<Self>) -> Result<(), Stop> {
-        let facts = match Facts::load(&self.ri.pool, &self.pool, &self.ri.root).await {
+        let facts = match Facts::load(&self.ri, &self.pool).await {
             Ok(f) => Arc::new(f),
             Err(e) => return Err(Stop::Failed(format!("facts: {e:#}"))),
         };
@@ -666,8 +666,7 @@ impl Job {
     /// Stage B for one perspective: partition, draw, describe the root.
     async fn top(&self, facts: &Facts, p: &Planned) -> Result<(), Stop> {
         self.progress("top", None, true).await;
-        let units: Vec<&super::generator_facts::Unit> = facts.top_units();
-        let handles = Handles::new(&units, &facts.edges);
+        let handles = Handles::new(&facts.top, &facts.edges);
         let detection = facts.detections.iter().find(|d| d.kind == p.kind);
         let flows = if FLOW_PERSPECTIVES.contains(&p.kind.as_str()) {
             facts
@@ -706,19 +705,19 @@ impl Job {
                     .map(|t| t.fields.into_fields())
                     .filter(|f| check_description("", &f.description).is_none())
                     .unwrap_or_default();
-                (
-                    structure_plan(facts, &p.id, fields),
-                    calls,
-                    true,
-                    Some(error),
-                )
+                (structure_plan(facts, fields), calls, true, Some(error))
             }
         };
 
-        let root_hash = facts.facts_hash(
-            &units.iter().map(|u| u.path.clone()).collect::<Vec<_>>(),
-            &facts.edges,
-        );
+        // The root's hash as `recompute` stamps it: every file, the skeleton's
+        // edges between the model's groups.
+        let group_children: Vec<Child> = plan
+            .groups
+            .iter()
+            .filter_map(|g| facts.group_child(&g.node, &g.name, &g.members))
+            .collect();
+        let (root_edges, _) = facts.sk.edges_between(&group_children);
+        let root_hash = facts.facts_hash(&facts.all_files(), &root_edges);
         let mut prov = self.provenance(&calls, repaired, facts, root_hash);
         prov.repaired |= error.is_some();
         if let Some(warning) = &plan.warning {
@@ -804,8 +803,14 @@ impl Job {
                 }
             };
 
-            let anchors: Vec<String> = flow.symbols.iter().map(|s| s.path.clone()).collect();
-            let hash = facts.facts_hash(&anchors, &plan.skeleton_edges);
+            let mut files: Vec<usize> = flow
+                .symbols
+                .iter()
+                .flat_map(|s| facts.sk.files_under(&s.path))
+                .collect();
+            files.sort_unstable();
+            files.dedup();
+            let hash = facts.facts_hash(&files, &plan.skeleton_edges);
             let mut prov = self.provenance(&calls, repaired, facts, hash);
             prov.repaired |= error.is_some();
             let rows = build_flow(
@@ -840,21 +845,19 @@ impl Job {
             else {
                 continue;
             };
-            let (kind, name, path, members, anchors) = (
-                header.kind,
-                header.name,
-                header.path,
-                header.members,
-                header.anchors,
+            let (kind, name, path, members) =
+                (header.kind, header.name, header.path, header.members);
+            let own = facts
+                .group_child(&header.node, &name, &members)
+                .map(|c| c.files)
+                .unwrap_or_default();
+            let sub = facts.sub_skeleton(
+                facts.children_for(&kind, path.as_deref(), &members),
+                Facts::cap(kind == "cluster" || kind == "bundle"),
             );
-            let sub = facts.sub_skeleton(&anchors);
             let mut children = Vec::with_capacity(sub.children.len());
             for c in &sub.children {
-                let top = if c.kind == "symbol" {
-                    Vec::new()
-                } else {
-                    facts.top_symbols(&self.ri.pool, &c.path).await
-                };
+                let top = facts.top_symbols(&self.ri.pool, &c.path).await;
                 children.push((c.clone(), top));
             }
             let stored = w::read_diagram(&self.pool, id)
@@ -863,14 +866,15 @@ impl Job {
             let edges: Vec<MapEdge> = stored.as_ref().map(|(_, e)| e.clone()).unwrap_or_default();
             items.push(DescribeItem {
                 id: id.clone(),
-                kind,
+                kind: kind.clone(),
                 name,
                 path,
                 members,
-                anchors: anchors.clone(),
+                anchors: header.anchors,
+                hash: facts.facts_hash(&own, &sub.edges),
+                triggers: facts.concern_triggers(&own, &header.node),
                 children,
                 edges,
-                triggers: facts.concern_triggers(&anchors),
             });
         }
         if items.is_empty() {
@@ -922,8 +926,7 @@ impl Job {
             let Some(item) = items.iter().find(|i| i.id == d.id) else {
                 continue;
             };
-            let sub_edges: Vec<UnitEdge> = facts.sub_skeleton(&item.anchors).edges;
-            let hash = facts.facts_hash(&item.anchors, &sub_edges);
+            let hash = item.hash.clone();
             let prov = self.provenance(&calls, repaired, facts, hash);
             let name = d.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
             w::write_prose(&self.pool, &d.id, name, &d.fields.into_fields(), &prov)
@@ -1020,7 +1023,7 @@ struct Handles {
 }
 
 impl Handles {
-    fn new(units: &[&super::generator_facts::Unit], edges: &[UnitEdge]) -> Self {
+    fn new(units: &[Child], edges: &[MapEdge]) -> Self {
         Self {
             units: units
                 .iter()
@@ -1203,16 +1206,20 @@ struct TopPlan {
     edges: Vec<MapEdge>,
     /// Groups the model drew (handle order); node ids resolved.
     nodes: Vec<String>,
-    /// 13–20 nodes: accepted with this note in the error log (§5.3).
+    /// 13–20 nodes: accepted with this note in the job log (§5.3).
     warning: Option<String>,
 }
 
+/// One model-made group: a cluster of units or a single unit.
 #[derive(Clone, Debug)]
 struct Group {
     node: String,
     name: String,
     members: Vec<String>,
+    /// Member unit paths (anchors).
     paths: Vec<String>,
+    /// The group as the skeleton sees it (its files).
+    child: Child,
 }
 
 fn validate_top(
@@ -1269,7 +1276,7 @@ fn validate_top(
                 continue;
             }
             members.push(node.to_owned());
-            if let Some(u) = facts.unit(node) {
+            if let Some(u) = facts.top_unit(node) {
                 paths.push(u.path.clone());
             }
         }
@@ -1278,14 +1285,19 @@ fn validate_top(
         } else {
             cluster_id(&members)
         };
+        let name = n.name.trim().to_owned();
+        let Some(child) = facts.group_child(&node, &name, &members) else {
+            continue; // members all invalid: reported above
+        };
         handles.push(n.id.clone());
         groups.push((
             n.id.clone(),
             Group {
                 node,
-                name: n.name.trim().to_owned(),
+                name,
                 members,
                 paths,
+                child,
             },
         ));
     }
@@ -1327,7 +1339,7 @@ fn validate_top(
         if let Ok(Some(l)) = check_edge_label(&path, &label) {
             errors.push(l);
         }
-        let mut evidence = facts.evidence_between(&from.paths, &to.paths);
+        let mut evidence = facts.evidence_between(&from.child, &to.child);
         if let Some(n) = note {
             for cited in &n.evidence {
                 match h.edge_index(cited) {
@@ -1406,10 +1418,8 @@ fn validate_top(
 
 /// §5.6: the structure-only top level — the largest units by share and a
 /// bundle, mechanical labels — used when the model's output failed twice.
-fn structure_plan(facts: &Facts, persp: &str, fields: MapFields) -> TopPlan {
-    let units = facts.top_units();
-    let drawn: Vec<&super::generator_facts::Unit> =
-        units.iter().copied().take(DIAGRAM_NODES).collect();
+fn structure_plan(facts: &Facts, fields: MapFields) -> TopPlan {
+    let drawn: Vec<&Child> = facts.top.iter().take(DIAGRAM_NODES).collect();
     let groups: Vec<Group> = drawn
         .iter()
         .map(|u| Group {
@@ -1417,6 +1427,7 @@ fn structure_plan(facts: &Facts, persp: &str, fields: MapFields) -> TopPlan {
             name: u.name.clone(),
             members: vec![u.node.clone()],
             paths: vec![u.path.clone()],
+            child: (*u).clone(),
         })
         .collect();
     let drawn_nodes: BTreeSet<&str> = drawn.iter().map(|u| u.node.as_str()).collect();
@@ -1424,31 +1435,20 @@ fn structure_plan(facts: &Facts, persp: &str, fields: MapFields) -> TopPlan {
         .edges
         .iter()
         .filter(|e| drawn_nodes.contains(e.from.as_str()) && drawn_nodes.contains(e.to.as_str()))
-        .map(map_edge)
+        .cloned()
         .collect();
-    let _ = persp;
     TopPlan {
         fields,
         nodes: groups.iter().map(|g| g.node.clone()).collect(),
         groups,
-        uncovered: units
+        uncovered: facts
+            .top
             .iter()
             .skip(DIAGRAM_NODES)
             .map(|u| u.node.clone())
             .collect(),
         edges,
         warning: None,
-    }
-}
-
-/// A skeleton edge as a stored edge with a mechanical (empty) label.
-fn map_edge(e: &UnitEdge) -> MapEdge {
-    MapEdge {
-        from: e.from.clone(),
-        to: e.to.clone(),
-        label: String::new(),
-        backed: !e.evidence.is_empty(),
-        evidence: e.evidence.clone(),
     }
 }
 
@@ -1484,16 +1484,13 @@ fn graph_node(id: &str, label: &str, paths: &[String], tag: Option<String>) -> G
     }
 }
 
+/// A stored edge as drawn: the model's *why* (or the skeleton's mechanical
+/// label), dashed when inferred.
 fn graph_edge(e: &MapEdge) -> GraphEdge {
-    let label = if e.label.is_empty() {
-        evidence_summary(&e.evidence)
-    } else {
-        e.label.clone()
-    };
     GraphEdge {
         from: e.from.clone(),
         to: e.to.clone(),
-        label: (!label.is_empty()).then_some(label),
+        label: (!e.label.is_empty()).then(|| e.label.clone()),
         style: Some(if e.backed {
             GraphEdgeStyle::Solid
         } else {
@@ -1516,9 +1513,9 @@ fn graph(nodes: Vec<GraphNode>, edges: &[MapEdge]) -> GraphProps {
 }
 
 /// The element rows of one perspective from a validated top level: the root
-/// (depth 0, the model's diagram), the groups (depth 1), and the skeleton's
-/// structure below them to `max_depth` (§5.5) — units with their module
-/// diagrams for `overall-architecture`, leaves elsewhere.
+/// (depth 0, the model's diagram), the groups (depth 1, the model's — stored
+/// `generated` so `recompute` keeps their names and members), and the
+/// skeleton's structure below them to `max_depth` (§5.5).
 fn build_tree(
     facts: &Facts,
     p: &Planned,
@@ -1536,24 +1533,30 @@ fn build_tree(
         .map(|g| graph_node(&g.node, &g.name, &g.paths, None))
         .collect();
     let bundle_node = format!("bundle:{root_node}");
-    if !plan.uncovered.is_empty() {
+    let bundle = (!plan.uncovered.is_empty())
+        .then(|| {
+            facts.group_child(
+                &bundle_node,
+                &format!("+{} more", plan.uncovered.len()),
+                &plan.uncovered,
+            )
+        })
+        .flatten();
+    let mut root_edges = plan.edges.clone();
+    if let Some(b) = &bundle {
         nodes.push(graph_node(
-            &bundle_node,
-            &format!("+{} more", plan.uncovered.len()),
+            &b.node,
+            &b.name,
             &[],
             Some(format!("+{}", plan.uncovered.len())),
         ));
-    }
-    let mut root_edges = plan.edges.clone();
-    // Edges the skeleton holds into/out of the bundle, counted.
-    if !plan.uncovered.is_empty() {
+        // Edges the skeleton holds into the bundle, counted beside the model's.
         for g in &plan.groups {
-            let to_bundle =
-                facts.evidence_between(&g.paths, &uncovered_paths(facts, &plan.uncovered));
+            let to_bundle = facts.evidence_between(&g.child, b);
             if !to_bundle.is_empty() {
                 root_edges.push(MapEdge {
                     from: g.node.clone(),
-                    to: bundle_node.clone(),
+                    to: b.node.clone(),
                     label: String::new(),
                     backed: true,
                     evidence: to_bundle,
@@ -1597,51 +1600,54 @@ fn build_tree(
         } else {
             Vec::new()
         };
-        rows.extend(structure_rows(
+        let mut group_rows = structure_rows(
             facts,
             &p.id,
             &p.id,
             1,
             u32::try_from(i).unwrap_or(u32::MAX),
-            &g.node,
-            &g.name,
+            &g.child,
             kind,
-            g.paths.first().cloned(),
             members,
             g.paths.clone(),
             max_depth,
-        ));
+        );
+        // The partition and its names are the model's: `generated` keeps them
+        // through the skeleton's recompute (W1 rewrites `structure` rows' names).
+        if let Some(group) = group_rows.first_mut() {
+            group.origin = MapOrigin::Generated;
+        }
+        rows.extend(group_rows);
     }
-    if !plan.uncovered.is_empty() {
-        let paths = uncovered_paths(facts, &plan.uncovered);
-        rows.extend(structure_rows(
+    if let Some(b) = &bundle {
+        let paths: Vec<String> = plan
+            .uncovered
+            .iter()
+            .filter_map(|n| n.strip_prefix("unit:").map(str::to_owned))
+            .collect();
+        let mut bundle_rows = structure_rows(
             facts,
             &p.id,
             &p.id,
             1,
             u32::try_from(plan.groups.len()).unwrap_or(u32::MAX),
-            &bundle_node,
-            &format!("+{} more", plan.uncovered.len()),
+            b,
             "bundle",
-            None,
             plan.uncovered.clone(),
             paths,
             max_depth.min(2),
-        ));
+        );
+        if let Some(row) = bundle_rows.first_mut() {
+            row.origin = MapOrigin::Generated;
+        }
+        rows.extend(bundle_rows);
     }
     rows
 }
 
-fn uncovered_paths(facts: &Facts, nodes: &[String]) -> Vec<String> {
-    nodes
-        .iter()
-        .filter_map(|n| facts.unit(n).map(|u| u.path.clone()))
-        .collect()
-}
-
-/// One structure element (basenames, mechanical labels, `origin: Structure`)
-/// and, while `depth < max_depth`, its children the same way; children at
-/// `max_depth` are leaves.
+/// One structure element (basenames, the skeleton's mechanical labels,
+/// `origin: Structure`) and, while `depth < max_depth`, its children the same
+/// way; children at `max_depth` are leaves.
 #[allow(clippy::too_many_arguments)]
 fn structure_rows(
     facts: &Facts,
@@ -1649,21 +1655,21 @@ fn structure_rows(
     parent: &str,
     depth: u8,
     order_no: u32,
-    node: &str,
-    name: &str,
+    child: &Child,
     kind: &str,
-    path: Option<String>,
     members: Vec<String>,
     anchors: Vec<String>,
     max_depth: u8,
 ) -> Vec<ElementRow> {
-    let id = element_id(persp, node);
-    // Doors: clusters, bundles and the skeleton's units (a module directory
-    // inside a unit is a listing, not another diagram — W7's reading cap).
-    let descend = depth < max_depth
-        && (kind == "cluster" || kind == "bundle" || facts.unit(node).is_some_and(|u| !u.leaf()));
+    let id = element_id(persp, &child.node);
+    let grouped = kind == "cluster" || kind == "bundle";
+    // Doors: clusters, bundles and units with more than a leaf's files.
+    let descend = depth < max_depth && (grouped || !Facts::is_leaf(child));
     let sub = if descend {
-        facts.sub_skeleton(&anchors)
+        facts.sub_skeleton(
+            facts.children_for(kind, Some(&child.path), &members),
+            Facts::cap(grouped),
+        )
     } else {
         Default::default()
     };
@@ -1678,7 +1684,7 @@ fn structure_rows(
             .map(|c| graph_node(&c.node, &c.name, std::slice::from_ref(&c.path), None))
             .collect();
         if !sub.bundled.is_empty() {
-            let b = format!("bundle:{node}");
+            let b = format!("bundle:{}", child.node);
             nodes.push(graph_node(
                 &b,
                 &format!("+{} more", sub.bundled.len()),
@@ -1686,23 +1692,22 @@ fn structure_rows(
                 Some(format!("+{}", sub.bundled.len())),
             ));
         }
-        let edges: Vec<MapEdge> = sub.edges.iter().map(map_edge).collect();
-        (Some(graph(nodes, &edges)), edges)
+        (Some(graph(nodes, &sub.edges)), sub.edges.clone())
     };
     rows.push(ElementRow {
         id: id.clone(),
         perspective: persp.to_owned(),
-        node: node.to_owned(),
+        node: child.node.clone(),
         parent: Some(parent.to_owned()),
         depth,
         order_no,
-        name: name.to_owned(),
-        path,
+        name: child.name.clone(),
+        path: (!grouped || !child.path.is_empty()).then(|| child.path.clone()),
         kind: kind.to_owned(),
         members,
         leaf,
         origin: MapOrigin::Structure,
-        facts_hash: facts.facts_hash(&anchors, &sub.edges),
+        facts_hash: facts.facts_hash(&child.files, &sub.edges),
         diagram,
         fields: MapFields::default(),
         provenance: None,
@@ -1720,17 +1725,20 @@ fn structure_rows(
             &id,
             depth + 1,
             u32::try_from(i).unwrap_or(u32::MAX),
-            &c.node,
-            &c.name,
+            c,
             c.kind,
-            Some(c.path.clone()),
             Vec::new(),
             vec![c.path.clone()],
             max_depth,
         ));
     }
     if !sub.bundled.is_empty() {
-        let b = format!("bundle:{node}");
+        let b = format!("bundle:{}", child.node);
+        let files: Vec<usize> = sub
+            .bundled
+            .iter()
+            .flat_map(|c| c.files.iter().copied())
+            .collect();
         rows.push(ElementRow {
             id: element_id(persp, &b),
             perspective: persp.to_owned(),
@@ -1744,13 +1752,7 @@ fn structure_rows(
             members: sub.bundled.iter().map(|c| c.node.clone()).collect(),
             leaf: true,
             origin: MapOrigin::Structure,
-            facts_hash: facts.facts_hash(
-                &sub.bundled
-                    .iter()
-                    .map(|c| c.path.clone())
-                    .collect::<Vec<_>>(),
-                &[],
-            ),
+            facts_hash: facts.facts_hash(&files, &[]),
             diagram: None,
             fields: MapFields::default(),
             provenance: None,
@@ -1778,21 +1780,26 @@ struct FlowPlan {
     nodes: Vec<String>,
     edges: Vec<MapEdge>,
     /// The chain's call edges as skeleton edges (facts hash).
-    skeleton_edges: Vec<UnitEdge>,
+    skeleton_edges: Vec<MapEdge>,
 }
 
-fn flow_skeleton_edges(flow: &Flow) -> Vec<UnitEdge> {
+fn call_evidence(c: &super::generator_facts::CallSite) -> MapEvidence {
+    MapEvidence::Call {
+        site: c.site.clone(),
+        from: c.from.trim_start_matches("sym:").to_owned(),
+        to: c.to.trim_start_matches("sym:").to_owned(),
+    }
+}
+
+fn flow_skeleton_edges(flow: &Flow) -> Vec<MapEdge> {
     flow.calls
         .iter()
-        .map(|c| UnitEdge {
+        .map(|c| MapEdge {
             from: c.from.clone(),
             to: c.to.clone(),
-            weight: 1,
-            evidence: vec![MapEvidence::Call {
-                site: c.site.clone(),
-                from: c.from.trim_start_matches("sym:").to_owned(),
-                to: c.to.trim_start_matches("sym:").to_owned(),
-            }],
+            label: String::new(),
+            backed: true,
+            evidence: vec![call_evidence(c)],
         })
         .collect()
 }
@@ -1855,11 +1862,7 @@ fn validate_flow(r: &FlowReply, flow: &Flow, handles: &[String]) -> Result<FlowP
             .calls
             .iter()
             .filter(|c| c.from == from && c.to == to)
-            .map(|c| MapEvidence::Call {
-                site: c.site.clone(),
-                from: c.from.trim_start_matches("sym:").to_owned(),
-                to: c.to.trim_start_matches("sym:").to_owned(),
-            })
+            .map(call_evidence)
             .collect();
         let backed = !evidence.is_empty();
         if !backed {
@@ -1912,7 +1915,7 @@ fn structure_flow(flow: &Flow, fields: MapFields) -> FlowPlan {
             .take(DIAGRAM_NODES)
             .map(|s| s.node.clone())
             .collect(),
-        edges: skeleton_edges.iter().map(map_edge).collect(),
+        edges: skeleton_edges.clone(),
         skeleton_edges,
     }
 }
@@ -1926,32 +1929,29 @@ fn build_flow(
     order_no: u32,
 ) -> Vec<ElementRow> {
     let id = element_id(&p.id, &flow.entry.node);
-    let name_of = |s: &super::generator_facts::FlowSymbol, handles: &[String]| -> String {
-        let i = flow.symbols.iter().position(|x| x.node == s.node);
-        i.and_then(|i| handles.get(i))
+    let handles: Vec<String> = (1..=flow.symbols.len()).map(|n| format!("s{n}")).collect();
+    let name_of = |s: &super::generator_facts::FlowSymbol| -> String {
+        flow.symbols
+            .iter()
+            .position(|x| x.node == s.node)
+            .and_then(|i| handles.get(i))
             .and_then(|h| plan.names.get(h))
             .cloned()
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| s.name.clone())
     };
-    let handles: Vec<String> = (1..=flow.symbols.len()).map(|n| format!("s{n}")).collect();
     let drawn: Vec<&super::generator_facts::FlowSymbol> = plan
         .nodes
         .iter()
         .filter(|n| {
-            plan.edges.iter().any(|e| e.from == **n || e.to == **n) || plan.edges.is_empty()
+            plan.edges.is_empty() || plan.edges.iter().any(|e| e.from == **n || e.to == **n)
         })
         .filter_map(|n| flow.symbols.iter().find(|s| s.node == *n))
         .collect();
     let nodes: Vec<GraphNode> = drawn
         .iter()
         .map(|s| {
-            let mut n = graph_node(
-                &s.node,
-                &name_of(s, &handles),
-                std::slice::from_ref(&s.path),
-                None,
-            );
+            let mut n = graph_node(&s.node, &name_of(s), std::slice::from_ref(&s.path), None);
             n.r#ref = Some(format!("{}#L{}-L{}", s.path, s.line_start, s.line_end));
             n.kind = Some(GraphKind::Rounded);
             n
@@ -1994,7 +1994,7 @@ fn build_flow(
             parent: Some(id.clone()),
             depth: 2,
             order_no: u32::try_from(i).unwrap_or(u32::MAX),
-            name: name_of(s, &handles),
+            name: name_of(s),
             path: Some(s.path.clone()),
             kind: "symbol".to_owned(),
             members: Vec::new(),
@@ -2021,9 +2021,11 @@ struct DescribeItem {
     path: Option<String>,
     members: Vec<String>,
     anchors: Vec<String>,
+    /// The element's facts hash at describe time.
+    hash: String,
+    triggers: Vec<String>,
     children: Vec<(Child, Vec<String>)>,
     edges: Vec<MapEdge>,
-    triggers: Vec<String>,
 }
 
 fn validate_describe(
@@ -2150,27 +2152,20 @@ fn detection_json(d: &Detection) -> serde_json::Value {
     json!({ "kind": d.kind, "eligible": d.eligible, "hits": d.hits, "samples": d.samples, "confidence": d.confidence })
 }
 
-fn units_json(
-    facts: &Facts,
-    h: &Handles,
-    with_symbols: &HashMap<String, Vec<String>>,
-) -> Vec<serde_json::Value> {
+fn units_json(facts: &Facts, h: &Handles) -> Vec<serde_json::Value> {
     h.units
         .iter()
-        .filter_map(|(handle, node)| facts.unit(node).map(|u| (handle, u)))
+        .filter_map(|(handle, node)| facts.top_unit(node).map(|u| (handle, u)))
         .map(|(handle, u)| {
+            let m = facts.measures(u);
             let indeg = facts.edges.iter().filter(|e| e.to == u.node).count();
             let outdeg = facts.edges.iter().filter(|e| e.from == u.node).count();
-            let mut v = json!({
-                "handle": handle, "path": u.path, "files": u.files, "lines": u.lines, "share": (u.share * 1000.0).round() / 1000.0,
-                "in": indeg, "out": outdeg, "entry": u.entry, "recent": u.recent,
-            });
-            if let Some(sy) = with_symbols.get(&u.node)
-                && !sy.is_empty()
-            {
-                v["top_symbols"] = json!(sy);
-            }
-            v
+            json!({
+                "handle": handle, "path": u.path, "kind": u.kind, "member": u.member,
+                "files": m.files, "lines": m.lines, "symbols": m.symbols, "tests": m.tests,
+                "share": (m.share * 1000.0).round() / 1000.0,
+                "in": indeg, "out": outdeg, "entry": m.entry, "recent": m.recent,
+            })
         })
         .collect()
 }
@@ -2184,8 +2179,7 @@ fn edges_json(facts: &Facts, h: &Handles) -> Vec<serde_json::Value> {
                 "handle": handle,
                 "from": h.unit_handle(&e.from).unwrap_or("?"),
                 "to": h.unit_handle(&e.to).unwrap_or("?"),
-                "evidence": evidence_summary(&e.evidence),
-                "weight": e.weight,
+                "evidence": e.label,
             })
         })
         .collect()
@@ -2193,8 +2187,7 @@ fn edges_json(facts: &Facts, h: &Handles) -> Vec<serde_json::Value> {
 
 /// Stage A's user message.
 fn select_message(facts: &Facts) -> String {
-    let units = facts.top_units();
-    let h = Handles::new(&units, &facts.edges);
+    let h = Handles::new(&facts.top, &facts.edges);
     let mut hubs: Vec<(&str, usize)> = h
         .units
         .iter()
@@ -2211,7 +2204,7 @@ fn select_message(facts: &Facts) -> String {
         "task": "Choose the perspectives this codebase evidences. `overall-architecture` is always included. Pick any number of the eligible kinds; decline eligible ones you would be forcing.",
         "schema": { "perspectives": [{ "kind": "<catalogue kind>", "title": "<display title>", "why": "<one sentence: what in the facts answers this question>" }] },
         "profile": facts.profile,
-        "units": units_json(facts, &h, &HashMap::new()),
+        "units": units_json(facts, &h),
         "edges_summary": { "kept": facts.edges.len(), "folded_minor": facts.folded },
         "hubs": hubs.iter().take(8).map(|(n, d)| json!({ "unit": h.unit_handle(n).unwrap_or("?"), "in_degree": d })).collect::<Vec<_>>(),
         "perspectives": facts.detections.iter().map(detection_json).collect::<Vec<_>>(),
@@ -2242,7 +2235,13 @@ fn flows_json(flows: &[Flow], named: bool) -> Vec<serde_json::Value> {
         .iter()
         .map(|f| {
             let handles: Vec<String> = (1..=f.symbols.len()).map(|n| format!("s{n}")).collect();
-            let handle_of = |node: &str| f.symbols.iter().position(|s| s.node == node).map(|i| handles[i].clone()).unwrap_or_default();
+            let handle_of = |node: &str| {
+                f.symbols
+                    .iter()
+                    .position(|s| s.node == node)
+                    .map(|i| handles[i].clone())
+                    .unwrap_or_default()
+            };
             json!({
                 "entry": { "path": f.entry.path, "symbol": f.entry.name, "line": f.entry.line_start },
                 "symbols": f.symbols.iter().enumerate().map(|(i, s)| {
@@ -2275,7 +2274,7 @@ fn top_message(
             "edges": [{ "from": "g1", "to": "g2", "evidence": ["e4", "e9"] }, { "from": "g2", "to": "g3", "reason": "<why you believe it despite no evidence>" }]
         },
         "profile": facts.profile,
-        "units": units_json(facts, h, &HashMap::new()),
+        "units": units_json(facts, h),
         "edges": edges_json(facts, h),
         "minor_edges_folded": facts.folded,
         "tiers": tiers_json(facts, h),
@@ -2333,12 +2332,15 @@ fn describe_message(facts: &Facts, items: &[DescribeItem]) -> String {
             "path": it.path,
             "members": it.members,
             "paths": it.anchors,
-            "children": it.children.iter().map(|(c, top)| json!({
-                "node": c.node, "name": c.name, "path": c.path, "kind": c.kind, "files": c.files, "lines": c.lines,
-                "top_symbols": top,
-            })).collect::<Vec<_>>(),
+            "children": it.children.iter().map(|(c, top)| {
+                let m = facts.measures(c);
+                json!({
+                    "node": c.node, "name": c.name, "path": c.path, "kind": c.kind, "files": m.files, "lines": m.lines,
+                    "top_symbols": top,
+                })
+            }).collect::<Vec<_>>(),
             "edges": it.edges.iter().enumerate().map(|(i, e)| json!({
-                "handle": format!("e{}", i + 1), "from": e.from, "to": e.to, "evidence": evidence_summary(&e.evidence),
+                "handle": format!("e{}", i + 1), "from": e.from, "to": e.to, "evidence": e.label,
             })).collect::<Vec<_>>(),
             "concern_triggers": it.triggers,
         })).collect::<Vec<_>>(),

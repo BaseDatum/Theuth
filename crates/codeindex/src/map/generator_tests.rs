@@ -13,7 +13,6 @@ use runtime::{Runtime, SessionId, SideCall, SideReply};
 use serde_json::{Value, json};
 
 use super::*;
-use crate::map::generator_facts::tests::synthetic;
 use crate::map::validate::COUNTS_FROM_EVIDENCE;
 
 // --- the fake side caller -----------------------------------------------------
@@ -183,6 +182,7 @@ struct Scratch {
     _repo: TempDir,
     root: PathBuf,
     ix: Arc<Codeindex>,
+    ri: Arc<RootIndex>,
     pool: SqlitePool,
 }
 
@@ -205,14 +205,13 @@ async fn scratch() -> Scratch {
     let ri = ix.open_root(&root).await.unwrap();
     let r = ix.reconcile(&ri, false).await.unwrap();
     assert!(r.reparsed > 0, "{r:?}");
-    let pool = store::open(&store::path(ix.dir(), &root), &root)
-        .await
-        .unwrap();
+    let pool = ix.map_pool(&ri).await.unwrap();
     Scratch {
         _data: data,
         _repo: repo,
         root,
         ix,
+        ri,
         pool,
     }
 }
@@ -347,6 +346,28 @@ async fn generate_with_fake_side_caller_validates_and_repairs() {
             .await
             .unwrap();
     assert_eq!(persp, "generated");
+    // One facts hash: the skeleton pass right after generation finds nothing
+    // stale and keeps the model's names, partition and diagram.
+    let changed = crate::map::skeleton::recompute(&s.ix, &s.ri).await.unwrap();
+    let stale: Vec<(String,)> = sqlx::query_as("SELECT id FROM elements WHERE stale <> 0")
+        .fetch_all(&s.pool)
+        .await
+        .unwrap();
+    assert!(
+        stale.is_empty(),
+        "stale after recompute: {stale:?} (changed {changed:?})"
+    );
+    let (name, origin, diagram): (String, String, String) = sqlx::query_as(
+        "SELECT name, origin, diagram FROM elements WHERE id = 'overall-architecture/unit:crates/a'",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert!(
+        name.starts_with("Group n") && origin == "generated",
+        "{name} {origin}"
+    );
+    assert!(diagram.contains("unit:crates/a/src/"), "{diagram}");
     // A second open with nothing stale is a no-op job.
     let again = generate(
         &s.ix,
@@ -513,11 +534,7 @@ async fn cancel_stops_and_keeps_written_elements() {
     );
 }
 
-// --- pure tests ---------------------------------------------------------------------
-
-fn handles_for(facts: &Facts) -> Handles {
-    Handles::new(&facts.top_units(), &facts.edges)
-}
+// --- fixture-backed validation tests ------------------------------------------------
 
 /// A stage-B reply over one group per unit; `mermaid` is the edge lines only,
 /// the group declarations are prepended.
@@ -525,7 +542,7 @@ fn reply(facts: &Facts, h: &Handles, mermaid: &str, edges: Vec<Value>) -> TopRep
     let nodes: Vec<Value> = h
         .units
         .iter()
-        .map(|(handle, node)| json!({ "id": format!("g{}", &handle[1..]), "name": facts.unit(node).unwrap().name, "members": [handle] }))
+        .map(|(handle, node)| json!({ "id": format!("g{}", &handle[1..]), "name": facts.top_unit(node).unwrap().name, "members": [handle] }))
         .collect();
     let decls: String = h
         .units
@@ -534,21 +551,26 @@ fn reply(facts: &Facts, h: &Handles, mermaid: &str, edges: Vec<Value>) -> TopRep
         .collect();
     let mermaid = format!("{decls}{}", mermaid.trim_start_matches("flowchart LR\n"));
     serde_json::from_value(json!({
-        "fields": { "description": "A synthetic workspace with an app, a core and a util crate plus docs." },
+        "fields": { "description": "A fixture workspace with a library crate and a binary crate." },
         "nodes": nodes, "mermaid": format!("flowchart LR\n{mermaid}"), "edges": edges,
     }))
     .unwrap()
 }
 
-#[test]
-fn edges_without_evidence_need_a_reason() {
-    let facts = synthetic();
-    let h = handles_for(&facts);
-    let g = |path: &str| format!("g{}", &h.unit_handle(&format!("unit:{path}")).unwrap()[1..]);
-    let (app, core, util) = (g("crates/app"), g("crates/core"), g("crates/util"));
-    // util → app: nothing in the index joins them.
+fn group_handle(h: &Handles, path: &str) -> String {
+    format!("g{}", &h.unit_handle(&format!("unit:{path}")).unwrap()[1..])
+}
+
+#[tokio::test]
+async fn edges_without_evidence_need_a_reason() {
+    let _serial = SERIAL.lock().await;
+    let s = scratch().await;
+    let facts = Facts::load(&s.ri, &s.pool).await.unwrap();
+    let h = Handles::new(&facts.top, &facts.edges);
+    let (a, b) = (group_handle(&h, "crates/a"), group_handle(&h, "crates/b"));
+    // b → a: a Cargo path dep and imports; a → b: nothing in the index.
     let src = format!(
-        "flowchart LR\n  {app} -->|\"drives the core\"| {core}\n  {util} -->|\"helps the app\"| {app}\n"
+        "flowchart LR\n  {b} -->|\"uses the library\"| {a}\n  {a} -->|\"answers it\"| {b}\n"
     );
     let err = validate_top(
         &reply(&facts, &h, &src, vec![]),
@@ -570,36 +592,29 @@ fn edges_without_evidence_need_a_reason() {
             &facts,
             &h,
             &src,
-            vec![json!({ "from": util, "to": app, "reason": "the app re-exports util's prelude" })],
+            vec![json!({ "from": a, "to": b, "reason": "the binary re-exports the prelude" })],
         ),
         &facts,
         &h,
         "overall-architecture",
     )
     .unwrap();
-    let inferred = ok
-        .edges
-        .iter()
-        .find(|e| e.from == "unit:crates/util")
-        .unwrap();
+    let inferred = ok.edges.iter().find(|e| e.from == "unit:crates/a").unwrap();
     assert!(!inferred.backed);
     assert_eq!(
         inferred.evidence,
         vec![MapEvidence::Inferred {
-            reason: "the app re-exports util's prelude".into()
+            reason: "the binary re-exports the prelude".into()
         }]
     );
-    let backed = ok
-        .edges
-        .iter()
-        .find(|e| e.from == "unit:crates/app")
-        .unwrap();
+    let backed = ok.edges.iter().find(|e| e.from == "unit:crates/b").unwrap();
     assert!(
         backed.backed
             && backed
                 .evidence
                 .iter()
-                .any(|e| matches!(e, MapEvidence::Manifest { .. }))
+                .any(|e| matches!(e, MapEvidence::Manifest { .. })),
+        "{backed:?}"
     );
     assert!(ok.uncovered.is_empty());
 
@@ -609,7 +624,7 @@ fn edges_without_evidence_need_a_reason() {
             &facts,
             &h,
             &src,
-            vec![json!({ "from": util, "to": app, "evidence": ["e1"], "reason": "x" })],
+            vec![json!({ "from": a, "to": b, "evidence": ["e1"], "reason": "x" })],
         ),
         &facts,
         &h,
@@ -622,16 +637,14 @@ fn edges_without_evidence_need_a_reason() {
     );
 }
 
-#[test]
-fn labels_with_counts_are_rejected() {
-    let facts = synthetic();
-    let h = handles_for(&facts);
-    let g = |path: &str| format!("g{}", &h.unit_handle(&format!("unit:{path}")).unwrap()[1..]);
-    let src = format!(
-        "flowchart LR\n  {} -->|\"mesh · 4 deps\"| {}\n",
-        g("crates/app"),
-        g("crates/core")
-    );
+#[tokio::test]
+async fn labels_with_counts_are_rejected() {
+    let _serial = SERIAL.lock().await;
+    let s = scratch().await;
+    let facts = Facts::load(&s.ri, &s.pool).await.unwrap();
+    let h = Handles::new(&facts.top, &facts.edges);
+    let (a, b) = (group_handle(&h, "crates/a"), group_handle(&h, "crates/b"));
+    let src = format!("flowchart LR\n  {b} -->|\"mesh · 4 deps\"| {a}\n");
     let err = validate_top(
         &reply(&facts, &h, &src, vec![]),
         &facts,
@@ -646,19 +659,20 @@ fn labels_with_counts_are_rejected() {
     assert!(msg.contains("/mermaid/edges/0 · label \"mesh · 4 deps\" carries a number · counts are rendered from evidence"));
 
     // A label override in `edges` is checked the same way; a clean one passes.
-    let src = format!(
-        "flowchart LR\n  {} --> {}\n",
-        g("crates/app"),
-        g("crates/core")
-    );
+    let src = format!("flowchart LR\n  {b} --> {a}\n");
     let ok = validate_top(
-        &reply(&facts, &h, &src, vec![json!({ "from": g("crates/app"), "to": g("crates/core"), "label": "drives the engine" })]),
+        &reply(
+            &facts,
+            &h,
+            &src,
+            vec![json!({ "from": b, "to": a, "label": "drives the library" })],
+        ),
         &facts,
         &h,
         "overall-architecture",
     )
     .unwrap();
-    assert_eq!(ok.edges[0].label, "drives the engine");
+    assert_eq!(ok.edges[0].label, "drives the library");
     let err = validate_top(
         &reply(&facts, &h, &src, vec![]),
         &facts,
@@ -671,7 +685,16 @@ fn labels_with_counts_are_rejected() {
 
 #[test]
 fn ineligible_perspective_is_dropped() {
-    let facts = synthetic(); // only overall-architecture and dependency-map are eligible
+    let detections: Vec<Detection> = PERSPECTIVES
+        .iter()
+        .map(|k| Detection {
+            kind: (*k).to_owned(),
+            eligible: matches!(*k, "overall-architecture" | "dependency-map"),
+            hits: 0,
+            samples: vec![],
+            confidence: 0.0,
+        })
+        .collect();
     let row = |k: &str| SelectRow {
         kind: k.to_owned(),
         title: title_of(k),
@@ -683,7 +706,7 @@ fn ineligible_perspective_is_dropped() {
             row("dependency-map"),
             row("request-lifecycle"),
         ],
-        &facts.detections,
+        &detections,
     );
     assert_eq!(
         kept.iter().map(|p| p.kind.as_str()).collect::<Vec<_>>(),
@@ -723,12 +746,18 @@ fn no_perspective_ceiling() {
     );
 }
 
-#[test]
-fn structure_fallback_and_tree_shape() {
-    let facts = synthetic();
-    let plan = structure_plan(&facts, "overall-architecture", MapFields::default());
-    assert_eq!(plan.groups.len(), 4);
-    assert!(plan.edges.iter().all(|e| e.label.is_empty() && e.backed));
+#[tokio::test]
+async fn structure_fallback_and_tree_shape() {
+    let _serial = SERIAL.lock().await;
+    let s = scratch().await;
+    let facts = Facts::load(&s.ri, &s.pool).await.unwrap();
+    let plan = structure_plan(&facts, MapFields::default());
+    assert_eq!(plan.groups.len(), facts.top.len());
+    assert!(
+        plan.edges.iter().all(|e| e.backed && !e.label.is_empty()),
+        "{:?}",
+        plan.edges
+    );
     let p = Planned {
         id: "overall-architecture".into(),
         kind: "overall-architecture".into(),
@@ -756,37 +785,37 @@ fn structure_fallback_and_tree_shape() {
         (root.depth, root.kind.as_str(), root.origin),
         (0, "perspective", MapOrigin::Generated)
     );
-    let core = rows
+    let a = rows
         .iter()
-        .find(|r| r.id == "overall-architecture/unit:crates/core")
+        .find(|r| r.id == "overall-architecture/unit:crates/a")
         .unwrap();
-    assert_eq!((core.depth, core.leaf), (1, false));
-    let g = core.diagram.as_ref().unwrap();
-    assert!(g.nodes.iter().any(|n| n.id == "unit:crates/core/src/gen"));
-    assert!(g.edges.iter().all(|e| {
-        e.label
-            .as_deref()
-            .is_some_and(|l| l.contains("import") || l.contains("ref"))
-    }));
+    assert_eq!(
+        (a.depth, a.leaf, a.origin),
+        (1, false, MapOrigin::Generated)
+    );
+    let g = a.diagram.as_ref().unwrap();
+    assert!(
+        g.nodes
+            .iter()
+            .any(|n| n.id.starts_with("unit:crates/a/src/")),
+        "{:?}",
+        g.nodes
+    );
     let modules: Vec<&ElementRow> = rows
         .iter()
-        .filter(|r| r.parent.as_deref() == Some("overall-architecture/unit:crates/core"))
+        .filter(|r| r.parent.as_deref() == Some("overall-architecture/unit:crates/a"))
         .collect();
-    assert_eq!(modules.len(), 4);
-    assert!(modules.iter().all(|m| m.depth == 2));
-    let lib = modules
-        .iter()
-        .find(|m| m.node == "unit:crates/core/src/lib.rs")
-        .unwrap();
-    assert_eq!((lib.kind.as_str(), lib.leaf), ("file", true));
-    let docs = rows
-        .iter()
-        .find(|r| r.id == "overall-architecture/unit:docs")
-        .unwrap();
+    assert!(modules.len() >= 2, "{modules:#?}");
     assert!(
-        docs.leaf && docs.diagram.is_none(),
-        "a ≤ 2-file unit is a leaf"
+        modules
+            .iter()
+            .all(|m| m.depth == 2 && m.origin == MapOrigin::Structure)
     );
+    let b = rows
+        .iter()
+        .find(|r| r.id == "overall-architecture/unit:crates/b")
+        .unwrap();
+    assert!(b.leaf && b.diagram.is_none(), "a ≤ 2-file unit is a leaf");
     assert!(rows.iter().all(|r| r.depth <= MAX_DEPTH));
     assert_eq!(
         sub_line(&["a/b".into(), "c/d".into(), "e".into(), "f".into()]).as_deref(),
