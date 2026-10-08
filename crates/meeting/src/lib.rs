@@ -39,6 +39,7 @@ pub mod batch;
 pub mod cache;
 pub mod capture;
 pub mod diar;
+pub mod endless;
 pub mod head;
 pub mod note;
 pub mod ogg;
@@ -637,6 +638,10 @@ pub struct StartMeeting {
     /// Model for the meeting session (phase 2); stored in the manifest.
     #[serde(default)]
     pub session_model: Option<String>,
+    /// 137 R1-D6: the session's memory mode; `None` = `agent.endless.default_meeting`.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub memory: Option<agent::MemoryMode>,
 }
 
 /// Reply to [`StartMeeting`].
@@ -1019,6 +1024,8 @@ pub(crate) struct NoteReady {
 pub struct Meeting {
     rt: Runtime,
     cfg: MeetingConfig,
+    /// 137 R1-D6: `agent.endless.{default_meeting, meeting_view_bytes}`.
+    endless: endless::Config,
     pub(crate) store: Arc<Store>,
     /// The brief cache (phase 5); `None` when `briefs.sqlite` would not open — the
     /// meeting then runs on the model path only.
@@ -1318,11 +1325,28 @@ impl Meeting {
 
     /// 02 §4.1: re-render the state head and, when it differs from the last one pushed,
     /// hand it to the session with the trigger and hint — one ask per change, never a timer.
+    /// 137 R1-D6: with the mode on, the view is re-read first (same cadence, one more
+    /// section); a view that does not answer in time leaves the last one in place.
     async fn push_head(&mut self) {
         let Some(rec) = self.current.as_mut() else {
             return;
         };
-        let head = head::render(&head::of(rec, chrono::Utc::now()));
+        if rec.manifest.memory == agent::MemoryMode::Endless
+            && let Some(port) = endless::port()
+            && let Some(e) = endless::earlier(
+                port.as_ref(),
+                rec.manifest.session,
+                self.endless.meeting_view_bytes,
+            )
+            .await
+        {
+            rec.live.earlier = Some(e);
+        }
+        let head = head::render(&head::of(
+            rec,
+            chrono::Utc::now(),
+            rec.live.earlier.clone(),
+        ));
         if !head::changed(rec.live.last_head.as_deref(), &head) {
             return;
         }
@@ -1739,6 +1763,16 @@ impl Message<StartMeeting> for Meeting {
         manifest.title = m.title;
         manifest.context = m.context;
         manifest.session_model = m.session_model;
+        // 137 R1-D6: the mode is the start option, else the configured default; without
+        // the agent bridge installed the meeting runs as before and says so once.
+        manifest.memory = self.endless.resolve(m.memory);
+        if manifest.memory == agent::MemoryMode::Endless && endless::port().is_none() {
+            tracing::warn!(
+                meeting = %manifest.id,
+                "meeting: endless memory requested but no agent bridge is installed; running in epochs"
+            );
+            manifest.memory = agent::MemoryMode::Epochs;
+        }
         if disk_low(&self.rt.data_dir) {
             manifest.degraded.push(Degradation::DiskLow);
         }
@@ -1752,6 +1786,7 @@ impl Message<StartMeeting> for Meeting {
             title,
             context_tokens: self.cfg.context_tokens,
             toolset: self.cfg.live_toolset(),
+            view_bytes: self.endless.meeting_view_bytes,
             live_model_dir: self.cfg.live_model_dir.clone().unwrap_or_else(|| {
                 self.rt
                     .data_dir
@@ -1783,6 +1818,8 @@ struct Setup {
     title: String,
     context_tokens: u32,
     toolset: agent::Toolset,
+    /// 137 R1-D6: `agent.endless.meeting_view_bytes`, the head section's budget.
+    view_bytes: u32,
     live_model_dir: PathBuf,
     /// Locates the ONNX Runtime (`models::onnx::ort_lib`).
     data_dir: PathBuf,
@@ -1803,6 +1840,9 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
             options: agent::CreateSessionOptions {
                 project: Some("meetings".into()),
                 model: manifest.session_model.clone(),
+                // 137 R1-D6: never the chat default — the meeting's mode is set below with
+                // the meeting filter, so the agent never starts an unfiltered tree here.
+                memory: Some(agent::MemoryMode::Epochs),
                 ..Default::default()
             },
             peer: None,
@@ -1813,6 +1853,28 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
         Err(e) => return Begun::failed(manifest, format!("create session: {e}")),
     };
     manifest.session = session;
+    // 137 R1-D6: the summary tree over the meeting's units; a refusal degrades to epochs
+    // (the head and the tools then stay as wave 81 built them).
+    if manifest.memory == agent::MemoryMode::Endless {
+        let enabled = match endless::port() {
+            Some(port) => port.enable_meeting(session).await,
+            None => Err("no agent bridge installed".into()),
+        };
+        if let Err(e) = enabled {
+            tracing::warn!(%session, "meeting: endless memory off: {e}");
+            manifest.memory = agent::MemoryMode::Epochs;
+        }
+    }
+    let (toolset, earlier) = match manifest.memory {
+        agent::MemoryMode::Endless => (
+            endless::toolset(&setup.toolset),
+            Some(head::Earlier {
+                lines: Vec::new(),
+                budget: setup.view_bytes,
+            }),
+        ),
+        agent::MemoryMode::Epochs => (setup.toolset.clone(), None),
+    };
     if let Err(e) = agents
         .ask(agent::RenameSession {
             session,
@@ -1839,7 +1901,7 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
             session,
             at_tokens: Some(setup.context_tokens),
             hint: Some(tools::COMPACTION_HINT.to_owned()),
-            head: Some(head::render(&head::initial(&manifest, &setup.title))),
+            head: Some(head::render(&head::initial(&manifest, &setup.title, earlier))),
         })
         .await
     {
@@ -1849,7 +1911,7 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
     if let Err(e) = agents
         .ask(agent::SetToolset {
             session,
-            toolset: Some(setup.toolset.clone()),
+            toolset: Some(toolset),
         })
         .await
     {
@@ -2043,6 +2105,13 @@ impl Message<Begun> for Meeting {
                 let me = ctx.actor_ref().clone();
                 let dir = self.store.meeting_dir(id);
                 let mut rec = Recording::new(manifest, capture, &self.cfg, &dir);
+                // 137 R1-D6: the section exists from the first head; the view fills it.
+                if rec.manifest.memory == agent::MemoryMode::Endless {
+                    rec.live.earlier = Some(head::Earlier {
+                        lines: Vec::new(),
+                        budget: self.endless.meeting_view_bytes,
+                    });
+                }
                 self.spawn_tasks(id, &mut rec, me.clone());
                 if let Some((mic, system)) = m.engines
                     && let Some((mic_ring, system_ring)) = rec.capture.take_stt()
@@ -3513,6 +3582,7 @@ impl runtime::Plugin for MeetingPlugin {
         let mut meeting = Meeting {
             rt: rt.clone(),
             cfg,
+            endless: endless::Config::load(rt),
             store: store.clone(),
             cache: cache.clone(),
             current: None,
