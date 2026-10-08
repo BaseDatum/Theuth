@@ -2084,7 +2084,7 @@ mod tests {
     }
 
     fn sleeper(promotable: bool) -> (DynTool, Arc<std::sync::atomic::AtomicUsize>) {
-        let entered = Arc::default();
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         (
             Arc::new(Sleeper {
                 promotable,
