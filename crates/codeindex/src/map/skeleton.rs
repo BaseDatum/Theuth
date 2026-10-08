@@ -784,7 +784,10 @@ impl Skeleton {
         let generated = existing
             .get(&id)
             .is_some_and(|r| r.origin() == MapOrigin::Generated);
+        // §5.1 item 4: a unit of ≤ LEAF_FILES parsed files is a leaf — the
+        // generator's `Facts::is_leaf`, so recompute adds no rows under it.
         let leaf = matches!(kind, "file" | "bundle" | "external" | "symbol")
+            || (kind == "unit" && files.len() <= LEAF_FILES as usize)
             || depth >= MAX_DEPTH
             || children.is_empty();
         // Cap + bundle; a model partition keeps its own (≤ hard cap) children.

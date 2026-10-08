@@ -710,12 +710,16 @@ impl Job {
         };
 
         // The root's hash as `recompute` stamps it: every file, the skeleton's
-        // edges between the model's groups.
-        let group_children: Vec<Child> = plan
+        // edges between the model's groups and the bundle (a kept child there).
+        let mut group_children: Vec<Child> = plan
             .groups
             .iter()
             .filter_map(|g| facts.group_child(&g.node, &g.name, &g.members))
             .collect();
+        if !plan.uncovered.is_empty() {
+            let bundle_node = format!("bundle:perspective:{}", p.id);
+            group_children.extend(facts.group_child(&bundle_node, "", &plan.uncovered));
+        }
         let (root_edges, _) = facts.sk.edges_between(&group_children);
         let root_hash = facts.facts_hash(&facts.all_files(), &root_edges);
         let mut prov = self.provenance(&calls, repaired, facts, root_hash);
@@ -871,7 +875,9 @@ impl Job {
                 path,
                 members,
                 anchors: header.anchors,
-                hash: facts.facts_hash(&own, &sub.edges),
+                // The row's own edges: none for a leaf — `recompute` hashes
+                // a ≤ LEAF_FILES unit the same way.
+                hash: facts.facts_hash(&own, &edges),
                 triggers: facts.concern_triggers(&own, &header.node),
                 children,
                 edges,
@@ -1625,6 +1631,7 @@ fn build_tree(
             .iter()
             .filter_map(|n| n.strip_prefix("unit:").map(str::to_owned))
             .collect();
+        // One leaf row: the bundle's door is its member list (O4).
         let mut bundle_rows = structure_rows(
             facts,
             &p.id,
@@ -1635,7 +1642,7 @@ fn build_tree(
             "bundle",
             plan.uncovered.clone(),
             paths,
-            max_depth.min(2),
+            max_depth,
         );
         if let Some(row) = bundle_rows.first_mut() {
             row.origin = MapOrigin::Generated;
@@ -1663,8 +1670,10 @@ fn structure_rows(
 ) -> Vec<ElementRow> {
     let id = element_id(persp, &child.node);
     let grouped = kind == "cluster" || kind == "bundle";
-    // Doors: clusters, bundles and units with more than a leaf's files.
-    let descend = depth < max_depth && (grouped || !Facts::is_leaf(child));
+    // Doors (O4): a cluster or a unit with more than a leaf's files opens a
+    // diagram; a bundle opens its member list — a leaf here, as in W1's
+    // skeleton, so recompute never has rows to delete under it.
+    let descend = depth < max_depth && (kind == "cluster" || (!grouped && !Facts::is_leaf(child)));
     let sub = if descend {
         facts.sub_skeleton(
             facts.children_for(kind, Some(&child.path), &members),

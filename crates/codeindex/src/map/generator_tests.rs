@@ -354,7 +354,7 @@ async fn generate_with_fake_side_caller_validates_and_repairs() {
         .await
         .unwrap();
     assert!(
-        stale.is_empty(),
+        stale.is_empty() && changed.is_empty(),
         "stale after recompute: {stale:?} (changed {changed:?})"
     );
     let (name, origin, diagram): (String, String, String) = sqlx::query_as(
@@ -383,6 +383,108 @@ async fn generate_with_fake_side_caller_validates_and_repairs() {
     wait_idle(&s.root).await;
     let (stage, _, calls, _) = job_row(&s.pool, &again.id).await;
     assert_eq!((stage.as_str(), calls), ("done", 0));
+}
+
+#[tokio::test]
+async fn bundle_is_a_leaf_door_to_its_members() {
+    let _serial = SERIAL.lock().await;
+    let s = scratch().await;
+    {
+        let mut sc = script();
+        *sc = Script::default();
+        // The model groups every unit but the last: that one is the bundle.
+        sc.handlers
+            .entry("top")
+            .or_default()
+            .push_back(Box::new(|u| {
+                let mut r = top_reply(u, "uses it", None);
+                let dropped = r["nodes"].as_array_mut().unwrap().pop().unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned();
+                let mermaid: String = r["mermaid"]
+                    .as_str()
+                    .unwrap()
+                    .lines()
+                    .filter(|l| {
+                        !l.split(|c: char| !c.is_alphanumeric())
+                            .any(|t| t == dropped)
+                    })
+                    .map(|l| format!("{l}\n"))
+                    .collect();
+                r["mermaid"] = json!(mermaid);
+                Ok(r.to_string())
+            }));
+    }
+    let job = generate(
+        &s.ix,
+        Generate {
+            root: s.root.clone(),
+            session: SessionId::new(),
+            element: None,
+        },
+    )
+    .await
+    .unwrap();
+    wait_idle(&s.root).await;
+    let (stage, _, _, log) = job_row(&s.pool, &job.id).await;
+    assert_eq!(stage, "done", "{log:?}");
+    let (id, members, leaf, origin): (String, String, i64, String) = sqlx::query_as(
+        "SELECT id, members, leaf, origin FROM elements WHERE kind = 'bundle' AND depth = 1",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    let members: Vec<String> = serde_json::from_str(&members).unwrap();
+    assert_eq!((members.len(), leaf, origin.as_str()), (1, 1, "generated"));
+    let (under,): (i64,) = sqlx::query_as("SELECT count(*) FROM elements WHERE parent = ?")
+        .bind(&id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(under, 0, "a bundle opens its member list, not a diagram");
+    // The skeleton pass agrees: nothing deleted, nothing stale, members kept.
+    let dump = || async {
+        let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, coalesce(parent,''), kind, members, facts_hash FROM elements ORDER BY depth, order_no",
+        )
+        .fetch_all(&s.pool)
+        .await
+        .unwrap();
+        let edges: Vec<(String, String, String, i64)> = sqlx::query_as(
+            "SELECT from_node, to_node, label, backed FROM edges WHERE element = 'overall-architecture'",
+        )
+        .fetch_all(&s.pool)
+        .await
+        .unwrap();
+        format!("{rows:#?}\n{edges:#?}")
+    };
+    let d0 = dump().await;
+    let (before,): (i64,) = sqlx::query_as("SELECT count(*) FROM elements")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    let changed = crate::map::skeleton::recompute(&s.ix, &s.ri).await.unwrap();
+    let (after, stale): (i64, i64) =
+        sqlx::query_as("SELECT count(*), sum(stale <> 0) FROM elements")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (after, stale, changed.len()),
+        (before, 0, 0),
+        "changed {changed:?}\nBEFORE {d0}\nAFTER {}",
+        dump().await
+    );
+    let (again,): (String,) = sqlx::query_as("SELECT members FROM elements WHERE id = ?")
+        .bind(&id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&again).unwrap(),
+        members
+    );
 }
 
 #[tokio::test]
