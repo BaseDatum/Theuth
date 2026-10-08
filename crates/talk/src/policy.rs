@@ -2411,7 +2411,7 @@ mod tests {
         seen.extend(windows(&p.step(Input::SpeechStarted(ids[1]), ms(t1, 4001))));
         assert_eq!(
             seen,
-            vec![],
+            Vec::<bool>::new(),
             "nothing reopens while speech is queued or playing"
         );
         let a = p.step(
@@ -2431,16 +2431,16 @@ mod tests {
     fn p6_approval_is_announced_and_never_kept() {
         let (mut p, t0) = thinking();
         p.step(Input::Tools(1), ms(t0, 900));
-        let said = "Waiting for your approval to run shell: git push.";
+        let line = "Waiting for your approval to run shell: git push.";
         let a = p.step(Input::Approval("shell: git push".into()), ms(t0, 1000));
         assert_eq!(
             a,
             vec![
                 Action::Speak {
                     index: 0,
-                    text: said.into()
+                    text: line.into()
                 },
-                Action::Announced(said.into()),
+                Action::Announced(line.into()),
             ]
         );
         assert!(p.ledger.sentences[0].harness);
