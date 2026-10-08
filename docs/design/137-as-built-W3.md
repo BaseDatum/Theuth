@@ -27,7 +27,6 @@ Branch `feat/137-w3` off a0046c22. Scope: `crates/desktop/ui/**` (plus this file
 - `cd crates/desktop/ui && BUILD_LABEL=137-W3 $HOME/.theuth/bin/build-lock bunx vitest run src/components/chat/NewChatPane.test.ts src/components/chat/MemoryPanel.test.ts src/components/settings/Memory.test.ts src/lib/header.test.ts src/rpc/api.test.ts src/components/sidebar/SessionList.test.ts src/components/settings/Channels.test.ts src/components/chat/CostPill.test.ts` → `Test Files  8 passed (8)` · `Tests  43 passed (43)`.
 - `cd crates/desktop/ui && BUILD_LABEL=137-W3 $HOME/.theuth/bin/build-lock bun run build` → `✓ built in 8.36s`, `BUILD-EXIT=0` (only the pre-existing chunk-size warning).
 - No JS formatter step exists in the UI gates; none added.
-- Tooling note (orchestrator, 03:28): the first visual-check runs started `vite` dev under `build-lock`, holding a machine-wide slot while idle — that was wrong and was killed from outside. Rule applied from then on: only tsc / vitest / `bun run build` go through the lock; the dev server, headless Chrome and screenshots run bare. No dev server or slot of W3's is left running.
 
 Bindings note: the worktree's `src/rpc/bindings` (installed by the prep) predated ~35 types (`AdvisoryNote`, `LiveCountsRow`, `ReminderEvent`, …; 261 tsc errors at baseline). I regenerated them from this worktree's Rust with the crate-level `cargo test -p rpc --features ts --lib --quiet export_bindings` (8 passed) behind the lock and copied `bindings/.` into the UI tree (the `just ts-desktop` copy step, by hand). Both directories are git-ignored; nothing of that is in the commits.
 
@@ -57,6 +56,7 @@ Esc: closes the sheet from the tree (verified). The recall box is `type="text"` 
 8. **Animated height** uses the CSS grid `0fr → 1fr` transition (no new dependency); children stay mounted (inert, aria-hidden) when collapsed so the collapse animates too and re-opening is instant.
 9. **Tests** are vitest without a DOM (the tree's convention): component tests use `renderToStaticMarkup`; interaction logic is exercised through the exported `reduce`/`flatten`/`highlight` and in the browser run above.
 10. **Dev fixture at `useApi`.** The fixture wraps at `useApi()` (DEV only) rather than per call site so every `list_sessions` observer sees the tagged rows; a per-site wrap flickered because React Query takes the queryFn of whichever observer refetches.
+11. **Build-lock misuse (acknowledged).** I ran the vite dev server under `build-lock` for the visual checks, twice (pids 84450 at 03:25 and 6031 at 03:28), holding one of the two machine-wide build slots while an idle process sat in it; the orchestrator killed both from outside. The rule, applied from here on: `build-lock` wraps only `bunx tsc`, `bunx vitest run` and `bun run build`; the dev server, headless Chrome and screenshots run bare — `cd crates/desktop/ui && (bunx vite --port 1421 --strictPort > /tmp/137-w3-vite.log 2>&1 &)`, shoot, then `pkill -f 'vite --port 1421'`. No dev server or W3 slot is live at hand-off.
 
 ## Hand-offs
 
