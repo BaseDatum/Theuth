@@ -152,6 +152,9 @@ pub struct AcpChild {
     respawn: Option<usize>,
     /// Watch-only children the harness runs inside itself (141 §7.2).
     observed: Observed,
+    /// Where omp keeps its transcripts (`<home>/.omp/agent/sessions`, 141
+    /// §6.4 feed 2): the engine's home; tests point it at a scratch dir.
+    omp_home: std::path::PathBuf,
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
@@ -477,6 +480,7 @@ impl AcpChild {
             notes: Vec::new(),
             respawn: None,
             observed: Observed::default(),
+            omp_home: std::env::home_dir().unwrap_or_default(),
         }
     }
 
@@ -4664,6 +4668,28 @@ pub(crate) mod tests {
                 .any(|e| matches!(e, AgentEvent::HarnessModelChanged { session, model } if *session == child && model == "opencode/big-pickle")),
             "{events:?}"
         );
+        // 141 R1 T4 (§6.3): the `<task_result>` text is the child's one
+        // assistant message — shown live and persisted, so the view is not
+        // empty for a harness that streams nothing.
+        assert!(
+            events.iter().any(
+                |e| matches!(e, AgentEvent::TextDelta { session, text, .. } if *session == child && &**text == "alpha line one")
+            ),
+            "{events:?}"
+        );
+        let child_rows: Vec<(ChatRole, String)> = rig
+            .store
+            .messages(child)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, m)| (m.role, crate::loop_::text_of(&m.content)))
+            .collect();
+        assert_eq!(
+            child_rows,
+            [(ChatRole::Assistant, "alpha line one".to_owned())],
+            "one assistant row, nothing empty"
+        );
         rig.fake.end_turn(&id);
         rig.until_finished().await;
         let kids = rig.store.observed_children(rig.session).await.unwrap();
@@ -5036,9 +5062,14 @@ pub(crate) mod tests {
             events.iter().any(|e| matches!(e, AgentEvent::HarnessModelChanged { session, model } if *session == read_a && model == "anthropic/claude-fable-5-1:high")),
             "{events:?}"
         );
+        // 141 R1 T3 / F18: omp re-sends the spawn acknowledgement's stale
+        // `pending` rows after the live ones moved on — no regression, no
+        // closed-and-reopened child turn.
+        rig.fake.send(frame("completed_stale"));
         rig.fake.send(frame("final"));
         rig.fake.end_turn(&id);
         let mut finished = Vec::new();
+        let mut all = Vec::new();
         while finished.len() < 3 {
             let events = rig
                 .until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
@@ -5047,10 +5078,39 @@ pub(crate) mod tests {
                 unreachable!()
             };
             finished.push(*session);
+            all.extend(events);
         }
         assert!(
             finished.contains(&rig.session) && finished.contains(&read_a),
             "{finished:?}"
+        );
+        assert!(
+            !all.iter()
+                .any(|e| matches!(changed(e), Some((_, _, ObservedState::Pending)))),
+            "a stale snapshot never moves a row back to pending: {all:?}"
+        );
+        assert_eq!(
+            all.iter()
+                .filter(
+                    |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == read_a)
+                )
+                .count(),
+            1,
+            "one child turn: {all:?}"
+        );
+        let child_rows: Vec<(ChatRole, String)> = rig
+            .store
+            .messages(read_a)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, m)| (m.role, crate::loop_::text_of(&m.content)))
+            .collect();
+        assert!(
+            !child_rows
+                .iter()
+                .any(|(r, t)| *r == ChatRole::Assistant && t.is_empty()),
+            "no empty assistant rows on the child: {child_rows:?}"
         );
         let kids = rig.store.observed_children(rig.session).await.unwrap();
         assert_eq!(kids.len(), 2, "{kids:?}");
@@ -5159,5 +5219,240 @@ pub(crate) mod tests {
             matches!(events.last(), Some(AgentEvent::ToolCallStarted { session, call_id, .. }) if *session == child && *call_id == call),
             "{events:?}"
         );
+    }
+
+    /// A throwaway omp home for the `Fake`'s session `s1` (141 §6.4 feed 2
+    /// layout): `(home, artifacts dir)`; the parent transcript is empty.
+    fn omp_home() -> (std::path::PathBuf, std::path::PathBuf) {
+        let home = std::env::temp_dir().join(format!("theuth-acp-omp-{}", Uuid::now_v7()));
+        let cwd = home.join(".omp/agent/sessions/--tmp-x--");
+        let art = cwd.join("2026-10-08T16-00-00-000Z_s1");
+        std::fs::create_dir_all(&art).unwrap();
+        std::fs::write(cwd.join("2026-10-08T16-00-00-000Z_s1.jsonl"), "").unwrap();
+        (home, art)
+    }
+
+    fn omp_fixture_lines(name: &str) -> Vec<String> {
+        let path = format!(
+            "{}/../acp/fixtures/omp-18.3.1/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::read_to_string(&path)
+            .expect(&path)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The child's `counted` USD meter in nanos (0 when none).
+    async fn usd_of(rig: &Rig, child: SessionId) -> u64 {
+        rig.store.session_cost(child).await.unwrap().map_or(0, |c| {
+            c.total
+                .returned
+                .iter()
+                .find(|m| m.currency == "USD")
+                .map_or(0, |m| m.nanos)
+        })
+    }
+
+    async fn child_rows(rig: &Rig, child: SessionId) -> Vec<(ChatRole, String, Vec<String>)> {
+        rig.store
+            .messages(child)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, m)| {
+                (
+                    m.role,
+                    crate::loop_::text_of(&m.content),
+                    m.content
+                        .tool_calls()
+                        .iter()
+                        .map(|c| c.fn_name.clone())
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// 141 R1 T1 + T2 (the common omp case: background spawn, the parent
+    /// answers first, feed 1 falls silent): the child's transcript comes from
+    /// the tail — its `read` call, its per-turn `usage.cost.total` as the
+    /// `counted` meter — and when omp completes it (sidecar first, the yield
+    /// entries a moment later) the tail still drains to EOF: the yield call
+    /// and result land, the cursor reaches the end, the meter is the full
+    /// 0.12128025 USD.
+    #[tokio::test]
+    async fn omp_tail_drains_after_completion_and_meters_counted_cost() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let (home, art) = omp_home();
+        let frame = |name: &str| -> serde_json::Value {
+            let path = format!(
+                "{}/../acp/fixtures/omp-18.3.1/task.{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let mut v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
+            v["params"]["sessionId"] = json!("s1");
+            v
+        };
+        let h = home.clone();
+        let mut rig = Rig::build(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("oh-my-pi", "18.3.1")),
+            move |c| c.omp_home = h,
+            true,
+        )
+        .await;
+        rig.input("spawn readers, do not wait").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("completed_stale"));
+        rig.fake.end_turn(&id);
+        let events = rig
+            .until(|e| matches!(changed(e), Some((_, "ReadB", _))))
+            .await;
+        let (read_a, ..) = events
+            .iter()
+            .find_map(|e| changed(e).filter(|(_, n, _)| *n == "ReadA"))
+            .unwrap();
+        assert_eq!(usd_of(&rig, read_a).await, 0);
+
+        // The transcript through the `read` result; nothing more on the wire.
+        let lines = omp_fixture_lines("ReadA.jsonl");
+        let path = art.join("ReadA.jsonl");
+        std::fs::write(&path, format!("{}\n", lines[..9].join("\n"))).unwrap();
+        let events = rig
+            .until(
+                |e| matches!(e, AgentEvent::ToolCallFinished { session, .. } if *session == read_a),
+            )
+            .await;
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::ToolCallStarted { session, name, .. } if *session == read_a && name == "read")),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(changed(e), Some((c, _, ObservedState::Running)) if c == read_a)),
+            "{events:?}"
+        );
+        assert_eq!(
+            usd_of(&rig, read_a).await,
+            114_902_500,
+            "the first turn's cost.total"
+        );
+
+        // omp finishes the job: the sidecar appears, then the yield entries.
+        std::fs::write(art.join("ReadA.md"), "alpha line one\n").unwrap();
+        rig.until(|e| matches!(changed(e), Some((c, _, ObservedState::Completed)) if c == read_a))
+            .await;
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::ToolCallFinished { session, call_id, .. } if *session == read_a && call_id == "toolu_01CcxeBFS3rftpne67JPvF8V"))
+            .await;
+        assert!(
+            !events.iter().any(|e| matches!(changed(e), Some((c, _, s)) if c == read_a && s != ObservedState::Completed)),
+            "completed stays completed: {events:?}"
+        );
+        assert_eq!(
+            rig.store.observed_cursor(read_a).await.unwrap(),
+            Some(std::fs::metadata(&path).unwrap().len()),
+            "the tail reached EOF after completion"
+        );
+        assert_eq!(
+            usd_of(&rig, read_a).await,
+            121_280_250,
+            "both turns' cost.total, high-water"
+        );
+        let rows = child_rows(&rig, read_a).await;
+        assert!(
+            rows.iter().any(|(_, _, calls)| calls == &["yield"]),
+            "{rows:?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|(r, t, calls)| *r == ChatRole::Assistant && t.is_empty() && calls.is_empty()),
+            "no empty assistant rows: {rows:?}"
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 141 R1 T5: the engine restarts while an omp child is mid-tool; omp
+    /// died with the old engine, aborted the job (`toolResult "Command
+    /// aborted"`, assistant `stopReason: aborted`) and left a zero-byte
+    /// `.md`. The resumed harness actor first marks the stored row `unknown`
+    /// (lost contact), then the tail settles it `cancelled` — never
+    /// `completed`.
+    #[tokio::test]
+    async fn aborted_omp_child_is_cancelled_not_completed_after_a_restart() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let (home, art) = omp_home();
+        let h = home.clone();
+        let mut rig = Rig::build(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("oh-my-pi", "18.3.1")),
+            move |c| c.omp_home = h,
+            true,
+        )
+        .await;
+        rig.warm().await;
+        // A row the previous engine life wrote: running when it died.
+        let mut up =
+            crate::store::ObservedUpsert::new(rig.session, ObservedSource::OmpTask, "SlowA");
+        up.name = Some("SlowA");
+        up.state = Some(ObservedState::Running);
+        let (slow_a, _) = rig.store.upsert_observed(up).await.unwrap();
+        let lines = omp_fixture_lines("SlowA.aborted.jsonl");
+        std::fs::write(art.join("SlowA.jsonl"), format!("{}\n", lines.join("\n"))).unwrap();
+        std::fs::write(art.join("SlowA.md"), "").unwrap();
+        rig.actor.tell(Shutdown).await.unwrap();
+        rig.actor.wait_for_shutdown().await;
+
+        // Boot resumes the harness: a new actor on the same row.
+        let (mut fake, dialer) = Fake::new();
+        let mut child = AcpChild::new(
+            rig.session,
+            "omp".into(),
+            Transport::Dial(dialer),
+            rig.rt.data_dir.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Duration::from_secs(60),
+            rig.store.clone(),
+            rig.rt.clone(),
+            Default::default(),
+            Vec::new(),
+        );
+        child.remote = false;
+        child.omp_home = home.clone();
+        let actor = AcpChild::spawn(child);
+        fake.handshake(Vec::new(), Some(Implementation::new("oh-my-pi", "18.3.1")))
+            .await;
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnFinished { session, stop_reason, .. } if *session == slow_a && stop_reason == "cancelled"))
+            .await;
+        let states: Vec<ObservedState> = events
+            .iter()
+            .filter_map(|e| changed(e).filter(|(c, ..)| *c == slow_a).map(|(_, _, s)| s))
+            .collect();
+        assert_eq!(states.first(), Some(&ObservedState::Unknown), "{states:?}");
+        assert_eq!(states.last(), Some(&ObservedState::Cancelled), "{states:?}");
+        assert!(!states.contains(&ObservedState::Completed), "{states:?}");
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::ToolCallFinished { session, output, is_error: true, .. } if *session == slow_a && output.contains("Command aborted"))),
+            "{events:?}"
+        );
+        let row = rig.observed(ObservedSource::OmpTask, "SlowA").await;
+        let o = row.observed.unwrap();
+        assert_eq!(o.state, ObservedState::Cancelled);
+        assert_eq!(o.stop.as_deref(), Some("aborted"));
+        actor.tell(Shutdown).await.unwrap();
+        let _ = std::fs::remove_dir_all(home);
     }
 }

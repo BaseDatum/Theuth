@@ -7760,6 +7760,9 @@ impl Message<ResumeChild> for Agents {
 
     async fn handle(&mut self, m: ResumeChild, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let row = self.stored(m.session).await?;
+        if row.observed.is_some() {
+            return Err(OBSERVED.into());
+        }
         let Some(agent) = row.agent.as_deref() else {
             return Err("not an external harness; only an ACP child can be resumed".into());
         };
@@ -13206,7 +13209,8 @@ pub(crate) mod tests {
 
     /// 75 §10: `resume_child` is refused with a clear error for a native
     /// session, for an ACP row whose harness is not in `agents.yaml` (a
-    /// node's session) and for one with no stored harness session id.
+    /// node's session), for one with no stored harness session id, and (141
+    /// §5.4) for a watch-only row with the watch-only text.
     #[tokio::test]
     async fn resume_child_refuses_native_node_and_unstored() {
         let a = agents().await;
@@ -13241,6 +13245,13 @@ pub(crate) mod tests {
             refused(agents.ask(ResumeChild { session: local }).await)
                 .contains("cannot be resumed here"),
             "no agents.yaml entry"
+        );
+        let mut up = crate::store::ObservedUpsert::new(local, crate::ObservedSource::OmpTask, "A");
+        up.state = Some(ObservedState::Running);
+        let (watched, _) = store.upsert_observed(up).await.unwrap();
+        assert_eq!(
+            refused(agents.ask(ResumeChild { session: watched }).await),
+            OBSERVED
         );
     }
 

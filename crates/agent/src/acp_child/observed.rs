@@ -20,7 +20,7 @@ use acp::harness::opencode::task_v1;
 use acp::omp::{self, Entry, Tailer};
 use acp::{ChildAnnounce, ChildSource, ChildState, CostRule, Harness, Permission};
 use agent_client_protocol::schema::MaybeUndefined;
-use agent_client_protocol::schema::v1::{SessionUpdate, Usage as AcpUsage};
+use agent_client_protocol::schema::v1::{ContentChunk, SessionUpdate, Usage as AcpUsage};
 use genai::chat::{ChatMessage, MessageContent};
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
@@ -42,6 +42,10 @@ const DETAIL_THROTTLE: Duration = Duration::from_millis(250);
 const PENDING_TRAFFIC: Duration = Duration::from_secs(2);
 /// omp tail poll period while any omp child is non-terminal (§7.3).
 const OMP_POLL: Duration = Duration::from_millis(500);
+/// How long the omp tail keeps reading a child after its last change (§6.4,
+/// 141 R1 T1): the yield call/result and `session_exit` land in the jsonl
+/// in the same second feed 1 reports `completed`.
+const OMP_LINGER: Duration = Duration::from_secs(10);
 /// `TurnStarted.text` of a watch-only child's turn when the source gave no
 /// assignment text: a harness wrapper no UI renders as a user message.
 const WATCHED_NOTE: &str = "<runtime>watch-only: the harness runs this subagent</runtime>";
@@ -106,6 +110,12 @@ struct ObservedChild {
     /// The pending detail-throttle timer.
     dirty: Option<AbortHandle>,
     last_emit: Instant,
+    /// omp: the sum of the tail's per-turn `usage.cost.total` so far (141
+    /// R1 T2) — the `counted` meter when feed 1 fell silent. Restarts from
+    /// 0 on a new connection; the meter is high-water, so it never lowers.
+    // ponytail: not persisted; a child whose cost all lands after a restart
+    // under-meters until feed 1 speaks again. Persist beside observed_cursor if that shows.
+    tail_cost: f64,
 }
 
 impl ObservedChild {
@@ -114,6 +124,13 @@ impl ObservedChild {
             self.meta.state,
             ObservedState::Running | ObservedState::RequiresAction
         )
+    }
+
+    /// The omp tail still reads this child: non-terminal, or terminal for
+    /// [`OMP_LINGER`] after its last change (141 R1 T1).
+    fn tails(&self) -> bool {
+        self.meta.source == ObservedSource::OmpTask
+            && (!self.meta.state.is_terminal() || self.last_emit.elapsed() < OMP_LINGER)
     }
 
     fn event(&self) -> AgentEvent {
@@ -233,10 +250,16 @@ impl AcpChild {
                         turn: None,
                         dirty: None,
                         last_emit: Instant::now(),
+                        tail_cost: 0.0,
                     },
                 );
             }
         }
+        // D11 (141 R1 T5): the rows were written by a connection that is
+        // gone; whatever was running then is unknown until this one observes
+        // it again (RFD re-announces, opencode re-streams open children,
+        // the omp tail settles from disk).
+        self.observed_lost().await;
         if self.is_omp() && !self.remote {
             let mut cursors = HashMap::new();
             for c in self.observed.by_external.values() {
@@ -309,13 +332,25 @@ impl AcpChild {
             None => self.id,
             Some(ext) => self.observed.by_external.get(ext).map_or(self.id, |c| c.id),
         };
-        let (state, stop, usage) = match &a.state {
+        let (mut state, stop, usage) = match &a.state {
             Some(s) => {
                 let (st, stop, usage) = state_of(s);
                 (Some(st), stop, usage)
             }
             None => (None, None, None),
         };
+        // F18 (141 R1 T3): a snapshot can only say `pending` about a row
+        // that is new or still pending — omp's spawn acknowledgement carries
+        // stale rows after the live ones already moved on.
+        if state == Some(ObservedState::Pending)
+            && self
+                .observed
+                .by_external
+                .get(&a.child)
+                .is_some_and(|c| c.meta.state != ObservedState::Pending)
+        {
+            state = None;
+        }
         let mut detail = a.detail.clone();
         if let Some(u) = &usage
             && let Ok(v) = serde_json::to_value(u)
@@ -344,14 +379,15 @@ impl AcpChild {
             return;
         };
         let prev = self.observed.by_external.remove(&a.child);
-        let (turn, dirty, last_emit, before) = match prev {
+        let (turn, dirty, last_emit, before, prev_tail_cost) = match prev {
             Some(p) => (
                 p.turn,
                 p.dirty,
                 p.last_emit,
                 Some((p.meta.state, p.name, p.model, p.meta.can_cancel)),
+                p.tail_cost,
             ),
-            None => (None, None, Instant::now(), None),
+            None => (None, None, Instant::now(), None, 0.0),
         };
         let mut c = ObservedChild {
             id,
@@ -362,6 +398,7 @@ impl AcpChild {
             turn,
             dirty,
             last_emit,
+            tail_cost: prev_tail_cost,
         };
         let significant = created
             || before.as_ref().is_none_or(|(st, n, m, cc)| {
@@ -391,6 +428,25 @@ impl AcpChild {
                 .await;
             }
         }
+        // §6.3 (141 R1 T4): opencode 1.x streams nothing for the child; the
+        // completed call's `<task_result>` is its one assistant message.
+        if source == ObservedSource::OpencodeTask
+            && c.meta.state.is_terminal()
+            && let Some(text) = a
+                .detail
+                .get("result")
+                .and_then(serde_json::Value::as_str)
+                .filter(|t| !t.is_empty())
+        {
+            if c.turn.is_none() {
+                self.open_child_turn(&mut c, None).await;
+            }
+            self.apply_child_update(
+                &mut c,
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(text.into())),
+            )
+            .await;
+        }
         // §5.2: a turn is open while running/requires_action.
         if c.live() {
             if c.turn.is_none() {
@@ -403,26 +459,8 @@ impl AcpChild {
         }
         // §7.6: only `counted` writes money; the cumulative cost is the
         // high-water meter of `<acp sid>/<external id>`.
-        if c.meta.cost_rule == CostRule::Counted
-            && let Some(cost) = a.detail.get("cost").and_then(serde_json::Value::as_f64)
-            && let Some(h) = &self.harness
-            && let Ok(u) = meter_update(
-                &self.name,
-                &format!("{}/{}", h.session_id(), c.meta.external),
-                cost,
-                "USD",
-                true,
-            )
-        {
-            match self.store.apply_observed_meter(c.id, u).await {
-                Ok(bumped) => {
-                    for (session, revision) in bumped {
-                        self.publish(AgentEvent::ModelUsageChanged { session, revision })
-                            .await;
-                    }
-                }
-                Err(e) => tracing::warn!(session = %c.id, "apply_observed_meter: {e:#}"),
-            }
+        if let Some(cost) = a.detail.get("cost").and_then(serde_json::Value::as_f64) {
+            self.meter_child(&c, cost).await;
         }
         let pending = self.observed.pending_traffic.remove(&a.child);
         self.observed.by_external.insert(a.child.clone(), c);
@@ -529,7 +567,16 @@ impl AcpChild {
         turn.cancel.cancel();
         turn.disarm();
         turn.close("");
+        // The parent's turn ends on an assistant row by invariant; a
+        // watch-only child's history has no such reader, and the row would
+        // be an empty bubble (141 R1 T3).
         for m in std::mem::take(&mut turn.messages) {
+            if m.role == genai::chat::ChatRole::Assistant
+                && m.content.tool_calls().is_empty()
+                && crate::loop_::text_of(&m.content).is_empty()
+            {
+                continue;
+            }
             if let Err(e) = self.store.append(c.id, &m).await {
                 tracing::error!(session = %c.id, "append: {e:#}");
             }
@@ -570,6 +617,36 @@ impl AcpChild {
                 }
             }
             Err(e) => tracing::warn!(session = %c.id, "record_remote_turn: {e:#}"),
+        }
+    }
+
+    /// §7.6: a `counted` child's cumulative USD → the high-water meter of
+    /// `<acp sid>/<external id>` under the child. Feed 1's `detail.cost` and
+    /// the tail's summed `usage.cost.total` (141 R1 T2) measure the same
+    /// money, so the higher wins and nothing doubles. Other cost rules write
+    /// nothing.
+    async fn meter_child(&self, c: &ObservedChild, cost: f64) {
+        if c.meta.cost_rule != CostRule::Counted {
+            return;
+        }
+        let Some(h) = &self.harness else { return };
+        let Ok(u) = meter_update(
+            &self.name,
+            &format!("{}/{}", h.session_id(), c.meta.external),
+            cost,
+            "USD",
+            true,
+        ) else {
+            return;
+        };
+        match self.store.apply_observed_meter(c.id, u).await {
+            Ok(bumped) => {
+                for (session, revision) in bumped {
+                    self.publish(AgentEvent::ModelUsageChanged { session, revision })
+                        .await;
+                }
+            }
+            Err(e) => tracing::warn!(session = %c.id, "apply_observed_meter: {e:#}"),
         }
     }
 
@@ -812,13 +889,10 @@ impl AcpChild {
         }
     }
 
-    /// Arm the omp poll if it is not running and any omp child is non-terminal.
+    /// Arm the omp poll if it is not running and any omp child still tails
+    /// (non-terminal, or terminal within [`OMP_LINGER`]).
     fn omp_poll(&mut self, me: &ActorRef<Self>) {
-        let any = self
-            .observed
-            .by_external
-            .values()
-            .any(|c| c.meta.source == ObservedSource::OmpTask && !c.meta.state.is_terminal());
+        let any = self.observed.by_external.values().any(ObservedChild::tails);
         let Some(f) = &mut self.observed.omp else {
             return;
         };
@@ -837,9 +911,9 @@ impl AcpChild {
         };
         f.poll = None;
         if f.tailer.is_none()
-            && let (Some(home), Some(h)) = (std::env::home_dir(), &self.harness)
+            && let Some(h) = &self.harness
         {
-            f.tailer = Tailer::locate(&home, h.session_id());
+            f.tailer = Tailer::locate(&self.omp_home, h.session_id());
         }
         let Some(tailer) = f.tailer.clone() else {
             self.omp_poll(me);
@@ -859,7 +933,7 @@ impl AcpChild {
             .observed
             .by_external
             .values()
-            .filter(|c| c.meta.source == ObservedSource::OmpTask && !c.meta.state.is_terminal())
+            .filter(|c| c.tails())
             .map(|c| c.meta.external.clone())
             .collect();
         for ext in exts {
@@ -946,6 +1020,10 @@ impl AcpChild {
                 Entry::Assistant { usage: Some(u), .. } => {
                     self.record_child_tokens(&c, TurnId::new(), &omp_tokens(u))
                         .await;
+                    if u.cost > 0.0 {
+                        c.tail_cost += u.cost;
+                        self.meter_child(&c, c.tail_cost).await;
+                    }
                 }
                 _ => {}
             }
@@ -953,6 +1031,20 @@ impl AcpChild {
         self.observed.by_external.insert(ext.to_owned(), c);
         for u in omp::to_updates(entries) {
             self.observed_traffic(ext, u, me).await;
+        }
+        // §5.2 (141 R1 T5): omp aborted the job (its exit, a cancel) — the
+        // closing assistant entry says so; `Command aborted` tool results
+        // landed above, inside the turn.
+        let aborted = entries
+            .iter()
+            .any(|e| matches!(e, Entry::Assistant { stop_reason: Some(r), .. } if r == "aborted"));
+        if aborted && let Some(mut c) = self.observed.by_external.remove(ext) {
+            if !c.meta.state.is_terminal() {
+                self.set_child_state(&mut c, ObservedState::Cancelled, Some(Some("aborted")))
+                    .await;
+                self.close_child_turn(&mut c, "cancelled", None).await;
+            }
+            self.observed.by_external.insert(ext.to_owned(), c);
         }
     }
 }

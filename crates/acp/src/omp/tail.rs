@@ -78,10 +78,13 @@ impl Tailer {
         Ok((lines.iter().map(Entry::parse).collect(), cursor))
     }
 
-    /// `<id>.md` exists: the child finished and omp wrote its final output.
+    /// `<id>.md` exists with content: the child finished and omp wrote its
+    /// final output. A zero-byte `.md` is what omp leaves behind when it
+    /// aborts the job on exit (141 R1 T5) — not a completion.
     #[must_use]
     pub fn sidecar_done(&self, id: &str) -> bool {
-        self.child_path(id).with_extension("md").is_file()
+        fs::metadata(self.child_path(id).with_extension("md"))
+            .is_ok_and(|m| m.is_file() && m.len() > 0)
     }
 
     /// The `<id>.md` final output, once written.
@@ -193,6 +196,8 @@ pub enum Entry {
         usage: Option<Usage>,
         /// `provider/model` of this response.
         model: Option<String>,
+        /// `stopReason` (`toolUse`, `stop`, `aborted`, …).
+        stop_reason: Option<String>,
     },
     /// `custom {customType:"tool_execution_start"}`.
     ToolStart(Call),
@@ -264,6 +269,7 @@ impl Entry {
                             (None, Some(model)) => Some(model.to_owned()),
                             _ => None,
                         },
+                        stop_reason: s(&m["stopReason"]),
                     },
                     Some("toolResult") => Entry::ToolResult {
                         call_id: s(&m["toolCallId"]).unwrap_or_default(),
@@ -458,10 +464,12 @@ mod tests {
             calls,
             usage,
             model,
+            stop_reason,
         } = &entries[6]
         else {
             panic!("{:?}", entries[6]);
         };
+        assert_eq!(stop_reason.as_deref(), Some("toolUse"));
         assert_eq!(text, "");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "toolu_01N97dmhtms4GH34fEciDfVT");
@@ -570,6 +578,9 @@ mod tests {
         assert!(!t.sidecar_done("ReadA"));
         assert_eq!(t.sidecar_text("ReadA"), None);
         assert_eq!(t.result_json("ReadA"), None);
+        // 141 R1 T5: an aborted job leaves a 0-byte `.md` — not done.
+        fs::write(t.artifacts.join("ReadA.md"), b"").unwrap();
+        assert!(!t.sidecar_done("ReadA"));
         fs::copy(fixture("ReadA.md"), t.artifacts.join("ReadA.md")).unwrap();
         fs::copy(fixture("ReadA.json"), t.artifacts.join("ReadA.json")).unwrap();
         assert!(t.sidecar_done("ReadA"));
@@ -584,5 +595,41 @@ mod tests {
         assert_eq!(jobs, ["ReadA"]);
         assert_eq!(cursor, fs::metadata(&t.parent_file).unwrap().len());
         assert_eq!(t.settled_jobs(cursor).unwrap(), (Vec::new(), cursor));
+    }
+
+    /// 141 R1 T5: a child omp aborted on exit (`SlowA.aborted.jsonl`, recorded
+    /// 2026-10-08 after SIGTERM of the engine): the open call's result is
+    /// `Command aborted` (`isError`), the closing assistant entry has
+    /// `stopReason: aborted` and empty content; `to_updates` yields the
+    /// call and its failed result and nothing for the empty entry.
+    #[test]
+    fn aborted_child_entries_carry_the_stop_reason() {
+        let home = Home::new();
+        let t = home.tailer();
+        fs::copy(
+            fixture("SlowA.aborted.jsonl"),
+            t.artifacts.join("SlowA.jsonl"),
+        )
+        .unwrap();
+        let (entries, _) = t.read("SlowA", 0).unwrap();
+        assert_eq!(entries.len(), 8);
+        assert!(matches!(
+            &entries[3],
+            Entry::Assistant { calls, stop_reason: Some(r), .. }
+                if calls[0].name == "bash" && r == "toolUse"
+        ));
+        assert!(matches!(
+            &entries[6],
+            Entry::ToolResult { text, is_error: true, .. } if text == "Command aborted"
+        ));
+        assert!(matches!(
+            &entries[7],
+            Entry::Assistant { text, calls, stop_reason: Some(r), .. }
+                if text.is_empty() && calls.is_empty() && r == "aborted"
+        ));
+        let updates = to_updates(&entries);
+        assert_eq!(updates.len(), 2);
+        assert!(matches!(&updates[1], SessionUpdate::ToolCallUpdate(u)
+            if u.fields.status == Some(ToolCallStatus::Failed)));
     }
 }
