@@ -472,16 +472,19 @@ function reportCounts(r: { replayed: unknown[]; interrupted: [string, string][];
 /** 109 §8.2: the banner from `Loaded.resume`. No row while we show a turn still "resuming…" → the turn is no longer
  * open, so it ran: flip `resumed` (the live `TurnResumed` was published before this client subscribed). Same turn →
  * keep what we have, take the row's `resumed` if newer and its persisted report when we hold none (a live report for
- * the turn wins). Another turn → the row's state and report. */
+ * the turn wins); 139: the row's `owner`/`here` are the truth about who runs it now. Another turn → the row's state
+ * and report. A pre-139 engine omits `here`: owned here, as before. */
 export function resumeFromLoaded(
   cur: ResumeBanner | undefined,
   loaded: LoadedPage["resume"] | undefined,
 ): ResumeBanner | undefined {
   if (!loaded) return cur && !cur.resumed ? { ...cur, resumed: true } : cur;
   const report = loaded.report ? reportCounts(loaded.report) : undefined;
+  const here = loaded.here ?? true;
   if (cur?.turn === loaded.turn) {
     const next = cur.resumed || !loaded.resumed ? cur : { ...cur, resumed: true };
-    return cur.report || !report ? next : { ...next, report };
+    const owned = next.here === here && next.owner === loaded.owner ? next : { ...next, here, owner: loaded.owner };
+    return cur.report || !report ? owned : { ...owned, report };
   }
   const at = Date.parse(loaded.interrupted_at);
   return {
@@ -490,8 +493,16 @@ export function resumeFromLoaded(
     at: Number.isNaN(at) ? Date.now() : at,
     resumed: loaded.resumed,
     report,
+    owner: loaded.owner,
+    here,
+    cause: loaded.cause,
   };
 }
+
+/** 139 §9.3: who runs the session as the banner last learned it (`Loaded.resume`, `SessionOwnerChanged`). Owner
+ * events reach a replica's clients relayed (`events.rs` follower), so they inherit the view instead of asserting
+ * "here"; with no banner yet the engine we talk to is assumed to be the owner, as before 139. */
+const whose = (r: ResumeBanner | undefined): Pick<ResumeBanner, "here" | "owner"> => ({ here: r?.here ?? true, owner: r?.owner });
 
 /** What makes two renderings of one stored row the same card: kind plus its stable handle, not the process-local id. */
 function signature(e: Entry): string {
@@ -676,15 +687,34 @@ export function apply(
           at: Number.isNaN(at) ? Date.now() : at,
           resumed: true,
           report: slice.resume?.turn === e.turn ? slice.resume.report : undefined,
+          // 139 §9.3: a relayed `TurnResumed` from a followed owner must not flip a replica's view to "here".
+          ...whose(slice.resume),
+          cause: e.cause,
+          from: e.from,
         },
       };
     }
     case "ResumeReport": {
-      const base = slice.resume?.turn === e.turn ? slice.resume : { turn: e.turn, kind: "interrupted" as const, at: Date.now(), resumed: true };
+      const base = slice.resume?.turn === e.turn ? slice.resume : { turn: e.turn, kind: "interrupted" as const, at: Date.now(), resumed: true, ...whose(slice.resume) };
       return { ...slice, resume: { ...base, report: reportCounts(e) } };
     }
+    // 139 §6.1: `reason: "release"` is the owner side of a transfer (the taker resumes it — §9.3 "Moving to…").
     case "TurnSuspended":
-      return { ...slice, resume: { turn: e.turn, kind: "suspended", at: Date.now(), resumed: false } };
+      return {
+        ...slice,
+        resume: { turn: e.turn, kind: "suspended", at: Date.now(), resumed: false, ...whose(slice.resume), cause: e.reason === "release" ? "transfer" : undefined },
+      };
+    // 139 §6.3 (D5): a system takeover left the turn open here; the banner says so and offers Resume (§9.3).
+    case "ResumePending":
+      return {
+        ...slice,
+        resume: { turn: e.turn, kind: "interrupted", at: Date.now(), resumed: false, ...whose(slice.resume), cause: "takeover", from: e.from },
+      };
+    // 139 §9.3: the banner follows ownership — "Moving to B…" on the old owner's clients once B's row lands.
+    case "SessionOwnerChanged":
+      return slice.resume
+        ? { ...slice, resume: { ...slice.resume, here: e.here, owner: e.here ? undefined : e.owner } }
+        : slice;
     case "PartialDropped":
       return slice;
     case "TitleChanged": {

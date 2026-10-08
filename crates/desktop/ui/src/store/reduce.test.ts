@@ -1111,7 +1111,7 @@ test('ToolCallStarted edit/write_file appends the root-relative path under its r
 test('109 §8.2: the banner follows TurnResumed → ResumeReport, the next turn clears it; a lost job keeps its exit', () => {
   const at = '2026-10-06T12:05:00Z'
   let s = run([{ type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: true, cause: 'crash' }])
-  expect(s.resume).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: true, report: undefined })
+  expect(s.resume).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: true, report: undefined, here: true, cause: 'crash' })
   s = apply(s, { type: 'ResumeReport', session: S, turn: T, replayed: [['c1', 'read_file'], ['c2', 'grep']], interrupted: [['c3', 'git push']], lost_jobs: ['j1'], children_restored: 0, children_handed_off: 0 }, ctx())
   expect(s.resume?.report).toEqual({ replayed: 2, skipped: ['git push'], lostJobs: 1 })
   // The resumed turn's own events keep the banner; a different turn drops it.
@@ -1125,6 +1125,41 @@ test('109 §8.2: the banner follows TurnResumed → ResumeReport, the next turn 
   j = apply(j, { type: 'JobFinished', session: S, id: 'j1', command: 'make', exit: 'lost', secs: 4n, output: '', inline: false, pty: false }, ctx())
   expect(j.entries[0]).toMatchObject({ job: { exit: { exit: 'lost', secs: 4 } } })
   expect(j.jobs.size).toBe(0)
+})
+
+test('139 §9.3: the banner carries owner/here/cause/from — from Loaded.resume, TurnResumed, TurnSuspended{release}, ResumePending, SessionOwnerChanged', () => {
+  const at = '2026-10-06T12:05:00Z'
+  // A replica's row: who runs it; a pre-139 row omits `here` and reads as owned here.
+  const theirs = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: false, owner: 'A', here: false, cause: 'crash' as const }
+  expect(resumeFromLoaded(undefined, theirs)).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: false, owner: 'A', here: false, cause: 'crash' })
+  expect(resumeFromLoaded(undefined, { turn: T, kind: 'interrupted', interrupted_at: at, resumed: false } as never)).toMatchObject({ here: true })
+  // The same turn, loaded again after ownership moved: the row's owner/here win over what we had.
+  const held = { turn: T, kind: 'interrupted' as const, at: Date.parse(at), resumed: false, here: true }
+  expect(resumeFromLoaded(held, theirs)).toEqual({ ...held, owner: 'A', here: false })
+  expect(resumeFromLoaded(held, { ...theirs, owner: undefined, here: true })).toBe(held)
+
+  // TurnResumed on the owner: cause + from.
+  const resumed = run([{ type: 'TurnResumed', session: S, turn: T, kind: 'suspended', interrupted_at: at, resumed_at: at, partial_dropped: false, cause: 'transfer', from: 'A' }])
+  expect(resumed.resume).toMatchObject({ kind: 'suspended', resumed: true, here: true, cause: 'transfer', from: 'A' })
+  // Relayed to a replica's clients (the follower re-publishes the owner's events): the view stays "not here".
+  let replica: SessionSlice = { ...empty(S), resume: resumeFromLoaded(undefined, theirs) }
+  replica = apply(replica, { type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: false, cause: 'crash' }, ctx())
+  expect(replica.resume).toMatchObject({ resumed: true, here: false, owner: 'A' })
+  // The old owner's side of a transfer: TurnSuspended{release} → cause transfer; B's row lands → not here, owner B.
+  let a = run([{ type: 'TurnSuspended', session: S, turn: T, reason: 'release' }])
+  expect(a.resume).toMatchObject({ kind: 'suspended', resumed: false, here: true, cause: 'transfer' })
+  a = apply(a, { type: 'SessionOwnerChanged', session: S, owner: 'B', epoch: 2, here: false }, ctx())
+  expect(a.resume).toMatchObject({ here: false, owner: 'B', cause: 'transfer' })
+  // Taking it back: here again, no foreign owner.
+  expect(apply(a, { type: 'SessionOwnerChanged', session: S, owner: 'me', epoch: 3, here: true }, ctx()).resume).toMatchObject({ here: true, owner: undefined })
+  expect(apply(empty(S), { type: 'SessionOwnerChanged', session: S, owner: 'B', epoch: 2, here: false }, ctx()).resume).toBeUndefined()
+  expect(apply(run([{ type: 'TurnSuspended', session: S, turn: T, reason: 'update' }]), { type: 'TurnStarted', session: S, turn: 'n', text: 'x', model: 'm', turn_seq: 1 }, ctx()).resume).toBeUndefined()
+  expect(run([{ type: 'TurnSuspended', session: S, turn: T, reason: 'update' }]).resume?.cause).toBeUndefined()
+  // A system takeover (D5): the turn waits for the user's Resume.
+  const pending = run([{ type: 'ResumePending', session: S, turn: T, from: 'A' }])
+  expect(pending.resume).toMatchObject({ kind: 'interrupted', resumed: false, here: true, cause: 'takeover', from: 'A' })
+  const after = apply(pending, { type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: false, cause: 'takeover', from: 'A' }, ctx())
+  expect(after.resume).toMatchObject({ resumed: true, cause: 'takeover', from: 'A', here: true })
 })
 
 test('109 LIVE: a child\u2019s TurnResumed shows it running (own slice and the parent\u2019s row, no chat line) until TurnFinished', () => {
@@ -1166,7 +1201,7 @@ test('109 §8.2: the interrupted partial loads greyed and the regenerated reply\
   )
   let s = useSessions.getState().sessions[S] as SessionSlice
   expect(s.entries.map((e) => e.kind)).toEqual(['user', 'interrupted'])
-  expect(s.resume).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: false })
+  expect(s.resume).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: false, here: true })
   s = apply(s, { type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: true, cause: 'crash' }, ctx())
   expect(s.entries.map((e) => e.kind)).toEqual(['user', 'interrupted'])
   s = apply(s, { type: 'TextDelta', session: S, turn: T, text: 'half a reply' }, ctx())
@@ -1181,7 +1216,7 @@ test('109 §8.2: the interrupted partial loads greyed and the regenerated reply\
 
 test('109 BANNER: a banner still "resuming…" flips to resumed when the row says so or the open turn is gone', () => {
   const at = '2026-10-06T12:05:00Z'
-  const waiting = { turn: T, kind: 'interrupted' as const, at: Date.parse(at), resumed: false }
+  const waiting = { turn: T, kind: 'interrupted' as const, at: Date.parse(at), resumed: false, here: true }
   const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: false, here: true }
   // Ask mode, still waiting: nothing changes.
   expect(resumeFromLoaded(waiting, row)).toBe(waiting)
@@ -1203,9 +1238,9 @@ test('109 REPORT: a Loaded.resume row with a report fills the banner counts; a l
   const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: true, report, here: true }
   const counts = { replayed: 2, skipped: ['git push'], lostJobs: 1 }
   // A desktop that connected after the engine resumed: no banner yet, the row brings everything.
-  expect(resumeFromLoaded(undefined, row)).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: true, report: counts })
+  expect(resumeFromLoaded(undefined, row)).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: true, report: counts, here: true })
   // Still "resuming…" for the same turn: flips and takes the persisted counts.
-  const waiting = { turn: T, kind: 'interrupted' as const, at: Date.parse(at), resumed: false }
+  const waiting = { turn: T, kind: 'interrupted' as const, at: Date.parse(at), resumed: false, here: true }
   expect(resumeFromLoaded(waiting, row)).toEqual({ ...waiting, resumed: true, report: counts })
   // A live report already held for the turn outranks the row's.
   const live = { ...waiting, resumed: true, report: { replayed: 9, skipped: [], lostJobs: 0 } }
@@ -1213,7 +1248,7 @@ test('109 REPORT: a Loaded.resume row with a report fills the banner counts; a l
   // A row without a report keeps the live one.
   expect(resumeFromLoaded(live, { ...row, report: undefined })).toBe(live)
   // Another turn's row replaces banner and counts.
-  expect(resumeFromLoaded(live, { ...row, turn: 'other' })).toEqual({ turn: 'other', kind: 'interrupted', at: Date.parse(at), resumed: true, report: counts })
+  expect(resumeFromLoaded(live, { ...row, turn: 'other' })).toEqual({ turn: 'other', kind: 'interrupted', at: Date.parse(at), resumed: true, report: counts, here: true })
   // The next turn still clears it.
   const s = { ...empty(S), resume: resumeFromLoaded(undefined, row) }
   expect(apply(s, { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 }, ctx()).resume).toBe(s.resume)
