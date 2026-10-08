@@ -127,5 +127,35 @@ async fn harvest_scenarios() {
         .await;
     assert_eq!(harvested(&events), Some((0, 1)));
 
+    // 136 P2 D4: the dreaming session never harvests itself — a due turn
+    // neither counts nor fires, compaction's pre-harvest is skipped, and
+    // `/knowledge harvest` is refused by name.
+    knowledge.register_consolidating_session(shared.id);
+    let (mut night, tid3) = h.turn("openai/textonly", CancellationToken::new()).await;
+    night.calls = 1;
+    night.state.turns_since_harvest = every - 1;
+    let state = night
+        .run(tid3, vec![h.input("Retitled 300 concepts.", false)])
+        .await;
+    let events = h.drain().await;
+    assert_eq!(harvesting(&events), 0, "no self-harvest");
+    assert_eq!(
+        state.turns_since_harvest,
+        every - 1,
+        "the count does not move for the dreaming session"
+    );
+    let mut night = Turn::new(shared.clone(), None, CancellationToken::new(), state);
+    assert_eq!(
+        night.harvest_now().await.err(),
+        Some("the dreaming session does not harvest itself".to_owned())
+    );
+    night.calls = 1;
+    night.compact_now(Some(CompactStyle::Cut), None).await.unwrap();
+    let events = h
+        .drain_until(|e| matches!(e, AgentEvent::Compacted { .. }))
+        .await;
+    assert_eq!(harvesting(&events), 0, "no pre-compaction harvest");
+    knowledge.clear_consolidating_session();
+
     let _ = std::fs::remove_dir_all(&reg_dir);
 }

@@ -3199,6 +3199,16 @@ impl Turn {
         self.shared.knowledge.clone()
     }
 
+    /// The store a harvest may write to: [`Self::knowledge`] minus the
+    /// dreaming session itself (136 P2 D4) — a night's frame is the ledger
+    /// and hundreds of titles, and its harvest would land inside the night
+    /// outside the receipt. Every harvest entry (turn end, compaction,
+    /// `/knowledge harvest`) funnels through this `None`.
+    fn harvest_store(&self) -> Option<Arc<Knowledge>> {
+        self.knowledge()
+            .filter(|k| !k.is_consolidating_session(self.shared.id))
+    }
+
     async fn publish(&self, event: AgentEvent) {
         self.shared.rt.publish(event).await;
     }
@@ -4994,7 +5004,7 @@ impl Turn {
         // previous one still runs is not queued.
         let harvestable = self.calls > 0 && !interrupted && self.shared.depth == 0;
         let every = self.shared.cfg.knowledge.harvest_every;
-        if harvestable && registry.is_some() && self.knowledge().is_some() {
+        if harvestable && registry.is_some() && self.harvest_store().is_some() {
             self.state.turns_since_harvest += 1;
             if every > 0 && self.state.turns_since_harvest >= every {
                 self.state.turns_since_harvest = 0;
@@ -6435,12 +6445,13 @@ impl Turn {
         reply: Option<oneshot::Sender<Result<HarvestResult, String>>>,
         chain: bool,
     ) -> Result<(), String> {
-        self.knowledge()
-            .ok_or(if self.shared.resources.is_private() {
-                "knowledge harvest is disabled in a private session"
-            } else {
-                "knowledge is off"
-            })?;
+        self.harvest_store().ok_or(if self.shared.resources.is_private() {
+            "knowledge harvest is disabled in a private session"
+        } else if self.knowledge().is_some() {
+            "the dreaming session does not harvest itself"
+        } else {
+            "knowledge is off"
+        })?;
         if self.state.history.is_empty() {
             return Err("nothing to harvest".into());
         }
@@ -6604,7 +6615,7 @@ impl Turn {
             && self.shared.cfg.knowledge.harvest_every > 0
             && self.shared.depth == 0
             && (self.state.turns_since_harvest > 0 || self.calls > 0)
-            && self.knowledge().is_some()
+            && self.harvest_store().is_some()
         {
             self.state.turns_since_harvest = 0;
             self.calls = 0;
