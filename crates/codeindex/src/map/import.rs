@@ -10,7 +10,6 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use sqlx::{SqliteConnection, SqlitePool};
@@ -81,7 +80,7 @@ pub async fn import(ri: &RootIndex, pool: &SqlitePool) -> anyhow::Result<u32> {
         sqlx::query_scalar("SELECT COALESCE(MAX(order_no), 0) + 1 FROM perspectives")
             .fetch_one(&mut *tx)
             .await?;
-    let now = now_ms();
+    let now = u64::try_from(super::store::now_ms()).unwrap_or(0);
     let mut count = 0;
     for p in &perspectives {
         let pid = format!("imported:{}", p.dir);
@@ -443,12 +442,6 @@ pub(super) fn yaml_scalar<'a>(text: &'a str, key: &str) -> Option<&'a str> {
         }
         Some(v.trim_matches(|c| c == '"' || c == '\''))
     })
-}
-
-pub(super) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// `YYYY-MM-DDTHH:MM:SS(.fff)?Z` → Unix ms (proleptic Gregorian).

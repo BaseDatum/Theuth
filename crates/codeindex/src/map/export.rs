@@ -15,7 +15,7 @@ use anyhow::Context as _;
 use sqlx::{Row as _, SqlitePool};
 use surface::{GraphDirection, GraphEdgeStyle, GraphProps};
 
-use super::import::{FIELD_FILES, is_ours, ms_to_iso, now_ms};
+use super::import::{FIELD_FILES, is_ours, ms_to_iso};
 use super::{Export, MapElement, MapExport, MapIndex, MapOrigin, MapState, store};
 use crate::index::Codeindex;
 use crate::{root, store as index_store};
@@ -45,15 +45,8 @@ pub async fn export(ix: &Codeindex, m: Export) -> anyhow::Result<MapExport> {
         root.display()
     );
     let git_head = index_store::meta(&ri.pool, "git_head").await?;
-    // The map lives beside the index (§9): derive its path from the index file's directory.
-    let index_file = ri.pool.connect_options().get_filename().to_path_buf();
-    let dir = index_file
-        .parent()
-        .with_context(|| format!("index file {} has no directory", index_file.display()))?;
-    let pool = store::open(&store::path(dir, &root), &root).await?;
-    let out = write_omm(&pool, &root, git_head.as_deref()).await;
-    pool.close().await;
-    out
+    let pool = ix.map_pool(&ri).await?;
+    write_omm(&pool, &root, git_head.as_deref()).await
 }
 
 /// One `elements` row as the export needs it.
@@ -186,7 +179,7 @@ pub async fn write_omm(
             by_parent: &by_parent,
             edge_rows: &edge_rows,
             git_head,
-            now: ms_to_iso(now_ms()),
+            now: ms_to_iso(u64::try_from(store::now_ms()).unwrap_or(0)),
             out: &mut out,
         };
         w.element(&root_row, &dir.join(&pid), &title, &[])?;
