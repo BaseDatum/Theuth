@@ -241,7 +241,8 @@ internal sealed class Surfaces : IDisposable
         menu.Show(BuildMenu(), at);
     }
 
-    /// <summary>§4.5: Open theuth · Ask theuth… · Pause notifications ▸ · Launch at login ✓ · Keyboard shortcuts… Ctrl+/ · Settings… · Quit theuth.</summary>
+    /// <summary>§4.5: Open theuth · Ask theuth… · Pause notifications ▸ · Launch at login ✓ · Keyboard shortcuts… Ctrl+/ · Settings… · Quit theuth
+    /// · Quit theuth Companion (Swift W7: Quit theuth is the whole app, the second item only the companion).</summary>
     private List<TrayMenu.Item> BuildMenu()
     {
         bool login = LaunchAtLoginState?.Invoke() ?? false;
@@ -260,8 +261,23 @@ internal sealed class Surfaces : IDisposable
             new("Keyboard shortcuts…\tCtrl+/", () => ShowLegend(fromPanel: false)),
             new("Settings…", () => store.Perform(Intent.Settings)),
             TrayMenu.Item.Separator,
-            new("Quit theuth", () => quit(0)),
+            new("Quit theuth", QuitTheuth),
+            new("Quit theuth Companion", () => quit(0)),
         };
+    }
+
+    /// <summary>
+    /// Quit theuth = the whole app (Swift W7): the shell's quit handshake (<c>theuth://quit</c>) stops the engine and then
+    /// closes this companion. With no shell, or if the handshake has not closed the companion within 10 s, it quits itself.
+    /// </summary>
+    private void QuitTheuth()
+    {
+        if (!Links.QuitTheuth())
+        {
+            quit(0);
+            return;
+        }
+        _ = Task.Delay(TimeSpan.FromSeconds(10)).ContinueWith(_ => dispatcher.TryEnqueue(() => quit(0)));
     }
 
     private void OnMark(Mark m, RECT row)

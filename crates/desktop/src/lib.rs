@@ -522,7 +522,7 @@ mod desktop {
     }
 
     /// 130 D10: `theuth://attention/<id>` · `theuth://c/<session>` · `theuth://new` from the companion
-    /// (or anything else) → [`navigate`]; unknown shapes are logged and dropped. On Windows a cold start
+    /// (or anything else) → [`navigate`]; `theuth://quit` → [`request_quit`]; unknown shapes are logged and dropped. On Windows a cold start
     /// by a link has the URL in argv: the plugin parsed it in its own setup, before this listener existed,
     /// so `get_current()` replays it (macOS delivers `RunEvent::Opened` later and reads `None` here).
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -531,6 +531,11 @@ mod desktop {
         let handle = app.clone();
         let open = move |urls: Vec<tauri::Url>| {
             for url in urls {
+                if is_quit_link(&url) {
+                    tracing::info!("deep link: quit requested ({url})");
+                    request_quit(&handle);
+                    continue;
+                }
                 match deep_link_route(&url) {
                     Some(route) => navigate(&handle, &route),
                     None => tracing::info!("deep link ignored: {url}"),
@@ -541,6 +546,15 @@ mod desktop {
             open(urls);
         }
         app.deep_link().on_open_url(move |event| open(event.urls()));
+    }
+
+    /// `theuth://quit`: the companion's tray › Quit theuth — the whole app, one quit (130 W7). The Swift
+    /// companion `terminate()`s the shell, which lands in the same handshake; on Windows the companion
+    /// opens this link instead (the single-instance plugin hands it to the running shell) → [`request_quit`].
+    fn is_quit_link(url: &tauri::Url) -> bool {
+        url.scheme() == "theuth"
+            && url.host_str() == Some("quit")
+            && url.path().trim_matches('/').is_empty()
     }
 
     /// The app route for a `theuth://` URL, or `None` for anything the companion does not send.
@@ -583,7 +597,7 @@ mod desktop {
 
     #[cfg(test)]
     mod tests {
-        use super::deep_link_route;
+        use super::{deep_link_route, is_quit_link};
 
         #[test]
         fn deep_link_routes() {
@@ -598,6 +612,17 @@ mod desktop {
             assert_eq!(route("theuth://attention"), None);
             assert_eq!(route("theuth://settings/general"), None);
             assert_eq!(route("https://attention/x"), None);
+        }
+
+        #[test]
+        fn quit_link_is_not_a_route() {
+            let url = |s: &str| tauri::Url::parse(s).unwrap();
+            assert!(is_quit_link(&url("theuth://quit")));
+            assert!(is_quit_link(&url("theuth://quit/")));
+            assert!(!is_quit_link(&url("theuth://quit/now")));
+            assert!(!is_quit_link(&url("theuth://new")));
+            assert!(!is_quit_link(&url("https://quit")));
+            assert_eq!(deep_link_route(&url("theuth://quit")), None);
         }
     }
 }
