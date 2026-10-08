@@ -516,7 +516,7 @@ pub fn render(
     }
     out.push_str("</description>\n");
 
-    items.sort_by(|a, b| b.added_ms.cmp(&a.added_ms));
+    items.sort_by_key(|i| std::cmp::Reverse(i.added_ms));
     let mut left = budget.context_budget_tokens;
     let mut spent_truncation = false;
     let mut full: Vec<String> = Vec::new();
