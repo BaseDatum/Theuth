@@ -81,9 +81,11 @@ Bun.serve({
     log.flush();
     const b = body && typeof body === "object" ? (body as { messages?: unknown; tools?: unknown }) : {};
     const msgs: Msg[] = Array.isArray(b.messages) ? (b.messages as Msg[]) : [];
-    const answered = msgs.some((m) => m.role === "tool");
+    // Only this turn counts: a tool result *after* the last user message means the batch ran.
+    const lastUserAt = msgs.map((m) => m.role).lastIndexOf("user");
+    const answered = msgs.slice(lastUserAt + 1).some((m) => m.role === "tool");
     const hasTools = Array.isArray(b.tools) && b.tools.length > 0;
-    const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+    const lastUser = lastUserAt >= 0 ? msgs[lastUserAt] : undefined;
     const text = textOf(lastUser?.content).trim();
     const marker = text.indexOf("SMOKE ");
     if (!answered && hasTools && marker >= 0) {

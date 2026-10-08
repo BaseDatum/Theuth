@@ -187,13 +187,30 @@ class Engine {
     return this.sql<T>(q, ...params)[0];
   }
 
+  paused = false;
   pause() {
+    if (this.paused || !this.proc) return;
     process.kill(this.pid, "SIGSTOP");
+    this.paused = true;
     log(`${this.name} SIGSTOP`);
   }
   resume() {
+    if (!this.paused || !this.proc) return;
     process.kill(this.pid, "SIGCONT");
+    this.paused = false;
     log(`${this.name} SIGCONT`);
+  }
+  /// SIGSTOP this engine and wait until `peer`'s mesh marks it unreachable
+  /// (the QUIC idle timeout, ~20–30 s): a `Write` take or a forward from
+  /// `peer` then sees "owner unreachable" instead of waiting on a release.
+  async partitionFrom(peer: Engine) {
+    this.pause();
+    const t0 = now();
+    await waitFor(`${peer.name} sees ${this.name} unreachable`, async () => {
+      const s = await peer.rpc("mesh_status", []);
+      return isObj(s) && Array.isArray(s.peers) && s.peers.some((p) => isObj(p) && p.id === this.id && p.reachable === false);
+    }, 120_000, 500);
+    log(`${peer.name} saw ${this.name} unreachable after ${now() - t0} ms`);
   }
   async stop(signal: "SIGTERM" | "SIGKILL" = "SIGTERM") {
     if (!this.proc) return;
@@ -272,8 +289,9 @@ async function newSession(e: Engine): Promise<string> {
 /// Send the batch; return once `turn` is known and `held` (a call name) is
 /// `started` on every engine in `visibleOn`.
 async function sendBatch(e: Engine, sid: string, batch: Call[], held: string | null, visibleOn: Engine[]): Promise<string> {
+  const before = e.evs(sid, "TurnStarted").length;
   await e.rpc("send_input", [sid, `SMOKE ${JSON.stringify({ calls: batch })}`, [], null, null]);
-  const started = await e.waitEv(sid, "TurnStarted");
+  const started = await waitFor(`${e.name} TurnStarted of ${sid.slice(0, 8)}`, () => e.evs(sid, "TurnStarted")[before] ?? null, 30_000);
   const turn = String(started.turn);
   if (held) {
     for (const v of visibleOn) {
@@ -393,59 +411,63 @@ async function T2c(A: Engine, B: Engine) {
 }
 
 async function T3(A: Engine, B: Engine) {
-  // Takeover: A partitioned (SIGSTOP) mid-batch; `user` take on B. Then A
-  // runs on alone (B stopped), writes its tail, and demotes with orphans
+  // Takeover: A partitioned (SIGSTOP) mid-batch; `user` take on B. Bridged
+  // calls run one python cell at a time per session, so one session holds
+  // the mutating `shell`, another the read-only `wait` on its own PTY. Then
+  // A runs on alone (B stopped), writes its tail, and demotes with orphans
   // when B comes back.
-  const sid = await newSession(A);
   const hitsFile = `${ROOT}/hits-T3`;
-  // Turn 1: a PTY job to wait on in turn 2 (a held read-only call).
-  const t1 = await sendBatch(A, sid, [{ name: "start", args: { command: "printf 'HELLO-T3\\n'; sleep 300", name: "t3" } }], null, []);
-  await A.waitEv(sid, "TurnFinished", 30_000);
-  const pty = jobs(A, sid).find((j) => j.kind === "pty");
-  check("turn 1 started a PTY job on A", !!pty && pgAlive(pty.pgid), JSON.stringify(pty));
-  void t1;
-  const turn = await sendBatch(
-    A,
-    sid,
-    [readFixture, heldShell(hitsFile, 25), { name: "wait", args: { id: pty?.id ?? "j1", pattern: "NEVER-MATCHES", timeout: 100 } }],
-    "shell",
-    [A, B],
-  );
-  await waitFor("wait started on B", () => callState(B, sid, turn, "wait") === "started");
-  A.pause();
+  const sm = await newSession(A); // mutating started
+  const sr = await newSession(A); // read-only started
+  await sendBatch(A, sr, [{ name: "start", args: { command: "printf 'HELLO-T3\\n'; sleep 300", name: "t3", ready: { log: "HELLO" } } }], null, []);
+  await A.waitEv(sr, "TurnFinished", 30_000);
+  const pty = jobs(A, sr).find((j) => j.kind === "pty");
+  check("a PTY job runs on A", !!pty && pgAlive(pty.pgid), JSON.stringify(pty));
+  const tm = await sendBatch(A, sm, [readFixture, heldShell(hitsFile, 25)], "shell", [A, B]);
+  const tr = await sendBatch(A, sr, [{ name: "wait", args: { id: pty?.id ?? "j1", pattern: "NEVER-MATCHES", timeout: 100 } }], "wait", [A, B]);
+  await A.partitionFrom(B);
   const t0 = now();
-  const take = await B.rpc("session_take", [sid, "user"]);
+  const take = await B.rpc("session_take", [sm, "user"]);
   const took = now() - t0;
   check("session_take(user) on B with A partitioned → B, epoch 2", isObj(take) && take.owner === B.id && take.epoch === 2, `${JSON.stringify(take)} in ${took} ms`);
-  const resumed = await B.waitEv(sid, "TurnResumed");
+  await B.rpc("session_take", [sr, "user"]);
+  const resumed = await B.waitEv(sm, "TurnResumed");
   check("B TurnResumed{cause: takeover, from: A, kind: interrupted}", resumed.cause === "takeover" && resumed.from === A.id && resumed.kind === "interrupted", JSON.stringify({ cause: resumed.cause, from: resumed.from, kind: resumed.kind }));
-  check("no suspended row shipped", suspendedReasons(B, sid, turn).length === 0);
-  await B.waitEv(sid, "TurnFinished", 60_000);
-  const h = await history(B, sid);
-  const shellOut = toolResult(h, "shell");
-  const waitOut = toolResult(h, "wait");
-  check("A's started mutating `shell` reported interrupted (takeover wording)", /interrupted/.test(shellOut) && /took the session over|takeover/.test(shellOut), shellOut.split("\n")[0]);
-  check("started read-only `wait` re-run on B (its PTY stayed on A: lost/moved banner)", waitOut.length > 0 && /moved|gone|lost/.test(waitOut), waitOut.split("\n")[0]);
-  check("<engine_restart kind=\"takeover\"> note", h.some((x) => x.role === "tool" && /<engine_restart[^>]*kind="takeover"/.test(x.result?.[0] ?? "")));
+  check("no suspended row shipped", suspendedReasons(B, sm, tm).length === 0 && suspendedReasons(B, sr, tr).length === 0);
+  await B.waitEv(sm, "TurnFinished", 60_000);
+  await B.waitEv(sr, "TurnResumed");
+  await B.waitEv(sr, "TurnFinished", 60_000);
+  const hm = await history(B, sm);
+  const hr = await history(B, sr);
+  const shellOut = toolResult(hm, "shell");
+  const waitOut = toolResult(hr, "wait");
+  check("A's started mutating `shell` reported interrupted (takeover wording)", /interrupted/.test(shellOut) && /took the session over|moved here from/.test(shellOut) && shellOut.includes(A.id), shellOut.split("\n")[0]);
+  check("started read-only `wait` re-run on B: lost PTY, moved-from-A banner over A's last page", /process gone — the session moved from/.test(waitOut) && waitOut.includes(A.id) && /HELLO-T3/.test(waitOut), waitOut.split("\n").find((l) => /process gone/.test(l))?.slice(0, 120) ?? waitOut.slice(0, 120));
+  check("<engine_restart kind=\"takeover\"> note on both", [hm, hr].every((h) => h.some((x) => x.role === "tool" && /<engine_restart[^>]*kind="takeover"/.test(x.result?.[0] ?? ""))));
+  check("read_file output reused (finished row)", toolResult(hm, "read_file").includes("fixture-139"));
   // A alone: B stopped, A resumed; A's shell finishes and A closes its turn under epoch 1.
   B.pause();
   A.resume();
-  await waitFor("A's turn finished on its own", () => newestStep(A, sid)?.kind === "turn_finished", 60_000, 250);
-  const aLog = A.sql<{ seq: number; epoch: number }>("SELECT seq, epoch FROM session_log WHERE session_id = ? ORDER BY seq", sid);
-  check("A wrote a tail at epoch 1 while partitioned", aLog.some((r) => r.epoch === 1) && newestStep(A, sid)?.kind === "turn_finished", `${aLog.length} log rows`);
+  await waitFor("A's turn finished on its own", () => newestStep(A, sm)?.kind === "turn_finished", 60_000, 250);
+  const aLog = A.sql<{ seq: number; epoch: number }>("SELECT seq, epoch FROM session_log WHERE session_id = ? ORDER BY seq", sm);
+  check("A wrote a tail at epoch 1 while partitioned", aLog.some((r) => r.epoch === 1) && newestStep(A, sm)?.kind === "turn_finished", `${aLog.length} log rows`);
   check("mutating call ran exactly once (A's run; B did not re-run it)", hits(hitsFile) === 1, `${hits(hitsFile)} hit(s)`);
   B.resume();
-  await A.waitEv(sid, "SessionOwnerChanged", 60_000, (e) => e.here === false);
-  const orphans = await waitFor("A's orphans", async () => {
-    const o = await A.rpc("session_orphans", [sid]);
-    return Array.isArray(o) && o.length ? o : null;
-  }, 30_000, 250).catch(() => []);
-  check("A demoted; its tail is in session_orphans", Array.isArray(orphans) && orphans.length >= 1, JSON.stringify(orphans));
-  const ha = await history(A, sid);
-  check("A's transcript is B's (nothing merged)", shape(ha) === shape(h), shape(ha));
+  await A.waitEv(sm, "SessionOwnerChanged", 90_000, (e) => e.here === false);
+  const demoted = await waitFor("A's demote log line", () => A.logText().includes(`${sm} taken by ${B.id}`), 30_000, 250).catch(() => false);
+  const orphans = await A.rpc("session_orphans", [sm]);
+  const dropped = B.logText().includes(`dropped stale rows of ${sm} epoch 1 from ${A.id}`);
+  check("A ran demote when B's take reached it (log row or snapshot)", demoted === true, A.logText().split("\n").find((l) => l.includes(`${sm} taken by`))?.slice(0, 200) ?? "(no demote line)");
+  // 68 §4.3 as built: orphans are the rows the taker never acked. When the reconnect
+  // ships A's tail before B's take row lands on A, B drops it as StaleEpoch and acks,
+  // so A counts 0 orphans — either way the tail is discarded, never merged.
+  check("A's tail discarded: in session_orphans or dropped as StaleEpoch on B", (Array.isArray(orphans) && orphans.length >= 1) || dropped, `orphans=${JSON.stringify(orphans)} stale-dropped-on-B=${dropped}`);
+  const ha = await history(A, sm);
+  check("A's transcript is B's (nothing merged)", shape(ha) === shape(hm), shape(ha));
+  await A.waitEv(sr, "SessionOwnerChanged", 60_000, (e) => e.here === false);
   check("A's PTY group still alive after the takeover (B never signalled it)", pgAlive(pty?.pgid ?? null), `pgid ${pty?.pgid}`);
-  const bj = jobs(B, sid);
-  check("B lists A's jobs lost with engine = A (settle_transferred, no signal)", bj.length === 2 && bj.every((j) => j.state === "lost" && j.engine === A.id), JSON.stringify(bj));
+  const bj = jobs(B, sr);
+  check("B lists A's PTY job lost with engine = A (settle_transferred, no signal)", bj.length === 1 && bj[0].state === "lost" && bj[0].engine === A.id, JSON.stringify(bj));
   if (pty?.pgid) try { process.kill(-pty.pgid, "SIGKILL"); } catch { /* gone */ }
 }
 
@@ -458,7 +480,7 @@ async function T4(A: Engine, B: Engine) {
   const sb = await newSession(A);
   const ta = await sendBatch(A, sa, [readFixture, heldShell(`${ROOT}/hits-T4a`, 60)], "shell", [A, B]);
   const tb = await sendBatch(A, sb, [readFixture, heldShell(`${ROOT}/hits-T4b`, 60)], "shell", [A, B]);
-  A.pause();
+  await A.partitionFrom(B);
   await B.rpc("send_input", [sa, "hello from B", [], null, null]);
   const ra = await B.waitEv(sa, "TurnResumed", 40_000);
   check("(Q10) send_input on B took the session and resumed at once: TurnResumed{takeover}", ra.cause === "takeover" && ra.from === A.id, JSON.stringify({ cause: ra.cause, from: ra.from }));
@@ -471,8 +493,8 @@ async function T4(A: Engine, B: Engine) {
   const items = await B.rpc("attention_list", []);
   const item = Array.isArray(items) ? items.find((i) => isObj(i) && String(i.id).startsWith(`resume:${sb}`)) : null;
   check("B's attention_list has resume:<session>:<turn> with the takeover title", isObj(item) && String(item.id) === `resume:${sb}:${tb}` && /taken from/.test(JSON.stringify(item)), isObj(item) ? `${item.id} ${str(item.title)}` : JSON.stringify(items).slice(0, 200));
-  const hb = await history(B, sb);
-  check("local note: taken from A … press Resume", hb.some((x) => x.role === "user" && /taken from .* press Resume/.test(x.text ?? "")));
+  const note = B.one<{ body: string }>("SELECT body FROM messages WHERE session_id = ? AND body LIKE '%press Resume%'", sb);
+  check("local note row: taken from A … press Resume", !!note && note.body.includes(A.id), (note?.body ?? "").slice(0, 120));
   check("newest step still open on B (nothing ran)", newestStep(B, sb)?.kind !== "turn_finished" && callState(B, sb, tb, "shell") === "started");
   const ok = await B.rpc("resume_turn", [sb]);
   const rb = await B.waitEv(sb, "TurnResumed", 30_000);
@@ -522,11 +544,11 @@ async function T6(A: Engine, B: Engine) {
   // owner-changed reason; pty_screen on B serves the replicated page with
   // the moved-from banner; A's groups are dead (KillSession).
   const sid = await newSession(A);
-  await sendBatch(A, sid, [{ name: "start", args: { command: "printf 'HELLO-T6\\n'; sleep 300", name: "t6" } }], null, []);
+  await sendBatch(A, sid, [{ name: "start", args: { command: "printf 'HELLO-T6\\n'; sleep 300", name: "t6", ready: { log: "HELLO" } } }], null, []);
   await A.waitEv(sid, "TurnFinished", 30_000);
   await sleep(1500); // one pty snapshot tick
   const turn = await sendBatch(A, sid, [heldShell(`${ROOT}/hits-T6`, 90)], "shell", [A, B]);
-  const before = jobs(A, sid);
+  const before = await waitFor("both job rows on A", () => (jobs(A, sid).length === 2 && jobs(A, sid).every((j) => j.pgid) ? jobs(A, sid) : null), 10_000);
   check("two running jobs on A, engine = A", before.length === 2 && before.every((j) => j.state === "running" && j.engine === A.id), JSON.stringify(before));
   await waitFor("pty screen replicated to B", () => B.one<{ text: string }>("SELECT text FROM pty_screens WHERE session_id = ?", sid)?.text.includes("HELLO-T6"), 20_000);
   await B.rpc("session_take", [sid, "user"]);
@@ -537,8 +559,15 @@ async function T6(A: Engine, B: Engine) {
   check("B's list_jobs shows both jobs lost", lost.length === 2, JSON.stringify(listed).slice(0, 300));
   const pty = before.find((j) => j.kind === "pty");
   const screen = await B.rpc("pty_screen", [sid, pty?.id ?? "j1", { anchor: "live" }, null]);
-  const text = isObj(screen) && Array.isArray(screen.lines) ? screen.lines.map((l) => (Array.isArray(l) ? l.map((r) => (isObj(r) ? str(r.text) : "")).join("") : "")).join("\n") : JSON.stringify(screen);
-  check("pty_screen on B: replicated page with the moved-from-A banner", /HELLO-T6/.test(text) && /moved from/.test(text) && text.includes(A.id.slice(0, 8)), text.split("\n").filter(Boolean).slice(0, 3).join(" | "));
+  const runText = (r: Json) => (isObj(r) && Array.isArray(r.cells) ? r.cells.map((c) => (isObj(c) ? str(c.text) : "")).join("") : "");
+  const text = isObj(screen) && Array.isArray(screen.lines) ? screen.lines.map((l) => (Array.isArray(l) ? l.map(runText).join("") : "")).join("\n") : "";
+  check("pty_screen on B: the replicated page (stored_page, epoch null = lost)", isObj(screen) && screen.type === "updated" && /HELLO-T6/.test(text) && screen.epoch === null, `${isObj(screen) ? str(screen.type) : JSON.stringify(screen)} | ${text.split("\n").filter(Boolean).slice(0, 2).join(" | ")}`);
+  // The model-facing page (`screen` tool) carries the moved-from banner (lost_page).
+  await sendBatch(B, sid, [{ name: "screen", args: { id: pty?.id ?? "j1" } }], null, []);
+  await B.waitEv(sid, "TurnFinished", 30_000, () => B.evs(sid, "TurnFinished").length >= 2);
+  const page = toolResult(await history(B, sid), "screen");
+  // Through the python bridge the tool's structured value is what the model sees: `lost: True` + A's last rows.
+  check("screen() on B: the PTY is lost, A's last page served", /'lost': True/.test(page) && /HELLO-T6/.test(page), page.split("\n").find((l) => /'lost'/.test(l))?.slice(0, 160) ?? page.slice(0, 160));
   const h = await history(B, sid);
   check("resumed shell call carries the owner-changed job note", /moved|owner changed/.test(toolResult(h, "shell")), toolResult(h, "shell").split("\n")[0]);
   check("A's process groups dead after the transfer (KillSession)", before.every((j) => !pgAlive(j.pgid)), before.map((j) => `${j.id}:${j.pgid}`).join(","));
@@ -574,7 +603,7 @@ async function T7(A: Engine, B: Engine) {
   const s2 = await newSession(A);
   await sendBatch(A, s2, [{ name: "ask_user", args: { questions: [{ id: "x", question: "?", options: [{ label: "a" }, { label: "b" }] }] } }], "ask_user", [A, B]);
   const q = await waitFor("question on B", () => B.one<{ id: string }>("SELECT id FROM questions WHERE session_id = ?", s2));
-  A.pause();
+  await A.partitionFrom(B);
   const r = await B.raw("answer_ask", [q.id, [{ kind: "choice", index: 0 }]]);
   check("answer_ask on B for A's question with A down → -32010 OwnerUnreachable", r.error?.code === -32010, JSON.stringify(r.error));
   A.resume();
@@ -656,6 +685,9 @@ async function main() {
       } catch (e) {
         check("row completed", false, String(e));
       }
+      // A row that failed mid-partition must not leave an engine stopped.
+      A.resume();
+      B.resume();
       log(`${name} took ${((now() - t) / 1000).toFixed(1)} s`);
     }
   } finally {
