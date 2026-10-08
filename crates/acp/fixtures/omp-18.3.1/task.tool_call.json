@@ -1,0 +1,51 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "01a11b25-d8f7-71b3-a309-a306e24281dc",
+  "update": {
+   "sessionUpdate": "tool_call",
+   "toolCallId": "toolu_013x6rgBK7MEUsQq79DoL4YK",
+   "title": "Spawning parallel file readers",
+   "kind": "other",
+   "status": "pending",
+   "rawInput": {
+    "context": "# Goal\nReport the first line of a text file in cwd `/tmp/rec…",
+    "tasks": [
+     {
+      "name": "ReadA",
+      "agent": "scout",
+      "task": "# Target\n`a.txt` in cwd.\n# Change\nRead it; report its first…",
+      "outputSchema": {
+       "type": "object",
+       "properties": {
+        "first_line": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "first_line"
+       ]
+      }
+     },
+     {
+      "name": "ReadB",
+      "agent": "scout",
+      "task": "# Target\n`b.txt` in cwd.\n# Change\nRead it; report its first…",
+      "outputSchema": {
+       "type": "object",
+       "properties": {
+        "first_line": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "first_line"
+       ]
+      }
+     }
+    ]
+   }
+  }
+ }
+}
