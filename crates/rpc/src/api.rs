@@ -5811,7 +5811,9 @@ impl ApiServer for Server {
     }
 
     async fn autoresearch_get(&self, slug: String) -> RpcResult<autoresearch::StudyDetail> {
-        autoresearch::rpc_impl::get(slug).await.map_err(dreaming_err)
+        autoresearch::rpc_impl::get(slug)
+            .await
+            .map_err(dreaming_err)
     }
 
     async fn autoresearch_experiments(

@@ -13,11 +13,11 @@ use agent::{
 use app::AppCallChanged;
 use artifact::ArtifactShown;
 use artifact::preview::{PagePreviewRequested, PagePreviewResolved};
+use autoresearch::StudyEvent;
 use browser::BrowserEvent;
 use codeindex::CodeindexEvent;
 use document::DocumentChanged;
 use double::{DoubleAnswered, DoublePredicted, DoubleTrainingState, DoubleVersionActivated};
-use autoresearch::StudyEvent;
 use dreaming::{DreamNightFinished, DreamNightStarted, DreamUndone};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
