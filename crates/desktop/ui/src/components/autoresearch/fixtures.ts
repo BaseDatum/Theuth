@@ -1,4 +1,4 @@
-// 140 §15 "UI": the autoresearch RPCs answered from memory so the Library tab, the Study view, the routines row
+// 140 §15 "UI": the autoresearch RPCs answered from memory so the Agents › Autoresearch tab, the Study view, the routines row
 // and Settings › Autoresearch render in every state against any engine. Dev only, behind
 // `VITE_AUTORESEARCH_FIXTURE=studies|empty` (or `localStorage['autoresearch-fixture']`); the data is exported for
 // the vitest over the model and the components. Mirrors `dev/dreaming-fixture.ts`.
