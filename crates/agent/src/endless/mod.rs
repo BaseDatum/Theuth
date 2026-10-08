@@ -34,10 +34,16 @@ pub use tree::{Kind, Node, Unit};
 pub struct EndlessConfig {
     /// New chat ∞ switch initial state.
     pub default_chat: bool,
-    /// Desks without an explicit `memory:` field.
+    /// Desks without an explicit `memory:` field (R1-D7: on).
     pub default_desk: bool,
-    /// View budget in bytes (16_000..=256_000).
+    /// Meeting sessions (R1-D6).
+    pub default_meeting: bool,
+    /// View budget in bytes (16_000..=256_000; R1-D2: 128 KB).
     pub view_bytes: u32,
+    /// View budget for a meeting head's `## Earlier in this meeting` (R1-D6).
+    pub meeting_view_bytes: u32,
+    /// R1-D4: at switch-on the tree covers only the last this many units.
+    pub backfill_max_units: u32,
     /// One summary line's ceiling in bytes.
     pub node_bytes: u32,
     /// Slack band of the fold (0.0..=0.5), D5.
@@ -60,8 +66,11 @@ impl Default for EndlessConfig {
     fn default() -> Self {
         Self {
             default_chat: false,
-            default_desk: false,
-            view_bytes: 64_000,
+            default_desk: true,
+            default_meeting: false,
+            view_bytes: 128_000,
+            meeting_view_bytes: 32_000,
+            backfill_max_units: 2_000,
             node_bytes: 512,
             slack: 0.125,
             settle_secs: 45,
@@ -77,11 +86,91 @@ impl Default for EndlessConfig {
 impl EndlessConfig {
     /// The fold parameters, clamped to the documented ranges.
     pub fn fold_cfg(&self) -> fold::FoldCfg {
+        self.fold_cfg_for(self.view_bytes)
+    }
+
+    /// Fold parameters for a per-session / per-render budget.
+    pub fn fold_cfg_for(&self, view_bytes: u32) -> fold::FoldCfg {
         fold::FoldCfg {
-            view_bytes: self.view_bytes.clamp(16_000, 256_000),
+            view_bytes: view_bytes.clamp(16_000, 256_000),
             slack: self.slack.clamp(0.0, 0.5),
         }
     }
+}
+
+/// R1-D3: the compactor model id — `agent.endless.model` → `agent.title_model`
+/// → the session's model. What Settings and the Memory panel display.
+pub fn resolved_compactor_model(cfg: &crate::AgentConfig, session_model: &str) -> String {
+    cfg.endless
+        .model
+        .clone()
+        .or_else(|| cfg.title_model.clone())
+        .unwrap_or_else(|| session_model.to_owned())
+}
+
+/// R1-D6: which parts become units (`sessions.endless_filter`, fixed at switch-on).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum UnitFilter {
+    /// Every part (§4 table).
+    #[default]
+    All,
+    /// Meetings: `user` texts starting with `[meeting` and `tool` calls
+    /// `meeting_topic` / `meeting_brief`; everything else dropped.
+    Meeting,
+}
+
+impl UnitFilter {
+    /// The stored string form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Meeting => "meeting",
+        }
+    }
+
+    /// Whether `unit` enters the tree.
+    pub fn keeps(self, unit: &tree::Unit) -> bool {
+        match self {
+            Self::All => true,
+            Self::Meeting => match unit.kind {
+                tree::Kind::User => unit.text.starts_with("[meeting"),
+                tree::Kind::Tool => {
+                    unit.text.starts_with("meeting_topic ")
+                        || unit.text.starts_with("meeting_brief ")
+                }
+                _ => false,
+            },
+        }
+    }
+}
+
+impl std::str::FromStr for UnitFilter {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "all" => Ok(Self::All),
+            "meeting" => Ok(Self::Meeting),
+            _ => Err(format!("unknown unit filter: {s:?}")),
+        }
+    }
+}
+
+/// R1-D4: what a backfill would cost before it starts (the Memory panel's note).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct BackfillEstimate {
+    /// Units the tree would cover (after the `backfill_max_units` cap) that lack a line.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub units: u64,
+    /// Seconds, from the measured per-unit time (5 s before any node is built).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub eta_secs: u64,
+    /// USD, from the measured per-unit cost ($0.02 before any node is built).
+    pub usd: f64,
 }
 
 /// A session's memory mode (`sessions.memory`, D1).
@@ -280,6 +369,8 @@ pub(crate) struct Inner {
     pub(crate) auth: crate::supervisor::Auth,
     pub(crate) catalog: Arc<models::Catalog>,
     pub(crate) cfg: EndlessConfig,
+    /// `agent.title_model` (R1-D3 chain).
+    pub(crate) title_model: Option<String>,
     /// Live sessions and their pumps.
     pub(crate) sessions: Mutex<HashMap<SessionId, pump::Handle>>,
     /// Tests inject a scripted compactor here; `None` = the model (D8).
@@ -303,6 +394,7 @@ impl Endless {
         auth: crate::supervisor::Auth,
         catalog: Arc<models::Catalog>,
         cfg: EndlessConfig,
+        title_model: Option<String>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -312,6 +404,7 @@ impl Endless {
                 auth,
                 catalog,
                 cfg,
+                title_model,
                 sessions: Mutex::new(HashMap::new()),
                 compactor_for_tests: None,
             }),
@@ -370,6 +463,32 @@ impl Endless {
         pump::nudge(&self.inner, session);
     }
 
+    /// R1-D2: a per-session view budget (agents file `view_bytes:`); until
+    /// called, `agent.endless.view_bytes`.
+    pub fn set_view_bytes(&self, session: SessionId, bytes: u32) {
+        pump::set_view_bytes(&self.inner, session, bytes);
+    }
+
+    /// R1-D1: the same render as the turn's, without freezing a context —
+    /// a native child's first message.
+    pub async fn render_snapshot(&self, session: SessionId) -> anyhow::Result<Vec<ViewBlock>> {
+        pump::render_with_budget(&self.inner, session, None).await
+    }
+
+    /// R1-D6: the view folded to `bytes` (a meeting head's section).
+    pub async fn render_with_budget(
+        &self,
+        session: SessionId,
+        bytes: u32,
+    ) -> anyhow::Result<Vec<ViewBlock>> {
+        pump::render_with_budget(&self.inner, session, Some(bytes)).await
+    }
+
+    /// R1-D4: ETA and cost of switching the session on (or of the backfill under way).
+    pub async fn backfill_estimate(&self, session: SessionId) -> anyhow::Result<BackfillEstimate> {
+        pump::backfill_estimate(&self.inner, session).await
+    }
+
     /// `zoom(id, n)` (§9).
     pub async fn zoom(&self, session: SessionId, id: u64, n: u64) -> Result<Vec<ViewLine>, String> {
         pump::zoom(&self.inner, session, id, n).await
@@ -390,14 +509,17 @@ impl Endless {
         pump::date(&self.inner, session, id).await
     }
 
-    /// `/endless on|off` (8.6); the caller guarantees the session is idle.
+    /// `/endless on|off` (8.6); the caller guarantees the session is idle. A
+    /// session with a transcript backfills under R1-D4; `filter` (R1-D6) and
+    /// the base are fixed at switch-on.
     pub async fn set_mode(
         &self,
         session: SessionId,
         mode: MemoryMode,
+        filter: UnitFilter,
         epoch: u32,
     ) -> anyhow::Result<SetMode> {
-        pump::set_mode(&self.inner, session, mode, epoch).await
+        pump::set_mode(&self.inner, session, mode, filter, epoch).await
     }
 
     /// RPC `session_memory` body data.

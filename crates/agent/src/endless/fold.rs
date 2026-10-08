@@ -89,12 +89,17 @@ fn part_len(tree: &Tree, part: Part, units: &[Unit]) -> usize {
     PLACEHOLDER.len()
 }
 
-/// The view: parts tiling `[0, T)` with their rendered byte sizes.
+/// R1-D4: the view's first line when `base > 0` (without the `0+base|` prefix).
+pub const EARLIER: &str = "(earlier history, not summarized; recall searches it)";
+
+/// The view: parts tiling `[base, T)` with their rendered byte sizes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fold {
-    /// The parts, oldest first; they tile `[0, T)`.
+    /// The parts, oldest first; they tile `[base, T)`.
     pub parts: Vec<Part>,
     sizes: Vec<usize>,
+    /// First unit the tree covers (R1-D4 backfill base); 0 = everything.
+    pub base: u64,
     /// Units so far.
     pub t: u64,
     /// Fold parameters.
@@ -102,22 +107,24 @@ pub struct Fold {
 }
 
 impl Fold {
-    /// An empty view (`T = 0`).
-    pub fn new(cfg: FoldCfg) -> Self {
+    /// An empty view over `[base, base)`.
+    pub fn new(base: u64, cfg: FoldCfg) -> Self {
         Self {
             parts: Vec::new(),
             sizes: Vec::new(),
-            t: 0,
+            base,
+            t: base,
             cfg,
         }
     }
 
-    /// The pure function of `(tree, T)`: replay `append(i)` for every unit
-    /// against `tree`. The live view IS this (recomputed when the tree or `T`
-    /// changes), so reload and live are the same function by construction.
-    pub fn rebuild(tree: &Tree, t: u64, cfg: FoldCfg, units: &[Unit]) -> Self {
-        let mut f = Self::new(cfg);
-        for i in 0..t {
+    /// The pure function of `(tree, base, T)`: replay `append(i)` for every
+    /// unit from `base` against `tree`. The live view IS this (recomputed when
+    /// the tree or `T` changes), so reload and live are the same function by
+    /// construction.
+    pub fn rebuild(tree: &Tree, base: u64, t: u64, cfg: FoldCfg, units: &[Unit]) -> Self {
+        let mut f = Self::new(base, cfg);
+        for i in base..t {
             f.append(tree, i, units);
         }
         f
@@ -135,7 +142,7 @@ impl Fold {
 
     /// Σ bytes of every part's rendered line (D10 placeholders counted).
     pub fn size(&self) -> usize {
-        self.sizes.iter().sum()
+        self.sizes.iter().sum::<usize>() + if self.base > 0 { EARLIER.len() } else { 0 }
     }
 
     /// §7.1 `fit()`. Returns how many pairs were merged.
@@ -223,9 +230,15 @@ pub fn line(part: Part, text: &str) -> String {
 
 /// The view as lines for the panel.
 pub fn render_lines(tree: &Tree, fold: &Fold, units: &[Unit]) -> Vec<ViewLine> {
-    fold.parts
-        .iter()
-        .map(|p| {
+    let head = (fold.base > 0).then(|| ViewLine {
+        id: 0,
+        n: fold.base,
+        level: 0,
+        text: EARLIER.to_owned(),
+        built: false,
+    });
+    head.into_iter()
+        .chain(fold.parts.iter().map(|p| {
             let (text, built) = part_text(tree, *p, units);
             let (id, n) = p.id_n();
             ViewLine {
@@ -235,7 +248,7 @@ pub fn render_lines(tree: &Tree, fold: &Fold, units: &[Unit]) -> Vec<ViewLine> {
                 text: text.replace('\n', " "),
                 built,
             }
-        })
+        }))
         .collect()
 }
 
@@ -263,6 +276,9 @@ pub fn render(tree: &Tree, fold: &Fold, units: &[Unit]) -> ViewRender {
         let mut text = String::new();
         if b == 0 {
             text.push_str("<chat>\n");
+            if fold.base > 0 {
+                text.push_str(&format!("0+{}|{EARLIER}\n", fold.base));
+            }
         }
         for l in &lines[from..*to] {
             text.push_str(l);
@@ -334,7 +350,7 @@ mod tests {
     }
 
     fn tiles(f: &Fold) {
-        let mut at = 0;
+        let mut at = f.base;
         for p in &f.parts {
             assert_eq!(p.start(), at, "parts tile [0, T) without gaps or overlap");
             at = p.end();
@@ -358,7 +374,7 @@ mod tests {
         let (nodes, units) = fixture();
         let t = units.len() as u64;
         let tree = Tree::from_nodes(nodes);
-        let f = Fold::rebuild(&tree, t, CFG, &units);
+        let f = Fold::rebuild(&tree, 0, t, CFG, &units);
         tiles(&f);
         for p in &f.parts {
             assert!(exists(p.l, p.i, t), "a part is a whole node over [0, T)");
@@ -381,16 +397,30 @@ mod tests {
         assert!(f.parts.iter().any(|p| p.l >= 4), "deep bands exist");
 
         // Purity: the same function twice, and incremental append == rebuild.
-        assert_eq!(Fold::rebuild(&tree, t, CFG, &units), f);
-        let mut inc = Fold::new(CFG);
+        assert_eq!(Fold::rebuild(&tree, 0, t, CFG, &units), f);
+        let mut inc = Fold::new(0, CFG);
         for i in 0..t {
             inc.append(&tree, i, &units);
         }
         assert_eq!(inc, f);
 
         // Re-fold at a smaller T is a prefix-consistent fold too.
-        let half = Fold::rebuild(&tree, t / 2, CFG, &units);
+        let half = Fold::rebuild(&tree, 0, t / 2, CFG, &units);
         tiles(&half);
+
+        // R1-D4: a base — parts tile [base, T) and the view opens with the raw-history line.
+        let based = Fold::rebuild(&tree, 300, t, CFG, &units);
+        tiles(&based);
+        assert!(based.parts.iter().all(|p| p.start() >= 300));
+        let r = render(&tree, &based, &units);
+        assert!(
+            r.blocks[0]
+                .text
+                .starts_with(&format!("<chat>\n0+300|{EARLIER}\n300+")),
+            "{}",
+            r.blocks[0].text
+        );
+        assert_eq!(render_lines(&tree, &based, &units)[0].n, 300);
     }
 
     /// D5 turn-to-turn stability on the fixture: the identical line prefix
@@ -400,10 +430,10 @@ mod tests {
         let (nodes, units) = fixture();
         let t = units.len() as u64;
         let tree = Tree::from_nodes(nodes);
-        let mut prev = Fold::rebuild(&tree, 200, CFG, &units);
+        let mut prev = Fold::rebuild(&tree, 0, 200, CFG, &units);
         let (mut same, mut turns) = (0usize, 0usize);
         for n in 201..=t {
-            let f = Fold::rebuild(&tree, n, CFG, &units);
+            let f = Fold::rebuild(&tree, 0, n, CFG, &units);
             let common = prev
                 .parts
                 .iter()
@@ -425,7 +455,7 @@ mod tests {
         let (nodes, units) = fixture();
         let t = units.len() as u64;
         let tree = Tree::from_nodes(nodes);
-        let f = Fold::rebuild(&tree, t, CFG, &units);
+        let f = Fold::rebuild(&tree, 0, t, CFG, &units);
         let r = render(&tree, &f, &units);
         assert!(r.blocks.len() <= 4 && r.blocks.len() >= 2);
         assert!(r.blocks[0].text.starts_with("<chat>\n"));
@@ -463,7 +493,7 @@ mod tests {
         };
         let units = vec![unit(0, "short"), unit(1, &"x".repeat(3000))];
         let tree = Tree::default();
-        let f = Fold::rebuild(&tree, 2, CFG, &units);
+        let f = Fold::rebuild(&tree, 0, 2, CFG, &units);
         let r = render(&tree, &f, &units);
         assert_eq!(r.unbuilt, 2);
         assert!(!r.settled);

@@ -12,7 +12,18 @@ use super::Store;
 use crate::context::Mask;
 use crate::endless::compactor::CallRow;
 use crate::endless::tree::{Kind, Node};
-use crate::endless::{EndlessStats, GuardTrips, MemoryMode};
+use crate::endless::{EndlessStats, GuardTrips, MemoryMode, UnitFilter};
+
+/// The session's endless columns (R1-D4 base, R1-D6 filter).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EndlessMeta {
+    /// `sessions.memory`.
+    pub mode: MemoryMode,
+    /// `sessions.endless_filter`.
+    pub filter: UnitFilter,
+    /// `sessions.endless_base`: first unit the tree covers.
+    pub base: u64,
+}
 
 /// One `endless_units` row (the unit without its text).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,6 +100,40 @@ impl Store {
             .fetch_optional(&self.read)
             .await?;
         Ok(s.and_then(|s| s.parse().ok()).unwrap_or_default())
+    }
+
+    /// `sessions.{memory, endless_filter, endless_base}`; defaults for an unknown session.
+    pub async fn endless_meta(&self, id: SessionId) -> anyhow::Result<EndlessMeta> {
+        let row: Option<(String, String, i64)> = sqlx::query_as(
+            "SELECT memory, endless_filter, endless_base FROM sessions WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row
+            .map(|(m, f, b)| EndlessMeta {
+                mode: m.parse().unwrap_or_default(),
+                filter: f.parse().unwrap_or_default(),
+                base: u64::try_from(b).unwrap_or(0),
+            })
+            .unwrap_or_default())
+    }
+
+    /// Fix the filter and base at switch-on (R1-D4, R1-D6).
+    pub async fn set_endless_meta(
+        &self,
+        id: SessionId,
+        filter: UnitFilter,
+        base: u64,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET endless_filter = ?, endless_base = ? WHERE id = ?")
+            .bind(filter.as_str())
+            .bind(i64::try_from(base).unwrap_or(i64::MAX))
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
     }
 
     /// Set `sessions.memory` (8.6, create_session).

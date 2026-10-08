@@ -15,10 +15,12 @@ use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::compactor::{self, Compactor, ModelCompactor, Step};
+use super::fold::ViewBlock;
 use super::fold::{self, Fold, FoldCfg, Part, ViewRender};
 use super::tree::{self, Node, Tree, Unit, exists, id_n};
 use super::{
-    Attached, Backfill, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode, ViewLine, units,
+    Attached, Backfill, BackfillEstimate, EndlessProgress, Inner, MemoryMode, SessionMemory,
+    SetMode, UnitFilter, ViewLine, units,
 };
 use crate::backend::Backend;
 use crate::cost::{CallKind, CallStatus};
@@ -29,8 +31,12 @@ use crate::store::endless::UnitRow;
 const FROZEN_KEEP: usize = 8;
 /// Progress events: at most one per this interval per session.
 const PROGRESS_EVERY: Duration = Duration::from_millis(500);
-/// Seconds per level-0 unit before any measurement (ETA, D14).
-const DEFAULT_UNIT_SECS: f64 = 4.0;
+/// Seconds per level-0 unit before any measurement (ETA, D14 / R1-D4).
+const DEFAULT_UNIT_SECS: f64 = 5.0;
+/// USD per unit before any measurement (R1-D4).
+const DEFAULT_UNIT_USD: f64 = 0.02;
+/// Nodes that calibrate the estimate (R1-D4).
+const CALIBRATE_NODES: u32 = 20;
 
 /// One attached session's live state.
 pub struct Handle {
@@ -76,7 +82,7 @@ impl State {
         store: Store,
         inner: &Inner,
         compactor: Arc<dyn Compactor>,
-        mode: MemoryMode,
+        meta: crate::store::endless::EndlessMeta,
     ) -> Self {
         Self {
             session,
@@ -84,7 +90,7 @@ impl State {
             rt: inner.rt.clone(),
             cfg: inner.cfg.clone(),
             compactor,
-            live: Mutex::new(Live::new(mode)),
+            live: Mutex::new(Live::new(meta)),
             wake: Notify::new(),
             built_tx: watch::channel(0).0,
             ingest: tokio::sync::Mutex::new(()),
@@ -94,6 +100,12 @@ impl State {
 
 struct Live {
     mode: MemoryMode,
+    /// R1-D6: which parts become tree units (fixed at switch-on).
+    filter: UnitFilter,
+    /// R1-D4: first unit the tree covers; units below are raw (recall only).
+    base: u64,
+    /// R1-D2: per-session view budget override.
+    view_bytes: Option<u32>,
     /// Every unit, dense by `i`.
     // ponytail: whole-session unit text in memory; page from the store if a session outgrows RAM.
     units: Vec<Unit>,
@@ -131,9 +143,20 @@ impl Live {
     /// Fill the fold cache; read it as `self.fold` (a field borrow, so
     /// `self.tree` / `self.units` stay usable beside it).
     fn ensure_fold(&mut self, cfg: FoldCfg) {
-        if self.fold.is_none() {
-            self.fold = Some(Fold::rebuild(&self.tree, self.t(), cfg, &self.units));
+        if self.fold.as_ref().is_none_or(|f| f.cfg != cfg) {
+            self.fold = Some(Fold::rebuild(
+                &self.tree,
+                self.base.min(self.t()),
+                self.t(),
+                cfg,
+                &self.units,
+            ));
         }
+    }
+
+    /// The session's fold parameters (R1-D2 override, else the config).
+    fn fold_cfg(&self, cfg: &super::EndlessConfig) -> FoldCfg {
+        cfg.fold_cfg_for(self.view_bytes.unwrap_or(cfg.view_bytes))
     }
 
     fn fold(&mut self, cfg: FoldCfg) -> Fold {
@@ -148,23 +171,37 @@ impl Live {
     /// D14 progress; `None` once every history unit has its line.
     fn backfill(&self) -> Option<Backfill> {
         let total = self.backfill_total;
-        if total == 0 {
+        if total <= self.base {
             return None;
         }
-        let done = (0..total).filter(|i| self.tree.built(0, *i)).count() as u64;
-        if done >= total {
+        let done = (self.base..total)
+            .filter(|i| self.tree.built(0, *i))
+            .count() as u64;
+        let span = total - self.base;
+        if done >= span {
             return None;
         }
-        let per = if self.build_secs.1 > 0 {
+        Some(Backfill {
+            done,
+            total: span,
+            eta_secs: ((span - done) as f64 * self.secs_per_unit()) as u64,
+        })
+    }
+
+    /// Measured seconds per model-built level-0 node, else the default.
+    fn secs_per_unit(&self) -> f64 {
+        if self.build_secs.1 > 0 {
             self.build_secs.0 / f64::from(self.build_secs.1)
         } else {
             DEFAULT_UNIT_SECS
-        };
-        Some(Backfill {
-            done,
-            total,
-            eta_secs: ((total - done) as f64 * per) as u64,
-        })
+        }
+    }
+
+    /// Level-0 units in `[base, T)` without a line.
+    fn unbuilt_level0(&self) -> u64 {
+        (self.base.min(self.t())..self.t())
+            .filter(|i| !self.tree.built(0, *i))
+            .count() as u64
     }
 
     /// Nodes that exist over `[0, T)` (every level), and how many are built.
@@ -196,7 +233,7 @@ impl Live {
     fn history_unbuilt(&self) -> u64 {
         self.units
             .iter()
-            .filter(|u| self.unit_turn(u.i) == 0 && !self.tree.built(0, u.i))
+            .filter(|u| u.i >= self.base && self.unit_turn(u.i) == 0 && !self.tree.built(0, u.i))
             .map(|u| u.i + 1)
             .max()
             .unwrap_or(0)
@@ -204,9 +241,12 @@ impl Live {
 }
 
 impl Live {
-    fn new(mode: MemoryMode) -> Self {
+    fn new(meta: crate::store::endless::EndlessMeta) -> Self {
         Self {
-            mode,
+            mode: meta.mode,
+            filter: meta.filter,
+            base: meta.base,
+            view_bytes: None,
             units: Vec::new(),
             tree: Tree::default(),
             fold: None,
@@ -226,10 +266,10 @@ impl Live {
     }
 }
 
-/// The compactor for a session (D8): `agent.endless.model` when set, else the
-/// session's own model with the session's effort.
+/// The compactor for a session (R1-D3): `agent.endless.model` → else
+/// `agent.title_model` → else the session's own model with its effort.
 fn compactor_for(inner: &Inner, session: SessionId, attached: &Attached) -> ModelCompactor {
-    let (model, effort) = match &inner.cfg.model {
+    let (model, effort) = match inner.cfg.model.as_ref().or(inner.title_model.as_ref()) {
         Some(id) => match inner
             .catalog
             .resolve(id, &*crate::supervisor::configured(inner.auth.clone()))
@@ -296,11 +336,17 @@ pub(crate) async fn attach(
         .store
         .clone()
         .unwrap_or_else(|| inner.store.clone());
-    let mode = store.session_memory(session).await?;
+    let meta = store.endless_meta(session).await?;
+    let mode = meta.mode;
     let existing = inner.sessions.lock().get(&session).map(|h| h.state.clone());
     let state = match existing {
         Some(state) => {
-            state.live.lock().mode = mode;
+            let mut live = state.live.lock();
+            live.mode = meta.mode;
+            live.filter = meta.filter;
+            live.base = meta.base;
+            live.invalidate();
+            drop(live);
             state
         }
         None => {
@@ -308,7 +354,7 @@ pub(crate) async fn attach(
                 Some(c) => c,
                 None => Arc::new(compactor_for(inner, session, &attached)),
             };
-            let state = Arc::new(State::new(session, store, inner, compactor, mode));
+            let state = Arc::new(State::new(session, store, inner, compactor, meta));
             load(&state).await?;
             state
         }
@@ -387,16 +433,20 @@ async fn ingest(state: &State) -> anyhow::Result<()> {
         return Ok(());
     }
     let mut new_units = Vec::new();
-    let (mut next_i, turn, mut last_seq) = {
+    let (mut next_i, turn, mut last_seq, filter) = {
         let live = state.live.lock();
-        (live.t(), live.turn, live.last_seq)
+        (live.t(), live.turn, live.last_seq, live.filter)
     };
     for m in &rows {
         last_seq = last_seq.max(m.seq);
         if m.excluded {
             continue;
         }
-        let units = units::derive(m.seq, m.at, &m.message, state.cfg.cap_chars, next_i);
+        let mut units = units::derive(m.seq, m.at, &m.message, state.cfg.cap_chars, next_i);
+        units.retain(|u| filter.keeps(u));
+        for (k, u) in units.iter_mut().enumerate() {
+            u.i = next_i + k as u64;
+        }
         next_i += units.len() as u64;
         new_units.extend(units);
     }
@@ -448,12 +498,13 @@ fn start_pump(state: Arc<State>, cancel: CancellationToken) {
 
 /// Start every eligible node up to `jobs` (§5.2 rules 1–3).
 fn schedule(state: &Arc<State>) {
-    let cfg = state.cfg.fold_cfg();
     let mut live = state.live.lock();
     if live.mode != MemoryMode::Endless {
         return;
     }
+    let cfg = live.fold_cfg(&state.cfg);
     let t = live.t();
+    let base = live.base;
     let now = Instant::now();
     // Rule 3 frontier: the start of the first unbuilt view part (T when all built).
     live.ensure_fold(cfg);
@@ -477,7 +528,7 @@ fn schedule(state: &Arc<State>) {
         let n = 1u64 << l;
         for i in 0..(t / n) {
             let key = (l, i);
-            if live.tree.built(l, i) || !exists(l, i, t) || (i + 1) * n > frontier {
+            if i * n < base || live.tree.built(l, i) || !exists(l, i, t) || (i + 1) * n > frontier {
                 continue;
             }
             if !live.tree.built(l - 1, 2 * i) || !live.tree.built(l - 1, 2 * i + 1) {
@@ -541,7 +592,7 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live) {
     let ctx = match live.frozen.iter().find(|(t, _)| *t == last_turn) {
         Some((_, ctx)) => ctx.clone(),
         None => {
-            let f = live.fold(state.cfg.fold_cfg());
+            let f = live.fold(live.fold_cfg(&state.cfg));
             fold::render(&live.tree, &f, &live.units).text()
         }
     };
@@ -676,7 +727,7 @@ fn emit_progress(state: &Arc<State>) -> Duration {
     }
     live.dirty = false;
     live.last_progress = Some(Instant::now());
-    let cfg = state.cfg.fold_cfg();
+    let cfg = live.fold_cfg(&state.cfg);
     let (built, total) = live.totals();
     let unbuilt = live.fold(cfg).unbuilt(&live.tree);
     let ev = EndlessProgress {
@@ -705,12 +756,12 @@ pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> 
         tracing::warn!(%session, error = %e, "endless: ingest before settle");
     }
     state.wake.notify_one();
-    let cfg = state.cfg.fold_cfg();
     let mut rx = state.built_tx.subscribe();
     let deadline = Instant::now() + max;
     loop {
         let unbuilt = {
             let mut live = state.live.lock();
+            let cfg = live.fold_cfg(&state.cfg);
             live.fold(cfg).unbuilt(&live.tree)
         };
         if unbuilt == 0 {
@@ -731,8 +782,8 @@ pub(crate) async fn render_for_turn(
         anyhow::bail!("session {session} is not attached to endless");
     };
     ingest(&state).await?;
-    let cfg = state.cfg.fold_cfg();
     let mut live = state.live.lock();
+    let cfg = live.fold_cfg(&state.cfg);
     let f = live.fold(cfg);
     let render = fold::render(&live.tree, &f, &live.units);
     live.turn += 1;
@@ -748,6 +799,103 @@ pub(crate) fn nudge(inner: &Inner, session: SessionId) {
     if let Some(state) = state_of(inner, session) {
         state.wake.notify_one();
     }
+}
+
+pub(crate) fn set_view_bytes(inner: &Inner, session: SessionId, bytes: u32) {
+    if let Some(state) = state_of(inner, session) {
+        let mut live = state.live.lock();
+        live.view_bytes = Some(bytes);
+        live.invalidate();
+    }
+}
+
+/// R1-D1 / R1-D6: the view rendered now, under the session's budget or
+/// `bytes`, without freezing a context or counting a turn.
+pub(crate) async fn render_with_budget(
+    inner: &Inner,
+    session: SessionId,
+    bytes: Option<u32>,
+) -> anyhow::Result<Vec<ViewBlock>> {
+    let Some(state) = state_of(inner, session) else {
+        anyhow::bail!("session {session} is not attached to endless");
+    };
+    ingest(&state).await?;
+    let mut live = state.live.lock();
+    let f = match bytes {
+        Some(b) => {
+            let cfg = state.cfg.fold_cfg_for(b);
+            Fold::rebuild(
+                &live.tree,
+                live.base.min(live.t()),
+                live.t(),
+                cfg,
+                &live.units,
+            )
+        }
+        None => {
+            let cfg = live.fold_cfg(&state.cfg);
+            live.fold(cfg)
+        }
+    };
+    Ok(fold::render(&live.tree, &f, &live.units).blocks)
+}
+
+/// Tree units of the rows (the filter applied), for sizing a backfill before any state exists.
+async fn count_units(
+    store: &Store,
+    session: SessionId,
+    cap_chars: u32,
+    filter: UnitFilter,
+) -> anyhow::Result<u64> {
+    let rows = store.endless_messages_from(session, 0).await?;
+    Ok(rows
+        .iter()
+        .filter(|m| !m.excluded)
+        .map(|m| {
+            units::derive(m.seq, m.at, &m.message, cap_chars, 0)
+                .iter()
+                .filter(|u| filter.keeps(u))
+                .count() as u64
+        })
+        .sum())
+}
+
+/// R1-D4: cost of the backfill (pending or hypothetical) from the first
+/// `CALIBRATE_NODES` built nodes, else the static defaults.
+pub(crate) async fn backfill_estimate(
+    inner: &Inner,
+    session: SessionId,
+) -> anyhow::Result<BackfillEstimate> {
+    let store = inner.store_for(session);
+    let Some(state) = state_of(inner, session) else {
+        let meta = store.endless_meta(session).await?;
+        let t = count_units(&store, session, inner.cfg.cap_chars, meta.filter).await?;
+        let units = t.min(u64::from(inner.cfg.backfill_max_units));
+        return Ok(BackfillEstimate {
+            units,
+            eta_secs: (units as f64 * DEFAULT_UNIT_SECS) as u64,
+            usd: units as f64 * DEFAULT_UNIT_USD,
+        });
+    };
+    ingest(&state).await?;
+    let stats = store.endless_stats(session).await?;
+    let live = state.live.lock();
+    let units = if live.mode == MemoryMode::Endless {
+        live.unbuilt_level0()
+    } else {
+        live.t().min(u64::from(state.cfg.backfill_max_units))
+    };
+    let built = live.tree.built_at(0).min(u64::from(CALIBRATE_NODES));
+    let usd_per = if built > 0 && stats.calls > 0 {
+        stats.usd_estimate / built as f64
+    } else {
+        DEFAULT_UNIT_USD
+    };
+    Ok(BackfillEstimate {
+        units,
+        eta_secs: (units as f64 * live.secs_per_unit()) as u64,
+        usd: units as f64 * usd_per,
+    })
 }
 
 fn view_line(part: Part, text: String, built: bool) -> ViewLine {
@@ -771,7 +919,9 @@ pub(crate) async fn zoom(
         return Err("this session has no endless memory".into());
     };
     let live = state.live.lock();
-    let Some((l, i)) = tree::addr(id, n).filter(|(l, i)| exists(*l, *i, live.t())) else {
+    let Some((l, i)) =
+        tree::addr(id, n).filter(|(l, i)| exists(*l, *i, live.t()) && (*l == 0 || id >= live.base))
+    else {
         return Err(format!("No line {id}+{n}."));
     };
     if l == 0 {
@@ -864,11 +1014,24 @@ pub(crate) async fn set_mode(
     inner: &Inner,
     session: SessionId,
     mode: MemoryMode,
+    filter: UnitFilter,
     epoch: u32,
 ) -> anyhow::Result<SetMode> {
     let store = inner.store_for(session);
     match mode {
         MemoryMode::Endless => {
+            // R1-D4 / R1-D6: filter and base are fixed when the tree is first started.
+            let meta = store.endless_meta(session).await?;
+            let has_tree = !store.endless_nodes(session).await?.is_empty();
+            if !has_tree {
+                let t = count_units(&store, session, inner.cfg.cap_chars, filter).await?;
+                let base = t.saturating_sub(u64::from(inner.cfg.backfill_max_units));
+                store.set_endless_meta(session, filter, base).await?;
+            } else {
+                store
+                    .set_endless_meta(session, meta.filter, meta.base)
+                    .await?;
+            }
             store.set_session_memory(session, mode).await?;
             let attached = inner
                 .sessions

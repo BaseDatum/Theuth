@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use runtime::{Runtime, SessionId};
 
 use super::compactor::{Compactor, Reply};
-use super::{Attached, Endless, EndlessConfig, MemoryMode};
+use super::{Attached, Endless, EndlessConfig, MemoryMode, UnitFilter};
 use crate::store::Store;
 
 /// Echoes the step input (the text after the last `bytes:\n`) cut to 400
@@ -52,6 +52,17 @@ impl Compactor for Echo {
 }
 
 async fn harness() -> (Endless, Store, Arc<Echo>, SessionId, std::path::PathBuf) {
+    harness_with(EndlessConfig {
+        view_bytes: 16_000,
+        settle_secs: 5,
+        ..EndlessConfig::default()
+    })
+    .await
+}
+
+async fn harness_with(
+    cfg: EndlessConfig,
+) -> (Endless, Store, Arc<Echo>, SessionId, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("theuth-endless-e2e-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(&dir).unwrap();
     let store = Store::open(&dir.join("sessions.sqlite"), None)
@@ -67,11 +78,8 @@ async fn harness() -> (Endless, Store, Arc<Echo>, SessionId, std::path::PathBuf)
         genai::Client::builder().build().unwrap(),
         crate::supervisor::Auth::stub(&dir),
         Arc::new(models::Catalog::load(&dir)),
-        EndlessConfig {
-            view_bytes: 16_000,
-            settle_secs: 5,
-            ..EndlessConfig::default()
-        },
+        cfg,
+        None,
     );
     Arc::get_mut(&mut endless.inner)
         .unwrap()
@@ -228,14 +236,20 @@ async fn pump_builds_tree_and_tools_answer() {
     assert_eq!(endless.date(id, 99).await.unwrap_err(), "No message 99.");
 
     // /endless off → head, then on → no backfill (the tree exists).
-    let off = endless.set_mode(id, MemoryMode::Epochs, 3).await.unwrap();
+    let off = endless
+        .set_mode(id, MemoryMode::Epochs, UnitFilter::All, 3)
+        .await
+        .unwrap();
     let head = off.head.unwrap();
     assert!(head.starts_with("<context_summary epoch=\"3\" style=\"endless\">\n<chat>\n"));
     assert!(head.ends_with("</chat>\n</context_summary>"));
     assert_eq!(off.memory.mode, MemoryMode::Epochs);
     assert!(off.memory.view.is_empty());
     assert!(!endless.active(id));
-    let on = endless.set_mode(id, MemoryMode::Endless, 3).await.unwrap();
+    let on = endless
+        .set_mode(id, MemoryMode::Endless, UnitFilter::All, 3)
+        .await
+        .unwrap();
     assert!(on.head.is_none() && on.memory.backfill.is_none());
     assert!(endless.active(id));
     endless.detach(id);
@@ -250,7 +264,10 @@ async fn history_backfills_then_activates_and_resumes_from_rows() {
     seed(&store, id, "short tool output").await;
     endless.attach(id, attached()).await.unwrap();
     assert!(!endless.active(id), "epochs session");
-    let on = endless.set_mode(id, MemoryMode::Endless, 1).await.unwrap();
+    let on = endless
+        .set_mode(id, MemoryMode::Endless, UnitFilter::All, 1)
+        .await
+        .unwrap();
     let mem = on.memory;
     assert!(
         mem.backfill.is_some_and(|b| b.total == 6) || endless.active(id),
@@ -324,4 +341,106 @@ fn wire_types_round_trip() {
     }))
     .unwrap();
     assert_eq!(summary.memory, MemoryMode::Epochs);
+}
+
+/// R1-D4: a capped backfill — the tree covers `[base, T)`, the view opens
+/// with the raw-history line, `zoom(id, 1)` and recall's raw fallback still
+/// reach the units below, merged lines below the base do not exist.
+#[tokio::test]
+async fn backfill_cap_sets_base_and_keeps_raw_history_reachable() {
+    let (endless, store, _echo, id, _dir) = harness_with(EndlessConfig {
+        view_bytes: 16_000,
+        backfill_max_units: 3,
+        ..EndlessConfig::default()
+    })
+    .await;
+    seed(&store, id, "short tool output").await;
+    endless.attach(id, attached()).await.unwrap();
+    let est = endless.backfill_estimate(id).await.unwrap();
+    assert_eq!(est.units, 3, "{est:?}");
+    assert!(
+        (est.usd - 0.06).abs() < 1e-9 && est.eta_secs == 15,
+        "static defaults: {est:?}"
+    );
+    let on = endless
+        .set_mode(id, MemoryMode::Endless, UnitFilter::All, 1)
+        .await
+        .unwrap();
+    assert_eq!(store.endless_meta(id).await.unwrap().base, 3);
+    assert!(
+        on.memory.view[0].n == 3 && on.memory.view[0].id == 0,
+        "{:?}",
+        on.memory.view
+    );
+    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.active(id));
+    let r = endless.render_for_turn(id).await.unwrap();
+    assert!(
+        r.text()
+            .starts_with(&format!("<chat>\n0+3|{}\n3+1|", super::fold::EARLIER)),
+        "{}",
+        r.text()
+    );
+    assert!(
+        store
+            .endless_nodes(id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|n| n.i * (1 << n.l) >= 3)
+    );
+    assert_eq!(
+        endless.zoom(id, 0, 1).await.unwrap()[0].text,
+        "user: hello, please look at the nginx config"
+    );
+    assert_eq!(endless.zoom(id, 0, 2).await.unwrap_err(), "No line 0+2.");
+    let raw = endless.recall(id, "hello, please", 8).await.unwrap();
+    assert!(
+        raw.iter().any(|l| l.id == 0 && l.text.ends_with("(raw)")),
+        "{raw:?}"
+    );
+    let snap = endless.render_snapshot(id).await.unwrap();
+    assert_eq!(
+        snap.iter().map(|b| b.text.as_str()).collect::<String>(),
+        r.text()
+    );
+    let small = endless.render_with_budget(id, 16_000).await.unwrap();
+    assert!(!small.is_empty());
+}
+
+/// R1-D3 chain and R1-D6 filter are pure and testable alone.
+#[test]
+fn compactor_chain_and_meeting_filter() {
+    use super::{
+        resolved_compactor_model,
+        tree::{Kind, Unit},
+    };
+    let mut cfg = crate::AgentConfig::default();
+    assert_eq!(resolved_compactor_model(&cfg, "s"), "s");
+    cfg.title_model = Some("t".into());
+    assert_eq!(resolved_compactor_model(&cfg, "s"), "t");
+    cfg.endless.model = Some("e".into());
+    assert_eq!(resolved_compactor_model(&cfg, "s"), "e");
+    assert_eq!(cfg.endless.view_bytes, 128_000);
+    assert!(cfg.endless.default_desk && !cfg.endless.default_chat && !cfg.endless.default_meeting);
+    let unit = |kind: Kind, text: &str| Unit {
+        i: 0,
+        seq: 0,
+        part: 0,
+        kind,
+        text: text.into(),
+        size: 0,
+        at: None,
+    };
+    let f = UnitFilter::Meeting;
+    assert!(f.keeps(&unit(Kind::User, "[meeting batch 3] ...")));
+    assert!(!f.keeps(&unit(Kind::User, "hello")));
+    assert!(f.keeps(&unit(Kind::Tool, "meeting_topic {\"title\":\"x\"}")));
+    assert!(!f.keeps(&unit(Kind::Tool, "python {}")));
+    assert!(!f.keeps(&unit(Kind::Echo, "[meeting")));
+    assert!(UnitFilter::All.keeps(&unit(Kind::Echo, "anything")));
+    assert_eq!(
+        "meeting".parse::<UnitFilter>().unwrap(),
+        UnitFilter::Meeting
+    );
 }
