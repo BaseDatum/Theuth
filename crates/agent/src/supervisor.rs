@@ -46,7 +46,7 @@ use crate::communication::{
     mesh as peer_mesh, network,
 };
 
-use crate::acp_child::AcpChild;
+use crate::acp_child::{AcpChild, CancelObserved};
 use crate::context::{
     ContextBreakdown, ContextEntry, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot,
     ContextTarget, save_blob,
@@ -102,8 +102,8 @@ use crate::{
     Withdraw, effort_of,
 };
 use crate::{
-    AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SpendReportQuery, SubagentsConfig,
-    UnloadSession,
+    AdvisorConfig, DurableStore, ObservedState, SessionCostQuery, SessionKind, SpendReportQuery,
+    SubagentsConfig, UnloadSession,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
@@ -324,6 +324,12 @@ pub(crate) enum LiveActor {
 
 /// The refusal for every `Session`-only command on an ACP child.
 const NOT_NATIVE: &str = "not available for an external harness";
+/// 141 §5.4: the refusal for anything that would drive or message a
+/// watch-only child (`Agents::session()` is the one choke point).
+pub const OBSERVED: &str =
+    "watch-only: the harness runs this subagent; open or message its parent";
+/// 141 §5.4: the peer-address refusal (`send_message`, peer intake).
+pub const OBSERVED_PEER: &str = "watch-only harness subagent — message its parent";
 
 impl LiveActor {
     fn is_alive(&self) -> bool {
@@ -768,6 +774,10 @@ impl Agents {
         // 125 §4.1/§4.2: the hidden advisor child is never a peer; the
         // advised session's loop hooks switch on when a link exists.
         let kind = row.as_ref().map(|r| r.kind).unwrap_or_default();
+        // 141 §5.4: a watch-only child is the harness's; nothing here drives it.
+        if kind == SessionKind::Observed || row.as_ref().is_some_and(|r| r.observed.is_some()) {
+            anyhow::bail!("{OBSERVED}");
+        }
         let advised = kind == SessionKind::Chat && store.advisor_link(id).await?.is_some();
         if kind == SessionKind::Advisor {
             self.advisors.insert(id);
@@ -1443,6 +1453,10 @@ impl Agents {
                     Some(row) if row.kind == SessionKind::Advisor => {
                         Err(format!("`{to}` is not a peer"))
                     }
+                    // 141 §5.4: nor is a watch-only harness subagent.
+                    Some(row) if row.kind == SessionKind::Observed || row.observed.is_some() => {
+                        Err(format!("`{to}`: {OBSERVED_PEER}"))
+                    }
                     Some(_) => {
                         self.mirror(id).await;
                         Ok(Target::Local(id))
@@ -1649,6 +1663,9 @@ impl Agents {
             .ok_or_else(|| format!("unknown peer `session:{to}`"))?;
         if row.kind == SessionKind::Advisor {
             return Err(format!("`session:{to}` is not a peer"));
+        }
+        if row.kind == SessionKind::Observed || row.observed.is_some() {
+            return Err(format!("`session:{to}`: {OBSERVED_PEER}"));
         }
         if isolated && row.agent.is_some() {
             return Err("an external harness cannot own an A2A task scope".into());
@@ -2394,6 +2411,8 @@ impl Message<ActivityRegistered> for Agents {
         self.rebuild_waits().await;
         self.resume_scan().await;
         self.respawn_acp_children().await; // 109 W4 §7.3
+        // 141 §7.8: watch-only children of a harness that did not come back.
+        self.mark_observed_lost().await;
         // 109 §7.2: the spared child results, after the open turns are queued.
         self.deliver_spared_results().await;
     }
@@ -3183,6 +3202,22 @@ impl Message<Cancel> for Agents {
                 .await
                 .unwrap_or_default(),
         };
+        // 141 §7.7: a watch-only child has no actor; its stop goes to the
+        // harness that runs it. The target itself is always forwarded (the
+        // actor answers "cannot stop" when the harness offers no per-child
+        // cancel); tree descendants only when the harness said it can.
+        let mut observed: Vec<SessionSummary> = tree
+            .iter()
+            .filter(|(_, s)| s.observed.as_ref().is_some_and(|o| o.can_cancel))
+            .map(|(_, s)| s.clone())
+            .collect();
+        if m.scope == CancelScope::Root
+            && self.live(m.session).is_none()
+            && let Ok(Some(row)) = self.store_for(m.session).session(m.session).await
+            && row.observed.is_some()
+        {
+            observed.push(row);
+        }
         let ids: Vec<SessionId> = std::iter::once(m.session)
             .chain(tree.into_iter().map(|(_, s)| s.id))
             .collect();
@@ -3200,6 +3235,9 @@ impl Message<Cancel> for Agents {
                 let keep = if id == m.session { m.keep.take() } else { None };
                 live.actor.tell_cancel(keep).await;
             }
+        }
+        for row in observed {
+            self.cancel_observed(row).await;
         }
         // The cancelled turns' awaiting tool calls are gone: their waits
         // expire explicitly (50 §5.3), never left for a late reply.
@@ -4991,10 +5029,11 @@ impl Agents {
                     kind,
                     relationship,
                     state,
-                    send: true,
+                    // 141 D10: a watch-only child is listed, never messaged.
+                    send: r.observed.is_none(),
                     // An external harness cannot call theuth peer tools (50
                     // §6.4); a node child can, back over its conn (67 §8).
-                    reply: kind != PeerKind::Acp,
+                    reply: kind != PeerKind::Acp && r.observed.is_none(),
                     stream: false,
                     activity: None,
                     title,
@@ -5541,7 +5580,7 @@ impl Agents {
         for (depth, row) in &rows {
             let parent = row.parent.unwrap_or(session);
             // Names of cold siblings are known here; keep the two states equal.
-            let state = self.state_of(row.id, Some(parent), &names);
+            let state = self.state_of_row(row, Some(parent), &names);
             let mut activity = activity.remove(&row.id).unwrap_or_default();
             activity.state = state.clone();
             out.push(
@@ -5685,6 +5724,94 @@ impl Agents {
         }
     }
 
+    /// [`Self::state_of`] for a store row: a watch-only child's state comes
+    /// from the harness (141 §5.2 table) — except an unanswered permission
+    /// ask keyed to it, which is `Approval` like anyone's.
+    fn state_of_row(
+        &self,
+        row: &SessionSummary,
+        parent: Option<SessionId>,
+        names: &HashMap<SessionId, &str>,
+    ) -> AgentState {
+        let live = self.state_of(row.id, parent, names);
+        match &row.observed {
+            Some(o) if !matches!(live, AgentState::Approval { .. }) => match o.state {
+                ObservedState::Running => AgentState::Running,
+                ObservedState::RequiresAction => AgentState::Approval {
+                    tool: o.description.clone().unwrap_or_default(),
+                },
+                ObservedState::Failed => AgentState::Error,
+                ObservedState::Cancelled => AgentState::Cancelled,
+                ObservedState::Pending
+                | ObservedState::Idle
+                | ObservedState::Completed
+                | ObservedState::Unknown => AgentState::Idle,
+            },
+            _ => live,
+        }
+    }
+
+    /// 141 §7.7: stop watch-only `row` through the live harness actor that
+    /// runs it — its parent, or the nearest ACP ancestor when nested. No
+    /// live harness: nothing to tell; the row is already lost or terminal.
+    async fn cancel_observed(&self, row: SessionSummary) {
+        let mut parent = row.parent;
+        let mut hops = 0;
+        while let Some(p) = parent
+            && hops < 8
+        {
+            if let Some(LiveActor::Acp(a)) = self.live(p) {
+                let _ = a.tell(CancelObserved { child: row.id }).await;
+                return;
+            }
+            parent = self
+                .store_for(p)
+                .session(p)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|r| r.parent);
+            hops += 1;
+        }
+        tracing::info!(session = %row.id, "cancel: watch-only child has no live harness");
+    }
+
+    /// Engine start (141 §7.8, D11): non-terminal watch-only children whose
+    /// harness is not live become `unknown` / "lost contact"; each is
+    /// published so an open UI updates.
+    async fn mark_observed_lost(&self) {
+        let live: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, l)| matches!(l.actor, LiveActor::Acp(_)) && l.actor.is_alive())
+            .map(|(id, _)| *id)
+            .collect();
+        let lost = match self.store.mark_observed_lost(&live).await {
+            Ok(lost) => lost,
+            Err(e) => {
+                tracing::warn!("mark_observed_lost: {e:#}");
+                return;
+            }
+        };
+        for id in lost {
+            let Ok(Some(row)) = self.store.session(id).await else {
+                continue;
+            };
+            let (Some(parent), Some(observed)) = (row.parent, row.observed) else {
+                continue;
+            };
+            self.rt
+                .publish(AgentEvent::ObservedChildChanged {
+                    parent,
+                    child: id,
+                    name: row.name.unwrap_or_default(),
+                    model: row.harness_model,
+                    observed,
+                })
+                .await;
+        }
+    }
+
     /// One roster row from its store row plus live state.
     async fn info_row(
         &self,
@@ -5757,7 +5884,11 @@ impl Agents {
                 continue;
             }
             let parent = row.parent.unwrap_or(row.id);
-            let state = a.state.clone();
+            let state = if row.observed.is_some() {
+                self.state_of_row(row, row.parent, &HashMap::new())
+            } else {
+                a.state.clone()
+            };
             out.push(
                 self.info_row(self.store_for(row.id), row, depth, parent, state, a)
                     .await,
@@ -13654,6 +13785,137 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!((free, turn), (1, false), "permit released with the turn");
+    }
+
+    /// 141 §5.4: a watch-only row is never driven — `session()` (the one
+    /// choke point behind send_input/steer/undo/compact/resume) refuses it
+    /// with [`OBSERVED`]; it is not a peer (`resolve`, `enqueue_peer`); the
+    /// directory lists it `send: false`; the roster state follows the
+    /// harness's state; a repeat announce is the same row.
+    #[tokio::test]
+    async fn observed_rows_are_refused_as_targets_and_listed_watch_only() {
+        let mut a = agents_with(true).await;
+        let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let acp = SessionId::new();
+        a.store
+            .create_session(acp, "omp", Some(root), Some("omp"), None)
+            .await
+            .unwrap();
+        let mut up = crate::store::ObservedUpsert::new(acp, crate::ObservedSource::OmpTask, "ReadA");
+        up.name = Some("ReadA");
+        up.state = Some(ObservedState::Running);
+        let (child, created) = a.store.upsert_observed(up).await.unwrap();
+        assert!(created);
+        let err = a
+            .session(Some(child), None, None, (None, None))
+            .await
+            .expect_err("watch-only rows are never driven")
+            .to_string();
+        assert_eq!(err, OBSERVED);
+        assert!(a.sessions.get(&child).is_none(), "no actor was spawned");
+        let err = a
+            .resolve(root, &format!("session:{child}"))
+            .await
+            .expect_err("not a peer");
+        assert!(err.ends_with(OBSERVED_PEER), "{err}");
+        let rows = a.directory(root).await.unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.address == format!("session:{child}"))
+            .expect("listed");
+        assert!(!row.send && !row.reply, "{row:?}");
+        let infos = a.agents(root).await;
+        let info = infos.iter().find(|i| i.id == child).expect("in the tree");
+        assert_eq!(info.state, AgentState::Running, "{info:?}");
+        assert_eq!(info.kind, SessionKind::Observed);
+        assert_eq!(
+            info.observed.as_ref().map(|o| o.external.as_str()),
+            Some("ReadA")
+        );
+        assert_eq!(info.parent, acp);
+        // Engine restart with the harness gone: lost contact, published.
+        let rt = a.rt.clone();
+        let mut rx = tap(&rt).await;
+        a.mark_observed_lost().await;
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::ObservedChildChanged { child: c, .. } if *c == child),
+        )
+        .await;
+        let AgentEvent::ObservedChildChanged { observed, .. } = e else {
+            unreachable!()
+        };
+        assert_eq!(observed.state, ObservedState::Unknown);
+        assert_eq!(observed.stop.as_deref(), Some("lost contact"));
+        let infos = a.agents(root).await;
+        let info = infos.iter().find(|i| i.id == child).unwrap();
+        assert_eq!(info.state, AgentState::Idle, "unknown shows idle, labelled by the UI");
+    }
+
+    /// 141 §7.7: `Cancel` on a watch-only child (no actor of its own) is
+    /// forwarded to the harness actor that runs it; with
+    /// `capabilities.cancel` that is a `session/cancel` on the child's own
+    /// id. The parent's turn is untouched.
+    #[tokio::test]
+    async fn cancel_of_an_observed_child_is_forwarded_to_its_harness() {
+        let a = agents().await;
+        let mut fake = node(&a, "box");
+        let rt = a.rt.clone();
+        let (agents, p) = rooted(a).await;
+        rt.subscribe::<Agents, AgentEvent>(&agents).await;
+        let mut rx = tap(&rt).await;
+        let (_, e1, _) = agents.ask(spawn_on(p, "box", "e1", "go")).await.unwrap();
+        fake.handshake(Vec::new(), None).await;
+        let (id, _) = fake.prompt().await;
+        fake.end_turn(&id);
+        next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == e1),
+        )
+        .await;
+        let actor = agents
+            .ask(With(move |a: &mut Agents| match &a.sessions[&e1].actor {
+                LiveActor::Acp(a) => a.clone(),
+                LiveActor::Native(_) => unreachable!(),
+            }))
+            .await
+            .unwrap();
+        let mut ann = acp::ChildAnnounce::new(acp::ChildSource::Rfd, "sess_child_1");
+        ann.title = Some("Reader".into());
+        ann.can_cancel = Some(true);
+        ann.state = Some(acp::ChildState::Running);
+        actor.tell(acp::Update::Subagent(ann)).await.unwrap();
+        let e = next_event(
+            &mut rx,
+            |e| matches!(e, AgentEvent::ObservedChildChanged { parent, .. } if *parent == e1),
+        )
+        .await;
+        let AgentEvent::ObservedChildChanged { child, .. } = e else {
+            unreachable!()
+        };
+        agents
+            .tell(Cancel {
+                session: child,
+                scope: CancelScope::Root,
+                keep: None,
+            })
+            .await
+            .unwrap();
+        let m = fake.next().await;
+        assert_eq!(m["method"], "session/cancel", "{m}");
+        assert_eq!(m["params"]["sessionId"], "sess_child_1", "{m}");
+        // `Tree` on the harness session reaches the cancellable child too.
+        agents
+            .tell(Cancel {
+                session: e1,
+                scope: CancelScope::Tree,
+                keep: None,
+            })
+            .await
+            .unwrap();
+        let m = fake.next().await;
+        assert_eq!(m["method"], "session/cancel", "{m}");
+        assert_eq!(m["params"]["sessionId"], "sess_child_1", "{m}");
     }
 
     /// T7: pools are per orchestrator tree — a queued child in tree A does

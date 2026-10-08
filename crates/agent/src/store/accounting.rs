@@ -266,6 +266,9 @@ struct MeterRow {
     attributed_nanos: Option<i64>,
     coverage: String,
     source_metadata: Option<String>,
+    /// `CostScope` as stored: `opaque_remote_inclusive` for a harness's own
+    /// meter, `observed` for a watch-only child's (141 §7.6).
+    scope: String,
 }
 
 /// Latest epoch of one meter identity.
@@ -631,6 +634,29 @@ impl Store {
         owner: SessionId,
         update: MeterUpdate,
     ) -> anyhow::Result<Vec<(SessionId, u64)>> {
+        self.apply_meter_scoped(owner, update, CostScope::OpaqueRemoteInclusive)
+            .await
+    }
+
+    /// [`Self::apply_meter`] for a watch-only child's own cost (141 §7.6
+    /// `counted`): the rows carry [`CostScope::Observed`] so
+    /// `session_cost().children[]` names them; they roll up through
+    /// `cost_owners` like any child's.
+    pub async fn apply_observed_meter(
+        &self,
+        owner: SessionId,
+        update: MeterUpdate,
+    ) -> anyhow::Result<Vec<(SessionId, u64)>> {
+        self.apply_meter_scoped(owner, update, CostScope::Observed)
+            .await
+    }
+
+    async fn apply_meter_scoped(
+        &self,
+        owner: SessionId,
+        update: MeterUpdate,
+        scope: CostScope,
+    ) -> anyhow::Result<Vec<(SessionId, u64)>> {
         let total = &update.cumulative;
         anyhow::ensure!(
             crate::cost::valid_currency(&total.currency),
@@ -767,7 +793,7 @@ impl Store {
         .bind(total_nanos)
         .bind(total_nanos - baseline)
         .bind(if known_zero { "known_zero" } else { "imported" })
-        .bind(CostScope::OpaqueRemoteInclusive.as_str())
+        .bind(scope.as_str())
         .bind(if known_zero { Coverage::Complete } else { Coverage::Unknown }.as_str())
         .bind(if known_zero { None } else { Some("imported_baseline") })
         .bind(&update.report_id)
@@ -822,8 +848,8 @@ impl Store {
         .fetch_all(&mut *tx)
         .await?;
         let meters: Vec<MeterRow> = sqlx::query_as(subtree!(
-            "SELECT owner_id, currency, attributed_nanos, coverage, source_metadata FROM remote_meters \
-             WHERE owner_id IN (SELECT id FROM sub)"
+            "SELECT owner_id, currency, attributed_nanos, coverage, source_metadata, scope \
+             FROM remote_meters WHERE owner_id IN (SELECT id FROM sub)"
         ))
         .bind(&sid)
         .bind(LINEAGE_MAX)
@@ -873,7 +899,7 @@ impl Store {
             let Some(n) = nodes.get_mut(&m.owner_id) else {
                 continue;
             };
-            n.scope = CostScope::OpaqueRemoteInclusive;
+            n.scope = m.scope.parse().unwrap_or(CostScope::OpaqueRemoteInclusive);
             match money(m.attributed_nanos, Some(&m.currency)) {
                 Some(money) if add_by_currency(&mut n.direct.returned, &money).is_ok() => {}
                 _ => n.direct.unavailable = n.direct.unavailable.saturating_add(1),
@@ -1327,6 +1353,42 @@ mod tests {
         assert_eq!(returned(&oc.direct), vec![("USD", 200_000_000)]);
         assert!(store.apply_meter(r, imported(0.80, "c")).await.is_err());
     }
+
+    /// 141 §7.6: a watch-only child's `counted` meter rows are stored with
+    /// the `observed` scope and read back as such on the child and on the
+    /// parent's `children[]`, while rolling up like any child's spend; the
+    /// harness's own rows stay `opaque_remote_inclusive`.
+    #[tokio::test]
+    async fn observed_meter_rows_keep_their_scope_and_roll_up() {
+        let store = fresh().await;
+        let (acp, child) = (SessionId::new(), SessionId::new());
+        store.ensure_owner(acp, None).await.unwrap();
+        store.ensure_owner(child, Some(acp)).await.unwrap();
+        let upd = |ext: &str, amount: f64| MeterUpdate {
+            origin: "omp".into(),
+            external_session: ext.into(),
+            cumulative: Money::from_f64(amount, "USD").unwrap(),
+            confirmed_new_session: true,
+            report_id: None,
+        };
+        store.apply_meter(acp, upd("s1", 0.13948325)).await.unwrap();
+        store
+            .apply_observed_meter(child, upd("s1/ReadA", 0.1149025))
+            .await
+            .unwrap();
+        store
+            .apply_observed_meter(child, upd("s1/ReadA", 0.12128025))
+            .await
+            .unwrap();
+        let c = store.session_cost(child).await.unwrap().unwrap();
+        assert_eq!(c.scope, CostScope::Observed);
+        assert_eq!(returned(&c.direct), vec![("USD", 121_280_250)], "high water once");
+        let p = store.session_cost(acp).await.unwrap().unwrap();
+        assert_eq!(p.scope, CostScope::OpaqueRemoteInclusive);
+        assert_eq!(p.children[0].scope, CostScope::Observed);
+        assert_eq!(returned(&p.total), vec![("USD", 260_763_500)]);
+    }
+
     fn guard_upd(amount: f64, cur: &str) -> MeterUpdate {
         MeterUpdate {
             origin: "omp".into(),
