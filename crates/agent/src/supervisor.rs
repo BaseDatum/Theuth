@@ -97,9 +97,9 @@ use crate::{
     ResetRuntime, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
     SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
     SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
-    SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt,
-    SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TrimAssistant, Undo, UseSkill,
-    Withdraw, effort_of,
+    SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel,
+    ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TalkLive,
+    TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{
     AdvisorConfig, DurableStore, SessionCostQuery, SessionKind, SpendReportQuery, SubagentsConfig,
@@ -242,6 +242,8 @@ pub struct Agents {
     /// Input ids routed by this process (idempotent retries): id -> (session, when).
     // ponytail: process-local, lost on restart; persist beside the row if retries must survive engine restarts.
     seen: HashMap<InputId, (SessionId, Instant)>,
+    /// 145 §0.3: sessions with a live talk and its spoken window.
+    talk: HashMap<SessionId, TalkLive>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
     approvals: HashMap<SessionId, (ApprovalId, String, u64)>,
     /// Session search index (design doc 26), rebuilt after the rows change.
@@ -2996,6 +2998,21 @@ impl Message<Withdraw> for Agents {
             self.ledger.withdrawn(m.session, m.id);
         }
         r
+    }
+}
+
+impl Message<SetTalk> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetTalk, _: &mut Context<Self, Self::Reply>) {
+        match m.live {
+            Some(live) => {
+                self.talk.insert(m.session, live);
+            }
+            None => {
+                self.talk.remove(&m.session);
+            }
+        }
     }
 }
 
@@ -8832,6 +8849,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             last_stop: HashMap::new(),
             last_input: HashMap::new(),
             seen: HashMap::new(),
+            talk: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: nodes.clone(),
@@ -10618,6 +10636,7 @@ pub(crate) mod tests {
             last_stop: HashMap::new(),
             last_input: HashMap::new(),
             seen: HashMap::new(),
+            talk: HashMap::new(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: Nodes::default(),

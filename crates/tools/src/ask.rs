@@ -699,6 +699,8 @@ mod tests {
             call_id: "1".into(),
             quiet: false,
             resources: crate::SessionResources::durable_arc(&std::env::temp_dir()),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            promote_after: None,
         };
         Tool::call(&AskUserTool(actor), args, cx).await.unwrap()
     }
@@ -732,6 +734,8 @@ mod tests {
                 call_id: "1".into(),
                 quiet: false,
                 resources: crate::SessionResources::durable_arc(&std::env::temp_dir()),
+                cancel: tokio_util::sync::CancellationToken::new(),
+                promote_after: None,
             },
         )
         .await
@@ -776,6 +780,8 @@ mod tests {
             call_id: call_id.into(),
             quiet: false,
             resources: crate::SessionResources::durable_arc(&std::env::temp_dir()),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            promote_after: None,
         }
     }
 

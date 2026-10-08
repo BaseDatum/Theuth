@@ -303,6 +303,10 @@ pub struct ToolCx {
     /// Where this session's owners put files (51 §4.5); durable unless the
     /// supervisor installed a private root.
     pub resources: Arc<SessionResources>,
+    /// 145 §0.5: cancelled when the turn or the promoted job is cancelled.
+    pub cancel: tokio_util::sync::CancellationToken,
+    /// 145 §0.4: promote to a job after this long; `None` never.
+    pub promote_after: Option<std::time::Duration>,
 }
 
 /// One struct per tool; the schema is derived from `Args`.
@@ -336,6 +340,14 @@ pub trait Tool: Send + Sync + 'static {
     /// Description shown to the model.
     fn description(&self) -> String;
 
+    /// A call may be promoted to a background job (145 §0.4). `false` for
+    /// shell/start/send/wait/screen/jobs/cancel_job (job-shaped), ask_user,
+    /// desktop_handoff, secret_request, secret_request_form, approval-shaped
+    /// tools, spawn_subagent, send_message (an explicit wait is the caller's).
+    fn promotable(&self) -> bool {
+        true
+    }
+
     /// Run it.
     async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput>;
 }
@@ -364,6 +376,11 @@ pub trait ErasedTool: Send + Sync + 'static {
     fn consumes_secrets(&self) -> bool {
         true
     }
+    /// [`Tool::promotable`]: `false` for interactive or job-shaped tools.
+    /// MCP tools may be promoted.
+    fn promotable(&self) -> bool {
+        true
+    }
     /// Invoke with raw args.
     fn call(
         &self,
@@ -386,6 +403,10 @@ impl<T: Tool> ErasedTool for T {
 
     fn consumes_secrets(&self) -> bool {
         T::CONSUMES_SECRETS
+    }
+
+    fn promotable(&self) -> bool {
+        Tool::promotable(self)
     }
 
     fn call(

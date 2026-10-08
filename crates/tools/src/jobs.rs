@@ -2573,6 +2573,8 @@ pub(crate) mod tests {
             call_id: String::new(),
             quiet: false,
             resources: crate::SessionResources::durable_arc(&fx.dir),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            promote_after: None,
         };
         let cd = Tool::call(
             &tool,
