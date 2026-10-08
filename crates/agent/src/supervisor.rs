@@ -67,9 +67,8 @@ use crate::loop_::{
     ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
     QueuedInputs, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn, Session, SessionState,
     SetBudgetNow, SetCompactionOverride, SetMemoryNow, SetPendingEffort, SetTitlePin,
-    SetToolsetOverride,
-    SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks,
-    text_of,
+    SetToolsetOverride, SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput,
+    WithdrawInput, prompt_blocks, text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
