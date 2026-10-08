@@ -20,6 +20,10 @@
                     follow it with `status`
     launch-task     W6: start the installed theuth-desktop.exe through a one-shot interactive scheduled task — no output
                     redirection, so nothing inherits this job's handles (`launch` redirects and blocks the service's job)
+    launch-logged   W6: the same one-shot task, but it runs a launcher (pwsh) that starts the desktop with RUST_LOG=info and
+                    its stdout/stderr in C:\Users\user\tools\pkg\desktop-w6-stdout.log / -stderr.log (the release
+                    desktop logs to STDOUT); the launcher's handles are the task's, never this job's
+    stdout [N]      W6: companion/tray/deep-link/quit lines of desktop-w6-stdout.log, then its last N lines (default 30)
 #>
 param(
     [Parameter(Position = 0)] [string] $Action = 'help',
@@ -146,6 +150,31 @@ switch ($Action) {
         Start-Sleep 20
         schtasks /delete /tn theuth-app-once /f 2>&1 | Out-Null
         Procs
+    }
+    'launch-logged' {
+        $exe = Join-Path $app 'theuth-desktop.exe'
+        if (-not (Test-Path $exe)) { Say "no $exe"; break }
+        $out = Join-Path $pkg 'desktop-w6-stdout.log'
+        $err = Join-Path $pkg 'desktop-w6-stderr.log'
+        $launcher = Join-Path $pkg 'launch-logged.ps1'
+        Set-Content -Path $launcher -Encoding utf8 -Value @(
+            '$env:RUST_LOG = ''info'''
+            "Start-Process -FilePath '$exe' -RedirectStandardOutput '$out' -RedirectStandardError '$err'"
+        )
+        schtasks /create /tn theuth-app-once /tr "conhost.exe --headless pwsh.exe -NoProfile -File $launcher" /sc once /st 23:59 /it /f 2>&1 | ForEach-Object { Say "schtasks: $_" }
+        schtasks /run /tn theuth-app-once 2>&1 | ForEach-Object { Say "schtasks: $_" }
+        Start-Sleep 25
+        schtasks /delete /tn theuth-app-once /f 2>&1 | Out-Null
+        Procs
+        Say "stdout $out $((Get-Item $out -ErrorAction SilentlyContinue).Length) bytes"
+    }
+    'stdout' {
+        $n = if ($Rest.Count -gt 0) { [int]$Rest[0] } else { 30 }
+        $out = Join-Path $pkg 'desktop-w6-stdout.log'
+        if (-not (Test-Path $out)) { Say "no $out"; break }
+        Get-Content $out | Select-String -Pattern 'companion|deep link|tray|quit' | Select-Object -Last 40 | ForEach-Object { Say (Clip $_.Line 220) }
+        Say "--- last $n lines"
+        Get-Content $out -Tail $n | ForEach-Object { Say (Clip $_ 220) }
     }
     'restore-clone' {
         if ((Get-ScheduledTask -TaskName 'theuth-pkg' -ErrorAction SilentlyContinue).State -eq 'Running') { Say 'restore-clone: theuth-pkg is still running; refusing'; exit 1 }
