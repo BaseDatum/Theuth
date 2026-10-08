@@ -234,7 +234,7 @@ impl Backend for Fake {
                 base_mean: 100.0,
                 final_mean: study.incumbent_mean.unwrap_or(100.0),
                 delta_pct: -10.0,
-                holdout: None,
+                ..Headline::default()
             },
             "doc-1".into(),
         ))
@@ -1598,7 +1598,7 @@ fn cards_render_valid_json_render_fences() {
         base_mean: 52.1,
         final_mean: 41.2,
         delta_pct: -20.9,
-        holdout: None,
+        ..Headline::default()
     };
     let result = result_card(&study, &h, &series, &cs, 70, 4);
     let body = result

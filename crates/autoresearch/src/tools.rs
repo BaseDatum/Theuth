@@ -421,9 +421,15 @@ fn pause_words(r: &crate::types::PauseReason) -> String {
 
 // ───────────────────────────── the tools ─────────────────────────────
 
-/// No arguments.
+/// `experiment_begin` arguments: nothing, unless you are a wave child.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
-pub struct NoArgs {}
+pub struct BeginArgs {
+    /// Wave slot number (140 §10). Only a child spawned by the study session passes it, with the
+    /// number the supervisor gave it; the harness binds this session to that slot's worktree and
+    /// experiment, and `experiment_run` / `experiment_log` then act on it without any argument.
+    #[serde(default)]
+    pub slot: Option<u8>,
+}
 
 /// `experiment_begin` (140 §12.4).
 pub struct BeginTool(pub Arc<Seams>);
@@ -433,7 +439,7 @@ impl Tool for BeginTool {
     const NAME: &'static str = "experiment_begin";
     const RISK: Risk = Risk::Mutating;
     const RETURNS: &'static str = "dict";
-    type Args = NoArgs;
+    type Args = BeginArgs;
 
     fn description(&self) -> String {
         "Start the next experiment of this autoresearch study. Returns the brief: goal, incumbent, noise, recent \
@@ -441,11 +447,14 @@ impl Tool for BeginTool {
             .into()
     }
 
-    async fn call(&self, _: NoArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, args: BeginArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        if args.slot == Some(0) {
+            anyhow::bail!("slot numbers start at 1");
+        }
         let brief = actor()?
             .ask(Begin {
                 session: cx.session,
-                slot: None,
+                slot: args.slot,
             })
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -477,7 +486,7 @@ impl Tool for RunTool {
         let report = actor()?
             .ask(Run {
                 session: cx.session,
-                slot: None,
+                slot: crate::wave::slot_of(cx.session),
                 args,
             })
             .await
@@ -509,7 +518,7 @@ impl Tool for LogTool {
         let report = actor()?
             .ask(Log {
                 session: cx.session,
-                slot: None,
+                slot: crate::wave::slot_of(cx.session),
                 args,
             })
             .await

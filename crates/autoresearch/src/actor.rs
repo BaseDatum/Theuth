@@ -5,7 +5,8 @@
 //! file), Begin (drift repair, dangling experiment, brief), Run (novelty,
 //! custody, scope, samples, gate, checks), Log (keep/discard, review, stop
 //! rules), Notes, Control, Steer, IdeaOp, Status, Detail, Experiments,
-//! Experiment, StartDraft. The `slot` paths are W5's (hand-off).
+//! Experiment, StartDraft. The `slot` / `parallel > 1` branches of Begin, Run
+//! and Log go through [`crate::wave`] (W5).
 //!
 //! Long handlers (Begin, Run, Log, and the preparing / segment / finalize
 //! pipelines) run off the mailbox on an [`Env`] clone so Status, Control and
@@ -121,11 +122,11 @@ impl Env {
         crate::study_dir(&self.root, slug)
     }
 
-    fn runs_dir(&self, slug: &str, n: u32) -> PathBuf {
+    pub(crate) fn runs_dir(&self, slug: &str, n: u32) -> PathBuf {
         self.study_dir(slug).join("runs").join(n.to_string())
     }
 
-    fn evaluator_dir(&self, slug: &str, segment: u32) -> PathBuf {
+    pub(crate) fn evaluator_dir(&self, slug: &str, segment: u32) -> PathBuf {
         self.study_dir(slug)
             .join("evaluator")
             .join(segment.to_string())
@@ -195,6 +196,22 @@ pub trait Backend: Send + Sync {
     /// `git diff a b`, capped.
     fn diff_text(&self, worktree: &Path, a: &str, b: &str, max_bytes: usize) -> Result<String> {
         crate::git::diff_text(worktree, a, b, max_bytes)
+    }
+    /// `git worktree add --detach` (wave candidates).
+    fn worktree_add_detached(&self, repo: &Path, worktree: &Path, sha: &str) -> Result<()> {
+        crate::git::worktree_add_detached(repo, worktree, sha)
+    }
+    /// `git cherry-pick <sha>` onto the study branch; `Ok(false)` = conflict (aborted).
+    fn cherry_pick(&self, worktree: &Path, sha: &str) -> Result<bool> {
+        crate::git::cherry_pick(worktree, sha)
+    }
+    /// `HEAD` of a worktree.
+    fn head(&self, worktree: &Path) -> Result<String> {
+        crate::git::head(worktree)
+    }
+    /// Files touched by a commit (wave promotion's disjointness).
+    fn files_of(&self, worktree: &Path, sha: &str) -> Result<Vec<String>> {
+        crate::git::files_of(worktree, sha)
     }
     // ── W1 measure ──
     /// One scored sample through the slot and the load check.
@@ -444,7 +461,7 @@ impl<'a> Paths<'a> {
     }
 }
 
-fn worktree_of(study: &StudyRecord) -> Result<PathBuf> {
+pub(crate) fn worktree_of(study: &StudyRecord) -> Result<PathBuf> {
     study
         .worktree
         .as_deref()
@@ -452,14 +469,14 @@ fn worktree_of(study: &StudyRecord) -> Result<PathBuf> {
         .ok_or_else(|| Error::refused(format!("study `{}` has no worktree yet", study.slug)))
 }
 
-fn incumbent_of(study: &StudyRecord) -> Result<String> {
+pub(crate) fn incumbent_of(study: &StudyRecord) -> Result<String> {
     study
         .incumbent_sha
         .clone()
         .ok_or_else(|| Error::refused(format!("study `{}` has no incumbent yet", study.slug)))
 }
 
-fn gate_cfg(cfg: &AutoresearchConfig, spec: &StudySpec) -> Result<GateCfg> {
+pub(crate) fn gate_cfg(cfg: &AutoresearchConfig, spec: &StudySpec) -> Result<GateCfg> {
     Ok(GateCfg {
         direction: spec.metric.direction,
         z: cfg.gate.z,
@@ -478,7 +495,7 @@ fn gate_cfg(cfg: &AutoresearchConfig, spec: &StudySpec) -> Result<GateCfg> {
     })
 }
 
-fn mean(v: &[f64]) -> f64 {
+pub(crate) fn mean(v: &[f64]) -> f64 {
     if v.is_empty() {
         0.0
     } else {
@@ -486,7 +503,7 @@ fn mean(v: &[f64]) -> f64 {
     }
 }
 
-fn clean_values(samples: &[Sample]) -> Vec<f64> {
+pub(crate) fn clean_values(samples: &[Sample]) -> Vec<f64> {
     samples
         .iter()
         .filter(|s| !s.noisy && !s.lost)
@@ -495,7 +512,7 @@ fn clean_values(samples: &[Sample]) -> Vec<f64> {
 }
 
 /// Pooled σ of the current segment: every tree measured more than once since the segment opened (140 §5.2 step 1).
-async fn segment_sigma(env: &Env, study: &StudyRecord) -> Result<f64> {
+pub(crate) async fn segment_sigma(env: &Env, study: &StudyRecord) -> Result<f64> {
     let opened = env
         .store
         .get_segment(&study.slug, study.segment)
@@ -702,7 +719,7 @@ async fn set_state(
     Ok(())
 }
 
-async fn progress(
+pub(crate) async fn progress(
     env: &Env,
     slug: &str,
     n: u32,
@@ -728,6 +745,27 @@ async fn progress(
         elapsed_ms,
     })
     .await;
+}
+
+/// §5.5 / §10 step 3: in-process bench queue. Scored samples of concurrent
+/// wave slots (and of two studies in one engine) take it one at a time when
+/// `bench.exclusive`; W1's machine slot is still taken inside. Smoke runs,
+/// checks and edits never queue here.
+static BENCH_QUEUE: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
+
+/// One scored sample through the bench queue (when exclusive) and the backend.
+pub(crate) async fn bench_sample(
+    env: &Env,
+    spec: &StudySpec,
+    req: SampleRequest<'_>,
+    cancel: &CancellationToken,
+) -> Result<Sample> {
+    let _turn = if spec.bench.exclusive {
+        Some(BENCH_QUEUE.lock().await)
+    } else {
+        None
+    };
+    env.backend.sample(spec, &env.cfg.bench, req, cancel).await
 }
 
 /// `Deliver` to the chat the draft card lived in, regardless of `quiet` (140 §13.1); off-mailbox.
@@ -1223,8 +1261,8 @@ pub async fn begin(a: &mut Studies, m: Begin) -> Result<Brief> {
 
 /// [`begin`] on an [`Env`] (off-mailbox).
 pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
-    if m.slot.is_some() {
-        return Err(Error::NotBuilt("W5"));
+    if let Some(slot) = m.slot {
+        return begin_slot(env, m.session, slot).await;
     }
     let mut study = study_of(env, m.session).await?;
     match &study.state {
@@ -1237,11 +1275,20 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
             )));
         }
     }
-    if study.spec.parallel > 1 {
-        return Err(Error::NotBuilt("W5"));
-    }
     let slug = study.slug.clone();
     let mut incidents = Vec::new();
+    // §10: a wave study promotes the previous wave first (unlogged slots count as discard).
+    let wave = if study.spec.parallel > 1 {
+        let (stop, notes) = crate::wave::settle(env, &study).await?;
+        if stop.is_some() {
+            return Err(Error::refused("the study is finalizing"));
+        }
+        incidents.extend(notes);
+        study = study_by_slug(&env.store, &slug).await?;
+        Some(crate::wave::next_wave(env, &slug).await?)
+    } else {
+        None
+    };
 
     // §8.4: the money cap is checked again here so a fire after the cap ends at once.
     let spend = env.backend.spend_usd(study.session).await;
@@ -1364,9 +1411,15 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
         }
     }
 
-    // Allocate n.
-    let exp = ExperimentRecord::open(&slug, n, study.segment, &incumbent);
-    env.store.insert_experiment(&exp).await?;
+    // Allocate n (one experiment), or the wave's N slots (§10 step 1).
+    let slots = match wave {
+        Some(w) => Some(crate::wave::open_env(env, &study, w).await?),
+        None => {
+            let exp = ExperimentRecord::open(&slug, n, study.segment, &incumbent);
+            env.store.insert_experiment(&exp).await?;
+            None
+        }
+    };
     set_phase(&env.root, &slug, n, Phase::Novelty);
 
     // Explore mode after a plateau (§8.4), budget line, code map, incidents.
@@ -1405,6 +1458,8 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
         incidents,
         budget_left: (left.experiments, left.hours, left.usd),
         code_map,
+        gate: env.cfg.gate.clone(),
+        crash_retries: env.cfg.defaults.crash_retries,
     };
     let mut brief = env
         .backend
@@ -1413,12 +1468,71 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     brief.n = n;
     brief.segment = study.segment;
     env.store.mark_steers_seen(&slug, n).await?;
-    env.publish(StudyEvent::ExperimentStarted {
-        slug: slug.clone(),
-        n,
-        slot: None,
-    })
-    .await;
+    match (wave, slots) {
+        (Some(w), Some(slots)) => {
+            let ideas = env.store.list_ideas(&slug, Some(IdeaStatus::Open)).await?;
+            brief
+                .text
+                .push_str(&crate::wave::supervisor_block(&study, w, &slots, &ideas));
+            for s in &slots {
+                env.publish(StudyEvent::ExperimentStarted {
+                    slug: slug.clone(),
+                    n: s.n,
+                    slot: Some(s.k),
+                })
+                .await;
+            }
+            brief.slots = Some(slots);
+        }
+        _ => {
+            env.publish(StudyEvent::ExperimentStarted {
+                slug: slug.clone(),
+                n,
+                slot: None,
+            })
+            .await;
+        }
+    }
+    Ok(brief)
+}
+
+/// `Begin{slot}` from a wave child (140 §10 step 2): bind the child to its
+/// slot and return the study brief for the slot's experiment plus its `<slot>` block.
+async fn begin_slot(env: &Env, session: SessionId, slot: u8) -> Result<Brief> {
+    crate::wave::bind_slot(session, slot);
+    let (study, exp, _) = crate::wave::resolve_env(env, session, slot).await?;
+    let slug = study.slug.clone();
+    let wave = exp.wave.unwrap_or(0);
+    let slots = crate::wave::slots_of(env, &slug, wave).await?;
+    let Some(mine) = slots.iter().find(|s| s.k == slot).cloned() else {
+        return Err(Error::refused(format!("wave {wave} has no slot {slot}")));
+    };
+    let (closed, _) = counts(&env.store, &slug).await?;
+    let spend = env.backend.spend_usd(study.session).await;
+    let left = budget_left(
+        &study.spec,
+        closed,
+        stop::hours_running(&study, chrono::Utc::now()),
+        spend,
+    );
+    let cx = crate::brief::Context {
+        n: exp.n,
+        budget_left: (left.experiments, left.hours, left.usd),
+        gate: env.cfg.gate.clone(),
+        crash_retries: env.cfg.defaults.crash_retries,
+        ..Default::default()
+    };
+    let mut brief = env
+        .backend
+        .brief(&env.store, &study, &env.cfg.brief, &cx)
+        .await?;
+    brief.n = exp.n;
+    brief.segment = study.segment;
+    let ideas = env.store.list_ideas(&slug, Some(IdeaStatus::Open)).await?;
+    brief
+        .text
+        .push_str(&crate::wave::child_block(wave, &mine, &ideas));
+    brief.slots = Some(vec![mine]);
     Ok(brief)
 }
 
@@ -1473,12 +1587,17 @@ async fn refuse_run(
 
 /// [`run`] on an [`Env`] (off-mailbox).
 pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
-    if m.slot.is_some() {
-        return Err(Error::NotBuilt("W5"));
-    }
-    let mut study = study_of(env, m.session).await?;
+    // A wave slot (§10 step 2) measures its own candidate worktree; everything else is the same path.
+    let (mut study, mut exp, worktree) = match m.slot {
+        Some(slot) => crate::wave::resolve_env(env, m.session, slot).await?,
+        None => {
+            let study = study_of(env, m.session).await?;
+            let exp = current_experiment(env, &study).await?;
+            let worktree = worktree_of(&study)?;
+            (study, exp, worktree)
+        }
+    };
     let slug = study.slug.clone();
-    let mut exp = current_experiment(env, &study).await?;
     let retries = env.cfg.defaults.crash_retries;
     let runs_so_far = env
         .store
@@ -1524,7 +1643,6 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
     env.store.update_experiment(&exp).await?;
     let n = exp.n;
     let started = exp.started_at.clone();
-    let worktree = worktree_of(&study)?;
     let incumbent = incumbent_of(&study)?;
     let cancel = cancel_token(&env.root, &slug);
     let retries_left = retries.saturating_sub(runs_so_far);
@@ -1692,15 +1810,13 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             planned.max(k as u8),
         )
         .await;
-        let s = env
-            .backend
-            .sample(
-                &study.spec,
-                &env.cfg.bench,
-                paths.req(k, &cand_tree, SampleRole::Candidate),
-                &cancel,
-            )
-            .await?;
+        let s = bench_sample(
+            env,
+            &study.spec,
+            paths.req(k, &cand_tree, SampleRole::Candidate),
+            &cancel,
+        )
+        .await?;
         env.store.insert_sample(&slug, &s).await?;
         if cancel.is_cancelled() || s.lost {
             taken.push(s);
@@ -1737,15 +1853,13 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             } => {
                 planned = (k as u8).saturating_add(more);
                 if incumbent_sample {
-                    let si = env
-                        .backend
-                        .sample(
-                            &study.spec,
-                            &env.cfg.bench,
-                            paths.req(k, &incumbent, SampleRole::Incumbent),
-                            &cancel,
-                        )
-                        .await?;
+                    let si = bench_sample(
+                        env,
+                        &study.spec,
+                        paths.req(k, &incumbent, SampleRole::Incumbent),
+                        &cancel,
+                    )
+                    .await?;
                     env.store.insert_sample(&slug, &si).await?;
                     taken.push(si);
                 }
@@ -1856,7 +1970,7 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
 }
 
 /// Mean secondaries `(name, candidate, incumbent)` for the guards.
-fn secondary_means(candidate: &[Sample], incumbent: &[Sample]) -> Vec<(String, f64, f64)> {
+pub(crate) fn secondary_means(candidate: &[Sample], incumbent: &[Sample]) -> Vec<(String, f64, f64)> {
     let mut out = Vec::new();
     let cands: Vec<&Sample> = candidate
         .iter()
@@ -1954,7 +2068,7 @@ async fn interrupted(
 }
 
 /// Samples of `(slug, n)` that never finished → `lost` (§8.5).
-async fn mark_lost(store: &Store, slug: &str, n: u32) -> Result<()> {
+pub(crate) async fn mark_lost(store: &Store, slug: &str, n: u32) -> Result<()> {
     sqlx::query(
         "UPDATE samples SET lost = 1 WHERE slug = ?1 AND n = ?2 AND value IS NULL AND exit IS NULL",
     )
@@ -1966,7 +2080,7 @@ async fn mark_lost(store: &Store, slug: &str, n: u32) -> Result<()> {
 }
 
 /// After a keep the candidate's samples belong to the new incumbent tree.
-async fn retag_samples(store: &Store, slug: &str, n: u32, sha: &str) -> Result<()> {
+pub(crate) async fn retag_samples(store: &Store, slug: &str, n: u32, sha: &str) -> Result<()> {
     sqlx::query(
         "UPDATE samples SET tree_sha = ?3 WHERE slug = ?1 AND n = ?2 AND role = 'candidate'",
     )
@@ -1987,19 +2101,23 @@ pub async fn log(a: &mut Studies, m: Log) -> Result<LogReport> {
 
 /// [`log`] on an [`Env`] (off-mailbox).
 pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
-    if m.slot.is_some() {
-        return Err(Error::NotBuilt("W5"));
-    }
-    let mut study = study_of(env, m.session).await?;
+    // A wave slot (§10 step 2) closes its own candidate worktree; everything else is the same path.
+    let (mut study, mut exp, worktree) = match m.slot {
+        Some(slot) => crate::wave::resolve_env(env, m.session, slot).await?,
+        None => {
+            let study = study_of(env, m.session).await?;
+            let exp = current_experiment(env, &study).await?;
+            let worktree = worktree_of(&study)?;
+            (study, exp, worktree)
+        }
+    };
     let slug = study.slug.clone();
-    let mut exp = current_experiment(env, &study).await?;
     if exp.state == ExperimentState::Measuring {
         return Err(Error::refused(
             "still measuring; wait for experiment_run to return",
         ));
     }
     let a = m.args;
-    let worktree = worktree_of(&study)?;
     let incumbent = incumbent_of(&study)?;
     let n = exp.n;
     exp.description = a.description.chars().take(500).collect();
@@ -2039,7 +2157,18 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
     let mut report = LogReport::default();
     let runs = env.runs_dir(&slug, n);
     std::fs::create_dir_all(&runs)?;
-    if keep {
+    if keep && m.slot.is_some() {
+        // §10: a slot keep is a candidate commit in its own worktree; promotion moves the incumbent.
+        let meta = crate::wave::keep_meta(&study, &exp);
+        let sha = env
+            .backend
+            .keep(&worktree, &study.spec, &meta, env.cfg.git.author.as_deref())?;
+        retag_samples(&env.store, &slug, n, &sha).await?;
+        exp.commit_sha = Some(sha.clone());
+        exp.state = ExperimentState::Kept;
+        exp.line = format!("keep-candidate of wave {}; {}", exp.wave.unwrap_or(0), exp.line);
+        report.commit = Some(sha);
+    } else if keep {
         let meta = KeepMeta {
             slug: slug.clone(),
             n,
@@ -2168,13 +2297,35 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         spend,
     );
 
-    // §8.4 stop rules after the experiment closed.
-    report.stop = apply_rules(env, &slug, spend).await?;
+    // §8.4 stop rules after the experiment closed; a wave waits for its last slot, then promotes (§10 step 4).
+    report.stop = match m.slot {
+        None => apply_rules(env, &slug, spend).await?,
+        Some(_) => {
+            let wave = exp.wave.unwrap_or(0);
+            if crate::wave::wave_closed(env, &slug, wave).await? {
+                crate::wave::promote_env(env, &slug, wave).await?;
+                if let Some(e) = env.store.get_experiment(&slug, n).await? {
+                    report.applied = e.state;
+                    report.commit = e.commit_sha.clone();
+                    report.review = e.review.clone();
+                }
+                let after = study_by_slug(&env.store, &slug).await?;
+                report.incumbent = Incumbent {
+                    sha: after.incumbent_sha.clone().unwrap_or_default(),
+                    mean: after.incumbent_mean,
+                    kept: counts(&env.store, &slug).await?.1,
+                };
+                apply_rules(env, &slug, spend).await?
+            } else {
+                None
+            }
+        }
+    };
     Ok(report)
 }
 
 /// `Autoresearch-Metric: time_ms 42.3 -> 41.2 (-2.6%, 3.1 sigma, n=3)`.
-fn metric_line(study: &StudyRecord, exp: &ExperimentRecord) -> String {
+pub(crate) fn metric_line(study: &StudyRecord, exp: &ExperimentRecord) -> String {
     format!(
         "{} {} -> {} ({:+.1}%, {} sigma, n={})",
         study.spec.metric.name,
@@ -2256,7 +2407,7 @@ async fn keep_simpler_granted(
 // ───────────────────────────── stop rules, pause, finalize ─────────────────────────────
 
 /// Evaluate §8.4 for `slug` and act; returns the stop reason when the study is finalizing.
-async fn apply_rules(env: &Env, slug: &str, spend: f64) -> Result<Option<StopReason>> {
+pub(crate) async fn apply_rules(env: &Env, slug: &str, spend: f64) -> Result<Option<StopReason>> {
     let mut study = study_by_slug(&env.store, slug).await?;
     if !matches!(study.state, StudyState::Running | StudyState::Paused { .. }) {
         return Ok(study.stop_reason.clone());

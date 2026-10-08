@@ -177,6 +177,10 @@ impl Message<agent::AgentEvent> for Studies {
     type Reply = ();
 
     async fn handle(&mut self, e: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
+        // W5: wave children (`SubagentSpawned` → toolset, a child's turn end) and the supervisor's settle.
+        if let Err(err) = crate::wave::on_agent_event(self, &e).await {
+            tracing::warn!("wave event not handled: {err}");
+        }
         if let agent::AgentEvent::TurnFinished { session, .. } = e
             && let Err(err) = on_turn_finished(self, session).await
         {
