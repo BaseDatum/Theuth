@@ -307,3 +307,363 @@ and the live editors see `DocEvent::Members`/`Meta` as today. Ingest happens on 
 blob and the helper); the resulting snapshot mirrors to every engine as it does for any document. A source's
 **original bytes** are not replicated (the attachment dir is per engine, 31 §9) — "Open original" off the hub
 forwards to the hub (§17).
+
+## 4. Sources
+
+### 4.1 Origins → extraction routes (all nine, wave 1)
+
+| origin | how it is added | extraction (existing path) | origin key | what the source stores | citation anchor |
+|---|---|---|---|---|---|
+| file (PDF, Word, PowerPoint, Excel, ODF, RTF, EPUB, txt/md) | drop / picker → `put_attachment` (`crates/rpc/src/api.rs:1266-1270`); agent `source_add(path=…)` | `tools::doc::convert` — `anydoc` → GFM on the blocking pool (`crates/tools/src/doc.rs:1-4`), `MAX_BYTES` 25 MiB (`:11`); txt/md verbatim | `file:<sha256 of bytes>` | markdown → blocks; `blob` = attachment path; `pages` from the converter when it reports them | `theuth://sources/<id>#<block>` |
+| URL | paste in "+ Add" / `source_add(url=…)` | `scrape_url` ladder (fetch → issue → island rung → render, `crates/scrape/src/lib.rs:1-3`) with `only_main_content`; `PageMeta` (122 D5, `docs/design/122-web-reading.md:344-358`) into `meta`; a PDF/Office response goes through the file route | `url:<canonical ?? final URL>` | markdown; `fetched_ms`, `content_sha` | `#<block>` |
+| meeting | "+ Add › Meeting" picker / `source_add(meeting=…)` | transcript via the meeting store (`Segment { speaker, t0_ms, t1_ms, text }`, `crates/meeting/src/transcript.rs:34-49`) rendered as `## [mm:ss] <speaker>` blocks, one block per segment; the meeting's `MeetingNote` document (`crates/meeting/src/note.rs:1-7`) is added as a **note item**, not copied | `meeting:<id>` | transcript markdown; `duration_ms`; `meta.segments = [{t0_ms, block}]` for `@mm:ss` resolution | `theuth://meetings/<id>@mm:ss` (resolves to the segment via FTS `segments.t0`, `crates/meeting/migrations/0002_segments.sql:3-10`) |
+| pasted text | "+ Add › Paste" / `source_add(text=…, title=…)` | none — the text is the markdown | `text:<sha256>` | markdown; `words` | `#<block>` |
+| past session | "+ Add › Chat" picker / `source_add(session=…)` | `session_read` outline then turns (`crates/agent/src/attach.rs:29-30`) → `## Turn N — user|theuth` blocks; tool call bodies collapsed to one line each | `session:<id>` | transcript markdown; `meta.turns` | `theuth://sessions/<id>#<turn>` opens `/c/<id>` at the turn |
+| Confluence page | "+ Add › Confluence" (URL or page id) / `source_add(mcp=…)` | the installed Atlassian MCP tool, whatever its registered name (`crates/tools/src/mcp.rs:1-3`): `notebooks.mcp.confluence_tool` names it, args `{pageId}`; the returned content block text → markdown | `mcp:<server>/<tool>/<sha256(args)>` | markdown + `meta { url, space, version, last_modified }`; refresh = the same call | `#<block>` |
+| Jira issue | "+ Add › Jira" (key or URL) / `source_add(mcp=…)` | `notebooks.mcp.jira_tool` with `{issueKey, expand: comments}`; rendered as `# KEY summary`, fields table, `## Comments` with one block per comment | `mcp:<server>/<tool>/<sha256(args)>` | markdown + `meta { url, status, updated }` | `#<block>` (a comment is a block) |
+| YouTube | paste a `youtube.com`/`youtu.be` URL — detected before the URL route | §4.1.1 route | `youtube:<video id>` | transcript markdown with `## [mm:ss]` blocks every ~60 s of speech; `duration_ms`; `meta.title/channel` | `@mm:ss` on the source: `theuth://sources/<id>@mm:ss` resolves to the block covering that time |
+| audio file (m4a, mp3, wav, ogg, opus, webm) | drop / `source_add(path=…)` | `transcribe(path)` → `voice::Transcript` (`api.rs:1320-1324`): symphonia → 16 kHz → Parakeet TDT in 180 s pieces (`crates/voice/src/stt.rs:1-7`, `:26-29`); the notebook route asks the meeting crate's TDT path when word times are wanted (`stt.rs:4-5`) so blocks get timestamps | `file:<sha256>` | transcript markdown with `## [mm:ss]` blocks; `duration_ms`; `blob` | `@mm:ss` |
+| video file (mp4, webm, mkv) | drop / `source_add(path=…)` | video = its audio track: symphonia demuxes the container (`Cargo.toml:124` enables `isomp4`, `mkv`, `ogg`) and the audio route runs; no frames are read | `file:<sha256>` | as audio | `@mm:ss` |
+
+Pre-flight (before a job is queued): unsupported type → `415 unsupported: <ext>` on the card at once
+(`open-notebook: api/routers/sources.py:49-72`, technique: never burn a retry on a type that cannot work);
+over `notebooks.max_source_bytes` → `too large: <n> MiB > <cap>`; a URL the fetcher's SSRF guard refuses (122
+§5) → `refused: private address`; YouTube with neither captions nor `yt-dlp` → `no transcript route` with the
+config key named.
+
+#### 4.1.1 YouTube (writer's call W-d)
+
+Two routes, `notebooks.youtube_route: auto | captions | audio` (default `auto`):
+
+1. **captions** — fetch the watch page through the stealth fetcher (122 R1-D1), read the `captionTracks`
+   list from the embedded player JSON (122 D9's data-island rung is the precedent for reading page JSON), fetch
+   the chosen track (`notebooks.youtube_langs`, default `["en"]`, else the first track) as `srv3`/`json3` XML/JSON,
+   render `## [mm:ss]` blocks. Cost: two fetches, seconds. Constraint: an undocumented endpoint that Google
+   changes; when the page carries no `captionTracks` (no captions, age gate, consent wall → 122 D1 `PageIssue`)
+   the route fails with the reason.
+2. **audio** — if `notebooks.youtube_ytdlp` (default: `yt-dlp` on `PATH`) resolves, run `yt-dlp -x --audio-format
+   m4a -o <attachments>/<id>.m4a <url>` under the tool deadline, then the audio route. Constraint: an external
+   binary the user installs (not bundled, not downloaded by theuth — the same footing as `models/` checkpoints
+   before the mirror, 43 §11); a 41-minute talk is ~2–4 min of Parakeet TDT on a Mac CPU
+   [INFERENCE from 45 §11's RTF; measure in W1]. `auto` = captions, then audio on failure.
+
+Rejected: a YouTube Data API key (quota, a Google account for a local product); embedding the player
+(`open-notebook: SourceDetailContent.tsx:384-385` shows an iframe — a view, not a source).
+
+### 4.2 The ingest job
+
+One `IngestActor` in the document crate (hub-only, `hub.rs:1-3`), `notebooks.ingest_concurrency` (default 2)
+jobs at a time, each a `spawn_blocking` for the converter/STT with the tool deadline.
+
+```
+new ──queued──▶ running ──▶ completed
+                  │              ▲
+                  └──▶ failed ───┘ (retry: new attempt; refused while running|queued)
+```
+
+- **Status words** (`sources.status`): `new` (row written, nothing fetched — the card exists immediately),
+  `queued`, `running` (with `progress` 0–100 published as `SourceEvent::Progress` for STT and captions),
+  `completed`, `failed` (`error` text, permanent vs transient in the text: `415 unsupported`, `too large` and
+  `refused` are permanent; network/deadline failures transient). `source_refresh(id)` re-runs from the origin
+  (URL, MCP call, YouTube) or from `blob` (files); refused while `running|queued`; `attempts` increments.
+- **Steps**: extract → markdown → `start_import(mode: Replace)` into the Source document as `Principal::Helper`
+  (the path `create_doc` already takes, `crates/document/src/actor.rs:1803-1809`) → snapshot →
+  index (§7) → default insight (§4.3) → `status = completed` → `DocumentChanged` + `SourceEvent::Changed`.
+- **Size** (writer's call W-e): one source = one document under 59 §4.7's 8 MiB Y state
+  (`docs/design/59-documents.md:499-507`). The extracted markdown is capped at `notebooks.max_source_chars`
+  (default 2 000 000 chars ≈ 500k tokens, ≈ 2–3 MiB of Y state after blocks) — a 300-page PDF is ~150k words /
+  ~0.9 MB of markdown and fits; a 2 000-page manual does not and is refused with "split the file". Rejected:
+  chunked documents (`part 2/7`) — citations and the dial would then span several ids for one thing.
+  `ponytail:` a cap, not pagination; raise it or add parts when a real corpus hits it.
+- **Freshness**: `fetched_ms` (every successful fetch), `content_sha` (sha256 of the markdown). `source_refresh`
+  re-fetches and compares; a different sha → `start_import(mode: Diff)` so unchanged blocks keep their ids
+  (59 §4.4) and `changed_since = old fetched_ms` is set until the user opens the source ("changed since · 9 d"
+  chip, field §6 item 5). A scheduled re-fetch is a routine (`schedule()`) calling `source_refresh` — not a
+  notebook feature (122 §8's ruling stands: no conditional GET on the fetch path,
+  `docs/design/122-web-reading.md:1198-1200`).
+- **Provenance** on every source: `origin` (JSON of `SourceOrigin`, §13), `added_by` on the item row,
+  `fetched_ms`, `content_sha`, `blob`, `meta` (`PageMeta`/file name/video title), `attempts`, `error`. The source
+  page shows them verbatim (§12).
+
+### 4.3 Insights (D7; writer's call W-f)
+
+One **default insight** per source at the end of ingest: a side call (`SideCall`, `crates/runtime/src/side_call.rs:1-5`)
+on `ModelRole::Named(notebooks.insight_model)` (default = `agent.title_model`, the "cheap and fast" slot,
+`crates/agent/src/lib.rs:2926-2927`; unset → the session model chain `side_call.rs:83-84`) with the instruction
+*"Dense summary (≤ 200 words), then `Key points` (≤ 8 bullets) of the document below; cite nothing; plain markdown."*
+over the first `notebooks.insight_input_tokens` (default 24 000) tokens of the markdown. Output lands as a
+**titled block section at the end of the source document**: `## Insights` → `### Dense summary · <model> ·
+<date>` → blocks, inserted by the job as `Principal::Helper` (the one write a source accepts after ingest).
+Rejected: a sibling `DocKind::Insight` (one more document per insight, nothing to share separately); a column
+(not block-addressable, not citable). Insights are therefore **citable blocks** (`theuth://sources/<id>#<block>`
+— the chip shows "insight" like `open-notebook`'s Lightbulb, `source-references.tsx:275-317`), searchable on
+their own (§7 indexes them with `kind = insight`), and what the dial's `summary` level injects (§5).
+
+**More on demand** from the source page's Insights tab: a picker over the skills whose front matter says
+`notebook_insight: true` (`crates/agent/src/skills.rs`, recon §10 — skills are the reusable prompt host) plus
+three built-ins (`Key insights`, `Table of contents`, `Open questions`); each run appends another `###` under
+`## Insights`. **Promote to note**: `insight_promote(source, block)` → `doc_create(title = "<insight title> —
+<source title>", markdown)` with a trailing provenance line `*From [<source title>](theuth://sources/<id>#<block>)
+· <model> · <date>*` and the new note added to the current notebook. Rejected: `apply_default` rows in a
+table (`open-notebook: 5.surrealql:101`) — the one default is config (`notebooks.insight_default: on|off`).
+
+### 4.4 Representation
+
+Blocks: the derived markdown goes through the helper's `import` exactly as `doc_create` does
+(`crates/document/src/actor.rs:488-492`; `crates/document/src/helper.rs:466-477`), so a source has
+BlockNote blocks with stable ids — headings per page/section/segment, paragraphs, tables, code. `doc_read`
+outline (120-char lines, `docs/design/59-documents.md:520-532`) is the model's first look at a source in `full`
+mode. Chunks for the index are derived from blocks (§7.3) and never stored as documents.
+
+## 5. What the model sees
+
+### 5.1 The dial (D6)
+
+Four states per item (source or note) per thread: `off` (not mentioned), `mention` (one line: kind, title, id,
+size), `summary` (the mention + the source's `## Insights` blocks, or a note's first heading and first 400
+chars), `full` (the mention + the whole markdown, blocks annotated `<!-- id -->` as `doc_read(format="markdown")`
+does, `59-documents.md:534-536`). Sessions and artifacts in a notebook are `mention`-only (the model fetches
+with `session_read`/`artifact_read`, `attach.rs:26-30`).
+
+**Default rule**, computed on the hub at turn time: `summary` when the source has ≥ 1 insight else `full` —
+in item order, newest first — while the running total stays under the budget; `mention` for everything the
+budget cannot hold (`open-notebook: frontend/src/lib/utils/source-context.ts:23-26` is the "insights if any
+else full" rule; the budget ordering is ours). Notes default to `full` (small) under the same budget.
+
+**Storage (writer's call W-g)**: the dial lives on the **session**, server-side — `session_context(session,
+kind, item, level, hlc)` in `sessions.sqlite`, set by `notebook_context_set` (RPC from the card, tool from the
+agent, §13) and read at turn assembly. Sessions are owner-only (D13), so this is "per thread, never shared".
+The per-device memory is `lib/notebook-context.ts` (zustand + localStorage, the `note-chat.ts` pattern,
+`crates/desktop/ui/src/lib/note-chat.ts:1-2`): the levels the user last chose in this notebook, applied to a
+**new** thread's first message by one `notebook_context_set` batch. Rejected: a marker line carrying the
+dial in the user text (20 sources × 26-char ids per message); page-state only (`open-notebook: page.tsx:71-110`).
+
+**Budget (writer's call W-h)**: `notebooks.context_budget_tokens`, default **40 000**. Why: it is under every
+current chat model's window with room for history, tools and the reply (meetings run at a 24 000 compact
+threshold, 53 §4.7); open-notebook's source chat found 50 000 workable (`open-notebook: graphs/source_chat.py:85`);
+a 40k block at the volatile tail (10 §14's rule: hints at the tail, not the prefix) costs one prefix miss per
+turn, not one per item. Tokens are estimated as `chars / 4` on the hub (the UI's `≈ bytes/3` convention,
+`docs/design/137-endless.md:287`, over-counts prose; the hub's estimate is what the composer shows).
+
+### 5.2 The pre-turn estimate
+
+The composer's context line (§12): `in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes · ~12.4k
+of 40k tokens · 1 omitted` — from `notebook_context_estimate(notebook, session)` (RPC, read-only, any engine:
+it reads the replica), re-run on every dial change and on `SourceEvent::Changed`. "omitted" = items at `off`
+or truncated by the budget; the chip opens the sources column scrolled to them. A notebook whose every item is
+`off` shows "nothing in context — the agent will only see the description" **before** send; the model gets the
+same sentence in the block (never a silent empty context — field §6 item 2; `open-notebook` shipped bulk
+toggles after exactly that bug, CHANGELOG 1.10.0).
+
+### 5.3 The injection shape
+
+A new volatile tail block, built by the agent plugin next to `<knowledge>` hints when the session has a
+`notebook` binding (§8), after the user turn's `[attached …]` lines:
+
+```
+<notebook id="01K7…" title="DR verification — ICD portal">
+<description>…the notebook document's markdown, ≤ 2 000 tokens, truncated with a notice…</description>
+<item kind="source" id="01K7…S1" title="ICD portal DR runbook v7" origin="file · 48 pages" level="summary" status="available">
+## Insights …blocks with <!-- id --> …
+</item>
+<item kind="source" id="01K7…S2" title="AWS Route 53 failover docs" origin="url · fetched 9 d ago · changed since" level="mention" status="omitted">
+mention only: 11 400 words; read with doc_read("01K7…S2") if needed
+</item>
+<item kind="source" id="01K7…S4" title="DR-412 Failover drill results" origin="jira" level="full" status="truncated">
+…markdown… [truncated: 3 200 of 9 800 tokens shown; the rest is available with doc_read(blocks=[…]) — the first omitted block is 7f2a]
+</item>
+<item kind="note" id="01K7…N1" title="Drill timeline" level="full" status="available">…</item>
+You may cite only these ids: 01K7…S1, 01K7…S2, 01K7…S4, 01K7…N1 (and the blocks inside them).
+</notebook>
+```
+
+`status ∈ available | truncated | omitted` per item, the truncation notice verbatim in the item (`open-notebook:
+utils/context_builder.py:34-36, 471-477` — technique). The allow-list sentence is the per-turn citation contract
+(§6.2). Item order = dial order (full, summary, mention), newest first within a level, so truncation hits the
+least-chosen first. The `[attached …]` markers (`crates/agent/src/attach.rs:17-21`) are unchanged in grammar;
+inside a notebook session the composer still leads every message with `[attached notebook <id> "<title>"]`
+(a sixth `Kind`, §13) and the attachments `PROMPT` gains one row: *notebook → its items are already in the
+`<notebook>` block below at the levels the user chose; `doc_read` any item for more.* A standing prompt block
+`notebooks` (~120 tokens, static) explains the block, the levels and the citation grammar.
+
+**Outside a notebook nothing changes**: no `<notebook>` block, no allow-list sentence, the attachments prompt
+and markers exactly as `attach.rs:17-35` today, `doc_read` on demand.
+
+## 6. Citations
+
+### 6.1 Grammar (D8) — 71 §2.3 extended
+
+```
+Cite        := [label](theuth://<kind>/<id><locator>?)
+kind        := notes | sources | knowledge | meetings | sessions
+locator     := #<blockId>            notes, sources (a block; an insight is a block)
+             | @mm:ss | @h:mm:ss     meetings (segment at that time), sources with duration_ms (youtube, audio, video)
+             | #<turn>               sessions (1-based turn number from session_read's outline)
+             | (none)                knowledge (the concept; `@<commit>` after the id for a revision, 66 §0.4)
+query       := ?s=<sha8>             optional: first 8 hex of sha256(block text) at citing time, for drift (§6.4)
+```
+
+`theuth://notes/<id>` already exists as the `doc_create` result URL (`crates/document/src/tools.rs:870`) and the
+board header's "Copy link" (71 §2.2); the grammar adds locators and four kinds. It is a **link**, so it survives
+copy, `doc_export` (markdown keeps it, PDF renders the chip number + a References page), Slack/Telegram
+(§6.5) and paste into any editor. Shared parser `crates/surface/src/anchor.rs` + its TS twin
+(`crates/desktop/ui/src/components/chat/surface/anchor.ts:5-7`) gain `TheuthAnchor` beside `CodeAnchor`/`BlockAnchor`
+— one grammar, same rejects on both sides.
+
+### 6.2 The model's contract
+
+The `notebooks` prompt block: *"Cite with markdown links to `theuth://` ids you were given: `[runbook §4.2](theuth://sources/01K7…S1#b12)`.
+Cite the block, not the document, whenever you quote or rely on a passage; cite a meeting or a recording at
+its time `@41:12`. Never invent an id; the ids you may cite are listed at the end of the `<notebook>` block.
+Call things by title in prose, never by id"* (the rule `attach.rs:33` already states). The allow-list sentence
+(§5.3) is per turn; a chip whose id is not in it still renders (the engine resolves it) but is flagged
+`unlisted` in the References footer — the model cited something it fetched with `doc_read`, which is fine, or
+hallucinated, which the footer makes visible.
+
+### 6.3 Rendering: numbered chips + References
+
+The chat renderer is Streamdown (`crates/desktop/ui/src/components/chat/MessageAssistant.tsx:7`) with
+`markdownComponents = { td, img }` (`:54`). It gains `a: CitationLink` (new `components/chat/Citations.tsx`): a
+`theuth://` href renders as a numbered chip `[1]` (ordinal of first appearance in the message), any other href
+as today (`[&_a]:underline`, OS-opening). A `References` footer under the message lists `n · kind icon · title ·
+locator (§4.2 / block "RDS promotion" / @41:12) · drift chip` resolved by one batched `cite_resolve(hrefs)` RPC
+(read-only, any engine). Rendering is client-side on the stored text — nothing is rewritten in the transcript
+(`open-notebook: source-references.tsx:331-342` rewrites to `[n](#ref-…)`; ours keeps the href). The same
+component renders chips inside notes (BlockNote's `link` inline, `59-documents.md:938`) and boards
+(`BoardReader.tsx:390-398` gains the `theuth:` branch beside `code:`), so an answer promoted into a note keeps
+working chips.
+
+**Click** → open the target at the locator: `/notes/<id>#<block>` and `/sources/<id>#<block>` scroll to the
+block and pulse it for 1.2 s (`reveal.ts`'s decoration, `59-documents.md:674-680`, in highlight mode); the
+editor needs `editor.getBlock(id)` + `scrollIntoView` — ids are already on every block container.
+`/meetings/<id>?t=2472000` opens the transcript at the segment; `/c/<id>?turn=7`; `/knowledge/<id>`. On the
+phone the target opens in the stacked view's Notes/Sources tab. What the index needs for search → open-at-block
+(59 §15, `59-documents.md:1103-1105`): the outline ids — §7 stores them.
+
+### 6.4 Dangling targets and drift (writer's call W-i)
+
+`cite_resolve` answers per href `{ status: same | changed | moved | missing | unavailable, title, text?, block? }`:
+
+| status | meaning for a block citation | modelled on |
+|---|---|---|
+| `same` | the block exists and `sha8(text)` equals `?s=` (or no `?s=` was given) | `LocateStatus::Same` (`crates/codeindex/src/locate.rs:51-52`) |
+| `changed` | the block exists, its text hashes differently | `Changed` (`:53-54`) |
+| `moved` | the block id is gone but a block in the same document hashes to `?s=` — the chip opens that block | `Moved` (`:55-56`) |
+| `missing` | neither the id nor the text exists; the document exists | `Missing` (`:57-58`) |
+| `unavailable` | the document is deleted/trashed or not in any notebook the viewer may read | `open-notebook: ContentUnavailable.tsx:17-24` (one card everywhere) |
+
+For a block, `text_sha` means `sha256` of the block's lossy markdown with trailing whitespace trimmed
+(`locate.rs:75-79` convention, lowercase hex, truncated to 8 for the URL). `moved`/`changed` chips get a small
+status word in the References row; `missing`/`unavailable` chips are struck through and open an "unavailable"
+card naming the kind and, when known, when it was removed. Meetings: `@mm:ss` beyond `duration_ms` → `missing`.
+
+### 6.5 Export and channels
+
+- `doc_export` markdown (`crates/artifact/src/export.rs:19-20`): links verbatim — a reader with theuth opens them,
+  one without sees the URL. PDF (`:21-22`): chip numbers in the text and a "References" page `n. title — locator
+  — theuth://…` (Typst footnotes are not used: a long list of footnotes reflows every page).
+- Slack / Telegram / Signal: the channel renderers already lower markdown; a `theuth://` link becomes `title
+  [n]` with a trailing `References:` list of `n. title — locator` (no clickable deep link off the device —
+  stated in the footer as "open in theuth").
+- Copy from the chat: the clipboard gets the markdown with links intact (the Streamdown copy path is text;
+  the chip is a presentation of the same `[label](theuth://…)` — field §6 item 1's workaround industry exists
+  because NotebookLM's chips are not text).
+
+### 6.6 Validation at `doc_insert`/`doc_replace`
+
+Like `Excerpt`s (`crates/document/src/tools.rs:208-212`): every `](theuth:` link in the inserted markdown is
+resolved on the hub; a `missing`/`unavailable` target is **refused** with `theuth://sources/<id>#7f2a: block not
+found; the document's blocks near the end are 7f1e, 7f2b…` — the model gets its correction round before the
+note holds a dead chip. `changed` is accepted (the text drifted since the model read it; the chip will say so).
+A `?s=` is **added** by the tool when absent (the hub hashes the target block at insert) so promoted answers
+carry drift information from day one. `knowledge`/`sessions`/`meetings` targets are checked for existence only.
+
+## 7. Search and embeddings
+
+### 7.1 One index over blocks (`<data_dir>/documents/index.sqlite`)
+
+```sql
+CREATE VIRTUAL TABLE IF NOT EXISTS nb_blocks USING fts5(
+  doc UNINDEXED, block UNINDEXED, kind UNINDEXED,     -- kind ∈ note|board|meeting_note|source|insight|notebook
+  ord UNINDEXED, heading, text, text_sha UNINDEXED, tokens UNINDEXED,
+  tokenize = 'porter unicode61 remove_diacritics 2');            -- 10 §3.1's tokenizer
+CREATE VIRTUAL TABLE IF NOT EXISTS nb_vec USING vec0(            -- sqlite-vec (new dependency, "to verify")
+  rowid INTEGER PRIMARY KEY, embedding float[768], doc TEXT, block TEXT, chunk INTEGER);
+CREATE TABLE IF NOT EXISTS nb_index_state (doc TEXT PRIMARY KEY, content_sha TEXT, model TEXT, dims INTEGER, indexed_ms INTEGER);
+```
+
+Not replicated: the index is derived from documents every engine already holds and is rebuilt locally
+(`knowledge.sqlite` is the precedent, `docs/design/10-knowledge.md:253-258`). **Trigger**: `DocumentChanged`
+(`crates/document/src/meta.rs:396-411`, published on create/export/rename/delete) → the indexer reads the
+document's blocks from the local mirror (`Outline`/`Markdown` work anywhere, `hub.rs:4-5`), diffs `text_sha`
+per block, re-embeds only changed chunks, deletes rows of vanished blocks. A deleted document drops its rows.
+First run on an engine: walk `docs` where `kind ∈ (note, board, meeting_note, source, notebook)`.
+
+This **replaces the per-query file read** in `crates/document/src/search.rs:56-58` ("a cached index keyed on
+DocumentChanged is the upgrade" — this is that upgrade): the `Notes` category reads `nb_blocks` and returns
+block-level hits with outline ids, so a hit opens the editor at the block (59 §15). 10 §3's rule
+(`10-knowledge.md:333-334`) read honestly: FTS5 virtual tables cannot carry a vector column, so the "same
+table" is the same sqlite file with two virtual tables joined by rowid (writer's call W-j) — still not a new
+store.
+
+### 7.2 The embedding model (D9; writer's call W-j)
+
+`notebooks.embedding_model` names a **local checkpoint directory** under `<data_dir>/models/` — the decision
+crate's convention (`crates/decision/src/lib.rs:47-49`, `:342-348`: `models/decision[-<name>]/`; 45/57 put
+every local model there, `crates/voice/src/lib.rs:406-415`). Default `embed-gte-modernbert-base` →
+`<data_dir>/models/embed-gte-modernbert-base/{model.safetensors, config.json, tokenizer.json}`. No
+`provider/model` is accepted; a value with a `/` is a config error naming the rule (D9).
+
+| candidate | params | dims | context | pooling | licence | download | to verify |
+|---|---|---|---|---|---|---|---|
+| `Alibaba-NLP/gte-modernbert-base` (default) | ~149M | 768 | 8192 | CLS | Apache-2.0 | ~600 MB f32 safetensors (~300 MB f16) | all five numbers; whether candle 0.11's `modernbert` config matches the checkpoint's `config.json` |
+| `nomic-ai/modernbert-embed-base` | ~149M | 768 (Matryoshka 256) | 8192 | mean | Apache-2.0 | ~600 MB | same; needs `search_query:` / `search_document:` prefixes |
+
+Why gte: its CLS pooling is what the vendored encoder already exposes — `ModelOutput.pooled = xs.i((.., 0))`
+(`crates/decision/src/candle/model.rs:659`) — and it needs no prefix convention; nomic is the swap if gte's
+recall disappoints (a config value and a rebuild). The encoder is the vendored `ModernBert`
+(`crates/decision/src/candle/mod.rs:1-4`) **without** the decision head: a new `crates/decision/src/candle/embed.rs`
+loads `config.json` (`model_type == "modernbert"`, `config.rs:100-102`), runs the encoder, takes `[CLS]`,
+L2-normalises, on `Device::Auto` (`models.accelerator`, `crates/models/src/accelerator.rs:12-14`: Metal f16
+on a Mac, else CPU f32). Exposed as an `EmbedActor` (`"embed"`), `Embed { texts } → Vec<Vec<f32>>`, batches of
+32, lazy load, idle unload like `Engine` (`crates/decision/src/engine.rs:1-6`). `Scores.embedding`
+(`engine.rs:84-87`) stays what it is (the oracle's gate) — not reused for retrieval (a decision-head state is
+not a retrieval embedding).
+
+### 7.3 Chunking and what is embedded
+
+Header-aware, token-measured (the model's tokenizer): walk blocks in order; a heading starts a new chunk and
+is prepended to every chunk under it; paragraphs/list items/table rows are appended until **400 tokens**
+(`notebooks.chunk_tokens`), **15 % overlap** (`notebooks.chunk_overlap`, carried from the previous chunk's tail
+blocks), chunks under **5 tokens** dropped (`open-notebook: utils/chunking.py:33-118` — the numbers; the
+block-boundary walk is ours so every chunk maps to `[first block, last block]`). Embedded: source chunks,
+insight blocks (one vector per insight section, mean of its chunks when > 400 tokens), note/board/meeting-note
+chunks, the notebook description. Not embedded: sessions, artifacts (`search()`'s owners cover them, 49).
+The query is embedded the same way (one chunk; long queries truncated at 400 tokens).
+
+### 7.4 Retrieval and the `search()` categories that change
+
+`nb_search(query, scope: {notebooks?, docs?, kinds?}, limit)` (ReadOnly, any engine) = **hybrid**: FTS5 bm25
+top-`4×limit` ∪ vector top-`4×limit` (cosine via `vec0` `MATCH`, `k = 4×limit`), fused by reciprocal rank
+(`1/(60+rank)` per list, summed), de-duplicated by block, snippet from FTS5 `snippet()` when the hit is lexical
+else the chunk's first 160 chars. Rejected: vector-only (144-CARD §5 do-not-borrow); a cross-encoder reranker
+(a second model; add when measured).
+
+`SearchCategory` (`crates/search/src/lib.rs:68-82`) gains `Sources` and `Notebooks`; `Notes` becomes block-level
+(`hit.block`, `hit.heading`) — the UI's hit row opens at the block. `search()`'s identities
+(`crates/rpc/src/search.rs:593-598`) gain `source document id + block`, `notebook id`. The human dialog gets two
+chips; the TUI the same two categories. `knowledge_search` and hints are untouched (10 §3.3's contract).
+
+### 7.5 Rebuild on model change and cost
+
+`nb_index_state.model/dims` per document; a different `notebooks.embedding_model` at start → every row is
+stale → background re-embed in `DocumentChanged` order, FTS5 untouched (lexical search keeps working while
+vectors rebuild; the hybrid falls back to FTS5-only per document until its vectors are current).
+`open-notebook` records nothing about which model made a vector (`1.surrealql:16-26`) — ours does.
+
+Cost (assumptions stated, measure in W1): ModernBERT-base at 400 tokens ≈ 15–30 ms per chunk on an M-series GPU
+in f16, ≈ 150–300 ms on CPU f32 [INFERENCE from 57's laya numbers, same architecture class]; a 300-page PDF
+(~200k tokens) ≈ 600 chunks → ~15 s GPU / ~2–3 min CPU, in the background after `completed`; a 2-page note ≈
+3 chunks, imperceptible. Storage: 768 × 4 B = 3 KiB per vector; 10 000 chunks = 30 MiB. Query: one embedding
+(~20 ms) + two index reads (< 10 ms at 10⁵ rows with `vec0`'s brute force, "to verify" — `vec0` has no ANN;
+add a partition key per notebook if a corpus passes ~10⁶ chunks). No provider call, no bytes leave the machine.
