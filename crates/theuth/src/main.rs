@@ -1209,6 +1209,33 @@ agent:
 #   digest: \"Mon 08:00\"
 #   home_engine: null        # mesh: only this engine dreams; null = the engine that installed the routine
 
+# autoresearch:              # measured experiment loops (design doc 140): one study = a benchmark, a check, a scope and
+#                            # budgets; the harness measures, gates against the noise and keeps or reverts in its own worktree.
+#   enabled: true            # false: no tools, no prompt block, no RPC beyond \"disabled\"; existing study files stay paused
+#   root: null               # null = <data_dir>/autoresearch (sqlite, worktrees, custody, run logs)
+#   defaults:                # what a new draft card is pre-filled with (R1-D1)
+#     repeats: 3
+#     bench_timeout: 600s
+#     checks_timeout: 300s
+#     crash_retries: 2
+#     budget: { usd: 20, per_experiment_usd: 1.5, hours: 10, experiments: 120 }
+#     parallel: 1
+#   gate: { z: 2.0, z_fast: 3.5, z_discard: 1.0, z_suspicious: 8.0, confirm_runs: 2, remeasure_after: 6, remeasure_every: 5 }
+#   noise: { max_cv: 0.05 }  # baseline sigma/mean above this refuses to start
+#   plateau: { window: 12 }  # experiments without a keep: explore once, then stop
+#   pause: { crash_streak: 4, custody_refusals: 2 }
+#   review: { model: null, on_suspicious: revert, pause_after: 3 }   # model: null = another vendor than the executor; \"off\" disables
+#   models: { executor: null, advisor: null }   # null = agent.model (R1-D5) / 125's advisor
+#   effort: { executor: high, review: low, advisor: high }
+#   brief: { max_bytes: 12288, recent: 8, dead_ends: 30, ideas: 12, playbook_bytes: 4096, code_map_tokens: 1200 }
+#   novelty: { threshold: 0.6 }
+#   bench: { lock: builtin, max_load: 0.5, wait: 20m }   # lock: builtin | \"<wrapper command>\" (e.g. ~/.theuth/bin/build-lock)
+#   max_parallel: 4
+#   confirm_budget_usd: 50   # draft cards above this need the user to type the amount
+#   keep_finished_days: 14   # finished worktrees are removed after this
+#   git: { author: null }    # null = theuth autoresearch <noreply@theuth.local>
+#   notify: { new_best: false }   # channel pings during a study (R1-D6: off)
+
 # a2a:                       # remote agents over A2A 1.0 (design doc 50 §6); peers/exports live in <data_dir>/a2a/peers.yaml, `/a2a reload` applies edits
 #   enabled: false           # false: no actor, listener, card fetch or credential load. Needs agent.communication too.
 #   listen: 127.0.0.1:7780   # SDK HTTP listener; loopback only, restart to change
@@ -1745,6 +1772,8 @@ async fn run() -> anyhow::Result<()> {
             Box::new(agent::AgentPlugin),
             // 136: the nightly routine's plugin (bundled skill/sensor/routine, signals, tools, RPC); after agent.
             Box::new(dreaming::DreamingPlugin),
+            // 140: autoresearch studies (store, `Studies` actor, tools, prompt block, skill); after agent.
+            Box::new(autoresearch::AutoresearchPlugin),
             // The `search` tool (49 §4.4): registration only.
             Box::new(rpc::SearchToolsPlugin),
             // 63 §6.4: attachable, on a loopback port; stdout untouched.
@@ -1861,6 +1890,8 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(agent::AgentPlugin),
         // 136: the nightly routine's plugin (bundled skill/sensor/routine, signals, tools, RPC); after agent.
         Box::new(dreaming::DreamingPlugin),
+        // 140: autoresearch studies (store, `Studies` actor, tools, prompt block, skill); after agent.
+        Box::new(autoresearch::AutoresearchPlugin),
         Box::new(rpc::SearchToolsPlugin),
         Box::new(signal::SignalPlugin {
             channel: headless,

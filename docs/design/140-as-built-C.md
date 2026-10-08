@@ -1,0 +1,44 @@
+# 140 as-built — C CONTRACT (the autoresearch plugin skeleton)
+
+Worker 140-C, 2026-10-08, branch `feat/140-c` (cut from `feat/140-autoresearch` 2297bd07). The compiling skeleton every other wave worker codes against: the crate, the wire types, the config section, the sqlite ledger, the actor, the tools' registration, the RPC methods and events, the binary registration. Every module another worker owns is a documented stub returning `Err(Error::NotBuilt("<owner>"))`.
+
+## Built, file by file
+
+- `crates/autoresearch/Cargo.toml` — deps as dreaming's plus `sqlx` (the workspace's sqlite crate), `tokio-util`, `sha2`, `thiserror`, `codeindex` (W6's `code_map`), `document`/`knowledge` (W2); `ts` feature forwards to `runtime/tools/agent/schedule`.
+- `src/error.rs` — `Error { NotBuilt(&'static str), Refused(String), Sqlx, Io, Json, Other }`, `Result<T, E = Error>`.
+- `src/config.rs` — `AutoresearchConfig` = every key of §12.2 with the R1 defaults (`defaults.budget` $20 / $1.5 / 10 h / 120; `review.on_suspicious: revert`; `notify.new_best: false`), `AgentDefaults::from_runtime`, the R1-D5 role resolution (`executor()`, `reviewer()`, `advisor()`), `persist()` (whole-section rewrite, dreaming's pattern). Tests: defaults, role resolution, persist.
+- `src/types.rs` — §12.3/§12.4/§12.5 by name: `StudySpec` (+ `MetricSpec`, `Direction`, `Guard`, `BenchSpec`, `CommandSpec`, `HoldoutSpec`, `BudgetSpec`, `ModelsSpec`, `Effect::parse`), `StudyState`, `PauseReason`, `StopReason`, `ExperimentState`, `Verdict`, `SampleRole`, `Sample`, `GateCfg`/`GateInput`/`GateStep` (pure, not wire), `RunArgs`, `RunReport`, `CheckResult`, `SimilarExperiment`, `CaseDelta`, `LogArgs`, `Decision`, `LogReport`, `Incumbent`, `BudgetLeft`, `BudgetUsed`, `ReviewVerdict`, `NotesArgs`, `IdeaDraft`, `NotesReport`, `Brief`, `Slot`, `ControlOp`, `StartWhen`, `By`, `IdeaChange`, `IdeaSource`, `IdeaStatus`, `Idea`, `Steer`, `Phase`, `StudyInfo`, `StudyDetail`, `ChartSeries`, `ChartPoint`, `Changeset`, `ExperimentRow`, `ExperimentDetail`, `StudyEvent` (`#[serde(tag = "type")]`, five variants), the actor messages `Create, StartDraft, Begin, Run, Log, Notes, Control, SteerMsg, IdeaOp, Status, Detail, Experiments, Experiment, Settings, SetSettings`. Every wire type: Serialize/Deserialize/JsonSchema + ts-rs behind `ts`. Tests: `Effect`, tagged round-trips, the §4.1 YAML.
+- `migrations/0001_init.sql` + `src/store.rs` — `<root>/autoresearch.sqlite`, WAL, `synchronous=NORMAL`, `sqlx::migrate!` (`_sqlx_migrations` = the migrations table); tables `studies, segments, experiments, samples, ideas, steers, events, experiments_fts` (FTS5 over idea/description/learned, kept by triggers). Records: `StudyRecord`, `SegmentRecord`, `ExperimentRecord` (+ `.row()` → `ExperimentRow`), `EventRecord`; `Sample`/`Idea`/`Steer` are the wire types. Accessors: `create/update/get/list_study`, `set_study_state`, `study_of_session`, `put/get_segment`, `next_experiment_n`, `insert/update/get/list_experiments`, `dangling_experiment`, `insert/list_samples`, `samples_of_tree`, `insert/update/get/list_ideas`, `insert/list_steers`, `mark_steers_seen`, `append/list_events`, `pool()` for module-local queries. Tests: migrate + reopen, full round-trip incl. the FTS trigger.
+- `src/lib.rs` — `AutoresearchPlugin` (`name() = "autoresearch"`), `Studies` actor registered as `AUTORESEARCH_ACTOR` with `Message` impls delegating to `actor::*` (macro), `Settings`/`SetSettings` implemented for real (persist + apply), `start()`, `install_skill()`, consts `PLUGIN, DIR, SCHEDULE_PREFIX, SKILL, SKILL_PATH`, `study_dir()`, `drafts_dir()`. Test: stubs answer `NotBuilt(W3)`, settings round-trip through the actor and `rpc_impl`.
+- `src/tools.rs` — the 7 tools registered with their Risk and the verbatim §12.4 descriptions, `PROMPT_BLOCK` (config-only paragraph), `Seams`, `actor()`, `structured()`. Study tools and `autoresearch_status`/`autoresearch_control` ask the actor (so they answer `NotBuilt(W3)` until W3); `autoresearch_draft` and the `steer`/`idea` ops are `NotBuilt(W3)`/`NotBuilt(W6)`.
+- `src/rpc_impl.rs` — `METHODS` (10) and the plain async fns the `rpc` crate delegates to (complete, dreaming's `rpc.rs` pattern).
+- Stubs with doc comments naming owner and design §: `runner, scanner, gate, custody, slot` (W1) · `git, finalize, record` (W2) · `actor, binding, schedule_file, stop` (W3) · `brief, novelty, review` (W6) · `wave` (W5). `skill.md` empty (W6), `fixtures/.gitkeep` (W1).
+- `crates/rpc`: trait methods + bodies for the 10 `autoresearch.*` methods (`settings.get` falls back to the section when the actor is absent, like `dreaming.settings`), `StudyEvent` in `bridge.rs` (forward + subscribe) and `client.rs` (republish), 67 types in `export.rs`, `autoresearch_methods_are_registered` test.
+- `crates/theuth`: `Box::new(autoresearch::AutoresearchPlugin)` at both plugin lists, the commented `# autoresearch:` config block with every §12.2 key and default.
+- Workspace `Cargo.toml` dependency line (members are `crates/*`), `docs/design/00-architecture.md` §10 line.
+
+## Gates
+
+(filled below as run)
+
+## Deviations (closest correct thing; none change the design's behaviour)
+
+1. **Owners follow the 140-C brief, not §21.1's table**, where they differ: `tools, brief, novelty, review` are W6 (the brief), not W3; `rpc_impl.rs` is complete delegation, not a stub (the `rpc` crate must compile now). No `src/api.rs`: the brief's per-module stubs replace §21.1's single api file.
+2. **sqlite crate = `sqlx`** (what schedule/knowledge/dreaming use; no rusqlite in the tree). Workers write module-local queries against `Store::pool()` (`&SqlitePool`), not `&Connection`. The migrations table is sqlx's `_sqlx_migrations`.
+3. **`by: Actor` → `By`** (enum `User | Model | Advisor | Setup | Plugin`): `Actor` would shadow `kameo::Actor` in every module that spawns or implements one.
+4. **`Steer` the message → `SteerMsg`**: `Steer` is the `steers` row (wire type, exported); the ask message cannot share the name in one namespace.
+5. **Durations in `StudySpec` are humantime strings** (`timeout: "600s"`) as in the §4.1 YAML; `min_effect`/`max_regression` are strings parsed by `Effect::parse` (`0.5%` relative, `0.3` absolute).
+6. **`StudyState` is stored as `state` (tag) + `state_reason`** (JSON `PauseReason` / failure text) so `WHERE state = 'running'` stays a plain query; `verdict`, `review`, `stop_reason` are JSON text columns.
+7. **Extra actor messages beyond §12.3**: `StartDraft { draft_id, start }` (the `autoresearch.create` press), `Detail { slug }` (`autoresearch.get` needs a `StudyDetail`, `Status` returns `StudyInfo`s), `Settings` / `SetSettings` (`autoresearch.settings.get|set`). `Slot` carries its experiment `n`; `Brief` carries `n` and `segment`.
+8. **The skill is written by the plugin at start** (`install_skill`, dreaming's binary-owned pattern), not by `first_run`; an empty bundle writes nothing, so the skeleton leaves no empty `skills/autoresearch.md`.
+9. **`autoresearch.steer` returns `i64`** (the row id) — `SteerId` is a type alias; ts-rs gets `number` via `ts(type = "number")` on every 64-bit wire field.
+10. **`ExperimentState::Timeout`** added (§8.5 "records `timeout` on the experiment").
+
+## Hand-offs
+
+- **W1** (`runner, scanner, gate, custody, slot`, `fixtures/toy-sort`): signatures in the stubs; `Sample` is the row you fill; `GateCfg/GateInput/GateStep` are the gate's pure contract — if the shape must change, change `types.rs` and tell W3. `Store::samples_of_tree` + `list_samples` feed σ; `Store::insert_sample` writes.
+- **W2** (`git, finalize, record`): `KeepMeta` carries the trailers; `finalize::run` returns `(Headline, report_doc)`; `record::write` returns the knowledge id. `Changeset` is the wire type the UI shows.
+- **W3** (`actor, binding, schedule_file, stop`, `crates/app/src/study_draft.rs`, slash commands): every `Message` impl in `lib.rs` calls `actor::<name>(&mut Studies, msg)`; subscribe to `ScheduleEvent::Fired` / `AgentEvent::TurnFinished` in `lib.rs::start` where the comment says so; `Studies` fields are `data_dir, root, cfg, agent, rt, store`. `tools::DraftTool::call` is yours to route to the app card. `rpc_impl.rs` is complete; change only if a method's shape changes (then also `crates/rpc/src/api.rs` and the UI).
+- **W6** (`tools` bodies, `brief, novelty, review`, `skill.md`): the descriptions are the §12.4 verbatim text — do not edit; `ControlTool`'s `steer`/`idea` ops route to `SteerMsg` / `IdeaOp`. `PROMPT_BLOCK` is config-only by design (07).
+- **W5** (`wave`): `Slot`, `Begin/Run/Log.slot` and `ExperimentRecord.wave/slot` are in place; `Store::dangling_experiment(slug, slot)` is per slot.
+- **W4 UI**: bindings = the 67 `autoresearch::*` types in `export.rs`; `autoresearch.settings.get|set` carry `AutoresearchConfig` whole; events arrive as `StudyEvent` with `type: StudyChanged | ExperimentStarted | ExperimentProgress | ExperimentFinished | StudyFinished`.

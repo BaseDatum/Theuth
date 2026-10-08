@@ -799,6 +799,7 @@ crates/
   talk/               plugin: a live, interruptible spoken conversation with one session — turn policy, barge-in classifier, heard-prefix ledger over `voice`'s devices and models; `talk_*` RPC, `TalkEvent` (76; contract 2026-09-28, `voice ← talk ← rpc`)
   decision/           plugin: local typed-probability oracle (laya via ONNX Runtime) with selective gate; consumers `meeting`, `browser`, `agent` (readability) (57; step 1 skeleton 2026-09-21)
   dreaming/           plugin: the nightly own-context routine — bundled `dreaming` skill/sensor/routine, `Signals` + `Night` actors, day ledger, cases, learned-sidecar edits behind a replay gate, journal, per-night undo, `dreaming.*` RPC; `t dreaming dry-run` (136; built 2026-10-08)
+  autoresearch/       plugin: measured experiment loops — study spec + draft card, noise gate, evaluator custody, git ratchet in an engine-managed worktree, brief-as-memory, reviewer, finalize into changesets, `autoresearch.*` RPC (140; skeleton 2026-10-08)
   relay/              bin: theuth-relay, stateless encrypted-frame relay (31)
   tui/                plugin: iocraft frontend (§8)
   a2a/                plugin: A2A network boundary — official Rust SDK client/server, loopback listener gated by `a2a.enabled` and the global communication switch, `peers.yaml` bindings, `/a2a` status/reload (50 §6; implemented 2026-09-18, verification pending)
