@@ -3263,8 +3263,10 @@ impl Turn {
     fn dangling_calls(&self) -> Vec<ToolCall> {
         for (_, m) in self.state.history.iter().rev() {
             match m.role {
-                // Inputs taken after the kill (a steer, a fresh turn's opener).
-                ChatRole::User => continue,
+                // Inputs taken after the kill (a steer, a fresh turn's opener)
+                // and harness notes (139 §6.3: the taker's "taken from A …
+                // press Resume" row) sit above the batch; neither answers it.
+                ChatRole::User | ChatRole::System => continue,
                 ChatRole::Assistant => {
                     return m.content.tool_calls().into_iter().cloned().collect();
                 }

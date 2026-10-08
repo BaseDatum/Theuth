@@ -11,7 +11,7 @@ use kameo::error::SendError;
 use runtime::SessionId;
 use tools::{JobKind, JobRow, ToolOutput};
 
-use crate::durability::jobs::{hhmmss_ms, log_tail};
+use crate::durability::jobs::{hhmmss_ms, job_of_call, log_tail};
 use crate::durability::{JournaledCall, ResumeCause, ResumeKind, ResumePlan};
 use crate::store::Store;
 use crate::supervisor::{DropWait, ResumeQuestion, ResumeWait, remaining};
@@ -75,7 +75,8 @@ pub(crate) async fn resume_job_call(
             return Some(interrupted_note(call, plan));
         }
     };
-    let by_call = || rows.iter().find(|j| j.call_id == call.call_id);
+    // `job_of_call`: a bridged `shell` / `start` spawns under `<call_id>.<n>`.
+    let by_call = || rows.iter().find(|j| job_of_call(&j.call_id, &call.call_id));
     let by_arg = || {
         let id = call.args.get("id").and_then(|v| v.as_str())?;
         rows.iter()

@@ -118,7 +118,7 @@ mod resume;
 pub mod transfer; // 139 W2
 mod waits;
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
-pub use resume::{OpenTurn, ResumeTurn};
+pub use resume::{OpenTurn, ResumeTurn, TakeoverPending};
 pub use transfer::{DrainSession, SessionDrainReport}; // 139 C
 // 109 W3: what a resumed human-wait / peer-wait call asks the supervisor for.
 pub(crate) use waits::{ResumeQuestion, ResumeWait, remaining};
@@ -170,6 +170,11 @@ pub struct Agents {
     /// refuses their inputs (`transfer::draining_error`) until the demote
     /// lands or the hold expires (`transfer::ClearDraining`).
     draining_sessions: HashMap<SessionId, &'static str>,
+    /// 139 §6.3 (D5): sessions a system takeover left `ResumePending` →
+    /// the engine taken from; the user's `resume_turn` (boot-rule cause,
+    /// no `suspended` row) resumes them as `Takeover{from}` and runs the
+    /// §7 jobs / child-waits pass instead of reading as a `crash`.
+    pending_takeovers: HashMap<SessionId, String>,
     /// The communication policy (50 §2.1, §8), shared read-only with the
     /// tool registry; every mutation and admission happens in this mailbox.
     pub(crate) communication: SharedPolicy,
@@ -1953,6 +1958,23 @@ impl Agents {
                 self.peer_changed(&r).await;
             }
             self.enqueued.remove(&receipt.id);
+            return Ok(());
+        }
+        // 139 §8 "Children" (69 P): the parent moved to another engine — its
+        // owner runs the intake. `enqueue_peer` would spawn a local actor for
+        // a session this engine no longer owns, whose intake refuses the row.
+        if let Some(owner) = self.remote_owner(parent).await {
+            let m = Deliver {
+                from: child,
+                to: to_key,
+                text: text.to_owned(),
+                await_reply: false,
+                reply_to: None,
+                request_id: Some(request_id),
+                admitted: CancellationToken::new(),
+            };
+            self.forward_peer(owner, parent, &m, text.to_owned(), receipt, generation)
+                .await?;
             return Ok(());
         }
         let record = match self.store.peer_record(parent, receipt.id).await {
@@ -8332,6 +8354,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             sessions: HashMap::new(),
             running: HashSet::new(),
             draining_sessions: HashMap::new(),
+            pending_takeovers: HashMap::new(),
             communication: communication.clone(),
             network: network::NetworkState::default(),
             waits: HashMap::new(),
@@ -10070,6 +10093,7 @@ pub(crate) mod tests {
             sessions: HashMap::new(),
             running: HashSet::new(),
             draining_sessions: HashMap::new(),
+            pending_takeovers: HashMap::new(),
             communication: SharedPolicy::new(Policy::new(communication, "config")),
             network: network::NetworkState::default(),
             waits: HashMap::new(),

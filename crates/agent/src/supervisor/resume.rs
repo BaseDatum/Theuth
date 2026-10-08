@@ -45,6 +45,26 @@ impl Message<ResumeTurn> for Agents {
     }
 }
 
+/// `tell` from `Take::run` (139 §6.3, D5): a system takeover of `session`
+/// from `from` left its open turn `ResumePending`. The next `ResumeTurn`
+/// with no explicit cause (the Attention item's `resume_turn` press) is a
+/// `Takeover{from}` — the journal alone would call it a `crash`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TakeoverPending {
+    /// Session.
+    pub session: SessionId,
+    /// The engine it was taken from.
+    pub from: String,
+}
+
+impl Message<TakeoverPending> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: TakeoverPending, _: &mut Context<Self, Self::Reply>) {
+        self.pending_takeovers.insert(m.session, m.from);
+    }
+}
+
 /// `ask` → `Option<TurnId>`: the session's open turn, if any (§4.6 step 12:
 /// the schedule plugin keeps a run open while its session is being resumed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,7 +154,12 @@ impl Agents {
             Ok(None) => return tracing::warn!(session = %session, %turn, "109: no session row"),
             Err(e) => return tracing::warn!(session = %session, %turn, "109: session: {e:#}"),
         }
-        let cause = cause.unwrap_or(plan.cause);
+        // 139 §6.3: a pending system takeover resumed by the user's press.
+        let (cause, from) = match (cause, self.pending_takeovers.remove(&session)) {
+            (Some(c), _) => (c, from),
+            (None, Some(taken_from)) => (ResumeCause::Takeover, Some(taken_from)),
+            (None, None) => (plan.cause, from),
+        };
         if matches!(cause, ResumeCause::Transfer | ResumeCause::Takeover) {
             self.rebuild_waits_for(session).await;
         }

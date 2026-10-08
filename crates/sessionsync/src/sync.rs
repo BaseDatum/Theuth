@@ -561,8 +561,11 @@ async fn receive_snapshot(
     tracing::debug!(
         "sessions: snapshot of {origin} (to seq {current_to_seq}) applied from {remote}"
     );
-    for (id, owner, epoch) in state.sessions {
+    for (id, owner, epoch, before) in state.sessions {
         if let Ok(session) = id.parse() {
+            // 68 §4.3 / 139 T3: the snapshot raised the epoch of a session
+            // this engine owned — demote exactly as `apply_log_row` does.
+            crate::owner::on_applied(&node.store, origin, session, before, epoch).await;
             node.owner_changed(session, owner, epoch).await;
         }
     }

@@ -28,6 +28,18 @@ use crate::store::{Scope, Store};
 /// Bytes of a lost job's log quoted in its `<job_result>` (`jobs.rs::TAIL`).
 const TAIL: u64 = 8 * 1024;
 
+/// Whether `jobs.call_id` belongs to tool call `call_id`. A direct `shell` /
+/// `start` the loop bridges into a python cell (`repl::bridge_cell`) spawns
+/// its job under the runtime's inner id `<call_id>.<n>` (`repl.rs`), so the
+/// plain equality the 109 rules used missed it: the call read as "never
+/// spawned" and was run again, and the job was reported twice.
+pub(crate) fn job_of_call(job_call_id: &str, call_id: &str) -> bool {
+    job_call_id == call_id
+        || job_call_id
+            .strip_prefix(call_id)
+            .is_some_and(|rest| rest.starts_with('.'))
+}
+
 /// What one reaper pass did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReapReport {
@@ -114,7 +126,7 @@ pub async fn settle_transferred(store: &Store, session: SessionId, from: &str) -
         let reason = LostReason::OwnerChanged {
             engine: row.engine.clone(),
         };
-        let deliver = (!in_batch.contains(&row.call_id))
+        let deliver = (!in_batch.iter().any(|c| job_of_call(&row.call_id, c)))
             .then(|| lost_body(&row, screen.as_ref(), &tail, now, &reason));
         reaped.jobs.push(LostJob {
             row,
@@ -199,7 +211,10 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
             JobKind::Shell => None,
         };
         let tail = row.log.as_deref().map(log_tail).unwrap_or_default();
-        let deliver = (!in_batch.contains(&(row.session, row.call_id.clone()))).then(|| {
+        let in_turn = in_batch
+            .iter()
+            .any(|(s, c)| *s == row.session && job_of_call(&row.call_id, c));
+        let deliver = (!in_turn).then(|| {
             lost_body(
                 &row,
                 screen.as_ref(),
@@ -326,6 +341,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("theuth-109-w2-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// 139 Z-fix: a bridged call's job (`<call_id>.<n>`) is that call's; a
+    /// sibling with a longer id or another call is not.
+    #[test]
+    fn job_of_call_accepts_the_bridged_inner_id() {
+        assert!(job_of_call("smoke_1_shell", "smoke_1_shell"));
+        assert!(job_of_call("smoke_1_shell.1", "smoke_1_shell"));
+        assert!(job_of_call("smoke_1_shell.12", "smoke_1_shell"));
+        assert!(!job_of_call("smoke_1_shell_b", "smoke_1_shell"));
+        assert!(!job_of_call("smoke_1_shell", "smoke_1_shell.1"));
+        assert!(!job_of_call("smoke_2_start.1", "smoke_1_shell"));
     }
 
     async fn session(store: &Store) -> SessionId {
