@@ -90,6 +90,8 @@ class Engine {
         `mesh: { relay: none, discovery: false, name: ${this.name}, bind: 127.0.0.1:${this.bind} }`,
         "slack: { enabled: false }",
         "signal: { enabled: false }",
+        // spawn_subagent (T2's native-child variant) needs model-to-model communication.
+        "agent: { communication: true }",
         // `shell` stays inline for 120 s so a `sleep` holds its call `started`; no approval prompts.
         "tools: { approvals: false, job_grace_secs: 120, login_path: false }",
         `sessions: { release_wait_secs: ${RELEASE_WAIT_SECS}, takeover_secs: 0 }`,
@@ -258,7 +260,8 @@ type Call = { name: string; args: Obj };
 const FIXTURE = `${ROOT}/fixture.txt`;
 const readFixture: Call = { name: "read_file", args: { path: FIXTURE } };
 const heldShell = (hitsFile: string, secs: number): Call => ({ name: "shell", args: { command: `echo hit >> ${hitsFile}; sleep ${secs}` } });
-const todoInit: Call = { name: "todo", args: { op: "init", items: ["one", "two"] } };
+// Third call of the batch (quick, read-only): `todo` would add a `<todo_continue>` nudge turn.
+const listDir: Call = { name: "list_dir", args: { path: ROOT } };
 
 async function newSession(e: Engine): Promise<string> {
   const sid = String(await e.rpc("new_session", []));
@@ -288,9 +291,11 @@ async function history(e: Engine, sid: string): Promise<Hist[]> {
 function toolResult(h: Hist[], name: string): string {
   return h.find((x) => x.role === "tool" && x.name === name)?.result?.[0] ?? "";
 }
-/// `role[:name]` sequence: what "equal modulo the notes" compares.
+/// `role[:name]` sequence: what "equal modulo the notes" compares. `error`
+/// cards (the old owner's "background work outcome unknown: j1 killed when
+/// the session moved") are notes about the move, not transcript.
 function shape(h: Hist[]): string {
-  return h.map((x) => (x.role === "tool" ? `tool:${x.name}` : x.role)).join(" ");
+  return h.filter((x) => x.role !== "error").map((x) => (x.role === "tool" ? `tool:${x.name}` : x.role)).join(" ");
 }
 
 // ---- rows -------------------------------------------------------------------
@@ -300,7 +305,7 @@ async function T1(A: Engine, B: Engine) {
   // nothing; A's turn finishes with the uninterrupted transcript.
   const sid = await newSession(A);
   const hitsFile = `${ROOT}/hits-T1`;
-  const turn = await sendBatch(A, sid, [readFixture, heldShell(hitsFile, 25), todoInit], "shell", [A, B]);
+  const turn = await sendBatch(A, sid, [readFixture, heldShell(hitsFile, 25), listDir], "shell", [A, B]);
   const logBefore = B.logText().length;
   await B.stop("SIGTERM");
   await B.start();
@@ -323,8 +328,7 @@ async function T2(A: Engine, B: Engine) {
   // Transfer mid-batch: A reachable, `shell` held; B takes with `user`.
   const sid = await newSession(A);
   const hitsFile = `${ROOT}/hits-T2`;
-  const turn = await sendBatch(A, sid, [readFixture, heldShell(hitsFile, 90), todoInit], "shell", [A, B]);
-  const jobsBefore = jobs(A, sid);
+  const turn = await sendBatch(A, sid, [readFixture, heldShell(hitsFile, 90), listDir], "shell", [A, B]);
   await waitFor("read_file finished on B", () => callState(B, sid, turn, "read_file") === "finished");
   const t0 = now();
   const take = await B.rpc("session_take", [sid, "user"]);
@@ -351,16 +355,41 @@ async function T2(A: Engine, B: Engine) {
   check("resume_reports row on B: cause transfer, shell interrupted, lost job", rep?.cause === "transfer" && /shell/.test(rep.interrupted) && rep.lost_jobs !== "[]", JSON.stringify(rep));
   // Control: the same batch, uninterrupted, on A.
   const ctl = await newSession(A);
-  await sendBatch(A, ctl, [readFixture, heldShell(`${ROOT}/hits-T2-control`, 1), todoInit], null, []);
+  await sendBatch(A, ctl, [readFixture, heldShell(`${ROOT}/hits-T2-control`, 1), listDir], null, []);
   await A.waitEv(ctl, "TurnFinished", 60_000);
   const hc = await history(A, ctl);
-  check("transcript shape equals the uninterrupted run's (modulo notes)", shape(h) === shape(hc) && h.at(-1)?.text === hc.at(-1)?.text, `${shape(h)} | final "${h.at(-1)?.text}"`);
+  check("transcript shape equals the uninterrupted run's (modulo notes)", shape(h) === shape(hc) && h.at(-1)?.text === hc.at(-1)?.text, `taken: ${shape(h)} | control: ${shape(hc)} | finals "${h.at(-1)?.text}" / "${hc.at(-1)?.text}"`);
   // Jobs: A's shell group was killed by the release drain (KillSession).
   const j = jobs(B, sid);
   check("job row lost on B with engine = A", j.length === 1 && j[0].state === "lost" && j[0].engine === A.id, JSON.stringify(j));
-  check("A's shell process group dead after the transfer", !pgAlive(jobsBefore[0]?.pgid ?? null), `pgid ${jobsBefore[0]?.pgid}`);
+  const pgid = jobs(A, sid)[0]?.pgid ?? null;
+  check("A's shell process group dead after the transfer", pgid !== null && !pgAlive(pgid), `pgid ${pgid}`);
   const ha = await history(A, sid);
   check("A's copy equals B's (B's rows overwrote A's)", shape(ha) === shape(h), shape(ha));
+}
+
+async function T2c(A: Engine, B: Engine) {
+  // T2's native-child variant: the parent's batch spawns a child on A and
+  // holds; B takes the parent; the child (still on A) finishes afterwards
+  // and its result reaches the parent on B (69 P: peers follow the owner).
+  await A.rpc("set_subagent_model", ["fake/batch"]);
+  const sid = await newSession(A);
+  const kidTask = `SMOKE ${JSON.stringify({ calls: [{ name: "shell", args: { command: "sleep 20" } }] })}`;
+  const turn = await sendBatch(A, sid, [{ name: "spawn_subagent", args: { name: "kid", task: kidTask } }, heldShell(`${ROOT}/hits-T2c`, 90)], "shell", [A, B]);
+  const kid = await waitFor("child session on A", () => A.one<{ id: string; owner: string }>("SELECT id, owner FROM sessions WHERE parent = ?", sid), 20_000);
+  check("child spawned on A, owned by A", kid.owner === A.id, kid.id);
+  await waitFor("child's turn running on A", () => callState(A, kid.id, newestStep(A, kid.id)?.turn_id ?? "", "shell") === "started", 30_000);
+  await B.rpc("session_take", [sid, "user"]);
+  const resumed = await B.waitEv(sid, "TurnResumed");
+  check("parent resumed on B as a transfer", resumed.cause === "transfer");
+  await B.waitEv(sid, "TurnFinished", 60_000);
+  check("child still owned by A after the parent's take (children are not co-owned)", ownerRow(A, kid.id)?.owner === A.id && ownerRow(B, kid.id)?.owner === A.id);
+  await A.waitEv(kid.id, "TurnFinished", 60_000);
+  const delivered = await waitFor("child's result on B", async () => (await history(B, sid)).find((x) => x.role === "user" && (x.text ?? "").includes(`session:${kid.id}`)) ?? null, 60_000, 500);
+  check("the child's result arrived in the parent's transcript on B", !!delivered, (delivered.text ?? "").split("\n")[0].slice(0, 160));
+  await B.waitEv(sid, "TurnFinished", 60_000, () => B.evs(sid, "TurnFinished").length >= 2).catch(() => null);
+  check("B ran a turn on the delivered result", B.evs(sid, "TurnFinished").length >= 2, `${B.evs(sid, "TurnFinished").length} TurnFinished on B`);
+  void turn;
 }
 
 async function T3(A: Engine, B: Engine) {
@@ -574,7 +603,7 @@ async function T8(A: Engine, B: Engine) {
   check("the refused input is in no transcript", !h.some((x) => /during the drain/.test(x.text ?? "")) && !(await history(A, sid)).some((x) => /during the drain/.test(x.text ?? "")));
 }
 
-const ROWS: Record<string, (A: Engine, B: Engine) => Promise<void>> = { T1, T2, T3, T4, T5, T6, T7, T8 };
+const ROWS: Record<string, (A: Engine, B: Engine) => Promise<void>> = { T1, T2, T2c, T3, T4, T5, T6, T7, T8 };
 
 // ---- main -------------------------------------------------------------------
 
