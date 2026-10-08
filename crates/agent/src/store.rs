@@ -1100,7 +1100,11 @@ impl Store {
 
     /// 136 R-22: persist the session's money cap (`None` clears) so a
     /// durability-resumed turn runs under it after a restart.
-    pub async fn set_budget(&self, id: SessionId, budget: Option<&crate::Budget>) -> anyhow::Result<()> {
+    pub async fn set_budget(
+        &self,
+        id: SessionId,
+        budget: Option<&crate::Budget>,
+    ) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE sessions SET budget = ? WHERE id = ?")
             .bind(budget.map(serde_json::to_string).transpose()?)
@@ -5822,7 +5826,10 @@ mod tests {
             id
         };
         let isolated = mk(None).await;
-        assert!(!store.may_consolidate(isolated).await.unwrap(), "isolated root");
+        assert!(
+            !store.may_consolidate(isolated).await.unwrap(),
+            "isolated root"
+        );
 
         let owner = mk(None).await;
         store
@@ -5852,7 +5859,10 @@ mod tests {
             .unwrap();
         store.set_desk(desk, Some("builder")).await.unwrap();
         assert!(!store.may_consolidate(desk).await.unwrap(), "desk");
-        assert!(!store.may_consolidate(SessionId::new()).await.unwrap(), "unknown");
+        assert!(
+            !store.may_consolidate(SessionId::new()).await.unwrap(),
+            "unknown"
+        );
     }
 
     /// `owner` starts as the opening engine's id (`''` when unknown), is

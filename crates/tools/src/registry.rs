@@ -2227,7 +2227,11 @@ mod tests {
     async fn cap_holds_for_a_session_with_approvals_off() {
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let reg = registry(
-            vec![Arc::new(Wipe(runs.clone())), Arc::new(Touch), Arc::new(Echo)],
+            vec![
+                Arc::new(Wipe(runs.clone())),
+                Arc::new(Touch),
+                Arc::new(Echo),
+            ],
             None,
         );
         let session = SessionId::new();
@@ -2262,7 +2266,11 @@ mod tests {
             .into_iter()
             .map(|s| s.name)
             .collect();
-        assert_eq!(names, ["echo", "touch"], "the destructive tool is not offered");
+        assert_eq!(
+            names,
+            ["echo", "touch"],
+            "the destructive tool is not offered"
+        );
     }
 
     /// Stands in for the agent's `send_message`: counts body runs.

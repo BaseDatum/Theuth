@@ -12325,7 +12325,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let saved = store.budget(root).await.unwrap().expect("persisted");
-        assert_eq!((saved.nanos, saved.currency.as_str()), (1_000_000_000, "USD"));
+        assert_eq!(
+            (saved.nanos, saved.currency.as_str()),
+            (1_000_000_000, "USD")
+        );
         assert!(
             chrono::DateTime::parse_from_rfc3339(&saved.since).is_ok(),
             "since is stamped server-side: {}",

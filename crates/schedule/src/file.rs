@@ -1336,7 +1336,10 @@ mod tests {
         assert_eq!(f.cap.as_deref(), Some("mutating"));
         let text = render(&f.args());
         assert!(text.contains("cap: mutating\n"), "{text}");
-        assert_eq!(parse("x", &text).unwrap().cap, Some(::tools::Risk::Mutating));
+        assert_eq!(
+            parse("x", &text).unwrap().cap,
+            Some(::tools::Risk::Mutating)
+        );
     }
 
     #[test]

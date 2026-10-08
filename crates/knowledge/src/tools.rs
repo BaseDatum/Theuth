@@ -965,8 +965,9 @@ mod tests {
         // a plain session's are.
         let night = cx(false);
         k.register_consolidating_session(night.session);
+        let get = GetTool(k.clone());
         let read = |c: ToolCx| {
-            GetTool(k.clone()).call(
+            get.call(
                 IdArgs {
                     id: "facts/x".into(),
                 },

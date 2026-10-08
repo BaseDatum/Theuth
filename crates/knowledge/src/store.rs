@@ -773,12 +773,18 @@ impl Knowledge {
     /// 136 D6: the open night's dreaming session; `BeginNight` registers it,
     /// the night's close clears it. Replaces any earlier registration.
     pub fn register_consolidating_session(&self, session: SessionId) {
-        *self.consolidating.write().unwrap_or_else(|p| p.into_inner()) = Some(session);
+        *self
+            .consolidating
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(session);
     }
 
     /// 136 D6: no open night — unattended sessions may not consolidate.
     pub fn clear_consolidating_session(&self) {
-        *self.consolidating.write().unwrap_or_else(|p| p.into_inner()) = None;
+        *self
+            .consolidating
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = None;
     }
 
     /// 136 D6 / R-28: is `session` the registered dreaming session? Its own
@@ -888,9 +894,7 @@ impl Knowledge {
         // writer is dreaming.
         if !(exists && source == Source::Dreaming) {
             match &p.scope {
-                Some(scope) => {
-                    fm.set("scope", Value::String(scope.to_string_lossy().into_owned()))
-                }
+                Some(scope) => fm.set("scope", Value::String(scope.to_string_lossy().into_owned())),
                 None => {
                     fm.as_mapping_mut().remove("scope");
                 }
@@ -2193,7 +2197,9 @@ mod tests {
             assert!(text.contains(line), "{line:?} missing from\n{text}");
         }
 
-        // A put that sets a key overwrites that key only.
+        // A put that sets a key overwrites that key only; evidence is a union
+        // (R-23); a dreaming put on an existing file keeps `source` and marks
+        // `consolidated_at` (D5).
         let (m, _) = k
             .put(
                 Put {
@@ -2208,16 +2214,19 @@ mod tests {
             .unwrap();
         assert_eq!(m.status, Status::Tidy);
         assert!(m.hint);
-        assert_eq!(m.evidence, ["01def"]);
+        assert_eq!(m.evidence, ["01abc", "user", "01def"]);
         assert_eq!(m.verified.as_deref(), Some("2026-10-01"));
-        assert_eq!(m.source, Some(Source::Dreaming));
+        assert_eq!(m.source, Some(Source::Model));
+        assert!(m.consolidated_at.is_some());
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("source: dreaming"), "{text}");
+        assert!(text.contains("source: model"), "{text}");
+        assert!(text.contains("consolidated_at: "), "{text}");
         assert!(text.contains("check: ls /"), "{text}");
         // The row carries the columns too (list reads rows, not files).
         let listed = k.list(Some("facts/rt"), None, None, 10).await.unwrap();
         assert_eq!(listed[0].status, Status::Tidy);
-        assert_eq!(listed[0].evidence, ["01def"]);
+        assert_eq!(listed[0].evidence, ["01abc", "user", "01def"]);
+        assert_eq!(listed[0].consolidated_at, m.consolidated_at);
 
         // A file without any 136 key reads as the defaults.
         k.put(put("facts/plain", "Plain", "b"), Source::Model)
@@ -2973,7 +2982,9 @@ mod tests {
         };
         let errs = [
             k.archive("facts/h", "noise").await.err(),
-            k.supersede("facts/h", "facts/other", None, None).await.err(),
+            k.supersede("facts/h", "facts/other", None, None)
+                .await
+                .err(),
             k.merge(&["facts/h".into()], "facts/other", "b", &[], &scope)
                 .await
                 .err(),
@@ -3024,9 +3035,14 @@ mod tests {
         k.put(put("facts/newer", "Newer", "n"), Source::Model)
             .await
             .unwrap();
-        k.supersede("facts/canon", "facts/newer", Some("2026-01-01T00:00:00Z"), None)
-            .await
-            .unwrap();
+        k.supersede(
+            "facts/canon",
+            "facts/newer",
+            Some("2026-01-01T00:00:00Z"),
+            None,
+        )
+        .await
+        .unwrap();
         k.archive("facts/canon", "superseded").await.unwrap();
         let m = k.get("facts/canon").await.unwrap().meta;
         assert!(!m.hint && m.status == Status::Archived && m.superseded_by.is_some());
@@ -3034,14 +3050,24 @@ mod tests {
             owner: USER_OWNER.into(),
             line: BTreeSet::new(),
         };
-        k.merge(&["facts/dup".into()], "facts/canon", "merged body", &[], &scope)
-            .await
-            .unwrap();
+        k.merge(
+            &["facts/dup".into()],
+            "facts/canon",
+            "merged body",
+            &[],
+            &scope,
+        )
+        .await
+        .unwrap();
         let m = k.get("facts/canon").await.unwrap().meta;
         assert!(m.hint);
         assert_eq!(m.status, Status::Tidy);
         assert!(m.superseded_by.is_none() && m.valid_until.is_none());
-        assert_eq!(m.source, Some(Source::Model), "existing canonical keeps its source");
+        assert_eq!(
+            m.source,
+            Some(Source::Model),
+            "existing canonical keeps its source"
+        );
     }
 
     /// 136 R-26: dead rows are filtered before the bm25 cut, so a note with
@@ -3072,7 +3098,11 @@ mod tests {
             Put {
                 status: Some(Status::Merged),
                 merged_into: Some("facts/live0".into()),
-                ..put("facts/stub", "pelican relay pelican", "pelican relay pelican relay")
+                ..put(
+                    "facts/stub",
+                    "pelican relay pelican",
+                    "pelican relay pelican relay",
+                )
             },
             Source::Dreaming,
         )
