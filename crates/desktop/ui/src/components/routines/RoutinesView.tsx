@@ -3,6 +3,8 @@ import { FlaskConical, MessageSquarePlus, Play, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { Pulse } from '@/components/chat/Pulse'
 import { useDreamStatus } from '@/components/dreaming/queries'
+import { useStudies } from '@/components/autoresearch/queries'
+import { routineSentence } from '@/components/autoresearch/model'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { useAction } from '@/components/settings/shared'
@@ -178,41 +180,54 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
   })
   const r = fromInfo(s)
   const title = [s.when, s.when_sensor].filter(Boolean).join(' · ')
+  // 140 §13.1 / R1-D4: an `autoresearch-<slug>` schedule is a study — `study` badge, opens the Study view, says its headline.
+  const study = s.name.startsWith('autoresearch-') ? s.name.slice('autoresearch-'.length) : null
+  const body = (
+    <>
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        {study !== null ? <span className="rounded bg-info/15 px-1.5 py-px text-[11px] font-medium text-info">study</span> : <KindBadge kind={kindOf(r)} />}
+        <span className="truncate font-medium">{s.name}</span>
+        {s.error !== null ? (
+          <span className="text-xs text-danger">broken</span>
+        ) : !s.enabled ? (
+          <span className="text-xs text-fg-tertiary">paused</span>
+        ) : null}
+        <StopChip s={s} />
+      </div>
+      <div className="mt-0.5 truncate text-[13px] text-fg-secondary" title={title}>
+        {s.error !== null ? <span className="text-danger">{s.error}</span> : s.name === 'dreaming' ? <DreamingSentence fallback={sentence(r, sensorArgs(s, sensors))} /> : study !== null ? <StudySentence slug={study} fallback={sentence(r, sensorArgs(s, sensors))} /> : sentence(r, sensorArgs(s, sensors))}
+      </div>
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-secondary">
+        {s.next && (
+          <span className="tabular-nums" title={new Date(s.next).toLocaleString()}>
+            next {relative(s.next)}
+          </span>
+        )}
+        {s.last && (
+          <span className="tabular-nums" title={new Date(s.last).toLocaleString()}>
+            last {relative(s.last)}
+          </span>
+        )}
+        {s.last_check && (
+          <span className="tabular-nums" title={s.last_check.hash ?? undefined}>
+            last check {lastCheckText(s.last_check)}
+          </span>
+        )}
+        <RoutineChips s={s} notHub={notHub} />
+      </div>
+    </>
+  )
   return (
     <li className={cn('flex flex-col gap-2 px-3 py-2.5 hover:bg-layer-1 md:flex-row md:items-center md:gap-3', !s.enabled && 'text-fg-tertiary')}>
-      <Link to="/routines/$name/$section" params={{ name: s.name, section: 'overview' }} search={{}} className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <KindBadge kind={kindOf(r)} />
-          <span className="truncate font-medium">{s.name}</span>
-          {s.error !== null ? (
-            <span className="text-xs text-danger">broken</span>
-          ) : !s.enabled ? (
-            <span className="text-xs text-fg-tertiary">paused</span>
-          ) : null}
-          <StopChip s={s} />
-        </div>
-        <div className="mt-0.5 truncate text-[13px] text-fg-secondary" title={title}>
-          {s.error !== null ? <span className="text-danger">{s.error}</span> : s.name === 'dreaming' ? <DreamingSentence fallback={sentence(r, sensorArgs(s, sensors))} /> : sentence(r, sensorArgs(s, sensors))}
-        </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-secondary">
-          {s.next && (
-            <span className="tabular-nums" title={new Date(s.next).toLocaleString()}>
-              next {relative(s.next)}
-            </span>
-          )}
-          {s.last && (
-            <span className="tabular-nums" title={new Date(s.last).toLocaleString()}>
-              last {relative(s.last)}
-            </span>
-          )}
-          {s.last_check && (
-            <span className="tabular-nums" title={s.last_check.hash ?? undefined}>
-              last check {lastCheckText(s.last_check)}
-            </span>
-          )}
-          <RoutineChips s={s} notHub={notHub} />
-        </div>
-      </Link>
+      {study !== null ? (
+        <Link to="/autoresearch/$slug" params={{ slug: study }} search={{}} className="min-w-0 flex-1">
+          {body}
+        </Link>
+      ) : (
+        <Link to="/routines/$name/$section" params={{ name: s.name, section: 'overview' }} search={{}} className="min-w-0 flex-1">
+          {body}
+        </Link>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="outline" size="xs" disabled={fire.isPending || s.error !== null || s.running} onClick={() => fire.mutate(s.name)}>
           <Play /> Run now
@@ -232,6 +247,15 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
       </div>
     </li>
   )
+}
+
+/** 140 §13.1: a study's row says its headline (`autoresearch.list`) instead of the loop's trigger sentence. */
+function StudySentence({ slug, fallback }: { slug: string; fallback: string }) {
+  const studies = useStudies()
+  const info = studies.data?.find((s) => s.slug === slug)
+  if (!info) return <>{fallback}</>
+  const line = routineSentence(info)
+  return <span title={line}>{line}</span>
 }
 
 /** 136 §8: the `dreaming` row says what last night did (`dreaming.status`) instead of its trigger sentence. */

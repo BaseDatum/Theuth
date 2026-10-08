@@ -137,7 +137,8 @@ export function budgetBars(b: BudgetUsed): Bar[] {
   ]
 }
 
-export const usd = (v: number): string => (v >= 100 ? `$${Math.round(v)}` : v >= 10 ? `$${v.toFixed(1)}` : `$${v.toFixed(2)}`)
+/** `$20` · `$11.4` · `$0.34`: whole dollars bare, one decimal from $10, two below. */
+export const usd = (v: number): string => (Number.isInteger(v) || v >= 100 ? `$${Math.round(v)}` : v >= 10 ? `$${v.toFixed(1)}` : `$${v.toFixed(2)}`)
 const hours = (h: number): string => (Number.isInteger(h) ? String(h) : h.toFixed(1))
 
 /** `41.2 ms`: three significant digits below 1000, whole numbers above. */
