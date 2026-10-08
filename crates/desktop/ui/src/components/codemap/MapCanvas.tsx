@@ -60,15 +60,22 @@ function useZoom(svg: React.RefObject<SVGSVGElement | null>, w: number, key: str
   useLayoutEffect(() => {
     const el = svg.current
     if (!el || w <= 0) return
+    let raf = 0
     const measure = () => setZoom(Math.round((el.getBoundingClientRect().width / w) * 100) / 100)
+    // one frame later: a synchronous state change inside an observer callback trips "ResizeObserver loop completed"
+    const later = () => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(measure)
+    }
     measure()
     const box = el.parentElement
-    const mo = box ? new MutationObserver(measure) : null
+    const mo = box ? new MutationObserver(later) : null
     if (box) mo!.observe(box, { attributes: true, attributeFilter: ['style'] })
-    const ro = new ResizeObserver(measure)
+    const ro = new ResizeObserver(later)
     const surface = el.closest('[role=application]')
     if (surface) ro.observe(surface)
     return () => {
+      cancelAnimationFrame(raf)
       mo?.disconnect()
       ro.disconnect()
     }
@@ -156,11 +163,18 @@ export function MapCanvas(p: MapCanvasProps) {
   useLayoutEffect(() => {
     const s = stage.current
     if (!s) return
-    const measure = () => setSize({ w: s.clientWidth, h: s.clientHeight })
+    let raf = 0
+    const measure = () => setSize((prev) => (prev.w === s.clientWidth && prev.h === s.clientHeight ? prev : { w: s.clientWidth, h: s.clientHeight }))
     measure()
-    const ro = new ResizeObserver(measure)
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(measure)
+    })
     ro.observe(s)
-    return () => ro.disconnect()
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+    }
   }, [])
   // O8b: chosen per layout pass; the direction is part of the hash, so crossing the threshold is a new layout
   const direction = directionFor(size.w, size.h)
