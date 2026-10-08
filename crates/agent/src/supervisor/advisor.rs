@@ -60,7 +60,10 @@ fn sync_backlog_str(v: SyncBacklog) -> &'static str {
 
 /// D-R1.5: one crude pairing signal — both catalog prices known and the
 /// advisor's output price below the advised model's.
-fn pairing_warning(advisor: Option<models::Cost>, advised: Option<models::Cost>) -> Option<String> {
+pub(crate) fn pairing_warning(
+    advisor: Option<models::Cost>,
+    advised: Option<models::Cost>,
+) -> Option<String> {
     let (a, s) = (advisor?, advised?);
     (a.output < s.output).then(|| PAIRING_WARNING.to_owned())
 }

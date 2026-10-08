@@ -435,11 +435,11 @@ impl Link {
         }
     }
 
-    /// Reply to the pending consultation, if any, and clear it.
-    fn answer_consult(&mut self, r: Result<String, String>) -> Option<PendingConsult> {
+    /// Reply to the pending consultation, if any, and clear it; returns its question.
+    fn answer_consult(&mut self, r: Result<String, String>) -> Option<String> {
         let pc = self.consult.take()?;
         pc.reply.send(r);
-        Some(pc)
+        Some(pc.question)
     }
 }
 
@@ -1016,12 +1016,12 @@ impl Advisors {
             Act::Good { held, next, answer } => {
                 self.deliver(session, held, false).await;
                 if let Some(answer) = answer
-                    && let Some(pc) = self
+                    && let Some(question) = self
                         .links
                         .get_mut(&session)
                         .and_then(|l| l.answer_consult(Ok(answer.clone())))
                 {
-                    self.deliver_consultation(session, session, pc.question, answer)
+                    self.deliver_consultation(session, session, question, answer)
                         .await;
                 }
                 self.set_state(session, AdvisorState::Idle, None).await;
@@ -1545,10 +1545,12 @@ impl Message<CancelConsult> for Advisors {
         let Some(pc) = link.consult.take() else {
             return;
         };
-        drop(pc.reply);
+        // The asker already returned its timeout string; the reply is for tests.
+        let parked = pc.parked;
+        pc.reply.send(Err("cancelled".into()));
         // The consultation turn in flight ends `cancelled`, which
         // `finish_review` treats as a user stop: no counters, no card.
-        if !pc.parked && link.reviewing.as_ref().is_some_and(|r| r.consult) {
+        if !parked && link.reviewing.as_ref().is_some_and(|r| r.consult) {
             let advisor = link.row.advisor;
             self.tell_agents(crate::Cancel {
                 session: advisor,
@@ -1664,7 +1666,7 @@ impl Message<AgentEvent> for Advisors {
                     l.backlog = 0;
                     l.release_waiters();
                     // R1.4: the awaiting `consult` went with the turn (no card, no counters).
-                    l.consult = None;
+                    l.answer_consult(Err("cancelled".into()));
                     let held = l.reviewing.as_mut().map(|r| std::mem::take(&mut r.held));
                     (
                         l.row.advisor,
