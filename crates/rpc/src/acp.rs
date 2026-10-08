@@ -415,10 +415,10 @@ async fn serve(
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_with(transport, async move |cx: ConnectionTo<Client>| {
-            cx.incoming_closed().await;
-            Ok(())
-        })
+        // 141 §4.4 (R2A §5.3): `connect_to` waits for the owned `Stdio`
+        // driver, so the last stdout write is flushed at stdin EOF;
+        // `connect_with(.., incoming_closed)` on SDK 3.1 would not.
+        .connect_to(transport)
         .await;
     let _ = relay.tell(Unbind { id }).await;
     result

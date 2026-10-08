@@ -1,0 +1,34 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "ses_ee4d8bb5dffeS1akqW7B497imb",
+  "update": {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "call_a062fdd9472f454ea6e45c9b",
+   "status": "completed",
+   "title": "Read first line of a.txt",
+   "content": [
+    {
+     "type": "content",
+     "content": {
+      "type": "text",
+      "text": "<task id=\"ses_ee4d89f0cffe7zXAvHsSIT0UsD\" state=\"completed\">\n<task_result>\nalpha line one\n</task_result>\n</task>"
+     }
+    }
+   ],
+   "rawOutput": {
+    "output": "<task id=\"ses_ee4d89f0cffe7zXAvHsSIT0UsD\" state=\"completed\">\n<task_result>\nalpha line one\n</task_result>\n</task>",
+    "metadata": {
+     "parentSessionId": "ses_ee4d8bb5dffeS1akqW7B497imb",
+     "sessionId": "ses_ee4d89f0cffe7zXAvHsSIT0UsD",
+     "model": {
+      "modelID": "big-pickle",
+      "providerID": "opencode"
+     },
+     "truncated": false
+    }
+   }
+  }
+ }
+}

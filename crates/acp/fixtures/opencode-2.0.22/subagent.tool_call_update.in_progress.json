@@ -1,0 +1,20 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "ses_ee4d9b05effekZbnkfXPDosL35",
+  "update": {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "toolu_018wLewXWWb6vBSf6pqKcnLn",
+   "status": "in_progress",
+   "kind": "think",
+   "title": "subagent",
+   "locations": [],
+   "rawInput": {
+    "agent": "general",
+    "description": "Read a.txt first line",
+    "prompt": "Read the file a.txt in the working directory /tmp/recon-141/oc-scratch (use the read tool). Reply with only the exact text of its first line. If the file does not exist or is empty, say so."
+   }
+  }
+ }
+}

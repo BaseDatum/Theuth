@@ -26,8 +26,8 @@ use agent_client_protocol::schema::v1::{
     PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigOptionValue, SessionConfigSelectOptions, SessionConfigValueId, SessionId,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, ToolCallUpdate,
-    Usage,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason,
+    SubagentCapabilities, ToolCallUpdate, Usage,
 };
 use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo, JsonRpcRequest, LineDirection, Lines,
@@ -40,6 +40,12 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::PeerMessage;
+
+pub mod opencode;
+mod process;
+pub mod rfd;
+
+use process::{ChildProcess, ExitSlot};
 
 /// [`probe`] gives up on `initialize` + `session/new` after this long.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -454,6 +460,10 @@ pub type Turn = BoxFuture<'static, Result<(String, Option<Usage>), String>>;
 /// connection's notification handler.
 type Options = Arc<Mutex<Vec<SessionConfigOption>>>;
 
+/// The harness's session id once `session/new` | `session/load` returned,
+/// shared with the connection's notification handler (141 §6.1 nesting).
+type Own = Arc<Mutex<Option<String>>>;
+
 /// A live connection to one harness process with one ACP session. Cheap to
 /// clone; every clone shares the connection, and [`Harness::close`] on any of
 /// them (or dropping the last one) ends it and kills the process group.
@@ -501,6 +511,9 @@ struct Link {
     closed: &'static str,
     /// See [`Harness::options`]; the notification handler writes it.
     options: Options,
+    /// The harness's session id once opened; the typed handler reads it to
+    /// tell a depth-1 RFD announce (`parent: None`) from a nested one.
+    own: Own,
 }
 
 /// Why the handshake could not open a session.
@@ -536,6 +549,12 @@ impl Link {
         let permission_tx = tx;
         let shared: Options = Arc::default();
         let options = shared.clone();
+        let own: Own = Arc::default();
+        let own_typed = own.clone();
+        // 141 §6.2: one memory per connection, shared by the two notification
+        // handlers (child_update announces; the parent's spawn join reads them).
+        let children: Arc<Mutex<opencode::Children>> = Arc::default();
+        let children_typed = children.clone();
         let builder = Client
             .builder()
             .on_receive_notification(
@@ -547,33 +566,54 @@ impl Link {
                     {
                         o.clone_from(&u.config_options);
                     }
-                    let _ = notify_tx.send(Update::Session {
-                        session: n.session_id.0.to_string(),
-                        update: n.update,
-                    });
+                    match n.update {
+                        // 141 §6.1: an RFD announce on the parent session.
+                        SessionUpdate::SubagentUpdate(u) => {
+                            let own = own_typed.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                            let _ = notify_tx.send(Update::Subagent(rfd::announce(
+                                &n.session_id,
+                                own.as_deref(),
+                                u,
+                            )));
+                        }
+                        // Everything else — the driven session's own traffic,
+                        // an RFD child's traffic, `session_message*` — keeps
+                        // its wire session id. The opencode 2.x spawn join
+                        // (141 §6.2) precedes the parent's tool event.
+                        update => {
+                            let join = children_typed
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .spawn_join(&update);
+                            if let Some(a) = join {
+                                let _ = notify_tx.send(Update::Subagent(a));
+                            }
+                            let _ = notify_tx.send(Update::Session {
+                                session: n.session_id.0.to_string(),
+                                update,
+                            });
+                        }
+                    }
                     Ok(())
                 },
                 agent_client_protocol::on_receive_notification!(),
             )
             // Every other notification: the peer-message extension is ours
-            // (67 §8), opencode's sub-agent updates ride as session updates
-            // (06 §8.4); anything else is dropped, as the SDK would drop it.
-            // 141 C stub: W1 replaces the `child_update` branch with
-            // `opencode::child_update(&n) -> Vec<Update>` (announce + child
-            // traffic keyed by `childSessionId`, 141 §6.2). Until then the
-            // flattened update is attributed to the root session as before.
+            // (67 §8); opencode 2.x's `child_update` becomes announces and
+            // child traffic (141 §6.2); anything else is dropped, as the SDK
+            // would drop it.
             .on_receive_notification(
                 async move |n: UntypedMessage, _cx| {
                     if let Some(m) = PeerMessage::parse(&n) {
                         let _ = peer_tx.send(Update::Peer(m));
-                    } else if let Some(u) = child_update(&n) {
-                        let session = n
-                            .params
-                            .get("rootSessionId")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned();
-                        let _ = peer_tx.send(Update::Session { session, update: u });
+                    } else {
+                        let updates = children
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .child_update(&n);
+                        for u in updates {
+                            let _ = peer_tx.send(u);
+                        }
                     }
                     Ok(())
                 },
@@ -600,15 +640,27 @@ impl Link {
                 },
                 agent_client_protocol::on_receive_request!(),
             );
+        // 141 §4.3: a subprocess publishes its driver's exit result here.
+        let exit: Option<Arc<ExitSlot>> = match &transport {
+            Transport::Process(_) => Some(Arc::default()),
+            Transport::Dial(_) => None,
+        };
+        let slot = exit.clone();
         let main = |cx: ConnectionTo<Agent>| async move {
             let _ = cx_tx.send(cx.clone());
             // The connection (and the child) lives until `close`, the last
             // handle drop, or the transport's incoming EOF.
             tokio::select! {
-                _ = shutdown_rx => {}
-                () = cx.incoming_closed() => {}
+                // theuth is closing: the kill is ours, nothing to report.
+                _ = shutdown_rx => Ok(()),
+                // 141 §4.3: the SDK no longer awaits the owned transport once
+                // `main` returns, so give the driver `EXIT_GRACE` to report
+                // the child's exit status and stderr tail; its `Err` is ours.
+                () = cx.incoming_closed() => match &slot {
+                    Some(_slot) => Ok(()), // TEMP-W1-MEASURE: pre-mitigation behaviour
+                    None => Ok(()),
+                },
             }
-            Ok(())
         };
         let log = Mutex::new(open_log(stderr_log));
         let (connection, closed): (BoxFuture<'static, Result<(), Error>>, &'static str) =
@@ -622,6 +674,7 @@ impl Link {
                             let _ = writeln!(f, "{line}");
                         }
                     });
+                    let agent = ChildProcess::new(agent, exit.unwrap_or_default());
                     (
                         Box::pin(builder.connect_with(agent, main)),
                         "process exited",
@@ -644,6 +697,7 @@ impl Link {
                 done: Some(done),
                 closed,
                 options: shared,
+                own,
             }),
             Err(_) => Err(format!("spawn failed: {}", exit_text(done.await, closed))),
         }
@@ -667,9 +721,11 @@ impl Link {
     /// `initialize`, then `session/load` (when `resume` is set and the agent
     /// advertises `loadSession`; a failing load falls back to a new session)
     /// or `session/new`. `auth_required` → `authenticate` once with an
-    /// agent-type method when `authenticate`, else [`Fail::Login`]. Returns
-    /// the session, whether it was loaded, its `configOptions` and the
-    /// agent's `agentInfo`.
+    /// agent-type method when `authenticate`, else [`Fail::Login`]. A
+    /// `session/new` | `session/load` that fails while carrying `mcp` (the
+    /// theuth skills back-channel, 141 D14) is retried once without it, with
+    /// a warning naming the harness. Returns the session, whether it was
+    /// loaded, its `configOptions` and the agent's `agentInfo`.
     async fn open(
         &mut self,
         config: Option<&AcpAgentConfig>,
@@ -685,12 +741,20 @@ impl Link {
         };
         let mut load = resume.filter(|_| init.agent_capabilities.load_session);
         let mut authenticated = false;
+        let mut with_mcp = !mcp.is_empty();
+        let harness = init
+            .agent_info
+            .as_ref()
+            .map(|a| a.name.clone())
+            .or_else(|| config.map(|c| c.command().display().to_string()))
+            .unwrap_or_else(|| "dialled harness".to_owned());
         loop {
+            let servers = if with_mcp { mcp.to_vec() } else { Vec::new() };
             let opened = match &load {
                 Some(sid) => self
                     .request(
                         LoadSessionRequest::new(SessionId::new(sid.as_str()), cwd)
-                            .mcp_servers(mcp.to_vec()),
+                            .mcp_servers(servers),
                     )
                     .await
                     .map(|r| {
@@ -704,7 +768,7 @@ impl Link {
                     .request(
                         NewSessionRequest::new(cwd)
                             .meta(meta.clone())
-                            .mcp_servers(mcp.to_vec()),
+                            .mcp_servers(servers),
                     )
                     .await
                     .map(|r| (r.session_id, false, r.config_options.unwrap_or_default())),
@@ -740,9 +804,22 @@ impl Link {
                         None => return Err(Fail::Login(login_command(config, &init.auth_methods))),
                     }
                 }
+                // 141 D14: the back-channel must never cost the session.
+                Err(e)
+                    if with_mcp
+                        && e.code != ErrorCode::AuthRequired
+                        && !is_incoming_transport_closed(&e) =>
+                {
+                    tracing::warn!(
+                        "acp {harness}: session/{} with the theuth MCP back-channel failed ({e}); retrying without it",
+                        if load.is_some() { "load" } else { "new" }
+                    );
+                    with_mcp = false;
+                }
                 Err(e) if load.is_some() && !is_incoming_transport_closed(&e) => {
                     tracing::warn!("acp session/load failed, starting a new session: {e}");
                     load = None;
+                    with_mcp = !mcp.is_empty();
                 }
                 Err(e) => return Err(Fail::Other(self.explain(e).await)),
             }
@@ -789,6 +866,8 @@ impl Harness {
             }
             Err(Fail::Other(why)) => return Err(why),
         };
+        // 141 §6.1: the handler now knows which announces are depth 1.
+        *link.own.lock().unwrap_or_else(|p| p.into_inner()) = Some(session.0.to_string());
         // 06 §8.4: the version decides the usage semantics; say it once per child.
         match &agent {
             Some(a) => tracing::info!(session = %session.0, "acp harness {} {}", a.name, a.version),
@@ -993,39 +1072,6 @@ pub fn usage_is_lower_bound(agent: Option<&Implementation>) -> bool {
     })
 }
 
-/// opencode ≥ 2's extension notification carrying a sub-agent's updates
-/// (06 §8.4), sent only to a client that advertised
-/// `_meta["opencode/child-session-updates"]`.
-pub const CHILD_UPDATE_METHOD: &str = "opencode/session/child_update";
-
-/// The `session/update` payload inside an [`CHILD_UPDATE_METHOD`]
-/// notification (`{rootSessionId, childSessionId, …, type: "update", update}`),
-/// as this session's own update: the sub-agent's tool calls keep their
-/// `<child>:<id>` ids and `_meta["opencode/child-session"]`, its
-/// `agent_message_chunk`s ride as thought (activity to show, not this turn's
-/// result text). `None` for any other method, a `type: "status"` event, or
-/// an update kind that is not tool/thought traffic.
-#[must_use]
-pub fn child_update(n: &UntypedMessage) -> Option<SessionUpdate> {
-    if n.method != CHILD_UPDATE_METHOD || n.params.get("type")?.as_str()? != "update" {
-        return None;
-    }
-    let mut update = n.params.get("update")?.clone();
-    if update
-        .get("sessionUpdate")
-        .and_then(serde_json::Value::as_str)
-        == Some("agent_message_chunk")
-    {
-        update["sessionUpdate"] = "agent_thought_chunk".into();
-    }
-    match serde_json::from_value::<SessionUpdate>(update).ok()? {
-        u @ (SessionUpdate::ToolCall(_)
-        | SessionUpdate::ToolCallUpdate(_)
-        | SessionUpdate::AgentThoughtChunk(_)) => Some(u),
-        _ => None,
-    }
-}
-
 /// The model select itself (see [`current_model`]).
 fn model_select(options: &[SessionConfigOption]) -> Option<&SessionConfigOption> {
     options
@@ -1155,14 +1201,16 @@ pub async fn probe(transport: Transport, stderr_log: PathBuf) -> ProbeResult {
 
 /// 06 §8.4: client capabilities — no `fs`, no `terminal`, `auth.terminal`,
 /// no `elicitation` (theuth renders no forms; advertising `form` makes
-/// opencode cancel the question), and `_meta["opencode/child-session-updates"]`
-/// so opencode ≥ 2 forwards sub-agent updates (toolCallIds `<child>:<id>`).
+/// opencode cancel the question), `_meta["opencode/child-session-updates"]`
+/// so opencode ≥ 2 forwards sub-agent updates (toolCallIds `<child>:<id>`),
+/// and `subagents: {}` so an RFD agent announces its children (141 D4, F10).
 fn initialize_request() -> InitializeRequest {
     InitializeRequest::new(ProtocolVersion::V1)
         .client_capabilities(
             ClientCapabilities::new()
                 .terminal(false)
                 .auth(AuthCapabilities::new().terminal(true))
+                .subagents(SubagentCapabilities::new())
                 .meta(Meta::from_iter([(
                     "opencode/child-session-updates".to_owned(),
                     serde_json::Value::Bool(true),
@@ -1196,7 +1244,7 @@ fn login_command(config: Option<&AcpAgentConfig>, methods: &[AuthMethod]) -> Str
 }
 
 /// Serde name of a stop reason (`end_turn`, `cancelled`, …).
-fn stop_reason(s: StopReason) -> String {
+pub(crate) fn stop_reason(s: StopReason) -> String {
     serde_json::to_value(s)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
@@ -1418,61 +1466,22 @@ mod tests {
         assert_eq!(current_value(&v1, "effort").as_deref(), Some("high"));
     }
 
-    /// 06 §8.4: 2.x forwards a sub-agent's updates on
-    /// `opencode/session/child_update`; the tool call keeps its `<child>:<id>`
-    /// id and `_meta`, the sub-agent's prose becomes thought, a `status`
-    /// event and other methods are nothing.
+    /// 141 D4, parity row 1: `initialize` advertises `subagents: {}` next to
+    /// the opencode `_meta` flag; still no `fs`, `terminal` or `elicitation`.
     #[test]
-    fn child_update_fixtures_become_session_updates() {
-        let as_untyped =
-            |v: serde_json::Value| -> UntypedMessage { serde_json::from_value(v).unwrap() };
-        let n = as_untyped(fixture("2.0.22", "child_update.tool_call.json"));
-        assert_eq!(n.method, CHILD_UPDATE_METHOD);
-        let Some(SessionUpdate::ToolCall(tc)) = child_update(&n) else {
-            panic!("tool_call expected");
-        };
-        assert_eq!(
-            &*tc.tool_call_id.0,
-            "ses_f00417af0ffewZH4KxaHpEZ653:toolu_0179KkBvErCkm8J5u2hVjtLG"
-        );
-        assert_eq!(tc.title, "Create hello.txt file: write");
+    fn initialize_advertises_subagents_and_opencode_child_updates() {
+        let v = serde_json::to_value(initialize_request()).unwrap();
+        let caps = &v["clientCapabilities"];
+        assert_eq!(caps["subagents"], serde_json::json!({}));
+        assert_eq!(caps["_meta"]["opencode/child-session-updates"], true);
+        assert_eq!(caps["terminal"], false);
+        assert_eq!(caps["auth"]["terminal"], true);
         assert!(
-            tc.meta
-                .as_ref()
-                .is_some_and(|m| m.contains_key("opencode/child-session"))
+            caps.get("elicitation")
+                .is_none_or(serde_json::Value::is_null)
         );
-
-        let n = as_untyped(fixture(
-            "2.0.22",
-            "child_update.tool_call_update.completed.json",
-        ));
-        let Some(SessionUpdate::ToolCallUpdate(u)) = child_update(&n) else {
-            panic!("tool_call_update expected");
-        };
-        assert_eq!(
-            u.fields.status,
-            Some(agent_client_protocol::schema::v1::ToolCallStatus::Completed)
-        );
-        assert_eq!(
-            u.fields.locations.as_deref().map(|l| l.len()),
-            Some(1),
-            "the written file's location"
-        );
-
-        let n = as_untyped(fixture("2.0.22", "child_update.agent_message_chunk.json"));
-        assert!(matches!(
-            child_update(&n),
-            Some(SessionUpdate::AgentThoughtChunk(_))
-        ));
-
-        let status = as_untyped(
-            serde_json::json!({"jsonrpc": "2.0", "method": CHILD_UPDATE_METHOD,
-            "params": {"rootSessionId": "r", "childSessionId": "c", "parentSessionId": "r", "depth": 1,
-                       "type": "status", "status": "completed"}}),
-        );
-        assert!(child_update(&status).is_none());
-        let other = UntypedMessage::new("session/update", serde_json::json!({})).unwrap();
-        assert!(child_update(&other).is_none());
+        assert!(caps.get("fs").is_none_or(|fs| fs["readTextFile"] != true));
+        assert_eq!(v["clientInfo"]["name"], "theuth");
     }
 
     /// 2.x permission asks carry `diff` content and `locations` (06 §8.4)
@@ -1591,6 +1600,183 @@ mod tests {
         )
         .await;
         assert!(r.as_ref().is_err_and(|e| e.contains("offline")), "{r:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("theuth-acp-{tag}-{}", std::process::id()))
+    }
+
+    fn connect_to(transport: Transport, dir: &Path, mcp_servers: Vec<McpServer>) -> Connect {
+        Connect {
+            transport,
+            cwd: dir.to_path_buf(),
+            resume: None,
+            stderr_log: dir.join("acp.log"),
+            meta: None,
+            model: None,
+            effort: None,
+            mcp_servers,
+        }
+    }
+
+    /// 141 §4.3 / §4.5 test 1, parity rows 24–25: a child that exits before
+    /// answering `initialize` → the connect error names the status; a child
+    /// that answers `initialize` + `session/new` then exits 3 with stderr →
+    /// `Update::Closed` carries `exit status: 3` and the stderr tail; a
+    /// missing executable is `spawn failed: … No such file …`, never the
+    /// bare `process exited`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_exit_status_and_stderr_reach_the_text() {
+        let dir = scratch("exit");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let sh = |script: &str| Transport::Process(AcpAgentConfig::new("sh").arg("-c").arg(script));
+        let r = Harness::connect(connect_to(sh("exit 17"), &dir, Vec::new()), tx).await;
+        let why = r.as_ref().err().cloned().unwrap_or_default();
+        assert!(why.contains("exit status: 17"), "{r:?}");
+
+        // Answer two requests by echoing their ids back, then die loudly.
+        const SCRIPT: &str = r#"
+reply() { i=${1##*\"id\":}; i=${i%%,*}; i=${i%%\}*}; printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$i" "$2"; }
+read -r l; reply "$l" '{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}'
+read -r l; reply "$l" '{"sessionId":"s1"}'
+echo "harness fell over" >&2
+exit 3
+"#;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let h = Harness::connect(connect_to(sh(SCRIPT), &dir, Vec::new()), tx)
+            .await
+            .unwrap();
+        assert_eq!(h.session_id(), "s1");
+        let closed = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("closed within 10 s")
+            .expect("an update");
+        let Update::Closed(text) = closed else {
+            panic!("Closed expected, got {closed:?}");
+        };
+        assert!(
+            text.contains("exit status: 3") && text.contains("harness fell over"),
+            "{text}"
+        );
+
+        let bogus = Transport::Process(AcpAgentConfig::new("/nonexistent/theuth-bogus-harness"));
+        let p = probe(bogus, dir.join("acp-bogus.log")).await;
+        assert!(!p.ok);
+        assert!(
+            p.status.starts_with("spawn failed:") && p.status.contains("No such file"),
+            "{}",
+            p.status
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scripted harness over an in-memory duplex: answers `initialize`
+    /// (with `loadSession`) and refuses any `session/new` | `session/load`
+    /// that carries `mcpServers`; records every request it saw.
+    #[derive(Debug)]
+    struct McpAverse {
+        seen: Arc<Mutex<Vec<(String, usize)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Dialer for McpAverse {
+        async fn dial(&self) -> Result<LineDuplex, String> {
+            use futures::{SinkExt, StreamExt};
+            let (ours, theirs) = tokio::io::duplex(1 << 16);
+            let seen = self.seen.clone();
+            tokio::spawn(async move {
+                let mut d = crate::mesh::line_duplex(Box::new(theirs));
+                while let Some(Ok(line)) = d.incoming.next().await {
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
+                    let (Some(id), Some(method)) = (v.get("id"), v["method"].as_str()) else {
+                        continue;
+                    };
+                    let mcp = v["params"]["mcpServers"].as_array().map_or(0, Vec::len);
+                    seen.lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push((method.to_owned(), mcp));
+                    let body = match method {
+                        "initialize" => serde_json::json!({"result": {
+                            "protocolVersion": 1,
+                            "agentCapabilities": {"loadSession": true},
+                            "authMethods": [],
+                            "agentInfo": {"name": "averse", "version": "0.1"}
+                        }}),
+                        "session/new" | "session/load" if mcp > 0 => serde_json::json!({"error": {
+                            "code": -32603, "message": "mcp servers are not supported here"
+                        }}),
+                        "session/new" => serde_json::json!({"result": {"sessionId": "fresh"}}),
+                        "session/load" => serde_json::json!({"result": {}}),
+                        _ => serde_json::json!({"error": {"code": -32601, "message": "nope"}}),
+                    };
+                    let mut reply = serde_json::json!({"jsonrpc": "2.0", "id": id});
+                    reply
+                        .as_object_mut()
+                        .unwrap()
+                        .extend(body.as_object().unwrap().clone());
+                    if d.outgoing.send(reply.to_string()).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            Ok(crate::mesh::line_duplex(Box::new(ours)))
+        }
+    }
+
+    fn shim() -> McpServer {
+        use agent_client_protocol::schema::v1::McpServerStdio;
+        McpServer::Stdio(McpServerStdio::new("theuth", "/usr/bin/true"))
+    }
+
+    fn requests(seen: &Mutex<Vec<(String, usize)>>) -> Vec<(String, usize)> {
+        seen.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// 141 D14: a `session/new` refused with the back-channel is retried
+    /// once without it and the session opens; a `session/load` likewise.
+    #[tokio::test]
+    async fn mcp_back_channel_is_retried_without_on_failure() {
+        let dir = scratch("mcp");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let dialer = Arc::new(McpAverse { seen: seen.clone() });
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let h = Harness::connect(
+            connect_to(Transport::Dial(dialer.clone()), &dir, vec![shim()]),
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(h.session_id(), "fresh");
+        assert_eq!(
+            requests(&seen),
+            [
+                ("initialize".to_owned(), 0),
+                ("session/new".to_owned(), 1),
+                ("session/new".to_owned(), 0)
+            ]
+        );
+        h.close();
+
+        seen.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut c = connect_to(Transport::Dial(dialer), &dir, vec![shim()]);
+        c.resume = Some("old".to_owned());
+        let h = Harness::connect(c, tx).await.unwrap();
+        assert!(h.resumed());
+        assert_eq!(h.session_id(), "old");
+        assert_eq!(
+            requests(&seen),
+            [
+                ("initialize".to_owned(), 0),
+                ("session/load".to_owned(), 1),
+                ("session/load".to_owned(), 0)
+            ]
+        );
+        h.close();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,0 +1,16 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "ses_ee4d8bb5dffeS1akqW7B497imb",
+  "update": {
+   "sessionUpdate": "tool_call",
+   "toolCallId": "call_a062fdd9472f454ea6e45c9b",
+   "title": "task",
+   "kind": "think",
+   "status": "pending",
+   "locations": [],
+   "rawInput": {}
+  }
+ }
+}

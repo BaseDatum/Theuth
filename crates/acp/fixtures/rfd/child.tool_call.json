@@ -1,0 +1,17 @@
+{
+ "jsonrpc": "2.0",
+ "method": "session/update",
+ "params": {
+  "sessionId": "sess_child_1",
+  "update": {
+   "sessionUpdate": "tool_call",
+   "toolCallId": "call_child_1",
+   "title": "Fetch pricing page",
+   "kind": "fetch",
+   "status": "pending",
+   "rawInput": {
+    "url": "https://example.com/pricing"
+   }
+  }
+ }
+}
