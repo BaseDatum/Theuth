@@ -52,6 +52,10 @@ async fn binding_is_root_metadata_and_chats_list_newest_first() {
     let chats = store.notebook_chats("nb1").await.unwrap();
     let ids: Vec<SessionId> = chats.iter().map(|s| s.id).collect();
     assert_eq!(ids, vec![b, a]);
+    assert_eq!(
+        store.notebook_chat_counts().await.unwrap(),
+        vec![("nb1".to_owned(), 2)]
+    );
 
     // Unbind; unknown session is an error.
     store.set_notebook(a, None).await.unwrap();
@@ -60,6 +64,11 @@ async fn binding_is_root_metadata_and_chats_list_newest_first() {
         store.notebook_chats("nb1").await.unwrap().len(),
         1,
         "only b stays bound"
+    );
+    assert_eq!(
+        store.notebook_chat_counts().await.unwrap(),
+        vec![("nb1".to_owned(), 1)],
+        "`Notebook.chats` counts the same roots the list shows"
     );
     assert!(
         store

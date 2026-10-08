@@ -2725,6 +2725,46 @@ fn nb_result<T>(r: anyhow::Result<T>) -> RpcResult<T> {
     })
 }
 
+/// 144 §8 (W3 R1): `Notebook.chats` from the agent store (`sessions.notebook`); the document crate holds no
+/// session rows. Best effort — no agent actor or a store error leaves the count at 0.
+async fn notebook_chat_counts() -> std::collections::HashMap<String, u32> {
+    match lookup::<Agents>(agent::AGENT_ACTOR) {
+        Ok(agents) => agent::notebooks::chat_counts(&agents)
+            .await
+            .unwrap_or_default(),
+        Err(_) => Default::default(),
+    }
+}
+
+/// 144 §6.4 (W3 R1): the document crate answers `same`/available for `theuth://sessions/<id>#<turn>` unchecked;
+/// the agent store decides — no such (readable) session → `available: false`, a turn past the end → `missing`;
+/// the title becomes the session's display name. Best effort when the agent actor is not running.
+async fn check_session_cites(cites: &mut [document::Citation]) {
+    let Ok(agents) = lookup::<Agents>(agent::AGENT_ACTOR) else {
+        return;
+    };
+    for c in cites
+        .iter_mut()
+        .filter(|c| c.kind == document::CiteKind::Sessions)
+    {
+        let Ok(anchor) = surface::anchor::TheuthAnchor::parse(&c.href) else {
+            continue;
+        };
+        match agent::notebooks::session_cite(&agents, &anchor.id).await {
+            Ok(Some(s)) => {
+                c.title = s.title;
+                if let Some(surface::anchor::Locator::Turn(t)) = anchor.locator
+                    && t as usize > s.turns
+                {
+                    c.status = codeindex::LocateStatus::Missing;
+                }
+            }
+            Ok(None) => c.available = false,
+            Err(e) => tracing::debug!(href = %c.href, "session citation check skipped: {e:#}"),
+        }
+    }
+}
+
 /// The knowledge actor; `knowledge.enabled: false` means it was never
 /// spawned (12 §9.3).
 fn knowledge() -> RpcResult<ActorRef<KnowledgeActor>> {
@@ -4950,13 +4990,18 @@ impl ApiServer for Server {
     }
 
     async fn notebook_list(&self, archived: Option<bool>) -> RpcResult<Vec<document::Notebook>> {
-        doc_send(
+        let mut list = doc_send(
             &documents()?,
             document::NotebookList {
                 archived: archived.unwrap_or(false),
             },
         )
-        .await
+        .await?;
+        let counts = notebook_chat_counts().await;
+        for nb in &mut list {
+            nb.chats = counts.get(&nb.doc.id.to_string()).copied().unwrap_or(0);
+        }
+        Ok(list)
     }
 
     async fn notebook_get(
@@ -4965,8 +5010,15 @@ impl ApiServer for Server {
         id: document::DocId,
     ) -> RpcResult<document::NotebookDetail> {
         let (peer, by) = principal(ext)?;
-        let r = doc_send(&documents()?, document::NotebookGet { id, by }).await;
+        let mut r = doc_send(&documents()?, document::NotebookGet { id, by }).await;
         member_outcome(&peer, &r);
+        if let Ok(d) = &mut r {
+            d.notebook.chats = notebook_chat_counts()
+                .await
+                .get(&d.notebook.doc.id.to_string())
+                .copied()
+                .unwrap_or(0);
+        }
         r
     }
 
@@ -5206,8 +5258,11 @@ impl ApiServer for Server {
         hrefs: Vec<String>,
     ) -> RpcResult<Vec<document::Citation>> {
         let (peer, by) = principal(ext)?;
-        let r = doc_send(&documents()?, document::CiteResolve { hrefs, by }).await;
+        let mut r = doc_send(&documents()?, document::CiteResolve { hrefs, by }).await;
         member_outcome(&peer, &r);
+        if let Ok(cites) = &mut r {
+            check_session_cites(cites).await;
+        }
         r
     }
 

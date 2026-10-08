@@ -6,6 +6,7 @@
 //! `document`, so every document read or write goes through the tool registry (`notebook_get`,
 //! `doc_read`, `source_get`, `doc_create`, `doc_insert`) as `Principal::Agent { session }`.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use kameo::actor::ActorRef;
@@ -165,6 +166,79 @@ pub async fn session_set_notebook(
         .ask(SetSessionNotebook { session, notebook })
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// `ask` → `Result<Vec<(notebook, n)>, String>`: how many root sessions each notebook binds (`Notebook.chats`).
+#[derive(Clone, Copy, Debug)]
+pub struct NotebookChatCounts;
+
+impl Message<NotebookChatCounts> for Agents {
+    type Reply = Result<Vec<(String, u32)>, String>;
+
+    async fn handle(
+        &mut self,
+        _: NotebookChatCounts,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store
+            .notebook_chat_counts()
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// `Notebook.chats` for every notebook with at least one bound root (R1: the document crate holds no session
+/// rows, so the RPC layer fills the count from `sessions.notebook`).
+pub async fn chat_counts(agents: &ActorRef<Agents>) -> anyhow::Result<HashMap<String, u32>> {
+    agents
+        .ask(NotebookChatCounts)
+        .await
+        .map(|v| v.into_iter().collect())
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// What `cite_resolve` needs of a `theuth://sessions/<id>#<turn>` target (R1): its display title and how many
+/// turns it has. `Ok(None)` when there is no such readable session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionCite {
+    /// [`crate::attach::session_title`] of the row.
+    pub title: String,
+    /// 1-based turns, as `session_read` numbers them.
+    pub turns: usize,
+}
+
+/// Existence check for a session citation; a private or advisor session reads as absent.
+pub async fn session_cite(
+    agents: &ActorRef<Agents>,
+    session: &str,
+) -> anyhow::Result<Option<SessionCite>> {
+    let Ok(id) = session.parse::<SessionId>() else {
+        return Ok(None);
+    };
+    match agents
+        .ask(ReadSession {
+            session: id,
+            caller: id,
+        })
+        .await
+    {
+        Ok(read) => {
+            let first = read.history.iter().find_map(|e| match e {
+                HistoryEntry::User { text, .. } => crate::attach::first_line(text),
+                _ => None,
+            });
+            Ok(Some(SessionCite {
+                title: crate::attach::session_title(
+                    &read.summary.title,
+                    first.as_deref(),
+                    Some(read.summary.created_at),
+                ),
+                turns: crate::session_read::turns(&read.history).len(),
+            }))
+        }
+        Err(kameo::error::SendError::HandlerError(_)) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("{e}")),
+    }
 }
 
 /// `doc_create(title, markdown)` from the assistant message at `turn` (1-based) with chips intact plus the
