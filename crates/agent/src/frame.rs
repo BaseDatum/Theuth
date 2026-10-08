@@ -12,6 +12,7 @@ use genai::chat::{
 };
 use runtime::SessionId;
 
+use crate::endless::ViewBlock;
 use crate::skills;
 
 /// Identity line the Claude Code login requires first in the system prompt (design doc 05 §2.3).
@@ -277,6 +278,45 @@ impl Frame<'_> {
     }
 }
 
+/// 137 §7.2 / D4: the rendered view as the user messages that precede the
+/// turn's input — one per block so each can carry its own cache mark. On
+/// [`Transport::Anthropic`] at most [`VIEW_MARKS`] of the marked blocks get
+/// `cache_control: ephemeral` — the system block (1 h) and the tail (5 min)
+/// take two of the provider's four breakpoints — chosen as the latest marked
+/// blocks that are not the final one (the newest band grows every turn, so
+/// a mark on it is never read back). Other transports cache implicitly on
+/// the stable prefix and get no message marks. Pure.
+pub fn view_messages(blocks: &[ViewBlock], t: Transport) -> Vec<ChatMessage> {
+    let mut marks: Vec<usize> = blocks
+        .iter()
+        .enumerate()
+        .take(blocks.len().saturating_sub(1))
+        .filter(|(_, b)| b.mark && t == Transport::Anthropic)
+        .map(|(i, _)| i)
+        .collect();
+    let keep = marks.len().saturating_sub(VIEW_MARKS);
+    marks.drain(..keep);
+    blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let m = ChatMessage::user(b.text.clone());
+            if marks.contains(&i) {
+                m.with_options(CacheControl::Ephemeral)
+            } else {
+                m
+            }
+        })
+        .collect()
+}
+
+/// Message-level cache marks the view may use on Anthropic (see [`view_messages`]).
+pub const VIEW_MARKS: usize = 2;
+
+/// 137 R1-D1: the paragraph a theuth-native child of an endless parent gets
+/// appended to its system prompt — its first message opens with the parent's view.
+pub const CHILD_VIEW_NOTE: &str = "Your first message holds the view below, then your task. The view shows what your parent knows: what the user wants, decided and taught. Use it as context only, and do what your task says.";
+
 /// Replaces every `ContentPart::Binary` in a user-role message with
 /// `Text("[image omitted: model is text-only]")` — `document` for a PDF
 /// (17 §3.3, 20 §2.5). In a tool-role message the images of each
@@ -358,6 +398,34 @@ pub fn baseline(
     attended: bool,
     advised: bool,
 ) -> String {
+    baseline_dated(
+        data_dir,
+        identity,
+        peer_line,
+        plugin_blocks,
+        claude_code,
+        subagent_model,
+        attended,
+        advised,
+        true,
+    )
+}
+
+/// [`baseline`] with the `Date:` line optional: an endless session (137
+/// §7.3) keeps its system prompt byte-identical across days and carries the
+/// date in the turn's input block instead (the `<time …/>` stamp).
+#[allow(clippy::too_many_arguments)]
+pub fn baseline_dated(
+    data_dir: &Path,
+    identity: Option<&str>,
+    peer_line: &str,
+    plugin_blocks: &str,
+    claude_code: bool,
+    subagent_model: Option<&str>,
+    attended: bool,
+    advised: bool,
+    dated: bool,
+) -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -371,10 +439,13 @@ pub fn baseline(
             ),
         ),
     };
-    let mut header = format!(
-        "{persona}\nWorking directory: {cwd}\nDate: {}",
-        chrono::Local::now().format("%Y-%m-%d")
-    );
+    let mut header = format!("{persona}\nWorking directory: {cwd}");
+    if dated {
+        header.push_str(&format!(
+            "\nDate: {}",
+            chrono::Local::now().format("%Y-%m-%d")
+        ));
+    }
     if let Some(m) = subagent_model {
         header.push_str(&format!(
             "\nPreferred subagent model: {m} (the user's choice; spawn_subagent uses it when you omit `model`, so pass \

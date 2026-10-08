@@ -77,6 +77,7 @@ use crate::durability::{
     CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, ResumeReportRow, StepKind, crash,
     crash_point,
 };
+use crate::endless::{Endless, ViewRender};
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
@@ -285,6 +286,11 @@ fn split_next(queue: Vec<Queued>) -> (Vec<Queued>, Vec<Queued>) {
 /// `max_concurrent = 1`.
 fn bounded(depth: u8, input: &Input) -> bool {
     input.peer.is_some() || (input.scope.is_some() && depth == 0)
+}
+
+/// Bytes `a` and `b` share from the start (137 §7.3 `changed_from_byte`).
+fn common_prefix(a: &str, b: &str) -> usize {
+    a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
 }
 
 /// `ask` → `Result<String, String>`: remove a queued input; `Ok(text)`, or
@@ -525,6 +531,9 @@ pub struct SessionState {
     pub compaction_off: Option<(u32, u32)>,
     /// The `at_tokens` clamp was logged this session.
     pub clamp_warned: bool,
+    /// 137 §7.3: the view blocks of the last endless turn this process, for
+    /// the `view_rebase` diff; `None` until the first endless turn.
+    pub last_view: Option<Vec<String>>,
     /// The detached title call of the last turn (07 §15, 51 §6.1): aborted
     /// when a new one starts and when the session stops, never left to
     /// outlive the lifecycle.
@@ -570,6 +579,7 @@ impl SessionState {
             last_after: None,
             compaction_off: None,
             clamp_warned: false,
+            last_view: None,
             title_task: None,
             harvest_task: None,
         }
@@ -715,6 +725,15 @@ struct Shared {
     /// 125 §4.1 item 4: an advisor is linked to this session; the two step
     /// hooks cost one atomic load when it is not.
     advisor: Arc<std::sync::atomic::AtomicBool>,
+    /// 137: the endless memory service; `None` in tests built without one
+    /// (the session then runs the epochs frame whatever `sessions.memory` says).
+    endless: Option<Endless>,
+    /// 137 R1-D1: a theuth-native child whose parent is endless — its first
+    /// message opened with the parent's view, its prompt says so.
+    parent_view: bool,
+    /// Test hook: the view an endless turn renders instead of asking the service.
+    #[cfg(test)]
+    test_view: Arc<parking_lot::Mutex<Option<ViewRender>>>,
 }
 
 /// The model, what streams it (12 §6) and the resolution error of the
@@ -835,6 +854,10 @@ impl Session {
                 catalog,
                 pool,
                 knowledge: None,
+                endless: None,
+                parent_view: false,
+                #[cfg(test)]
+                test_view: Arc::default(),
                 permits,
             },
             state: Some(state),
@@ -850,6 +873,18 @@ impl Session {
     /// 125 §4.1: this session is the hidden advisor child (`kind = advisor`).
     pub(crate) fn with_kind(mut self, kind: SessionKind) -> Self {
         self.shared.kind = kind;
+        self
+    }
+
+    /// 137: the endless service this session's turns consult (the supervisor).
+    pub(crate) fn with_endless(mut self, endless: Endless) -> Self {
+        self.shared.endless = Some(endless);
+        self
+    }
+
+    /// 137 R1-D1: this child's first message opens with its endless parent's view.
+    pub(crate) fn with_parent_view(mut self, on: bool) -> Self {
+        self.shared.parent_view = on;
         self
     }
 
@@ -1105,6 +1140,10 @@ impl Session {
         // 109 §4.1: an open turn of an earlier process is closed before the
         // opener's row, so its tool message follows its `tool_use` row.
         task.settle_open_turns(turn).await;
+        // 137 §8.1: settle and freeze the view before the input row is logged.
+        // ponytail: this await runs on the actor (bounded by `settle_secs`);
+        // moving the opener's persist into the task would free the mailbox.
+        task.endless_start().await;
         let mut inputs = inputs.into_iter();
         let mut ids = Vec::new();
         let mut texts = Vec::new();
@@ -2365,6 +2404,22 @@ struct Turn {
     /// The `turn_finished` step rode the final assistant row (109 §3.3 step
     /// 4); `drive` writes it on its own otherwise.
     finished_written: bool,
+    /// 137 D4: set at the start of an endless turn — the view this turn's
+    /// first request opens with, and what the `view_rebase` log line needs.
+    /// `None` = the epochs frame.
+    view: Option<EndlessView>,
+}
+
+/// What an endless turn carries from `Turn::endless_start` (137 §7.3, §8.1).
+struct EndlessView {
+    render: ViewRender,
+    /// Byte offset where this view first differs from the previous turn's
+    /// (`== len` when identical); `None` on the session's first endless turn.
+    changed_from_byte: Option<usize>,
+    /// Leading blocks byte-identical to the previous turn's.
+    blocks_hit: usize,
+    /// The `view_rebase` line went out with the first response's cache reads.
+    logged: bool,
 }
 
 /// Execution accounting of a peer-opened turn (50 §8): the wall deadline of
@@ -2937,6 +2992,7 @@ impl Turn {
             risks: HashMap::new(),
             resume_call: parking_lot::Mutex::new(None),
             finished_written: false,
+            view: None,
         }
     }
 
@@ -3135,10 +3191,17 @@ impl Turn {
         }
     }
 
-    /// `est` of the system prompt plus this turn's tool definitions.
+    /// `est` of the system prompt plus this turn's tool definitions — and, in
+    /// an endless turn, the view blocks in front of the rows (137 D4: they are
+    /// the fixed prefix, not history).
     fn system_tokens(&self) -> u32 {
         let text = |n: usize| u32::try_from(n / 4).unwrap_or(u32::MAX);
+        let view: usize = self
+            .view
+            .as_ref()
+            .map_or(0, |v| v.render.blocks.iter().map(|b| b.text.len()).sum());
         text(self.state.baseline.len())
+            .saturating_add(text(view))
             .saturating_add(serde_json::to_string(&self.tools).map_or(0, |s| text(s.len())))
     }
 
@@ -3189,9 +3252,24 @@ impl Turn {
                 (self.state.history.last().map_or(0, |(s, _)| s + 1), false)
             }
         };
+        if stored {
+            self.committed(seq, msg);
+        } else {
+            self.first_seq.get_or_insert(seq);
+            self.state.history.push((seq, msg));
+        }
+        stored
+    }
+
+    /// A row reached `messages` (any role, incl. steering and peer intake):
+    /// into the frame at its seq, and the endless pump is nudged so the
+    /// row's units are derived (137 §8.3; a no-op for an epochs session).
+    fn committed(&mut self, seq: i64, msg: ChatMessage) {
         self.first_seq.get_or_insert(seq);
         self.state.history.push((seq, msg));
-        stored
+        if let Some(endless) = &self.shared.endless {
+            endless.on_rows_committed(self.shared.id);
+        }
     }
 
     /// A harness note: user-role tail message (07 §8.7). See [`Turn::persist`] for the flag.
@@ -3614,6 +3692,109 @@ impl Turn {
         .await;
     }
 
+    /// 137 §8.1 (D4, D10): the endless preamble, before the turn's first row
+    /// is logged. Settles the view (at most `settle_secs`), freezes it for this
+    /// turn, and resets the frame: no head, no carried history — the turn's
+    /// first request is `[tools][system][view blocks][input]`. A no-op for an
+    /// epochs session (or while a backfill still covers the history, D14).
+    async fn endless_start(&mut self) {
+        let Some(render) = self.endless_view().await else {
+            return;
+        };
+        let blocks: Vec<String> = render.blocks.iter().map(|b| b.text.clone()).collect();
+        let (changed_from_byte, blocks_hit) = match &self.state.last_view {
+            Some(prev) => (
+                Some(common_prefix(&prev.concat(), &blocks.concat())),
+                prev.iter()
+                    .zip(&blocks)
+                    .take_while(|(a, b)| a == b)
+                    .count(),
+            ),
+            None => (None, 0),
+        };
+        self.state.last_view = Some(blocks);
+        // Nothing is carried (8.3): the per-epoch sets start over with the frame.
+        self.state.head = None;
+        self.state.history.clear();
+        self.state.used = 0;
+        self.state.last_after = None;
+        self.state.pressure_sent = false;
+        self.state.compaction_off = None;
+        self.state.hinted.clear();
+        self.state.knowledge_read.clear();
+        self.state.files_written.clear();
+        if !self.state.skills.is_empty() {
+            self.state.skills.clear();
+            self.publish_skills().await;
+        }
+        self.since = 0;
+        self.hint_since = 0;
+        // A rebuilt frame is the named `view_rebase` event, not a miss (07 §7).
+        self.reset_this_round = true;
+        tracing::debug!(session = %self.shared.id, blocks = render.blocks.len(), settled = render.settled, unbuilt = render.unbuilt, "endless turn start");
+        self.view = Some(EndlessView {
+            render,
+            changed_from_byte,
+            blocks_hit,
+            logged: false,
+        });
+    }
+
+    /// The view this turn opens with: `settle` then `render_for_turn` on the
+    /// service when the session is active in endless mode; the test hook's
+    /// view in tests; `None` otherwise.
+    async fn endless_view(&self) -> Option<ViewRender> {
+        #[cfg(test)]
+        if let Some(v) = self.shared.test_view.lock().clone() {
+            return Some(v);
+        }
+        let endless = self.shared.endless.as_ref()?;
+        let id = self.shared.id;
+        if !endless.active(id) {
+            return None;
+        }
+        let max = Duration::from_secs(u64::from(self.shared.cfg.endless.settle_secs));
+        let started = Instant::now();
+        let settled = tokio::select! {
+            _ = self.cancel.cancelled() => return None,
+            s = endless.settle(id, max) => s,
+        };
+        if !settled {
+            tracing::info!(session = %id, waited_ms = started.elapsed().as_millis() as u64, "endless settle: timed out; unbuilt parts render per D10");
+        }
+        match endless.render_for_turn(id).await {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!(session = %id, "endless render_for_turn: {e:#}; running the epochs frame this turn");
+                None
+            }
+        }
+    }
+
+    /// 137 §7.3: the `view_rebase` line, once per endless turn, with the
+    /// provider's cache reads of the turn's first response.
+    fn log_view_rebase(&mut self, cache_read: u32, cache_write: u32, prompt: u32) {
+        let Some(v) = self.view.as_mut().filter(|v| !v.logged) else {
+            return;
+        };
+        v.logged = true;
+        let bytes: usize = v.render.blocks.iter().map(|b| b.text.len()).sum();
+        tracing::info!(
+            session = %self.shared.id,
+            turn = ?self.turn,
+            blocks = v.render.blocks.len(),
+            bytes,
+            changed_from_byte = v.changed_from_byte,
+            blocks_hit = v.blocks_hit,
+            settled = v.render.settled,
+            unbuilt = v.render.unbuilt,
+            cache_read,
+            cache_write,
+            prompt,
+            "view_rebase"
+        );
+    }
+
     /// Turn start: render the system prompt and log a rebase when it changed
     /// (07 §4); fetch the tool list once for the whole turn (07 §5, 12 §4).
     /// Also looks up the knowledge store (12 §9.2) and resyncs its index with
@@ -3701,7 +3882,11 @@ impl Turn {
             });
             frame::advisor_baseline(&identity)
         } else {
-            frame::baseline(
+            // 137 §7.3: an endless turn's system prompt carries no date (the
+            // input's `<time …/>` stamp does) and ends with VIEW_DOC, so it is
+            // byte-identical across turns and days.
+            let endless = self.view.is_some();
+            let mut b = frame::baseline_dated(
                 &self.shared.rt.data_dir,
                 identity.as_deref(),
                 &peer_line,
@@ -3710,7 +3895,14 @@ impl Turn {
                 subagent_model.as_deref(),
                 attended,
                 self.shared.advisor.load(Ordering::Relaxed),
-            )
+                !endless,
+            );
+            // R1-D1: a native child of an endless parent opens with the parent's view.
+            if self.shared.parent_view {
+                b.push_str("\n\n");
+                b.push_str(frame::CHILD_VIEW_NOTE);
+            }
+            b
         };
         // The index and the bridge set come from one filter over one `ListTools`:
         // a name hidden this turn (risk cap, communication off, flapping MCP) is
@@ -3723,6 +3915,11 @@ impl Turn {
                 self.runtime_names.insert(repl::sanitize_ident(&s.name));
                 self.runtime_names.insert(s.name.clone());
             }
+        }
+        // 137 §9: VIEW_DOC closes an endless turn's system prompt (constant bytes).
+        if self.view.is_some() {
+            baseline.push_str("\n\n");
+            baseline.push_str(Endless::view_doc());
         }
         if baseline != self.state.baseline {
             if !self.state.baseline.is_empty() {
@@ -3747,6 +3944,12 @@ impl Turn {
         if advisor {
             specs.retain(|s| s.name != todo::NAME);
             specs.push(advisor::advise::spec());
+            specs.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        // 137 §9: `zoom`, `recall`, `date` exist only in an endless turn; the
+        // list stays sorted so an epochs session's tools are untouched.
+        if self.view.is_some() {
+            specs.extend(endless_tools::specs());
             specs.sort_by(|a, b| a.name.cmp(&b.name));
         }
         self.tools = specs.into_iter().map(direct_tool).collect();
@@ -4137,6 +4340,11 @@ impl Turn {
             // 125 §5.4: an advisory row is the card text verbatim — no clock stamp.
             None if advisory.is_some() => ChatMessage::user(std::mem::take(&mut input.text)),
             None => {
+                // 137 §7.3: the date left the system prompt; the opener of an
+                // endless turn always carries the stamp (date, weekday, time).
+                if self.view.is_some() && self.first_seq.is_none() {
+                    self.state.last_stamp = None;
+                }
                 clock::prepend_due(
                     &mut input.text,
                     chrono::Local::now(),
@@ -4248,8 +4456,7 @@ impl Turn {
             .await
         {
             Ok(Some((seq, msg))) => {
-                self.first_seq.get_or_insert(seq);
-                self.state.history.push((seq, msg));
+                self.committed(seq, msg);
                 // 109 §3.3 step 1: the consumption is its own transaction
                 // (50 §7), so the step follows it; a kill between the two
                 // leaves the exchange consumed and the turn without this
@@ -4849,7 +5056,10 @@ impl Turn {
         // 125 §4.1/§4.7: an advisor never compacts or gets harness rows — the
         // `Advisors` actor re-primes it from its `ContextUsed` instead.
         let chat = self.shared.kind == SessionKind::Chat;
-        if let Some(limit) = self.threshold(window).filter(|_| chat) {
+        // 137 D2: an endless turn's frame is bounded by the view; the auto
+        // trigger and the pressure note are off (D11 still catches an overflow).
+        let endless = self.view.is_some();
+        if let Some(limit) = self.threshold(window).filter(|_| chat && !endless) {
             // Pressure is measured against the window (the configured fraction) or,
             // under a token override, against the override itself.
             let span = if self.override_tokens().is_some() {
@@ -4972,7 +5182,15 @@ impl Turn {
             }
         }
 
-        let (head, msgs) = self.projected(&images);
+        let (head, mut msgs) = self.projected(&images);
+        // 137 D4: the view blocks precede the turn's rows, one user message
+        // each with the transport's cache marks; empty once an overflow cut
+        // moved the view into the head (D11).
+        if let Some(v) = &self.view {
+            let mut view = frame::view_messages(&v.render.blocks, transport);
+            view.append(&mut msgs);
+            msgs = view;
+        }
         // 116: budgeted from the post-compaction frame, the same `est` measure
         // the calibration ratio is derived from.
         let max_tokens = self.reply_budget(&current, transport, self.est_frame());
@@ -5086,6 +5304,13 @@ impl Turn {
                 self.state.calibration = Some((prompt as f32 / estimated as f32).clamp(0.5, 4.0));
             }
             self.state.last_provider = Some(self.state.used);
+            let written = u
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cache_creation_tokens)
+                .unwrap_or(0)
+                .max(0) as u32;
+            self.log_view_rebase(cached, written, prompt);
             // 07 §7 miss detection: the design checking itself in production.
             if transport != Transport::Plain
                 && let Some((at, prev_prompt)) = self.state.prev_call
@@ -5320,8 +5545,12 @@ impl Turn {
         // `python` cell under the same call_id - the repl's own policy path
         // (86 RUNTIME-BRIDGE); anything else is refused.
         let advisor = self.shared.kind == SessionKind::Advisor;
+        let endless = self.view.is_some();
         let local = |name: &str| {
-            name == todo::NAME || name == repl::NAME || (advisor && name == advisor::advise::NAME)
+            name == todo::NAME
+                || name == repl::NAME
+                || (advisor && name == advisor::advise::NAME)
+                || (endless && endless_tools::is_local(name))
         };
         let mut bridged: Vec<Option<String>> = vec![None; calls.len()];
         for (i, c) in calls.iter_mut().enumerate() {
@@ -5389,6 +5618,14 @@ impl Turn {
             crash_point(&crash::call_point(i, crash::CALL_AFTER_STARTED));
             let out = if advisor && call.fn_name == advisor::advise::NAME {
                 self.advise(&call.fn_arguments).await
+            } else if endless && endless_tools::is_local(&call.fn_name) {
+                // 137 §9: the view's tools; `self.view` implies the service is attached.
+                match &self.shared.endless {
+                    Some(e) => {
+                        endless_tools::run(e, session, &call.fn_name, &call.fn_arguments).await
+                    }
+                    None => ToolOutput::err("endless memory is not available in this process"),
+                }
             } else if call.fn_name == todo::NAME {
                 self.state.todo_touched_round = round;
                 let work = plan.get_or_insert_with(|| self.state.todos.clone());
@@ -5946,7 +6183,17 @@ impl Turn {
         // `given` and forces Summary (the `given` arm below) over the configured
         // style, so a meeting never rasterises snap frames or calls the
         // summariser. `/clear` keeps its own body and harvest, head or not.
-        let (given, r#override) = if r#override == Some(CompactStyle::Clear) {
+        // 137 D11: in an endless turn the fold is mechanical — style `cut`,
+        // the head is the view (no summariser, no session head, no style
+        // override); the next turn is fresh anyway.
+        let view_head = self
+            .view
+            .as_ref()
+            .filter(|v| !v.render.blocks.is_empty())
+            .map(|v| v.render.text());
+        let (given, r#override) = if view_head.is_some() {
+            (None, Some(CompactStyle::Cut))
+        } else if r#override == Some(CompactStyle::Clear) {
             (given, r#override)
         } else {
             match given.or_else(|| self.shared.compaction.read().head.clone()) {
@@ -6033,7 +6280,12 @@ impl Turn {
             }
         }
         let k = keep_from + usize::from(self.state.head.is_some());
-        let cut_body = || format!("folded {k} messages; no summary. Recent turns follow verbatim.");
+        let cut_body = || match &view_head {
+            Some(view) => format!(
+                "folded {k} messages of this turn; no summary. The view of the whole session follows, then this turn's recent messages verbatim.\n{view}"
+            ),
+            None => format!("folded {k} messages; no summary. Recent turns follow verbatim."),
+        };
         // Snap: the body is the caption and `pngs` the frames it describes (13 §2.4).
         let mut pngs: Vec<Vec<u8>> = Vec::new();
         let mut body = match style {
@@ -6244,6 +6496,10 @@ impl Turn {
             .map(|(_, m)| compact::fold_tool_results(m))
             .sum();
         self.state.head = Some(head);
+        // D11: the view now rides in the head; the frame stops prepending it.
+        if let Some(v) = &mut self.view {
+            v.render.blocks.clear();
+        }
         // 36 §6.5 / 70: seed with the whole-frame estimate (system, tools, head,
         // tail) scaled by the session's calibration; the provider's number
         // replaces it next call. This is the figure the UI shows as "≈".
@@ -6697,8 +6953,7 @@ impl Turn {
             .append_vision(session, &msg, &note)
             .await
             .map_err(|e| format!("store: {e:#}"))?;
-        self.first_seq.get_or_insert(seq);
-        self.state.history.push((seq, msg));
+        self.committed(seq, msg);
         let mut answered = 0;
         for o in &outcomes {
             if o.status == VisionStatus::Failed {
@@ -7112,6 +7367,9 @@ fn progress_due(prev: Option<&Progress>, now: Instant, len: usize) -> bool {
 }
 
 mod side;
+
+/// 137 §9: `zoom`, `recall`, `date` — specs and handlers of an endless turn.
+pub(crate) mod endless_tools;
 
 /// 109 §4.2: the job / question / wait resume rules (stubs; W2, W3 fill them).
 pub(crate) mod resume_calls;
