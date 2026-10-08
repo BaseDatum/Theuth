@@ -13,7 +13,7 @@ use crate::model::UiEvent;
 pub enum Look {
     /// Slow breathing ring (`Idle`, `Listening`, `Interrupted`).
     Idle,
-    /// Rotating, pulsing inner texture (`Thinking`).
+    /// Rotating, pulsing inner texture (`Thinking`, `Working`).
     Thinking,
     /// Radiating rings driven by the voice level (`Speaking`, `Holding` frozen).
     Speaking,
@@ -23,7 +23,7 @@ pub enum Look {
 pub fn look(state: State) -> Look {
     match state {
         State::Idle | State::Listening | State::Interrupted => Look::Idle,
-        State::Thinking => Look::Thinking,
+        State::Thinking | State::Working => Look::Thinking,
         State::Speaking | State::Holding => Look::Speaking,
     }
 }
@@ -91,7 +91,9 @@ impl Talking {
             TalkEvent::TalkStarted { .. }
             | TalkEvent::Holding { .. }
             | TalkEvent::Resumed { .. }
-            | TalkEvent::Flush { .. } => {}
+            | TalkEvent::Flush { .. }
+            // 145 §0.6: the sentence reaches the agent line through its `Saying`.
+            | TalkEvent::Announced { .. } => {}
         }
         None
     }
@@ -123,6 +125,7 @@ pub fn event_id(ev: &TalkEvent) -> TalkId {
         | TalkEvent::Interrupted { id, .. }
         | TalkEvent::Flush { id, .. }
         | TalkEvent::Degraded { id, .. }
+        | TalkEvent::Announced { id, .. }
         | TalkEvent::TalkFinished { id, .. } => *id,
     }
 }

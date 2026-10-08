@@ -5685,15 +5685,18 @@ impl Model {
         Some(Command::TalkStart(self.session))
     }
 
-    /// Esc in the talk view (76 §5.2): while the agent is thinking, speaking
-    /// or held, it is the agent's cancel — the talk stays on and returns to
-    /// `Listening`; otherwise it leaves the view, the talk keeps running.
+    /// Esc in the talk view (76 §5.2): while the agent is thinking, working,
+    /// speaking or held, it is the agent's cancel — the talk stays on and
+    /// returns to `Listening`; otherwise it leaves the view, the talk keeps running.
     pub fn talk_escape(&mut self) -> Option<Command> {
         match &self.talk {
             Some(t)
                 if matches!(
                     t.state,
-                    talk::State::Thinking | talk::State::Speaking | talk::State::Holding
+                    talk::State::Thinking
+                        | talk::State::Working
+                        | talk::State::Speaking
+                        | talk::State::Holding
                 ) =>
             {
                 Some(Command::Cancel(t.session))
