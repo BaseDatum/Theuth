@@ -84,15 +84,39 @@ pub struct DreamUndone {
     pub group: Option<String>,
 }
 
+/// `budget_usd` as the routine's `budget:` value: rendered from nanos
+/// (`{}.{:09} USD`, trailing zeros trimmed) so `schedule::file::Budget::parse`
+/// always accepts it (136 D13 — `0.1234567891` or `1e20` from a number input
+/// would otherwise break the file's parse).
+pub fn budget_line(usd: f64) -> String {
+    let n = (usd.max(0.0) * 1e9).round().min(u64::MAX as f64) as u64;
+    let (whole, frac) = (n / 1_000_000_000, n % 1_000_000_000);
+    if frac == 0 {
+        format!("{whole} USD")
+    } else {
+        let frac = format!("{frac:09}");
+        format!("{whole}.{} USD", frac.trim_end_matches('0'))
+    }
+}
+
 /// The routine file text for `cfg` (design §9.7 with the config's values).
 /// `cwd` is the data dir, so the sensor finds `dreaming/signals.json`.
-pub fn routine_text(cfg: &DreamConfig, data_dir: &Path, engine: Option<&str>) -> String {
-    let model_line = cfg
-        .models
-        .tidy
-        .as_deref()
-        .map_or(String::new(), |m| format!("model: {m}\n"));
-    let engine_arg = engine.map_or(String::new(), |e| format!(" engine={e}"));
+/// `model:` is always written: the resolved tidy tier (136 D12).
+pub fn routine_text(
+    cfg: &DreamConfig,
+    data_dir: &Path,
+    engine: Option<&str>,
+    agent: &config::AgentDefaults,
+) -> String {
+    let (models, _) = cfg.resolve_models(agent);
+    let model_line = if models.tidy.is_empty() {
+        String::new()
+    } else {
+        format!("model: {}\n", models.tidy)
+    };
+    let engine_arg = engine
+        .filter(|e| !e.is_empty())
+        .map_or(String::new(), |e| format!(" engine={e}"));
     ROUTINE_TEMPLATE
         .replace(
             "{{window}}",
@@ -103,19 +127,29 @@ pub fn routine_text(cfg: &DreamConfig, data_dir: &Path, engine: Option<&str>) ->
         .replace("{{heavy_sessions}}", &cfg.heavy_day.sessions.to_string())
         .replace("{{engine_arg}}", &engine_arg)
         .replace("{{run_timeout}}", &cfg.run_timeout)
-        .replace("{{budget}}", &format!("{} USD", cfg.budget_usd))
+        .replace("{{budget}}", &budget_line(cfg.budget_usd))
         .replace("{{cwd}}", &format!("\"{}\"", data_dir.display()))
         .replace("{{model_line}}", &model_line)
 }
 
+/// The three bundled files, root-relative.
+pub const BUNDLED: [&str; 3] = [
+    "skills/dreaming.md",
+    "sensors/dreaming.py",
+    "schedules/dreaming.md",
+];
+
 /// Write the bundled files (136 §2.4): `skills/dreaming.md` and
 /// `sensors/dreaming.py` are binary-owned (rewritten when the text differs);
-/// `schedules/dreaming.md` only when absent, so the user's `enabled:` toggle
-/// survives restarts. Returns the root-relative paths written.
+/// `schedules/dreaming.md` is written when absent and otherwise patched in
+/// place (`budget` / `when` / `run_timeout` / `model` / `cap` follow the
+/// config, R-47; `enabled:` and every other line survive). Returns the
+/// root-relative paths written.
 pub fn install_files(
     data_dir: &Path,
     cfg: &DreamConfig,
     engine: Option<&str>,
+    agent: &config::AgentDefaults,
 ) -> std::io::Result<Vec<String>> {
     let mut written = Vec::new();
     for (rel, body) in [
@@ -132,12 +166,32 @@ pub fn install_files(
         }
     }
     let routine = data_dir.join(schedule::DIR).join("dreaming.md");
-    if !routine.exists() {
+    if routine.exists() {
+        let before = std::fs::read_to_string(&routine)?;
+        night::update_routine_file(data_dir, cfg, engine, agent)?;
+        if std::fs::read_to_string(&routine)? != before {
+            written.push(format!("{}/dreaming.md", schedule::DIR));
+        }
+    } else {
         std::fs::create_dir_all(data_dir.join(schedule::DIR))?;
-        std::fs::write(&routine, routine_text(cfg, data_dir, engine))?;
+        std::fs::write(&routine, routine_text(cfg, data_dir, engine, agent))?;
         written.push(format!("{}/dreaming.md", schedule::DIR));
     }
     Ok(written)
+}
+
+/// `dreaming.enabled: false` (136 D11, design §8): the routine, the sensor
+/// and the skill leave; the schedule's reconcile drops the removed entry.
+/// Absent files are fine.
+pub fn remove_files(data_dir: &Path) -> std::io::Result<()> {
+    for rel in BUNDLED {
+        match std::fs::remove_file(data_dir.join(rel)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// `t dreaming dry-run --data-dir <copy>` (136 §3.3 item 7): Recall plus
@@ -163,7 +217,11 @@ impl runtime::Plugin for DreamingPlugin {
             DreamConfig::default()
         });
         if !cfg.enabled {
-            tracing::info!("dreaming disabled by config");
+            // D11: an installed routine must not keep firing with the plugin off.
+            match remove_files(&rt.data_dir) {
+                Ok(()) => tracing::info!("dreaming disabled by config; bundled files removed"),
+                Err(e) => tracing::warn!("dreaming disabled by config; bundled files not removed: {e}"),
+            }
             return Ok(());
         }
         // The engine id (68 §2): the mesh plugin starts after us, so read the identity file.
@@ -174,13 +232,20 @@ impl runtime::Plugin for DreamingPlugin {
                 String::new()
             }
         };
-        let home = cfg.home_engine.clone().filter(|h| !h.is_empty());
-        match install_files(&rt.data_dir, &cfg, home.as_deref()) {
+        let agent = config::AgentDefaults::from_runtime(rt);
+        // R-33 (D14): `engine ≠ self` is enforced always — the home engine when
+        // configured, else this engine.
+        let home = cfg
+            .home_engine
+            .clone()
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| engine.clone());
+        match install_files(&rt.data_dir, &cfg, Some(&home), &agent) {
             Ok(w) if !w.is_empty() => tracing::info!(files = ?w, "dreaming: bundled files written"),
             Ok(_) => {}
             Err(e) => tracing::warn!("dreaming: bundled files not written: {e}"),
         }
-        if let Err(e) = night::start(rt, cfg.clone(), &engine) {
+        if let Err(e) = night::start(rt, cfg.clone(), &engine, agent.clone()) {
             tracing::warn!("dreaming actor not started: {e:#}");
         }
         if let Err(e) = signals::start(rt, &engine).await {
@@ -204,6 +269,7 @@ impl runtime::Plugin for DreamingPlugin {
                     Arc::new(crate::tools::Seams {
                         data_dir: rt_tools.data_dir.clone(),
                         cfg,
+                        agent,
                         knowledge,
                     }),
                 )
@@ -218,11 +284,20 @@ impl runtime::Plugin for DreamingPlugin {
 mod tests {
     use super::*;
 
+    fn agent() -> config::AgentDefaults {
+        config::AgentDefaults {
+            model: "openai/gpt-5.6-sol".into(),
+            escalate_model: None,
+        }
+    }
+
+    /// The routine parses, carries the budget, the cap (D4), the engine arg
+    /// always (R-33) and the resolved tidy model always (R-14/D12).
     #[test]
     fn routine_parses_with_the_schedule_crate_and_carries_the_budget() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = DreamConfig::default();
-        let text = routine_text(&cfg, dir.path(), Some("eng1"));
+        let text = routine_text(&cfg, dir.path(), Some("eng1"), &agent());
         let spec =
             schedule::file::parse("dreaming", &text).unwrap_or_else(|e| panic!("{e}\n{text}"));
         assert_eq!(
@@ -244,7 +319,12 @@ mod tests {
         assert!(spec.quiet && !spec.approvals && spec.enabled);
         assert_eq!(spec.memory, schedule::file::Memory::Clear);
         assert_eq!(spec.cwd.as_deref(), Some(dir.path()));
-        assert!(spec.model.is_none());
+        assert_eq!(spec.cap, Some(::tools::Risk::Mutating), "D4: capped at mutating");
+        assert_eq!(
+            spec.model.as_deref(),
+            Some("openai/gpt-5.6-sol"),
+            "D12: tidy defaults to agent.model and is always written"
+        );
         let with_model = routine_text(
             &DreamConfig {
                 models: config::Models {
@@ -256,6 +336,7 @@ mod tests {
             },
             dir.path(),
             None,
+            &agent(),
         );
         let spec = schedule::file::parse("dreaming", &with_model).unwrap();
         assert_eq!(spec.model.as_deref(), Some("anthropic/claude-haiku-4-5"));
@@ -263,11 +344,36 @@ mod tests {
         assert!(!spec.sensor.unwrap().args.contains_key("engine"));
     }
 
+    /// R-15 (D13): any finite budget renders to a line `Budget::parse` accepts.
     #[test]
-    fn install_writes_owned_files_always_and_the_routine_once() {
+    fn budget_line_always_parses() {
+        assert_eq!(budget_line(1.0), "1 USD");
+        assert_eq!(budget_line(2.5), "2.5 USD");
+        assert_eq!(budget_line(0.1234567891), "0.123456789 USD");
+        assert_eq!(budget_line(0.05), "0.05 USD");
+        for usd in [0.1234567891, 1e12, 1e20, 0.0, 1000.0, 3.0000000004] {
+            let dir = tempfile::tempdir().unwrap();
+            let text = routine_text(
+                &DreamConfig {
+                    budget_usd: usd,
+                    ..Default::default()
+                },
+                dir.path(),
+                Some("e"),
+                &agent(),
+            );
+            schedule::file::parse("dreaming", &text).unwrap_or_else(|e| panic!("{usd}: {e}"));
+        }
+    }
+
+    /// Install writes the binary-owned files whenever they differ and the
+    /// routine once; a later install patches the routine's config keys in
+    /// place (R-47) and keeps the user's `enabled:` toggle.
+    #[test]
+    fn install_writes_owned_files_always_and_patches_the_routine_in_place() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = DreamConfig::default();
-        let w = install_files(dir.path(), &cfg, None).unwrap();
+        let w = install_files(dir.path(), &cfg, None, &agent()).unwrap();
         assert_eq!(
             w,
             [
@@ -277,7 +383,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            install_files(dir.path(), &cfg, None).unwrap(),
+            install_files(dir.path(), &cfg, None, &agent()).unwrap(),
             Vec::<String>::new()
         );
         // The user toggles the routine off and edits the skill: the toggle survives, the skill does not.
@@ -288,7 +394,7 @@ mod tests {
         std::fs::write(&routine, &toggled).unwrap();
         std::fs::write(dir.path().join("skills/dreaming.md"), "mine").unwrap();
         assert_eq!(
-            install_files(dir.path(), &cfg, None).unwrap(),
+            install_files(dir.path(), &cfg, None, &agent()).unwrap(),
             ["skills/dreaming.md"]
         );
         assert_eq!(std::fs::read_to_string(&routine).unwrap(), toggled);
@@ -296,7 +402,35 @@ mod tests {
             std::fs::read_to_string(dir.path().join("skills/dreaming.md")).unwrap(),
             SKILL
         );
-        assert!(SENSOR.starts_with("# theuth-sensor: dreaming 2\n"));
+        assert!(SENSOR.starts_with("# theuth-sensor: dreaming 3\n"));
+        // R-47: a hand-edited config.yaml (here: a new cfg) reaches the installed routine.
+        let changed = DreamConfig {
+            budget_usd: 4.0,
+            ..cfg
+        };
+        assert_eq!(
+            install_files(dir.path(), &changed, Some("eng9"), &agent()).unwrap(),
+            ["schedules/dreaming.md"]
+        );
+        let after = std::fs::read_to_string(&routine).unwrap();
+        assert!(after.contains("enabled: false\n"), "{after}");
+        assert!(after.contains("budget: 4 USD\n"), "{after}");
+        assert!(after.contains(" engine=eng9"), "{after}");
+    }
+
+    /// R-13 (D11): `enabled: false` removes the three files (absent ones are fine).
+    #[test]
+    fn disabling_removes_the_bundled_files() {
+        let dir = tempfile::tempdir().unwrap();
+        install_files(dir.path(), &DreamConfig::default(), None, &agent()).unwrap();
+        for rel in BUNDLED {
+            assert!(dir.path().join(rel).exists(), "{rel}");
+        }
+        remove_files(dir.path()).unwrap();
+        for rel in BUNDLED {
+            assert!(!dir.path().join(rel).exists(), "{rel}");
+        }
+        remove_files(dir.path()).unwrap();
     }
 
     #[test]

@@ -135,6 +135,10 @@ pub enum EditOp {
     Replace,
     /// Remove the bullet matching `anchor` exactly.
     Delete,
+    /// Retire a dreaming-made skill (136 D4): `skills/dreaming-<skill>.md`
+    /// moves to `skills/retired/<skill>.md` with a `retired_because:` line.
+    /// Needs no anchor or gate; receipted and undone with the sidecars.
+    Retire,
 }
 
 /// The gate's verdict on an edit (136 §7.2 step 4).
@@ -170,27 +174,38 @@ pub struct GateResult {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct EditRecord {
-    /// Ulid.
+    /// Ulid; the server assigns it when empty (136 D3).
+    #[serde(default)]
     pub id: String,
-    /// The night that proposed it.
+    /// The night that proposed it; the server assigns it when empty.
+    #[serde(default)]
     pub night: NightId,
-    /// `skill:<name>` | `preferences`.
+    /// `skill:<name>` | `preferences`; the server assigns it.
+    #[serde(default)]
     pub target: String,
     /// The op.
     pub op: EditOp,
     /// ≤ 140 chars; the bullet text.
+    #[serde(default)]
     pub content: String,
     /// Exact text of the bullet to replace / delete / add after; `None` = append.
+    #[serde(default)]
     pub anchor: Option<String>,
     /// The proposer's reason (never shown to the judge).
+    #[serde(default)]
     pub rationale: String,
     /// Case ids it closes.
+    #[serde(default)]
     pub cases: Vec<String>,
-    /// The gate's numbers; `None` before replay.
+    /// The gate's numbers as the server computed them from `replays.jsonl`
+    /// (136 D2); `None` before the record pass. The caller's value is advisory.
+    #[serde(default)]
     pub gate: Option<GateResult>,
     /// RFC 3339 when applied.
+    #[serde(default)]
     pub applied_at: Option<String>,
     /// RFC 3339 when undone.
+    #[serde(default)]
     pub undone_at: Option<String>,
 }
 
@@ -267,6 +282,16 @@ pub struct NightSummary {
     pub mode: String,
     /// Every group of the night was undone.
     pub undone: bool,
+    /// How the night closed (136 D7): `None` = the model journaled it;
+    /// `budget` = the turn ended on the budget guard; `incomplete` = the turn
+    /// ended (error, timeout, early stop) before the journal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub status: Option<String>,
+    /// The judge ran on the proposer's model (no `agent.escalate_model`, 136 D12).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub judge_same_model: bool,
 }
 
 /// What `BeginNight` hands back: the night id and, per knowledge id touched
@@ -494,6 +519,12 @@ pub struct DreamSettings {
     pub digest: String,
     /// RFC 3339 while paused.
     pub paused_until: Option<String>,
+    /// The models that actually run each tier tonight (136 D12): the config's
+    /// pick, else the server-side default. The UI shows these instead of
+    /// computing defaults client-side. Ignored on `set_settings`.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub resolved: Option<ResolvedModels>,
 }
 
 /// The four model tiers as the UI shows them (136 §2.7).
@@ -508,6 +539,20 @@ pub struct DreamModels {
     pub propose: Option<String>,
     /// `None` = default.
     pub judge: Option<String>,
+}
+
+/// What runs each tier (136 D12): `provider/model` strings, never `None`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "DreamResolvedModels"))]
+pub struct ResolvedModels {
+    /// The routine's `model:` (config `tidy`, else `agent.model`).
+    pub tidy: String,
+    /// v1 = `tidy` (the proposer runs in the night's own turn).
+    pub propose: String,
+    /// Config `judge`, else `agent.escalate_model` when set and ≠ `propose`, else `propose`.
+    pub judge: String,
+    /// The replay target: config-free, `agent.model`.
+    pub target: String,
 }
 
 /// `dreaming.metrics(days)` (136 §13).
@@ -596,6 +641,20 @@ mod tests {
         let e: EditRecord = serde_json::from_value(edit.clone()).unwrap();
         assert_eq!(e.gate.unwrap().verdict, Verdict::Accepted);
         assert_eq!(serde_json::to_value(&e).unwrap(), edit);
+    }
+
+    /// R-3 (D3): the proposer prompt's shape — no `id`, `night`, `target`,
+    /// `gate`, timestamps — deserialises; the server assigns the rest.
+    #[test]
+    fn the_proposer_prompts_edit_shape_parses() {
+        let e: EditRecord = serde_json::from_str(
+            r#"{"op":"add","content":"x","anchor":null,"rationale":"r","cases":[]}"#,
+        )
+        .unwrap();
+        assert!(e.id.is_empty() && e.night.is_empty() && e.target.is_empty());
+        assert!(e.gate.is_none() && e.applied_at.is_none());
+        let r: EditRecord = serde_json::from_str(r#"{"op":"retire"}"#).unwrap();
+        assert_eq!(r.op, EditOp::Retire);
     }
 
     #[test]

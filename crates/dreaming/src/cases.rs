@@ -136,7 +136,9 @@ pub fn list(
 
 /// Move a case to `state` (136 §6, §7.2 step 5): `closed` records
 /// `closed_by`, `reopened` stamps `reopened_at`, `settled` leaves the pool.
-/// Appends the new line; returns it.
+/// Legal moves (R-38): `open | reopened → closed`, `closed → reopened`,
+/// anything → `settled`. Appends the new line, bumps the learned bullets'
+/// counters (136 D10, [`crate::edits::count_case`]); returns the line.
 pub fn transition(
     data_dir: &Path,
     id: &str,
@@ -144,13 +146,26 @@ pub fn transition(
     closed_by: Option<&str>,
 ) -> anyhow::Result<Case> {
     let mut c = get(data_dir, id)?;
+    anyhow::ensure!(
+        matches!(
+            (c.state, state),
+            (CaseState::Open | CaseState::Reopened, CaseState::Closed)
+                | (CaseState::Closed, CaseState::Reopened)
+                | (_, CaseState::Settled)
+        ),
+        "case {id}: {:?} → {:?} is not a transition (open|reopened → closed, closed → reopened, any → settled)",
+        c.state,
+        state
+    );
     match state {
         CaseState::Closed => c.closed_by = closed_by.map(str::to_owned).or(c.closed_by),
         CaseState::Reopened => c.reopened_at = Some(now_rfc3339()),
         CaseState::Open | CaseState::Settled => {}
     }
     c.state = state;
-    append(data_dir, &c, &c.night.clone())
+    let c = append(data_dir, &c, &c.night.clone())?;
+    crate::edits::count_case(data_dir, &c.id, state);
+    Ok(c)
 }
 
 /// Cases older than [`SETTLE_DAYS`] with no reopen become `settled`
@@ -276,5 +291,11 @@ mod tests {
         assert_eq!(get(dir.path(), "old-1").unwrap().state, CaseState::Settled);
         // The reopened one is not settled (it has a reopen).
         assert_eq!(settle_old(dir.path(), Utc::now()).unwrap(), 0);
+        // R-38: no state machine shortcuts — open → reopened, closed → closed, settled → closed.
+        assert!(transition(dir.path(), &second.id, CaseState::Reopened, None).is_err());
+        transition(dir.path(), &second.id, CaseState::Closed, None).unwrap();
+        assert!(transition(dir.path(), &second.id, CaseState::Closed, None).is_err());
+        assert!(transition(dir.path(), "old-1", CaseState::Closed, None).is_err());
+        assert_eq!(get(dir.path(), &second.id).unwrap().state, CaseState::Closed);
     }
 }

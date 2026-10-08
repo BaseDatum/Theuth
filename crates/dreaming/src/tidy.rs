@@ -38,6 +38,10 @@ pub struct Candidates {
 
 /// `id` without a trailing `-YYYY-MM-DD`, `-YYYYMMDD` or `-vN` suffix.
 pub fn stem(id: &str) -> &str {
+    // Byte slicing below: a non-ASCII id (R-32) is its own stem.
+    if !id.is_ascii() {
+        return id;
+    }
     let bytes = id.as_bytes();
     // -YYYY-MM-DD
     if id.len() > 11 {
@@ -207,6 +211,9 @@ mod tests {
         assert_eq!(stem("facts/x-2026-13"), "facts/x-2026-13");
         assert_eq!(stem("facts/v2"), "facts/v2");
         assert_eq!(stem("facts/plain"), "facts/plain");
+        // R-32: a multibyte id never panics on the byte slices.
+        assert_eq!(stem("facts/café-2026-10-05"), "facts/café-2026-10-05");
+        assert_eq!(stem("facts/日本語"), "facts/日本語");
     }
 
     #[test]

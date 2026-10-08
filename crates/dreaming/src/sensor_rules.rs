@@ -9,6 +9,9 @@ use crate::types::SignalsSnapshot;
 
 /// Battery floor when off mains (136 §4 phase 0).
 pub const BATTERY_MIN_PCT: u8 = 40;
+/// `signals.json` older than this is a dead writer (R-19, 136 D14): the
+/// gate holds. The [`crate::signals::HEARTBEAT`] re-stamps it every minute.
+pub const STALE_SECS: i64 = 3 * 60;
 
 /// `"HH:MM"` → minutes since local midnight; `None` when malformed.
 pub fn parse_hhmm(s: &str) -> Option<u32> {
@@ -45,6 +48,12 @@ pub fn gate(
         && s.engine != me
     {
         return Err("another engine owns dreaming");
+    }
+    // R-19: a frozen file (the plugin off, the actor dead) must not keep passing.
+    if let Some(w) = s.written_at.as_deref()
+        && parse_rfc3339(w).is_none_or(|t| now.signed_duration_since(t).num_seconds() > STALE_SECS)
+    {
+        return Err("signals stale");
     }
     let (Some(start), Some(end)) = (parse_hhmm(&cfg.window[0]), parse_hhmm(&cfg.window[1])) else {
         return Err("window malformed");
@@ -151,6 +160,36 @@ mod tests {
                     ..s.clone()
                 },
                 Err("another engine owns dreaming"),
+            ),
+            (
+                "signals stale: written 45 min ago",
+                at(2, 0),
+                0,
+                SignalsSnapshot {
+                    written_at: Some("2026-10-08T01:15:00Z".into()),
+                    ..s.clone()
+                },
+                Err("signals stale"),
+            ),
+            (
+                "signals fresh: written 2 min ago",
+                at(2, 0),
+                0,
+                SignalsSnapshot {
+                    written_at: Some("2026-10-08T01:58:00Z".into()),
+                    ..s.clone()
+                },
+                Ok(()),
+            ),
+            (
+                "signals stale: written_at unparseable",
+                at(2, 0),
+                0,
+                SignalsSnapshot {
+                    written_at: Some("yesterday".into()),
+                    ..s.clone()
+                },
+                Err("signals stale"),
             ),
             (
                 "outside: 00:30 local",

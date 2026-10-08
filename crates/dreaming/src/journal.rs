@@ -130,6 +130,26 @@ pub async fn append(
     section: &str,
     markdown: &str,
 ) -> anyhow::Result<()> {
+    let text = append_file(data_dir, night, section, markdown)?;
+    mirror(data_dir, &text).await;
+    Ok(())
+}
+
+/// [`append`] from a sync path (the server-side counters, 136 D10): the
+/// file only; the next `append` mirrors the whole text, so the document
+/// catches up at the latest with the night's `Receipt` line.
+pub fn append_sync(data_dir: &Path, night: &NightId, section: &str, markdown: &str) {
+    if let Err(e) = append_file(data_dir, night, section, markdown) {
+        tracing::warn!("dreaming: journal line not written: {e}");
+    }
+}
+
+fn append_file(
+    data_dir: &Path,
+    night: &NightId,
+    section: &str,
+    markdown: &str,
+) -> anyhow::Result<String> {
     let mode = read_state(data_dir)
         .last_night
         .as_ref()
@@ -137,8 +157,7 @@ pub async fn append(
         .map_or_else(|| "nightly".to_owned(), |n| n.mode.clone());
     let text = insert(&text(data_dir), night, &mode, section, &scrub(markdown));
     write_atomic(&path(data_dir), text.as_bytes())?;
-    mirror(data_dir, &text).await;
-    Ok(())
+    Ok(text)
 }
 
 /// Push the journal text into the documents store (best effort).

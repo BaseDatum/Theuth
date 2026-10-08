@@ -1,4 +1,4 @@
-# theuth-sensor: dreaming 2
+# theuth-sensor: dreaming 3
 # arg: window optional 01:00-06:00 — local window the night may start in (from dreaming.window)
 # arg: idle optional 20 — minutes since the last root turn (dreaming.idle_minutes)
 # arg: heavy_concepts optional 300 — new concepts that earn a second window (dreaming.heavy_day.concepts)
@@ -18,14 +18,26 @@ import datetime
 import json
 
 BATTERY_MIN_PCT = 40
+STALE_SECS = 3 * 60  # signals.json older than this is a dead writer (R-19)
+
+
+def _int(v, default: int) -> int:
+    """`int()` that answers `default` for None / junk instead of raising (R-39)."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
 
 
 def _hhmm(s: str):
     parts = s.strip().split(":")
     if len(parts) != 2:
         return None
-    h = int(parts[0])
-    m = int(parts[1])
+    try:
+        h = int(parts[0])
+        m = int(parts[1])
+    except ValueError:
+        return None
     if h >= 24 or m >= 60:
         return None
     return h * 60 + m
@@ -56,6 +68,11 @@ def gate(args: dict, s: dict, now) -> str:
     me = args.get("engine")
     if me and s.get("engine") and str(s.get("engine")) != str(me):
         return "another engine owns dreaming"
+    written = s.get("written_at")
+    if written:
+        w = _rfc3339(written)
+        if w is None or (now - w).total_seconds() > STALE_SECS:
+            return "signals stale"
     window = str(args.get("window") or "01:00-06:00").split("-")
     if len(window) != 2:
         return "window malformed"
@@ -63,21 +80,21 @@ def gate(args: dict, s: dict, now) -> str:
     end = _hhmm(window[1])
     if start is None or end is None:
         return "window malformed"
-    tz = int(s.get("tz_offset_minutes") or 0)
+    tz = _int(s.get("tz_offset_minutes"), 0)
     secs = (int(now.timestamp()) % 86400) + tz * 60
     local = (secs % 86400) // 60
     into = _minutes_into_window(local, start, end)
     if into is None:
         return "outside the window"
-    idle = int(args.get("idle") or 20)
+    idle = _int(args.get("idle"), 20)
     last_turn = _rfc3339(s.get("last_root_turn_at"))
     if last_turn is not None and (now - last_turn).total_seconds() // 60 < idle:
         return "a root session turned recently"
-    if int(s.get("desks_doing") or 0) > 0:
+    if _int(s.get("desks_doing"), 0) > 0:
         return "a desk is doing"
-    concepts = int(s.get("new_concepts_since") or 0)
-    sessions = int(s.get("sessions_since") or 0)
-    heavy = concepts >= int(args.get("heavy_concepts") or 300) or sessions >= int(args.get("heavy_sessions") or 40)
+    concepts = _int(s.get("new_concepts_since"), 0)
+    sessions = _int(s.get("sessions_since"), 0)
+    heavy = concepts >= _int(args.get("heavy_concepts"), 300) or sessions >= _int(args.get("heavy_sessions"), 40)
     window_start = now - datetime.timedelta(minutes=into)
     last_dream = _rfc3339(s.get("last_dream_at"))
     if last_dream is not None and last_dream >= window_start and not heavy:
@@ -89,7 +106,7 @@ def gate(args: dict, s: dict, now) -> str:
     if on_ac is True:
         power_ok = True
     elif pct is not None:
-        power_ok = int(pct) >= BATTERY_MIN_PCT
+        power_ok = _int(pct, 0) >= BATTERY_MIN_PCT
     elif on_ac is False:
         power_ok = False
     else:
