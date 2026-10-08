@@ -145,7 +145,7 @@ function DeskRow({
 
 /**
  * ChatGPT's left rail: Chat, Talk, Note, Meeting, Attention, Agents, Library, the desks, the chat list, Settings; Search sits in
- * the header beside the toggle (49 §5.1). 97: Agents/Tasks/Routines and the seven Library pages are one row each; the
+ * the header beside the toggle (49 §5.1). 97: the five Agents pages and the five Library pages are one row each; the
  * page under it carries the tab band (`SectionBand`), so the rail stays short.
  */
 export function AppSidebar({ session }: { session: string | undefined }) {
