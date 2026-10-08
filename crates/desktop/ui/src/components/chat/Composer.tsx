@@ -40,6 +40,7 @@ import { isDesktop, touch } from '@/lib/platform'
 import { type OwnerUnreachable, ownerUnreachable } from '@/lib/owner'
 import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
+import type { CreateSessionOptionsEndless } from '@/rpc/endless-stubs'
 import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -75,8 +76,24 @@ import { analyserSource, tapOrLevels } from '@/lib/visual-source'
 import { QueuedChips } from './QueuedChips'
 import { type Ctx, FRESH, draftSkill, isCommand, matches, run } from './slash'
 
-/** New Chat options (51 §8.3): `private` selects memory-only retention; `project` is root metadata. */
-export type DraftCreate = { private: boolean; project: string | null }
+/** New Chat options (51 §8.3, 137 §11.3): `private` selects memory-only retention; `project` is root metadata; `endless` the summary-tree memory. */
+export type DraftCreate = { private: boolean; project: string | null; endless: boolean }
+
+/** The `create_session` options for a draft; `memory` is sent only when the ∞ switch is on (the engine's default otherwise). */
+export function createOptions(draft: DraftCreate): CreateSessionOptionsEndless {
+  return {
+    retention: draft.private ? 'private' : 'durable',
+    project: draft.project,
+    view: draft.private ? VIEW : null,
+    cwd: null,
+    model: null,
+    effort: null,
+    parent_session: null,
+    parent_engine: null,
+    harness: null,
+    memory: draft.endless ? 'endless' : null,
+  }
+}
 
 const NONE = EMPTY.pastes
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
@@ -716,20 +733,10 @@ export function Composer({
         await deadline(api.send_input(id, body, files, null, clientId))
       } else {
         let id: string
-        if (draftCreate?.private || draftCreate?.project) {
+        if (draftCreate?.private || draftCreate?.project || draftCreate?.endless) {
           if (draftCreate.private && !usePrivate.getState().acknowledged)
             throw new Error('Acknowledge the private session notice first')
-          const open = await api.create_session({
-            retention: draftCreate.private ? 'private' : 'durable',
-            project: draftCreate.project,
-            view: draftCreate.private ? VIEW : null,
-            cwd: null,
-            model: null,
-            effort: null,
-            parent_session: null,
-            parent_engine: null,
-            harness: null,
-          })
+          const open = await api.create_session(createOptions(draftCreate))
           if (open.retention === 'private') usePrivate.getState().open(open)
           id = open.session
         } else id = await api.new_session()

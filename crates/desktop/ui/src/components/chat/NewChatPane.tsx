@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 import { type UseNavigateResult, useNavigate } from '@tanstack/react-router'
 import { useEffect, useId, useState } from 'react'
 import { Composer, type DraftCreate } from '@/components/chat/Composer'
@@ -6,8 +7,12 @@ import { LinkBanner } from '@/components/link/LinkFailure'
 import { ProjectPicker } from '@/components/chat/ProjectPicker'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { draftProject, usePanes } from '@/lib/panes'
+import { useCompactorLabel } from '@/lib/endless'
 import { usePrivate } from '@/lib/private'
+import { queryKeys, useApi } from '@/lib/rpc'
+import type { EndlessConfig } from '@/rpc/endless-stubs'
 
 /**
  * The new-chat body shared by the `/new` route and a draft pane: header, prompt, composer, create options.
@@ -31,7 +36,12 @@ export function NewChat({
   const [project, setProject] = useState<string | null>(preset ?? null)
   // `/` stays mounted across `/` → `/?project=x`, so the preset must follow the URL, not just seed the state.
   useEffect(() => setProject(preset ?? null), [preset])
-  const draft: DraftCreate = { private: priv, project: project?.trim() || null }
+  // 137 §11.3: the ∞ switch starts at `agent.endless.default_chat` and is remembered per draft only.
+  const api = useApi()
+  const endlessSettings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
+  const [endless, setEndless] = useState<boolean | null>(null)
+  const endlessOn = endless ?? endlessSettings.data?.default_chat ?? false
+  const draft: DraftCreate = { private: priv, project: project?.trim() || null, endless: endlessOn }
   return (
     <>
       <Header session={null} first={first} onClose={onClose} />
@@ -39,7 +49,15 @@ export function NewChat({
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
         <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} />
-        <CreateOptions priv={priv} onPriv={setPriv} project={project} onProject={setProject} />
+        <CreateOptions
+          priv={priv}
+          onPriv={setPriv}
+          project={project}
+          onProject={setProject}
+          endless={endlessOn}
+          onEndless={setEndless}
+          settings={endlessSettings.data}
+        />
       </div>
     </>
   )
@@ -82,22 +100,32 @@ export function NewChatPane({ id, first }: { id: string; first: boolean }) {
   return <NewChat preset={draftProject(id)} pane={id} first={first} onClose={close} onCreated={created} />
 }
 
-/** Private toggle, project picker and the retention warning with its acknowledgement (51 §1, §8.3); sits under the composer. */
-function CreateOptions({
+/**
+ * Private toggle, project picker, the ∞ (endless memory) toggle, and their notices (51 §1, §8.3; 137 §11.3); sits under
+ * the composer. `settings` is `agent.endless` for the compactor line; absent before its first read.
+ */
+export function CreateOptions({
   priv,
   onPriv,
   project,
   onProject,
+  endless,
+  onEndless,
+  settings,
 }: {
   priv: boolean
   onPriv(v: boolean): void
   project: string | null
   onProject(v: string | null): void
+  endless: boolean
+  onEndless(v: boolean): void
+  settings: EndlessConfig | undefined
 }) {
   const acknowledged = usePrivate((s) => s.acknowledged)
   const acknowledge = usePrivate((s) => s.acknowledge)
   // Two draft panes may be open at once; label ids must not collide.
   const pid = useId()
+  const compactor = useCompactorLabel(settings?.model)
   return (
     <div className="mx-auto mt-1 w-full max-w-[768px] px-4 text-sm">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
@@ -105,6 +133,18 @@ function CreateOptions({
           <Switch checked={priv} onCheckedChange={onPriv} aria-label="Private session" />
           <span>Private</span>
         </label>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <label className="flex items-center gap-2">
+              <Switch checked={endless} onCheckedChange={onEndless} aria-label="Endless memory" />
+              {/* One text size up, pulled up a hair: the glyph's optical centre sits on the x-height, not the baseline. */}
+              <span aria-hidden className="relative -top-px text-base leading-5 [font-feature-settings:normal]">
+                ∞
+              </span>
+            </label>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Endless memory</TooltipContent>
+        </Tooltip>
         <div className="flex items-center gap-2">
           <Label htmlFor={pid} className="text-fg-secondary">
             Project
@@ -112,6 +152,17 @@ function CreateOptions({
           <ProjectPicker id={pid} value={project} onChange={onProject} />
         </div>
       </div>
+      {endless && (
+        <div className="mt-3 rounded-xl border border-border-subtle bg-muted/40 p-3">
+          <p className="font-medium">Endless memory</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-fg-secondary">
+            <li>Every turn starts from a compressed view of the whole chat; nothing is deleted, the distant past just gets coarser.</li>
+            <li>A background summariser keeps the view fresh; the first answer after a long turn may wait a few seconds for it.</li>
+            <li>zoom and recall bring any past message back word for word.</li>
+          </ul>
+          <p className="mt-2 text-xs text-fg-tertiary">Compactor: {compactor}</p>
+        </div>
+      )}
       {priv && (
         <div className="mt-3 rounded-xl border border-warning-border/40 bg-warning-bg p-3">
           <p className="font-medium">Private session</p>
