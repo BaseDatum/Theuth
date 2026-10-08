@@ -1387,6 +1387,44 @@ impl Message<MetricsOver> for Night {
     }
 }
 
+/// The dreaming session's turn ended while its night is still open — the
+/// budget guard ended it (`Abort::Budget` → `end_turn`, the `<budget>` note
+/// waits for a next turn a routine never has), an error or a timeout: close
+/// the night here so the record, `state.json` and the journal say so.
+impl Message<agent::AgentEvent> for Night {
+    type Reply = ();
+
+    async fn handle(&mut self, e: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
+        let agent::AgentEvent::TurnFinished {
+            session,
+            stop_reason,
+            ..
+        } = e
+        else {
+            return;
+        };
+        let Some(night) = self.active.clone() else {
+            return;
+        };
+        let Some(mut r) = read_record(&self.data_dir, &night) else {
+            return;
+        };
+        if r.session != Some(session) || r.summary.finished_at.is_some() {
+            return;
+        }
+        let line = format!(
+            "- turn ended (`{stop_reason}`) before the journal: the budget guard refused a call, or the turn errored or timed out; what was written stands and is in the receipt"
+        );
+        if let Err(err) = journal::append(&self.data_dir, &night, "Ended", &line).await {
+            tracing::warn!("dreaming: ended line not written: {err}");
+        }
+        r.phases.push(format!("ended: {stop_reason}"));
+        if let Err(err) = self.finish(r).await {
+            tracing::warn!("dreaming: night not closed after the turn ended: {err}");
+        }
+    }
+}
+
 /// Spawn, register and subscribe the actor; the `engine` is stamped into
 /// `state.json` once so the sensor and `home_engine` have something to compare.
 pub fn start(rt: &Runtime, cfg: DreamConfig, engine: &str) -> anyhow::Result<()> {
@@ -1402,6 +1440,7 @@ pub fn start(rt: &Runtime, cfg: DreamConfig, engine: &str) -> anyhow::Result<()>
     tokio::spawn(async move {
         rt2.subscribe::<Night, knowledge::KnowledgeChanged>(&actor)
             .await;
+        rt2.subscribe::<Night, agent::AgentEvent>(&actor).await;
     });
     Ok(())
 }
@@ -1796,5 +1835,66 @@ mod tests {
         assert_eq!(left_undone(dir.path(), &r), None);
         // No ledger file: nothing to gate on.
         assert_eq!(left_undone(tempfile::tempdir().unwrap().path(), &r), None);
+    }
+
+    /// A night whose turn ends without `section="journal"` (the budget guard
+    /// refused the next call — live night 3 at $0.05 — or an error) is closed
+    /// by the actor: `finished_at` set, `ended: <stop>` in the phases, an
+    /// `Ended` line in the journal, `run_request` cleared. Another session's
+    /// turn end is not ours.
+    #[tokio::test]
+    async fn turn_end_without_a_journal_closes_the_open_night() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_owned());
+        let actor = Night::spawn(Night::new(&rt, DreamConfig::default(), "e"));
+        let mine = SessionId::new();
+        let mut state = read_state(dir.path());
+        state.run_request = Some(RunRequest {
+            budget_usd: 0.05,
+            mode: RunMode::Pass,
+            run_timeout_secs: None,
+        });
+        write_state(dir.path(), &state).unwrap();
+        actor
+            .ask(BeginNight {
+                night: "2026-10-08".into(),
+                mode: "pass".into(),
+                session: Some(mine),
+            })
+            .await
+            .unwrap();
+        let finished = |session| agent::AgentEvent::TurnFinished {
+            session,
+            turn: runtime::TurnId::new(),
+            stop_reason: "end_turn".into(),
+            usage: Default::default(),
+            context: 0,
+        };
+        actor.tell(finished(SessionId::new())).await.unwrap();
+        actor.ask(Status).await.unwrap();
+        assert!(
+            read_record(dir.path(), "2026-10-08")
+                .unwrap()
+                .summary
+                .finished_at
+                .is_none(),
+            "another session's turn"
+        );
+        actor.tell(finished(mine)).await.unwrap();
+        actor.ask(Status).await.unwrap();
+        let r = read_record(dir.path(), "2026-10-08").unwrap();
+        assert!(r.summary.finished_at.is_some());
+        assert_eq!(r.phases, ["ended: end_turn"]);
+        let state = read_state(dir.path());
+        assert!(state.run_request.is_none() && state.nights == 1);
+        let j = journal::text(dir.path());
+        assert!(
+            j.contains("### Ended\n- turn ended (`end_turn`) before the journal"),
+            "{j}"
+        );
+        assert!(
+            j.contains("### Receipt\n- nothing changed · $0.00 of $0.05"),
+            "{j}"
+        );
     }
 }
