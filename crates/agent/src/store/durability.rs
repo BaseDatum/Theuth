@@ -1326,6 +1326,8 @@ impl Store {
     /// newest first; bounded to rows updated after `since`. A harness-made
     /// `System` note (the lost note, `append_local_note`) ends the match, so
     /// a child marked lost is not scanned again.
+    /// Only `kind = 'chat'` rows: advisors and 141's watch-only `observed`
+    /// children (never driven, no `agent`) are not respawned.
     pub async fn midprompt_acp_children(
         &self,
         since: DateTime<Utc>,
@@ -1334,7 +1336,7 @@ impl Store {
             "SELECT c.id, c.parent FROM sessions c \
              JOIN messages m ON m.session_id = c.id \
                AND m.seq = (SELECT MAX(seq) FROM messages WHERE session_id = c.id) \
-             WHERE c.agent IS NOT NULL AND c.parent IS NOT NULL AND c.kind != 'advisor' \
+             WHERE c.agent IS NOT NULL AND c.parent IS NOT NULL AND c.kind = 'chat' \
                AND (c.owner = '' OR c.owner = ?1) AND c.updated_at > ?2 AND {MIDPROMPT} \
              ORDER BY c.updated_at DESC"
         )))
