@@ -1,4 +1,4 @@
-# theuth-sensor: dreaming 1
+# theuth-sensor: dreaming 2
 # arg: window optional 01:00-06:00 — local window the night may start in (from dreaming.window)
 # arg: idle optional 20 — minutes since the last root turn (dreaming.idle_minutes)
 # arg: heavy_concepts optional 300 — new concepts that earn a second window (dreaming.heavy_day.concepts)
@@ -99,10 +99,17 @@ def gate(args: dict, s: dict, now) -> str:
     return ""
 
 
+def strip_header(text: str) -> str:
+    """`read_file` always starts with a `[read_file <path>: N lines, …]` line, even with numbers=False."""
+    if text.startswith("[read_file "):
+        return "\n".join(text.split("\n")[1:])
+    return text
+
+
 async def check(state: dict, args: dict) -> dict:
     try:
         text = await read_file("dreaming/signals.json", numbers=False)
-        signals = json.loads(text)
+        signals = json.loads(strip_header(text))
     except Exception as e:  # noqa: BLE001 — no file yet is "nothing new"
         return {"fire": False, "payload": "subject=dreaming events=no-signals " + str(e), "state": {}, "next": None}
     now = datetime.datetime.now(datetime.timezone.utc)

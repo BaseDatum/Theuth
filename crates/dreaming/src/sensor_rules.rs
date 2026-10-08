@@ -378,6 +378,42 @@ mod tests {
         assert_eq!(n, rows().len());
     }
 
+    /// `read_file` answers a `[read_file …]` header line before the text even
+    /// with `numbers=False`; `check` must parse the JSON under it (the night
+    /// never fired before this: every check was `events=no-signals`).
+    #[test]
+    fn python_sensor_reads_signals_under_the_read_file_header() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sensor.py"), crate::SENSOR).unwrap();
+        let script = "import asyncio, json\nimport sensor\nasync def read_file(path, numbers=True):\n    body = json.dumps({'last_root_turn_at': None, 'desks_doing': 0, 'new_concepts_since': 3, 'sessions_since': 1, 'last_dream_at': None, 'on_ac': True, 'tz_offset_minutes': 0})\n    return '[read_file ' + path + ': 1 lines, ' + str(len(body)) + ' bytes; showing lines 1–1]\\n' + body + '\\n'\nsensor.read_file = read_file\nr = asyncio.run(sensor.check({}, {'window': '00:00-23:59'}))\nprint(json.dumps(r))\n";
+        let out = match std::process::Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .current_dir(dir.path())
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("python3 not on PATH; header test skipped");
+                return;
+            }
+        };
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let r: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(r["fire"], true, "{r}");
+        assert!(
+            r["payload"]
+                .as_str()
+                .unwrap()
+                .starts_with("subject=dreaming events=go\ngate: open"),
+            "{r}"
+        );
+    }
+
     #[test]
     fn window_crossing_midnight() {
         let cfg = DreamConfig {

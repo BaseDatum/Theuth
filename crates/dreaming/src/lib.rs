@@ -296,7 +296,7 @@ mod tests {
             std::fs::read_to_string(dir.path().join("skills/dreaming.md")).unwrap(),
             SKILL
         );
-        assert!(SENSOR.starts_with("# theuth-sensor: dreaming 1\n"));
+        assert!(SENSOR.starts_with("# theuth-sensor: dreaming 2\n"));
     }
 
     #[test]
