@@ -75,6 +75,14 @@ observed-child columns. 141 also shipped `migrations/0041_observed_children.sql`
 W3's `loop_.rs` / `supervisor.rs` / `lib.rs` hunks merged clean beside 145's. Bindings regenerated again after
 the fold (export 8 passed).
 
+### W3 R1 fold (commit `798bd1e4`)
+`feat/144-w3 0ecfd0c9` merged: `Notebook.chats` from `Store::notebook_chat_counts()` via `agent::notebooks::chat_counts`
+in `notebook_list`/`notebook_get`; session citations checked by `check_session_cites()` after `CiteResolve`. One
+conflict in `rpc/src/api.rs` `notebook_get`: C's membership-checked `NotebookGet { id, by }` kept with W3's `mut r` chats
+patch. The migration stays `0042_session_notebook.sql`. Gates after: clippy `-p agent -p rpc -p document -p tui
+--tests -D warnings` clean; `cargo test -p agent -p rpc -p document -p link` (compiled under the lock, run bare) —
+agent 562 (+2 ignored) + 1 + 5, document 71 + 11 + 4 + 3 + 1 + 5 + 1, link 27, rpc 55 + 1, 0 failed.
+
 ## Proof
 Scratch engine `t --headless --data-dir /tmp/144-engine` (rpc 127.0.0.1:7145, `anthropic/claude-sonnet-4-5` through
 the env key, `link.enabled` on the public relay, `tools.policy.mutating: allow`), the gte checkpoint under
