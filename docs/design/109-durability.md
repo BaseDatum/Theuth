@@ -971,6 +971,8 @@ durability:
   pty_snapshot_secs: 5      # PTY screen snapshot timer (§5.3)
   journal_keep_days: 7      # finished-turn journal retention (§3.6)
   handoff_tokens: 4000      # ACP delta handoff budget (§7.3)
+  acp_respawn_window_days: 7    # 146 D1: how far back boot scans for mid-prompt ACP children
+  acp_respawn_parallel: 4   # 146 D2: ACP children respawning at once; the rest queue
   # the job reaper (§5.4) has no key: it always runs before any ResumeTurn
 ```
 
