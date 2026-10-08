@@ -1,18 +1,23 @@
 import { code } from '@streamdown/code'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Check, Copy, GitFork, type LucideIcon, RefreshCw, Square, Trash2, Volume2 } from 'lucide-react'
+import { Check, Copy, FilePlus, GitFork, type LucideIcon, RefreshCw, Square, StickyNote, Trash2, Volume2 } from 'lucide-react'
 import { type ComponentProps, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { type Components, type PluginConfig, Streamdown } from 'streamdown'
+import { useNotebookChat, type NotebookChat } from '@/components/notebooks/NotebookContext'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useNotebooksApi } from '@/lib/notebooks-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
 import { cn } from '@/lib/utils'
 import type { ContextEntry } from '@/rpc/bindings/ContextEntry'
 import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
+import type { DocSummary } from '@/rpc/bindings/DocSummary'
 import { useSessionField, useSessions } from '@/store/sessions'
+import { CitationLink, CitationsProvider, References } from './Citations'
 import { openContextPicker } from './ContextPicker'
 import { MermaidFence } from './Mermaid'
 import { Reserve } from './Reserve'
@@ -51,7 +56,7 @@ function Img({ node: _node, src, alt, ...rest }: ComponentProps<'img'> & { node?
 }
 // Markdown tables (`| a | b |`) take streamdown's `td` with the json-render `Table`'s wrapping rules; the table itself goes
 // natural-width via the `[&_table]` variants on the Streamdown className below, so streamdown's `overflow-x-auto` wrapper scrolls.
-export const markdownComponents: Components = { td: MarkdownTd, img: Img }
+export const markdownComponents: Components = { td: MarkdownTd, img: Img, a: CitationLink }
 export const shikiTheme: ['github-light', 'github-dark'] = ['github-light', 'github-dark']
 
 /** `text` fenced with `language`; the fence outruns any backtick run inside. */
@@ -191,6 +196,50 @@ function replyIndex(session: string, turn: number, id: string): number | undefin
   return n < 0 ? undefined : n
 }
 
+/** 144 §8: in a notebook's chat, an answer can be saved as a new note or promoted (appended) into one of the notebook's notes. */
+function NotebookActions({ session, turn, nbc }: { session: string; turn: number; nbc: NotebookChat }) {
+  const nb = useNotebooksApi()
+  const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
+  const save = () =>
+    nb.save_answer_as_note(session, turn, nbc.notebook).then((doc) => {
+      toast(`Saved as “${doc.title}”`)
+      nbc.onChanged()
+    }, fail)
+  const promote = (note: DocSummary) =>
+    nb.promote_answer(session, turn, note.id).then(() => {
+      toast(`Promoted into “${note.title}”`)
+      nbc.onChanged()
+    }, fail)
+  return (
+    <>
+      <ActionButton icon={StickyNote} label="Save answer as note" onClick={() => void save()} />
+      <DropdownMenu>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" className="size-11 rounded-lg text-fg-secondary" aria-label="Promote into a note">
+                <FilePlus />
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent>Promote into a note</TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="start" className="w-64">
+          {nbc.notes.length === 0 ? (
+            <DropdownMenuItem disabled>No notes in this notebook yet</DropdownMenuItem>
+          ) : (
+            nbc.notes.slice(0, 12).map((note) => (
+              <DropdownMenuItem key={note.id} onSelect={() => void promote(note)}>
+                <span className="truncate">{note.title}</span>
+              </DropdownMenuItem>
+            ))
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
+  )
+}
+
 /** Markdown at column width; `open` while the reply streams (only the last entry ever is). `turn` is the opener seq the reply belongs to; `id` is the entry id (for the fork's reply index).
  * `context` is the stored row's membership (48 §3.3); a removed row renders as archive, without turn actions. `readOnly` (an inspection page) keeps only copy/read-aloud. */
 export const MessageAssistant = memo(function MessageAssistant({
@@ -244,20 +293,24 @@ export const MessageAssistant = memo(function MessageAssistant({
     }
   }
   const stamp = useStampToggle()
+  const nbc = useNotebookChat()
   return (
     <div className="group py-2" onClick={stamp.onClick}>
-      <FenceContext value={fence}>
-        <Streamdown
-          mode={open ? undefined : 'static'}
-          isAnimating={open}
-          plugins={plugins}
-          components={markdownComponents}
-          shikiTheme={shikiTheme}
-          className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
-        >
-          {text}
-        </Streamdown>
-      </FenceContext>
+      <CitationsProvider text={text}>
+        <FenceContext value={fence}>
+          <Streamdown
+            mode={open ? undefined : 'static'}
+            isAnimating={open}
+            plugins={plugins}
+            components={markdownComponents}
+            shikiTheme={shikiTheme}
+            className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
+          >
+            {text}
+          </Streamdown>
+        </FenceContext>
+        <References />
+      </CitationsProvider>
       {!open && (
         <div className="-ml-2 flex items-center">
           {voice && <ActionButton icon={mine ? Square : Volume2} label={mine ? 'Stop' : 'Read aloud'} onClick={readAloud} />}
@@ -269,6 +322,7 @@ export const MessageAssistant = memo(function MessageAssistant({
             </>
           )}
           {!readOnly && context && !context.removed && <RemoveButton session={session} target={context.target} active={context.active} />}
+          {nbc && !readOnly && turn != null && <NotebookActions session={session} turn={turn} nbc={nbc} />}
           <Stamp at={at} shown={stamp.shown} className="ml-auto" />
         </div>
       )}

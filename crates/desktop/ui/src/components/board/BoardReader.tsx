@@ -10,6 +10,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { MessageSquareQuote, RefreshCw } from 'lucide-react'
 import { type CSSProperties, Fragment, type ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from 'zustand'
+import { CitationLink } from '@/components/chat/Citations'
 import { MermaidFence } from '@/components/chat/Mermaid'
 import { Excerpt, type ExcerptProps } from '@/components/chat/surface/Excerpt'
 import { FenceFallback, JsonRenderFence } from '@/components/chat/surface/JsonRenderFence'
@@ -17,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import type { AttachRef } from '@/lib/attach'
 import { composeAsk } from '@/lib/board-ask'
 import { useBoards } from '@/lib/boards'
+import { parseTheuthHref } from '@/lib/citations'
 import type { EngineProvider } from '@/lib/doc/provider'
 import { usePointerCoarse } from '@/lib/mobile'
 import { useApi } from '@/lib/rpc'
@@ -387,7 +389,7 @@ function CodeBlock({ block }: { block: Extract<DocBlock, { type: 'codeBlock' }> 
   }
 }
 
-/** Styled runs and links; a `code:` href is an anchor span, any other link opens outside. */
+/** Styled runs and links; a `code:` href is an anchor span, a `theuth://` href a citation chip, any other link opens outside. */
 function InlineContent({ content, blockId, claim }: { content: DocBlock['content']; blockId: string; claim: string }) {
   if (!Array.isArray(content)) return null
   return (
@@ -397,6 +399,13 @@ function InlineContent({ content, blockId, claim }: { content: DocBlock['content
         if (c.type !== 'link') return null
         const anchor = codeAnchor(c.href)
         const inner = c.content.map((t, j) => <Styled key={j} run={t} />)
+        if (parseTheuthHref(c.href)) {
+          return (
+            <CitationLink key={i} href={c.href}>
+              {inner}
+            </CitationLink>
+          )
+        }
         if (anchor) {
           return (
             <AnchorSpan key={i} anchor={anchor} blockId={blockId} claim={claim}>

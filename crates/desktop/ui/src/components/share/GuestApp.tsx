@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Editor as BlockEditor } from '@/components/editor/Editor'
+import { NotebookGuest } from '@/components/notebooks/NotebookGuest'
 import { ParticipantStrip } from '@/components/share/ParticipantStrip'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,6 +15,7 @@ import { getIdentity } from '@/link/keys'
 import { LinkTransport } from '@/link/transport'
 import { makeApi } from '@/rpc/api'
 import type { DocEvent } from '@/rpc/bindings/DocEvent'
+import type { DocKind } from '@/rpc/bindings/DocKind'
 import { RpcClient } from '@/rpc/client'
 
 /** IndexedDB row (`link`/`identity`) holding the name this browser joins with; asked once (59 §8.6). */
@@ -21,7 +23,7 @@ const NAME_KEY = 'guest-name'
 
 type GuestState =
   | { kind: 'connecting' }
-  | { kind: 'open'; provider: EngineProvider; user: GuestUser; owner: string }
+  | { kind: 'open'; provider: EngineProvider; user: GuestUser; owner: string; client: RpcClient; engine: string }
   /** Terminal: the connection is closed and the page says why. */
   | { kind: 'gone'; message: string }
 
@@ -149,7 +151,7 @@ function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
         } else if (s.reason === 'revoked') end('Your access was removed.')
         else if (s.reason === 'deleted') end('This document was deleted.')
       })
-      setState({ kind: 'open', provider: p, user, owner: transport.hello?.name ?? '' })
+      setState({ kind: 'open', provider: p, user, owner: transport.hello?.name ?? '', client, engine: target.engineId })
     }
     let joined = false
     const off = client.onState((s) => {
@@ -178,10 +180,10 @@ function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
 
   if (state.kind === 'gone') return <Screen title={state.message} />
   if (state.kind === 'connecting') return <Screen title="Connecting…" hint="Waiting for the owner's Mac through the relay." />
-  return <GuestDocument key={state.provider.doc.clientID} provider={state.provider} user={state.user} owner={state.owner} />
+  return <GuestDocument key={state.provider.doc.clientID} provider={state.provider} user={state.user} owner={state.owner} client={state.client} engine={state.engine} />
 }
 
-function GuestDocument({ provider, user, owner }: { provider: EngineProvider; user: GuestUser; owner: string }) {
+function GuestDocument({ provider, user, owner, client, engine }: { provider: EngineProvider; user: GuestUser; owner: string; client: RpcClient; engine: string }) {
   const [status, setStatus] = useState<DocStatus>(provider.status)
   const [title, setTitle] = useState(provider.meta?.title ?? '')
   useEffect(() => {
@@ -208,7 +210,12 @@ function GuestDocument({ provider, user, owner }: { provider: EngineProvider; us
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium">{title || 'Untitled'}</h1>
         <ParticipantStrip provider={provider} />
       </header>
-      <BlockEditor provider={provider} status={status} />
+      {/* 144 §12.5: a shared notebook is its three columns, not a paper (`notebook` joins `DocKind` with the bindings). */}
+      {provider.meta?.kind === ('notebook' as DocKind) ? (
+        <NotebookGuest provider={provider} client={client} engine={engine} user={user} role={user.role} />
+      ) : (
+        <BlockEditor provider={provider} status={status} />
+      )}
       <footer className="flex h-8 shrink-0 items-center justify-between gap-3 border-t border-border-subtle px-4 text-xs text-fg-tertiary">
         <span data-testid="guest-you">
           You are {user.role === 'viewer' ? 'viewing' : 'editing'} as <span style={{ color: user.color }}>{user.name}</span>

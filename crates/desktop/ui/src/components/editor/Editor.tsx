@@ -20,11 +20,13 @@ import '@blocknote/shadcn/style.css'
 import { FRAGMENT, createDocumentSchema, links } from '@theuth/documents/schema'
 import { GripVertical, Sparkles, Workflow } from 'lucide-react'
 import { type SyntheticEvent, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useOpenCite, usePulseBlock } from '@/components/chat/Citations'
 import { codeBlock } from '@/components/editor/CodeBlock'
 import { frontmatterBlock } from '@/components/editor/FrontmatterBlock'
 import { MobileToolbar } from '@/components/editor/MobileToolbar'
 import { revealExtension } from '@/components/editor/reveal'
 import { DictationButton } from '@/components/ui/dictation'
+import { parseTheuthHref } from '@/lib/citations'
 import type { AgentPresence, DocStatus, EngineProvider } from '@/lib/doc/provider'
 import { usePointerCoarse } from '@/lib/mobile'
 import { deviceName } from '@/lib/platform'
@@ -166,6 +168,9 @@ export function Editor({
     [provider],
   )
   const agent = useAgentPresence(provider)
+  // 144 §6.3: `#<block>` in the location pulses that block; a `theuth://` link opens its target (no-op without a router).
+  usePulseBlock()
+  const openCite = useOpenCite()
   const extraItems = useMemo(
     () => [
       {
@@ -194,7 +199,19 @@ export function Editor({
     [onAsk, editor],
   )
   return (
-    <div className={cn('flex min-h-0 flex-1 flex-col', className)} data-toolbar={toolbar || undefined} data-paper={dense ? 'dense' : 'page'}>
+    <div
+      className={cn('flex min-h-0 flex-1 flex-col', className)}
+      data-toolbar={toolbar || undefined}
+      data-paper={dense ? 'dense' : 'page'}
+      onClickCapture={(e) => {
+        const href = (e.target as Element).closest('a[href^="theuth://"]')?.getAttribute('href')
+        const cite = href ? parseTheuthHref(href) : null
+        if (!cite) return
+        e.preventDefault()
+        e.stopPropagation()
+        openCite(cite)
+      }}
+    >
       <BlockNoteView
         editor={editor}
         theme={dark ? 'dark' : 'light'}

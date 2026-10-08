@@ -17,6 +17,7 @@ import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as LibraryRouteImport } from './routes/library'
 import { Route as LinkRouteImport } from './routes/link'
 import { Route as NewRouteImport } from './routes/new'
+import { Route as NotebooksRouteImport } from './routes/notebooks'
 import { Route as NotesRouteImport } from './routes/notes'
 import { Route as OverlayRouteImport } from './routes/overlay'
 import { Route as SecretsRouteImport } from './routes/secrets'
@@ -32,12 +33,14 @@ import { Route as MeetingsIndexRouteImport } from './routes/meetings.index'
 import { Route as MeetingsIdRouteImport } from './routes/meetings.$id'
 import { Route as MeetingsBriefsRouteImport } from './routes/meetings.briefs'
 import { Route as MeetingsNewRouteImport } from './routes/meetings.new'
+import { Route as NotebooksIdRouteImport } from './routes/notebooks_.$id'
 import { Route as NotesIdRouteImport } from './routes/notes_.$id'
 import { Route as RoutinesIndexRouteImport } from './routes/routines.index'
 import { Route as RoutinesNewRouteImport } from './routes/routines.new'
 import { Route as SettingsTabRouteImport } from './routes/settings.$tab'
 import { Route as SkillsIndexRouteImport } from './routes/skills.index'
 import { Route as SkillsNameRouteImport } from './routes/skills.$name'
+import { Route as SourcesIdRouteImport } from './routes/sources_.$id'
 import { Route as TalkSessionRouteImport } from './routes/talk.$session'
 import { Route as TasksIndexRouteImport } from './routes/tasks.index'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
@@ -87,6 +90,11 @@ const LinkRoute = LinkRouteImport.update({
 const NewRoute = NewRouteImport.update({
   id: '/new',
   path: '/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NotebooksRoute = NotebooksRouteImport.update({
+  id: '/notebooks',
+  path: '/notebooks',
   getParentRoute: () => rootRouteImport,
 } as any)
 const NotesRoute = NotesRouteImport.update({
@@ -164,6 +172,11 @@ const MeetingsNewRoute = MeetingsNewRouteImport.update({
   path: '/meetings/new',
   getParentRoute: () => rootRouteImport,
 } as any)
+const NotebooksIdRoute = NotebooksIdRouteImport.update({
+  id: '/notebooks_/$id',
+  path: '/notebooks/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const NotesIdRoute = NotesIdRouteImport.update({
   id: '/notes_/$id',
   path: '/notes/$id',
@@ -192,6 +205,11 @@ const SkillsIndexRoute = SkillsIndexRouteImport.update({
 const SkillsNameRoute = SkillsNameRouteImport.update({
   id: '/skills/$name',
   path: '/skills/$name',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SourcesIdRoute = SourcesIdRouteImport.update({
+  id: '/sources_/$id',
+  path: '/sources/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TalkSessionRoute = TalkSessionRouteImport.update({
@@ -254,6 +272,7 @@ export interface FileRoutesByFullPath {
   '/library': typeof LibraryRoute
   '/link': typeof LinkRoute
   '/new': typeof NewRoute
+  '/notebooks': typeof NotebooksRoute
   '/notes': typeof NotesRoute
   '/overlay': typeof OverlayRoute
   '/secrets': typeof SecretsRoute
@@ -266,10 +285,12 @@ export interface FileRoutesByFullPath {
   '/meetings/$id': typeof MeetingsIdRoute
   '/meetings/briefs': typeof MeetingsBriefsRoute
   '/meetings/new': typeof MeetingsNewRoute
+  '/notebooks/$id': typeof NotebooksIdRoute
   '/notes/$id': typeof NotesIdRoute
   '/routines/new': typeof RoutinesNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/skills/$name': typeof SkillsNameRoute
+  '/sources/$id': typeof SourcesIdRoute
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
   '/vm/$name': typeof VmNameRoute
@@ -294,6 +315,7 @@ export interface FileRoutesByTo {
   '/library': typeof LibraryRoute
   '/link': typeof LinkRoute
   '/new': typeof NewRoute
+  '/notebooks': typeof NotebooksRoute
   '/notes': typeof NotesRoute
   '/overlay': typeof OverlayRoute
   '/secrets': typeof SecretsRoute
@@ -306,10 +328,12 @@ export interface FileRoutesByTo {
   '/meetings/$id': typeof MeetingsIdRoute
   '/meetings/briefs': typeof MeetingsBriefsRoute
   '/meetings/new': typeof MeetingsNewRoute
+  '/notebooks/$id': typeof NotebooksIdRoute
   '/notes/$id': typeof NotesIdRoute
   '/routines/new': typeof RoutinesNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/skills/$name': typeof SkillsNameRoute
+  '/sources/$id': typeof SourcesIdRoute
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
   '/vm/$name': typeof VmNameRoute
@@ -336,6 +360,7 @@ export interface FileRoutesById {
   '/library': typeof LibraryRoute
   '/link': typeof LinkRoute
   '/new': typeof NewRoute
+  '/notebooks': typeof NotebooksRoute
   '/notes': typeof NotesRoute
   '/overlay': typeof OverlayRoute
   '/secrets': typeof SecretsRoute
@@ -348,10 +373,12 @@ export interface FileRoutesById {
   '/meetings/$id': typeof MeetingsIdRoute
   '/meetings/briefs': typeof MeetingsBriefsRoute
   '/meetings/new': typeof MeetingsNewRoute
+  '/notebooks_/$id': typeof NotebooksIdRoute
   '/notes_/$id': typeof NotesIdRoute
   '/routines/new': typeof RoutinesNewRoute
   '/settings/$tab': typeof SettingsTabRoute
   '/skills/$name': typeof SkillsNameRoute
+  '/sources_/$id': typeof SourcesIdRoute
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
   '/vm/$name': typeof VmNameRoute
@@ -379,6 +406,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/link'
     | '/new'
+    | '/notebooks'
     | '/notes'
     | '/overlay'
     | '/secrets'
@@ -391,10 +419,12 @@ export interface FileRouteTypes {
     | '/meetings/$id'
     | '/meetings/briefs'
     | '/meetings/new'
+    | '/notebooks/$id'
     | '/notes/$id'
     | '/routines/new'
     | '/settings/$tab'
     | '/skills/$name'
+    | '/sources/$id'
     | '/talk/$session'
     | '/tasks/$id'
     | '/vm/$name'
@@ -419,6 +449,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/link'
     | '/new'
+    | '/notebooks'
     | '/notes'
     | '/overlay'
     | '/secrets'
@@ -431,10 +462,12 @@ export interface FileRouteTypes {
     | '/meetings/$id'
     | '/meetings/briefs'
     | '/meetings/new'
+    | '/notebooks/$id'
     | '/notes/$id'
     | '/routines/new'
     | '/settings/$tab'
     | '/skills/$name'
+    | '/sources/$id'
     | '/talk/$session'
     | '/tasks/$id'
     | '/vm/$name'
@@ -460,6 +493,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/link'
     | '/new'
+    | '/notebooks'
     | '/notes'
     | '/overlay'
     | '/secrets'
@@ -472,10 +506,12 @@ export interface FileRouteTypes {
     | '/meetings/$id'
     | '/meetings/briefs'
     | '/meetings/new'
+    | '/notebooks_/$id'
     | '/notes_/$id'
     | '/routines/new'
     | '/settings/$tab'
     | '/skills/$name'
+    | '/sources_/$id'
     | '/talk/$session'
     | '/tasks/$id'
     | '/vm/$name'
@@ -502,6 +538,7 @@ export interface RootRouteChildren {
   LibraryRoute: typeof LibraryRoute
   LinkRoute: typeof LinkRoute
   NewRoute: typeof NewRoute
+  NotebooksRoute: typeof NotebooksRoute
   NotesRoute: typeof NotesRoute
   OverlayRoute: typeof OverlayRoute
   SecretsRoute: typeof SecretsRoute
@@ -511,10 +548,12 @@ export interface RootRouteChildren {
   MeetingsIdRoute: typeof MeetingsIdRoute
   MeetingsBriefsRoute: typeof MeetingsBriefsRoute
   MeetingsNewRoute: typeof MeetingsNewRoute
+  NotebooksIdRoute: typeof NotebooksIdRoute
   NotesIdRoute: typeof NotesIdRoute
   RoutinesNewRoute: typeof RoutinesNewRoute
   SettingsTabRoute: typeof SettingsTabRoute
   SkillsNameRoute: typeof SkillsNameRoute
+  SourcesIdRoute: typeof SourcesIdRoute
   TalkSessionRoute: typeof TalkSessionRoute
   TasksIdRoute: typeof TasksIdRoute
   VmNameRoute: typeof VmNameRoute
@@ -587,6 +626,13 @@ declare module '@tanstack/react-router' {
       path: '/new'
       fullPath: '/new'
       preLoaderRoute: typeof NewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/notebooks': {
+      id: '/notebooks'
+      path: '/notebooks'
+      fullPath: '/notebooks'
+      preLoaderRoute: typeof NotebooksRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/notes': {
@@ -694,6 +740,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MeetingsNewRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/notebooks_/$id': {
+      id: '/notebooks_/$id'
+      path: '/notebooks/$id'
+      fullPath: '/notebooks/$id'
+      preLoaderRoute: typeof NotebooksIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/notes_/$id': {
       id: '/notes_/$id'
       path: '/notes/$id'
@@ -734,6 +787,13 @@ declare module '@tanstack/react-router' {
       path: '/skills/$name'
       fullPath: '/skills/$name'
       preLoaderRoute: typeof SkillsNameRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sources_/$id': {
+      id: '/sources_/$id'
+      path: '/sources/$id'
+      fullPath: '/sources/$id'
+      preLoaderRoute: typeof SourcesIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/talk/$session': {
@@ -856,6 +916,7 @@ const rootRouteChildren: RootRouteChildren = {
   LibraryRoute: LibraryRoute,
   LinkRoute: LinkRoute,
   NewRoute: NewRoute,
+  NotebooksRoute: NotebooksRoute,
   NotesRoute: NotesRoute,
   OverlayRoute: OverlayRoute,
   SecretsRoute: SecretsRoute,
@@ -865,10 +926,12 @@ const rootRouteChildren: RootRouteChildren = {
   MeetingsIdRoute: MeetingsIdRoute,
   MeetingsBriefsRoute: MeetingsBriefsRoute,
   MeetingsNewRoute: MeetingsNewRoute,
+  NotebooksIdRoute: NotebooksIdRoute,
   NotesIdRoute: NotesIdRoute,
   RoutinesNewRoute: RoutinesNewRoute,
   SettingsTabRoute: SettingsTabRoute,
   SkillsNameRoute: SkillsNameRoute,
+  SourcesIdRoute: SourcesIdRoute,
   TalkSessionRoute: TalkSessionRoute,
   TasksIdRoute: TasksIdRoute,
   VmNameRoute: VmNameRoute,
