@@ -464,6 +464,12 @@ const NEWEST: &str = "SELECT session_id, turn_id, kind, \
 /// `ToolCall` without its `Tool` response, or a `Tool` response the model
 /// never answered. An idle child ends on `Assistant` text; a lost one on a
 /// `System` note.
+/// 146 (141 coordination): the `sessions.kind` values of ACP children this
+/// engine drives — the respawn trigger set and the ACP journal apply to these
+/// only. 141's watch-only harness-internal children (`SessionKind::Observed`,
+/// never prompted by us) and 125's advisors are outside it by construction.
+pub const DRIVEN_KINDS: &str = "('chat')";
+
 const MIDPROMPT: &str = "(json_extract(m.body, '$.role') IN ('User', 'Tool') \
      OR (json_extract(m.body, '$.role') = 'Assistant' AND EXISTS \
          (SELECT 1 FROM json_each(m.body, '$.content') WHERE json_type(value, '$.ToolCall') IS NOT NULL)))";
@@ -1413,7 +1419,7 @@ impl Store {
             "SELECT c.id, c.parent FROM sessions c \
              JOIN messages m ON m.session_id = c.id \
                AND m.seq = (SELECT MAX(seq) FROM messages WHERE session_id = c.id) \
-             WHERE c.agent IS NOT NULL AND c.parent IS NOT NULL AND c.kind = 'chat' \
+             WHERE c.agent IS NOT NULL AND c.parent IS NOT NULL AND c.kind IN {DRIVEN_KINDS} \
                AND (c.owner = '' OR c.owner = ?1) AND c.updated_at > ?2 AND {MIDPROMPT} \
                AND NOT EXISTS (SELECT 1 FROM turn_steps t WHERE t.session_id = c.id) \
              ORDER BY c.updated_at DESC"

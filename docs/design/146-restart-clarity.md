@@ -56,6 +56,14 @@ nobody was told, and the dead children's dangling `ToolCall` rendered as a runni
   harness's connect + prompt accept (1–2 s in P7).
 - **D10 touches `acp_child.rs` by one line** (`queue_respawn`: `handoff::restored_note(&self.store, self.id, now).await`): the restored note needs the store to name the interrupted prompt; nothing else in that file or `crates/acp/**` changed. For design 141 to clear.
 - **D9 journals at dispatch *and* on the child's `TurnStarted`** with supervisor-minted turn ids (the actor's ids are its own): the journal models "this child owes work" (one open turn per child), not the harness's turn boundaries. `turn_finished_in` now also sets `sessions.last_stop`/`finished_at` on ACP children.
+- **141 coordination (delta 3)**: the trigger set (journal split, wait rows, messages fallback) and the ACP
+  journal apply only to `sessions.kind IN ('chat')` (`store::durability::DRIVEN_KINDS`, `acp_resume::driven`):
+  141's `SessionKind::Observed` watch-only children and advisors are never respawned or journaled. No
+  match on `acp::Update` anywhere in 146. The boot-pass edit is one compact block in `ActivityRegistered`
+  (141's `self.mark_observed_lost().await;` folds in after `self.respawn_acp_children(…)`); `Cancel` and
+  `LoadSession` are untouched. The approved ≤ 5-line `acp_child.rs` hunk is **not** at the cancel path:
+  D10 needed no marker there (the drain's `suspended{shutdown}` + the `draining()` skip carry it); the one
+  line is in `queue_respawn` (`restored_note` takes the store) — same budget, different hunk; 141 to clear.
 - **A quiet boot (0 resumed, 0 respawned, 0 lost) raises no item** — the brief did not say; a notice on
   every boot would be noise.
 - **A lost child's `child_result` wait row is cleared** (`child_waits::child_result_delivered`): otherwise a
@@ -97,6 +105,8 @@ Final run (`/tmp/146-smoke.log`; binary `target/w/debug/t` at the final commit);
 | P9 (D11) `~/.omp/agent/sessions/*/*_<acp>*` deleted before the reboot (run 21:30) | ✓ `respawned=1 fresh=1 lost=0`; the child's next row: "your previous harness session <old id> could not be loaded … read git log and git status first", `Your original brief: "Run exactly one shell command…"`; `sessions.acp_session` is a new id, `acp_previous` the old; HUD `Restarted 21:20 · 1 restarted fresh`; parent got DONE |
 | P5 second `t --headless` | ✓ exit 0 after 68 ms, stderr `engine already running (pid 49070, headless, since 19:57, ws://127.0.0.1:7961) — run `t` to attach …`; first engine's `info` still answers |
 | P6 `open_turns` on the `.backup` copy (25 581 `turn_steps` rows / 1 027 turns) | ✓ old 1.12–1.26 s → new 0.085–0.09 s at 15:40/17:09 (cold-ish cache), old 0.63 s → new 0.052 s at 17:30 (warm): 12–14×; with the 0043 index the old query also drops to 0.04–0.07 s and the new is unchanged. Result sets identical (`EXCEPT` both ways = 0). The index pays for `open_turn` / `journal_prune` / `resume_report` (per-turn `at` seeks) |
+| P5 second `t --headless` | ✓ exit 0 after 59–125 ms across six runs (one outlier of 1 171 ms at load average 66 with other waves' cargo builds: the 1.2 GB debug binary's own load time, not the guard), stderr `engine already running (pid 49070, headless, since 19:57, ws://127.0.0.1:7961) — run `t` to attach …`; first engine's `info` still answers |
+| P6 `open_turns` on the `.backup` copy (25 581 `turn_steps` rows / 1 027 turns) | ✓ old 1.12–1.26 s → new 0.085–0.09 s at 15:40/17:09 (cold-ish cache), old 0.63 s → new 0.052 s at 17:30 (warm): 12–14×; with the 0042 index the old query also drops to 0.04–0.07 s and the new is unchanged. Result sets identical (`EXCEPT` both ways = 0). The index pays for `open_turn` / `journal_prune` / `resume_report` (per-turn `at` seeks) |
 
 Observed while proving, not fixed here: `set_model(…, persist = true)` / `add_provider` append a second
 top-level `agent:` block when the existing one is a flow mapping (`agent: { communication: true }`);
