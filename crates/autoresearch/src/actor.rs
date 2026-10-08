@@ -1829,9 +1829,10 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     // §5.4: the base's holdout, the reference every later holdout is judged against.
     holdout(env, study, &head, 0, &cancel).await?;
 
-    let model = env.cfg.executor(&spec.models, &env.agent);
-    let text = schedule_file::text(&spec, &env.cfg, &worktree, &model, start);
-    schedule_file::write(&env.data_dir, &slug, &text).await?;
+    // `running` first, then the file: a fire can follow the write at once (`every: 0s`
+    // plus the Reconcile the write asks for), and the confinement resolver ends the
+    // loop of a study that is not running or paused ("toolset gone", 140-P live).
+    // A failed write still lands in `failed` through `prepare`'s error path.
     patch(
         env,
         study,
@@ -1842,6 +1843,9 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     )
     .await?;
     set_state(env, study, StudyState::Running, None).await?;
+    let model = env.cfg.executor(&spec.models, &env.agent);
+    let text = schedule_file::text(&spec, &env.cfg, &worktree, &model, start);
+    schedule_file::write(&env.data_dir, &slug, &text).await?;
     let sched = schedule_file::name(&slug);
     deliver(study.origin, &slug, start_card(study, m, sigma, &sched));
     Ok(())

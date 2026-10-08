@@ -517,6 +517,35 @@ async fn create_prepares_to_running_with_baseline_sigma_and_schedule_file() {
     assert!(e.contains("taken"), "{e}");
 }
 
+/// 140-P: the schedule file appears only once the study is `running` — a fire that
+/// follows the write at once must find a study the confinement resolver owns.
+#[tokio::test]
+async fn study_is_running_before_its_schedule_file_exists() {
+    let fake = Fake::with_values(&[100.0, 101.0, 99.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let sp = spec(&h, "t1", 10);
+    create(
+        &mut h.studies,
+        Create {
+            spec: sp,
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap();
+    let file = h._dir.path().join("schedules/autoresearch-t1.md");
+    for _ in 0..500 {
+        if file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(file.exists(), "schedule file never written");
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert_eq!(s.state, StudyState::Running, "file written before running");
+}
+
 #[tokio::test]
 async fn noisy_baseline_fails_with_the_numbers() {
     let fake = Fake::with_values(&[100.0, 120.0, 80.0]);
