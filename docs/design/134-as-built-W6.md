@@ -199,3 +199,54 @@ Not exercised: a mid-grace reconnect on a live engine (unit-tested only — no s
   folder is left) — a reinstall to the same path will not show the tip again. Sky may prefer the flag in the data dir.
 - Recorded for the orchestrator, not changed (per the 04:33 addendum): hire/blocked toasts carrying only "Open panel · Later"
   are by design; Unblock refused by the engine while blockers exist is product-level.
+
+## 5. Integration and packaged gate (orchestrator, 2026-10-08 05:25–07:45)
+
+**Integrated tree.** `integrate/134-w6` cab3145a merges, in this order:
+- feat/134-w6-polish 64fa0054 (this wave);
+- feat/134-w6-tools 1df28454: `w5-gate.ps1 pkg-start SHA` / `launch-task`, plus the desktop tray tooltip;
+- feat/130-parity 89d0ad3e: the macOS companion's parity fixes, see `130-as-built-PARITY.md`;
+- origin/main 4606b76e;
+- `w5-gate.ps1 launch-logged` / `stdout`.
+
+No conflicts. 40 files against main.
+
+**Gates on the integrated tree.**
+
+| Gate | Result |
+|---|---|
+| C# Core / Rpc (Mac `test.sh`) | 141/141 · 35/35 |
+| Swift `test.sh` / `swift build -c release` | 92 tests in 21 suites · Build complete |
+| `cargo fmt --check -p desktop` · `cargo clippy -p desktop --no-deps -D warnings` · `cargo test -p desktop --lib` | clean · clean · 48 passed |
+| tray tooltip (`App.tsx`) | `tsc -b --noEmit` baseline diff: 0 new errors, none in App.tsx (273 pre-existing from stale bindings in an unseeded tree) |
+| build-B companion Debug build · Windows `cargo check -p desktop` | 0 errors / 0 warnings · 0 / 0 |
+| build-B release package (`pkg-start cab3145a`, v2.12.3 → full workspace rebuild) | exit 0 at 06:25 (58 min), setup 309.7 MB |
+
+The `verdict()` tests in `companion/windows.rs` compile only on Windows, and the build service's `cargo check` does not build tests. They were read, not run.
+
+**Update path, packaged.** Setup ran over the running 2.12.2+f51e3bb3 app, its engine and its companion: exit 0 in 44 s. Nothing was left running afterwards; the hook stopped the companion and the job object took the engine with the shell. Then 488 companion files, the scheme registered, and `companion.json` kept.
+
+**Startup flicker, packaged — fixed.** `launch-logged` produced exactly `05:33:44.691 companion: launched …` and `05:33:44.696 companion: alive=true; tray hidden`, with no `alive=false` afterwards. Re-read at 06:35. Before the fix the same log showed alive=true → false → true within 2 s.
+
+**Dev-machine caveat (not a user bug).** With `launch_at_login` true in the shared `~\.theuth\companion.json`, any companion instance rewrites `Run\TheuthCompanion` to ITS OWN exe on start, including a Debug build or a packaging run started from `target\release\companion-windows\`. After the package build the Run value pointed into the release clone. The installed companion wrote it back on its next start (verified 06:35). A later fix could write the value only from the installed location, or only on a user toggle.
+
+**Packaged recheck, first package (2.12.3+cab3145a, 06:36–06:50, fresh windows-mcp subagent): 7/7 PASS.**
+- R1: the pin tip stayed silent because the icon was promoted (log `verdict=Promoted … IsPromoted=1`), and settings JSON loads in the trimmed publish.
+- R2: the shell tray tooltip reads `theuth · nothing needs you`.
+- R3: the menu order ends with Quit theuth · Quit theuth Companion, and paused shows `Pause notifications (until 07:41)` plus check marks.
+- R4: `theuth couldn't reply — model: Resolver error …` arrived 34 ms after the ask.
+- R5: the Launch-at-login toggle took `ui_click` twice with the same element id.
+- R6: a toast click launched the companion, the action was replayed after the first refetch, and the panel opened on the hire card about 1.5 s after the click.
+- R7: Quit theuth ended every process in about 1 s, with no Application Error.
+
+The recheck also found item 10 (below): a spurious engine-unreachable toast on every intentional quit.
+
+**Item 10, packaged (2.12.3+7fd8068f, installed over the running app at 07:35, exit 0 in 42 s, flicker-free start):** R2′ PASS: "Quit theuth Companion" logged `quitting — engine-loss toast suppressed`, no toast, the shell tooltip correct, and the Run value written back to the installed exe on relaunch. R7′ PASS: "Quit theuth" took 160 ms from click to exit (`quitting — engine-loss toast suppressed` → `theuth://quit` → `WM_CLOSE` → exit 0), every process was gone, and Notification Center gained no new "engine unreachable" entry (newest stayed 7:19 AM) and no crash. The update over the running app also produced no toast: the companion held two transient losses during the shell's engine handover (`engine lost — held for 5 s before the error toast (item 10)` at 07:35:50 and 07:35:51) and dropped them on reconnect.
+
+**What landed vs what was packaged.** The packaged and rechecked build is 7fd8068f. The landed tree adds two things. One is 877606e9: two lines in `Notifier.cs` that log a held engine loss once per outage, not per reconnect attempt. It is Debug-built 0/0 on build-B, and Core is 146/146 on the final tree (my run). The other is 594343f4, which is this document. The Rpc code and tests are byte-identical to the 35/35 run on cab3145a.
+
+**For Sky.**
+1. Backdrops (§2): retry the rail acrylic with a region-based pass-through instead of the layered window, and chase the panel Mica light-under-Dark anomaly on WinAppSDK 2.5.1, or accept opaque surfaces.
+2. Unblock is a product-level issue on all three surfaces (desktop inbox, Windows, macOS). The engine refuses `blocked → todo` while blockers exist. Knowledge `facts/theuth-attention-unblock-refused-while-blockers-exist-2026-10-08` has the options.
+3. build-B's installed app has no model credential: Library › Secrets is empty, every turn fails `ApiKeyEnvNotFound ANTHROPIC_API_KEY`, and the picker lists no provider. Add a key there to use it. Nothing was copied over.
+4. The pin-tip flag lives in `companion\settings.json`, which survives uninstall, so a reinstall to the same path will not show the tip again.
