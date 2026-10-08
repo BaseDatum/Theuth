@@ -153,7 +153,10 @@ pub async fn set_enabled(slug: &str, enabled: bool) -> Result<()> {
 }
 
 /// Fire the study's schedule once (`RunOnce`; 33 D6 `/schedules run`). A
-/// paused study is enabled for the fire and disabled again right after.
+/// paused study is enabled for the fire and disabled again right after;
+/// `SetEnabled(true)` re-arms `every: 0s` to *now*, so a tick interleaved
+/// before `Fire` may fire the loop itself — then `Fire` answers `busy` and
+/// the run that started is the one we report.
 pub async fn fire(slug: &str, paused: bool) -> Result<runtime::SessionId> {
     let sched = schedule_actor()?;
     let n = name(slug);
@@ -165,11 +168,23 @@ pub async fn fire(slug: &str, paused: bool) -> Result<runtime::SessionId> {
             })
             .await;
     }
-    let fired = sched
+    let mut fired = sched
         .ask(schedule::Fire { name: n.clone() })
         .await
         .map_err(|e| Error::refused(e.to_string()));
     if paused {
+        if matches!(&fired, Err(e) if e.to_string().ends_with("busy")) {
+            fired = sched
+                .ask(schedule::ListSchedules)
+                .await
+                .map_err(|e| Error::refused(e.to_string()))
+                .and_then(|list| {
+                    list.into_iter()
+                        .find(|s| s.name == n && s.running)
+                        .and_then(|s| s.session)
+                        .ok_or_else(|| Error::refused("busy"))
+                });
+        }
         let _ = sched
             .ask(schedule::SetEnabled {
                 name: n,
@@ -180,30 +195,66 @@ pub async fn fire(slug: &str, paused: bool) -> Result<runtime::SessionId> {
     fired
 }
 
-/// End the loop from inside its run through `schedule::Done` (33 §3.5); the
-/// file is removed by the schedule actor. `Err` when `session` is not a
-/// running schedule session (the run already settled) — then [`done`].
+/// End the loop from inside its run: the study file bound to `session` is
+/// deleted (never `schedule::Done` — its "done (model): …" line ignores
+/// `quiet`, and the study's own result card is the loud ending, 33 D4).
+/// `Err` when `session` is not a running study schedule — then [`done`].
 pub async fn done_run(session: runtime::SessionId, reason: &str) -> Result<()> {
-    schedule_actor()?
-        .ask(schedule::Done {
-            session,
-            why: reason.to_owned(),
-        })
+    let sched = schedule_actor()?;
+    let name = sched
+        .ask(schedule::ListSchedules)
+        .await
+        .map_err(|e| Error::refused(e.to_string()))?
+        .into_iter()
+        .find(|s| s.session == Some(session) && s.name.starts_with(crate::SCHEDULE_PREFIX))
+        .map(|s| s.name)
+        .ok_or_else(|| Error::refused("not a running study schedule"))?;
+    tracing::debug!(%name, "study schedule ended: {reason}");
+    sched
+        .ask(schedule::Delete { name })
         .await
         .map_err(|e| Error::refused(e.to_string()))?;
     Ok(())
 }
 
 /// End the loop and delete the file through the schedule actor (140 §8.1).
-/// Tries `Done` on the study's bound session when one is given, else
-/// `Delete` (the same effect once the run has settled).
 pub async fn done(slug: &str, reason: &str) -> Result<()> {
-    let _ = reason;
+    tracing::debug!(slug, "study schedule ended: {reason}");
     schedule_actor()?
         .ask(schedule::Delete { name: name(slug) })
         .await
         .map_err(|e| Error::refused(e.to_string()))?;
     Ok(())
+}
+
+/// `autoresearch.enabled: false` (140 §12.2 "existing study files stay
+/// paused"): flip `enabled: false` on every `schedules/autoresearch-*.md` so
+/// the schedule plugin, which still runs, fires no study session nobody
+/// confines or binds. Returns the names switched off.
+pub fn disable_all(data_dir: &Path) -> std::io::Result<Vec<String>> {
+    let dir = data_dir.join(schedule::DIR);
+    let mut off = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(off);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("md")
+            || !stem.starts_with(crate::SCHEDULE_PREFIX)
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)?;
+        let disabled = schedule::file::set_enabled(&text, false);
+        if disabled != text {
+            schedule::file::write_atomic(&dir, stem, &disabled)?;
+            off.push(stem.to_owned());
+        }
+    }
+    Ok(off)
 }
 
 #[cfg(test)]
@@ -314,5 +365,40 @@ mod tests {
         let on_disk =
             std::fs::read_to_string(data.join("schedules/autoresearch-sort-speed.md")).unwrap();
         assert_eq!(on_disk, t);
+    }
+
+    /// R-6: with the plugin disabled every study file is paused in place;
+    /// other schedules and already-paused studies are untouched.
+    #[test]
+    fn disable_all_pauses_study_files_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let cfg = AutoresearchConfig::default();
+        let t = text(&spec(), &cfg, dir.path(), "", &StartWhen::Now);
+        write(&data, "sort-speed", &t).unwrap();
+        let mut other = spec();
+        other.slug = "paused".into();
+        let p = schedule::file::set_enabled(
+            &text(&other, &cfg, dir.path(), "", &StartWhen::Now),
+            false,
+        );
+        write(&data, "paused", &p).unwrap();
+        let sched = data.join(schedule::DIR);
+        std::fs::write(sched.join("dreaming.md"), "---\nevery: 1h\n---\nx\n").unwrap();
+
+        let off = disable_all(&data).unwrap();
+        assert_eq!(off, vec!["autoresearch-sort-speed".to_owned()]);
+        let s = std::fs::read_to_string(sched.join("autoresearch-sort-speed.md")).unwrap();
+        assert!(
+            !schedule::file::parse("autoresearch-sort-speed", &s)
+                .unwrap()
+                .enabled
+        );
+        assert_eq!(
+            std::fs::read_to_string(sched.join("dreaming.md")).unwrap(),
+            "---\nevery: 1h\n---\nx\n"
+        );
+        assert!(disable_all(&data).unwrap().is_empty(), "idempotent");
+        assert!(disable_all(&dir.path().join("none")).unwrap().is_empty());
     }
 }

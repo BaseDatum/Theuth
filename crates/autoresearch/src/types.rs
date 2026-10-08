@@ -137,6 +137,9 @@ wire! {
         pub name: String,
         /// Largest allowed regression, relative (`5%`) or absolute; see [`Effect`].
         pub max_regression: String,
+        /// Which way this secondary improves (default `lower`: memory, latency);
+        /// independent of the primary's direction (R-19).
+        pub direction: Direction,
     }
 }
 
@@ -570,8 +573,8 @@ pub struct GateCfg {
     pub remeasure_after: u32,
     /// Smallest effect worth keeping.
     pub min_effect: Effect,
-    /// Secondary limits by name.
-    pub guards: Vec<(String, Effect)>,
+    /// Secondary limits: `(name, largest regression, the secondary's own direction)`.
+    pub guards: Vec<(String, Effect, Direction)>,
 }
 
 /// What the gate sees after each sample (140 §5.2 steps 1–3).

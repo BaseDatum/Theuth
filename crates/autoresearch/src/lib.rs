@@ -221,6 +221,8 @@ pub async fn start(
     let env = studies.env();
     let actor = Studies::spawn_with_mailbox(studies, runtime::subscriber_mailbox());
     actor.register(AUTORESEARCH_ACTOR)?;
+    // 140 §8.3 / R-5: the schedule applies the study toolset before every prompt.
+    schedule::confine(SCHEDULE_PREFIX, binding::confinement(env.store.clone()));
     // §8.2 / §12.3 subscriptions: binding on `Fired`, dangling experiments on `TurnFinished`.
     rt.subscribe::<Studies, schedule::ScheduleEvent>(&actor)
         .await;
@@ -262,9 +264,17 @@ impl runtime::Plugin for AutoresearchPlugin {
             AutoresearchConfig::default()
         });
         if !cfg.enabled {
-            tracing::info!(
-                "autoresearch disabled by config; no tools, no actor, study files stay as they are"
-            );
+            // 140 §12.2 / R-6: the schedule plugin still runs; study files must not fire unconfined.
+            match schedule_file::disable_all(&rt.data_dir) {
+                Ok(off) if off.is_empty() => {
+                    tracing::info!("autoresearch disabled by config; no tools, no actor")
+                }
+                Ok(off) => tracing::info!(
+                    "autoresearch disabled by config; no tools, no actor; study files paused: {}",
+                    off.join(", ")
+                ),
+                Err(e) => tracing::warn!("autoresearch disabled; study files not paused: {e}"),
+            }
             return Ok(());
         }
         match install_skill(&rt.data_dir) {

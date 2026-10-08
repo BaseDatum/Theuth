@@ -70,13 +70,6 @@ pub fn decide(
         return Rule::Stop(StopReason::Hours);
     }
     let window = cfg.plateau.window.max(1);
-    if view.overfit {
-        return if view.explored {
-            Rule::Stop(StopReason::Overfit)
-        } else {
-            Rule::Explore
-        };
-    }
     if view.since_keep >= window {
         if view.since_keep >= 2 * window && view.explored {
             return Rule::Stop(StopReason::Plateau);
@@ -84,6 +77,14 @@ pub fn decide(
         if !view.explored {
             return Rule::Explore;
         }
+    }
+    // §5.4: overfit is treated as a plateau (explore once, then stop).
+    if view.overfit {
+        return if view.explored {
+            Rule::Stop(StopReason::Overfit)
+        } else {
+            Rule::Explore
+        };
     }
     if cfg.pause.crash_streak > 0 && view.crash_streak >= cfg.pause.crash_streak {
         return Rule::Pause(PauseReason::CrashStreak);
@@ -119,20 +120,14 @@ pub async fn view(store: &Store, study: &StudyRecord, spend_usd: f64) -> Result<
         .find(|e| e.state == ExperimentState::Kept)
         .map_or(0, |e| e.n);
     let since_keep = closed.iter().filter(|e| e.n > last_keep_n).count() as u32;
-    let crash_streak = closed
-        .iter()
-        .take_while(|e| e.state == ExperimentState::Crashed)
-        .count() as u32;
-    let custody_refusals = closed
-        .iter()
-        .take_while(|e| e.verdict.as_ref().is_some_and(is_custody_refusal))
-        .count() as u32;
 
     let events = store.list_events(&study.slug, None, 10_000).await?; // newest first
+    // `after_n` when the event carries it; `check_overfit` writes `n` (R-44) — same scale here.
     let after_n = |kind: &str| -> Option<u32> {
         events.iter().find(|e| e.kind == kind).map(|e| {
             e.payload
                 .get("after_n")
+                .or_else(|| e.payload.get("n"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32
         })
@@ -146,9 +141,16 @@ pub async fn view(store: &Store, study: &StudyRecord, spend_usd: f64) -> Result<
     let explored = after_n("explore").is_some_and(|n| n >= last_keep_n);
     let overfit = after_n("overfit").is_some_and(|n| n >= last_keep_n);
     let resumed_after = after_n("resumed").unwrap_or(0);
-    let review_flags = closed
-        .iter()
-        .filter(|e| e.n > resumed_after)
+    // Streaks and flags count from the last resume (R-57): a pause the user
+    // lifted does not fire again on the very next crash or refusal.
+    let since_resume = || closed.iter().filter(|e| e.n > resumed_after);
+    let crash_streak = since_resume()
+        .take_while(|e| e.state == ExperimentState::Crashed)
+        .count() as u32;
+    let custody_refusals = since_resume()
+        .take_while(|e| e.verdict.as_ref().is_some_and(is_custody_refusal))
+        .count() as u32;
+    let review_flags = since_resume()
         .filter(|e| {
             matches!(
                 e.review,
@@ -164,7 +166,11 @@ pub async fn view(store: &Store, study: &StudyRecord, spend_usd: f64) -> Result<
         stop_after,
         closed: closed.len() as u32,
         spend_usd,
-        hours: hours_running(study, chrono::Utc::now()),
+        hours: hours_running_from(
+            study,
+            chrono::Utc::now(),
+            paused_since(&events, &study.state),
+        ),
         since_keep,
         explored,
         overfit,
@@ -172,6 +178,37 @@ pub async fn view(store: &Store, study: &StudyRecord, spend_usd: f64) -> Result<
         custody_refusals,
         review_flags,
     })
+}
+
+/// When the current pause began (R-46): the oldest `paused` row newer than
+/// the last `resumed` row — a rule that re-pauses an already paused study
+/// re-stamps `at`, and the first stamp is the true start. `None` unless the
+/// study is paused. `events` newest first.
+pub fn paused_since(
+    events: &[crate::store::EventRecord],
+    state: &crate::types::StudyState,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    if !matches!(state, crate::types::StudyState::Paused { .. }) {
+        return None;
+    }
+    events
+        .iter()
+        .take_while(|e| e.kind != "resumed")
+        .filter(|e| e.kind == "paused")
+        .last()
+        .and_then(|e| e.payload.get("at")?.as_str().map(str::to_owned))
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// [`hours_running`] with the current pause read from the ledger (R-46).
+pub async fn hours_running_live(store: &Store, study: &StudyRecord) -> Result<f64> {
+    let events = store.list_events(&study.slug, None, 10_000).await?;
+    Ok(hours_running_from(
+        study,
+        chrono::Utc::now(),
+        paused_since(&events, &study.state),
+    ))
 }
 
 /// Evaluate §8.4 for `study` from the ledger and `spend_usd` (the session tree's ledger sum).
@@ -185,8 +222,21 @@ pub async fn evaluate(
     Ok(decide(&v, &study.spec, cfg))
 }
 
-/// Hours since Start excluding paused time.
+/// Hours since Start excluding closed pauses only (`paused_ms`, added at
+/// resume). Wrong by the open pause while the study is paused: the stop rules
+/// use [`hours_running_live`]; the brief and `StudyInfo` should too (R-46).
 pub fn hours_running(study: &StudyRecord, now: chrono::DateTime<chrono::Utc>) -> f64 {
+    hours_running_from(study, now, None)
+}
+
+/// Hours since Start excluding paused time: `paused_ms` (closed pauses, added
+/// at resume) plus the open pause since `paused_since` when the study is
+/// paused now (R-46: a RunOnce after an overnight pause must not trip `budget.hours`).
+pub fn hours_running_from(
+    study: &StudyRecord,
+    now: chrono::DateTime<chrono::Utc>,
+    paused_since: Option<chrono::DateTime<chrono::Utc>>,
+) -> f64 {
     let Some(started) = study
         .started_at
         .as_deref()
@@ -197,7 +247,11 @@ pub fn hours_running(study: &StudyRecord, now: chrono::DateTime<chrono::Utc>) ->
     let elapsed_ms = (now - started.with_timezone(&chrono::Utc))
         .num_milliseconds()
         .max(0) as u64;
-    elapsed_ms.saturating_sub(study.paused_ms) as f64 / 3_600_000.0
+    let open_pause_ms = paused_since.map_or(0, |t| (now - t).num_milliseconds().max(0) as u64);
+    elapsed_ms
+        .saturating_sub(study.paused_ms)
+        .saturating_sub(open_pause_ms) as f64
+        / 3_600_000.0
 }
 
 #[cfg(test)]
@@ -396,7 +450,79 @@ mod tests {
         study.paused_ms = 3_600_000;
         let h = hours_running(&study, now);
         assert!((h - 2.0).abs() < 0.01, "{h}");
+        // R-46: the open pause counts too — paused 90 min ago and still paused.
+        let h = hours_running_from(&study, now, Some(now - chrono::Duration::minutes(90)));
+        assert!((h - 0.5).abs() < 0.01, "{h}");
         study.started_at = None;
         assert_eq!(hours_running(&study, now), 0.0);
+    }
+
+    async fn closed(store: &Store, slug: &str, n: u32, state: ExperimentState) {
+        let mut e = crate::store::ExperimentRecord::open(slug, n, 0, "base");
+        e.state = state;
+        e.finished_at = Some(crate::store::now());
+        store.insert_experiment(&e).await.unwrap();
+    }
+
+    /// R-44: `check_overfit` writes `{n}`; the view must see the overfit after
+    /// a keep (the rule was dead with `after_n` defaulting to 0).
+    /// R-57: a crash streak counts only since the last resume.
+    /// R-46: the open pause is subtracted from the running hours.
+    #[tokio::test]
+    async fn view_reads_overfit_streaks_and_pauses_from_the_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        let mut study = crate::store::StudyRecord::new(spec(), None);
+        study.slug = "s".into();
+        study.spec.slug = "s".into();
+        let now = chrono::Utc::now();
+        study.started_at = Some((now - chrono::Duration::hours(3)).to_rfc3339());
+        store.create_study(&study).await.unwrap();
+        closed(&store, "s", 1, ExperimentState::Kept).await;
+        closed(&store, "s", 2, ExperimentState::Crashed).await;
+        closed(&store, "s", 3, ExperimentState::Crashed).await;
+        store
+            .append_event("s", "overfit", &serde_json::json!({ "n": 3, "gap": 0.2 }))
+            .await
+            .unwrap();
+        let v = view(&store, &study, 0.0).await.unwrap();
+        assert!(v.overfit, "{v:?}");
+        assert_eq!(v.crash_streak, 2);
+        assert!((v.hours - 3.0).abs() < 0.05, "{}", v.hours);
+
+        // Paused 2 h ago (re-stamped 1 h ago by a rule): the first stamp counts.
+        store
+            .append_event(
+                "s",
+                "paused",
+                &serde_json::json!({ "reason": "crash_streak", "at": (now - chrono::Duration::hours(2)).to_rfc3339() }),
+            )
+            .await
+            .unwrap();
+        store
+            .append_event(
+                "s",
+                "paused",
+                &serde_json::json!({ "reason": "crash_streak", "at": (now - chrono::Duration::hours(1)).to_rfc3339() }),
+            )
+            .await
+            .unwrap();
+        study.state = crate::types::StudyState::Paused {
+            reason: PauseReason::CrashStreak,
+        };
+        let v = view(&store, &study, 0.0).await.unwrap();
+        assert!((v.hours - 1.0).abs() < 0.05, "{}", v.hours);
+
+        // Resumed after #3: the two crashes no longer form a streak; one new crash is 1.
+        store
+            .append_event("s", "resumed", &serde_json::json!({ "after_n": 3 }))
+            .await
+            .unwrap();
+        study.state = crate::types::StudyState::Running;
+        study.paused_ms = 7_200_000;
+        closed(&store, "s", 4, ExperimentState::Crashed).await;
+        let v = view(&store, &study, 0.0).await.unwrap();
+        assert_eq!(v.crash_streak, 1);
+        assert!((v.hours - 1.0).abs() < 0.05, "{}", v.hours);
     }
 }
