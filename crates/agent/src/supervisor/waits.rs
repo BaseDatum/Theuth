@@ -96,91 +96,133 @@ fn request_ids(w: &WaitRow) -> Vec<Uuid> {
     }
 }
 
+/// The live approval actor, if any (the honoured answers' destination).
+fn approval_actor() -> Option<ActorRef<tools::Approval>> {
+    ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR)
+        .ok()
+        .flatten()
+        .filter(ActorRef::is_alive)
+}
+
+/// What a rebuild did, for the one log line.
+#[derive(Clone, Copy, Debug, Default)]
+struct Counts {
+    rearmed: usize,
+    honoured: usize,
+    superseded: usize,
+}
+
+impl std::ops::AddAssign for Counts {
+    fn add_assign(&mut self, o: Self) {
+        self.rearmed += o.rearmed;
+        self.honoured += o.honoured;
+        self.superseded += o.superseded;
+    }
+}
+
+impl Counts {
+    fn log(self) {
+        if self.rearmed + self.honoured + self.superseded > 0 {
+            tracing::info!(
+                rearmed = self.rearmed,
+                honoured = self.honoured,
+                superseded = self.superseded,
+                "109: waits and approvals rebuilt from the journal"
+            );
+        }
+    }
+}
+
 impl Agents {
     /// Boot (§4.6 step 10): rebuild the live waiters and settle the dead
-    /// approvals of every open turn from their rows; see the module doc.
+    /// approvals of every open turn `here` from their rows; see the module doc.
     pub(super) async fn rebuild_waits(&mut self) {
-        let approval = ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR)
-            .ok()
-            .flatten()
-            .filter(ActorRef::is_alive);
-        self.rebuild_waits_with(approval).await;
-    }
-
-    /// [`Self::rebuild_waits`] with the approval actor the honoured answers go to.
-    async fn rebuild_waits_with(&mut self, approval: Option<ActorRef<tools::Approval>>) {
-        // 139 §5.1 item 7: owner-scoped; W1 adds `rebuild_waits_for(session)`.
+        // 139 §5.1 item 7: owner-scoped — a replica never re-arms the owner's.
         let open = match self.store.open_turns(Scope::Here).await {
             Ok(o) => o,
             Err(e) => return tracing::error!("109: open turns unreadable: {e:#}"),
         };
-        let (mut rearmed, mut honoured, mut superseded) = (0usize, 0usize, 0usize);
-        for (session, turn, _) in &open {
-            let calls = self
+        let approval = approval_actor();
+        let mut n = Counts::default();
+        for (session, turn, _) in open {
+            n += self.rebuild_waits_of(session, turn, approval.as_ref()).await;
+        }
+        n.log();
+    }
+
+    /// 139 §7.3: [`Self::rebuild_waits`] for one session's open turn — the
+    /// first step of a resume after a transfer / takeover, on the new owner,
+    /// from the replicated `questions` / `waits` rows.
+    pub(super) async fn rebuild_waits_for(&mut self, session: SessionId) {
+        let turn = match self.store.open_turn(session).await {
+            Ok(Some((turn, _))) => turn,
+            Ok(None) => return,
+            Err(e) => return tracing::error!(%session, "109: open_turn: {e:#}"),
+        };
+        let approval = approval_actor();
+        self.rebuild_waits_of(session, turn, approval.as_ref())
+            .await
+            .log();
+    }
+
+    /// One open turn's rows: approvals of `planned` calls settled, `peer_reply`
+    /// waits re-armed. `approval` is the actor the honoured answers go to.
+    async fn rebuild_waits_of(
+        &mut self,
+        session: SessionId,
+        turn: TurnId,
+        approval: Option<&ActorRef<tools::Approval>>,
+    ) -> Counts {
+        let mut n = Counts::default();
+        let calls = self.store.calls_of(session, turn).await.unwrap_or_default();
+        for call in calls.iter().filter(|c| c.state == CallState::Planned) {
+            let rows = self
                 .store
-                .calls_of(*session, *turn)
+                .questions_of_call(session, &call.call_id)
                 .await
                 .unwrap_or_default();
-            for call in calls.iter().filter(|c| c.state == CallState::Planned) {
-                let rows = self
-                    .store
-                    .questions_of_call(*session, &call.call_id)
-                    .await
-                    .unwrap_or_default();
-                for row in rows
-                    .into_iter()
-                    .filter(|r| r.kind == QuestionKind::Approval)
-                {
-                    match row.state {
-                        QuestionState::Pending => {
-                            // §6.2: the gate's invocation died with the process.
-                            match self
-                                .store
-                                .question_resolve(&row.id, QuestionState::Superseded, None)
-                                .await
-                            {
-                                Ok(true) => superseded += 1,
-                                Ok(false) => {}
-                                Err(e) => tracing::error!(id = %row.id, "109: supersede: {e:#}"),
-                            }
+            for row in rows
+                .into_iter()
+                .filter(|r| r.kind == QuestionKind::Approval)
+            {
+                match row.state {
+                    QuestionState::Pending => {
+                        // §6.2: the gate's invocation died with the process.
+                        match self
+                            .store
+                            .question_resolve(&row.id, QuestionState::Superseded, None)
+                            .await
+                        {
+                            Ok(true) => n.superseded += 1,
+                            Ok(false) => {}
+                            Err(e) => tracing::error!(id = %row.id, "109: supersede: {e:#}"),
                         }
-                        QuestionState::Answered => {
-                            let decision: Option<Decision> =
-                                row.answer.and_then(|a| serde_json::from_value(a).ok());
-                            if let (Some(a), Some(decision)) = (&approval, decision) {
-                                let _ = a
-                                    .tell(HonourAnswer {
-                                        session: *session,
-                                        call_id: call.call_id.clone(),
-                                        decision,
-                                    })
-                                    .await;
-                                honoured += 1;
-                            }
-                        }
-                        _ => {}
                     }
-                }
-            }
-            let waits = self
-                .store
-                .waits_of(*session, *turn)
-                .await
-                .unwrap_or_default();
-            for w in waits.iter().filter(|w| w.kind == WaitKind::PeerReply) {
-                for id in request_ids(w) {
-                    rearmed += usize::from(self.rearm_peer_wait(*session, id).await);
+                    QuestionState::Answered => {
+                        let decision: Option<Decision> =
+                            row.answer.and_then(|a| serde_json::from_value(a).ok());
+                        if let (Some(a), Some(decision)) = (approval, decision) {
+                            let _ = a
+                                .tell(HonourAnswer {
+                                    session,
+                                    call_id: call.call_id.clone(),
+                                    decision,
+                                })
+                                .await;
+                            n.honoured += 1;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
-        if rearmed + honoured + superseded > 0 {
-            tracing::info!(
-                rearmed,
-                honoured,
-                superseded,
-                "109: waits and approvals rebuilt from the journal"
-            );
+        let waits = self.store.waits_of(session, turn).await.unwrap_or_default();
+        for w in waits.iter().filter(|w| w.kind == WaitKind::PeerReply) {
+            for id in request_ids(w) {
+                n.rearmed += usize::from(self.rearm_peer_wait(session, id).await);
+            }
         }
+        n
     }
 
     /// Re-create the live [`super::Wait`] of exchange `id` for `session`
@@ -229,7 +271,9 @@ impl Agents {
     }
 
     /// Deliver one spared child result into its parent (§7.2), the tail of
-    /// `hand_off` without the live-child bookkeeping.
+    /// `hand_off` without the live-child bookkeeping. 139 §5.1 item 11: a
+    /// parent owned elsewhere (taken since the child finished) is never
+    /// woken here — the result goes to its owner as `Agents::deliver` does.
     async fn deliver_spared(&mut self, record: PeerRecord) {
         let id = record.receipt.id;
         let (Some(child), Some(parent)) = (
@@ -241,6 +285,8 @@ impl Agents {
         if !self.enqueued.insert(id) {
             return;
         }
+        // The rows' lineage, as `resolve` makes known before any route.
+        self.mirror(child).await;
         let generation = match self.communication.0.write().route(child, parent) {
             Ok(g) => g,
             Err(e) => {
@@ -249,6 +295,26 @@ impl Agents {
                 return;
             }
         };
+        if let Some(owner) = self.remote_owner(parent).await {
+            // ponytail: a forwarded row stays `accepted` here and is re-forwarded at
+            // the next boot; the owner's intake dedups on the id (`accept_exchange_as`).
+            let m = super::Deliver {
+                from: child,
+                to: record.receipt.to.clone(),
+                text: record.text.clone(),
+                await_reply: false,
+                reply_to: record.receipt.reply_to,
+                request_id: None,
+                admitted: tokio_util::sync::CancellationToken::new(),
+            };
+            if let Err(e) = self
+                .forward_peer(owner, parent, &m, record.text, record.receipt, generation)
+                .await
+            {
+                tracing::warn!(%child, %parent, "139: spared child result not forwarded: {e}");
+            }
+            return;
+        }
         if let Err(reason) = self.enqueue_peer(record, generation, false, false).await {
             self.enqueued.remove(&id);
             match self.store.fail_exchange(id, &reason).await {
@@ -425,7 +491,8 @@ mod tests {
     use tools::approval::RequestApproval;
     use tools::{Decision, Risk};
 
-    use super::super::tests::agents_with;
+    use super::super::resume::tests::b_holding_a_turn;
+    use super::super::tests::{agents_on, agents_with};
     use super::*;
     use crate::durability::StepKind;
     use crate::store::communication::AcceptExchange;
@@ -434,28 +501,25 @@ mod tests {
     /// An open turn of `s`: `input_accepted`, `model_call`, a `tool_batch` of
     /// `calls` (planned), with `started` marked `started`.
     async fn open_batch(
-        a: &Agents,
+        a: &crate::store::Store,
         s: SessionId,
         calls: &[(&str, &str)],
         started: &[&str],
     ) -> TurnId {
         let t = TurnId::new();
-        a.store.append(s, &ChatMessage::user("hi")).await.unwrap();
-        a.store
-            .step(s, t, StepKind::InputAccepted, None, &json!({}))
+        a.append(s, &ChatMessage::user("hi")).await.unwrap();
+        a.step(s, t, StepKind::InputAccepted, None, &json!({}))
             .await
             .unwrap();
-        a.store
-            .step(s, t, StepKind::ModelCall, Some("mc1"), &json!({}))
+        a.step(s, t, StepKind::ModelCall, Some("mc1"), &json!({}))
             .await
             .unwrap();
         let seq = a
-            .store
             .append(s, &ChatMessage::assistant("tools"))
             .await
             .unwrap();
         let ids: Vec<&str> = calls.iter().map(|(id, _)| *id).collect();
-        let mut tx = a.store.begin_write().await.unwrap();
+        let mut tx = a.begin_write().await.unwrap();
         step_in(
             &mut tx,
             s,
@@ -485,7 +549,7 @@ mod tests {
             .unwrap();
         tx.commit().await.unwrap();
         for id in started {
-            assert!(a.store.call_started(s, id).await.unwrap());
+            assert!(a.call_started(s, id).await.unwrap());
         }
         t
     }
@@ -520,8 +584,8 @@ mod tests {
     async fn superseded_on_reask_and_answered_row_honoured() {
         let mut a = agents_with(true).await;
         let (s, _) = a.session(None, None, None, (None, None)).await.unwrap();
-        let _t = open_batch(
-            &a,
+        let t = open_batch(
+            &a.store,
             s,
             &[("c1", "shell"), ("c2", "shell"), ("c3", "ask_user")],
             &["c3"],
@@ -539,7 +603,7 @@ mod tests {
         let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let approval = tools::Approval::spawn(tools::Approval::new(rt, Duration::from_millis(50)));
 
-        a.rebuild_waits_with(Some(approval.clone())).await;
+        a.rebuild_waits_of(s, t, Some(&approval)).await;
 
         let state = |id: &str| {
             let rows = futures::executor::block_on(a.store.questions_pending(s)).unwrap();
@@ -603,7 +667,7 @@ mod tests {
         a.session(Some(child), Some((root, "kid")), None, (None, None))
             .await
             .unwrap();
-        let t = open_batch(a, root, &[("c1", "send_message")], &["c1"]).await;
+        let t = open_batch(&a.store, root, &[("c1", "send_message")], &["c1"]).await;
         let generation = a.communication.0.write().route(root, child).unwrap();
         let receipt = a
             .store
@@ -767,7 +831,7 @@ mod tests {
         a.session(Some(kid2), Some((q, "kid2")), None, (None, None))
             .await
             .unwrap();
-        let t = open_batch(&a, q, &[("c1", "send_message")], &["c1"]).await;
+        let t = open_batch(&a.store, q, &[("c1", "send_message")], &["c1"]).await;
         a.store
             .wait_put(&WaitRow {
                 session: q,
@@ -820,6 +884,99 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|r| r.receipt.id != r2.id)
+        );
+    }
+
+    /// 139 §7.3 / I1: `rebuild_waits_for(s1)` settles s1's pending approval
+    /// and leaves s2's; the boot `rebuild_waits` settles s2's and never `a`'s
+    /// (a replica re-arms nothing of the owner's — `Scope::Here`).
+    #[tokio::test]
+    async fn rebuild_waits_for_one_session_leaves_others() {
+        let dir = std::env::temp_dir().join(format!("theuth-139-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = crate::store::Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId("a".into())),
+        )
+        .await
+        .unwrap();
+        let foreign = SessionId::new();
+        a.create_session(foreign, "m", None, None, None)
+            .await
+            .unwrap();
+        open_batch(&a, foreign, &[("c1", "shell")], &[]).await;
+        let theirs = approval_row(foreign, "c1", QuestionState::Pending, None);
+        a.question_put(&theirs).await.unwrap();
+        a.close().await;
+
+        let mut b = agents_on(dir, Some("b"), true).await;
+        let (s1, _) = b.session(None, None, None, (None, None)).await.unwrap();
+        let (s2, _) = b.session(None, None, None, (None, None)).await.unwrap();
+        open_batch(&b.store, s1, &[("c1", "shell")], &[]).await;
+        open_batch(&b.store, s2, &[("c1", "shell")], &[]).await;
+        let (p1, p2) = (
+            approval_row(s1, "c1", QuestionState::Pending, None),
+            approval_row(s2, "c1", QuestionState::Pending, None),
+        );
+        b.store.question_put(&p1).await.unwrap();
+        b.store.question_put(&p2).await.unwrap();
+        let store = b.store.clone();
+        let state = |s: SessionId| {
+            let store = store.clone();
+            async move { store.questions_of_call(s, "c1").await.unwrap()[0].state }
+        };
+
+        b.rebuild_waits_for(s1).await;
+        assert_eq!(state(s1).await, QuestionState::Superseded);
+        assert_eq!(state(s2).await, QuestionState::Pending, "s2 untouched");
+        assert_eq!(state(foreign).await, QuestionState::Pending);
+
+        b.rebuild_waits().await;
+        assert_eq!(state(s2).await, QuestionState::Superseded);
+        assert_eq!(state(foreign).await, QuestionState::Pending, "a's approval is not b's");
+    }
+
+    /// 139 §5.1 item 11: a spared result for a parent owned elsewhere is
+    /// forwarded, never injected here — no actor, no ticket; with no mesh the
+    /// forward fails as `OwnerUnreachable` and the receipt says so.
+    #[tokio::test]
+    async fn spared_result_for_a_foreign_parent_is_forwarded_not_injected() {
+        let (mut b, foreign, _, _dir) = b_holding_a_turn(true).await;
+        let child = SessionId::new();
+        b.store
+            .create_session(child, "m", Some(foreign), Some("kid"), None)
+            .await
+            .unwrap();
+        b.ledger.certify();
+        b.mirror(child).await;
+        let generation = b.communication.0.write().route(child, foreign).unwrap();
+        let rid = format!("result:{}", TurnId::new());
+        let receipt = b
+            .store
+            .accept_exchange(&AcceptExchange {
+                sender: &format!("session:{child}"),
+                recipient: &format!("session:{foreign}"),
+                sender_session: Some(child),
+                recipient_session: Some(foreign),
+                request_id: Some(&rid),
+                reply_to: None,
+                request_scope: None,
+                generation: generation.revision() as i64,
+                body: "done on b",
+            })
+            .await
+            .unwrap();
+        assert_eq!(b.store.spared_child_results().await.unwrap().len(), 1);
+
+        b.deliver_spared_results().await;
+        assert!(b.sessions.is_empty(), "no actor for a's session");
+        assert_eq!(b.ledger.activity(foreign), None, "no ticket admitted");
+        assert!(!b.enqueued.contains(&receipt.id));
+        let r = b.store.exchange_receipt(receipt.id).await.unwrap().unwrap();
+        assert_eq!(r.state, PeerMessageState::Failed);
+        assert!(
+            r.error.as_deref().is_some_and(|e| e.contains("OwnerUnreachable") && e.contains("\"a\"")),
+            "{r:?}"
         );
     }
 }
