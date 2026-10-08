@@ -45,7 +45,7 @@ pub mod opencode;
 mod process;
 pub mod rfd;
 
-use process::{ChildProcess, ExitSlot};
+use process::{ChildProcess, EXIT_GRACE, ExitSlot};
 
 /// [`probe`] gives up on `initialize` + `session/new` after this long.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -657,7 +657,7 @@ impl Link {
                 // `main` returns, so give the driver `EXIT_GRACE` to report
                 // the child's exit status and stderr tail; its `Err` is ours.
                 () = cx.incoming_closed() => match &slot {
-                    Some(_slot) => Ok(()), // TEMP-W1-MEASURE: pre-mitigation behaviour
+                    Some(slot) => slot.wait().await.unwrap_or(Ok(())),
                     None => Ok(()),
                 },
             }
@@ -707,13 +707,17 @@ impl Link {
         self.cx.send_request(req).block_task().await
     }
 
-    /// Text for a failed request: on transport EOF wait for the exit status,
-    /// whose text carries the stderr tail.
+    /// Text for a failed request: when the connection task ends within
+    /// [`EXIT_GRACE`] (transport EOF, or a child that died before answering
+    /// — on SDK 3.1 that surfaces as `response … never received`, not as
+    /// incoming-closed, 141 §4.3) its result is the text, carrying the exit
+    /// status and stderr tail; otherwise the request's own error.
     async fn explain(&mut self, e: Error) -> String {
-        if is_incoming_transport_closed(&e)
-            && let Some(done) = self.done.take()
-        {
-            return exit_text(done.await, self.closed);
+        if let Some(mut done) = self.done.take() {
+            match tokio::time::timeout(EXIT_GRACE, &mut done).await {
+                Ok(r) => return exit_text(r, self.closed),
+                Err(_) => self.done = Some(done),
+            }
         }
         error_text(&e)
     }
@@ -899,6 +903,7 @@ impl Harness {
             done,
             closed,
             options: shared,
+            own: _,
         } = link;
         *shared.lock().unwrap_or_else(|p| p.into_inner()) = options;
         if let Some(done) = done {

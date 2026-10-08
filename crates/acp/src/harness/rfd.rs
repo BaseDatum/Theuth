@@ -8,7 +8,7 @@
 //! and `null` = an explicit clear value, so a status-only frame touches only
 //! `state`.
 
-use agent_client_protocol::MaybeUndefined;
+use agent_client_protocol::schema::MaybeUndefined;
 use agent_client_protocol::schema::v1::{SessionId, StateUpdate, StopReason, SubagentUpdate};
 
 use super::{ChildAnnounce, ChildSource, ChildState, CostRule};
