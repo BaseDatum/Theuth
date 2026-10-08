@@ -178,7 +178,7 @@ impl Tool for GetTool {
             .into()
     }
 
-    async fn call(&self, a: IdArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: IdArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         if let Some((id, commit)) = a.id.split_once('@') {
             let c = self.0.read_revision(id, commit).await?;
             let date = c.time.get(..10).unwrap_or(&c.time);
@@ -190,8 +190,12 @@ impl Tool for GetTool {
             )));
         }
         let c = self.0.get(&a.id).await?;
-        // 136 §5.3: every read is a vote for the hint shelf.
-        if let Err(e) = self.0.record_opened(&c.meta.id, chrono::Utc::now()).await {
+        // 136 §5.3: every read is a vote for the hint shelf — except the
+        // night's own (R-28): Tidy reads hundreds of entries and would make
+        // `opened == 0` unreachable for anything it touched.
+        if !self.0.is_consolidating_session(cx.session)
+            && let Err(e) = self.0.record_opened(&c.meta.id, chrono::Utc::now()).await
+        {
             tracing::debug!(id = %c.meta.id, "record_opened: {e:#}");
         }
         let mut s = c.text;
@@ -928,7 +932,8 @@ mod tests {
             .to_string();
         assert!(e.contains("knowledge_verify runs only"), "{e}");
         // A plain put is anyone's and `source: model`; a put that sets a
-        // consolidation key is gated the same way and lands as `dreaming`.
+        // consolidation key is gated the same way and, on an existing file,
+        // keeps `source` and marks `consolidated_at` (D5).
         let tidy = || Put {
             status: Some(crate::Status::Tidy),
             ..put()
@@ -953,9 +958,29 @@ mod tests {
             .unwrap();
         let m = k.get("facts/x").await.unwrap().meta;
         assert_eq!(
-            (m.source, m.status),
-            (Some(Source::Dreaming), crate::Status::Tidy)
+            (m.source, m.status, m.consolidated_at.is_some()),
+            (Some(Source::Model), crate::Status::Tidy, true)
         );
+        // R-28: the registered dreaming session's own reads are not opens;
+        // a plain session's are.
+        let night = cx(false);
+        k.register_consolidating_session(night.session);
+        let get = GetTool(k.clone());
+        let read = |c: ToolCx| {
+            get.call(
+                IdArgs {
+                    id: "facts/x".into(),
+                },
+                c,
+            )
+        };
+        read(night.clone()).await.unwrap();
+        assert_eq!(k.stats(&["facts/x".into()]).await.unwrap()[0].opened, 0);
+        read(cx(false)).await.unwrap();
+        assert_eq!(k.stats(&["facts/x".into()]).await.unwrap()[0].opened, 1);
+        k.clear_consolidating_session();
+        read(night).await.unwrap();
+        assert_eq!(k.stats(&["facts/x".into()]).await.unwrap()[0].opened, 2);
         // Stats is read-only and real.
         let out = StatsTool(k.clone())
             .call(
@@ -967,6 +992,6 @@ mod tests {
             .await
             .unwrap();
         assert!(out.content.contains("shown 0"), "{}", out.content);
-        assert_eq!(out.structured.unwrap()[0]["opened"], 0);
+        assert_eq!(out.structured.unwrap()[0]["opened"], 2);
     }
 }

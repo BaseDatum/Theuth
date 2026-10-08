@@ -43,6 +43,9 @@ pub struct DayLedger {
     pub backlog: Backlog,
     /// Sessions in the window (`min_sessions` decides a quiet night).
     pub sessions: u64,
+    /// `dreaming.min_sessions` (R-40): below it the night is Recall + Journal.
+    #[serde(default)]
+    pub min_sessions: u32,
     /// A `run_now` waiting for this run.
     pub run_request: Option<RunRequest>,
 }
@@ -85,8 +88,8 @@ pub fn pending(data_dir: &Path) -> Vec<(PathBuf, agent::LedgerRewind)> {
     v
 }
 
-/// Copy `<data_dir>/roster/journal/*.md` into `ledger/<night>/journals/`;
-/// the file names copied.
+/// Copy `<data_dir>/roster/journal/*.md` into `ledger/<night>/journals/`,
+/// scrubbed (R-36); the file names copied.
 pub fn copy_desk_journals(data_dir: &Path, night: &str) -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(data_dir.join(roster::desk::JOURNAL_DIR)) else {
         return Vec::new();
@@ -101,8 +104,8 @@ pub fn copy_desk_journals(data_dir: &Path, night: &str) -> Vec<String> {
         let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if let Ok(bytes) = std::fs::read(&p)
-            && write_atomic(&dest.join(name), &bytes).is_ok()
+        if let Ok(text) = std::fs::read_to_string(&p)
+            && write_atomic(&dest.join(name), crate::scrub::scrub(&text).as_bytes()).is_ok()
         {
             names.push(name.to_owned());
         }
@@ -188,7 +191,9 @@ fn cap<T>(v: &mut Vec<T>, n: usize) {
 }
 
 /// Build tonight's ledger. `session` is the calling (dreaming) session: it
-/// and its children are excluded and it owns the night's spend.
+/// and its children are excluded and it owns the night's spend. A second
+/// call the same night (a backlog pass) keeps the first call's window and
+/// its rewind snapshots (R-43): the pending files were consumed by pass 1.
 pub async fn build(
     data_dir: &Path,
     cfg: &DreamConfig,
@@ -206,6 +211,16 @@ pub async fn build(
         })
         .to_owned();
     let night = tonight();
+    // The earlier pass of this night, if any: its window and its rewinds hold.
+    let earlier: Option<DayLedger> = std::fs::read_to_string(path(data_dir, &night))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    // The window is read BEFORE `BeginNight` moves `state.last_dream_at` (136 D7).
+    let since = match (since, &earlier) {
+        (Some(s), _) => s.to_owned(),
+        (None, Some(e)) => e.ledger.since.clone(),
+        (None, None) => window_start(data_dir, None),
+    };
     if let Ok(Some(actor)) = ActorRef::<Night>::lookup(DREAMING_ACTOR) {
         actor
             .ask(BeginNight {
@@ -216,7 +231,6 @@ pub async fn build(
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
     }
-    let since = window_start(data_dir, since);
     let until = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
@@ -255,8 +269,9 @@ pub async fn build(
         }
     }
     let pending = pending(data_dir);
-    let pending_rewinds: Vec<agent::LedgerRewind> =
-        pending.iter().map(|(_, r)| r.clone()).collect();
+    let mut pending_rewinds: Vec<agent::LedgerRewind> =
+        earlier.map(|e| e.pending_rewinds).unwrap_or_default();
+    pending_rewinds.extend(pending.iter().map(|(_, r)| r.clone()));
     let desk_journals = copy_desk_journals(data_dir, &night);
     let (mut tidy, backlog) = candidates(data_dir, cfg, knowledge).await;
     cap(&mut tidy.fresh, cfg.caps.triage as usize);
@@ -273,6 +288,7 @@ pub async fn build(
         tidy,
         backlog,
         sessions,
+        min_sessions: cfg.min_sessions,
         run_request: state.run_request,
     };
     // Scrub, then shrink to the cap (the long lists first).
@@ -330,7 +346,7 @@ mod tests {
         .unwrap();
         write_atomic(
             &d.join(roster::desk::JOURNAL_DIR).join("sre-1.md"),
-            b"Done / Open / Next",
+            b"Done / Open / Next: rotate sk-abcdefghijklmnop",
         )
         .unwrap();
         let day = build(d, &cfg, None, None, Some("2026-10-07T03:00:00Z"))
@@ -346,12 +362,41 @@ mod tests {
                 .contains("[redacted]")
         );
         assert_eq!(day.desk_journals, ["sre-1.md"]);
-        assert!(dir(d).join(&day.night).join("journals/sre-1.md").exists());
+        let copied =
+            std::fs::read_to_string(dir(d).join(&day.night).join("journals/sre-1.md")).unwrap();
+        assert!(
+            copied.contains("[redacted]") && !copied.contains("sk-abc"),
+            "R-36: {copied}"
+        );
         assert!(path(d, &day.night).exists());
         assert!(pending(d).is_empty(), "pending folded in and removed");
         assert_eq!(day.backlog, Backlog::default());
         // Default window: 24 h ago when no state.
         let s = window_start(d, None);
         assert!(s.ends_with('Z'));
+        // R-43: the second call of the night (a backlog pass) keeps the first
+        // call's window and its rewinds, and folds in anything new.
+        write_atomic(
+            &pending_dir(d).join("b.json"),
+            serde_json::to_string(&agent::LedgerRewind {
+                session: SessionId::new(),
+                at: "2026-10-07T22:00:00Z".into(),
+                dropped_assistant_text: "second".into(),
+            })
+            .unwrap()
+            .as_bytes(),
+        )
+        .unwrap();
+        let again = build(d, &cfg, None, None, None).await.unwrap();
+        assert_eq!(again.ledger.since, "2026-10-07T03:00:00Z");
+        assert_eq!(
+            again.pending_rewinds.len(),
+            2,
+            "{:?}",
+            again.pending_rewinds
+        );
+        let on_disk: DayLedger =
+            serde_json::from_str(&std::fs::read_to_string(path(d, &again.night)).unwrap()).unwrap();
+        assert_eq!(on_disk.pending_rewinds.len(), 2);
     }
 }

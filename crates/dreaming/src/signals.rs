@@ -1,12 +1,16 @@
 //! The `Signals` actor (design doc 136 §9.3): keeps `<data_dir>/dreaming/signals.json`
 //! — what the gate sensor reads — from bus events, atomic rename on every
-//! write: `engine`, `tz_offset_minutes`, `last_root_turn_at` on `TurnFinished`
-//! of an attended root session, `sessions_since`, `new_concepts_since` on
-//! `KnowledgeChanged` puts, `last_dream_at` from `state.json` (reset by
-//! `Dreamt`), `desks_doing` from the roster (`ListAgents`, `Working`; no desk
-//! event exists on the bus, so it is re-read on every finished turn),
-//! `on_ac` / `battery_pct` from `pmset -g batt` at most once a minute on
-//! macOS (`None` elsewhere). On `ContextChanged{reason: "rewind"}` the last
+//! write: `engine`, `tz_offset_minutes`, `last_root_turn_at` on `TurnStarted`
+//! and `TurnFinished` of an attended root session (R-17: a turn in flight is
+//! not idle), `sessions_since` over attended roots only (R-18: the dreaming
+//! session and every routine never count), `new_concepts_since` on
+//! `KnowledgeChanged` puts, `last_dream_at` from `state.json` (moved by
+//! `DreamStarted`, counters reset by `Dreamt`), `desks_doing` from the
+//! roster (`ListAgents`, `Working`; no desk event exists on the bus, so it
+//! is re-read on every finished turn), `on_ac` / `battery_pct` from
+//! `pmset -g batt` at most once a minute on macOS (`None` elsewhere). A
+//! [`HEARTBEAT`] re-stamps `written_at` so the gate can tell a live file
+//! from a frozen one (R-19). On `ContextChanged{reason: "rewind"}` the last
 //! assistant text of that session — cached at its previous `TurnFinished`,
 //! because the rewind has already hidden the rows when the event arrives —
 //! is written scrubbed (≤ 2 KB) to `ledger/pending/<id>.json` for Recall.
@@ -30,6 +34,9 @@ pub const SIGNALS_ACTOR: &str = "dreaming-signals";
 pub const REWIND_CHARS: usize = 2 * 1024;
 /// Power probe spacing.
 pub const POWER_EVERY: Duration = Duration::from_secs(60);
+/// `written_at` re-stamp spacing (R-19); the gate refuses a file older than
+/// [`crate::sensor_rules::STALE_SECS`].
+pub const HEARTBEAT: Duration = Duration::from_secs(60);
 
 /// `<data_dir>/dreaming/signals.json`.
 pub fn path(data_dir: &Path) -> PathBuf {
@@ -205,14 +212,23 @@ impl Message<agent::AgentEvent> for Signals {
 
     async fn handle(&mut self, e: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
         match e {
+            // R-17: a root turn in flight is activity — stamp at the start too.
+            agent::AgentEvent::TurnStarted { session, .. } => {
+                if self.attended_root(session).await {
+                    self.snap.last_root_turn_at =
+                        Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+                    self.flush();
+                }
+            }
             agent::AgentEvent::TurnFinished { session, .. } => {
                 if self.attended_root(session).await {
                     self.snap.last_root_turn_at =
                         Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
                     self.cache_last_assistant(session).await;
-                }
-                if self.seen.insert(session) {
-                    self.snap.sessions_since = self.seen.len() as u32;
+                    // R-18: only the user's own sessions are "something new".
+                    if self.seen.insert(session) {
+                        self.snap.sessions_since = self.seen.len() as u32;
+                    }
                 }
                 if let Some(n) = self.desks_doing().await {
                     self.snap.desks_doing = n;
@@ -254,7 +270,7 @@ impl Message<Snapshot> for Signals {
 }
 
 /// `tell`: a night ended at `at` (RFC 3339) — the counters start over
-/// (`Night` sends it when the journal phase closes the night).
+/// (`Night` sends it when the night closes).
 #[derive(Clone, Debug)]
 pub struct Dreamt(pub String);
 
@@ -266,6 +282,33 @@ impl Message<Dreamt> for Signals {
         self.snap.new_concepts_since = 0;
         self.snap.sessions_since = 0;
         self.seen.clear();
+        self.flush();
+    }
+}
+
+/// `tell`: a night began at `at` (136 D7) — `last_dream_at` moves so the
+/// gate's "already dreamt this window" holds even for a night that is cut
+/// off; the counters stay, so a heavy day keeps its second window.
+#[derive(Clone, Debug)]
+pub struct DreamStarted(pub String);
+
+impl Message<DreamStarted> for Signals {
+    type Reply = ();
+
+    async fn handle(&mut self, DreamStarted(at): DreamStarted, _: &mut Context<Self, Self::Reply>) {
+        self.snap.last_dream_at = Some(at);
+        self.flush();
+    }
+}
+
+/// `tell` (self, every [`HEARTBEAT`]): re-stamp `written_at` (R-19).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Heartbeat;
+
+impl Message<Heartbeat> for Signals {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Heartbeat, _: &mut Context<Self, Self::Reply>) {
         self.flush();
     }
 }
@@ -301,6 +344,15 @@ pub async fn start(rt: &Runtime, engine: &str) -> anyhow::Result<()> {
     rt.subscribe::<Signals, agent::AgentEvent>(&actor).await;
     rt.subscribe::<Signals, knowledge::KnowledgeChanged>(&actor)
         .await;
+    // R-19: the heartbeat; the loop ends with the actor.
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(HEARTBEAT).await;
+            if actor.tell(Heartbeat).await.is_err() {
+                break;
+            }
+        }
+    });
     Ok(())
 }
 
@@ -384,6 +436,87 @@ mod tests {
             (again.snap.sessions_since, again.snap.engine.as_str()),
             (1, "engine-2")
         );
+    }
+
+    /// R-17: a root turn that STARTED stamps `last_root_turn_at` (a long
+    /// in-flight turn is not idle); R-18: a routine's (unattended) or a
+    /// child's turn neither stamps nor counts toward `sessions_since` — the
+    /// dreaming session's own turn end after `Dreamt` leaves it at 0.
+    /// `DreamStarted` moves `last_dream_at` without resetting the counters.
+    #[tokio::test]
+    async fn only_attended_roots_stamp_and_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let store = agent::store::Store::open(&d.join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let root = SessionId::new();
+        let routine = SessionId::new();
+        let child = SessionId::new();
+        store
+            .create_session(root, "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .create_session(routine, "m", None, None, None)
+            .await
+            .unwrap();
+        store.set_unattended(routine).await.unwrap();
+        store
+            .create_session(child, "m", Some(root), None, None)
+            .await
+            .unwrap();
+        let mut s = Signals::new(d, "e", Some(store));
+        s.probes = false;
+        let actor = Signals::spawn(s);
+        let started = |session| agent::AgentEvent::TurnStarted {
+            session,
+            turn: runtime::TurnId::new(),
+            text: String::new(),
+            model: "m".into(),
+            turn_seq: 1,
+        };
+        let finished = |session| agent::AgentEvent::TurnFinished {
+            session,
+            turn: runtime::TurnId::new(),
+            stop_reason: "end_turn".into(),
+            usage: Default::default(),
+            context: 0,
+        };
+        actor.tell(started(routine)).await.unwrap();
+        actor.tell(started(child)).await.unwrap();
+        let snap = actor.ask(Snapshot).await.unwrap();
+        assert!(snap.last_root_turn_at.is_none(), "R-18: not a root turn");
+        actor.tell(started(root)).await.unwrap();
+        let snap = actor.ask(Snapshot).await.unwrap();
+        assert!(snap.last_root_turn_at.is_some(), "R-17: in flight counts");
+        assert_eq!(snap.sessions_since, 0, "a start is not a finished session");
+        actor.tell(finished(routine)).await.unwrap();
+        actor.tell(finished(child)).await.unwrap();
+        actor.tell(finished(root)).await.unwrap();
+        let snap = actor.ask(Snapshot).await.unwrap();
+        assert_eq!(snap.sessions_since, 1, "the root only");
+        actor
+            .tell(DreamStarted("2026-10-08T01:00:00Z".into()))
+            .await
+            .unwrap();
+        let snap = actor.ask(Snapshot).await.unwrap();
+        assert_eq!(snap.last_dream_at.as_deref(), Some("2026-10-08T01:00:00Z"));
+        assert_eq!(snap.sessions_since, 1, "DreamStarted keeps the counters");
+        actor
+            .tell(Dreamt("2026-10-08T03:00:00Z".into()))
+            .await
+            .unwrap();
+        // The dreaming routine's own turn ends after the close.
+        actor.tell(finished(routine)).await.unwrap();
+        let snap = actor.ask(Snapshot).await.unwrap();
+        assert_eq!(snap.sessions_since, 0, "R-18: nothing new");
+        // Heartbeat re-stamps `written_at`.
+        let before = snap.written_at.clone();
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        actor.tell(Heartbeat).await.unwrap();
+        let snap = actor.ask(Snapshot).await.unwrap();
+        assert_ne!(snap.written_at, before);
     }
 
     #[tokio::test]

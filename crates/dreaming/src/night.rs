@@ -20,7 +20,7 @@ use kameo::message::{Context, Message};
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 
-use crate::config::DreamConfig;
+use crate::config::{AgentDefaults, DreamConfig};
 use crate::sensor_rules::{local_minutes, parse_hhmm};
 use crate::types::{
     Backlog, DreamSettings, DreamState, DreamStatus, Metrics, NightCounts, NightId, NightReceipt,
@@ -80,6 +80,19 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
+}
+
+/// Append `text` to `path` (parents created).
+pub fn append_text(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(text.as_bytes())
 }
 
 fn append_line<T: Serialize>(path: &Path, row: &T) -> anyhow::Result<()> {
@@ -157,8 +170,9 @@ pub fn status_with(data_dir: &Path, cfg: &DreamConfig, backlog: Backlog) -> Drea
     }
 }
 
-/// `dreaming.settings`: the Settings › Dreaming view of the config (136 §2.7).
-pub fn settings(data_dir: &Path, cfg: &DreamConfig) -> DreamSettings {
+/// `dreaming.settings`: the Settings › Dreaming view of the config (136 §2.7)
+/// with the tiers as they resolve tonight (136 D12).
+pub fn settings(data_dir: &Path, cfg: &DreamConfig, agent: &AgentDefaults) -> DreamSettings {
     DreamSettings {
         enabled: cfg.enabled,
         window: cfg.window.clone(),
@@ -172,6 +186,7 @@ pub fn settings(data_dir: &Path, cfg: &DreamConfig) -> DreamSettings {
         preferences_auto: cfg.preferences.auto_from_explicit,
         digest: cfg.digest.clone(),
         paused_until: read_state(data_dir).paused_until,
+        resolved: Some(cfg.resolve_models(agent).0),
     }
 }
 
@@ -209,42 +224,61 @@ pub fn persist(path: &Path, cfg: &DreamConfig) -> std::io::Result<()> {
     std::fs::rename(tmp, path)
 }
 
+/// The front-matter keys a settings change (or a hand-edited `config.yaml`,
+/// R-47) carries into the installed routine file.
+const ROUTINE_KEYS: [&str; 5] = ["budget", "when", "run_timeout", "model", "cap"];
+
 /// Carry a settings change into the installed routine file: its `budget:`,
-/// `when:` (window / idle / heavy-day args) and `run_timeout:` lines take
-/// the new values; every other line — `enabled:` above all — stays.
+/// `when:` (window / idle / heavy-day args), `run_timeout:`, `model:` (the
+/// resolved tidy tier, 136 D12) and `cap:` lines take the new values — a
+/// missing one is inserted before the closing `---`; every other line —
+/// `enabled:` above all — stays.
 pub fn update_routine_file(
     data_dir: &Path,
     cfg: &DreamConfig,
     engine: Option<&str>,
+    agent: &AgentDefaults,
 ) -> std::io::Result<()> {
     let path = data_dir.join(schedule::DIR).join("dreaming.md");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(());
     };
-    let fresh = crate::routine_text(cfg, data_dir, engine);
+    let fresh = crate::routine_text(cfg, data_dir, engine, agent);
     let want = |key: &str| {
         fresh
             .lines()
-            .find(|l| l.starts_with(key))
+            .find(|l| l.starts_with(&format!("{key}:")))
             .map(str::to_owned)
     };
     let mut out = Vec::new();
     let mut in_front = false;
     let mut seen = 0;
+    let mut patched: Vec<&str> = Vec::new();
     for line in text.lines() {
         if line == "---" {
             seen += 1;
+            if seen == 2 {
+                // Keys the file lacks (an older install): add them.
+                for key in ROUTINE_KEYS {
+                    if !patched.contains(&key)
+                        && let Some(w) = want(key)
+                    {
+                        out.push(w);
+                    }
+                }
+            }
             in_front = seen == 1;
             out.push(line.to_owned());
             continue;
         }
         if in_front {
             let key = line.split(':').next().unwrap_or("");
-            if matches!(key, "budget" | "when" | "run_timeout")
-                && let Some(w) = want(&format!("{key}:"))
-            {
-                out.push(w);
-                continue;
+            if let Some(key) = ROUTINE_KEYS.iter().find(|k| **k == key) {
+                patched.push(key);
+                if let Some(w) = want(key) {
+                    out.push(w);
+                    continue;
+                }
             }
         }
         out.push(line.to_owned());
@@ -291,9 +325,19 @@ pub struct NightRecord {
     /// Proposal ids created this night.
     #[serde(default)]
     pub proposals: Vec<String>,
-    /// Sidecars already restored by an undo.
+    /// Sidecars already restored by an undo (`<skill>`, `retired:<skill>`, `preferences`).
     #[serde(default)]
     pub sidecars_undone: Vec<String>,
+    /// The knowledge HEAD when the night opened (136 D14): the restore point
+    /// for an event that carries no commit.
+    #[serde(default)]
+    pub head_at_start: Option<String>,
+    /// Skills `retire`d that night (`backups/<night>/retired/`), for the receipt.
+    #[serde(default)]
+    pub retired: Vec<String>,
+    /// `preferences_set` wrote that night (`backups/<night>/preferences.md` exists).
+    #[serde(default)]
+    pub preferences_touched: bool,
 }
 
 impl NightRecord {
@@ -349,19 +393,22 @@ pub fn nights(data_dir: &Path) -> Vec<NightRecord> {
     v
 }
 
-/// The sidecar backups of a night: skill names under `backups/<night>/`.
+/// The sidecar backups of a night: skill names under `backups/<night>/`
+/// (files only; `preferences.md` and the `retired/` directory are not sidecars).
 pub fn backed_up_skills(data_dir: &Path, night: &str) -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(dir(data_dir).join("backups").join(night)) else {
         return Vec::new();
     };
     let mut v: Vec<String> = rd
         .filter_map(Result::ok)
+        .filter(|e| e.path().is_file())
         .filter_map(|e| {
             e.path()
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .map(str::to_owned)
         })
+        .filter(|s| s != "preferences")
         .collect();
     v.sort();
     v
@@ -467,6 +514,8 @@ pub struct Night {
     pub data_dir: PathBuf,
     /// The section as read at start; `SetSettings` updates it.
     pub cfg: DreamConfig,
+    /// The `agent:` section's model defaults (136 D12).
+    pub agent: AgentDefaults,
     /// For events and `data_dir`.
     pub rt: Runtime,
     /// The engine id (routine file args).
@@ -475,27 +524,41 @@ pub struct Night {
     pub active: Option<NightId>,
     /// The knowledge store, resolved on first use.
     knowledge: Option<Arc<knowledge::Knowledge>>,
+    /// The last `Fired{name: "dreaming"}`: `(at, session)`. The session is
+    /// registered as the consolidating session at fire time (136 D6) and
+    /// `BeginNight` defaults to it; the night is dated from the fire, not
+    /// from the ledger call, so the spend window covers the first model call
+    /// (live: the first call — $0.09–0.13, the uncached prompt — fell before
+    /// `started_at` and the receipt missed it).
+    pub fired: Option<(String, SessionId)>,
+    /// Merge commits counted this night (R-35: one merge per commit, not per rewritten id).
+    merge_commits: std::collections::HashSet<String>,
     /// [`ENDED_GRACE`]; tests shorten it.
     pub ended_grace: std::time::Duration,
-    /// The last `Fired{name: "dreaming"}`: `(at, session)`. `BeginNight` dates
-    /// the night from the fire, not from the ledger call, so the spend window
-    /// covers the first model call (live: the first call — $0.09–0.13, the
-    /// uncached prompt — fell before `started_at` and the receipt missed it).
-    fired: Option<(String, SessionId)>,
 }
 
 impl Night {
     /// Build one.
-    pub fn new(rt: &Runtime, cfg: DreamConfig, engine: &str) -> Self {
+    pub fn new(rt: &Runtime, cfg: DreamConfig, engine: &str, agent: AgentDefaults) -> Self {
         Self {
             data_dir: rt.data_dir.clone(),
             cfg,
+            agent,
             rt: rt.clone(),
             engine: engine.to_owned(),
             active: None,
             knowledge: None,
-            ended_grace: ENDED_GRACE,
             fired: None,
+            merge_commits: Default::default(),
+            ended_grace: ENDED_GRACE,
+        }
+    }
+
+    /// 136 D6: the dreaming session may consolidate from `at` until the night closes.
+    async fn register_session(&mut self, at: String, session: SessionId) {
+        self.fired = Some((at, session));
+        if let Some(k) = self.knowledge().await {
+            k.register_consolidating_session(session);
         }
     }
 
@@ -544,12 +607,22 @@ impl Night {
         }
     }
 
-    async fn finish(&mut self, mut r: NightRecord) -> anyhow::Result<NightRecord> {
+    /// Close `r` (136 D7): counts, spend, `status` (`None` = journaled by the
+    /// model), `state.json`, the `Receipt` line, `Dreamt`, the event; the
+    /// consolidating session is cleared so no unattended write lands after.
+    async fn finish(
+        &mut self,
+        mut r: NightRecord,
+        status: Option<&str>,
+    ) -> anyhow::Result<NightRecord> {
         let night = r.summary.night.clone();
         file_counts(&self.data_dir, &night, &mut r.summary.counts);
         r.backups = backed_up_skills(&self.data_dir, &night);
+        r.retired = edits::retired_that_night(&self.data_dir, &night);
+        r.preferences_touched = preferences::backup_path(&self.data_dir, &night).exists();
         let spend = self.spend_nanos(&r).await;
         r.summary.spend_usd = spend as f64 / 1e9;
+        r.summary.status = status.map(str::to_owned);
         let now = cases::now_rfc3339();
         r.summary.finished_at = Some(now.clone());
         write_record(&self.data_dir, &r)?;
@@ -590,6 +663,11 @@ impl Night {
             })
             .await;
         self.active = None;
+        self.fired = None;
+        self.merge_commits.clear();
+        if let Some(k) = self.knowledge().await {
+            k.clear_consolidating_session();
+        }
         Ok(r)
     }
 }
@@ -617,11 +695,18 @@ fn receipt_line(r: &NightRecord, cap: f64) -> String {
         parts.push("nothing changed".into());
     }
     parts.push(format!("${:.2} of ${cap:.2}", r.summary.spend_usd));
+    if let Some(s) = r.summary.status.as_deref() {
+        parts.push(format!("ended: {s}"));
+    }
     let mut groups: Vec<&str> = r.knowledge.iter().map(|t| t.group.as_str()).collect();
     groups.sort_unstable();
     groups.dedup();
     let mut handles: Vec<String> = groups.iter().map(|g| (*g).to_owned()).collect();
     handles.extend(r.backups.iter().map(|s| format!("skill:{s}")));
+    handles.extend(r.retired.iter().map(|s| format!("skill:{s}")));
+    if r.preferences_touched {
+        handles.push("preferences".into());
+    }
     let undo = if handles.is_empty() {
         String::new()
     } else {
@@ -749,7 +834,20 @@ impl Message<BeginNight> for Night {
             return Err(format!("paused until {until}"));
         }
         let now = cases::now_rfc3339();
-        let started_at = match (&self.fired, m.session) {
+        let (_, judge_same_model) = self.cfg.resolve_models(&self.agent);
+        // 136 D14: the knowledge HEAD at the start of the night.
+        let head_at_start = match self.knowledge().await {
+            Some(k) => k
+                .history(None, 1)
+                .await
+                .ok()
+                .and_then(|h| h.changes.first().map(|c| c.commit.clone())),
+            None => None,
+        };
+        // The session: the caller's, else the one the schedule fired into (136 D6).
+        let session = m.session.or(self.fired.as_ref().map(|(_, s)| *s));
+        // Dated from the fire (P: the spend window must cover the first model call).
+        let started_at = match (&self.fired, session) {
             (Some((at, s)), Some(session)) if *s == session && *at <= now => at.clone(),
             _ => now.clone(),
         };
@@ -758,19 +856,23 @@ impl Message<BeginNight> for Night {
                 if r.summary.finished_at.is_some() {
                     // A second window the same night (heavy day): reopen, keep the counts.
                     r.summary.finished_at = None;
+                    r.summary.status = None;
                     r.summary.mode = m.mode.clone();
+                    r.head_at_start = head_at_start;
                 }
                 r
             }
             None => NightRecord {
                 summary: NightSummary {
                     night: m.night.clone(),
-                    started_at,
+                    started_at: started_at.clone(),
                     finished_at: None,
                     counts: NightCounts::default(),
                     spend_usd: 0.0,
                     mode: m.mode.clone(),
                     undone: false,
+                    status: None,
+                    judge_same_model,
                 },
                 session: None,
                 knowledge: Vec::new(),
@@ -778,18 +880,34 @@ impl Message<BeginNight> for Night {
                 phases: Vec::new(),
                 proposals: Vec::new(),
                 sidecars_undone: Vec::new(),
+                head_at_start,
+                retired: Vec::new(),
+                preferences_touched: false,
             },
         };
-        if m.session.is_some() {
-            r.session = m.session;
+        if let Some(s) = session {
+            r.session = Some(s);
+            // Belt: the fire path registers at `ScheduleEvent::Fired`; an owner-root
+            // call (or a test) reaches here without it.
+            self.register_session(started_at.clone(), s).await;
         }
         let fresh = self.active.as_deref() != Some(m.night.as_str());
         write_record(&self.data_dir, &r).map_err(|e| e.to_string())?;
         let mut state = state;
         state.last_night = Some(r.summary.clone());
+        if fresh {
+            // 136 D7: the sensor's "already dreamt this window" moves at the start,
+            // so a night cut off before its close is not re-fired into.
+            state.last_dream_at = Some(now.clone());
+        }
         write_state(&self.data_dir, &state).map_err(|e| e.to_string())?;
         self.active = Some(m.night.clone());
         if fresh {
+            if let Ok(Some(s)) =
+                ActorRef::<crate::signals::Signals>::lookup(crate::signals::SIGNALS_ACTOR)
+            {
+                let _ = s.tell(crate::signals::DreamStarted(now)).await;
+            }
             self.rt
                 .publish(DreamNightStarted {
                     night: m.night.clone(),
@@ -806,6 +924,10 @@ impl Message<Commit> for Night {
     async fn handle(&mut self, m: Commit, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let mut r = read_record(&self.data_dir, &m.night)
             .ok_or_else(|| format!("no night {} (call dreaming_ledger first)", m.night))?;
+        if r.summary.finished_at.is_some() {
+            // R-11: a second close (or a section after the close) counts nothing twice.
+            return Err(format!("night {} is already closed", m.night));
+        }
         if m.phase == "journal" && !r.phases.iter().any(|p| p.starts_with("nudge: ")) {
             let cap = read_state(&self.data_dir)
                 .run_request
@@ -828,10 +950,10 @@ impl Message<Commit> for Night {
         r.phases.push(format!(
             "{}: {}",
             m.phase,
-            crate::scrub::clip(&m.summary, 200)
+            crate::scrub::clip(&crate::scrub::scrub(&m.summary), 200)
         ));
         if m.phase == "journal" {
-            self.finish(r).await.map_err(|e| e.to_string())?;
+            self.finish(r, None).await.map_err(|e| e.to_string())?;
         } else {
             write_record(&self.data_dir, &r).map_err(|e| e.to_string())?;
         }
@@ -905,8 +1027,13 @@ fn left_undone(data_dir: &Path, r: &NightRecord) -> Option<String> {
 /// The commit `undo` restores `e.id` to: the first parent of the commit the
 /// event names (one tree diff, no history walk — and immune to later writes
 /// to the same id landing before this event is handled); "" when that commit
-/// created the id. An event without a commit falls back to the id's history.
-pub async fn commit_before(k: &knowledge::Knowledge, e: &knowledge::KnowledgeChanged) -> String {
+/// created the id. An event without a commit restores to the knowledge HEAD
+/// captured when the night opened (136 D14), else the id's history.
+pub async fn commit_before(
+    k: &knowledge::Knowledge,
+    e: &knowledge::KnowledgeChanged,
+    head_at_start: Option<&str>,
+) -> String {
     if let Some(c) = e.commit.as_deref() {
         return match k.revision(c, Some(&e.id)).await {
             Ok(r)
@@ -922,6 +1049,9 @@ pub async fn commit_before(k: &knowledge::Knowledge, e: &knowledge::KnowledgeCha
                 String::new()
             }
         };
+    }
+    if let Some(h) = head_at_start.filter(|h| !h.is_empty()) {
+        return h.to_owned();
     }
     match k.history(Some(&e.id), 2).await {
         Ok(h) => h
@@ -958,8 +1088,15 @@ impl Message<knowledge::KnowledgeChanged> for Night {
             knowledge::KnowledgeOp::Put => "put",
             knowledge::KnowledgeOp::Delete => return,
         };
+        // R-35: a merge is one commit rewriting the canonical and every stub;
+        // count it once (an event without a commit counts as its own merge).
+        let counted_merge = e.op == knowledge::KnowledgeOp::Merge
+            && e.commit
+                .as_ref()
+                .is_some_and(|c| !self.merge_commits.insert(c.clone()));
         match e.op {
-            knowledge::KnowledgeOp::Merge => r.summary.counts.merged += 1,
+            knowledge::KnowledgeOp::Merge if !counted_merge => r.summary.counts.merged += 1,
+            knowledge::KnowledgeOp::Merge => {}
             knowledge::KnowledgeOp::Supersede => r.summary.counts.superseded += 1,
             knowledge::KnowledgeOp::Archive => r.summary.counts.archived += 1,
             knowledge::KnowledgeOp::Verify => r.summary.counts.verified += 1,
@@ -968,9 +1105,10 @@ impl Message<knowledge::KnowledgeChanged> for Night {
             knowledge::KnowledgeOp::Delete => {}
         }
         if !r.knowledge.iter().any(|t| t.id == e.id) {
+            let head = r.head_at_start.clone();
             let commit_before = match self.knowledge().await {
-                Some(k) => commit_before(&k, &e).await,
-                None => String::new(),
+                Some(k) => commit_before(&k, &e, head.as_deref()).await,
+                None => head.unwrap_or_default(),
             };
             r.knowledge.push(Touched {
                 id: e.id.clone(),
@@ -1048,6 +1186,15 @@ impl Message<Export> for Night {
     }
 }
 
+/// The installed routine's `enabled:` (`schedules/dreaming.md`); `true` when
+/// the file is absent or unparseable (the schedule's reconcile reports that).
+pub fn routine_enabled(data_dir: &Path) -> bool {
+    std::fs::read_to_string(data_dir.join(schedule::DIR).join("dreaming.md"))
+        .ok()
+        .and_then(|t| schedule::file::parse("dreaming", &t).ok())
+        .is_none_or(|s| s.enabled)
+}
+
 impl Message<RunNow> for Night {
     type Reply = Result<SessionId, String>;
 
@@ -1059,9 +1206,23 @@ impl Message<RunNow> for Night {
         if !(req.budget_usd.is_finite() && req.budget_usd > 0.0) {
             return Err("budget_usd must be a positive number".into());
         }
-        let mut state = read_state(&self.data_dir);
-        state.run_request = Some(req.clone());
-        write_state(&self.data_dir, &state).map_err(|e| e.to_string())?;
+        // R-46 (D7): a press is not a way around the switches.
+        if !self.cfg.enabled {
+            return Err("dreaming is off in config (dreaming.enabled: false)".into());
+        }
+        if !routine_enabled(&self.data_dir) {
+            return Err(
+                "the dreaming routine is switched off (schedules/dreaming.md enabled: false)"
+                    .into(),
+            );
+        }
+        let state = read_state(&self.data_dir);
+        if let Some(until) = state.paused_until.as_deref()
+            && chrono::DateTime::parse_from_rfc3339(until)
+                .is_ok_and(|t| t.with_timezone(&Utc) > Utc::now())
+        {
+            return Err(format!("paused until {until}; resume first"));
+        }
         let sched = ActorRef::<schedule::Schedule>::lookup(schedule::SCHEDULE_ACTOR)
             .ok()
             .flatten()
@@ -1078,13 +1239,22 @@ impl Message<RunNow> for Night {
                 req.budget_usd
             )),
         };
-        sched
+        let session = sched
             .ask(schedule::FireWith {
                 name: "dreaming".into(),
                 overrides,
             })
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // R-31: the request is on record only once the fire took (`busy` /
+        // `disabled` / `check broken` leave no stale backlog request behind).
+        let mut state = read_state(&self.data_dir);
+        state.run_request = Some(req);
+        write_state(&self.data_dir, &state).map_err(|e| e.to_string())?;
+        // 136 D6: the fired session consolidates tonight (the `Fired` event
+        // registers it too; this is the belt when the reply lands first).
+        self.register_session(cases::now_rfc3339(), session).await;
+        Ok(session)
     }
 }
 
@@ -1114,7 +1284,7 @@ impl Message<Settings> for Night {
     type Reply = DreamSettings;
 
     async fn handle(&mut self, _: Settings, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        settings(&self.data_dir, &self.cfg)
+        settings(&self.data_dir, &self.cfg, &self.agent)
     }
 }
 
@@ -1126,8 +1296,11 @@ impl Message<SetSettings> for Night {
         SetSettings(s): SetSettings,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        if !(s.budget_usd.is_finite() && s.budget_usd >= 0.0) {
-            return Err("budget_usd must be a non-negative number".into());
+        // D13: a positive bounded budget (the UI mirrors `MAX_BUDGET_USD`).
+        if !(s.budget_usd.is_finite() && s.budget_usd > 0.0 && s.budget_usd <= MAX_BUDGET_USD) {
+            return Err(format!(
+                "budget_usd must be above 0 and at most {MAX_BUDGET_USD}"
+            ));
         }
         if parse_hhmm(&s.window[0]).is_none() || parse_hhmm(&s.window[1]).is_none() {
             return Err("window: two HH:MM times".into());
@@ -1145,16 +1318,26 @@ impl Message<SetSettings> for Night {
         persist(&self.data_dir.join("config.yaml"), &cfg)
             .map_err(|e| format!("config.yaml: {e}"))?;
         let home = cfg.home_engine.clone().filter(|h| !h.is_empty());
-        if let Err(e) = update_routine_file(&self.data_dir, &cfg, home.as_deref()) {
-            tracing::warn!("dreaming: routine file not updated: {e}");
+        let engine = home.or_else(|| (!self.engine.is_empty()).then(|| self.engine.clone()));
+        // D11: off removes the routine, the sensor and the skill; on reinstalls them.
+        let r = if cfg.enabled {
+            crate::install_files(&self.data_dir, &cfg, engine.as_deref(), &self.agent).map(|_| ())
+        } else {
+            crate::remove_files(&self.data_dir)
+        };
+        if let Err(e) = r {
+            tracing::warn!("dreaming: bundled files not updated: {e}");
         }
         let mut state = read_state(&self.data_dir);
         state.paused_until = s.paused_until.clone();
         write_state(&self.data_dir, &state).map_err(|e| e.to_string())?;
         self.cfg = cfg;
-        Ok(settings(&self.data_dir, &self.cfg))
+        Ok(settings(&self.data_dir, &self.cfg, &self.agent))
     }
 }
+
+/// The largest nightly budget `set_settings` accepts (136 D13).
+pub const MAX_BUDGET_USD: f64 = 1000.0;
 
 impl Message<Proposals> for Night {
     type Reply = Vec<Proposal>;
@@ -1190,8 +1373,13 @@ impl Message<SetMetaNote> for Night {
 
 /// What pressing an option means (136 §4 phase 6).
 fn choice_is_no(choice: &str) -> bool {
-    let c = choice.to_lowercase();
-    c.contains("not ") || c.starts_with("no") || c.contains("never") || c.contains("dismiss")
+    let c = choice.trim().to_lowercase();
+    c == "no"
+        || c.starts_with("no ")
+        || c.starts_with("not ")
+        || c.contains(" not ")
+        || c.contains("never")
+        || c.contains("dismiss")
 }
 
 impl Message<ProposalAct> for Night {
@@ -1400,8 +1588,9 @@ impl Message<MetricsOver> for Night {
     }
 }
 
-/// Remember the dreaming routine's fire so [`BeginNight`] can date the night
-/// from it (the spend window is `[started_at, now)` over `model_calls`).
+/// 136 D6: the schedule fired `dreaming` — that session consolidates tonight,
+/// from before its first tool call until the night closes; [`BeginNight`]
+/// dates the night from the fire (the spend window is `[started_at, now)`).
 impl Message<schedule::ScheduleEvent> for Night {
     type Reply = ();
 
@@ -1409,12 +1598,11 @@ impl Message<schedule::ScheduleEvent> for Night {
         if let schedule::ScheduleEvent::Fired { name, session, at } = e
             && name == "dreaming"
         {
-            self.fired = Some((
-                at.with_timezone(&Utc)
-                    .format("%Y-%m-%dT%H:%M:%SZ")
-                    .to_string(),
-                session,
-            ));
+            let at = at
+                .with_timezone(&Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            self.register_session(at, session).await;
         }
     }
 }
@@ -1473,6 +1661,34 @@ impl Message<agent::AgentEvent> for Night {
     }
 }
 
+impl Night {
+    /// Did the budget guard end `session`'s turn (136 D7)? The guard's own
+    /// predicate over the agent's ledger: `spent + estimate > cap` for the
+    /// cap stamped on the session.
+    async fn budget_hit(&self, session: SessionId) -> bool {
+        let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+            return false;
+        };
+        let Ok(store) = agents.ask(agent::DurableStore).await else {
+            return false;
+        };
+        let Ok(Some(budget)) = store.budget(session).await else {
+            return false;
+        };
+        let model = match store.session(session).await {
+            Ok(Some(s)) => s.model,
+            _ => String::new(),
+        };
+        match store
+            .budget_spent(session, &budget.currency, &model, &budget.since)
+            .await
+        {
+            Ok((spent, estimate)) => spent.saturating_add(estimate) > budget.nanos,
+            Err(_) => false,
+        }
+    }
+}
+
 impl Message<CloseEnded> for Night {
     type Reply = ();
 
@@ -1483,15 +1699,25 @@ impl Message<CloseEnded> for Night {
         if r.session != Some(m.session) || r.summary.finished_at.is_some() {
             return;
         }
+        let status = if self.budget_hit(m.session).await {
+            "budget"
+        } else {
+            "incomplete"
+        };
         let line = format!(
-            "- turn ended (`{}`) before the journal: the budget guard refused a call, or the turn errored or timed out; what was written stands and is in the receipt",
-            m.stop_reason
+            "- turn ended (`{}`) before the journal — {}; what was written stands and is in the receipt",
+            m.stop_reason,
+            if status == "budget" {
+                "the budget guard refused the next call"
+            } else {
+                "the turn errored, timed out or stopped early"
+            }
         );
         if let Err(err) = journal::append(&self.data_dir, &m.night, "Ended", &line).await {
             tracing::warn!("dreaming: ended line not written: {err}");
         }
         r.phases.push(format!("ended: {}", m.stop_reason));
-        if let Err(err) = self.finish(r).await {
+        if let Err(err) = self.finish(r, Some(status)).await {
             tracing::warn!("dreaming: night not closed after the turn ended: {err}");
         }
     }
@@ -1499,14 +1725,21 @@ impl Message<CloseEnded> for Night {
 
 /// Spawn, register and subscribe the actor; the `engine` is stamped into
 /// `state.json` once so the sensor and `home_engine` have something to compare.
-pub fn start(rt: &Runtime, cfg: DreamConfig, engine: &str) -> anyhow::Result<()> {
+pub fn start(
+    rt: &Runtime,
+    cfg: DreamConfig,
+    engine: &str,
+    agent: AgentDefaults,
+) -> anyhow::Result<()> {
     let mut state = read_state(&rt.data_dir);
     if state.engine.is_empty() {
         state.engine = engine.to_owned();
         write_state(&rt.data_dir, &state).context("write dreaming/state.json")?;
     }
-    let actor =
-        Night::spawn_with_mailbox(Night::new(rt, cfg, engine), runtime::subscriber_mailbox());
+    let actor = Night::spawn_with_mailbox(
+        Night::new(rt, cfg, engine, agent),
+        runtime::subscriber_mailbox(),
+    );
     actor.register(DREAMING_ACTOR)?;
     let rt2 = rt.clone();
     tokio::spawn(async move {
@@ -1546,6 +1779,8 @@ mod tests {
             spend_usd: 0.4,
             mode: "nightly".into(),
             undone: false,
+            status: None,
+            judge_same_model: false,
         };
         let state = DreamState {
             last_night: Some(night.clone()),
@@ -1623,13 +1858,19 @@ mod tests {
         let section: DreamConfig = serde_yaml::from_value(back["dreaming"].clone()).unwrap();
         assert_eq!(section, cfg);
         // The routine file: budget / when / run_timeout follow; `enabled: false` survives.
-        crate::install_files(dir.path(), &DreamConfig::default(), None).unwrap();
+        crate::install_files(
+            dir.path(),
+            &DreamConfig::default(),
+            None,
+            &AgentDefaults::default(),
+        )
+        .unwrap();
         let routine = dir.path().join("schedules/dreaming.md");
         let toggled = std::fs::read_to_string(&routine)
             .unwrap()
             .replace("---\nevery", "---\nenabled: false\nevery");
         std::fs::write(&routine, &toggled).unwrap();
-        update_routine_file(dir.path(), &cfg, None).unwrap();
+        update_routine_file(dir.path(), &cfg, None, &AgentDefaults::default()).unwrap();
         let after = std::fs::read_to_string(&routine).unwrap();
         assert!(after.contains("enabled: false\n"), "{after}");
         assert!(after.contains("budget: 2.5 USD\n"), "{after}");
@@ -1657,6 +1898,8 @@ mod tests {
                         spend_usd: 0.0,
                         mode: "nightly".into(),
                         undone: false,
+                        status: None,
+                        judge_same_model: false,
                     },
                     session: None,
                     knowledge: vec![Touched {
@@ -1669,6 +1912,9 @@ mod tests {
                     phases: vec![],
                     proposals: vec![],
                     sidecars_undone: vec![],
+                    head_at_start: None,
+                    retired: vec![],
+                    preferences_touched: false,
                 },
             )
             .unwrap();
@@ -1749,7 +1995,7 @@ mod tests {
             source: knowledge::Source::Dreaming,
             commit,
         };
-        let before = commit_before(&k, &ev(retitle.commit.clone())).await;
+        let before = commit_before(&k, &ev(retitle.commit.clone()), None).await;
         assert!(!before.is_empty());
         let parent = k
             .revision(retitle.commit.as_deref().unwrap(), None)
@@ -1764,7 +2010,7 @@ mod tests {
             "An over-long title that dreaming shortens"
         );
         // The history fallback (no commit on the event) is the pre-fix answer.
-        assert!(!commit_before(&k, &ev(None)).await.is_empty());
+        assert!(!commit_before(&k, &ev(None), None).await.is_empty());
         // A merge into a new canonical: the canonical was created by that commit.
         k.put(put("facts/b-2026-10-01", "B one"), knowledge::Source::Model)
             .await
@@ -1788,12 +2034,12 @@ mod tests {
             source: knowledge::Source::Dreaming,
             commit: merged.commit.clone(),
         };
-        assert_eq!(commit_before(&k, &created).await, "");
+        assert_eq!(commit_before(&k, &created, None).await, "");
         let folded = knowledge::KnowledgeChanged {
             id: "facts/b-2026-10-01".into(),
             ..created
         };
-        assert!(!commit_before(&k, &folded).await.is_empty());
+        assert!(!commit_before(&k, &folded, None).await.is_empty());
     }
 
     #[test]
@@ -1812,6 +2058,8 @@ mod tests {
                 spend_usd: 0.3673,
                 mode: "pass".into(),
                 undone: false,
+                status: None,
+                judge_same_model: false,
             },
             session: None,
             knowledge: ["retitle", "merge", "merge", "verify"]
@@ -1828,6 +2076,9 @@ mod tests {
             phases: vec![],
             proposals: vec![],
             sidecars_undone: vec![],
+            head_at_start: None,
+            retired: vec![],
+            preferences_touched: false,
         };
         assert_eq!(
             receipt_line(&r, 3.0),
@@ -1877,6 +2128,8 @@ mod tests {
                 spend_usd: 0.0,
                 mode: "pass".into(),
                 undone: false,
+                status: None,
+                judge_same_model: false,
             },
             session: None,
             knowledge: ids
@@ -1892,6 +2145,9 @@ mod tests {
             phases: vec![],
             proposals: vec![],
             sidecars_undone: vec![],
+            head_at_start: None,
+            retired: vec![],
+            preferences_touched: false,
         };
         assert_eq!(
             left_undone(dir.path(), &touched(&["facts/a"])).as_deref(),
@@ -1920,7 +2176,7 @@ mod tests {
     async fn turn_end_without_a_journal_closes_the_open_night() {
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.path().to_owned());
-        let mut night = Night::new(&rt, DreamConfig::default(), "e");
+        let mut night = Night::new(&rt, DreamConfig::default(), "e", AgentDefaults::default());
         night.ended_grace = std::time::Duration::from_millis(50);
         let actor = Night::spawn(night);
         let mine = SessionId::new();
@@ -1988,6 +2244,11 @@ mod tests {
         let r = read_record(dir.path(), "2026-10-08").unwrap();
         assert!(r.summary.finished_at.is_some());
         assert_eq!(r.phases, ["ended: end_turn"]);
+        assert_eq!(
+            r.summary.status.as_deref(),
+            Some("incomplete"),
+            "D7: no agent ledger here, so not `budget`"
+        );
         let state = read_state(dir.path());
         assert!(state.run_request.is_none() && state.nights == 1);
         let j = journal::text(dir.path());
@@ -1996,8 +2257,316 @@ mod tests {
             "{j}"
         );
         assert!(
-            j.contains("### Receipt\n- nothing changed · $0.00 of $0.05"),
+            j.contains("### Receipt\n- nothing changed · $0.00 of $0.05 · ended: incomplete"),
             "{j}"
+        );
+        // R-11: a journal section after the close is refused and counts nothing twice.
+        let e = actor
+            .ask(Commit {
+                night: "2026-10-08".into(),
+                phase: "journal".into(),
+                summary: "again".into(),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("already closed"), "{e}");
+        assert_eq!(read_state(dir.path()).nights, 1);
+    }
+
+    /// D7/R-8: `last_dream_at` moves when the night STARTS; R-11: the close
+    /// runs once — a second `journal` is refused, `nights` stays 1.
+    #[tokio::test]
+    async fn begin_moves_last_dream_at_and_the_journal_closes_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_owned());
+        let actor = Night::spawn(Night::new(
+            &rt,
+            DreamConfig::default(),
+            "e",
+            AgentDefaults::default(),
+        ));
+        assert!(read_state(dir.path()).last_dream_at.is_none());
+        actor
+            .ask(BeginNight {
+                night: "2026-10-08".into(),
+                mode: "nightly".into(),
+                session: None,
+            })
+            .await
+            .unwrap();
+        let started = read_state(dir.path()).last_dream_at;
+        assert!(started.is_some(), "D7: set at DreamNightStarted");
+        let close = || Commit {
+            night: "2026-10-08".into(),
+            phase: "journal".into(),
+            summary: "done".into(),
+        };
+        actor.ask(close()).await.unwrap();
+        let state = read_state(dir.path());
+        assert_eq!(state.nights, 1);
+        assert!(state.last_night.as_ref().unwrap().finished_at.is_some());
+        assert!(
+            state.last_night.as_ref().unwrap().status.is_none(),
+            "journaled by the model"
+        );
+        let e = actor.ask(close()).await.unwrap_err().to_string();
+        assert!(e.contains("already closed"), "{e}");
+        assert_eq!(read_state(dir.path()).nights, 1, "R-11: counted once");
+        assert_eq!(
+            journal::text(dir.path()).matches("### Receipt").count(),
+            1,
+            "one receipt line"
+        );
+    }
+
+    /// R-46 (D7): `RunNow` refuses while paused, with `dreaming.enabled:
+    /// false` and with the routine switched off; R-31: without a schedule
+    /// actor the fire fails and no `run_request` is left behind.
+    #[tokio::test]
+    async fn run_now_respects_the_switches_and_persists_nothing_without_a_fire() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let rt = Runtime::new(figment::Figment::new(), d.to_owned());
+        crate::install_files(d, &DreamConfig::default(), None, &AgentDefaults::default()).unwrap();
+        let actor = Night::spawn(Night::new(
+            &rt,
+            DreamConfig::default(),
+            "e",
+            AgentDefaults::default(),
+        ));
+        let req = RunRequest {
+            budget_usd: 1.0,
+            mode: RunMode::Pass,
+            run_timeout_secs: None,
+        };
+        // No schedule actor: the fire fails, the request is not persisted (R-31).
+        let e = actor
+            .ask(RunNow(req.clone()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("schedule is not running"), "{e}");
+        assert!(read_state(d).run_request.is_none(), "R-31");
+        // Paused.
+        let mut state = read_state(d);
+        state.paused_until = Some("2999-01-01T00:00:00Z".into());
+        write_state(d, &state).unwrap();
+        let e = actor
+            .ask(RunNow(req.clone()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("paused until 2999"), "{e}");
+        state.paused_until = None;
+        write_state(d, &state).unwrap();
+        // The routine row switched off.
+        let routine = d.join("schedules/dreaming.md");
+        let toggled = std::fs::read_to_string(&routine)
+            .unwrap()
+            .replace("---\nevery", "---\nenabled: false\nevery");
+        std::fs::write(&routine, &toggled).unwrap();
+        let e = actor
+            .ask(RunNow(req.clone()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("switched off"), "{e}");
+        // Off in config.
+        let off = Night::spawn(Night::new(
+            &rt,
+            DreamConfig {
+                enabled: false,
+                ..DreamConfig::default()
+            },
+            "e",
+            AgentDefaults::default(),
+        ));
+        let e = off.ask(RunNow(req)).await.unwrap_err().to_string();
+        assert!(e.contains("off in config"), "{e}");
+        assert!(read_state(d).run_request.is_none());
+    }
+
+    /// R-14 (D12): `SetSettings` writes the resolved tidy model into the
+    /// routine (a pick, then the default again), answers `resolved`, bounds
+    /// the budget (D13) and, with `enabled: false`, removes the bundled
+    /// files (D11) — re-enabling reinstalls them.
+    #[tokio::test]
+    async fn set_settings_patches_the_routine_model_and_toggles_the_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let rt = Runtime::new(figment::Figment::new(), d.to_owned());
+        let agent = AgentDefaults {
+            model: "openai/gpt-5.6-sol".into(),
+            escalate_model: Some("anthropic/claude-opus-4-1".into()),
+        };
+        std::fs::write(
+            d.join("config.yaml"),
+            "agent:\n  model: openai/gpt-5.6-sol\n",
+        )
+        .unwrap();
+        crate::install_files(d, &DreamConfig::default(), Some("e"), &agent).unwrap();
+        let routine = d.join("schedules/dreaming.md");
+        let model_of = || {
+            schedule::file::parse("dreaming", &std::fs::read_to_string(&routine).unwrap())
+                .unwrap()
+                .model
+        };
+        assert_eq!(model_of().as_deref(), Some("openai/gpt-5.6-sol"));
+        let actor = Night::spawn(Night::new(&rt, DreamConfig::default(), "e", agent.clone()));
+        let mut s = actor.ask(Settings).await.unwrap();
+        let resolved = s.resolved.clone().unwrap();
+        assert_eq!(
+            (
+                resolved.tidy.as_str(),
+                resolved.judge.as_str(),
+                resolved.target.as_str()
+            ),
+            (
+                "openai/gpt-5.6-sol",
+                "anthropic/claude-opus-4-1",
+                "openai/gpt-5.6-sol"
+            )
+        );
+        s.models.tidy = Some("anthropic/claude-haiku-4-5".into());
+        let back = actor.ask(SetSettings(s.clone())).await.unwrap();
+        assert_eq!(model_of().as_deref(), Some("anthropic/claude-haiku-4-5"));
+        assert_eq!(back.resolved.unwrap().tidy, "anthropic/claude-haiku-4-5");
+        assert!(
+            std::fs::read_to_string(d.join("config.yaml"))
+                .unwrap()
+                .contains("tidy: anthropic/claude-haiku-4-5")
+        );
+        s.models.tidy = None;
+        actor.ask(SetSettings(s.clone())).await.unwrap();
+        assert_eq!(
+            model_of().as_deref(),
+            Some("openai/gpt-5.6-sol"),
+            "the default again"
+        );
+        // D13: the budget is bounded.
+        for bad in [0.0, -1.0, 1000.01, f64::NAN] {
+            let mut b = s.clone();
+            b.budget_usd = bad;
+            assert!(actor.ask(SetSettings(b)).await.is_err(), "{bad}");
+        }
+        s.budget_usd = 1000.0;
+        actor.ask(SetSettings(s.clone())).await.unwrap();
+        assert!(
+            std::fs::read_to_string(&routine)
+                .unwrap()
+                .contains("budget: 1000 USD\n")
+        );
+        // D11: off removes the files; on brings them back.
+        s.enabled = false;
+        actor.ask(SetSettings(s.clone())).await.unwrap();
+        for rel in crate::BUNDLED {
+            assert!(!d.join(rel).exists(), "{rel}");
+        }
+        s.enabled = true;
+        actor.ask(SetSettings(s)).await.unwrap();
+        for rel in crate::BUNDLED {
+            assert!(d.join(rel).exists(), "{rel}");
+        }
+        assert_eq!(model_of().as_deref(), Some("openai/gpt-5.6-sol"));
+    }
+
+    /// D6: the fired session is registered as the consolidating session at
+    /// `ScheduleEvent::Fired` (and by `BeginNight` as a belt); the close
+    /// clears it. D14: `head_at_start` is the knowledge HEAD at `BeginNight`
+    /// and is the restore point for an event without a commit.
+    #[tokio::test]
+    async fn the_fired_session_consolidates_until_the_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let rt = Runtime::new(figment::Figment::new(), d.to_owned());
+        let k = knowledge::Knowledge::open(d, rt.clone()).await.unwrap();
+        k.put(
+            knowledge::Put {
+                id: "facts/a".into(),
+                type_: "fact".into(),
+                title: "A".into(),
+                body: "body".into(),
+                ..Default::default()
+            },
+            knowledge::Source::Model,
+        )
+        .await
+        .unwrap();
+        let head = k.history(None, 1).await.unwrap().changes[0].commit.clone();
+        let mut night = Night::new(&rt, DreamConfig::default(), "e", AgentDefaults::default());
+        night.knowledge = Some(k.clone());
+        night.ended_grace = std::time::Duration::from_millis(20);
+        let actor = Night::spawn(night);
+        let fired = SessionId::new();
+        actor
+            .tell(schedule::ScheduleEvent::Fired {
+                name: "dreaming".into(),
+                session: fired,
+                at: Local::now(),
+            })
+            .await
+            .unwrap();
+        actor
+            .tell(schedule::ScheduleEvent::Fired {
+                name: "other".into(),
+                session: SessionId::new(),
+                at: Local::now(),
+            })
+            .await
+            .unwrap();
+        actor.ask(Nights { limit: 1 }).await.unwrap();
+        assert!(k.is_consolidating_session(fired), "registered at fire time");
+        assert!(k.may_consolidate(fired).await);
+        // BeginNight without a session defaults to the fired one.
+        actor
+            .ask(BeginNight {
+                night: "2026-10-08".into(),
+                mode: "nightly".into(),
+                session: None,
+            })
+            .await
+            .unwrap();
+        let r = read_record(d, "2026-10-08").unwrap();
+        assert_eq!(r.session, Some(fired));
+        assert_eq!(r.head_at_start.as_deref(), Some(head.as_str()), "D14");
+        // An event without a commit restores to the HEAD at start.
+        actor
+            .tell(knowledge::KnowledgeChanged {
+                id: "facts/a".into(),
+                op: knowledge::KnowledgeOp::Retitle,
+                source: knowledge::Source::Dreaming,
+                commit: None,
+            })
+            .await
+            .unwrap();
+        actor.ask(Nights { limit: 1 }).await.unwrap();
+        let r = read_record(d, "2026-10-08").unwrap();
+        assert_eq!(r.knowledge[0].commit_before, head);
+        // The close clears the registration.
+        actor
+            .tell(agent::AgentEvent::TurnFinished {
+                session: fired,
+                turn: runtime::TurnId::new(),
+                stop_reason: "end_turn".into(),
+                usage: Default::default(),
+                context: 0,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        actor.ask(Nights { limit: 1 }).await.unwrap();
+        assert!(
+            read_record(d, "2026-10-08")
+                .unwrap()
+                .summary
+                .finished_at
+                .is_some()
+        );
+        assert!(!k.is_consolidating_session(fired), "cleared at the close");
+        assert!(
+            !k.may_consolidate(fired).await,
+            "an unattended unknown session"
         );
     }
 }

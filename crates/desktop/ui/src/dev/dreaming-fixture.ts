@@ -10,7 +10,7 @@ import type { NightSummary } from '@/rpc/bindings/NightSummary'
 import type { Proposal } from '@/rpc/bindings/Proposal'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 
-export const STATES = ['empty', 'night', 'paused', 'disabled'] as const
+export const STATES = ['empty', 'night', 'paused', 'disabled', 'running'] as const
 export type State = (typeof STATES)[number]
 
 const state = (): State | null => {
@@ -47,6 +47,8 @@ export const UNDONE_NIGHT: NightSummary = {
   undone: true,
 }
 export const QUIET_NIGHT: NightSummary = { night: day(2), started_at: ago(2 * D + 5 * H), finished_at: ago(2 * D + 5 * H + 60_000), counts: zero, spend_usd: 0, mode: 'pass', undone: false }
+/** A night in flight: `finished_at: null`, partial counts, the routine row `running`. */
+export const RUNNING_NIGHT: NightSummary = { night: day(0), started_at: ago(12 * 60_000), finished_at: null, counts: { ...zero, triaged: 90n, retitled: 40n }, spend_usd: 0.27, mode: 'pass', undone: false }
 
 export const PROPOSALS: Proposal[] = [
   {
@@ -76,6 +78,8 @@ export const SETTINGS: DreamSettings = {
   digest: 'Mon 08:00',
   paused_until: null,
 }
+/** What the engine says the `null` tiers run on (F2's `DreamSettings.resolved`); the `night` state carries it, `empty` does not. */
+export const RESOLVED: NonNullable<DreamSettings['resolved']> = { tidy: 'anthropic/claude-haiku-4-5', propose: 'anthropic/claude-haiku-4-5', judge: 'openai/gpt-5.6-sol', target: 'openai/gpt-5.6-sol' }
 
 const status = (over: Partial<DreamStatus>): DreamStatus => ({
   enabled: true,
@@ -96,7 +100,7 @@ export const FIXTURES: Record<State, { status: DreamStatus; nights: NightSummary
     status: status({ last_night: NIGHT, budget_left_tonight_usd: 0.4, backlog: { fresh: 41n, untidied: 212n, open_cases: 9n }, proposals_pending: 2n }),
     nights: [NIGHT, UNDONE_NIGHT, QUIET_NIGHT],
     proposals: PROPOSALS,
-    settings: { ...SETTINGS, budget_usd: 2.5, models: { ...SETTINGS.models, tidy: 'anthropic/claude-haiku-4-5' } },
+    settings: { ...SETTINGS, budget_usd: 2.5, models: { ...SETTINGS.models, tidy: 'anthropic/claude-haiku-4-5' }, resolved: RESOLVED },
     routineEnabled: true,
   },
   paused: {
@@ -112,6 +116,13 @@ export const FIXTURES: Record<State, { status: DreamStatus; nights: NightSummary
     proposals: [],
     settings: { ...SETTINGS, enabled: false },
     routineEnabled: false,
+  },
+  running: {
+    status: status({ last_night: RUNNING_NIGHT, budget_left_tonight_usd: 0.73, backlog: { fresh: 30n, untidied: 400n, open_cases: 1n } }),
+    nights: [RUNNING_NIGHT, NIGHT],
+    proposals: [],
+    settings: { ...SETTINGS, resolved: RESOLVED },
+    routineEnabled: true,
   },
 }
 
@@ -148,7 +159,7 @@ function wrap(api: Api, f: (typeof FIXTURES)[State]): Api {
     last: f.status.last_night?.finished_at ?? null,
     last_result: f.status.last_night ? 'end_turn' : null,
     session: null,
-    running: false,
+    running: nights.some((n) => n.finished_at === null),
     error: null,
     until: null,
     max_runs: 100000,

@@ -275,9 +275,29 @@ pub async fn set(
         }
         other => anyhow::bail!("op {other:?}: add | replace | demote"),
     }
+    backup_once(data_dir, &crate::ledger::tonight())?;
     write_atomic(&path(data_dir), render(&lines).as_bytes())?;
     republish(data_dir).await;
     Ok(block(data_dir).unwrap_or_default())
+}
+
+/// `<data_dir>/dreaming/backups/<night>/preferences.md`: the block before the
+/// night's first write (R-9); `dreaming_undo(night, "preferences")` restores it.
+pub fn backup_path(data_dir: &Path, night: &str) -> PathBuf {
+    crate::night::dir(data_dir)
+        .join("backups")
+        .join(night)
+        .join("preferences.md")
+}
+
+/// Write the backup unless the night already has one (an absent file backs
+/// up as empty, so undo removes it).
+pub fn backup_once(data_dir: &Path, night: &str) -> anyhow::Result<()> {
+    let b = backup_path(data_dir, night);
+    if !b.exists() {
+        write_atomic(&b, &std::fs::read(path(data_dir)).unwrap_or_default())?;
+    }
+    Ok(())
 }
 
 /// The line with the oldest `confirmed` date (136 §4 Settle: demoted when the block is full).

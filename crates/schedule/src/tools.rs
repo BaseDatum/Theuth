@@ -165,8 +165,9 @@ pub fn render_args(a: &ScheduleArgs) -> String {
         until: a.until.as_deref(),
         max_runs: a.max_runs,
         run_timeout: a.run_timeout.as_deref(),
-        // 136 §2.3: `budget:` is written by hand or by the bundled dreaming routine, not by the tool.
+        // 136 §2.3 / D4: `budget:` and `cap:` are written by hand or by the bundled dreaming routine, not by the tool.
         budget: None,
+        cap: None,
         cwd: a.cwd.as_deref(),
         approvals: a.approvals.unwrap_or(true),
         // 40 §1.12 / 108 D12: a watcher defaults to `enabled: false`; an

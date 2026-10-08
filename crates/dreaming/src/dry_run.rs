@@ -99,12 +99,22 @@ async fn open_ro(path: &Path) -> Option<sqlx::SqliteConnection> {
     if !path.exists() {
         return None;
     }
-    SqliteConnectOptions::new()
+    match SqliteConnectOptions::new()
         .filename(path)
         .read_only(true)
         .connect()
         .await
-        .ok()
+    {
+        Ok(c) => Some(c),
+        Err(e) => {
+            // R-39: a store that does not open is not "zero uses".
+            tracing::warn!(
+                "dreaming dry-run: {} not opened read-only: {e}",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 /// The `uses` table of `<data_dir>/knowledge.sqlite`, read-only, completed
@@ -118,7 +128,10 @@ pub async fn read_uses(data_dir: &Path) -> Vec<Uses> {
         )
         .fetch_all(&mut c)
         .await
-        .unwrap_or_default()
+        .unwrap_or_else(|e| {
+            tracing::warn!("dreaming dry-run: uses table not read: {e}");
+            Vec::new()
+        })
         .into_iter()
         .map(|(id, shown, opened, last_shown, last_opened)| Uses {
             id,

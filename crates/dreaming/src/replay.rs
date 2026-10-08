@@ -2,19 +2,23 @@
 //! with the candidate learned text as the system frame, answer it with the
 //! target model in a fresh context (`runtime::SideCall`, `CallKind::Dream`,
 //! the dreaming session as the cost owner so the budget guard counts it),
-//! then have the judge model — `dreaming.models.judge`, else the session's —
-//! score the answer 0–1 against `ideal` + `user_words` with a one-line
-//! reason. The judge never sees the proposer's rationale; the gate math of
-//! §7.2 step 4 is [`gate`], the pure function the skill's recipe mirrors.
+//! then have the judge model (136 D12: `dreaming.models.judge`, else
+//! `agent.escalate_model`, else the proposer's model) score the answer 0–1
+//! against `ideal` + `user_words` with a one-line reason. The judge never
+//! sees the proposer's rationale. Every replay is persisted as one row of
+//! `dreaming/replays.jsonl` (136 D2) and the gate of §7.2 step 4 — [`gate`]
+//! — is recomputed from those rows by `skill_learned_edit`'s record pass
+//! ([`gate_from_rows`]); the model's own arithmetic is never trusted.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use kameo::actor::ActorRef;
 use runtime::SessionId;
+use sha2::Digest as _;
 
 use crate::cases;
-use crate::config::DreamConfig;
+use crate::config::{AgentDefaults, DreamConfig};
 use crate::types::{GateResult, Verdict};
 
 /// The judge prompt, verbatim in `skill.md` (a test keeps them identical).
@@ -32,6 +36,99 @@ pub struct Replay {
     pub score: f64,
     /// One line.
     pub reason: String,
+}
+
+/// One persisted replay (`dreaming/replays.jsonl`, 136 D2).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ReplayRow {
+    /// The night.
+    pub night: String,
+    /// The case replayed.
+    pub case_id: String,
+    /// `sha256(candidate_text.trim())`; `None` = the baseline run.
+    pub candidate_sha256: Option<String>,
+    /// The judge's score.
+    pub score: f64,
+    /// `provider/model` that judged.
+    pub judge_model: String,
+    /// RFC 3339.
+    pub at: String,
+}
+
+/// `<data_dir>/dreaming/replays.jsonl`.
+pub fn replays_path(data_dir: &Path) -> PathBuf {
+    crate::night::dir(data_dir).join("replays.jsonl")
+}
+
+/// The candidate's identity: `sha256` of the trimmed text, hex.
+pub fn candidate_sha256(text: &str) -> String {
+    format!("{:x}", sha2::Sha256::digest(text.trim().as_bytes()))
+}
+
+/// Append one row.
+pub fn log_row(data_dir: &Path, row: &ReplayRow) -> anyhow::Result<()> {
+    let p = replays_path(data_dir);
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut line = serde_json::to_string(row)?;
+    line.push('\n');
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)?
+        .write_all(line.as_bytes())?;
+    Ok(())
+}
+
+/// Every row of `night`, in file order.
+pub fn rows(data_dir: &Path, night: &str) -> Vec<ReplayRow> {
+    std::fs::read_to_string(replays_path(data_dir))
+        .map(|t| {
+            t.lines()
+                .filter_map(|l| serde_json::from_str::<ReplayRow>(l).ok())
+                .filter(|r| r.night == night)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The gate for `candidate_text` from tonight's persisted replays (136 D2):
+/// pair the latest baseline row and the latest candidate row per case,
+/// then [`gate`]. `None` when no replay of that candidate was logged.
+pub fn gate_from_rows(
+    data_dir: &Path,
+    night: &str,
+    candidate_text: &str,
+    cfg: &DreamConfig,
+) -> Option<GateResult> {
+    let sha = candidate_sha256(candidate_text);
+    let rows = rows(data_dir, night);
+    let mut baseline: std::collections::BTreeMap<&str, f64> = Default::default();
+    let mut candidate: std::collections::BTreeMap<&str, f64> = Default::default();
+    for r in &rows {
+        match r.candidate_sha256.as_deref() {
+            None => {
+                baseline.insert(&r.case_id, r.score);
+            }
+            Some(s) if s == sha => {
+                candidate.insert(&r.case_id, r.score);
+            }
+            Some(_) => {}
+        }
+    }
+    if candidate.is_empty() {
+        return None;
+    }
+    let (mut b, mut c) = (Vec::new(), Vec::new());
+    for (case, score) in &candidate {
+        if let Some(base) = baseline.get(case) {
+            b.push(*base);
+            c.push(*score);
+        }
+    }
+    Some(gate(&b, &c, cfg))
 }
 
 /// The system frame for the target model: the learned text as the live
@@ -112,10 +209,13 @@ async fn call(
 }
 
 /// Replay one case: `candidate_text` None = the current learned text (the
-/// baseline run); `target_model` None = the session's model.
+/// baseline run); `target_model` None = the resolved `target` tier
+/// (`agent.model`). The judge is the resolved `judge` tier (136 D12). The
+/// score is persisted as a [`ReplayRow`] of tonight (136 D2).
 pub async fn replay(
     data_dir: &Path,
     cfg: &DreamConfig,
+    agent_defaults: &AgentDefaults,
     session: SessionId,
     case_id: &str,
     candidate_text: Option<&str>,
@@ -126,13 +226,20 @@ pub async fn replay(
         .ok()
         .flatten()
         .ok_or_else(|| anyhow::anyhow!("agent actor is not running"))?;
+    let (models, _) = cfg.resolve_models(agent_defaults);
     let learned = match candidate_text {
         Some(t) => t.to_owned(),
         None => current_learned(data_dir, &case.skill_hint),
     };
-    let target_role = target_model
-        .map(|m| runtime::ModelRole::Named(m.to_owned()))
-        .unwrap_or(runtime::ModelRole::Session);
+    let target = target_model
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(&models.target);
+    let target_role = if target.is_empty() {
+        runtime::ModelRole::Session
+    } else {
+        runtime::ModelRole::Named(target.to_owned())
+    };
     let answer = call(
         &agents,
         session,
@@ -144,12 +251,11 @@ pub async fn replay(
         ),
     )
     .await?;
-    let judge_role = cfg
-        .models
-        .judge
-        .clone()
-        .map(runtime::ModelRole::Named)
-        .unwrap_or(runtime::ModelRole::Session);
+    let judge_role = if models.judge.is_empty() {
+        runtime::ModelRole::Session
+    } else {
+        runtime::ModelRole::Named(models.judge.clone())
+    };
     let verdict = call(
         &agents,
         session,
@@ -160,6 +266,17 @@ pub async fn replay(
     .await?;
     let (score, reason) = parse_judge(&verdict)
         .ok_or_else(|| anyhow::anyhow!("judge answered without a score: {}", verdict.trim()))?;
+    log_row(
+        data_dir,
+        &ReplayRow {
+            night: crate::ledger::tonight(),
+            case_id: case.id.clone(),
+            candidate_sha256: candidate_text.map(candidate_sha256),
+            score,
+            judge_model: models.judge,
+            at: cases::now_rfc3339(),
+        },
+    )?;
     Ok(Replay {
         answer,
         score,
@@ -263,5 +380,52 @@ mod tests {
                 .contains("## Standing preferences (learned)\n- rule")
         );
         assert!(!target_system("knowledge:facts/x", "").contains("Learned"));
+    }
+
+    /// R-2 (D2): the gate comes from `replays.jsonl`, paired by case; no row
+    /// for the candidate → `None` (the record pass refuses); another night's
+    /// rows and another candidate's rows do not count; a case replayed twice
+    /// keeps its latest score.
+    #[test]
+    fn gate_is_recomputed_from_tonights_replay_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = DreamConfig::default();
+        let text = "- Prefer numbered lists\n";
+        assert_eq!(gate_from_rows(dir.path(), "2026-10-08", text, &cfg), None);
+        let row = |night: &str, case: &str, sha: Option<&str>, score: f64| ReplayRow {
+            night: night.into(),
+            case_id: case.into(),
+            candidate_sha256: sha.map(str::to_owned),
+            score,
+            judge_model: "openai/gpt-5.6-sol".into(),
+            at: String::new(),
+        };
+        let sha = candidate_sha256(text);
+        for (c, b, k) in [("c1", 0.4, 0.7), ("c2", 0.5, 0.6), ("c3", 0.3, 0.5)] {
+            log_row(dir.path(), &row("2026-10-08", c, None, b)).unwrap();
+            log_row(dir.path(), &row("2026-10-08", c, Some(&sha), k)).unwrap();
+        }
+        // Noise: another candidate, another night, a re-run of c3 that lands lower.
+        log_row(dir.path(), &row("2026-10-08", "c1", Some("other"), 0.0)).unwrap();
+        log_row(dir.path(), &row("2026-10-07", "c4", Some(&sha), 1.0)).unwrap();
+        log_row(dir.path(), &row("2026-10-08", "c3", Some(&sha), 0.4)).unwrap();
+        let g = gate_from_rows(dir.path(), "2026-10-08", text, &cfg).unwrap();
+        assert_eq!((g.verdict, g.val_cases), (Verdict::Accepted, 3));
+        assert!((g.baseline - 0.4).abs() < 1e-9, "{g:?}");
+        assert!(
+            (g.candidate - (0.7 + 0.6 + 0.4) / 3.0).abs() < 1e-9,
+            "{g:?}"
+        );
+        // Two pairs only → unverified; whitespace around the candidate is not an identity change.
+        log_row(dir.path(), &row("2026-10-09", "c1", None, 0.1)).unwrap();
+        log_row(dir.path(), &row("2026-10-09", "c1", Some(&sha), 0.9)).unwrap();
+        log_row(dir.path(), &row("2026-10-09", "c2", None, 0.1)).unwrap();
+        log_row(dir.path(), &row("2026-10-09", "c2", Some(&sha), 0.9)).unwrap();
+        let g = gate_from_rows(dir.path(), "2026-10-09", &format!("  {text}\n"), &cfg).unwrap();
+        assert_eq!((g.verdict, g.val_cases), (Verdict::Unverified, 2));
+        // A candidate replayed without any baseline: rows exist, nothing pairs.
+        log_row(dir.path(), &row("2026-10-10", "c9", Some(&sha), 0.9)).unwrap();
+        let g = gate_from_rows(dir.path(), "2026-10-10", text, &cfg).unwrap();
+        assert_eq!((g.verdict, g.val_cases), (Verdict::Unverified, 0));
     }
 }

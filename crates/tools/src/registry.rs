@@ -2219,6 +2219,60 @@ mod tests {
         );
     }
 
+    /// 136 R-4: `approvals: false` turns every `ask` into `allow`, so a
+    /// `SetCap{Mutating}` is what keeps destructive tools out of an
+    /// unattended run: the capped-and-bypassed session runs a mutating tool
+    /// without a prompt and is refused a destructive one.
+    #[tokio::test]
+    async fn cap_holds_for_a_session_with_approvals_off() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reg = registry(
+            vec![
+                Arc::new(Wipe(runs.clone())),
+                Arc::new(Touch),
+                Arc::new(Echo),
+            ],
+            None,
+        );
+        let session = SessionId::new();
+        reg.ask(SetApprovals {
+            session: Some(session),
+            enabled: false,
+        })
+        .await
+        .unwrap();
+        reg.tell(SetCap {
+            session,
+            cap: Some(Risk::Mutating),
+        })
+        .await
+        .unwrap();
+        let out = reg.ask(Invoke(call("touch", session))).await.unwrap();
+        assert!(!out.is_error, "mutating runs without a prompt: {out:?}");
+        let out = reg
+            .ask(Invoke(app_call(
+                "wipe",
+                session,
+                serde_json::json!({"target": "db"}),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(out.content, "wipe: denied: subagent is capped at mutating");
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let names: Vec<String> = reg
+            .ask(ListTools(Some(session)))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            names,
+            ["echo", "touch"],
+            "the destructive tool is not offered"
+        );
+    }
+
     /// Stands in for the agent's `send_message`: counts body runs.
     struct Peer(Arc<std::sync::atomic::AtomicUsize>);
 

@@ -222,6 +222,7 @@ async fn export_bindings() {
         dreaming::UndoReport,
         dreaming::DreamSettings,
         dreaming::DreamModels,
+        dreaming::ResolvedModels,
         dreaming::Proposal,
         dreaming::ProposalKind,
         dreaming::Metrics,

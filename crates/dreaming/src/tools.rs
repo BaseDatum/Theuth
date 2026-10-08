@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tools::registry::ToolRegistry;
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
-use crate::config::DreamConfig;
+use crate::config::{AgentDefaults, DreamConfig};
 use crate::night::{DREAMING_ACTOR, Night, ProposalDraft};
 use crate::types::{Case, CaseKind, CaseOrigin, CaseState, EditRecord, NightId, Split};
 
@@ -26,6 +26,8 @@ pub struct Seams {
     pub data_dir: PathBuf,
     /// The section as read at start.
     pub cfg: DreamConfig,
+    /// The `agent:` section's model defaults (136 D12).
+    pub agent: AgentDefaults,
     /// The knowledge store, for the owner-root-or-unattended gate.
     pub knowledge: Option<Arc<knowledge::Knowledge>>,
 }
@@ -97,24 +99,27 @@ pub struct LedgerArgs {
     pub since: Option<String>,
 }
 
-/// `dreaming_ledger`: the day ledger (136 §4 phase 1).
+/// `dreaming_ledger`: the day ledger (136 §4 phase 1). Mutating (R-10, D9):
+/// it opens the night, consumes the pending rewinds and writes the night
+/// file, so it runs behind the same gate as the other writers.
 pub struct LedgerTool(pub Arc<Seams>);
 
 #[async_trait::async_trait]
 impl Tool for LedgerTool {
     const NAME: &'static str = "dreaming_ledger";
-    const RISK: Risk = Risk::ReadOnly;
+    const RISK: Risk = Risk::Mutating;
     const RETURNS: &'static str = "dict";
     type Args = LedgerArgs;
 
     fn description(&self) -> String {
-        "Dreaming: the day ledger since the last night — sessions, plain user messages, tool errors, questions, \
+        "Dreaming only: the day ledger since the last night — sessions, plain user messages, tool errors, questions, \
          stops, app presses, hint impressions/opens, skill loads, rewinds, pending desk journals and any \
-         `run_request`. Read it first; it decides tonight's phases."
+         `run_request`. Opens tonight's night. Read it first; it decides tonight's phases."
             .into()
     }
 
     async fn call(&self, a: LedgerArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        self.0.mutating(Self::NAME, &cx).await?;
         let l = crate::ledger::build(
             &self.0.data_dir,
             &self.0.cfg,
@@ -373,12 +378,16 @@ impl Tool for CaseListTool {
 /// Arguments for [`SkillLearnedEditTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SkillLearnedEditArgs {
-    /// Skill name; only `skills/learned/<skill>.md` is written.
+    /// Skill name (`[a-z0-9-]`); only `skills/learned/<skill>.md` is written.
     pub skill: String,
-    /// ≤ 4 bounded edits.
+    /// ≤ 4 bounded edits; `{op, content, anchor, rationale, cases}` is enough.
     pub edits: Vec<EditRecord>,
     /// The night id (the backup directory).
     pub night: NightId,
+    /// `candidate` (default): apply in memory, answer the text, write nothing.
+    /// `record`: gate from tonight's `replay_case` rows of that text, then write.
+    #[serde(default)]
+    pub pass: Option<String>,
 }
 
 /// `skill_learned_edit`: apply bounded edits to a learned sidecar.
@@ -392,9 +401,12 @@ impl Tool for SkillLearnedEditTool {
     type Args = SkillLearnedEditArgs;
 
     fn description(&self) -> String {
-        "Dreaming only: apply ≤ 4 bounded edits (add | replace | delete with exact-text anchors) to a skill's \
-         learned sidecar `skills/learned/<skill>.md`; the file is backed up first. Returns the apply report \
-         (applied | skipped_unmatched | error per edit) and the candidate text. Never touches the skill itself."
+        "Dreaming only: apply ≤ 4 bounded edits (add | replace | delete with bullet-text anchors; retire for a \
+         dreaming-made skill) to a skill's learned sidecar `skills/learned/<skill>.md`. `pass: candidate` \
+         (default) applies in memory and returns the candidate `text` for `replay_case`; `pass: record` \
+         recomputes the gate from tonight's replays of exactly that text — refusing when none were logged — \
+         and writes the edits only when it is accepted (backup first). Returns the apply report \
+         (applied | skipped_unmatched | error per edit) and the text. Never touches the skill itself."
             .into()
     }
 
@@ -407,7 +419,19 @@ impl Tool for SkillLearnedEditTool {
                 self.0.cfg.caps.edits_per_target
             );
         }
-        let r = crate::edits::apply(&self.0.data_dir, &a.skill, &a.edits, &a.night)?;
+        let pass = match a.pass.as_deref().map(str::trim) {
+            None | Some("") | Some("candidate") => crate::edits::Pass::Candidate,
+            Some("record") => crate::edits::Pass::Record,
+            Some(other) => bail!("pass {other:?}: candidate | record"),
+        };
+        let r = crate::edits::apply(
+            &self.0.data_dir,
+            &self.0.cfg,
+            &a.skill,
+            &a.edits,
+            &a.night,
+            pass,
+        )?;
         Ok(structured(
             format!("{}: {} edits", r.target, r.edits.len()),
             r,
@@ -423,7 +447,8 @@ pub struct ReplayArgs {
     /// The candidate sidecar text; `None` = the current text (the baseline run).
     #[serde(default)]
     pub candidate_text: Option<String>,
-    /// `provider/model` for the answer; `None` = the session's model. The judge is fixed by config.
+    /// `provider/model` for the answer; `None` = the resolved `target` tier (`agent.model`).
+    /// The judge is the resolved `judge` tier (136 D12).
     #[serde(default)]
     pub target_model: Option<String>,
 }
@@ -442,7 +467,8 @@ impl Tool for ReplayTool {
     fn description(&self) -> String {
         "Dreaming: replay one case — render its context with the candidate skill text, answer it with the target \
          model in a fresh context, judge the answer against the ideal and the user's words with the configured \
-         judge. Returns {answer, score (0–1), reason}. Spends model budget."
+         judge. Returns {answer, score (0–1), reason} and logs the score to `dreaming/replays.jsonl`, which \
+         `skill_learned_edit(pass=\"record\")` gates on. Spends model budget."
             .into()
     }
 
@@ -450,6 +476,7 @@ impl Tool for ReplayTool {
         let r = crate::replay::replay(
             &self.0.data_dir,
             &self.0.cfg,
+            &self.0.agent,
             cx.session,
             &a.case_id,
             a.candidate_text.as_deref(),
@@ -483,12 +510,67 @@ impl Tool for PreferencesSetTool {
 
     fn description(&self) -> String {
         "Dreaming only: add, replace or demote one line of the standing preferences block (≤ 20 lines × 140 \
-         chars, in the system prompt every turn). Refuses past the cap. Returns the block text."
+         chars, in the system prompt every turn). Refuses past the cap. With `preferences.auto_from_explicit` \
+         off, `add` files a `remember` proposal for the inbox instead of writing. Returns the block text."
             .into()
     }
 
     async fn call(&self, a: PreferencesSetArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         self.0.mutating(Self::NAME, &cx).await?;
+        // The live switch (`SetSettings` updates the actor's config, not the seams').
+        let actor = ActorRef::<Night>::lookup(DREAMING_ACTOR).ok().flatten();
+        let auto = match &actor {
+            Some(n) => n
+                .ask(crate::night::Settings)
+                .await
+                .map_or(self.0.cfg.preferences.auto_from_explicit, |s| {
+                    s.preferences_auto
+                }),
+            None => self.0.cfg.preferences.auto_from_explicit,
+        };
+        if a.op.trim() == "add" && !auto {
+            // R-16 (D8): the user's veto on the always-on rung.
+            let line = crate::scrub::clip(&crate::scrub::scrub(a.line.trim()), 140);
+            anyhow::ensure!(!line.is_empty(), "empty line");
+            let night = crate::ledger::tonight();
+            let draft = ProposalDraft {
+                kind: crate::types::ProposalKind::Remember,
+                title: format!("I'll remember: {line}"),
+                body: format!(
+                    "A standing preference dreaming wanted to add to the system prompt block; \
+                     `preferences.auto_from_explicit` is off, so it waits for you. Evidence: {}.",
+                    if a.evidence.is_empty() {
+                        "none recorded".to_owned()
+                    } else {
+                        a.evidence.join(", ")
+                    }
+                ),
+                options: vec![
+                    "confirm".into(),
+                    "not that".into(),
+                    "never save this".into(),
+                ],
+            };
+            let rows = match actor {
+                Some(actor) => actor
+                    .ask(crate::night::Propose {
+                        night: night.clone(),
+                        drafts: vec![draft],
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?,
+                None => {
+                    crate::night::add_proposals(&self.0.data_dir, &self.0.cfg, &night, vec![draft])?
+                }
+            };
+            return Ok(ToolOutput::ok(match rows.first() {
+                Some(p) => format!(
+                    "auto-promote is off: filed as a remember proposal `proposal:{}` (the block is unchanged)",
+                    p.id
+                ),
+                None => "auto-promote is off and the weekly proposal cap is reached: not filed (the block is unchanged)".to_owned(),
+            }));
+        }
         let block = crate::preferences::set(
             &self.0.data_dir,
             self.0.knowledge.as_deref(),
@@ -705,15 +787,11 @@ mod tests {
                 "dreaming_undo",
             ]
         );
-        for r in [
-            LedgerTool::RISK,
-            StateTool::RISK,
-            CaseListTool::RISK,
-            ReplayTool::RISK,
-        ] {
+        for r in [StateTool::RISK, CaseListTool::RISK, ReplayTool::RISK] {
             assert_eq!(r, Risk::ReadOnly);
         }
         for r in [
+            LedgerTool::RISK,
             CasePutTool::RISK,
             SkillLearnedEditTool::RISK,
             PreferencesSetTool::RISK,
@@ -748,6 +826,7 @@ mod tests {
         let seams = Arc::new(Seams {
             data_dir: dir.path().to_owned(),
             cfg: DreamConfig::default(),
+            agent: AgentDefaults::default(),
             knowledge: None,
         });
         let out = StateTool(seams.clone())
@@ -794,5 +873,115 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("no case x"), "{e}");
+    }
+
+    /// R-10 (D9): `dreaming_ledger` is gated — a session that may not
+    /// consolidate neither opens a night nor consumes the pending rewinds.
+    #[tokio::test]
+    async fn ledger_refuses_an_ungated_session_and_leaves_the_pending_rewinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let seams = Arc::new(Seams {
+            data_dir: dir.path().to_owned(),
+            cfg: DreamConfig::default(),
+            agent: AgentDefaults::default(),
+            knowledge: None,
+        });
+        let pending = crate::ledger::pending_dir(dir.path()).join("a.json");
+        crate::night::write_atomic(
+            &pending,
+            serde_json::to_string(&agent::LedgerRewind {
+                session: runtime::SessionId::new(),
+                at: "2026-10-07T21:05:00Z".into(),
+                dropped_assistant_text: "tail".into(),
+            })
+            .unwrap()
+            .as_bytes(),
+        )
+        .unwrap();
+        let e = LedgerTool(seams)
+            .call(LedgerArgs::default(), cx(false))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("dreaming_ledger runs only"), "{e}");
+        assert!(pending.exists(), "the rewind snapshot was not consumed");
+        assert!(!crate::ledger::path(dir.path(), &crate::ledger::tonight()).exists());
+        assert!(crate::night::read_record(dir.path(), &crate::ledger::tonight()).is_none());
+    }
+
+    /// R-16 (D8): with `preferences.auto_from_explicit` off, `add` files a
+    /// `remember` proposal and leaves the block alone; `demote`/`replace`
+    /// are unaffected.
+    #[tokio::test]
+    async fn preferences_add_becomes_a_proposal_when_auto_promote_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let mut cfg = DreamConfig::default();
+        cfg.preferences.auto_from_explicit = false;
+        // A gate-passing context: the knowledge store with this session registered.
+        let rt = runtime::Runtime::new(figment::Figment::new(), d.to_owned());
+        let k = knowledge::Knowledge::open(d, rt).await.unwrap();
+        let cx = cx(false);
+        k.register_consolidating_session(cx.session);
+        let seams = Arc::new(Seams {
+            data_dir: d.to_owned(),
+            cfg,
+            agent: AgentDefaults::default(),
+            knowledge: Some(k.clone()),
+        });
+        let out = PreferencesSetTool(seams.clone())
+            .call(
+                PreferencesSetArgs {
+                    op: "add".into(),
+                    line: "never use ask_user; numbered text".into(),
+                    evidence: vec!["s1".into(), "s2".into()],
+                },
+                cx.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content
+                .starts_with("auto-promote is off: filed as a remember proposal"),
+            "{}",
+            out.content
+        );
+        assert!(!crate::preferences::path(d).exists());
+        let rows: Vec<crate::types::Proposal> =
+            std::fs::read_to_string(crate::night::proposals_path(d))
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, crate::types::ProposalKind::Remember);
+        assert_eq!(
+            rows[0].title,
+            "I'll remember: never use ask_user; numbered text"
+        );
+        // The switch on: the same call writes the block.
+        let seams = Arc::new(Seams {
+            data_dir: d.to_owned(),
+            cfg: DreamConfig::default(),
+            agent: AgentDefaults::default(),
+            knowledge: Some(k),
+        });
+        let out = PreferencesSetTool(seams)
+            .call(
+                PreferencesSetArgs {
+                    op: "add".into(),
+                    line: "never use ask_user; numbered text".into(),
+                    evidence: vec![],
+                },
+                cx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("- never use ask_user; numbered text"),
+            "{}",
+            out.content
+        );
+        assert!(crate::preferences::path(d).exists());
     }
 }

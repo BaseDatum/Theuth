@@ -67,12 +67,61 @@ pub struct HeavyDay {
 pub struct Models {
     /// `None` = `decide_many` only, model tail off.
     pub triage: Option<String>,
-    /// Default: `agent.title_model`, else the subagent model.
+    /// Default: `agent.model` (136 D12); always written as the routine's `model:`.
     pub tidy: Option<String>,
-    /// Default: `agent.subagents.model`.
+    /// v1: `tidy` (the proposer runs in the night's own turn).
     pub propose: Option<String>,
-    /// Default: `agent.model` when its vendor differs from `propose`, else `propose` with another seed.
+    /// Default: `agent.escalate_model` when set and ≠ the proposer model, else the
+    /// proposer model (`judge_same_model` recorded on the night).
     pub judge: Option<String>,
+}
+
+/// What the `agent:` section offers as tier defaults (136 D12).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentDefaults {
+    /// `agent.model`.
+    pub model: String,
+    /// `agent.escalate_model`, when set and non-empty.
+    pub escalate_model: Option<String>,
+}
+
+impl AgentDefaults {
+    /// Read the `agent:` section (defaults when absent).
+    pub fn from_runtime(rt: &runtime::Runtime) -> Self {
+        let a: agent::AgentConfig = rt.section("agent").unwrap_or_default();
+        Self {
+            model: a.model,
+            escalate_model: a.escalate_model.filter(|m| !m.trim().is_empty()),
+        }
+    }
+}
+
+impl DreamConfig {
+    /// The models that run each tier (136 D12): the config's pick, else the
+    /// default from the `agent:` section. The flag is `judge_same_model`.
+    pub fn resolve_models(&self, agent: &AgentDefaults) -> (crate::types::ResolvedModels, bool) {
+        fn pick(m: &Option<String>) -> Option<&str> {
+            m.as_deref().map(str::trim).filter(|m| !m.is_empty())
+        }
+        let tidy = pick(&self.models.tidy).unwrap_or(&agent.model).to_owned();
+        let propose = pick(&self.models.propose).unwrap_or(&tidy).to_owned();
+        let (judge, same) = match pick(&self.models.judge) {
+            Some(j) => (j.to_owned(), j == propose),
+            None => match agent.escalate_model.as_deref() {
+                Some(e) if e != propose => (e.to_owned(), false),
+                _ => (propose.clone(), true),
+            },
+        };
+        (
+            crate::types::ResolvedModels {
+                tidy,
+                propose,
+                judge,
+                target: agent.model.clone(),
+            },
+            same,
+        )
+    }
 }
 
 /// `caps:`.
@@ -271,5 +320,60 @@ mod tests {
         assert!(c.models.tidy.is_none());
         assert_eq!(c.window, ["23:00", "05:00"]);
         assert_eq!(c.caps, Caps::default());
+    }
+
+    /// D12: `tidy` defaults to `agent.model`, `propose` to `tidy`, `judge` to
+    /// `agent.escalate_model` unless it is the proposer (then the proposer,
+    /// flagged), `target` to `agent.model`; a config pick wins.
+    #[test]
+    fn model_tiers_resolve_from_the_agent_section() {
+        let agent = AgentDefaults {
+            model: "openai/gpt-5.6-sol".into(),
+            escalate_model: Some("anthropic/claude-opus-4-1".into()),
+        };
+        let (r, same) = DreamConfig::default().resolve_models(&agent);
+        assert_eq!(
+            (
+                r.tidy.as_str(),
+                r.propose.as_str(),
+                r.judge.as_str(),
+                r.target.as_str()
+            ),
+            (
+                "openai/gpt-5.6-sol",
+                "openai/gpt-5.6-sol",
+                "anthropic/claude-opus-4-1",
+                "openai/gpt-5.6-sol"
+            )
+        );
+        assert!(!same);
+        let no_escalate = AgentDefaults {
+            escalate_model: None,
+            ..agent.clone()
+        };
+        let (r, same) = DreamConfig::default().resolve_models(&no_escalate);
+        assert_eq!(r.judge, "openai/gpt-5.6-sol");
+        assert!(same, "no escalate model: the proposer judges, flagged");
+        let same_as_propose = AgentDefaults {
+            escalate_model: Some("openai/gpt-5.6-sol".into()),
+            ..agent.clone()
+        };
+        assert!(DreamConfig::default().resolve_models(&same_as_propose).1);
+        let picked = DreamConfig {
+            models: Models {
+                tidy: Some("anthropic/claude-haiku-4-5".into()),
+                judge: Some(" ".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (r, same) = picked.resolve_models(&agent);
+        assert_eq!(r.tidy, "anthropic/claude-haiku-4-5");
+        assert_eq!(r.propose, "anthropic/claude-haiku-4-5", "propose v1 = tidy");
+        assert_eq!(
+            r.judge, "anthropic/claude-opus-4-1",
+            "a blank pick is no pick"
+        );
+        assert!(!same);
     }
 }

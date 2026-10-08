@@ -64,9 +64,14 @@ pub fn split_title(title: &str, body: &str) -> (String, String) {
             title[at + len..].trim().to_owned(),
         ),
         // No clause boundary: a fragment in the body would read wrong, so
-        // the whole statement is the summary.
+        // the whole statement is the summary. No space either: cut one
+        // char short so the `…` keeps the title within the cap (136 R-45).
         None => {
-            let at = head.rfind(' ').unwrap_or(cap);
+            let at = head.rfind(' ').unwrap_or_else(|| {
+                head.char_indices()
+                    .nth(TITLE_MAX - 1)
+                    .map_or(head.len(), |(i, _)| i)
+            });
             (format!("{}…", title[..at].trim_end()), title.to_owned())
         }
     };
@@ -201,6 +206,7 @@ mod tests {
             valid_until: None,
             superseded_by: None,
             merged_into: None,
+            consolidated_at: None,
         }
     }
 
@@ -233,6 +239,18 @@ mod tests {
         assert!(t.ends_with('…'));
         assert!(t.chars().count() <= TITLE_MAX);
         assert_eq!(b, format!("## Summary\n\n{}\n", long.trim()));
+    }
+
+    /// 136 R-45: a title with no space at all (a URL, a hash, a CJK run) is
+    /// still within the cap after the `…`.
+    #[test]
+    fn no_space_at_all_stays_within_the_cap() {
+        for long in ["x".repeat(300), "日".repeat(300)] {
+            let (t, b) = split_title(&long, "");
+            assert!(t.ends_with('…'));
+            assert_eq!(t.chars().count(), TITLE_MAX, "{t}");
+            assert_eq!(b, format!("## Summary\n\n{long}\n"));
+        }
     }
 
     #[test]
