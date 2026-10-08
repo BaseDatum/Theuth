@@ -74,10 +74,37 @@ job, representation), §13.1 shapes (frozen, untouched), §14 `notebooks.*` keys
   `crates/document/tests/ingest_job.rs` (five tests, helper-gated like `tests/actor.rs`).
 
 ## Proof
-- (gates below; timings filled after the run)
+- `tests/ingest_job.rs` (helper `theuth-documents 59.5`): pasted text → `completed` in **666 ms** end to end
+  (row `new` → `queued` → job → helper `Replace` import → snapshot → row), `words 13`, `fetched_ms`/`content_sha`
+  set, filed as `source` item `added_by owner`, listed per notebook and globally; refresh same bytes → attempt 2, same
+  sha, `changed_since` none; blob rewritten → attempt 3, new sha, `changed_since` = previous `fetched_ms`, Diff import
+  shows the new text. Four pre-flight refusals land as `failed` cards with no job (`415 unsupported: xyz`,
+  `too large: …`, `refused: private address (…)`, `no transcript route: …`), `attempts 0`, all filed. The two-page
+  PDF → `completed` in **870–930 ms** (anydoc 49–92 ms of it), `pages 2`, `bytes 859`, both pages in the document,
+  original copied under `attachments/`. The meeting fixture → `## [mm:ss] <speaker>` blocks, `duration_ms` from the
+  manifest, title "Failover sync" from the manifest via the heading/export path, `meta.segments` 3. Same paste in two
+  notebooks → one document id, two item rows, a completed card reused not re-run, caller's title kept. Audio
+  without the voice plugin and session without a registry → `failed … (transient; refresh to retry)`, re-adding a
+  failed card re-runs (`attempts 2`).
+- `tests/ingest_audio.rs` with `THEUTH_STT_MODEL_DIR=~/.theuth/models/parakeet-tdt`: the 3 s wav decodes to 3000 ms;
+  Parakeet TDT load **756 ms**, word-timed inference of 3 s **166 ms** on this Mac (a pure tone → 0 words, as
+  expected). Without the variable the inference half skips loudly.
+- Unit tests: `captions` (video ids incl. path-traversal and 10/12-char rejects; the saved watch page → 3 tracks,
+  `en` picks the human `en-GB` over `asr en`, details title/channel/2 461 000 ms; json3 → 12 words → three
+  `## [mm:ss]` blocks), `meeting::render`, `session` header/turn/cut parsing, `mcp` Jira + Confluence renderers,
+  `job::headed`, `cap_chars`, `timed_blocks`, `permanent`, config defaults + unknown-key tolerance.
+- Not provable offline (no network in tests, by rule): the live URL ladder, YouTube fetches, `yt-dlp`, MCP servers,
+  `session_read` through a running registry. Their parsers/renderers are unit-tested on fixtures; the glue is the
+  same `invoke()` path for all three registry calls.
 
 ## Gates
-- (filled after the run)
+- `cargo fmt -p document -p voice` clean.
+- `cargo clippy -p document -p voice --tests -- -D warnings` clean.
+- `cargo test -p document -p voice --tests`: document lib 63 passed (15 ingest), `tests/actor.rs` 11, `tests/ingest_audio.rs` 1,
+  `tests/ingest_job.rs` 5; voice lib 25 passed — `live::tests::utterer_returns_the_spoken_sentence_punctuated`
+  (macOS `say` + Nemotron streaming, untouched by W1) failed once in the full run and passed on rerun: environmental.
+- Regression set `cargo test -p document -p link -p rpc`: document 63 + 11 + 1 + 5, link 27, rpc 54 + 1 (prompts), all green;
+  no existing share/guest/replication test touched.
 
 ## Deviations
 - `meta.segments` for meetings is `[{t0_ms, t1_ms, speaker}]`, not `[{t0_ms, block}]`: block ids are minted by the
@@ -93,6 +120,13 @@ job, representation), §13.1 shapes (frozen, untouched), §14 `notebooks.*` keys
 - No automatic retry of transient failures (none specified); `attempts` counts runs, `permanent()` classifies.
 - Hub status for the ingest actor is a `HubGate` message on `DocumentActor` (defined in `ingest/mod.rs`); no such
   query existed.
+- Title of a `Source` is not set by `Rename` (refused: `title_owned_by_binding` for bound kinds) — the job heads the
+  markdown with `# <title>` (`job::headed`) and the title follows at export (`ExportDone`, the Knowledge rule). A
+  caller's `title` wins over the origin's; the origin's replaces the provisional one (file name / URL / id).
+- `webm` is classified audio (both §4.1 rows list it; the audio row first); `mov`/`m4v`/`flac`/`aac` are accepted
+  beside the listed extensions since symphonia demuxes them.
+- `pages` for PDFs is a page-object scan (`file::pdf_pages`), not a converter figure: anydoc reports pages only
+  inside the OCR error.
 
 ## Hand-offs
 - W2 (`index::on_document_changed`): called once per completed ingest with
