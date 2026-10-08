@@ -42,7 +42,7 @@ pub fn split_title(title: &str, body: &str) -> (String, String) {
     let head = &title[..cap];
     let clause = [". ", "; ", ": ", " — ", " – "]
         .iter()
-        .filter_map(|sep| head.rfind(sep).map(|at| (at, sep.len())))
+        .filter_map(|sep| head.rfind(*sep).map(|at| (at, sep.len())))
         .max_by_key(|(at, _)| *at);
     let (short, rest) = match clause {
         Some((at, len)) => (

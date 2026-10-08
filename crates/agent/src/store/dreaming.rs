@@ -158,12 +158,11 @@ impl Store {
             ledger.truncated = true;
         }
         let allowed: HashSet<String> = listed.iter().map(|s| s.id.to_string()).collect();
-        let mut by_id: HashMap<String, usize> = listed
+        let by_id: HashMap<String, usize> = listed
             .iter()
             .enumerate()
             .map(|(i, s)| (s.id.to_string(), i))
             .collect();
-        let session_at = |by_id: &mut HashMap<String, usize>, id: &str| by_id.get(id).copied();
 
         // --- turns and stops.
         let steps: Vec<(String, String, String, String)> = sqlx::query_as(
@@ -175,7 +174,7 @@ impl Store {
         .fetch_all(&self.read)
         .await?;
         for (session, turn_id, at, payload) in steps {
-            let Some(i) = session_at(&mut by_id, &session) else {
+            let Some(i) = by_id.get(&session).copied() else {
                 continue;
             };
             listed[i].turns += 1;
@@ -220,7 +219,7 @@ impl Store {
             .fetch_all(&self.read)
             .await?;
         for (session, turn_id, name, args, attempt, is_error, at, output) in calls {
-            let Some(i) = session_at(&mut by_id, &session) else {
+            let Some(i) = by_id.get(&session).copied() else {
                 continue;
             };
             listed[i].tool_calls += 1;
@@ -290,7 +289,7 @@ impl Store {
         .fetch_all(&self.read)
         .await?;
         for (owner, returned, estimated) in money {
-            if let Some(i) = session_at(&mut by_id, &owner) {
+            if let Some(i) = by_id.get(&owner).copied() {
                 let nanos = returned.or(estimated).and_then(|n| u64::try_from(n).ok());
                 listed[i].model_cost_nanos += nanos.unwrap_or(0);
             }
@@ -307,7 +306,7 @@ impl Store {
             .fetch_all(&self.read)
             .await?;
         for (session, kind, state, answer, answered_by, asked_at) in questions {
-            let Some(i) = session_at(&mut by_id, &session) else {
+            let Some(i) = by_id.get(&session).copied() else {
                 continue;
             };
             // A `Decision` is a JSON string (`"allow"`); an ask's answers stay JSON.
@@ -340,7 +339,7 @@ impl Store {
         let mut hinted: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for (session, seq, at, body) in messages {
-            let Some(i) = session_at(&mut by_id, &session) else {
+            let Some(i) = by_id.get(&session).copied() else {
                 continue;
             };
             let Ok(msg) = serde_json::from_str::<ChatMessage>(&body) else {
@@ -609,7 +608,7 @@ mod tests {
             .ledger_since(&window(vec![], false), &redact)
             .await
             .unwrap();
-        let kinds: BTreeMap<SessionId, &str> =
+        let kinds: HashMap<SessionId, &str> =
             l.sessions.iter().map(|s| (s.id, s.kind.as_str())).collect();
         assert_eq!(kinds[&dream], "routine");
         assert_eq!(kinds[&dream_child], "child");
