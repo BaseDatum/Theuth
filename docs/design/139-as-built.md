@@ -124,9 +124,39 @@ The three reds are pre-existing on main, none in a file 139 touched for the fail
 | agent `supervisor::tests::held_message_follows_the_brief` — "freed when y's turn ends" | load flake: passes 3/3 in isolation; 139's `supervisor.rs` diff touches neither `child_turns`/`SpawnPermit` nor the test (the machine ran two other designs' builds during the run) |
 | `rpc/tests/prompts::prompts_resolve_everywhere_and_replay_only_while_pending` — second `answer_ask` returns an error, not `false` | 132's `agent::answer_ask` (`717708fa`, `lib.rs:362-367`) sends `LateAnswer` to an `Agents` actor the test never spawns; 139's only delta in `answer_ask` is W4's `route_question` prelude, which returns `Ok(None)` without a sessionsync actor; `crates/rpc/tests/prompts.rs` last changed by 129 W1 (`2ca73a86`) |
 
-### 6.2 Merged-tree gates after Z
+### 6.2 Merged-tree gates after Z (at `657111a9`: Z `aef1f969` + main `68b9fc26` (137 ENDLESS) folded + the §3.1 fixes)
 
-*(filled by the closer after `DONE Z`: crate tests, `just durability`, `just durability-mesh`, clippy on the crate list, `cargo check --workspace --tests`, `just ts-desktop` + `git status`, `bun run check` + `bun run test`, rustfmt on every touched `.rs`.)*
+One machine-wide run, 09:31–09:46, `BUILD_SLOTS=1 BUILD_LABEL=139 build-lock` + `/tmp/theuth-build.lock`
+(`/tmp/139-gate.sh`, logs in `/tmp/139-gate/`). The fold of 137 conflicted in `capture.rs`
+(`ATTACHED` 17 + 3 endless tables = 20), `loop_.rs` (`Turn` fields), `supervisor.rs` (`unload_session`:
+139's graceful stop + 137's `endless.detach`; the D15 prune loop beside 137's `Endless::new`) and
+`Composer.tsx` (imports) — all additive. `0037_endless.sql` then `0038_mesh_durability.sql` applied
+by `sqlite3` to a `.backup` of the live store (at migration 36): 2874 `jobs` rows backfilled,
+10 `resume_reports` rows, `endless_units` created empty.
+
+| # | gate | result |
+|---|---|---|
+| 1 | `cargo test -p agent -p tools -p rpc -p sessionsync -p roster -p schedule -p tui --no-fail-fast` | agent **506 passed, 1 failed, 2 ignored** (`crash_child`, `measure_dump_knee` — by design); tools **177 passed, 1 ignored** (`bench_walk`) in 10.7 s (was 600 s before §3.1's test fix); rpc **52 passed, 1 failed** + `tests/prompts` **1 failed**; sessionsync 14 + `tests/mesh_durability` 2; roster 68; schedule 72; tui 146 + `tests/no_emoji` 1; doc-tests 0 |
+| 2 | `just durability` | agent 34 passed, 1 ignored; tools 52 passed (`--test-threads=1 jobs:: pty::`) |
+| 3 | `just durability-mesh` (Z's) | `sessionsync --test mesh_durability` 2; `sessionsync --lib owner::` 5; agent 31; tools 10 — all passed |
+| 4 | `cargo clippy -p agent -p tools -p rpc -p sessionsync -p roster -p schedule -p tui --tests -- -D warnings` | clean |
+| 5 | `cargo check --workspace --tests` | clean |
+| 6 | `just ts-desktop` | 8 export tests passed; `git status --short` empty afterwards — no tracked binding changed beyond what C/W4 committed (`FrontDoorError.ts`, `ResumeState.ts`, `ResumeCause.ts`, `AgentEvent.ts`) |
+| 7 | `bun run check` + `bun run test` in `crates/desktop/ui` | `tsc -b --noEmit` clean; **197 files, 1364 tests passed** |
+| 8 | `rustfmt --edition 2024 --check` on every `.rs` 139 touched (module trees included) | clean in every 139 hunk; the only diffs are main's pre-existing drift outside 139 lines: `tui/src/model.rs:25,38,3917,18271-18333` (W4 recorded), `tasks/src/ledger.rs` (20 spots; 139's one hunk is `:95-99`), `slack/src/channel.rs:557,1718,1735` (139's one line is `:2666`), `schedule/src/validate.rs` (not touched by 139 — reached through `schedule/src/lib.rs`'s module tree) |
+
+The three test reds, each pre-existing on main (the brief's rule — listed with the proof):
+
+| red | proof |
+|---|---|
+| agent `supervisor::tests::held_message_follows_the_brief` | load flake (§6.1 row 2): 3/3 green isolated; 139's `supervisor.rs` diff touches neither `child_turns`/`SpawnPermit` nor the test |
+| rpc `engine::tests::second_acquire_in_one_process_is_running` — *"engine.lock is held but engine.json is missing"* at `engine.rs:312` | flock timing under the full parallel binary: **3/3 green isolated** (`cargo test -p rpc --lib -- engine::tests`, 4 passed each run); `crates/rpc/src/engine.rs` is untouched by 139 (last changed on main by `751b1be6`) |
+| `rpc/tests/prompts::prompts_resolve_everywhere_and_replay_only_while_pending` | §6.1 row 3 (132's `LateAnswer` path, main `717708fa`) |
+
+`loop_::tests::prompt_parts_in_order_with_blank_lines` (red in §6.1) is **green** after the 137 fold
+(`frame.rs` changed on main by `1b7e800f`). The brief's other known reds did not appear: the two
+`tools` kill/reap load flakes passed in the parallel run, `tui/tests/no_emoji` passed, workspace
+clippy was not run (the crate-list form is the gate; C recorded the `double`/`decision` reds).
 
 ## 7. Open items (139 follow-ons)
 
