@@ -2440,7 +2440,11 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].kind, AttentionKind::Resume);
         assert_eq!(items[0].id, format!("resume:{session}:{turn}"));
-        assert!(items[0].title.ends_with("was taken from a"), "{}", items[0].title);
+        assert!(
+            items[0].title.ends_with("was taken from a"),
+            "{}",
+            items[0].title
+        );
         assert_eq!(items[0].detail.as_deref(), Some("resume?"));
 
         let resumed = agent::AgentEvent::TurnResumed {
@@ -2455,7 +2459,10 @@ mod tests {
         };
         assert!(resume_transition(&mut reports, &resumed, 80));
         assert!(reports.is_empty());
-        assert!(!resume_transition(&mut reports, &resumed, 81), "nothing left to clear");
+        assert!(
+            !resume_transition(&mut reports, &resumed, 81),
+            "nothing left to clear"
+        );
 
         let gaps = agent::AgentEvent::ResumeReport {
             session,

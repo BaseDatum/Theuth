@@ -283,8 +283,16 @@ mod tests {
         assert_eq!(b.respawn_acp_child(parent, node).await, Ok(false));
         assert_eq!(b.respawn_acp_child(parent, spared).await, Ok(false));
         assert_eq!(b.respawn_acp_child(parent, ghost).await, Ok(false));
-        assert_eq!(b.respawn_acp_child(parent, taken).await, Ok(false), "owned by a");
-        assert_eq!(b.respawn_acp_child(parent, bad_cwd).await, Ok(false), "cwd not here");
+        assert_eq!(
+            b.respawn_acp_child(parent, taken).await,
+            Ok(false),
+            "owned by a"
+        );
+        assert_eq!(
+            b.respawn_acp_child(parent, bad_cwd).await,
+            Ok(false),
+            "cwd not here"
+        );
         assert!(b.sessions.is_empty(), "nothing spawned so far");
 
         std::sync::Arc::make_mut(&mut b.cfg).durability.resume = ResumeMode::Off;

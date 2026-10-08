@@ -145,7 +145,9 @@ impl Agents {
         let approval = approval_actor();
         let mut n = Counts::default();
         for (session, turn, _) in open {
-            n += self.rebuild_waits_of(session, turn, approval.as_ref()).await;
+            n += self
+                .rebuild_waits_of(session, turn, approval.as_ref())
+                .await;
         }
         n.log();
     }
@@ -514,10 +516,7 @@ mod tests {
         a.step(s, t, StepKind::ModelCall, Some("mc1"), &json!({}))
             .await
             .unwrap();
-        let seq = a
-            .append(s, &ChatMessage::assistant("tools"))
-            .await
-            .unwrap();
+        let seq = a.append(s, &ChatMessage::assistant("tools")).await.unwrap();
         let ids: Vec<&str> = calls.iter().map(|(id, _)| *id).collect();
         let mut tx = a.begin_write().await.unwrap();
         step_in(
@@ -933,7 +932,11 @@ mod tests {
 
         b.rebuild_waits().await;
         assert_eq!(state(s2).await, QuestionState::Superseded);
-        assert_eq!(state(foreign).await, QuestionState::Pending, "a's approval is not b's");
+        assert_eq!(
+            state(foreign).await,
+            QuestionState::Pending,
+            "a's approval is not b's"
+        );
     }
 
     /// 139 §5.1 item 11: a spared result for a parent owned elsewhere is
@@ -975,7 +978,9 @@ mod tests {
         let r = b.store.exchange_receipt(receipt.id).await.unwrap().unwrap();
         assert_eq!(r.state, PeerMessageState::Failed);
         assert!(
-            r.error.as_deref().is_some_and(|e| e.contains("OwnerUnreachable") && e.contains("\"a\"")),
+            r.error
+                .as_deref()
+                .is_some_and(|e| e.contains("OwnerUnreachable") && e.contains("\"a\"")),
             "{r:?}"
         );
     }

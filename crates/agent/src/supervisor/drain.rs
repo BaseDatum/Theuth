@@ -424,7 +424,11 @@ mod tests {
         let plan = store.resume_plan(sid, turn).await.unwrap();
         assert_eq!(plan.kind, crate::durability::ResumeKind::Suspended);
         let plan = store.resume_plan(foreign, foreign_turn).await.unwrap();
-        assert_eq!(plan.kind, crate::durability::ResumeKind::Interrupted, "a's turn untouched");
+        assert_eq!(
+            plan.kind,
+            crate::durability::ResumeKind::Interrupted,
+            "a's turn untouched"
+        );
         let ev = tokio::time::timeout(Duration::from_secs(2), events.recv())
             .await
             .unwrap();

@@ -182,19 +182,30 @@ pub(crate) mod tests {
     /// open turn and closes the file; engine `b` opens the same file (a
     /// replica holding `a`'s rows) and gets an `Agents` over it. Returns
     /// `b`, `a`'s session, its open turn and the dir.
-    pub(crate) async fn b_holding_a_turn(communication: bool) -> (Agents, SessionId, TurnId, PathBuf) {
+    pub(crate) async fn b_holding_a_turn(
+        communication: bool,
+    ) -> (Agents, SessionId, TurnId, PathBuf) {
         let dir = std::env::temp_dir().join(format!("theuth-139-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
-        let a = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId("a".into())))
-            .await
-            .unwrap();
+        let a = Store::open(
+            &dir.join("sessions.sqlite"),
+            Some(mesh::EngineId("a".into())),
+        )
+        .await
+        .unwrap();
         let (foreign, turn) = (SessionId::new(), TurnId::new());
         a.create_session(foreign, "m", None, None, None)
             .await
             .unwrap();
-        a.step(foreign, turn, StepKind::InputAccepted, None, &serde_json::json!({}))
-            .await
-            .unwrap();
+        a.step(
+            foreign,
+            turn,
+            StepKind::InputAccepted,
+            None,
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
         a.close().await;
         let b = agents_on(dir.clone(), Some("b"), communication).await;
         (b, foreign, turn, dir)
@@ -208,7 +219,13 @@ pub(crate) mod tests {
             .await
             .unwrap();
         b.store
-            .step(mine, turn, StepKind::InputAccepted, None, &serde_json::json!({}))
+            .step(
+                mine,
+                turn,
+                StepKind::InputAccepted,
+                None,
+                &serde_json::json!({}),
+            )
             .await
             .unwrap();
         (mine, turn)
@@ -227,9 +244,18 @@ pub(crate) mod tests {
         assert!(b.sessions.contains_key(&mine), "own turn resumed");
         assert!(!b.sessions.contains_key(&foreign), "a's turn untouched");
 
-        b.resume_turn(foreign, foreign_turn, None, Some(ResumeCause::Takeover), Some("a".into()))
-            .await;
-        assert!(!b.sessions.contains_key(&foreign), "ensure!(row.here) holds");
+        b.resume_turn(
+            foreign,
+            foreign_turn,
+            None,
+            Some(ResumeCause::Takeover),
+            Some("a".into()),
+        )
+        .await;
+        assert!(
+            !b.sessions.contains_key(&foreign),
+            "ensure!(row.here) holds"
+        );
         let plan = b.store.resume_plan(foreign, foreign_turn).await.unwrap();
         assert_eq!(plan.kind, ResumeKind::Interrupted, "journal untouched");
     }
