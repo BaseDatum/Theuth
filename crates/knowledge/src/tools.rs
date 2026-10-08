@@ -1128,13 +1128,17 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            e.starts_with(&format!("verify ok: `{other_s}` is not in the concept's evidence")),
+            e.starts_with(&format!(
+                "verify ok: `{other_s}` is not in the concept's evidence"
+            )),
             "{e}"
         );
         assert!(k.get("facts/x").await.unwrap().meta.verified.is_none());
         // One real source admits the call; every item is recorded (evidence
         // items are whitespace-free tokens: the index column is space-joined).
-        verify(VOk, vec!["conf/pg.toml", "pg_isready"]).await.unwrap();
+        verify(VOk, vec!["conf/pg.toml", "pg_isready"])
+            .await
+            .unwrap();
         let m = k.get("facts/x").await.unwrap().meta;
         assert!(m.verified.is_some());
         assert_eq!(m.evidence, [cited_s.as_str(), "conf/pg.toml", "pg_isready"]);
@@ -1148,7 +1152,10 @@ mod tests {
                 .unwrap();
         }
         // `stale` keeps the one-of-three rule: a bare id is enough, nothing is not.
-        let e = verify(Stale, vec!["ftp://x"]).await.unwrap_err().to_string();
+        let e = verify(Stale, vec!["ftp://x"])
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(e.starts_with("verify needs evidence from a read:"), "{e}");
         verify(Stale, vec!["meeting:06"]).await.unwrap();
         let m = k.get("facts/x").await.unwrap().meta;

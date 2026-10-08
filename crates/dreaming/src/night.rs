@@ -1512,8 +1512,7 @@ impl Message<ProposalAct> for Night {
                     if path.exists() {
                         return Err(format!("a schedule named {name} already exists"));
                     }
-                    write_atomic(&path, lines.as_bytes())
-                        .map_err(|e| e.to_string())?;
+                    write_atomic(&path, lines.as_bytes()).map_err(|e| e.to_string())?;
                     note.push_str(&format!(
                         " — `schedules/{name}.md` written, enabled: {start}"
                     ));
@@ -2225,7 +2224,9 @@ mod tests {
         assert_eq!(
             lines(&not_skipped(
                 &all,
-                &skipped("- Retitles: out of budget\n- merge groups: all false positives\n- no cases: friction was noise")
+                &skipped(
+                    "- Retitles: out of budget\n- merge groups: all false positives\n- no cases: friction was noise"
+                )
             )),
             "1 of 1 archive-by-use ids, 1 of 1 verifications"
         );
@@ -2283,15 +2284,25 @@ mod tests {
         };
         actor.ask(begin()).await.unwrap();
         // First close: the nudge.
-        let e = actor.ask(commit("journal", "done")).await.unwrap_err().to_string();
+        let e = actor
+            .ask(commit("journal", "done"))
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(
             e.contains("not closing yet") && e.contains("1 of 1 retitles, 1 of 1 verifications"),
             "{e}"
         );
         // Second close with nothing worked and no Skipped: refused again, naming both.
-        let e = actor.ask(commit("journal", "done")).await.unwrap_err().to_string();
+        let e = actor
+            .ask(commit("journal", "done"))
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(
-            e.contains("still not closing — no `Skipped` line for: 1 of 1 retitles, 1 of 1 verifications"),
+            e.contains(
+                "still not closing — no `Skipped` line for: 1 of 1 retitles, 1 of 1 verifications"
+            ),
             "{e}"
         );
         // A Skipped section covering one list: the other is still named.
@@ -2299,14 +2310,21 @@ mod tests {
             .ask(commit("skipped", "- retitles: titles already short\n"))
             .await
             .unwrap();
-        let e = actor.ask(commit("journal", "done")).await.unwrap_err().to_string();
+        let e = actor
+            .ask(commit("journal", "done"))
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(
             e.contains("no `Skipped` line for: 1 of 1 verifications") && !e.contains("retitles"),
             "{e}"
         );
         // Covering the rest closes the night.
         actor
-            .ask(commit("skipped", "- verifications: no read tool reached the sources"))
+            .ask(commit(
+                "skipped",
+                "- verifications: no read tool reached the sources",
+            ))
             .await
             .unwrap();
         actor.ask(commit("journal", "done")).await.unwrap();
@@ -2331,7 +2349,11 @@ mod tests {
             "{:?}",
             r.phases
         );
-        let e = actor.ask(commit("journal", "done")).await.unwrap_err().to_string();
+        let e = actor
+            .ask(commit("journal", "done"))
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("not closing yet"), "{e}");
         let mut r = read_record(d, night).unwrap();
         for (id, group) in [("facts/a", "retitle"), ("facts/v", "verify")] {
@@ -2643,8 +2665,16 @@ mod tests {
         actor.ask(SetSettings(s.clone())).await.unwrap();
         assert!(!d.join("sensors/dreaming.py").exists());
         assert!(d.join("skills/dreaming.md").exists());
-        assert!(!routine_enabled(d), "{}", std::fs::read_to_string(&routine).unwrap());
-        assert_eq!(model_of().as_deref(), Some("openai/gpt-5.6-sol"), "still parseable");
+        assert!(
+            !routine_enabled(d),
+            "{}",
+            std::fs::read_to_string(&routine).unwrap()
+        );
+        assert_eq!(
+            model_of().as_deref(),
+            Some("openai/gpt-5.6-sol"),
+            "still parseable"
+        );
         s.enabled = true;
         actor.ask(SetSettings(s)).await.unwrap();
         for rel in crate::BUNDLED {

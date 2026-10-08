@@ -150,7 +150,10 @@ async fn harvest_scenarios() {
         Some("the dreaming session does not harvest itself".to_owned())
     );
     night.calls = 1;
-    night.compact_now(Some(CompactStyle::Cut), None).await.unwrap();
+    night
+        .compact_now(Some(CompactStyle::Cut), None)
+        .await
+        .unwrap();
     let events = h
         .drain_until(|e| matches!(e, AgentEvent::Compacted { .. }))
         .await;

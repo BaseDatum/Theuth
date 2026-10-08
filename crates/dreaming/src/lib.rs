@@ -235,7 +235,9 @@ impl runtime::Plugin for DreamingPlugin {
                 Ok(()) => tracing::info!(
                     "dreaming disabled by config; routine switched off (enabled: false), sensor removed"
                 ),
-                Err(e) => tracing::warn!("dreaming disabled by config; files not switched off: {e}"),
+                Err(e) => {
+                    tracing::warn!("dreaming disabled by config; files not switched off: {e}")
+                }
             }
             return Ok(());
         }
@@ -451,19 +453,28 @@ mod tests {
         install_files(d, &cfg, Some("e"), &agent()).unwrap();
         let routine = d.join("schedules/dreaming.md");
         let parse = || {
-            schedule::file::parse("dreaming", &std::fs::read_to_string(&routine).unwrap())
-                .unwrap()
+            schedule::file::parse("dreaming", &std::fs::read_to_string(&routine).unwrap()).unwrap()
         };
         disable_files(d).unwrap();
         assert!(!d.join(SENSOR_PATH).exists());
         assert!(d.join("skills/dreaming.md").exists(), "the skill stays");
         let spec = parse();
-        assert!(!spec.enabled, "{}", std::fs::read_to_string(&routine).unwrap());
-        assert_eq!(spec.when_text, "every 30m when dreaming.py", "the rest of the routine is intact");
+        assert!(
+            !spec.enabled,
+            "{}",
+            std::fs::read_to_string(&routine).unwrap()
+        );
+        assert_eq!(
+            spec.when_text, "every 30m when dreaming.py",
+            "the rest of the routine is intact"
+        );
         assert!(!night::routine_enabled(d));
         disable_files(d).unwrap();
         assert_eq!(
-            std::fs::read_to_string(&routine).unwrap().matches("enabled:").count(),
+            std::fs::read_to_string(&routine)
+                .unwrap()
+                .matches("enabled:")
+                .count(),
             1,
             "idempotent"
         );
@@ -472,8 +483,15 @@ mod tests {
         assert_eq!(w, [SENSOR_PATH, "schedules/dreaming.md"]);
         assert!(parse().enabled);
         // A hand toggle with the sensor in place is the user's and survives.
-        std::fs::write(&routine, night::set_routine_enabled(&std::fs::read_to_string(&routine).unwrap(), false)).unwrap();
-        assert_eq!(install_files(d, &cfg, Some("e"), &agent()).unwrap(), Vec::<String>::new());
+        std::fs::write(
+            &routine,
+            night::set_routine_enabled(&std::fs::read_to_string(&routine).unwrap(), false),
+        )
+        .unwrap();
+        assert_eq!(
+            install_files(d, &cfg, Some("e"), &agent()).unwrap(),
+            Vec::<String>::new()
+        );
         assert!(!parse().enabled);
         // Nothing installed: disabling is a no-op.
         disable_files(tempfile::tempdir().unwrap().path()).unwrap();

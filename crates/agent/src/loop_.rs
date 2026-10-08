@@ -6445,13 +6445,14 @@ impl Turn {
         reply: Option<oneshot::Sender<Result<HarvestResult, String>>>,
         chain: bool,
     ) -> Result<(), String> {
-        self.harvest_store().ok_or(if self.shared.resources.is_private() {
-            "knowledge harvest is disabled in a private session"
-        } else if self.knowledge().is_some() {
-            "the dreaming session does not harvest itself"
-        } else {
-            "knowledge is off"
-        })?;
+        self.harvest_store()
+            .ok_or(if self.shared.resources.is_private() {
+                "knowledge harvest is disabled in a private session"
+            } else if self.knowledge().is_some() {
+                "the dreaming session does not harvest itself"
+            } else {
+                "knowledge is off"
+            })?;
         if self.state.history.is_empty() {
             return Err("nothing to harvest".into());
         }

@@ -997,18 +997,30 @@ mod tests {
     /// the skill's recipes say `stage`.
     #[test]
     fn skill_learned_edit_stage_replaces_the_pass_keyword() {
-        let a: SkillLearnedEditArgs =
-            serde_json::from_value(serde_json::json!({"skill": "s", "edits": [], "night": "n", "stage": "record"}))
-                .unwrap();
+        let a: SkillLearnedEditArgs = serde_json::from_value(
+            serde_json::json!({"skill": "s", "edits": [], "night": "n", "stage": "record"}),
+        )
+        .unwrap();
         assert_eq!(a.stage.as_deref(), Some("record"));
-        let a: SkillLearnedEditArgs =
-            serde_json::from_value(serde_json::json!({"skill": "s", "edits": [], "night": "n", "pass": "record"}))
-                .unwrap();
-        assert_eq!(a.stage.as_deref(), Some("record"), "the old spelling still lands");
+        let a: SkillLearnedEditArgs = serde_json::from_value(
+            serde_json::json!({"skill": "s", "edits": [], "night": "n", "pass": "record"}),
+        )
+        .unwrap();
+        assert_eq!(
+            a.stage.as_deref(),
+            Some("record"),
+            "the old spelling still lands"
+        );
         let schema = serde_json::to_string(&schemars::schema_for!(SkillLearnedEditArgs)).unwrap();
-        assert!(schema.contains("\"stage\"") && !schema.contains("\"pass\""), "{schema}");
+        assert!(
+            schema.contains("\"stage\"") && !schema.contains("\"pass\""),
+            "{schema}"
+        );
         let skill = crate::SKILL;
-        assert!(!skill.contains("pass=") && !skill.contains("`pass`"), "skill.md still says pass=");
+        assert!(
+            !skill.contains("pass=") && !skill.contains("`pass`"),
+            "skill.md still says pass="
+        );
         assert_eq!(skill.matches("stage=\"record\"").count(), 2);
         assert!(skill.contains("{skill, edits, night, stage?}"));
     }
