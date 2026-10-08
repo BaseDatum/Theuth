@@ -13819,13 +13819,15 @@ mod tests {
             "{wide}"
         );
         assert_eq!(m.board_row(&m.agents[&child], 100), row, "no cost yet");
-        let mut total = CostBucket::default();
-        total.calls = 1;
-        total.dispatched = 1;
-        total.returned = vec![Money {
-            currency: "USD".into(),
-            nanos: 121_280_250,
-        }];
+        let total = CostBucket {
+            calls: 1,
+            dispatched: 1,
+            returned: vec![Money {
+                currency: "USD".into(),
+                nanos: 121_280_250,
+            }],
+            ..Default::default()
+        };
         m.apply(UiEvent::Cost(
             root,
             SessionCost {
