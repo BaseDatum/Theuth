@@ -1754,6 +1754,60 @@ pub trait Api {
     /// The 136 §13 series over `days`.
     #[method(name = "dreaming.metrics")]
     async fn dreaming_metrics(&self, days: u32) -> RpcResult<dreaming::Metrics>;
+    /// 140 §12.5: every study, newest first.
+    #[method(name = "autoresearch.list")]
+    async fn autoresearch_list(&self) -> RpcResult<Vec<autoresearch::StudyInfo>>;
+    /// 140 §12.5: one study with its spec, incumbent, σ, budget and chart series.
+    #[method(name = "autoresearch.get")]
+    async fn autoresearch_get(&self, slug: String) -> RpcResult<autoresearch::StudyDetail>;
+    /// 140 §12.5: run-table rows newest first; `before` pages.
+    #[method(name = "autoresearch.experiments")]
+    async fn autoresearch_experiments(
+        &self,
+        slug: String,
+        before: Option<u32>,
+        limit: u32,
+    ) -> RpcResult<Vec<autoresearch::ExperimentRow>>;
+    /// 140 §12.5: one experiment — samples, verdict line, deviations, review, diff, log tails.
+    #[method(name = "autoresearch.experiment")]
+    async fn autoresearch_experiment(
+        &self,
+        slug: String,
+        n: u32,
+    ) -> RpcResult<autoresearch::ExperimentDetail>;
+    /// 140 §12.5 / §8.6: pause, resume, stop_after, stop_now, run_once, segment, finalize, restore, discard.
+    #[method(name = "autoresearch.control")]
+    async fn autoresearch_control(
+        &self,
+        slug: String,
+        op: autoresearch::ControlOp,
+    ) -> RpcResult<autoresearch::StudyInfo>;
+    /// 140 §7.3: a steer reaches the next brief without pausing; returns the row id.
+    #[method(name = "autoresearch.steer")]
+    async fn autoresearch_steer(&self, slug: String, text: String) -> RpcResult<i64>;
+    /// 140 §7.3: add, reprioritise, close or reopen a backlog idea.
+    #[method(name = "autoresearch.idea")]
+    async fn autoresearch_idea(
+        &self,
+        slug: String,
+        op: autoresearch::IdeaChange,
+    ) -> RpcResult<autoresearch::Idea>;
+    /// 140 §12.4: the draft card's Start press — creates the study from the draft.
+    #[method(name = "autoresearch.create")]
+    async fn autoresearch_create(
+        &self,
+        draft_id: String,
+        start: autoresearch::StartWhen,
+    ) -> RpcResult<autoresearch::StudyInfo>;
+    /// Settings › Autoresearch as running (140 §12.2); from the config section even when disabled.
+    #[method(name = "autoresearch.settings.get")]
+    async fn autoresearch_settings_get(&self) -> RpcResult<autoresearch::AutoresearchConfig>;
+    /// Persist the `autoresearch:` section and apply it live (140 §12.5).
+    #[method(name = "autoresearch.settings.set")]
+    async fn autoresearch_settings_set(
+        &self,
+        config: autoresearch::AutoresearchConfig,
+    ) -> RpcResult<autoresearch::AutoresearchConfig>;
     /// 137 §11.1 `agent.endless` as in force (Settings › Memory).
     #[method(name = "endless_settings_get")]
     async fn endless_settings_get(&self) -> RpcResult<EndlessConfig>;
@@ -2322,6 +2376,11 @@ impl Server {
     fn dreaming_config(&self) -> dreaming::DreamConfig {
         self.rt.section("dreaming").unwrap_or_default()
     }
+
+    /// The `autoresearch:` section as read at start (140 §12.2); defaults when absent.
+    fn autoresearch_config(&self) -> autoresearch::AutoresearchConfig {
+        self.rt.section("autoresearch").unwrap_or_default()
+    }
 }
 
 impl Server {
@@ -2383,7 +2442,7 @@ pub(crate) fn lookup<A: Actor>(name: &str) -> RpcResult<ActorRef<A>> {
     }
 }
 
-/// A `dreaming::rpc` error → JSON-RPC: "not running" is `NOT_RUNNING`, anything else `ASK_FAILED`.
+/// A `dreaming::rpc` / `autoresearch::rpc_impl` error → JSON-RPC: "not running" is `NOT_RUNNING`, anything else `ASK_FAILED`.
 fn dreaming_err(e: String) -> ErrorObjectOwned {
     let code = if e.ends_with("is not running") {
         NOT_RUNNING
@@ -6330,6 +6389,102 @@ impl ApiServer for Server {
         dreaming::rpc::metrics(days).await.map_err(dreaming_err)
     }
 
+    // 140 §12.5: every method asks the `autoresearch` actor through `autoresearch::rpc_impl`
+    // (`dreaming_err` maps "is not running" to `NOT_RUNNING`); `list` is empty and
+    // `settings.get` / `settings.set` answer from the section when the plugin is disabled, so
+    // the Library tab and Settings › Autoresearch work (and can re-enable it) without the actor.
+
+    async fn autoresearch_list(&self) -> RpcResult<Vec<autoresearch::StudyInfo>> {
+        match autoresearch::rpc_impl::list().await {
+            Err(e) if e.ends_with("is not running") => Ok(Vec::new()),
+            r => r.map_err(dreaming_err),
+        }
+    }
+
+    async fn autoresearch_get(&self, slug: String) -> RpcResult<autoresearch::StudyDetail> {
+        autoresearch::rpc_impl::get(slug)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_experiments(
+        &self,
+        slug: String,
+        before: Option<u32>,
+        limit: u32,
+    ) -> RpcResult<Vec<autoresearch::ExperimentRow>> {
+        autoresearch::rpc_impl::experiments(slug, before, limit)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_experiment(
+        &self,
+        slug: String,
+        n: u32,
+    ) -> RpcResult<autoresearch::ExperimentDetail> {
+        autoresearch::rpc_impl::experiment(slug, n)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_control(
+        &self,
+        slug: String,
+        op: autoresearch::ControlOp,
+    ) -> RpcResult<autoresearch::StudyInfo> {
+        autoresearch::rpc_impl::control(slug, op)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_steer(&self, slug: String, text: String) -> RpcResult<i64> {
+        autoresearch::rpc_impl::steer(slug, text)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_idea(
+        &self,
+        slug: String,
+        op: autoresearch::IdeaChange,
+    ) -> RpcResult<autoresearch::Idea> {
+        autoresearch::rpc_impl::idea(slug, op)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_create(
+        &self,
+        draft_id: String,
+        start: autoresearch::StartWhen,
+    ) -> RpcResult<autoresearch::StudyInfo> {
+        autoresearch::rpc_impl::create(draft_id, start)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_settings_get(&self) -> RpcResult<autoresearch::AutoresearchConfig> {
+        match autoresearch::rpc_impl::settings().await {
+            Ok(c) => Ok(c),
+            Err(_) => Ok(self.autoresearch_config()),
+        }
+    }
+
+    async fn autoresearch_settings_set(
+        &self,
+        config: autoresearch::AutoresearchConfig,
+    ) -> RpcResult<autoresearch::AutoresearchConfig> {
+        match autoresearch::rpc_impl::set_settings(config.clone()).await {
+            Err(e) if e.ends_with("is not running") => {
+                autoresearch::config::persist(&self.rt.data_dir.join("config.yaml"), &config)
+                    .map_err(|e| dreaming_err(format!("config.yaml: {e}")))?;
+                Ok(config)
+            }
+            r => r.map_err(dreaming_err),
+        }
+    }
+
     async fn endless_settings_get(&self) -> RpcResult<EndlessConfig> {
         ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetEndlessSettings).await
     }
@@ -7750,6 +7905,16 @@ mod tests {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let names: Vec<&str> = Server::new(rt).into_rpc().method_names().collect();
         for m in dreaming::rpc::METHODS {
+            assert!(names.contains(&m), "{m} missing from {names:?}");
+        }
+    }
+
+    /// 140 §12.5: every `autoresearch.*` method is registered under its dotted name.
+    #[tokio::test]
+    async fn autoresearch_methods_are_registered() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let names: Vec<&str> = Server::new(rt).into_rpc().method_names().collect();
+        for m in autoresearch::rpc_impl::METHODS {
             assert!(names.contains(&m), "{m} missing from {names:?}");
         }
     }

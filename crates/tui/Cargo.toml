@@ -21,6 +21,7 @@ computer = { workspace = true }
 link = { workspace = true }
 nodes = { workspace = true }
 schedule = { workspace = true }
+autoresearch = { workspace = true }  # 140 §13.1 `/autoresearch` direct forms (`ControlOp`, `render_info`)
 tasks = { workspace = true }
 roster = { workspace = true }
 sandbox = { workspace = true }

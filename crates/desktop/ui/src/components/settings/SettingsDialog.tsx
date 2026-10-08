@@ -28,6 +28,7 @@ import {
 import { useState } from 'react'
 import { Advisor } from '@/components/settings/Advisor'
 import { Agents } from '@/components/settings/Agents'
+import { Autoresearch } from '@/components/settings/Autoresearch'
 import { Approvals } from '@/components/settings/Approvals'
 import { Channels } from '@/components/settings/Channels'
 import { Chat } from '@/components/settings/Chat'
@@ -56,6 +57,7 @@ const TABS = [
   ['loop', 'Agent loop', RefreshCw],
   ['advisor', 'Advisor', Eye],
   ['dreaming', 'Dreaming', Moon],
+  ['autoresearch', 'Autoresearch', FlaskConical],
   ['approvals', 'Approvals', ShieldCheck],
   ['communication', 'Communication', Radio],
   ['memory', 'Memory', InfinityIcon],
@@ -97,6 +99,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'loop' && <Loop />}
       {tab === 'advisor' && <Advisor />}
       {tab === 'dreaming' && <Dreaming />}
+      {tab === 'autoresearch' && <Autoresearch />}
       {tab === 'approvals' && <Approvals session={session} onClose={onClose} />}
       {tab === 'communication' && <Communication session={session} focus={peer} />}
       {tab === 'memory' && <Memory />}

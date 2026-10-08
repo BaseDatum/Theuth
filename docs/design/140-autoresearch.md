@@ -115,7 +115,7 @@ repo: /Users/Sky.Moore/Develop/liquid
 base: HEAD                           # resolved to a sha at Start; a dirty tree is refused (or "include my changes" → a base commit on the study branch)
 metric: {name: time_ms, unit: ms, direction: lower, min_effect: 0.5%}   # min_effect: relative or absolute floor on a keep
 secondary_guards:                    # optional: a keep may not regress these past the limit
-  - {name: alloc_mb, max_regression: 5%}
+  - {name: alloc_mb, max_regression: 5%, direction: lower}   # direction per guard (default lower), independent of the primary's
 bench:
   command: bench.sh                  # a script the setup wrote (custody only, never in the repo) or a repo command; cwd = worktree
   timeout: 600s                      # one sample; kill = crash
@@ -135,7 +135,7 @@ window: null                         # or a 40 `when:` sensor, e.g. sensors/idle
 
 **Where the evaluator lives.** Scripts the setup writes (benchmark, holdout, a check wrapper) are written to `<data_dir>/autoresearch/drafts/<slug>/`, run by hand from there with the repo as `cwd` during setup, and moved into custody at Start; they never enter the user's checkout or the study branch, so no changeset can carry them and Start's clean-tree check is not tripped by the setup's own work. Repo files the evaluator reads (fixtures, tests, a `Rakefile`) stay where they are and are listed in `evaluator_paths`.
 
-The draft card renders this as five plain lines plus warnings, the 108 way: *"Optimise `time_ms` (lower) of `bench.sh` in liquid · check `bundle exec rake test` · may edit `lib/liquid/**` · up to 120 experiments, 10 h, $20 · starts now."* Warnings appear for: no check, no holdout, metric is wall-clock with `exclusive: false`, `scope` empty, budget above the configured confirmation threshold. Buttons: **Start now · Start in idle window · Edit · Discard**.
+The draft card renders this as five plain lines plus warnings, the 108 way: *"Optimise `time_ms` (lower) of `bench.sh` in liquid · check `bundle exec rake test` · may edit `lib/liquid/**` · up to 120 experiments, 10 h, $20 · starts now."* Warnings appear for: no check, no holdout, metric is wall-clock with `exclusive: false`, `scope` empty, budget above the configured confirmation threshold. Buttons: **Start now · Start in idle window · Start with my uncommitted changes · Edit · Discard** (the third sets `include_dirty`, §6, and is absent when the spec already has it; fix round R-11).
 
 ### 4.2 Lifecycle
 
@@ -183,13 +183,14 @@ The invariant borrowed from omp's pending run (`140-recon-omp.md` §16.2): at mo
 
 Notation: direction-normalised so that a positive Δ is better; `x̄_c`, `n_c` the candidate's sample mean and count; `x̄_i`, `n_i` the incumbent's (its own samples since it became incumbent, plus re-measures).
 
-1. **σ (noise).** Pooled within-tree standard deviation over every tree measured more than once in the current segment: `σ² = Σ_t Σ_k (x_tk − x̄_t)² / Σ_t (n_t − 1)`. Samples flagged `noisy` (load precondition missed, §5.5) are excluded. A robust variant (1.4826 × pooled MAD) is used once ≥ 12 repeated samples exist. omp's estimate pools *different* trees, so real improvements inflate its noise and it collapses to null when MAD = 0 (`state.ts:105-131`); this one measures only repetition.
+1. **σ (noise).** Pooled within-tree standard deviation over every tree measured more than once in the current segment: `σ² = Σ_t Σ_k (x_tk − x̄_t)² / Σ_t (n_t − 1)`. Samples flagged `noisy` (load precondition missed, §5.5) are excluded. A robust variant is used once ≥ 12 repeated samples exist — **as built (fix round R-24): the median of all within-tree pairwise |differences| × 1.04827**, not 1.4826 × pooled MAD: a pairwise difference has the same distribution whatever the tree size, so confirm pairs and triples do not read σ 30–50 % low as a MAD around each tree's own median did, and one outlier poisons only its own pairs. omp's estimate pools *different* trees, so real improvements inflate its noise and it collapses to null when MAD = 0 (`state.ts:105-131`); this one measures only repetition.
 2. **Threshold.** `T = max(z · σ · √(1/n_c + 1/n_i), min_effect · |x̄_i|)` (absolute `min_effect` when given in metric units). Deterministic metrics (σ = 0: instruction counts, binary size, token counts) skip the z-tests: `Δ > min_effect` keeps, `Δ ≤ 0` is `no_gain` or `worse`, and the confirm step is not run.
 3. **Sequential decision** (defaults `z_discard` 1.0, `z_fast` 3.5, `z` 2.0, `confirm_runs` 2):
    - sample 1: `z₁ = Δ / (σ √(1 + 1/n_i))`. `z₁ < z_discard` → verdict `no_gain` (or `worse` when `z₁ < −z`). `z₁ ≥ z_fast` and `Δ > min_effect · |x̄_i|` → candidate for keep.
    - otherwise take `confirm_runs` more samples; if the incumbent's newest sample is older than `remeasure_after` (default 6) experiments, take one incumbent sample too (load and thermal drift); recompute with means; keep-candidate iff `Δ > T`, else `no_gain`.
-   - a keep-candidate whose `z ≥ z_suspicious` (default 8) or whose Δ exceeds 3× the largest earlier accepted Δ in the segment gets the confirm samples regardless and is marked `suspicious` for review (§9).
-   - **guards:** any `secondary_guards` metric regressing past its `max_regression` (on means) turns a keep-candidate into `guard_failed`.
+   - **after a fast keep** (as built, R-25): the incumbent has one sample — the lucky one — so the next experiment's first step is one incumbent re-measure on the incumbent's own clean tree before anything is judged, and no positive Δ is one-sample-discarded while the incumbent has fewer than 3 samples (it goes to confirm on means instead). This fixes the winner's curse on x̄_i and the z₁ stage of the next experiment at the cost of one sample per keep.
+   - a keep-candidate whose `z ≥ z_suspicious` (default 8) or whose Δ exceeds 3× the largest earlier accepted Δ in the segment gets the confirm samples regardless and is marked `suspicious` for review (§9) — and stays `suspicious` after confirm even when the means fall under the thresholds (R-30).
+   - **guards:** any `secondary_guards` metric regressing past its `max_regression` (on means) turns a keep-candidate into `guard_failed`. Each guard carries its own `direction` (default `lower`: memory, latency), independent of the primary's (R-19); the draft card shows it.
    - **keep-simpler:** when the model asks for it, the harness grants it iff the candidate is not significantly worse (`z > −1` on means after confirm), the diff removes more lines than it adds (`git diff --numstat`, excluding whitespace-only), checks pass and guards hold (Karpathy's simplicity criterion, made checkable).
 4. **Incumbent re-measure.** Every `remeasure_every` keeps (default 5) the plugin spends one sample on the incumbent at the start of the next experiment; σ and `x̄_i` absorb it. A re-measure that lands outside 3σ of `x̄_i` raises a `drift` event (shown on the chart, mentioned in the brief) and doubles the next confirm count.
 5. **What the model sees.** The verdict in words and numbers: `improved: 41.2 ms vs 42.3 ms (−2.6 %), 3.1σ over 3 samples, checks passed` / `no gain: −0.4 %, 0.6σ (1 sample)` / `crash: exit 1 (tail below)` / `guard failed: alloc_mb +7.2 % > 5 %`. The friendly "N× noise floor" wording is omp's (`log-experiment.ts:451-453`); the arithmetic underneath is new.
@@ -296,12 +297,12 @@ budget: 1.5 USD                    # = budget.per_experiment_usd → 136 SetBudg
 run_timeout: 100m                  # = (crash_retries + confirm_runs + 2) × bench.timeout + checks.timeout + bench.wait + 15m, at least 30m: one experiment's worst case
 approvals: false
 quiet: true
-memory: clear
+# memory: clear                    # as built: only written with `when:` (the parser wants `memory:` beside a sensor); a clock-only fire clears the frame anyway (34 D4)
 runtime: clear
 cwd: /Users/Sky.Moore/.theuth/autoresearch/sort-speed/worktree
 model: anthropic/claude-fable-5-1  # = models.executor
 enabled: true
-# when: sensors/idle.py            # only with window: — then `every: 1m` instead of 0s (a sensor needs a cadence; 40's budgets apply)
+# when: idle.py                    # only with window: — then `every: 1m` instead of 0s and `memory: clear` (a sensor needs a cadence; 40's budgets apply; a bare sensor file name, no path)
 ---
 Run the next experiment of autoresearch study `sort-speed`. Call experiment_begin() first and follow the protocol in the brief it returns. Do not ask questions; nobody is watching this session.
 ```
@@ -310,7 +311,7 @@ Every key is an existing 33/34 key plus 136's `budget:`; the schedule crate lear
 
 ### 8.2 Binding a session to a study
 
-The plugin subscribes to `ScheduleEvent::Fired { name, session, … }` (`crates/schedule/src/lib.rs:472-478`). For `name = autoresearch-<slug>` it records `studies.session` (34: one session per schedule, so this happens once, and again only if the session is re-created) and sends `agent::SetToolset` (§8.3). The study tools resolve their study from the calling session (or from the parent session plus `slot` for wave children, §10); a call from any other session is refused with `not an autoresearch session`.
+The plugin subscribes to `ScheduleEvent::Fired { name, session, … }`. **As built (fix round R-5/R-115):** confinement is applied by the schedule, not after the fact — the plugin registers a `ToolsetResolver` for the `autoresearch-` prefix (`schedule::confine`, `binding::confinement`); before a fire the schedule asks it for the study's `Toolset` (§8.3), *asks* `agent::SetToolset`, then publishes `Fired` and only then sends the prompt, so the first turn's rebase already reads the allowlist; a study the plugin no longer knows ends the loop (`toolset gone`), a failed `SetToolset` refuses the fire. On `Fired` the plugin only records `studies.session` (34: one session per schedule, so this happens once, and again only if the session is re-created). The study tools resolve their study from the calling session (or from the parent session plus `slot` for wave children, §10); a call from any other session is refused with `not an autoresearch session`; `autoresearch_control` is refused the other way round (a bound session or a wave child, R-13).
 
 ### 8.3 Unattended under confinement
 
@@ -394,13 +395,13 @@ On the first plateau (§8.4) the plugin calls `models.advisor` once (default: 12
 | advisor | `models.advisor` | 125's advisor when configured, else the executor | `high` |
 | report writer (finalize) | — | the executor | default |
 
-All three are pickers in Settings › Autoresearch (Radix Select over `list_models`, the 136 S5 / wave 88 pattern) and per-study overrides in the draft card.
+All three are pickers in Settings › Autoresearch (`ModelCombobox` over `list_models`, the 136 Dreaming pattern; the reviewer has an Off switch = `review.model: off`) and per-study overrides in the draft card. The effort column is the intent; as built no call path carries an effort (R-72), so the configured values are stored, not applied.
 
 ## 10. Waves (parallel mode, built as W4)
 
 `parallel: N` (2 ≤ N ≤ `autoresearch.max_parallel`, default 4) changes one fire from "one experiment" to "one wave":
 1. `experiment_begin` (in the study session, now a supervisor) creates N candidate worktrees from the incumbent (`<slug>/cand-<k>`, `git worktree add --detach`), allocates experiment numbers, and returns the brief plus `slots: [{k, worktree, category, idea_id?}]` — the plugin assigns distinct categories (rotation over the categories seen in the study, user ideas first), so a wave is diverse by construction (AlphaEvolve islands in miniature).
-2. The supervisor spawns N native children (`spawn_subagent`, `cwd` = the slot worktree, model = executor, `tools: mutating`), each told its slot and to follow the protocol; children call `experiment_run{slot}` / `experiment_log{slot}`; the plugin maps a child to its slot through the parent session and the slot number.
+2. The supervisor spawns N native children (`spawn_subagent`, `cwd` = the slot worktree, model = executor) bound to the study `Toolset` (§8.3; as built by W5 — `tools: mutating` would remove `shell`), each told its slot and to follow the protocol; children call `experiment_run{slot}` / `experiment_log{slot}`; the plugin maps a child to its slot through the parent session and the slot number.
 3. Scored samples go through the bench queue: serial when `bench.exclusive`, concurrent otherwise (deterministic metrics, or slots placed on separate engines — a later doc). Smoke tests and edits run in parallel.
 4. When every slot has logged (or the run deadline passes), the plugin promotes: the best keep-candidate becomes the incumbent (cherry-picked onto the study branch, then one confirm sample on the branch); other keep-candidates whose files are disjoint from it are cherry-picked one at a time and kept only if a confirm run still clears the gate against the new incumbent (SkyPilot's factorial waves, `140-research-practice.md` §4). Every candidate worktree is then removed.
 5. Each slot is an experiment in the ledger (`wave` column = the fire's number; `parent` = the incumbent sha at the wave start), so the chart and the report need no special case.
@@ -411,10 +412,10 @@ Not in W4: external-harness slots (omp/opencode children cannot call theuth's ex
 
 Entered on any stop rule (§8.4). Steps, each a ledger event so a restart resumes the step, not the study:
 1. **Confirm.** Base and final incumbent, `bench.repeats` samples each, interleaved (A B A B A B) to cancel drift; holdout likewise when configured. Result: the headline `time_ms 52.1 → 41.2 (−20.9 %, CI ±0.8 %)`, holdout `61.0 → 49.7 (−18.5 %)`.
-2. **Changesets.** Kept commits (excluding reverted ones) are grouped into changesets that share no files (union-find over touched paths, pi-autoresearch's finalize); a changeset whose cherry-pick onto the base conflicts is merged with the changeset(s) it needs. Each changeset is cherry-picked alone onto the base in a scratch worktree and measured `bench.repeats` times; changesets that no longer clear the gate alone are marked "only helps together with #k" (stacked keeps are not independently valuable — measure, do not assume). Branches `autoresearch/<slug>/<k>-<name>` point at the results.
+2. **Changesets.** Kept commits (excluding reverted ones) are grouped into changesets that share no files (union-find over touched paths, pi-autoresearch's finalize); a changeset whose cherry-pick onto the base conflicts is merged with the changeset(s) it needs. Each changeset is cherry-picked alone onto the base in a scratch worktree and measured `bench.repeats` times; changesets that no longer clear the gate alone are marked "only helps together with #k" (stacked keeps are not independently valuable — measure, do not assume). Branches `autoresearch/<slug>+<k>-<name>` point at the results (git cannot hold `autoresearch/<slug>/…` beside the study branch `autoresearch/<slug>`; `+` is legal in a ref and no slug contains it).
 3. **Report.** One finalize turn in the study session (the brief plus a "write the report" protocol) produces the report document (20/59 documents store, title `Autoresearch: <slug>`): what was asked, the headline, the chart (json-render LineChart of every experiment and the incumbent staircase), the changesets table (Δ alone, Δ together, files, review verdict), *Needs your eyes* (reverted-by-review, suspicious, deviations with their justifications, unreviewed keeps, holdout gap), the dead ends grouped, cost and time, and how to land. The plugin writes the numbers; the model writes the prose around them (it cannot change a number: tables are inserted by the plugin after the turn).
 4. **Deliver.** One message through `Deliver` regardless of `quiet` (33 D4's loud ending): headline, MetricGrid, the chart, changesets, link to the report. One attention `review` row: "Study sort-speed finished: −20.9 % in 4 changesets · Review". The knowledge record (§7.3) is written.
-5. **Landing** is the user's. The Study view lists the changesets with **Open PR** (GitHub tools, from the changeset branch, body = the report's section for it), **Merge into my branch** (local `git merge --no-ff` into the repo's current branch, refused if the user's tree is dirty), and **Discard study** (removes worktree and branches after one confirmation of the label). Nothing is pushed by the plugin.
+5. **Landing** is the user's. The Study view lists the changesets with **Open PR** (copies `git push origin autoresearch/<slug>+<k>-<name>` and the `gh pr create` command for the changeset branch — the plugin never pushes), **Merge into my branch** (`autoresearch.control {op: merge, changeset: k}` → local `git merge --no-ff` into the repo's current branch, refused if the user's tree is dirty), and **Discard study** (removes worktree and branches after one confirmation of the label). Nothing is pushed by the plugin.
 
 ## 12. The `autoresearch` plugin
 
@@ -441,7 +442,7 @@ autoresearch:
   pause: {crash_streak: 4, custody_refusals: 2}
   review: {model: null, on_suspicious: revert, pause_after: 3}     # model: null = other-vendor default; "off" disables
   models: {executor: null, advisor: null}
-  effort: {executor: high, review: low, advisor: high}
+  effort: {executor: high, review: low, advisor: high}   # as built: reserved, not applied — neither `runtime::SideCall` nor a schedule file carries an effort (fix round R-72; hand-off `SideCall.effort`)
   brief: {max_bytes: 12288, recent: 8, dead_ends: 30, ideas: 12, playbook_bytes: 4096, code_map_tokens: 1200}
   novelty: {threshold: 0.6}
   bench: {lock: builtin, max_load: 0.5, wait: 20m}   # lock: builtin | "<wrapper command>"
@@ -495,15 +496,16 @@ Root-session tools (the user's chats; runtime functions, not direct):
 
 | tool | Risk | args → returns |
 |---|---|---|
-| `autoresearch_draft` | read_only (writes nothing until the press) | `StudySpec` → the draft card (`crates/app`, routine_draft pattern). Invariant: the press, not the model, starts the study — the Start buttons call `autoresearch.create{draft_id, start}`; the chat then sees `[app study-drafts <id> started \| discarded]`. W2 reuses whichever press path the routine draft card uses today |
+| `autoresearch_draft` | read_only (creates no study) | `StudySpec` → the draft card (`crates/app`, routine_draft pattern). Writes the spec and a random **press token** to `<root>/drafts/<slug>/spec.json`. Invariant: the press, not the model, starts the study — the Start buttons run `autoresearch_start {draft_id, token}` (an OpenUI `Mutation` can only run installed tools, so the RPC `autoresearch.create {draft_id, start}` is the desktop's path); the chat then sees `[app study-drafts <id> started \| discarded]` |
+| `autoresearch_start` | mutating (the card's press only) | `{draft_id, token, window?, include_dirty?}` → `StudyInfo` (`include_dirty: true` rewrites the draft's spec first, R-11); refuses without the draft's token, which the model never sees (R-10 fix round) |
 | `autoresearch_status` | read_only | `{slug?}` → state, headline, last 5 experiments, budget left, current phase |
-| `autoresearch_control` | mutating | `{slug, op, reason?, text?}` (op incl. `steer`, `idea`) → `StudyInfo` |
+| `autoresearch_control` | mutating | `{slug, op, reason?, text?, n?}`; op = `pause \| resume \| stop_after \| stop_now \| run_once \| segment \| finalize \| restore \| keep_reverted \| merge \| discard \| steer \| idea` → `StudyInfo`. Refused from a bound study session or a wave child (R-13). No `start` op |
 
 Tool descriptions (verbatim; the model reads these):
 - `experiment_run`: "Measure your current change in this autoresearch study. The harness checks the evaluator files and scope, runs the study's fixed benchmark (1–3 samples, minutes), runs the correctness check if the change would be kept, and returns a verdict computed from the measured noise. Call it once per idea, after your edit; after a crash you may fix and call it again (the brief says how many times). Do not run the benchmark yourself for scoring."
 - `experiment_log`: "Close the current experiment. The harness applies the verdict of the last experiment_run: an improvement is committed, anything else is reverted (your change is saved as a patch). Write what you did and what the result teaches the next experiment. decision 'discard' throws away an improvement you distrust; 'keep_simpler' keeps a change that simplifies the code at equal performance (the harness verifies it)."
 - `experiment_begin`: "Start the next experiment of this autoresearch study. Returns the brief: goal, incumbent, noise, recent experiments, dead ends, ideas, the user's notes, budget left, and the protocol. Call it first."
-- `experiment_notes`: "Update the study's playbook (replaces it; keep it under 4 KiB) or add ideas to the backlog for later experiments."
+- `experiment_notes`: "Update the study's playbook (replaces it; keep it under {brief.playbook_bytes as KiB} KiB) or add ideas to the backlog for later experiments." (the cap is the configured value, 4 KiB by default)
 
 ### 12.5 RPC (crates/rpc, ts-rs bindings)
 
@@ -566,7 +568,7 @@ Routines list/detail and the embedded chat: `components/routines/{RoutinesView,R
 
 Per crate, crate-level gates only (the machine's build protocol: `build-lock`, `CARGO_BUILD_JOBS=4`, no workspace-wide runs in workers):
 - **`cargo test -p autoresearch`** —
-  - `gate`: fixtures for a deterministic metric (σ = 0, `min_effect` decides), a noisy metric with known σ (seeded generator; the false-keep rate over 10,000 simulated null experiments ≤ 1 % at defaults; the keep rate of a true 3σ improvement ≥ 85 %), near-tie confirm path, suspicious path, guard failure, keep-simpler granted/refused, re-measure drift event.
+  - `gate`: fixtures for a deterministic metric (σ = 0, `min_effect` decides), a noisy metric with known σ (seeded generator; the false-keep rate over 10,000 simulated null experiments ≤ 1 % at defaults; the keep rate of a true 3σ improvement ≥ 80 %), near-tie confirm path, suspicious path, guard failure, keep-simpler granted/refused, re-measure drift event. **Measured (fix round, unbiased σ; σ = 1 % of the metric, `min_effect` 0.5 %, 200 studies × 50 experiments): true 3σ power 83.6 % (8361 / 10 000), null false-keep rate 0.39 % (39 / 10 000).** W1's 89.7 % / 0.93 % were read with the σ that ran 30–50 % low past 12 samples (every z inflated ≈ 1.4×), and the original ≥ 85 % line was written for that estimate. The defaults stay conservative on purpose: a false keep ratchets noise into every later experiment, a missed gain costs one more try. The knobs that trade false keeps for power are `gate.z_discard` (1.0 → 0.8 sends fewer true gains to a one-sample `no_gain`; the null budget has room, 0.39 % of 1 %), `gate.z_fast` (3.5; lower = more one-sample keeps) and `gate.confirm_runs` (2; more = tighter means at ~1 sample per near-tie each); the test floor is 80 %.
   - `scanner`: METRIC/CASE/ASI parsing, last-wins, CRLF, NaN → crash, a 200 MB output streamed with bounded memory, missing primary → crash.
   - `custody`: editing a custody path → refused before any sample; a new segment re-baselines; non-path commands frozen as text.
   - `git` (temp repos): keep commits with trailers and excludes evaluator paths; discard saves a patch that re-applies cleanly, then resets and cleans while ignored files survive; drift repair; the user's checkout byte-identical before and after a 20-experiment simulated study; hooks not run.
@@ -619,3 +621,30 @@ Prerequisite: 136 on main (`SetBudget`, `budget:`, the side-call guard). 137 is 
 ## 20. Status
 
 Design v1, draft for review. Nothing built. The four research sheets are committed beside this doc. Number claimed 2026-10-08 03:45 (broadcast to the active roots; next free 141). Depends on 136 landing; the as-builts of W0–W4 will be appended as `140-as-built-<W>.md`.
+
+## 21. Revision 1 — Sky's answers, 2026-10-08 11:08 (override the text above where they differ)
+
+Sky, 11:05: "Ok, omp subagents, parallel implementation, build it, get it on main" — then "Wait ask me the questions". The six §19 questions went out as two ask_user cards; his answers, verbatim:
+
+| # | question | answer | what changes |
+|---|---|---|---|
+| R1-D1 | pre-filled budgets | **$20 · 120 exp · 10 h** | as §12.2 (`defaults.budget`: usd 20, per_experiment_usd 1.5, hours 10, experiments 120) |
+| R1-D2 | a keep the reviewer calls gaming | **Undo it + Restore row** | as §9.1 (`review.on_suspicious: revert`) |
+| R1-D3 | waves in this build | **Yes, in this build** | W4 WAVES is part of this wave (§21.1, worker W5) |
+| R1-D4 | where the Study view lives | **"Library tab"** (typed, neither option) | the Study view is an **eighth Library tab**: `{ to: '/autoresearch', label: 'Autoresearch', icon: FlaskConical }` appended to `GROUPS.library` in `crates/desktop/ui/src/lib/nav.ts` (the `Tab` union gains `'/autoresearch'`); `/autoresearch` = the study list (rail, the Artifacts/Knowledge two-pane frame of 97b: `components/library/Page.tsx`, `SectionBand group="library"`), `/autoresearch/$slug` = the Study view of §13.1. Routines (108) still lists `autoresearch-<slug>` schedules (they are schedule files) but shows the `study` badge and navigates to `/autoresearch/<slug>` instead of RoutineDetail. Replaces "Inside Routines" in §0 D15, §13.1 and §17 (108 amendment) |
+| R1-D5 | default executor model | **Session default** | `models.executor` default = `agent.model` (openai/gpt-5.6-sol here). `models.review` default = the first of `agent.subagents.model`, `agent.title_model`, `agent.model` whose vendor differs from the executor's (here anthropic/claude-fable-5-1), else the executor with the fixed rubric. `models.advisor` default unchanged (125's advisor, else the executor at high effort). Replaces §9.3's first two rows |
+| R1-D6 | new-best pings | **Off** | as §13.1 (`autoresearch.notify.new_best: false`) |
+
+### 21.1 The build wave (supersedes §16's table; contract-first, omp ACP workers)
+
+Integration branch `feat/140-autoresearch` (worktree `~/Develop/theuth-140`, cut from origin/main 589a72f2, which has 136's `budget:`/`cap:`/`SetBudget`/`FireWith` and 137). Toolchain: `stable` (rust-toolchain.toml; Sky's warm target was built by rustc 1.96.1). Each worker has its own worktree and an APFS clone of a warm target in `./target`.
+
+| worker | starts from | owns (must not touch anything else) | first deliverable |
+|---|---|---|---|
+| **C CONTRACT** | integration head | `crates/autoresearch/{Cargo.toml, src/lib.rs, src/config.rs, src/types.rs, src/store.rs, src/api.rs}` (`api.rs` = every inter-module signature below as a documented stub returning `Err(NotBuilt("<owner>"))`), empty module files for every other worker, the plugin registration in `crates/theuth/src/main.rs` (+ the commented `autoresearch:` block in the config template there), the `autoresearch.*` RPC methods + events + ts-rs exports in `crates/rpc` (handler bodies delegating to the actor), workspace `Cargo.toml` member line, 00 §10 line | compiling skeleton + bindings ≤ 45 min (`cargo check -p autoresearch -p rpc -p theuth`, `cargo test -p rpc --features ts --lib export_bindings`) |
+| **W1 MEASURE** | C's skeleton commit | `src/{runner,scanner,gate,custody,slot}.rs`, `fixtures/toy-sort/**` | gate + scanner with tests first |
+| **W2 RATCHET** | C's skeleton commit | `src/{git,finalize,record}.rs` | git keep/discard/patch/drift with temp-repo tests first |
+| **W3 LOOP** | C's skeleton commit | `src/{actor,tools,brief,novelty,stop,review,binding,schedule_file,rpc_impl}.rs`, `crates/autoresearch/skill.md` (bundled as `skills/autoresearch.md` by `first_run`), `crates/app/src/study_draft.rs` (+ its registration in `crates/app`), slash command entries (`/autoresearch` in the TUI command table and desktop `slash.ts`), Deliver/attention wiring | one study end to end on toy-sort with W1/W2 stubs |
+| **W4 UI** | integration head (bindings swapped in from C's commit) | `crates/desktop/ui/src/components/autoresearch/**`, `routes/autoresearch*.tsx`, the `GROUPS.library` line + `Tab` union in `lib/nav.ts`, the study badge/link lines in `components/routines/*`, Settings › Autoresearch (`components/settings/` beside Dreaming), `lib/api.ts` autoresearch calls | Library tab + Study view on fixtures |
+| **W5 WAVES** | the merged C+W1+W2+W3 head | `src/wave.rs` + the `slot` paths of Begin/Run/Log in `actor.rs`/`tools.rs` (hand-off from W3) | 2-slot wave on toy-sort |
+| **Z CLOSER** | integration | merges, cross-seam fixes, as-builts, live smoke + gaming probe, landing | merged tree green |
