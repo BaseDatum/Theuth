@@ -5,6 +5,7 @@
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { LOCAL } from '@/link/engines'
 import type { Api } from '@/rpc/api'
+import { type RpcClient, isTransportError } from '@/rpc/client'
 import { isDesktop } from './platform'
 
 const MIME: Record<string, string> = {
@@ -111,4 +112,30 @@ export function readText(api: Api, path: string): Promise<string> {
   texts.set(path, p)
   // ponytail: unbounded by count, keyed by content-addressed path; an LRU when a session shows hundreds of documents.
   return p
+}
+
+/**
+ * `readText`, retried once when the first read found the socket down: the read an artifact view issues right after an
+ * iPad foregrounds lands in the client's `reconnecting`/probe window and rejects `not connected`; the next `open`
+ * repeats it. Any other failure, and a second transport failure, reject to the caller.
+ */
+export async function readTextOnline(api: Api, client: Pick<RpcClient, 'onState'> | null, path: string): Promise<string> {
+  try {
+    return await readText(api, path)
+  } catch (e) {
+    if (!client || !isTransportError(e)) throw e
+    const { promise, resolve } = Promise.withResolvers<void>()
+    // `onState` calls back at once with the current state, before `off` is assigned.
+    let off: (() => void) | undefined
+    let open = false
+    off = client.onState((s) => {
+      if (s !== 'open') return
+      open = true
+      off?.()
+      resolve()
+    })
+    if (open) off()
+    await promise
+    return readText(api, path)
+  }
 }
