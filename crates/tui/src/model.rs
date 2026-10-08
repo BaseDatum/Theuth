@@ -10089,7 +10089,7 @@ impl Model {
         enum Act {
             Move(usize),
             Expand(String, bool),
-            Send(Command),
+            Send(Box<Command>),
             Pending(Option<Target>),
             Close,
             Nothing,
@@ -10106,21 +10106,21 @@ impl Model {
         let row = rows.get(cursor);
         let set_gate = |row: &Row<'_>, gate: Option<Gate>| {
             let t = row.target();
-            Act::Send(Command::SetGate {
+            Act::Send(Box::new(Command::SetGate {
                 server: t.server,
                 tool: t.tool,
                 gate,
                 session,
-            })
+            }))
         };
         let draft = self.draft_options();
         let set_hidden = |row: &Row<'_>, hidden: bool| {
-            Act::Send(Command::SetHidden {
+            Act::Send(Box::new(Command::SetHidden {
                 session,
                 tools: row.tool_names(),
                 hidden,
                 draft: draft.clone(),
-            })
+            }))
         };
         // The scope prompt after ⏎ on an `on` row: the target is the row the
         // cursor was on, re-found by name (a refresh may have moved it).
@@ -10138,14 +10138,14 @@ impl Model {
                 (KeyCode::Up, _) => Act::Move(cursor.saturating_sub(1)),
                 (KeyCode::Down, _) => Act::Move((cursor + 1).min(rows.len().saturating_sub(1))),
                 (KeyCode::Esc, _) => Act::Close,
-                (KeyCode::Char('s'), _) => Act::Send(Command::SyncMcp),
+                (KeyCode::Char('s'), _) => Act::Send(Box::new(Command::SyncMcp)),
                 (KeyCode::Right, Some(Row::Server(s))) => Act::Expand(s.name.clone(), true),
                 (KeyCode::Left, Some(Row::Server(s) | Row::Tool(s, _))) => {
                     Act::Expand(s.name.clone(), false)
                 }
                 (KeyCode::Char('l'), Some(Row::Server(s))) => match s.auth {
-                    McpAuth::Required => Act::Send(Command::Login(s.name.clone())),
-                    McpAuth::LoggedIn => Act::Send(Command::Logout(s.name.clone())),
+                    McpAuth::Required => Act::Send(Box::new(Command::Login(s.name.clone()))),
+                    McpAuth::LoggedIn => Act::Send(Box::new(Command::Logout(s.name.clone()))),
                     McpAuth::None => Act::Nothing,
                 },
                 // ⏎: turn on undoes whichever switch is off; turn off asks for the scope.
@@ -10193,7 +10193,7 @@ impl Model {
             }
             Act::Send(cmd) => {
                 *pending = None;
-                send(tx, cmd);
+                send(tx, *cmd);
             }
             Act::Pending(p) => *pending = p,
             Act::Close => self.menu = None,
@@ -10222,7 +10222,7 @@ impl Model {
     fn acp_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
         enum Act {
             Move(usize),
-            Send(Command),
+            Send(Box<Command>),
             Probe,
             Close,
             Nothing,
@@ -10243,9 +10243,11 @@ impl Model {
             (KeyCode::Down, _) => Act::Move(step((cursor + 1).min(last), 1)),
             (KeyCode::Esc, _) => Act::Close,
             (KeyCode::Char('p'), _) => Act::Probe,
-            (KeyCode::Enter, Some(AcpRow::Registry(a))) => Act::Send(Command::AddAcp(a.id.clone())),
+            (KeyCode::Enter, Some(AcpRow::Registry(a))) => {
+                Act::Send(Box::new(Command::AddAcp(a.id.clone())))
+            }
             (KeyCode::Char('d') | KeyCode::Backspace, Some(AcpRow::Entry(e))) => {
-                Act::Send(Command::RemoveAcp(e.name.clone()))
+                Act::Send(Box::new(Command::RemoveAcp(e.name.clone())))
             }
             _ => Act::Nothing,
         };
@@ -10266,7 +10268,7 @@ impl Model {
                 }
                 send(tx, Command::ListAcp { probe: true });
             }
-            Act::Send(cmd) => send(tx, cmd),
+            Act::Send(cmd) => send(tx, *cmd),
             Act::Close => self.menu = None,
             Act::Nothing => {}
         }
@@ -13839,13 +13841,15 @@ mod tests {
             "{wide}"
         );
         assert_eq!(m.board_row(&m.agents[&child], 100), row, "no cost yet");
-        let mut total = CostBucket::default();
-        total.calls = 1;
-        total.dispatched = 1;
-        total.returned = vec![Money {
-            currency: "USD".into(),
-            nanos: 121_280_250,
-        }];
+        let total = CostBucket {
+            calls: 1,
+            dispatched: 1,
+            returned: vec![Money {
+                currency: "USD".into(),
+                nanos: 121_280_250,
+            }],
+            ..Default::default()
+        };
         m.apply(UiEvent::Cost(
             root,
             SessionCost {
