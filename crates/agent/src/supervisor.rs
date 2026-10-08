@@ -8485,6 +8485,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         auth.clone(),
         catalog.clone(),
         cfg.endless.clone(),
+        // R1-D3: the compactor chain's middle link (`agent.endless.model` → title model → session).
+        cfg.title_model.clone(),
     );
     let agents = Agents::spawn_with_mailbox(
         Agents {
@@ -9199,7 +9201,7 @@ impl Message<CreateSession> for Agents {
             // starts the (empty) tree, so the first turn is already endless.
             if memory == MemoryMode::Endless {
                 self.endless
-                    .set_mode(id, memory, 0)
+                    .set_mode(id, memory, 0, crate::endless::UnitFilter::All)
                     .await
                     .map_err(|e| format!("endless: {e:#}"))?;
                 tracing::info!(session = %id, "endless: created in endless mode");
@@ -10269,6 +10271,7 @@ pub(crate) mod tests {
             auth.clone(),
             catalog.clone(),
             cfg.endless.clone(),
+            None,
         );
         Agents {
             rt,

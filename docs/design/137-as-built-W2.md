@@ -1,6 +1,6 @@
 # 137 — As built, W2 LOOP (fresh-turn frame, settle, tools, `/endless`, RPC bodies, roster)
 
-Branch `feat/137-w2`, worktree `~/Develop/theuth-137-w2`, from W1's skeleton `3955ab2b` + design R1 `9bf9f6cd`. Coded against `docs/design/137-contract.md` §4 (`agent::endless::Endless`); the five Revision-1 interfaces not yet in the skeleton sit behind `crates/agent/src/endless_ext.rs` (§3 below). Nothing under `crates/agent/src/endless/**`, the migration or `crates/desktop/**` was edited (one exception, reverted, §5.1).
+Branch `feat/137-w2`, worktree `~/Develop/theuth-137-w2`, from W1's skeleton `3955ab2b` + design R1 `9bf9f6cd`; **W1's finished branch `feat/137-w1` (`8f9cc634`) merged in at the orchestrator's 03:55 instruction** — the loop now runs against the real `agent::endless::Endless`. Coded against `docs/design/137-contract.md` §4. `crates/agent/src/endless_ext.rs` is now thin delegation over W1's landed R1 interfaces (§3) plus the shared `/endless` reply texts. Nothing under `crates/agent/src/endless/**`, the migration or `crates/desktop/**` was edited by W2.
 
 ## 1. What was built (file level)
 
@@ -44,32 +44,23 @@ Branch `feat/137-w2`, worktree `~/Develop/theuth-137-w2`, from W1's skeleton `39
 
 Shell for every call: `export PATH="$HOME/.theuth/bin:$(/opt/homebrew/bin/just toolchain):$PATH"; export CARGO_TARGET_DIR=$HOME/Develop/theuth-137-target; export CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0`, each cargo call wrapped in `BUILD_LABEL=137-W2 build-lock`.
 
-| gate | result line |
+| gate | result line (on the merged tree, `feat/137-w1` @ `8f9cc634` in) |
 |---|---|
-| `cargo check -p agent -p rpc -p roster` | `Finished \`dev\` profile` — 0 errors (compile warnings only inside W1's `endless/**`: missing docs, never-read fields) |
-| `cargo test -p agent --lib --no-fail-fast` | `test result: FAILED. 480 passed; 2 failed; 2 ignored` — the 2 are W1's skeleton tests (`endless::units::tests::derives_units_from_stored_row_shapes`, `store::endless::tests::endless_rows_round_trip_and_fts_follows_level0`); every W2 test passes. **Run with W1's `compactor.rs` test locally patched to compile (§5.1), reverted before commit; on the committed tree the agent lib test target does not compile until W1 fixes it.** |
-| `cargo test -p rpc --no-fail-fast` | unit tests `test result: ok. 51 passed; 0 failed`; integration `tests/prompts.rs`: `test result: FAILED. 0 passed; 1 failed` — `prompts_resolve_everywhere_and_replay_only_while_pending` at prompts.rs:140, **pre-existing** since 132 ENG (`717708fa`): a second `answer_ask` now routes a `LateAnswer` to the `Agents` actor, which that test never starts (result `null`, expected `false`). Not touched by W2. |
+| `cargo check -p agent -p rpc -p roster` | `Finished \`dev\` profile` — 0 errors |
+| `cargo test -p agent --lib --no-fail-fast` | `test result: ok. 493 passed; 0 failed; 2 ignored` |
+| `cargo test -p rpc --no-fail-fast` | unit tests `test result: ok. 51 passed; 0 failed`; integration `tests/prompts.rs`: `prompts_resolve_everywhere_and_replay_only_while_pending` fails at prompts.rs:140 — **pre-existing** since 132 ENG (`717708fa`): a second `answer_ask` routes a `LateAnswer` to the `Agents` actor, which that test never starts (result `null`, expected `false`). Not touched by W2. |
 | `cargo test -p roster --no-fail-fast` | `test result: ok. 67 passed; 0 failed; 0 ignored` |
-| `cargo clippy -p agent -p rpc -p roster --no-deps -- -D warnings` | agent: **fails on 95 lints, all in W1's `crates/agent/src/endless/**` and `crates/agent/src/store/endless.rs`** (`missing_docs` ×~85, `dead_code` on `Inner.{rt,client,auth,catalog}`, `clippy::type_complexity`, `clippy::manual_is_multiple_of`); zero in W2's files. `cargo clippy -p rpc -p roster --no-deps -- -D warnings`: `Finished \`dev\` profile` (clean). |
-| `cargo fmt -p agent -p rpc -p roster` | run; W1's `endless/**`, `store/endless.rs` and `store/durability.rs` reformatted by fmt were reverted (`git checkout`) — W1's files are not W2's to touch; everything else committed formatted. |
+| `cargo clippy -p agent -p rpc -p roster --no-deps -- -D warnings` | `Finished \`dev\` profile` (clean) |
+| `cargo fmt -p agent -p rpc -p roster` | run; committed formatted |
 | `cargo check -p tui` (outside the gates, for the `/endless` command) | `Finished \`dev\` profile` |
+
+Before the merge (skeleton only) the agent suite was `480 passed; 2 failed` with both failures in W1's skeleton tests and W1's `compactor.rs` test not compiling; all of that is gone with W1's finished branch.
 
 Shared-target caveat for every line above: see §5.1.
 
-## 3. The R1 adapter (`crates/agent/src/endless_ext.rs`) — hand-off to W1
+## 3. `crates/agent/src/endless_ext.rs` — after the W1 merge
 
-Thin functions W2 calls today; each becomes a one-line delegation once `Endless` grows the method:
-
-| adapter | today | W1 interface it stands in for |
-|---|---|---|
-| `render_snapshot(e, s) -> Vec<ViewBlock>` | one `<chat>` block rendered from `Endless::memory(s).view` (no frozen-context side effect) | `Endless::render_snapshot(session)` |
-| `set_mode(e, s, mode, epoch, UnitFilter)` | logs a non-`All` filter, calls `Endless::set_mode` | `set_mode(…, UnitFilter)` |
-| `backfill_estimate(&SessionMemory)` | units/ETA from `memory.backfill`, `usd: None`, `model` from `memory.model` | `Endless::backfill_estimate` (adds $ and the calibrated s/unit) |
-| `set_view_bytes(e, s, bytes)` | range check + `info!`, returns `memory(s)` — **not yet applied** | `Endless::set_view_bytes` + `SessionMemory.view_bytes` |
-| `UnitFilter` | local enum | W1's |
-| `reply(mode, &SessionMemory)`, `status(&SessionMemory)`, `eta(secs)` | the `/endless` texts (shared by TUI; W3 may reuse) | — |
-
-`render_with_budget` is not called by W2 (meetings are W4's).
+W1 landed `render_snapshot`, `render_with_budget`, `set_mode(…, UnitFilter)`, `set_view_bytes`, `backfill_estimate`, `UnitFilter` and `ViewLine.at` in `8f9cc634`, so the module is thin delegation (`render_snapshot` → `Vec<ViewBlock>` with a `warn!` on error; `set_mode`; `render_with_budget`; `set_view_bytes` = range check + `Endless::set_view_bytes` + `memory`) plus what every client shares: `backfill_estimate(&SessionMemory) -> BackfillEstimate { units, eta_secs, usd, model }` (from the service's `Backfill.usd_estimate`), `reply(mode, &SessionMemory)`, `status(&SessionMemory)` (shows `view_bytes`), `eta(secs)`. `agent::UnitFilter` is W1's (`endless::UnitFilter`); the local enum is gone.
 
 ## 4. Tests (137 §14, W2's share)
 - `frame::tests::view_blocks_become_marked_user_messages` — marks per transport, cap, final block unmarked, Anthropic frame keeps system 1 h first / tail 5 min last with the view in front.
@@ -99,10 +90,9 @@ Thin functions W2 calls today; each becomes a one-line delegation once `Endless`
 
 ### 5.1 Build-environment notes
 - **Shared `CARGO_TARGET_DIR` collides across 137 worktrees.** Cargo hashes workspace-member artifacts relative to the workspace root, so `agent` from `theuth-137-w1` and `-w2` share one `.rmeta`/`.rlib`; `cargo check -p rpc` once linked against W1's `agent` (an error pointed at `endless/mod.rs:299`, a line only W1's tree has). Workaround used for every gate: `touch crates/agent/src/lib.rs` (and the other crate roots) right before the cargo call so my tree's artifact is rebuilt first. Reported to the orchestrator. An APFS clone of the 63 GB target as a private dir timed out at 52 GB and was removed.
-- **W1's skeleton test code does not compile under `cargo test -p agent --lib`**: `endless/compactor.rs` test `request_marks_context_block_on_anthropic_only` calls `genai::Client::default()` and `supervisor::Auth::default()`, neither of which exists. To run the agent suite I patched those two expressions locally (`Client::new().unwrap()`, `Auth::stub(Path::new("/unused"))`), ran the gate, and reverted the file before committing — the committed tree still carries W1's version. **W1 must fix this for the agent test gate to compile.** With that patch, two W1 tests fail (`endless::units::tests::derives_units_from_stored_row_shapes` at units.rs:118 — JSON key order of `fn_arguments`; `store::endless::tests::endless_rows_round_trip_and_fts_follows_level0` at store/endless.rs:437); none of W2's.
 
 ## 6. Hand-offs
-- **W1**: the five R1 interfaces (§3), especially `set_view_bytes` + `SessionMemory.view_bytes` (the RPC and roster already call the adapter) and `backfill_estimate` (`usd`); fix the compactor test compile (§5.1) and the two failing skeleton tests; `EndlessConfig.default_desk` → `true` (R1-D7); `render_snapshot` should not touch the frozen context.
+- **W1**: landed and merged. Open: `EndlessConfig` TS/JsonSchema derive + `export.rs` entry for the settings RPCs (§1); `default_desk` default per R1-D7.
 - **W4 (meeting)**: `agent::SetSessionMemory { session, mode, filter: agent::UnitFilter::Meeting }` → `anyhow::Result<agent::SetMode>` (idle only, `Err("busy")`); `agent::RenderMemoryView { session, bytes }` → `anyhow::Result<Vec<agent::ViewLine>>`. Both handled by `Agents`; the meeting session is excluded from the fresh-turn frame on the switch.
 - **W3 (desktop)**: `set_session_memory`/`session_memory`/`endless_zoom`/`endless_recall`/`set_session_view_bytes` are live RPCs; `EndlessProgress` arrives on the session event stream (`type: "EndlessProgress"`); `CreateSessionOptions.memory` is honoured; `AgentFile.memory`/`view_bytes` are in `agents_list`/`agent_put`; the `/endless` slash entry in `slash.ts` should mirror the TUI (`on|off|status`), text from `SessionMemory` as `endless_ext::reply`/`status` render it.
 - **Closer**: `just ts-desktop` regenerates `AgentFile` (two optional fields) and `methods.json` (`set_session_view_bytes`); live smoke per §14 — the `view_rebase` line is `tracing::info!` target `agent::loop_` with `cache_read` as a field; the first endless turn of a session logs `changed_from_byte = None`, `blocks_hit = 0`.

@@ -61,3 +61,10 @@ CREATE TRIGGER endless_nodes_au AFTER UPDATE ON endless_nodes WHEN NEW.l = 0 BEG
   DELETE FROM endless_lines_fts WHERE session_id = OLD.session_id AND i = OLD.i;
   INSERT INTO endless_lines_fts (text, session_id, i) VALUES (NEW.text, NEW.session_id, NEW.i);
 END;
+
+-- 137 R1-D4 / R1-D6: the backfill base (units below it are raw only, reached
+-- by recall) and the unit filter (`all` | `meeting`), both fixed at switch-on.
+ALTER TABLE sessions ADD COLUMN endless_base INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN endless_filter TEXT NOT NULL DEFAULT 'all';
+-- 137 R1b: per-session view budget (the user's control); NULL = `agent.endless.view_bytes`.
+ALTER TABLE sessions ADD COLUMN endless_view_bytes INTEGER NULL;

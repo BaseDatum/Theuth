@@ -1,90 +1,43 @@
-//! 137 Revision 1 seams the loop, the spawn path and the RPC call, written
-//! against the interfaces W1 adds to [`Endless`] in a follow-up
-//! (`render_snapshot`, `render_with_budget`, `UnitFilter` on `set_mode`,
-//! `set_view_bytes`, `backfill_estimate`). Until then each function is a thin
-//! adapter over the contract's v1 API; when the service grows the method,
-//! the body becomes a one-line delegation and nothing else moves.
+//! 137 Revision 1 seams the loop, the spawn path, the roster and the RPC
+//! call — thin delegations to [`Endless`] (W1 landed `render_snapshot`,
+//! `render_with_budget`, `set_mode(…, UnitFilter)`, `set_view_bytes`,
+//! `backfill_estimate` in `8f9cc634`), plus the `/endless` reply texts every
+//! client shares.
 
 use runtime::SessionId;
 
-use serde::{Deserialize, Serialize};
+use crate::endless::{
+    Backfill, Endless, MemoryMode, SessionMemory, SetMode, UnitFilter, ViewBlock, ViewLine,
+};
 
-use crate::endless::{Backfill, Endless, MemoryMode, SessionMemory, SetMode, ViewBlock, ViewLine};
-
-/// Which units a tree is built over (R1-D6): everything, or a meeting's
-/// transcript batches and topic/brief tool calls only (W4's).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UnitFilter {
-    /// Every unit (chats, desks).
-    #[default]
-    All,
-    /// Transcript batches and topic/brief tool calls only.
-    Meeting,
-}
-
-/// What `/endless on` tells the user before the backfill runs (R1-D3, R1-D4).
+/// What `/endless on` tells the user (R1-D3, R1-D4), from the service's
+/// [`Backfill`] (`usd` is the service's remaining × measured $ per unit) and
+/// the compactor model it resolved.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BackfillEstimate {
     /// Units still to summarise.
     pub units: u64,
     /// Wall-clock estimate for the backfill.
     pub eta_secs: u64,
-    /// Estimated cost in USD; `None` until the service measures its first nodes.
-    pub usd: Option<f64>,
+    /// Estimated cost in USD.
+    pub usd: f64,
     /// The compactor model id (R1-D3 chain, resolved by the service).
     pub model: String,
 }
 
 /// R1-D1: the parent's rendered view as cache-marked blocks for a native
-/// child's first message. Adapter: rendered from the panel lines of
-/// [`Endless::memory`] as one `<chat>` block (the service's `render_snapshot`
-/// will return the band-split blocks without touching the frozen context).
-/// Empty when the parent has no view (not endless, or nothing summarised).
+/// child's first message; empty when the parent has no view or the render fails.
 pub async fn render_snapshot(endless: &Endless, session: SessionId) -> Vec<ViewBlock> {
-    let Ok(m) = endless.memory(session).await else {
-        return Vec::new();
-    };
-    if m.mode != MemoryMode::Endless || m.view.is_empty() {
-        return Vec::new();
+    match endless.render_snapshot(session).await {
+        Ok(blocks) => blocks,
+        Err(e) => {
+            tracing::warn!(session = %session, "endless render_snapshot: {e:#}");
+            Vec::new()
+        }
     }
-    let mut text = String::from("<chat>\n");
-    for l in &m.view {
-        text.push_str(&format!("{}+{}|{}\n", l.id, l.n, l.text.replace('\n', " ")));
-    }
-    text.push_str("</chat>");
-    vec![ViewBlock { text, mark: true }]
 }
 
-/// R1-D6: the view folded to a `bytes` budget (a meeting head's "Earlier in
-/// this meeting" section). Adapter: the live view's lines, trimmed from the
-/// oldest end to fit `bytes` (the service's `render_with_budget` will fold
-/// the tree to the budget instead of cutting lines); unbuilt parts render as
-/// the service renders them.
-pub async fn render_with_budget(
-    endless: &Endless,
-    session: SessionId,
-    bytes: u32,
-) -> anyhow::Result<Vec<ViewLine>> {
-    let m = endless.memory(session).await?;
-    if m.mode != MemoryMode::Endless {
-        return Ok(Vec::new());
-    }
-    let budget = bytes as usize;
-    let mut total: usize = m.view.iter().map(|l| l.text.len()).sum();
-    let mut skip = 0;
-    while total > budget && skip < m.view.len() {
-        total -= m.view[skip].text.len();
-        skip += 1;
-    }
-    if skip > 0 {
-        tracing::debug!(session = %session, bytes, dropped = skip, "endless render_with_budget: adapter cut the oldest lines");
-    }
-    Ok(m.view.into_iter().skip(skip).collect())
-}
-
-/// `set_mode` with a unit filter (R1-D6). Adapter: the filter is recorded in
-/// the log only; the service builds over every unit.
+/// `/endless on|off` with a unit filter (R1-D6).
 pub async fn set_mode(
     endless: &Endless,
     session: SessionId,
@@ -92,35 +45,40 @@ pub async fn set_mode(
     epoch: u32,
     filter: UnitFilter,
 ) -> anyhow::Result<SetMode> {
-    if filter != UnitFilter::All {
-        tracing::info!(session = %session, ?filter, "endless set_mode: unit filter not yet honoured by the service");
-    }
-    endless.set_mode(session, mode, epoch).await
+    endless.set_mode(session, mode, epoch, filter).await
+}
+
+/// R1-D6: the view re-folded to `bytes`, as lines (a meeting head's section).
+pub async fn render_with_budget(
+    endless: &Endless,
+    session: SessionId,
+    bytes: u32,
+) -> anyhow::Result<Vec<ViewLine>> {
+    endless.render_with_budget(session, bytes).await
 }
 
 /// R1-D3/R1-D4: the estimate `/endless on` replies with, from the state the
-/// switch returned. Adapter: seconds from the service's `backfill.eta_secs`,
-/// cost unknown until the service exposes `backfill_estimate`.
+/// switch returned (`backfill: None` = the view already covers the history).
 pub fn backfill_estimate(m: &SessionMemory) -> BackfillEstimate {
-    let (units, eta_secs) = match m.backfill {
+    let (units, eta_secs, usd) = match m.backfill {
         Some(Backfill {
             done,
             total,
             eta_secs,
-        }) => (total.saturating_sub(done), eta_secs),
-        None => (0, 0),
+            usd_estimate,
+        }) => (total.saturating_sub(done), eta_secs, usd_estimate),
+        None => (0, 0, 0.0),
     };
     BackfillEstimate {
         units,
         eta_secs,
-        usd: None,
+        usd,
         model: m.model.clone(),
     }
 }
 
-/// R1-D2b: the per-session view budget. Valid range 16_000..=256_000.
-/// Adapter: validated and logged; the service's `set_view_bytes` (and
-/// `SessionMemory.view_bytes`) will make it take effect at the next turn.
+/// R1-D2b: the per-session view budget (16_000..=256_000), applied by the
+/// service at the next render; returns the state after the write.
 pub async fn set_view_bytes(
     endless: &Endless,
     session: SessionId,
@@ -129,7 +87,10 @@ pub async fn set_view_bytes(
     if !(16_000..=256_000).contains(&bytes) {
         return Err(format!("view_bytes {bytes} out of range 16000..=256000"));
     }
-    tracing::info!(session = %session, bytes, "endless set_view_bytes: accepted; applied by the service at the next turn boundary");
+    endless
+        .set_view_bytes(session, bytes)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
     endless.memory(session).await.map_err(|e| format!("{e:#}"))
 }
 
@@ -157,13 +118,11 @@ pub fn reply(mode: MemoryMode, m: &SessionMemory) -> String {
             if est.units == 0 {
                 format!("Endless memory on. Compactor: {model}. The view is up to date.")
             } else {
-                let usd = est
-                    .usd
-                    .map_or(String::new(), |u| format!(", ≈ ${u:.2}"));
                 format!(
-                    "Endless memory on. Summarising {} messages in the background with {model} (ETA {}{usd}); the session keeps its current memory until the view covers its history.",
+                    "Endless memory on. Summarising {} messages in the background with {model} (ETA {}, ≈ ${:.2}); the session keeps its current memory until the view covers its history.",
                     est.units,
-                    eta(est.eta_secs)
+                    eta(est.eta_secs),
+                    est.usd
                 )
             }
         }
@@ -182,8 +141,9 @@ pub fn status(m: &SessionMemory) -> String {
     }
     let bytes: usize = m.view.iter().map(|l| l.text.len()).sum();
     let mut s = format!(
-        "Memory: endless · view {} KB · {} lines · {} messages · compactor {}",
+        "Memory: endless · view {} KB of {} KB · {} lines · {} messages · compactor {}",
         bytes / 1000,
+        m.view_bytes / 1000,
         m.view.len(),
         m.units,
         if m.model.is_empty() {
@@ -227,12 +187,14 @@ mod tests {
                 level: 1,
                 text: "user: a\nb".into(),
                 built: true,
+                at: None,
             }],
             settling: false,
             unbuilt: 0,
             units: 2,
             stats: EndlessStats::default(),
             model: "p/haiku".into(),
+            view_bytes: 128_000,
             backfill,
         }
     }
@@ -246,22 +208,29 @@ mod tests {
             done: 40,
             total: 1_240,
             eta_secs: 3_725,
+            usd_estimate: 18.5,
         }));
         let est = backfill_estimate(&busy);
         assert_eq!(
-            (est.units, est.eta_secs, est.model.as_str()),
-            (1_200, 3_725, "p/haiku")
+            (est.units, est.eta_secs, est.model.as_str(), est.usd),
+            (1_200, 3_725, "p/haiku", 18.5)
         );
         let text = reply(MemoryMode::Endless, &busy);
         assert!(
-            text.contains("1200 messages") && text.contains("1h 02m") && text.contains("p/haiku"),
+            text.contains("1200 messages")
+                && text.contains("1h 02m")
+                && text.contains("p/haiku")
+                && text.contains("$18.50"),
             "{text}"
         );
         assert!(reply(MemoryMode::Epochs, &busy).starts_with("Endless memory off."));
         assert_eq!(eta(59), "59s");
         assert_eq!(eta(125), "2m 05s");
         let s = status(&busy);
-        assert!(s.starts_with("Memory: endless · view 0 KB · 1 lines · 2 messages · compactor p/haiku · backfill 40/1240"), "{s}");
+        assert!(
+            s.starts_with("Memory: endless · view 0 KB of 128 KB · 1 lines · 2 messages · compactor p/haiku · backfill 40/1240"),
+            "{s}"
+        );
         assert!(status(&memory(None)).ends_with("· up to date"));
         let mut epochs = memory(None);
         epochs.mode = MemoryMode::Epochs;

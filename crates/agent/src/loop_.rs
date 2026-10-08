@@ -77,7 +77,7 @@ use crate::durability::{
     CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, ResumeReportRow, StepKind, crash,
     crash_point,
 };
-use crate::endless::{Endless, MemoryMode, SessionMemory, SetMode, ViewRender};
+use crate::endless::{Endless, MemoryMode, SetMode, ViewRender};
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
@@ -415,7 +415,7 @@ pub struct SetMemoryNow {
     /// The mode to switch to.
     pub mode: MemoryMode,
     /// Which units the tree is built over.
-    pub filter: crate::endless_ext::UnitFilter,
+    pub filter: crate::endless::UnitFilter,
 }
 
 /// `ask` → `Result<HarvestResult, String>`: harvest the finished frame now
@@ -2208,7 +2208,7 @@ impl Message<SetMemoryNow> for Session {
         };
         // R1-D6: the filter decides whether this session may run the fresh-turn frame.
         self.shared.meeting_filter.store(
-            m.mode == MemoryMode::Endless && m.filter == crate::endless_ext::UnitFilter::Meeting,
+            m.mode == MemoryMode::Endless && m.filter == crate::endless::UnitFilter::Meeting,
             Ordering::Relaxed,
         );
         let cancel = self.shared.rt.shutdown.child_token();
@@ -6111,7 +6111,7 @@ impl Turn {
     async fn set_memory(
         &mut self,
         mode: MemoryMode,
-        filter: crate::endless_ext::UnitFilter,
+        filter: crate::endless::UnitFilter,
     ) -> Result<SetMode, String> {
         let session = self.shared.id;
         let endless = self

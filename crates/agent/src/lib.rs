@@ -114,9 +114,8 @@ pub use cost::{
 };
 pub use endless::{
     Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
-    SessionMemory, SetMode, ViewLine,
+    SessionMemory, SetMode, UnitFilter, ViewLine, resolved_compactor_model,
 };
-pub use endless_ext::UnitFilter;
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
 };

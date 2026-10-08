@@ -74,11 +74,7 @@ pub fn cap(s: &str, cap_chars: u32) -> String {
     let cut = n - head - tail;
     let head_end = s.char_indices().nth(head).map_or(s.len(), |(b, _)| b);
     let tail_start = s.char_indices().nth(n - tail).map_or(s.len(), |(b, _)| b);
-    format!(
-        "{}[… {cut} chars cut]{}",
-        &s[..head_end],
-        &s[tail_start..]
-    )
+    format!("{}[… {cut} chars cut]{}", &s[..head_end], &s[tail_start..])
 }
 
 #[cfg(test)]
@@ -97,7 +93,10 @@ mod tests {
         let user = parse(r#"{"role":"User","content":[{"Text":"hello there"}]}"#);
         let u = derive(0, None, &user, 30_000, 0);
         assert_eq!(u.len(), 1);
-        assert_eq!((u[0].kind, u[0].text.as_str(), u[0].size), (Kind::User, "hello there", 17));
+        assert_eq!(
+            (u[0].kind, u[0].text.as_str(), u[0].size),
+            (Kind::User, "hello there", 17)
+        );
         assert_eq!(u[0].tagged(), "user: hello there");
 
         let asst = ChatMessage::assistant(MessageContent::from_parts(vec![
@@ -115,13 +114,16 @@ mod tests {
         assert_eq!(u.len(), 2, "reasoning dropped");
         assert_eq!((u[0].i, u[0].kind, u[0].part), (1, Kind::Talk, 1));
         assert_eq!((u[1].i, u[1].kind, u[1].part), (2, Kind::Tool, 2));
-        assert_eq!(u[1].text, r#"read {"n":1,"path":"a.rs"}"#);
+        assert_eq!(u[1].text, r#"read {"path":"a.rs","n":1}"#);
 
         let tool = ChatMessage::from(vec![ToolResponse::new("c1", "x".repeat(100))]);
         let json = serde_json::to_string(&tool).unwrap();
         let u = derive(2, None, &parse(&json), 30, 3);
         assert_eq!(u[0].kind, Kind::Echo);
-        assert_eq!(u[0].text, format!("{}[… 70 chars cut]{}", "x".repeat(20), "x".repeat(10)));
+        assert_eq!(
+            u[0].text,
+            format!("{}[… 70 chars cut]{}", "x".repeat(20), "x".repeat(10))
+        );
 
         let work = parse(
             r#"{"role":"User","content":[{"Text":"<message from=\"session:abc\" id=\"1\">done</message>"}]}"#,
@@ -133,6 +135,9 @@ mod tests {
     fn cap_counts_chars_not_bytes() {
         let s = "é".repeat(12);
         assert_eq!(cap(&s, 12), s);
-        assert_eq!(cap(&s, 9), format!("{}[… 3 chars cut]{}", "é".repeat(6), "é".repeat(3)));
+        assert_eq!(
+            cap(&s, 9),
+            format!("{}[… 3 chars cut]{}", "é".repeat(6), "é".repeat(3))
+        );
     }
 }
