@@ -13652,7 +13652,7 @@ mod tests {
         assert!(m.board().is_empty(), "pending is not live");
         assert_eq!(m.agents[&child].info.kind, SessionKind::Observed);
         m.apply_agent(ev(ObservedState::Running, Some("Reading first line")));
-        let row = agent_row(&m.agents[&child], "⠹", 80);
+        let row = agent_row(&m.agents[&child], "⠹", 100);
         assert!(
             row.starts_with("◎ ReadA")
                 && row.contains("running   watch · omp task · Reading first line"),
@@ -13673,16 +13673,16 @@ mod tests {
             m.board().iter().any(|r| r.info.id == child),
             "failed lingers"
         );
-        assert!(agent_row(&m.agents[&child], "⠹", 80).contains("failed    watch · omp task"));
+        assert!(agent_row(&m.agents[&child], "⠹", 100).contains("failed    watch · omp task"));
         m.apply_agent(ev(ObservedState::Unknown, None));
-        assert!(agent_row(&m.agents[&child], "⠹", 80).contains("lost contact"));
+        assert!(agent_row(&m.agents[&child], "⠹", 100).contains("lost contact"));
         assert!(
             m.board().iter().any(|r| r.info.id == child),
             "lost contact lingers"
         );
         m.apply_agent(ev(ObservedState::Completed, None));
         assert!(m.board().is_empty(), "done leaves the board");
-        assert!(agent_row(&m.agents[&child], "⠹", 80).contains("done      watch · omp task"));
+        assert!(agent_row(&m.agents[&child], "⠹", 100).contains("done      watch · omp task"));
         let grand = SessionId::new();
         m.apply_agent(AgentEvent::ObservedChildChanged {
             parent: child,
@@ -13697,7 +13697,7 @@ mod tests {
             ),
         });
         assert_eq!(m.agents[&grand].info.depth, 2);
-        let row = agent_row(&m.agents[&grand], "⠹", 80);
+        let row = agent_row(&m.agents[&grand], "⠹", 100);
         assert!(
             row.starts_with("◎   ↳ ReadA.b") && row.contains("watch · opencode"),
             "{row}"
