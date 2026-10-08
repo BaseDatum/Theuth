@@ -445,12 +445,19 @@ impl Scope {
     }
 }
 
+/// One open turn as `open_turns` lists it: `(session, turn, last activity)`.
+pub type OpenTurnRow = (SessionId, TurnId, DateTime<Utc>);
+
 /// The window that picks each turn's newest non-partial step and its last
-/// activity time (`last_at` includes partial rows).
+/// activity time (`last_at` includes partial rows). 146 D5: one window pass
+/// over the table — partial rows sort last inside their partition, so
+/// `rn = 1` is the newest non-partial step and `MAX(at)` sees every row —
+/// instead of a correlated `MAX(at)` subquery per row (1.1 s → 0.08 s over
+/// 25k rows; migration 0042 indexes the per-turn `at` lookups).
 const NEWEST: &str = "SELECT session_id, turn_id, kind, \
-     ROW_NUMBER() OVER (PARTITION BY session_id, turn_id ORDER BY n DESC) AS rn, \
-     (SELECT MAX(at) FROM turn_steps t2 WHERE t2.session_id = t1.session_id AND t2.turn_id = t1.turn_id) AS last_at \
-     FROM turn_steps t1 WHERE kind != 'assistant_partial'";
+     ROW_NUMBER() OVER (PARTITION BY session_id, turn_id ORDER BY (kind = 'assistant_partial'), n DESC) AS rn, \
+     MAX(at) OVER (PARTITION BY session_id, turn_id) AS last_at \
+     FROM turn_steps";
 
 impl Store {
     /// [`step_in`] in its own transaction: the `suspended` row (§9), tests,
@@ -600,10 +607,7 @@ impl Store {
     /// active first (§4.6 step 10's `resume_scan`). `suspended` is open.
     /// `Scope::Here` keeps the turns of sessions this engine owns (139 D1):
     /// a replica never lists the owner's live turn as its own to act on.
-    pub async fn open_turns(
-        &self,
-        scope: Scope,
-    ) -> anyhow::Result<Vec<(SessionId, TurnId, DateTime<Utc>)>> {
+    pub async fn open_turns(&self, scope: Scope) -> anyhow::Result<Vec<OpenTurnRow>> {
         let rows: Vec<(String, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT o.session_id, o.turn_id, o.last_at FROM ({NEWEST}) o \
              JOIN sessions s ON s.id = o.session_id \
@@ -1306,6 +1310,36 @@ impl Store {
         .fetch_all(&self.read)
         .await?;
         rows.into_iter().map(wait_of).collect()
+    }
+
+    /// 146 D1: ACP children here that were mid-prompt when the engine died —
+    /// their last `messages` row is a prompt (`User`), a `ToolCall` without
+    /// its `Tool` response, or a `Tool` response the model never answered —
+    /// with their parent, newest first; bounded to rows updated after
+    /// `since`. A harness-made `System` note (the lost note, `append_local_note`)
+    /// ends the match, so a child marked lost is not scanned again.
+    pub async fn midprompt_acp_children(
+        &self,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<(SessionId, SessionId)>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT c.id, c.parent FROM sessions c \
+             JOIN messages m ON m.session_id = c.id \
+               AND m.seq = (SELECT MAX(seq) FROM messages WHERE session_id = c.id) \
+             WHERE c.agent IS NOT NULL AND c.parent IS NOT NULL AND c.kind != 'advisor' \
+               AND (c.owner = '' OR c.owner = ?1) AND c.updated_at > ?2 \
+               AND (json_extract(m.body, '$.role') IN ('User', 'Tool') \
+                    OR (json_extract(m.body, '$.role') = 'Assistant' AND EXISTS \
+                        (SELECT 1 FROM json_each(m.body, '$.content') WHERE json_type(value, '$.ToolCall') IS NOT NULL))) \
+             ORDER BY c.updated_at DESC",
+        )
+        .bind(&*self.me)
+        .bind(since.to_rfc3339())
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(c, p)| Ok((parse_session(&c)?, parse_session(&p)?)))
+            .collect()
     }
 
     /// The session's job rows, oldest first (`jobs()` after a restart, §5.1).

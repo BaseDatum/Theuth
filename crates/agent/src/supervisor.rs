@@ -174,6 +174,8 @@ pub struct Agents {
     sessions: HashMap<SessionId, Live>,
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
     running: HashSet<SessionId>,
+    /// 146: the boot pass's ACP respawn queue and counts, until settled.
+    boot: Option<acp_resume::Boot>,
     /// 139 D16: sessions mid-release-drain → the drain's reason; `route`
     /// refuses their inputs (`transfer::draining_error`) until the demote
     /// lands or the hold expires (`transfer::ClearDraining`).
@@ -2259,6 +2261,9 @@ impl Message<AgentEvent> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, ev: AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
+        if self.boot.is_some() {
+            self.boot_child_event(&ev).await; // 146 D2
+        }
         match ev {
             // 109 LIVE: a turn resumed after a restart (`Turn::resume`)
             // publishes `TurnResumed`, never `TurnStarted`; for liveness it is
@@ -2386,16 +2391,22 @@ impl Message<ActivityRegistered> for Agents {
     async fn handle(&mut self, _: ActivityRegistered, _: &mut Context<Self, Self::Reply>) {
         self.ledger.certify();
         self.rearm_reminders_for(None).await;
+        // 146 D5: one `open_turns(Here)` for the whole pass.
+        let open = self.open_here().await;
         // 109 §4.6 step 10, in this order: no `ResumeTurn` before the reaper.
-        let reaped = crate::durability::jobs::reap_jobs(&self.store).await;
+        let reaped = crate::durability::jobs::reap_jobs_in(&self.store, &open).await;
         if reaped != crate::durability::jobs::ReapReport::default() {
             tracing::info!("109: reaper: {reaped:?}");
         }
-        self.rebuild_waits().await;
-        self.resume_scan().await;
-        self.respawn_acp_children().await; // 109 W4 §7.3
+        self.rebuild_waits(&open).await;
+        self.resume_scan(&open).await;
+        let resuming = match self.cfg.durability.resume {
+            crate::durability::ResumeMode::Auto => open.len() as u32,
+            _ => 0,
+        };
+        self.respawn_acp_children(resuming).await; // 109 W4 §7.3, 146 D1–D4
         // 109 §7.2: the spared child results, after the open turns are queued.
-        self.deliver_spared_results().await;
+        self.deliver_spared_results(&open).await;
     }
 }
 
@@ -8812,6 +8823,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             endless: endless.clone(),
             sessions: HashMap::new(),
             running: HashSet::new(),
+            boot: None,
             draining_sessions: HashMap::new(),
             pending_takeovers: HashMap::new(),
             communication: communication.clone(),
@@ -10598,6 +10610,7 @@ pub(crate) mod tests {
             endless,
             sessions: HashMap::new(),
             running: HashSet::new(),
+            boot: None,
             draining_sessions: HashMap::new(),
             pending_takeovers: HashMap::new(),
             communication: SharedPolicy::new(Policy::new(communication, "config")),
