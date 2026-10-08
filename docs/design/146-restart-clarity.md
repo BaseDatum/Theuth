@@ -134,3 +134,41 @@ going through `inject`, so it respects 145's talk-window parking without a speci
 | desktop `bun run check` (tsc) + `vitest run src/store/reduce.test.ts src/store/sessions.test.ts` | tsc clean (after `bun install --frozen-lockfile` for `@types/d3-sankey`); 66 passed |
 | `just restart-clarity` (`BACKUP_DB` = `.backup` of the live store, 29 469 `turn_steps` / 1 357 turns) | 25/25; P6 old 0.882 s → new 0.06 s |
 | `BUILD_SLOTS=1 mbx check --workspace --tests` | clean (same `block` note) |
+
+### Second fold: main 8cd9c323 (141 ACP SUBAGENT VISIBILITY `cac2e5a2` + 125 R1 CONSULT)
+
+Main moved again before the report (delta F1 named `cac2e5a2`; the tip was `8cd9c323`, which adds 125 R1
+on top of 141 — folded whole, a land must be against the tip). Merge commit `5dcc0c36`, fixes `8a972304`,
+`817e8af3`.
+
+One textual conflict, `crates/agent/src/supervisor.rs` `ActivityRegistered`: 146's pass (`open_here()`
+once, `rebuild_waits(&open)`, `resume_scan(&open)`, `respawn_acp_children(resuming)`) kept, then 141's
+`mark_observed_lost()` — both run, in that order. Everything else auto-merged: `Cargo.toml`/`Cargo.lock`
+(`agent-client-protocol =3.1.0`, theirs), migrations `0041_observed_children` (theirs) + `0042_turn_steps_turn_at`
+(ours), `lib.rs` (`SessionKind::Observed`, `AgentEvent::ObservedChildChanged` — 146 has no exhaustive
+`AgentEvent` match, `boot_child_event` uses `_ =>`), `ResumeChild` (141's `row.observed` refusal sits above
+146's D8 mid-prompt decision), `acp_child.rs` + `acp_child/observed.rs` (theirs; 146 never touched them),
+rpc `api.rs`/`acp.rs`, desktop `reduce.ts`/`ModelMenu.tsx` (141's `watching` gate and 146's D8 toast
+coexist), `AgentTree.tsx`. Fix commits: `midprompt_acp_children` filters `c.kind = 'chat'` (was
+`!= 'advisor'`) so 141's watch-only rows — never driven, no `agent` — are never a respawn candidate; the
+`turn_steps` journal needs no filter (only a driven actor writes steps, observed rows have none). The tui
+`model.rs:13773` test was red under `clippy -D warnings` (`field_reassign_with_default`) on `origin/main`
+itself (141's `3a765294`); rewritten as a struct literal, no behaviour change.
+
+Interaction noted, not changed: 141's `mark_observed_lost` checks which ACP actors are live when it runs;
+146 spawns `acp_respawn_parallel` (4) respawns synchronously before it and queues the rest, so the
+observed children of a queued respawn are marked `unknown`/"lost contact" at boot. A respawned harness is
+a new process whose in-process subagents are gone anyway; its tailer re-reports anything still alive.
+
+| gate | result |
+|---|---|
+| `mbx test -p agent --lib -- supervisor:: durability:: acp_resume:: acp_child::` | 157 passed, 0 failed |
+| `mbx test -p acp` | 46 passed |
+| `mbx test -p rpc --lib` | 55 passed |
+| `mbx test -p tui --lib` | 155 passed |
+| `mbx clippy -p agent -p rpc -p tui -p roster -p theuth -p desktop -p talk -p acp --all-targets -- -D warnings` | clean after `817e8af3`; same `block` note |
+| `cargo fmt --check` | no diff in the touched files |
+| `BUILD_SLOTS=1 mbx test -p rpc --features ts --lib export_bindings` + copy | 689 files, no diff against the committed bindings |
+| desktop `bun run check` + `vitest run src/store/reduce.test.ts src/store/sessions.test.ts` | tsc clean; 67 passed |
+| `just restart-clarity` (`BACKUP_DB` = fresh `.backup`, 29 807 rows / 1 396 turns) | 25/25; P6 old 1.384 s → new 0.098 s |
+| `BUILD_SLOTS=1 mbx check --workspace --tests` | clean (same `block` note) |
