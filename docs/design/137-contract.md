@@ -4,7 +4,7 @@ Status: contract v1 · 2026-10-08 · what `crates/agent/src/endless/**` and the 
 
 ## 0. Ownership recap
 
-W1 writes: `crates/agent/src/endless/{mod,units,tree,fold,guards,compactor,pump,recall}.rs`, `crates/agent/src/store/endless.rs`, `crates/agent/migrations/0038_endless.sql`, `crates/agent/tests/fixtures/endless/`, and these small edits outside: `lib.rs` (`pub mod endless;`, `AgentConfig.endless`, `SessionSummary.memory`, re-exports), `store.rs` (`pub mod endless;`, `memory` column in `SessionRow`/`session_cols!`/`summary`, one `delete_endless_in` call in `delete_session`), `store/capture.rs` (`ATTACHED` += the three tables), `lifecycle.rs` (`CreateSessionOptions.memory`), `crates/runtime/src/side_call.rs` (`CallKind::Endless`), `crates/rpc/src/api.rs` (four trait methods + `Err("not yet")` stub bodies — jsonrpsee's `#[rpc]` trait is implemented in the same crate, so bodies are required), `crates/rpc/src/export.rs` (new types in the `export!` list).
+W1 writes: `crates/agent/src/endless/{mod,units,tree,fold,guards,compactor,pump,recall}.rs`, `crates/agent/src/store/endless.rs`, `crates/agent/migrations/0037_endless.sql`, `crates/agent/tests/fixtures/endless/`, and these small edits outside: `lib.rs` (`pub mod endless;`, `AgentConfig.endless`, `SessionSummary.memory`, re-exports), `store.rs` (`pub mod endless;`, `memory` column in `SessionRow`/`session_cols!`/`summary`, one `delete_endless_in` call in `delete_session`), `store/capture.rs` (`ATTACHED` += the three tables), `lifecycle.rs` (`CreateSessionOptions.memory`), `crates/runtime/src/side_call.rs` (`CallKind::Endless`), `crates/rpc/src/api.rs` (four trait methods + `Err("not yet")` stub bodies — jsonrpsee's `#[rpc]` trait is implemented in the same crate, so bodies are required), `crates/rpc/src/export.rs` (new types in the `export!` list).
 
 W2 replaces the four stub bodies in `rpc/api.rs`, registers the event (§6), constructs `Endless` in the supervisor, and calls the API below from `frame.rs` / `loop_.rs` / `context.rs` / tools. W2 never edits `endless/**`; interface changes go through a message to W1 (or, after W1 is done, a small PR against `endless/mod.rs` only).
 
@@ -186,9 +186,9 @@ pub async fn endless_units_like(&self, id, needle: &str, limit: u32) -> anyhow::
 pub async fn endless_messages_from(&self, id, seq: i64) -> anyhow::Result<Vec<EndlessMessage>>;     // {seq, message: ChatMessage, excluded_whole: bool, at: Option<DateTime<Utc>>}, cut_at respected
 ```
 
-### 5.1 Migration `crates/agent/migrations/0038_endless.sql`
+### 5.1 Migration `crates/agent/migrations/0037_endless.sql`
 
-Numbered 0038 on purpose: 0036 is the highest on the base, 0037 is left as the spare slot for design 136 (DREAMING, landing first); the closer renumbers if 136 takes more than one.
+Numbered 0037: next after `0036_double.sql`; design 136 adds no migration (orchestrator, 03:13).
 ```sql
 ALTER TABLE sessions ADD COLUMN memory TEXT NOT NULL DEFAULT 'epochs';
 ALTER TABLE sessions ADD COLUMN endless_base INTEGER NOT NULL DEFAULT 0;      -- R1-D4
