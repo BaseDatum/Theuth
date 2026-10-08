@@ -105,6 +105,8 @@ pub struct Studies {
     pub rt: Runtime,
     /// The ledger.
     pub store: Store,
+    /// W1/W2/W6 seams (the real modules in production; test doubles in tests).
+    pub backend: Arc<dyn actor::Backend>,
 }
 
 impl Studies {
@@ -129,9 +131,6 @@ macro_rules! delegate {
 delegate! {
     Create => StudyInfo, create;
     StartDraft => StudyInfo, start_draft;
-    Begin => Brief, begin;
-    Run => RunReport, run;
-    Log => LogReport, log;
     Notes => NotesReport, notes;
     Control => StudyInfo, control;
     SteerMsg => SteerId, steer;
@@ -140,6 +139,35 @@ delegate! {
     Detail => StudyDetail, detail;
     Experiments => Vec<ExperimentRow>, experiments;
     Experiment => ExperimentDetail, experiment;
+}
+
+/// Begin / Run / Log measure for minutes: they run off the mailbox on an
+/// [`actor::Env`] and reply through `DelegatedReply`, so Status, Control and
+/// a `StopNow` cancel keep flowing (the asker still sees `Result<T, String>`).
+macro_rules! delegate_off_mailbox {
+    ($($msg:ty => $reply:ty, $f:ident;)*) => {$(
+        impl Message<$msg> for Studies {
+            type Reply = kameo::reply::DelegatedReply<std::result::Result<$reply, String>>;
+
+            async fn handle(&mut self, m: $msg, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+                let (reply, tx) = ctx.reply_sender();
+                let env = self.env();
+                tokio::spawn(async move {
+                    let r = actor::$f(&env, m).await.map_err(|e| e.to_string());
+                    if let Some(tx) = tx {
+                        tx.send(r);
+                    }
+                });
+                reply
+            }
+        }
+    )*};
+}
+
+delegate_off_mailbox! {
+    Begin => Brief, begin_env;
+    Run => RunReport, run_env;
+    Log => LogReport, log_env;
 }
 
 impl Message<Settings> for Studies {
@@ -181,20 +209,37 @@ pub async fn start(
 ) -> anyhow::Result<ActorRef<Studies>> {
     let root = cfg.root(&rt.data_dir);
     let store = Store::open(&root).await?;
-    let actor = Studies::spawn_with_mailbox(
-        Studies {
-            data_dir: rt.data_dir.clone(),
-            root,
-            cfg,
-            agent,
-            rt: rt.clone(),
-            store,
-        },
-        runtime::subscriber_mailbox(),
-    );
+    let studies = Studies {
+        data_dir: rt.data_dir.clone(),
+        root,
+        cfg,
+        agent,
+        rt: rt.clone(),
+        store,
+        backend: Arc::new(actor::Real),
+    };
+    let env = studies.env();
+    let actor = Studies::spawn_with_mailbox(studies, runtime::subscriber_mailbox());
     actor.register(AUTORESEARCH_ACTOR)?;
-    // W3: subscribe to ScheduleEvent::Fired and AgentEvent::TurnFinished here
-    // (`binding::on_fired` / `binding::on_turn_finished`).
+    // §8.2 / §12.3 subscriptions: binding on `Fired`, dangling experiments on `TurnFinished`.
+    rt.subscribe::<Studies, schedule::ScheduleEvent>(&actor).await;
+    rt.subscribe::<Studies, agent::AgentEvent>(&actor).await;
+    // §8.5 restart recovery, then the attention source (§13.1).
+    if let Err(e) = actor::recover(&env).await {
+        tracing::warn!("autoresearch recovery: {e}");
+    }
+    let rt2 = rt.clone();
+    let store = env.store.clone();
+    tokio::spawn(async move {
+        if let Some(inbox) = rt2
+            .lookup_when::<roster::attention::Attention>(roster::attention::ATTENTION_ACTOR)
+            .await
+        {
+            let _ = inbox
+                .tell(roster::attention::RegisterSource(Arc::new(actor::AttentionSource(store))))
+                .await;
+        }
+    });
     Ok(actor)
 }
 
@@ -251,16 +296,21 @@ impl runtime::Plugin for AutoresearchPlugin {
 mod tests {
     use super::*;
 
-    /// Every actor message compiles against its stub and answers `NotBuilt` with the owner's name.
+    /// Every actor message compiles against its handler; an empty ledger lists no studies.
     #[tokio::test]
-    async fn stubs_answer_not_built() {
+    async fn actor_starts_and_settings_persist() {
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         let actor = start(&rt, AutoresearchConfig::default(), Default::default())
             .await
             .unwrap();
-        let e = actor.ask(Status::default()).await.unwrap_err().to_string();
-        assert!(e.contains("not built yet (owner W3)"), "{e}");
+        assert!(actor.ask(Status::default()).await.unwrap().is_empty());
+        let e = actor
+            .ask(Begin { session: runtime::SessionId::new(), slot: None })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("not an autoresearch session"), "{e}");
         let cfg = actor.ask(Settings).await.unwrap();
         assert_eq!(cfg, AutoresearchConfig::default());
         let mut cfg2 = cfg.clone();
