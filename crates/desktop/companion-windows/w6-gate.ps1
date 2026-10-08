@@ -15,6 +15,7 @@
                          path as tray › Quit theuth Companion → quit(0)); never touches theuth-desktop or the engine
     start-installed      start the installed companion again (C:\Users\user\AppData\Local\theuth\companion\Theuth.Companion.exe)
     launch [flags…]      start THIS worktree's Debug companion with flags (refuses while another companion runs); prints pid + log
+    quit-mine            graceful quit of THIS worktree's companion (WM_CLOSE to its host window)
     kill-mine            stop only companions started from this worktree
     tray-reg             HKCU\Control Panel\NotifyIconSettings entries whose ExecutablePath ends in Theuth.Companion.exe
     promote [exe-substr] IsPromoted=1 for this worktree's exe entry (W2's promote, path-scoped)
@@ -143,6 +144,15 @@ switch ($Action) {
         Say "launch: running=$(-not $p.HasExited)"
         $cl = LogFile
         if (Test-Path $cl) { Get-Content $cl -Tail 30 | ForEach-Object { Say ('  ' + (Clip $_ 220)) } }
+    }
+    'quit-mine' {
+        $w = HostWindowOf $mine
+        if (-not $w) { Say "quit-mine: no TheuthCompanionRail window owned by $mine"; Procs; break }
+        Say "quit-mine: WM_CLOSE -> hwnd=0x$($w.Hwnd.ToInt64().ToString('X')) pid=$($w.Pid)"
+        [void][W6Native]::PostMessageW($w.Hwnd, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
+        $t0 = Get-Date
+        while (((Get-Date) - $t0).TotalSeconds -lt 8 -and (Get-Process -Id $w.Pid -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 200 }
+        Say "quit-mine: pid $($w.Pid) gone=$(-not (Get-Process -Id $w.Pid -ErrorAction SilentlyContinue)) after $([int]((Get-Date) - $t0).TotalMilliseconds) ms"
     }
     'kill-mine' {
         $ps = @(Get-Process -Name 'Theuth.Companion' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($here, [StringComparison]::OrdinalIgnoreCase) })
