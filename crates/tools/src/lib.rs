@@ -85,7 +85,9 @@ pub use registry::{
     CloseTreeAll, ExpectParticipants, OpenTree, ParticipantsReady, RegisterLifecycle,
 };
 pub use registry::{InstallResources, RemoveResources};
-pub use reminder::{CancelReminder, RearmReminder, ReminderEvent, ReminderView, SetReminder};
+pub use reminder::{
+    CancelReminder, CancelReminders, RearmReminder, ReminderEvent, ReminderView, SetReminder,
+};
 pub use resources::{CloseAck, CloseTree, TreeOpened};
 pub use resources::{Retention, SessionResources};
 

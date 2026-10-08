@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use agent::AgentEvent;
 use agent::store::Store;
+use kameo::actor::ActorRef;
 use futures::{SinkExt as _, StreamExt as _};
 use parking_lot::Mutex;
 use replica::{ByteStream, PeerId};
@@ -36,6 +37,8 @@ pub const BATCH_BYTES: usize = 32 * 1024 * 1024;
 const RELAY_CAPACITY: usize = 1024;
 /// How long a gap before out-of-order rows may stay open before the stream resyncs.
 const GAP_WAIT: Duration = Duration::from_secs(10);
+/// Outbox re-check period while harness rows remain (139 R2 D3).
+const HARNESS_RETRY: Duration = Duration::from_secs(60);
 
 /// One `theuth/sessions/1` stream, framed (see [`crate::events::framed`]).
 pub type Stream = Framed<Box<dyn ByteStream>, LengthDelimitedCodec>;
@@ -62,14 +65,17 @@ pub struct Node {
     origins: Mutex<HashMap<PeerId, Arc<tokio::sync::Mutex<()>>>>,
     /// Per origin: rows that arrived ahead of the cursor, and since when.
     pending: Mutex<HashMap<PeerId, Ahead>>,
+    /// `sessions.harness_outbox_ttl_secs`: an outbox row older than this is dropped (139 R2 D3).
+    harness_ttl: Duration,
 }
 
 /// Rows from one origin that arrived ahead of the cursor, keyed by seq, and when the first did.
 type Ahead = (Instant, BTreeMap<u64, LogRow>);
 
 impl Node {
-    /// A node over `store`; `rt` publishes `AgentEvent`s when present.
-    pub fn new(store: Store, rt: Option<Runtime>) -> Arc<Self> {
+    /// A node over `store`; `rt` publishes `AgentEvent`s when present;
+    /// `harness_ttl` bounds how long a harness row waits for its owner.
+    pub fn new(store: Store, rt: Option<Runtime>, harness_ttl: Duration) -> Arc<Self> {
         let me = PeerId(store.engine().to_owned());
         Arc::new(Self {
             store,
@@ -81,6 +87,7 @@ impl Node {
             stale_logged: Mutex::default(),
             origins: Mutex::default(),
             pending: Mutex::default(),
+            harness_ttl,
         })
     }
 
@@ -228,6 +235,10 @@ async fn run(
     let mut relay = node.relay.subscribe();
     let mut log = node.store.log_watch();
     log.mark_unchanged();
+    let mut harness = node.store.harness_watch();
+    harness.mark_unchanged();
+    let mut retry = tokio::time::interval(HARNESS_RETRY);
+    retry.tick().await;
 
     let ours = node.held_here().await?;
     framed
@@ -271,6 +282,8 @@ async fn run(
             _ => send_snapshot(node, &remote, origin, &mut framed).await?,
         }
     }
+    // 139 R2 D3: whatever waited for this peer while the link was down.
+    flush_harness(node, &remote, &mut framed).await?;
 
     let mut inflight: HashMap<PeerId, InFlight> = HashMap::new();
     loop {
@@ -296,6 +309,23 @@ async fn run(
                             node.store.set_cursor(&node.me.0, &remote.0, i64::try_from(seq)?).await?;
                         }
                     }
+                    Msg::Harness { session, kind, id, text, wrapped, .. } => {
+                        let error = match session.parse::<SessionId>() {
+                            Ok(session) => {
+                                let m = agent::supervisor::HarnessDeliver { session, kind, text, wrapped };
+                                receive_harness(node, &remote, &id, m).await.err()
+                            }
+                            Err(_) => Some("malformed session id".to_owned()),
+                        };
+                        framed.send(Msg::HarnessAck { id, error }.encode()?).await?;
+                    }
+                    Msg::HarnessAck { id, error } => match error {
+                        None => node.store.harness_delete(&id).await?,
+                        Some(e) => {
+                            tracing::info!("sessions: harness {id} refused by {remote}: {e}");
+                            node.store.harness_refused(&id, &e).await?;
+                        }
+                    },
                     other => tracing::debug!("sessions: frame {} from {remote} has no handler on this stream", other.tag()),
                 }
             }
@@ -304,6 +334,11 @@ async fn run(
                 ship_own(node, &remote, &mut framed).await?;
             }
             () = node.kick.notified() => ship_own(node, &remote, &mut framed).await?,
+            changed = harness.changed() => {
+                changed?;
+                flush_harness(node, &remote, &mut framed).await?;
+            }
+            _ = retry.tick() => flush_harness(node, &remote, &mut framed).await?,
             relayed = relay.recv() => {
                 match relayed {
                     Ok((origin, row)) => {
@@ -326,6 +361,123 @@ async fn run(
             }
         }
     }
+}
+
+/// 139 R2 D2/D3: send every `harness_outbox` row whose session `remote`
+/// owns now (the owner is re-resolved per attempt), deliver here the rows
+/// of sessions that came back, drop rows past the TTL with a local note.
+/// Called after the `Hello` exchange, on every enqueue and every
+/// [`HARNESS_RETRY`]. The ack deletes the row ([`Msg::HarnessAck`]).
+async fn flush_harness(node: &Arc<Node>, remote: &PeerId, framed: &mut Stream) -> anyhow::Result<()> {
+    let rows = node.store.harness_outbox().await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    let ttl = i64::try_from(node.harness_ttl.as_millis()).unwrap_or(i64::MAX);
+    for row in rows {
+        let session: SessionId = match row.session.parse() {
+            Ok(s) => s,
+            Err(_) => {
+                node.store.harness_delete(&row.id).await?;
+                continue;
+            }
+        };
+        if now.saturating_sub(row.at) > ttl {
+            tracing::warn!(%session, id = %row.id, attempts = row.attempts, "139: {} for a session owned elsewhere dropped after {:?}: {}", row.kind, node.harness_ttl, row.last_error.as_deref().unwrap_or("owner never reachable"));
+            // ponytail: the owner's next message replaces the note (owner wins), as 68's orphan note.
+            let _ = node
+                .store
+                .append_local_note(
+                    session,
+                    &format!(
+                        "{} produced on {} was not forwarded to the session's owner within {} s and was dropped",
+                        row.kind,
+                        node.me.0,
+                        node.harness_ttl.as_secs()
+                    ),
+                )
+                .await;
+            node.store.harness_delete(&row.id).await?;
+            continue;
+        }
+        match node.store.owner(session).await? {
+            Some((owner, _)) if owner == remote.0 => {
+                node.store.harness_sent(&row.id).await?;
+                framed
+                    .send(
+                        Msg::Harness {
+                            session: row.session,
+                            kind: row.kind,
+                            origin: PeerId(row.origin),
+                            id: row.id,
+                            text: row.text,
+                            wrapped: row.wrapped,
+                            scope: row.scope,
+                            at: row.at,
+                        }
+                        .encode()?,
+                    )
+                    .await?;
+            }
+            // The session came back here: the supervisor delivers it.
+            Some((owner, _)) if owner.is_empty() || owner == node.me.0 => {
+                if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    && agents
+                        .tell(agent::supervisor::HarnessDeliver {
+                            session,
+                            kind: row.kind,
+                            text: row.text,
+                            wrapped: row.wrapped,
+                        })
+                        .await
+                        .is_ok()
+                {
+                    node.store.harness_delete(&row.id).await?;
+                }
+            }
+            _ => {}
+        }
+    }
+    node.store.harness_prune_seen(now.saturating_sub(ttl)).await?;
+    Ok(())
+}
+
+/// 139 R2 D2: one received `Msg::Harness`. `Err` is the ack's `error`: the
+/// sender keeps the row. A known session is handed to the supervisor as
+/// [`agent::supervisor::HarnessDeliver`] once per `id` (`harness_seen`);
+/// `inject` there forwards again if the session has moved on.
+async fn receive_harness(
+    node: &Arc<Node>,
+    remote: &PeerId,
+    id: &str,
+    m: agent::supervisor::HarnessDeliver,
+) -> Result<(), String> {
+    let session = m.session;
+    match node.store.session(session).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err("unknown session".to_owned()),
+        Err(e) => return Err(e.to_string()),
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    if !node
+        .store
+        .harness_mark_seen(id, now)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        tracing::debug!(%session, id, "sessions: harness envelope seen before; acked again");
+        return Ok(());
+    }
+    tracing::info!(%session, id, "sessions: {} from {remote} handed to the supervisor", m.kind);
+    let handed = match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+        Ok(Some(agents)) => agents.tell(m).await.map_err(|e| e.to_string()),
+        _ => Err("no supervisor here".to_owned()),
+    };
+    if handed.is_err() {
+        let _ = node.store.harness_unsee(id).await;
+    }
+    handed
 }
 
 /// Our own rows after what `remote` holds; a snapshot if the log no longer
@@ -670,16 +822,21 @@ mod tests {
     /// A store opened as engine `name`, its shipper wired to a loopback
     /// transport the way `SessionSync::start_transport` wires the real one.
     async fn node(name: &str, switch: &Arc<Switch>) -> Node {
-        node_in(name, tempfile::tempdir().unwrap(), switch).await
+        node_in(name, tempfile::tempdir().unwrap(), switch, &SessionsConfig::default()).await
     }
 
     /// A node over an existing data dir (its `sessions.sqlite` may hold rows already).
-    async fn node_in(name: &str, dir: tempfile::TempDir, switch: &Arc<Switch>) -> Node {
+    async fn node_in(
+        name: &str,
+        dir: tempfile::TempDir,
+        switch: &Arc<Switch>,
+        config: &SessionsConfig,
+    ) -> Node {
         let me = PeerId(name.to_owned());
         let store = Store::open(&dir.path().join("sessions.sqlite"), Some(me.clone().into()))
             .await
             .unwrap();
-        let shipper = Shipper::new(store.clone(), None, &SessionsConfig::default());
+        let shipper = Shipper::new(store.clone(), None, config);
         let (tx, rx) = mpsc::unbounded_channel();
         switch.inboxes.lock().insert(me.clone(), tx);
         let transport = Arc::new(Loop {
@@ -858,7 +1015,7 @@ mod tests {
             store.close().await;
         }
         let switch = Arc::new(Switch::default());
-        let a = node_in("A", dir, &switch).await;
+        let a = node_in("A", dir, &switch, &SessionsConfig::default()).await;
         assert_eq!(a.store.log_seq(), 0);
         let b = node("B", &switch).await;
         link(&switch, &a, &b, true);
@@ -1116,5 +1273,160 @@ mod tests {
         let s = c.store.session(id).await.unwrap().unwrap();
         assert_eq!((s.owner.as_str(), s.here), ("A", false));
         assert!(!c.shipper.node().me.0.is_empty());
+    }
+
+    // ---- 139 R2: the harness outbox over the stream (no supervisor on either side) ----
+
+    fn harness_row(session: SessionId, id: &str) -> agent::store::harness::HarnessRow {
+        agent::store::harness::HarnessRow {
+            id: id.into(),
+            session: session.to_string(),
+            kind: "job j1".into(),
+            origin: "A".into(),
+            text: "done".into(),
+            wrapped: "<job_result id=\"j1\">done</job_result>".into(),
+            scope: None,
+            at: chrono::Utc::now().timestamp_millis(),
+            attempts: 0,
+            last_error: None,
+        }
+    }
+
+    /// A session created on A, replicated to every node in `others`, then
+    /// taken by each of `takers` in turn (epoch 2, 3, …) with every node
+    /// seeing the final owner.
+    async fn taken(a: &Node, others: &[&Node], takers: &[&Node]) -> SessionId {
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        for o in others {
+            until("replicated", || same_session(&a.store, &o.store, id)).await;
+        }
+        for (i, t) in takers.iter().enumerate() {
+            let epoch = u32::try_from(i).unwrap() + 2;
+            t.store.set_owner(id, &t.me().0, epoch).await.unwrap();
+            t.store.set_fence(id, epoch, &t.me().0).await.unwrap();
+            for o in others.iter().chain(std::iter::once(&a)) {
+                until("owner row landed", || async {
+                    o.store.owner(id).await.unwrap() == Some((t.me().0.clone(), epoch))
+                })
+                .await;
+            }
+        }
+        id
+    }
+
+    async fn outbox(n: &Node) -> Vec<(String, i64, Option<String>)> {
+        n.store
+            .harness_outbox()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.id, r.attempts, r.last_error))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn harness_outbox_row_waits_for_the_link_and_is_sent_on_connect() {
+        let switch = Arc::new(Switch::default());
+        let (a, b) = (node("A", &switch).await, node("B", &switch).await);
+        link(&switch, &a, &b, true);
+        let id = taken(&a, &[&b], &[&b]).await;
+        link(&switch, &a, &b, false);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        a.store.harness_enqueue(&harness_row(id, "u1")).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(outbox(&a).await, vec![("u1".into(), 0, None)], "no link: nothing sent");
+
+        // The link returns: the row goes with the `Hello`; B has no supervisor
+        // (a pairing run), so its ack refuses and A keeps the row with the reason.
+        link(&switch, &a, &b, true);
+        until("B answered", || async {
+            outbox(&a).await == vec![("u1".into(), 1, Some("no supervisor here".into()))]
+        })
+        .await;
+        assert!(
+            b.store.harness_mark_seen("u1", 0).await.unwrap(),
+            "a refused envelope is not remembered as seen"
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_duplicate_id_is_acked_without_a_second_handoff() {
+        let switch = Arc::new(Switch::default());
+        let (a, b) = (node("A", &switch).await, node("B", &switch).await);
+        link(&switch, &a, &b, true);
+        let id = taken(&a, &[&b], &[&b]).await;
+        // B handed this id to its supervisor before (a reconnect overlap resent it).
+        assert!(b.store.harness_mark_seen("u2", 0).await.unwrap());
+        a.store.harness_enqueue(&harness_row(id, "u2")).await.unwrap();
+        until("acked as seen: the row is gone", || async {
+            outbox(&a).await.is_empty()
+        })
+        .await;
+        assert!(
+            !b.store.harness_mark_seen("u2", 0).await.unwrap(),
+            "still seen, never unseen"
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_row_follows_the_owner_when_the_session_moved_again() {
+        let switch = Arc::new(Switch::default());
+        let (a, b, c) = (
+            node("A", &switch).await,
+            node("B", &switch).await,
+            node("C", &switch).await,
+        );
+        link(&switch, &a, &b, true);
+        link(&switch, &a, &c, true);
+        link(&switch, &b, &c, true);
+        // B took it, then C did: the row's owner is re-resolved per attempt.
+        let id = taken(&a, &[&b, &c], &[&b, &c]).await;
+        link(&switch, &a, &c, false);
+        link(&switch, &b, &c, false);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        a.store.harness_enqueue(&harness_row(id, "u3")).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(outbox(&a).await, vec![("u3".into(), 0, None)], "B is linked but is not the owner");
+
+        assert!(c.store.harness_mark_seen("u3", 0).await.unwrap());
+        link(&switch, &a, &c, true);
+        until("sent to C and acked", || async { outbox(&a).await.is_empty() }).await;
+        assert!(b.store.harness_mark_seen("u3", 0).await.unwrap(), "B never saw it");
+    }
+
+    #[tokio::test]
+    async fn harness_rows_past_the_ttl_are_dropped_with_a_local_note() {
+        let switch = Arc::new(Switch::default());
+        let cfg = SessionsConfig {
+            harness_outbox_ttl_secs: 0,
+            ..SessionsConfig::default()
+        };
+        let a = node_in("A", tempfile::tempdir().unwrap(), &switch, &cfg).await;
+        let b = node("B", &switch).await;
+        link(&switch, &a, &b, true);
+        let id = taken(&a, &[&b], &[&b]).await;
+        let before = texts(&a.store, id).await.len();
+        let mut row = harness_row(id, "u4");
+        row.at -= 1;
+        a.store.harness_enqueue(&row).await.unwrap();
+        until("dropped", || async { outbox(&a).await.is_empty() }).await;
+        let t = texts(&a.store, id).await;
+        assert_eq!(t.len(), before + 1);
+        assert!(
+            t.last().unwrap().2.contains("job j1 produced on A was not forwarded"),
+            "{t:?}"
+        );
+        assert_eq!(
+            texts(&b.store, id).await.len(),
+            before,
+            "the note is local to A"
+        );
+        assert!(b.store.harness_mark_seen("u4", 0).await.unwrap(), "never sent");
     }
 }

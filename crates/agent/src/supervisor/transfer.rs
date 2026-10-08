@@ -136,13 +136,18 @@ pub(crate) async fn drain_session(
         }
     }
     // (4) The session's jobs: rows `lost` and screens first, then the signal
-    // (W3's body). Before the actor stops so the rows precede `flush`.
-    if let Ok(Some(jobs)) = ActorRef::<Jobs>::lookup(JOBS_ACTOR)
-        && let Err(e) = jobs
+    // (W3's body). Before the actor stops so the rows precede `flush`. Its
+    // reminder timers stop too (139 R2 D4): the taker arms the rows.
+    if let Ok(Some(jobs)) = ActorRef::<Jobs>::lookup(JOBS_ACTOR) {
+        if let Err(e) = jobs
             .ask(tools::jobs::KillSession { session: m.session })
             .await
-    {
-        tracing::warn!(session = %m.session, "139: drain: KillSession: {e}");
+        {
+            tracing::warn!(session = %m.session, "139: drain: KillSession: {e}");
+        }
+        let _ = jobs
+            .tell(tools::CancelReminders { session: m.session })
+            .await;
     }
     // (5) The cancel is processed before the stop (never dropped, D19); a
     // cancel while `draining` is a suspension in the loop (§6.1).
@@ -250,10 +255,14 @@ impl Message<ClearDraining> for Agents {
 }
 
 /// `sessionsync::owner::demote` → the taker's row landed: inputs for
-/// `session` are no longer ours to refuse (they forward to the new owner).
+/// `session` are no longer ours to refuse (they forward to the new owner),
+/// and its reminder timers stop here (139 R2 D4; a takeover had no drain).
 pub async fn demoted(session: SessionId) {
     if let Ok(Some(agents)) = ActorRef::<Agents>::lookup(crate::AGENT_ACTOR) {
         let _ = agents.tell(ClearDraining(session)).await;
+    }
+    if let Ok(Some(jobs)) = ActorRef::<Jobs>::lookup(JOBS_ACTOR) {
+        let _ = jobs.tell(tools::CancelReminders { session }).await;
     }
 }
 
