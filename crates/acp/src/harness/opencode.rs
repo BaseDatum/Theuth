@@ -184,10 +184,10 @@ impl Children {
 }
 
 /// opencode 1.x: the `task` tool-call lifecycle on the parent (141 §6.3,
-/// F16). The child's external id is `task:<toolCallId>` for the row's whole
-/// life — the real opencode session id (known only from the completed
-/// frame's `rawOutput.metadata.sessionId`) rides in `detail.sessionId`; no
-/// traffic or cancel ever addresses it (D6, D12).
+/// F16). The child's external id is `task:<toolCallId>` until the completed
+/// frame's `rawOutput.metadata.sessionId` supplies the real one: that
+/// announce carries `child = <real id>` with the same `tool_call`, and the
+/// ingest side re-keys the provisional row (141 §6.3; `acp_child/observed.rs`).
 pub mod task_v1 {
     use super::*;
 
@@ -224,8 +224,9 @@ pub mod task_v1 {
     /// `subagent_type` as `detail.agent`; the terminal frame → `completed`
     /// or `failed` (tool `status: failed`, or `<task … state="error">` with
     /// the `<task_error>` text), `model = "<providerID>/<modelID>"`,
-    /// `detail.{sessionId, parentSessionId, result}` where `result` is the
-    /// `<task_result>` text (the child's only transcript content).
+    /// `child` rewritten to `metadata.sessionId`, `detail.{parentSessionId,
+    /// result}` where `result` is the `<task_result>` text (the child's only
+    /// transcript content).
     #[must_use]
     pub fn announce(update: &SessionUpdate) -> Option<ChildAnnounce> {
         if !is_task_call(update) {
@@ -269,7 +270,7 @@ pub mod task_v1 {
         }
         let meta = output.and_then(|o| o.get("metadata"));
         if let Some(sid) = str_of(meta, "sessionId") {
-            a.detail.insert("sessionId".into(), sid.into());
+            a.child = sid;
         }
         if let Some(pid) = str_of(meta, "parentSessionId") {
             a.detail.insert("parentSessionId".into(), pid.into());
@@ -567,7 +568,11 @@ mod tests {
         let a = task_v1::announce(&done).unwrap();
         assert_eq!(a.state, Some(ChildState::Completed));
         assert_eq!(a.model.as_deref(), Some("opencode/big-pickle"));
-        assert_eq!(a.detail["sessionId"], "ses_ee4d89f0cffe7zXAvHsSIT0UsD");
+        assert_eq!(a.child, "ses_ee4d89f0cffe7zXAvHsSIT0UsD");
+        assert_eq!(
+            a.tool_call.as_deref(),
+            Some("call_a062fdd9472f454ea6e45c9b")
+        );
         assert_eq!(
             a.detail["parentSessionId"],
             "ses_ee4d8bb5dffeS1akqW7B497imb"

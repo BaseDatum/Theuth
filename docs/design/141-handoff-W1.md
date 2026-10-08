@@ -74,14 +74,11 @@ Status `created|running|completed|failed|interrupted` ↔ `Pending|Running|Compl
 |---|---|
 | `task.tool_call.json` | `{source: OpencodeTask, child: "task:call_a062fdd9472f454ea6e45c9b", title: "task", state: Pending, tool_call, cost_rule: Unreported}` |
 | `task.tool_call_update.in_progress.json` | `{…, title: "Read first line of a.txt", description: <prompt ≤200 chars>, detail.agent: "explore", state: Running}` |
-| `task.tool_call_update.completed.json` | `{…, state: Completed, model: "opencode/big-pickle", detail.sessionId: "ses_ee4d89f0cffe7zXAvHsSIT0UsD", detail.parentSessionId, detail.result: "alpha line one"}` |
+| `task.tool_call_update.completed.json` | `{child: "ses_ee4d89f0cffe7zXAvHsSIT0UsD", tool_call: "call_a062fdd9472f454ea6e45c9b", state: Completed, model: "opencode/big-pickle", detail.parentSessionId, detail.result: "alpha line one"}` |
 
-**Deviation from §6.3/§13.2**: the external id is `task:<toolCallId>` for the
-row's whole life; the real opencode id rides in `detail.sessionId`. The
-contract (`ChildAnnounce`, `ObservedUpsert`) has no rename operation, and
-nothing ever addresses a 1.x child by its session id (no traffic, no cancel —
-F16, D12). If the Closer wants `acp_session` rewritten, it is a store-side
-rename keyed on `detail.sessionId`, not a transport change.
+The completed announce carries `child = <real session id>` with the same
+`tool_call`; W2's `observed_upsert` re-keys the provisional `task:<toolCallId>`
+row to it (`acp_child/observed.rs`), matching §6.3.
 
 **RFD** (`crates/acp/fixtures/rfd/`, **all synthetic**, README inside; `sess_parent` = harness session, `sess_child_1` = child):
 
@@ -179,7 +176,6 @@ finished), stable toolchain, `CARGO_BUILD_JOBS=4`, after merging
 
 - Optional `lib.rs` re-export (§1.1).
 - `supervisor.rs:1027` → `entry.mcp_enabled()` (cosmetic, W2's file).
-- opencode 1.x `acp_session` rewrite (§1.3 deviation) if wanted.
 - `request_permission.diff.json` child id ≠ the `child_update.*` child; a W2
   permission test must announce `ses_f00417af0ffewZH4KxaHpEZ653` first or
   edit the fixture's ids (it is a verbatim 2026-10-03 recording; I left it).
