@@ -37,7 +37,7 @@ test('skill index not loaded: a plain word still runs, a path-like word is text'
   expect(isCommand('/', null)).toBe(false)
 })
 
-test('bare /skills and /mcp open the Library pages, carrying the chat they came from', async () => {
+test('bare /skills and /mcp open their pages, carrying the chat they came from', async () => {
   const navigate = vi.fn().mockResolvedValue(undefined)
   const ctx = { api: {} as Api, session: 'abc', parent: null, navigate, reload: async () => {} } as unknown as Ctx
   await run('/skills', ctx)

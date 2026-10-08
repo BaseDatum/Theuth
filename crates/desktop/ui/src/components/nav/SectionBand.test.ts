@@ -19,21 +19,21 @@ const render = (group: 'agents' | 'library') => renderToStaticMarkup(createEleme
 const active = (html: string) => [...html.matchAll(/<button[^>]*data-state="active"[^>]*aria-label="([^"]+)"/g)].map((m) => m[1])
 const tabs = (html: string) => html.match(/role="tab"/g)?.length ?? 0
 
-test('agents group: three full-width tabs, Tasks active under /tasks/abc, labels hidden below md', () => {
+test('agents group: five full-width tabs, Tasks active under /tasks/abc, labels hidden below md', () => {
   env.pathname = '/tasks/abc'
   const html = render('agents')
-  expect(tabs(html)).toBe(3)
+  expect(tabs(html)).toBe(5)
   expect(active(html)).toEqual(['Tasks'])
-  expect(html.match(/<span class="hidden md:inline">/g)?.length).toBe(3)
+  expect(html.match(/<span class="hidden md:inline">/g)?.length).toBe(5)
   expect(html).toContain('h-[52px]')
   expect(html).not.toContain('@container')
   expect(html).not.toContain('Show sidebar')
 })
 
-test('library group: seven tabs, Meetings active under /meetings/briefs', () => {
+test('library group: five tabs, Meetings active under /meetings/briefs', () => {
   env.pathname = '/meetings/briefs'
   const html = render('library')
-  expect(tabs(html)).toBe(7)
+  expect(tabs(html)).toBe(5)
   expect(active(html)).toEqual(['Meetings'])
   expect(html).toContain('title="Artifacts"')
 })
