@@ -646,6 +646,29 @@ pub struct VerifyArgs {
     /// What was checked, or what changed.
     #[serde(default)]
     pub note: Option<String>,
+    /// What the check read: a path (absolute or relative to the data dir), an
+    /// http(s) URL, or a `session:<uuid>` / `meeting:<id>` id. At least one
+    /// must name a real source; all are added to the concept's `evidence`.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+/// 136 P gap 2: does `e` name something a read tool could have read?
+fn is_evidence(e: &str, data_dir: &std::path::Path) -> bool {
+    let e = e.trim();
+    if e.is_empty() {
+        return false;
+    }
+    if e.starts_with("http://") || e.starts_with("https://") {
+        return true;
+    }
+    if let Some(s) = e.strip_prefix("session:") {
+        return s.parse::<runtime::SessionId>().is_ok();
+    }
+    if let Some(m) = e.strip_prefix("meeting:") {
+        return !m.is_empty();
+    }
+    data_dir.join(e).exists()
 }
 
 /// `knowledge_verify` (136 §2.1): record a read-tool check's verdict.
@@ -659,13 +682,23 @@ impl Tool for VerifyTool {
 
     fn description(&self) -> String {
         "Dreaming only: record the outcome of checking a knowledge concept against the world with read tools: \
-         `ok` sets `verified: <today>`, `stale` sets `status: stale` and keeps the note. Never a model's opinion."
+         `ok` sets `verified: <today>`, `stale` sets `status: stale` and keeps the note. Never a model's opinion: \
+         `evidence` must name what was read (an existing path, an http(s) URL, or a session:/meeting: id)."
             .into()
     }
 
     async fn call(&self, a: VerifyArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         consolidating(&self.0, Self::NAME, &cx).await?;
-        let r = self.0.verify(&a.id, a.outcome, a.note.as_deref()).await?;
+        anyhow::ensure!(
+            a.evidence
+                .iter()
+                .any(|e| is_evidence(e, &cx.resources.root)),
+            "verify needs evidence from a read: pass evidence with a path that exists, an http(s) URL, or a session:/meeting: id"
+        );
+        let r = self
+            .0
+            .verify(&a.id, a.outcome, a.note.as_deref(), &a.evidence)
+            .await?;
         Ok(structured(format!("verified {}: {:?}", a.id, a.outcome), r))
     }
 }
@@ -924,6 +957,7 @@ mod tests {
                     id: "facts/x".into(),
                     outcome: crate::types::VerifyOutcome::Ok,
                     note: None,
+                    evidence: Vec::new(),
                 },
                 cx(false),
             )
@@ -993,5 +1027,70 @@ mod tests {
             .unwrap();
         assert!(out.content.contains("shown 0"), "{}", out.content);
         assert_eq!(out.structured.unwrap()[0]["opened"], 2);
+    }
+
+    /// 136 P gap 2: `knowledge_verify` refuses without evidence a read tool
+    /// could have produced; a path that exists (relative to the data dir),
+    /// an http(s) URL or a `session:`/`meeting:` id passes and is recorded.
+    #[tokio::test]
+    async fn verify_needs_evidence_from_a_read() {
+        let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("conf")).unwrap();
+        std::fs::write(dir.join("conf/pg.toml"), "port = 5432\n").unwrap();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let k = Knowledge::open(&dir, rt).await.unwrap();
+        k.put(put(), Source::Model).await.unwrap();
+        let night = ToolCx {
+            resources: Arc::new(tools::SessionResources {
+                root: dir.clone(),
+                retention: tools::Retention::Durable,
+                generation: 1,
+            }),
+            ..cx(false)
+        };
+        k.register_consolidating_session(night.session);
+        let tool = VerifyTool(k.clone());
+        let verify = |evidence: Vec<&str>| {
+            tool.call(
+                VerifyArgs {
+                    id: "facts/x".into(),
+                    outcome: crate::types::VerifyOutcome::Ok,
+                    note: None,
+                    evidence: evidence.into_iter().map(str::to_owned).collect(),
+                },
+                night.clone(),
+            )
+        };
+        let refused = "verify needs evidence from a read: pass evidence with a path that exists, an http(s) URL, or a session:/meeting: id";
+        for bad in [
+            vec![],
+            vec!["I checked it"],
+            vec!["conf/missing.toml"],
+            vec!["session:not-a-uuid"],
+            vec!["meeting:"],
+            vec!["ftp://x"],
+        ] {
+            let e = verify(bad.clone()).await.unwrap_err().to_string();
+            assert_eq!(e, refused, "{bad:?}");
+        }
+        assert!(k.get("facts/x").await.unwrap().meta.verified.is_none());
+        // One real source admits the call; every item is recorded (evidence
+        // items are whitespace-free tokens: the index column is space-joined).
+        verify(vec!["conf/pg.toml", "pg_isready"]).await.unwrap();
+        let m = k.get("facts/x").await.unwrap().meta;
+        assert!(m.verified.is_some());
+        assert_eq!(m.evidence, ["conf/pg.toml", "pg_isready"]);
+        let s = runtime::SessionId::new();
+        for good in [
+            dir.join("conf/pg.toml").to_string_lossy().into_owned(),
+            "https://example.com/doc".into(),
+            format!("session:{s}"),
+            "meeting:06".into(),
+        ] {
+            verify(vec![good.as_str()]).await.unwrap();
+        }
+        let m = k.get("facts/x").await.unwrap().meta;
+        assert_eq!(m.evidence.len(), 6, "{:?}", m.evidence);
+        assert_eq!(m.evidence[5], "meeting:06");
     }
 }

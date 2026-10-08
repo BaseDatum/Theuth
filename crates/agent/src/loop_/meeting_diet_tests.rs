@@ -61,15 +61,22 @@ async fn diet_scenarios() {
     let configured = AgentConfig::default().knowledge.hint_limit;
     assert!(configured >= 3, "the default admits all three");
 
-    let run = |toolset: Option<Toolset>| async move {
-        let mut h = Harness::new(fake()).await;
-        let (mut turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
-        // `Session::start_turn` sets the round-0 hint query; the harness bypasses it.
-        turn.input_text = input.into();
-        *turn.shared.toolset.write() = toolset;
-        let state = turn.run(tid, vec![h.input(input, false)]).await;
-        h.drain().await;
-        hint_lines(&state.history)
+    let run = |toolset: Option<Toolset>, dreaming: bool| {
+        let knowledge = knowledge.clone();
+        async move {
+            let mut h = Harness::new(fake()).await;
+            let (mut turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
+            // `Session::start_turn` sets the round-0 hint query; the harness bypasses it.
+            turn.input_text = input.into();
+            *turn.shared.toolset.write() = toolset;
+            if dreaming {
+                knowledge.register_consolidating_session(turn.shared.id);
+            }
+            let state = turn.run(tid, vec![h.input(input, false)]).await;
+            knowledge.clear_consolidating_session();
+            h.drain().await;
+            hint_lines(&state.history)
+        }
     };
     let live = |hint_limit| {
         Some(Toolset {
@@ -92,16 +99,32 @@ async fn diet_scenarios() {
             .collect::<Vec<_>>()
     };
     assert_eq!(
-        run(None).await,
+        run(None, false).await,
         Some(3),
         "no override: the configured limit"
     );
     assert_eq!(shown(knowledge.clone(), ids.clone()).await, [1, 1, 1]);
-    assert_eq!(run(live(None)).await, Some(3), "`None` defers to config");
-    assert_eq!(run(live(Some(2))).await, Some(2), "`Some(2)`: two lines");
+    assert_eq!(
+        run(live(None), false).await,
+        Some(3),
+        "`None` defers to config"
+    );
+    assert_eq!(
+        run(live(Some(2)), false).await,
+        Some(2),
+        "`Some(2)`: two lines"
+    );
     let after_two = shown(knowledge.clone(), ids.clone()).await;
     assert_eq!(after_two.iter().sum::<u64>(), 3 + 3 + 2, "{after_two:?}");
-    assert_eq!(run(live(Some(0))).await, None, "`Some(0)`: no note at all");
+    assert_eq!(
+        run(live(Some(0)), false).await,
+        None,
+        "`Some(0)`: no note at all"
+    );
+    assert_eq!(shown(knowledge.clone(), ids.clone()).await, after_two);
+    // 136 (P gap 1): the registered dreaming session gets no note and spends
+    // no impressions, whatever its toolset says.
+    assert_eq!(run(None, true).await, None, "dreaming session: no note");
     assert_eq!(shown(knowledge.clone(), ids.clone()).await, after_two);
 
     // A fresh session's first turn with user text is title-due (07 §15);

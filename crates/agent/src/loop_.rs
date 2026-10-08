@@ -5056,6 +5056,7 @@ impl Turn {
         // 10 §4.2: hints at turn start against the input, then every `hint_rounds`
         // rounds against what was appended since; each id once per epoch. 06 §1.5:
         // the session's toolset may cap the lines or (`Some(0)`) drop hints entirely.
+        // 136 (P gap 1): the dreaming session gets no note and spends no impressions.
         let cfg = &self.shared.cfg.knowledge;
         let hint_limit = self
             .shared
@@ -5067,6 +5068,7 @@ impl Turn {
         if chat
             && hint_limit > 0
             && let Some(knowledge) = self.knowledge()
+            && !knowledge.is_consolidating_session(self.shared.id)
         {
             let query = if round == 0 {
                 Some(std::mem::take(&mut self.input_text))

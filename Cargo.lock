@@ -10432,6 +10432,7 @@ dependencies = [
  "gix",
  "kameo",
  "okf",
+ "parking_lot",
  "replica",
  "runtime",
  "schemars 1.2.2",

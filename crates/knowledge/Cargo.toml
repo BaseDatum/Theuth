@@ -28,6 +28,7 @@ ts-rs = { workspace = true, optional = true }
 [dev-dependencies]
 figment = { workspace = true }
 uuid = { workspace = true }
+parking_lot = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "search/ts", "document/ts"]
