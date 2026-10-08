@@ -7,7 +7,7 @@ namespace Theuth.Companion.Ui;
 
 /// <summary>
 /// The tray's right-click menu (design 134 §4.5, D9): Open theuth · Ask theuth… · Pause notifications ▸ · Launch at login ✓ ·
-/// Keyboard shortcuts… Ctrl+/ · Settings… · Quit theuth, as a Win32 popup menu (<c>TrackPopupMenuEx</c> on the host window,
+/// Keyboard shortcuts… Ctrl+/ · Settings… · Quit theuth · Quit theuth Companion, as a Win32 popup menu (<c>TrackPopupMenuEx</c> on the host window,
 /// <c>TPM_RETURNCMD</c>, the documented SetForegroundWindow / WM_NULL pair around it). Deviation: §4.5 names a WinUI
 /// <c>MenuFlyout</c>; hosted in a 1 × 1 tool window it terminated the process on build-B (no managed exception), and the
 /// native menu is what the shell's other tray icons use (keyboard, Narrator and dismissal for free).

@@ -276,12 +276,18 @@ mod desktop {
             .manage(update::Pending::default())
             .manage(Flags::default());
         // 58 §6.2: one island command set on every desktop OS; the `NSPanel` plugin is macOS's.
-        // 130 D10: `theuth://` too — Windows/Linux would need single-instance to not spawn a second
-        // process per link, and have no companion to open them (§5.9).
         #[cfg(target_os = "macos")]
-        let builder = builder
-            .plugin(tauri_nspanel::init())
-            .plugin(tauri_plugin_deep_link::init());
+        let builder = builder.plugin(tauri_nspanel::init());
+        // 134 D10: on Windows a `theuth://` click starts a second `theuth-desktop.exe` with the URL in
+        // argv (W1S); single-instance goes first and, with its `deep-link` feature, hands argv to the
+        // deep-link plugin before the callback. The NSIS installer writes `HKCU\Software\Classes\theuth`.
+        #[cfg(target_os = "windows")]
+        let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show(app)
+        }));
+        // 130 D10: `theuth://` — Linux has no companion to send them and no single-instance (§5.9).
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        let builder = builder.plugin(tauri_plugin_deep_link::init());
         let builder = builder.invoke_handler(tauri::generate_handler![
             commands::connection,
             commands::launch_log,
@@ -336,7 +342,7 @@ mod desktop {
                 island::init(app.handle())?;
                 point::init(app.handle())?;
                 companion::init(app.handle())?;
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 deep_links(app.handle());
                 Ok(())
             })
@@ -516,19 +522,39 @@ mod desktop {
     }
 
     /// 130 D10: `theuth://attention/<id>` · `theuth://c/<session>` · `theuth://new` from the companion
-    /// (or anything else) → [`navigate`]; unknown shapes are logged and dropped.
-    #[cfg(target_os = "macos")]
+    /// (or anything else) → [`navigate`]; `theuth://quit` → [`request_quit`]; unknown shapes are logged and dropped. On Windows a cold start
+    /// by a link has the URL in argv: the plugin parsed it in its own setup, before this listener existed,
+    /// so `get_current()` replays it (macOS delivers `RunEvent::Opened` later and reads `None` here).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn deep_links(app: &AppHandle) {
         use tauri_plugin_deep_link::DeepLinkExt;
         let handle = app.clone();
-        app.deep_link().on_open_url(move |event| {
-            for url in event.urls() {
+        let open = move |urls: Vec<tauri::Url>| {
+            for url in urls {
+                if is_quit_link(&url) {
+                    tracing::info!("deep link: quit requested ({url})");
+                    request_quit(&handle);
+                    continue;
+                }
                 match deep_link_route(&url) {
                     Some(route) => navigate(&handle, &route),
                     None => tracing::info!("deep link ignored: {url}"),
                 }
             }
-        });
+        };
+        if let Ok(Some(urls)) = app.deep_link().get_current() {
+            open(urls);
+        }
+        app.deep_link().on_open_url(move |event| open(event.urls()));
+    }
+
+    /// `theuth://quit`: the companion's tray › Quit theuth — the whole app, one quit (130 W7). The Swift
+    /// companion `terminate()`s the shell, which lands in the same handshake; on Windows the companion
+    /// opens this link instead (the single-instance plugin hands it to the running shell) → [`request_quit`].
+    fn is_quit_link(url: &tauri::Url) -> bool {
+        url.scheme() == "theuth"
+            && url.host_str() == Some("quit")
+            && url.path().trim_matches('/').is_empty()
     }
 
     /// The app route for a `theuth://` URL, or `None` for anything the companion does not send.
@@ -571,7 +597,7 @@ mod desktop {
 
     #[cfg(test)]
     mod tests {
-        use super::deep_link_route;
+        use super::{deep_link_route, is_quit_link};
 
         #[test]
         fn deep_link_routes() {
@@ -586,6 +612,17 @@ mod desktop {
             assert_eq!(route("theuth://attention"), None);
             assert_eq!(route("theuth://settings/general"), None);
             assert_eq!(route("https://attention/x"), None);
+        }
+
+        #[test]
+        fn quit_link_is_not_a_route() {
+            let url = |s: &str| tauri::Url::parse(s).unwrap();
+            assert!(is_quit_link(&url("theuth://quit")));
+            assert!(is_quit_link(&url("theuth://quit/")));
+            assert!(!is_quit_link(&url("theuth://quit/now")));
+            assert!(!is_quit_link(&url("theuth://new")));
+            assert!(!is_quit_link(&url("https://quit")));
+            assert_eq!(deep_link_route(&url("theuth://quit")), None);
         }
     }
 }

@@ -1,4 +1,4 @@
-//! Windows and Linux: no companion (130 §5.9). The tray stays, nothing is launched or watched.
+//! Linux: no companion (130 §5.9). The tray stays, nothing is launched or watched.
 
 use tauri::AppHandle;
 
