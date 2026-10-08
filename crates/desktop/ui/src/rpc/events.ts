@@ -49,6 +49,7 @@ import type { ReminderEvent } from '@/rpc/bindings/ReminderEvent'
 import type { DreamNightStarted } from '@/rpc/bindings/DreamNightStarted'
 import type { DreamNightFinished } from '@/rpc/bindings/DreamNightFinished'
 import type { DreamUndone } from '@/rpc/bindings/DreamUndone'
+import type { StudyEvent } from '@/rpc/bindings/StudyEvent'
 import type { EndlessProgress } from '@/rpc/bindings/EndlessProgress'
 
 /**
@@ -130,5 +131,7 @@ export type WireEvent =
   | DreamNightStarted
   | DreamNightFinished
   | DreamUndone
+  /** 140 §12.3: a study changed state, an experiment started / progressed / finished, a study finished. */
+  | StudyEvent
   /** 137 §11.2: the compactor's build/settle progress for an endless session; the header badge and Memory panel refetch. */
   | EndlessProgress
