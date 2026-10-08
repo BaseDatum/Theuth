@@ -619,3 +619,30 @@ Prerequisite: 136 on main (`SetBudget`, `budget:`, the side-call guard). 137 is 
 ## 20. Status
 
 Design v1, draft for review. Nothing built. The four research sheets are committed beside this doc. Number claimed 2026-10-08 03:45 (broadcast to the active roots; next free 141). Depends on 136 landing; the as-builts of W0–W4 will be appended as `140-as-built-<W>.md`.
+
+## 21. Revision 1 — Sky's answers, 2026-10-08 11:08 (override the text above where they differ)
+
+Sky, 11:05: "Ok, omp subagents, parallel implementation, build it, get it on main" — then "Wait ask me the questions". The six §19 questions went out as two ask_user cards; his answers, verbatim:
+
+| # | question | answer | what changes |
+|---|---|---|---|
+| R1-D1 | pre-filled budgets | **$20 · 120 exp · 10 h** | as §12.2 (`defaults.budget`: usd 20, per_experiment_usd 1.5, hours 10, experiments 120) |
+| R1-D2 | a keep the reviewer calls gaming | **Undo it + Restore row** | as §9.1 (`review.on_suspicious: revert`) |
+| R1-D3 | waves in this build | **Yes, in this build** | W4 WAVES is part of this wave (§21.1, worker W5) |
+| R1-D4 | where the Study view lives | **"Library tab"** (typed, neither option) | the Study view is an **eighth Library tab**: `{ to: '/autoresearch', label: 'Autoresearch', icon: FlaskConical }` appended to `GROUPS.library` in `crates/desktop/ui/src/lib/nav.ts` (the `Tab` union gains `'/autoresearch'`); `/autoresearch` = the study list (rail, the Artifacts/Knowledge two-pane frame of 97b: `components/library/Page.tsx`, `SectionBand group="library"`), `/autoresearch/$slug` = the Study view of §13.1. Routines (108) still lists `autoresearch-<slug>` schedules (they are schedule files) but shows the `study` badge and navigates to `/autoresearch/<slug>` instead of RoutineDetail. Replaces "Inside Routines" in §0 D15, §13.1 and §17 (108 amendment) |
+| R1-D5 | default executor model | **Session default** | `models.executor` default = `agent.model` (openai/gpt-5.6-sol here). `models.review` default = the first of `agent.subagents.model`, `agent.title_model`, `agent.model` whose vendor differs from the executor's (here anthropic/claude-fable-5-1), else the executor with the fixed rubric. `models.advisor` default unchanged (125's advisor, else the executor at high effort). Replaces §9.3's first two rows |
+| R1-D6 | new-best pings | **Off** | as §13.1 (`autoresearch.notify.new_best: false`) |
+
+### 21.1 The build wave (supersedes §16's table; contract-first, omp ACP workers)
+
+Integration branch `feat/140-autoresearch` (worktree `~/Develop/theuth-140`, cut from origin/main 589a72f2, which has 136's `budget:`/`cap:`/`SetBudget`/`FireWith` and 137). Toolchain: `stable` (rust-toolchain.toml; Sky's warm target was built by rustc 1.96.1). Each worker has its own worktree and an APFS clone of a warm target in `./target`.
+
+| worker | starts from | owns (must not touch anything else) | first deliverable |
+|---|---|---|---|
+| **C CONTRACT** | integration head | `crates/autoresearch/{Cargo.toml, src/lib.rs, src/config.rs, src/types.rs, src/store.rs, src/api.rs}` (`api.rs` = every inter-module signature below as a documented stub returning `Err(NotBuilt("<owner>"))`), empty module files for every other worker, the plugin registration in `crates/theuth/src/main.rs` (+ the commented `autoresearch:` block in the config template there), the `autoresearch.*` RPC methods + events + ts-rs exports in `crates/rpc` (handler bodies delegating to the actor), workspace `Cargo.toml` member line, 00 §10 line | compiling skeleton + bindings ≤ 45 min (`cargo check -p autoresearch -p rpc -p theuth`, `cargo test -p rpc --features ts --lib export_bindings`) |
+| **W1 MEASURE** | C's skeleton commit | `src/{runner,scanner,gate,custody,slot}.rs`, `fixtures/toy-sort/**` | gate + scanner with tests first |
+| **W2 RATCHET** | C's skeleton commit | `src/{git,finalize,record}.rs` | git keep/discard/patch/drift with temp-repo tests first |
+| **W3 LOOP** | C's skeleton commit | `src/{actor,tools,brief,novelty,stop,review,binding,schedule_file,rpc_impl}.rs`, `crates/autoresearch/skill.md` (bundled as `skills/autoresearch.md` by `first_run`), `crates/app/src/study_draft.rs` (+ its registration in `crates/app`), slash command entries (`/autoresearch` in the TUI command table and desktop `slash.ts`), Deliver/attention wiring | one study end to end on toy-sort with W1/W2 stubs |
+| **W4 UI** | integration head (bindings swapped in from C's commit) | `crates/desktop/ui/src/components/autoresearch/**`, `routes/autoresearch*.tsx`, the `GROUPS.library` line + `Tab` union in `lib/nav.ts`, the study badge/link lines in `components/routines/*`, Settings › Autoresearch (`components/settings/` beside Dreaming), `lib/api.ts` autoresearch calls | Library tab + Study view on fixtures |
+| **W5 WAVES** | the merged C+W1+W2+W3 head | `src/wave.rs` + the `slot` paths of Begin/Run/Log in `actor.rs`/`tools.rs` (hand-off from W3) | 2-slot wave on toy-sort |
+| **Z CLOSER** | integration | merges, cross-seam fixes, as-builts, live smoke + gaming probe, landing | merged tree green |
