@@ -5462,6 +5462,7 @@ impl ApiServer for Server {
             Err(_) => Ok(dreaming::night::settings(
                 &self.rt.data_dir,
                 &self.dreaming_config(),
+                &dreaming::config::AgentDefaults::from_runtime(&self.rt),
             )),
         }
     }
