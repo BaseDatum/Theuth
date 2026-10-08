@@ -524,9 +524,13 @@ pub struct Night {
     pub active: Option<NightId>,
     /// The knowledge store, resolved on first use.
     knowledge: Option<Arc<knowledge::Knowledge>>,
-    /// The session the schedule last fired `dreaming` into (136 D6: registered
-    /// as the consolidating session at fire time; `BeginNight` defaults to it).
-    pub fired: Option<SessionId>,
+    /// The last `Fired{name: "dreaming"}`: `(at, session)`. The session is
+    /// registered as the consolidating session at fire time (136 D6) and
+    /// `BeginNight` defaults to it; the night is dated from the fire, not
+    /// from the ledger call, so the spend window covers the first model call
+    /// (live: the first call — $0.09–0.13, the uncached prompt — fell before
+    /// `started_at` and the receipt missed it).
+    pub fired: Option<(String, SessionId)>,
     /// Merge commits counted this night (R-35: one merge per commit, not per rewritten id).
     merge_commits: std::collections::HashSet<String>,
     /// [`ENDED_GRACE`]; tests shorten it.
@@ -550,9 +554,9 @@ impl Night {
         }
     }
 
-    /// 136 D6: the dreaming session may consolidate from now until the night closes.
-    async fn register_session(&mut self, session: SessionId) {
-        self.fired = Some(session);
+    /// 136 D6: the dreaming session may consolidate from `at` until the night closes.
+    async fn register_session(&mut self, at: String, session: SessionId) {
+        self.fired = Some((at, session));
         if let Some(k) = self.knowledge().await {
             k.register_consolidating_session(session);
         }
@@ -840,6 +844,13 @@ impl Message<BeginNight> for Night {
                 .and_then(|h| h.changes.first().map(|c| c.commit.clone())),
             None => None,
         };
+        // The session: the caller's, else the one the schedule fired into (136 D6).
+        let session = m.session.or(self.fired.as_ref().map(|(_, s)| *s));
+        // Dated from the fire (P: the spend window must cover the first model call).
+        let started_at = match (&self.fired, session) {
+            (Some((at, s)), Some(session)) if *s == session && *at <= now => at.clone(),
+            _ => now.clone(),
+        };
         let mut r = match read_record(&self.data_dir, &m.night) {
             Some(mut r) => {
                 if r.summary.finished_at.is_some() {
@@ -854,7 +865,7 @@ impl Message<BeginNight> for Night {
             None => NightRecord {
                 summary: NightSummary {
                     night: m.night.clone(),
-                    started_at: now.clone(),
+                    started_at: started_at.clone(),
                     finished_at: None,
                     counts: NightCounts::default(),
                     spend_usd: 0.0,
@@ -874,11 +885,11 @@ impl Message<BeginNight> for Night {
                 preferences_touched: false,
             },
         };
-        if let Some(s) = m.session.or(self.fired) {
+        if let Some(s) = session {
             r.session = Some(s);
             // Belt: the fire path registers at `ScheduleEvent::Fired`; an owner-root
             // call (or a test) reaches here without it.
-            self.register_session(s).await;
+            self.register_session(started_at.clone(), s).await;
         }
         let fresh = self.active.as_deref() != Some(m.night.as_str());
         write_record(&self.data_dir, &r).map_err(|e| e.to_string())?;
@@ -1240,8 +1251,9 @@ impl Message<RunNow> for Night {
         let mut state = read_state(&self.data_dir);
         state.run_request = Some(req);
         write_state(&self.data_dir, &state).map_err(|e| e.to_string())?;
-        // 136 D6: the fired session consolidates tonight.
-        self.register_session(session).await;
+        // 136 D6: the fired session consolidates tonight (the `Fired` event
+        // registers it too; this is the belt when the reply lands first).
+        self.register_session(cases::now_rfc3339(), session).await;
         Ok(session)
     }
 }
@@ -1576,6 +1588,25 @@ impl Message<MetricsOver> for Night {
     }
 }
 
+/// 136 D6: the schedule fired `dreaming` — that session consolidates tonight,
+/// from before its first tool call until the night closes; [`BeginNight`]
+/// dates the night from the fire (the spend window is `[started_at, now)`).
+impl Message<schedule::ScheduleEvent> for Night {
+    type Reply = ();
+
+    async fn handle(&mut self, e: schedule::ScheduleEvent, _: &mut Context<Self, Self::Reply>) {
+        if let schedule::ScheduleEvent::Fired { name, session, at } = e
+            && name == "dreaming"
+        {
+            let at = at
+                .with_timezone(&Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            self.register_session(at, session).await;
+        }
+    }
+}
+
 /// Settling grace before an ended night is closed: the agent's ledger settles
 /// the last model call shortly after `TurnFinished` (live: a `$0.00 of $0.05`
 /// receipt when closed inline).
@@ -1688,20 +1719,6 @@ impl Message<CloseEnded> for Night {
         r.phases.push(format!("ended: {}", m.stop_reason));
         if let Err(err) = self.finish(r, Some(status)).await {
             tracing::warn!("dreaming: night not closed after the turn ended: {err}");
-        }
-    }
-}
-
-/// 136 D6: the schedule fired `dreaming` — that session consolidates tonight,
-/// from before its first tool call until the night closes.
-impl Message<schedule::ScheduleEvent> for Night {
-    type Reply = ();
-
-    async fn handle(&mut self, e: schedule::ScheduleEvent, _: &mut Context<Self, Self::Reply>) {
-        if let schedule::ScheduleEvent::Fired { name, session, .. } = e
-            && name == "dreaming"
-        {
-            self.register_session(session).await;
         }
     }
 }
@@ -2170,6 +2187,15 @@ mod tests {
             run_timeout_secs: None,
         });
         write_state(dir.path(), &state).unwrap();
+        let fired_at = Utc::now() - chrono::Duration::seconds(20);
+        actor
+            .tell(schedule::ScheduleEvent::Fired {
+                name: "dreaming".into(),
+                session: mine,
+                at: fired_at.with_timezone(&Local),
+            })
+            .await
+            .unwrap();
         actor
             .ask(BeginNight {
                 night: "2026-10-08".into(),
@@ -2178,6 +2204,14 @@ mod tests {
             })
             .await
             .unwrap();
+        assert_eq!(
+            read_record(dir.path(), "2026-10-08")
+                .unwrap()
+                .summary
+                .started_at,
+            fired_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            "the night is dated from the fire, so the first model call is inside the spend window"
+        );
         let finished = |session| agent::AgentEvent::TurnFinished {
             session,
             turn: runtime::TurnId::new(),
