@@ -1970,7 +1970,10 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
 }
 
 /// Mean secondaries `(name, candidate, incumbent)` for the guards.
-pub(crate) fn secondary_means(candidate: &[Sample], incumbent: &[Sample]) -> Vec<(String, f64, f64)> {
+pub(crate) fn secondary_means(
+    candidate: &[Sample],
+    incumbent: &[Sample],
+) -> Vec<(String, f64, f64)> {
     let mut out = Vec::new();
     let cands: Vec<&Sample> = candidate
         .iter()
@@ -2166,7 +2169,11 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         retag_samples(&env.store, &slug, n, &sha).await?;
         exp.commit_sha = Some(sha.clone());
         exp.state = ExperimentState::Kept;
-        exp.line = format!("keep-candidate of wave {}; {}", exp.wave.unwrap_or(0), exp.line);
+        exp.line = format!(
+            "keep-candidate of wave {}; {}",
+            exp.wave.unwrap_or(0),
+            exp.line
+        );
         report.commit = Some(sha);
     } else if keep {
         let meta = KeepMeta {

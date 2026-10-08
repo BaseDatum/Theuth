@@ -72,10 +72,7 @@ pub fn slot_of(session: SessionId) -> Option<u8> {
 
 /// The parent of a registered child; `session` itself otherwise.
 fn parent_of(session: SessionId) -> SessionId {
-    CHILDREN
-        .lock()
-        .get(&session)
-        .map_or(session, |c| c.parent)
+    CHILDREN.lock().get(&session).map_or(session, |c| c.parent)
 }
 
 /// `AgentEvent`s the wave cares about (called from `binding`'s subscription):
@@ -104,7 +101,9 @@ pub async fn on_agent_event(a: &mut Studies, e: &agent::AgentEvent) -> Result<()
                         tracing::warn!(slug = %study.slug, "wave child toolset not applied: {e}");
                     }
                 }
-                None => tracing::warn!(slug = %study.slug, "agent actor not running; wave child unconfined"),
+                None => {
+                    tracing::warn!(slug = %study.slug, "agent actor not running; wave child unconfined")
+                }
             }
             Ok(())
         }
@@ -159,7 +158,9 @@ pub(crate) async fn resolve_env(
         .await?
         .ok_or_else(binding::not_a_study_session)?;
     if study.spec.parallel < 2 {
-        return Err(Error::refused("this study runs one experiment per fire; drop `slot`"));
+        return Err(Error::refused(
+            "this study runs one experiment per fire; drop `slot`",
+        ));
     }
     let exp = env
         .store
@@ -323,7 +324,12 @@ pub(crate) async fn slots_of(env: &Env, slug: &str, wave: u32) -> Result<Vec<Slo
 }
 
 /// The `<wave>` block appended to the supervisor's brief (140 §10 step 2).
-pub(crate) fn supervisor_block(study: &StudyRecord, wave: u32, slots: &[Slot], ideas: &[Idea]) -> String {
+pub(crate) fn supervisor_block(
+    study: &StudyRecord,
+    wave: u32,
+    slots: &[Slot],
+    ideas: &[Idea],
+) -> String {
     let mut out = format!(
         "\n<wave n=\"{wave}\" slots=\"{}\">\n\
          This fire is a wave: {} candidates are tried in parallel from the incumbent, one per slot, each in its own worktree. \
@@ -368,7 +374,10 @@ pub(crate) fn child_block(wave: u32, slot: &Slot, ideas: &[Idea]) -> String {
 }
 
 fn slot_line(s: &Slot, ideas: &[Idea]) -> String {
-    let mut line = format!("slot {}: experiment #{} · worktree {}", s.k, s.n, s.worktree);
+    let mut line = format!(
+        "slot {}: experiment #{} · worktree {}",
+        s.k, s.n, s.worktree
+    );
     line.push_str(&if s.category.is_empty() {
         " · category: free (not one another slot has)".to_owned()
     } else {
@@ -444,7 +453,12 @@ async fn abandon(env: &Env, mut exp: ExperimentRecord) -> Result<()> {
             slug: exp.slug.clone(),
             n: exp.n,
             verdict: exp.verdict.clone().unwrap_or(Verdict::Refused {
-                reason: if interrupted { "interrupted" } else { "abandoned" }.into(),
+                reason: if interrupted {
+                    "interrupted"
+                } else {
+                    "abandoned"
+                }
+                .into(),
             }),
             metric: exp.metric,
             delta_pct: exp.delta_pct,
@@ -457,7 +471,10 @@ async fn abandon(env: &Env, mut exp: ExperimentRecord) -> Result<()> {
 /// Promote every wave of `study` that has not been promoted yet (slots still
 /// open are abandoned first), then the §8.4 stop rules. Returns the stop
 /// reason when the study is finalizing and the one-line notes for the brief.
-pub(crate) async fn settle(env: &Env, study: &StudyRecord) -> Result<(Option<StopReason>, Vec<String>)> {
+pub(crate) async fn settle(
+    env: &Env,
+    study: &StudyRecord,
+) -> Result<(Option<StopReason>, Vec<String>)> {
     let slug = study.slug.as_str();
     let all = env.store.list_experiments(slug, None, u32::MAX).await?;
     let mut waves: Vec<u32> = all.iter().filter_map(|e| e.wave).collect();
@@ -552,10 +569,7 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
             .files_of(&study_wt, &cand_sha)?
             .into_iter()
             .collect();
-        if let Some((m, _)) = touched
-            .iter()
-            .find(|(_, f)| !f.is_disjoint(&files))
-        {
+        if let Some((m, _)) = touched.iter().find(|(_, f)| !f.is_disjoint(&files)) {
             let shared: Vec<&String> = files
                 .iter()
                 .filter(|f| touched.iter().any(|(_, t)| t.contains(*f)))
@@ -596,7 +610,11 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
             exp.parent_sha = incumbent.clone();
         }
         let prior = (!combined).then_some(cand_sha.as_str());
-        match confirm(env, &study, &mut exp, &study_wt, &new_sha, &incumbent, prior).await? {
+        match confirm(
+            env, &study, &mut exp, &study_wt, &new_sha, &incumbent, prior,
+        )
+        .await?
+        {
             Ok(mean_c) => {
                 let previous_mean = study.incumbent_mean;
                 if !combined {
@@ -610,7 +628,15 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
                 study.incumbent_mean = Some(mean_c);
                 env.store.update_experiment(&exp).await?;
                 env.store.update_study(&study).await?;
-                review(env, &mut study, &mut exp, &study_wt, &incumbent, previous_mean).await?;
+                review(
+                    env,
+                    &mut study,
+                    &mut exp,
+                    &study_wt,
+                    &incumbent,
+                    previous_mean,
+                )
+                .await?;
                 if exp.state == ExperimentState::Kept {
                     promotion.promoted.push(exp.n);
                     touched.push((exp.n, files));
@@ -620,7 +646,9 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
                 // Back to the incumbent; the pick's diff is saved as the candidate patch.
                 let patch = env.runs_dir(slug, exp.n).join("candidate.patch");
                 match env.backend.discard(&study_wt, &incumbent, &patch) {
-                    Ok(_) => exp.patch_path = Some(format!("{slug}/runs/{}/candidate.patch", exp.n)),
+                    Ok(_) => {
+                        exp.patch_path = Some(format!("{slug}/runs/{}/candidate.patch", exp.n))
+                    }
                     Err(e) => tracing::warn!(%slug, n = exp.n, "reset after a failed confirm: {e}"),
                 }
                 exp.commit_sha = Some(cand_sha.clone());
@@ -708,7 +736,16 @@ async fn confirm(
     let max_more = 1 + u32::from(env.cfg.gate.confirm_runs);
     for _ in 0..max_more {
         k += 1;
-        actor::progress(env, slug, exp.n, &exp.started_at, Phase::Sampling, k as u8, k as u8).await;
+        actor::progress(
+            env,
+            slug,
+            exp.n,
+            &exp.started_at,
+            Phase::Sampling,
+            k as u8,
+            k as u8,
+        )
+        .await;
         let s = actor::bench_sample(
             env,
             &study.spec,
@@ -781,7 +818,10 @@ async fn confirm(
         cand_vals.len(),
     );
     if !verdict.is_keep_candidate() {
-        return Ok(Err(format!("confirm did not clear the gate ({})", verdict.tag())));
+        return Ok(Err(format!(
+            "confirm did not clear the gate ({})",
+            verdict.tag()
+        )));
     }
     if combined && let Some(c) = study.spec.checks.as_ref() {
         actor::progress(env, slug, exp.n, &exp.started_at, Phase::Checks, 0, 1).await;
@@ -804,7 +844,9 @@ async fn confirm(
             )
             .await?;
         if exit != Some(0) {
-            return Ok(Err(format!("checks failed on the combined tree (exit {exit:?})")));
+            return Ok(Err(format!(
+                "checks failed on the combined tree (exit {exit:?})"
+            )));
         }
     }
     exp.verdict = Some(verdict);
@@ -845,7 +887,9 @@ async fn review(
         },
     };
     let rv = match rv {
-        ReviewVerdict::Flagged { reason } if env.cfg.review.on_suspicious == OnSuspicious::Revert => {
+        ReviewVerdict::Flagged { reason }
+            if env.cfg.review.on_suspicious == OnSuspicious::Revert =>
+        {
             let sha = exp.commit_sha.clone().unwrap_or_default();
             let patch = env.runs_dir(&slug, n).join("candidate.patch");
             if let Ok(diff) = env.backend.diff_text(study_wt, previous, &sha, 4 << 20) {
@@ -969,7 +1013,11 @@ mod tests {
         }
         /// `custody::scope_diff` is C's stub at this branch's cut (W1 R1 fills it on
         /// integration); W2's `git::scope_diff` against the candidate's HEAD is the same answer.
-        fn scope_diff(&self, spec: &StudySpec, worktree: &Path) -> Result<crate::custody::ScopeDiff> {
+        fn scope_diff(
+            &self,
+            spec: &StudySpec,
+            worktree: &Path,
+        ) -> Result<crate::custody::ScopeDiff> {
             let d = git::scope_diff(worktree, spec, &git::head(worktree)?)?;
             Ok(crate::custody::ScopeDiff {
                 changed: d.touched,
@@ -1121,7 +1169,10 @@ mod tests {
     /// The off-mailbox settle of `wave` has recorded its event.
     async fn wait_promoted(h: &H, wave: u32) {
         for _ in 0..250 {
-            if promoted_already(&h.studies.env(), "wave", wave).await.unwrap() {
+            if promoted_already(&h.studies.env(), "wave", wave)
+                .await
+                .unwrap()
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1168,7 +1219,11 @@ mod tests {
         assert_eq!(slot_of(child), Some(k));
         let mine = &brief.slots.as_ref().unwrap()[0];
         assert_eq!(mine.k, k);
-        assert!(brief.text.contains(&format!("<slot k=\"{k}\"")), "{}", brief.text);
+        assert!(
+            brief.text.contains(&format!("<slot k=\"{k}\"")),
+            "{}",
+            brief.text
+        );
         append(&mine.worktree, file, &format!("# slot {k}\n"));
         let r = actor::run_env(
             &env,
@@ -1228,7 +1283,11 @@ mod tests {
         .unwrap();
         let slots = brief.slots.clone().unwrap();
         assert_eq!(slots.len(), 3);
-        assert!(brief.text.contains("<wave n=\"1\" slots=\"3\">"), "{}", brief.text);
+        assert!(
+            brief.text.contains("<wave n=\"1\" slots=\"3\">"),
+            "{}",
+            brief.text
+        );
         for (i, s) in slots.iter().enumerate() {
             assert_eq!(s.k as usize, i + 1);
             assert_eq!(s.n as usize, i + 1);
@@ -1236,7 +1295,12 @@ mod tests {
             assert_eq!(dir, cand_dir(&h.studies.root, "wave", s.k));
             assert_eq!(git::head(&dir).unwrap(), base, "candidate at the incumbent");
         }
-        let rows = h.studies.store.list_experiments("wave", None, 10).await.unwrap();
+        let rows = h
+            .studies
+            .store
+            .list_experiments("wave", None, 10)
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 3);
         for r in &rows {
             assert_eq!(r.wave, Some(1));
@@ -1259,7 +1323,10 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(e.contains("not an autoresearch session"), "{e}");
-        let e = resolve(&h.studies, h.session, 7).await.unwrap_err().to_string();
+        let e = resolve(&h.studies, h.session, 7)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("slot 7 has no open experiment"), "{e}");
         assert_eq!(
             resolve(&h.studies, h.session, 2).await.unwrap(),
@@ -1271,7 +1338,11 @@ mod tests {
         let r1 = child_round(&h, c1, 1, "sorter.py", true).await.unwrap();
         assert_eq!(r1.applied, ExperimentState::Kept);
         assert_eq!(r1.stop, None);
-        assert_eq!(study(&h).await.incumbent_sha.unwrap(), base, "a slot keep does not move the incumbent");
+        assert_eq!(
+            study(&h).await.incumbent_sha.unwrap(),
+            base,
+            "a slot keep does not move the incumbent"
+        );
         assert_eq!(git::head(&study_wt).unwrap(), base);
         let r2 = child_round(&h, c2, 2, "main.py", true).await.unwrap();
         assert_eq!(r2.applied, ExperimentState::Kept);
@@ -1283,46 +1354,109 @@ mod tests {
         let incumbent = after.incumbent_sha.clone().unwrap();
         assert_ne!(incumbent, base);
         assert_eq!(git::head(&study_wt).unwrap(), incumbent);
-        assert_eq!(sh(&study_wt, &["rev-list", "--count", "HEAD"]), "3", "base + two picks");
+        assert_eq!(
+            sh(&study_wt, &["rev-list", "--count", "HEAD"]),
+            "3",
+            "base + two picks"
+        );
         assert_eq!(after.incumbent_mean, Some(85.0));
         assert_eq!(r3.applied, ExperimentState::Discarded);
         assert_eq!(r3.incumbent.sha, incumbent);
         assert_eq!(r3.incumbent.kept, 2);
-        let e1 = h.studies.store.get_experiment("wave", 1).await.unwrap().unwrap();
-        let e2 = h.studies.store.get_experiment("wave", 2).await.unwrap().unwrap();
-        let e3 = h.studies.store.get_experiment("wave", 3).await.unwrap().unwrap();
+        let e1 = h
+            .studies
+            .store
+            .get_experiment("wave", 1)
+            .await
+            .unwrap()
+            .unwrap();
+        let e2 = h
+            .studies
+            .store
+            .get_experiment("wave", 2)
+            .await
+            .unwrap()
+            .unwrap();
+        let e3 = h
+            .studies
+            .store
+            .get_experiment("wave", 3)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(e1.state, ExperimentState::Kept);
         assert_eq!(e2.state, ExperimentState::Kept);
         assert_eq!(e2.commit_sha.as_deref(), Some(incumbent.as_str()));
-        assert_eq!(e2.parent_sha, e1.commit_sha.clone().unwrap(), "the combined pick's parent is the first promotion");
+        assert_eq!(
+            e2.parent_sha,
+            e1.commit_sha.clone().unwrap(),
+            "the combined pick's parent is the first promotion"
+        );
         let log = sh(&study_wt, &["log", "--format=%H%n%B", "HEAD"]);
         assert!(log.contains(&format!("{}\n", e1.commit_sha.clone().unwrap())));
-        assert!(log.contains("Autoresearch-Run: 1") && log.contains("Autoresearch-Run: 2"), "{log}");
+        assert!(
+            log.contains("Autoresearch-Run: 1") && log.contains("Autoresearch-Run: 2"),
+            "{log}"
+        );
         assert!(e1.line.contains("promoted from wave 1"), "{}", e1.line);
         assert!(matches!(e1.review, Some(ReviewVerdict::Clean { .. })));
         assert!(matches!(e2.review, Some(ReviewVerdict::Clean { .. })));
         assert_eq!(e3.state, ExperimentState::Discarded);
-        assert!(e3.line.contains("overlaps experiment 1 on sorter.py"), "{}", e3.line);
+        assert!(
+            e3.line.contains("overlaps experiment 1 on sorter.py"),
+            "{}",
+            e3.line
+        );
         let patch = h.studies.root.join(e3.patch_path.unwrap());
-        assert!(std::fs::read_to_string(&patch).unwrap().contains("# slot 3"));
+        assert!(
+            std::fs::read_to_string(&patch)
+                .unwrap()
+                .contains("# slot 3")
+        );
         // Samples follow the promoted trees: slot sample + confirm for #1, one confirm for #2.
-        assert_eq!(h.studies.store.samples_of_tree("wave", &e1.commit_sha.unwrap()).await.unwrap().len(), 2);
-        assert_eq!(h.studies.store.samples_of_tree("wave", &incumbent).await.unwrap().len(), 1);
-        assert!(bench.values.lock().is_empty(), "exactly eight samples were spent");
+        assert_eq!(
+            h.studies
+                .store
+                .samples_of_tree("wave", &e1.commit_sha.unwrap())
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            h.studies
+                .store
+                .samples_of_tree("wave", &incumbent)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            bench.values.lock().is_empty(),
+            "exactly eight samples were spent"
+        );
         // Every candidate worktree is gone.
         for k in 1..=3 {
             assert!(!cand_dir(&h.studies.root, "wave", k).exists());
         }
         assert!(!sh(&study_wt, &["worktree", "list"]).contains("cand-"));
         // The ledger says what happened.
-        let ev = h.studies.store.list_events("wave", Some(EVENT_PROMOTED), 10).await.unwrap();
+        let ev = h
+            .studies
+            .store
+            .list_events("wave", Some(EVENT_PROMOTED), 10)
+            .await
+            .unwrap();
         assert_eq!(ev.len(), 1);
         assert_eq!(ev[0].payload["promoted"], serde_json::json!([1, 2]));
         assert_eq!(ev[0].payload["incumbent"], serde_json::json!(incumbent));
         // No slot is left open; the children's bindings go with their turns.
         assert!(wave_closed(&env, "wave", 1).await.unwrap());
         for c in [c1, c2, c3] {
-            on_agent_event(&mut h.studies, &turn_finished(c)).await.unwrap();
+            on_agent_event(&mut h.studies, &turn_finished(c))
+                .await
+                .unwrap();
             assert_eq!(slot_of(c), None);
         }
     }
@@ -1348,27 +1482,71 @@ mod tests {
         child_round(&h, c1, 1, "sorter.py", true).await.unwrap();
         // Slot 2 measured and never logged; its child's turn ends first, then the supervisor's.
         child_round(&h, c2, 2, "main.py", false).await;
-        on_agent_event(&mut h.studies, &turn_finished(c2)).await.unwrap();
-        let e2 = h.studies.store.get_experiment("wave", 2).await.unwrap().unwrap();
+        on_agent_event(&mut h.studies, &turn_finished(c2))
+            .await
+            .unwrap();
+        let e2 = h
+            .studies
+            .store
+            .get_experiment("wave", 2)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(e2.state, ExperimentState::Abandoned);
-        assert_eq!(slot_of(c2), None, "the child's binding is dropped with its turn");
-        assert_eq!(study(&h).await.incumbent_sha.unwrap(), base, "not promoted before the wave settles");
-        on_agent_event(&mut h.studies, &turn_finished(h.session)).await.unwrap();
+        assert_eq!(
+            slot_of(c2),
+            None,
+            "the child's binding is dropped with its turn"
+        );
+        assert_eq!(
+            study(&h).await.incumbent_sha.unwrap(),
+            base,
+            "not promoted before the wave settles"
+        );
+        on_agent_event(&mut h.studies, &turn_finished(h.session))
+            .await
+            .unwrap();
         wait_promoted(&h, 1).await;
         let after = study(&h).await;
         let incumbent = after.incumbent_sha.clone().unwrap();
         assert_ne!(incumbent, base);
-        let e1 = h.studies.store.get_experiment("wave", 1).await.unwrap().unwrap();
+        let e1 = h
+            .studies
+            .store
+            .get_experiment("wave", 1)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(e1.state, ExperimentState::Kept);
         assert_eq!(e1.commit_sha.as_deref(), Some(incumbent.as_str()));
         assert!(!cand_dir(&h.studies.root, "wave", 1).exists());
         assert!(!cand_dir(&h.studies.root, "wave", 2).exists());
-        let incidents = h.studies.store.list_events("wave", Some("incident"), 10).await.unwrap();
-        assert!(incidents.iter().any(|e| e.payload["n"] == 2 && e.payload["slot"] == 2), "{incidents:?}");
+        let incidents = h
+            .studies
+            .store
+            .list_events("wave", Some("incident"), 10)
+            .await
+            .unwrap();
+        assert!(
+            incidents
+                .iter()
+                .any(|e| e.payload["n"] == 2 && e.payload["slot"] == 2),
+            "{incidents:?}"
+        );
         // Settling again is a no-op.
-        on_agent_event(&mut h.studies, &turn_finished(h.session)).await.unwrap();
+        on_agent_event(&mut h.studies, &turn_finished(h.session))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(h.studies.store.list_events("wave", Some(EVENT_PROMOTED), 10).await.unwrap().len(), 1);
+        assert_eq!(
+            h.studies
+                .store
+                .list_events("wave", Some(EVENT_PROMOTED), 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         // The next fire opens wave 2 from the new incumbent; categories rotate over what was seen.
         let brief = actor::begin_env(
             &env,
@@ -1382,10 +1560,25 @@ mod tests {
         let slots = brief.slots.unwrap();
         assert_eq!(slots.iter().map(|s| s.n).collect::<Vec<_>>(), vec![3, 4]);
         // Seen: c1 (slot 1), c2 (slot 2 measured before it was abandoned); wave 2 rotates by one.
-        assert_eq!(slots.iter().map(|s| s.category.as_str()).collect::<Vec<_>>(), vec!["c2", "c1"]);
+        assert_eq!(
+            slots
+                .iter()
+                .map(|s| s.category.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c2", "c1"]
+        );
         for s in &slots {
-            let e = h.studies.store.get_experiment("wave", s.n).await.unwrap().unwrap();
-            assert_eq!((e.wave, e.slot, e.parent_sha.as_str()), (Some(2), Some(s.k), incumbent.as_str()));
+            let e = h
+                .studies
+                .store
+                .get_experiment("wave", s.n)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (e.wave, e.slot, e.parent_sha.as_str()),
+                (Some(2), Some(s.k), incumbent.as_str())
+            );
             assert_eq!(git::head(Path::new(&s.worktree)).unwrap(), incumbent);
         }
         assert_eq!(bench.values.lock().len(), 0);

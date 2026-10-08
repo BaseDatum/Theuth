@@ -28,9 +28,16 @@ Worker 140-W5, branch `feat/140-w5` from the merged integration head e7b20015 (C
 ### `src/binding.rs` (one insertion, W3's file)
 The `Message<AgentEvent>` handler calls `wave::on_agent_event` before the existing `TurnFinished` path. `on_turn_finished` is unchanged: slot experiments have `slot IS NOT NULL`, so its `dangling_experiment(slug, None)` never sees them.
 
-## Gates
+## Gates (through `BUILD_LABEL=140-W5 build-lock`, stable rustc 1.96.1, `CARGO_BUILD_JOBS=4`, `CARGO_INCREMENTAL=0`)
 
-(see the end of this note; filled after the runs)
+- `cargo test -p autoresearch`: **109 passed, 0 failed** (106 of C/W1/W2/W3/W6 unchanged + 3 in `wave::tests`, real git on a copy of `fixtures/toy-sort`, fake bench/reviewer):
+  - `three_slot_wave_promotes_best_combines_disjoint_and_drops_overlap`: one supervisor begin → 3 detached candidate worktrees at the incumbent, rows `wave=1, slot=1..3, parent_sha=base`; a foreign session and an unopened slot refused; three children (`experiment_begin{slot}` → edit → run → log; slots 1 and 3 touch `sorter.py`, slot 2 `main.py`; Δ 10 / 5 / 3); the last log promotes: `rev-list --count` 3 (base + two picks), #1 and #2 `kept` with the trailers on the branch, #2's `parent_sha` = #1's pick, #3 `discarded` "overlaps experiment 1 on sorter.py" with its patch saved, samples under the promoted trees (2 and 1), exactly 8 samples spent, every `cand-k` removed and absent from `git worktree list`, `wave_promoted {promoted: [1, 2]}`, children's bindings dropped at their turn ends.
+  - `abandoned_slot_is_discarded_at_the_supervisors_turn_end_and_the_next_wave_opens`: slot 2 measured and never logged; its child's `TurnFinished` marks it `abandoned` (incident row with `slot: 2`), the supervisor's `TurnFinished` settles off the mailbox (#1 promoted, worktrees removed), a second settle is a no-op, the next begin opens wave 2 (`n` 3–4, `parent_sha` = the new incumbent, categories rotated `c2, c1`).
+  - `exclusive_samples_take_the_bench_queue_one_at_a_time`: three concurrent `bench_sample`s — peak concurrency 1 with `exclusive: true`, ≥ 2 without.
+- `cargo clippy -p autoresearch --tests`: 0 warnings.
+- `rustfmt --edition 2024 --check` on `wave.rs`, `actor.rs`, `tools.rs`, `binding.rs`, `actor/tests.rs`: clean (`wave.rs` and my two long lines in `actor.rs` formatted; nothing else moved).
+- Target: the APFS clone of C's warm target into `./target` had copied 10 GB of `release/` after 28 min with 59 GB of `debug/` still to go (several clones were competing for the disk), so `./target` is a symlink to `theuth-140-c/target` — the same arrangement the integration worktree and W6's use (`ls -la ~/Develop/theuth-140/target`). No cold build; the shared target's lock serialises with the closer's cargo runs.
+- `actor/tests.rs` needed two `..Headline::default()` lines (W2's `Headline` grew `sigma`/`n` after W3's tests were written) — the identical lines the closer has uncommitted in the integration tree.
 
 ## Deviations (closest correct thing)
 
