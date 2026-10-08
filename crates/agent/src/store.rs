@@ -552,11 +552,17 @@ impl Store {
             .context("run migrations")?;
         let me: Arc<str> = engine.map(|e| e.0).unwrap_or_default().into();
         if !me.is_empty() {
-            sqlx::query("UPDATE sessions SET owner = ? WHERE owner = ''")
+            // 68 §8 / 139 D17: a store written before this engine had a mesh
+            // identity; local and unreplicated (Revision 1 Q6: log only).
+            let n = sqlx::query("UPDATE sessions SET owner = ? WHERE owner = ''")
                 .bind(&*me)
                 .execute(&read)
                 .await
-                .context("backfill sessions.owner")?;
+                .context("backfill sessions.owner")?
+                .rows_affected();
+            if n > 0 {
+                tracing::info!("68: claimed {n} unowned session(s) as {me}");
+            }
         }
         let session: Arc<Mutex<Option<capture::Session>>> = Arc::new(Mutex::new(None));
         let slot = session.clone();
