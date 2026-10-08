@@ -40,6 +40,9 @@ pub mod cache;
 pub mod capture;
 pub mod diar;
 pub mod endless;
+// 137 R1-D6 hand-off: enable once W2's `SetSessionMemory` / `RenderMemoryView` land
+// (137-as-built-W4.md §4 item 1), together with `endless_agent::install()` in `start`.
+// mod endless_agent;
 pub mod head;
 pub mod note;
 pub mod ogg;
@@ -3579,6 +3582,7 @@ impl runtime::Plugin for MeetingPlugin {
                 None
             }
         };
+        // 137 R1-D6 hand-off (closer): `endless_agent::install();` here, with `mod endless_agent`.
         let mut meeting = Meeting {
             rt: rt.clone(),
             cfg,
