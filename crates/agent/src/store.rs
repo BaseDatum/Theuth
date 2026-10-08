@@ -1486,10 +1486,9 @@ impl Store {
                 .bind(id.to_string())
                 .fetch_optional(&self.read)
                 .await?;
-        Ok(row
-            .and_then(|(c,)| c)
+        row.and_then(|(c,)| c)
             .map(|c| u64::try_from(c).context("negative observed_cursor"))
-            .transpose()?)
+            .transpose()
     }
 
     /// Persist the omp transcript byte offset after an applied batch (141 §7.3).

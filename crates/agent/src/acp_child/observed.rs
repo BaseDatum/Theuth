@@ -79,9 +79,17 @@ pub(crate) struct Observed {
     pending_traffic: HashMap<String, (Instant, Vec<SessionUpdate>)>,
     /// RFD `session_message_chunk` text accumulating per `(session external id, messageId)`
     /// into one directed line (§6.1).
-    directed: HashMap<(String, String), (Option<String>, Option<String>, String)>,
+    directed: HashMap<(String, String), Directed>,
     /// omp feeds; `None` when the harness is not a local omp.
     omp: Option<OmpFeeds>,
+}
+
+/// One inter-session message as it accumulates: sender, recipient, text.
+#[derive(Clone, Default)]
+struct Directed {
+    sender: Option<String>,
+    recipient: Option<String>,
+    text: String,
 }
 
 struct ObservedChild {
@@ -661,23 +669,23 @@ impl AcpChild {
             _ => return,
         };
         let key = (ext.to_owned(), message_id);
-        let e = self
-            .observed
-            .directed
-            .entry(key)
-            .or_insert_with(|| (None, None, String::new()));
+        let e = self.observed.directed.entry(key).or_default();
         if sender.is_some() {
-            e.0 = sender;
+            e.sender = sender;
         }
         if recipient.is_some() {
-            e.1 = recipient;
+            e.recipient = recipient;
         }
         if whole {
-            e.2 = text;
+            e.text = text;
         } else {
-            e.2.push_str(&text);
+            e.text.push_str(&text);
         }
-        let (sender, recipient, text) = e.clone();
+        let Directed {
+            sender,
+            recipient,
+            text,
+        } = e.clone();
         let own = self.harness.as_ref().map(Harness::session_id);
         let session = if Some(ext) == own {
             self.id
@@ -873,27 +881,26 @@ impl AcpChild {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => tracing::debug!(session = %self.id, child = %ext, "omp tail: {e}"),
             }
-            if settled.contains(&ext) || tailer.sidecar_done(&ext) {
-                if let Some(mut c) = self.observed.by_external.remove(&ext) {
-                    if !c.meta.state.is_terminal() {
-                        // `<id>.json` → `detail.result` (§6.4) before the
-                        // terminal event so the roster shows it with "done".
-                        if let Some(r) = tailer.result_json(&ext) {
-                            let mut detail = serde_json::Map::new();
-                            detail.insert("result".into(), r);
-                            let mut up =
-                                ObservedUpsert::new(c.parent, c.meta.source, &c.meta.external);
-                            up.detail = Some(&detail);
-                            if self.store.upsert_observed(up).await.is_ok() {
-                                c.meta.detail["result"] = detail["result"].clone();
-                            }
+            if (settled.contains(&ext) || tailer.sidecar_done(&ext))
+                && let Some(mut c) = self.observed.by_external.remove(&ext)
+            {
+                if !c.meta.state.is_terminal() {
+                    // `<id>.json` → `detail.result` (§6.4) before the
+                    // terminal event so the roster shows it with "done".
+                    if let Some(r) = tailer.result_json(&ext) {
+                        let mut detail = serde_json::Map::new();
+                        detail.insert("result".into(), r);
+                        let mut up = ObservedUpsert::new(c.parent, c.meta.source, &c.meta.external);
+                        up.detail = Some(&detail);
+                        if self.store.upsert_observed(up).await.is_ok() {
+                            c.meta.detail["result"] = detail["result"].clone();
                         }
-                        self.set_child_state(&mut c, ObservedState::Completed, Some(None))
-                            .await;
-                        self.close_child_turn(&mut c, "end_turn", None).await;
                     }
-                    self.observed.by_external.insert(ext, c);
+                    self.set_child_state(&mut c, ObservedState::Completed, Some(None))
+                        .await;
+                    self.close_child_turn(&mut c, "end_turn", None).await;
                 }
+                self.observed.by_external.insert(ext, c);
             }
         }
         self.omp_poll(me);

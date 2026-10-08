@@ -13811,7 +13811,7 @@ pub(crate) mod tests {
             Ok(_) => panic!("watch-only rows are never driven"),
         };
         assert_eq!(err, OBSERVED);
-        assert!(a.sessions.get(&child).is_none(), "no actor was spawned");
+        assert!(!a.sessions.contains_key(&child), "no actor was spawned");
         let err = match a.resolve(root, &format!("session:{child}")).await {
             Err(e) => e,
             Ok(_) => panic!("not a peer"),
