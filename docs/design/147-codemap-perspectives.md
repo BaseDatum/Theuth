@@ -81,6 +81,13 @@ the typed `Graph` of 65; the mock of the Map tab (`docs/design/assets/147-codema
     state) + detail pane; rendered by `GraphBody`/`GraphSvg` + the ELK worker + `DiagramFrame`; < 600 px panel and phones =
     list form, no SVG (73 §0.9). Rejected: omm's whole map in one SVG with zoom-threshold reveal; mermaid.js static SVG; a
     second renderer.
+    **[orch] O8b — diagram direction follows the canvas aspect** (from the mock, 2026-10-08 18:45): the 11-node theuth
+    top level is 6 ELK layers deep and needs ~1 050 px of canvas at 100 % laid out LR, so in the docked side pane (360–920
+    px) the map is laid out top-to-bottom (TB, fits at ~86 %) and LR only when the canvas is wider than tall and ≥ ~1 000 px
+    (pop-out); chosen per layout pass, never animated while idle; edge labels hidden below ~70 % zoom and shown for the
+    selection (§11.3). Node second line = abbreviated path (first two anchors + `+N`), full anchors in the detail pane; edge
+    labels ≤ 4 words; **numbers on edges come from evidence, never from the model** (§6.6 rule 7). Rejected: always-LR like
+    omm (6.5 px labels at 72 % in the pane).
 14. **[orch] O9 — tabs `Map | Here | Fit | Change`; the panel opens on Map, pinned.** 73's auto-follow applies only when the
     user is on a lens tab or presses *Follow agent*; agent lens activity is a dot on that lens tab. Rejected: switching away
     from Map on every `code_*` call.
@@ -340,7 +347,7 @@ pub enum MapEvidence {
     Process  { site: String, verb: String /* spawn | dial | listen */ },
     Inferred { reason: String },                                   // model-asserted, dashed
 }
-pub struct MapEdge { pub from: String, pub to: String, pub label: String /* ≤ 6 words */, pub backed: bool,
+pub struct MapEdge { pub from: String, pub to: String, pub label: String /* ≤ 4 words, no counts */, pub backed: bool,
                      pub evidence: Vec<MapEvidence> /* backed: ≥ 1 non-Inferred */ }
 ```
 
@@ -515,8 +522,9 @@ top level is readable after the second round-trip. Progress = `CodeMapProgress` 
 ### 6.3 Prompts (content outline; text lives in `map/gen.rs`, a pure function of config like `RegisterPrompt`)
 
 System: the role ("name and explain structure the index already measured; never invent a node or a path"); the rules —
-use only the handles given, every edge labelled with *why* in ≤ 6 words, two-line node labels are built by the engine (the
-model gives `name` only), ≤ 12 nodes, `flowchart LR` (TD for hierarchies), no `classDef`/`style`/`click`, don't force a
+use only the handles given, every edge labelled with *why* in ≤ 4 words and never a count (the engine renders counts from
+evidence, §6.6 rule 7), two-line node labels are built by the engine (the model gives `name` only), ≤ 12 nodes, `flowchart`
+(the engine chooses the direction at render time, O8b), no `classDef`/`style`/`click`, don't force a
 perspective the code does not evidence, an edge without evidence needs a reason, prose 2–5 sentences, English ids; the
 12-row catalogue with each row's question (§7); output = one JSON object, nothing else. User: the stage's facts JSON. A
 repair user message = the previous output + the located error list (§6.6).
@@ -555,11 +563,15 @@ sits below `codeindex` in 00 §10; if not, the parse moves into `codeindex` behi
    (`deny_unknown_fields`).
 2. Mermaid parses (§6.5); node ids ⊆ issued handles; every `members` entry is a unit handle; members partition the units
    (no unit in two groups; uncovered units → the engine adds the bundle).
-3. Caps: ≤ 12 nodes (20 hard), edges ≤ 2 × nodes, labels ≤ 80 chars, edge labels ≤ 6 words, description ≤ 120 words.
+3. Caps: ≤ 12 nodes (20 hard), edges ≤ 2 × nodes, labels ≤ 80 chars, edge labels ≤ 4 words, description ≤ 120 words.
 4. Anchors: every node resolves to ≥ 1 indexed path (`files.path`) — a `cluster:` through its members.
 5. Edges: `backed` computed against the sub-skeleton; an edge with no evidence and no `reason` is an error; a model-cited
    `evidence` handle that does not join the endpoints is an error.
 6. Perspective choice (stage A): kinds ⊆ eligible; `overall-architecture` present.
+7. Edge labels say *why*, never *how many*: a label containing a digit, `N`, `deps`, `imports`, `refs`, `calls`, `×` is
+   rejected (repair message: "counts are rendered from evidence; write the reason") — the mock found a model-written
+   `→ mesh · 4 deps` where the ledger's evidence was one `document→mesh` Cargo dep. The engine renders counts
+   (`5 Cargo deps`, `37 imports`) from `MapEdge.evidence` beside the model's label; the model never sees a slot for them.
 Error → one repair message listing `path · what · expected` lines (the `<surface_error>` shape of 30 §5); a second failure
 → the element keeps `origin: Structure` for its diagram (structure view + listing) and whatever prose validated, with
 `provenance.repaired = true` and the error in the job log. Nothing invalid is ever stored as a diagram.
@@ -737,8 +749,19 @@ codeindex:
 
 ## 11. UI — the Map tab
 
-Mock: `docs/design/assets/147-codemap-map.html` (made in parallel; the wireframes below are its source of truth where
-they differ, the mock wins on pixels, this section on behaviour).
+Mock: `docs/design/assets/147-codemap-map.html` (three frames + a legend; the mock wins on pixels, this section on
+behaviour). **Frame A** — desktop side pane 880 × 660, Map tab, `Overall architecture` with `Content stores` selected while
+generation runs: header chips `theuth ▾ · 1,278 files · 41,906 symbols · 14 calls`, progress line `Mapping perspectives ·
+5 of 9 · next: data-flow`, search field `Find element or file…`, tree (Clients / RPC facade / Agent loop / …, depth-3 rows
+such as `Git facts` carrying a hatched `stale` badge), TB canvas at 86 % with the zoom strip `− 86% + fit`, detail pane with
+Description, `Inside · 5` (the children as a drill link), `Edges · 2` (`rpc → here · 5 Cargo deps · backed`, `→ mesh ·
+document→mesh · backed`), the provenance line `written by claude-… · HEAD 5cddad8e · 3 min ago · $0.04` and the four actions.
+**Frame B** — the same pane drilled into `Content stores › codeindex` (click/Enter zooms in, Esc goes up), detail pane
+closed, LR-shaped module diagram with one hatched node whose badge word is `stale`. **Frame C** — phone / narrow pane 380 px:
+below 600 px the map is a list under the tabs `Map Here Fit Change`, title `Overall architecture · 49 crates in 11 layers ·
+15 of 16 edges · written 3 min ago`. **Legend** (six encodings): backed edge (solid, index evidence); inferred edge (dashed,
+the model's claim); `stale` (hatched + the word); `edited · read` marks; group thumbnail (`n inside ›` drills); counted
+bundle `fan-in (9)` — edges hidden as a count in the footnote, never a hairball.
 
 ### 11.1 Layout
 
@@ -778,11 +801,18 @@ fold, Enter drill, Esc up one level.
 
 `MapCanvas` renders the selected element's `diagram` through `GraphBody` (`Graph.tsx:306-315`, the codemap's
 `highlight`/`onSelect` path) with the ELK layout from `graph-layout.ts:101` (hash-cached, worker, 2 s time-box → the list
-form of the element while the layout is late), inside `DiagramFrame` for pan/zoom/export (B10). Nodes: label = child name,
-`sub` = its path (two lines, D4 — `sub` is the spec's mono second line, `spec.rs:558`), `tag` = `+N` on bundles, `ref` =
-path; `state` by stale (hatch via `GraphBody.hatch`) and marks (`badges`). Edges: label = the model's *why*, `dashed` for
-`inferred`, tooltip = the evidence summary (`37 imports · sample crates/rpc/src/api.rs#L1079`). One level live: the diagram
-shows the element's children only; nothing beyond the cap is ever drawn (73 §6.5 "never drawn").
+form of the element while the layout is late), inside `DiagramFrame` for pan/zoom/export (B10). **Direction** (O8b): per
+layout pass, `direction = canvas.width > canvas.height && canvas.width ≥ 1000 ? 'LR' : 'TB'` — the docked pane (360–920 px)
+always gets TB (theuth's 11-node top level: 6 ELK layers, ~1 050 px LR at 100 % vs a fit at ~86 % TB, frame A); a pop-out
+wider than tall gets LR. The direction is part of the layout hash, so a resize across the threshold is a new layout, applied
+at the next layout pass and never animated while idle (73 §0.6). **Labels**: node line 1 = child name, line 2 (`sub`, the
+spec's mono second line, `spec.rs:558`) = abbreviated path — the first two anchors joined by `·` plus `+N` when more
+(`crates/knowledge · crates/document +3`), full anchors in the detail pane; `tag` = `+N` on bundles; `ref` = the first
+anchor; `state` by stale (hatch via `GraphBody.hatch`) and marks (`badges`). **Edges**: label = the model's *why* (≤ 4
+words) followed by the engine-rendered count from evidence (`board anchors · 5 Cargo deps`); `dashed` for `inferred`;
+tooltip = the evidence summary (`37 imports · sample crates/rpc/src/api.rs#L1079`). Edge labels are hidden below ~70 %
+zoom and always shown for the selected node's edges (frame A shows them at 86 %). One level live: the diagram shows the
+element's children only; nothing beyond the cap is ever drawn (73 §6.5 "never drawn").
 
 **Thumbnails** (O8, W6): a child with a `thumbnail` renders it inside its node box, box grown to 168×104 px; the child's
 layout comes from the same ELK cache keyed by its hash; drawn as rects + edges only, labels hidden (scale < 0.5), the
