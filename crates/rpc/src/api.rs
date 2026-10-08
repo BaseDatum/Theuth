@@ -1570,7 +1570,7 @@ pub trait Api {
     /// settle). The compactor model applies to sessions attached after the
     /// change. A failed write changes nothing.
     #[method(name = "endless_settings_set")]
-    async fn endless_settings_set(&self, settings: EndlessConfig) -> RpcResult<EndlessConfig>;
+    async fn endless_settings_set(&self, config: EndlessConfig) -> RpcResult<EndlessConfig>;
     /// Settings › Search (16 §8): the four external providers (enabled, base
     /// URL, secret name and whether it is set - never the value, timeout,
     /// priority, registered) plus the `web` read/budget defaults.
@@ -5509,11 +5509,11 @@ impl ApiServer for Server {
     }
 
     async fn endless_settings_get(&self) -> RpcResult<EndlessConfig> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, agent::EndlessSettings).await
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetEndlessSettings).await
     }
 
-    async fn endless_settings_set(&self, settings: EndlessConfig) -> RpcResult<EndlessConfig> {
-        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetEndlessSettings(settings)).await
+    async fn endless_settings_set(&self, config: EndlessConfig) -> RpcResult<EndlessConfig> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetEndlessSettings { config }).await
     }
 
     async fn meeting_oracle_mode(&self) -> RpcResult<decision::ModeInfo> {

@@ -591,9 +591,9 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::Memory { session, mode } => match mode {
             Some(mode) => {
                 let m = msg(api.set_session_memory(session, mode).await)?;
-                UiEvent::Info(agent::endless::text::reply(mode, &m))
+                UiEvent::Info(agent::endless_ext::reply(mode, &m))
             }
-            None => UiEvent::Info(agent::endless::text::status(
+            None => UiEvent::Info(agent::endless_ext::status(
                 &msg(api.session_memory(session).await)?,
             )),
         },

@@ -6152,14 +6152,13 @@ impl Turn {
             return Ok(SetMode { memory, head: None });
         }
         let n = self.state.epoch + 1;
-        let r = endless
-            .set_mode(session, mode, n, filter)
+        let r = crate::endless_ext::set_mode(endless, session, mode, n, filter)
             .await
             .map_err(|e| format!("{e:#}"))?;
         match mode {
             MemoryMode::Endless => {
-                let b = r.memory.backfill.unwrap_or_default();
-                tracing::info!(session = %session, ?filter, units = b.total - b.done, eta_secs = b.eta_secs, usd = b.usd_estimate, model = %r.memory.model, "context_edit: endless on");
+                let est = crate::endless_ext::backfill_estimate(&r.memory);
+                tracing::info!(session = %session, ?filter, units = est.units, eta_secs = est.eta_secs, usd = est.usd, model = %est.model, "context_edit: endless on");
             }
             MemoryMode::Epochs => {
                 let folded = match &r.head {

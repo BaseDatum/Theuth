@@ -554,8 +554,8 @@ impl Roster {
                     d.memory = m.mode;
                     d.pending_memory = None;
                 }
-                let b = m.backfill.unwrap_or_default();
-                tracing::info!(agent = %name, %session, %mode, units = b.total - b.done, eta_secs = b.eta_secs, usd = b.usd_estimate, model = %m.model, "desk memory switched");
+                let est = agent::endless_ext::backfill_estimate(&m);
+                tracing::info!(agent = %name, %session, %mode, units = est.units, eta_secs = est.eta_secs, model = %est.model, usd = est.usd, "desk memory switched");
             }
             Err(e) if e.to_string().contains("busy") => {
                 tracing::debug!(agent = %name, "desk memory switch deferred: busy");

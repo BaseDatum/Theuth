@@ -107,7 +107,7 @@ use crate::{
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
-    EndlessConfigChanged, EndlessRecall, EndlessSettings, EndlessZoom, RenderMemoryView,
+    EndlessConfigChanged, EndlessRecall, EndlessZoom, GetEndlessSettings, RenderMemoryView,
     SessionMemoryQuery, SetEndlessSettings, SetSessionMemory, SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
@@ -3896,11 +3896,7 @@ impl Agents {
             && self.endless.active(*parent)
         {
             let (actor, parent) = (actor.clone(), *parent);
-            let blocks = self
-                .endless
-                .render_snapshot(parent)
-                .await
-                .unwrap_or_default();
+            let blocks = crate::endless_ext::render_snapshot(&self.endless, parent).await;
             if !blocks.is_empty() {
                 let _ = actor
                     .tell(crate::loop_::OpenerContext(
@@ -6624,7 +6620,7 @@ impl Message<RenderMemoryView> for Agents {
         self.stored(m.session)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
-        self.endless.render_with_budget(m.session, m.bytes).await
+        crate::endless_ext::render_with_budget(&self.endless, m.session, m.bytes).await
     }
 }
 
@@ -6638,31 +6634,17 @@ impl Message<SetSessionViewBytes> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.stored(m.session).await?;
-        if !EndlessConfig::VIEW_BYTES.contains(&m.bytes) {
-            return Err(format!(
-                "view_bytes {} out of range {}..={}",
-                m.bytes,
-                EndlessConfig::VIEW_BYTES.start(),
-                EndlessConfig::VIEW_BYTES.end()
-            ));
-        }
-        self.endless
-            .set_view_bytes(m.session, m.bytes)
-            .await
-            .map_err(|e| format!("{e:#}"))?;
-        self.endless
-            .memory(m.session)
-            .await
-            .map_err(|e| format!("{e:#}"))
+        crate::endless_ext::set_view_bytes(&self.endless, m.session, m.bytes).await
     }
 }
 
-impl Message<EndlessSettings> for Agents {
+impl Message<GetEndlessSettings> for Agents {
     type Reply = Result<EndlessConfig, String>;
 
+    /// The live section (`Endless::config`); `Result` because a bare config struct is no kameo `Reply`.
     async fn handle(
         &mut self,
-        _: EndlessSettings,
+        _: GetEndlessSettings,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         Ok(self.endless.config())
@@ -6672,34 +6654,76 @@ impl Message<EndlessSettings> for Agents {
 impl Message<SetEndlessSettings> for Agents {
     type Reply = Result<EndlessConfig, String>;
 
-    /// 137 §11.3: persist `agent.endless` to `config.yaml`, then apply it live
-    /// and tell the roster and the meeting plugin ([`EndlessConfigChanged`]).
+    /// 137 §11.3: the Settings → Memory writer. Ranges as §11.1 documents
+    /// them; one `write_nested_config_value` per key (the writer is a scalar
+    /// writer); the live config is replaced so new sessions, every pump,
+    /// the roster and the meeting plugin see it.
     async fn handle(
         &mut self,
         m: SetEndlessSettings,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let cfg = m.0.validated()?;
-        if let Some(id) = cfg.model.as_deref()
+        let c = m.config;
+        if !(16_000..=256_000).contains(&c.view_bytes) {
+            return Err(format!(
+                "view_bytes {} out of range 16000..=256000",
+                c.view_bytes
+            ));
+        }
+        if !(0.0..=0.5).contains(&c.slack) {
+            return Err(format!("slack {} out of range 0.0..=0.5", c.slack));
+        }
+        if !(128..=4_096).contains(&c.node_bytes) {
+            return Err(format!(
+                "node_bytes {} out of range 128..=4096",
+                c.node_bytes
+            ));
+        }
+        if c.jobs == 0 || c.tries == 0 {
+            return Err("jobs and tries must be at least 1".into());
+        }
+        if let Some(id) = c.model.as_deref()
             && let Err(e) = self.catalog.resolve(id, &*self.configured)
         {
             return Err(format!("model: {e}"));
         }
-        // One scalar per key through the comment-preserving writer; the
-        // struct is flat, so `serde_json::Value` lists every key once. A
-        // missing key is inserted at the top of the block, so writing in
-        // reverse leaves a fresh block in struct order.
         let path = self.rt.data_dir.join("config.yaml");
-        let keys = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
-        for (key, value) in keys.as_object().into_iter().flatten().rev() {
-            let text = serde_yaml::to_string(value).map_err(|e| e.to_string())?;
-            runtime::write_nested_config_value(&path, "agent", "endless", key, text.trim())
+        if !(16_000..=256_000).contains(&c.meeting_view_bytes) {
+            return Err(format!(
+                "meeting_view_bytes {} out of range 16000..=256000",
+                c.meeting_view_bytes
+            ));
+        }
+        let keys: [(&str, String); 14] = [
+            ("default_chat", c.default_chat.to_string()),
+            ("default_desk", c.default_desk.to_string()),
+            ("default_meeting", c.default_meeting.to_string()),
+            ("view_bytes", c.view_bytes.to_string()),
+            ("meeting_view_bytes", c.meeting_view_bytes.to_string()),
+            ("backfill_max_units", c.backfill_max_units.to_string()),
+            ("node_bytes", c.node_bytes.to_string()),
+            ("slack", c.slack.to_string()),
+            ("settle_secs", c.settle_secs.to_string()),
+            ("jobs", c.jobs.to_string()),
+            ("tries", c.tries.to_string()),
+            ("retry_secs", c.retry_secs.to_string()),
+            ("cap_chars", c.cap_chars.to_string()),
+            (
+                "model",
+                c.model.clone().unwrap_or_else(|| "null".to_owned()),
+            ),
+        ];
+        for (key, value) in &keys {
+            runtime::write_nested_config_value(&path, "agent", "endless", key, value)
                 .map_err(|e| format!("config.yaml: {e}"))?;
         }
-        self.endless.set_config(cfg.clone());
-        self.rt.publish(EndlessConfigChanged(cfg.clone())).await;
-        tracing::info!(default_chat = cfg.default_chat, default_desk = cfg.default_desk, default_meeting = cfg.default_meeting, view_bytes = cfg.view_bytes, model = ?cfg.model, "endless settings written");
-        Ok(cfg)
+        Arc::make_mut(&mut self.cfg).endless = c.clone();
+        // Live (closer): the service's shared config, then the roster and the
+        // meeting plugin over the bus.
+        self.endless.set_config(c.clone());
+        self.rt.publish(EndlessConfigChanged(c.clone())).await;
+        tracing::info!(default_chat = c.default_chat, default_desk = c.default_desk, default_meeting = c.default_meeting, view_bytes = c.view_bytes, model = ?c.model, "endless settings written");
+        Ok(c)
     }
 }
 
@@ -11908,15 +11932,20 @@ pub(crate) mod tests {
         let a = agents_with(false).await;
         let dir = a.rt.data_dir.clone();
         let agents = Agents::spawn(a);
-        let before = agents.ask(EndlessSettings).await.unwrap();
+        let before = agents.ask(GetEndlessSettings).await.unwrap();
         assert_eq!(before.view_bytes, EndlessConfig::default().view_bytes);
         let mut want = before.clone();
         want.default_chat = true;
         want.view_bytes = 96_000;
         want.slack = 0.25;
-        let got = agents.ask(SetEndlessSettings(want.clone())).await.unwrap();
+        let got = agents
+            .ask(SetEndlessSettings {
+                config: want.clone(),
+            })
+            .await
+            .unwrap();
         assert!(got.default_chat && got.view_bytes == 96_000);
-        let live = agents.ask(EndlessSettings).await.unwrap();
+        let live = agents.ask(GetEndlessSettings).await.unwrap();
         assert!(live.default_chat && live.view_bytes == 96_000 && live.slack == 0.25);
         let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
         for needle in [
@@ -11951,7 +11980,7 @@ pub(crate) mod tests {
         let mut bad = want.clone();
         bad.view_bytes = 1_000;
         let e = agents
-            .ask(SetEndlessSettings(bad))
+            .ask(SetEndlessSettings { config: bad })
             .await
             .unwrap_err()
             .to_string();

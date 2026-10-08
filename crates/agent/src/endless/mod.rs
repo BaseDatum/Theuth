@@ -22,7 +22,6 @@ pub mod guards;
 pub mod pump;
 #[cfg(test)]
 mod tests;
-pub mod text;
 pub mod tree;
 pub mod units;
 
@@ -87,9 +86,6 @@ impl Default for EndlessConfig {
 }
 
 impl EndlessConfig {
-    /// Legal view budgets in bytes (§11.1).
-    pub const VIEW_BYTES: std::ops::RangeInclusive<u32> = 16_000..=256_000;
-
     /// The fold parameters, clamped to the documented ranges.
     pub fn fold_cfg(&self) -> fold::FoldCfg {
         self.fold_cfg_for(self.view_bytes)
@@ -98,46 +94,9 @@ impl EndlessConfig {
     /// Fold parameters for a per-session / per-render budget.
     pub fn fold_cfg_for(&self, view_bytes: u32) -> fold::FoldCfg {
         fold::FoldCfg {
-            view_bytes: view_bytes.clamp(*Self::VIEW_BYTES.start(), *Self::VIEW_BYTES.end()),
+            view_bytes: view_bytes.clamp(16_000, 256_000),
             slack: self.slack.clamp(0.0, 0.5),
         }
-    }
-
-    /// A settings write (`endless_settings_set`): the documented ranges, a
-    /// user-facing error naming the field; `model` trimmed, empty → `None`.
-    pub fn validated(mut self) -> Result<Self, String> {
-        let range = |name: &str, v: u32, r: std::ops::RangeInclusive<u32>| {
-            if r.contains(&v) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "{name} {v} out of range {}..={}",
-                    r.start(),
-                    r.end()
-                ))
-            }
-        };
-        range("view_bytes", self.view_bytes, Self::VIEW_BYTES)?;
-        range(
-            "meeting_view_bytes",
-            self.meeting_view_bytes,
-            4_000..=256_000,
-        )?;
-        range("backfill_max_units", self.backfill_max_units, 0..=100_000)?;
-        range("node_bytes", self.node_bytes, 128..=4_096)?;
-        range("settle_secs", self.settle_secs, 0..=600)?;
-        range("retry_secs", self.retry_secs, 1..=3_600)?;
-        range("cap_chars", self.cap_chars, 1_000..=1_000_000)?;
-        range("jobs", u32::from(self.jobs), 1..=32)?;
-        range("tries", u32::from(self.tries), 1..=10)?;
-        if !(0.0..=0.5).contains(&self.slack) {
-            return Err(format!("slack {} out of range 0.0..=0.5", self.slack));
-        }
-        self.model = self
-            .model
-            .map(|m| m.trim().to_owned())
-            .filter(|m| !m.is_empty());
-        Ok(self)
     }
 }
 

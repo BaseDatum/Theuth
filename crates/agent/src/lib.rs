@@ -36,6 +36,7 @@ pub mod context;
 pub mod continuation;
 pub mod durability;
 pub mod endless;
+pub mod endless_ext;
 pub mod frame;
 pub mod loop_;
 pub mod peers;
@@ -866,18 +867,22 @@ pub struct SetSessionViewBytes {
     pub bytes: u32,
 }
 
-/// `ask` → `EndlessConfig` (137 §11.1): the `agent.endless` section in force.
+/// `ask` → `Result<EndlessConfig, String>` (137 §11.3): the live `agent.endless` section (never `Err`).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct EndlessSettings;
+pub struct GetEndlessSettings;
 
-/// `ask` → `Result<EndlessConfig, String>` (137 §11.3 Settings › Memory):
-/// persist the whole `agent.endless` block to `config.yaml` and apply it
-/// live — defaults for new chats/desks/meetings, the view budget, slack and
-/// settle at the next turn of every endless session. The compactor model
-/// applies to sessions attached after the change. A failed write changes
-/// nothing. [`EndlessConfigChanged`] follows on the bus.
+/// `ask` → `Result<EndlessConfig, String>` (137 §11.3): validate, persist
+/// every `agent.endless.*` key to config.yaml and apply it live — the
+/// service's shared config (`view_bytes`/`slack` re-fold at the next render,
+/// `settle_secs` per turn), `default_chat` for the next created session, and
+/// [`EndlessConfigChanged`] on the bus for the roster (`default_desk`) and
+/// the meeting plugin. The compactor model applies to sessions attached after
+/// the change. Returns what was stored.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SetEndlessSettings(pub EndlessConfig);
+pub struct SetEndlessSettings {
+    /// The whole section.
+    pub config: EndlessConfig,
+}
 
 /// Bus event: `agent.endless` was changed through [`SetEndlessSettings`];
 /// the roster and the meeting plugin refresh their copies.
