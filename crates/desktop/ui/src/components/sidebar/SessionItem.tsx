@@ -143,6 +143,7 @@ export const SessionItem = memo(function SessionItem({
   owner,
   epoch,
   here,
+  endless,
   subagents,
   active,
   selected,
@@ -160,6 +161,8 @@ export const SessionItem = memo(function SessionItem({
   owner: string
   epoch: number
   here: boolean
+  /** 137 §11.3: `SessionSummary.memory === 'endless'`; the ∞ glyph after the title. */
+  endless: boolean
   /** Its subtree from `list_sessions` (all depths); absent when it has none. */
   subagents: readonly SessionSummary[] | undefined
   active: boolean
@@ -305,6 +308,11 @@ export const SessionItem = memo(function SessionItem({
               <SessionPending id={id} />
               <SessionSubagents subagents={subagents} />
               <span className="truncate">{shown}</span>
+              {endless && (
+                <span role="img" aria-label="Endless memory" className="shrink-0 text-sm leading-4 text-fg-tertiary">
+                  ∞
+                </span>
+              )}
               {!here && <EngineChip owner={owner} epoch={epoch} className="ml-auto" />}
             </Link>
           </SidebarMenuButton>

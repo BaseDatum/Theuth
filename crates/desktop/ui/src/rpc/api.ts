@@ -204,6 +204,8 @@ import type {
   ProviderInfo,
   VoiceStatus,
 } from '@/rpc/extra'
+// 137 W3: stand-ins until `just ts-desktop` — see the hand-off notes in that file.
+import { type EndlessApi, bindEndless } from '@/rpc/endless-stubs'
 
 /** `computer::PermissionStatus` (27 §6); hand-written until the bindings are regenerated. */
 export type PermissionStatus = {
@@ -233,7 +235,7 @@ export type DocStats = {
  * per request; params positional, in trait order. `subscribe_events` is
  * `RpcClient.subscribe`.
  */
-export interface Api {
+export interface Api extends EndlessApi {
   /** `/a2a`: listener, configured peers and exports (50 §10); `enabled: false` with an empty status when `a2a.enabled` is off. */
   a2a_status(): Promise<A2aStatus>
   add_acp(id: string): Promise<EntryInfo>
@@ -1252,5 +1254,6 @@ export const METHODS = [
 export function makeApi(client: RpcClient): Api {
   const api: Partial<Record<keyof Api, (...args: unknown[]) => Promise<unknown>>> = {}
   for (const name of METHODS) api[name] = (...args) => client.call(name, args)
+  bindEndless(api, client)
   return api as Api
 }
