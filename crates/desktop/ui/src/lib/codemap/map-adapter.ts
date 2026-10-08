@@ -120,7 +120,21 @@ const TOP: Spec = {
     { node: 'cluster:1a2b3c4d', name: 'Clients', path: 'crates/desktop', files: 410, lines: 120_000, kind: 'cluster', description: 'Desktop (Tauri + React) and TUI; talk to rpc over one WebSocket.' },
     { node: 'unit:crates/rpc', name: 'RPC facade', path: 'crates/rpc', files: 40, lines: 18_000, description: 'jsonrpsee methods for every plugin; forwards to the owning engine.' },
     { node: 'cluster:2b3c4d5e', name: 'Agent loop', path: 'crates/agent', files: 120, lines: 60_000, kind: 'cluster', description: 'Session actors, model backends, the tool loop, ACP children.' },
-    { node: 'cluster:3c4d5e6f', name: 'Foundation', path: 'crates/runtime', files: 90, lines: 30_000, kind: 'cluster', description: 'Runtime, platform, tool registry, surface, secrets — imported by all.' },
+    {
+      node: 'cluster:3c4d5e6f',
+      name: 'Foundation',
+      path: 'crates/runtime',
+      files: 90,
+      lines: 30_000,
+      kind: 'cluster',
+      description: 'Runtime, platform, tool registry, surface, secrets — imported by all.',
+      children: [
+        { node: 'unit:crates/runtime', name: 'Runtime', path: 'crates/runtime', files: 30, lines: 12_000, description: 'Event bus, registry lookups, side calls.' },
+        { node: 'unit:crates/tools', name: 'Tool registry', path: 'crates/tools', files: 25, lines: 9_000, description: 'RegisterTool, risk classes, the registry every plugin fills.' },
+        { node: 'unit:crates/platform', name: 'Platform', path: 'crates/platform', files: 20, lines: 6_000, description: 'Paths, processes, OS facts.' },
+        { node: 'unit:crates/surface', name: 'Surface', path: 'crates/surface', files: 15, lines: 3_000, description: 'json-render specs, Graph, Mermaid lowering.' },
+      ],
+    },
     STORES,
     { node: 'cluster:4d5e6f70', name: 'Local models + speech', path: 'crates/models', files: 60, lines: 20_000, kind: 'cluster', description: 'Decision model, voice, meeting and talk drive sessions.' },
     {
@@ -181,7 +195,12 @@ const CODEINDEX_EDGES: EdgeSpec[] = [
   ['unit:crates/codeindex/src/tools.rs', 'unit:crates/codeindex/src/event.rs', 'CodeToolRan', refs(6, 'crates/codeindex/src/tools.rs#L188')],
   ['unit:crates/codeindex/src/index.rs', 'unit:crates/codeindex/src/event.rs', 'CodeReconciled', refs(2, 'crates/codeindex/src/index.rs#L533')],
 ]
-const EDGES: Record<string, EdgeSpec[]> = { 'overall-architecture': TOP_EDGES, 'cluster:9f3a1c2e': STORES_EDGES, 'unit:crates/codeindex': CODEINDEX_EDGES }
+const FOUNDATION_EDGES: EdgeSpec[] = [
+  ['unit:crates/tools', 'unit:crates/runtime', 'tool events', manifest(1, 'crates/tools', 'crates/runtime')],
+  ['unit:crates/surface', 'unit:crates/runtime', 'spec publish', manifest(1, 'crates/surface', 'crates/runtime')],
+  ['unit:crates/runtime', 'unit:crates/platform', 'paths + processes', manifest(1, 'crates/runtime', 'crates/platform')],
+]
+const EDGES: Record<string, EdgeSpec[]> = { 'overall-architecture': TOP_EDGES, 'cluster:9f3a1c2e': STORES_EDGES, 'unit:crates/codeindex': CODEINDEX_EDGES, 'cluster:3c4d5e6f': FOUNDATION_EDGES }
 
 const LIFECYCLE: Spec = {
   node: 'request-lifecycle',

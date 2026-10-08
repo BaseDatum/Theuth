@@ -11,7 +11,7 @@ import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo
 import { DiagramFrame } from '@/components/chat/DiagramFrame'
 import { adjacencyText, ArrowMarkers, edgeLabelAt, edgeUnit, Label, MARGIN, markerFor, MONO, paint, Shape, useGraphUnits } from '@/components/chat/surface/Graph'
 import { basename } from '@/lib/codemap/labels'
-import { directionFor, edgeLabelShown, type ElementGraph, elementGraph, elementStats, evidenceSummary, footnote, type Mark, THUMB_CHIP_H, THUMB_TITLE_H, thumbBox, thumbLabels, thumbTransform } from '@/lib/codemap/map'
+import { directionFor, edgeLabelShown, type ElementGraph, elementGraph, elementStats, evidenceCount, evidenceSummary, footnote, type Mark, THUMB_CHIP_H, THUMB_TITLE_H, thumbBox, thumbLabels, thumbTransform } from '@/lib/codemap/map'
 import type { MapElement } from '@/lib/codemap/map-types'
 import { svgA11y, unitLabel } from '@/lib/diagram/a11y'
 import { fnv, type Layout, LINE_PX, textWidth, wrapLabel } from '@/lib/diagram/elk'
@@ -127,19 +127,24 @@ function Thumbnail({ graph: g, layout: l, area, t }: { graph: GraphProps; layout
   )
 }
 
-/** The edge label on a card mask: the model's why then the evidence count, never truncated (ELK reserved its box). */
-function EdgeText({ text, at, along, side, t, fill }: { text: string; at: { x: number; y: number }; along: 'horizontal' | 'vertical'; side: 'before' | 'after'; t: DiagramTokens; fill: string }) {
-  const w = Math.ceil(textWidth(text, FONT_PX - 2) + 8)
-  const h = LINE_PX
+/** The edge label on a card mask: the model's why, the evidence count under it in mono; never truncated. */
+function EdgeText({ text, sub, at, along, side, t, fill }: { text: string; sub?: string; at: { x: number; y: number }; along: 'horizontal' | 'vertical'; side: 'before' | 'after'; t: DiagramTokens; fill: string }) {
+  const w = Math.ceil(Math.max(textWidth(text, FONT_PX - 2), sub ? textWidth(sub, FONT_PX - 3) : 0) + 8)
+  const h = sub ? LINE_PX * 2 - 4 : LINE_PX
   const k = side === 'before' ? -1 : 1
   const cx = along === 'horizontal' ? at.x : at.x + k * (8 + w / 2)
   const cy = along === 'horizontal' ? at.y + k * (8 + h / 2) : at.y
   return (
     <g data-edge-label>
       <rect x={cx - w / 2} y={cy - h / 2} width={w} height={h} rx={3} fill={t.card} stroke={t.border} strokeWidth={0.5} />
-      <text x={cx} y={cy} dy="0.32em" textAnchor="middle" fontFamily={t.font} fontSize={FONT_PX - 2} fill={fill}>
+      <text x={cx} y={sub ? cy - (LINE_PX - 4) / 2 : cy} dy="0.32em" textAnchor="middle" fontFamily={t.font} fontSize={FONT_PX - 2} fill={fill}>
         {text}
       </text>
+      {sub && (
+        <text x={cx} y={cy + (LINE_PX - 4) / 2} dy="0.32em" textAnchor="middle" fontFamily={MONO} fontSize={FONT_PX - 3} fill={t.mutedForeground}>
+          {sub}
+        </text>
+      )}
     </g>
   )
 }
@@ -162,8 +167,10 @@ export function MapCanvas(p: MapCanvasProps) {
   const eg: ElementGraph = useMemo(() => elementGraph(el, direction), [el, direction])
   const box = thumbBox(p.popped)
   const thumbIds = useMemo(() => new Set(eg.thumbs.keys()), [eg])
-  const hash = useMemo(() => fnv(`${structuralHash(eg.graph)}|${[...thumbIds].join(',')}|${box.w}x${box.h}`), [eg, thumbIds, box.w, box.h])
-  const shown = useElkLayout(hash, () => toElkSized(eg.graph, thumbIds, box), flattenElk, size.w > 0)
+  // ELK reserves label boxes: the *why* alone (≤ 4 words) keeps the picture compact; the evidence count joins at draw time
+  const elkGraph = useMemo<GraphData>(() => ({ ...eg.graph, edges: eg.graph.edges.map((e, i) => ({ ...e, label: eg.edges[i]?.label || e.label })) }), [eg])
+  const hash = useMemo(() => fnv(`${structuralHash(elkGraph)}|${[...thumbIds].join(',')}|${box.w}x${box.h}`), [elkGraph, thumbIds, box.w, box.h])
+  const shown = useElkLayout(hash, () => toElkSized(elkGraph, thumbIds, box), flattenElk, size.w > 0)
   const thumbLayouts = useThumbLayouts(eg.thumbs)
 
   // unit contract: nodes then edges; the selected child and the search chain's nodes draw `active`
@@ -194,6 +201,26 @@ export function MapCanvas(p: MapCanvasProps) {
     if (selectedNode) units.dispatch({ type: 'select', id: selectedNode })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sync the unit selection to the panel's; `units` is stable per render pass
   }, [selectedNode])
+  // `DiagramFrame`'s surface takes pointer capture on pointerdown (pan/pinch), so `click` lands on the surface, not the
+  // unit under the finger: remember the unit at pointerdown and resolve a still pointer (< 5 px) at pointerup ourselves.
+  // Two presses on one node within 350 ms = drill (the chip presses drill at once); keyboard stays with the unit contract.
+  const pressRef = useRef<{ id: string; drill: boolean; x: number; y: number; target: Element } | null>(null)
+  const lastPress = useRef<{ id: string; at: number } | null>(null)
+  const pointerDown = (id: string, drillChip: boolean) => (e: React.PointerEvent) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    pressRef.current = { id, drill: drillChip, x: e.clientX, y: e.clientY, target: e.currentTarget }
+  }
+  const pointerUp = (e: React.PointerEvent) => {
+    const pr = pressRef.current
+    pressRef.current = null
+    if (!pr || Math.hypot(e.clientX - pr.x, e.clientY - pr.y) >= 5) return
+    const twice = lastPress.current && lastPress.current.id === pr.id && e.timeStamp - lastPress.current.at < 350
+    lastPress.current = { id: pr.id, at: e.timeStamp }
+    if (pr.id.startsWith('edge:')) return units.dispatch({ type: 'select', id: pr.id })
+    if (pr.drill || twice) return drill(pr.id, pr.target)
+    units.dispatch({ type: 'select', id: pr.id })
+    onPress(pr.id)
+  }
 
   // zoom (label hiding) measured off the mounted svg
   const svgRef = useRef<SVGSVGElement>(null)
@@ -268,11 +295,11 @@ export function MapCanvas(p: MapCanvasProps) {
             const full = meta ? evidenceSummary(meta) : (edge.label ?? '')
             const aria = [nodes[edge.from]?.label ?? edge.from, '→', nodes[edge.to]?.label ?? edge.to, edge.label ? `: ${edge.label}` : '', meta && !meta.backed ? ' (inferred)' : ''].join(' ')
             return (
-              <g key={e.index} opacity={pt.opacity} data-edge={meta ? (meta.backed ? 'backed' : 'inferred') : 'diagram'} {...units.unit(edgeUnit(e.index), aria)}>
+              <g key={e.index} opacity={pt.opacity} data-edge={meta ? (meta.backed ? 'backed' : 'inferred') : 'diagram'} {...units.unit(edgeUnit(e.index), aria)} onClick={undefined} onPointerDown={pointerDown(edgeUnit(e.index), false)}>
                 <title>{full}</title>
                 <path d={d} fill="none" stroke="transparent" strokeWidth={18} />
                 <path d={d} fill="none" stroke={pt.stroke} strokeWidth={st === 'active' ? 2 : 1.25} strokeDasharray={edge.style === 'dashed' ? '6 4' : undefined} {...markers(edge.arrow, markerFor(markerId, st))} />
-                {label && <EdgeText text={edge.label!} at={label.at} along={label.along} side={label.side} t={t} fill={meta && !meta.backed ? t.mutedForeground : pt.stroke} />}
+                {label && <EdgeText text={meta ? meta.label || edge.label! : edge.label!} sub={meta ? evidenceCount(meta.evidence) || undefined : undefined} at={label.at} along={label.along} side={label.side} t={t} fill={meta && !meta.backed ? t.mutedForeground : pt.stroke} />}
               </g>
             )
           })}
@@ -309,8 +336,9 @@ export function MapCanvas(p: MapCanvasProps) {
                 data-thumb={isThumb || undefined}
                 aria-description={node.ref ?? undefined}
                 {...attrs}
+                onClick={undefined}
+                onPointerDown={pointerDown(n.id, false)}
                 onKeyDown={onKeyDown}
-                onDoubleClick={(ev) => drill(n.id, ev.currentTarget)}
               >
                 <rect x={n.x - 4} y={n.y - 4} width={n.w + 8} height={n.h + 8} fill="transparent" />
                 <Shape kind={kind} x={n.x} y={n.y} w={n.w} h={n.h} fill={s.fill} fillOpacity={s.fillOpacity} stroke={stale ? t.danger : s.stroke} strokeWidth={s.strokeWidth} />
@@ -329,9 +357,9 @@ export function MapCanvas(p: MapCanvasProps) {
                     <g
                       data-drill
                       transform={`translate(${n.x + n.w - 10} ${n.y + n.h - THUMB_CHIP_H + 2})`}
-                      onClick={(ev) => {
+                      onPointerDown={(ev) => {
                         ev.stopPropagation()
-                        drill(n.id, ev.currentTarget)
+                        pointerDown(n.id, true)(ev)
                       }}
                     >
                       <rect x={-72} y={-13} width={72} height={15} rx={7.5} fill={t.muted} />
@@ -407,7 +435,7 @@ export function MapCanvas(p: MapCanvasProps) {
           </button>
         )}
       </nav>
-      <div ref={stage} className="relative min-h-0 flex-1 p-1">
+      <div ref={stage} className="relative min-h-0 flex-1 p-1" onPointerUp={pointerUp} onPointerCancel={() => (pressRef.current = null)}>
         {shown ? (
           <DiagramFrame name={`codemap-map-${basename(el.path ?? el.id)}-${hash}`} label={`map · ${el.name} · ${direction}`} kind="codemap-map" fill>
             {content}
@@ -418,7 +446,6 @@ export function MapCanvas(p: MapCanvasProps) {
         {layout && (
           <div className="pointer-events-none absolute right-3 bottom-2 flex items-center gap-1 rounded border border-border-subtle bg-layer-1 px-1.5 py-0.5 text-fg-secondary" data-zoom-strip title="scroll or pinch to zoom · double-click to fit">
             <span className="text-foreground">{fitPct}%</span>
-            <span>{Math.abs(fitPct - 100) < 1 ? '' : 'fit'}</span>
           </div>
         )}
         {anim && (

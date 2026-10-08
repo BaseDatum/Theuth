@@ -175,19 +175,25 @@ const under = (dir: string, file: string) => file === dir || file.startsWith(`${
 
 /**
  * `read` for elements whose `path` contains a `code_*` target (`codemap.trail[].target`), `edited` for a file from
- * `codemap.edited[root]`; prefix match on the tree rows' paths, client side only.
+ * `codemap.edited[root]`; prefix match on the tree rows' paths, client side only. A mark climbs to the ancestors (their
+ * anchors contain the child's); perspective headers stay unmarked.
  */
 export function marksFor(index: MapIndex, trailTargets: readonly (string | null)[], edited: readonly string[]): Map<string, Mark[]> {
   const read = trailTargets.map((t) => (t ? filePath(t) : '')).filter(Boolean)
   const out = new Map<string, Mark[]>()
   if (read.length === 0 && edited.length === 0) return out
+  const parents = parentsOf(index)
+  const add = (id: string, m: Mark) => {
+    const cur = out.get(id) ?? []
+    if (!cur.includes(m)) out.set(id, [...cur, m])
+  }
   for (const p of index.perspectives) {
     for (const r of rowsOf(p)) {
       if (!r.path) continue
       const marks: Mark[] = []
       if (read.some((f) => under(r.path!, f))) marks.push('read')
       if (edited.some((f) => under(r.path!, f))) marks.push('edited')
-      if (marks.length) out.set(r.id, marks)
+      for (const m of marks) for (const id of [r.id, ...ancestorsOf(r.id, parents).filter((a) => a !== p.id)]) add(id, m)
     }
   }
   return out

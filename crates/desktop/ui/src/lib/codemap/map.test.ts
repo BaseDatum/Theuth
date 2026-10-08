@@ -94,6 +94,9 @@ test('activity marks: read from trail targets, edited from the edit list, by pat
   expect(marks.get('overall-architecture/unit:crates/codeindex')).toEqual(['read'])
   expect(marks.get('overall-architecture/unit:crates/document')).toEqual(['edited'])
   expect(marks.has('overall-architecture/unit:crates/rpc')).toBe(false)
+  // the cluster above both: read through codeindex, edited through document; the perspective header never
+  expect([...marks.get('overall-architecture/cluster:9f3a1c2e')!].sort()).toEqual(['edited', 'read'])
+  expect(marks.has('overall-architecture')).toBe(false)
   const rows = buildTreeRows(index, () => true, marks)
   expect(rows.find((r) => r.name === 'code_* tools')!.marks).toEqual(['read'])
   expect(marksFor(index, [], []).size).toBe(0)

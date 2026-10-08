@@ -27,6 +27,8 @@ import './codemap.css'
 const LIST_W = 600
 const WIDE_W = 1080
 const REFETCH_MS = 200
+/** The detail pane docks to the right of the canvas from here (the mock's 880 px pane: tree 180 · canvas · detail 260). */
+const DOCK_W = 820
 const SEARCH_MS = 150
 
 export type MapNav = { view: string | null; selected: string | null }
@@ -289,7 +291,8 @@ export function MapTab(p: MapProps) {
     )
   }
 
-  const wide = p.width >= WIDE_W
+  // the mock's 880 px pane docks the detail right (260 px); 280 px from 1 080 px; narrower panes stack it under the canvas
+  const wide = p.width >= DOCK_W
   return (
     <div className="flex h-full min-h-0 flex-col" onKeyDown={keys} data-map data-map-form="graph">
       {banners}
@@ -336,7 +339,7 @@ export function MapTab(p: MapProps) {
             )}
           </div>
           {detailOpen ? (
-            <div className={cn('relative shrink-0 overflow-hidden', wide ? 'w-[280px] border-l border-border-subtle' : 'h-[40%] border-t border-border-subtle')} data-map-detail-pane>
+            <div className={cn('relative shrink-0 overflow-hidden', wide ? cn('border-l border-border-subtle', p.width >= WIDE_W ? 'w-[280px]' : 'w-[260px]') : 'h-[40%] border-t border-border-subtle')} data-map-detail-pane>
               {detail(() => setDetailOpen(false))}
             </div>
           ) : (

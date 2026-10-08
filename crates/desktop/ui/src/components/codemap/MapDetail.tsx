@@ -60,16 +60,16 @@ export function EdgeRow({ e, names, self }: { e: MapEdge; names: ReadonlyMap<str
   const reason = inferredReason(e)
   const count = evidenceCount(e.evidence)
   return (
-    <li className="flex items-baseline gap-1.5 overflow-hidden py-0.5 font-mono text-[11px] whitespace-nowrap" data-edge={e.backed ? 'backed' : 'inferred'}>
-      <span className="truncate">
+    <li className="flex flex-wrap items-baseline gap-x-1.5 py-0.5 font-mono text-[11px]" data-edge={e.backed ? 'backed' : 'inferred'}>
+      <span>
         {name(e.from)} → {name(e.to)}
       </span>
-      {e.label && <span className="truncate text-fg-secondary">· {e.label}</span>}
-      {count && <span className="truncate text-fg-secondary">· {count}</span>}
+      {e.label && <span className="text-fg-secondary">· {e.label}</span>}
+      {count && <span className="text-fg-secondary">· {count}</span>}
       <span className={cn('shrink-0 rounded border px-1 text-[9px] leading-[13px]', e.backed ? 'border-success text-success' : 'border-dashed border-border text-fg-secondary')} title={reason ?? undefined}>
         {e.backed ? 'backed' : 'inferred'}
       </span>
-      {reason && <span className="truncate text-fg-tertiary">— {reason}</span>}
+      {reason && <span className="basis-full text-fg-tertiary">— {reason}</span>}
     </li>
   )
 }
