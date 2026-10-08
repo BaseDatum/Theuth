@@ -336,18 +336,38 @@ mod tests {
             };
             // Engine `a` owned `foreign` and set a reminder on it.
             let foreign = SessionId::new();
-            let a = Store::open(&dir.join("sessions.sqlite"), Some(mesh::EngineId("a".into())))
+            let a = Store::open(
+                &dir.join("sessions.sqlite"),
+                Some(mesh::EngineId("a".into())),
+            )
+            .await
+            .unwrap();
+            a.create_session(foreign, "m", None, None, None)
                 .await
                 .unwrap();
-            a.create_session(foreign, "m", None, None, None).await.unwrap();
             a.insert_reminder(&row(foreign, "r1")).await.unwrap();
             a.close().await;
 
             let mut b = super::super::tests::agents_on(dir.clone(), Some("b"), false).await;
+            // A previous body's jobs actor died with its runtime without its
+            // `on_stop` unregistration (what `tools::registry::start` evicts).
+            if ActorRef::<Jobs>::lookup(JOBS_ACTOR)
+                .ok()
+                .flatten()
+                .is_some_and(|j| !j.is_alive())
+            {
+                kameo::registry::ACTOR_REGISTRY
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(JOBS_ACTOR);
+            }
             let jobs = tools::jobs::start(&b.rt, Duration::ZERO, Duration::from_secs(30)).unwrap();
             let (taken, other) = (SessionId::new(), SessionId::new());
             for s in [taken, other] {
-                b.store.create_session(s, "m", None, None, None).await.unwrap();
+                b.store
+                    .create_session(s, "m", None, None, None)
+                    .await
+                    .unwrap();
                 b.store.insert_reminder(&row(s, "r1")).await.unwrap();
             }
             b.store.insert_reminder(&row(taken, "r2")).await.unwrap();
@@ -373,14 +393,27 @@ mod tests {
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            assert_eq!(want, vec![(taken.to_string(), vec!["r1".to_owned(), "r2".to_owned()])]);
+            assert_eq!(
+                want,
+                vec![(taken.to_string(), vec!["r1".to_owned(), "r2".to_owned()])]
+            );
 
             b.rearm_reminders_for(Some(foreign)).await;
             tokio::time::sleep(Duration::from_millis(200)).await;
-            assert_eq!(armed().await.len(), 1, "a session owned by `a` arms nothing here");
-            assert_eq!(b.store.reminders().await.unwrap().len(), 4, "rows untouched");
+            assert_eq!(
+                armed().await.len(),
+                1,
+                "a session owned by `a` arms nothing here"
+            );
+            assert_eq!(
+                b.store.reminders().await.unwrap().len(),
+                4,
+                "rows untouched"
+            );
 
-            jobs.tell(tools::CancelReminders { session: taken }).await.unwrap();
+            jobs.tell(tools::CancelReminders { session: taken })
+                .await
+                .unwrap();
             for _ in 0..100 {
                 if armed().await.is_empty() {
                     break;
@@ -388,7 +421,11 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             assert!(armed().await.is_empty());
-            assert_eq!(b.store.reminders().await.unwrap().len(), 4, "the demote deletes no row");
+            assert_eq!(
+                b.store.reminders().await.unwrap().len(),
+                4,
+                "the demote deletes no row"
+            );
             let _ = std::fs::remove_dir_all(&dir);
         });
     }

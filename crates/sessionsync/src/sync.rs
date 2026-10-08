@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use agent::AgentEvent;
 use agent::store::Store;
-use kameo::actor::ActorRef;
 use futures::{SinkExt as _, StreamExt as _};
+use kameo::actor::ActorRef;
 use parking_lot::Mutex;
 use replica::{ByteStream, PeerId};
 use runtime::{Runtime, SessionId};
@@ -368,7 +368,11 @@ async fn run(
 /// of sessions that came back, drop rows past the TTL with a local note.
 /// Called after the `Hello` exchange, on every enqueue and every
 /// [`HARNESS_RETRY`]. The ack deletes the row ([`Msg::HarnessAck`]).
-async fn flush_harness(node: &Arc<Node>, remote: &PeerId, framed: &mut Stream) -> anyhow::Result<()> {
+async fn flush_harness(
+    node: &Arc<Node>,
+    remote: &PeerId,
+    framed: &mut Stream,
+) -> anyhow::Result<()> {
     let rows = node.store.harness_outbox().await?;
     if rows.is_empty() {
         return Ok(());
@@ -439,7 +443,9 @@ async fn flush_harness(node: &Arc<Node>, remote: &PeerId, framed: &mut Stream) -
             _ => {}
         }
     }
-    node.store.harness_prune_seen(now.saturating_sub(ttl)).await?;
+    node.store
+        .harness_prune_seen(now.saturating_sub(ttl))
+        .await?;
     Ok(())
 }
 
@@ -822,7 +828,13 @@ mod tests {
     /// A store opened as engine `name`, its shipper wired to a loopback
     /// transport the way `SessionSync::start_transport` wires the real one.
     async fn node(name: &str, switch: &Arc<Switch>) -> Node {
-        node_in(name, tempfile::tempdir().unwrap(), switch, &SessionsConfig::default()).await
+        node_in(
+            name,
+            tempfile::tempdir().unwrap(),
+            switch,
+            &SessionsConfig::default(),
+        )
+        .await
     }
 
     /// A node over an existing data dir (its `sessions.sqlite` may hold rows already).
@@ -1337,9 +1349,16 @@ mod tests {
         link(&switch, &a, &b, false);
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        a.store.harness_enqueue(&harness_row(id, "u1")).await.unwrap();
+        a.store
+            .harness_enqueue(&harness_row(id, "u1"))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(outbox(&a).await, vec![("u1".into(), 0, None)], "no link: nothing sent");
+        assert_eq!(
+            outbox(&a).await,
+            vec![("u1".into(), 0, None)],
+            "no link: nothing sent"
+        );
 
         // The link returns: the row goes with the `Hello`; B has no supervisor
         // (a pairing run), so its ack refuses and A keeps the row with the reason.
@@ -1362,7 +1381,10 @@ mod tests {
         let id = taken(&a, &[&b], &[&b]).await;
         // B handed this id to its supervisor before (a reconnect overlap resent it).
         assert!(b.store.harness_mark_seen("u2", 0).await.unwrap());
-        a.store.harness_enqueue(&harness_row(id, "u2")).await.unwrap();
+        a.store
+            .harness_enqueue(&harness_row(id, "u2"))
+            .await
+            .unwrap();
         until("acked as seen: the row is gone", || async {
             outbox(&a).await.is_empty()
         })
@@ -1390,14 +1412,27 @@ mod tests {
         link(&switch, &b, &c, false);
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        a.store.harness_enqueue(&harness_row(id, "u3")).await.unwrap();
+        a.store
+            .harness_enqueue(&harness_row(id, "u3"))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(outbox(&a).await, vec![("u3".into(), 0, None)], "B is linked but is not the owner");
+        assert_eq!(
+            outbox(&a).await,
+            vec![("u3".into(), 0, None)],
+            "B is linked but is not the owner"
+        );
 
         assert!(c.store.harness_mark_seen("u3", 0).await.unwrap());
         link(&switch, &a, &c, true);
-        until("sent to C and acked", || async { outbox(&a).await.is_empty() }).await;
-        assert!(b.store.harness_mark_seen("u3", 0).await.unwrap(), "B never saw it");
+        until("sent to C and acked", || async {
+            outbox(&a).await.is_empty()
+        })
+        .await;
+        assert!(
+            b.store.harness_mark_seen("u3", 0).await.unwrap(),
+            "B never saw it"
+        );
     }
 
     #[tokio::test]
@@ -1419,7 +1454,10 @@ mod tests {
         let t = texts(&a.store, id).await;
         assert_eq!(t.len(), before + 1);
         assert!(
-            t.last().unwrap().2.contains("job j1 produced on A was not forwarded"),
+            t.last()
+                .unwrap()
+                .2
+                .contains("job j1 produced on A was not forwarded"),
             "{t:?}"
         );
         assert_eq!(
@@ -1427,6 +1465,9 @@ mod tests {
             before,
             "the note is local to A"
         );
-        assert!(b.store.harness_mark_seen("u4", 0).await.unwrap(), "never sent");
+        assert!(
+            b.store.harness_mark_seen("u4", 0).await.unwrap(),
+            "never sent"
+        );
     }
 }

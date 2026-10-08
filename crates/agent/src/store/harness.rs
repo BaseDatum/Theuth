@@ -177,14 +177,20 @@ mod tests {
         store.harness_refused("x", "unknown session").await.unwrap();
         let rows = store.harness_outbox().await.unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!((rows[0].attempts, rows[0].last_error.as_deref()), (1, Some("unknown session")));
+        assert_eq!(
+            (rows[0].attempts, rows[0].last_error.as_deref()),
+            (1, Some("unknown session"))
+        );
         store.harness_sent("x").await.unwrap();
         let rows = store.harness_outbox().await.unwrap();
         assert_eq!((rows[0].attempts, rows[0].last_error.as_deref()), (2, None));
         assert_eq!(rows[0].kind, "job j1");
         store.harness_delete("x").await.unwrap();
         assert!(store.harness_outbox().await.unwrap().is_empty());
-        assert!(!watch.has_changed().unwrap(), "only an enqueue wakes the shippers");
+        assert!(
+            !watch.has_changed().unwrap(),
+            "only an enqueue wakes the shippers"
+        );
     }
 
     #[tokio::test]

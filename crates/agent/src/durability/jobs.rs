@@ -1,5 +1,5 @@
 //! Design doc 109 §5.4: the job reaper at start. Runs once after
-//! `rearm_reminders` and before `resume_scan` (§4.6 step 10): every
+//! `rearm_reminders_for(None)` and before `resume_scan` (§4.6 step 10): every
 //! `running` `jobs` row whose pgid is still alive is killed, every `running`
 //! row is settled `lost`, and the rows go to the jobs actor as
 //! [`Reaped`] — which lists them `lost`, serves a lost PTY's stored screen,

@@ -1397,8 +1397,12 @@ impl Agents {
                 last_error: None,
             };
             match self.store.harness_enqueue(&row).await {
-                Ok(()) => tracing::info!(session = %to, %owner, id = %row.id, "139: {from}: queued for the owner"),
-                Err(e) => tracing::warn!(session = %to, %owner, "139: {from}: not queued for the owner: {e:#}"),
+                Ok(()) => {
+                    tracing::info!(session = %to, %owner, id = %row.id, "139: {from}: queued for the owner")
+                }
+                Err(e) => {
+                    tracing::warn!(session = %to, %owner, "139: {from}: not queued for the owner: {e:#}")
+                }
             }
             return;
         }
