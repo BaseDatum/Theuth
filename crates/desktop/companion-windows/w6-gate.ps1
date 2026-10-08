@@ -63,6 +63,7 @@ public static class W6Native {
     [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint msg, IntPtr w, [MarshalAs(UnmanagedType.LPWStr)] string l, uint flags, uint timeout, out IntPtr result);
     [DllImport("user32.dll", SetLastError = true)] public static extern bool SystemParametersInfoW(uint action, uint param, ref int pv, uint winini);
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "SystemParametersInfoW")] public static extern bool SystemParametersInfoSet(uint action, uint param, IntPtr pv, uint winini);
     [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
     [StructLayout(LayoutKind.Explicit)] public struct INPUTUNION { [FieldOffset(0)] public KEYBDINPUT ki; [FieldOffset(0)] public long pad1; [FieldOffset(8)] public long pad2; [FieldOffset(16)] public long pad3; }
     [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public INPUTUNION u; }
@@ -214,8 +215,9 @@ switch ($Action) {
         }
         if ($what -eq 'animations' -and $val -in 'on', 'off') {
             $v = if ($val -eq 'on') { 1 } else { 0 }
-            # SPI_SETCLIENTAREAANIMATION = 0x1043; pvParam is the BOOL by value for SET; SPIF_UPDATEINIFILE|SPIF_SENDCHANGE = 3
-            $ok = [W6Native]::SystemParametersInfoW(0x1043, 0, [ref]$v, 3)
+            # SPI_SETCLIENTAREAANIMATION = 0x1043; for SET pvParam carries the BOOL BY VALUE (a pointer to a BOOL reads as TRUE);
+            # SPIF_UPDATEINIFILE|SPIF_SENDCHANGE = 3
+            $ok = [W6Native]::SystemParametersInfoSet(0x1043, 0, [IntPtr]$v, 3)
             Say "fx: SPI_SETCLIENTAREAANIMATION $val -> $ok"
         }
         $t = (Get-ItemProperty $key -ErrorAction SilentlyContinue).EnableTransparency
