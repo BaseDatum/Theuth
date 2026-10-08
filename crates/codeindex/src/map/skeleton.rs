@@ -980,7 +980,8 @@ impl Skeleton {
     }
 
     /// A model-written child row as a skeleton child: a `unit:` by its path,
-    /// a `cluster:` through its members' files, an `ext:` with no files.
+    /// a `cluster:` or the root `bundle:` through its members' files, an
+    /// `ext:` with no files.
     fn model_child(&self, e: &ElementRow) -> Option<Child> {
         if let Some(c) = self.child_of_node(&e.node) {
             return Some(Child {
@@ -988,7 +989,7 @@ impl Skeleton {
                 ..c
             });
         }
-        if e.kind == "cluster" {
+        if e.kind == "cluster" || e.kind == "bundle" {
             let mut files: Vec<usize> = e
                 .members()
                 .iter()
@@ -1001,7 +1002,9 @@ impl Skeleton {
                 node: e.node.clone(),
                 name: e.name.clone(),
                 path: e.path.clone().unwrap_or_default(),
-                kind: "unit",
+                // A bundle stays a leaf (§5.6): `"unit"` would make its
+                // `children_of("")` the whole top level.
+                kind: if e.kind == "bundle" { "bundle" } else { "unit" },
                 files,
                 member: false,
             });
@@ -1851,6 +1854,27 @@ mod tests {
             "{hits:?}"
         );
         assert_eq!(hits[0].chain.len(), 3);
+        // A generated root keeps its bundle: recompute re-plans the bundle row
+        // (its files, anchors, hash) instead of dropping it.
+        let pool = ix.map_pool(&ri).await.unwrap();
+        sqlx::query("UPDATE elements SET origin = 'generated' WHERE id = ?")
+            .bind(STRUCTURE_PERSPECTIVE)
+            .execute(&pool)
+            .await
+            .unwrap();
+        recompute(&ix, &ri).await.unwrap();
+        let root = element(
+            &ix,
+            Element {
+                root: ri.root.clone(),
+                element: STRUCTURE_PERSPECTIVE.to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(root.children.len(), 13, "{:?}", root.children);
+        let b = root.children.iter().find(|c| c.kind == "bundle").unwrap();
+        assert_eq!((b.files, b.id.as_str()), (9, bundle_child.id.as_str()));
     }
 
     #[tokio::test]

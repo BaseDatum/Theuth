@@ -467,7 +467,9 @@ async fn cancel_stops_and_keeps_written_elements() {
             .fetch_one(&s.pool)
             .await
             .unwrap();
-        if n > 0 {
+        // Stage B puts one element per transaction: wait for the three the
+        // assertion below needs, not the first.
+        if n >= 3 {
             break;
         }
         assert!(t.elapsed() < Duration::from_secs(20), "stage B never wrote");
