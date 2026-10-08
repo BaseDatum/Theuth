@@ -10,15 +10,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use agent::AgentEvent;
+use agent::durability::{DurabilityConfig, ResumeCause, ResumeMode};
 use agent::store::Store;
+use agent::supervisor::transfer;
 use anyhow::Context as _;
 use futures::{SinkExt as _, StreamExt as _};
 use kameo::actor::ActorRef;
+use kameo::message::{Context, Message};
 use replica::{ALPN_SESSIONS, PeerId, Transport};
 use runtime::{Runtime, SessionId};
 
 use crate::types::Msg;
-use crate::{SessionsConfig, TakeReason};
+use crate::{SessionSync, SessionsConfig, TakeReason};
 
 /// How often a taker re-reads its cursor while waiting for the owner's tail.
 const CURSOR_POLL: Duration = Duration::from_millis(100);
@@ -51,10 +54,52 @@ pub struct Take {
     pub peers: Vec<mesh::Peer>,
 }
 
+/// 139 §6.2 step 9: what the taker did about the taken open turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResumeOnTake {
+    /// No turn was open on our copy.
+    NoOpenTurn,
+    /// `ResumeTurn{cause}` sent to the supervisor (resumes now).
+    Resume(ResumeCause),
+    /// `ResumePending` published: the Attention item; the user resumes.
+    Pending,
+    /// `durability.resume = off`: the next input resumes lazily.
+    Nothing,
+}
+
+/// 139 §6.3 policy table (D5, Revision 1 Q10): a transfer follows
+/// `durability.resume`; a takeover resumes only when the user asked for it
+/// (`User` — the RPC passes `User` for a `Write` take from a real client
+/// peer, W4); system takes (`Write`, `Orphan`) leave the item.
+fn resume_policy(transferred: bool, reason: TakeReason, mode: ResumeMode) -> ResumeOnTake {
+    if transferred {
+        match mode {
+            ResumeMode::Auto => ResumeOnTake::Resume(ResumeCause::Transfer),
+            ResumeMode::Ask => ResumeOnTake::Pending,
+            ResumeMode::Off => ResumeOnTake::Nothing,
+        }
+    } else {
+        match reason {
+            TakeReason::User => ResumeOnTake::Resume(ResumeCause::Takeover),
+            TakeReason::Write | TakeReason::Orphan => ResumeOnTake::Pending,
+        }
+    }
+}
+
 impl Take {
     /// Take `id` here; returns the new `(owner, epoch)`. A session already
-    /// ours (or unowned, lone engine) is a no-op.
+    /// ours (or unowned, lone engine) is a no-op. The taken open turn, if
+    /// any, is resumed or left for the user per [`resume_policy`].
     pub async fn run(self, id: SessionId, reason: TakeReason) -> Result<(String, u32), String> {
+        self.take(id, reason).await.map(|(owner, _)| owner)
+    }
+
+    /// [`Take::run`] reporting what step 9 did.
+    pub(crate) async fn take(
+        self,
+        id: SessionId,
+        reason: TakeReason,
+    ) -> Result<((String, u32), ResumeOnTake), String> {
         let me = self.store.engine().to_owned();
         let (epoch, owner) = self
             .store
@@ -63,15 +108,16 @@ impl Take {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("{id}: no such session"))?;
         if owner.is_empty() || owner == me {
-            return Ok((owner, epoch));
+            return Ok(((owner, epoch), ResumeOnTake::NoOpenTurn));
         }
         if me.is_empty() {
             return Err("this engine has no mesh identity".to_owned());
         }
         let peer = PeerId(owner.clone());
+        let mut transferred = false;
         if self.connected.contains(&peer) {
             match self.release_from(&peer, id).await {
-                Ok(()) => {}
+                Ok(()) => transferred = true,
                 // The user chose to continue here now: A's tail becomes A's orphans (§4.3).
                 Err(e) if reason == TakeReason::User => {
                     tracing::warn!("sessions: take {id} from {owner} without its tail: {e:#}");
@@ -90,7 +136,8 @@ impl Take {
                 ));
             }
         }
-        unload(id).await;
+        // 139 D19: no taker-side `unload` — after D1 no actor exists here
+        // for a session this engine does not own (I1).
         let next = epoch + 1;
         self.store
             .set_owner(id, &me, next)
@@ -108,15 +155,88 @@ impl Take {
                 here: true,
             })
             .await;
-        Ok((me, next))
+        let resumed = self.resume_on_take(id, &owner, transferred, reason).await;
+        Ok(((me, next), resumed))
+    }
+
+    /// 139 §6.2 step 9 / 9′: the open turn on our copy, after `set_owner`,
+    /// by the policy table. `ResumeTurn` is a `tell` so the take's reply is
+    /// not delayed by the resume.
+    async fn resume_on_take(
+        &self,
+        id: SessionId,
+        from: &str,
+        transferred: bool,
+        reason: TakeReason,
+    ) -> ResumeOnTake {
+        let turn = match self.store.open_turn(id).await {
+            Ok(Some((turn, _))) => turn,
+            Ok(None) => return ResumeOnTake::NoOpenTurn,
+            Err(e) => {
+                tracing::warn!("sessions: take {id}: open_turn: {e:#}");
+                return ResumeOnTake::NoOpenTurn;
+            }
+        };
+        let action = resume_policy(transferred, reason, self.durability().resume);
+        match &action {
+            ResumeOnTake::Resume(cause) => {
+                match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+                    Ok(Some(agents)) => {
+                        let _ = agents
+                            .tell(agent::supervisor::ResumeTurn {
+                                session: id,
+                                turn,
+                                cause: Some(*cause),
+                                from: Some(from.to_owned()),
+                            })
+                            .await;
+                    }
+                    _ => tracing::warn!(
+                        "sessions: take {id}: no supervisor; turn {turn} resumes on the next start"
+                    ),
+                }
+            }
+            ResumeOnTake::Pending => {
+                if !transferred {
+                    // ponytail: the owner's next message replaces the note (owner wins).
+                    let note = format!(
+                        "taken from {from} at {} while a turn was running; press Resume to continue it here",
+                        chrono::Local::now().format("%H:%M")
+                    );
+                    if let Err(e) = self.store.append_local_note(id, &note).await {
+                        tracing::warn!("sessions: take {id}: note: {e:#}");
+                    }
+                }
+                self.rt
+                    .publish(AgentEvent::ResumePending {
+                        session: id,
+                        turn,
+                        from: from.to_owned(),
+                    })
+                    .await;
+            }
+            ResumeOnTake::Nothing | ResumeOnTake::NoOpenTurn => {}
+        }
+        tracing::info!("sessions: take {id} from {from}: open turn {turn} → {action:?}");
+        action
+    }
+
+    /// `durability:` as the agent reads it; defaults when absent.
+    fn durability(&self) -> DurabilityConfig {
+        self.rt
+            .section::<DurabilityConfig>("durability")
+            .unwrap_or_default()
     }
 
     /// `Release` → `Released{last_seq}` over `theuth/sessions/1`, then wait
-    /// until our cursor for the owner reached `last_seq`; each bounded by
-    /// `release_wait_secs`.
+    /// until our cursor for the owner reached `last_seq`. The reply is
+    /// bounded by `release_wait_secs + durability.drain_secs` (139 Q4: the
+    /// owner drains for `release_wait_secs − 1` and then flushes), the
+    /// cursor by `release_wait_secs`.
     async fn release_from(&self, peer: &PeerId, id: SessionId) -> anyhow::Result<()> {
         let t = self.transport.as_ref().context("no transport")?;
         let wait = Duration::from_secs(self.config.release_wait_secs);
+        let reply_wait = wait + Duration::from_secs(self.durability().drain_secs);
         let mut framed = crate::events::framed(t.open(peer, ALPN_SESSIONS).await?);
         framed
             .send(
@@ -126,7 +246,7 @@ impl Take {
                 .encode()?,
             )
             .await?;
-        let frame = tokio::time::timeout(wait, framed.next())
+        let frame = tokio::time::timeout(reply_wait, framed.next())
             .await
             .context("release timed out")?
             .context("owner closed the stream")??;
@@ -178,13 +298,13 @@ impl Take {
     }
 }
 
-/// Owner side of a take (68 §4.2 step 1): stop the live actor, flush the
-/// write connection, answer with `MAX(seq)` of the session's log rows. The
-/// session stays readable here; the taker's row flips `owner` when it lands.
-// ponytail: a turn that starts between the kill and the taker's row still
-// writes and becomes an orphan on demote; a local "releasing" mark would close it.
+/// Owner side of a take (68 §4.2 step 1; 139 §6.1 D3): drain the session —
+/// its open turn is `turn_finished` or `suspended{release}` before the
+/// reply — flush the write connection, answer with `MAX(seq)` of the
+/// session's log rows. The session stays readable here; the taker's row
+/// flips `owner` when it lands. Inputs are refused meanwhile (D16).
 pub async fn release(store: &Store, id: SessionId) -> anyhow::Result<u64> {
-    unload(id).await;
+    drain_session(store, id).await;
     store.flush().await?;
     Ok(u64::try_from(store.session_log_seq(id).await?).unwrap_or(0))
 }
@@ -206,8 +326,10 @@ pub(crate) async fn answer_release(
 /// actor, orphan our unshipped rows of that epoch (those above what `by`
 /// had applied of our log), raise the fence, tell the UI, and leave a
 /// local-only note in the transcript. Returns how many rows were orphaned.
+/// 139 D16: the taker's row landed, so the release hold on inputs ends.
 pub async fn demote(rt: &Runtime, store: &Store, m: Demote) -> anyhow::Result<u64> {
     unload(m.session).await;
+    transfer::demoted(m.session).await;
     let me = store.engine();
     let shipped = store
         .cursors()
@@ -282,10 +404,60 @@ pub(crate) async fn on_applied(
     }
 }
 
-/// Stop the live actor of `id`, if the agent supervisor is running.
+/// Stop the live actor of `id`, if the agent supervisor is running
+/// (`UnloadSession`, 139 D19: the cancel lands before the stop).
 async fn unload(id: SessionId) {
     if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
         let _ = agents.ask(agent::UnloadSession { session: id }).await;
+    }
+}
+
+/// 139 §6.1: the owner side of a take drains `id` — `suspended{release}`
+/// first, in-flight calls until the window closes, jobs, then the actor —
+/// through the supervisor; without one (a pairing run, these tests) the
+/// store-only step 1 still leaves the resumable row (I3).
+async fn drain_session(store: &Store, id: SessionId) {
+    let deadline = Instant::now() + transfer::release_window(release_wait_secs().await);
+    match ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+        Ok(Some(agents)) => {
+            if let Err(e) = agents
+                .ask(agent::supervisor::DrainSession {
+                    session: id,
+                    reason: transfer::RELEASE,
+                    deadline,
+                })
+                .await
+            {
+                tracing::warn!("sessions: release {id}: drain: {e}");
+            }
+        }
+        _ => {
+            transfer::suspend_open_turn(store, id, transfer::RELEASE).await;
+        }
+    }
+}
+
+/// `ask` → `sessions.release_wait_secs`: the owner's own window for a
+/// release (139 Q4; `Msg::Release` carries none). `release` runs off the
+/// actor's mailbox (an accepted stream), so asking it is safe there.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReleaseWaitSecs;
+
+impl Message<ReleaseWaitSecs> for SessionSync {
+    type Reply = u64;
+
+    async fn handle(&mut self, _: ReleaseWaitSecs, _: &mut Context<Self, Self::Reply>) -> u64 {
+        self.config.release_wait_secs
+    }
+}
+
+async fn release_wait_secs() -> u64 {
+    match crate::actor() {
+        Some(a) => a
+            .ask(ReleaseWaitSecs)
+            .await
+            .unwrap_or(SessionsConfig::default().release_wait_secs),
+        None => SessionsConfig::default().release_wait_secs,
     }
 }
 
@@ -328,6 +500,7 @@ mod tests {
 
     use super::*;
     use crate::apply::{Applied, apply_log_row};
+    use agent::durability::{ResumeKind, StepKind};
 
     // ---- the record replica's loopback transport, cut to what a take needs ----
 
@@ -490,8 +663,9 @@ mod tests {
         a.store.append(id, &agent_msg("u1")).await.unwrap();
         b.pull(&a).await;
         assert_eq!(b.store.fence(id).await.unwrap(), Some((1, "a".into())));
-        // The tail B has not seen yet.
+        // The tail B has not seen yet: a message and an open turn (139 §6.2).
         a.store.append(id, &agent_msg("u2")).await.unwrap();
+        let turn = open_turn_on(&a.store, id).await;
         let tail = a.store.log_seq();
 
         let switch = Arc::new(Switch::default());
@@ -520,9 +694,9 @@ mod tests {
             }
         });
 
-        let got = b
+        let (got, resumed) = b
             .take(Some(lb.clone()), vec![a.id()], vec![])
-            .run(id, TakeReason::Write)
+            .take(id, TakeReason::Write)
             .await
             .unwrap();
         assert_eq!(got, ("b".into(), 2));
@@ -535,6 +709,13 @@ mod tests {
         );
         assert_eq!(b.store.owner(id).await.unwrap(), Some(("b".into(), 2)));
         assert_eq!(b.store.fence(id).await.unwrap(), Some((2, "b".into())));
+        // 139 D3/D4: A's release drained the turn — `suspended{release}` is
+        // on B at epoch 1 (before B's `set_owner`, or the fence would have
+        // dropped it) and B decided to resume it as a transfer from A.
+        let plan = b.store.resume_plan(id, turn).await.unwrap();
+        assert_eq!(plan.kind, ResumeKind::Suspended);
+        assert_eq!(plan.cause, ResumeCause::Transfer, "newest step is suspended{{release}}");
+        assert_eq!(resumed, ResumeOnTake::Resume(ResumeCause::Transfer));
         b.store.append(id, &agent_msg("u3 on b")).await.unwrap();
 
         // B's take row reaches A: A demotes with nothing to orphan.
@@ -562,7 +743,8 @@ mod tests {
             a.store.append(id, &agent_msg("late")).await.is_err(),
             "A is fenced out"
         );
-        assert_eq!(a.store.session_log_seq(id).await.unwrap(), tail);
+        // 139 I3: the drain's row is the session's last row on A, and it shipped.
+        assert!(a.store.session_log_seq(id).await.unwrap() > tail);
         a.close().await;
         b.close().await;
     }
@@ -646,16 +828,23 @@ mod tests {
             .await
             .unwrap();
         a.store.append(id, &agent_msg("u1")).await.unwrap();
+        let turn = open_turn_on(&a.store, id).await;
         b.pull(&a).await;
         // Partition: A keeps writing; B takes.
         a.store.append(id, &agent_msg("u2")).await.unwrap();
         a.store.append(id, &agent_msg("u3")).await.unwrap();
+        // 139 D5: the user's take resumes the open turn here as a takeover
+        // (no `suspended` row shipped: `kind = Interrupted`).
+        let (got, resumed) = b
+            .take(None, vec![], vec![peer("a", false, now_ms())])
+            .take(id, TakeReason::User)
+            .await
+            .unwrap();
+        assert_eq!(got, ("b".into(), 2));
+        assert_eq!(resumed, ResumeOnTake::Resume(ResumeCause::Takeover));
         assert_eq!(
-            b.take(None, vec![], vec![peer("a", false, now_ms())])
-                .run(id, TakeReason::User)
-                .await
-                .unwrap(),
-            ("b".into(), 2)
+            b.store.resume_plan(id, turn).await.unwrap().kind,
+            ResumeKind::Interrupted
         );
         b.store.append(id, &agent_msg("b1")).await.unwrap();
 
@@ -699,7 +888,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .all(|r| r.epoch != 1 || r.seq <= 2)
+                .all(|r| r.epoch != 1 || r.seq <= 3)
         );
         for row in a.store.log_orphans(id).await.unwrap() {
             assert_eq!(
@@ -719,5 +908,133 @@ mod tests {
 
     fn agent_msg(t: &str) -> genai::chat::ChatMessage {
         genai::chat::ChatMessage::user(t)
+    }
+
+    /// Open a turn of `id` on `store` (its `input_accepted` step) and return it.
+    async fn open_turn_on(store: &Store, id: SessionId) -> runtime::TurnId {
+        let turn = runtime::TurnId::new();
+        store
+            .step(id, turn, StepKind::InputAccepted, None, &serde_json::json!({}))
+            .await
+            .unwrap();
+        turn
+    }
+
+    /// Collects the runtime's `AgentEvent`s.
+    #[derive(kameo::Actor)]
+    struct Sink {
+        events: Arc<parking_lot::Mutex<Vec<AgentEvent>>>,
+    }
+
+    impl Message<AgentEvent> for Sink {
+        type Reply = ();
+
+        async fn handle(&mut self, e: AgentEvent, _: &mut Context<Self, Self::Reply>) {
+            self.events.lock().push(e);
+        }
+    }
+
+    async fn sink(rt: &Runtime) -> Arc<parking_lot::Mutex<Vec<AgentEvent>>> {
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let actor = kameo::actor::Spawn::spawn(Sink {
+            events: events.clone(),
+        });
+        rt.subscribe::<Sink, AgentEvent>(&actor).await;
+        events
+    }
+
+    /// 139 §6.3 (D5, Q10): the policy table as ruled.
+    #[test]
+    fn resume_policy_follows_the_table() {
+        use ResumeOnTake::*;
+        for reason in [TakeReason::User, TakeReason::Write, TakeReason::Orphan] {
+            assert_eq!(resume_policy(true, reason, ResumeMode::Auto), Resume(ResumeCause::Transfer));
+            assert_eq!(resume_policy(true, reason, ResumeMode::Ask), Pending);
+            assert_eq!(resume_policy(true, reason, ResumeMode::Off), Nothing);
+        }
+        for mode in [ResumeMode::Auto, ResumeMode::Ask, ResumeMode::Off] {
+            assert_eq!(resume_policy(false, TakeReason::User, mode), Resume(ResumeCause::Takeover));
+            assert_eq!(resume_policy(false, TakeReason::Write, mode), Pending);
+            assert_eq!(resume_policy(false, TakeReason::Orphan, mode), Pending);
+        }
+    }
+
+    /// 139 D5: a system takeover (`Write` after `takeover_secs`, `Orphan`)
+    /// of a session with an open turn does not resume it — `ResumePending`
+    /// is published and the transcript gets the local note; a session with
+    /// no open turn publishes nothing.
+    #[tokio::test]
+    async fn system_takeover_leaves_the_open_turn_pending() {
+        let (a, b) = (engine("a").await, engine("b").await);
+        let events = sink(&b.rt).await;
+        let id = SessionId::new();
+        a.store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store.append(id, &agent_msg("u1")).await.unwrap();
+        let turn = open_turn_on(&a.store, id).await;
+        b.pull(&a).await;
+        let before = b.store.messages(id).await.unwrap().len();
+
+        let old = vec![peer("a", false, now_ms() - 301_000)];
+        let (got, resumed) = b
+            .take(None, vec![], old.clone())
+            .take(id, TakeReason::Write)
+            .await
+            .unwrap();
+        assert_eq!((got, resumed), (("b".into(), 2), ResumeOnTake::Pending));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            events.lock().iter().any(|e| matches!(
+                e,
+                AgentEvent::ResumePending { session, turn: t, from } if *session == id && *t == turn && from == "a"
+            )),
+            "{:?}",
+            events.lock()
+        );
+        let messages = b.store.messages(id).await.unwrap();
+        assert_eq!(messages.len(), before + 1);
+        let text = messages.last().unwrap().1.content.joined_texts().unwrap_or_default();
+        assert!(text.starts_with("taken from a at ") && text.contains("press Resume"), "{text}");
+        // The turn is still open on B: the user's Resume runs it.
+        assert_eq!(b.store.open_turn(id).await.unwrap().map(|(t, _)| t), Some(turn));
+
+        // Orphan: the same, from a third engine; no open turn → nothing.
+        let c = engine("c").await;
+        let c_events = sink(&c.rt).await;
+        c.pull(&a).await;
+        c.pull(&b).await;
+        let closed = SessionId::new();
+        b.store
+            .create_session(closed, "m", None, None, None)
+            .await
+            .unwrap();
+        c.pull(&b).await;
+        let (_, resumed) = c
+            .take(None, vec![], vec![peer("b", false, now_ms())])
+            .take(id, TakeReason::Orphan)
+            .await
+            .unwrap();
+        assert_eq!(resumed, ResumeOnTake::Pending);
+        let (_, resumed) = c
+            .take(None, vec![], vec![peer("b", false, now_ms())])
+            .take(closed, TakeReason::Orphan)
+            .await
+            .unwrap();
+        assert_eq!(resumed, ResumeOnTake::NoOpenTurn);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let pending: Vec<SessionId> = c_events
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ResumePending { session, .. } => Some(*session),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pending, [id]);
+        a.close().await;
+        b.close().await;
+        c.close().await;
     }
 }

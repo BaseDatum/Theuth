@@ -166,6 +166,10 @@ pub struct Agents {
     sessions: HashMap<SessionId, Live>,
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
     running: HashSet<SessionId>,
+    /// 139 D16: sessions mid-release-drain → the drain's reason; `route`
+    /// refuses their inputs (`transfer::draining_error`) until the demote
+    /// lands or the hold expires (`transfer::ClearDraining`).
+    draining_sessions: HashMap<SessionId, &'static str>,
     /// The communication policy (50 §2.1, §8), shared read-only with the
     /// tool registry; every mutation and admission happens in this mailbox.
     pub(crate) communication: SharedPolicy,
@@ -297,7 +301,7 @@ struct Live {
 /// What runs a session's turns: theuth's own loop, or an external ACP harness
 /// (design doc 06 §3.2). Both take [`UserInput`], [`CancelTurn`] and [`IsRunning`].
 #[derive(Clone)]
-enum LiveActor {
+pub(crate) enum LiveActor {
     Native(ActorRef<Session>),
     Acp(ActorRef<AcpChild>),
 }
@@ -329,6 +333,15 @@ impl LiveActor {
             Self::Acp(a) => {
                 let _ = a.tell(CancelTurn { keep }).await;
             }
+        }
+    }
+
+    /// 139 D19: cancel the turn, then stop once the cancel is processed —
+    /// never `kill()`, which drops the queued cancel with the mailbox.
+    async fn stop(&self) {
+        match self {
+            Self::Native(a) => transfer::stop_actor(a).await,
+            Self::Acp(a) => transfer::stop_actor(a).await,
         }
     }
 
@@ -1181,6 +1194,14 @@ impl Agents {
                 defer,
             });
             return Ok(());
+        }
+        // 139 D16: a session mid-release-drain takes nothing — the fence is
+        // about to move. Refused before any row is written (no error row
+        // in the transcript); the RPC layer maps the prefix to `-32011`.
+        if let Some(reason) = self.draining_sessions.get(&sid).copied() {
+            self.ledger.release(sid, ticket);
+            self.network_input_dropped(ticket).await;
+            return Err(transfer::draining_error(sid, reason));
         }
         let routed = match check_files(&files) {
             Ok(()) => self.session(Some(sid), None, None, (None, None)).await,
@@ -5889,17 +5910,17 @@ impl Message<UnloadSession> for Agents {
 }
 
 impl Agents {
-    /// As `DeleteSession` stops an actor (68 §4.2): cancel the turn, kill,
-    /// forget the live entry; rows and peer state stay. Also the C-contract
-    /// body of `transfer::drain_session` until W2 lands the drain; 139 D19
-    /// (W2) swaps `kill()` for `stop_gracefully` + `wait_for_shutdown`.
+    /// As `DeleteSession` stops an actor (68 §4.2): cancel the turn, stop
+    /// gracefully (139 D19: the cancel is processed, never dropped), forget
+    /// the live entry; rows and peer state stay. A demoted turn's
+    /// `finish_turn("cancelled")` is refused `NotOwner` by the fence, which
+    /// is correct — the new owner's rows stand.
     pub(super) async fn unload_session(&mut self, session: SessionId) -> bool {
         self.drop_queued(session).await;
         let Some(live) = self.sessions.remove(&session) else {
             return false;
         };
-        live.actor.tell_cancel(None).await;
-        live.actor.kill().await;
+        live.actor.stop().await;
         self.running.remove(&session);
         true
     }
@@ -8251,6 +8272,29 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .as_deref()
             .map_or_else(|| text.to_owned(), |v| v.redact(text).into_owned())
     });
+    // 139 D15 (§5.3): finished-turn journal retention runs where the rows
+    // are owned — hourly, `Scope::Here`; the deletes replicate as log rows.
+    // ponytail: no config key for the interval (sessionsync's orphan sweep shape).
+    {
+        let store = store.clone();
+        let keep_days = cfg.durability.journal_keep_days;
+        let shutdown = rt.shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                match store.journal_prune(store::Scope::Here, keep_days).await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!("109: pruned {n} finished turn(s) older than {keep_days} days")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("109: journal prune: {e:#}"),
+                }
+                tokio::select! {
+                    () = shutdown.cancelled() => return,
+                    () = tokio::time::sleep(Duration::from_secs(3600)) => {}
+                }
+            }
+        });
+    }
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
@@ -8272,6 +8316,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             auth,
             sessions: HashMap::new(),
             running: HashSet::new(),
+            draining_sessions: HashMap::new(),
             communication: communication.clone(),
             network: network::NetworkState::default(),
             waits: HashMap::new(),
@@ -10009,6 +10054,7 @@ pub(crate) mod tests {
             auth: Auth::stub(&dir),
             sessions: HashMap::new(),
             running: HashSet::new(),
+            draining_sessions: HashMap::new(),
             communication: SharedPolicy::new(Policy::new(communication, "config")),
             network: network::NetworkState::default(),
             waits: HashMap::new(),
