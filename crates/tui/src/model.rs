@@ -9877,7 +9877,7 @@ impl Model {
     fn acp_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
         enum Act {
             Move(usize),
-            Send(Command),
+            Send(Box<Command>),
             Probe,
             Close,
             Nothing,
@@ -9898,9 +9898,11 @@ impl Model {
             (KeyCode::Down, _) => Act::Move(step((cursor + 1).min(last), 1)),
             (KeyCode::Esc, _) => Act::Close,
             (KeyCode::Char('p'), _) => Act::Probe,
-            (KeyCode::Enter, Some(AcpRow::Registry(a))) => Act::Send(Command::AddAcp(a.id.clone())),
+            (KeyCode::Enter, Some(AcpRow::Registry(a))) => {
+                Act::Send(Box::new(Command::AddAcp(a.id.clone())))
+            }
             (KeyCode::Char('d') | KeyCode::Backspace, Some(AcpRow::Entry(e))) => {
-                Act::Send(Command::RemoveAcp(e.name.clone()))
+                Act::Send(Box::new(Command::RemoveAcp(e.name.clone())))
             }
             _ => Act::Nothing,
         };
@@ -9921,7 +9923,7 @@ impl Model {
                 }
                 send(tx, Command::ListAcp { probe: true });
             }
-            Act::Send(cmd) => send(tx, cmd),
+            Act::Send(cmd) => send(tx, *cmd),
             Act::Close => self.menu = None,
             Act::Nothing => {}
         }
