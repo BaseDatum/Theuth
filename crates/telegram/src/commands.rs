@@ -1778,7 +1778,7 @@ mod tests {
         };
         assert_eq!(
             handle(cx(&port, 2, Some(s)), "cancel", "ReadA").await,
-            text(format!(
+            text(&format!(
                 "ReadA is a watch-only subagent of {}; stop the parent",
                 short(s)
             ))

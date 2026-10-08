@@ -132,7 +132,15 @@ gate + status hint + refusal + `/` escape hatch + state line + Esc routing),
 
 ## 5. Gates
 
-(filled in below)
+All through `BUILD_LABEL=141-W4 build-lock`, stable toolchain, `CARGO_BUILD_JOBS=4`,
+after merging `feat/141-acp-subagents` at C's final `63281cc4` (the warm-target clone
+never produced `.ready`; built from the partial clone after `cargo clean -p
+sentencepiece-sys` cleared a CMakeCache pointing at Sky's target dir):
+
+- `cargo test -p tui` — `149 passed; 0 failed` (lib) + 1 bin test.
+- `cargo test -p slack` — `146 passed; 0 failed`.
+- `cargo test -p telegram` — `124 passed; 0 failed`.
+
 
 ## 6. For the Closer
 
