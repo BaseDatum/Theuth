@@ -45,6 +45,8 @@ cargo fmt -p meeting                                                          (c
 
 No live smoke: the agent bridge (§4 item 1) is not wired on this branch, so a started meeting runs in epochs with one `warn!`; the head/tool/start paths are exercised by the unit tests above.
 
+Re-run after the orchestrator merged W1's full implementation (`b4a7fd1f`, W1 at `8f9cc634`): `cargo check -p meeting -p rpc` → `Finished … in 35.47s`, exit 0; `cargo test -p meeting --no-fail-fast` → `ok. 69 passed` / `ok. 1 passed` / `ok. 1 passed`; `cargo clippy -p meeting --no-deps -- -D warnings` → `Finished … in 39.93s`, exit 0. The merged `agent::endless` surface matches what the port abstracts (`ViewLine.text` is the verbatim unit or placeholder when unbuilt; `SetMode`, `MemoryMode` unchanged); `render_with_budget`, `UnitFilter`, `set_view_bytes`, `backfill_estimate` are still W1's follow-up and are reached only through `endless_agent.rs`.
+
 ## 3. Deviations and decisions (design silent or adjusted)
 
 1. **VIEW_DOC rides in the head, not the system prompt.** The agent has no per-session system-prompt block: `Toolset.prompts` only selects *plugin* blocks by name, and a block registered with `RegisterPrompt` is seen by every session without a toolset (`loop_.rs` `toolset.is_none_or(..)`), i.e. every ordinary chat. The meeting's standing rules already live in the head (wave 81), so the doc sits at the top of the `## Earlier in this meeting` section — per session, mode-gated, no agent edit, constant bytes.
