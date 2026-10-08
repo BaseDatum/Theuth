@@ -289,8 +289,7 @@ pub struct NightSummary {
     #[cfg_attr(feature = "ts", ts(optional))]
     pub status: Option<String>,
     /// The judge ran on the proposer's model (no `agent.escalate_model`, 136 D12).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default)]
     pub judge_same_model: bool,
 }
 
