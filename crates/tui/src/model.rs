@@ -17560,6 +17560,7 @@ mod tests {
             pinned: false,
             archived: false,
             project: project.map(str::to_owned),
+            notebook: None,
             retention: Retention::Durable,
             running: false,
             owner: String::new(),

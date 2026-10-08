@@ -271,6 +271,7 @@ mod tests {
             pinned: false,
             archived: true,
             project: None,
+            notebook: None,
             retention: tools::Retention::Durable,
             running: false,
             owner: String::new(),

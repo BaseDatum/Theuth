@@ -1457,6 +1457,7 @@ pub(crate) mod testing {
             pinned: false,
             archived: false,
             project: None,
+            notebook: None,
             retention: tools::Retention::Durable,
             running: false,
             owner: String::new(),

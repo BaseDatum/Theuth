@@ -258,6 +258,13 @@ impl runtime::Plugin for DocumentPlugin {
         if let Err(e) = ingest::IngestActor::start(rt, store.clone(), actor.clone()) {
             tracing::warn!("documents: ingest unavailable: {e:#}");
         }
+        // 144 §7.1: the block index — first run / model change in the background.
+        let a = actor.clone();
+        tokio::spawn(async move {
+            if let Err(e) = index::reindex(&a).await {
+                tracing::warn!("index: rebuild failed: {e:#}");
+            }
+        });
 
         let a = actor.clone();
         tokio::spawn(async move {
@@ -298,6 +305,8 @@ impl runtime::Plugin for DocumentPlugin {
         // watcher now (a lone engine is its own hub); the lease and the self id flip it from here on.
         let _ = actor.tell(hub::Reconcile).await;
         rt.subscribe::<DocumentActor, mesh::MeshEvent>(&actor).await;
+        // 144 §7.1: every `DocumentChanged` this actor publishes re-indexes the document.
+        rt.subscribe::<DocumentActor, DocumentChanged>(&actor).await;
         let (a, rt2) = (actor.clone(), rt.clone());
         tokio::spawn(async move {
             let Some(m) = rt2.lookup_when::<mesh::Mesh>(mesh::MESH_ACTOR).await else {

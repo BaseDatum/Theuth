@@ -187,6 +187,16 @@ impl Message<Changed> for DocumentActor {
     }
 }
 
+/// The bus route: the document actor subscribes to its own `DocumentChanged` (`lib.rs`), so every
+/// publish site in `actor.rs`/`notebook.rs` reaches the index without a call beside it.
+impl Message<DocumentChanged> for DocumentActor {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: DocumentChanged, ctx: &mut Context<Self, Self::Reply>) {
+        Message::<Changed>::handle(self, Changed(ev), ctx).await
+    }
+}
+
 /// `ask` → `Result<Vec<BlockHit>, String>`: the hybrid search, `limit + 1` hits for paging.
 #[derive(Clone, Debug)]
 pub struct NbSearch(pub NbSearchArgs);
