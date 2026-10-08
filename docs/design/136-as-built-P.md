@@ -122,6 +122,46 @@ Orchestrator's ask (04:04): what in `skill.md`/`routine.md`/`replay.rs` depends 
 - **Final reply** — the routine's only quoted reply text was "paused"; Sonnet echoed it. Now explicit (`dreamt <night>: …`).
 - **Prompt cost** — the first call is ≈ 23.5 k tokens (routine, skill, `<knowledge>` note, tool schemas); on `gpt-5.6-sol` with `effort: max` that call alone is likely to exceed a sub-$0.15 cap and reasoning tokens will dominate each cell; expect a pass to cost several × the Sonnet numbers and the 45 m `run_timeout` to matter.
 
+## 6.2 Live evidence per review finding (`/tmp/136/review.md`, R-numbers)
+
+The orchestrator's scope update (04:23: finish the night + undo + the $0.05 run, no fix rounds 2/3, leave review findings to F2) was delivered to P after rounds 2/3 had already been committed (`53bbdc55` … `7f4160e2`). Nothing was reverted (new commits only); the overlaps are listed so F2/F1 can reconcile.
+
+| R | Observed live | P's tree |
+|---|---|---|
+| R-1 lifetime budget on the reused session | not reproducible on fresh clones (one fire per clone); every full night's `spend_usd` and the refusal runs are single-fire numbers | untouched |
+| R-3 `EditRecord` deserialisation | not reached: 0 cases → no Rehearse on any night | untouched |
+| R-4 destructive tools callable, `git log` in the skill | not exercised (no `shell` call by the model on any night); P's skill edit (`62ac8793`) left `git log` out of the new verify text but did not remove the existing mention | prose only |
+| R-5 tidy put rewrites owner/visibility | not reached: 0 `fresh` entries → no tidy-mark put | untouched |
+| R-7 ops restamp `timestamp` | **confirmed**: every retitled/merged/archived/verified file shows `timestamp: <tonight>` and `source: dreaming` in the AFTER diffs (e.g. a 2026-09-14 decision archived on night 4 carries `timestamp: 2026-10-08T04:23:49Z`); the undo restores the old stamp | untouched |
+| R-8 / R-49 capped night never closes | **confirmed** on live3 (`finished_at: null`, `run_request` kept, `dreaming.nights` perpetual row) | **fixed in P** (`08feccab`, `2ff37cb3`: close on `TurnFinished` after a grace) — overlaps F2; also `7f4160e2` dates the night from `Fired` so the receipt spend is right |
+| R-10 ungated `dreaming_ledger` | not exercised (only the dreaming session called it) | untouched |
+| R-11 second `journal` re-runs `finish` | not observed (the model closed once per night); P's close gate refuses the *first* early close, it does not guard a second close after `finished_at` | partial overlap (`6c888466`); the `finished_at` guard is still missing |
+| R-14 tiers do not reach the run | **confirmed**: `sessions.model = anthropic/claude-sonnet-4-5` = `agent.model` for the dreaming session; routine file has no `model:` line | untouched |
+| R-18 `sessions_since` counts the night's own and every routine's turn | **confirmed**: night 1 `signals.sessions_since: 5` before any night from the copied store's refused resume turns; after each close the sensor's `sessions_since` ≥ 1 again | untouched |
+| R-20 `commit_before` at handling time | **confirmed**: night 1 `facts/theuth-dev-remotes-…-2026-10-06` (merge then verify) → `commit_before` = the merge commit, half-restored; actor 6 s/event behind | **fixed in P** (`53bbdc55`: `KnowledgeChanged.commit` — a `knowledge` crate change, F1's crate — + parent via `revision`); nights 2/4 restored 315/315, 390/390 |
+| R-21 `LedgerSince` full scans in the supervisor mailbox | **confirmed**: `sqlx slow statement` warnings on every `dreaming_ledger` and `spend_nanos` (2–3 s each on the 872 MB copy); the night-1 journal close took 2 min 48 s inside the tool call (mostly R-20's history walks, partly this) | untouched |
+| R-27 in-flight calls count 0 | not exercised (no concurrent side calls) | untouched |
+| R-28 the night's `knowledge_get` counts as opens | not measured (the clones' `uses` tables were removed with the clones); 392 `knowledge_get` on night 4 would each have been an open | untouched; related new finding below (impressions) |
+| R-31 `run_request` persisted before `FireWith` | not observed (every `FireWith` succeeded) | untouched |
+| R-35 `merged` counts ids | **confirmed**: `merged: 21` for 10 groups (night 1), `46` for 22 commits (night 4) | untouched |
+| R-39 `sensor.py` | the review's `int()` point not hit; the header bug below is a different, fatal one | — |
+| R-42 `budget exhausted:` match | not reached | untouched |
+| R-48 three-decimal money | not a UI run | untouched |
+
+**New defects the review missed** (all observed live, see §5):
+1. `sensor.py` parses `read_file`'s header line as JSON — the gate had never fired (fixed `e4eff6a4`).
+2. The `uses` bootstrap fallback keyed on an empty table — archive-by-use 95 → 0 with 16 live rows (fixed `14c1d064`).
+3. The model closes the night with the lists unworked and the money unspent; prose did not change that, a refused first close did (`6c888466`).
+4. `##` headings in the model's section body are parsed as night boundaries by `journal::insert` (fixed `53bbdc55`).
+5. The night's spend window starts at the `dreaming_ledger` call, after the first (uncached) model call: every night under-read by $0.09–0.13, a refused night read $0.00 (fixed `7f4160e2`).
+6. `tidy::candidates` offers `decision`s as archive-by-use; the model archived 5 (fixed `eb2e3058`).
+7. `knowledge_verify` is called without any read tool on 3/3 nights — `verified:` dates from a night are not evidence (not fixed; needs a code gate, §6 item 2).
+8. `<knowledge>` hints are built in the dreaming session and record impressions on ids near the titles it tidies (R-28 covers opens, not impressions) (not fixed).
+9. Undo leaves `links` rows retargeted to the merge canonical (not fixed).
+10. `restore` is ≈ 1.1 s/id (one commit + index regeneration each): a 390-id undo takes 7 min (not fixed).
+11. The routine's final reply was `paused` and became the run's `report` (fixed in prose, `62ac8793`).
+12. A knowledge title of 126 chars survives `knowledge_retitle` (no clip) (not fixed).
+
 ## 7. Recommendations for the first real night on the user's engine
 
 - **Rebuild and restart before the window**: the sensor fix takes effect only when `sensors/dreaming.py` is rewritten at start (v2 ≠ the installed v1). Check `list_schedules → last_check.outcome` and the run envelope's `gate:` line; `events=no-signals` means the old sensor is still installed.
