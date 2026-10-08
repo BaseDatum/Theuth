@@ -1,7 +1,7 @@
 // 136 §8: the pure parts of Settings › Dreaming and the Routines row — formatting, the settings reducer,
 // the digest field. Wire types in `@/rpc/bindings/Dream*`; everything here is testable without React.
 
-import { formatMoney, moneyParts } from '@/lib/money'
+import { moneyParts } from '@/lib/money'
 import type { DreamModels } from '@/rpc/bindings/DreamModels'
 import type { DreamSettings } from '@/rpc/bindings/DreamSettings'
 import type { NightCounts } from '@/rpc/bindings/NightCounts'
@@ -11,8 +11,8 @@ import type { UndoReport } from '@/rpc/bindings/UndoReport'
 
 /** §9.2 `budget_usd: 1` — the nightly default. */
 export const DEFAULT_BUDGET_USD = 1
-/** §14.1: Dream now opens at $5. */
-export const RUN_NOW_BUDGET_USD = 5
+/** The server's bound on any budget (`SetSettings`, R-34/R-15): `0 < usd ≤ 1000`. */
+export const MAX_BUDGET_USD = 1000
 export const PAUSE_DAYS = 7
 /** Dream now's modes in display order. */
 export const RUN_MODES: readonly [RunMode, string][] = [
@@ -26,10 +26,15 @@ export const TIERS = ['triage', 'tidy', 'propose', 'judge'] as const satisfies r
 export type Tier = (typeof TIERS)[number]
 export const TIER_LABEL: Record<Tier, string> = { triage: 'Triage', tidy: 'Tidy', propose: 'Propose', judge: 'Judge' }
 
-/** Dreaming's money is `f64` USD on the wire; the formatter wants integer nanos. `$4.100`. */
-export function usd(n: number): string {
-  return formatMoney({ nanos: String(Math.round(n * 1e9)), currency: 'USD' })
+/** Dreaming's money is `f64` USD on the wire; two decimals like every price in the pane (`$4.10`, `$1,000.00`). */
+const USD = new Intl.NumberFormat('en', { style: 'currency', currency: 'USD' })
+export const usd = (n: number): string => USD.format(n)
+/** A budget field's text → USD, or `null` when empty, non-numeric or outside `(0, 1000]` (R-34: an empty field must never save $0). */
+export function budgetFromInput(raw: string): number | null {
+  const n = Number(raw)
+  return raw.trim() !== '' && Number.isFinite(n) && n > 0 && n <= MAX_BUDGET_USD ? n : null
 }
+export const BUDGET_PROBLEM = `Enter an amount above $0 and at most ${usd(MAX_BUDGET_USD)}.`
 /** The currency symbol for an input adornment (`$`). */
 export const USD_SYMBOL = moneyParts({ nanos: '0', currency: 'USD' }).prefix
 
@@ -56,14 +61,14 @@ export function countsLine(c: NightCounts): string {
   return parts.length ? parts.join(', ') : 'nothing to tidy'
 }
 
-/** The status card's line: `14 merged, 31 archived, $4.100`, `(undone)` appended for a reverted night; `no nights yet`. */
+/** The status card's line: `14 merged, 31 archived, $4.10`, `(undone)` appended for a reverted night; `no nights yet`. */
 export function nightText(night: NightSummary | null): string {
   if (!night) return 'no nights yet'
   const line = `${countsLine(night.counts)}, ${usd(night.spend_usd)}`
   return night.undone ? `${line} (undone)` : line
 }
 
-/** The Routines row subtitle: `last night: 14 merged, 31 archived, $4.100`. */
+/** The Routines row subtitle: `last night: 14 merged, 31 archived, $4.10`. */
 export const nightLine = (night: NightSummary | null): string => (night ? `last night: ${nightText(night)}` : nightText(night))
 
 /** `Mon 08:00` ⇄ `{ day, time }`; an unparseable digest reads as Monday 08:00 so the controls always show something. */
@@ -83,6 +88,22 @@ export const pauseUntil = (now: Date, days = PAUSE_DAYS): string => new Date(now
 /** The pause is live while `paused_until` is in the future. */
 export const isPaused = (pausedUntil: string | null, now: Date): boolean => pausedUntil !== null && new Date(pausedUntil).getTime() > now.getTime()
 
+/**
+ * Why Dream now cannot run right now (R-46), as the tail of "Dream now is unavailable: …" for the button's tooltip and
+ * the note under the status card; `null` when it can. Config off beats the routine switch beats the pause beats a running night.
+ */
+export function dreamNowBlocker(
+  s: { enabled: boolean; routineEnabled: boolean | undefined; pausedUntil: string | null; running: boolean },
+  now: Date,
+): string | null {
+  if (!s.enabled) return 'dreaming is off in config (dreaming.enabled: false)'
+  if (s.routineEnabled === false) return 'the dreaming routine is switched off'
+  if (isPaused(s.pausedUntil, now)) return `dreaming is paused until ${new Date(s.pausedUntil as string).toLocaleDateString()}`
+  if (s.running) return 'a night is already running'
+  return null
+}
+export const dreamNowUnavailable = (blocker: string): string => `Dream now is unavailable: ${blocker}.`
+
 /** One edit of Settings › Dreaming; `set_settings` takes the whole object, so the reducer produces it. */
 export type SettingsChange =
   | { kind: 'budget'; usd: number }
@@ -95,13 +116,13 @@ export type SettingsChange =
   | { kind: 'resume' }
 
 /**
- * The next `DreamSettings`, or `null` when the change is a no-op or invalid (a negative budget, a malformed time) so
- * the caller skips the round trip. `enabled` is never touched here: it is the routine's switch (`enable_schedule`).
+ * The next `DreamSettings`, or `null` when the change is a no-op or invalid (a budget outside `(0, 1000]`, a malformed
+ * time) so the caller skips the round trip. `enabled` is never touched here: it is the routine's switch (`enable_schedule`).
  */
 export function reduceSettings(s: DreamSettings, c: SettingsChange): DreamSettings | null {
   switch (c.kind) {
     case 'budget':
-      if (!Number.isFinite(c.usd) || c.usd < 0 || c.usd === s.budget_usd) return null
+      if (!Number.isFinite(c.usd) || c.usd <= 0 || c.usd > MAX_BUDGET_USD || c.usd === s.budget_usd) return null
       return { ...s, budget_usd: c.usd }
     case 'window': {
       if (!/^\d{2}:\d{2}$/.test(c.time) || s.window[c.index] === c.time) return null
@@ -131,21 +152,26 @@ export function reduceSettings(s: DreamSettings, c: SettingsChange): DreamSettin
 }
 
 /**
- * What a tier's `null` resolves to (§9.2 defaults), for the picker's first entry: triage has no model (`null`, rules
- * only); tidy follows the title model, then the subagent model; propose the subagent model; judge the session default
- * when its provider differs from propose, else propose again with another seed.
+ * What a tier's `null` resolves to, for the picker's first entry: the server's `resolved.*` when the engine exports it
+ * (R-14: that is the model the night actually runs on; judge = propose means the same model judges); else the §9.2 rule
+ * client-side — triage has no model (rules only); tidy follows the routine file's `model:`, then the title model, then
+ * the subagent model; propose the subagent model; judge the session default when its provider differs from propose,
+ * else propose itself (`same`).
  */
-export function resolvedDefault(tier: Tier, d: { title: string | null; subagent: string | null; session: string }): { model: string | null; seed: boolean } {
+export function resolvedDefault(
+  tier: Tier,
+  d: { resolved?: DreamSettings['resolved']; routine?: string | null; title: string | null; subagent: string | null; session: string },
+): { model: string | null; same: boolean } {
+  if (tier === 'triage') return { model: null, same: false }
+  if (d.resolved) return { model: d.resolved[tier], same: tier === 'judge' && d.resolved.judge === d.resolved.propose }
   const propose = d.subagent ?? d.session
   switch (tier) {
-    case 'triage':
-      return { model: null, seed: false }
     case 'tidy':
-      return { model: d.title ?? propose, seed: false }
+      return { model: d.routine ?? d.title ?? propose, same: false }
     case 'propose':
-      return { model: propose, seed: false }
+      return { model: propose, same: false }
     case 'judge':
-      return d.session.split('/')[0] !== propose.split('/')[0] ? { model: d.session, seed: false } : { model: propose, seed: true }
+      return d.session.split('/')[0] !== propose.split('/')[0] ? { model: d.session, same: false } : { model: propose, same: true }
   }
 }
 
