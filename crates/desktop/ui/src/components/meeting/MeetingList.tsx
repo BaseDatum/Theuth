@@ -9,6 +9,7 @@ import { type ReactNode, useState } from 'react'
 import { dragSource } from '@/components/chat/AttachChip'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
+import { Column } from '@/components/library/Page'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
@@ -100,7 +101,8 @@ export function MeetingList() {
           </Button>
         )}
       </MeetingHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10">
+      {/* 143 D5: the same centred column as Tools/Secrets/Notes. */}
+      <Column>
         {list.isError && <Empty>{errorText(list.error)}</Empty>}
         {list.data?.length === 0 && <Empty>No meetings yet.</Empty>}
         <ul className="divide-y divide-border-subtle">
@@ -108,7 +110,7 @@ export function MeetingList() {
             <Row key={m.id} m={m} onAttach={() => setAttaching(toRef({ kind: 'meeting', meeting: m }))} />
           ))}
         </ul>
-      </div>
+      </Column>
     </div>
   )
 }
