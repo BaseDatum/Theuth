@@ -28,6 +28,12 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 tracing = { workspace = true }
 sqlx = { workspace = true }
+# 144 §7: the block index — `vec0` registered on the index pool's connections; the `EmbedActor` (`decision::embed`)
+# supplies vectors and token counts.
+sqlite-vec = { workspace = true }
+libsqlite3-sys = { version = "0.36" }
+decision = { workspace = true }
+parking_lot = { workspace = true }
 notify = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
