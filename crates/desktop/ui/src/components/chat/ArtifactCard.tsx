@@ -39,7 +39,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { fmtBytes, isLocal, readText, resolveFile } from "@/lib/files";
+import { fmtBytes, isLocal, readText, readTextOnline, resolveFile } from "@/lib/files";
 import { resultLine } from "@/lib/describe";
 import { canPopout, openPopout } from "@/lib/popout";
 import { useApi } from "@/lib/rpc";
@@ -48,7 +48,8 @@ import { useEngines } from "@/link/engines";
 import type { Api } from "@/rpc/api";
 import type { Artifact, Kind } from "@/rpc/extra";
 import { useConnection } from "@/store/connection";
-import { type Entry, useSessions } from "@/store/sessions";
+import { type Entry, type SessionsApi, useSessions } from "@/store/sessions";
+import { partialShow } from "@/store/reduce";
 import { ChatPicker } from "@/components/notes/ChatPicker";
 import { attachTo, toRef } from "@/lib/attach";
 import { Img } from "./Attachments";
@@ -89,22 +90,60 @@ export const GLYPH: Record<Kind, typeof File> = {
 const fail = (e: unknown) =>
   toast.error(e instanceof Error ? e.message : String(e));
 
-/** Text of an engine file, `null` while loading, `''` on failure. */
+/** Open the panel on `callId`. A finished `show` whose record the store lacks (its `ArtifactShown` was lost on a
+ * dead relay socket and nothing re-listed) fetches it with `get_artifact` and applies it as the event would have. */
+export async function openShow(
+  api: Pick<Api, "get_artifact">,
+  session: string,
+  callId: string,
+  name: string,
+): Promise<void> {
+  if (!useSessions.getState().sessions[session]?.artifacts.has(callId)) {
+    try {
+      const artifact = await api.get_artifact(callId);
+      useSessions
+        .getState()
+        .applyEvents([{ type: "ArtifactShown", session, call_id: callId, artifact }]);
+    } catch {
+      toast.error(`could not open ${name}`);
+      return;
+    }
+  }
+  useSessions.getState().setArtifactPanel(session, callId);
+}
+
+/**
+ * `list_artifacts` into the slice (`routes/c.$session` on load and on every settle). The map is otherwise fed by live
+ * `ArtifactShown`s only, which a relay client that slept through them never sees (a parked socket loses the gap,
+ * 25 §2.1). A failed list (an engine without the artifact plugin, a socket still down) keeps the map as it is — never `[]`.
+ */
+export const relistArtifacts = (
+  api: Pick<Api, "list_artifacts">,
+  store: SessionsApi,
+  session: string,
+): Promise<void> =>
+  api.list_artifacts(session, null).then(
+    (a) => store.getState().setArtifacts(session, a),
+    () => undefined,
+  );
+
+/** Text of an engine file, `null` while loading (including the wait for a down socket to reopen), `''` on failure. */
 export function useText(path: string | null): string | null {
   const api = useApi();
+  const client = useConnection((s) => s.client);
   const [text, setText] = useState<string | null>(null);
   useEffect(() => {
     if (!path) return;
     let live = true;
     setText(null);
-    readText(api, path).then(
+    readTextOnline(api, client, path).then(
       (t) => live && setText(t),
       () => live && setText(""),
     );
     return () => {
       live = false;
     };
-  }, [api, path]);
+  }, [api, client, path]);
   return text;
 }
 
@@ -442,8 +481,10 @@ export const ArtifactCard = memo(function ArtifactCard({
   const preview = artifact && TEXT_KINDS[artifact.kind] ? artifact.path : null;
   const text = useText(preview);
   const { result } = tool;
+  const api = useApi();
   const open = () =>
-    useSessions.getState().setArtifactPanel(session, tool.callId);
+    // The toast's name before a record exists: the `name` the call gave, else the base name of its `path`.
+    void openShow(api, session, tool.callId, partialShow(JSON.stringify(tool.args ?? {}))?.name ?? tool.name);
 
   if (artifact?.kind === "html") {
     // 120 §3: the card is the page — borderless at reply width on the transcript background; header row kept, one
@@ -551,7 +592,7 @@ export const ArtifactCard = memo(function ArtifactCard({
       name={tool.name}
       slot={ArtifactWriting}
       busy={!result}
-      onClick={draft && open}
+      onClick={draft || (result && !result.isError) ? open : undefined}
     >
       {result ? (
         <div className="truncate font-mono text-xs text-fg-secondary">

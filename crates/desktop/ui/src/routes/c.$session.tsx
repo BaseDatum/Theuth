@@ -10,6 +10,7 @@ import { Composer } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { LinkBanner } from '@/components/link/LinkFailure'
 import { lastCode } from '@/components/chat/MessageAssistant'
+import { relistArtifacts } from '@/components/chat/ArtifactCard'
 import { NewChatPane } from '@/components/chat/NewChatPane'
 import { OrphansBanner } from '@/components/chat/OrphansBanner'
 import { ResumeBanner } from '@/components/chat/ResumeBanner'
@@ -177,16 +178,10 @@ export function useSessionLoad(session: string): void {
     await resumed()
     const before = store.getState().sessions[session]
     const fresh = before && freshness(before)
-    const [page, agents, artifacts] = await Promise.all([
-      api.load_session(session, null, PAGE),
-      api.list_agents(session),
-      // An engine without the artifact plugin has no such method.
-      api.list_artifacts(session, null).catch(() => []),
-    ])
-    const { loadHistory, setChildren, setArtifacts } = store.getState()
+    const [page, agents] = await Promise.all([api.load_session(session, null, PAGE), api.list_agents(session), relistArtifacts(api, store, session)])
+    const { loadHistory, setChildren } = store.getState()
     loadHistory(session, page, 'replace', fresh)
     setChildren(session, agents)
-    setArtifacts(session, artifacts)
     const s = store.getState().sessions[session]
     if (!s?.todos || s.todosStale) refreshTodos()
   }, [api, session, store, refreshTodos])
@@ -202,6 +197,7 @@ export function useSessionLoad(session: string): void {
       return
     }
     settling.current = true
+    void relistArtifacts(api, store, session)
     void (async () => {
       for (let tries = 0; tries < SETTLE_TRIES; tries++) {
         const s = store.getState().sessions[session]
