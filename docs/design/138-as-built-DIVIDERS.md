@@ -15,17 +15,17 @@ Same shape at `ArtifactPanel.tsx` (sheet left edge), `codemap/CodeMapHost.tsx` (
 - Gesture glue: `setPointerCapture` on the hit zone; `pointermove`/`pointerup`/`pointercancel`/`lostpointercapture` listeners on that element only, attached at down and removed at end (never `window`); `touch-none select-none [-webkit-touch-callout:none]`; `documentElement` cursor (`col-resize`/`row-resize`) + `user-select:none` while live, restored on end; unmount mid-drag ends it.
 - Hit zone: invisible, absolutely positioned child, 10 px (fine) / 32 px (`pointer-coarse:`) across, full length; `relative z-10` on the handle so it sits above pane content, below popovers (z-50).
 - Visuals: grip pill (`bg-fg-tertiary`, 4×32 or 32×4, `rounded-full`) on `pointer-coarse` only; while dragging the line and pill take `bg-fg-accent` (`data-dragging`). Fine pointers keep the site's hover colour. Focus: `focus-visible:ring-2 focus-visible:ring-ring`.
-- A11y: `role="separator"`, `aria-orientation`, `tabIndex={0}`, arrow keys along the line's axis call `onNudge`.
+- A11y: `role="separator"`, `aria-orientation`, `tabIndex={0}` only when `onNudge` is given (a Tab stop that ignores arrows is worse than none), arrow keys along the line's axis call `onNudge`.
 
 ## Per-site
 | Site | Line | Placement | Sizing (unchanged math) | Nudge |
 |---|---|---|---|---|
-| `Panes.tsx` `Divider` (also used by `ControlCenter.tsx`, `RoutineDetail.tsx`) | 4 px, `bg-border-subtle` | center | parent rect → `clampRatio` → `onRatio` (`usePanes.resize`) | ±0.05 ratio; `aria-valuenow` = ratio×100, 15–85 — only when the new optional `ratio` prop is passed (Branch passes it; the two other callers are off-limits tonight and keep drag-only) |
+| `Panes.tsx` `Divider` (also used by `ControlCenter.tsx` `ratio={ratio}` = `useMeetingSettings.split`, `RoutineDetail.tsx` `ratio={ratio}` state; both hold the first child's share, 0.15–0.85) | 4 px, `bg-border-subtle` | center | parent rect → `clampRatio` → `onRatio` (`usePanes.resize`) | ±0.05 ratio; `aria-valuenow` = ratio×100, 15–85 (all three callers pass `ratio`) |
 | `ArtifactPanel.tsx` | 6 px, transparent, `hover:bg-border-strong`, `hidden sm:block` | start (extends LEFT, outward over the overlay) | `clamp(innerWidth − x, MIN_W, innerWidth/2)` → `setWidth` | ∓16 px |
 | `CodeMapHost.tsx` | 6 px, `bg-border-subtle` | center | `clampW(paneRight − x)` → `setWidth` (localStorage effect unchanged) | ∓16 px |
 | `NoteChat.tsx` | 6 px, transparent, `hover:bg-layer-2` | start (extends UP over the editor, never down over the header buttons) | `clamp(startH + startY − y, MIN_HEIGHT, paneH − 120)` → `set(note, {height})` | ∓16 px |
 
-Decisions: centred fine-pointer zones bleed 2–3 px into the adjacent pane edge (brief's default kept; macOS overlay scrollbars sit inside that edge only while scrolling). `Divider.ratio` optional so the two untouchable callers still compile. Coarse-pointer grip hides on fine pointers rather than fading, to keep the 4 px line as it was.
+Decisions: centred fine-pointer zones bleed 2–3 px into the adjacent pane edge (brief's default kept; macOS overlay scrollbars sit inside that edge only while scrolling). `Divider.ratio` stays optional in the type (every caller in the tree passes it; without it the separator is drag-only and not a Tab stop). Coarse-pointer grip hides on fine pointers rather than fading, to keep the 4 px line as it was. R1: tabIndex gated on `onNudge`; `ratio` added at the two other Divider callers (one-line edits).
 
 ## Harness (throwaway, `/tmp/138-harness`, not committed; headless Chrome via CDP, touch emulation; shots in `/tmp/138-divider-shots/`)
 ```
