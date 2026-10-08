@@ -1,14 +1,24 @@
 import NumberFlow from '@number-flow/react'
 import { useQuery } from '@tanstack/react-query'
-import { Coins } from 'lucide-react'
+import { Coins, Eye } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { costLines, costShort, moneyParts } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { CostBucket } from '@/rpc/bindings/CostBucket'
 import type { RemoteTokens } from '@/rpc/bindings/RemoteTokens'
+import type { ObservedMeta } from '@/rpc/bindings/ObservedMeta'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
+import { useSessionField } from '@/store/sessions'
 import { MenuRow } from './HeaderMenu'
+
+/** 141 §7.6: the one-line rule a watch-only child's breakdown names — why its money is, or is not, in the totals. */
+export const COST_RULE: Record<ObservedMeta['cost_rule'], string> = {
+  counted: 'counted — omp background subagent, not in the harness’s own total',
+  inside_parent: 'inside parent — omp sync subagent, already in the harness’s total',
+  display_only: 'reported by the harness, not counted',
+  unreported: 'not reported by the harness',
+}
 
 function Bucket({ label, bucket }: { label: string; bucket: CostBucket }) {
   const { primary, secondary } = costLines(bucket)
@@ -87,7 +97,8 @@ export function HarnessTokens({ rows }: { rows: RemoteTokens[] }) {
   )
 }
 
-export function Breakdown({ cost }: { cost: SessionCost }) {
+/** `observed`: the session's own watch-only facts (141), when it is a watch-only child — adds the cost-rule line. */
+export function Breakdown({ cost, observed }: { cost: SessionCost; observed?: ObservedMeta | null }) {
   return (
     <div className="flex flex-col gap-3 text-sm">
       <Bucket label="Direct" bucket={cost.direct} />
@@ -99,6 +110,7 @@ export function Breakdown({ cost }: { cost: SessionCost }) {
         {cost.remote_meter_gaps > 0 && ` · ${cost.remote_meter_gaps} remote meter gaps`}
       </p>
       {cost.delta_suspected && <p className="text-xs text-fg-tertiary">harness may report per-turn cost — totals may be low</p>}
+      {observed && <p className="text-xs text-fg-tertiary">watch-only: {COST_RULE[observed.cost_rule]}</p>}
       <HarnessTokens rows={cost.remote_tokens} />
       {cost.children.length > 0 && (
         <table className="w-full text-xs">
@@ -112,6 +124,7 @@ export function Breakdown({ cost }: { cost: SessionCost }) {
             {cost.children.map((c) => (
               <tr key={c.session}>
                 <td className="truncate py-0.5">
+                  {c.scope === 'observed' && <Eye className="mr-1 inline size-3 opacity-70" aria-label="watch-only" role="img" />}
                   {c.name ?? c.session}
                   {c.deleted && <span className="ml-1 text-fg-tertiary">(deleted)</span>}
                   {c.scope === 'opaque_remote_inclusive' && <span className="ml-1 text-fg-tertiary">(remote)</span>}
@@ -172,6 +185,7 @@ export function CostPill({ session, row, onOpen }: { session: string; row?: bool
 /** The breakdown; lives in the header (not the pill) so it outlives a compact menu that closes on selection. `/cost` opens it too. */
 export function CostDialog({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
   const data = useCost(session)
+  const observed = useSessionField(session, 'observed')
   useEffect(() => {
     const h = (e: Event) => {
       if ((e as CustomEvent<{ session: string }>).detail.session === session) onOpenChange(true)
@@ -184,7 +198,7 @@ export function CostDialog({ session, open, onOpenChange }: { session: string; o
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogTitle>Cost</DialogTitle>
-        <Breakdown cost={data} />
+        <Breakdown cost={data} observed={observed} />
       </DialogContent>
     </Dialog>
   )
