@@ -136,10 +136,12 @@ test('reviewWord: reverted and flagged both read SUSPICIOUS; error has no verdic
   expect(reviewWord(null).word).toBe('unreviewed')
 })
 
-test('holdout summary and the keep threshold', () => {
+test('holdout summary means the samples of each checkpoint (R-89) and the keep threshold', () => {
   const d = studies()[0]?.detail
   if (!d) throw new Error('fixture')
-  expect(holdoutSummary(d.series)).toEqual({ base: 61, latest: 49.7, delta_pct: expect.closeTo(-18.52, 1), n: 31 })
+  // Three samples per checkpoint in the fixture; the card shows their means, not the first/last raw sample.
+  expect(d.series.holdout.filter((h) => h.n === 0)).toHaveLength(3)
+  expect(holdoutSummary(d.series)).toEqual({ base: expect.closeTo(61, 5), latest: expect.closeTo(49.7, 5), delta_pct: expect.closeTo(-18.52, 1), n: 31 })
   expect(holdoutSummary({ holdout: [] })).toBeNull()
   // 2σ√2 over the incumbent: 2·0.42·1.414 / 41.2 = 2.9 %; the relative min_effect 0.5 % is below it.
   expect(keepNeedsPct(0.42, 41.2, '0.5%')).toBeCloseTo(2.88, 1)
@@ -181,6 +183,10 @@ test('layout: the staircase starts at the base, marks follow their tag, crashes 
   expect(l.marks.find((m) => m.n === 33)?.outcome).toBe('lost')
   expect(l.marks.find((m) => m.n === 35)?.outcome).toBe('open')
   expect(l.marks.find((m) => m.n === 3)?.label).toBe('#3 kept · 50.4 ms')
+  // With the run rows the tooltip is the verdict in words (R-97).
+  const withRows = layout(d.series, { width: 900, height: 260, unit: 'ms', lastN: 35, rows: [row({ n: 3, state: 'kept', delta_pct: 3.3, z: 4.1, idea: 'memoise the token table' })] })
+  expect(withRows.marks.find((m) => m.n === 3)?.label).toBe('#3 kept +3.3 % 4.1σ · 50.4 ms · memoise the token table')
+  // One diamond per checkpoint, not per sample.
   expect(l.holdout.length).toBe(4)
   expect(l.yh).not.toBeNull()
   expect(l.right).toBeGreaterThan(16)

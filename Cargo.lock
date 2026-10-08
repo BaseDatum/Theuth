@@ -22812,6 +22812,7 @@ dependencies = [
  "arboard",
  "artifact",
  "async-trait",
+ "autoresearch",
  "chrono",
  "computer",
  "crossterm",

@@ -166,7 +166,10 @@ wire! {
 }
 
 wire! {
-    /// `effort:` per role.
+    /// `effort:` per role (140 §9.3). Reserved: neither `runtime::SideCall`
+    /// (reviewer, advisor) nor a schedule file (executor) carries an effort
+    /// today, so these values are stored and shown but not applied (R-72;
+    /// hand-off: `SideCall.effort` in `runtime` + `agent`).
     pub struct Effort as "AutoresearchEffort" {
         /// The study session.
         pub executor: String,
@@ -360,19 +363,25 @@ impl Default for Bench {
 pub struct AgentDefaults {
     /// `agent.model` — the executor default.
     pub model: String,
-    /// `agent.subagents.model`, `agent.title_model`, `agent.escalate_model` in
-    /// that order, non-empty only — the reviewer picks the first of another vendor.
+    /// `agent.subagents.model`, `agent.title_model`, `agent.model` in that
+    /// order, non-empty only — the reviewer picks the first of another vendor
+    /// (R1-D5: `agent.model` is in the chain so an executor overridden to
+    /// another vendor still gets the session model as its judge).
     pub others: Vec<String>,
 }
 
 impl AgentDefaults {
-    /// Read the `agent:` section (defaults when absent).
+    /// Read the `agent:` section (defaults when absent). This is another
+    /// plugin's section (plugins.md §3.6), read from the startup snapshot as
+    /// dreaming does for the same R1-D5 defaults; the `agent` actor exposes no
+    /// query for its model roles, and a live change of `agent.model` reaches
+    /// the next study through a restart.
     pub fn from_runtime(rt: &runtime::Runtime) -> Self {
         let a: agent::AgentConfig = rt.section("agent").unwrap_or_default();
         let others = [
             a.subagents.model.clone(),
             a.title_model.clone(),
-            a.escalate_model.clone(),
+            Some(a.model.clone()),
         ]
         .into_iter()
         .flatten()
@@ -448,6 +457,9 @@ fn pick(m: &Option<String>) -> Option<&str> {
 /// Persist the whole `autoresearch:` section of `config.yaml` (the block is
 /// replaced by `cfg` serialised; the rest of the file is byte-identical),
 /// through a sibling temp file and a rename — `dreaming::night::persist`'s pattern.
+/// The block starts at the first line beginning `autoresearch:` — a bare key,
+/// an inline map (`autoresearch: {}`) or a key with a trailing comment — so a
+/// second block (a duplicate key the next start cannot parse) is never appended.
 pub fn persist(path: &Path, cfg: &AutoresearchConfig) -> std::io::Result<()> {
     let text = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -458,7 +470,7 @@ pub fn persist(path: &Path, cfg: &AutoresearchConfig) -> std::io::Result<()> {
     let mut block: Vec<String> = vec!["autoresearch:".to_owned()];
     block.extend(body.lines().map(|l| format!("  {l}")));
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    match lines.iter().position(|l| l.trim_end() == "autoresearch:") {
+    match lines.iter().position(|l| l.starts_with("autoresearch:")) {
         Some(start) => {
             let end = lines[start + 1..]
                 .iter()
@@ -530,6 +542,61 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.reviewer(&off, &agent), None);
+    }
+
+    /// R-84: with `models.executor` overridden to another vendor, the reviewer
+    /// falls back to `agent.model` (the last link of the R1-D5 chain), not to
+    /// the executor itself.
+    #[test]
+    fn reviewer_falls_back_to_agent_model_when_executor_is_overridden() {
+        let cfg = AutoresearchConfig {
+            models: Models {
+                executor: Some("anthropic/claude-fable-5-1".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let agent = AgentDefaults {
+            model: "openai/gpt-5.6-sol".into(),
+            // what `from_runtime` builds: subagents, title, then `agent.model`.
+            others: vec![
+                "anthropic/claude-fable-5-1".into(),
+                "openai/gpt-5.6-sol".into(),
+            ],
+        };
+        let spec = crate::types::ModelsSpec::default();
+        assert_eq!(cfg.executor(&spec, &agent), "anthropic/claude-fable-5-1");
+        assert_eq!(
+            cfg.reviewer(&spec, &agent).as_deref(),
+            Some("openai/gpt-5.6-sol")
+        );
+    }
+
+    /// R-116: an inline or commented `autoresearch:` line is the block; the
+    /// file keeps one key and parses afterwards.
+    #[test]
+    fn persist_replaces_an_inline_or_commented_block() {
+        let dir = tempfile::tempdir().unwrap();
+        for head in ["autoresearch: {}", "autoresearch:  # mine"] {
+            let path = dir.path().join("config.yaml");
+            std::fs::write(
+                &path,
+                format!("agent:\n  model: x\n\n{head}\n\nweb:\n  a: 1\n"),
+            )
+            .unwrap();
+            let cfg = AutoresearchConfig {
+                enabled: false,
+                ..Default::default()
+            };
+            persist(&path, &cfg).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(text.matches("autoresearch:").count(), 1, "{head}: {text}");
+            assert!(text.ends_with("web:\n  a: 1\n"), "{head}: {text}");
+            let back: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+            let section: AutoresearchConfig =
+                serde_yaml::from_value(back["autoresearch"].clone()).unwrap();
+            assert_eq!(section, cfg);
+        }
     }
 
     /// `persist` replaces only the section and keeps the rest of the file.

@@ -24,14 +24,13 @@ const ROLE_NONE: Record<Role, string> = { executor: 'Session default', review: '
 const roleModel = (c: AutoresearchConfig, role: Role): string | null => (role === 'review' ? c.review.model : c.models[role])
 const withRoleModel = (c: AutoresearchConfig, role: Role, model: string | null): AutoresearchConfig => (role === 'review' ? { ...c, review: { ...c.review, model } } : { ...c, models: { ...c.models, [role]: model } })
 
-/** `600s` / `5m` / `1h` ↔ whole minutes (the spec's durations are humantime strings). */
-export function minutesOf(d: string): number | null {
+/** `600s` / `5m` / `1h` ↔ whole seconds (the spec's durations are humantime strings). */
+export function secondsOf(d: string): number | null {
   const m = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|min|h)?\s*$/.exec(d)
   if (!m) return null
   const v = Number(m[1])
   const unit = m[2] ?? 's'
-  const secs = unit === 'ms' ? v / 1000 : unit === 's' ? v : unit === 'h' ? v * 3600 : v * 60
-  return Math.round(secs / 60)
+  return Math.round(unit === 'ms' ? v / 1000 : unit === 's' ? v : unit === 'h' ? v * 3600 : v * 60)
 }
 
 /** Settings › Autoresearch (140 §13.1): defaults, model pickers, reviewer action, bench lock + load threshold, keep-finished days. Reads/writes `autoresearch.settings.get|set`. */
@@ -75,26 +74,39 @@ export function Autoresearch() {
         <Row label="Baseline repeats" description="Samples of the base at Start and of each changeset at the end; σ comes from these and every confirm run.">
           <Count value={s?.defaults.repeats} min={2} max={20} action={count((c, repeats) => ({ ...c, defaults: { ...c.defaults, repeats } }))} />
         </Row>
-        <Row label="Timeouts" description="One benchmark sample · the correctness check, in minutes. A sample past its timeout is a crash.">
-          <Minutes value={s?.defaults.bench_timeout} aria-label="Benchmark timeout in minutes" disabled={busy} onCommit={(d) => change((c) => ({ ...c, defaults: { ...c.defaults, bench_timeout: d } }))} />
-          <Minutes value={s?.defaults.checks_timeout} aria-label="Checks timeout in minutes" disabled={busy} onCommit={(d) => change((c) => ({ ...c, defaults: { ...c.defaults, checks_timeout: d } }))} />
+        <Row label="Timeouts" description="One benchmark sample · the correctness check, in seconds. A sample past its timeout is a crash.">
+          <Seconds value={s?.defaults.bench_timeout} aria-label="Benchmark timeout in seconds" disabled={busy} onCommit={(d) => change((c) => ({ ...c, defaults: { ...c.defaults, bench_timeout: d } }))} />
+          <Seconds value={s?.defaults.checks_timeout} aria-label="Checks timeout in seconds" disabled={busy} onCommit={(d) => change((c) => ({ ...c, defaults: { ...c.defaults, checks_timeout: d } }))} />
         </Row>
       </Section>
 
       <Section title="Models">
-        {ROLES.map((role) => (
-          <WideRow key={role} label={ROLE_LABEL[role]} description={ROLE_HELP[role]}>
-            <ModelCombobox
-              aria-label={`${ROLE_LABEL[role]} model`}
-              className="w-full max-w-72"
-              models={models.data ?? []}
-              value={s ? roleModel(s, role) : undefined}
-              none={{ label: ROLE_NONE[role] }}
-              disabled={busy}
-              onChange={(v) => change((c) => withRoleModel(c, role, v))}
-            />
-          </WideRow>
-        ))}
+        {ROLES.map((role) => {
+          const off = role === 'review' && s?.review.model === 'off'
+          return (
+            <WideRow key={role} label={ROLE_LABEL[role]} description={ROLE_HELP[role]}>
+              {role === 'review' && (
+                <ToggleGroup type="single" variant="outline" size="sm" value={off ? 'off' : 'on'} aria-label="Reviewer" disabled={busy} onValueChange={(v) => v && change((c) => withRoleModel(c, 'review', v === 'off' ? 'off' : null))}>
+                  <ToggleGroupItem value="on">On</ToggleGroupItem>
+                  <ToggleGroupItem value="off" title="review.model: off — keeps are not checked by a second model; the draft card warns">
+                    Off
+                  </ToggleGroupItem>
+                </ToggleGroup>
+              )}
+              {!off && (
+                <ModelCombobox
+                  aria-label={`${ROLE_LABEL[role]} model`}
+                  className="w-full max-w-72"
+                  models={models.data ?? []}
+                  value={s ? roleModel(s, role) : undefined}
+                  none={{ label: ROLE_NONE[role] }}
+                  disabled={busy}
+                  onChange={(v) => change((c) => withRoleModel(c, role, v))}
+                />
+              )}
+            </WideRow>
+          )
+        })}
       </Section>
 
       <Section title="Review and the machine">
@@ -195,9 +207,9 @@ function Money({ value, disabled, onCommit, 'aria-label': ariaLabel }: { value: 
   )
 }
 
-/** A humantime duration on the wire (`600s`), whole minutes in the field; written back as `<n>m`. */
-function Minutes({ value, disabled, onCommit, 'aria-label': ariaLabel }: { value: string | undefined; disabled: boolean; onCommit: (d: string) => void; 'aria-label': string }) {
-  const minutes = value === undefined ? undefined : (minutesOf(value) ?? undefined)
+/** A humantime duration on the wire (`600s`), whole seconds in the field (R-99: no rounding to minutes); written back as `<n>s`. */
+function Seconds({ value, disabled, onCommit, 'aria-label': ariaLabel }: { value: string | undefined; disabled: boolean; onCommit: (d: string) => void; 'aria-label': string }) {
+  const seconds = value === undefined ? undefined : (secondsOf(value) ?? undefined)
   return (
     <>
       <Input
@@ -205,21 +217,21 @@ function Minutes({ value, disabled, onCommit, 'aria-label': ariaLabel }: { value
         type="number"
         dictate={false}
         min={1}
-        max={240}
+        max={14400}
         aria-label={ariaLabel}
-        className="w-20 text-right"
+        className="w-24 text-right"
         disabled={disabled || value === undefined}
-        defaultValue={minutes}
+        defaultValue={seconds}
         onBlur={(e) => {
-          const n = bounded(e.currentTarget.value, 1, 240)
-          if (n !== undefined && n !== minutes) onCommit(`${n}m`)
-          else e.currentTarget.value = String(minutes ?? '')
+          const n = bounded(e.currentTarget.value, 1, 14400)
+          if (n !== undefined && n !== seconds) onCommit(`${n}s`)
+          else e.currentTarget.value = String(seconds ?? '')
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') e.currentTarget.blur()
         }}
       />
-      <span className="text-sm text-fg-secondary">min</span>
+      <span className="text-sm text-fg-secondary">s</span>
     </>
   )
 }

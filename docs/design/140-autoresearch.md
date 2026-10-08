@@ -394,7 +394,7 @@ On the first plateau (§8.4) the plugin calls `models.advisor` once (default: 12
 | advisor | `models.advisor` | 125's advisor when configured, else the executor | `high` |
 | report writer (finalize) | — | the executor | default |
 
-All three are pickers in Settings › Autoresearch (Radix Select over `list_models`, the 136 S5 / wave 88 pattern) and per-study overrides in the draft card.
+All three are pickers in Settings › Autoresearch (`ModelCombobox` over `list_models`, the 136 Dreaming pattern; the reviewer has an Off switch = `review.model: off`) and per-study overrides in the draft card. The effort column is the intent; as built no call path carries an effort (R-72), so the configured values are stored, not applied.
 
 ## 10. Waves (parallel mode, built as W4)
 
@@ -441,7 +441,7 @@ autoresearch:
   pause: {crash_streak: 4, custody_refusals: 2}
   review: {model: null, on_suspicious: revert, pause_after: 3}     # model: null = other-vendor default; "off" disables
   models: {executor: null, advisor: null}
-  effort: {executor: high, review: low, advisor: high}
+  effort: {executor: high, review: low, advisor: high}   # as built: reserved, not applied — neither `runtime::SideCall` nor a schedule file carries an effort (fix round R-72; hand-off `SideCall.effort`)
   brief: {max_bytes: 12288, recent: 8, dead_ends: 30, ideas: 12, playbook_bytes: 4096, code_map_tokens: 1200}
   novelty: {threshold: 0.6}
   bench: {lock: builtin, max_load: 0.5, wait: 20m}   # lock: builtin | "<wrapper command>"
@@ -495,15 +495,16 @@ Root-session tools (the user's chats; runtime functions, not direct):
 
 | tool | Risk | args → returns |
 |---|---|---|
-| `autoresearch_draft` | read_only (writes nothing until the press) | `StudySpec` → the draft card (`crates/app`, routine_draft pattern). Invariant: the press, not the model, starts the study — the Start buttons call `autoresearch.create{draft_id, start}`; the chat then sees `[app study-drafts <id> started \| discarded]`. W2 reuses whichever press path the routine draft card uses today |
+| `autoresearch_draft` | read_only (creates no study) | `StudySpec` → the draft card (`crates/app`, routine_draft pattern). Writes the spec and a random **press token** to `<root>/drafts/<slug>/spec.json`. Invariant: the press, not the model, starts the study — the Start buttons run `autoresearch_start {draft_id, token}` (an OpenUI `Mutation` can only run installed tools, so the RPC `autoresearch.create {draft_id, start}` is the desktop's path); the chat then sees `[app study-drafts <id> started \| discarded]` |
+| `autoresearch_start` | mutating (the card's press only) | `{draft_id, token, window?}` → `StudyInfo`; refuses without the draft's token, which the model never sees (R-10 fix round) |
 | `autoresearch_status` | read_only | `{slug?}` → state, headline, last 5 experiments, budget left, current phase |
-| `autoresearch_control` | mutating | `{slug, op, reason?, text?}` (op incl. `steer`, `idea`) → `StudyInfo` |
+| `autoresearch_control` | mutating | `{slug, op, reason?, text?, n?}`; op = `pause \| resume \| stop_after \| stop_now \| run_once \| segment \| finalize \| restore \| keep_reverted \| merge \| discard \| steer \| idea` → `StudyInfo`. Refused from a bound study session or a wave child (R-13). No `start` op |
 
 Tool descriptions (verbatim; the model reads these):
 - `experiment_run`: "Measure your current change in this autoresearch study. The harness checks the evaluator files and scope, runs the study's fixed benchmark (1–3 samples, minutes), runs the correctness check if the change would be kept, and returns a verdict computed from the measured noise. Call it once per idea, after your edit; after a crash you may fix and call it again (the brief says how many times). Do not run the benchmark yourself for scoring."
 - `experiment_log`: "Close the current experiment. The harness applies the verdict of the last experiment_run: an improvement is committed, anything else is reverted (your change is saved as a patch). Write what you did and what the result teaches the next experiment. decision 'discard' throws away an improvement you distrust; 'keep_simpler' keeps a change that simplifies the code at equal performance (the harness verifies it)."
 - `experiment_begin`: "Start the next experiment of this autoresearch study. Returns the brief: goal, incumbent, noise, recent experiments, dead ends, ideas, the user's notes, budget left, and the protocol. Call it first."
-- `experiment_notes`: "Update the study's playbook (replaces it; keep it under 4 KiB) or add ideas to the backlog for later experiments."
+- `experiment_notes`: "Update the study's playbook (replaces it; keep it under {brief.playbook_bytes as KiB} KiB) or add ideas to the backlog for later experiments." (the cap is the configured value, 4 KiB by default)
 
 ### 12.5 RPC (crates/rpc, ts-rs bindings)
 

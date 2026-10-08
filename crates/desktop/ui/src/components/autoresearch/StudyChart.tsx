@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { type Layout, OUTCOME_PAINT, layout } from './model'
+import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
 import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
 
 const H = 260
@@ -10,7 +11,7 @@ const H = 260
  * a staircase, the baseline ± σ band, holdout diamonds on a right axis, drift markers. Plain SVG over `layout()`; hover
  * (or focus — every mark is a button) shows the verdict line in a tooltip, click opens the experiment.
  */
-export function StudyChart({ detail, onPick, className }: { detail: StudyDetail; onPick: (n: number) => void; className?: string }) {
+export function StudyChart({ detail, rows: runRows, onPick, className }: { detail: StudyDetail; rows?: readonly ExperimentRow[]; onPick: (n: number) => void; className?: string }) {
   const unit = detail.spec.metric.unit
   const ref = useRef<HTMLElement>(null)
   // Laid out in the container's CSS pixels (no `preserveAspectRatio="none"`): circles stay round, text stays legible.
@@ -24,7 +25,7 @@ export function StudyChart({ detail, onPick, className }: { detail: StudyDetail;
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  const l = layout(detail.series, { width: W, height: H, unit, lastN: detail.info.current ?? undefined })
+  const l = layout(detail.series, { width: W, height: H, unit, lastN: detail.info.current ?? undefined, rows: runRows })
   const [hover, setHover] = useState<{ x: number; y: number; text: string } | null>(null)
   const id = useId()
   const rows = detail.series.experiments.length

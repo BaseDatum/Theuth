@@ -1,5 +1,5 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useMemo } from 'react'
 import { useAction } from '@/components/settings/shared'
 import { toast } from 'sonner'
 import { useApi } from '@/lib/rpc'
@@ -19,10 +19,10 @@ export function useAutoresearchApi() {
 export const KEY = ['autoresearch'] as const
 export const PAGE = 200
 
-/** §12.3 events: state changes refetch the list and the study; `ExperimentProgress` updates the live progress cell and refetches the detail (its `tail`). */
+/** §12.3 events: state changes refetch the list and the study; `ExperimentProgress` updates the live progress cell only (the detail polls while an experiment is in flight, see `useStudy`). */
 const EVENTS = ['StudyChanged', 'ExperimentStarted', 'ExperimentProgress', 'ExperimentFinished', 'StudyFinished'] as const satisfies readonly StudyEvent['type'][]
 
-/** Subscribe once per mounted view. */
+/** Subscribe once: mounted by the Explorer (the Study view is its outlet, so it must not mount a second one). */
 export function useAutoresearchEvents() {
   const qc = useQueryClient()
   useEffect(() => {
@@ -30,7 +30,6 @@ export function useAutoresearchEvents() {
       on(t, (e) => {
         if (e.type === 'ExperimentProgress') {
           qc.setQueryData<Progress>([...KEY, e.slug, 'progress'], { phase: e.phase, sample: e.sample, of: e.of, elapsed_ms: e.elapsed_ms })
-          void qc.invalidateQueries({ queryKey: [...KEY, e.slug, 'detail'] })
           return
         }
         if (e.type === 'ExperimentStarted' || e.type === 'ExperimentFinished') qc.removeQueries({ queryKey: [...KEY, e.slug, 'progress'] })
@@ -44,6 +43,9 @@ export function useAutoresearchEvents() {
   }, [qc])
 }
 
+/** While an experiment is in flight the detail is refetched this often: `StudyDetail.tail` is read at `get`, so this is what makes the sample log live (§13.1). */
+export const LIVE_MS = 2000
+
 export function useStudies() {
   const api = useAutoresearchApi()
   return useQuery({ queryKey: [...KEY, 'list'], queryFn: () => api['autoresearch.list']() })
@@ -51,12 +53,28 @@ export function useStudies() {
 
 export function useStudy(slug: string) {
   const api = useAutoresearchApi()
-  return useQuery({ queryKey: [...KEY, slug, 'detail'], queryFn: () => api['autoresearch.get'](slug) })
+  return useQuery({
+    queryKey: [...KEY, slug, 'detail'],
+    queryFn: () => api['autoresearch.get'](slug),
+    refetchInterval: (q) => (q.state.data?.info.current != null ? LIVE_MS : false),
+  })
 }
 
+/** Every experiment, newest first, paged by `before` until a page comes back short: the table, the tally and the Restore lookup see the whole study. */
 export function useExperiments(slug: string) {
   const api = useAutoresearchApi()
-  return useQuery({ queryKey: [...KEY, slug, 'experiments'], queryFn: () => api['autoresearch.experiments'](slug, null, PAGE) })
+  const q = useInfiniteQuery({
+    queryKey: [...KEY, slug, 'experiments'],
+    queryFn: ({ pageParam }) => api['autoresearch.experiments'](slug, pageParam, PAGE),
+    initialPageParam: null as number | null,
+    getNextPageParam: (last) => (last.length < PAGE ? null : (last[last.length - 1]?.n ?? null)),
+  })
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = q
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage) void fetchNextPage()
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage])
+  const data = useMemo(() => q.data?.pages.flat(), [q.data])
+  return { data, isPending: q.isPending, isError: q.isError }
 }
 
 export function useExperiment(slug: string, n: number | null) {

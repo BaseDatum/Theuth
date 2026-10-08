@@ -1,8 +1,10 @@
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
-import { Flag, OctagonX, Pause, Play, SkipForward, StepForward } from 'lucide-react'
+import { Flag, OctagonX, Pause, Play, Scissors, SkipForward, StepForward } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import type { ControlOp } from '@/rpc/bindings/ControlOp'
@@ -17,7 +19,7 @@ import { Panel, SidePanel } from './SidePanel'
 import { StudyChart } from './StudyChart'
 import { StatePill } from './StudyList'
 import { type Bar, type Progress, budgetBars, clock, holdoutSummary, improved, keepNeedsPct, metric, pauseReasonLabel, pct, phaseChips, shortSha, tally } from './model'
-import { useAutoresearchEvents, useControl, useExperiments, useProgress, useStudy } from './queries'
+import { useControl, useExperiments, useProgress, useStudy } from './queries'
 
 const route = getRouteApi('/autoresearch/$slug')
 
@@ -33,7 +35,6 @@ export function StudyView() {
   const study = useStudy(slug)
   const runs = useExperiments(slug)
   const progress = useProgress(slug)
-  useAutoresearchEvents()
   const pick = (next: number | null) => void navigate({ to: '/autoresearch/$slug', params: { slug }, search: next === null ? {} : { n: next }, replace: next !== null && n !== undefined })
   const back = { to: '/autoresearch' as const, label: 'Studies', className: 'md:hidden' }
   const counts = useMemo(() => tally(runs.data ?? []), [runs.data])
@@ -131,7 +132,7 @@ export function StudyView() {
           <Bars bars={budgetBars(info.budget_used, info.budget)} />
 
           <Panel title="Every experiment" hint="the incumbent as a staircase">
-            <StudyChart detail={d} onPick={pick} />
+            <StudyChart detail={d} rows={runs.data} onPick={pick} />
           </Panel>
 
           {info.current !== null && <Current n={info.current} row={current} progress={progress ?? { phase: info.phase, sample: 0, of: 0, elapsed_ms: 0 }} tail={d.tail} onOpen={() => pick(info.current)} />}
@@ -175,6 +176,7 @@ export function Controls({ info }: { info: StudyInfo }) {
           <Button variant="ghost" size="xs" disabled={busy || inFlight} onClick={run({ op: 'finalize' })} title="Skip straight to confirm, changesets and the report">
             <Flag /> Finalize now
           </Button>
+          <NewSegment slug={info.slug} pending={busy} />
         </div>
       )
     case 'paused':
@@ -194,20 +196,15 @@ export function Controls({ info }: { info: StudyInfo }) {
           <Button variant="ghost" size="xs" disabled={busy} onClick={run({ op: 'finalize' })}>
             <Flag /> Finalize now
           </Button>
+          <NewSegment slug={info.slug} pending={busy} />
         </div>
       )
     case 'preparing':
-      return (
-        <div className="flex items-center gap-1.5 2xl:ml-auto">
-          <Button variant="outline" size="xs" className="text-danger hover:text-danger" disabled={busy} onClick={run({ op: 'stop_now' })}>
-            <OctagonX /> Stop now
-          </Button>
-        </div>
-      )
+      // `stop_now` is refused while preparing (the baseline runs to its end or fails); nothing to press yet.
+      return <span className="text-xs text-fg-tertiary 2xl:ml-auto">preparing: worktree, custody, baseline samples…</span>
     case 'finalizing':
       return <span className="text-xs text-fg-tertiary 2xl:ml-auto">finalizing: confirm runs, changesets, report…</span>
     case 'failed':
-    case 'discarded':
       return <DiscardStudy slug={info.slug} pending={busy} onConfirm={run({ op: 'discard' })} />
     default:
       return null
@@ -233,6 +230,37 @@ function PausedBanner({ reason, slug }: { reason: PauseReason; slug: string }) {
         </Button>
       )}
     </div>
+  )
+}
+
+/** §5.3: only the user opens a segment — new custody copies and a fresh baseline on the incumbent, σ restarts; the reason is required. */
+export function NewSegment({ slug, pending }: { slug: string; pending: boolean }) {
+  const control = useControl(slug)
+  const [reason, setReason] = useState('')
+  const ready = reason.trim().length > 0
+  return (
+    <AlertDialog onOpenChange={(open) => !open && setReason('')}>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="xs" disabled={pending || control.isPending} title="New custody copies of the evaluator and a fresh baseline; σ restarts">
+          <Scissors /> New segment
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Open a new segment of {slug}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Copies the evaluator files again, measures a fresh baseline on the incumbent and restarts σ. Earlier experiments stay visible but leave the statistics. Say why (it goes in the ledger).
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <Input value={reason} placeholder="Reason, e.g. fixed the benchmark's warm-up" aria-label="Reason" onChange={(e) => setReason(e.target.value)} />
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep</AlertDialogCancel>
+          <AlertDialogAction disabled={!ready} onClick={() => control.mutate({ op: 'segment', reason: reason.trim() })}>
+            Open segment
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 

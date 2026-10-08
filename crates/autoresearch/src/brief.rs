@@ -68,13 +68,15 @@ pub async fn render(
     let experiments = store.list_experiments(slug, None, u32::MAX).await?;
     let steers = store.list_steers(slug, false).await?;
     let ideas = store.list_ideas(slug, Some(IdeaStatus::Open)).await?;
+    // Holdout samples share the incumbent's tree sha; they never enter the
+    // brief (§5.4), so n_i counts bench roles only.
     let incumbent_samples = match &study.incumbent_sha {
         Some(sha) => store.samples_of_tree(slug, sha).await?,
         None => Vec::new(),
     };
     let n_i = incumbent_samples
         .iter()
-        .filter(|s| s.value.is_some() && !s.noisy && !s.lost)
+        .filter(|s| s.value.is_some() && !s.noisy && !s.lost && is_bench(s))
         .count();
 
     let x_i = study.incumbent_mean;
@@ -200,8 +202,7 @@ pub async fn render(
         let moved = cases_moved(&candidate, &before, spec.metric.direction);
         if !moved.is_empty() {
             out.push_str(&format!(
-                "\nCases that moved most last time (#{}): {}\n",
-                last.n,
+                "\nCases that moved most last time: {}\n",
                 moved.join(", ")
             ));
         }
@@ -214,7 +215,7 @@ pub async fn render(
         out.push_str("(empty)\n");
     } else {
         for l in playbook.lines() {
-            out.push_str(if l.trim().is_empty() { "·" } else { l });
+            out.push_str(l);
             out.push('\n');
         }
     }
@@ -283,9 +284,27 @@ const TRIM_ORDER: [&str; 7] = [
     "From the user (since experiment ",
 ];
 
+/// Every header a section body can run into (the rendered order of §7.2); a
+/// body ends at the blank line before the next one of these, so a blank line
+/// inside the playbook is body, not a section end.
+const HEADERS: [&str; 11] = [
+    "Code map of the scope (ranked):",
+    "Dead ends (do not repeat without a new reason):",
+    "Ideas (open, highest priority first; user ideas marked ★):",
+    "Recent experiments (newest first):",
+    "Playbook (yours; update with experiment_notes):",
+    "Incumbent so far (kept, oldest first):",
+    "From the user (since experiment ",
+    "Cases that moved most last time:",
+    "Category balance:",
+    "Protocol:",
+    "</study>",
+];
+
 /// Trim `text` to `max_bytes` by dropping whole lines from the end of each
 /// list section, never mid-line (140 §7.1). Sections are trimmed in
-/// [`TRIM_ORDER`]; a section's body runs from its header to the next blank line.
+/// [`TRIM_ORDER`]; a section's body runs from its header to the blank line
+/// before the next header in [`HEADERS`].
 pub fn trim(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_owned();
@@ -299,11 +318,16 @@ pub fn trim(text: &str, max_bytes: usize) -> String {
             let Some(h) = lines.iter().position(|l| l.starts_with(header)) else {
                 break;
             };
-            // Body: lines after the header up to the next blank line.
-            let end = lines[h + 1..]
+            // Body: lines after the header up to the blank separator before the next header.
+            let next = lines[h + 1..]
                 .iter()
-                .position(|l| l.is_empty())
+                .position(|l| HEADERS.iter().any(|x| l.starts_with(x)))
                 .map_or(lines.len(), |p| h + 1 + p);
+            let end = if next > h + 1 && lines[next - 1].is_empty() {
+                next - 1
+            } else {
+                next
+            };
             if end <= h + 1 {
                 break;
             }
@@ -325,6 +349,8 @@ fn is_closed(s: ExperimentState) -> bool {
     )
 }
 
+/// §7.3: discarded / crashed / checks_failed / rejected — a `refused` run was
+/// never measured, so it is neither a dead end nor "do not repeat".
 fn is_dead_end(s: ExperimentState) -> bool {
     matches!(
         s,
@@ -332,8 +358,13 @@ fn is_dead_end(s: ExperimentState) -> bool {
             | ExperimentState::Crashed
             | ExperimentState::ChecksFailed
             | ExperimentState::RejectedByReview
-            | ExperimentState::Refused
     )
+}
+
+/// A sample of the search benchmark (not the holdout's): the only kind the
+/// brief may count or compare (§5.4).
+fn is_bench(s: &Sample) -> bool {
+    s.role != Some(SampleRole::Holdout)
 }
 
 fn push_list(out: &mut String, lines: &[String], empty: &str) {
@@ -442,13 +473,16 @@ fn metric_line(
     let unit = &spec.metric.unit;
     let incumbent = match (x_i, base) {
         (Some(x), Some(b)) if b != 0.0 => {
+            // Direction-normalised like every row's `delta_pct`: + = better.
             format!(
                 "Incumbent {} {unit} = {} vs base",
                 num(x),
-                pct(Some((x - b) / b.abs() * 100.0))
+                pct(Some(
+                    crate::gate::normalise(spec.metric.direction, x, b) / b.abs() * 100.0
+                ))
             )
         }
-        (Some(x), _) => format!("Incumbent {} {unit} (= base)", num(x)),
+        (Some(x), _) => format!("Incumbent {} {unit} (vs base unknown)", num(x)),
         (None, _) => "Incumbent not measured yet".to_owned(),
     };
     format!(
@@ -498,7 +532,8 @@ fn noise_line(
 }
 
 /// Dead ends grouped by category (newest first inside a group), near-duplicates
-/// collapsed into one line with `×N`, capped at `cap` lines.
+/// collapsed into one line with `×N`; the `cap` newest groups survive (§7.2
+/// newest first), then they are grouped by category.
 fn dead_ends(closed: &[&ExperimentRecord], cap: usize) -> Vec<String> {
     struct Group<'a> {
         head: &'a ExperimentRecord,
@@ -520,11 +555,12 @@ fn dead_ends(closed: &[&ExperimentRecord], cap: usize) -> Vec<String> {
             }),
         }
     }
-    // Group by category, keep newest-first order within (stable sort).
+    // Groups are newest-first (closed is); cap first, then group by category
+    // (stable sort keeps newest-first within a category).
+    groups.truncate(cap);
     groups.sort_by(|a, b| cat(&a.head.category).cmp(cat(&b.head.category)));
     groups
         .iter()
-        .take(cap)
         .map(|g| {
             let e = g.head;
             let mut line = format!(
@@ -592,7 +628,9 @@ fn cases_moved(candidate: &[Sample], before: &[Sample], direction: Direction) ->
     let after = means(candidate, |s| {
         s.role == Some(SampleRole::Candidate) || s.role.is_none()
     });
-    let before = means(before, |s| s.role != Some(SampleRole::Candidate));
+    let before = means(before, |s| {
+        s.role != Some(SampleRole::Candidate) && is_bench(s)
+    });
     let mut rows: Vec<(f64, String)> = after
         .iter()
         .filter_map(|(id, (sum, n))| {
@@ -650,7 +688,7 @@ fn balance_line(closed: &[&ExperimentRecord]) -> String {
         }
         _ => String::new(),
     };
-    format!("Category balance (last {}): {hist}.{hint}\n", window.len())
+    format!("Category balance: {hist}.{hint}\n")
 }
 
 /// Whole lines from the top of `text` that fit in `max_bytes`.
@@ -787,7 +825,7 @@ mod tests {
             e.category = "caching".into();
             e.description = format!("memoised slice {i}");
             e.learned = "the token table dominates".into();
-            e.delta_pct = Some(if kept { -2.4 } else { 0.1 });
+            e.delta_pct = Some(if kept { 2.4 } else { 0.1 });
             e.z = Some(if kept { 3.1 } else { 0.2 });
             e.n_samples = 1;
             store.insert_experiment(&e).await.unwrap();
@@ -863,7 +901,7 @@ mod tests {
         for needle in [
             "<study slug=\"sort-speed\" experiment=\"39\" segment=\"0\">",
             "Goal: Make parse+render",
-            "Metric: time_ms (ms, lower is better). Incumbent 41.2 ms = −2.6 % vs base, after 4 keeps in 38 experiments.",
+            "Metric: time_ms (ms, lower is better). Incumbent 41.2 ms = +2.6 % vs base, after 4 keeps in 38 experiments.",
             "Noise: sigma 0.42 ms (1.02 %). A keep needs about",
             "or a confirmed 2-sigma gain.",
             "Scope: lib/liquid/**. Never keep changes to: fixtures/**, test/**. Evaluator files (refused if changed): fixtures/, test/, Rakefile.",
@@ -871,15 +909,15 @@ mod tests {
             "From the user (since experiment 0):",
             "try SIMD for the scanner",
             "Incumbent so far (kept, oldest first):",
-            "caching: memoised slice 0 (−2.4 %, 3.1 sigma)",
+            "caching: memoised slice 0 (+2.4 %, 3.1 sigma)",
             "Recent experiments (newest first):",
             "#38 no_gain +0.1 % 0.2σ [caching] memoised slice 7 — learned: the token table dominates",
             "Dead ends (do not repeat without a new reason):",
             "Ideas (open, highest priority first; user ideas marked ★):",
             "★ [algorithm] idea 0:",
-            "Cases that moved most last time (#38): fixture_a +10 %, fixture_b −5 %",
+            "Cases that moved most last time: fixture_a +10 %, fixture_b −5 %",
             "Playbook (yours; update with experiment_notes):",
-            "Category balance (last 12):",
+            "Category balance: caching",
             "The last two were [caching]; pick another category.",
             "Mode: exploit.",
             "Code map of the scope (ranked):",
@@ -919,6 +957,126 @@ mod tests {
             .map(|l| l.split(']').next().unwrap())
             .collect();
         assert_eq!(cats, ["[algorithm", "[allocation", "[caching", "[io"]);
+    }
+
+    /// R-77: the cap keeps the newest dead-end groups, not the first categories
+    /// of the alphabet.
+    #[tokio::test]
+    async fn dead_end_cap_drops_the_oldest_groups() {
+        let (_d, store, study) = fixture(0, 12, 0, 0).await;
+        let cfg = BriefConfig {
+            dead_ends: 2,
+            ..Default::default()
+        };
+        let b = render(&store, &study, &cfg, &cx(13)).await.unwrap();
+        let cats: Vec<&str> = b
+            .text
+            .lines()
+            .skip_while(|l| !l.starts_with("Dead ends"))
+            .skip(1)
+            .take_while(|l| !l.is_empty())
+            .map(|l| l.split(']').next().unwrap())
+            .collect();
+        // Newest groups are io (#12) and allocation (#11).
+        assert_eq!(cats, ["[allocation", "[io"], "{}", b.text);
+    }
+
+    /// R-70: a `refused` run was never measured — not a dead end.
+    #[tokio::test]
+    async fn refused_runs_are_not_dead_ends() {
+        let (_d, store, study) = fixture(0, 1, 0, 0).await;
+        let mut e = ExperimentRecord::open("sort-speed", 2, 0, "inc");
+        e.state = ExperimentState::Refused;
+        e.verdict = Some(Verdict::Refused {
+            reason: "evaluator changed".into(),
+        });
+        e.idea = "a perfectly fine retryable idea".into();
+        e.category = "io".into();
+        store.insert_experiment(&e).await.unwrap();
+        let b = render(&store, &study, &BriefConfig::default(), &cx(3))
+            .await
+            .unwrap();
+        let section: Vec<&str> = b
+            .text
+            .lines()
+            .skip_while(|l| !l.starts_with("Dead ends"))
+            .skip(1)
+            .take_while(|l| !l.is_empty())
+            .collect();
+        // Still a recent experiment, but no dead-end line.
+        assert_eq!(section.len(), 1, "{section:?}");
+        assert!(
+            !section
+                .iter()
+                .any(|l| l.contains("perfectly fine retryable")),
+            "{section:?}"
+        );
+    }
+
+    /// R-3: a holdout sample on the incumbent's tree is neither counted in n_i
+    /// nor compared in "Cases that moved most" (§5.4: never in the brief).
+    #[tokio::test]
+    async fn holdout_samples_never_reach_the_brief() {
+        let (_d, store, study) = fixture(2, 0, 0, 0).await;
+        store
+            .insert_sample(
+                "sort-speed",
+                &Sample {
+                    n: 0,
+                    k: 9,
+                    tree_sha: "inc".into(),
+                    role: Some(SampleRole::Holdout),
+                    value: Some(100.0),
+                    cases: [("fixture_a".to_owned(), 1000.0)].into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let b = render(&store, &study, &BriefConfig::default(), &cx(3))
+            .await
+            .unwrap();
+        // n_i = 3 baseline samples: 3.5 · 0.42 · √(1 + 1/3) = 1.697 (1.644 with the holdout counted).
+        assert!(b.text.contains("A keep needs about 1.697 ms"), "{}", b.text);
+        assert!(
+            b.text
+                .contains("Cases that moved most last time: fixture_a +10 %"),
+            "{}",
+            b.text
+        );
+        assert!(!b.text.contains("1000"), "{}", b.text);
+    }
+
+    /// R-78: a blank line inside the playbook is body, not the section's end;
+    /// trimming the playbook drops its last line and renders no `·`.
+    #[tokio::test]
+    async fn playbook_blank_lines_survive_and_trim_from_its_bottom() {
+        let (_d, store, mut study) = fixture(0, 0, 0, 0).await;
+        study.playbook = "build: rake compile\n\nhot path: parser.rb\nlast line".into();
+        let full = render(
+            &store,
+            &study,
+            &BriefConfig {
+                max_bytes: u32::MAX,
+                ..Default::default()
+            },
+            &cx(1),
+        )
+        .await
+        .unwrap();
+        assert!(
+            full.text
+                .contains("Playbook (yours; update with experiment_notes):\nbuild: rake compile\n\nhot path: parser.rb\nlast line\n\nCategory balance"),
+            "{}",
+            full.text
+        );
+        assert!(!full.text.contains('·'));
+        // Trimming the playbook section drops its last line, not the blank line's first half.
+        let text = "head\n\nPlaybook (yours; update with experiment_notes):\nbuild: rake compile\n\nhot path: parser.rb\nlast line\n\nCategory balance: none.\nMode: exploit.\n\nProtocol:\n1.\n";
+        assert_eq!(
+            trim(text, text.len() - 1),
+            "head\n\nPlaybook (yours; update with experiment_notes):\nbuild: rake compile\n\nhot path: parser.rb\n\nCategory balance: none.\nMode: exploit.\n\nProtocol:\n1.\n"
+        );
     }
 
     /// Explore mode and incidents render; an empty study renders the empty markers.

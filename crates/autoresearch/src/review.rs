@@ -234,7 +234,10 @@ pub async fn review(
     }))
 }
 
-/// The kept commit's diff against its parent, from the study worktree.
+/// The kept commit's diff against its parent, from the study worktree — whole,
+/// so `summarise_diff`'s per-file summary names every file and picks the
+/// largest hunks from all of them (R-71: a cut before the summary left the
+/// files past it unreviewed). The reviewer's cap is applied in [`prompt`].
 fn keep_diff(study: &StudyRecord, e: &ExperimentRecord) -> Result<String> {
     let worktree = study
         .worktree
@@ -244,7 +247,7 @@ fn keep_diff(study: &StudyRecord, e: &ExperimentRecord) -> Result<String> {
         .commit_sha
         .as_deref()
         .ok_or_else(|| Error::refused(format!("experiment #{} has no commit", e.n)))?;
-    crate::git::diff_text(Path::new(worktree), &e.parent_sha, commit, 4 * DIFF_MAX)
+    crate::git::diff_text(Path::new(worktree), &e.parent_sha, commit, usize::MAX)
 }
 
 fn excerpt(s: &str, n: usize) -> String {

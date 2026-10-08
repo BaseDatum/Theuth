@@ -108,7 +108,7 @@ function SteerHistory({ steers }: { steers: StudySteer[] }) {
   )
 }
 
-/** Ideas: open ones first (★ the user's, by priority), tried/closed under a line; add (priority 3, source user) and close. */
+/** Ideas: open ones first (★ the user's, by priority), tried/closed under a line; add (priority 3, source user), reprioritise (0–3, R-90) and close. */
 function Ideas({ slug, ideas, live }: { slug: string; ideas: StudyIdea[]; live: boolean }) {
   const [adding, setAdding] = useState(false)
   const [text, setText] = useState('')
@@ -167,6 +167,24 @@ function Ideas({ slug, ideas, live }: { slug: string; ideas: StudyIdea[]; live: 
               {i.text} <span className="text-[11px] text-fg-tertiary">[{i.category}]</span>
               {i.source === 'advisor' && <span className="ml-1 text-[11px] text-info">advisor</span>}
             </span>
+            {live ? (
+              <select
+                aria-label={`Priority of idea: ${i.text}`}
+                value={i.priority}
+                disabled={act.isPending}
+                onChange={(e) => act.mutate({ op: 'priority', id: i.id, priority: Number(e.target.value) })}
+                className="h-5 shrink-0 rounded border border-border-subtle bg-layer-2 px-0.5 text-[11px] text-fg-secondary tabular-nums"
+                title="Priority: 3 first"
+              >
+                {[3, 2, 1, 0].map((p) => (
+                  <option key={p} value={p}>
+                    p{p}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="shrink-0 text-[11px] text-fg-tertiary tabular-nums">p{i.priority}</span>
+            )}
             {live && (
               <button
                 type="button"
@@ -213,7 +231,8 @@ function NeedsEyes({ detail, rows, onPick }: { detail: StudyDetail; rows: Experi
   const control = useControl(detail.info.slug)
   const live = detail.info.state.state === 'running' || detail.info.state.state === 'paused'
   const reverted = rows.filter((r) => r.state === 'rejected_by_review')
-  const lines = detail.needs_eyes
+  // The plugin's reverted line ends "· Restore · Keep reverted"; the buttons below say that (R-96).
+  const lines = detail.needs_eyes.map((l) => l.replace(/\s*·\s*Restore(\s*·\s*Keep reverted)?\s*$/, ''))
   return (
     <Panel title={`Needs your eyes · ${lines.length}`}>
       <ul className="flex flex-col gap-2">
@@ -250,7 +269,7 @@ function NeedsEyes({ detail, rows, onPick }: { detail: StudyDetail; rows: Experi
           )
         })}
       </ul>
-      {detail.info.state.state === 'finished' && detail.info.report_doc && (
+      {detail.info.state.state === 'finished' && detail.info.report_doc && !detail.info.report_doc.includes('/') && (
         <p className="mt-2 text-xs text-fg-tertiary">
           The{' '}
           <Link to="/notes/$id" params={{ id: detail.info.report_doc }} search={{}} className="underline">
