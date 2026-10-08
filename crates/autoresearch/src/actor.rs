@@ -1553,7 +1553,7 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     }
 
     // Explore mode after a plateau (§8.4), budget line, code map, incidents.
-    let events = env.store.list_events(&slug, None, 500).await?;
+    let events = env.store.list_events(&slug, Some("explore"), 1).await?;
     let last_keep_n = env
         .store
         .list_experiments(&slug, None, u32::MAX)
@@ -1562,8 +1562,7 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
         .find(|e| e.state == ExperimentState::Kept)
         .map_or(0, |e| e.n);
     let explore = events
-        .iter()
-        .find(|e| e.kind == "explore")
+        .first()
         .is_some_and(|e| {
             e.payload
                 .get("after_n")

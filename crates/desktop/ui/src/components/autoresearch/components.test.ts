@@ -91,16 +91,18 @@ test('state pill: words per state, the reason for a pause, the experiment while 
   expect(paint(createElement(StatePill, { state: by('fixture-guard').info.state, short: true }))).toContain('>paused<')
 })
 
-test('current experiment: chips from the progress event, the idea once the row exists', () => {
+test('current experiment: chips from the progress event, the idea once the row exists, the log tail while measuring', () => {
   const s = by('sort-speed')
   const row = s.rows.find((r) => r.n === 35) ?? null
-  let html = paint(createElement(Current, { n: 35, row, progress: { phase: 'sampling', sample: 2, of: 3, elapsed_ms: 402_000 }, onOpen: () => {} }))
+  let html = paint(createElement(Current, { n: 35, row, progress: { phase: 'sampling', sample: 2, of: 3, elapsed_ms: 402_000 }, tail: 'CASE n4000 time_ms=144.196\nMETRIC time_ms=1948.974', onOpen: () => {} }))
   expect(html).toContain('measuring 2/3')
   expect(html).toContain('Reuse the token buffer')
   expect(html).toContain('6:42')
-  html = paint(createElement(Current, { n: 36, row: null, progress: { phase: null, sample: 0, of: 0, elapsed_ms: 0 }, onOpen: () => {} }))
+  expect(html).toContain('METRIC time_ms=1948.974')
+  html = paint(createElement(Current, { n: 36, row: null, progress: { phase: null, sample: 0, of: 0, elapsed_ms: 0 }, tail: null, onOpen: () => {} }))
   expect(html).toContain('Experiment 36 · editing')
   expect(html).toContain('the idea is declared at the first measurement')
+  expect(html).not.toContain('Sample log tail')
 })
 
 test('run table: newest first, verdict badges, deviation marker, σ× and Δ columns', () => {

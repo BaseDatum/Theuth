@@ -30,12 +30,13 @@ test('agents group: three full-width tabs, Tasks active under /tasks/abc, labels
   expect(html).not.toContain('Show sidebar')
 })
 
-test('library group: seven tabs, Meetings active under /meetings/briefs', () => {
+test('library group: eight tabs (140 R1-D4 adds Autoresearch), Meetings active under /meetings/briefs', () => {
   env.pathname = '/meetings/briefs'
   const html = render('library')
-  expect(tabs(html)).toBe(7)
+  expect(tabs(html)).toBe(8)
   expect(active(html)).toEqual(['Meetings'])
   expect(html).toContain('title="Artifacts"')
+  expect(html).toContain('title="Autoresearch"')
 })
 
 test('no tab active on a foreign path', () => {

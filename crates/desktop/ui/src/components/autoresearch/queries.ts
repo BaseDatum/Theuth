@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { useAction } from '@/components/settings/shared'
+import { toast } from 'sonner'
 import { useApi } from '@/lib/rpc'
 import type { ControlOp } from '@/rpc/bindings/ControlOp'
 import type { IdeaChange } from '@/rpc/bindings/IdeaChange'
@@ -73,10 +74,15 @@ export function useAutoresearchSettings() {
   return useQuery({ queryKey: [...KEY, 'settings'], queryFn: () => api['autoresearch.settings.get']() })
 }
 
-/** `autoresearch.control`: every button of the header and the needs-your-eyes rows. */
+/** `autoresearch.control`: every button of the header, the needs-your-eyes rows and the changesets table. A merge has no row to change, so it says so. */
 export function useControl(slug: string) {
   const api = useAutoresearchApi()
-  return useAction((op: ControlOp) => api['autoresearch.control'](slug, op), { keys: [KEY] })
+  return useAction((op: ControlOp) => api['autoresearch.control'](slug, op), {
+    keys: [KEY],
+    onSuccess: (_info, op) => {
+      if (op.op === 'merge') toast.success(`Merged changeset #${op.changeset} into your branch`)
+    },
+  })
 }
 
 export function useSteer(slug: string, onSuccess?: () => void) {
