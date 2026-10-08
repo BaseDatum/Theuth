@@ -39,11 +39,11 @@ Synthetic check of the float rule across pane widths (`/tmp/143/w1/ratio-test.ht
 - `note-empty.png`, `note-long.png`, `note-phone.png` — the measurements above.
 - `meeting-dense.png` — the meeting control center; the dense note pane keeps its box shape.
 - `ratio-test.png` + `ratio-test.html` — the synthetic width sweep.
-- `bun run check` (`tsc -b --noEmit`): exit 0, 0 errors (baseline `tsc-baseline-theuth-143-w1.log`: 0).
-- `bunx vitest run src/lib src/components/sidebar src/components/meeting`: exit 0 — 79 files, 487 tests passed (includes the new "143 D4" and "143 D3" tests in `popout.test.ts`).
+
 ## Gates (under build-lock, `BUILD_LABEL=143-W1`)
 
-Filled in below by the final message; see the commit log.
+- `bun run check` (`tsc -b --noEmit`): exit 0, 0 errors (baseline `tsc-baseline-theuth-143-w1.log`: 0).
+- `bunx vitest run src/lib src/components/sidebar src/components/meeting`: exit 0 — 79 files, 487 tests passed (includes the new "143 D4" and "143 D3" tests in `popout.test.ts`).
 
 ## Deviations
 
