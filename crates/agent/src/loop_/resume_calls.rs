@@ -116,7 +116,10 @@ pub(crate) async fn resume_job_call(
         ),
     };
     let fate = if moved {
-        format!("the job stayed on {} and its exit code is unknown here", job.engine)
+        format!(
+            "the job stayed on {} and its exit code is unknown here",
+            job.engine
+        )
     } else {
         "the job died with the engine and its exit code is unknown".to_owned()
     };
@@ -411,13 +414,17 @@ mod tests {
         let c = call("c1", "send_message", json!({}));
         let crash = interrupted_note(&c, &plan(ResumeCause::Crash));
         assert!(
-            crash.content.starts_with("ERROR: interrupted: the engine restarted at "),
+            crash
+                .content
+                .starts_with("ERROR: interrupted: the engine restarted at "),
             "{}",
             crash.content
         );
         let moved = interrupted_note(&c, &plan(ResumeCause::Transfer));
         assert!(
-            moved.content.starts_with("ERROR: interrupted: the session moved to this engine at "),
+            moved
+                .content
+                .starts_with("ERROR: interrupted: the session moved to this engine at "),
             "{}",
             moved.content
         );
@@ -429,7 +436,11 @@ mod tests {
             "{}",
             w.content
         );
-        assert!(w.content.contains("arrives as a <message>"), "{}", w.content);
+        assert!(
+            w.content.contains("arrives as a <message>"),
+            "{}",
+            w.content
+        );
     }
 
     /// 139 §7.1 / §7.2: on engine `b`, the job note and the lost `wait`
@@ -465,7 +476,10 @@ mod tests {
             settled_ms: Some(9_000),
             engine: "a".into(),
         };
-        store.job_put(&row("j1", "c1", JobKind::Shell)).await.unwrap();
+        store
+            .job_put(&row("j1", "c1", JobKind::Shell))
+            .await
+            .unwrap();
         store.job_put(&row("j2", "c2", JobKind::Pty)).await.unwrap();
         let p = plan(ResumeCause::Transfer);
         let note = resume_job_call(&store, s, &call("c1", "shell", json!({})), &p)

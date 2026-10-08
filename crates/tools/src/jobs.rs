@@ -1269,7 +1269,11 @@ impl Jobs {
         for (pty, session, id) in screens {
             pty.snapshot_to_store(&*self.journal, session, &id).await;
         }
-        let what = if only.is_some() { "when the session moved" } else { "at shutdown" };
+        let what = if only.is_some() {
+            "when the session moved"
+        } else {
+            "at shutdown"
+        };
         for (session, sj) in &mut self.sessions {
             if only.is_some_and(|s| s != *session) {
                 continue;
@@ -2830,7 +2834,10 @@ pub(crate) mod tests {
         assert!(alive_at_write, "the row went to disk after the kill");
         assert_eq!(lost.state, JobState::Running);
         assert!(group_gone(&tree, Some(tokio::time::Instant::now() + KILL_WAIT)).await);
-        assert!(other_tree.alive(), "the other session's group was signalled");
+        assert!(
+            other_tree.alive(),
+            "the other session's group was signalled"
+        );
         let view = list(&fx).await.pop().unwrap();
         assert_eq!((view.id, view.state.as_str()), (id, "lost"));
         assert_eq!(

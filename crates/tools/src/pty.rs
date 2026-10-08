@@ -1503,7 +1503,9 @@ impl Message<SendInput> for Jobs {
             self.lost_page(
                 m.session,
                 &m.args.id,
-                Some(&format!("the terminal is gone ({why}); last screen follows")),
+                Some(&format!(
+                    "the terminal is gone ({why}); last screen follows"
+                )),
             )
         }) {
             tx.send(Ok(out));

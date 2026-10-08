@@ -199,8 +199,15 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
             JobKind::Shell => None,
         };
         let tail = row.log.as_deref().map(log_tail).unwrap_or_default();
-        let deliver = (!in_batch.contains(&(row.session, row.call_id.clone())))
-            .then(|| lost_body(&row, screen.as_ref(), &tail, restarted_at, &LostReason::Restart));
+        let deliver = (!in_batch.contains(&(row.session, row.call_id.clone()))).then(|| {
+            lost_body(
+                &row,
+                screen.as_ref(),
+                &tail,
+                restarted_at,
+                &LostReason::Restart,
+            )
+        });
         row.state = JobState::Lost;
         row.exit = Some(JobExit::Lost);
         // `KillAll` stamped the shutdown time (§5.5); a crash left none.
@@ -553,8 +560,9 @@ mod tests {
     }
 
     /// A live local process group standing in for one another engine
-    /// spawned (same pid namespace in the test): `(pgid, tree)`.
-    fn foreign_group() -> (i64, ProcessTree) {
+    /// spawned (same pid namespace in the test): `(pgid, tree, child)` —
+    /// the caller kills the tree and `wait`s the child.
+    fn foreign_group() -> (i64, ProcessTree, std::process::Child) {
         use std::os::unix::process::CommandExt;
         let child = std::process::Command::new("sleep")
             .arg("600")
@@ -564,7 +572,7 @@ mod tests {
         let pgid = child.id();
         let tree = ProcessTree::adopt(pgid).unwrap();
         assert!(tree.alive());
-        (i64::from(pgid), tree)
+        (i64::from(pgid), tree, child)
     }
 
     /// 139 I6 / D14: on engine `b`, a `running` row with `engine = "a"`
@@ -580,7 +588,7 @@ mod tests {
         .await
         .unwrap();
         let s = session(&store).await;
-        let (pgid, tree) = foreign_group();
+        let (pgid, tree, mut child) = foreign_group();
         let mut foreign = running(s, "j1", "c1", Some(pgid));
         foreign.engine = "a".into();
         store.job_put(&foreign).await.unwrap();
@@ -594,11 +602,19 @@ mod tests {
         assert_eq!(reaped.jobs[0].row.id.0, "j2");
         assert_eq!(reaped.jobs[0].reason, LostReason::Restart);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(tree.alive(), "the reaper signalled a group it did not spawn");
+        assert!(
+            tree.alive(),
+            "the reaper signalled a group it did not spawn"
+        );
         let rows = store.jobs_of(s).await.unwrap();
         let j1 = rows.iter().find(|r| r.id.0 == "j1").unwrap();
-        assert_eq!(j1.state, JobState::Running, "foreign row settled by the reaper");
+        assert_eq!(
+            j1.state,
+            JobState::Running,
+            "foreign row settled by the reaper"
+        );
         tree.kill();
+        let _ = child.wait();
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -617,7 +633,7 @@ mod tests {
         .await
         .unwrap();
         let s = session(&store).await;
-        let (pgid, tree) = foreign_group();
+        let (pgid, tree, mut child) = foreign_group();
         // j1: a's shell job, stub delivered. j2: a's PTY with a replicated
         // screen, its call `c2` started in the open turn. j3: b's own.
         let mut j1 = running(s, "j1", "c1", Some(pgid));
@@ -682,10 +698,7 @@ mod tests {
         assert_eq!(reaped.jobs.len(), 2);
         let by_id = |id: &str| reaped.jobs.iter().find(|j| j.row.id.0 == id).unwrap();
         let j1 = by_id("j1");
-        assert_eq!(
-            j1.reason,
-            LostReason::OwnerChanged { engine: "a".into() }
-        );
+        assert_eq!(j1.reason, LostReason::OwnerChanged { engine: "a".into() });
         assert_eq!(
             (j1.row.state, j1.row.exit.clone()),
             (JobState::Lost, Some(JobExit::Lost))
@@ -709,6 +722,7 @@ mod tests {
         // Idempotent: nothing left to settle.
         assert!(settle_transferred(&store, s, "a").await.jobs.is_empty());
         tree.kill();
+        let _ = child.wait();
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -93,7 +93,11 @@ pub async fn settle_on_transfer(agents: &mut Agents, parent: SessionId, from: Op
             "{} was running on {from}, which is unreachable; its result is lost. ",
             label(&row.name, child)
         );
-        if row.cwd.as_deref().is_some_and(|c| std::path::Path::new(c).is_dir()) {
+        if row
+            .cwd
+            .as_deref()
+            .is_some_and(|c| std::path::Path::new(c).is_dir())
+        {
             body.push_str(
                 &compose_handoff(&agents.store, child, agents.cfg.durability.handoff_tokens).await,
             );
@@ -178,7 +182,10 @@ mod tests {
         );
         assert_eq!(r1.payload, json!({"agent": "worker@a"}));
         assert_eq!(
-            rows.iter().find(|w| w.tool_call_id == "call-2").unwrap().payload,
+            rows.iter()
+                .find(|w| w.tool_call_id == "call-2")
+                .unwrap()
+                .payload,
             json!({"agent": null})
         );
 
@@ -202,8 +209,7 @@ mod tests {
         let dir = temp();
         std::fs::create_dir_all(&dir).unwrap();
         let parent = SessionId::new();
-        let (with_cwd, without_cwd, on_c) =
-            (SessionId::new(), SessionId::new(), SessionId::new());
+        let (with_cwd, without_cwd, on_c) = (SessionId::new(), SessionId::new(), SessionId::new());
         let worktree = dir.join("wt");
         std::fs::create_dir_all(&worktree).unwrap();
         // `a` created the children (owner = a) and recorded their `cwd`
@@ -287,7 +293,10 @@ mod tests {
             )),
             "{with}"
         );
-        assert!(with.contains("<resume_handoff>"), "handoff sections expected: {with}");
+        assert!(
+            with.contains("<resume_handoff>"),
+            "handoff sections expected: {with}"
+        );
         let without = text_of(without_cwd);
         assert_eq!(
             without,
