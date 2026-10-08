@@ -20,7 +20,7 @@ pub mod render;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -33,8 +33,9 @@ use runtime::{Runtime, SessionId};
 use crate::store::Store;
 use crate::supervisor::Agents;
 use crate::{
-    AGENT_ACTOR, AdvisorConfig, AdvisorLink, AdvisorNoteCounts, AdvisorSeverity, AdvisorState,
-    AdvisorStatus, Advisory, AdvisoryNote, AgentEvent, SyncBacklog,
+    AGENT_ACTOR, AdvisorConfig, AdvisorConsultCounts, AdvisorLink, AdvisorNoteCounts,
+    AdvisorSeverity, AdvisorState, AdvisorStatus, Advisory, AdvisoryKind, AdvisoryNote, AgentEvent,
+    ModelRole, SideCall, SideReply, SyncBacklog,
 };
 use guard::{Guard, Verdict};
 use render::{UpdateOpts, counted, fingerprint, render_update};
@@ -94,6 +95,8 @@ pub struct Attach {
     pub link: AdvisorLink,
     /// The advisor model's context window, 0 when unknown.
     pub context_limit: u32,
+    /// R1 D-R1.5: the pairing warning the supervisor computed, if any.
+    pub warning: Option<String>,
 }
 
 /// `ask` → `()`: `set_advisor(Off)` — cancel the review, delete the link.
@@ -179,14 +182,14 @@ pub struct Consult {
     pub n: u32,
 }
 
-/// `ask` → `Option<ConsultSourceInfo>`: the nearest ancestor link of the
-/// session (R1.3 availability for `depth > 0`).
+/// `ask` → `Option<ConsultSourceInfo>`: the nearest link on the session's
+/// chain — its own, else the nearest ancestor's (R1.3 availability).
 pub struct ConsultSource(pub SessionId);
 
-/// The link a subagent's one-shot runs against.
+/// The link a `consult` runs against.
 #[derive(Clone, Debug)]
 pub struct ConsultSourceInfo {
-    /// The advised ancestor.
+    /// The advised session (the asker itself at depth 0).
     pub advised: SessionId,
     /// Its advisor session.
     pub advisor: SessionId,
@@ -194,11 +197,77 @@ pub struct ConsultSourceInfo {
     pub model: String,
     /// The link's effort at call time.
     pub effort: Option<String>,
+    /// The live `advisor.max_consults` (0 = tool absent).
+    pub cap: u8,
 }
 
 /// `tell`: the asker gave up (timeout / Stop); cancel the pending
 /// consultation — no card, no counters.
 pub struct CancelConsult(pub SessionId);
+
+/// `Err` reason of a `consult` without a link; the loop maps it to
+/// `consult::ERR_OFF`, every other reason to `consult::err_unavailable`.
+pub const REASON_OFF: &str = "advisor off";
+
+/// Internal `tell`: a subagent's one-shot side call returned.
+struct OneShotDone {
+    asker: SessionId,
+    advised: SessionId,
+    question: String,
+    result: Result<SideReply, String>,
+    reply: ReplySender<Result<String, String>>,
+}
+
+/// Lines and chars an answer is clipped to (the advisor was asked for 12).
+const ANSWER_LINES: usize = 12;
+const ANSWER_CHARS: usize = 1500;
+/// The answer of a consultation turn that said nothing.
+pub const NO_OBJECTION: &str = "no objection";
+
+/// The advisor's reply trimmed and clipped; an empty one is [`NO_OBJECTION`].
+fn clip_answer(text: &str) -> String {
+    let text = text.trim();
+    if text.is_empty() {
+        return NO_OBJECTION.to_owned();
+    }
+    let mut out = text
+        .lines()
+        .take(ANSWER_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if out.chars().count() > ANSWER_CHARS {
+        let cut = out
+            .char_indices()
+            .nth(ANSWER_CHARS)
+            .map_or(out.len(), |(i, _)| i);
+        out.truncate(cut);
+        out.push('…');
+    }
+    out
+}
+
+/// Marker the renderer puts before a `### Consultation` block.
+const BLOCK_SEP: &str = "\n\n---\n\n### Consultation\n";
+
+/// `update` without its consultation block (a quarantined consultation is
+/// replayed as a plain review).
+fn without_block(update: &str) -> String {
+    match update.find(BLOCK_SEP) {
+        Some(i) => update[..i].to_owned(),
+        None => update.to_owned(),
+    }
+}
+
+/// `Link.detail`, or the state's word when a pause/halt left none.
+fn unavailable_detail(link: &Link) -> String {
+    link.detail.clone().unwrap_or_else(|| {
+        match link.row.state {
+            AdvisorState::Paused => "advisor paused",
+            _ => "advisor halted",
+        }
+        .to_owned()
+    })
+}
 
 // ---- state ------------------------------------------------------------------
 
@@ -223,6 +292,9 @@ struct Review {
     tainted: bool,
     /// Assistant text streamed so far (for the quarantine scan).
     text: String,
+    /// R1.4: this turn carries the `### Consultation` block; its text is
+    /// the answer.
+    consult: bool,
 }
 
 impl Review {
@@ -236,8 +308,19 @@ impl Review {
             unknown_tool: false,
             tainted: false,
             text: String::new(),
+            consult: false,
         }
     }
+}
+
+/// R1.4: the root's `consult` awaiting its answer through the child.
+struct PendingConsult {
+    reply: ReplySender<Result<String, String>>,
+    question: String,
+    /// The rendered `### Consultation` block.
+    block: String,
+    /// Still parked behind a review in flight (`finish_review` sends it).
+    parked: bool,
 }
 
 struct Link {
@@ -272,6 +355,14 @@ struct Link {
     context_limit: u32,
     detail: Option<String>,
     last_error: Option<String>,
+    /// R1.4: the root's consultation awaiting its answer.
+    consult: Option<PendingConsult>,
+    /// R1.5: consults answered through this link (the root's and its subagents').
+    consults_total: u32,
+    /// The root's per-turn count as the asker reported it (`Consult.n`).
+    consults_turn: u32,
+    /// D-R1.5 pairing warning, set at attach / re-pick.
+    warning: Option<String>,
 }
 
 impl Link {
@@ -305,6 +396,10 @@ impl Link {
             context_limit,
             detail: None,
             last_error: None,
+            consult: None,
+            consults_total: 0,
+            consults_turn: 0,
+            warning: None,
         }
     }
 
@@ -314,7 +409,7 @@ impl Link {
         }
     }
 
-    fn status(&self, cost: Option<crate::cost::CostBucket>) -> AdvisorStatus {
+    fn status(&self, cost: Option<crate::cost::CostBucket>, cap: u8) -> AdvisorStatus {
         AdvisorStatus {
             session: self.row.session,
             advisor: Some(self.row.advisor),
@@ -331,10 +426,20 @@ impl Link {
             backlog: self.backlog,
             last_note: self.last_note.clone(),
             detail: self.detail.clone(),
-            // 125 R1 C placeholder: W1 fills the counts and the pairing warning.
-            consults: crate::AdvisorConsultCounts::default(),
-            warning: None,
+            consults: AdvisorConsultCounts {
+                turn: self.consults_turn,
+                total: self.consults_total,
+                cap,
+            },
+            warning: self.warning.clone(),
         }
+    }
+
+    /// Reply to the pending consultation, if any, and clear it.
+    fn answer_consult(&mut self, r: Result<String, String>) -> Option<PendingConsult> {
+        let pc = self.consult.take()?;
+        pc.reply.send(r);
+        Some(pc)
     }
 }
 
@@ -349,6 +454,8 @@ pub struct Advisors {
     compact_at: f32,
     links: HashMap<SessionId, Link>,
     by_advisor: HashMap<SessionId, SessionId>,
+    /// R1.5: subagents with a one-shot in flight.
+    oneshots: HashSet<SessionId>,
 }
 
 impl kameo::Actor for Advisors {
@@ -378,6 +485,7 @@ impl Advisors {
             compact_at,
             links: HashMap::new(),
             by_advisor: HashMap::new(),
+            oneshots: HashSet::new(),
         };
         me.load().await?;
         let actor = Self::spawn_with_mailbox(me, runtime::subscriber_mailbox());
@@ -438,10 +546,8 @@ impl Advisors {
         }
     }
 
-    async fn publish(&self, session: SessionId) {
-        let Some(link) = self.links.get(&session) else {
-            return;
-        };
+    /// `link.status(..)` with the advisor's live cost and the live cap.
+    async fn status_of(&self, link: &Link) -> AdvisorStatus {
         let cost = self
             .store
             .session_cost(link.row.advisor)
@@ -449,7 +555,14 @@ impl Advisors {
             .ok()
             .flatten()
             .map(|c| c.total);
-        let status = link.status(cost);
+        link.status(cost, self.cfg.max_consults)
+    }
+
+    async fn publish(&self, session: SessionId) {
+        let Some(link) = self.links.get(&session) else {
+            return;
+        };
+        let status = self.status_of(link).await;
         self.rt
             .publish(AgentEvent::AdvisorChanged { session, status })
             .await;
@@ -487,13 +600,28 @@ impl Advisors {
     /// Render and send everything past the cursor as one update; detects a
     /// rewritten delivered prefix first and replays instead (125 §4.7).
     async fn send_update(&mut self, session: SessionId) {
-        let rows = match self.counted_rows(session).await {
+        self.send_update_with(session, false).await;
+    }
+
+    /// [`send_update`] that, with `consult`, appends the parked
+    /// `### Consultation` block to the same text and sends even when nothing
+    /// is pending (R1.4 step 3). A rewrite still replays first; the consult
+    /// stays parked for `finish_review`.
+    async fn send_update_with(&mut self, session: SessionId, consult: bool) {
+        let mut rows = match self.counted_rows(session).await {
             Ok(rows) => rows,
             Err(e) => {
                 tracing::warn!(session = %session, "advisor rows: {e:#}");
                 return;
             }
         };
+        if consult {
+            // The asker is inside a tool batch: its pending calls render at
+            // the tail and would fingerprint differently once answered.
+            while let Some((_, crate::HistoryEntry::Tool { result: None, .. })) = rows.last() {
+                rows.pop();
+            }
+        }
         let redact = self.redact.clone();
         let Some(link) = self.links.get_mut(&session) else {
             return;
@@ -522,6 +650,7 @@ impl Advisors {
                     will_continue: link.pending_continue,
                     preface: Some("_(transcript rewritten — replaying)_"),
                     reasoning: link.reasoning,
+                    ..Default::default()
                 },
             ));
             link.prefix = rows.iter().map(|(_, e)| fingerprint(e)).collect();
@@ -557,19 +686,35 @@ impl Advisors {
             return;
         }
         let fresh = &rows[count..];
-        if fresh.is_empty() {
+        if fresh.is_empty() && !consult {
             link.backlog = 0;
             link.release_waiters();
             return;
         }
         let preface = link.preface.take();
+        let block = link
+            .consult
+            .as_mut()
+            .filter(|_| consult)
+            .map(|pc| {
+                pc.parked = false;
+                pc.block.clone()
+            });
+        let steps = if fresh.is_empty() {
+            0
+        } else {
+            link.backlog.max(1)
+        };
         let text = redact(&render_update(
             fresh,
             UpdateOpts {
-                steps: link.backlog.max(1),
-                will_continue: link.pending_continue,
+                steps,
+                // A consultation is asked from inside the asker's turn.
+                will_continue: link.pending_continue || block.is_some(),
                 preface: preface.as_deref(),
                 reasoning: link.reasoning,
+                pin_first: false,
+                consult: block.as_deref(),
             },
         ));
         link.prefix
@@ -578,11 +723,9 @@ impl Advisors {
         link.row.state = AdvisorState::Reviewing;
         link.guard.begin_update();
         link.last_update = text.clone();
-        link.reviewing = Some(Review::new(
-            link.steps,
-            link.pending_turn,
-            link.pending_continue,
-        ));
+        let mut review = Review::new(link.steps, link.pending_turn, link.pending_continue);
+        review.consult = block.is_some();
+        link.reviewing = Some(review);
         link.backlog = 0;
         link.release_waiters();
         let advisor = link.row.advisor;
@@ -670,7 +813,53 @@ impl Advisors {
         .await;
     }
 
+    /// R1.4 step 6 / R1.5: the answered consultation as a masked card in the
+    /// asker's transcript, counted on the link of `advised`.
+    async fn deliver_consultation(
+        &mut self,
+        advised: SessionId,
+        asker: SessionId,
+        question: String,
+        answer: String,
+    ) {
+        let Some(link) = self.links.get_mut(&advised) else {
+            return;
+        };
+        link.consults_total += 1;
+        let (step, turn) = if asker == advised {
+            link.reviewing
+                .as_ref()
+                .map_or((link.steps, link.pending_turn), |r| (r.step, r.turn))
+        } else {
+            (link.steps, None)
+        };
+        let advisory = Advisory {
+            advisor: link.row.advisor,
+            step,
+            turn,
+            at_ms: chrono::Utc::now().timestamp_millis(),
+            notes: vec![AdvisoryNote {
+                severity: AdvisorSeverity::Advice,
+                note: answer,
+            }],
+            kind: AdvisoryKind::Consultation { question },
+        };
+        let text = advise::card_text(&advisory.notes);
+        self.tell_agents(DeliverAdvisory {
+            session: asker,
+            advisory,
+            text,
+            steer: false,
+            model_visible: false,
+        })
+        .await;
+        self.publish(advised).await;
+    }
+
     /// The advisor's turn ended (125 §4.13): decide under the borrow, then act.
+    /// A consultation turn (R1.4 step 5) is decided beside the review: its
+    /// text is the answer on `Good`; a quarantine, a drop, a pause or a halt
+    /// refuses it at once (D-R1.9: no retries); a replay keeps it pending.
     async fn finish_review(&mut self, session: SessionId, stop_reason: &str) {
         enum Act {
             Restart(String),
@@ -679,7 +868,11 @@ impl Advisors {
             RetryLater(SessionId),
             Dropped(String),
             Quarantine { warn: bool, text: String },
-            Good { held: Vec<AdvisoryNote>, next: bool },
+            Good {
+                held: Vec<AdvisoryNote>,
+                next: bool,
+                answer: Option<String>,
+            },
         }
         let Some(link) = self.links.get_mut(&session) else {
             return;
@@ -687,8 +880,10 @@ impl Advisors {
         let Some(review) = link.reviewing.take() else {
             return;
         };
-        let again = Review::new(review.step, review.turn, review.will_continue);
+        let consult = review.consult;
+        let mut again = Review::new(review.step, review.turn, review.will_continue);
         let act = if let Some(Reset::Replay(text)) = link.after_cancel.take() {
+            again.consult = consult;
             link.reviewing = Some(again);
             Act::Restart(text)
         } else if stop_reason == "error" {
@@ -702,6 +897,7 @@ impl Advisors {
                 Act::Pause(format!("advisor paused: {first}"))
             } else if overflow && !link.reprimed {
                 link.reprimed = true;
+                again.consult = consult;
                 link.reviewing = Some(again);
                 Act::Restart(format!(
                     "### Session update\n_(advisor context re-primed at step {})_\n{}",
@@ -713,15 +909,20 @@ impl Advisors {
                     link.reasoning = false;
                 }
                 link.failures += 1;
-                if link.failures < MAX_FAILURES && !overflow {
+                if link.failures < MAX_FAILURES && !overflow && !consult {
                     link.reviewing = Some(review);
                     Act::RetryLater(link.row.advisor)
                 } else {
                     link.failures = 0;
                     link.dropped += 1;
                     link.reprimed = false;
+                    if consult {
+                        link.answer_consult(Err(first.clone()));
+                    }
                     if link.dropped >= MAX_DROPPED {
                         Act::Halt(format!("advisor halted: {first}"))
+                    } else if consult {
+                        Act::Dropped(format!("consultation dropped: {first}"))
                     } else {
                         Act::Dropped(format!("review dropped: {first}"))
                     }
@@ -734,13 +935,20 @@ impl Advisors {
                 || injected_pattern(&review.text, &link.last_update);
             if tainted && !user_stopped {
                 link.quarantines += 1;
+                if consult {
+                    link.answer_consult(Err("quarantined".into()));
+                }
                 if link.quarantines >= 3 {
                     Act::Halt("advisor halted: quarantined repeatedly".into())
                 } else {
                     link.reviewing = Some(again);
                     Act::Quarantine {
                         warn: link.quarantines == 2,
-                        text: link.last_update.clone(),
+                        text: if consult {
+                            without_block(&link.last_update)
+                        } else {
+                            link.last_update.clone()
+                        },
                     }
                 }
             } else {
@@ -750,19 +958,30 @@ impl Advisors {
                     link.quarantines = 0;
                     link.reprimed = false;
                 }
+                let answer = if !consult {
+                    None
+                } else if user_stopped {
+                    link.answer_consult(Err("cancelled".into()));
+                    None
+                } else {
+                    Some(clip_answer(&review.text))
+                };
                 Act::Good {
                     held: review.held,
                     next: !user_stopped,
+                    answer,
                 }
             }
         };
         match act {
             Act::Restart(text) => self.restart_with(session, text).await,
             Act::Halt(detail) => {
+                self.refuse_consult(session, &detail);
                 self.set_state(session, AdvisorState::Halted, Some(detail))
                     .await
             }
             Act::Pause(detail) => {
+                self.refuse_consult(session, &detail);
                 self.set_state(session, AdvisorState::Paused, Some(detail))
                     .await
             }
@@ -794,8 +1013,17 @@ impl Advisors {
                 }
                 self.restart_with(session, text).await;
             }
-            Act::Good { held, next } => {
+            Act::Good { held, next, answer } => {
                 self.deliver(session, held, false).await;
+                if let Some(answer) = answer
+                    && let Some(pc) = self
+                        .links
+                        .get_mut(&session)
+                        .and_then(|l| l.answer_consult(Ok(answer.clone())))
+                {
+                    self.deliver_consultation(session, session, pc.question, answer)
+                        .await;
+                }
                 self.set_state(session, AdvisorState::Idle, None).await;
                 if next {
                     self.maybe_next(session).await;
@@ -804,12 +1032,25 @@ impl Advisors {
         }
     }
 
+    /// A pending consultation of `session` is refused with `reason`.
+    fn refuse_consult(&mut self, session: SessionId, reason: &str) {
+        if let Some(l) = self.links.get_mut(&session) {
+            l.answer_consult(Err(reason.to_owned()));
+        }
+    }
+
+    /// An idle link with work: a parked consultation first (its flush covers
+    /// the backlog), else the backlog alone.
     async fn maybe_next(&mut self, session: SessionId) {
-        if self
-            .links
-            .get(&session)
-            .is_some_and(|l| l.backlog > 0 && l.row.state == AdvisorState::Idle)
-        {
+        let Some(l) = self.links.get(&session) else {
+            return;
+        };
+        if l.row.state != AdvisorState::Idle {
+            return;
+        }
+        if l.consult.as_ref().is_some_and(|c| c.parked) {
+            self.send_update_with(session, true).await;
+        } else if l.backlog > 0 {
             self.send_update(session).await;
         }
     }
@@ -827,6 +1068,7 @@ impl Message<Attach> for Advisors {
                 link.row.model = m.link.model;
                 link.row.effort = m.link.effort;
                 link.context_limit = m.context_limit;
+                link.warning = m.warning;
                 link.failures = 0;
                 link.dropped = 0;
                 link.quarantines = 0;
@@ -868,21 +1110,12 @@ impl Message<Attach> for Advisors {
                 tracing::warn!(session = %session, "put_advisor_link: {e:#}");
             }
             self.by_advisor.insert(row.advisor, session);
-            self.links.insert(
-                session,
-                Link::new(row, self.cfg.max_notes_per_update, m.context_limit),
-            );
+            let mut link = Link::new(row, self.cfg.max_notes_per_update, m.context_limit);
+            link.warning = m.warning;
+            self.links.insert(session, link);
             self.publish(session).await;
         }
-        let link = &self.links[&session];
-        let cost = self
-            .store
-            .session_cost(link.row.advisor)
-            .await
-            .ok()
-            .flatten()
-            .map(|c| c.total);
-        link.status(cost)
+        self.status_of(&self.links[&session]).await
     }
 }
 
@@ -896,6 +1129,7 @@ impl Message<Detach> for Advisors {
         self.by_advisor.remove(&link.row.advisor);
         link.release_waiters();
         link.guard.reset();
+        link.answer_consult(Err(REASON_OFF.into()));
         if link.reviewing.is_some() {
             self.tell_agents(crate::Cancel {
                 session: link.row.advisor,
@@ -928,16 +1162,7 @@ impl Message<StatusOf> for Advisors {
         _: &mut Context<Self, Self::Reply>,
     ) -> AdvisorStatus {
         match self.links.get(&session) {
-            Some(link) => {
-                let cost = self
-                    .store
-                    .session_cost(link.row.advisor)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|c| c.total);
-                link.status(cost)
-            }
+            Some(link) => self.status_of(link).await,
             None => AdvisorStatus {
                 session,
                 ..AdvisorStatus::default()
@@ -1058,8 +1283,7 @@ impl Message<Advise> for Advisors {
             severity: m.severity,
             note: m.note.trim().to_owned(),
         };
-        // 125 R1 C placeholder: `advise::parse` refuses `advice`; the arms only
-        // keep the match exhaustive until W1 lands.
+        // `advise::parse` refuses `advice` (R1); the arm keeps the match exhaustive.
         match m.severity {
             AdvisorSeverity::Advice => {}
             AdvisorSeverity::Nit => link.notes.nit += 1,
@@ -1118,12 +1342,179 @@ impl Message<Retry> for Advisors {
     }
 }
 
-// 125 R1 C stubs: W1 replaces the bodies in place (R1.10).
-impl Message<Consult> for Advisors {
-    type Reply = Result<String, String>;
+impl Advisors {
+    /// R1.3: the link a `consult` of `session` runs against — its own, else
+    /// the nearest ancestor's.
+    async fn consult_source(&self, session: SessionId) -> Option<ConsultSourceInfo> {
+        let mut chain = vec![session];
+        match self.store.ancestors(session).await {
+            Ok(a) => chain.extend(a),
+            Err(e) => tracing::warn!(session = %session, "ancestors: {e:#}"),
+        }
+        chain.into_iter().find_map(|id| {
+            self.links.get(&id).map(|l| ConsultSourceInfo {
+                advised: id,
+                advisor: l.row.advisor,
+                model: l.row.model.clone(),
+                effort: l.row.effort.clone(),
+                cap: self.cfg.max_consults,
+            })
+        })
+    }
 
-    async fn handle(&mut self, _: Consult, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        Err("consult: not built".into())
+    /// R1.4: the root's consult through its advisor child — gate, then flush
+    /// the pending delta with the block, or park behind a review in flight.
+    async fn consult_child(&mut self, m: Consult, tx: ReplySender<Result<String, String>>) {
+        let Some(link) = self.links.get_mut(&m.asker) else {
+            tx.send(Err(REASON_OFF.into()));
+            return;
+        };
+        if matches!(link.row.state, AdvisorState::Paused | AdvisorState::Halted) {
+            tx.send(Err(unavailable_detail(link)));
+            return;
+        }
+        if link.consult.is_some() {
+            tx.send(Err("consultation in progress".into()));
+            return;
+        }
+        link.consults_turn = m.n;
+        let parked = link.reviewing.is_some();
+        link.consult = Some(PendingConsult {
+            reply: tx,
+            question: m.question.clone(),
+            block: consult::block(&m.partial, &m.question, m.context.as_deref()),
+            parked,
+        });
+        if parked {
+            self.publish(m.asker).await;
+        } else {
+            self.send_update_with(m.asker, true).await;
+        }
+    }
+
+    /// R1.5: a subagent's consult as a one-shot `SideCall` on the ancestor
+    /// link's model, owned by the asker; the result comes back as
+    /// [`OneShotDone`].
+    async fn consult_one_shot(&mut self, m: Consult, tx: ReplySender<Result<String, String>>) {
+        let Some(src) = self.consult_source(m.asker).await else {
+            tx.send(Err(REASON_OFF.into()));
+            return;
+        };
+        let link = &self.links[&src.advised];
+        if matches!(link.row.state, AdvisorState::Paused | AdvisorState::Halted) {
+            tx.send(Err(unavailable_detail(link)));
+            return;
+        }
+        if self.oneshots.contains(&m.asker) {
+            tx.send(Err("consultation in progress".into()));
+            return;
+        }
+        let rows = match self.counted_rows(m.asker).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tx.send(Err(format!("{e:#}")));
+                return;
+            }
+        };
+        let block = consult::block(&m.partial, &m.question, m.context.as_deref());
+        let user = (self.redact)(&render_update(
+            &rows,
+            UpdateOpts {
+                steps: 0,
+                will_continue: true,
+                preface: Some("_(a subagent's transcript; its brief is the first user message)_"),
+                reasoning: link.reasoning,
+                pin_first: true,
+                consult: Some(&block),
+            },
+        ));
+        let call = SideCall {
+            session: m.asker,
+            role: ModelRole::Named(src.model),
+            system: identity::one_shot(&self.rt.data_dir),
+            user,
+            budget: CONSULT_TIMEOUT,
+            kind: crate::cost::CallKind::Consult,
+        };
+        self.oneshots.insert(m.asker);
+        let agents = self.agents();
+        let me = ActorRef::<Self>::lookup(ADVISORS_ACTOR).ok().flatten();
+        let (asker, advised, question) = (m.asker, src.advised, m.question);
+        tokio::spawn(async move {
+            let result = match agents {
+                Some(a) => match a.ask(call).await {
+                    Ok(r) => Ok(r),
+                    Err(kameo::error::SendError::HandlerError(e)) => Err(e),
+                    Err(e) => Err(e.to_string()),
+                },
+                None => Err("agent actor not running".to_owned()),
+            };
+            let done = OneShotDone {
+                asker,
+                advised,
+                question,
+                result,
+                reply: tx,
+            };
+            match me {
+                Some(me) => {
+                    let _ = me.tell(done).await;
+                }
+                None => done.reply.send(Err("advisor actor not running".to_owned())),
+            }
+        });
+    }
+}
+
+impl Message<Consult> for Advisors {
+    type Reply = DelegatedReply<Result<String, String>>;
+
+    async fn handle(&mut self, m: Consult, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        if let Some(tx) = tx {
+            if m.depth == 0 {
+                self.consult_child(m, tx).await;
+            } else {
+                self.consult_one_shot(m, tx).await;
+            }
+        }
+        reply
+    }
+}
+
+impl Message<OneShotDone> for Advisors {
+    type Reply = ();
+
+    async fn handle(&mut self, m: OneShotDone, _: &mut Context<Self, Self::Reply>) {
+        if !self.oneshots.remove(&m.asker) {
+            // Cancelled (timeout / Stop): no card, no counters, nobody listening.
+            return;
+        }
+        if !self.links.contains_key(&m.advised) {
+            m.reply.send(Err(REASON_OFF.into()));
+            return;
+        }
+        match m.result {
+            Ok(r) => {
+                let answer = clip_answer(&r.text);
+                m.reply.send(Ok(answer.clone()));
+                self.deliver_consultation(m.advised, m.asker, m.question, answer)
+                    .await;
+            }
+            Err(e) => {
+                tracing::warn!(session = %m.asker, "consult one-shot: {e}");
+                let first = e.lines().next().unwrap_or("").to_owned();
+                if QUOTA.is_match(&e) {
+                    self.set_state(
+                        m.advised,
+                        AdvisorState::Paused,
+                        Some(format!("advisor paused: {first}")),
+                    )
+                    .await;
+                }
+                m.reply.send(Err(first));
+            }
+        }
     }
 }
 
@@ -1132,17 +1523,41 @@ impl Message<ConsultSource> for Advisors {
 
     async fn handle(
         &mut self,
-        _: ConsultSource,
+        ConsultSource(session): ConsultSource,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        None
+        self.consult_source(session).await
     }
 }
 
 impl Message<CancelConsult> for Advisors {
     type Reply = ();
 
-    async fn handle(&mut self, _: CancelConsult, _: &mut Context<Self, Self::Reply>) {}
+    async fn handle(
+        &mut self,
+        CancelConsult(asker): CancelConsult,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        self.oneshots.remove(&asker);
+        let Some(link) = self.links.get_mut(&asker) else {
+            return;
+        };
+        let Some(pc) = link.consult.take() else {
+            return;
+        };
+        drop(pc.reply);
+        // The consultation turn in flight ends `cancelled`, which
+        // `finish_review` treats as a user stop: no counters, no card.
+        if !pc.parked && link.reviewing.as_ref().is_some_and(|r| r.consult) {
+            let advisor = link.row.advisor;
+            self.tell_agents(crate::Cancel {
+                session: advisor,
+                keep: None,
+                scope: crate::CancelScope::Root,
+            })
+            .await;
+        }
+    }
 }
 
 impl Message<AgentEvent> for Advisors {
@@ -1236,12 +1651,20 @@ impl Message<AgentEvent> for Advisors {
             return;
         }
         match e {
+            // D-R1.1: a new turn of the advised session starts a fresh count.
+            AgentEvent::TurnStarted { .. } => {
+                if let Some(l) = self.links.get_mut(&session) {
+                    l.consults_turn = 0;
+                }
+            }
             // The user's Stop: the review goes with it, held notes are preserved as a card.
             AgentEvent::TurnFinished { stop_reason, .. } if stop_reason == "cancelled" => {
                 let (advisor, held, reviewing) = {
                     let l = self.links.get_mut(&session).unwrap();
                     l.backlog = 0;
                     l.release_waiters();
+                    // R1.4: the awaiting `consult` went with the turn (no card, no counters).
+                    l.consult = None;
                     let held = l.reviewing.as_mut().map(|r| std::mem::take(&mut r.held));
                     (
                         l.row.advisor,

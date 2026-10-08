@@ -36,7 +36,8 @@ const HARNESS_TAGS: &[&str] = &[
 /// How one update is framed.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UpdateOpts<'a> {
-    /// Agent-core steps this update covers (`> 1` after coalescing).
+    /// Agent-core steps this update covers (`> 1` after coalescing; `0` for
+    /// a consultation with nothing pending or a one-shot's whole transcript).
     pub steps: u32,
     /// More tool steps follow in the advised turn.
     pub will_continue: bool,
@@ -44,6 +45,11 @@ pub struct UpdateOpts<'a> {
     pub preface: Option<&'a str>,
     /// Render `Reasoning` rows; off after the advisor model refused on them.
     pub reasoning: bool,
+    /// R1.5: never elide the first row (a subagent's brief).
+    pub pin_first: bool,
+    /// R1.4: the `### Consultation` block, appended after a `---` line and
+    /// before the `[in progress …]` trailer; counted against the byte cap.
+    pub consult: Option<&'a str>,
 }
 
 /// Rows the cursor counts and fingerprints: everything but Advisory and
@@ -293,21 +299,24 @@ pub fn render_update(rows: &[(i64, HistoryEntry)], opts: UpdateOpts<'_>) -> Stri
         pieces.push(Piece { text, result });
     }
 
-    let heading = if opts.steps > 1 {
-        format!("### Session update ({} steps)", opts.steps)
-    } else {
+    let heading = if opts.steps == 1 {
         "### Session update".to_owned()
+    } else {
+        format!("### Session update ({} steps)", opts.steps)
     };
     let mut head = heading;
     if let Some(p) = opts.preface {
         head.push('\n');
         head.push_str(p);
     }
-    let trailer = if opts.will_continue {
-        "\n\n---\n\n[in progress — more steps follow]"
-    } else {
-        ""
-    };
+    let mut trailer = String::new();
+    if let Some(block) = opts.consult {
+        trailer.push_str("\n\n---\n\n");
+        trailer.push_str(block);
+    }
+    if opts.will_continue {
+        trailer.push_str("\n\n---\n\n[in progress — more steps follow]");
+    }
     let fixed = head.len() + trailer.len() + 2;
     let size = |pieces: &[Piece]| {
         pieces
@@ -323,17 +332,18 @@ pub fn render_update(rows: &[(i64, HistoryEntry)], opts: UpdateOpts<'_>) -> Stri
         }
         i += 1;
     }
-    // Then the oldest rows.
+    // Then the oldest rows — after the pinned first one when asked.
+    let keep = if opts.pin_first { 1 } else { 0 };
     let mut dropped = 0usize;
-    while fixed + size(&pieces) > UPDATE_BYTES && pieces.len() > 1 {
-        pieces.remove(0);
+    while fixed + size(&pieces) > UPDATE_BYTES && pieces.len() > keep + 1 {
+        pieces.remove(keep);
         dropped += 1;
     }
     let mut body = String::new();
-    if dropped > 0 {
-        body.push_str(&format!("_({dropped} earlier rows elided)_\n"));
-    }
-    for p in &pieces {
+    for (n, p) in pieces.iter().enumerate() {
+        if n == keep && dropped > 0 {
+            body.push_str(&format!("_({dropped} earlier rows elided)_\n"));
+        }
         body.push_str(&p.text);
         body.push('\n');
         if let Some(r) = &p.result {
@@ -422,6 +432,7 @@ mod tests {
                 will_continue: true,
                 preface: Some("_(p)_"),
                 reasoning: true,
+                ..Default::default()
             },
         );
         assert!(s.starts_with("### Session update (3 steps)\n_(p)_\n\n**user**:\nfix the build\n"));
@@ -429,11 +440,56 @@ mod tests {
         assert!(s.contains("→ shell(cargo test) ⇒ error · 2 lines — ERROR: could not compile\n"));
         assert!(s.contains("**user**:\n_(harness input: reminder from jobs, 2 lines)_\n_(message from peer: hello there)_"));
         assert!(s.ends_with("\n\n---\n\n[in progress — more steps follow]"));
-        let idle = render_update(&rows[..1], UpdateOpts::default());
+        let one = UpdateOpts {
+            steps: 1,
+            ..Default::default()
+        };
+        let idle = render_update(&rows[..1], one);
         assert_eq!(idle, "### Session update\n\n**user**:\nfix the build");
         // Reasoning off drops the thinking line.
-        let quiet = render_update(&rows[..3], UpdateOpts::default());
+        let quiet = render_update(&rows[..3], one);
         assert!(!quiet.contains("_thinking:_"));
+    }
+
+    /// R1.4 step 4 / R1.5: the block sits after `---` and before the
+    /// trailer; a zero-step heading says so; the pinned first row survives
+    /// the cap while the rows after it are elided.
+    #[test]
+    fn consult_block_and_pinned_first_row() {
+        let rows = vec![(1, user("fix the build"))];
+        let s = render_update(
+            &rows,
+            UpdateOpts {
+                steps: 0,
+                will_continue: true,
+                consult: Some("### Consultation\nQ"),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            s,
+            "### Session update (0 steps)\n\n**user**:\nfix the build\n\n---\n\n### Consultation\nQ\n\n---\n\n[in progress — more steps follow]"
+        );
+        let big = "x".repeat(7 * 1024);
+        let mut rows = vec![(0, user("the brief"))];
+        rows.extend((1..13).map(|i| (i, user(&format!("row{i} {big}")))));
+        let s = render_update(
+            &rows,
+            UpdateOpts {
+                pin_first: true,
+                consult: Some("### Consultation\nQ"),
+                ..Default::default()
+            },
+        );
+        assert!(s.len() <= UPDATE_BYTES, "{}", s.len());
+        assert!(
+            s.starts_with("### Session update (0 steps)\n\n**user**:\nthe brief\n_("),
+            "{}",
+            &s[..200]
+        );
+        assert!(s.contains("earlier rows elided)_\nrow"));
+        assert!(!s.contains("row1 "), "the oldest rows after the brief go first");
+        assert!(s.contains("row12 "));
     }
 
     #[test]

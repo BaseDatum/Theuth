@@ -201,6 +201,7 @@ fn hooks_fire_per_batch_and_at_turn_end() {
                 state: AdvisorState::Idle,
             },
             context_limit: 0,
+            warning: None,
         })
         .await
         .unwrap();
@@ -437,6 +438,7 @@ fn advisor_kind_session_runs_advise_locally_with_the_bare_prompt() {
                 state: AdvisorState::Idle,
             },
             context_limit: 0,
+            warning: None,
         })
         .await
         .unwrap();

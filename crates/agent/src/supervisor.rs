@@ -6036,6 +6036,8 @@ impl Message<ShowPrompt> for Agents {
             subagent_model.as_deref(),
             attended,
             advised,
+            // 125 R1.6: the root's `consult` paragraph while the cap allows the tool.
+            advised && self.advisor_cfg.max_consults > 0,
         );
         if self.pool.is_some()
             && toolset.as_ref().is_none_or(|t| t.runtime)
