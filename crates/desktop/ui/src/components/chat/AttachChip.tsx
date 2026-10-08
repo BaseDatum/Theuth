@@ -35,6 +35,10 @@ export function dragSource(ref: () => AttachRef): { draggable: boolean; onDragSt
 export function useOpenRef(): (ref: AttachRef) => void {
   const navigate = useNavigate()
   return (ref) => {
+    // 144 §12.4/§8: `notebook` and `source` refs exist before `Kind` lists them (the contract worker widens `lib/attach`).
+    const kind: string = ref.kind
+    if (kind === 'notebook') return void navigate({ to: '/notebooks/$id', params: { id: ref.id }, search: {} })
+    if (kind === 'source') return void navigate({ to: '/sources/$id', params: { id: ref.id }, search: {} })
     switch (ref.kind) {
       case 'note':
         return void navigate({ to: '/notes/$id', params: { id: ref.id }, search: {} })
@@ -82,7 +86,8 @@ export function popoutOf(ref: AttachRef): PopoutTarget | null {
 export function AttachChip({ item: ref, again, onRemove, className }: { item: AttachRef; again?: string | null; onRemove?: () => void; className?: string }) {
   const popout = popoutOf(ref)
   const open = useOpenRef()
-  const Icon = KIND_ICON[ref.kind]
+  const Icon = KIND_ICON[ref.kind] ?? Paperclip
+  const label = KIND_LABEL[ref.kind] ?? ref.kind
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -92,11 +97,11 @@ export function AttachChip({ item: ref, again, onRemove, className }: { item: At
             'flex h-7 max-w-[240px] items-center gap-1 rounded-full bg-layer-2 px-2 text-xs hover:bg-layer-3 pointer-coarse:h-8',
             className,
           )}
-          aria-label={`${KIND_LABEL[ref.kind]}: ${ref.title}`}
+          aria-label={`${label}: ${ref.title}`}
         >
           <Icon className="size-3.5 shrink-0 text-fg-secondary" />
           <span className="truncate">{ref.title}</span>
-          <span className="shrink-0 text-fg-tertiary">{KIND_LABEL[ref.kind]}</span>
+          <span className="shrink-0 text-fg-tertiary">{label}</span>
           {onRemove && (
             <span
               role="button"
