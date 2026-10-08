@@ -97,16 +97,20 @@ Same crate, same fp32 files (`istupakov/parakeet-tdt-0.6b-v3-onnx`, sha-verified
 | 7.4 s LibriSpeech | **0.215 s** | 2.5–3.3 s (19.0 s first time at this length) | 1.4–4.2 s | 0.80–0.95 s | — |
 | 30 s synthetic | **0.46 s** | 3.7–4.2 s (19.3 s first time) | — | 2.6–3.0 s | — |
 | 7 s after the three above | 0.33 s | 6.3 s (new length bucket) | — | — | — |
-| Nemotron streaming, 7.4 s | 1.1–1.75 s total ≈ 90–130 ms per chunk | 5–7 s (19.6 s machine-cold) | 4.8–12 s (slower than real time) | pending | 82 ms per chunk |
+| Nemotron streaming, 7.4 s (≈14 chunks) | 1.13–1.75 s ≈ 105 ms per chunk | 5–7 s (19.6 s machine-cold) | 7.6–12 s (slower than real time) | 2.1–2.2 s ≈ 157 ms per chunk | 82 ms per chunk (int8, 4 thr) |
+| Nemotron streaming, 19 s `say` clip (≈34 chunks) | 3.7–6.1 s ≈ 137 ms per chunk | 7.9–9.2 s | 12–24 s | 5.6 s ≈ 165 ms per chunk | — |
+| Nemotron-3 Sortformer v3 diariser fp32, 7.4 s / 19 s | **0.04 s / 0.075 s** | 2.0–3.4 s (13.4 s machine-cold, +13.5 s for the second length) | not run | 0.15 s / 0.385 s | 8-bit ORT: 236 ms per 10 s (4 thr) |
 
 Load 1.1–1.7 s Metal / 2.0–2.7 s ORT; max RSS 620 MB Metal (weights live in Metal buffers) vs 2.6 GB Burn CPU vs 2.7–2.9 GB ORT fp32; transcripts identical on all devices. Build: `--no-default-features --features metal` cold **15 m 40 s** at `-j4` (burn-flex 326 s, burn-cubecl 243 s, cubek-matmul 238 s, burn-dispatch 220 s, the generated model code 93–103 s), binary **135 MB** (164 MB with static ORT), target 2.6–3.8 GB. Every new audio-length bucket costs 6–19 s of kernel compile/autotune the first time (disk-cached afterwards); every process pays ~3 s on its first transcription even with a warm cache.
 
-Reading: on Apple silicon the Metal path is 4–6× faster than ORT CPU on fp32 and ~1.4× faster than the int8 CPU path we actually ship, with a third of the RSS. Burn's CPU backend is 2–5× slower than ORT CPU fp32 and 10–20× slower than our int8 path.
+A quieter re-run at the end of the session (load 17–20, `bin/burn-metal`) gave Metal warm **0.085 s / 0.16 s / 0.43 s** for the 5 s / 7.4 s / 30 s clips. Generic `wgpu` (WGSL kernels) instead of `metal` (MSL): warm 0.32 / 0.36 / 0.84 s — MSL is 2–3.8× faster warm, but WGSL's per-process first run is cheaper (0.8–1.5 s vs 2.2–4 s) and its new-length retune 5.5–6 s vs 19 s. The on-disk cache is `~/.cache/cubecl/default.db` — a SQLite store of autotune choices and compilation records (3–7 MB), not compiled shaders; Metal pipeline creation is redone in every process. Transcripts and diarisation segments were byte-identical across devices (one 30 ms segment-end difference on the 19 s clip).
+
+Reading: on Apple silicon the Metal path is 4–6× faster than ORT CPU on fp32 and 1.4–2.2× faster than the int8 CPU path we actually ship for **voice notes (TDT)** and **3.7–5.4×** for the diariser, with a third of the RSS. For **Nemotron streaming** it is 1.3–1.7× slower than today's int8 CPU path (105–137 vs 82 ms per chunk) and ~1.5× faster than ORT CPU fp32. Burn's CPU backend is 3–5× slower than ORT CPU fp32 and 10–20× slower than our int8 path.
 
 ## 9. Recommendation and revisit conditions
 
 1. **Keep ORT as the ONNX provider.** Nothing in the pure-Rust ecosystem loads our files; the latency and memory requirements (R6, R7) are met by int8 graphs those engines cannot run.
-2. **Track parakeet-rs's Burn backend as a macOS GPU tier**, not a replacement. Revisit when **all** of these hold:
+2. **Track parakeet-rs's Burn backend as a macOS GPU tier for voice notes and diarisation**, not a replacement and not (yet) for dictation streaming, where fp32 Metal loses to the int8 CPU path. Revisit when **all** of these hold:
    - [ ] parakeet-rs publishes a release (> 0.3.8) with the `burn`/`metal` features;
    - [ ] burn-onnx #601 (simplifier breaks Conformer rel-pos shift), #602 (Sortformer ScatterElements), #603 (host syncs) are closed;
    - [ ] the per-length-bucket JIT cost (6–19 s) has a warm-up or bucketing story acceptable for voice notes of arbitrary length;
@@ -125,4 +129,5 @@ Reading: on Apple silicon the Metal path is 4–6× faster than ORT CPU on fp32 
 
 ## 10. Changelog
 
-- 2026-10-08 — study written from the spike; pending refinements: TEN-VAD flex/wgpu micro-bench vs ORT 0.054 ms/frame (`burn-build`), Nemotron ORT rows + Sortformer on Metal + `wgpu`-vs-`metal` comparison (`parakeet-burn-bench`). Neither can change §1.
+- 2026-10-08 13:40 — study written from the spike.
+- 2026-10-08 13:55 — `parakeet-burn-bench` final: Nemotron ORT fp32 rows (157–165 ms per chunk), Sortformer v3 on Metal (0.04–0.075 s vs ORT 0.15–0.385 s), MSL-vs-WGSL (2–3.8× warm), quiet-load Metal re-run (0.085 s per 5 s clip), cubecl cache location; §8 and §9.2 updated; appendix D replaced with the final report. Still pending: TEN-VAD flex/wgpu micro-bench vs ORT 0.054 ms/frame (`burn-build`).

@@ -38,9 +38,9 @@ Synthetic clips (`gen_audio.py`: `0.3·sin(2π·220t)+0.2·sin(2π·1250t)+0.01�
 
 | file | duration | sha256 |
 |---|---|---|
-| audio/synth5s.wav | 5.000 s (80,000 frames) | `9e2ec4a6…18ad6` |
-| audio/synth7s.wav | 7.000 s (112,000 frames) | `5e91a956…7554` |
-| audio/synth30s.wav | 30.000 s (480,000 frames) | `01243ca2…194c` |
+| audio/synth5s.wav | 5.000 s (80,000 frames) | `9e2ec4a694df9428916f03a73ffa353830ef44af3bd7e4545724688776dd18a6` |
+| audio/synth7s.wav | 7.000 s (112,000 frames) | `5e91a956391d7a0a37bd03e62a89c71587c25134ff0aa722238e75ffa6ea7554` |
+| audio/synth30s.wav | 30.000 s (480,000 frames) | `01243ca2f423fcddc38ede80dc2bbb54e289a525257981da489ab05a8187194c` |
 | audio/say16k.wav | 19.018 s (304,282 frames) | macOS `say` → `afconvert -f WAVE -d LEI16@16000 -c 1`, 60-word English text |
 
 Second/third-priority models (huggingface.co/altunenes/parakeet-rs, `logs/04-dl-nemo.log`, `logs/04b-dl-nemo.log`; the first script was killed by the shell session after encoder.onnx.data finished — the resumed run found that file complete and fetched the rest):
@@ -251,7 +251,7 @@ The example calls `Nemotron::transcribe_audio(&mono)` once per run (all 560 ms c
 | ort | say16k | L3 | 2.40 | 6.16 | 5.41 | 14.04 | 2564 |
 | ort | say16k | L4 | 1.95 | 5.70 | 6.24 | 14.00 | 2564 |
 
-Nemotron summary (warm medians, ≈ per 560 ms chunk): Metal Run 2 — LibriSpeech **1.47 s** (≈105 ms/chunk), say16k **4.65 s** (≈137 ms/chunk); Metal process-cold Run 1 with cache: 5.0–9.2 s; machine-cold first run 19.6 s. ORT CPU fp32 — **2.2 s** (≈157 ms/chunk) and **5.5 s** (≈162 ms/chunk). burn CPU — **9.3 s** (≈660 ms/chunk, slower than real time) and **14.7 s** (≈430 ms/chunk). Metal vs ORT here: 1.5× (7.4 s) / 1.2× (19 s) — the streaming model's small per-chunk launches amortise the GPU dispatch overhead far less than the offline TDT encoder. The cubecl cache grew to 3,616 KiB after the Nemotron GPU runs. Note L1 of say16k (first time at that length) cost 8.8 s vs 7.9–9.2 s for L2–L4 — i.e. no visible new-length penalty for the streaming model: chunk shapes are fixed, so the kernels tuned by the LibriSpeech run were reused.
+Nemotron summary (warm medians, ≈ per 560 ms chunk): Metal Run 2 — LibriSpeech **1.47 s** (≈105 ms/chunk), say16k **4.65 s** (≈137 ms/chunk); Metal process-cold Run 1 with cache: 5.0–9.2 s; machine-cold first run 19.6 s. ORT CPU fp32 (median of all 8 runs) — **2.2 s** (≈157 ms/chunk) and **5.6 s** (≈165 ms/chunk). burn CPU (all 8 runs) — **9.3 s** (≈660 ms/chunk, slower than real time) and **14.2 s** (≈420 ms/chunk). Metal vs ORT here: 1.5× (7.4 s) / 1.2× (19 s) — the streaming model's small per-chunk launches amortise the GPU dispatch overhead far less than the offline TDT encoder. The cubecl cache grew to 3,616 KiB after the Nemotron GPU runs. Note L1 of say16k (first time at that length) cost 8.8 s vs 7.9–9.2 s for L2–L4 — i.e. no visible new-length penalty for the streaming model: chunk shapes are fixed, so the kernels tuned by the LibriSpeech run were reused.
 
 Transcript parity (identical across all launches and all three devices — one distinct string per device/clip):
 ```
@@ -298,3 +298,74 @@ say16k, gpu:                        say16k, ort:
 [  10.76s -   16.19s] speaker_0     [  10.76s -   16.19s] speaker_0
 [  16.48s -   18.99s] speaker_0     [  16.48s -   19.02s] speaker_0   <- only difference: last segment end 18.99 vs 19.02 s
 ```
+
+## 8. B3 — generic `wgpu` (WGSL kernels) vs `metal` (MSL), TDT
+
+Build: `cargo build --release --example burn --no-default-features --features wgpu` → `bin/burn-wgpu`. Start 12:29:03Z, build-lock queue **334 s**, cargo wall **7 m 28 s** (burn-flex 256.1 s, cubek-matmul 191.7 s, burn-dispatch 188.9 s, burn-cubecl 182.8 s, parakeet-rs **89.4 s**, burn-cubecl-fusion 86.5 s; 641 units — the burn crates recompiled again for the changed feature set), `/usr/bin/time -l` 784.52 s real / 1686.89 s user / 24.32 s sys, max RSS 1,952,972,800 B; binary 136,725,640 B; target/ 4,662,728 KiB = 4.45 GB after all three builds. Log `logs/07-build-b3.log`.
+
+Runs (load avg 20.02 / 26.61 / 34.04 at 13:43 — the quietest block of the session). `bin/burn-wgpu`, the cubecl cache already held the MSL entries; WGSL entries were tuned fresh (cache grew 5,664 → 6,676 KiB). Logs `logs/run/burn-wgpu-tdt-gpu-*`.
+
+| clip | launch | load s | Run 1 s | Run 2 s | wall s | RSS MB |
+|---|---|---|---|---|---|---|
+| synth 5 s | L1 (cold for WGSL) | 1.40 | **27.81** | 0.32 | 31.39 | 630 |
+| synth 5 s | L2 | 0.91 | 0.89 | 0.29 | 2.16 | 615 |
+| synth 5 s | L3 | 0.93 | 0.89 | 0.33 | 2.21 | 615 |
+| synth 5 s | L4 | 0.87 | 0.89 | 0.34 | 2.15 | 697 |
+| LibriSpeech 7.4 s | L1 (new length) | 0.94 | **5.47** | 0.36 | 6.81 | 616 |
+| LibriSpeech | L2 | 0.91 | 0.88 | 0.36 | 2.20 | 697 |
+| LibriSpeech | L3 | 0.90 | 0.83 | 0.35 | 2.11 | 702 |
+| LibriSpeech | L4 | 0.88 | 0.83 | 0.37 | 2.13 | 694 |
+| synth 30 s | L1 (new length) | 0.88 | **6.04** | 0.84 | 7.81 | 696 |
+| synth 30 s | L2 | 0.78 | 1.53 | 0.84 | 3.19 | 702 |
+| synth 30 s | L3 | 0.67 | 1.50 | 0.85 | 3.07 | 705 |
+
+Control: `bin/burn-metal` (B1 binary, MSL, no ORT linked) immediately after, same load (17–20): 5 s → Run 1 2.80 / 2.42 s, Run 2 **0.09 / 0.08 s**; LibriSpeech → Run 1 2.81 / 2.21 s, Run 2 **0.16 / 0.16 s**; 30 s → Run 1 4.04 / 3.73 s, Run 2 **0.46 / 0.40 s** (logs `logs/run/burn-metal-tdt-gpu-*`). Transcript identical to §4.5 on both binaries.
+
+MSL vs WGSL (TDT, warm Run 2, same load window): 5 s **0.085 s vs 0.32 s** (3.8×), 7.4 s **0.16 s vs 0.36 s** (2.3×), 30 s **0.43 s vs 0.84 s** (2.0×). The per-process first-transcription cost is the other way round: MSL 2.2–4.0 s, WGSL 0.83–1.53 s. Machine-cold first run: MSL 31.0 s, WGSL 27.8 s; new-length costs WGSL 5.5 s / 6.0 s vs MSL 19.0 s / 19.3 s.
+
+## 9. Errors and anomalies (verbatim)
+
+- Both builds: `warning: stripping debug info with \`rust-objcopy\` failed: signal: 6 (SIGABRT)` / `dyld[68259]: Library not loaded: @rpath/libLLVM.dylib … /Users/Sky.Moore/.rustup/toolchains/1.98.1-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/rust-objcopy` — toolchain-local, binaries fine.
+- No runtime errors; every launch exited rc=0.
+- The shell harness killed my `nohup`'d wrapper scripts (`dl_nemo.sh`, `build_b1.sh`) once their foreground child finished, so `logs/03-build-b1.log` lacks the trailing `rc=/cp` lines and the first `logs/04-dl-nemo.log` ends after encoder.onnx.data; the data itself (hashes, cargo output, `/usr/bin/time` blocks) is complete. Later steps ran the scripts in the foreground of an async shell.
+- Nemotron / diar per-chunk timings are not printed by `examples/burn.rs`; per-chunk numbers in §6 are totals divided by chunk count.
+- Not done: `eou`, `ctc`, `unified`, `multitalker` (not requested); burn-CPU for diar (task said gpu vs ort).
+
+## 10. Files
+
+- `BENCH.md` (this file), `env.sh`, `bench.sh` (runner: `bench.sh <bin> <kind> <audio> <model> <device> <launches> [extra]`), `gen_audio.py`, `dl_tdt.sh`, `dl_nemo.sh`, `build_b1.sh`, `build_b2.sh`, `build_b3.sh`
+- `bin/burn-metal` (B1, 141,356,360 B), `bin/burn-metal-ort` (B2, 171,445,032 B), `bin/burn-wgpu` (B3, 136,725,640 B)
+- `logs/01-clone.log`, `02-dl-tdt.log`, `03-build-b1.log`, `04-dl-nemo.log`, `04b-dl-nemo.log`, `05-tdt-sha256.txt`, `05-nemo-sha256.txt`, `06-build-b2.log`, `07-build-b3.log`, `logs/run/*.log` (one per launch, each with `uptime`, full program output, `/usr/bin/time -l`)
+- `target/cargo-timings/cargo-timing-20261008T{114420,120527,123439}*.html` (B1, B2, B3)
+- Cache written by the burn GPU path: `~/.cache/cubecl/default.db` (+ `-wal`, `-tshm`), 6,676 KiB at the end
+
+## 11. Consolidated results table
+
+run-1 = first transcription of the first launch (machine-cold for burn GPU); warm = median of the in-process Run 2 values across launches (burn GPU) or of all runs (CPU backends, which have no warm-up); encoder ms: not printed by the example (n/a). Load = `Loaded … in` median. Transcript: see §4.5 / §6 / §7 (identical across devices unless noted).
+
+| model | device | clip | run 1 total ms | warm median total ms | encoder ms | load ms | RSS MB | transcript |
+|---|---|---|---:|---:|---|---:|---:|---|
+| TDT fp32 | burn Metal (MSL) | synth 5 s | 31,020 | 135 | n/a | 1,200 | 618–695 | empty |
+| TDT fp32 | burn Metal (MSL) | LibriSpeech 7.4 s | 18,980 | 215 | n/a | 1,100 | 618–632 | "Well, I don't wish to see it any more, observed Phoebe, turning away her eyes. It is certainly very like the old portrait." |
+| TDT fp32 | burn Metal (MSL) | synth 30 s | 19,320 | 460 | n/a | 1,200 | 619–712 | empty |
+| TDT fp32 | burn Metal (MSL) | synth 7 s (after the others) | 6,280 | 330 (1 run) | n/a | 1,110 | 632 | empty |
+| TDT fp32 | burn Metal (MSL), quiet-load rerun (`bin/burn-metal`) | 5 s / 7.4 s / 30 s | 2,800 / 2,810 / 4,040 (cache warm) | 85 / 160 / 430 | n/a | ~950 | 618–715 | same |
+| TDT fp32 | burn wgpu (WGSL) | synth 5 s | 27,810 | 325 | n/a | 910 | 615–697 | empty |
+| TDT fp32 | burn wgpu (WGSL) | LibriSpeech 7.4 s | 5,470 | 360 | n/a | 905 | 616–702 | same |
+| TDT fp32 | burn wgpu (WGSL) | synth 30 s | 6,040 | 840 | n/a | 780 | 696–705 | empty |
+| TDT fp32 | burn CPU (16 rayon thr) | synth 5 s | 2,830 | 2,825 | n/a | 120 | 2,618 | empty |
+| TDT fp32 | burn CPU | LibriSpeech 7.4 s | 4,770 | 3,545 | n/a | 120 | 2,631 | same |
+| TDT fp32 | burn CPU | synth 30 s | 9,070 | 9,350 | n/a | 120 | 2,867 | empty |
+| TDT fp32 | ORT 1.28 CPU (4 thr) | synth 5 s | 620 | 610 | n/a | 2,440 | 2,570 | empty |
+| TDT fp32 | ORT 1.28 CPU (4 thr) | LibriSpeech 7.4 s | 810 | 855 | n/a | 2,400 | 2,576 | same |
+| TDT fp32 | ORT 1.28 CPU (4 thr) | synth 30 s | 3,000 | 2,770 | n/a | 1,945 | 2,743 | empty |
+| Nemotron fp32 | burn Metal | LibriSpeech 7.4 s (≈14 chunks) | 19,600 | 1,465 | n/a | 1,110 | 588–663 | "Well, I don't wish to see it any more, observed Phoebe, turning away her eyes. It is certainly very like the old portrait." |
+| Nemotron fp32 | burn Metal | say16k 19.0 s (≈34 chunks) | 8,810 | 4,645 | n/a | 1,160 | 589–667 | see §6 |
+| Nemotron fp32 | burn CPU | LibriSpeech | 11,560 | 9,280 | n/a | 110 | 2,521 | same |
+| Nemotron fp32 | burn CPU | say16k | 12,650 | 14,175 | n/a | 90 | 2,525 | same |
+| Nemotron fp32 | ORT 1.28 CPU | LibriSpeech | 2,110 | 2,205 | n/a | 2,040 | 2,555 | same |
+| Nemotron fp32 | ORT 1.28 CPU | say16k | 5,640 | 5,600 | n/a | 2,035 | 2,562 | same |
+| Diar (Sortformer v3) fp32 | burn Metal | LibriSpeech | 13,350 | 40 | n/a | 345 | 534–540 | 3 segments speaker_0 |
+| Diar fp32 | burn Metal | say16k | 13,490 | 75 | n/a | 350 | 541–549 | 5 segments; last end 18.99 s |
+| Diar fp32 | ORT 1.28 CPU | LibriSpeech | 150 | 150 | n/a | 1,380 | 498–502 | identical to Metal |
+| Diar fp32 | ORT 1.28 CPU | say16k | 370 | 385 | n/a | 1,385 | 502–513 | 5 segments; last end 19.02 s |
