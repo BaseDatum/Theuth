@@ -16,6 +16,8 @@ export const CATEGORIES: readonly SearchCategory[] = [
   'knowledge_history',
   'notes',
   'meetings',
+  'sources',
+  'notebooks',
 ]
 
 export const CATEGORY_LABEL: Record<SearchCategory, string> = {

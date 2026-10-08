@@ -1155,7 +1155,8 @@ pub trait Api {
         &self,
         args: document::index::NbSearchArgs,
     ) -> RpcResult<Vec<document::index::BlockHit>>;
-    /// Save the assistant message at `turn` of `session` as a new note in `notebook`, chips intact (144 §8). Owner only.
+    /// Save the assistant message of the turn opened at seq `turn` (`HistoryEntry.turn`, like `regenerate`) as a new
+    /// note in `notebook`, chips intact (144 §8). Owner only.
     #[method(name = "save_answer_as_note", with_extensions)]
     async fn save_answer_as_note(
         &self,
@@ -1163,7 +1164,7 @@ pub trait Api {
         turn: u32,
         notebook: document::DocId,
     ) -> RpcResult<agent::notebooks::SavedAnswer>;
-    /// Append the assistant message at `turn` of `session` to `note` under `## From chat · <date>` (144 §8). Owner only.
+    /// Append the assistant message of the turn opened at seq `turn` to `note` under `## From chat · <date>` (144 §8). Owner only.
     #[method(name = "promote_answer", with_extensions)]
     async fn promote_answer(
         &self,

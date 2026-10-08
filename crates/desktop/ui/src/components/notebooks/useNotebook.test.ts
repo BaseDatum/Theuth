@@ -21,8 +21,9 @@ test('Progress keeps running with the percent; a terminal Changed clears it', ()
   expect(applySourceEvent(running, { type: 'Changed', source: 's1', status: 'queued' })).toMatchObject({ status: 'queued', progress: 40 })
 })
 
-test('firstLine skips blanks, strips a heading mark and emphasis', () => {
-  expect(firstLine('\n\n# Title\n\nbody')).toBe('Title')
+test('firstLine skips blanks and the title heading, strips emphasis', () => {
+  expect(firstLine('# Title\n\nEverything about the drill.\n')).toBe('Everything about the drill.')
+  expect(firstLine('\n\n# Title\n')).toBe('')
   expect(firstLine('*Prove the DR path.*\nmore')).toBe('Prove the DR path.')
   expect(firstLine(undefined)).toBe('')
 })

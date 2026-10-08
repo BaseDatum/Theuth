@@ -258,9 +258,16 @@ impl runtime::Plugin for DocumentPlugin {
         if let Err(e) = ingest::IngestActor::start(rt, store.clone(), actor.clone()) {
             tracing::warn!("documents: ingest unavailable: {e:#}");
         }
-        // 144 §7.1: the block index — first run / model change in the background.
-        let a = actor.clone();
+        // 144 §7.1: the block index — first run / model change in the background. The embedder registers in
+        // the decision plugin, which starts after this one: wait for it (bounded) so the first walk embeds
+        // instead of leaving every document lexical-only until its next edit.
+        let (a, rt2) = (actor.clone(), rt.clone());
         tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                rt2.lookup_when::<decision::embed::EmbedActor>(decision::embed::EMBED_ACTOR),
+            )
+            .await;
             if let Err(e) = index::reindex(&a).await {
                 tracing::warn!("index: rebuild failed: {e:#}");
             }

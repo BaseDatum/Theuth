@@ -957,7 +957,7 @@ function NoteRow({ hit }: { hit: NoteSearchHit }) {
     <Lines
       title={titled ? <Snippet text={m.snippet} ranges={m.ranges} /> : hit.doc.title || 'Untitled note'}
       snippet={titled ? null : <Snippet text={m.snippet} ranges={m.ranges} />}
-      meta={['note', hit.heading ?? '', ago(new Date(Number(hit.doc.updated_ms)).toISOString())]}
+      meta={['note', hit.heading && hit.heading !== m.snippet ? hit.heading : '', ago(new Date(Number(hit.doc.updated_ms)).toISOString())]}
     />
   )
 }
@@ -970,7 +970,7 @@ function BlockRow({ hit, kind }: { hit: BlockHit; kind: 'source' | 'notebook' })
     <Lines
       title={titled ? <Snippet text={m.snippet} ranges={m.ranges} /> : hit.title || `Untitled ${kind}`}
       snippet={titled ? null : <Snippet text={m.snippet} ranges={m.ranges} />}
-      meta={[kind, hit.heading ?? '', hit.notebooks.length > 1 ? `in ${hit.notebooks.length} notebooks` : '']}
+      meta={[kind, hit.heading && hit.heading !== m.snippet ? hit.heading : '', hit.notebooks.length > 1 ? `in ${hit.notebooks.length} notebooks` : '']}
     />
   )
 }

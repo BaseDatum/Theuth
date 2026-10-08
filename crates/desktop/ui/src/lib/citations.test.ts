@@ -51,5 +51,6 @@ test('locatorLabel and provenance detection', () => {
   expect(locatorLabel(cite('theuth://sessions/s1#7'))).toBe('turn 7')
   expect(locatorLabel(cite('theuth://knowledge/k'))).toBe('')
   expect(isProvenanceLine('Body\n\n*Answer from [RDS drill](theuth://sessions/s1#3)*')).toBe(true)
+  expect(isProvenanceLine('Body\n\n*Answer from* *[chat](theuth://sessions/s1#1)** · m · d*')).toBe(true)
   expect(isProvenanceLine('See [RDS drill](theuth://sessions/s1#3)')).toBe(false)
 })

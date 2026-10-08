@@ -1396,6 +1396,8 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "context_pressure" => (None, "</context_pressure>"),
             "runtime" => (None, "</runtime>"),
             "knowledge" => (None, "</knowledge>"),
+            // 144 §5.3: the bound chat's volatile `<notebook>` block (a harness note like `<knowledge>`).
+            "notebook" => (None, "</notebook>"),
             "nudge" => (None, "</nudge>"),
             "journal" => (None, "</journal>"),
             // 125 §7.4: an advisory steer's row is carded by `AdvisoryAdded`, never echoed.

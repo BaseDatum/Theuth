@@ -216,7 +216,9 @@ pub async fn promote_answer(
     .map(|_| ())
 }
 
-/// The assistant text of `turn` and the markdown both actions write: the answer plus the provenance line.
+/// The assistant text of the turn opened by row `turn` (its opener seq — the `turn` every `HistoryEntry` and
+/// `regenerate`/`fork_session` carry) and the markdown both actions write: the answer plus the provenance line,
+/// whose `#<n>` is the 1-based `session_read` turn number.
 async fn answer(
     agents: &ActorRef<Agents>,
     session: SessionId,
@@ -230,10 +232,18 @@ async fn answer(
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let turns = crate::session_read::turns(&read.history);
-    let slice = (turn >= 1)
-        .then(|| turns.get(turn as usize - 1))
-        .flatten()
-        .ok_or_else(|| anyhow::anyhow!("session has no turn {turn} ({} turns)", turns.len()))?;
+    let opened_by = |t: &&[HistoryEntry]| matches!(t.first(), Some(HistoryEntry::User { turn: Some(seq), .. }) if *seq == i64::from(turn));
+    let (n, slice) = turns
+        .iter()
+        .enumerate()
+        .find(|(_, t)| opened_by(t))
+        .map(|(i, t)| (i as u32 + 1, *t))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "session has no turn opened at {turn} ({} turns)",
+                turns.len()
+            )
+        })?;
     let answer = slice
         .iter()
         .rev()
@@ -243,7 +253,7 @@ async fn answer(
         })
         .ok_or_else(|| anyhow::anyhow!("turn {turn} has no assistant answer"))?
         .to_owned();
-    let markdown = provenance(&answer, session, turn, &read.summary.model, &today());
+    let markdown = provenance(&answer, session, n, &read.summary.model, &today());
     Ok((answer, markdown))
 }
 

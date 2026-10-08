@@ -4,7 +4,8 @@ import { useNavigate } from '@tanstack/react-router'
 import { Check, Copy, FilePlus, GitFork, type LucideIcon, RefreshCw, Square, StickyNote, Trash2, Volume2 } from 'lucide-react'
 import { type ComponentProps, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { type Components, type PluginConfig, Streamdown } from 'streamdown'
+import { type Components, type PluginConfig, Streamdown, defaultRehypePlugins } from 'streamdown'
+import type { PluggableList } from 'unified'
 import { useNotebookChat, type NotebookChat } from '@/components/notebooks/NotebookContext'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -58,6 +59,15 @@ function Img({ node: _node, src, alt, ...rest }: ComponentProps<'img'> & { node?
 // natural-width via the `[&_table]` variants on the Streamdown className below, so streamdown's `overflow-x-auto` wrapper scrolls.
 export const markdownComponents: Components = { td: MarkdownTd, img: Img, a: CitationLink }
 export const shikiTheme: ['github-light', 'github-dark'] = ['github-light', 'github-dark']
+/**
+ * 144 §6: streamdown's sanitizer keeps only http/https/mailto-class hrefs and `harden` then prints `[blocked]` for a
+ * link without one. `theuth://` citations need the scheme on the allow-list; everything else stays the default.
+ */
+const sanitize = defaultRehypePlugins.sanitize as [unknown, { protocols?: { href?: string[] } }]
+export const rehypePlugins = Object.values({
+  ...defaultRehypePlugins,
+  sanitize: [sanitize[0], { ...sanitize[1], protocols: { ...sanitize[1].protocols, href: [...(sanitize[1].protocols?.href ?? []), 'theuth'] } }],
+}) as PluggableList
 
 /** `text` fenced with `language`; the fence outruns any backtick run inside. */
 export function fenced(text: string, language: string): string {
@@ -302,6 +312,7 @@ export const MessageAssistant = memo(function MessageAssistant({
             mode={open ? undefined : 'static'}
             isAnimating={open}
             plugins={plugins}
+            rehypePlugins={rehypePlugins}
             components={markdownComponents}
             shikiTheme={shikiTheme}
             className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"

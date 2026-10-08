@@ -60,10 +60,11 @@ export function useDescription(id: string) {
   return useQuery({ queryKey: notebookKeys.description(id), queryFn: () => api.doc_markdown(id) })
 }
 
-/** First non-empty, non-heading line of a markdown body, for the header and the Library row. */
+/** First non-empty line of a markdown body that is not a heading (the notebook document leads with `# <title>`), for the header and the Library row. */
 export function firstLine(markdown: string | undefined): string {
   for (const raw of (markdown ?? '').split('\n')) {
-    const l = raw.replace(/^#+\s*/, '').replace(/^[*_>`]+|[*_`]+$/g, '').trim()
+    if (/^#+\s/.test(raw)) continue
+    const l = raw.replace(/^[*_>`]+|[*_`]+$/g, '').trim()
     if (l) return l
   }
   return ''

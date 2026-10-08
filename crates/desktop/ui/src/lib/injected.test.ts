@@ -36,8 +36,9 @@ test('skill injection: chip plus the words after it', () => {
   ])
 })
 
-test('context summaries and runtime wrappers do not duplicate existing surfaces', () => {
+test('context summaries, runtime wrappers and the notebook block do not duplicate existing surfaces', () => {
   expect(classify('<context_summary>\nfolded\n</context_summary>\n<runtime>x</runtime>')).toEqual([])
+  expect(classify('<notebook id="nb1" title="DR">\n<description>…</description>\n</notebook>')).toEqual([])
 })
 
 test('surface_error notes are hidden, with or without attributes, and still compose with visible notices', () => {
