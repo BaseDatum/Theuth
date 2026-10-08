@@ -24,7 +24,7 @@ and what stays open. Line numbers are of the tree at the last commit below.
 | RPC (D11, D18) | `resume_turn` local on a non-owner | `resume_turn` through `forward::route` (`Take` → `ResumeTurn{Takeover}`, Q15); `SESSION_DRAINING = -32012` + `FrontDoorError::SessionDraining`; composer retries once | `rpc/src/{forward,api}.rs` (C, W4, closer), desktop `lib/owner.ts`, `Composer.tsx` (W4) |
 | Retention (D15) | `journal_prune` had no caller | hourly tick on the owner with `Scope::Here`, `durability.journal_keep_days` | `supervisor.rs` (W2) |
 | Owner backfill (D17) | silent | `info!("68: claimed {n} unowned session(s) as {me}")`; copied-file guard is a follow-on (Q6) | `store.rs` (W1) |
-| Inject guard (Q3) | `inject`/`rearm_reminders` would spawn an actor for a foreign session | `inject` checks `remote_owner(to)`: logs and **drops** (see §3); `rearm_reminders` runs under the same gate | `supervisor.rs` (W1) |
+| Inject guard (Q3) | `inject`/`rearm_reminders` would spawn an actor for a foreign session; a child's result for a parent owned elsewhere spawned a local actor whose intake refused it | `inject` checks `remote_owner(to)`: logs and **drops** a harness-made `<job_result>`/`<reminder>` (see §3); `rearm_reminders` runs under the same gate; `deliver_result` forwards a child's result to the parent's owner (`forward_peer`, 69 P — Z-fix 9a3beb33) | `supervisor.rs` (W1, Z) |
 
 ## 2. Cross-seam hand-offs closed by the closer (commit 91ba125f)
 
@@ -43,7 +43,7 @@ and what stays open. Line numbers are of the tree at the last commit below.
 
 | item | decision | why |
 |---|---|---|
-| Q3 `inject` drops instead of forwarding (W1 dev. 1) | **kept as drop + `warn!`**; forwarding is a 139 follow-on | the wire form (`PeerEnvelope.from: SessionId`, `Policy::route` refuses self-routes) has no sender for a harness-made `<job_result>`/`<reminder>`; after D1 every `inject` source is owner-scoped (reaper engine filter, spared results forwarded by `deliver_spared`, reminders gated), so the guard is a backstop that should never fire in production. A harness envelope on `theuth/rpc/1` is a 69 change |
+| Q3 `inject` drops instead of forwarding (W1 dev. 1) | **split**: a child's `result:` (the one source with a sender session) is forwarded to the parent's owner — Z-fix 9a3beb33 in `deliver_result`; a harness-made `<job_result>`/`<reminder>` (no sender) stays drop + `warn!` | the wire form (`PeerEnvelope.from: SessionId`, `Policy::route` refuses self-routes) has no sender for a harness-made body; after D1 every such `inject` source is owner-scoped (reaper engine filter, reminders gated), so that guard is a backstop that should never fire in production. A harness envelope on `theuth/rpc/1` would be a 69 change |
 | ACP rows without `cwd` pass the cwd gate (W1 dev. 2) | **accepted** | the lazy `acp_session` path uses the harness default for such rows; refusing them would refuse every pre-cwd child |
 | Q7 note cannot name `from` (W3 dev. 3) | **left**: *"the session moved to this engine at …"* | `from` is on `Resume`/`TurnResumed`, not on `ResumePlan` (C froze it); adding it to the plan for one note is not worth a contract change — the `<engine_restart from="A"/>` note in the same batch names the engine |
 | `DrainSession` replies via `DelegatedReply` (W2 dev. 1) | **accepted** | the body waits up to `release_wait_secs − 1` and the turn's end asks `Agents` — on the mailbox it would deadlock, as `Drain` does |
@@ -52,6 +52,17 @@ and what stays open. Line numbers are of the tree at the last commit below.
 | `jobs_settle_transferred` stamps B's `now` as `settled_ms` (W3 open) | accepted, noted | the owner-changed body shows the resume time, not A's kill time |
 | W4 dev. 4/5 (no §9.3 row for `here ∧ transfer ∧ !resumed`; `ResumeState` has no `from`) | accepted | wording added by W4; `from` after a reload reads *another engine* — follow-on if it matters |
 | Z in-process harness (C dev. 6, Q13) | as C decided: unit tests + scripted two-engine smoke | exporting `agents_on`/`BatchFake` under a feature is a refactor |
+
+### 3.1 Z's findings (`139-as-built-Z.md` "Open items")
+
+| finding | decision |
+|---|---|
+| **Drain ordering**: in every T2 run B's `settle_transferred` found A's job row `running` and settled it (`settled_ms` = B's `now`) | **as designed, recorded**: `KillSession` writes `state = running, exit = lost` on purpose (`jobs.rs` `kill_lost` doc: the row must stay `running` so `jobs_open`/`jobs_settle_transferred` find it — there is no "reported" mark), so B's `settle_transferred` always finds and settles it whatever the log order; the §6.1 "every row ≤ `last_seq`" claim is about the `suspended` step and the `lost` exit, which `drain_session` writes synchronously (`StoreJournal::job` is one store write) before the actor stops and `release` flushes. `settled_ms` on both copies is B's time (W3 open item, accepted) |
+| **Owner-side card** *"background work outcome unknown: j1: killed when the session moved before it settled"* on every transfer | **fixed** (`tools/src/jobs.rs` `kill_lost`): a transfer kill is a known outcome — the row is `lost` on disk and the taker reports it — so `KillSession` drops the actor's live `Activity` clone (the op retires `Finished`) instead of marking it `unknown`; `KillAll` at shutdown keeps the `unknown` (the ledger reconciles on the next boot). Wording *"killed at shutdown before it settled"* |
+| **`pending_takeovers` lifetime**: a session taken back before Resume leaves a stale entry | recorded; clear on `demote` is the ponytail follow-on if it matters |
+| **Unreachability floor 31–35 s** (QUIC idle) | recorded; `mesh` has no knob — the smoke's `partitionFrom` waits for it |
+| **W3 test time**: `kill_session_writes_lost_before_kill_and_spares_others` kept the other session's `sleep 600` group alive at the end (`tell(KillAll)` and return), and the runtime's pipe reader waited it out — `tools` 60 s → 600 s | **fixed**: the test `ask`s `KillAll` and asserts `group_gone` on the other tree |
+| Z-fixes landed in engine code (bridged `<call_id>.<n>` job ids; child results forwarded to the owner; pending system takeover resumes as `Takeover{from}` via `TakeoverPending` with `dangling_calls` skipping System rows; snapshot-path demote) | kept as merged (`aef1f969`); they are W3/W1/W2/W2 territory fixed by Z under 109 W6's rule and are in the gate below |
 
 ## 4. Deviations from the design (whole wave, incl. the closer's)
 
@@ -119,8 +130,11 @@ The three reds are pre-existing on main, none in a file 139 touched for the fail
 
 ## 7. Open items (139 follow-ons)
 
-- Q3 forwarding form for a harness result addressed to a session owned elsewhere (drop + `warn!`
-  today; needs a harness envelope on `theuth/rpc/1`, a 69 change).
+- Q3 forwarding form for a harness-made `<job_result>`/`<reminder>` addressed to a session owned
+  elsewhere (drop + `warn!` today; child results already forward — Z-fix). Needs a harness
+  envelope on `theuth/rpc/1`, a 69 change.
+- `pending_takeovers` entry left behind when a session is taken back before the Resume press
+  (clear on `demote`).
 - Q6 copied-file guard on the owner backfill (log only today).
 - Q11 a transferred parent's children render as remote rows on the new owner (the "N subagents
   running" glyph is off there).
@@ -131,7 +145,8 @@ The three reds are pre-existing on main, none in a file 139 touched for the fail
 - 68 `Hello` schema version (Q12) so a mixed-version mesh refuses to ship instead of retrying forever.
 
 Files changed by the closer: `crates/agent/src/supervisor/{transfer,resume}.rs`,
-`crates/agent/src/{supervisor,loop_}.rs`, `crates/rpc/src/{forward,api}.rs`,
-`crates/sessionsync/src/{lib,owner}.rs`, `crates/tasks/src/ledger.rs`,
+`crates/agent/src/{supervisor,loop_}.rs`, `crates/agent/src/store/capture.rs` (merge),
+`crates/rpc/src/{forward,api}.rs`, `crates/sessionsync/src/{lib,owner}.rs`,
+`crates/tasks/src/ledger.rs`, `crates/tools/src/jobs.rs`,
 `crates/desktop/ui/src/lib/{owner.ts,owner.test.ts}`, `crates/desktop/ui/src/components/chat/Composer.tsx`
 (merge), `docs/design/{68-sessions,68-contract,109-durability}.md`, `docs/design/139-as-built.md` (this note).

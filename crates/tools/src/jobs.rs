@@ -1269,11 +1269,6 @@ impl Jobs {
         for (pty, session, id) in screens {
             pty.snapshot_to_store(&*self.journal, session, &id).await;
         }
-        let what = if only.is_some() {
-            "when the session moved"
-        } else {
-            "at shutdown"
-        };
         for (session, sj) in &mut self.sessions {
             if only.is_some_and(|s| s != *session) {
                 continue;
@@ -1281,18 +1276,21 @@ impl Jobs {
             for job in &mut sj.jobs {
                 if job.exit.is_none() {
                     kill(&job.pgids);
-                    // Aborting the task skips its settlement, and an escapee may
-                    // outlive the kill: say so before the guard can drop as `Finished`.
-                    if let Some(a) = self.live.get(&job.op) {
-                        a.unknown(format!("{}: killed {what} before it settled", job.id));
-                    }
-                    job.task.abort();
                     if only.is_some() {
-                        // This actor lives on: list the job `lost` here (the
-                        // taker reports it to the model, 139 §7.1).
+                        // 139 §7.1: a transfer kill is a known outcome — the
+                        // row is `lost` on disk and the taker reports it to
+                        // the model — so the op retires as `Finished` (no
+                        // "outcome unknown" card on the old owner). This
+                        // actor lives on: list the job `lost` here.
+                        self.live.remove(&job.op);
                         job.exit = Some(JobExit::Lost);
                         job.secs = job.started.elapsed().as_secs();
+                    } else if let Some(a) = self.live.get(&job.op) {
+                        // Aborting the task skips its settlement, and an escapee may
+                        // outlive the kill: say so before the guard can drop as `Finished`.
+                        a.unknown(format!("{}: killed at shutdown before it settled", job.id));
                     }
+                    job.task.abort();
                 }
                 // Nothing observes a terminal past shutdown / a transfer:
                 // release every charge.
@@ -2844,7 +2842,10 @@ pub(crate) mod tests {
             fx.jobs.ask(ListJobs(other)).await.unwrap()[0].state,
             "running"
         );
-        fx.jobs.tell(KillAll).await.unwrap();
+        // Awaited, and the group's death observed: a live `sleep 600` would
+        // keep the runtime's pipe reader alive for the full ten minutes.
+        fx.jobs.ask(KillAll).await.unwrap();
+        assert!(group_gone(&other_tree, Some(tokio::time::Instant::now() + KILL_WAIT)).await);
     }
 
     /// 109 §4.4: the `shell` grace wait is a `job` wait while it lasts.
