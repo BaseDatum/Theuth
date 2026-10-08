@@ -2683,8 +2683,8 @@ impl Worker {
             AgentEvent::ContextUsed {
                 size: Some(size), ..
             } => self.context_size = Some(size),
-            // 141 C stub: W4 keeps this in the silent arm (no thread for a
-            // watch-only child); the board row comes from `route()`.
+            // 141 §10.2: a watch-only child never binds a thread; its board
+            // row comes from `route()`.
             AgentEvent::ObservedChildChanged { .. }
             | AgentEvent::SubagentSpawned { .. }
             | AgentEvent::InputQueued { .. }

@@ -4606,54 +4606,106 @@ pub(crate) mod tests {
         );
     }
 
-    /// 141 §6.3 (opencode 1.x): the provisional `task:<toolCallId>` row is
-    /// re-keyed to the real session id by the completed frame's announce —
-    /// one row, `acp_session` rewritten, the child's model recorded.
+    /// 141 §6.3 (opencode 1.x, real frames via `task_v1::announce`): the
+    /// recorded `task.{tool_call, in_progress, completed}` frames sent through
+    /// the `Fake` on a harness that claims `OpenCode 1.18.30` → one
+    /// `opencode_task` child `pending → running → completed`, the provisional
+    /// `task:<toolCallId>` row re-keyed to the real session id by the
+    /// completed frame (one row, `acp_session` rewritten), the child's model
+    /// recorded, the parent's own tool card kept. A 2.x harness ignores them.
     #[tokio::test]
-    async fn opencode_task_provisional_row_is_rekeyed_to_the_real_id() {
-        let mut rig = Rig::new(Duration::from_secs(3600)).await;
-        rig.warm().await;
-        let mut a = announce(
-            ChildSource::OpencodeTask,
-            "task:call_1",
-            ChildState::Running,
-        );
-        a.title = Some("Read first line of a.txt".into());
-        a.tool_call = Some("call_1".into());
-        rig.actor.tell(Update::Subagent(a)).await.unwrap();
+    async fn opencode_task_frames_announce_and_rekey_one_child() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let frame = |name: &str| -> serde_json::Value {
+            let path = format!(
+                "{}/../acp/fixtures/opencode-1.18.30/task.{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let mut v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
+            v["params"]["sessionId"] = json!("s1");
+            v
+        };
+        let mut rig = Rig::with_agent(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("OpenCode", "1.18.30")),
+        )
+        .await;
+        rig.input("read a.txt").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("tool_call"));
+        let events = rig.until(|e| changed(e).is_some()).await;
+        let (child, _, state) = changed(events.last().unwrap()).unwrap();
+        assert_eq!(state, ObservedState::Pending);
+        rig.fake.send(frame("tool_call_update.in_progress"));
         let events = rig
-            .until(|e| matches!(e, AgentEvent::TurnStarted { .. }))
+            .until(|e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session == child))
             .await;
-        let (child, ..) = changed(&events[0]).unwrap();
-        let mut b = announce(
-            ChildSource::OpencodeTask,
-            "ses_ee4d89f0cffe7zXAvHsSIT0UsD",
-            ChildState::Completed,
+        assert!(
+            events.iter().any(
+                |e| matches!(changed(e), Some((c, "Read first line of a.txt", ObservedState::Running)) if c == child)
+            ),
+            "{events:?}"
         );
-        b.tool_call = Some("call_1".into());
-        b.model = Some("opencode/big-pickle".into());
-        rig.actor.tell(Update::Subagent(b)).await.unwrap();
+        rig.fake.send(frame("tool_call_update.completed"));
         let events = rig
-            .until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
+            .until(|e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == child))
             .await;
-        assert_eq!(
-            changed(&events[0]).map(|(c, _, s)| (c, s)),
-            Some((child, ObservedState::Completed)),
+        assert!(
+            events.iter().any(
+                |e| matches!(changed(e), Some((c, _, ObservedState::Completed)) if c == child)
+            ),
             "{events:?}"
         );
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AgentEvent::HarnessModelChanged { session, model } if *session == child && model == "opencode/big-pickle"))
+                .any(|e| matches!(e, AgentEvent::HarnessModelChanged { session, model } if *session == child && model == "opencode/big-pickle")),
+            "{events:?}"
         );
+        rig.fake.end_turn(&id);
+        rig.until_finished().await;
         let kids = rig.store.observed_children(rig.session).await.unwrap();
         assert_eq!(kids.len(), 1, "{kids:?}");
         let (row, meta) = &kids[0];
         assert_eq!(row.id, child);
+        assert_eq!(meta.source, ObservedSource::OpencodeTask);
         assert_eq!(meta.external, "ses_ee4d89f0cffe7zXAvHsSIT0UsD");
-        assert_eq!(meta.tool_call.as_deref(), Some("call_1"));
+        assert_eq!(
+            meta.tool_call.as_deref(),
+            Some("call_a062fdd9472f454ea6e45c9b")
+        );
+        assert_eq!(meta.detail["agent"], "explore");
         assert_eq!(row.harness_model.as_deref(), Some("opencode/big-pickle"));
         assert_eq!(meta.cost_rule, CostRule::Unreported);
+        assert!(
+            rig.store
+                .messages(rig.session)
+                .await
+                .unwrap()
+                .iter()
+                .any(|(_, m)| m
+                    .content
+                    .tool_responses()
+                    .iter()
+                    .any(|r| r.call_id == "call_a062fdd9472f454ea6e45c9b")),
+            "parent keeps its tool card"
+        );
+
+        // opencode 2.x: the same frames are only the parent's tool card.
+        let mut rig = Rig::with_agent(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("OpenCode", "2.0.22")),
+        )
+        .await;
+        rig.input("go").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("tool_call_update.completed"));
+        rig.fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert!(!events.iter().any(|e| changed(e).is_some()), "{events:?}");
     }
 
     /// 141 §6.4/§7.6 (omp, rows fed as announces until W5's adapter lands):
@@ -5073,11 +5125,9 @@ pub(crate) mod tests {
     /// `child_update` frame, sent verbatim through the live `Fake`, becomes
     /// an `ObservedChildChanged{source: opencode_ext}` for its
     /// `childSessionId` and a `ToolCallStarted` on the child row with the
-    /// `<child>:<toolu>` id. Needs W1's `child_update` adapter in
-    /// `crates/acp/src/harness.rs` (C's stub still flattens the frame onto
-    /// the root); the Closer removes the `ignore`.
+    /// `<child>:<toolu>` id (W1's `child_update` adapter in
+    /// `crates/acp/src/harness/opencode.rs`).
     #[tokio::test]
-    #[ignore = "141: needs W1's opencode child_update adapter; Closer re-enables"]
     async fn raw_child_update_frame_reaches_the_observed_child() {
         let path = format!(
             "{}/../acp/fixtures/opencode-2.0.22/child_update.tool_call.json",

@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use acp::harness::opencode::task_v1;
 use acp::omp::{self, Entry, Tailer};
 use acp::{ChildAnnounce, ChildSource, ChildState, CostRule, Harness, Permission};
 use agent_client_protocol::schema::MaybeUndefined;
@@ -256,21 +257,27 @@ impl AcpChild {
     }
 
     /// 141 §7.2 item 3: a parent-session `tool_call(_update)` that carries omp
-    /// task rows announces every row (the frame still reaches the parent's
-    /// transcript as a tool event; the roster card replaces it in the UI only).
+    /// task rows announces every row, and an opencode 1.x `task` call
+    /// announces its one child (§6.3). The frame still reaches the parent's
+    /// transcript as a tool event; the roster card replaces it in the UI only.
     pub(super) async fn observed_task_frame(
         &mut self,
         update: &SessionUpdate,
         me: &ActorRef<Self>,
     ) {
-        if !self.is_omp() {
-            return;
-        }
-        let Some(frame) = omp::progress_rows(update) else {
-            return;
-        };
-        for row in &frame.rows {
-            self.observed_upsert(row.announce(&frame), me).await;
+        if self.is_omp() {
+            if let Some(frame) = omp::progress_rows(update) {
+                for row in &frame.rows {
+                    self.observed_upsert(row.announce(&frame), me).await;
+                }
+            }
+        } else if self
+            .harness
+            .as_ref()
+            .is_some_and(Harness::usage_is_lower_bound)
+            && let Some(a) = task_v1::announce(update)
+        {
+            self.observed_upsert(a, me).await;
         }
     }
 

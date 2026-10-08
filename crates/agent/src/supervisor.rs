@@ -1033,7 +1033,7 @@ impl Agents {
                             .clone()
                             .unwrap_or_else(|| acp::DEFAULT_SKILLS_DIR.into()),
                     )),
-                    entry.mcp.unwrap_or(true),
+                    entry.mcp_enabled(),
                 ),
                 // A node: native there, or its own `harness`; either way the
                 // instructions ride in `session/new` `_meta`.

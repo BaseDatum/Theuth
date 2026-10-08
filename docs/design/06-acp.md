@@ -1,6 +1,6 @@
 # Agent Client Protocol: external harnesses as subagents, theuth as an agent
 
-Status: as-built v0 · 2026-09-12 (draft v0 2026-09-09) · extends `00-architecture.md` §5, §7; `01-config-and-subagents.md` §2. §8 lists what the build changed against the draft; where §8 disagrees with §1-§7, §8 wins. §8.1 (2026-09-18) records the boundary with agent communication (50); its integration is implemented but not yet verified against a running harness. Amended 2026-09-29 per 75 §11: §1 table and line 9, §3.2 (`resume_child`), §3.3 rows, §3.6 store/RPC, §3.8 (MCP back-channel in scope), §7 cost visibility, §8 rule 11, §8.2 rendering.
+Status: as-built v0 · 2026-09-12 (draft v0 2026-09-09) · extends `00-architecture.md` §5, §7; `01-config-and-subagents.md` §2. §8 lists what the build changed against the draft; where §8 disagrees with §1-§7, §8 wins. §8.1 (2026-09-18) records the boundary with agent communication (50); its integration is implemented but not yet verified against a running harness. Amended 2026-09-29 per 75 §11: §1 table and line 9, §3.2 (`resume_child`), §3.3 rows, §3.6 store/RPC, §3.8 (MCP back-channel in scope), §7 cost visibility, §8 rule 11, §8.2 rendering. Amended 2026-10-08 per 141 (`141-acp-subagents.md`, as built in `141-as-built.md`): SDK 3.1.0, `clientCapabilities.subagents`, watch-only child sessions from RFD / opencode / omp feeds, MCP back-channel default on with a retry-without fallback — §3.8 and §8.5.
 
 Verified 2026-09-12. Client half (headless, real models; harness `opencode acp` 1.18.20 from `agents.yaml`, parent claude-sonnet-4-5): `spawn_subagent{agent:"opencode"}` → `SubagentSpawned`, child `TurnStarted{model:"opencode"}`, `ToolCallStarted bash`, `ToolCallFinished`, `TextDelta "ACP-OK-17"`, `TurnFinished end_turn`, parent turn with `<subagent_result stop="end_turn">ACP-OK-17</subagent_result>`; `send_message` with `await_reply` → second `session/prompt` on the same ACP session, answered from the child's context, `MessageDelivered` published; an entry with `OPENCODE_CONFIG` permission `bash: ask` → `ApprovalRequested{tool:"echo PERM-OK-5", risk: mutating, args:{command, kind:"execute"}}` on the child session, `resolve_approval allow` ran it, `deny` gave the harness `The user rejected permission to use this specific tool call.` and a silent turn end (result falls back to `[no reply; last tool result]`, §8.17); `cancel` on a child running `sleep 120` → `session/cancel` → `TurnFinished cancelled`, `<subagent_result stop="cancelled">`, process stays (idle child); RPC `shutdown` → zero `opencode acp` processes; restart + `send_message` to a store-only child respawned and `session/load`ed (harness recalled its first turn); unknown agent → tool error `unknown agent \`nope\`; configured: opencode, opencode-ask`; `list_acp(probe:true)` → `ok` for both; `command: /nonexistent/harness` → child `Error "spawn failed: Internal error: No such file or directory (os error 2)"` + `TurnFinished error`, parent `<subagent_result stop="error">` with that text.
 Registry: `list_acp_registry` → 40 agents; `add_acp("codex-acp")` wrote `codex-acp: {command: npx, args: [-y, "@agentclientprotocol/codex-acp@1.11.0"], description: "ACP adapter for OpenAI's coding assistant"}`; `spawn_subagent{agent:"codex-acp"}` streamed `CODEX-OK` and delivered the result (codex login already on disk); `remove_acp` removed entries.
@@ -384,12 +384,15 @@ subscription is already on disk once the user has used the harness.
   uses its own tools, which is what the user runs it for. Advertising `fs`
   would route every edit through theuth for unsaved-buffer awareness we do not
   have. Add when an editor-integrated theuth needs it (§4.4).
-- **MCP back-channel** — in scope since 75 §9, on by default: `session/new.mcpServers`
+- **MCP back-channel** — in scope since 75 §9, **on by default** (141 D14,
+  `acp::Entry::mcp_enabled()`): `session/new.mcpServers` (and `session/load`)
   carries a stdio shim `theuth mcp --session <id>` proxying `list_skills`,
   `load_skill` and `send_message` to the daemon; `agents.yaml` `mcp: false`
-  opts a harness out. The shared approval gate for mutating back-channel
-  tools is still a follow-up. (A remote child on a node, 32, is in the
-  same position as before: it cannot ask its parent.)
+  opts a harness out. A `session/new`/`load` that fails while carrying the
+  shim is retried once without it with a warning naming the harness (75 §9).
+  The shared approval gate for mutating back-channel tools is still a
+  follow-up. (A remote child on a node, 32, is in the same position as
+  before: it cannot ask its parent.)
 - **Forwarding `~/.theuth/mcp/*.json` to children.** Same mechanism
   (`mcpServers`), zero code beyond a mapping — but doubles every MCP server
   process per child and bypasses our gates. Still out (75 §12).
@@ -878,22 +881,14 @@ drives both; what changed and what the recorded fixtures in
   `clientCapabilities._meta["opencode/child-session-updates"]: true` and
   still no `elicitation` (theuth renders no forms; advertising `form` makes
   2.x cancel the question and tell the model to continue).
-- **Sub-agent updates.** With that flag, 2.x sends a sub-agent's activity on
-  the extension notification `opencode/session/child_update`
-  `{rootSessionId, childSessionId, parentSessionId, depth, title, type:
-  "update", update}` (or `type: "status"`), **not** on `session/update`.
-  `acp::child_update` turns the `update` into this session's own
-  `SessionUpdate`: tool calls keep their `<childSessionId>:<toolCallId>` id
-  and `_meta["opencode/child-session"]` and become ordinary cards/rows (ids
-  are opaque strings everywhere in theuth — nothing splits on `:`); the
-  sub-agent's `agent_message_chunk` is forwarded as `agent_thought_chunk`
-  so it shows as activity without becoming the turn's result text;
-  `status` events and other kinds are dropped. The sub-agent's permission
-  asks arrive as normal `session/request_permission` on the root session
-  with the prefixed id, `kind: edit`, `content: [{type: diff, …}]`,
-  `locations: [{path}]` — rendered through the existing gate unchanged
-  (`risk(kind)`, `raw_input ∪ kind`). Option ids are still `once/always/
-  reject`.
+- **Sub-agent updates** — **superseded by §8.5 (141, 2026-10-08)**: the
+  2.x extension notification `opencode/session/child_update` is no longer
+  flattened into the parent. Each child is its own watch-only session; the
+  child's `agent_message_chunk` is the child's assistant text (not the
+  parent's thought), `status` frames drive the child's state, and the
+  `<childSessionId>:<toolCallId>` ids stay on the child's cards. Permission
+  asks still arrive on the root session with the prefixed id; they are now
+  attributed to the child (§8.5).
 - **`session_info_update._meta`.** 2.x marks provider retries
   (`opencode/retry`) and compactions (`opencode/compaction`) there. No
   event slot renders them; the mailbox logs them at `debug` (follow-up:
@@ -909,3 +904,81 @@ drives both; what changed and what the recorded fixtures in
   '{"permission":{"bash":"ask","edit":"ask"}}'` on the scratch entries.
   Sky's V1-shaped `~/.config/opencode/opencode.json` loaded fine on 2.0.22
   (providers and MCP servers in effect; V1 `plugin` entries do not run).
+
+### 8.5 Subagent visibility (2026-10-08, design 141)
+
+Sky, 2026-10-08: harness-internal subagents were invisible. As built
+(`141-acp-subagents.md` + Revision 1; deltas in `141-as-built.md`):
+
+- **SDK.** `agent-client-protocol = "=3.1.0"`, features `process`, `stdio`,
+  `unstable_end_turn_token_usage`, `unstable_subagents` (schema 1.10.2).
+  3.1.0 no longer awaits the process driver in `connect_with`; theuth wraps
+  `AcpAgent` in `ChildProcess` (`harness/process.rs`) and waits up to
+  `EXIT_GRACE` 1.5 s for the driver result after `incoming_closed` (and in
+  `Link::explain` for any failed request), so a crashed child still reads
+  `exit status: N` + stderr tail, not `process exited`
+  (`process_exit_status_and_stderr_reach_the_text`). `t --acp` serves with
+  `Builder::connect_to` so the last stdout write is awaited at stdin EOF.
+- **Client capabilities.** `initialize` advertises
+  `clientCapabilities.subagents: {}` beside `_meta["opencode/child-session-updates"]`;
+  still no `fs`/`terminal`/`elicitation`.
+- **Watch-only children.** Every subagent a harness runs inside itself is a
+  `sessions` row with `kind = 'observed'`, `parent` = the ACP child (or the
+  observed parent when nested), **no `agent`**, `acp_session` = the
+  harness's own id, plus `observed_*` columns (migration 0041). Nothing
+  drives it: `Agents::session()` refuses with `watch-only: the harness runs
+  this subagent; open or message its parent`; `send_message`/`discover_peers`
+  list it `send: false`; permits, `max_runtime`, resume and dreaming skip it;
+  search indexes it. Event: `AgentEvent::ObservedChildChanged{parent, child,
+  name, model, observed: ObservedMeta}` (upsert; detail-only changes
+  throttled 250 ms); transcript content reuses the ordinary turn events on
+  the child id. `list_agents`/`list_sessions`/`load_session` carry
+  `kind` + `observed`; rpc `admitted`/`wanted` enrol the child like
+  `SubagentSpawned`. UI word: "Watching".
+- **Feeds** (`crates/acp`, normalised to `Update::Subagent(ChildAnnounce)` +
+  child-keyed `Update::Session{session, update}`):
+  - *RFD* (`unstable_subagents`, any compliant agent; none shipped yet):
+    `subagent_update` → announce (`title`, `description`, `capabilities.cancel`
+    → Stop button, `running | idle{stopReason, usage} | requires_action |
+    unknown`); child-addressed `session/update`s by outer `sessionId`;
+    `session_message(_chunk)` → directed `→ name:` / `← name:` lines; per-child
+    `session/cancel` only when `capabilities.cancel` was announced.
+  - *opencode 2.x* (`opencode/session/child_update`): status
+    `created|running|completed|failed|interrupted` → `pending|running|
+    completed|failed|cancelled`; `type: update` → the child's own transcript;
+    the parent's `subagent` tool call is joined via `rawOutput.metadata.sessionID`
+    (roster card); root permission asks with `<child>:<id>` → the child,
+    `requires_action` until answered. Cost/model not on the wire → `—`.
+  - *opencode 1.x*: only the `task` tool lifecycle (title `task`, `rawInput.
+    subagent_type`) → one child `pending → running → completed|failed`, keyed
+    `task:<toolCallId>` until the completed frame's `metadata.sessionId`
+    re-keys the row; model `providerID/modelID`; no transcript ("opencode 1.x
+    does not stream subagent activity").
+  - *omp* (`task` tool; `crates/acp/src/omp/`): (1) live — every
+    `tool_call_update` whose `rawOutput.details.progress[]` has rows (also
+    after the call's `completed`) → one child per `progress.id` (nested `a.b`
+    under `a`), status/model/tokens/cost/lastIntent/recentTools into
+    `observed_detail`; (2) tail — `~/.omp/agent/sessions/<cwd>/<ts>_<sid>/<id>.jsonl`
+    polled every 500 ms while any child is non-terminal → the child's
+    transcript (`agent_message_chunk`/`tool_call`/`tool_call_update`), byte
+    cursor persisted; `<id>.md`/`<id>.json` sidecars or the parent's
+    `async-result` entry settle completion after omp stops sending frames.
+- **Cost (D8), never double counted.** omp background spawns (`details.async`)
+  are excluded from the parent's `usage_update` → `counted`: meter rows with
+  `CostScope::Observed` under the child roll up through `cost_owners`; omp
+  sync spawns → `inside_parent` (display only); opencode → `unreported`;
+  RFD `idle.usage` → `display_only` tokens. `ObservedMeta.cost_rule` names
+  the rule; the cost breakdown shows it.
+- **Restart.** Boot sweep `Store::mark_observed_lost` → non-terminal children
+  of a harness no longer connected become `unknown` / "lost contact"; a
+  harness actor stopping does the same for its children at once; omp
+  children settle from the tail/sidecars on the next connect.
+- **Surfaces.** Desktop: eye + source tag + state dot in the tree/strip,
+  roster card in place of the spawn tool card, watch-only session view
+  (no composer, "Watching" chip, `ObservedBar` with Open parent / Stop
+  subagent gated on `can_cancel`). TUI: `◎` rows, read-only open, Esc routes
+  to cancel only when cancellable. Slack/Telegram: `◎` board rows, no
+  thread/topic.
+- **Not built (D12).** theuth-as-harness emitting `subagent_update` over
+  `t --acp`; claude/codex draft names; opencode HTTP route; per-child stop
+  for omp/opencode (no protocol surface).
