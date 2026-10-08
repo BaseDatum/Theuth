@@ -25,9 +25,9 @@ use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::config::{AgentDefaults, AutoresearchConfig};
 use crate::types::{
-    Begin, Control, ControlOp, IdeaChange, IdeaOp, Log, LogArgs, LogReport, Notes, NotesArgs,
-    ReviewVerdict, Run, RunArgs, RunReport, StartDraft, StartWhen, Status, SteerMsg, StudyInfo,
-    StudySpec, Verdict,
+    Begin, Control, ControlOp, ExperimentState, IdeaChange, IdeaOp, Log, LogArgs, LogReport, Notes,
+    NotesArgs, ReviewVerdict, Run, RunArgs, RunReport, StartDraft, StartWhen, Status, SteerMsg,
+    StudyInfo, StudySpec, Verdict,
 };
 use crate::{AUTORESEARCH_ACTOR, PLUGIN, Studies};
 
@@ -375,15 +375,31 @@ pub fn render_log(r: &LogReport) -> String {
         )),
         None => {}
     }
-    out.push_str(&format!(
-        "\nIncumbent {}{} after {} keeps.",
-        short(&r.incumbent.sha),
-        r.incumbent
-            .mean
-            .map(|m| format!(" = {m}"))
-            .unwrap_or_default(),
-        r.incumbent.kept
-    ));
+    // A wave slot's keep is a candidate commit until promotion moves the incumbent (§10 step 4):
+    // the keep's sha is not the incumbent's.
+    let awaiting_promotion = r.applied == ExperimentState::Kept
+        && r.commit.as_deref().is_some_and(|c| c != r.incumbent.sha);
+    if awaiting_promotion {
+        out.push_str(&format!(
+            "\nThis keep is a wave candidate: it awaits the wave's promotion once every slot has logged. Incumbent still {}{} after {} keeps.",
+            short(&r.incumbent.sha),
+            r.incumbent
+                .mean
+                .map(|m| format!(" = {m}"))
+                .unwrap_or_default(),
+            r.incumbent.kept
+        ));
+    } else {
+        out.push_str(&format!(
+            "\nIncumbent {}{} after {} keeps.",
+            short(&r.incumbent.sha),
+            r.incumbent
+                .mean
+                .map(|m| format!(" = {m}"))
+                .unwrap_or_default(),
+            r.incumbent.kept
+        ));
+    }
     out.push_str(&format!(
         "\nBudget left: {} experiments, {:.1} h, ${:.2}.",
         r.budget_left.experiments, r.budget_left.hours, r.budget_left.usd
@@ -433,9 +449,15 @@ fn pause_words(r: &crate::types::PauseReason) -> String {
 
 // ───────────────────────────── the tools ─────────────────────────────
 
-/// No arguments.
+/// `experiment_begin` arguments: nothing, unless you are a wave child.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
-pub struct NoArgs {}
+pub struct BeginArgs {
+    /// Wave slot number (140 §10). Only a child spawned by the study session passes it, with the
+    /// number the supervisor gave it; the harness binds this session to that slot's worktree and
+    /// experiment, and `experiment_run` / `experiment_log` then act on it without any argument.
+    #[serde(default)]
+    pub slot: Option<u8>,
+}
 
 /// `experiment_begin` (140 §12.4).
 pub struct BeginTool(pub Arc<Seams>);
@@ -445,7 +467,7 @@ impl Tool for BeginTool {
     const NAME: &'static str = "experiment_begin";
     const RISK: Risk = Risk::Mutating;
     const RETURNS: &'static str = "dict";
-    type Args = NoArgs;
+    type Args = BeginArgs;
 
     fn description(&self) -> String {
         "Start the next experiment of this autoresearch study. Returns the brief: goal, incumbent, noise, recent \
@@ -453,11 +475,14 @@ impl Tool for BeginTool {
             .into()
     }
 
-    async fn call(&self, _: NoArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, args: BeginArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        if args.slot == Some(0) {
+            anyhow::bail!("slot numbers start at 1");
+        }
         let brief = actor()?
             .ask(Begin {
                 session: cx.session,
-                slot: None,
+                slot: args.slot,
             })
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -489,7 +514,7 @@ impl Tool for RunTool {
         let report = actor()?
             .ask(Run {
                 session: cx.session,
-                slot: None,
+                slot: crate::wave::slot_of(cx.session),
                 args,
             })
             .await
@@ -521,7 +546,7 @@ impl Tool for LogTool {
         let report = actor()?
             .ask(Log {
                 session: cx.session,
-                slot: None,
+                slot: crate::wave::slot_of(cx.session),
                 args,
             })
             .await
@@ -1078,6 +1103,20 @@ mod tests {
         let t = render_log(&r2);
         assert!(t.starts_with("Applied: rejected by review. Review: SUSPICIOUS — the keep was reverted: bench.rb skips work\n"), "{t}");
         assert!(t.ends_with("This was the study's last experiment (plateau); the harness finalizes. End your turn."), "{t}");
+        // A wave slot's keep: the commit is not the incumbent yet.
+        let r3 = LogReport {
+            applied: ExperimentState::Kept,
+            commit: Some("cand000000000001".into()),
+            review: None,
+            stop: None,
+            ..r2
+        };
+        let t = render_log(&r3);
+        assert!(
+            t.contains("awaits the wave's promotion") && t.contains("Incumbent still abcdef1234"),
+            "{t}"
+        );
+        assert!(!t.contains("\nIncumbent abcdef1234 = 41.2 after"), "{t}");
     }
 
     #[test]

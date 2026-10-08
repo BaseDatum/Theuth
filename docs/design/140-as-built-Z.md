@@ -49,9 +49,18 @@ Detached gate (`/tmp/140-z-gate.sh` → `/tmp/140-z-gate.log`), each step throug
 | `bun run build` (tsc -b && vite build) | 127 → **0** | 8 s | |
 | `BUILD_SLOTS=1 cargo check --workspace --all-targets` | 0 | 407 s | the single workspace-class run |
 
+## Second turn — W5 WAVES merged (fc85c76c, `140-as-built-W5.md`)
+
+- `git merge --no-ff feat/140-w5`: one conflict (`actor.rs` begin_env, allocate-n): kept W5's `wave::open_env`-or-one-row block and Z's `begin {n, spend_usd}` event after it. W5's identical seam fixes (`..Headline::default()`, `brief::Context { gate, crash_retries }`) merged to one copy.
+- W5's test-double `scope_diff` override in `wave.rs` (it routed to W2's `git::scope_diff`, deleted in turn one) removed; the real `custody::scope_diff` serves the wave tests.
+- W5 hand-off (`render_log`): a slot keep before promotion (`applied == kept && commit != incumbent.sha`, W5's tell) now reads "This keep is a wave candidate: it awaits the wave's promotion once every slot has logged. Incumbent still …" instead of the sequential incumbent line; test added in `tools.rs`.
+- Harness Restore is applied only when the study is not a wave (`wave.is_none()`): a wave's candidates live in slot worktrees, so the ★ idea alone carries it there (recorded limit).
+- Shared-target incident: after the merge `review.rs` failed on `CallKind::Autoresearch` although `crates/runtime/src/side_call.rs` had it — a sibling worktree had rebuilt `runtime` into the shared target from its own source; `touch` of the file rebuilt it (same class of incident W1/W2/W6 recorded).
+
+Gates after the merge: GATE2_TABLE
+
 ## Still open
 
-- W5 WAVES is not in this tree; after the orchestrator merges it the affected gates re-run (second turn).
-- Live proof on `fixtures/toy-sort` and the gaming probe are the orchestrator's next step after W5.
+- Live proof on `fixtures/toy-sort` (single and 2-slot wave) and the gaming probe are the orchestrator's next step.
 - The attention row text still says "· Restore · Keep reverted"; the inbox UI has no per-source action buttons, so both are pressed from the Study view (or `autoresearch_control`).
 - `Phase` has no `holdout` chip; the in-study holdout runs after `ExperimentFinished` with no progress event (it is invisible to the brief by design and short).
