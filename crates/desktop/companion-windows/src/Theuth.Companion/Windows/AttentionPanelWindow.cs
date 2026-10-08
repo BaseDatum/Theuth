@@ -188,6 +188,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         anchor = at;
         previous = prev;
         IsOpen = true;
+        Log.Write($"panel theme: host.ActualTheme={host.ActualTheme} app={Application.Current?.RequestedTheme} backdrop={BackdropText}");
         Render(force: true);
         UpdateReceipt();
         agoTimer.Start();
@@ -311,6 +312,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         agoLabels.Clear();
         content.Children.Clear();
         var theme = host.ActualTheme;
+        backdrop?.SetTheme(theme); // the material follows the palette used below (W6: a light Mica under dark text on build-B)
         host.Background = backdrop is null ? Palette.Brush(Palette.Surface, theme) : Palette.Transparent;
         host.Foreground = Palette.Brush(Palette.Ink, theme);
         receiptRow.BorderBrush = Palette.Tint(Palette.Rule, theme, 0.6);

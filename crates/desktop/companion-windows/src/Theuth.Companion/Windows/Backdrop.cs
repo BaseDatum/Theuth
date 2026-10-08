@@ -91,11 +91,17 @@ internal sealed class Backdrop : IDisposable
         }
     }
 
-    /// <summary>The element theme changed: keep the material's tint in step.</summary>
+    /// <summary>
+    /// Keep the material's theme in step with the palette the content was just rendered with — called from every Render,
+    /// not only from <c>ActualThemeChanged</c>: on build-B (round 2, 04:55) the Mica came up light under dark-palette text.
+    /// </summary>
     public void SetTheme(ElementTheme theme)
     {
         if (disposed) return;
-        configuration.Theme = Palette.Resolve(theme) == ElementTheme.Light ? SystemBackdropTheme.Light : SystemBackdropTheme.Dark;
+        var want = Palette.Resolve(theme) == ElementTheme.Light ? SystemBackdropTheme.Light : SystemBackdropTheme.Dark;
+        if (configuration.Theme == want) return;
+        Log.Write($"backdrop {Material}: theme {configuration.Theme} → {want}");
+        configuration.Theme = want;
     }
 
     private static bool Supported(Func<bool> probe)

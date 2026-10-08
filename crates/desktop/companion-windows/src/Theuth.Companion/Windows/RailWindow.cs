@@ -175,6 +175,7 @@ internal sealed partial class RailWindow : ToolWindow
     private void Render()
     {
         var theme = root.ActualTheme;
+        backdrop?.SetTheme(theme);
         root.Children.Clear();
         views.Clear();
         rectsDirty = true;
