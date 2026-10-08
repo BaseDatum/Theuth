@@ -56,7 +56,12 @@ impl Default for Fake {
             decide: Default::default(),
             review: Default::default(),
             custody_changed: Default::default(),
-            scope: Default::default(),
+            // The real diff is never empty when the model edited the worktree; an
+            // empty one is refused before novelty (140-P), so the double says "one file".
+            scope: Mutex::new(ScopeDiff {
+                changed: vec!["lib/a.rs".into()],
+                ..ScopeDiff::default()
+            }),
             repair: Default::default(),
             spend: Mutex::new(Ok(0.0)),
             samples_taken: Default::default(),
@@ -1334,7 +1339,7 @@ async fn plateau_explores_once_then_stops() {
 
 #[tokio::test]
 async fn review_reverts_a_suspicious_keep_and_restore_queues_it() {
-    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 50.0]);
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 50.0, 50.0]);
     let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
     let session = started(&mut h, "t1", 10).await;
     begin(
@@ -1429,7 +1434,8 @@ async fn review_reverts_a_suspicious_keep_and_restore_queues_it() {
     let items = roster::attention::Source::items(&AttentionSource(h.studies.store.clone())).await;
     assert!(items.is_empty(), "no second restore is pending");
     *fake.novelty_refusal.lock() = Some("duplicate of #1".into());
-    fake.decide(Verdict::NoGain, 0.0, 0.1);
+    // The reviewer says SUSPICIOUS again: the user's Restore stands — flagged, not reverted.
+    fake.decide(Verdict::Suspicious, 50.0, 12.0);
     let r = run(
         &mut h.studies,
         Run {
@@ -1445,6 +1451,23 @@ async fn review_reverts_a_suspicious_keep_and_restore_queues_it() {
     .unwrap();
     assert!(!matches!(r.verdict, Verdict::Refused { .. }), "{r:?}");
     *fake.novelty_refusal.lock() = None;
+    let lr = log(
+        &mut h.studies,
+        Log {
+            session,
+            slot: None,
+            args: LogArgs::default(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(lr.applied, ExperimentState::Kept);
+    assert!(
+        matches!(lr.review, Some(ReviewVerdict::Flagged { .. })),
+        "{:?}",
+        lr.review
+    );
+    assert!(lr.commit.is_some());
     // Restore of an ordinary experiment is refused.
     let e = control(
         &mut h.studies,
@@ -1759,6 +1782,51 @@ fn l(session: SessionId, decision: Decision) -> Log {
             ..LogArgs::default()
         },
     }
+}
+
+/// 140-P live: a worktree equal to the incumbent (the model edited elsewhere) is
+/// refused by name before novelty — no sample, no "duplicate of #1" riddle — and the
+/// experiment can be run again once the tree changed.
+#[tokio::test]
+async fn run_refuses_an_unchanged_worktree_by_name() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 90.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    *fake.scope.lock() = ScopeDiff::default();
+    let before = *fake.samples_taken.lock();
+    let e = run(&mut h.studies, r(session, "x"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.starts_with("no change in the worktree") && e.contains("absolute path"),
+        "{e}"
+    );
+    assert_eq!(*fake.samples_taken.lock(), before, "no sample spent");
+    let x = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(x.state, ExperimentState::Open, "handed back to the model");
+    let ev = h
+        .studies
+        .store
+        .list_events("t1", Some("no_change"), 1)
+        .await
+        .unwrap();
+    assert_eq!(ev.len(), 1);
+    // Same experiment, the tree now differs: measured normally.
+    *fake.scope.lock() = ScopeDiff {
+        changed: vec!["lib/a.rs".into()],
+        ..ScopeDiff::default()
+    };
+    fake.decide(Verdict::Improved, 10.0, 4.0);
+    let rep = run(&mut h.studies, r(session, "x")).await.unwrap();
+    assert_eq!(rep.verdict, Verdict::Improved);
 }
 
 /// R-1: a keep commits the tree as it is now; a tree that no longer matches the

@@ -2495,6 +2495,22 @@ async fn measure_env(
     let started = exp.started_at.clone();
     let incumbent = incumbent_of(study)?;
     let retries_left = retries.saturating_sub(runs_so_far);
+    // Nothing to measure (140-P live): the model edited outside the worktree (file
+    // tools resolve relative paths against the engine's cwd), so the tree equals the
+    // incumbent. A named error, no sample, experiment still open — the model edits the
+    // right tree and runs again (a duplicate-of-#1 refusal hid the cause).
+    let scope = env.backend.scope_diff(&study.spec, worktree)?;
+    if scope == ScopeDiff::default() {
+        env.store
+            .append_event(&slug, "no_change", &serde_json::json!({ "n": n }))
+            .await?;
+        return Err(Error::refused(format!(
+            "no change in the worktree {} vs the incumbent — nothing to measure; edit files by \
+             absolute path under the worktree (relative paths resolve elsewhere), then call \
+             experiment_run again",
+            worktree.display()
+        )));
+    }
     // Novelty (§7.3).
     progress(env, &slug, n, &started, Phase::Novelty, 0, 1).await;
     // A git failure here is an error the model sees, never an empty hash fed to the novelty check (R-102).
@@ -2549,8 +2565,7 @@ async fn measure_env(
         return refuse_run(env, exp, reason, vec![], novelty.similar).await;
     }
 
-    // Scope (§5.3).
-    let scope = env.backend.scope_diff(&study.spec, worktree)?;
+    // Scope (§5.3), computed before the novelty check above.
     if !scope.off_limits.is_empty() {
         let reason = format!("touches off-limits {}", scope.off_limits.join(", "));
         return refuse_run(env, exp, reason, scope.deviations.clone(), novelty.similar).await;
@@ -3178,9 +3193,13 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
                     reason: e.to_string(),
                 },
             };
+            // A keep the user restored (§9.1 Restore) was already judged by the user: a
+            // second SUSPICIOUS flags it (needs-eyes line) but cannot revert it again,
+            // or the user and the reviewer would take turns forever (140-P live).
+            let restored = restoring(&env.store, &slug, n).await?.is_some();
             let rv = match rv {
                 ReviewVerdict::Flagged { reason }
-                    if env.cfg.review.on_suspicious == OnSuspicious::Revert =>
+                    if env.cfg.review.on_suspicious == OnSuspicious::Revert && !restored =>
                 {
                     // Revert: incumbent ← previous, the commit stays as a rejected ref, the patch
                     // is kept — and Restore must find it, so both writes are checked (R-103).
