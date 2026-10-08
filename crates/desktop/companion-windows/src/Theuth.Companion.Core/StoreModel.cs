@@ -649,7 +649,8 @@ public class StoreModel : INotifyPropertyChanged
         }
     }
 
-    /// <summary>Every event, raw: <c>TextDelta</c>/<c>TurnFinished</c> on the desk feed the reply; <c>Dictation*</c> the live dictation.</summary>
+    /// <summary>Every event, raw: <c>TextDelta</c>/<c>TurnFinished</c>/<c>Error</c> on the desk feed the reply (a failed turn ends the
+    /// receipt with "theuth couldn't reply — …", W6 item 7); <c>Dictation*</c> the live dictation.</summary>
     private void AskObserve(byte[] data)
     {
         StreamDelta d;
@@ -670,7 +671,8 @@ public class StoreModel : INotifyPropertyChanged
         switch (d.Type)
         {
             case "TextDelta": e = new ReplyEvent.TextDelta(session, d.Text ?? ""); break;
-            case "TurnFinished": e = new ReplyEvent.TurnFinished(session); break;
+            case "TurnFinished": e = new ReplyEvent.TurnFinished(session, d.StopReason); break;
+            case "Error": e = new ReplyEvent.Error(session, d.Message ?? ""); break;
             default: return;
         }
         if (!Ask.Router.Observe(e) || Ask.Router.Reply is not { } reply) return;
@@ -678,6 +680,7 @@ public class StoreModel : INotifyPropertyChanged
         if (Ask.Current is { } id) Ask.Receipts.Update(id, text);
         OnPropertyChanged(nameof(Ask));
         SetReceipt(new ReceiptRow.Reply("theuth", text.Length == 0 ? "…" : text, reply.Session));
+        if (reply.Failed) log($"ask failed on the desk: {(d.Type == "Error" ? d.Message : $"stop_reason={d.StopReason}")}");
         if (reply.Finished) ExpireReceipt(12);
     }
 

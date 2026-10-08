@@ -70,7 +70,7 @@ public struct AskRouter: Equatable, Sendable {
     /// `send_input` went out: collect the desk's reply from now until its turn finishes.
     public mutating func sent(on session: String) { reply = AskReply(session: session) }
 
-    /// Feed `TextDelta` / `TurnFinished` from the event stream; `true` when the receipt text changed.
+    /// Feed `TextDelta` / `TurnFinished` / `Error` from the event stream; `true` when the receipt text changed.
     @discardableResult
     public mutating func observe(_ e: ReplyEvent) -> Bool {
         guard var r = reply, !r.finished else { return false }
@@ -78,9 +78,19 @@ public struct AskRouter: Equatable, Sendable {
         case .textDelta(let session, let text):
             guard session == r.session else { return false }
             r.text += text
-        case .turnFinished(let session):
+        case .turnFinished(let session, let stopReason):
+            guard session == r.session else { return false }
+            switch stopReason {
+            case "error": r.failure = "the turn failed"
+            case "cancelled": r.failure = "the turn was cancelled"
             // A turn that ended before anything streamed is the one we steered into, not the reply.
-            guard session == r.session, !r.text.isEmpty else { return false }
+            default: guard !r.text.isEmpty else { return false }
+            }
+            r.finished = true
+        case .error(let session, let message):
+            // The engine's live `AgentEvent::Error` (e.g. a missing API key): the turn will not answer.
+            guard session == r.session else { return false }
+            r.failure = AskReply.clip(message)
             r.finished = true
         }
         reply = r
@@ -90,16 +100,23 @@ public struct AskRouter: Equatable, Sendable {
 
 public enum ReplyEvent: Equatable, Sendable {
     case textDelta(session: String, text: String)
-    case turnFinished(session: String)
+    /// `stop_reason`: the provider's, or `"cancelled"` / `"error"` (`crates/agent/src/lib.rs` `TurnFinished`).
+    case turnFinished(session: String, stopReason: String)
+    case error(session: String, message: String)
 }
 
-/// The desk's streamed answer; the receipt row shows `firstTwoLines`.
+/// The desk's streamed answer; the receipt row shows `receiptText`.
 public struct AskReply: Equatable, Sendable {
     public let session: String
     public var text = ""
     public var finished = false
+    /// Set when the desk's turn failed or was cancelled instead of answering; `finished` is set with it.
+    public var failure: String?
 
     public init(session: String) { self.session = session }
+
+    /// What the receipt row shows after "theuth · ": the answer's first two lines, or why there is none.
+    public var receiptText: String { failure.map { "couldn't reply — \($0)" } ?? firstTwoLines }
 
     /// The first two non-empty lines, markdown bullets and heading marks stripped, joined with " — ".
     public var firstTwoLines: String {
@@ -108,6 +125,13 @@ public struct AskReply: Equatable, Sendable {
             .map { String($0).trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         return lines.prefix(2).joined(separator: " — ")
+    }
+
+    /// An error message's first line, at most 80 characters.
+    static func clip(_ message: String) -> String {
+        let line = message.split(whereSeparator: \.isNewline).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        guard !line.isEmpty else { return "the turn failed" }
+        return line.count > 80 ? String(line.prefix(79)) + "…" : line
     }
 }
 

@@ -1,9 +1,11 @@
 //! Windows (134 D10, §5.5–5.6): launch `<exe dir>\companion\Theuth.Companion.exe`, follow it by the
 //! named mutex it holds, hand the notification area over (D9), and stop it at quit — the Windows form
-//! of `macos.rs`. Alive = `Local\io.theuth.companion` can be opened; the companion is the only writer.
+//! of `macos.rs`. Alive = `Local\io.theuth.companion` can be opened; the companion is the only writer
+//! (plus [`LAUNCH_GRACE`] for a companion we spawned that has not created it yet, 134 W6).
 //! Terminate = `WM_CLOSE` to its rail window class, [`QUIT_GRACE`], then `TerminateProcess`.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::time::{Duration, Instant};
 
@@ -33,10 +35,24 @@ const QUIT_GRACE: Duration = Duration::from_secs(2);
 /// How often [`watch`] opens the mutex; the bound on two tray icons overlapping after the companion
 /// starts or exits on its own (our own launch flips it immediately).
 const POLL: Duration = Duration::from_secs(2);
+/// 134 W6 item 5: a companion we just launched needs ~0.5 s to reach `OnLaunched` and create its mutex
+/// (build-B, f51e3bb3: spawned 01:42:46.178Z, mutex ≈ .70, first poll at .181 saw nothing → the tray
+/// icon flickered back for one poll). Until this long after our launch a missing mutex means "still
+/// starting" as long as the child process lives; after it, or once the child has exited, the mutex is
+/// the truth again.
+const LAUNCH_GRACE: Duration = Duration::from_secs(15);
 
 /// Last observed state (initial check, our launch, or the poll); `companion_alive` reads it. The tray
 /// starts visible, matching `false`.
 static ALIVE: AtomicBool = AtomicBool::new(false);
+
+/// The companion [`launch`] spawned, until the poll sees its mutex (or it exits / the grace ends).
+static LAUNCHED: Mutex<Option<Launched>> = Mutex::new(None);
+
+struct Launched {
+    child: std::process::Child,
+    at: Instant,
+}
 
 /// In `setup`, on the main thread: take stock, launch if needed, keep watching.
 pub fn init(app: &AppHandle) -> anyhow::Result<()> {
@@ -134,8 +150,12 @@ fn launch(app: &AppHandle, path: &std::path::Path) {
         .arg("--launched-by-shell")
         .spawn()
     {
-        Ok(_) => {
+        Ok(child) => {
             tracing::info!("companion: launched {}", path.display());
+            *LAUNCHED.lock().unwrap_or_else(|p| p.into_inner()) = Some(Launched {
+                child,
+                at: Instant::now(),
+            });
             set_alive(app, true);
         }
         Err(e) => tracing::warn!("companion: launch {}: {e}", path.display()),
@@ -161,16 +181,51 @@ fn set_alive(app: &AppHandle, alive: bool) {
     }
 }
 
-/// Open the mutex on the main thread every [`POLL`] and announce changes. ponytail: a 2 s poll, as on the
-/// Mac; `WaitForSingleObject` on a process handle is the push upgrade if the overlap ever matters.
+/// The poll's verdict from the mutex and the companion we launched (`Some((still running, since the
+/// launch))`): `(alive, keep watching the launch)`. Pure, for the tests; [`observe`] feeds it.
+fn verdict(held: bool, launched: Option<(bool, Duration)>) -> (bool, bool) {
+    match launched {
+        None => (held, false),
+        Some(_) if held => (true, false),
+        Some((true, since)) if since < LAUNCH_GRACE => (true, true),
+        Some(_) => (false, false),
+    }
+}
+
+/// One poll: the mutex, plus the launch grace of [`LAUNCH_GRACE`] for a child we spawned.
+fn observe() -> bool {
+    let held = mutex_held();
+    let mut launched = LAUNCHED.lock().unwrap_or_else(|p| p.into_inner());
+    let state = launched
+        .as_mut()
+        .map(|l| (matches!(l.child.try_wait(), Ok(None)), l.at.elapsed()));
+    let (alive, keep) = verdict(held, state);
+    if !keep && launched.is_some() {
+        if let Some((running, since)) = state
+            && !held
+        {
+            tracing::warn!(
+                "companion: launched {since:?} ago, {} and no mutex; treating it as gone",
+                if running { "still running" } else { "exited" }
+            );
+        }
+        *launched = None;
+    }
+    alive
+}
+
+/// Open the mutex on the main thread every [`POLL`] and announce changes — the first poll one [`POLL`]
+/// after start, not at once (`interval`'s immediate first tick is what read the mutex 3 ms after the
+/// launch). ponytail: a 2 s poll, as on the Mac; `WaitForSingleObject` on a process handle is the push
+/// upgrade if the overlap ever matters.
 fn watch(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut tick = tokio::time::interval(POLL);
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + POLL, POLL);
         loop {
             tick.tick().await;
             let handle = app.clone();
-            let run = app.run_on_main_thread(move || set_alive(&handle, mutex_held()));
+            let run = app.run_on_main_thread(move || set_alive(&handle, observe()));
             if run.is_err() {
                 return;
             }
@@ -192,4 +247,41 @@ pub fn login_item_status() -> &'static str {
         .unwrap_or_default()
         .launch_at_login;
     if wanted { "enabled" } else { "not_registered" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mutex_alone_decides_without_a_launch() {
+        assert_eq!(verdict(true, None), (true, false));
+        assert_eq!(verdict(false, None), (false, false));
+    }
+
+    #[test]
+    fn a_starting_companion_counts_as_alive_inside_the_grace() {
+        // The build-B shape: polled 3 ms after the spawn, the mutex is ~0.5 s away.
+        assert_eq!(
+            verdict(false, Some((true, Duration::from_millis(3)))),
+            (true, true)
+        );
+        assert_eq!(
+            verdict(false, Some((true, LAUNCH_GRACE - Duration::from_millis(1)))),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn the_mutex_ends_the_grace_and_an_exit_or_timeout_ends_the_optimism() {
+        assert_eq!(
+            verdict(true, Some((true, Duration::from_secs(1)))),
+            (true, false)
+        );
+        assert_eq!(
+            verdict(false, Some((false, Duration::from_secs(1)))),
+            (false, false)
+        );
+        assert_eq!(verdict(false, Some((true, LAUNCH_GRACE))), (false, false));
+    }
 }

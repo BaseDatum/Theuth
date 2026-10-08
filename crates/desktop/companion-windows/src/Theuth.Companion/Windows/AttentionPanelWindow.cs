@@ -1,6 +1,5 @@
 using System.ComponentModel;
 using System.Text;
-using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -29,7 +28,8 @@ internal readonly record struct PanelAnchor(PanelAnchorKind Kind, RECT Rect, boo
 }
 
 /// <summary>
-/// The Attention panel (design 134 §4.2, D5): 372 × ≤ 560 epx, Mica (opaque when unsupported or transparency is off),
+/// The Attention panel (design 134 §4.2, D5): 372 × ≤ 560 epx, Mica Base (Acrylic Base where Mica is unsupported, the opaque
+/// surface when transparency effects are off — live, C13),
 /// topmost, <c>TOOLWINDOW | TOPMOST</c> only — keyboard input needs activation, so <b>summoned = activated</b> and Esc hands
 /// the foreground back to the window it took it from (C10). Content in the order a person decides (130 §4.2): header →
 /// focused card → other items as lines → the Done zone → key hints → the receipt row. Keys are read on <c>PreviewKeyDown</c>
@@ -55,7 +55,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
     private readonly Border receiptBar;
     private readonly TextBox noteBox;
     private readonly TextBox replyBox;
-    private readonly bool mica;
+    private Backdrop? backdrop;
     private readonly List<(TextBlock Block, DateTimeOffset Since, string Prefix, string Suffix)> agoLabels = new();
     private readonly DispatcherQueueTimer agoTimer;
     private string renderKey = "";
@@ -67,8 +67,6 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         : base("theuth — Attention", default, excludeFromCapture: !Flags.Shareable)
     {
         this.store = store;
-        mica = MicaController.IsSupported() && TransparencyEnabled();
-        if (mica) SystemBackdrop = new MicaBackdrop { Kind = MicaKind.Base };
 
         content = new StackPanel();
         scroll = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Disabled };
@@ -98,8 +96,15 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         AutomationProperties.SetAutomationId(host, "panel");
         AutomationProperties.SetName(host, "Attention panel");
         host.PreviewKeyDown += OnPreviewKeyDown;
-        host.ActualThemeChanged += (_, _) => { if (IsOpen) Render(force: true); };
+        host.ActualThemeChanged += (_, _) =>
+        {
+            backdrop?.SetTheme(host.ActualTheme);
+            if (IsOpen) Render(force: true);
+        };
         Content = host;
+        // W6 item 2 (§4.2, A7): Mica Base, Acrylic Base where Mica is unsupported, the opaque surface when transparency effects are off.
+        ApplyEffects(initial: true);
+        if (SystemEffects.Current is { } fx) fx.Changed += () => ApplyEffects(initial: false);
 
         noteBox = new TextBox { PlaceholderText = "Why it goes back (required)", FontSize = 12.5 };
         AutomationProperties.SetAutomationId(noteBox, "note-field");
@@ -147,10 +152,39 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
     /// <summary>The window the panel took the foreground from (Esc gives it back).</summary>
     public HWND Previous => previous;
 
-    private static bool TransparencyEnabled()
+    /// <summary>"mica-base" · "acrylic-base" while attached; "opaque" when transparency effects are off or nothing is supported.</summary>
+    public string BackdropText => backdrop?.Material ?? "opaque";
+
+    /// <summary>At quit the controller goes before the window: a window destroyed under a live backdrop target faulted in Microsoft.UI.Xaml.dll (build-B, Application Error 1000).</summary>
+    protected override void OnClosingForGood()
     {
-        try { return new global::Windows.UI.ViewManagement.UISettings().AdvancedEffectsEnabled; }
-        catch (Exception) { return true; }
+        backdrop?.Dispose();
+        backdrop = null;
+    }
+
+    /// <summary>C13 live (W6 item 3): the transparency switch attaches/detaches the material; the animation switch pins the window transitions.</summary>
+    private void ApplyEffects(bool initial)
+    {
+        // W6 (as-built §2): on build-B the MicaController painted Mica LIGHT (#F3F3F3, its light tint) under Theme=Dark with
+        // host.ActualTheme=Dark and app=Dark, and the host's 82 % dark surface tint did not show over it (rounds 2–3, 04:55–05:13;
+        // round 1's first open at 04:40 was dark) — dark-palette text on a light ground. Until that is understood the panel is
+        // W2's opaque surface; `--panel-mica` attaches the controller for a retest.
+        bool wantBackdrop = Environment.GetCommandLineArgs().Contains("--panel-mica");
+        bool transparency = SystemEffects.TransparencyOn;
+        if (wantBackdrop && transparency && backdrop is null)
+        {
+            backdrop = Backdrop.Attach(this, BackdropKind.MicaBase, Palette.ColorOf(Palette.Surface, host.ActualTheme), host.ActualTheme, "panel");
+        }
+        else if ((!transparency || !wantBackdrop) && backdrop is not null)
+        {
+            backdrop.Dispose();
+            backdrop = null;
+            Log.Write("panel: backdrop detached — opaque surface (transparency effects off)");
+        }
+        SystemEffects.ApplyTransitions(Hwnd, SystemEffects.AnimationsOn);
+        if (initial) return;
+        Log.Write($"panel: effects applied — backdrop={BackdropText} animations={(SystemEffects.AnimationsOn ? "on" : "off")}");
+        if (IsOpen) Render(force: true);
     }
 
     /// <summary>Summon: remember who had the foreground, render, place, activate (the WM_HOTKEY / tray / rail grant, B5–B6).</summary>
@@ -159,6 +193,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         anchor = at;
         previous = prev;
         IsOpen = true;
+        Log.Write($"panel theme: host.ActualTheme={host.ActualTheme} app={Application.Current?.RequestedTheme} backdrop={BackdropText}");
         Render(force: true);
         UpdateReceipt();
         agoTimer.Start();
@@ -282,7 +317,11 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         agoLabels.Clear();
         content.Children.Clear();
         var theme = host.ActualTheme;
-        host.Background = mica ? Palette.Transparent : Palette.Brush(Palette.Surface, theme);
+        backdrop?.SetTheme(theme);
+        // With a material attached the surface is painted at 82 % over it (the material shows through the rest): on build-B the
+        // MicaController painted a LIGHT material under Theme=Dark (rounds 2–3, as-built W6 §2), which left dark-palette text
+        // on a cream ground — legibility never depends on what the controller paints.
+        host.Background = backdrop is null ? Palette.Brush(Palette.Surface, theme) : Palette.Tint(Palette.Surface, theme, 0.82);
         host.Foreground = Palette.Brush(Palette.Ink, theme);
         receiptRow.BorderBrush = Palette.Tint(Palette.Rule, theme, 0.6);
 
@@ -615,6 +654,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             if (focus == i) row.Children.Add(new Border { Width = 3, HorizontalAlignment = HorizontalAlignment.Left, Background = Palette.Brush(Palette.Malachite, theme) });
             AutomationProperties.SetAutomationId(row, $"done-{i + 1}");
             AutomationProperties.SetName(row, $"{r.Who}, {r.Text}, {RailModel.Ago(r.At, DateTimeOffset.Now)}");
+            AutomationProperties.SetAccessibilityView(row, AccessibilityView.Content); // W6 (C12): a row Narrator lands on, not a layout pane
             content.Children.Add(row);
         }
         if (focus is not null)

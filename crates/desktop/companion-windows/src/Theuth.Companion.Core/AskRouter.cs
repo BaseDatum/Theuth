@@ -102,7 +102,13 @@ public sealed class AskRouter
     /// <summary><c>send_input</c> went out: collect the desk's reply from now until its turn finishes.</summary>
     public void Sent(string session) => Reply = new AskReply(session);
 
-    /// <summary>Feed <c>TextDelta</c> / <c>TurnFinished</c> from the event stream; true when the receipt text changed.</summary>
+    /// <summary>
+    /// Feed <c>TextDelta</c> / <c>TurnFinished</c> / <c>Error</c> from the event stream; true when the receipt text changed.
+    /// 134 W6 item 7: the desk's <c>Error</c> event (the engine's "non-fatal or fatal error text for the UI" — a model resolver
+    /// error, a refused tool) or a <c>TurnFinished</c> whose <c>stop_reason</c> is <c>error</c> / <c>cancelled</c> (also
+    /// <c>timed_out</c> / <c>interrupted</c>) ends the reply as <see cref="AskReply.Failed"/>, text or no text — otherwise the
+    /// receipt would say "sent — waiting for the desk" forever. A normal finish is unchanged.
+    /// </summary>
     public bool Observe(ReplyEvent e)
     {
         if (Reply is not { } r || r.Finished) return false;
@@ -112,9 +118,21 @@ public sealed class AskRouter
                 if (d.Session != r.Session) return false;
                 r.Text += d.Text;
                 break;
+            case ReplyEvent.Error err:
+                if (err.Session != r.Session) return false;
+                r.Error = err.Message;
+                r.Finished = true;
+                break;
             case ReplyEvent.TurnFinished f:
+                if (f.Session != r.Session) return false;
+                if (IsFailure(f.StopReason))
+                {
+                    r.Error ??= f.StopReason == "error" ? "the desk's turn ended with an error" : $"the turn was {Reason(f.StopReason!)}";
+                    r.Finished = true;
+                    break;
+                }
                 // A turn that ended before anything streamed is the one we steered into, not the reply.
-                if (f.Session != r.Session || r.Text.Length == 0) return false;
+                if (r.Text.Length == 0) return false;
                 r.Finished = true;
                 break;
             default:
@@ -122,6 +140,16 @@ public sealed class AskRouter
         }
         return true;
     }
+
+    /// <summary>The engine's non-provider stop reasons that mean "no reply is coming" (loop_.rs: cancelled · timed_out · interrupted · error).</summary>
+    public static bool IsFailure(string? stopReason) => stopReason is "error" or "cancelled" or "timed_out" or "interrupted";
+
+    private static string Reason(string stopReason) => stopReason switch
+    {
+        "timed_out" => "timed out",
+        "interrupted" => "interrupted",
+        _ => "cancelled",
+    };
 }
 
 public abstract record ReplyEvent
@@ -130,23 +158,46 @@ public abstract record ReplyEvent
 
     public sealed record TextDelta(string Session, string Text) : ReplyEvent;
 
-    public sealed record TurnFinished(string Session) : ReplyEvent;
+    /// <summary><c>TurnFinished</c>; <paramref name="StopReason"/> is the provider's reason or <c>cancelled</c> / <c>error</c> (null from older decoders).</summary>
+    public sealed record TurnFinished(string Session, string? StopReason = null) : ReplyEvent;
+
+    /// <summary>The engine's <c>Error { session, turn, message }</c> event.</summary>
+    public sealed record Error(string Session, string Message) : ReplyEvent;
 }
 
 /// <summary>The desk's streamed answer; the receipt row shows <see cref="FirstTwoLines"/>.</summary>
 public sealed class AskReply(string session)
 {
+    /// <summary>The receipt line for a failed turn, before the clipped reason.</summary>
+    public const string FailedPrefix = "theuth couldn't reply — ";
+
+    /// <summary>How much of the error's first line the receipt shows.</summary>
+    public const int FailedClip = 120;
+
     public string Session { get; } = session;
     public string Text { get; set; } = "";
     public bool Finished { get; set; }
 
+    /// <summary>Set when the turn failed (<see cref="ReplyEvent.Error"/> or a failing stop reason): the reason, unclipped.</summary>
+    public string? Error { get; set; }
+
+    public bool Failed => Error is not null;
+
     private static readonly char[] NewLines = { '\n', '\r', '\u000B', '\u000C', '\u0085', '\u2028', '\u2029' };
 
-    /// <summary>The first two non-empty lines, markdown bullets and heading marks stripped, joined with " — ".</summary>
+    /// <summary>
+    /// The first two non-empty lines, markdown bullets and heading marks stripped, joined with " — "; for a failed turn
+    /// <see cref="FailedPrefix"/> + the error's first line clipped to <see cref="FailedClip"/> chars.
+    /// </summary>
     public string FirstTwoLines
     {
         get
         {
+            if (Error is { } error)
+            {
+                var first = error.Split(NewLines, StringSplitOptions.RemoveEmptyEntries).Select(TrimSpaces).FirstOrDefault(l => l.Length > 0) ?? "unknown error";
+                return FailedPrefix + (first.Length > FailedClip ? first[..(FailedClip - 1)].TrimEnd() + "…" : first);
+            }
             var lines = Text.Split(NewLines, StringSplitOptions.RemoveEmptyEntries)
                 .Select(l => TrimSpaces(TrimSpaces(l).TrimStart('#', '-', '*', '>', ' ')))
                 .Where(l => l.Length > 0)
