@@ -113,7 +113,7 @@ pub use cost::{
 };
 pub use endless::{
     Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
-    SessionMemory, UnitFilter, ViewLine, resolved_compactor_model,
+    SessionMemory, SetMode, UnitFilter, ViewLine, resolved_compactor_model,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
@@ -840,6 +840,7 @@ pub struct SetSessionMemory {
     /// The mode to switch to.
     pub mode: MemoryMode,
     /// Which parts become units.
+    #[serde(default)]
     pub filter: UnitFilter,
 }
 

@@ -3168,6 +3168,7 @@ impl ApiServer for Server {
             },
         )
         .await
+        .map(|r| r.memory)
     }
 
     async fn set_session_view_bytes(

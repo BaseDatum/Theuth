@@ -55,7 +55,9 @@ use crate::continuation::{
     DecideYield, InputConsumed, InputDropped, InputOrigin, InputTicket, Ledger, SessionUnknown,
     TurnEntered, TurnReturned, YieldDecision,
 };
-use crate::endless::{Attached, Endless, MemoryMode, SessionMemory, UnitFilter, ViewLine};
+use crate::endless::{
+    Attached, Endless, EndlessConfig, MemoryMode, SessionMemory, SetMode, UnitFilter, ViewLine,
+};
 use crate::lifecycle::{
     Authorize, Authorized, CleanupStatus, CloseResult, CreateSession, LeaveSession, PrivateOwner,
     PrivateRoot, PrivateTrees, ResumePrivate, SessionOpen,
@@ -105,9 +107,8 @@ use crate::{
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
-    EndlessConfig, EndlessConfigChanged, EndlessRecall, EndlessSettings, EndlessZoom,
-    RenderMemoryView, SessionMemoryQuery, SetEndlessSettings, SetSessionMemory,
-    SetSessionViewBytes,
+    EndlessConfigChanged, EndlessRecall, EndlessSettings, EndlessZoom, RenderMemoryView,
+    SessionMemoryQuery, SetEndlessSettings, SetSessionMemory, SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{ListProjectStyles, SetProjectStyle, SetSessionProject, project};
@@ -6565,11 +6566,11 @@ impl Message<EndlessRecall> for Agents {
 }
 
 impl Message<SetSessionMemory> for Agents {
-    type Reply = kameo::reply::DelegatedReply<Result<SessionMemory, String>>;
+    type Reply = kameo::reply::DelegatedReply<anyhow::Result<SetMode>>;
 
-    /// 137 §8.6: the switch runs on the session's actor as a mini-turn
-    /// ([`SetMemoryNow`]) so `off` can install the view head the way a
-    /// compaction does; the actor refuses with `busy` while a turn runs.
+    /// 137 §8.6 / R1-D6: the switch runs on the session's actor as a
+    /// mini-turn ([`SetMemoryNow`]) so `off` can install the view head the way
+    /// a compaction does; the actor refuses with `busy` while a turn runs.
     async fn handle(
         &mut self,
         m: SetSessionMemory,
@@ -6578,7 +6579,7 @@ impl Message<SetSessionMemory> for Agents {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         if self.running.contains(&m.session) {
-            tx.send(Err("busy".into()));
+            tx.send(Err(anyhow::anyhow!("busy")));
             return reply;
         }
         let actor = match self
@@ -6588,7 +6589,7 @@ impl Message<SetSessionMemory> for Agents {
         {
             Ok(actor) => actor,
             Err(e) => {
-                tx.send(Err(e));
+                tx.send(Err(anyhow::anyhow!(e)));
                 return reply;
             }
         };
@@ -6602,7 +6603,7 @@ impl Message<SetSessionMemory> for Agents {
                         filter: m.filter,
                     })
                     .await
-                    .map_err(|e| e.to_string()),
+                    .map_err(|e| anyhow::anyhow!("{e}")),
             );
         });
         reply
@@ -6610,19 +6611,20 @@ impl Message<SetSessionMemory> for Agents {
 }
 
 impl Message<RenderMemoryView> for Agents {
-    type Reply = Result<Vec<ViewLine>, String>;
+    type Reply = anyhow::Result<Vec<ViewLine>>;
 
-    /// 137 R1-D6: the meeting head's `## Earlier in this meeting` lines.
+    /// 137 R1-D6: the view folded to `bytes` for a meeting head, as lines
+    /// (W1's `render_with_budget` directly); empty for a non-endless session.
+    /// Any session this engine knows.
     async fn handle(
         &mut self,
         m: RenderMemoryView,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.stored(m.session).await?;
-        self.endless
-            .render_with_budget(m.session, m.bytes)
+        self.stored(m.session)
             .await
-            .map_err(|e| format!("{e:#}"))
+            .map_err(|e| anyhow::anyhow!(e))?;
+        self.endless.render_with_budget(m.session, m.bytes).await
     }
 }
 
@@ -6678,6 +6680,11 @@ impl Message<SetEndlessSettings> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let cfg = m.0.validated()?;
+        if let Some(id) = cfg.model.as_deref()
+            && let Err(e) = self.catalog.resolve(id, &*self.configured)
+        {
+            return Err(format!("model: {e}"));
+        }
         // One scalar per key through the comment-preserving writer; the
         // struct is flat, so `serde_json::Value` lists every key once. A
         // missing key is inserted at the top of the block, so writing in
@@ -6691,6 +6698,7 @@ impl Message<SetEndlessSettings> for Agents {
         }
         self.endless.set_config(cfg.clone());
         self.rt.publish(EndlessConfigChanged(cfg.clone())).await;
+        tracing::info!(default_chat = cfg.default_chat, default_desk = cfg.default_desk, default_meeting = cfg.default_meeting, view_bytes = cfg.view_bytes, model = ?cfg.model, "endless settings written");
         Ok(cfg)
     }
 }
@@ -8468,6 +8476,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         auth.clone(),
         catalog.clone(),
         cfg.endless.clone(),
+        // R1-D3: the compactor chain's middle link (`agent.endless.model` → title model → session).
         cfg.title_model.clone(),
     );
     let agents = Agents::spawn_with_mailbox(
@@ -11892,6 +11901,63 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    /// 137 §11.3: the Settings → Memory writer persists every key, updates the
+    /// live config and refuses out-of-range values.
+    #[tokio::test]
+    async fn endless_settings_round_trip_and_validate() {
+        let a = agents_with(false).await;
+        let dir = a.rt.data_dir.clone();
+        let agents = Agents::spawn(a);
+        let before = agents.ask(EndlessSettings).await.unwrap();
+        assert_eq!(before.view_bytes, EndlessConfig::default().view_bytes);
+        let mut want = before.clone();
+        want.default_chat = true;
+        want.view_bytes = 96_000;
+        want.slack = 0.25;
+        let got = agents.ask(SetEndlessSettings(want.clone())).await.unwrap();
+        assert!(got.default_chat && got.view_bytes == 96_000);
+        let live = agents.ask(EndlessSettings).await.unwrap();
+        assert!(live.default_chat && live.view_bytes == 96_000 && live.slack == 0.25);
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        for needle in [
+            "endless:",
+            "default_chat: true",
+            "view_bytes: 96000",
+            "slack: 0.25",
+            "meeting_view_bytes:",
+            "backfill_max_units:",
+            "model: null",
+        ] {
+            assert!(yaml.contains(needle), "{needle} in {yaml}");
+        }
+        // A new chat now starts endless by default.
+        let open = agents
+            .ask(CreateSession {
+                options: crate::CreateSessionOptions::default(),
+                peer: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            agents
+                .ask(SessionMemoryQuery {
+                    session: open.session,
+                })
+                .await
+                .unwrap()
+                .mode,
+            MemoryMode::Endless
+        );
+        let mut bad = want.clone();
+        bad.view_bytes = 1_000;
+        let e = agents
+            .ask(SetEndlessSettings(bad))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("view_bytes"), "{e}");
+    }
+
     /// 137 §11.2 / §14: `session_memory` of an epochs session is `mode:
     /// epochs` with an empty view; `create_session.options.memory` lands in
     /// the column; `/endless` flips an idle session both ways; `view_bytes`
@@ -11932,16 +11998,28 @@ pub(crate) mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(m.mode, MemoryMode::Epochs);
+        assert_eq!(m.memory.mode, MemoryMode::Epochs);
+        // R1-D6: a meeting-filtered switch is the same store write.
         let m = agents
             .ask(SetSessionMemory {
                 session: plain,
                 mode: MemoryMode::Endless,
-                filter: UnitFilter::All,
+                filter: UnitFilter::Meeting,
             })
             .await
             .unwrap();
-        assert_eq!(m.mode, MemoryMode::Endless);
+        assert_eq!(m.memory.mode, MemoryMode::Endless);
+        // RenderMemoryView: lines within the budget (an empty tree renders none).
+        assert!(
+            agents
+                .ask(RenderMemoryView {
+                    session: plain,
+                    bytes: 32_000,
+                })
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             agents
                 .ask(SessionMemoryQuery { session: plain })
