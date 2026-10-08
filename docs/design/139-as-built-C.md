@@ -30,11 +30,19 @@ Branch `feat/139-mesh-durability`, cut from `7d6832ba`. Signatures below are fro
 4. `jobs_settle_transferred` uses `engine NOT IN ('', me)`, not `!= me`: a `''` row is this engine's (Q14, same rule as `jobs_open(Here)`).
 5. `Scope::All` SQL still references `?1` (`(?1 IS NOT NULL)`) so both scopes bind the same arguments.
 6. `agent` feature `test-support` / `pub mod testing` **not added** (Q13 decision point): `supervisor::tests` (~3 000 lines, `agents_on`) and `loop_::durability_tests` (`Harness`, `BatchFake`) depend on dev-only crates (`wiremock`, `figment`) and on dozens of `#[cfg(test)]`-gated helpers (`Auth::stub`, `Agents::registry → Ok(None)`, `render`, `PermitsOf`, …); exporting them under a feature means gating all of those and carrying the `#[tokio::test]` bodies as dead code under `-D warnings` — a refactor. Z keeps the unit tests and runs T1–T7 as the scripted two-engine smoke.
-7. `cargo clippy --workspace --tests` / `cargo build --workspace`: see gate numbers below for what actually ran.
+7. `cargo build --workspace` replaced by one `cargo check --workspace --tests` (brief's load fallback); `cargo clippy --workspace --tests -- -D warnings` is red on this toolchain (1.98.1) **before C** — `crates/double/src/sched.rs:1141` (`for_unbounded_range`) and `crates/decision/src/candle/lora.rs:672` (`assertions_on_constants`), neither touched — so clippy ran per touched crate.
+8. `crates/desktop/ui/src/store/reduce.test.ts` (W4's file): six literals gained the now-required `cause: 'crash'` / `here: true` so `bun run check` passes; no behaviour asserted.
+9. `cargo fmt -p rpc -p tools` reflowed three unrelated spots (`api.rs` `double_train`, `approval.rs`, `ask.rs`); reverted — main is not fmt-clean there.
 
 ## Gates (numbers)
 
-Filled in at the end of the run — see the final section.
+- `cargo check --workspace --tests`: green (see final message for the run).
+- `cargo test -p agent --lib -- store::durability supervisor::`: 85 passed, 0 failed (store::durability alone: 8, +2 new, −0; `journal_rows_replicate_but_screens_do_not` renamed/inverted to `pty_screen_rows_replicate`).
+- `cargo test -p sessionsync -p rpc -p tools --lib`: sessionsync 12/12, rpc 51/51, tools 173 passed / 2 failed under parallel load (`jobs::tests::cancel_kills_group`, `close_sessions_kills_reaps_and_removes_logs`: `echo $$` not yet in the 200 ms tail — pre-existing timing; both pass with `--test-threads=1`, which is W3's gate form).
+- `cargo clippy -p agent -p tools -p rpc -p sessionsync -p roster -p schedule -p slack -p tui --tests -- -D warnings`: clean.
+- `just ts-desktop`: 8 export tests passed; `bun run check` (`tsc -b --noEmit`): clean.
+- `git grep -n 'open_turns()' crates` and `'jobs_open()'`: nothing.
+- 0038 on a live-store copy: applied by `sqlite3` to `.backup` of `~/.theuth/sessions.sqlite` (at migration 36): 2376 `jobs` rows backfilled to their session's owner, 10 `resume_reports` rows `cause = ''`.
 
 ## Open items for the closer
 

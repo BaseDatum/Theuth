@@ -326,8 +326,7 @@ impl Message<Expire> for Approval {
 
     async fn handle(&mut self, m: Expire, _: &mut Context<Self, Self::Reply>) {
         if let Some(p) = self.pending.remove(&m.0) {
-            self.settle(p.row, QuestionState::TimedOut, None, None)
-                .await;
+            self.settle(p.row, QuestionState::TimedOut, None, None).await;
         }
     }
 }

@@ -402,8 +402,7 @@ impl Message<Expire> for AskUser {
 
     async fn handle(&mut self, m: Expire, _: &mut Context<Self, Self::Reply>) {
         if let Some(w) = self.pending.remove(&m.0) {
-            self.settle(w.row, QuestionState::TimedOut, None, None)
-                .await;
+            self.settle(w.row, QuestionState::TimedOut, None, None).await;
         }
     }
 }

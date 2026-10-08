@@ -6382,6 +6382,8 @@ impl Model {
             | AgentEvent::SessionOwnerChanged { .. }
             | AgentEvent::SessionClosing { .. }
             | AgentEvent::PartialDropped { .. } => {}
+            // 139 §9.3 (W4): the owner-side takeover note.
+            AgentEvent::ResumePending { .. } => {}
             // 125: handled before the streaming-tail bookkeeping above.
             AgentEvent::AdvisorChanged { .. } | AgentEvent::AdvisoryAdded { .. } => {}
             // 109 §10.3: the divider and the status-line note.
