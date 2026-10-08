@@ -119,7 +119,7 @@ use tools::{
 
 // 109: handler bodies in their own files so the waves do not collide.
 mod acp_resume; // 109 W4
-mod advisor; // 125 W1
+pub(crate) mod advisor; // 125 W1
 pub mod child_waits; // 139 W3
 mod drain;
 mod resume;

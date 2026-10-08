@@ -487,9 +487,74 @@ fn advisor_kind_session_runs_advise_locally_with_the_bare_prompt() {
             .filter_map(|t| t["function"]["name"].as_str())
             .collect();
         assert!(
-            names.contains(&"advise") && !names.contains(&"todo"),
+            names.contains(&"advise") && !names.contains(&"todo") && !names.contains(&"consult"),
             "{names:?}"
         );
+        let _ = std::fs::remove_dir_all(&reg_dir);
+    });
+}
+
+/// R1.4 step 6: a masked card (`model_visible: false`) on a busy session is
+/// written at once as a row the UIs see, excluded from the model's context
+/// and never queued for the batch boundary.
+#[test]
+fn masked_card_lands_at_once_and_stays_out_of_context() {
+    crate::with_test_registry(async {
+        let reg_dir = std::env::temp_dir().join(format!("theuth-adv-reg-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&reg_dir).unwrap();
+        tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
+            .await
+            .unwrap();
+        let mut h = Harness::new(Script::new(vec![
+            tool_call("c1", "nope_tool", &json!({})).set_delay(Duration::from_millis(1500)),
+        ]))
+        .await;
+        let advisor = SessionId::new();
+        let actor = h.actor("openai/textonly").await;
+        actor.tell(user_input("go")).await.unwrap();
+        h.drain_until(|e| matches!(e, AgentEvent::TurnStarted { .. }))
+            .await;
+        let (mut a, t) = card(advisor, AdvisorSeverity::Advice, "the answer");
+        a.kind = crate::AdvisoryKind::Consultation {
+            question: "q?".into(),
+        };
+        actor
+            .tell(AppendAdvisory {
+                advisory: a,
+                text: t.clone(),
+                model_visible: false,
+            })
+            .await
+            .unwrap();
+        // The card is announced before the (delayed) tool batch ends.
+        let events = h
+            .drain_until(|e| matches!(e, AgentEvent::AdvisoryAdded { .. }))
+            .await;
+        assert_eq!(
+            count(&events, |e| matches!(e, AgentEvent::ToolCallFinished { .. })),
+            0,
+            "{events:?}"
+        );
+        let events = h.drain().await;
+        assert_eq!(
+            count(&events, |e| matches!(e, AgentEvent::AdvisoryAdded { .. })),
+            0,
+            "not queued again: {events:?}"
+        );
+        let reqs = h.requests().await;
+        assert!(
+            reqs.iter().all(|r| !texts(r).iter().any(|x| x == &t)),
+            "the masked card never entered a model call"
+        );
+        let rows = h.store.rows_since(h.id, 0).await.unwrap();
+        let masked = rows
+            .iter()
+            .filter(|(_, e)| {
+                matches!(e, HistoryEntry::Advisory { advisory, context: Some(c) }
+                    if c.removed && matches!(advisory.kind, crate::AdvisoryKind::Consultation { .. }))
+            })
+            .count();
+        assert_eq!(masked, 1, "{rows:?}");
         let _ = std::fs::remove_dir_all(&reg_dir);
     });
 }
