@@ -77,7 +77,7 @@ use crate::durability::{
     CallState, JournaledCall, LastStep, ResumeKind, ResumePlan, ResumeReportRow, StepKind, crash,
     crash_point,
 };
-use crate::endless::{Endless, ViewRender};
+use crate::endless::{Endless, MemoryMode, SessionMemory, ViewRender};
 use crate::frame::{self, Frame, Transport};
 use crate::peers::SpawnSubagentTool;
 use crate::repl::{self, Repl, RunCx};
@@ -394,6 +394,15 @@ pub struct CompactNow {
     pub style: Option<CompactStyle>,
     /// A ready-made summary body (`agent::Compact::head`).
     pub head: Option<String>,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137 §8.6): `/endless on|off`.
+/// `Err("busy")` while a turn runs. `endless` sets the column and starts the
+/// backfill; `epochs` stops the pump and writes the view as the next epoch's
+/// `<context_summary style="endless">` head, nothing of the tail kept.
+pub struct SetMemoryNow {
+    /// The mode to switch to.
+    pub mode: MemoryMode,
 }
 
 /// `ask` → `Result<HarvestResult, String>`: harvest the finished frame now
@@ -2138,6 +2147,32 @@ impl Message<CompactNow> for Session {
         let CompactNow { style, head } = m;
         tokio::spawn(async move {
             let result = turn.compact_now(style, head).await;
+            let _ = me.tell(TurnDone(turn.state)).await;
+            tx.send(result);
+        });
+        reply
+    }
+}
+
+impl Message<SetMemoryNow> for Session {
+    type Reply = kameo::reply::DelegatedReply<Result<SessionMemory, String>>;
+
+    /// `/endless on|off` (137 §8.6): the [`CompactNow`] shape — refused while
+    /// a turn (or compaction/harvest) owns the state, otherwise a `Turn`-less
+    /// task runs [`Turn::set_memory`] and hands the state back.
+    async fn handle(&mut self, m: SetMemoryNow, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let Some(state) = self.claim().await.filter(|_| self.inflight.is_none()) else {
+            tx.send(Err("busy".into()));
+            return reply;
+        };
+        let cancel = self.shared.rt.shutdown.child_token();
+        self.enter(cancel.clone(), None).await;
+        let mut turn = Turn::new(self.shared.clone(), None, cancel, state);
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            let result = turn.set_memory(m.mode).await;
             let _ = me.tell(TurnDone(turn.state)).await;
             tx.send(result);
         });
@@ -6024,6 +6059,74 @@ impl Turn {
             compact::CompactReason::Manual,
         )
         .await
+    }
+
+    /// `/endless on|off` between turns (137 §8.6). `off` installs the view
+    /// as the next epoch's head (`<context_summary epoch=n style="endless">`),
+    /// the tail empty — the same `epochs` row a compaction writes, no model
+    /// call — so the next epochs turn starts from it. Both directions log a
+    /// `context_edit`-class event in 07 §0's vocabulary.
+    async fn set_memory(&mut self, mode: MemoryMode) -> Result<SessionMemory, String> {
+        let session = self.shared.id;
+        let endless = self
+            .shared
+            .endless
+            .as_ref()
+            .ok_or("endless memory is not available in this process")?;
+        let current = endless.mode(session).await.map_err(|e| format!("{e:#}"))?;
+        if current == mode {
+            return endless.memory(session).await.map_err(|e| format!("{e:#}"));
+        }
+        let n = self.state.epoch + 1;
+        let r = crate::endless_ext::set_mode(
+            endless,
+            session,
+            mode,
+            n,
+            crate::endless_ext::UnitFilter::All,
+        )
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+        match mode {
+            MemoryMode::Endless => {
+                let est = crate::endless_ext::backfill_estimate(&r.memory);
+                tracing::info!(session = %session, units = est.units, eta_secs = est.eta_secs, model = %est.model, "context_edit: endless on");
+            }
+            MemoryMode::Epochs => {
+                let folded = self.state.history.len();
+                if let (Some(text), Some((at_seq, _))) = (&r.head, self.state.history.last()) {
+                    let at_seq = *at_seq;
+                    let head = ChatMessage::user(text.clone());
+                    self.shared
+                        .store
+                        .compact(session, n, at_seq, at_seq + 1, &head)
+                        .await
+                        .map_err(|e| format!("store: {e:#}"))?;
+                    self.state.history.clear();
+                    self.state.head = Some(head);
+                    self.state.epoch = n;
+                    self.state.used = self.calibrated(self.est_frame());
+                    self.state.pressure_sent = false;
+                    self.state.last_after = None;
+                    self.reset_this_round = true;
+                    self.since = 0;
+                    self.hint_since = 0;
+                    self.publish(AgentEvent::Compacted {
+                        session,
+                        turn: None,
+                        epoch: n,
+                        before: self.state.last_provider.unwrap_or(0),
+                        after: self.state.used,
+                        folded: folded as u32,
+                        style: CompactStyle::Summary,
+                    })
+                    .await;
+                }
+                self.state.last_view = None;
+                tracing::info!(session = %session, epoch = n, folded, head = r.head.is_some(), "context_edit: endless off");
+            }
+        }
+        Ok(r.memory)
     }
 
     /// `/knowledge harvest` between turns (10 §5.2): rebase, then

@@ -6,7 +6,10 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use a2a::A2aChanged;
-use agent::{AgentEvent, CommunicationChanged, LoginFinished, PeerDelivered, PeerMessageChanged};
+use agent::{
+    AgentEvent, CommunicationChanged, EndlessProgress, LoginFinished, PeerDelivered,
+    PeerMessageChanged,
+};
 use app::AppCallChanged;
 use artifact::ArtifactShown;
 use artifact::preview::{PagePreviewRequested, PagePreviewResolved};
@@ -140,7 +143,8 @@ forward!(
     DoubleTrainingState,
     DoubleVersionActivated,
     AttentionChanged,
-    ReminderEvent
+    ReminderEvent,
+    EndlessProgress
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -202,5 +206,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, DoubleVersionActivated>(&actor).await;
     rt.subscribe::<Bridge, AttentionChanged>(&actor).await;
     rt.subscribe::<Bridge, ReminderEvent>(&actor).await;
+    rt.subscribe::<Bridge, EndlessProgress>(&actor).await;
     tx
 }

@@ -36,6 +36,7 @@ pub mod context;
 pub mod continuation;
 pub mod durability;
 pub mod endless;
+pub mod endless_ext;
 pub mod frame;
 pub mod loop_;
 pub mod peers;
@@ -793,6 +794,60 @@ pub struct ContextItems {
 pub struct SessionContextBreakdown {
     /// Target session.
     pub session: SessionId,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137 §11.2): the session's memory
+/// mode, view and compactor stats; `mode: epochs` with an empty view for an
+/// epochs session.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SessionMemoryQuery {
+    /// Target session.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<Vec<ViewLine>, String>` (137 §9 `zoom`): the two lines
+/// under `id+n`, or the whole unit when `n == 1`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct EndlessZoom {
+    /// Target session.
+    pub session: SessionId,
+    /// First message of the line.
+    pub id: u64,
+    /// Messages the line covers (a power of two).
+    pub n: u64,
+}
+
+/// `ask` → `Result<Vec<ViewLine>, String>` (137 §9 `recall`): FTS over the
+/// session's level-0 lines, raw units as fallback; `limit` default 8.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EndlessRecall {
+    /// Target session.
+    pub session: SessionId,
+    /// Words to search for.
+    pub query: String,
+    /// Lines to return; `None` = 8.
+    pub limit: Option<u8>,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137 §8.6 `/endless on|off`):
+/// idle sessions only (`Err("busy")`). `endless` starts the backfill; `epochs`
+/// writes the view as the next epoch's head and stops the pump.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetSessionMemory {
+    /// Target session.
+    pub session: SessionId,
+    /// The mode to switch to.
+    pub mode: MemoryMode,
+}
+
+/// `ask` → `Result<SessionMemory, String>` (137 R1-D2b): the session's view
+/// budget in bytes (16_000..=256_000); takes effect at the next turn boundary.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetSessionViewBytes {
+    /// Target session.
+    pub session: SessionId,
+    /// View budget in bytes.
+    pub bytes: u32,
 }
 
 /// `ask` → `Result<ContextRemoval, String>`: remove `targets` from the
