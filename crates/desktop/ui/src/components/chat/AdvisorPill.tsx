@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { STATE_FG, TONE, contextLine, detailLine, pillLabel, tokensLine } from '@/lib/advisor-format'
+import { STATE_FG, TONE, consultsLine, contextLine, detailLine, pillLabel, tokensLine } from '@/lib/advisor-format'
 import { costShort } from '@/lib/money'
 import { cn } from '@/lib/utils'
 import type { AdvisorStatus } from '@/rpc/bindings/AdvisorStatus'
@@ -75,8 +75,10 @@ function Body({ status, session, onDone }: { status: AdvisorStatus; session: str
   return (
     <div className="flex flex-col gap-2">
       <Line label="Model">{status.model ?? '—'}</Line>
+      {status.warning && <p className="text-xs text-warning">{status.warning}</p>}
       <Line label="Effort">{status.effort ?? '—'}</Line>
       <Line label="State">{status.state === 'reviewing' ? 'reviewing…' : status.state}</Line>
+      <Line label="Consults">{consultsLine(status.consults)}</Line>
       <Line label="Context">{contextLine(status.context_used, status.context_limit)}</Line>
       <Line label="Tokens">{tokensLine(status.tokens_in, status.tokens_out)}</Line>
       <Line label="Cost">{status.cost ? costShort(status.cost) : '—'}</Line>
