@@ -12,3 +12,96 @@
     transition: none;
   }
 }
+
+/* 147 §11 — Map tab: badges, marks, progress bar, drill zoom. */
+.codemap-badge {
+  flex: none;
+  font: 9px/12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.codemap-badge.stale {
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger);
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--color-danger) 15%, transparent) 0 2px, transparent 2px 4px);
+}
+.codemap-badge.imp {
+  color: var(--color-info);
+  border: 1px solid var(--color-info);
+}
+.codemap-mark {
+  flex: none;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.codemap-mark.edited {
+  background: var(--color-fg-accent);
+}
+.codemap-mark.read {
+  background: transparent;
+  border: 1.5px solid var(--color-fg-accent);
+}
+.codemap-tree-sel {
+  box-shadow: inset 2px 0 0 var(--color-fg-accent);
+}
+.codemap-chain {
+  text-decoration: underline;
+  text-decoration-color: var(--color-fg-accent);
+  text-underline-offset: 2px;
+}
+.codemap-spin {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-layer-3);
+  border-top-color: var(--color-fg-accent);
+  animation: codemap-sp 1s linear infinite;
+}
+@keyframes codemap-sp {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.codemap-bar {
+  flex: none;
+  width: 120px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-layer-3);
+  position: relative;
+  overflow: hidden;
+}
+.codemap-bar i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--color-fg-accent);
+  border-radius: 2px;
+  transition: width 240ms;
+}
+/* §11.3 drill: one transform from the node's box to the canvas (or back), 240 ms, 71 M7. */
+.codemap-zoom {
+  transform-origin: 0 0;
+  transition:
+    transform 240ms ease-out,
+    opacity 240ms;
+  opacity: 1;
+}
+.codemap-zoom.on {
+  transform: translate(var(--zx), var(--zy)) scale(var(--zsx), var(--zsy));
+  opacity: 0.35;
+}
+@media (prefers-reduced-motion: reduce) {
+  .codemap-spin,
+  .codemap-bar i,
+  .codemap-zoom {
+    animation: none;
+    transition: none;
+  }
+}

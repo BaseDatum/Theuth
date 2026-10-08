@@ -1245,6 +1245,164 @@ pub async fn map_state(pool: &SqlitePool) -> anyhow::Result<(i64, i64)> {
     )
 }
 
+// --- codemap skeleton aggregates (147 §5.8 item 4) ---------------------------
+
+/// One parsed file as the skeleton aggregates it by path prefix: rank
+/// share, lines, tests, recency and the `(mtime_ns, size)` sync key that
+/// feeds the facts hash (§5.4).
+#[derive(Clone, Debug, FromRow)]
+pub struct FileFact {
+    /// Root-relative.
+    pub path: String,
+    /// `files.language`.
+    pub language: String,
+    /// Line count.
+    pub lines: i64,
+    /// Stored unpersonalised rank.
+    pub rank: f64,
+    /// `files.is_test`.
+    pub is_test: bool,
+    /// Sync key.
+    pub mtime_ns: i64,
+    /// Sync key.
+    pub size: i64,
+    /// Definitions in the file.
+    pub symbols: i64,
+}
+
+/// Every parsed file with its facts, by path. One query; the skeleton
+/// groups by any prefix in memory (a `GROUP BY` per depth would need one
+/// query per unit level).
+pub async fn file_facts(pool: &SqlitePool) -> anyhow::Result<Vec<FileFact>> {
+    Ok(sqlx::query_as(
+        "SELECT f.path, f.language, f.lines, f.rank, f.is_test, f.mtime_ns, f.size, \
+         (SELECT count(*) FROM symbols s WHERE s.file_id = f.id) AS symbols \
+         FROM files f WHERE f.language <> 'other' ORDER BY f.path",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// One file→file edge of the skeleton: resolved `imports` (not `mod:`) or
+/// cross-file `refs` at `confidence ≥ min`, grouped per file pair with the
+/// row count, one sample line and the mean confidence (§5.2).
+#[derive(Clone, Debug, FromRow)]
+pub struct FileEdge {
+    /// Root-relative referencing file.
+    pub from: String,
+    /// Root-relative target file.
+    pub to: String,
+    /// `imports` | `refs`.
+    pub kind: String,
+    /// Rows grouped under this pair.
+    pub count: i64,
+    /// The first line of the pair in `from` (`path#L` sample).
+    pub line: i64,
+    /// Mean `refs.confidence`; 1.0 for imports.
+    pub confidence: f64,
+}
+
+/// Every file→file import and ref edge (§5.2); `mod:` rows and same-file
+/// refs excluded like the rank graph. Two `GROUP BY`s over the pair.
+pub async fn file_edges(pool: &SqlitePool, min_confidence: f64) -> anyhow::Result<Vec<FileEdge>> {
+    let mut out: Vec<FileEdge> = sqlx::query_as(
+        "SELECT a.path AS \"from\", b.path AS \"to\", 'imports' AS kind, count(*) AS count, min(i.line) AS line, 1.0 AS confidence \
+         FROM imports i JOIN files a ON a.id = i.file_id JOIN files b ON b.id = i.target_file \
+         WHERE i.target_file IS NOT NULL AND i.target_file <> i.file_id AND i.specifier NOT LIKE 'mod:%' \
+         GROUP BY i.file_id, i.target_file",
+    )
+    .fetch_all(pool)
+    .await?;
+    let refs: Vec<FileEdge> = sqlx::query_as(
+        "SELECT a.path AS \"from\", b.path AS \"to\", 'refs' AS kind, count(*) AS count, min(r.line) AS line, avg(r.confidence) AS confidence \
+         FROM refs r JOIN symbols s ON s.id = r.to_symbol JOIN files a ON a.id = r.file_id JOIN files b ON b.id = s.file_id \
+         WHERE r.confidence >= ? AND r.file_id <> s.file_id \
+         GROUP BY r.file_id, s.file_id",
+    )
+    .bind(min_confidence)
+    .fetch_all(pool)
+    .await?;
+    out.extend(refs);
+    Ok(out)
+}
+
+/// One symbol of a leaf listing (§4.5 `MapListing`): a lens row plus its
+/// cross-file caller count and the file's distinct importers.
+#[derive(Clone, Debug, FromRow)]
+pub struct ListingRow {
+    /// Stable identity.
+    pub moniker: String,
+    /// Root-relative path.
+    pub path: String,
+    /// 1-based.
+    pub line_start: i64,
+    /// 1-based, inclusive.
+    pub line_end: i64,
+    /// Kind.
+    pub kind: String,
+    /// Name.
+    pub name: String,
+    /// Definition line.
+    pub signature: String,
+    /// Stored rank.
+    pub rank: f64,
+    /// `symbols.exported`.
+    pub exported: bool,
+    /// Cross-file resolved references to this definition.
+    pub callers: i64,
+    /// `files.mtime_ns`.
+    pub mtime_ns: i64,
+    /// `files.is_test`.
+    pub is_test: bool,
+}
+
+/// The `limit` best-ranked definitions under `prefix` (a directory — with
+/// its trailing `/` — or one file path), the count of all ranked ones there,
+/// and per listed file its distinct importers (`imports.target_file` ∪
+/// `refs.to_symbol` at `confidence ≥ 0.5`).
+pub async fn unit_listing(
+    pool: &SqlitePool,
+    prefix: &str,
+    limit: i64,
+) -> anyhow::Result<(Vec<ListingRow>, i64, HashMap<String, i64>)> {
+    let n = i64::try_from(prefix.len()).unwrap_or(i64::MAX);
+    let rows: Vec<ListingRow> = sqlx::query_as(
+        "SELECT s.moniker, f.path, s.line_start, s.line_end, s.kind, s.name, s.signature, s.rank, s.exported, \
+         (SELECT count(*) FROM refs r WHERE r.to_symbol = s.id AND r.confidence >= 0.5 AND r.file_id <> s.file_id) AS callers, \
+         f.mtime_ns, f.is_test \
+         FROM symbols s JOIN files f ON f.id = s.file_id \
+         WHERE (f.path = ?1 OR substr(f.path, 1, ?2) = ?1) AND s.rank > 0 \
+         ORDER BY s.rank DESC, f.path, s.line_start LIMIT ?3",
+    )
+    .bind(prefix)
+    .bind(n)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM symbols s JOIN files f ON f.id = s.file_id \
+         WHERE (f.path = ?1 OR substr(f.path, 1, ?2) = ?1) AND s.rank > 0",
+    )
+    .bind(prefix)
+    .bind(n)
+    .fetch_one(pool)
+    .await?;
+    let importers: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT f.path, count(DISTINCT e.src) FROM (\
+           SELECT target_file AS dst, file_id AS src FROM imports \
+             WHERE target_file IS NOT NULL AND target_file <> file_id AND specifier NOT LIKE 'mod:%' \
+           UNION \
+           SELECT s.file_id, r.file_id FROM refs r JOIN symbols s ON s.id = r.to_symbol \
+             WHERE r.confidence >= 0.5 AND r.file_id <> s.file_id\
+         ) e JOIN files f ON f.id = e.dst WHERE f.path = ?1 OR substr(f.path, 1, ?2) = ?1 GROUP BY e.dst",
+    )
+    .bind(prefix)
+    .bind(n)
+    .fetch_all(pool)
+    .await?;
+    Ok((rows, total, importers.into_iter().collect()))
+}
+
 /// Prefix of every rendered-map cache row in `meta`.
 const MAP_CACHE: &str = "map_cache:";
 

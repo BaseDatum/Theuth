@@ -1,0 +1,600 @@
+{
+ "meta": {
+  "root": "/Users/sky/Develop/theuth",
+  "seq": 57,
+  "schema": 1,
+  "state": "ready",
+  "index_state": "3255:1759946400000000000",
+  "git_head": "5cddad8e",
+  "stale_elements": 1,
+  "job": null,
+  "ms": 4
+ },
+ "id": "overall-architecture/cluster:26b565b0",
+ "node": "cluster:26b565b0",
+ "perspective": "overall-architecture",
+ "parent": "overall-architecture",
+ "crumbs": [
+  [
+   "overall-architecture",
+   "Overall architecture"
+  ],
+  [
+   "overall-architecture/cluster:26b565b0",
+   "Content stores"
+  ]
+ ],
+ "name": "Content stores",
+ "path": "crates",
+ "kind": "cluster",
+ "members": [
+  "unit:crates/knowledge",
+  "unit:crates/document",
+  "unit:crates/artifact",
+  "unit:crates/search",
+  "unit:crates/codeindex"
+ ],
+ "anchors": [
+  {
+   "path": "crates/knowledge",
+   "line_start": null,
+   "line_end": null,
+   "exists": true
+  },
+  {
+   "path": "crates/document",
+   "line_start": null,
+   "line_end": null,
+   "exists": true
+  },
+  {
+   "path": "crates/artifact",
+   "line_start": null,
+   "line_end": null,
+   "exists": true
+  },
+  {
+   "path": "crates/search",
+   "line_start": null,
+   "line_end": null,
+   "exists": true
+  },
+  {
+   "path": "crates/codeindex",
+   "line_start": null,
+   "line_end": null,
+   "exists": true
+  }
+ ],
+ "fields": {
+  "description": "Durable content the agent reads and writes (119 files / 54,183 lines). `document` is the Yjs authority for notes/boards/artifacts; `knowledge` (OKF bundle + gix history) and `artifact` sit on it; `search` is the shared fuzzy/snippet envelope; `codeindex` is the tree-sitter + SQLite code index whose lenses feed the CodeMap panel. See the child diagram for the five crates and the deeper one for codeindex's modules.",
+  "context": null,
+  "constraint": null,
+  "concern": null,
+  "todo": null,
+  "note": null
+ },
+ "diagram": {
+  "nodes": [
+   {
+    "id": "unit:crates/document",
+    "label": "Document authority",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/document",
+    "sub": "crates/document",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/knowledge",
+    "label": "Knowledge bundle",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/knowledge",
+    "sub": "crates/knowledge",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/artifact",
+    "label": "Artifacts",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/artifact",
+    "sub": "crates/artifact",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/search",
+    "label": "Search envelope",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/search",
+    "sub": "crates/search",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/codeindex",
+    "label": "Code index",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/codeindex",
+    "sub": "crates/codeindex",
+    "tag": null,
+    "icon": null
+   }
+  ],
+  "edges": [
+   {
+    "from": "unit:crates/knowledge",
+    "to": "unit:crates/document",
+    "label": "concepts are block documents",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/artifact",
+    "to": "unit:crates/document",
+    "label": "markdown artifacts are documents",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/document",
+    "to": "unit:crates/codeindex",
+    "label": "boards resolve code anchors",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/knowledge",
+    "to": "unit:crates/search",
+    "label": "shared fuzzy match",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/artifact",
+    "to": "unit:crates/search",
+    "label": "shared fuzzy match",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/document",
+    "to": "unit:crates/search",
+    "label": "shared fuzzy match",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   }
+  ],
+  "groups": null,
+  "direction": "LR",
+  "legend": null,
+  "title": null
+ },
+ "mermaid": "flowchart LR\n    unit_crates_document[\"Document authority\\ncrates/document\"]\n    unit_crates_knowledge[\"Knowledge bundle\\ncrates/knowledge\"]\n    unit_crates_artifact[\"Artifacts\\ncrates/artifact\"]\n    unit_crates_search[\"Search envelope\\ncrates/search\"]\n    unit_crates_codeindex[\"Code index\\ncrates/codeindex\"]\n\n    unit_crates_knowledge -->|\"concepts are block documents\"| unit_crates_document\n    unit_crates_artifact -->|\"markdown artifacts are documents\"| unit_crates_document\n    unit_crates_document -->|\"boards resolve code anchors\"| unit_crates_codeindex\n    unit_crates_knowledge -->|\"shared fuzzy match\"| unit_crates_search\n    unit_crates_artifact -->|\"shared fuzzy match\"| unit_crates_search\n    unit_crates_document -->|\"shared fuzzy match\"| unit_crates_search\n",
+ "edges": [
+  {
+   "from": "unit:crates/knowledge",
+   "to": "unit:crates/document",
+   "label": "concepts are block documents",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/knowledge",
+     "to": "crates/document",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/artifact",
+   "to": "unit:crates/document",
+   "label": "markdown artifacts are documents",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/artifact",
+     "to": "crates/document",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/document",
+   "to": "unit:crates/codeindex",
+   "label": "boards resolve code anchors",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/document",
+     "to": "crates/codeindex",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/knowledge",
+   "to": "unit:crates/search",
+   "label": "shared fuzzy match",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/knowledge",
+     "to": "crates/search",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/artifact",
+   "to": "unit:crates/search",
+   "label": "shared fuzzy match",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/artifact",
+     "to": "crates/search",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/document",
+   "to": "unit:crates/search",
+   "label": "shared fuzzy match",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/document",
+     "to": "crates/search",
+     "kind": "cargo-path"
+    }
+   ]
+  }
+ ],
+ "children": [
+  {
+   "id": "overall-architecture/unit:crates/document",
+   "node": "unit:crates/document",
+   "name": "Document authority",
+   "path": "crates/document",
+   "kind": "unit",
+   "files": 15,
+   "lines": 13749,
+   "share": 0.02,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/knowledge",
+   "node": "unit:crates/knowledge",
+   "name": "Knowledge bundle",
+   "path": "crates/knowledge",
+   "kind": "unit",
+   "files": 9,
+   "lines": 9087,
+   "share": 0.012,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/artifact",
+   "node": "unit:crates/artifact",
+   "name": "Artifacts",
+   "path": "crates/artifact",
+   "kind": "unit",
+   "files": 43,
+   "lines": 14770,
+   "share": 0.009,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/search",
+   "node": "unit:crates/search",
+   "name": "Search envelope",
+   "path": "crates/search",
+   "kind": "unit",
+   "files": 2,
+   "lines": 521,
+   "share": 0.004,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/codeindex",
+   "node": "unit:crates/codeindex",
+   "name": "Code index",
+   "path": "crates/codeindex",
+   "kind": "unit",
+   "files": 50,
+   "lines": 16056,
+   "share": 0.017,
+   "leaf": false,
+   "stale": false,
+   "thumbnail": {
+    "nodes": [
+     {
+      "id": "unit:crates/codeindex/src/walk.rs",
+      "label": "Walk",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/codeindex/src/walk.rs",
+      "sub": "crates/codeindex/src/walk.rs",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "cluster:f61c2c5b",
+      "label": "Parse + resolve",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/codeindex/src/parse.rs",
+      "sub": "crates/codeindex/src/parse.rs · crates/…",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/codeindex/src/store.rs",
+      "label": "SQLite store",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/codeindex/src/store.rs",
+      "sub": "crates/codeindex/src/store.rs",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/codeindex/src/index.rs",
+      "label": "Codeindex / RootIndex",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/codeindex/src/index.rs",
+      "sub": "crates/codeindex/src/index.rs",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/codeindex/src/git.rs",
+      "label": "Git facts",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/codeindex/src/git.rs",
+      "sub": "crates/codeindex/src/git.rs",
+      "tag": "stale",
+      "icon": null
+     },
+     {
+      "id": "unit:crates/codeindex/src/rank.rs",
+      "label": "Rank",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/codeindex/src/rank.rs",
+      "sub": "crates/codeindex/src/rank.rs",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/codeindex/src/lens.rs",
+      "label": "Lenses Here/Fit/Change",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/codeindex/src/lens.rs",
+      "sub": "crates/codeindex/src/lens.rs",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/codeindex/src/tools.rs",
+      "label": "code_* tools",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/codeindex/src/tools.rs",
+      "sub": "crates/codeindex/src/tools.rs",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/codeindex/src/event.rs",
+      "label": "Events",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/codeindex/src/event.rs",
+      "sub": "crates/codeindex/src/event.rs",
+      "tag": null,
+      "icon": null
+     }
+    ],
+    "edges": [
+     {
+      "from": "unit:crates/codeindex/src/index.rs",
+      "to": "unit:crates/codeindex/src/walk.rs",
+      "label": "lists files under ignore",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/index.rs",
+      "to": "cluster:f61c2c5b",
+      "label": "parse_chunk per changed file",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/index.rs",
+      "to": "unit:crates/codeindex/src/store.rs",
+      "label": "writes rows, reads stale",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/index.rs",
+      "to": "unit:crates/codeindex/src/git.rs",
+      "label": "HEAD and co-change history",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/index.rs",
+      "to": "unit:crates/codeindex/src/event.rs",
+      "label": "emits CodeindexEvent",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "cluster:f61c2c5b",
+      "to": "unit:crates/codeindex/src/store.rs",
+      "label": "looks up import targets",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/lens.rs",
+      "to": "unit:crates/codeindex/src/index.rs",
+      "label": "open_indexed → RootIndex",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/lens.rs",
+      "to": "unit:crates/codeindex/src/rank.rs",
+      "label": "PageRank for Fit/Here",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/lens.rs",
+      "to": "unit:crates/codeindex/src/store.rs",
+      "label": "symbol and ref rows",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/lens.rs",
+      "to": "unit:crates/codeindex/src/tools.rs",
+      "label": "shares budget_render helpers",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/tools.rs",
+      "to": "unit:crates/codeindex/src/index.rs",
+      "label": "opens the root index",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/tools.rs",
+      "to": "unit:crates/codeindex/src/rank.rs",
+      "label": "code_map ranking",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/tools.rs",
+      "to": "unit:crates/codeindex/src/store.rs",
+      "label": "rows for find/outline",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/tools.rs",
+      "to": "unit:crates/codeindex/src/git.rs",
+      "label": "code_impact reads git ranges",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/tools.rs",
+      "to": "unit:crates/codeindex/src/event.rs",
+      "label": "CodeToolSummary per call",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/codeindex/src/rank.rs",
+      "to": "unit:crates/codeindex/src/tools.rs",
+      "label": "estimate_tokens for budgets",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     }
+    ],
+    "groups": null,
+    "direction": "LR",
+    "legend": null,
+    "title": null
+   }
+  }
+ ],
+ "also_in": [],
+ "stale": false,
+ "origin": "generated",
+ "provenance": {
+  "model": "anthropic/claude-opus-4",
+  "git_head": "5cddad8e",
+  "index_state": "3255:1759946400000000000",
+  "generated_ms": 1759946700000,
+  "call_ids": [
+   "01J9ZQ4M8X3K2V7T1R6N5P0WAB",
+   "01J9ZQ5C2H9D4F8G1J3K6L7MNC"
+  ],
+  "cost_nanos": 40000000,
+  "currency": "USD",
+  "input_tokens": 11800,
+  "output_tokens": 1450,
+  "repaired": false,
+  "facts_hash": "0e84f1b0a33d012222cd8e2f1e8f7deb04af944117bf34141ab356f2be18898e"
+ },
+ "listing": null
+}

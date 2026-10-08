@@ -1,7 +1,7 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import type { Row } from '@/components/chat/rows'
 import type { Entry } from '@/store/sessions'
-import { bucket, estimateRow, estimateText, heights, PERSIST_KEYS, persist, recall, remember } from './measured'
+import { bucket, counters, estimateRow, estimateText, heights, PERSIST_KEYS, persist, recall, remember } from './measured'
 
 const mem = new Map<string, string>()
 vi.stubGlobal('localStorage', {
@@ -103,6 +103,20 @@ test('estimateRow: floor 96, fixed kinds, monotonic in text length', () => {
   }
   // Narrower column → more lines → taller.
   expect(estimateRow(assistant(text), 360)).toBeGreaterThan(estimateRow(assistant(text), 736))
+})
+
+test('estimateRow (R1.1): one computation per entry object and width', () => {
+  const row = assistant('lorem ipsum '.repeat(50))
+  const before = counters.estimates
+  const px = estimateRow(row, 736)
+  expect(estimateRow(row, 736)).toBe(px)
+  expect(estimateRow({ ...row }, 736)).toBe(px) // the row wrapper is rebuilt per render; the entry object is the key
+  expect(counters.estimates).toBe(before + 1)
+  expect(estimateRow(row, 360)).toBeGreaterThan(px)
+  expect(counters.estimates).toBe(before + 2)
+  // A new entry object (a streaming delta) is a new estimate.
+  estimateRow(assistant('lorem ipsum '.repeat(50)), 360)
+  expect(counters.estimates).toBe(before + 3)
 })
 
 test('estimateText: fences by language, tables by rows, images flat', () => {

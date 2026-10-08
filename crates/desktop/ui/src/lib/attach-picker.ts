@@ -12,6 +12,8 @@ export const TAB_LABEL: Record<Tab, string> = {
   artifact: 'Artifacts',
   session: 'Chats',
   meeting: 'Meetings',
+  notebook: 'Notebooks',
+  source: 'Sources',
 }
 
 /** Which `search` categories a tab requests, in the picker's group order (notes first, as the browse view). */
@@ -29,6 +31,10 @@ export function categoriesFor(tab: Tab): SearchCategory[] {
       return ['sessions']
     case 'meeting':
       return ['meetings']
+    case 'notebook':
+      return ['notebooks']
+    case 'source':
+      return ['sources']
   }
 }
 

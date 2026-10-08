@@ -795,6 +795,7 @@ mod tests {
             pinned: false,
             archived: false,
             project: None,
+            notebook: None,
             retention: agent::Retention::Durable,
             running: false,
             owner: String::new(),

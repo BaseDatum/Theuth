@@ -1457,6 +1457,8 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "context_pressure" => (None, "</context_pressure>"),
             "runtime" => (None, "</runtime>"),
             "knowledge" => (None, "</knowledge>"),
+            // 144 §5.3: the bound chat's volatile `<notebook>` block (a harness note like `<knowledge>`).
+            "notebook" => (None, "</notebook>"),
             "nudge" => (None, "</nudge>"),
             "journal" => (None, "</journal>"),
             // 125 §7.4: an advisory steer's row is carded by `AdvisoryAdded`, never echoed.
@@ -13334,9 +13336,12 @@ mod tests {
         assert_eq!(m.session, Some(hit));
         assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == hit));
         // Chips survive the reset a session switch performs.
-        m.search.selected = [true, false, false, false, false, false];
+        m.search.selected = [true, false, false, false, false, false, false, false];
         m.resume(SessionId::new(), &tx);
-        assert_eq!(m.search.selected, [true, false, false, false, false, false]);
+        assert_eq!(
+            m.search.selected,
+            [true, false, false, false, false, false, false, false]
+        );
     }
 
     /// 66 §10: `/attach q` opens the search menu in pick mode; Enter on a hit
@@ -18392,6 +18397,7 @@ mod tests {
             pinned: false,
             archived: false,
             project: project.map(str::to_owned),
+            notebook: None,
             retention: Retention::Durable,
             running: false,
             owner: String::new(),

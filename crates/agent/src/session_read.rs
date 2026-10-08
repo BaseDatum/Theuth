@@ -89,7 +89,7 @@ impl Tool for SessionReadTool {
 }
 
 /// One turn: the opener and everything up to the next one.
-fn turns(history: &[HistoryEntry]) -> Vec<&[HistoryEntry]> {
+pub(crate) fn turns(history: &[HistoryEntry]) -> Vec<&[HistoryEntry]> {
     let mut out = Vec::new();
     let mut start = 0;
     for (i, e) in history.iter().enumerate() {
@@ -369,6 +369,7 @@ mod tests {
             pinned: false,
             archived: false,
             project: Some("theuth".into()),
+            notebook: None,
             retention: tools::Retention::Durable,
             running: false,
             owner: String::new(),

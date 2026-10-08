@@ -373,6 +373,112 @@ impl Message<Transcribe> for Transcriber {
     }
 }
 
+/// Timed words of a whole file (144 §4.1 audio/video rows): [`Transcribe`] with `words: true` per
+/// [`PIECE`], times shifted to the file. `progress`, when given, hears 0–100 as pieces finish.
+/// `ponytail:` pieces are cut at 180 s, not at pauses — a word on a boundary may split; the meeting
+/// crate's VAD-span path is the upgrade when a notebook corpus shows it.
+#[derive(Debug)]
+pub struct TranscribeWords {
+    /// Audio or video file on this machine; the extension picks the demuxer.
+    pub path: PathBuf,
+    /// Percent sink.
+    pub progress: Option<tokio::sync::mpsc::UnboundedSender<u8>>,
+}
+
+/// Reply to [`TranscribeWords`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, kameo::Reply)]
+pub struct WordTranscript {
+    /// Every word with file times, in order.
+    pub words: Vec<Word>,
+    /// Length of the audio.
+    pub duration_ms: u64,
+}
+
+impl Transcriber {
+    /// Whole pipeline for one file with word times; blocking.
+    fn transcribe_words(
+        &self,
+        path: &Path,
+        progress: Option<&tokio::sync::mpsc::UnboundedSender<u8>>,
+    ) -> anyhow::Result<WordTranscript> {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let bytes = std::fs::read(path)?;
+        let (pcm, rate) = decode(bytes, ext)?;
+        let pcm = resample(pcm, rate, MODEL_RATE)?;
+        let duration_ms = pcm.len() as u64 * 1000 / MODEL_RATE as u64;
+        let mut guard = self.model.lock();
+        let model = match guard.as_ref() {
+            Some(m) => m,
+            None => guard.insert(Engine::load(&self.dir, &self.data_dir)?),
+        };
+        let mut words = Vec::new();
+        let pieces = pcm.chunks(PIECE).count().max(1);
+        for (i, piece) in pcm.chunks(PIECE).enumerate() {
+            let offset = (i * PIECE) as u64 * 1000 / MODEL_RATE as u64;
+            words.extend(
+                model
+                    .transcribe(piece, true)?
+                    .words
+                    .into_iter()
+                    .map(|w| Word {
+                        text: w.text,
+                        t0_ms: w.t0_ms + offset,
+                        t1_ms: w.t1_ms + offset,
+                    }),
+            );
+            if let Some(p) = progress {
+                let _ = p.send(((i + 1) * 100 / pieces) as u8);
+            }
+        }
+        *self.last_used.lock() = Instant::now();
+        Ok(WordTranscript { words, duration_ms })
+    }
+}
+
+impl Message<TranscribeWords> for Transcriber {
+    type Reply = kameo::reply::DelegatedReply<Result<WordTranscript, String>>;
+    async fn handle(
+        &mut self,
+        m: TranscribeWords,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let this = Self {
+            model: self.model.clone(),
+            last_used: self.last_used.clone(),
+            dir: self.dir.clone(),
+            data_dir: self.data_dir.clone(),
+            idle: self.idle,
+        };
+        tokio::task::spawn_blocking(move || {
+            let t = Instant::now();
+            let r = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                this.transcribe_words(&m.path, m.progress.as_ref())
+            })) {
+                Ok(r) => r.map_err(|e| format!("{e:#}")),
+                Err(p) => Err(format!(
+                    "transcribe panicked: {}",
+                    p.downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| p.downcast_ref::<String>().cloned())
+                        .unwrap_or_default()
+                )),
+            };
+            match &r {
+                Ok(w) => tracing::debug!(
+                    "voice: transcribed {} ms of audio with word times in {:?}",
+                    w.duration_ms,
+                    t.elapsed()
+                ),
+                Err(e) => tracing::warn!("voice: {e}"),
+            }
+            tx.send(r);
+        });
+        reply
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

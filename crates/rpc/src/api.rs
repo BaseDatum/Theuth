@@ -53,7 +53,7 @@ use base64::Engine as _;
 use browser::{BROWSER_ACTOR, Browsers, Screenshot};
 use codeindex::{
     CODEINDEX_ACTOR, ChangeLens, CodeindexActor, FitLens, HereLens, IndexStats, LensMeta,
-    LocateAnchor, Located,
+    LocateAnchor, Located, MapElement, MapExport, MapHit, MapIndex, MapJob,
 };
 use computer::{COMPUTER_ACTOR, Computer, Permissions, ScreenContext};
 use jsonrpsee::Extensions;
@@ -1069,6 +1069,122 @@ pub trait Api {
     /// A member renames themself (59 §8.5; editors only — `viewer_readonly` otherwise).
     #[method(name = "doc_set_name", with_extensions)]
     async fn doc_set_name(&self, doc: document::DocId, name: String) -> RpcResult<()>;
+    /// Notebooks (144 §13.3): live ones newest first; `archived` includes archived. Any engine, from the replica.
+    #[method(name = "notebook_list")]
+    async fn notebook_list(&self, archived: Option<bool>) -> RpcResult<Vec<document::Notebook>>;
+    /// One notebook with counts and its live items. Any engine; mode-2 guests see the notebooks they are members of.
+    #[method(name = "notebook_get", with_extensions)]
+    async fn notebook_get(&self, id: document::DocId) -> RpcResult<document::NotebookDetail>;
+    /// A new notebook (144 §3.2): a `DocKind::Notebook` document named `title` whose body is `description`,
+    /// plus its `notebooks` row. Hub only (`-32011` → forwarded).
+    #[method(name = "notebook_create", with_extensions)]
+    async fn notebook_create(
+        &self,
+        title: String,
+        description: Option<String>,
+        project: Option<String>,
+    ) -> RpcResult<document::Notebook>;
+    /// Rename, re-project (`project: ""` clears) or (un)archive a notebook. Hub only.
+    #[method(name = "notebook_update", with_extensions)]
+    async fn notebook_update(
+        &self,
+        id: document::DocId,
+        title: Option<String>,
+        project: Option<String>,
+        archived: Option<bool>,
+    ) -> RpcResult<()>;
+    /// What `notebook_delete` would do (144 §3.4): note count, exclusive sources, sources also in other notebooks.
+    #[method(name = "notebook_delete_preview")]
+    async fn notebook_delete_preview(
+        &self,
+        id: document::DocId,
+    ) -> RpcResult<document::DeletePreview>;
+    /// Trash the notebook document, soft-remove its items and, when `delete_exclusive_sources`, the sources no
+    /// other live notebook holds. Notes are never deleted; members get `Closed{deleted}`. Hub only.
+    #[method(name = "notebook_delete", with_extensions)]
+    async fn notebook_delete(
+        &self,
+        id: document::DocId,
+        delete_exclusive_sources: bool,
+    ) -> RpcResult<()>;
+    /// Live items of a notebook, oldest first. Any engine; membership-checked for guests.
+    #[method(name = "notebook_items_list", with_extensions)]
+    async fn notebook_items_list(
+        &self,
+        notebook: document::DocId,
+    ) -> RpcResult<Vec<document::NotebookItem>>;
+    /// Add (or revive) one item row. Hub only.
+    #[method(name = "notebook_item_add", with_extensions)]
+    async fn notebook_item_add(
+        &self,
+        notebook: document::DocId,
+        kind: document::ItemKind,
+        item: String,
+    ) -> RpcResult<document::NotebookItem>;
+    /// Soft-remove one item row; answers how many other live notebooks still hold the item. Hub only.
+    #[method(name = "notebook_item_remove", with_extensions)]
+    async fn notebook_item_remove(
+        &self,
+        notebook: document::DocId,
+        kind: document::ItemKind,
+        item: String,
+    ) -> RpcResult<document::ItemRemoved>;
+    /// Sessions bound to `notebook`, newest first (144 §8). Owner only — never on the guest allow-list (D13).
+    #[method(name = "notebook_chats", with_extensions)]
+    async fn notebook_chats(&self, notebook: document::DocId) -> RpcResult<Vec<SessionSummary>>;
+    /// Bind `session` to a notebook (`sessions.notebook`), or unbind with `None`. Owner only.
+    #[method(name = "session_set_notebook", with_extensions)]
+    async fn session_set_notebook(
+        &self,
+        session: SessionId,
+        notebook: Option<document::DocId>,
+    ) -> RpcResult<()>;
+    /// Add a source to a notebook (144 §4): pre-flight, the `new` row and card at once, then the ingest job
+    /// (`SourceEvent` on `subscribe_events`). Exactly one origin field. Hub only.
+    #[method(name = "source_add", with_extensions)]
+    async fn source_add(
+        &self,
+        args: document::ingest::SourceAddArgs,
+    ) -> RpcResult<document::Source>;
+    /// One source's card. Any engine; membership-checked for guests.
+    #[method(name = "source_get", with_extensions)]
+    async fn source_get(&self, id: document::DocId) -> RpcResult<document::Source>;
+    /// Sources of `notebook`, or every source (unfiled included). Any engine.
+    #[method(name = "source_list")]
+    async fn source_list(
+        &self,
+        notebook: Option<document::DocId>,
+    ) -> RpcResult<Vec<document::Source>>;
+    /// Re-run the ingest from the origin or the blob (144 §4.2); refused while queued or running. Hub only.
+    #[method(name = "source_refresh", with_extensions)]
+    async fn source_refresh(&self, id: document::DocId) -> RpcResult<document::Source>;
+    /// Resolve `theuth://` hrefs (144 §6.4) to citations with their drift status, positionally. Any engine;
+    /// `available: false` for trashed targets or ones the caller may not read.
+    #[method(name = "cite_resolve", with_extensions)]
+    async fn cite_resolve(&self, hrefs: Vec<String>) -> RpcResult<Vec<document::Citation>>;
+    /// Hybrid block search over notes, sources, insights and notebook descriptions (144 §7.4). Any engine.
+    #[method(name = "nb_search")]
+    async fn nb_search(
+        &self,
+        args: document::index::NbSearchArgs,
+    ) -> RpcResult<Vec<document::index::BlockHit>>;
+    /// Save the assistant message of the turn opened at seq `turn` (`HistoryEntry.turn`, like `regenerate`) as a new
+    /// note in `notebook`, chips intact (144 §8). Owner only.
+    #[method(name = "save_answer_as_note", with_extensions)]
+    async fn save_answer_as_note(
+        &self,
+        session: SessionId,
+        turn: u32,
+        notebook: document::DocId,
+    ) -> RpcResult<agent::notebooks::SavedAnswer>;
+    /// Append the assistant message of the turn opened at seq `turn` to `note` under `## From chat · <date>` (144 §8). Owner only.
+    #[method(name = "promote_answer", with_extensions)]
+    async fn promote_answer(
+        &self,
+        session: SessionId,
+        turn: u32,
+        note: document::DocId,
+    ) -> RpcResult<()>;
     /// Row counts and freshness of the code index for `root` (default: the
     /// git top-level of the process cwd; design doc 60 §10). Opens the
     /// index without reconciling it.
@@ -1123,6 +1239,43 @@ pub trait Api {
     /// `paths` is null. Publishes `CodeReconciled`.
     #[method(name = "codemap_touch")]
     async fn codemap_touch(&self, root: String, paths: Option<Vec<String>>) -> RpcResult<LensMeta>;
+    /// CodeMap overview (147 §10.2): every perspective of an indexed `root`
+    /// with its element tree and `meta.state`; the first skeleton pass runs
+    /// inline when the map file is missing. Store reads only, never a walk;
+    /// `ASK_FAILED` when the root was never indexed.
+    #[method(name = "codemap_overview")]
+    async fn codemap_overview(&self, root: String) -> RpcResult<MapIndex>;
+    /// CodeMap element (147 §10.2): one element — diagram, prose, edges with
+    /// evidence, children with thumbnails, listing for leaves.
+    #[method(name = "codemap_element")]
+    async fn codemap_element(&self, root: String, element: String) -> RpcResult<MapElement>;
+    /// CodeMap generate (147 §10.2, S1/S2): start the root's one generation
+    /// job charged to `session` (a live native session), or attach to the
+    /// running one; `element` set regenerates that subtree only.
+    #[method(name = "codemap_generate")]
+    async fn codemap_generate(
+        &self,
+        root: String,
+        session: SessionId,
+        element: Option<String>,
+    ) -> RpcResult<MapJob>;
+    /// CodeMap cancel (147 §6.7): abort the root's running job; stored
+    /// elements stay.
+    #[method(name = "codemap_cancel")]
+    async fn codemap_cancel(&self, root: String) -> RpcResult<MapJob>;
+    /// CodeMap search (147 §10.2): elements by name, or by a root-relative
+    /// path → the element chain whose anchors contain it; `limit` default 20.
+    #[method(name = "codemap_search")]
+    async fn codemap_search(
+        &self,
+        root: String,
+        query: String,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<MapHit>>;
+    /// CodeMap export (147 §13.1, S3): write `<root>/.omm/` in
+    /// oh-my-mermaid's layout; refuses when a foreign `.omm/` exists.
+    #[method(name = "codemap_export")]
+    async fn codemap_export(&self, root: String) -> RpcResult<MapExport>;
     /// Write `mcp/<name>.json` and connect; returns the server with its tools.
     #[method(name = "add_mcp_server")]
     async fn add_mcp_server(&self, name: String, entry: serde_json::Value) -> RpcResult<McpServer>;
@@ -2604,6 +2757,58 @@ async fn doc_forward<T: DeserializeOwned>(
     match forward::to_peer(ext, &replica::PeerId(hub.0), method, params).await? {
         Some(v) => Ok(v),
         None => r,
+    }
+}
+
+/// [`doc_send`]'s error mapping for the 144 delegation functions that answer `anyhow::Result`: a
+/// `NotHub:<id>` message becomes [`NOT_HUB`] with the typed payload (so [`doc_forward`] re-issues the
+/// call), anything else `ASK_FAILED` with the message.
+fn nb_result<T>(r: anyhow::Result<T>) -> RpcResult<T> {
+    r.map_err(|e| match document::DocError::parse(&format!("{e:#}")) {
+        err @ document::DocError::NotHub { .. } => {
+            ErrorObjectOwned::owned(NOT_HUB, "another engine holds the hub lease", Some(err))
+        }
+        document::DocError::Other(msg) => failed(msg),
+    })
+}
+
+/// 144 §8 (W3 R1): `Notebook.chats` from the agent store (`sessions.notebook`); the document crate holds no
+/// session rows. Best effort — no agent actor or a store error leaves the count at 0.
+async fn notebook_chat_counts() -> std::collections::HashMap<String, u32> {
+    match lookup::<Agents>(agent::AGENT_ACTOR) {
+        Ok(agents) => agent::notebooks::chat_counts(&agents)
+            .await
+            .unwrap_or_default(),
+        Err(_) => Default::default(),
+    }
+}
+
+/// 144 §6.4 (W3 R1): the document crate answers `same`/available for `theuth://sessions/<id>#<turn>` unchecked;
+/// the agent store decides — no such (readable) session → `available: false`, a turn past the end → `missing`;
+/// the title becomes the session's display name. Best effort when the agent actor is not running.
+async fn check_session_cites(cites: &mut [document::Citation]) {
+    let Ok(agents) = lookup::<Agents>(agent::AGENT_ACTOR) else {
+        return;
+    };
+    for c in cites
+        .iter_mut()
+        .filter(|c| c.kind == document::CiteKind::Sessions)
+    {
+        let Ok(anchor) = surface::anchor::TheuthAnchor::parse(&c.href) else {
+            continue;
+        };
+        match agent::notebooks::session_cite(&agents, &anchor.id).await {
+            Ok(Some(s)) => {
+                c.title = s.title;
+                if let Some(surface::anchor::Locator::Turn(t)) = anchor.locator
+                    && t as usize > s.turns
+                {
+                    c.status = codeindex::LocateStatus::Missing;
+                }
+            }
+            Ok(None) => c.available = false,
+            Err(e) => tracing::debug!(href = %c.href, "session citation check skipped: {e:#}"),
+        }
     }
 }
 
@@ -4839,6 +5044,317 @@ impl ApiServer for Server {
         r
     }
 
+    async fn notebook_list(&self, archived: Option<bool>) -> RpcResult<Vec<document::Notebook>> {
+        let mut list = doc_send(
+            &documents()?,
+            document::NotebookList {
+                archived: archived.unwrap_or(false),
+            },
+        )
+        .await?;
+        let counts = notebook_chat_counts().await;
+        for nb in &mut list {
+            nb.chats = counts.get(&nb.doc.id.to_string()).copied().unwrap_or(0);
+        }
+        Ok(list)
+    }
+
+    async fn notebook_get(
+        &self,
+        ext: &Extensions,
+        id: document::DocId,
+    ) -> RpcResult<document::NotebookDetail> {
+        let (peer, by) = principal(ext)?;
+        let mut r = doc_send(&documents()?, document::NotebookGet { id, by }).await;
+        member_outcome(&peer, &r);
+        if let Ok(d) = &mut r {
+            d.notebook.chats = notebook_chat_counts()
+                .await
+                .get(&d.notebook.doc.id.to_string())
+                .copied()
+                .unwrap_or(0);
+        }
+        r
+    }
+
+    async fn notebook_create(
+        &self,
+        ext: &Extensions,
+        title: String,
+        description: Option<String>,
+        project: Option<String>,
+    ) -> RpcResult<document::Notebook> {
+        owner(ext)?;
+        if title.trim().is_empty() {
+            return Err(ErrorObjectOwned::owned(
+                jsonrpsee::types::error::INVALID_PARAMS_CODE,
+                "title must not be empty",
+                None::<()>,
+            ));
+        }
+        let r = doc_send(
+            &documents()?,
+            document::NotebookCreate {
+                title: title.trim().to_owned(),
+                description: description.clone().unwrap_or_default(),
+                project: project.clone().filter(|p| !p.trim().is_empty()),
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await;
+        doc_forward(ext, "notebook_create", (&title, &description, &project), r).await
+    }
+
+    async fn notebook_update(
+        &self,
+        ext: &Extensions,
+        id: document::DocId,
+        title: Option<String>,
+        project: Option<String>,
+        archived: Option<bool>,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let r = doc_send(
+            &documents()?,
+            document::NotebookUpdate {
+                id: id.clone(),
+                title: title.clone().filter(|t| !t.trim().is_empty()),
+                project: project
+                    .clone()
+                    .map(|p| Some(p).filter(|p| !p.trim().is_empty())),
+                archived,
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await;
+        doc_forward(
+            ext,
+            "notebook_update",
+            (&id, &title, &project, &archived),
+            r,
+        )
+        .await
+    }
+
+    async fn notebook_delete_preview(
+        &self,
+        id: document::DocId,
+    ) -> RpcResult<document::DeletePreview> {
+        doc_send(&documents()?, document::NotebookDeletePreview { id }).await
+    }
+
+    async fn notebook_delete(
+        &self,
+        ext: &Extensions,
+        id: document::DocId,
+        delete_exclusive_sources: bool,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let r = doc_send(
+            &documents()?,
+            document::NotebookDelete {
+                id: id.clone(),
+                delete_exclusive_sources,
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await;
+        doc_forward(ext, "notebook_delete", (&id, &delete_exclusive_sources), r).await
+    }
+
+    async fn notebook_items_list(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+    ) -> RpcResult<Vec<document::NotebookItem>> {
+        let (peer, by) = principal(ext)?;
+        let r = doc_send(&documents()?, document::NotebookItemsList { notebook, by }).await;
+        member_outcome(&peer, &r);
+        r
+    }
+
+    async fn notebook_item_add(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+        kind: document::ItemKind,
+        item: String,
+    ) -> RpcResult<document::NotebookItem> {
+        owner(ext)?;
+        let r = doc_send(
+            &documents()?,
+            document::NotebookItemAdd {
+                notebook: notebook.clone(),
+                kind,
+                item: item.clone(),
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await;
+        doc_forward(ext, "notebook_item_add", (&notebook, &kind, &item), r).await
+    }
+
+    async fn notebook_item_remove(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+        kind: document::ItemKind,
+        item: String,
+    ) -> RpcResult<document::ItemRemoved> {
+        owner(ext)?;
+        let r = doc_send(
+            &documents()?,
+            document::NotebookItemRemove {
+                notebook: notebook.clone(),
+                kind,
+                item: item.clone(),
+                by: document::Principal::Owner { device: None },
+            },
+        )
+        .await;
+        doc_forward(ext, "notebook_item_remove", (&notebook, &kind, &item), r).await
+    }
+
+    async fn notebook_chats(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+    ) -> RpcResult<Vec<SessionSummary>> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(agent::notebooks::notebook_chats(&agents, notebook.to_string()).await)
+    }
+
+    async fn session_set_notebook(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        notebook: Option<document::DocId>,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(
+            agent::notebooks::session_set_notebook(
+                &agents,
+                session,
+                notebook.map(|n| n.to_string()),
+            )
+            .await,
+        )
+    }
+
+    async fn source_add(
+        &self,
+        ext: &Extensions,
+        args: document::ingest::SourceAddArgs,
+    ) -> RpcResult<document::Source> {
+        owner(ext)?;
+        let r = nb_result(
+            document::ingest::source_add(
+                &documents()?,
+                args.clone(),
+                document::Principal::Owner { device: None },
+            )
+            .await,
+        );
+        doc_forward(ext, "source_add", (&args,), r).await
+    }
+
+    async fn source_get(
+        &self,
+        ext: &Extensions,
+        id: document::DocId,
+    ) -> RpcResult<document::Source> {
+        let (peer, by) = principal(ext)?;
+        // 144 §11: readable by the owner, a member of the source, or a member of a notebook holding it.
+        let docs = documents()?;
+        let may = doc_send(
+            &docs,
+            document::MayRead {
+                doc: id.clone(),
+                by,
+            },
+        )
+        .await;
+        member_outcome(&peer, &may);
+        may?;
+        let r = nb_result(document::ingest::source_get(&docs, id).await);
+        member_outcome(&peer, &r);
+        r
+    }
+
+    async fn source_list(
+        &self,
+        notebook: Option<document::DocId>,
+    ) -> RpcResult<Vec<document::Source>> {
+        nb_result(document::ingest::source_list(&documents()?, notebook).await)
+    }
+
+    async fn source_refresh(
+        &self,
+        ext: &Extensions,
+        id: document::DocId,
+    ) -> RpcResult<document::Source> {
+        owner(ext)?;
+        let r = nb_result(
+            document::ingest::source_refresh(
+                &documents()?,
+                id.clone(),
+                document::Principal::Owner { device: None },
+            )
+            .await,
+        );
+        doc_forward(ext, "source_refresh", (&id,), r).await
+    }
+
+    async fn cite_resolve(
+        &self,
+        ext: &Extensions,
+        hrefs: Vec<String>,
+    ) -> RpcResult<Vec<document::Citation>> {
+        let (peer, by) = principal(ext)?;
+        let mut r = doc_send(&documents()?, document::CiteResolve { hrefs, by }).await;
+        member_outcome(&peer, &r);
+        if let Ok(cites) = &mut r {
+            check_session_cites(cites).await;
+        }
+        r
+    }
+
+    async fn nb_search(
+        &self,
+        args: document::index::NbSearchArgs,
+    ) -> RpcResult<Vec<document::index::BlockHit>> {
+        nb_result(document::index::nb_search(&documents()?, args).await)
+    }
+
+    async fn save_answer_as_note(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        turn: u32,
+        notebook: document::DocId,
+    ) -> RpcResult<agent::notebooks::SavedAnswer> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(
+            agent::notebooks::save_answer_as_note(&agents, session, turn, notebook.to_string())
+                .await,
+        )
+    }
+
+    async fn promote_answer(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        turn: u32,
+        note: document::DocId,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(agent::notebooks::promote_answer(&agents, session, turn, note.to_string()).await)
+    }
+
     async fn doc_snapshots(&self, doc: document::DocId) -> RpcResult<Vec<document::SnapshotInfo>> {
         doc_send(&documents()?, document::Snapshots { doc }).await
     }
@@ -5024,6 +5540,81 @@ impl ApiServer for Server {
             codeindex::Touch {
                 root: PathBuf::from(root),
                 paths,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_overview(&self, root: String) -> RpcResult<MapIndex> {
+        send(
+            &codeindex()?,
+            codeindex::map::Overview {
+                root: PathBuf::from(root),
+            },
+        )
+        .await
+    }
+
+    async fn codemap_element(&self, root: String, element: String) -> RpcResult<MapElement> {
+        send(
+            &codeindex()?,
+            codeindex::map::Element {
+                root: PathBuf::from(root),
+                element,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_generate(
+        &self,
+        root: String,
+        session: SessionId,
+        element: Option<String>,
+    ) -> RpcResult<MapJob> {
+        send(
+            &codeindex()?,
+            codeindex::map::Generate {
+                root: PathBuf::from(root),
+                session,
+                element,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_cancel(&self, root: String) -> RpcResult<MapJob> {
+        send(
+            &codeindex()?,
+            codeindex::map::Cancel {
+                root: PathBuf::from(root),
+            },
+        )
+        .await
+    }
+
+    async fn codemap_search(
+        &self,
+        root: String,
+        query: String,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<MapHit>> {
+        send(
+            &codeindex()?,
+            codeindex::map::Search {
+                root: PathBuf::from(root),
+                query,
+                limit,
+            },
+        )
+        .await
+    }
+
+    async fn codemap_export(&self, root: String) -> RpcResult<MapExport> {
+        send(
+            &codeindex()?,
+            codeindex::map::Export {
+                root: PathBuf::from(root),
             },
         )
         .await

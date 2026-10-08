@@ -222,6 +222,18 @@
       "body": "[attached note \"B\"]\nsecond line malformed"
     },
     {
+      "name": "notebook",
+      "input": "[attached notebook agqmlbgmk57ybm2rdgyj7kcery \"Platform runbooks\" · 4 sources · 2 notes]\nwhat does the failover runbook say?",
+      "refs": [{"kind": "notebook", "id": "agqmlbgmk57ybm2rdgyj7kcery", "title": "Platform runbooks", "meta": "4 sources · 2 notes"}],
+      "body": "what does the failover runbook say?"
+    },
+    {
+      "name": "source",
+      "input": "[attached source bk3pq2x7yzm4n6c8e0g1h2j3k4 \"Failover runbook.pdf\" · pdf · 12 pages · completed]\nsummarise section 4",
+      "refs": [{"kind": "source", "id": "bk3pq2x7yzm4n6c8e0g1h2j3k4", "title": "Failover runbook.pdf", "meta": "pdf · 12 pages · completed"}],
+      "body": "summarise section 4"
+    },
+    {
       "name": "empty text",
       "input": "",
       "refs": [],

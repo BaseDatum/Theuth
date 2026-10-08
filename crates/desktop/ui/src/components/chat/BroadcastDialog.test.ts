@@ -97,6 +97,7 @@ const summary = (id: string, over: Partial<SessionSummary> = {}): SessionSummary
   pinned: false,
   archived: false,
   project: null,
+  notebook: null,
   retention: 'durable',
   running: false,
   owner: '',

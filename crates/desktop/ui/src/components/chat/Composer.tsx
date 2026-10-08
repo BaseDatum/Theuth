@@ -91,6 +91,7 @@ export function createOptions(draft: DraftCreate, pick: { model: string | null; 
   return {
     retention: draft.private ? 'private' : 'durable',
     project: draft.project,
+    notebook: null,
     view: draft.private ? VIEW : null,
     cwd: null,
     model: pick.model,

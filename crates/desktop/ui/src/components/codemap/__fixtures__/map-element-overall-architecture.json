@@ -1,0 +1,1212 @@
+{
+ "meta": {
+  "root": "/Users/sky/Develop/theuth",
+  "seq": 57,
+  "schema": 1,
+  "state": "ready",
+  "index_state": "3255:1759946400000000000",
+  "git_head": "5cddad8e",
+  "stale_elements": 1,
+  "job": null,
+  "ms": 4
+ },
+ "id": "overall-architecture",
+ "node": "perspective:overall-architecture",
+ "perspective": "overall-architecture",
+ "parent": null,
+ "crumbs": [
+  [
+   "overall-architecture",
+   "Overall architecture"
+  ]
+ ],
+ "name": "Overall architecture",
+ "path": null,
+ "kind": "perspective",
+ "members": [
+  "cluster:df1efa65",
+  "unit:crates/rpc",
+  "cluster:6c626e52",
+  "cluster:832f5578",
+  "cluster:26b565b0",
+  "cluster:1671b209",
+  "cluster:040101c3",
+  "cluster:4d12bdc8",
+  "cluster:65ded279",
+  "cluster:3de0912b",
+  "unit:crates/theuth"
+ ],
+ "anchors": [
+  {
+   "path": "crates",
+   "line_start": null,
+   "line_end": null,
+   "exists": true
+  }
+ ],
+ "fields": {
+  "description": "theuth is a Cargo workspace of 49 crates (`crates/*`, 1,258 of 1,278 tracked files) plus a TypeScript desktop UI inside `crates/desktop/ui/src` (763 files, 106 k lines). Every crate is a plugin started by the `t` binary (`crates/theuth/src/main.rs`) on a shared `runtime::Runtime` with kameo actors; `crates/rpc` exposes them to the clients over one jsonrpsee WebSocket. This perspective groups the 49 crates into 11 layers chosen by what they depend on and who calls them; the Cargo path-dependency graph (334 edges) is the ground truth behind every arrow. Not shown: every layer depends on `foundation` (runtime/tools/platform are imported by 37, 31 and 24 crates) and `theuth-bin` imports 40 crates to assemble them — those fan-outs are omitted so the picture stays readable. Also outside the picture: `docs/` (542 files, design docs), `packages/` (OpenUI apps), `scripts/`, `site/`, `vendor/` (605 k lines, vendored dependencies), `deploy/`.",
+  "context": null,
+  "constraint": null,
+  "concern": "The dependency graph is star-shaped, not layered: `rpc` imports 37 crates and `agent` is imported by 21 (including `artifact`, `browser`, `meeting`, `talk`, `sandbox`), so \"agent\" is both the core and a shared library. Two files carry a disproportionate share of behaviour: `crates/rpc/src/api.rs` (8,029 lines) and `crates/agent/src/loop_.rs` (10,160 lines). A map that treats crates as units cannot show that; see the request-lifecycle perspective for the file-level path.",
+  "todo": null,
+  "note": null
+ },
+ "diagram": {
+  "nodes": [
+   {
+    "id": "cluster:df1efa65",
+    "label": "Clients",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/desktop",
+    "sub": "crates/desktop · crates/tui",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/rpc",
+    "label": "RPC facade",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/rpc",
+    "sub": "crates/rpc",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "cluster:6c626e52",
+    "label": "Agent loop",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/agent",
+    "sub": "crates/agent · crates/acp +1",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "cluster:832f5578",
+    "label": "Foundation",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/runtime",
+    "sub": "crates/runtime · crates/platform +6",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "cluster:26b565b0",
+    "label": "Content stores",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/knowledge",
+    "sub": "crates/knowledge · crates/document +3",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "cluster:1671b209",
+    "label": "Local models + speech",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/models",
+    "sub": "crates/models · crates/decision +3",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "cluster:040101c3",
+    "label": "World access",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/web",
+    "sub": "crates/web · crates/browser +4",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "cluster:4d12bdc8",
+    "label": "Channels + peers",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/signal",
+    "sub": "crates/signal · crates/slack +5",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "cluster:65ded279",
+    "label": "Mesh + sync",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/mesh",
+    "sub": "crates/mesh · crates/sessionsync +1",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "cluster:3de0912b",
+    "label": "Orchestration",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/roster",
+    "sub": "crates/roster · crates/tasks +5",
+    "tag": null,
+    "icon": null
+   },
+   {
+    "id": "unit:crates/theuth",
+    "label": "t binary",
+    "kind": "box",
+    "group": null,
+    "state": null,
+    "ref": "crates/theuth",
+    "sub": "crates/theuth",
+    "tag": null,
+    "icon": null
+   }
+  ],
+  "edges": [
+   {
+    "from": "cluster:df1efa65",
+    "to": "unit:crates/rpc",
+    "label": "jsonrpsee WebSocket",
+    "style": "dashed",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/rpc",
+    "to": "cluster:6c626e52",
+    "label": "send_input → SendInput",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/rpc",
+    "to": "cluster:26b565b0",
+    "label": "lens, doc, knowledge methods",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/rpc",
+    "to": "cluster:3de0912b",
+    "label": "schedule, tasks, roster methods",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/rpc",
+    "to": "cluster:4d12bdc8",
+    "label": "channel + pairing methods",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:6c626e52",
+    "to": "cluster:832f5578",
+    "label": "registry.ask(Invoke(ToolCall))",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:6c626e52",
+    "to": "cluster:040101c3",
+    "label": "HTTP client for providers",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:4d12bdc8",
+    "to": "cluster:6c626e52",
+    "label": "messages become session input",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:4d12bdc8",
+    "to": "cluster:3de0912b",
+    "label": "desks, tasks, the double",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:3de0912b",
+    "to": "cluster:6c626e52",
+    "label": "wake sessions, spawn desks",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:3de0912b",
+    "to": "cluster:65ded279",
+    "label": "engine stats, sandboxes, replication",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:26b565b0",
+    "to": "cluster:65ded279",
+    "label": "replica change feeds",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:1671b209",
+    "to": "cluster:6c626e52",
+    "label": "meeting/talk drive sessions",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:040101c3",
+    "to": "cluster:1671b209",
+    "label": "browser_run picks actions",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "cluster:65ded279",
+    "to": "cluster:6c626e52",
+    "label": "own agent sessions",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   },
+   {
+    "from": "unit:crates/theuth",
+    "to": "cluster:832f5578",
+    "label": "main() builds Runtime",
+    "style": "solid",
+    "state": null,
+    "arrow": null
+   }
+  ],
+  "groups": null,
+  "direction": "LR",
+  "legend": null,
+  "title": null
+ },
+ "mermaid": "flowchart LR\n    cluster_df1efa65[\"Clients\\ncrates/desktop · crates/tui\"]\n    unit_crates_rpc[\"RPC facade\\ncrates/rpc\"]\n    cluster_6c626e52[\"Agent loop\\ncrates/agent · crates/acp +1\"]\n    cluster_832f5578[\"Foundation\\ncrates/runtime · crates/platform +6\"]\n    cluster_26b565b0[\"Content stores\\ncrates/knowledge · crates/document +3\"]\n    cluster_1671b209[\"Local models + speech\\ncrates/models · crates/decision +3\"]\n    cluster_040101c3[\"World access\\ncrates/web · crates/browser +4\"]\n    cluster_4d12bdc8[\"Channels + peers\\ncrates/signal · crates/slack +5\"]\n    cluster_65ded279[\"Mesh + sync\\ncrates/mesh · crates/sessionsync +1\"]\n    cluster_3de0912b[\"Orchestration\\ncrates/roster · crates/tasks +5\"]\n    unit_crates_theuth[\"t binary\\ncrates/theuth\"]\n\n    cluster_df1efa65 -.->|\"jsonrpsee WebSocket\"| unit_crates_rpc\n    unit_crates_rpc -->|\"send_input → SendInput\"| cluster_6c626e52\n    unit_crates_rpc -->|\"lens, doc, knowledge methods\"| cluster_26b565b0\n    unit_crates_rpc -->|\"schedule, tasks, roster methods\"| cluster_3de0912b\n    unit_crates_rpc -->|\"channel + pairing methods\"| cluster_4d12bdc8\n    cluster_6c626e52 -->|\"registry.ask(Invoke(ToolCall))\"| cluster_832f5578\n    cluster_6c626e52 -->|\"HTTP client for providers\"| cluster_040101c3\n    cluster_4d12bdc8 -->|\"messages become session input\"| cluster_6c626e52\n    cluster_4d12bdc8 -->|\"desks, tasks, the double\"| cluster_3de0912b\n    cluster_3de0912b -->|\"wake sessions, spawn desks\"| cluster_6c626e52\n    cluster_3de0912b -->|\"engine stats, sandboxes, replication\"| cluster_65ded279\n    cluster_26b565b0 -->|\"replica change feeds\"| cluster_65ded279\n    cluster_1671b209 -->|\"meeting/talk drive sessions\"| cluster_6c626e52\n    cluster_040101c3 -->|\"browser_run picks actions\"| cluster_1671b209\n    cluster_65ded279 -->|\"own agent sessions\"| cluster_6c626e52\n    unit_crates_theuth -->|\"main() builds Runtime\"| cluster_832f5578",
+ "edges": [
+  {
+   "from": "cluster:df1efa65",
+   "to": "unit:crates/rpc",
+   "label": "jsonrpsee WebSocket",
+   "backed": false,
+   "evidence": [
+    {
+     "type": "inferred",
+     "reason": "desktop has no Cargo dep on rpc — it talks over the WebSocket (ui/src/rpc/transport.ts#L22-L43, client.ts#L106); only tui→rpc is a Cargo dep"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/rpc",
+   "to": "cluster:6c626e52",
+   "label": "send_input → SendInput",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/acp",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "call",
+     "site": "crates/rpc/src/api.rs#L2806",
+     "from": "rpc::api::send_input",
+     "to": "agent::Agents::SendInput"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/rpc",
+   "to": "cluster:26b565b0",
+   "label": "lens, doc, knowledge methods",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/document",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/knowledge",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/codeindex",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/search",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/artifact",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/rpc",
+   "to": "cluster:3de0912b",
+   "label": "schedule, tasks, roster methods",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/schedule",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/roster",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/tasks",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/app",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/update",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/double",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/dreaming",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/rpc",
+   "to": "cluster:4d12bdc8",
+   "label": "channel + pairing methods",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/signal",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/slack",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/telegram",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/link",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/nodes",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/rpc",
+     "to": "crates/a2a",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "cluster:6c626e52",
+   "to": "cluster:832f5578",
+   "label": "registry.ask(Invoke(ToolCall))",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/agent",
+     "to": "crates/tools",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/agent",
+     "to": "crates/runtime",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/agent",
+     "to": "crates/platform",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/agent",
+     "to": "crates/oauth",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/agent",
+     "to": "crates/surface",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/agent",
+     "to": "crates/secrets",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/agent",
+     "to": "crates/replica",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "call",
+     "site": "crates/agent/src/loop_.rs#L5900",
+     "from": "agent::loop_::Session::drive",
+     "to": "tools::registry::Invoke"
+    }
+   ]
+  },
+  {
+   "from": "cluster:6c626e52",
+   "to": "cluster:040101c3",
+   "label": "HTTP client for providers",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/agent",
+     "to": "crates/web",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "cluster:4d12bdc8",
+   "to": "cluster:6c626e52",
+   "label": "messages become session input",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/a2a",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/nodes",
+     "to": "crates/acp",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/nodes",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/signal",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/slack",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/telegram",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "cluster:4d12bdc8",
+   "to": "cluster:3de0912b",
+   "label": "desks, tasks, the double",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/signal",
+     "to": "crates/double",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/signal",
+     "to": "crates/roster",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/signal",
+     "to": "crates/tasks",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/slack",
+     "to": "crates/double",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/slack",
+     "to": "crates/roster",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/slack",
+     "to": "crates/tasks",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/telegram",
+     "to": "crates/double",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/telegram",
+     "to": "crates/roster",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/telegram",
+     "to": "crates/tasks",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "cluster:3de0912b",
+   "to": "cluster:6c626e52",
+   "label": "wake sessions, spawn desks",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/app",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/double",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/dreaming",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/roster",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/schedule",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/tasks",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/update",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "cluster:3de0912b",
+   "to": "cluster:65ded279",
+   "label": "engine stats, sandboxes, replication",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/double",
+     "to": "crates/mesh",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/dreaming",
+     "to": "crates/mesh",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/roster",
+     "to": "crates/mesh",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/roster",
+     "to": "crates/sandbox",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/schedule",
+     "to": "crates/mesh",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/tasks",
+     "to": "crates/mesh",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/tasks",
+     "to": "crates/sessionsync",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "cluster:26b565b0",
+   "to": "cluster:65ded279",
+   "label": "replica change feeds",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/document",
+     "to": "crates/mesh",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "cluster:1671b209",
+   "to": "cluster:6c626e52",
+   "label": "meeting/talk drive sessions",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/meeting",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/talk",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "cluster:040101c3",
+   "to": "cluster:1671b209",
+   "label": "browser_run picks actions",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/browser",
+     "to": "crates/decision",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "cluster:65ded279",
+   "to": "cluster:6c626e52",
+   "label": "own agent sessions",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/sandbox",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/sessionsync",
+     "to": "crates/agent",
+     "kind": "cargo-path"
+    }
+   ]
+  },
+  {
+   "from": "unit:crates/theuth",
+   "to": "cluster:832f5578",
+   "label": "main() builds Runtime",
+   "backed": true,
+   "evidence": [
+    {
+     "type": "manifest",
+     "from": "crates/theuth",
+     "to": "crates/runtime",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/theuth",
+     "to": "crates/platform",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/theuth",
+     "to": "crates/tools",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/theuth",
+     "to": "crates/surface",
+     "kind": "cargo-path"
+    },
+    {
+     "type": "manifest",
+     "from": "crates/theuth",
+     "to": "crates/secrets",
+     "kind": "cargo-path"
+    }
+   ]
+  }
+ ],
+ "children": [
+  {
+   "id": "overall-architecture/cluster:df1efa65",
+   "node": "cluster:df1efa65",
+   "name": "Clients",
+   "path": "crates",
+   "kind": "cluster",
+   "files": 315,
+   "lines": 66688,
+   "share": 0.099,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/rpc",
+   "node": "unit:crates/rpc",
+   "name": "RPC facade",
+   "path": "crates/rpc",
+   "kind": "unit",
+   "files": 72,
+   "lines": 15306,
+   "share": 0.023,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/cluster:6c626e52",
+   "node": "cluster:6c626e52",
+   "name": "Agent loop",
+   "path": "crates",
+   "kind": "cluster",
+   "files": 224,
+   "lines": 181887,
+   "share": 0.271,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/cluster:832f5578",
+   "node": "cluster:832f5578",
+   "name": "Foundation",
+   "path": "crates",
+   "kind": "cluster",
+   "files": 426,
+   "lines": 59363,
+   "share": 0.088,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/cluster:26b565b0",
+   "node": "cluster:26b565b0",
+   "name": "Content stores",
+   "path": "crates",
+   "kind": "cluster",
+   "files": 119,
+   "lines": 54183,
+   "share": 0.081,
+   "leaf": false,
+   "stale": false,
+   "thumbnail": {
+    "nodes": [
+     {
+      "id": "unit:crates/document",
+      "label": "Document authority",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/document",
+      "sub": "crates/document",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/knowledge",
+      "label": "Knowledge bundle",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/knowledge",
+      "sub": "crates/knowledge",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/artifact",
+      "label": "Artifacts",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/artifact",
+      "sub": "crates/artifact",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/search",
+      "label": "Search envelope",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/search",
+      "sub": "crates/search",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/codeindex",
+      "label": "Code index",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/codeindex",
+      "sub": "crates/codeindex",
+      "tag": null,
+      "icon": null
+     }
+    ],
+    "edges": [
+     {
+      "from": "unit:crates/knowledge",
+      "to": "unit:crates/document",
+      "label": "concepts are block documents",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/artifact",
+      "to": "unit:crates/document",
+      "label": "markdown artifacts are documents",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/document",
+      "to": "unit:crates/codeindex",
+      "label": "boards resolve code anchors",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/knowledge",
+      "to": "unit:crates/search",
+      "label": "shared fuzzy match",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/artifact",
+      "to": "unit:crates/search",
+      "label": "shared fuzzy match",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/document",
+      "to": "unit:crates/search",
+      "label": "shared fuzzy match",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     }
+    ],
+    "groups": null,
+    "direction": "LR",
+    "legend": null,
+    "title": null
+   }
+  },
+  {
+   "id": "overall-architecture/cluster:1671b209",
+   "node": "cluster:1671b209",
+   "name": "Local models + speech",
+   "path": "crates",
+   "kind": "cluster",
+   "files": 99,
+   "lines": 107615,
+   "share": 0.16,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/cluster:040101c3",
+   "node": "cluster:040101c3",
+   "name": "World access",
+   "path": "crates",
+   "kind": "cluster",
+   "files": 199,
+   "lines": 43714,
+   "share": 0.065,
+   "leaf": false,
+   "stale": false,
+   "thumbnail": {
+    "nodes": [
+     {
+      "id": "unit:crates/web",
+      "label": "HTTP + extraction",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/web",
+      "sub": "crates/web",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "unit:crates/browser",
+      "label": "Headless browser",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/browser",
+      "sub": "crates/browser",
+      "tag": null,
+      "icon": null
+     },
+     {
+      "id": "cluster:3b46c248",
+      "label": "Scrape / crawl / map",
+      "kind": "box",
+      "group": null,
+      "state": null,
+      "ref": "crates/scrape",
+      "sub": "crates/scrape · crates/firecrawl-native",
+      "tag": null,
+      "icon": null
+     }
+    ],
+    "edges": [
+     {
+      "from": "cluster:3b46c248",
+      "to": "unit:crates/web",
+      "label": "plain fetch first",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "cluster:3b46c248",
+      "to": "unit:crates/browser",
+      "label": "rendered falls back",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     },
+     {
+      "from": "unit:crates/browser",
+      "to": "unit:crates/web",
+      "label": "shares HTTP client",
+      "style": "solid",
+      "state": null,
+      "arrow": null
+     }
+    ],
+    "groups": null,
+    "direction": "LR",
+    "legend": null,
+    "title": null
+   }
+  },
+  {
+   "id": "overall-architecture/cluster:4d12bdc8",
+   "node": "cluster:4d12bdc8",
+   "name": "Channels + peers",
+   "path": "crates",
+   "kind": "cluster",
+   "files": 79,
+   "lines": 52204,
+   "share": 0.078,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/cluster:65ded279",
+   "node": "cluster:65ded279",
+   "name": "Mesh + sync",
+   "path": "crates",
+   "kind": "cluster",
+   "files": 51,
+   "lines": 19592,
+   "share": 0.029,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/cluster:3de0912b",
+   "node": "cluster:3de0912b",
+   "name": "Orchestration",
+   "path": "crates",
+   "kind": "cluster",
+   "files": 115,
+   "lines": 67109,
+   "share": 0.1,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  },
+  {
+   "id": "overall-architecture/unit:crates/theuth",
+   "node": "unit:crates/theuth",
+   "name": "t binary",
+   "path": "crates/theuth",
+   "kind": "unit",
+   "files": 10,
+   "lines": 3323,
+   "share": 0.005,
+   "leaf": true,
+   "stale": false,
+   "thumbnail": null
+  }
+ ],
+ "also_in": [],
+ "stale": false,
+ "origin": "generated",
+ "provenance": {
+  "model": "anthropic/claude-opus-4",
+  "git_head": "5cddad8e",
+  "index_state": "3255:1759946400000000000",
+  "generated_ms": 1759946640000,
+  "call_ids": [
+   "01J9ZQ3F7W2M9N4P6Q8R1S0TUV",
+   "01J9ZQ4A1B3C5D7E9F0G2H4JKL"
+  ],
+  "cost_nanos": 62000000,
+  "currency": "USD",
+  "input_tokens": 12400,
+  "output_tokens": 1680,
+  "repaired": false,
+  "facts_hash": "7c1d2e9f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d"
+ },
+ "listing": null
+}

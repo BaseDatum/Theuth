@@ -1,6 +1,8 @@
-//! Bus events (73 §5.1): one `CodeToolRan` per `code_*` call and one
-//! `CodeReconciled` per index write, coalesced to ≥ 250 ms per root. Rows
-//! never ride events; the lenses fetch them (`lens.rs`).
+//! Bus events (73 §5.1, 147 §10.1): one `CodeToolRan` per `code_*` call, one
+//! `CodeReconciled` per index write, `CodeMapProgress` per generation stage
+//! or element, `CodeMapChanged` per skeleton pass or stored element — the
+//! per-root ones coalesced to ≥ 250 ms. Rows never ride events; the lenses
+//! and the Map tab fetch them (`lens.rs`, `map/`).
 
 use std::path::PathBuf;
 
@@ -29,11 +31,11 @@ pub enum CodeindexEvent {
         root: PathBuf,
         /// `ToolCx.call_id`.
         call_id: String,
-        /// `code_map | code_find | code_outline | code_refs | code_symbol | code_impact`.
+        /// `code_map | code_find | code_outline | code_refs | code_symbol | code_impact | code_overview`.
         #[cfg_attr(
             feature = "ts",
             ts(
-                type = "\"code_map\" | \"code_find\" | \"code_outline\" | \"code_refs\" | \"code_symbol\" | \"code_impact\""
+                type = "\"code_map\" | \"code_find\" | \"code_outline\" | \"code_refs\" | \"code_symbol\" | \"code_impact\" | \"code_overview\""
             )
         )]
         tool: String,
@@ -68,6 +70,54 @@ pub enum CodeindexEvent {
         hint: Option<String>,
         /// `meta.git_head`, when the root is a repository.
         git_head: Option<String>,
+        /// Per-root monotonic sequence.
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        seq: u64,
+    },
+    /// A generation job moved (147 §10.1): once per stage change and per
+    /// element finished, ≥ 250 ms apart per root. No `session` scope: global,
+    /// the UI filters by root; `session` here is who pays, informational.
+    CodeMapProgress {
+        /// Canonical root.
+        root: PathBuf,
+        /// `jobs.id`.
+        job: String,
+        /// The opening session (S1).
+        session: SessionId,
+        /// `select | top | flow | describe | done | failed | cancelled`.
+        stage: String,
+        /// Elements with prose.
+        done: u32,
+        /// Elements planned.
+        total: u32,
+        /// The element just finished, when one did.
+        element: Option<String>,
+        /// Side calls made so far.
+        calls: u32,
+        /// Σ cost so far.
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        cost_nanos: u64,
+        /// Currency of `cost_nanos`.
+        currency: String,
+        /// Why it stopped, when `failed`.
+        error: Option<String>,
+        /// Per-root monotonic sequence.
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        seq: u64,
+    },
+    /// Map rows of `root` changed (147 §10.1, §8): after every skeleton pass
+    /// that changed anything and after every stored element; the panel
+    /// refetches `elements`.
+    CodeMapChanged {
+        /// Canonical root.
+        root: PathBuf,
+        /// Element ids to refetch, ≤ `map::CHANGED_ELEMENTS`.
+        elements: Vec<String>,
+        /// Element ids newly stale.
+        stale: Vec<String>,
+        /// Element ids beyond the cap.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        more: usize,
         /// Per-root monotonic sequence.
         #[cfg_attr(feature = "ts", ts(type = "number"))]
         seq: u64,

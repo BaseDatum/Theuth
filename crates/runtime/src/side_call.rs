@@ -33,6 +33,8 @@ pub enum CallKind {
     Dream,
     /// 137: an endless-mode compactor call (one node of the summary tree).
     Endless,
+    /// 147 §6.4: a CodeMap generator side call, charged to the opening session.
+    CodeMap,
     /// 125 R1: a native subagent's one-shot consultation of its ancestor's advisor.
     Consult,
 }
@@ -49,6 +51,7 @@ impl CallKind {
             Self::Escalate => "escalate",
             Self::Dream => "dream",
             Self::Endless => "endless",
+            Self::CodeMap => "codemap",
             Self::Consult => "consult",
         }
     }
@@ -72,6 +75,7 @@ impl FromStr for CallKind {
             "escalate" => Ok(Self::Escalate),
             "dream" => Ok(Self::Dream),
             "endless" => Ok(Self::Endless),
+            "codemap" => Ok(Self::CodeMap),
             "consult" => Ok(Self::Consult),
             _ => Err(format!("unknown CallKind: {s:?}")),
         }
@@ -145,6 +149,7 @@ mod tests {
             CallKind::Escalate,
             CallKind::Dream,
             CallKind::Endless,
+            CallKind::CodeMap,
             CallKind::Consult,
         ] {
             assert_eq!(k.as_str().parse::<CallKind>().unwrap(), k);

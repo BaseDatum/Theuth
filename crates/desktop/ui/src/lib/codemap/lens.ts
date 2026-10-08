@@ -60,6 +60,9 @@ export function lensFor(tool: CodeTool, args: Record<string, unknown>, summary: 
         },
         focus: null,
       }
+    // 147 §12.1: the map tool counts as a `code_*` call but never switches a lens.
+    case 'code_overview':
+      return null
   }
 }
 

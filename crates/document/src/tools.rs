@@ -107,6 +107,14 @@ impl Docs {
         if let Some(id) = DocId::parse(doc) {
             return Ok(id);
         }
+        // 144 §13.2: `source:<id>` / `notebook:<id>` name the document kinds by prefix; the id is the DocId.
+        if let Some(id) = doc
+            .strip_prefix("source:")
+            .or_else(|| doc.strip_prefix("notebook:"))
+        {
+            return DocId::parse(id)
+                .ok_or_else(|| anyhow::anyhow!("`{doc}`: `{id}` is not a document id"));
+        }
         if let Some(meeting) = doc.strip_prefix("meeting:") {
             let binding = Binding::MeetingNote(meeting.to_owned());
             return match self
@@ -139,7 +147,7 @@ impl Docs {
             Some(c) => c,
             None if doc.contains('/') => doc,
             None => anyhow::bail!(
-                "`{doc}` is neither a document id, `knowledge:<concept id>`, `meeting:<id>` nor `agent-charter:<name>`"
+                "`{doc}` is neither a document id, `knowledge:<concept id>`, `meeting:<id>`, `agent-charter:<name>`, `source:<id>` nor `notebook:<id>`"
             ),
         };
         let binding = Binding::Knowledge(concept.to_owned());
@@ -169,27 +177,27 @@ impl Docs {
     async fn edit(
         &self,
         doc: &str,
-        edits: Vec<BlockEdit>,
+        mut edits: Vec<BlockEdit>,
         cx: &ToolCx,
     ) -> anyhow::Result<ToolOutput> {
         let id = self.resolve(doc).await?;
-        for e in &edits {
-            if let BlockEdit::Insert { markdown, .. } | BlockEdit::Replace { markdown, .. } = e
-                && let Some(refused) = self.check_excerpts(&id, markdown).await
-            {
-                return Ok(refused);
+        let by = Principal::Agent {
+            session: cx.session.0,
+        };
+        for e in &mut edits {
+            if let BlockEdit::Insert { markdown, .. } | BlockEdit::Replace { markdown, .. } = e {
+                if let Some(refused) = self.check_excerpts(&id, markdown).await {
+                    return Ok(refused);
+                }
+                // 144 §6.6: a dead `theuth://` target is refused; live block citations gain `?s=`.
+                if let Some(refused) =
+                    crate::cite_check::check(&self.actor, markdown, by.clone()).await
+                {
+                    return Ok(refused);
+                }
             }
         }
-        let r = self
-            .actor
-            .ask(Edit {
-                doc: id,
-                edits,
-                by: Principal::Agent {
-                    session: cx.session.0,
-                },
-            })
-            .await;
+        let r = self.actor.ask(Edit { doc: id, edits, by }).await;
         Ok(match r {
             Ok(o) => outcome(o),
             Err(kameo::error::SendError::HandlerError(e)) => ToolOutput::err(model_error(&e)),
@@ -784,6 +792,9 @@ pub struct CreateArgs {
     /// Boards only: the absolute repository root every `code:` link, `ref` and `Excerpt.path` resolves against.
     #[serde(default)]
     pub root: Option<String>,
+    /// 144 §13.2: file the new note in this notebook (a `DocId`) as a `note` item.
+    #[serde(default)]
+    pub notebook: Option<String>,
 }
 
 /// `doc_create`: a new note (§5.3) or board (71 §2.1).
@@ -808,7 +819,13 @@ impl Tool for CreateTool {
         let by = Principal::Agent {
             session: cx.session.0,
         };
-        let markdown = a.markdown.unwrap_or_default();
+        let mut markdown = a.markdown.unwrap_or_default();
+        // 144 §6.6 / §8: a saved answer's chips must point at live blocks and carry `?s=`.
+        if let Some(refused) =
+            crate::cite_check::check(&self.0.actor, &mut markdown, by.clone()).await
+        {
+            return Ok(refused);
+        }
         let (kind, summary) = match a.kind.as_deref().unwrap_or("note") {
             "note" => {
                 if a.root.is_some() {
@@ -868,9 +885,33 @@ impl Tool for CreateTool {
         };
         let id = summary.map_err(anyhow::Error::msg)?.id;
         let url = format!("theuth://notes/{id}");
+        let mut text = format!("created {kind} {id} ({url})\n");
+        if let Some(nb) = a.notebook.as_deref().filter(|n| !n.trim().is_empty()) {
+            let notebook = self.0.resolve(nb).await?;
+            let r = self
+                .0
+                .actor
+                .ask(crate::notebook::NotebookItemAdd {
+                    notebook: notebook.clone(),
+                    kind: crate::notebook::ItemKind::Note,
+                    item: id.to_string(),
+                    by: Principal::Agent {
+                        session: cx.session.0,
+                    },
+                })
+                .await;
+            match r {
+                Ok(_) => text.push_str(&format!("filed in notebook {notebook}\n")),
+                Err(e) => {
+                    return Ok(ToolOutput::err(format!(
+                        "created {kind} {id} ({url}) but could not file it in notebook {notebook}: {e}"
+                    )));
+                }
+            }
+        }
         Ok(structured(
-            format!("created {kind} {id} ({url})\n"),
-            serde_json::json!({ "doc": id, "url": url, "kind": kind }),
+            text,
+            serde_json::json!({ "doc": id, "url": url, "kind": kind, "notebook": a.notebook }),
         ))
     }
 }

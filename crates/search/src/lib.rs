@@ -39,7 +39,7 @@ pub fn limit(requested: Option<u32>) -> u32 {
 }
 
 /// The selected categories in canonical order, deduplicated. `None` means
-/// all six; `Some(vec![])` means none.
+/// all eight; `Some(vec![])` means none.
 pub fn categories(requested: Option<Vec<SearchCategory>>) -> Vec<SearchCategory> {
     match requested {
         None => SearchCategory::ALL.to_vec(),
@@ -50,7 +50,7 @@ pub fn categories(requested: Option<Vec<SearchCategory>>) -> Vec<SearchCategory>
     }
 }
 
-/// One of the six search groups (49 §2.1; 66 §10 adds notes and meetings).
+/// One of the eight search groups (49 §2.1; 66 §10 adds notes and meetings; 144 §7.4 sources and notebooks).
 #[derive(
     Clone,
     Copy,
@@ -79,17 +79,23 @@ pub enum SearchCategory {
     Notes,
     /// Meetings: titles and transcript segments (66 §10).
     Meetings,
+    /// Sources: block-level hits over `DocKind::Source` text and insights (144 §7.4).
+    Sources,
+    /// Notebooks: titles and descriptions (144 §7.4).
+    Notebooks,
 }
 
 impl SearchCategory {
     /// Every category, in display and wire order.
-    pub const ALL: [SearchCategory; 6] = [
+    pub const ALL: [SearchCategory; 8] = [
         SearchCategory::Sessions,
         SearchCategory::Artifacts,
         SearchCategory::Knowledge,
         SearchCategory::KnowledgeHistory,
         SearchCategory::Notes,
         SearchCategory::Meetings,
+        SearchCategory::Sources,
+        SearchCategory::Notebooks,
     ];
 }
 

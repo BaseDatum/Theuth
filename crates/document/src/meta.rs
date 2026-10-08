@@ -25,12 +25,16 @@ impl DocId {
     }
 
     /// The id of the document bound to `binding`: uuid v5 (namespace [`Self::NAMESPACE`], name =
-    /// [`Binding::key`]) for bound kinds, so two engines agree without talking; a fresh v7 for a `Note`.
+    /// [`Binding::key`]) for bound kinds, so two engines agree without talking; a fresh v7 for the
+    /// keyless bindings (`Note`, `Notebook`).
     pub fn for_binding(binding: &Binding) -> Self {
-        match binding {
-            Binding::Note => Self::new(),
-            b => Self::from_uuid(uuid::Uuid::new_v5(&Self::NAMESPACE, b.key().as_bytes())),
+        if binding.keyless() {
+            return Self::new();
         }
+        Self::from_uuid(uuid::Uuid::new_v5(
+            &Self::NAMESPACE,
+            binding.key().as_bytes(),
+        ))
     }
 
     /// Render `u` (16 bytes → 26 chars, RFC 4648 alphabet lowercased, no padding).
@@ -98,6 +102,14 @@ pub enum DocKind {
     /// diagrams — bound like a note (`Binding::Note`, `documents/<id>/note.md`); its first block is the
     /// frontmatter carrying `root:`, the absolute repository root every `code:` link and `ref` resolves against.
     Board,
+    /// A notebook (144 §3.1): the container over notes, sources, sessions and artifacts. Its body is the
+    /// description the agent reads as a prompt block; its lists are `notebook_items` rows. Never lists
+    /// among notes.
+    Notebook,
+    /// A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted
+    /// text, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so
+    /// the same thing is one document everywhere. Written by `Principal::Helper`/`File` only.
+    Source,
 }
 
 impl DocKind {
@@ -110,6 +122,8 @@ impl DocKind {
             Self::AgentCharter => "agent_charter",
             Self::TaskThread => "task_thread",
             Self::Board => "board",
+            Self::Notebook => "notebook",
+            Self::Source => "source",
         }
     }
 
@@ -148,12 +162,23 @@ pub enum Binding {
     AgentCharter(String),
     /// A task's thread by task id.
     TaskThread(String),
+    /// A notebook has no other owner (144 §3.1): keyless like a note, a fresh v7 id.
+    Notebook,
+    /// A source by its origin key (144 §4.1): `url:<canonical>`, `file:<sha256>`, `meeting:<id>`,
+    /// `session:<id>`, `mcp:<server>/<tool>/<sha256(args)>`, `youtube:<video id>`, `text:<sha256>`.
+    Source(String),
 }
 
 impl Binding {
     /// The index column: canonical JSON, so `Lookup` is one `WHERE binding = ?`.
     pub fn key(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// No natural key: several live documents share this binding (notes, notebooks), so `Lookup`
+    /// and the id convergence of 69 §5 never apply to it.
+    pub fn keyless(&self) -> bool {
+        matches!(self, Self::Note | Self::Notebook)
     }
 
     /// The kind a new document of this binding gets.
@@ -165,6 +190,8 @@ impl Binding {
             Self::Note => DocKind::Note,
             Self::AgentCharter(_) => DocKind::AgentCharter,
             Self::TaskThread(_) => DocKind::TaskThread,
+            Self::Notebook => DocKind::Notebook,
+            Self::Source(_) => DocKind::Source,
         }
     }
 
@@ -180,6 +207,8 @@ impl Binding {
             Self::Note => format!("documents/{id}/note.md"),
             Self::AgentCharter(_) => format!("documents/{id}/charter.md"),
             Self::TaskThread(_) => format!("documents/{id}/thread.md"),
+            Self::Notebook => format!("documents/{id}/notebook.md"),
+            Self::Source(_) => format!("documents/{id}/source.md"),
         }
     }
 }
@@ -194,6 +223,11 @@ pub enum Role {
     /// Open and awareness only; `doc_update` → `viewer_readonly`.
     Viewer,
 }
+
+/// Refusal reason (144 §3.1): an `ApplyUpdate`, `doc_insert` or `doc_replace` on a `DocKind::Source` from
+/// anyone but `Principal::Helper`/`File` — the source is derived text; only ingest and the insight job
+/// write it. Sits beside `viewer_readonly` (`share.rs` `admit`).
+pub const SOURCE_READONLY: &str = "source_readonly";
 
 /// A member admitted through a share link (§8.1, §8.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

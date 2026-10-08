@@ -9,7 +9,7 @@ import type { GraphEdge } from '@/rpc/bindings/GraphEdge'
 import type { GraphGroup } from '@/rpc/bindings/GraphGroup'
 import type { GraphNode } from '@/rpc/bindings/GraphNode'
 import type { GraphProps } from '@/rpc/bindings/GraphProps'
-import { ELK_OPTIONS, elkLayout, flattenElk, fnv, GROUP_OPTIONS, labelSize, type Layout, LayoutTimeout, nodeSize, norm } from './diagram/elk'
+import { ELK_OPTIONS, elkLayout, elkPeek, flattenElk, fnv, GROUP_OPTIONS, labelSize, type Layout, LayoutTimeout, nodeSize, norm } from './diagram/elk'
 import type { Loose } from './diagram/types'
 import { type DiagramTokens, diagramTokens } from './diagram-theme'
 import { createRenderQueue, type RenderQueue } from './render-queue'
@@ -120,10 +120,14 @@ type Req<T> = { hash: string; build: () => ElkNode; map: (root: ElkNode) => T }
 /**
  * Layout through the render queue (coalesced while streaming, the last good layout stays on screen until the next
  * lands), `LayoutTimeout` → `{ timeout }` — never a blank card. `build`/`map` are read when the request runs;
- * `enabled: false` (a layout the component computes itself) requests nothing.
+ * `enabled: false` (a layout the component computes itself) requests nothing. 135 R2.3: a hash the kernel's LRU
+ * already holds is shown on the first render, no request.
  */
 export function useElkLayout<T>(hash: string, build: () => ElkNode, map: (root: ElkNode) => T, enabled = true): Shown<T> | null {
-  const [shown, setShown] = useState<Shown<T> | null>(null)
+  const [shown, setShown] = useState<Shown<T> | null>(() => {
+    const layout = enabled ? elkPeek<T>(hash) : undefined
+    return layout === undefined ? null : { hash, layout }
+  })
   const queue = useRef<RenderQueue<Req<T>> | null>(null)
   useEffect(() => {
     const q = createRenderQueue<Req<T>>(async (req, isCurrent) => {
@@ -139,9 +143,10 @@ export function useElkLayout<T>(hash: string, build: () => ElkNode, map: (root: 
   }, [])
   const latest = useRef({ build, map })
   latest.current = { build, map }
+  const have = shown !== null && 'layout' in shown && shown.hash === hash
   useEffect(() => {
-    if (enabled) queue.current?.request({ hash, build: () => latest.current.build(), map: (r) => latest.current.map(r) })
-  }, [hash, enabled])
+    if (enabled && !have) queue.current?.request({ hash, build: () => latest.current.build(), map: (r) => latest.current.map(r) })
+  }, [hash, enabled, have])
   return shown
 }
 
