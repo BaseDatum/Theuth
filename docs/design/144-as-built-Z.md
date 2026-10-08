@@ -83,6 +83,15 @@ patch. The migration stays `0042_session_notebook.sql`. Gates after: clippy `-p 
 --tests -D warnings` clean; `cargo test -p agent -p rpc -p document -p link` (compiled under the lock, run bare) —
 agent 562 (+2 ignored) + 1 + 5, document 71 + 11 + 4 + 3 + 1 + 5 + 1, link 27, rpc 55 + 1, 0 failed.
 
+### mbx adoption (R6)
+Every gate above ran on plain `cargo` with `CARGO_TARGET_DIR=~/Develop/theuth-144-target/C`. After the last gate
+(nothing compiling, no `target/` in the worktree) the tree was switched to `mbx` per Sky's 19:47 rule: `CARGO_TARGET_DIR`
+unset, `BUILD_LABEL=144-Z build-lock mbx check -p document -p agent -p rpc -p decision --tests` → clean,
+`Finished … in 11m 20s` (1510 crates checked cold — the one-time cost; the managed target is now
+`target -> ~/Library/Caches/mbx/targets/v1/1808…`). From here on this worktree is mbx-only (`build-lock mbx test … --no-run`
+under the lock, run bare; `BUILD_SLOTS=1 build-lock mbx check --workspace` for the workspace gate; bindings via
+`mbx test -p rpc --features ts --lib --quiet export_bindings` + `cp -R bindings/. crates/desktop/ui/src/rpc/bindings/`).
+
 ## Proof
 Scratch engine `t --headless --data-dir /tmp/144-engine` (rpc 127.0.0.1:7145, `anthropic/claude-sonnet-4-5` through
 the env key, `link.enabled` on the public relay, `tools.policy.mutating: allow`), the gte checkpoint under
