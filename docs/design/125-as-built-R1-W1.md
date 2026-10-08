@@ -59,7 +59,34 @@ counters and the pairing warning. No `lib.rs` type, no RPC, TUI or desktop file 
 
 ## Gates (exact result lines)
 
-GATES_PLACEHOLDER
+All through `BUILD_LABEL=125R1-W1 /Users/Sky.Moore/.theuth/bin/build-lock nice -n 10 …`, `CARGO_BUILD_JOBS=4`,
+`CARGO_INCREMENTAL=0`, `CARGO_TARGET_DIR=…/theuth-125-r1-int/target`, foreground.
+
+- `cargo test -p agent --lib -- advisor:: loop_::advisor_tests` →
+  `test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 510 filtered out; finished in 22.76s`
+  (`advisor::tests::consult_contract`, `advisor::tests::advisors_contract`, `advisor::tests::restart_reseeds_and_prefaces`,
+  the 5 `loop_::advisor_tests`, the `advisor::{advise,consult,guard,identity,render}::tests`, the 7 `store::advisor::tests`).
+- `cargo test -p agent` → `test result: ok. 536 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 110.88s`
+  (lib) + `test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` (doc).
+- `cargo clippy -p agent --all-targets -- -D warnings` → `Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 03s`.
+- `cargo fmt -p agent -- --check` → clean after `cargo fmt -p agent` (every hunk in W1's files).
+- `cargo check -p rpc -p tui -p theuth` → `Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 30s`.
+- `cargo test -p tui --test no_emoji` → `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s`
+  (R1.9 W1 (14): the new agent strings carry no emoji).
+
+R1.9 W1 coverage: (1) `root_consult_end_to_end` (tool + paragraph present with the flag, absent at `max_consults = 0`),
+`subagent_one_shot` (present through two hops, absent without a link), `advisor_kind_session_runs_advise_locally…`
+(never for `kind == Advisor`); (2) `root_consult_end_to_end` + `parked_consult_and_held_nits` (`(2 steps)` heading);
+(3) `parked_consult_and_held_nits`; (4) (5) (6) `root_consult_end_to_end` (12-line clip, `no objection`, masked
+`Consultation`/`Advice` card, one `AdvisoryAdded`, the `→ consult(…)` tool line in the next review and no `<advisory`,
+cap string without an actor call, reset on the next user turn) and `subagent_one_shot` (never resets); (7)
+`consult_gates`; (8) `consult_timeout_and_stop`; (9) (10) `consult_quarantine_and_blocker`; (11) `subagent_one_shot`
+(`ConsultSource` two hops / `None`, one one-shot request on the no-tools system prompt with the preface and the block,
+one `model_calls` row `kind = consult` owned by the subagent, 400 → unavailable + link stays `Idle`, 429 → `Paused`,
+`total` on the root link, no card for a failure); the 48 KiB pin is `render::tests::consult_block_and_pinned_first_row`;
+(12) `root_consult_end_to_end` (`consults`, `warning: None` for unpriced fakes) + the `pairing_warning` table in
+`consult_gates`; (13) `frame::tests::consult_paragraph_follows_the_advisory_one_when_the_tool_is_listed`; (14) above.
+The masked `AppendAdvisory` path on a busy session is `loop_::advisor_tests::masked_card_lands_at_once_and_stays_out_of_context`.
 
 ## Deviations from the design (and why)
 
@@ -94,4 +121,13 @@ GATES_PLACEHOLDER
 
 ## Open items
 
-OPEN_PLACEHOLDER
+- The scenario rig gained reply **lanes** (`Lane::{Any, Asker, Advisor, OneShot}`, matched on the request's system prompt and
+  last message) and a title-call bypass: with a subagent in play the fake serves four callers (the asker, its advisor, the
+  one-shot, the parent turn a child's result opens) plus detached title calls, and a FIFO script was non-deterministic.
+  `advisors_contract` still uses `push` (= `Any`) and is unchanged.
+- The one-shot's provider-error leg uses a 400 (deterministic); a 500 was absorbed below `Side::call` in the rig (the
+  request reached a hand-off turn instead), so "any other error does not pause" is pinned with a 4xx.
+- Not exercised here: a real provider's 429 text through the one-shot (the rig's 429 body carries `rate limit`, which
+  `QUOTA` matches as the child path does); the closer's scratch-engine smoke (R1.9 closer legs 1–6) covers the live shape.
+- `AdvisorStatus.consults.turn` is the root's own count as the asker reports it; a subagent's `n` is never folded in
+  (R1.5 "Counting") — `/advisor status` shows `turn` for the root and `total` for the tree.
