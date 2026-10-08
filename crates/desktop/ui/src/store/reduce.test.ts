@@ -462,6 +462,44 @@ test('93: a child\'s streaming events beat its row on every ancestor, throttled 
   expect(draft[S]?.children.kid).toMatchObject({ state: { state: 'idle' }, beat: 1300 })
 })
 
+// 141 §9.1: a watch-only child is a tree row on every ancestor and its own slice, with no `↳ spawned` line.
+test('ObservedChildChanged creates the child slice and ancestor rows without an interjection; a repeat updates in place; the child’s deltas beat its row', () => {
+  const observed = (state: 'pending' | 'running' | 'completed') => ({
+    source: 'omp_task' as const,
+    external: 'ReadA',
+    state,
+    can_cancel: false,
+    cost_rule: 'counted' as const,
+    tool_call: 'toolu_1',
+    detail: { index: 0, agent: 'scout', tokens: 8962, cost: 0.11 },
+  })
+  const draft: Record<string, SessionSlice> = { [S]: empty(S), harness: { ...empty('harness'), parent: S, agent: 'omp' } }
+  const ev = (state: 'pending' | 'running' | 'completed', model: string | null = 'anthropic/x') =>
+    ({ type: 'ObservedChildChanged', parent: 'harness', child: 'kidA', name: 'ReadA', model, observed: observed(state) }) as const
+  expect(route(draft, ev('pending'), ctx())).toBe(true)
+  expect(draft.kidA).toMatchObject({ name: 'ReadA', parent: 'harness', kind: 'observed', harnessModel: 'anthropic/x', observed: { state: 'pending' } })
+  // The ACP child lists it at depth 1, the root at depth 2; neither transcript gained a line.
+  expect(draft.harness?.children.kidA).toMatchObject({ depth: 1, agent: null, model: 'anthropic/x', state: { state: 'idle' }, kind: 'observed', observed: { source: 'omp_task', state: 'pending' } })
+  expect(draft[S]?.children.kidA).toMatchObject({ depth: 2, parent: 'harness' })
+  expect(draft.harness?.entries).toEqual([])
+  expect(draft[S]?.entries).toEqual([])
+  // Running: the same row moves (one row, not two), the strip's `live` bit flips on.
+  const started = draft.harness?.children.kidA?.started_at
+  route(draft, ev('running', null), ctx())
+  expect(Object.keys(draft.harness?.children ?? {})).toEqual(['kidA'])
+  expect(draft.harness?.children.kidA).toMatchObject({ state: { state: 'running' }, model: 'anthropic/x', started_at: started, observed: { state: 'running' } })
+  // 93: the child's own streaming events beat its rows on both ancestors.
+  route(draft, { type: 'TextDelta', session: 'kidA', turn: T, text: 'alpha' }, ctx(1000))
+  expect(draft.harness?.children.kidA?.beat).toBe(1000)
+  expect(draft[S]?.children.kidA?.beat).toBe(1000)
+  // Completed: the row rests and keeps its watch-only facts for the check glyph; a later `TurnFinished` on the child does not undo them.
+  route(draft, ev('completed'), ctx(2000))
+  expect(draft.harness?.children.kidA).toMatchObject({ state: { state: 'idle' }, observed: { state: 'completed' }, beat: 1000 })
+  expect(draft.harness?.children.kidA?.finished_at).not.toBeNull()
+  route(draft, { type: 'TurnFinished', session: 'kidA', turn: T, stop_reason: 'end_turn', usage, context: 1 }, ctx(3000))
+  expect(draft.harness?.children.kidA?.observed).toMatchObject({ state: 'completed' })
+})
+
 test('route leaves untouched slices alone and ignores foreign events', () => {
   const other = empty('other')
   const draft = { [S]: empty(S), other }
