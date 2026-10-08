@@ -21,7 +21,7 @@ export type { HereLens } from '@/rpc/bindings/HereLens'
 export type { LensMeta } from '@/rpc/bindings/LensMeta'
 export type { MapRow } from '@/rpc/bindings/MapRow'
 
-export type CodeTool = 'code_map' | 'code_find' | 'code_outline' | 'code_refs' | 'code_symbol' | 'code_impact'
+export type CodeTool = 'code_map' | 'code_find' | 'code_outline' | 'code_refs' | 'code_symbol' | 'code_impact' | 'code_overview'
 
 /** `CodeindexEvent::CodeToolRan` — once per `Tool::call`, after the envelope exists (errors too). */
 export type CodeToolRan = Extract<CodeindexEvent, { type: 'CodeToolRan' }>
