@@ -422,6 +422,26 @@ wire! {
     }
 }
 
+impl ExperimentState {
+    /// The serde tag (`"rejected_by_review"`), the chart's colour vocabulary.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Measuring => "measuring",
+            Self::Measured => "measured",
+            Self::Kept => "kept",
+            Self::Discarded => "discarded",
+            Self::Crashed => "crashed",
+            Self::ChecksFailed => "checks_failed",
+            Self::Refused => "refused",
+            Self::RejectedByReview => "rejected_by_review",
+            Self::Abandoned => "abandoned",
+            Self::Interrupted => "interrupted",
+            Self::Timeout => "timeout",
+        }
+    }
+}
+
 wire! {
     /// The gate's verdict (140 §5.2 step 5).
     #[serde(tag = "kind", rename_all = "snake_case")]
@@ -954,6 +974,17 @@ wire! {
             /// The reverted experiment.
             n: u32,
         },
+        /// Keep a review revert as it is: dismiss its needs-your-eyes item and attention row (140 §9.1).
+        KeepReverted {
+            /// The reverted experiment.
+            n: u32,
+        },
+        /// `git merge --no-ff` a finalize changeset into the repo's current branch (140 §11.5);
+        /// refused when the user's tree is dirty. Never pushes.
+        Merge {
+            /// The changeset's `k`.
+            changeset: u32,
+        },
         /// Remove worktree and branches.
         Discard,
     }
@@ -1206,6 +1237,8 @@ wire! {
         pub changesets: Vec<Changeset>,
         /// Attention items: reverted, deviations, overfit, drift (one line each).
         pub needs_eyes: Vec<String>,
+        /// The last 30 lines / 4 KiB of the running sample's log while an experiment is measuring.
+        pub tail: Option<String>,
     }
 }
 
@@ -1254,7 +1287,7 @@ wire! {
         pub k: u32,
         /// Short name.
         pub name: String,
-        /// `autoresearch/<slug>/<k>-<name>`.
+        /// `autoresearch/<slug>+<k>-<name>` (git cannot hold `autoresearch/<slug>/…` beside the study branch).
         pub branch: String,
         /// Files touched.
         pub files: Vec<String>,

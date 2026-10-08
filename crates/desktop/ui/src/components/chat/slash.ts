@@ -442,6 +442,15 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         return
       }
       throw new Error('usage: /skills [add <url> | rm <name> | sync]')
+    case '/autoresearch': {
+      if (!arg) return navigate({ to: '/autoresearch' })
+      // With words the skill takes over (setup from a goal, or a control phrased in words).
+      const id = session ?? (await api.new_session())
+      if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
+      await api.use_skill(id, 'autoresearch', arg)
+      if (!session) await navigate({ to: '/c/$session', params: { session: id } })
+      return
+    }
     case '/knowledge':
       if (!arg) return navigate({ to: '/knowledge' })
       if (sub === 'history') {

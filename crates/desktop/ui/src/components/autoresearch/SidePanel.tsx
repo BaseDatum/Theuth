@@ -20,7 +20,7 @@ export function SidePanel({ detail, rows, onPick }: { detail: StudyDetail; rows:
     <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-1">
       <div className="flex min-w-0 flex-col gap-3">
         {live && <SteerBox slug={detail.info.slug} steers={detail.steers} />}
-        {(detail.needs_eyes.length > 0 || rows.some((r) => r.state === 'rejected_by_review')) && <NeedsEyes detail={detail} rows={rows} onPick={onPick} />}
+        {detail.needs_eyes.length > 0 && <NeedsEyes detail={detail} rows={rows} onPick={onPick} />}
         {!live && detail.steers.length > 0 && (
           <Panel title="Your notes">
             <SteerHistory steers={detail.steers} />
@@ -204,8 +204,10 @@ function Ideas({ slug, ideas, live }: { slug: string; ideas: StudyIdea[]; live: 
 }
 
 /**
- * Needs your eyes: the plugin's lines (reverted, deviations, overfit, drift, unreviewed) plus a Restore button for
- * every experiment the review reverted — `restore` re-applies the patch as the next experiment and measures it again.
+ * Needs your eyes: the plugin's lines (reverted, deviations, overfit, drift, unreviewed). A line for an experiment the
+ * review reverted carries Restore (`restore`: the harness re-applies the change as the next experiment and measures it
+ * again) and Keep reverted (`keep_reverted`: dismisses the line and the attention row). The plugin drops a reverted
+ * line once either was pressed.
  */
 function NeedsEyes({ detail, rows, onPick }: { detail: StudyDetail; rows: ExperimentRow[]; onPick: (n: number) => void }) {
   const control = useControl(detail.info.slug)
@@ -213,7 +215,7 @@ function NeedsEyes({ detail, rows, onPick }: { detail: StudyDetail; rows: Experi
   const reverted = rows.filter((r) => r.state === 'rejected_by_review')
   const lines = detail.needs_eyes
   return (
-    <Panel title={`Needs your eyes · ${Math.max(lines.length, reverted.length)}`}>
+    <Panel title={`Needs your eyes · ${lines.length}`}>
       <ul className="flex flex-col gap-2">
         {lines.map((line, i) => {
           const m = /^#(\d+)\b/.exec(line)
@@ -232,33 +234,21 @@ function NeedsEyes({ detail, rows, onPick }: { detail: StudyDetail; rows: Experi
               ) : (
                 line
               )}
-              {rev && live && (
-                <div className="mt-1.5">
-                  <Button size="xs" variant="outline" disabled={control.isPending} onClick={() => control.mutate({ op: 'restore', n })} title="Re-applies the patch as the next experiment and measures it again">
-                    Restore
+              {rev && (
+                <div className="mt-1.5 flex gap-1.5">
+                  {live && (
+                    <Button size="xs" variant="outline" disabled={control.isPending} onClick={() => control.mutate({ op: 'restore', n })} title="The harness re-applies the change as the next experiment and measures it again">
+                      Restore
+                    </Button>
+                  )}
+                  <Button size="xs" variant="ghost" disabled={control.isPending} onClick={() => control.mutate({ op: 'keep_reverted', n })} title="Leave it reverted; dismiss this line and its inbox row">
+                    Keep reverted
                   </Button>
                 </div>
               )}
             </Item>
           )
         })}
-        {reverted
-          .filter((r) => !lines.some((line) => line.startsWith(`#${r.n} `) || line.startsWith(`#${r.n}:`)))
-          .map((r) => (
-            <Item key={`rev-${r.n}`} tone="warning">
-              <button type="button" className="font-semibold hover:underline" onClick={() => onPick(r.n)}>
-                #{r.n}
-              </button>{' '}
-              reverted by review{r.review?.reason ? <> — “{r.review.reason}”</> : null}
-              {live && (
-                <div className="mt-1.5">
-                  <Button size="xs" variant="outline" disabled={control.isPending} onClick={() => control.mutate({ op: 'restore', n: r.n })} title="Re-applies the patch as the next experiment and measures it again">
-                    Restore
-                  </Button>
-                </div>
-              )}
-            </Item>
-          ))}
       </ul>
       {detail.info.state.state === 'finished' && detail.info.report_doc && (
         <p className="mt-2 text-xs text-fg-tertiary">

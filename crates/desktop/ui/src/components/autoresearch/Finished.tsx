@@ -12,8 +12,9 @@ import { useControl } from './queries'
 
 /**
  * §11.5 the finished state: the headline, the changesets table (Δ alone / Δ together / files / review), the report
- * link, Discard study (one confirmation of the label). Open PR and Merge into my branch wait for their RPC (the
- * contract has no landing method yet): until then each row copies its branch and the merge command.
+ * link, Discard study (one confirmation of the label). Merge into my branch is the `merge` control op (a local
+ * `git merge --no-ff`, refused on a dirty tree); Open PR copies the push + `gh pr create` commands — the plugin
+ * never pushes (§6).
  */
 export function Finished({ detail }: { detail: StudyDetail }) {
   const control = useControl(detail.info.slug)
@@ -66,20 +67,20 @@ export function Finished({ detail }: { detail: StudyDetail }) {
             </thead>
             <tbody>
               {sets.map((c) => (
-                <Row key={c.k} c={c} repo={detail.spec.repo} />
+                <Row key={c.k} c={c} slug={detail.info.slug} pending={control.isPending} onMerge={() => control.mutate({ op: 'merge', changeset: c.k })} />
               ))}
             </tbody>
           </table>
         </div>
       )}
       <p className="mt-2 text-xs text-fg-tertiary">
-        Each changeset is a local branch <code className="font-mono">autoresearch/{detail.info.slug}/&lt;k&gt;-&lt;name&gt;</code>; nothing was pushed.
+        Each changeset is a local branch (<code className="font-mono">{sets[0]?.branch ?? `autoresearch/${detail.info.slug}+<k>-<name>`}</code>, …); nothing was pushed.
       </p>
     </Panel>
   )
 }
 
-function Row({ c, repo }: { c: StudyChangeset; repo: string }) {
+function Row({ c, slug, pending, onMerge }: { c: StudyChangeset; slug: string; pending: boolean; onMerge: () => void }) {
   const alone = c.only_with.length === 0
   const review = reviewWord(c.review)
   return (
@@ -110,19 +111,25 @@ function Row({ c, repo }: { c: StudyChangeset; repo: string }) {
       </td>
       <td className="px-2 py-1.5">
         <div className="flex flex-col items-end gap-1 2xl:flex-row 2xl:items-center 2xl:justify-end">
-          <CopyButton text={c.branch} label="Copy branch" icon={<GitPullRequest />}>
+          <CopyButton text={prCommands(c, slug)} label="Copy push + PR commands" icon={<GitPullRequest />}>
             Open PR
           </CopyButton>
-          <CopyButton text={`cd ${repo} && git merge --no-ff ${c.branch}`} label="Copy merge command" icon={<GitMerge />}>
-            Merge into my branch
-          </CopyButton>
+          <Button variant="outline" size="xs" title={`git merge --no-ff ${c.branch} into the repo's current branch (refused while your tree is dirty; nothing is pushed)`} disabled={pending} onClick={onMerge}>
+            <GitMerge /> Merge into my branch
+          </Button>
         </div>
       </td>
     </tr>
   )
 }
 
-/** Until the landing RPC exists the button puts the branch / the merge command on the clipboard and says so. */
+/** The push + `gh pr create` lines for a changeset branch (the plugin never pushes). */
+export function prCommands(c: StudyChangeset, slug: string): string {
+  const title = `autoresearch(${slug}): ${c.name}`
+  return `git push origin ${c.branch}\ngh pr create --head ${c.branch} --title ${JSON.stringify(title)} --body ${JSON.stringify(`Changeset #${c.k} of autoresearch study ${slug}: experiments #${c.experiments.join(', #')}; files ${c.files.join(', ')}.`)}`
+}
+
+/** Open PR puts the commands on the clipboard and says so. */
 function CopyButton({ text, label, icon, children }: { text: string; label: string; icon: ReactNode; children: string }) {
   const [done, setDone] = useState(false)
   return (

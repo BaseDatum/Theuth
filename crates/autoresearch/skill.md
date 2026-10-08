@@ -111,8 +111,8 @@ If the card reports a failed start (dirty tree, benchmark crash, σ too large), 
 
 - **"How is it going?"** → `autoresearch_status {slug}`: state, headline (metric now vs base), experiments and keeps, budget left, the current phase, the last five experiments. Summarise in two or three lines; the Study view has the chart.
 - **Steering** ("tell it to try SIMD", "stop touching the lexer") → `autoresearch_control {slug, op: steer, text}`: queued, read by the next experiment, the loop does not pause. A concrete idea for the backlog → `op: idea` with `text` (and the category in `reason`); user ideas get the ★ and top priority.
-- **Pause / resume / stop** → `op: pause | resume | stop_after | stop_now`. `stop_now` discards the experiment in flight; say so. **Finalize** runs when any stop fires: base vs final re-measured, independent changesets measured alone, a report document, one result card. Landing is the user's (per-changeset branches, Open PR, Merge into my branch).
-- A keep the reviewer reverted as possible gaming shows an attention row with **Restore**; `op: restore, n` re-measures it as a new experiment.
+- **Pause / resume / stop** → `op: pause | resume | stop_after | stop_now`. `stop_now` discards the experiment in flight; say so. **Finalize** runs when any stop fires: base vs final re-measured, independent changesets measured alone, a report document, one result card. Landing is the user's: per-changeset branches `autoresearch/<slug>+<k>-<name>`; `op: merge, n: <k>` merges one into the repo's current branch (`git merge --no-ff`, refused on a dirty tree); Open PR in the Study view copies the push + `gh pr create` commands — nothing is ever pushed by the harness.
+- A keep the reviewer reverted as possible gaming shows an attention row with **Restore · Keep reverted**; `op: restore, n` makes the harness re-apply its change at the next experiment and measure it again; `op: keep_reverted, n` dismisses the row.
 - The study's benchmark, check and fixtures are frozen in custody for the whole study; if the user wants to change the evaluator, `op: segment` with a `reason` opens a new segment (new custody, new baseline).
 
 ## Never

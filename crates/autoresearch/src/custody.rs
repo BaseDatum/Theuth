@@ -116,33 +116,34 @@ pub struct ScopeDiff {
     pub removed: u32,
 }
 
-/// `git status --porcelain=v2` + `git diff --numstat` of the worktree, classified against the spec's globs.
+/// `git status --porcelain=v2` (untracked, unmerged) + `git diff --name-only --no-renames HEAD`
+/// (tracked, both halves of a rename) + `git diff --numstat` of the worktree, classified against the spec's globs.
 ///
 /// HEAD of the study worktree is the incumbent. `changed` includes untracked files;
 /// `deviations` = paths outside `scope` (an empty `scope` means everything is in scope);
 /// `off_limits` = paths matching `off_limits` **or** listed in `evaluator_paths` (either
 /// makes a keep impossible, 140 §5.3); `added`/`removed` from `git diff --numstat -w
 /// --ignore-blank-lines HEAD` plus the non-blank lines of untracked files as `added`.
+/// A file the novelty hash staged as intent-to-add and the model then deleted is no change.
 pub fn scope_diff(spec: &StudySpec, worktree: &Path) -> Result<ScopeDiff> {
     let status = git(
         worktree,
         &["status", "--porcelain=v2", "--untracked-files=all", "-z"],
     )?;
-    let mut changed: Vec<String> = Vec::new();
+    let mut changed: Vec<String> = git(
+        worktree,
+        &["diff", "--name-only", "--no-renames", "-z", "HEAD"],
+    )?
+    .split('\0')
+    .filter(|l| !l.is_empty())
+    .map(str::to_owned)
+    .collect();
     let mut untracked: Vec<String> = Vec::new();
-    let mut fields = status.split('\0').filter(|s| !s.is_empty());
-    while let Some(entry) = fields.next() {
+    for entry in status.split('\0').filter(|s| !s.is_empty()) {
         let Some((kind, rest)) = entry.split_once(' ') else {
             continue;
         };
         match kind {
-            // `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`
-            "1" => changed.extend(rest.splitn(8, ' ').nth(7).map(str::to_owned)),
-            // `2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>` then `<origPath>` as its own NUL field
-            "2" => {
-                changed.extend(rest.splitn(9, ' ').nth(8).map(str::to_owned));
-                changed.extend(fields.next().map(str::to_owned));
-            }
             // `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`
             "u" => changed.extend(rest.splitn(10, ' ').nth(9).map(str::to_owned)),
             "?" => {

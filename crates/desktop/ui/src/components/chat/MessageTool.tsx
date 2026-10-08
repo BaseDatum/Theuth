@@ -130,7 +130,7 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
   const asked = tool.name === 'ask_user' && tool.result && !tool.result.isError ? askQuestions(tool.args) : null
   if (asked && tool.result) return <AnsweredAskCard questions={asked} output={tool.result.output} session={session} callId={tool.callId} />
   const card =
-    tool.name === 'show' || tool.name === 'app' || tool.name === 'task_draft' || tool.name === 'agent_draft' || tool.name === 'routine_draft' ? (
+    tool.name === 'show' || tool.name === 'app' || tool.name === 'task_draft' || tool.name === 'agent_draft' || tool.name === 'routine_draft' || tool.name === 'autoresearch_draft' ? (
       <ArtifactCard tool={tool} session={session} />
     ) : tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url' || tool.name === 'search_web' ? (
       <ScrapeCard tool={tool} session={session} />

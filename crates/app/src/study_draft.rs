@@ -291,7 +291,7 @@ impl Tool for StudyDraftTool {
         }
         let cfg: AutoresearchConfig = self.core.rt.section("autoresearch").unwrap_or_default();
         let root = cfg.root(&self.core.rt.data_dir);
-        if let Err(e) = write_draft(&root, &spec) {
+        if let Err(e) = write_draft(&root, &spec, cx.session) {
             return Ok(ToolOutput::err(format!(
                 "autoresearch_draft: cannot write {}: {e}",
                 draft_spec_path(&root, &spec.slug).display()

@@ -18,7 +18,7 @@ export function useAutoresearchApi() {
 export const KEY = ['autoresearch'] as const
 export const PAGE = 200
 
-/** §12.3 events: state changes refetch the list and the study; `ExperimentProgress` only updates the live progress cell. */
+/** §12.3 events: state changes refetch the list and the study; `ExperimentProgress` updates the live progress cell and refetches the detail (its `tail`). */
 const EVENTS = ['StudyChanged', 'ExperimentStarted', 'ExperimentProgress', 'ExperimentFinished', 'StudyFinished'] as const satisfies readonly StudyEvent['type'][]
 
 /** Subscribe once per mounted view. */
@@ -29,6 +29,7 @@ export function useAutoresearchEvents() {
       on(t, (e) => {
         if (e.type === 'ExperimentProgress') {
           qc.setQueryData<Progress>([...KEY, e.slug, 'progress'], { phase: e.phase, sample: e.sample, of: e.of, elapsed_ms: e.elapsed_ms })
+          void qc.invalidateQueries({ queryKey: [...KEY, e.slug, 'detail'] })
           return
         }
         if (e.type === 'ExperimentStarted' || e.type === 'ExperimentFinished') qc.removeQueries({ queryKey: [...KEY, e.slug, 'progress'] })

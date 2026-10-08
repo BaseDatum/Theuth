@@ -462,104 +462,6 @@ pub fn restore_rejected(worktree: &Path, slug: &str, n: u32) -> Result<()> {
     git(worktree, &["reset", "-q"]).map(drop)
 }
 
-/// The glob form of `scope:` / `off_limits:` / `evaluator_paths:` (140 §4.1):
-/// `**` spans segments, `*`/`?` stay inside one; a bare path (`fixtures/`,
-/// `Rakefile`) matches itself and everything under it.
-pub fn path_matches(pattern: &str, path: &str) -> bool {
-    let pat = pattern
-        .trim()
-        .trim_start_matches("./")
-        .trim_end_matches('/');
-    if pat.is_empty() {
-        return false;
-    }
-    if !pat.contains(['*', '?', '[']) {
-        return path == pat || path.starts_with(&format!("{pat}/"));
-    }
-    fn seg(p: &[u8], s: &[u8]) -> bool {
-        match (p.first(), s.first()) {
-            (None, None) => true,
-            (Some(b'*'), _) => seg(&p[1..], s) || (!s.is_empty() && seg(p, &s[1..])),
-            (Some(b'?'), Some(_)) => seg(&p[1..], &s[1..]),
-            (Some(a), Some(b)) if a == b => seg(&p[1..], &s[1..]),
-            _ => false,
-        }
-    }
-    fn walk(pats: &[&str], segs: &[&str]) -> bool {
-        match pats.first() {
-            None => segs.is_empty(),
-            Some(&"**") => (0..=segs.len()).any(|i| walk(&pats[1..], &segs[i..])),
-            Some(p) => {
-                !segs.is_empty()
-                    && seg(p.as_bytes(), segs[0].as_bytes())
-                    && walk(&pats[1..], &segs[1..])
-            }
-        }
-    }
-    let pats: Vec<&str> = pat.split('/').collect();
-    let segs: Vec<&str> = path.split('/').collect();
-    walk(&pats, &segs)
-}
-
-/// The worktree's changes against the incumbent, classified (140 §5.3 Scope).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ScopeDiff {
-    /// Every path that differs from the incumbent (tracked or new).
-    pub touched: Vec<String>,
-    /// Touched paths outside `scope` (when `scope` is non-empty).
-    pub deviations: Vec<String>,
-    /// Touched paths matching `off_limits` — a keep is impossible.
-    pub off_limits: Vec<String>,
-    /// Touched paths matching `evaluator_paths` — custody will refuse.
-    pub evaluator: Vec<String>,
-    /// Lines added, whitespace-only changes excluded.
-    pub added: u32,
-    /// Lines removed, whitespace-only changes excluded.
-    pub removed: u32,
-    /// Normalised patch hash ([`patch_hash`]).
-    pub hash: String,
-}
-
-impl ScopeDiff {
-    /// Keep-simpler's line criterion (140 §5.2): removes more than it adds.
-    pub fn simpler(&self) -> bool {
-        self.removed > self.added
-    }
-}
-
-/// Diff the worktree against the incumbent: touched paths (untracked files
-/// included), deviations, off-limits and evaluator hits, `-w --numstat`
-/// line counts, and the normalised hash.
-pub fn scope_diff(worktree: &Path, spec: &StudySpec, incumbent: &str) -> Result<ScopeDiff> {
-    stage_intent(worktree)?;
-    let mut d = ScopeDiff::default();
-    for line in git(worktree, &["diff", "--name-only", incumbent, "--", "."])?.lines() {
-        let p = line.trim();
-        if p.is_empty() {
-            continue;
-        }
-        if !spec.scope.is_empty() && !spec.scope.iter().any(|g| path_matches(g, p)) {
-            d.deviations.push(p.to_owned());
-        }
-        if spec.off_limits.iter().any(|g| path_matches(g, p)) {
-            d.off_limits.push(p.to_owned());
-        }
-        if spec.evaluator_paths.iter().any(|g| path_matches(g, p)) {
-            d.evaluator.push(p.to_owned());
-        }
-        d.touched.push(p.to_owned());
-    }
-    for line in git(worktree, &["diff", "-w", "--numstat", incumbent, "--", "."])?.lines() {
-        let mut it = line.split('\t');
-        let a = it.next().and_then(|v| v.parse::<u32>().ok());
-        let r = it.next().and_then(|v| v.parse::<u32>().ok());
-        d.added += a.unwrap_or(0);
-        d.removed += r.unwrap_or(0);
-    }
-    d.hash = patch_hash(worktree, incumbent)?;
-    Ok(d)
-}
-
 /// Normalised patch hash for the novelty check (140 §7.3): `git diff -w <incumbent>`
 /// with `index`/`@@` lines dropped and every line's whitespace removed
 /// (context lines carry the tree's whitespace even under `-w`), sha256.
@@ -951,15 +853,14 @@ mod tests {
             if n == 6 {
                 std::fs::write(f.study.join("fixtures/a.txt"), "tampered\n").unwrap();
             }
-            let d = scope_diff(&f.study, &f.spec, &incumbent).unwrap();
+            let d = crate::custody::scope_diff(&f.spec, &f.study).unwrap();
             assert!(
-                d.touched.contains(&"src/lib.rs".to_owned())
-                    && d.touched.contains(&format!("src/new{n}.rs"))
+                d.changed.contains(&"src/lib.rs".to_owned())
+                    && d.changed.contains(&format!("src/new{n}.rs"))
             );
             if n == 6 {
                 assert_eq!((d.added, d.removed), (3, 1));
                 assert_eq!(d.off_limits, vec!["fixtures/a.txt"]);
-                assert_eq!(d.evaluator, vec!["fixtures/a.txt"]);
             } else {
                 assert_eq!((d.added, d.removed), (2, 0));
                 assert!(d.deviations.is_empty() && d.off_limits.is_empty(), "{d:?}");
@@ -1188,62 +1089,39 @@ mod tests {
     }
 
     #[test]
-    fn path_globs() {
-        for (pat, path, want) in [
-            ("src/**", "src/a.rs", true),
-            ("src/**", "src/deep/a.rs", true),
-            ("src/**", "lib/a.rs", false),
-            ("fixtures/", "fixtures/a.json", true),
-            ("fixtures/", "fixtures", true),
-            ("fixtures/", "fixtures2/a", false),
-            ("Rakefile", "Rakefile", true),
-            ("*.rs", "a.rs", true),
-            ("*.rs", "src/a.rs", false),
-            ("**/*_test.rb", "test/deep/foo_test.rb", true),
-            ("**/*_test.rb", "foo_test.rb", true),
-            ("lib/liquid/**", "lib/liquid.rb", false),
-            ("src/?.rs", "src/a.rs", true),
-            ("src/?.rs", "src/ab.rs", false),
-            ("", "x", false),
-        ] {
-            assert_eq!(path_matches(pat, path), want, "{pat} vs {path}");
-        }
-    }
-
-    #[test]
     fn scope_diff_counts_lines_without_whitespace_and_hashes_stably() {
         let f = fixture();
         let base = resolve_base(&f.repo, "HEAD", false).unwrap();
         worktree_add(&f.repo, &f.spec, &f.study, &base).unwrap();
         std::fs::write(f.study.join("src/lib.rs"), "fn a() {}\nfn c() {}\n").unwrap();
         std::fs::write(f.study.join("README.md"), "out of scope\n").unwrap();
-        let d1 = scope_diff(&f.study, &f.spec, &base).unwrap();
+        let d1 = crate::custody::scope_diff(&f.spec, &f.study).unwrap();
+        let h1 = patch_hash(&f.study, &base).unwrap();
         assert_eq!((d1.added, d1.removed), (2, 1));
         assert_eq!(d1.deviations, vec!["README.md"]);
-        assert!(!d1.simpler());
+        assert!(d1.removed <= d1.added);
         // Whitespace-only edits change neither the counts nor the hash.
         std::fs::write(f.study.join("src/lib.rs"), "fn a()  {}\nfn c() {}\n").unwrap();
-        let d2 = scope_diff(&f.study, &f.spec, &base).unwrap();
+        let d2 = crate::custody::scope_diff(&f.spec, &f.study).unwrap();
         assert_eq!((d2.added, d2.removed), (2, 1));
-        assert_eq!(d2.hash, d1.hash);
-        assert_eq!(patch_hash(&f.study, &base).unwrap(), d1.hash);
+        assert_eq!(patch_hash(&f.study, &base).unwrap(), h1);
         std::fs::write(f.study.join("src/lib.rs"), "fn a() {}\n").unwrap();
-        let d3 = scope_diff(&f.study, &f.spec, &base).unwrap();
-        assert_ne!(d3.hash, d1.hash);
+        let d3 = crate::custody::scope_diff(&f.spec, &f.study).unwrap();
+        assert_ne!(patch_hash(&f.study, &base).unwrap(), h1);
         assert_eq!(
             (d3.added, d3.removed),
             (1, 1),
             "README.md still counts: {d3:?}"
         );
-        assert!(!d3.simpler());
+        assert!(d3.removed <= d3.added);
         std::fs::remove_file(f.study.join("README.md")).unwrap();
-        let d4 = scope_diff(&f.study, &f.spec, &base).unwrap();
+        let d4 = crate::custody::scope_diff(&f.spec, &f.study).unwrap();
         assert_eq!(
-            (d4.added, d4.removed, d4.touched.len()),
+            (d4.added, d4.removed, d4.changed.len()),
             (0, 1, 1),
             "{d4:?}"
         );
-        assert!(d4.simpler());
+        assert!(d4.removed > d4.added);
         let text = diff_text(&f.study, &base, "HEAD", 10_000).unwrap();
         assert_eq!(text, "", "HEAD == base");
         let sha = keep(&f.study, &f.spec, &meta(1), None).unwrap();

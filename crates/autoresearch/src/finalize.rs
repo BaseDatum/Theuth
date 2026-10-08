@@ -758,7 +758,7 @@ pub fn resolve(
     }
 }
 
-/// Step 2c: branch `autoresearch/<slug>/<k>-<name>` at each resolved scratch
+/// Step 2c: branch `autoresearch/<slug>+<k>-<name>` at each resolved scratch
 /// worktree's HEAD, then remove the scratch worktrees. Local branches only.
 pub fn branch_all(repo: &Path, slug: &str, dir: &Path, cs: &mut [Changeset]) -> Result<()> {
     for c in cs.iter_mut() {

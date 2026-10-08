@@ -188,6 +188,19 @@ pub trait Backend: Send + Sync {
     fn reject(&self, worktree: &Path, slug: &str, n: u32, previous: &str) -> Result<()> {
         crate::git::reject(worktree, slug, n, previous)
     }
+    /// Re-apply a rejected keep to the working tree, uncommitted (the next candidate).
+    fn restore_rejected(&self, worktree: &Path, slug: &str, n: u32) -> Result<()> {
+        crate::git::restore_rejected(worktree, slug, n)
+    }
+    /// `git merge --no-ff <branch>` into the user's current branch (clean tree only); the merge sha.
+    fn merge_into_checkout(
+        &self,
+        repo: &Path,
+        branch: &str,
+        author: Option<&str>,
+    ) -> Result<String> {
+        crate::git::merge_into_checkout(repo, branch, author)
+    }
     /// Normalised patch hash of the worktree vs the incumbent.
     fn patch_hash(&self, worktree: &Path, incumbent: &str) -> Result<String> {
         crate::git::patch_hash(worktree, incumbent)
@@ -533,6 +546,158 @@ async fn counts(store: &Store, slug: &str) -> Result<(u32, u32)> {
         .filter(|e| e.state == ExperimentState::Kept)
         .count() as u32;
     Ok((closed, kept))
+}
+
+/// Review reverts the user already acted on (`restore` or `kept_reverted` events): no row, no needs-eyes line.
+async fn dismissed_reverts(store: &Store, slug: &str) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for kind in ["restore", "kept_reverted"] {
+        out.extend(
+            store
+                .list_events(slug, Some(kind), 500)
+                .await
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|e| e.payload.get("n").and_then(|v| v.as_u64())),
+        );
+    }
+    out
+}
+
+/// The user's pending Restore (§9.1): a `restore {n}` event newer than every `restore_applied`.
+async fn pending_restore(store: &Store, slug: &str) -> Result<Option<u32>> {
+    let restores = store.list_events(slug, Some("restore"), 1).await?;
+    let Some(r) = restores.first() else {
+        return Ok(None);
+    };
+    let applied = store.list_events(slug, Some("restore_applied"), 1).await?;
+    if applied.first().is_some_and(|a| a.id > r.id) {
+        return Ok(None);
+    }
+    Ok(r.payload
+        .get("n")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32))
+}
+
+/// Which rejected experiment `n` restores (the harness applied its patch at begin), if any.
+async fn restoring(store: &Store, slug: &str, n: u32) -> Result<Option<u32>> {
+    Ok(store
+        .list_events(slug, Some("restore_applied"), 50)
+        .await?
+        .iter()
+        .find(|e| e.payload.get("n").and_then(|v| v.as_u64()) == Some(u64::from(n)))
+        .filter(|e| e.payload.get("failed").is_none())
+        .and_then(|e| e.payload.get("of").and_then(|v| v.as_u64()))
+        .map(|of| of as u32))
+}
+
+/// A `drift` event not yet answered by a doubled confirm (§5.2 step 4: the next confirm takes 2× the samples).
+async fn drift_pending(store: &Store, slug: &str) -> Result<bool> {
+    let drift = store.list_events(slug, Some("drift"), 1).await?;
+    let Some(d) = drift.first() else {
+        return Ok(false);
+    };
+    let doubled = store.list_events(slug, Some("confirm_doubled"), 1).await?;
+    Ok(doubled.first().is_none_or(|c| c.id < d.id))
+}
+
+/// §5.4: `holdout.repeats` samples of `holdout.command` on `tree` (role `Holdout`,
+/// through the slot). Clean values; a crashed sample is skipped, never fatal.
+/// Holdout numbers reach the ledger, the Study view and the report — never the brief.
+async fn holdout(
+    env: &Env,
+    study: &StudyRecord,
+    tree: &str,
+    n: u32,
+    cancel: &CancellationToken,
+) -> Result<Vec<f64>> {
+    let Some(h) = study.spec.holdout.as_ref() else {
+        return Ok(vec![]);
+    };
+    let mut spec = study.spec.clone();
+    spec.bench.command = h.command.clone();
+    let worktree = worktree_of(study)?;
+    let evaluator = env.evaluator_dir(&study.slug, study.segment);
+    let runs = env.runs_dir(&study.slug, n).join("holdout");
+    std::fs::create_dir_all(&runs)?;
+    let mut values = Vec::new();
+    for k in 1..=u32::from(h.repeats.unwrap_or(spec.bench.repeats).max(1)) {
+        let s = env
+            .backend
+            .sample(
+                &spec,
+                &env.cfg.bench,
+                SampleRequest {
+                    slug: &study.slug,
+                    n,
+                    k,
+                    tree_sha: tree,
+                    role: SampleRole::Holdout,
+                    worktree: &worktree,
+                    evaluator: &evaluator,
+                    runs_dir: &runs,
+                },
+                cancel,
+            )
+            .await?;
+        env.store.insert_sample(&study.slug, &s).await?;
+        values.extend(s.value.filter(|_| !s.noisy && !s.lost));
+    }
+    Ok(values)
+}
+
+/// §5.4 overfit: the incumbent's holdout is worse than the base's beyond 2σ_holdout
+/// while the search metric improved. Records `overfit` (the stop rules treat it as a plateau).
+async fn check_overfit(
+    env: &Env,
+    study: &StudyRecord,
+    n: u32,
+    incumbent_holdout: &[f64],
+) -> Result<()> {
+    let Some(base) = study.base_sha.as_deref() else {
+        return Ok(());
+    };
+    let base_holdout: Vec<f64> = env
+        .store
+        .samples_of_tree(&study.slug, base)
+        .await?
+        .into_iter()
+        .filter(|s| s.role == Some(SampleRole::Holdout) && !s.noisy && !s.lost)
+        .filter_map(|s| s.value)
+        .collect();
+    if base_holdout.is_empty() || incumbent_holdout.is_empty() {
+        return Ok(());
+    }
+    let sigma = env
+        .backend
+        .pooled_sigma(&[base_holdout.clone(), incumbent_holdout.to_vec()]);
+    let direction = study.spec.metric.direction;
+    let holdout_delta = gate::normalise(direction, mean(incumbent_holdout), mean(&base_holdout));
+    let search_delta = match (
+        study.incumbent_mean,
+        env.store.get_segment(&study.slug, study.segment).await?,
+    ) {
+        (Some(inc), Some(seg)) => seg
+            .baseline_mean
+            .map(|b| gate::normalise(direction, inc, b)),
+        _ => None,
+    };
+    if holdout_delta < -2.0 * sigma && search_delta.is_some_and(|d| d > 0.0) {
+        env.store
+            .append_event(
+                &study.slug,
+                "overfit",
+                &serde_json::json!({
+                    "n": n,
+                    "holdout_base": mean(&base_holdout),
+                    "holdout_incumbent": mean(incumbent_holdout),
+                    "sigma": sigma,
+                }),
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 fn budget_left(spec: &StudySpec, closed: u32, hours: f64, spend: f64) -> BudgetLeft {
@@ -1119,6 +1284,8 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     }
     study.incumbent_mean = Some(m);
     study.sigma = Some(sigma);
+    // §5.4: the base's holdout, the reference every later holdout is judged against.
+    holdout(env, study, &head, 0, &cancel).await?;
 
     let model = env.cfg.executor(&spec.models, &env.agent);
     let text = schedule_file::text(&spec, &env.cfg, &worktree, &model, start);
@@ -1187,27 +1354,12 @@ async fn baseline(
 /// The draft is `<root>/drafts/<draft_id>/spec.json` = `{"spec": StudySpec, "origin": SessionId}`
 /// written by `autoresearch_draft`; `draft_id` is the spec's slug.
 pub async fn start_draft(a: &mut Studies, m: StartDraft) -> Result<StudyInfo> {
-    #[derive(serde::Deserialize)]
-    struct Draft {
-        spec: StudySpec,
-        #[serde(default)]
-        origin: Option<SessionId>,
-    }
-    let path = crate::drafts_dir(&a.root, &m.draft_id).join("spec.json");
-    let text = std::fs::read_to_string(&path).map_err(|e| {
-        Error::refused(format!(
-            "draft `{}` not found ({}): {e}",
-            m.draft_id,
-            path.display()
-        ))
-    })?;
-    let d: Draft = serde_json::from_str(&text)?;
-    let origin = d.origin.unwrap_or_default();
+    let d = crate::tools::read_draft(&a.root, &m.draft_id)?;
     create(
         a,
         Create {
             spec: d.spec,
-            origin,
+            origin: d.origin.unwrap_or_default(),
             start: m.start,
         },
     )
@@ -1367,7 +1519,38 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     // Allocate n.
     let exp = ExperimentRecord::open(&slug, n, study.segment, &incumbent);
     env.store.insert_experiment(&exp).await?;
+    // Study spend at open; `Log` subtracts it for the row's `cost_nanos`.
+    env.store
+        .append_event(
+            &slug,
+            "begin",
+            &serde_json::json!({ "n": n, "spend_usd": spend }),
+        )
+        .await?;
     set_phase(&env.root, &slug, n, Phase::Novelty);
+
+    // §9.1 Restore: the harness re-applies the rejected change as this experiment's candidate.
+    if let Some(of) = pending_restore(&env.store, &slug).await? {
+        let rejected = env.store.get_experiment(&slug, of).await?;
+        let (idea, category) = rejected.map(|r| (r.idea, r.category)).unwrap_or_default();
+        let payload = match env.backend.restore_rejected(&worktree, &slug, of) {
+            Ok(()) => {
+                incidents.push(format!(
+                    "this experiment restores #{of} (\"{idea}\", reverted by review; the user wants it measured again): \
+                     its change is already applied in the worktree — call experiment_run(idea: \"{idea}\", category: \"{category}\") \
+                     without editing, then experiment_log."
+                ));
+                serde_json::json!({ "n": n, "of": of })
+            }
+            Err(e) => {
+                incidents.push(format!("restore of #{of} failed: {e}"));
+                serde_json::json!({ "n": n, "of": of, "failed": e.to_string() })
+            }
+        };
+        env.store
+            .append_event(&slug, "restore_applied", &payload)
+            .await?;
+    }
 
     // Explore mode after a plateau (§8.4), budget line, code map, incidents.
     let events = env.store.list_events(&slug, None, 500).await?;
@@ -1405,6 +1588,8 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
         incidents,
         budget_left: (left.experiments, left.hours, left.usd),
         code_map,
+        gate: env.cfg.gate.clone(),
+        crash_retries: env.cfg.defaults.crash_retries,
     };
     let mut brief = env
         .backend
@@ -1564,7 +1749,9 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             .append_event(&slug, "novelty_flag", &serde_json::json!({ "n": n }))
             .await?;
     }
-    if let Some(reason) = novelty.refused.filter(|_| !a.force) {
+    // A harness-applied Restore is a deliberate re-measure of a dead end (§9.1): never a duplicate.
+    let restore_of = restoring(&env.store, &slug, n).await?;
+    if let Some(reason) = novelty.refused.filter(|_| !a.force && restore_of.is_none()) {
         return refuse_run(env, &mut exp, reason, vec![], novelty.similar).await;
     }
 
@@ -1675,7 +1862,13 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
         .fold(None, |m: Option<f64>, d| Some(m.map_or(d, |x| x.max(d))));
     let mut planned: u8 = 1;
     let mut k: u32 = taken.len() as u32;
+    // Candidate samples before the gate is consulted again (`Confirm.more` is W1's count;
+    // the drift rule's doubling is ours, §5.2 step 4).
+    let mut need: u32 = 1;
+    let drift_double = drift_pending(&env.store, &slug).await?;
+    let mut doubled = false;
     let mut decision: Option<GateStep> = None;
+    let mut last_input: Option<GateInput> = None;
     let max_samples = 1 + 2 * u32::from(env.cfg.gate.confirm_runs) + 1;
     while decision.is_none() && k < max_samples {
         if cancel.is_cancelled() {
@@ -1711,6 +1904,14 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             crash(env, &mut exp, &mut report, &s);
             return finish_measure(env, &mut exp, report, taken, None).await;
         }
+        let cand_taken: Vec<Sample> = taken
+            .iter()
+            .filter(|s| s.role == Some(SampleRole::Candidate))
+            .cloned()
+            .collect();
+        if (cand_taken.len() as u32) < need {
+            continue;
+        }
         let inc_samples = env.store.samples_of_tree(&slug, &incumbent).await?;
         let incumbent_age = inc_samples
             .iter()
@@ -1718,9 +1919,9 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
             .map(|s| s.n)
             .max()
             .map_or(n, |newest| n.saturating_sub(newest).saturating_sub(1));
-        let candidate = clean_values(&taken);
+        let candidate = clean_values(&cand_taken);
         let incumbent_vals = clean_values(&inc_samples);
-        let secondaries = secondary_means(&taken, &inc_samples);
+        let secondaries = secondary_means(&cand_taken, &inc_samples);
         let input = GateInput {
             candidate,
             incumbent: incumbent_vals,
@@ -1735,7 +1936,16 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
                 more,
                 incumbent_sample,
             } => {
-                planned = (k as u8).saturating_add(more);
+                let mut more = u32::from(more.max(1));
+                if drift_double && !doubled {
+                    more *= 2;
+                    doubled = true;
+                    env.store
+                        .append_event(&slug, "confirm_doubled", &serde_json::json!({ "n": n }))
+                        .await?;
+                }
+                need = cand_taken.len() as u32 + more;
+                planned = need.min(u32::from(u8::MAX)) as u8;
                 if incumbent_sample {
                     let si = env
                         .backend
@@ -1749,36 +1959,22 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
                     env.store.insert_sample(&slug, &si).await?;
                     taken.push(si);
                 }
-                if more == 0 {
-                    // The gate asked for nothing more but did not decide: decide on what we have.
-                    decision = Some(env.backend.gate_step(&gcfg, &input));
-                    if matches!(decision, Some(GateStep::Confirm { .. })) {
-                        decision = Some(GateStep::Decide {
-                            verdict: Verdict::NoGain,
-                            delta: 0.0,
-                            delta_pct: 0.0,
-                            z: None,
-                        });
-                    }
-                }
             }
             d @ GateStep::Decide { .. } => decision = Some(d),
         }
+        last_input = Some(input);
     }
-    let GateStep::Decide {
-        verdict,
-        delta,
-        delta_pct,
-        z,
-    } = decision.unwrap_or(GateStep::Decide {
-        verdict: Verdict::NoGain,
-        delta: 0.0,
-        delta_pct: 0.0,
-        z: None,
-    })
-    else {
-        unreachable!()
-    };
+    // At the cap the gate decides on what was measured; with no measurable input it is no gain.
+    let (verdict, delta, delta_pct, z) =
+        match decision.or_else(|| last_input.map(|i| env.backend.gate_step(&gcfg, &i))) {
+            Some(GateStep::Decide {
+                verdict,
+                delta,
+                delta_pct,
+                z,
+            }) => (verdict, delta, delta_pct, z),
+            _ => (Verdict::NoGain, 0.0, 0.0, None),
+        };
     let cand_vals = clean_values(
         &taken
             .iter()
@@ -2133,6 +2329,18 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         };
     }
     exp.finished_at = Some(now());
+    // Cost of this experiment = study spend now − spend at `Begin` (one ledger query each; already paid for).
+    let spend = env.backend.spend_usd(study.session).await;
+    let spend_at_begin = env
+        .store
+        .list_events(&slug, Some("begin"), 50)
+        .await?
+        .iter()
+        .find(|e| e.payload.get("n").and_then(|v| v.as_u64()) == Some(u64::from(n)))
+        .and_then(|e| e.payload.get("spend_usd").and_then(|v| v.as_f64()));
+    if let Some(at_begin) = spend_at_begin {
+        exp.cost_nanos = ((spend - at_begin).max(0.0) * 1e9) as u64;
+    }
     env.store.update_experiment(&exp).await?;
     for id in &a.closes {
         if let Some(mut idea) = env.store.get_idea(*id).await?
@@ -2154,7 +2362,18 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
     .await;
 
     let (closed, kept) = counts(&env.store, &slug).await?;
-    let spend = env.backend.spend_usd(study.session).await;
+    // §5.4: the holdout on the incumbent every `holdout.every` keeps (never in the reply).
+    if exp.state == ExperimentState::Kept
+        && let Some(h) = study.spec.holdout.as_ref()
+        && kept > 0
+        && kept % h.every.max(1) == 0
+        && let Some(sha) = study.incumbent_sha.as_deref()
+    {
+        match holdout(env, &study, sha, n, &cancel_token(&env.root, &slug)).await {
+            Ok(values) => check_overfit(env, &study, n, &values).await?,
+            Err(e) => tracing::warn!(%slug, n, "holdout failed: {e}"),
+        }
+    }
     report.applied = exp.state;
     report.incumbent = Incumbent {
         sha: study.incumbent_sha.clone().unwrap_or_default(),
@@ -2721,17 +2940,20 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
                     "experiment #{n} was not reverted by review"
                 )));
             }
-            let patch = exp
-                .patch_path
-                .as_deref()
-                .map(|p| env.root.join(p).display().to_string())
-                .unwrap_or_else(|| format!("refs/autoresearch/{slug}/rejected/{n}"));
+            if is_terminal(&study.state) {
+                return Err(Error::refused(format!(
+                    "study `{slug}` is {}; nothing left to restore into",
+                    state_word(&study.state)
+                )));
+            }
+            // The ★ idea is the brief's explanation; the harness re-applies the change at the
+            // next experiment_begin (`restore_rejected`) and the model only measures it.
             env.store
                 .insert_idea(&Idea {
                     slug: slug.clone(),
                     text: format!(
-                        "Restore experiment #{n} ({}): the user wants it measured again. Re-apply its saved patch \
-                         `{patch}` to the working tree (`git apply <path>`; no commit), then experiment_run it as is.",
+                        "Restore experiment #{n} ({}): the user wants it measured again. The harness re-applies \
+                         its change at the next experiment_begin; experiment_run it as is, without editing.",
                         exp.idea
                     ),
                     category: exp.category.clone(),
@@ -2742,6 +2964,50 @@ pub async fn control(a: &mut Studies, m: Control) -> Result<StudyInfo> {
                 .await?;
             env.store
                 .append_event(&slug, "restore", &serde_json::json!({ "n": n }))
+                .await?;
+        }
+        ControlOp::KeepReverted { n } => {
+            let exp = env
+                .store
+                .get_experiment(&slug, n)
+                .await?
+                .ok_or_else(|| Error::refused(format!("no experiment #{n}")))?;
+            if exp.state != ExperimentState::RejectedByReview {
+                return Err(Error::refused(format!(
+                    "experiment #{n} was not reverted by review"
+                )));
+            }
+            env.store
+                .append_event(
+                    &slug,
+                    "kept_reverted",
+                    &serde_json::json!({ "n": n, "by": m.by }),
+                )
+                .await?;
+        }
+        ControlOp::Merge { changeset } => {
+            if study.state != StudyState::Finished {
+                return Err(Error::refused(format!(
+                    "changesets exist once the study is finished (it is {})",
+                    state_word(&study.state)
+                )));
+            }
+            let cs = changesets_of(&env, &slug)
+                .await
+                .into_iter()
+                .find(|c| c.k == changeset)
+                .ok_or_else(|| Error::refused(format!("no changeset #{changeset}")))?;
+            let sha = env.backend.merge_into_checkout(
+                Path::new(&study.repo),
+                &cs.branch,
+                env.cfg.git.author.as_deref(),
+            )?;
+            env.store
+                .append_event(
+                    &slug,
+                    "merged",
+                    &serde_json::json!({ "k": changeset, "branch": cs.branch, "sha": sha, "by": m.by }),
+                )
                 .await?;
         }
         ControlOp::Discard => {
@@ -2880,16 +3146,12 @@ async fn chart_series(env: &Env, study: &StudyRecord) -> Result<ChartSeries> {
             .unwrap_or_else(|| e.started_at.clone());
         series.experiments.push(ChartPoint {
             n: e.n,
-            verdict: e
-                .verdict
-                .as_ref()
-                .map(Verdict::tag)
-                .unwrap_or(match e.state {
-                    ExperimentState::Interrupted | ExperimentState::Timeout => "interrupted",
-                    ExperimentState::Abandoned => "abandoned",
-                    _ => "",
-                })
-                .to_owned(),
+            // The ledger state colours the dot; a discard says why (worse / guard failed / no gain).
+            verdict: match (e.state, e.verdict.as_ref()) {
+                (ExperimentState::Discarded, Some(v)) => v.tag(),
+                (s, _) => s.tag(),
+            }
+            .to_owned(),
             metric: e.metric,
             at: at.clone(),
         });
@@ -2944,13 +3206,16 @@ pub async fn detail(a: &mut Studies, m: Detail) -> Result<StudyDetail> {
     let steers = env.store.list_steers(&study.slug, false).await?;
     let changesets = changesets_of(&env, &study.slug).await;
     let mut needs_eyes = Vec::new();
+    let dismissed = dismissed_reverts(&env.store, &study.slug).await;
     for e in env
         .store
         .list_experiments(&study.slug, None, u32::MAX)
         .await?
     {
         match (&e.state, &e.review) {
-            (ExperimentState::RejectedByReview, Some(ReviewVerdict::Reverted { reason })) => {
+            (ExperimentState::RejectedByReview, Some(ReviewVerdict::Reverted { reason }))
+                if !dismissed.contains(&u64::from(e.n)) =>
+            {
                 needs_eyes.push(format!("#{} reverted by review — {reason} · Restore", e.n));
             }
             (_, Some(ReviewVerdict::Flagged { reason })) => {
@@ -2981,6 +3246,17 @@ pub async fn detail(a: &mut Studies, m: Detail) -> Result<StudyDetail> {
             _ => {}
         }
     }
+    // The live tail: the newest log under runs/<n>/ while an experiment is measuring.
+    let tail = phase_of(&env.root, &study.slug).and_then(|(n, _)| {
+        let dir = env.runs_dir(&study.slug, n);
+        let newest = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
+            .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?;
+        let text = env.backend.tail(&newest.path());
+        (!text.is_empty()).then_some(text)
+    });
     Ok(StudyDetail {
         info,
         spec: study.spec.clone(),
@@ -2990,6 +3266,7 @@ pub async fn detail(a: &mut Studies, m: Detail) -> Result<StudyDetail> {
         steers,
         changesets,
         needs_eyes,
+        tail,
     })
 }
 
@@ -3190,14 +3467,7 @@ impl roster::attention::Source for AttentionSource {
             if is_terminal(&s.state) && s.state != StudyState::Finished {
                 continue;
             }
-            let restored: std::collections::HashSet<u64> = self
-                .0
-                .list_events(&s.slug, Some("restore"), 500)
-                .await
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|e| e.payload.get("n").and_then(|v| v.as_u64()))
-                .collect();
+            let restored = dismissed_reverts(&self.0, &s.slug).await;
             for e in self
                 .0
                 .list_experiments(&s.slug, None, u32::MAX)

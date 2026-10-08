@@ -296,12 +296,12 @@ budget: 1.5 USD                    # = budget.per_experiment_usd → 136 SetBudg
 run_timeout: 100m                  # = (crash_retries + confirm_runs + 2) × bench.timeout + checks.timeout + bench.wait + 15m, at least 30m: one experiment's worst case
 approvals: false
 quiet: true
-memory: clear
+# memory: clear                    # as built: only written with `when:` (the parser wants `memory:` beside a sensor); a clock-only fire clears the frame anyway (34 D4)
 runtime: clear
 cwd: /Users/Sky.Moore/.theuth/autoresearch/sort-speed/worktree
 model: anthropic/claude-fable-5-1  # = models.executor
 enabled: true
-# when: sensors/idle.py            # only with window: — then `every: 1m` instead of 0s (a sensor needs a cadence; 40's budgets apply)
+# when: idle.py                    # only with window: — then `every: 1m` instead of 0s and `memory: clear` (a sensor needs a cadence; 40's budgets apply; a bare sensor file name, no path)
 ---
 Run the next experiment of autoresearch study `sort-speed`. Call experiment_begin() first and follow the protocol in the brief it returns. Do not ask questions; nobody is watching this session.
 ```
@@ -400,7 +400,7 @@ All three are pickers in Settings › Autoresearch (Radix Select over `list_mode
 
 `parallel: N` (2 ≤ N ≤ `autoresearch.max_parallel`, default 4) changes one fire from "one experiment" to "one wave":
 1. `experiment_begin` (in the study session, now a supervisor) creates N candidate worktrees from the incumbent (`<slug>/cand-<k>`, `git worktree add --detach`), allocates experiment numbers, and returns the brief plus `slots: [{k, worktree, category, idea_id?}]` — the plugin assigns distinct categories (rotation over the categories seen in the study, user ideas first), so a wave is diverse by construction (AlphaEvolve islands in miniature).
-2. The supervisor spawns N native children (`spawn_subagent`, `cwd` = the slot worktree, model = executor, `tools: mutating`), each told its slot and to follow the protocol; children call `experiment_run{slot}` / `experiment_log{slot}`; the plugin maps a child to its slot through the parent session and the slot number.
+2. The supervisor spawns N native children (`spawn_subagent`, `cwd` = the slot worktree, model = executor) bound to the study `Toolset` (§8.3; as built by W5 — `tools: mutating` would remove `shell`), each told its slot and to follow the protocol; children call `experiment_run{slot}` / `experiment_log{slot}`; the plugin maps a child to its slot through the parent session and the slot number.
 3. Scored samples go through the bench queue: serial when `bench.exclusive`, concurrent otherwise (deterministic metrics, or slots placed on separate engines — a later doc). Smoke tests and edits run in parallel.
 4. When every slot has logged (or the run deadline passes), the plugin promotes: the best keep-candidate becomes the incumbent (cherry-picked onto the study branch, then one confirm sample on the branch); other keep-candidates whose files are disjoint from it are cherry-picked one at a time and kept only if a confirm run still clears the gate against the new incumbent (SkyPilot's factorial waves, `140-research-practice.md` §4). Every candidate worktree is then removed.
 5. Each slot is an experiment in the ledger (`wave` column = the fire's number; `parent` = the incumbent sha at the wave start), so the chart and the report need no special case.
@@ -411,10 +411,10 @@ Not in W4: external-harness slots (omp/opencode children cannot call theuth's ex
 
 Entered on any stop rule (§8.4). Steps, each a ledger event so a restart resumes the step, not the study:
 1. **Confirm.** Base and final incumbent, `bench.repeats` samples each, interleaved (A B A B A B) to cancel drift; holdout likewise when configured. Result: the headline `time_ms 52.1 → 41.2 (−20.9 %, CI ±0.8 %)`, holdout `61.0 → 49.7 (−18.5 %)`.
-2. **Changesets.** Kept commits (excluding reverted ones) are grouped into changesets that share no files (union-find over touched paths, pi-autoresearch's finalize); a changeset whose cherry-pick onto the base conflicts is merged with the changeset(s) it needs. Each changeset is cherry-picked alone onto the base in a scratch worktree and measured `bench.repeats` times; changesets that no longer clear the gate alone are marked "only helps together with #k" (stacked keeps are not independently valuable — measure, do not assume). Branches `autoresearch/<slug>/<k>-<name>` point at the results.
+2. **Changesets.** Kept commits (excluding reverted ones) are grouped into changesets that share no files (union-find over touched paths, pi-autoresearch's finalize); a changeset whose cherry-pick onto the base conflicts is merged with the changeset(s) it needs. Each changeset is cherry-picked alone onto the base in a scratch worktree and measured `bench.repeats` times; changesets that no longer clear the gate alone are marked "only helps together with #k" (stacked keeps are not independently valuable — measure, do not assume). Branches `autoresearch/<slug>+<k>-<name>` point at the results (git cannot hold `autoresearch/<slug>/…` beside the study branch `autoresearch/<slug>`; `+` is legal in a ref and no slug contains it).
 3. **Report.** One finalize turn in the study session (the brief plus a "write the report" protocol) produces the report document (20/59 documents store, title `Autoresearch: <slug>`): what was asked, the headline, the chart (json-render LineChart of every experiment and the incumbent staircase), the changesets table (Δ alone, Δ together, files, review verdict), *Needs your eyes* (reverted-by-review, suspicious, deviations with their justifications, unreviewed keeps, holdout gap), the dead ends grouped, cost and time, and how to land. The plugin writes the numbers; the model writes the prose around them (it cannot change a number: tables are inserted by the plugin after the turn).
 4. **Deliver.** One message through `Deliver` regardless of `quiet` (33 D4's loud ending): headline, MetricGrid, the chart, changesets, link to the report. One attention `review` row: "Study sort-speed finished: −20.9 % in 4 changesets · Review". The knowledge record (§7.3) is written.
-5. **Landing** is the user's. The Study view lists the changesets with **Open PR** (GitHub tools, from the changeset branch, body = the report's section for it), **Merge into my branch** (local `git merge --no-ff` into the repo's current branch, refused if the user's tree is dirty), and **Discard study** (removes worktree and branches after one confirmation of the label). Nothing is pushed by the plugin.
+5. **Landing** is the user's. The Study view lists the changesets with **Open PR** (copies `git push origin autoresearch/<slug>+<k>-<name>` and the `gh pr create` command for the changeset branch — the plugin never pushes), **Merge into my branch** (`autoresearch.control {op: merge, changeset: k}` → local `git merge --no-ff` into the repo's current branch, refused if the user's tree is dirty), and **Discard study** (removes worktree and branches after one confirmation of the label). Nothing is pushed by the plugin.
 
 ## 12. The `autoresearch` plugin
 

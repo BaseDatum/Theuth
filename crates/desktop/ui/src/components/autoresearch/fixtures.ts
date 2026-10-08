@@ -369,6 +369,7 @@ function study(args: { slug: string; goal?: string; repo?: string; state: StudyS
     steers: args.plan.count === 0 ? [] : steers(args.slug),
     changesets: args.changesets ?? [],
     needs_eyes: args.eyes ?? [],
+    tail: info.current !== null ? 'CASE n4000 time_ms=144.196\nCASE n8000 time_ms=591.764\nCASE n12000 time_ms=1213.014\nMETRIC time_ms=1948.974' : null,
   }
   return { info, detail, rows: [...b.rows].reverse(), details: b.details }
 }
@@ -511,7 +512,10 @@ function wrap(api: Api, s: State): Api {
           set({ state: { state: 'discarded' } })
           break
         case 'restore':
+        case 'keep_reverted':
           st.detail = { ...st.detail, needs_eyes: st.detail.needs_eyes.filter((line) => !line.startsWith(`#${op.n} reverted`)) }
+          break
+        case 'merge':
           break
         case 'segment':
           set({ segment: st.info.segment + 1, state: { state: 'running' } })

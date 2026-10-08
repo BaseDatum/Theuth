@@ -33,6 +33,8 @@ pub enum CallKind {
     Dream,
     /// 137: an endless-mode compactor call (one node of the summary tree).
     Endless,
+    /// 140: an autoresearch side call (reviewer, advisor), charged to the study session.
+    Autoresearch,
 }
 
 impl CallKind {
@@ -47,6 +49,7 @@ impl CallKind {
             Self::Escalate => "escalate",
             Self::Dream => "dream",
             Self::Endless => "endless",
+            Self::Autoresearch => "autoresearch",
         }
     }
 }
@@ -69,6 +72,7 @@ impl FromStr for CallKind {
             "escalate" => Ok(Self::Escalate),
             "dream" => Ok(Self::Dream),
             "endless" => Ok(Self::Endless),
+            "autoresearch" => Ok(Self::Autoresearch),
             _ => Err(format!("unknown CallKind: {s:?}")),
         }
     }

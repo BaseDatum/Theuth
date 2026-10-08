@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kameo::actor::ActorRef;
+use runtime::SessionId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tools::registry::ToolRegistry;
@@ -103,18 +104,29 @@ pub fn draft_spec_path(root: &Path, draft_id: &str) -> PathBuf {
     crate::drafts_dir(root, draft_id).join("spec.json")
 }
 
-/// Write a draft's spec beside its setup scripts; returns the draft id (the slug).
-pub fn write_draft(root: &Path, spec: &StudySpec) -> std::io::Result<String> {
+/// The draft on disk: the spec and the chat it was drafted in (start and result cards go there).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Draft {
+    /// The spec the card shows.
+    pub spec: StudySpec,
+    /// The session the card was drafted in.
+    #[serde(default)]
+    pub origin: Option<SessionId>,
+}
+
+/// Write a draft beside its setup scripts; returns the draft id (the slug).
+pub fn write_draft(root: &Path, spec: &StudySpec, origin: SessionId) -> std::io::Result<String> {
     let path = draft_spec_path(root, &spec.slug);
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    std::fs::write(&path, serde_json::to_vec_pretty(spec)?)?;
+    let draft = serde_json::json!({ "spec": spec, "origin": origin });
+    std::fs::write(&path, serde_json::to_vec_pretty(&draft)?)?;
     Ok(spec.slug.clone())
 }
 
-/// Read a draft's spec (`StartDraft`); `Refused` names a missing draft.
-pub fn read_draft(root: &Path, draft_id: &str) -> crate::Result<StudySpec> {
+/// Read a draft (`StartDraft`); `Refused` names a missing draft.
+pub fn read_draft(root: &Path, draft_id: &str) -> crate::Result<Draft> {
     let path = draft_spec_path(root, draft_id);
     let bytes = std::fs::read(&path).map_err(|e| {
         crate::Error::refused(format!("no draft `{draft_id}` ({}: {e})", path.display()))
@@ -670,7 +682,7 @@ impl Tool for StatusTool {
 pub struct ControlArgs {
     /// The study (or the draft id — its slug — for `start`).
     pub slug: String,
-    /// `pause | resume | stop_after | stop_now | run_once | segment | finalize | restore | discard | steer | idea | start | start_window`.
+    /// `pause | resume | stop_after | stop_now | run_once | segment | finalize | restore | keep_reverted | merge | discard | steer | idea | start | start_window`.
     pub op: String,
     /// For `segment` (why) and `restore`/`idea` details (idea: the category).
     #[serde(default)]
@@ -678,7 +690,7 @@ pub struct ControlArgs {
     /// For `steer` (the text), `idea` (the idea) and `start_window` (the sensor; default sensors/idle.py).
     #[serde(default)]
     pub text: Option<String>,
-    /// For `restore`: the experiment number.
+    /// For `restore` / `keep_reverted`: the experiment number; for `merge`: the changeset's k.
     #[serde(default)]
     pub n: Option<u32>,
 }
@@ -696,7 +708,9 @@ impl Tool for ControlTool {
     fn description(&self) -> String {
         "Control an autoresearch study from this chat: pause, resume, stop_after (finalize after the experiment in \
          flight), stop_now (discard it), run_once, segment (new evaluator custody and baseline; give a reason), \
-         finalize, restore (re-measure a reverted keep; give n), discard, steer (text reaches the next experiment \
+         finalize, restore (re-measure a reverted keep; give n), keep_reverted (leave it reverted; give n), merge \
+         (git merge --no-ff a finished study's changeset into the repo's current branch; n = the changeset; never pushes), \
+         discard, steer (text reaches the next experiment \
          without pausing) or idea (add to the backlog; text, optional category in reason). start / start_window \
          start a drafted study — the draft card's buttons do that; call them yourself only when the user asks in words."
             .into()
@@ -726,6 +740,15 @@ impl Tool for ControlTool {
             "finalize" => ControlOp::Finalize,
             "restore" => ControlOp::Restore {
                 n: a.n.ok_or_else(|| anyhow::anyhow!("restore needs n"))?,
+            },
+            "keep_reverted" => ControlOp::KeepReverted {
+                n: a.n
+                    .ok_or_else(|| anyhow::anyhow!("keep_reverted needs n"))?,
+            },
+            "merge" => ControlOp::Merge {
+                changeset: a
+                    .n
+                    .ok_or_else(|| anyhow::anyhow!("merge needs n (the changeset)"))?,
             },
             "discard" => ControlOp::Discard,
             "steer" => {
@@ -1207,13 +1230,15 @@ mod tests {
             goal: "g".into(),
             ..Default::default()
         };
-        let id = write_draft(dir.path(), &spec).unwrap();
+        let origin = SessionId::new();
+        let id = write_draft(dir.path(), &spec, origin).unwrap();
         assert_eq!(id, "sort-speed");
         assert_eq!(
             draft_spec_path(dir.path(), &id),
             dir.path().join("drafts/sort-speed/spec.json")
         );
-        assert_eq!(read_draft(dir.path(), &id).unwrap(), spec);
+        let d = read_draft(dir.path(), &id).unwrap();
+        assert_eq!((d.spec, d.origin), (spec, Some(origin)));
         let e = read_draft(dir.path(), "nope").unwrap_err().to_string();
         assert!(e.starts_with("no draft `nope`"), "{e}");
     }

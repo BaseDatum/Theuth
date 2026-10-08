@@ -134,7 +134,7 @@ export function StudyView() {
             <StudyChart detail={d} onPick={pick} />
           </Panel>
 
-          {info.current !== null && <Current n={info.current} row={current} progress={progress ?? { phase: info.phase, sample: 0, of: 0, elapsed_ms: 0 }} onOpen={() => pick(info.current)} />}
+          {info.current !== null && <Current n={info.current} row={current} progress={progress ?? { phase: info.phase, sample: 0, of: 0, elapsed_ms: 0 }} tail={d.tail} onOpen={() => pick(info.current)} />}
           {st.state === 'preparing' && <Preparing detail={d} />}
           {/* Below 2xl the side panel sits above the table as two columns (the steer box stays near the top); at 2xl it is the mock's 300 px column. */}
           <div className="grid min-w-0 grid-cols-1 gap-3 2xl:grid-cols-[minmax(0,1fr)_300px]">
@@ -271,9 +271,10 @@ export function Bars({ bars }: { bars: Bar[] }) {
 
 /**
  * The experiment in flight: phase chips from the last `ExperimentProgress`, the elapsed clock (ticks locally between
- * events, from the row's `started_at` once the row exists), the idea once declared.
+ * events, from the row's `started_at` once the row exists), the idea once declared, the running sample's log tail
+ * (`StudyDetail.tail`, refetched on every `ExperimentProgress`).
  */
-export function Current({ n, row, progress, onOpen }: { n: number; row: ExperimentRow | null; progress: Progress; onOpen: () => void }) {
+export function Current({ n, row, progress, tail, onOpen }: { n: number; row: ExperimentRow | null; progress: Progress; tail: string | null; onOpen: () => void }) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
@@ -311,6 +312,11 @@ export function Current({ n, row, progress, onOpen }: { n: number; row: Experime
         </p>
       ) : (
         <p className="mt-2 text-[13px] text-fg-tertiary">Reading the brief and editing; the idea is declared at the first measurement.</p>
+      )}
+      {tail && (
+        <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-layer-2 p-2 font-mono text-[11px] leading-snug text-fg-secondary" aria-label="Sample log tail">
+          {tail}
+        </pre>
       )}
     </Panel>
   )

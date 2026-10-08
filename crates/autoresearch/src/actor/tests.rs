@@ -25,6 +25,8 @@ struct Fake {
     repair: Mutex<Option<String>>,
     spend: Mutex<f64>,
     samples_taken: Mutex<u32>,
+    restored: Mutex<Vec<u32>>,
+    novelty_refusal: Mutex<Option<String>>,
 }
 
 impl Fake {
@@ -75,6 +77,10 @@ impl Backend for Fake {
         Ok(self.repair.lock().take())
     }
     fn reject(&self, _: &Path, _: &str, _: u32, _: &str) -> Result<()> {
+        Ok(())
+    }
+    fn restore_rejected(&self, _: &Path, _: &str, n: u32) -> Result<()> {
+        self.restored.lock().push(n);
         Ok(())
     }
     fn patch_hash(&self, _: &Path, _: &str) -> Result<String> {
@@ -191,7 +197,10 @@ impl Backend for Fake {
         _: f64,
         _: bool,
     ) -> Result<Novelty> {
-        Ok(Novelty::default())
+        Ok(Novelty {
+            refused: self.novelty_refusal.lock().clone(),
+            ..Novelty::default()
+        })
     }
     async fn mark_tried(&self, _: &Store, _: &str, _: &str, _: u32) -> Result<Vec<i64>> {
         Ok(vec![])
@@ -234,7 +243,7 @@ impl Backend for Fake {
                 base_mean: 100.0,
                 final_mean: study.incumbent_mean.unwrap_or(100.0),
                 delta_pct: -10.0,
-                holdout: None,
+                ..Headline::default()
             },
             "doc-1".into(),
         ))
@@ -1253,6 +1262,50 @@ async fn review_reverts_a_suspicious_keep_and_restore_queues_it() {
     assert!(ideas[0].text.contains("Restore experiment #1") && ideas[0].priority == 3);
     let items = roster::attention::Source::items(&AttentionSource(h.studies.store.clone())).await;
     assert!(items.is_empty(), "the row clears once acted on");
+    // The next begin re-applies the rejected change itself (restore_rejected) and the brief says so;
+    // the run that follows is not a duplicate even though its patch hash equals the dead end's.
+    let brief = begin(
+        &mut h.studies,
+        Begin {
+            session,
+            slot: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        brief.text.contains("restores #1") && brief.text.contains("already applied"),
+        "{}",
+        brief.text
+    );
+    assert_eq!(*fake.restored.lock(), vec![1]);
+    let applied = h
+        .studies
+        .store
+        .list_events("t1", Some("restore_applied"), 5)
+        .await
+        .unwrap();
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0].payload["of"], 1);
+    let items = roster::attention::Source::items(&AttentionSource(h.studies.store.clone())).await;
+    assert!(items.is_empty(), "no second restore is pending");
+    *fake.novelty_refusal.lock() = Some("duplicate of #1".into());
+    fake.decide(Verdict::NoGain, 0.0, 0.1);
+    let r = run(
+        &mut h.studies,
+        Run {
+            session,
+            slot: None,
+            args: RunArgs {
+                idea: "memo".into(),
+                ..RunArgs::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!matches!(r.verdict, Verdict::Refused { .. }), "{r:?}");
+    *fake.novelty_refusal.lock() = None;
     // Restore of an ordinary experiment is refused.
     let e = control(
         &mut h.studies,
@@ -1598,7 +1651,7 @@ fn cards_render_valid_json_render_fences() {
         base_mean: 52.1,
         final_mean: 41.2,
         delta_pct: -20.9,
-        holdout: None,
+        ..Headline::default()
     };
     let result = result_card(&study, &h, &series, &cs, 70, 4);
     let body = result
