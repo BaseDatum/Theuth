@@ -1,0 +1,1 @@
+`ui/src/components` alone is 462 files / 72 k lines and imports `lib` 811 times and `rpc` 430 times; the import graph is dense enough that the folders are an organisational, not an architectural, boundary.

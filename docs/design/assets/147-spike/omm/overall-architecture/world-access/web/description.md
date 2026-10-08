@@ -1,0 +1,1 @@
+`crates/web/` (72 files / 17,867 lines): the engine's HTTP client (`wreq` with browser impersonation), `read_url`/`search_web` plumbing, html→markdown and compaction. Imported by 8 crates including `agent`, `routes`, `search-providers` and `tui`.

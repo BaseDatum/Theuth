@@ -160,6 +160,32 @@ pub enum Delivery {
     NextTurn,
 }
 
+/// `ask` → `()` (145 §0.3–0.4). A live talk tells the agent whether its spoken
+/// window is open; `None` when the talk ends. Only sessions that have received
+/// `Some(..)` park anything or promote tool calls.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetTalk {
+    /// The talk's session.
+    pub session: SessionId,
+    /// The live talk's window, or `None` when it ended.
+    pub live: Option<TalkLive>,
+}
+
+/// What a live talk tells the agent (145 §2.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TalkLive {
+    /// Open: harness-made inputs may start a turn (after `TALK_COALESCE_MS`).
+    /// Closed: they are parked.
+    pub open: bool,
+    /// `talk.promote_after_ms`; `None` never promotes.
+    pub promote_after_ms: Option<u64>,
+}
+
+/// Items landing within this window join one turn.
+pub const TALK_COALESCE_MS: u64 = 120;
+/// A closed window releases what it parked after this long regardless.
+pub const TALK_PARK_CAP_MS: u64 = 60_000;
+
 /// `ask` → [`SessionId`]. `session: None` creates a new session. Returns as
 /// soon as the turn is queued; progress arrives as [`AgentEvent`]s.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2583,6 +2609,13 @@ pub enum AgentEvent {
         /// The steer's id.
         id: InputId,
     },
+    /// 145 §0.3: harness inputs parked behind a closed spoken window.
+    InputsParked {
+        /// Session.
+        session: SessionId,
+        /// Items parked right now.
+        count: u32,
+    },
     /// A subagent session was created for `parent`.
     SubagentSpawned {
         /// Owning session.
@@ -2951,6 +2984,7 @@ impl AgentEvent {
             | Self::InputQueued { session, .. }
             | Self::InputInjected { session, .. }
             | Self::InputWithdrawn { session, .. }
+            | Self::InputsParked { session, .. }
             | Self::MessageDelivered { session, .. }
             | Self::ModelChanged { session, .. }
             | Self::HarnessCommandsChanged { session, .. }

@@ -1,0 +1,1 @@
+`src/tools.rs` (2,070 lines): the seven model-facing tools (`code_find`, `code_outline`, `code_refs`, `code_symbol`, `code_map`, `code_impact`, `project_profile`), their `PROMPT` text (L25) and the budget renderer (`budget_render` L125). `register()` (L47) adds them to the tool registry at plugin start.

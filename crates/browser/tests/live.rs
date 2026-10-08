@@ -159,6 +159,8 @@ impl Kit {
             call_id: "c1".to_owned(),
             quiet: false,
             resources: tools::SessionResources::durable_arc(&self.data_dir),
+            cancel: tools::CancellationToken::new(),
+            promote_after: None,
         };
         tool.call(args, cx).await.expect(name)
     }

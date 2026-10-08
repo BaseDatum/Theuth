@@ -1,0 +1,2606 @@
+{
+ "root": "/Users/Sky.Moore/Develop/theuth",
+ "generated": "2026-10-08",
+ "indexed_files": 3255,
+ "dropped": 3355,
+ "git_tracked_files": 3321,
+ "profile": {
+  "kind": "cargo",
+  "commands": {
+   "check": "just check",
+   "test": "just test",
+   "lint": "just clippy",
+   "format": "just fmt",
+   "build": "just build",
+   "typecheck": null
+  }
+ },
+ "top_level_node_count": 68,
+ "crate_count": 49,
+ "nodes": [
+  {
+   "id": "assets",
+   "kind": "dir",
+   "paths": [
+    "assets/"
+   ],
+   "files": 12,
+   "lines": 6721,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "a2a",
+   "kind": "crate",
+   "paths": [
+    "crates/a2a/"
+   ],
+   "files": 5,
+   "lines": 3825,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "acp",
+   "kind": "crate",
+   "paths": [
+    "crates/acp/"
+   ],
+   "files": 29,
+   "lines": 3237,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "agent",
+   "kind": "crate",
+   "paths": [
+    "crates/agent/"
+   ],
+   "files": 187,
+   "lines": 172172,
+   "rank": 0.00867,
+   "map_rows_6000": 9
+  },
+  {
+   "id": "app",
+   "kind": "crate",
+   "paths": [
+    "crates/app/"
+   ],
+   "files": 14,
+   "lines": 7592,
+   "rank": 0.00113,
+   "map_rows_6000": 1
+  },
+  {
+   "id": "artifact",
+   "kind": "crate",
+   "paths": [
+    "crates/artifact/"
+   ],
+   "files": 43,
+   "lines": 14770,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "browser",
+   "kind": "crate",
+   "paths": [
+    "crates/browser/"
+   ],
+   "files": 11,
+   "lines": 4945,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "codeindex",
+   "kind": "crate",
+   "paths": [
+    "crates/codeindex/"
+   ],
+   "files": 50,
+   "lines": 16056,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "computer",
+   "kind": "crate",
+   "paths": [
+    "crates/computer/"
+   ],
+   "files": 12,
+   "lines": 4424,
+   "rank": 0.0091,
+   "map_rows_6000": 3
+  },
+  {
+   "id": "cursor",
+   "kind": "crate",
+   "paths": [
+    "crates/cursor/"
+   ],
+   "files": 8,
+   "lines": 6478,
+   "rank": 0.00089,
+   "map_rows_6000": 1
+  },
+  {
+   "id": "decision",
+   "kind": "crate",
+   "paths": [
+    "crates/decision/"
+   ],
+   "files": 40,
+   "lines": 45455,
+   "rank": 0.00846,
+   "map_rows_6000": 7
+  },
+  {
+   "id": "desktop",
+   "kind": "crate",
+   "paths": [
+    "crates/desktop/"
+   ],
+   "files": 302,
+   "lines": 38454,
+   "rank": 0.00382,
+   "map_rows_6000": 3
+  },
+  {
+   "id": "ui-App.tsx",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/App.tsx"
+   ],
+   "files": 1,
+   "lines": 694,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "ui-components",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/components/"
+   ],
+   "files": 462,
+   "lines": 72248,
+   "rank": 0.03089,
+   "map_rows_6000": 15
+  },
+  {
+   "id": "ui-dev",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/dev/"
+   ],
+   "files": 5,
+   "lines": 727,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "ui-hooks",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/hooks/"
+   ],
+   "files": 10,
+   "lines": 790,
+   "rank": 0.0158,
+   "map_rows_6000": 2
+  },
+  {
+   "id": "ui-lib",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/lib/"
+   ],
+   "files": 202,
+   "lines": 19547,
+   "rank": 0.16066,
+   "map_rows_6000": 48
+  },
+  {
+   "id": "ui-link",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/link/"
+   ],
+   "files": 16,
+   "lines": 2221,
+   "rank": 0.00272,
+   "map_rows_6000": 2
+  },
+  {
+   "id": "ui-main.tsx",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/main.tsx"
+   ],
+   "files": 1,
+   "lines": 26,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "ui-routeTree.gen.ts",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/routeTree.gen.ts"
+   ],
+   "files": 1,
+   "lines": 889,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "ui-routes",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/routes/"
+   ],
+   "files": 40,
+   "lines": 1247,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "ui-rpc",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/rpc/"
+   ],
+   "files": 7,
+   "lines": 2151,
+   "rank": 0.00369,
+   "map_rows_6000": 3
+  },
+  {
+   "id": "ui-store",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/store/"
+   ],
+   "files": 17,
+   "lines": 4653,
+   "rank": 0.03289,
+   "map_rows_6000": 15
+  },
+  {
+   "id": "ui-styles.css",
+   "kind": "ui-module",
+   "paths": [
+    "crates/desktop/ui/src/styles.css"
+   ],
+   "files": 1,
+   "lines": 804,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "document",
+   "kind": "crate",
+   "paths": [
+    "crates/document/"
+   ],
+   "files": 15,
+   "lines": 13749,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "double",
+   "kind": "crate",
+   "paths": [
+    "crates/double/"
+   ],
+   "files": 23,
+   "lines": 14175,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "dreaming",
+   "kind": "crate",
+   "paths": [
+    "crates/dreaming/"
+   ],
+   "files": 22,
+   "lines": 11165,
+   "rank": 0.00075,
+   "map_rows_6000": 1
+  },
+  {
+   "id": "firecrawl-native",
+   "kind": "crate",
+   "paths": [
+    "crates/firecrawl-native/"
+   ],
+   "files": 75,
+   "lines": 6365,
+   "rank": 0.00075,
+   "map_rows_6000": 1
+  },
+  {
+   "id": "knowledge",
+   "kind": "crate",
+   "paths": [
+    "crates/knowledge/"
+   ],
+   "files": 9,
+   "lines": 9087,
+   "rank": 0.01342,
+   "map_rows_6000": 5
+  },
+  {
+   "id": "link",
+   "kind": "crate",
+   "paths": [
+    "crates/link/"
+   ],
+   "files": 14,
+   "lines": 5464,
+   "rank": 0.00087,
+   "map_rows_6000": 1
+  },
+  {
+   "id": "markdown",
+   "kind": "crate",
+   "paths": [
+    "crates/markdown/"
+   ],
+   "files": 3,
+   "lines": 1437,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "meeting",
+   "kind": "crate",
+   "paths": [
+    "crates/meeting/"
+   ],
+   "files": 37,
+   "lines": 17019,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "mesh",
+   "kind": "crate",
+   "paths": [
+    "crates/mesh/"
+   ],
+   "files": 16,
+   "lines": 4809,
+   "rank": 0.00531,
+   "map_rows_6000": 1
+  },
+  {
+   "id": "models",
+   "kind": "crate",
+   "paths": [
+    "crates/models/"
+   ],
+   "files": 7,
+   "lines": 37347,
+   "rank": 0.0022,
+   "map_rows_6000": 2
+  },
+  {
+   "id": "nodes",
+   "kind": "crate",
+   "paths": [
+    "crates/nodes/"
+   ],
+   "files": 7,
+   "lines": 1698,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "oauth",
+   "kind": "crate",
+   "paths": [
+    "crates/oauth/"
+   ],
+   "files": 3,
+   "lines": 1316,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "platform",
+   "kind": "crate",
+   "paths": [
+    "crates/platform/"
+   ],
+   "files": 13,
+   "lines": 1933,
+   "rank": 0.00828,
+   "map_rows_6000": 6
+  },
+  {
+   "id": "relay",
+   "kind": "crate",
+   "paths": [
+    "crates/relay/"
+   ],
+   "files": 7,
+   "lines": 1680,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "replica",
+   "kind": "crate",
+   "paths": [
+    "crates/replica/"
+   ],
+   "files": 14,
+   "lines": 4086,
+   "rank": 0.00237,
+   "map_rows_6000": 1
+  },
+  {
+   "id": "roster",
+   "kind": "crate",
+   "paths": [
+    "crates/roster/"
+   ],
+   "files": 21,
+   "lines": 9826,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "routes",
+   "kind": "crate",
+   "paths": [
+    "crates/routes/"
+   ],
+   "files": 7,
+   "lines": 2540,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "rpc",
+   "kind": "crate",
+   "paths": [
+    "crates/rpc/"
+   ],
+   "files": 72,
+   "lines": 15306,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "runtime",
+   "kind": "crate",
+   "paths": [
+    "crates/runtime/"
+   ],
+   "files": 3,
+   "lines": 538,
+   "rank": 0.02401,
+   "map_rows_6000": 7
+  },
+  {
+   "id": "sandbox",
+   "kind": "crate",
+   "paths": [
+    "crates/sandbox/"
+   ],
+   "files": 23,
+   "lines": 9844,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "schedule",
+   "kind": "crate",
+   "paths": [
+    "crates/schedule/"
+   ],
+   "files": 11,
+   "lines": 8828,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "scrape",
+   "kind": "crate",
+   "paths": [
+    "crates/scrape/"
+   ],
+   "files": 8,
+   "lines": 3990,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "search",
+   "kind": "crate",
+   "paths": [
+    "crates/search/"
+   ],
+   "files": 2,
+   "lines": 521,
+   "rank": 0.00082,
+   "map_rows_6000": 1
+  },
+  {
+   "id": "search-providers",
+   "kind": "crate",
+   "paths": [
+    "crates/search-providers/"
+   ],
+   "files": 14,
+   "lines": 3583,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "secrets",
+   "kind": "crate",
+   "paths": [
+    "crates/secrets/"
+   ],
+   "files": 9,
+   "lines": 3811,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "sessionsync",
+   "kind": "crate",
+   "paths": [
+    "crates/sessionsync/"
+   ],
+   "files": 12,
+   "lines": 4939,
+   "rank": 0.00093,
+   "map_rows_6000": 1
+  },
+  {
+   "id": "signal",
+   "kind": "crate",
+   "paths": [
+    "crates/signal/"
+   ],
+   "files": 12,
+   "lines": 8243,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "slack",
+   "kind": "crate",
+   "paths": [
+    "crates/slack/"
+   ],
+   "files": 17,
+   "lines": 15513,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "surface",
+   "kind": "crate",
+   "paths": [
+    "crates/surface/"
+   ],
+   "files": 357,
+   "lines": 24359,
+   "rank": 0.00193,
+   "map_rows_6000": 2
+  },
+  {
+   "id": "talk",
+   "kind": "crate",
+   "paths": [
+    "crates/talk/"
+   ],
+   "files": 3,
+   "lines": 3276,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "tasks",
+   "kind": "crate",
+   "paths": [
+    "crates/tasks/"
+   ],
+   "files": 21,
+   "lines": 14416,
+   "rank": 0.00376,
+   "map_rows_6000": 2
+  },
+  {
+   "id": "telegram",
+   "kind": "crate",
+   "paths": [
+    "crates/telegram/"
+   ],
+   "files": 17,
+   "lines": 15781,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "theuth",
+   "kind": "crate",
+   "paths": [
+    "crates/theuth/"
+   ],
+   "files": 10,
+   "lines": 3323,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "tools",
+   "kind": "crate",
+   "paths": [
+    "crates/tools/"
+   ],
+   "files": 24,
+   "lines": 21883,
+   "rank": 0.02926,
+   "map_rows_6000": 17
+  },
+  {
+   "id": "tui",
+   "kind": "crate",
+   "paths": [
+    "crates/tui/"
+   ],
+   "files": 13,
+   "lines": 28234,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "update",
+   "kind": "crate",
+   "paths": [
+    "crates/update/"
+   ],
+   "files": 3,
+   "lines": 1107,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "voice",
+   "kind": "crate",
+   "paths": [
+    "crates/voice/"
+   ],
+   "files": 12,
+   "lines": 4518,
+   "rank": 0.00299,
+   "map_rows_6000": 4
+  },
+  {
+   "id": "web",
+   "kind": "crate",
+   "paths": [
+    "crates/web/"
+   ],
+   "files": 72,
+   "lines": 17867,
+   "rank": 0.00676,
+   "map_rows_6000": 7
+  },
+  {
+   "id": "deploy",
+   "kind": "dir",
+   "paths": [
+    "deploy/"
+   ],
+   "files": 30,
+   "lines": 1201,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "docs",
+   "kind": "dir",
+   "paths": [
+    "docs/"
+   ],
+   "files": 542,
+   "lines": 143812,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "packages",
+   "kind": "dir",
+   "paths": [
+    "packages/"
+   ],
+   "files": 69,
+   "lines": 19070,
+   "rank": 0.00819,
+   "map_rows_6000": 6
+  },
+  {
+   "id": "scripts",
+   "kind": "dir",
+   "paths": [
+    "scripts/"
+   ],
+   "files": 59,
+   "lines": 11392,
+   "rank": 0.00805,
+   "map_rows_6000": 5
+  },
+  {
+   "id": "site",
+   "kind": "dir",
+   "paths": [
+    "site/"
+   ],
+   "files": 69,
+   "lines": 11839,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  },
+  {
+   "id": "vendor",
+   "kind": "dir",
+   "paths": [
+    "vendor/"
+   ],
+   "files": 59,
+   "lines": 605705,
+   "rank": 0.0,
+   "map_rows_6000": 0
+  }
+ ],
+ "edges": [
+  {
+   "from": "a2a",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "a2a",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "a2a",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "acp",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "acp",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "acp",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "acp",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "cursor",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "knowledge",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "models",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "oauth",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "search",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "surface",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "agent",
+   "to": "web",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "app",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "app",
+   "to": "artifact",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "app",
+   "to": "link",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "app",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "app",
+   "to": "roster",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "app",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "app",
+   "to": "schedule",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "app",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "artifact",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "artifact",
+   "to": "document",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "artifact",
+   "to": "markdown",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "artifact",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "artifact",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "artifact",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "artifact",
+   "to": "search",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "artifact",
+   "to": "surface",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "artifact",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "browser",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "browser",
+   "to": "decision",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "browser",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "browser",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "browser",
+   "to": "web",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "codeindex",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "codeindex",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "computer",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "computer",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "computer",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "decision",
+   "to": "models",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "decision",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "decision",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "decision",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "desktop",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "document",
+   "to": "codeindex",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "document",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "document",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "document",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "document",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "document",
+   "to": "search",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "document",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "document",
+   "to": "surface",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "document",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "decision",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "meeting",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "roster",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "schedule",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "talk",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "double",
+   "to": "voice",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "dreaming",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "dreaming",
+   "to": "document",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "dreaming",
+   "to": "knowledge",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "dreaming",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "dreaming",
+   "to": "roster",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "dreaming",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "dreaming",
+   "to": "schedule",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "dreaming",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "knowledge",
+   "to": "document",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "knowledge",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "knowledge",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "knowledge",
+   "to": "search",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "knowledge",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "link",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "link",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "link",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "link",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "link",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "meeting",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "meeting",
+   "to": "decision",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "meeting",
+   "to": "document",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "meeting",
+   "to": "models",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "meeting",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "meeting",
+   "to": "search",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "meeting",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "meeting",
+   "to": "voice",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "mesh",
+   "to": "oauth",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "mesh",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "mesh",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "mesh",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "mesh",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "mesh",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "models",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "nodes",
+   "to": "acp",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "nodes",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "nodes",
+   "to": "link",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "nodes",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "nodes",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "oauth",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "relay",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "replica",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "artifact",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "document",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "knowledge",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "sandbox",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "tasks",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "roster",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "routes",
+   "to": "browser",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "routes",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "routes",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "routes",
+   "to": "web",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "a2a",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "acp",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "app",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "artifact",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "browser",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "codeindex",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "computer",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "decision",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "document",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "double",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "dreaming",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "knowledge",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "link",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "meeting",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "nodes",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "roster",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "sandbox",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "schedule",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "search",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "search-providers",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "sessionsync",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "signal",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "slack",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "surface",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "talk",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "tasks",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "telegram",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "update",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "voice",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "rpc",
+   "to": "web",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "sandbox",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "sandbox",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "sandbox",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "sandbox",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "sandbox",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "sandbox",
+   "to": "update",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "schedule",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "schedule",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "schedule",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "schedule",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "schedule",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "schedule",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "scrape",
+   "to": "browser",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "scrape",
+   "to": "firecrawl-native",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "scrape",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "scrape",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "scrape",
+   "to": "web",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "search-providers",
+   "to": "oauth",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "search-providers",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "search-providers",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "search-providers",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "search-providers",
+   "to": "web",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "secrets",
+   "to": "oauth",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "secrets",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "secrets",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "secrets",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "secrets",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "sessionsync",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "sessionsync",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "sessionsync",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "sessionsync",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "a2a",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "artifact",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "double",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "link",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "roster",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "surface",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "tasks",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "signal",
+   "to": "voice",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "a2a",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "artifact",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "double",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "markdown",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "roster",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "surface",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "tasks",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "slack",
+   "to": "voice",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "surface",
+   "to": "markdown",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "talk",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "talk",
+   "to": "markdown",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "talk",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "talk",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "talk",
+   "to": "voice",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tasks",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tasks",
+   "to": "document",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tasks",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tasks",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tasks",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tasks",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tasks",
+   "to": "schedule",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tasks",
+   "to": "sessionsync",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tasks",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "artifact",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "double",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "link",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "markdown",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "roster",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "tasks",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "telegram",
+   "to": "voice",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "a2a",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "app",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "artifact",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "browser",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "codeindex",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "computer",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "decision",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "document",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "double",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "dreaming",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "knowledge",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "link",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "meeting",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "mesh",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "models",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "nodes",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "roster",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "routes",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "rpc",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "sandbox",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "schedule",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "scrape",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "search-providers",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "sessionsync",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "signal",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "slack",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "surface",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "talk",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "tasks",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "telegram",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "tui",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "update",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "voice",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "theuth",
+   "to": "web",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tools",
+   "to": "oauth",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tools",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tools",
+   "to": "replica",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tools",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "a2a",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "acp",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "artifact",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "computer",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "document",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "double",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "knowledge",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "link",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "markdown",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "meeting",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "models",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "nodes",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "oauth",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "roster",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "rpc",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "sandbox",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "schedule",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "search",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "surface",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "talk",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "tasks",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "update",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "voice",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "tui",
+   "to": "web",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "update",
+   "to": "agent",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "update",
+   "to": "platform",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "update",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "voice",
+   "to": "markdown",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "voice",
+   "to": "models",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "voice",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "voice",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "web",
+   "to": "runtime",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "web",
+   "to": "secrets",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "web",
+   "to": "tools",
+   "evidence": "Cargo.toml [dependencies] path/workspace dep"
+  },
+  {
+   "from": "ui-components",
+   "to": "ui-dev",
+   "evidence": "2 `from '@/dev/\u2026'` imports in ui/src/components"
+  },
+  {
+   "from": "ui-components",
+   "to": "ui-hooks",
+   "evidence": "24 `from '@/hooks/\u2026'` imports in ui/src/components"
+  },
+  {
+   "from": "ui-components",
+   "to": "ui-lib",
+   "evidence": "811 `from '@/lib/\u2026'` imports in ui/src/components"
+  },
+  {
+   "from": "ui-components",
+   "to": "ui-link",
+   "evidence": "33 `from '@/link/\u2026'` imports in ui/src/components"
+  },
+  {
+   "from": "ui-components",
+   "to": "ui-routes",
+   "evidence": "2 `from '@/routes/\u2026'` imports in ui/src/components"
+  },
+  {
+   "from": "ui-components",
+   "to": "ui-rpc",
+   "evidence": "430 `from '@/rpc/\u2026'` imports in ui/src/components"
+  },
+  {
+   "from": "ui-components",
+   "to": "ui-store",
+   "evidence": "135 `from '@/store/\u2026'` imports in ui/src/components"
+  },
+  {
+   "from": "ui-lib",
+   "to": "ui-components",
+   "evidence": "22 `from '@/components/\u2026'` imports in ui/src/lib"
+  },
+  {
+   "from": "ui-lib",
+   "to": "ui-dev",
+   "evidence": "2 `from '@/dev/\u2026'` imports in ui/src/lib"
+  },
+  {
+   "from": "ui-lib",
+   "to": "ui-hooks",
+   "evidence": "1 `from '@/hooks/\u2026'` imports in ui/src/lib"
+  },
+  {
+   "from": "ui-lib",
+   "to": "ui-link",
+   "evidence": "6 `from '@/link/\u2026'` imports in ui/src/lib"
+  },
+  {
+   "from": "ui-lib",
+   "to": "ui-rpc",
+   "evidence": "124 `from '@/rpc/\u2026'` imports in ui/src/lib"
+  },
+  {
+   "from": "ui-lib",
+   "to": "ui-store",
+   "evidence": "20 `from '@/store/\u2026'` imports in ui/src/lib"
+  },
+  {
+   "from": "ui-store",
+   "to": "ui-components",
+   "evidence": "3 `from '@/components/\u2026'` imports in ui/src/store"
+  },
+  {
+   "from": "ui-store",
+   "to": "ui-lib",
+   "evidence": "11 `from '@/lib/\u2026'` imports in ui/src/store"
+  },
+  {
+   "from": "ui-store",
+   "to": "ui-link",
+   "evidence": "1 `from '@/link/\u2026'` imports in ui/src/store"
+  },
+  {
+   "from": "ui-store",
+   "to": "ui-rpc",
+   "evidence": "68 `from '@/rpc/\u2026'` imports in ui/src/store"
+  },
+  {
+   "from": "ui-routes",
+   "to": "ui-components",
+   "evidence": "80 `from '@/components/\u2026'` imports in ui/src/routes"
+  },
+  {
+   "from": "ui-routes",
+   "to": "ui-hooks",
+   "evidence": "1 `from '@/hooks/\u2026'` imports in ui/src/routes"
+  },
+  {
+   "from": "ui-routes",
+   "to": "ui-lib",
+   "evidence": "23 `from '@/lib/\u2026'` imports in ui/src/routes"
+  },
+  {
+   "from": "ui-routes",
+   "to": "ui-link",
+   "evidence": "1 `from '@/link/\u2026'` imports in ui/src/routes"
+  },
+  {
+   "from": "ui-routes",
+   "to": "ui-rpc",
+   "evidence": "2 `from '@/rpc/\u2026'` imports in ui/src/routes"
+  },
+  {
+   "from": "ui-routes",
+   "to": "ui-store",
+   "evidence": "4 `from '@/store/\u2026'` imports in ui/src/routes"
+  },
+  {
+   "from": "ui-hooks",
+   "to": "ui-lib",
+   "evidence": "8 `from '@/lib/\u2026'` imports in ui/src/hooks"
+  },
+  {
+   "from": "ui-link",
+   "to": "ui-lib",
+   "evidence": "7 `from '@/lib/\u2026'` imports in ui/src/link"
+  },
+  {
+   "from": "ui-link",
+   "to": "ui-rpc",
+   "evidence": "10 `from '@/rpc/\u2026'` imports in ui/src/link"
+  },
+  {
+   "from": "ui-link",
+   "to": "ui-store",
+   "evidence": "3 `from '@/store/\u2026'` imports in ui/src/link"
+  },
+  {
+   "from": "ui-dev",
+   "to": "ui-components",
+   "evidence": "1 `from '@/components/\u2026'` imports in ui/src/dev"
+  },
+  {
+   "from": "ui-dev",
+   "to": "ui-lib",
+   "evidence": "1 `from '@/lib/\u2026'` imports in ui/src/dev"
+  },
+  {
+   "from": "ui-dev",
+   "to": "ui-rpc",
+   "evidence": "18 `from '@/rpc/\u2026'` imports in ui/src/dev"
+  },
+  {
+   "from": "ui-dev",
+   "to": "ui-store",
+   "evidence": "3 `from '@/store/\u2026'` imports in ui/src/dev"
+  },
+  {
+   "from": "ui-rpc",
+   "to": "rpc",
+   "evidence": "crates/desktop/ui/src/rpc/bindings/ generated by `just ts-desktop` from crates/rpc ts-rs exports"
+  }
+ ],
+ "edge_counts": {
+  "cargo": 334,
+  "ui_imports": 31
+ }
+}

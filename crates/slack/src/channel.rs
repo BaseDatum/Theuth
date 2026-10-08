@@ -2717,6 +2717,8 @@ impl Worker {
             | AgentEvent::ResumeReport { .. }
             | AgentEvent::TurnSuspended { .. }
             | AgentEvent::PartialDropped { .. }
+            // 145 §0.3: parked harness inputs are the talk's business; the thread sees nothing.
+            | AgentEvent::InputsParked { .. }
             // 125 §9: the pill is the TUI's and the app's; the thread sees nothing.
             | AgentEvent::AdvisorChanged { .. } => {}
             // 125 §9: a concern or blocker is one quiet line; nits post nothing.

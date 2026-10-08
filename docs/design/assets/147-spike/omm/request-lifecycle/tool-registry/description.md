@@ -1,0 +1,1 @@
+`crates/tools/src/registry.rs`: `RegisterTool(DynTool)` (L254, 145 references across the workspace) is how every plugin — including codeindex's `tools::register` — adds tools; `Invoke(ToolCall)` runs one and returns `ToolOutput`; the registry consults the `ExecutionGate` installed by the agent for approvals and suspension.

@@ -1,0 +1,1 @@
+A 2-file, 521-line crate (`crates/search/`) with the fuzzy matcher, snippet builder and page envelope shared by knowledge, document, artifact, meeting, agent, rpc and tui (design 49 §4.1). Leaf: no internal structure worth a diagram.

@@ -1063,6 +1063,8 @@ mod tests {
             call_id: "c1".into(),
             quiet: false,
             resources: Arc::new(tools::SessionResources::durable(dir)),
+            cancel: tools::CancellationToken::new(),
+            promote_after: None,
         }
     }
 

@@ -1,0 +1,20 @@
+graph LR
+    web-ui["Desktop UI\ncrates/desktop/ui/src/components/chat/Composer.tsx"]
+    rpc-api["RPC method send_input\ncrates/rpc/src/api.rs"]
+    agent-session["Agents → Session actor\ncrates/agent/src/{supervisor,loop_}.rs"]
+    model-provider["Model backend (genai)\ncrates/agent/src/backend.rs"]
+    tool-registry["Tool registry\ncrates/tools/src/registry.rs"]
+
+    web-ui -->|"api.send_input(session, body, files, null, clientId) over WebSocket JSON-RPC"| rpc-api
+    rpc-api -->|"authorize, forward::route to the owning engine, ask(AGENT_ACTOR, SendInput)"| agent-session
+    agent-session -->|"drive(turn): exec_chat_stream(spec, req) per round"| model-provider
+    model-provider -->|"streamed deltas + tool_use blocks"| agent-session
+    agent-session -->|"registry.ask(Invoke(ToolCall)) gated by PermitGate"| tool-registry
+    tool-registry -->|"ToolOutput appended to the transcript"| agent-session
+    agent-session -->|"AgentEvent via rt.subscribe in rpc/src/bridge.rs"| rpc-api
+    rpc-api -->|"notifications → store/reduce.ts"| web-ui
+
+    classDef entry fill:#89b4fa,stroke:#89b4fa,color:#1e1e2e
+    classDef external fill:#585b70,stroke:#585b70,color:#cdd6f4
+    class web-ui entry
+    class model-provider external

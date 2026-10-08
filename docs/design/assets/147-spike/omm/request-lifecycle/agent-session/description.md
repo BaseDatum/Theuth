@@ -1,0 +1,1 @@
+`crates/agent/src/supervisor.rs` L2901 (`Agents` handles `SendInput` → `human_input`) and `src/loop_.rs` L1348 (`Session` handles `UserInput`, builds an `Input` L155 with files, ticket, scope) → `drive()` L4901 runs the turn; `PermitGate` L1522 implements `tools::registry::ExecutionGate` so a tool waiting on a human suspends the session instead of blocking it.
