@@ -373,6 +373,14 @@ export function fromHistory(h: HistoryEntry): Entry[] {
   return Number.isNaN(at) ? out : out.map((e) => ({ ...e, at }));
 }
 
+/** 146 D7: a session loaded with `running === false` whose last entry is a result-less tool call — an ACP child
+ * killed mid-call by an engine restart — shows that card interrupted instead of spinning forever. */
+export function interruptDangling(entries: Entry[]): Entry[] {
+  const at = entries.length - 1;
+  const last = entries[at];
+  return last?.kind === "tool" && !last.result ? replaceAt(entries, at, { ...last, interrupted: true }) : entries;
+}
+
 function historyEntries(h: HistoryEntry): Entry[] {
   const context = h.context ?? undefined;
   switch (h.role) {
@@ -926,7 +934,8 @@ function turn(
                 at: Date.now(),
               },
             ];
-      return { ...s, entries, waiting: false, activity: "streaming" };
+      // 146 D7: a turn-scoped event means a turn runs, whatever a late reseed said.
+      return { ...s, entries, running: true, waiting: false, activity: "streaming" };
     }
     case "ReasoningDelta": {
       const at = s.entries.length - 1;
@@ -950,6 +959,7 @@ function turn(
       return {
         ...s,
         browser: s.browser || e.name.startsWith("browser_"),
+        running: true,
         waiting: false,
         activity: "tool",
         entries: [
@@ -989,6 +999,7 @@ function turn(
         progress: without(s.progress, e.call_id),
         browser: s.browser || e.name.startsWith("browser_"),
         codemap: codeEdited(s.codemap, e.name, e.args),
+        running: true,
         waiting: false,
         activity: "tool" as const,
       };
@@ -1175,6 +1186,8 @@ function trackRow(
   note?: (name: string) => Entry;
 } | null {
   const now = () => new Date().toISOString();
+  const wake = (row: AgentInfo): AgentInfo =>
+    row.state.state === "idle" ? { ...row, state: { state: "running" }, started_at: row.started_at ?? now() } : row;
   switch (e.type) {
     case "TurnStarted":
     // 109 LIVE: a turn resumed after a restart runs without a `TurnStarted`.
@@ -1209,6 +1222,10 @@ function trackRow(
         }),
       };
     }
+    // 146 D7: a respawned child's first turn-scoped event lights its dot and pill even if a reseed landed late.
+    case "ToolCallPending":
+    case "TextDelta":
+      return { patch: wake };
     case "ToolCallStarted": {
       const args = e.args;
       if (
@@ -1217,7 +1234,7 @@ function trackRow(
         args === null ||
         Array.isArray(args)
       )
-        return null;
+        return { patch: wake };
       if (args.await_reply !== true) return null;
       const from = typeof args.to === "string" ? args.to : "?";
       return {

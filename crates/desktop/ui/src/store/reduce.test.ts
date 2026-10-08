@@ -1182,6 +1182,49 @@ test('109 LIVE: a child\u2019s TurnResumed shows it running (own slice and the p
   expect(runningSubagents([kid], draft)).toBe(0)
 })
 
+test('146 D7: a dead ACP child\u2019s dangling history tool call loads interrupted; a running or native one does not', () => {
+  const st = useSessions.getState()
+  const dangling = (id: string, agent: string | null, running: boolean) => {
+    st.loadHistory(
+      id,
+      {
+        ...loaded(),
+        agent,
+        running,
+        history: [
+          { role: 'user', text: 'go', turn: 1, context: msg(1) },
+          { role: 'tool', call_id: 'c1', name: 'shell', args: { command: 'sleep 150' }, result: null, files: [] },
+        ],
+        first_seq: 1,
+        more: false,
+      },
+      'replace',
+    )
+    return useSessions.getState().sessions[id]?.entries.at(-1)
+  }
+  expect(dangling('dead', 'omp', false)).toMatchObject({ kind: 'tool', callId: 'c1', interrupted: true })
+  expect(dangling('alive', 'omp', true)).not.toHaveProperty('interrupted')
+  expect(dangling('native', null, false)).not.toHaveProperty('interrupted')
+})
+
+test('146 D7: a child\u2019s first turn-scoped event sets running on its slice and lights the parent\u2019s row; an awaiting row is kept', () => {
+  const draft: Record<string, SessionSlice> = { [S]: empty(S), kid: { ...empty('kid'), running: false } }
+  route(draft, { type: 'SubagentSpawned', parent: S, child: 'kid', name: 'Scout' }, ctx())
+  route(draft, { type: 'TurnFinished', session: 'kid', turn: 'old', stop_reason: 'stop', usage, context: 1 }, ctx())
+  expect(draft[S]?.children.kid?.state).toEqual({ state: 'idle' })
+  route(draft, { type: 'ToolCallPending', session: 'kid', turn: T, call_id: 'c1', name: 'shell' }, ctx())
+  expect(draft.kid).toMatchObject({ running: true, activity: 'tool' })
+  expect(draft[S]?.children.kid).toMatchObject({ state: { state: 'running' }, started_at: expect.any(String) })
+  // A late reseed downgrades; the next delta restores.
+  draft.kid = { ...(draft.kid as SessionSlice), running: false }
+  route(draft, { type: 'TextDelta', session: 'kid', turn: T, text: 'hi' }, ctx())
+  expect(draft.kid?.running).toBe(true)
+  route(draft, { type: 'ToolCallStarted', session: 'kid', turn: T, call_id: 'c2', name: 'send_message', args: { to: 'parent', await_reply: true } }, ctx())
+  expect(draft[S]?.children.kid?.state).toEqual({ state: 'awaiting', from: 'parent' })
+  route(draft, { type: 'TextDelta', session: 'kid', turn: T, text: 'still' }, ctx())
+  expect(draft[S]?.children.kid?.state).toEqual({ state: 'awaiting', from: 'parent' })
+})
+
 test('109 §8.2: the interrupted partial loads greyed and the regenerated reply\u2019s first delta replaces it', () => {
   const st = useSessions.getState()
   const at = '2026-10-06T12:05:00Z'

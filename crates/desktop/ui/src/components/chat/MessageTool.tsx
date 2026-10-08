@@ -155,7 +155,7 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
   const progress = useSessions((s) => (tool.pending ? s.sessions[session]?.progress.get(tool.callId) : undefined))
   const sandbox = useSessions((s) => (tool.pending ? s.sessions[session]?.sandbox.get(tool.callId) : undefined))
   const { result } = tool
-  const running = tool.pending || !result
+  const running = !tool.interrupted && (tool.pending || !result)
   const edit = tool.name === 'edit' ? editArgs(tool.args) : null
   const expandable = !!(source || edit || result || tool.job)
   return (
@@ -183,6 +183,7 @@ function PlainTool({ tool, session, readOnly }: { tool: Tool; session: string; r
             {sandbox.pct !== null && ` · ${sandbox.pct}%`}
           </div>
         )}
+        {tool.interrupted && <div className="w-full font-mono text-xs text-fg-tertiary opacity-70">interrupted by restart</div>}
         {result && (
           <div className={cn('w-full truncate font-mono text-xs', result.isError ? 'text-danger' : 'text-success')}>
             {result.isError ? '✗' : '✓'} {resultLine(result.output)}
