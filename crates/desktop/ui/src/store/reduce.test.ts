@@ -1110,7 +1110,7 @@ test('ToolCallStarted edit/write_file appends the root-relative path under its r
 
 test('109 §8.2: the banner follows TurnResumed → ResumeReport, the next turn clears it; a lost job keeps its exit', () => {
   const at = '2026-10-06T12:05:00Z'
-  let s = run([{ type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: true }])
+  let s = run([{ type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: true, cause: 'crash' }])
   expect(s.resume).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: true, report: undefined })
   s = apply(s, { type: 'ResumeReport', session: S, turn: T, replayed: [['c1', 'read_file'], ['c2', 'grep']], interrupted: [['c3', 'git push']], lost_jobs: ['j1'], children_restored: 0, children_handed_off: 0 }, ctx())
   expect(s.resume?.report).toEqual({ replayed: 2, skipped: ['git push'], lostJobs: 1 })
@@ -1134,7 +1134,7 @@ test('109 LIVE: a child\u2019s TurnResumed shows it running (own slice and the p
   route(draft, { type: 'TurnFinished', session: 'kid', turn: 'old', stop_reason: 'stop', usage, context: 1 }, ctx())
   expect(draft[S]?.children.kid).toMatchObject({ state: { state: 'idle' }, started_at: null })
   const lines = draft[S]?.entries.length
-  expect(route(draft, { type: 'TurnResumed', session: 'kid', turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: false }, ctx())).toBe(true)
+  expect(route(draft, { type: 'TurnResumed', session: 'kid', turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: false, cause: 'crash' }, ctx())).toBe(true)
   expect(draft[S]?.children.kid?.state).toEqual({ state: 'running' })
   expect(draft[S]?.children.kid?.started_at).toEqual(expect.any(String))
   expect(draft[S]?.entries.length).toBe(lines)
@@ -1160,19 +1160,19 @@ test('109 §8.2: the interrupted partial loads greyed and the regenerated reply\
       ],
       first_seq: 1,
       more: false,
-      resume: { turn: T, kind: 'interrupted', interrupted_at: at, resumed: false },
+      resume: { turn: T, kind: 'interrupted', interrupted_at: at, resumed: false, here: true },
     },
     'replace',
   )
   let s = useSessions.getState().sessions[S] as SessionSlice
   expect(s.entries.map((e) => e.kind)).toEqual(['user', 'interrupted'])
   expect(s.resume).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: false })
-  s = apply(s, { type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: true }, ctx())
+  s = apply(s, { type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: at, resumed_at: at, partial_dropped: true, cause: 'crash' }, ctx())
   expect(s.entries.map((e) => e.kind)).toEqual(['user', 'interrupted'])
   s = apply(s, { type: 'TextDelta', session: S, turn: T, text: 'half a reply' }, ctx())
   expect(s.entries.map((e) => e.kind)).toEqual(['user', 'assistant'])
   // A live state already seen for the same turn outranks the row; another open turn copies the row's flag; no row keeps what we have.
-  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: false }
+  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: false, here: true }
   expect(resumeFromLoaded(s.resume, row)).toBe(s.resume)
   expect(resumeFromLoaded(s.resume, { ...row, turn: 'other' })).toMatchObject({ turn: 'other', resumed: false })
   expect(resumeFromLoaded(s.resume, { ...row, turn: 'other', resumed: true })).toMatchObject({ turn: 'other', resumed: true })
@@ -1182,7 +1182,7 @@ test('109 §8.2: the interrupted partial loads greyed and the regenerated reply\
 test('109 BANNER: a banner still "resuming…" flips to resumed when the row says so or the open turn is gone', () => {
   const at = '2026-10-06T12:05:00Z'
   const waiting = { turn: T, kind: 'interrupted' as const, at: Date.parse(at), resumed: false }
-  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: false }
+  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: false, here: true }
   // Ask mode, still waiting: nothing changes.
   expect(resumeFromLoaded(waiting, row)).toBe(waiting)
   // The engine relaunched it before this client subscribed (the live TurnResumed was missed).
@@ -1200,7 +1200,7 @@ test('109 BANNER: a banner still "resuming…" flips to resumed when the row say
 test('109 REPORT: a Loaded.resume row with a report fills the banner counts; a live report for the turn wins', () => {
   const at = '2026-10-06T12:05:00Z'
   const report = { replayed: [['c1', 'read_file'], ['c2', 'grep']] as [string, string][], interrupted: [['c3', 'git push']] as [string, string][], lost_jobs: ['j1'], children_restored: 0, children_handed_off: 0 }
-  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: true, report }
+  const row = { turn: T, kind: 'interrupted' as const, interrupted_at: at, resumed: true, report, here: true }
   const counts = { replayed: 2, skipped: ['git push'], lostJobs: 1 }
   // A desktop that connected after the engine resumed: no banner yet, the row brings everything.
   expect(resumeFromLoaded(undefined, row)).toEqual({ turn: T, kind: 'interrupted', at: Date.parse(at), resumed: true, report: counts })
