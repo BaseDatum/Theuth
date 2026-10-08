@@ -16442,7 +16442,12 @@ mod tests {
             "{:?}",
             m.entries
         );
-        assert!(m.status().contains("taken from abcdef01 while a turn was running — not resumed"), "{}", m.status());
+        assert!(
+            m.status()
+                .contains("taken from abcdef01 while a turn was running — not resumed"),
+            "{}",
+            m.status()
+        );
     }
 
     /// 139 §9.3: the owner-offline line gains the running-turn suffix only

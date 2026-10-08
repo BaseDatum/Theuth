@@ -2197,7 +2197,10 @@ fn session_draining(session: SessionId, e: ErrorObjectOwned) -> ErrorObjectOwned
 /// one — read from the replicated `questions` row, so an answer typed on any
 /// engine finds the actor holding the oneshot. `None`: no row (a pre-0033
 /// question or a non-journaled kind), or the session is unknown / ours.
-async fn question_owner(store: &agent::store::Store, id: &Uuid) -> RpcResult<Option<replica::PeerId>> {
+async fn question_owner(
+    store: &agent::store::Store,
+    id: &Uuid,
+) -> RpcResult<Option<replica::PeerId>> {
     let Some(row) = store
         .question_get(&id.to_string())
         .await
@@ -6800,7 +6803,10 @@ mod tests {
             "turn": turn, "kind": "interrupted", "interrupted_at": at, "resumed": true
         }))
         .unwrap();
-        assert_eq!((pre139.owner, pre139.here, pre139.cause), (None, true, None));
+        assert_eq!(
+            (pre139.owner, pre139.here, pre139.cause),
+            (None, true, None)
+        );
         // 139 §9.1: `TurnResumed` carries `cause` + `from`; an old engine's omits both.
         let ev = agent::AgentEvent::TurnResumed {
             session: SessionId::new(),
@@ -6813,7 +6819,13 @@ mod tests {
             from: Some("engine-a".into()),
         };
         let v = serde_json::to_value(&ev).unwrap();
-        assert_eq!((&v["cause"], &v["from"]), (&serde_json::json!("takeover"), &serde_json::json!("engine-a")));
+        assert_eq!(
+            (&v["cause"], &v["from"]),
+            (
+                &serde_json::json!("takeover"),
+                &serde_json::json!("engine-a")
+            )
+        );
         let mut old = v.clone();
         let o = old.as_object_mut().unwrap();
         o.remove("cause");
@@ -6831,7 +6843,10 @@ mod tests {
             ErrorObjectOwned::owned(ASK_FAILED, "SessionDraining:release:engine-b", None::<()>),
         );
         assert_eq!(e.code(), forward::SESSION_DRAINING);
-        assert_eq!(e.message(), format!("{session} is moving to engine-b — retry in a moment"));
+        assert_eq!(
+            e.message(),
+            format!("{session} is moving to engine-b — retry in a moment")
+        );
         let data: serde_json::Value = serde_json::from_str(e.data().unwrap().get()).unwrap();
         assert_eq!(
             data,
@@ -6842,9 +6857,16 @@ mod tests {
             ErrorObjectOwned::owned(ASK_FAILED, "SessionDraining:shutdown", None::<()>),
         );
         assert_eq!(e.code(), forward::SESSION_DRAINING);
-        assert_eq!(e.message(), format!("{session} is pausing for shutdown — resumes on the next start"));
+        assert_eq!(
+            e.message(),
+            format!("{session} is pausing for shutdown — resumes on the next start")
+        );
         let other = ErrorObjectOwned::owned(ASK_FAILED, "runner unavailable", None::<()>);
-        assert_eq!(session_draining(session, other.clone()), other, "anything else passes through");
+        assert_eq!(
+            session_draining(session, other.clone()),
+            other,
+            "anything else passes through"
+        );
         assert_eq!(
             serde_json::to_value(roster::attention::AttentionKind::Resume).unwrap(),
             "resume"
@@ -6893,7 +6915,11 @@ mod tests {
                 format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{params},"id":1}}"#);
             let (resp, _) = methods.raw_json_request(&req, 1).await.unwrap();
             let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
-            assert_eq!(v["error"]["code"].as_i64(), Some(i64::from(code)), "{req} → {v}");
+            assert_eq!(
+                v["error"]["code"].as_i64(),
+                Some(i64::from(code)),
+                "{req} → {v}"
+            );
         }
     }
 
@@ -6950,10 +6976,15 @@ mod tests {
         assert_eq!(question_owner(&store, &Uuid::now_v7()).await.unwrap(), None);
 
         let ext = Extensions::new();
-        let local: Option<bool> =
-            route_question_via(&ext, &store, &mine_q, "answer_ask", (AskId(mine_q), None::<Vec<Answer>>))
-                .await
-                .unwrap();
+        let local: Option<bool> = route_question_via(
+            &ext,
+            &store,
+            &mine_q,
+            "answer_ask",
+            (AskId(mine_q), None::<Vec<Answer>>),
+        )
+        .await
+        .unwrap();
         assert_eq!(local, None, "our own question: answered here");
         // No replica transport in this process: the owner is not connected.
         let e = route_question_via::<bool>(
