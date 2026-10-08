@@ -189,7 +189,7 @@ internal sealed partial class RailWindow : ToolWindow
             root.Children.Add(sliver);
             return;
         }
-        root.Background = backdrop is null ? Palette.Brush(Palette.Surface, theme) : Palette.Transparent;
+        root.Background = backdrop is null ? Palette.Brush(Palette.Surface, theme) : Palette.Tint(Palette.Surface, theme, 0.82);
         var rail = store.Rail;
         var stack = new StackPanel { Spacing = 6, Padding = new Thickness(0, 10, 0, 10), HorizontalAlignment = HorizontalAlignment.Stretch };
         var word = MarkGlyph.Wordmark(theme);

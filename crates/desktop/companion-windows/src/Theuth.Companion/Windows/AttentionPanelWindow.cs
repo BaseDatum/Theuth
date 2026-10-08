@@ -312,8 +312,11 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         agoLabels.Clear();
         content.Children.Clear();
         var theme = host.ActualTheme;
-        backdrop?.SetTheme(theme); // the material follows the palette used below (W6: a light Mica under dark text on build-B)
-        host.Background = backdrop is null ? Palette.Brush(Palette.Surface, theme) : Palette.Transparent;
+        backdrop?.SetTheme(theme);
+        // With a material attached the surface is painted at 82 % over it (the material shows through the rest): on build-B the
+        // MicaController painted a LIGHT material under Theme=Dark (rounds 2–3, as-built W6 §2), which left dark-palette text
+        // on a cream ground — legibility never depends on what the controller paints.
+        host.Background = backdrop is null ? Palette.Brush(Palette.Surface, theme) : Palette.Tint(Palette.Surface, theme, 0.82);
         host.Foreground = Palette.Brush(Palette.Ink, theme);
         receiptRow.BorderBrush = Palette.Tint(Palette.Rule, theme, 0.6);
 
