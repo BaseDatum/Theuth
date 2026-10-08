@@ -14,6 +14,7 @@ use sqlx::SqlitePool;
 use crate::event::{CodeindexEvent, RECONCILED_PATHS};
 use crate::git::Git;
 use crate::lang::Language;
+use crate::map;
 use crate::parse::{ParsedFile, Parsers, parse};
 use crate::rank;
 use crate::resolve::{self, Workspace};
@@ -32,6 +33,14 @@ pub const SUSPECT_ROOT_HINT: &str = "most indexed files are missing from the wal
 /// Minimum gap between two `CodeReconciled` events of one root (73 §5.1);
 /// a write inside the gap defers one trailing event.
 pub const RECONCILED_GATE: Duration = Duration::from_millis(250);
+/// Touched files inside [`BURST_WINDOW`] above which a touch is a burst
+/// (73 §7, 147 §5.8 item 5): the rank persist and the skeleton pass are
+/// deferred to one trailing run instead of ~300–700 ms per keystroke.
+pub const BURST_FILES: usize = 4;
+/// The burst window; the trailing run waits for this much quiet.
+pub const BURST_WINDOW: Duration = Duration::from_secs(2);
+/// `meta` key: `1` while a burst holds the rank (and skeleton) back.
+pub const RANK_DEFERRED: &str = "rank_deferred";
 
 /// Everything the plugin shares: config, the index directory, open roots.
 pub struct Codeindex {
@@ -68,6 +77,20 @@ pub struct RootIndex {
     /// Stamped on every event and lens reply (73 §4).
     seq: AtomicU64,
     gate: tokio::sync::Mutex<Gate>,
+    /// The root's `-map.sqlite` (147 §9), opened on first use.
+    map: tokio::sync::Mutex<Option<SqlitePool>>,
+    /// Touch-burst state (147 §5.8 item 5).
+    burst: tokio::sync::Mutex<Burst>,
+}
+
+/// Touches in the last [`BURST_WINDOW`] and whether a trailing rank run is owed.
+#[derive(Default)]
+struct Burst {
+    recent: VecDeque<Instant>,
+    /// A write skipped its rank persist; the trailing run owes one.
+    deferred: bool,
+    /// The trailing task is alive.
+    scheduled: bool,
 }
 
 /// `CodeReconciled` coalescing state (73 §4).
@@ -156,6 +179,23 @@ impl Codeindex {
         &self.dir
     }
 
+    /// Whether `ri` has a map file (147 §9): the CodeMap was opened for it
+    /// once, so the skeleton pass after a write has something to keep fresh.
+    pub fn has_map(&self, ri: &RootIndex) -> bool {
+        map::store::path(&self.dir, &ri.root).is_file()
+    }
+
+    /// The root's map pool (147 §9), opened — and created — on first use and
+    /// kept with the root. Every map read and write goes through here.
+    pub async fn map_pool(&self, ri: &RootIndex) -> anyhow::Result<SqlitePool> {
+        let mut slot = ri.map.lock().await;
+        if let Some(p) = &*slot {
+            return Ok(p.clone());
+        }
+        let p = map::store::open(&map::store::path(&self.dir, &ri.root), &ri.root).await?;
+        *slot = Some(p.clone());
+        Ok(p)
+    }
     /// Publish on the bus when the plugin owns one.
     pub(crate) async fn publish(&self, ev: CodeindexEvent) {
         if let Some(rt) = &self.rt {
@@ -185,6 +225,8 @@ impl Codeindex {
             truncated: AtomicBool::new(false),
             seq: AtomicU64::new(0),
             gate: tokio::sync::Mutex::default(),
+            map: tokio::sync::Mutex::new(None),
+            burst: tokio::sync::Mutex::default(),
         });
         lru.map.insert(root.to_path_buf(), ri.clone());
         lru.order.push_back(root.to_path_buf());
@@ -192,7 +234,12 @@ impl Codeindex {
             if let Some(old) = lru.order.pop_front()
                 && let Some(evicted) = lru.map.remove(&old)
             {
-                tokio::spawn(async move { evicted.pool.close().await });
+                tokio::spawn(async move {
+                    evicted.pool.close().await;
+                    if let Some(m) = evicted.map.lock().await.take() {
+                        m.close().await;
+                    }
+                });
             }
         }
         Ok(ri)
@@ -230,7 +277,7 @@ impl Codeindex {
         } else if force || d.known == 0 || d.changed.len() + d.gone.len() <= self.cfg.sync_limit {
             let t = Instant::now();
             out.removed = d.gone.len();
-            let written = self.write(ri, d.changed, d.delete).await?;
+            let written = self.write(ri, d.changed, d.delete, true).await?;
             out.reparsed = written.len();
             tracing::info!(root = %ri.root.display(), reparsed = out.reparsed, removed = out.removed, ms = t.elapsed().as_millis(), "codeindex reconciled");
             wrote = Some((written, d.gone));
@@ -256,7 +303,7 @@ impl Codeindex {
                             Ok((Vec::new(), Vec::new()))
                         }
                         Ok(d) => me
-                            .write(&ri2, d.changed, d.delete)
+                            .write(&ri2, d.changed, d.delete, true)
                             .await
                             .map(|written| (written, d.gone)),
                         Err(e) => Err(e),
@@ -372,8 +419,15 @@ impl Codeindex {
     /// (root-relative or absolute under the root) — no walk. A path that
     /// escapes the root fails the whole call; a known path that is gone is
     /// removed; an unchanged `(mtime_ns, size)` is a no-op. Publishes
-    /// `CodeReconciled` when anything was written.
-    pub async fn touch(&self, ri: &Arc<RootIndex>, paths: &[String]) -> anyhow::Result<Reconciled> {
+    /// `CodeReconciled` when anything was written. More than [`BURST_FILES`]
+    /// files touched inside [`BURST_WINDOW`] is a burst (147 §5.8 item 5):
+    /// the rank persist and the skeleton pass wait for one trailing run after
+    /// the window closes, so a stale mark never costs the whole rank per file.
+    pub async fn touch(
+        self: &Arc<Self>,
+        ri: &Arc<RootIndex>,
+        paths: &[String],
+    ) -> anyhow::Result<Reconciled> {
         let _g = ri.write.lock().await;
         let known = store::known_files(&ri.pool).await?;
         let mut d = Diff::default();
@@ -419,15 +473,98 @@ impl Codeindex {
         if !d.changed.is_empty() || !d.delete.is_empty() {
             let t = Instant::now();
             out.removed = d.gone.len();
-            // ponytail: every touch re-persists the rank (~300 ms on 1 000 files);
-            // defer to the next tool call if a burst of touches ever hurts.
-            let written = self.write(ri, d.changed, d.delete).await?;
+            let n = d.changed.len() + d.gone.len();
+            let burst = {
+                let mut b = ri.burst.lock().await;
+                let now = Instant::now();
+                while b
+                    .recent
+                    .front()
+                    .is_some_and(|t| now.duration_since(*t) > BURST_WINDOW)
+                {
+                    b.recent.pop_front();
+                }
+                b.recent.extend(std::iter::repeat_n(now, n));
+                b.recent.len() > BURST_FILES
+            };
+            let written = self.write(ri, d.changed, d.delete, !burst).await?;
+            if burst {
+                let mut b = ri.burst.lock().await;
+                b.deferred = true;
+                if !b.scheduled {
+                    b.scheduled = true;
+                    let (me, ri2) = (Arc::clone(self), Arc::clone(ri));
+                    tokio::spawn(async move { me.trailing_rank(ri2).await });
+                }
+            }
             out.reparsed = written.len();
-            tracing::info!(root = %ri.root.display(), reparsed = out.reparsed, removed = out.removed, ms = t.elapsed().as_millis(), "codeindex touched");
+            tracing::info!(root = %ri.root.display(), reparsed = out.reparsed, removed = out.removed, burst, ms = t.elapsed().as_millis(), "codeindex touched");
             self.reconciled(ri, written, d.gone).await;
         }
         out.indexed_files = store::counts(&ri.pool).await?.files;
         Ok(out)
+    }
+
+    /// The trailing run of a touch burst: wait for [`BURST_WINDOW`] of quiet,
+    /// then persist the rank and run the skeleton pass once, under the
+    /// writer lock. A non-burst write in between already did both.
+    async fn trailing_rank(&self, ri: Arc<RootIndex>) {
+        loop {
+            tokio::time::sleep(BURST_WINDOW).await;
+            let mut b = ri.burst.lock().await;
+            if b.recent.back().is_some_and(|t| t.elapsed() < BURST_WINDOW) {
+                continue;
+            }
+            b.scheduled = false;
+            b.recent.clear();
+            let due = std::mem::take(&mut b.deferred);
+            drop(b);
+            if due {
+                let _g = ri.write.lock().await;
+                let t = Instant::now();
+                if let Err(e) = self.persist_rank(&ri).await {
+                    tracing::warn!(root = %ri.root.display(), error = format!("{e:#}"), "codeindex deferred rank failed");
+                } else {
+                    tracing::info!(root = %ri.root.display(), ms = t.elapsed().as_millis(), "codeindex deferred rank persisted");
+                }
+            }
+            return;
+        }
+    }
+
+    /// 60 §7: the unpersonalised ranks after a write (`files.rank`,
+    /// `symbols.rank`, `meta.entry_points`), then the skeleton pass when the
+    /// root has a map (147 §5, §8). Clears [`RANK_DEFERRED`].
+    async fn persist_rank(&self, ri: &RootIndex) -> anyhow::Result<()> {
+        let t = Instant::now();
+        let (nodes, iterations) = rank::persist(&ri.pool).await?;
+        let rank_ms = t.elapsed().as_millis();
+        store::set_meta(&ri.pool, "rank_iterations", &iterations.to_string()).await?;
+        store::set_meta(&ri.pool, "rank_ms", &rank_ms.to_string()).await?;
+        store::set_meta(&ri.pool, RANK_DEFERRED, "0").await?;
+        ri.burst.lock().await.deferred = false;
+        tracing::debug!(
+            rank_ms,
+            rank_nodes = nodes,
+            rank_iterations = iterations,
+            "codeindex rank persisted"
+        );
+        if self.has_map(ri) {
+            let t = Instant::now();
+            match map::skeleton::recompute(self, ri).await {
+                Ok(changed) => {
+                    tracing::debug!(
+                        changed = changed.len(),
+                        ms = t.elapsed().as_millis(),
+                        "codemap skeleton pass"
+                    )
+                }
+                Err(e) => {
+                    tracing::warn!(root = %ri.root.display(), error = format!("{e:#}"), "codemap skeleton pass failed")
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Publish `CodeReconciled` for a write, ≥ [`RECONCILED_GATE`] apart per
@@ -468,13 +605,15 @@ impl Codeindex {
 
     /// Parse `changed` on `available_parallelism()` blocking workers, each
     /// owning its parsers, then one transaction, then 60 §6 resolution for
-    /// the changed files plus the affected set (§5.4). Returns the paths
-    /// written.
+    /// the changed files plus the affected set (§5.4), then — unless a touch
+    /// burst defers it — the rank persist and the skeleton pass
+    /// ([`Self::persist_rank`]). Returns the paths written.
     async fn write(
         &self,
         ri: &RootIndex,
         changed: Vec<Entry>,
         delete: Vec<i64>,
+        persist_rank: bool,
     ) -> anyhow::Result<Vec<String>> {
         let enabled: HashSet<&str> = self.cfg.languages.iter().map(String::as_str).collect();
         let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
@@ -535,10 +674,12 @@ impl Codeindex {
         // 60 §7: unpersonalised ranks stored after every write, so `code_map`
         // without `focus` and `code_find`'s ordering are lookups.
         let t = Instant::now();
-        let (nodes, iterations) = rank::persist(&ri.pool).await?;
+        if persist_rank {
+            self.persist_rank(ri).await?;
+        } else {
+            store::set_meta(&ri.pool, RANK_DEFERRED, "1").await?;
+        }
         let rank_ms = t.elapsed().as_millis();
-        store::set_meta(&ri.pool, "rank_iterations", &iterations.to_string()).await?;
-        store::set_meta(&ri.pool, "rank_ms", &rank_ms.to_string()).await?;
         tracing::debug!(
             parse_ms,
             apply_ms,
@@ -546,8 +687,7 @@ impl Codeindex {
             subjects_ms,
             test_subjects = subjects,
             rank_ms,
-            rank_nodes = nodes,
-            rank_iterations = iterations,
+            rank_deferred = !persist_rank,
             resolved_files = targets.len(),
             "codeindex write phases"
         );

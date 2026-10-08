@@ -205,9 +205,7 @@ async fn scratch() -> Scratch {
     let ri = ix.open_root(&root).await.unwrap();
     let r = ix.reconcile(&ri, false).await.unwrap();
     assert!(r.reparsed > 0, "{r:?}");
-    let pool = store::open(&store::path(ix.dir(), &root), &root)
-        .await
-        .unwrap();
+    let pool = ix.map_pool(&ri).await.unwrap();
     Scratch {
         _data: data,
         _repo: repo,

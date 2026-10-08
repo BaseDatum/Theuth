@@ -35,7 +35,6 @@ use super::{
 };
 use crate::event::CodeindexEvent;
 use crate::index::{Codeindex, RootIndex};
-use crate::map::store;
 
 /// Stage-B calls in flight at once (§6.7).
 pub const TOP_CONCURRENCY: usize = 3;
@@ -106,7 +105,7 @@ pub async fn generate(ix: &Arc<Codeindex>, m: Generate) -> anyhow::Result<MapJob
     let caller = SIDE_CALLER.get().cloned().ok_or_else(|| {
         anyhow::anyhow!("codemap generation needs the agent plugin (no side caller installed)")
     })?;
-    let pool = store::open(&store::path(ix.dir(), &ri.root), &ri.root).await?;
+    let pool = ix.map_pool(&ri).await?;
     let job = MapJob {
         id: new_id(),
         session: m.session,
@@ -1597,7 +1596,7 @@ fn build_tree(
         } else {
             Vec::new()
         };
-        rows.extend(structure_rows(
+        let mut group_rows = structure_rows(
             facts,
             &p.id,
             &p.id,
@@ -1610,7 +1609,13 @@ fn build_tree(
             members,
             g.paths.clone(),
             max_depth,
-        ));
+        );
+        // The partition and its names are the model's: `generated` keeps them
+        // through the skeleton's recompute (W1 rewrites `structure` rows' names).
+        if let Some(group) = group_rows.first_mut() {
+            group.origin = MapOrigin::Generated;
+        }
+        rows.extend(group_rows);
     }
     if !plan.uncovered.is_empty() {
         let paths = uncovered_paths(facts, &plan.uncovered);
