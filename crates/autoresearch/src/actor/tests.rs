@@ -120,7 +120,12 @@ impl Backend for Fake {
         base_sha: &str,
     ) -> Result<String> {
         std::fs::create_dir_all(worktree)?;
-        Ok(base_sha.to_owned())
+        // `include_dirty`: the real one commits a `base snapshot` and returns its sha.
+        Ok(if *self.include_dirty.lock() == Some(true) {
+            "snapshot".to_owned()
+        } else {
+            base_sha.to_owned()
+        })
     }
     fn worktree_remove(&self, _: &Path, _: &Path) -> Result<()> {
         Ok(())
@@ -357,10 +362,27 @@ impl Backend for Fake {
             delta_pct: -10.0,
             ..Headline::default()
         };
-        // W2 records the report step; the actor's §11.3 turn reads it back.
+        // W2 records the changesets and the report steps; the actor's §11.3 turn, the
+        // result card and `StudyDetail.changesets` read them back (140-P).
         let rows = store.list_experiments(&study.slug, None, u32::MAX).await?;
-        let report =
-            crate::finalize::assemble(study, reason, headline.clone(), vec![], &rows, vec![]);
+        let cs = vec![Changeset {
+            k: 1,
+            name: "a".into(),
+            branch: format!("autoresearch/{}+1-a", study.slug),
+            files: vec!["a".into()],
+            experiments: vec![1],
+            delta_alone_pct: Some(-10.0),
+            delta_together_pct: Some(-10.0),
+            ..Changeset::default()
+        }];
+        store
+            .append_event(
+                &study.slug,
+                crate::finalize::EVENT,
+                &serde_json::json!({ "step": "changesets", "changesets": cs, "notes": [] }),
+            )
+            .await?;
+        let report = crate::finalize::assemble(study, reason, headline.clone(), cs, &rows, vec![]);
         let doc = self.doc.lock().clone();
         store
             .append_event(
@@ -2334,6 +2356,7 @@ async fn finalize_writes_the_report_prose_before_the_tables() {
     let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
     let session = started(&mut h, "t1", 1).await;
     begin(&mut h.studies, b(session)).await.unwrap();
+    *fake.spend.lock() = Ok(0.5); // the tree spent $0.50 between begin and close
     fake.decide(Verdict::Improved, 5.0, 4.0);
     run(&mut h.studies, r(session, "x")).await.unwrap();
     log(&mut h.studies, l(session, Decision::Auto))
@@ -2362,6 +2385,25 @@ async fn finalize_writes_the_report_prose_before_the_tables() {
             .unwrap()
             .len(),
         1
+    );
+    // 140-P: the detail reads W2's changesets record and a finished study's closed spend.
+    let d = detail(&mut h.studies, Detail { slug: "t1".into() })
+        .await
+        .unwrap();
+    assert_eq!(d.changesets.len(), 1, "{:?}", d.changesets);
+    assert_eq!(d.changesets[0].branch, "autoresearch/t1+1-a");
+    let x = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        (d.info.budget_used.usd - x.cost_nanos as f64 / 1e9).abs() < 1e-9,
+        "{} vs {}",
+        d.info.budget_used.usd,
+        x.cost_nanos
     );
 }
 
@@ -2556,6 +2598,10 @@ async fn create_and_discard_use_the_worktree_and_the_repo_cleanup() {
     .unwrap();
     wait_state(&h.studies.store, "t1", |s| *s == StudyState::Running).await;
     assert_eq!(*fake.include_dirty.lock(), Some(true));
+    // 140-P: the study's base is the snapshot the baseline measured, not the resolved HEAD.
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert_eq!(s.base_sha.as_deref(), Some("snapshot"));
+    assert_eq!(s.incumbent_sha.as_deref(), Some("snapshot"));
     let worktree = h.studies.root.join("t1/worktree");
     assert_eq!(fake.custody_from.lock().clone(), vec![worktree]);
     let c = |op| Control {

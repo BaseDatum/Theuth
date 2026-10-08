@@ -732,16 +732,21 @@ async fn study_spend_or_closed(env: &Env, study: &StudyRecord) -> f64 {
         Ok(v) => v,
         Err(e) => {
             tracing::debug!(slug = %study.slug, "live spend unavailable: {e}");
-            env.store
-                .list_experiments(&study.slug, None, u32::MAX)
-                .await
-                .unwrap_or_default()
-                .iter()
-                .filter(|e| is_closed(e))
-                .map(|e| e.cost_nanos as f64 / 1e9)
-                .sum()
+            closed_spend(env, &study.slug).await
         }
     }
+}
+
+/// Σ `cost_nanos` of the closed experiments, in USD (no agent ask).
+async fn closed_spend(env: &Env, slug: &str) -> f64 {
+    env.store
+        .list_experiments(slug, None, u32::MAX)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| is_closed(e))
+        .map(|e| e.cost_nanos as f64 / 1e9)
+        .sum()
 }
 
 /// Review reverts the user already acted on (`restore` or `kept_reverted` events): no row, no needs-eyes line.
@@ -1175,8 +1180,10 @@ pub async fn info_full(env: &Env, study: &StudyRecord) -> Result<StudyInfo> {
         .get_segment(&study.slug, study.segment)
         .await?
         .and_then(|s| s.baseline_mean);
+    // A finished study has no live tree to ask (R-115: no agent ask per `autoresearch.list`
+    // row), but its closed experiments' cost is a ledger sum — $0 was wrong (140-P live).
     let spend = if is_terminal(&study.state) {
-        0.0
+        closed_spend(env, &study.slug).await
     } else {
         study_spend_or_closed(env, study).await
     };
@@ -1735,11 +1742,15 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     let head = env
         .backend
         .worktree_add(&repo, &spec, &worktree, &base_sha)?;
+    // The study's base is the worktree's HEAD after `worktree_add`: with `include_dirty`
+    // that is the `base snapshot` commit — the tree the baseline measures, the overfit
+    // check's base holdout and finalize's "base vs final" / cherry-pick target
+    // (140-P live: the resolved HEAD left the dirty changes out of all three).
     patch(
         env,
         study,
         StudyPatch {
-            base_sha: Some(base_sha.clone()),
+            base_sha: Some(head.clone()),
             branch: Some(format!("autoresearch/{slug}")),
             worktree: Some(worktree.display().to_string()),
             incumbent_sha: Some(head.clone()),
@@ -4029,18 +4040,15 @@ async fn report_turn(env: &Env, study: &StudyRecord, doc: &str) -> Result<()> {
     Ok(())
 }
 
-/// Finalize's changesets, as W2 records them (`events.kind = "changeset"`, payload = `Changeset`).
+/// Finalize's changesets as W2 records them: the `finalize` event whose `step` is
+/// `changesets` (`finalize::changesets`). 140-P live: this read `events.kind =
+/// "changeset"`, which nothing writes — the result card and `StudyDetail.changesets`
+/// were always empty ("No changeset cleared the gate") while the report had them.
 async fn changesets_of(env: &Env, slug: &str) -> Vec<Changeset> {
-    let mut out: Vec<Changeset> = env
-        .store
-        .list_events(slug, Some("changeset"), 200)
+    let mut out = crate::finalize::changesets(&env.store, slug)
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|e| serde_json::from_value(e.payload).ok())
-        .collect();
+        .unwrap_or_default();
     out.sort_by_key(|c: &Changeset| c.k);
-    out.dedup_by_key(|c| c.k);
     out
 }
 
