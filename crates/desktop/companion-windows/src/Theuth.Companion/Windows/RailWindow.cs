@@ -61,8 +61,11 @@ internal sealed partial class RailWindow : ToolWindow
         Presence = presence;
         Side = side == "left" ? "left" : "right";
         animate = SystemEffects.AnimationsOn;
-        // W6 item 2 (A7): Thin acrylic on the layered rail window; `--no-rail-acrylic` keeps W2's opaque surface (the A/B switch).
-        wantBackdrop = !Environment.GetCommandLineArgs().Contains("--no-rail-acrylic");
+        // W6 item 2 (A7): Thin acrylic on the layered rail window was TESTED on build-B (as-built W6 §2) and does not work —
+        // the controller paints no material (the fallback colour, black over a white canvas) and attaching it drops the window
+        // out of the topmost band (it hid behind a maximized Paint and an activated Notepad). The rail stays W2's opaque
+        // surface; `--rail-acrylic` re-enables the controller for a retest on a newer Windows App SDK.
+        wantBackdrop = Environment.GetCommandLineArgs().Contains("--rail-acrylic");
         root = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Top };
         AutomationProperties.SetAutomationId(root, "rail");
         AutomationProperties.SetName(root, "theuth rail");
@@ -89,7 +92,7 @@ internal sealed partial class RailWindow : ToolWindow
         Log.Write($"rail shown: rect={Win32.Text(ScreenRect)} exstyle={Win32.ExStyleText(Win32.ExStyle(Hwnd))} affinity=0x{Win32.DisplayAffinity(Hwnd):X} presence={Presence.RawValue()} side={Side} animations={(animate ? "on" : "off")} backdrop={BackdropText}");
     }
 
-    /// <summary>"acrylic-thin" while the material is attached; "opaque" (transparency off, unsupported, or --no-rail-acrylic).</summary>
+    /// <summary>"acrylic-thin" while the material is attached (<c>--rail-acrylic</c> only); "opaque" otherwise (the default, transparency off, unsupported).</summary>
     public string BackdropText => backdrop?.Material ?? "opaque";
 
     /// <summary>

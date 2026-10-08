@@ -117,6 +117,9 @@ internal sealed class Surfaces : IDisposable
     /// <summary>W3: Pause notifications ▸ "1h" · "tomorrow" · "off". The menu rows are disabled until something listens.</summary>
     public event Action<string>? PauseRequested;
 
+    /// <summary>W6 item 9: when notifications are paused until (null = not paused) — the submenu's check marks and the row's "(until HH:mm)".</summary>
+    public Func<DateTimeOffset?>? PausedUntil { get; set; }
+
     /// <summary>W3: the Launch at login row was toggled to this value (the Run key + companion.json are W3's).</summary>
     public event Action<bool>? LaunchAtLoginToggled;
 
@@ -258,15 +261,19 @@ internal sealed class Surfaces : IDisposable
     private List<TrayMenu.Item> BuildMenu()
     {
         bool login = LaunchAtLoginState?.Invoke() ?? false;
+        // W6 item 9 (parity with the Mac menu, NotificationsInstaller.swift appendMenu): the active pause carries the check mark.
+        var now = DateTimeOffset.Now;
+        var pausedUntil = PausedUntil?.Invoke();
+        var pause = PauseMenu.State(pausedUntil, now, new DateTimeOffset(DateTime.Today.AddDays(1)));
         return new List<TrayMenu.Item>
         {
             new("Open theuth", Links.OpenTheuth),
             new("Ask theuth…", () => store.Perform(Intent.AskBar)),
-            new("Pause notifications", Enabled: PauseRequested is not null, Sub: new List<TrayMenu.Item>
+            new(PauseMenu.Title(pausedUntil, now), Enabled: PauseRequested is not null, Sub: new List<TrayMenu.Item>
             {
-                new("For 1 hour", () => PauseRequested?.Invoke("1h")),
-                new("Until tomorrow", () => PauseRequested?.Invoke("tomorrow")),
-                new("Off", () => PauseRequested?.Invoke("off")),
+                new("For 1 hour", () => PauseRequested?.Invoke("1h"), Checked: pause == PauseMenuState.Hour),
+                new("Until tomorrow", () => PauseRequested?.Invoke("tomorrow"), Checked: pause == PauseMenuState.Tomorrow),
+                new("Off", () => PauseRequested?.Invoke("off"), Checked: pause == PauseMenuState.Off),
             }),
             new("Launch at login", () => LaunchAtLoginToggled?.Invoke(!login), Enabled: LaunchAtLoginToggled is not null, Checked: login),
             TrayMenu.Item.Separator,

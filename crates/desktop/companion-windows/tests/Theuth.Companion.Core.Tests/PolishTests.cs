@@ -177,3 +177,63 @@ public sealed class AskReplyFailureTests
         Assert.True(delta.StopReason is null && delta.Message is null && delta.Text == "hi");
     }
 }
+
+// Design 134 W6 item 8: a process LAUNCHED by a toast click reads its own activation (GetActivatedEventArgs) — the mapping
+// and the hold-until-refetch rule. Item 9: the Pause notifications ▸ check marks (the Mac menu's rule).
+public sealed class ToastActivationTests
+{
+    private static Dictionary<string, string> Args(params (string K, string V)[] kv) => kv.ToDictionary(p => p.K, p => p.V, StringComparer.Ordinal);
+
+    [Fact]
+    public void ParseReadsActionBannerItemAndText()
+    {
+        var a = ToastActivation.Parse(Args(("action", "opt-2"), ("banner", "hire:1"), ("item", "hire:1"), ("kind", "question")), Args(("text", "  yes ")));
+        Assert.Equal(new ToastActivation("opt-2", "hire:1", "hire:1", "yes"), a);
+        Assert.Equal(1, a.OptionIndex);
+        // A body tap carries no action: open; an empty text box is no text.
+        var body = ToastActivation.Parse(Args(("banner", "b")), Args(("text", "   ")));
+        Assert.Equal(("open", "b", null, null), (body.Action, body.Banner, body.Item, body.Text));
+        Assert.Null(body.OptionIndex);
+        Assert.True(ToastActivation.Parse(Args(("action", "later")), null).IsNoop);
+    }
+
+    [Fact]
+    public void ALaunchedProcessHoldsEverythingButLaterUntilTheFirstRefetch()
+    {
+        var open = ToastActivation.Parse(Args(("action", "open"), ("banner", "hire:1")), null);
+        Assert.True(open.HoldUntilRefetch(launched: true, refetchedOnce: false, itemCount: 0));   // the panel opens on the item once it exists
+        Assert.False(open.HoldUntilRefetch(launched: true, refetchedOnce: true, itemCount: 3));
+        Assert.False(open.HoldUntilRefetch(launched: false, refetchedOnce: false, itemCount: 0)); // a running instance opens at once (W3)
+        var answer = ToastActivation.Parse(Args(("action", "opt-1"), ("item", "x")), null);
+        Assert.True(answer.HoldUntilRefetch(launched: false, refetchedOnce: false, itemCount: 0));  // W3's relaunch rule, unchanged
+        Assert.False(answer.HoldUntilRefetch(launched: false, refetchedOnce: false, itemCount: 2));
+        Assert.True(answer.HoldUntilRefetch(launched: true, refetchedOnce: false, itemCount: 2));
+        var later = ToastActivation.Parse(Args(("action", "later")), null);
+        Assert.False(later.HoldUntilRefetch(launched: true, refetchedOnce: false, itemCount: 0));
+    }
+}
+
+public sealed class PauseMenuTests
+{
+    private static readonly DateTimeOffset Now = new(2026, 10, 8, 4, 23, 0, TimeSpan.FromHours(1));
+    private static readonly DateTimeOffset Tomorrow = new(2026, 10, 9, 0, 0, 0, TimeSpan.FromHours(1));
+
+    [Fact]
+    public void OffWhenNotPausedOrExpired()
+    {
+        Assert.Equal(PauseMenuState.Off, PauseMenu.State(null, Now, Tomorrow));
+        Assert.Equal(PauseMenuState.Off, PauseMenu.State(Now.AddMinutes(-1), Now, Tomorrow));
+        Assert.Equal("Pause notifications", PauseMenu.Title(null, Now));
+    }
+
+    [Fact]
+    public void HourAndTomorrowFollowTheMacRule()
+    {
+        Assert.Equal(PauseMenuState.Hour, PauseMenu.State(Now.AddHours(1), Now, Tomorrow));
+        Assert.Equal(PauseMenuState.Tomorrow, PauseMenu.State(Tomorrow, Now, Tomorrow));
+        // Paused "for 1 hour" at 23:30 ends tomorrow but within the hour: still the hour row.
+        var late = new DateTimeOffset(2026, 10, 8, 23, 30, 0, TimeSpan.FromHours(1));
+        Assert.Equal(PauseMenuState.Hour, PauseMenu.State(late.AddHours(1), late, Tomorrow));
+        Assert.Equal("Pause notifications (until 05:23)", PauseMenu.Title(Now.AddHours(1), Now));
+    }
+}

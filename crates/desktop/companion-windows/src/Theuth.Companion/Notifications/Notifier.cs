@@ -142,6 +142,12 @@ internal sealed class Notifier : IDisposable
             Early.Clear();
         }
         foreach (var a in early) Invoked(a);
+        // W6 item 8: a toast click that LAUNCHED this process — its arguments arrive only through GetActivatedEventArgs.
+        if (Ui.SingleInstance.LaunchActivation is { } launch && launch.Data is AppNotificationActivatedEventArgs la)
+        {
+            Log.Write($"notifications: launch activation argument='{la.Argument}' input={la.UserInput.Count}");
+            Invoked(la, launched: true);
+        }
         Changed?.Invoke();
     }
 
@@ -187,6 +193,8 @@ internal sealed class Notifier : IDisposable
     private void OnRefetched()
     {
         refetchedOnce = true;
+        heldFallback?.Stop();
+        heldFallback = null;
         if (pendingActivations.Count == 0) return;
         var pending = pendingActivations.ToList();
         pendingActivations.Clear();
@@ -416,21 +424,39 @@ internal sealed class Notifier : IDisposable
         }
     }
 
-    private void Invoked(AppNotificationActivatedEventArgs args)
+    private void Invoked(AppNotificationActivatedEventArgs args, bool launched = false)
     {
-        var a = args.Arguments;
-        string action = a.TryGetValue(ToastBuilder.ArgAction, out var ac) ? ac : "open";
-        string? banner = a.TryGetValue(ToastBuilder.ArgBanner, out var bn) ? bn : null;
-        string? item = a.TryGetValue(ToastBuilder.ArgItem, out var it) ? it : null;
-        string? text = args.UserInput.TryGetValue(ToastBuilder.InputText, out var t) ? t.Trim() : null;
-        if (!refetchedOnce && store.Items.Count == 0 && action is not ("later" or "open"))
+        var t = ToastActivation.Parse(args.Arguments, args.UserInput);
+        if (t.IsNoop) return;
+        if (t.HoldUntilRefetch(launched, refetchedOnce, store.Items.Count))
         {
-            // Relaunched by the click (Kind=Launch): the Store has nothing yet — answer after the first refetch.
-            Log.Write($"notifications: action {action} held until the first refetch (relaunch path)");
-            pendingActivations.Add((action, banner, item, text));
+            // The Store has nothing yet (a process the click launched, or an answer before the first snapshot): act after the
+            // first refetch — or after 5 s if the engine never answers, so a click is never swallowed.
+            Log.Write($"notifications: action {t.Action} held until the first refetch ({(launched ? "launch" : "relaunch")} path)");
+            pendingActivations.Add((t.Action, t.Banner, t.Item, t.Text));
+            ArmHeldFallback();
             return;
         }
-        Handle(action, banner, item, text, fromRelaunch: false);
+        Handle(t.Action, t.Banner, t.Item, t.Text, fromRelaunch: launched);
+    }
+
+    private DispatcherQueueTimer? heldFallback;
+
+    private void ArmHeldFallback()
+    {
+        if (heldFallback is not null) return;
+        var timer = dispatcher.CreateTimer();
+        timer.Interval = TimeSpan.FromSeconds(5);
+        timer.IsRepeating = false;
+        timer.Tick += (_, _) => Guard.Run("held toast actions", () =>
+        {
+            heldFallback = null;
+            if (pendingActivations.Count == 0) return;
+            Log.Write($"notifications: no refetch within 5 s — handling {pendingActivations.Count} held action(s) now");
+            OnRefetched();
+        });
+        heldFallback = timer;
+        timer.Start();
     }
 
     private void Handle(string action, string? bannerId, string? itemId, string? text, bool fromRelaunch)
@@ -466,7 +492,7 @@ internal sealed class Notifier : IDisposable
             default:
             {
                 if (item is null) return;
-                int n = Array.IndexOf(ToastBuilder.OptionActions, action);
+                int n = Array.IndexOf(ToastActivation.OptionActions, action);
                 if (n < 0) return;
                 var options = store.CardFor(item).Options.Where(o => !o.Action.NeedsNote).ToList();
                 if (n >= options.Count) return;

@@ -16,9 +16,9 @@ namespace Theuth.Companion.Notifications;
 /// </summary>
 internal static class ToastBuilder
 {
-    public const string ArgAction = "action", ArgBanner = "banner", ArgItem = "item", ArgCategory = "kind";
-    public const string InputText = "text";
-    public static readonly string[] OptionActions = { "opt-1", "opt-2", "opt-3" };
+    public const string ArgAction = ToastActivation.ArgAction, ArgBanner = ToastActivation.ArgBanner, ArgItem = ToastActivation.ArgItem, ArgCategory = "kind";
+    public const string InputText = ToastActivation.InputText;
+    public static readonly string[] OptionActions = ToastActivation.OptionActions;
 
     /// <summary>Tags and groups are capped at 64 chars by the platform; long ids keep a readable head plus a stable hash.</summary>
     public static string TagFor(string id)

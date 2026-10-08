@@ -637,6 +637,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             if (focus == i) row.Children.Add(new Border { Width = 3, HorizontalAlignment = HorizontalAlignment.Left, Background = Palette.Brush(Palette.Malachite, theme) });
             AutomationProperties.SetAutomationId(row, $"done-{i + 1}");
             AutomationProperties.SetName(row, $"{r.Who}, {r.Text}, {RailModel.Ago(r.At, DateTimeOffset.Now)}");
+            AutomationProperties.SetAccessibilityView(row, AccessibilityView.Content); // W6 (C12): a row Narrator lands on, not a layout pane
             content.Children.Add(row);
         }
         if (focus is not null)
