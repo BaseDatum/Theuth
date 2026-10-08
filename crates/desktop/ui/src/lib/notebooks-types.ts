@@ -86,6 +86,7 @@ export type Citation = {
   text: string | null
 }
 
+// `#[serde(tag = "type")]` with no rename: the variant names are the tags.
 export type SourceEvent =
-  | { type: 'changed'; source: DocId; status: SourceStatus }
-  | { type: 'progress'; source: DocId; percent: number }
+  | { type: 'Changed'; source: DocId; status: SourceStatus }
+  | { type: 'Progress'; source: DocId; percent: number }
