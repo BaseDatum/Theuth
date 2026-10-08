@@ -115,11 +115,12 @@ pub async fn on_fired(a: &mut Studies, name: &str, session: runtime::SessionId) 
     Ok(())
 }
 
-/// `AgentEvent::TurnStarted` on a bound session: a `turn` event marks the fire
-/// (one experiment per turn — `experiment_begin` refuses a second one, 140-P);
-/// the user's own text (140 §8.6) becomes a steer so the next fresh frame still
-/// sees it. A schedule envelope (`<schedule …>`) or any other harness-built
-/// input (`<…`) is not the user's.
+/// `AgentEvent::TurnStarted` on a bound session: a schedule envelope
+/// (`<schedule …>`, a fire or RunOnce) records a `turn` event — one experiment
+/// per fire, `experiment_begin` refuses a second one (140-P); a child's result
+/// (`<message …>`) or any other harness-built input (`<…`) is neither a fire nor
+/// the user's; the user's own text (140 §8.6) becomes a steer so the next fresh
+/// frame still sees it.
 pub async fn on_turn_started(
     a: &mut Studies,
     session: runtime::SessionId,
@@ -128,10 +129,13 @@ pub async fn on_turn_started(
     let Some(study) = a.store.study_of_session(session).await? else {
         return Ok(());
     };
-    a.store
-        .append_event(&study.slug, "turn", &serde_json::json!({}))
-        .await?;
     let text = text.trim();
+    if text.starts_with("<schedule") || text.contains("\n<schedule") {
+        a.store
+            .append_event(&study.slug, "turn", &serde_json::json!({}))
+            .await?;
+        return Ok(());
+    }
     if text.is_empty() || text.starts_with('<') {
         return Ok(());
     }

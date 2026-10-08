@@ -2286,6 +2286,7 @@ async fn brief_context(
         code_map,
         gate: env.cfg.gate.clone(),
         crash_retries: env.cfg.defaults.crash_retries,
+        worktree: None,
     })
 }
 
@@ -2311,7 +2312,10 @@ async fn begin_slot(env: &Env, session: SessionId, slot: u8) -> Result<Brief> {
     };
     let (closed, _) = counts(&env.store, &slug).await?;
     let spend = study_spend_or_closed(env, &study).await;
-    let cx = brief_context(env, &study, exp.n, Vec::new(), closed, spend).await?;
+    let mut cx = brief_context(env, &study, exp.n, Vec::new(), closed, spend).await?;
+    // The child edits its slot tree, not the study worktree (140-P live: a slot that
+    // followed the brief's Worktree line edited the study tree and measured nothing).
+    cx.worktree = Some(mine.worktree.clone());
     let mut brief = env
         .backend
         .brief(&env.store, &study, &env.cfg.brief, &cx)
