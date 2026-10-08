@@ -263,9 +263,10 @@ qrcode = { version = "0.14", default-features = false }
 # Snap compaction frames (design doc 13 §0.4): 8-bit grayscale encode only; not `image`.
 png = "0.17"
 # Agent Client Protocol (design doc 06): external harnesses as subagents, `t --acp`.
-# 2.x is a rewrite; pinned exactly, only the v1 schema module is used (06 §7).
-# 2.2.0 for `PromptResponse.usage` behind `unstable_end_turn_token_usage` (75 §7).
-agent-client-protocol = { version = "=2.2.0", features = ["unstable_end_turn_token_usage"] }
+# Pinned exactly, only the v1 schema module is used (06 §7). 3.1.0 (141 §4.1):
+# `process`/`stdio` gate the native transports, `unstable_end_turn_token_usage`
+# = `PromptResponse.usage` (75 §7), `unstable_subagents` = RFD `subagent_update`.
+agent-client-protocol = { version = "=3.1.0", features = ["process", "stdio", "unstable_end_turn_token_usage", "unstable_subagents"] }
 # Image input (design doc 17): OS clipboard image read — bracketed paste is text-only.
 # `image-data` pulls `image` with minimal features; we encode with `png` ourselves.
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }

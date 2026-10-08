@@ -6,6 +6,7 @@ import { openSearch } from '@/lib/search'
 import { LOCAL, useEngines } from '@/link/engines'
 import type { Api } from '@/rpc/api'
 import type { CommunicationState } from '@/rpc/bindings/CommunicationState'
+import type { HarnessCommand } from '@/rpc/bindings/HarnessCommand'
 import type { CompactStyle } from '@/rpc/bindings/CompactStyle'
 import type { SyncResult } from '@/rpc/bindings/SyncResult'
 import type { LoadedPage } from '@/rpc/extra'
@@ -154,6 +155,56 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
 
 /** Commands whose name starts with the typed word (`/mo` → `/model`). */
 export const matches = (word: string) => COMMANDS.filter((c) => c.name.startsWith(word))
+
+/** One slash-menu row: a theuth built-in or, in an ACP session (D15), one of the harness's own commands. */
+export type SlashItem = {
+  name: string
+  hint: string
+  desc: string
+  /** `theuth` or the harness's name; set only when both kinds are listed. */
+  source?: string
+  /** Picked → the name goes to the harness verbatim (`sendRaw`), never through theuth's parsing. */
+  raw?: boolean
+}
+
+/** What the composer needs to list a harness's commands: the ACP child's agent name, its manifest, theuth's skill names (`null` until the index loads). */
+export type HarnessMenu = { agent: string; commands: readonly HarnessCommand[]; skills: readonly string[] | null }
+
+/**
+ * D15 (b): the slash menu's rows for the typed `word`. theuth's built-ins first; in an ACP session the harness's
+ * commands follow, every row labelled with its source. A harness `skill:<name>` that theuth also has as a skill is
+ * listed twice, theuth's row first — typed `/skill:<name>` ⏎ keeps parking theuth's skill, as the hint says; the
+ * harness's row is sent raw when picked.
+ */
+export function slashMenu(word: string, harness: HarnessMenu | null | undefined): SlashItem[] {
+  const own = matches(word)
+  if (!harness) return own
+  const items: SlashItem[] = own.map((c) => ({ ...c, source: 'theuth' }))
+  for (const c of harness.commands) {
+    const name = `/${c.name}`
+    if (!name.startsWith(word)) continue
+    const skill = c.name.startsWith('skill:') ? c.name.slice('skill:'.length) : null
+    if (skill && harness.skills?.includes(skill)) items.push({ name, hint: '[words]', desc: `park theuth's ${skill} skill on the next message (typed ⏎)`, source: 'theuth' })
+    items.push({ name, hint: c.hint ?? '', desc: `${c.description}${skill && harness.skills?.includes(skill) ? ` (${harness.agent}'s — picked, sent as typed)` : ''}`, source: harness.agent, raw: true })
+  }
+  return items
+}
+
+/**
+ * D15: `text` goes to `session` verbatim — a harness command (`/skill:ponytail`), never parsed as theuth's (`/skill:`
+ * parking, built-ins). Queued (`steer`) mid-turn like any send; shown at once like one.
+ */
+export async function sendRaw(api: Api, session: string, text: string): Promise<void> {
+  const st = useSessions.getState()
+  const id = crypto.randomUUID()
+  if (st.sessions[session]?.running) {
+    st.applyEvents([{ type: 'InputQueued', session, id, text, defer: false }])
+    await api.steer(session, text, id, [])
+  } else {
+    st.markSent(session, text, [])
+    await api.send_input(session, text, [], null, id)
+  }
+}
 
 /**
  * Is `line` a slash command: its first word is a built-in (`COMMANDS`) or names a known skill. Anything else —

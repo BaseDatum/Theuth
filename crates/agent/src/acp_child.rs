@@ -49,6 +49,10 @@ use crate::supervisor::Deliver;
 use crate::todo::{Status, Todo, TodoSource};
 use crate::{AGENT_ACTOR, AgentEvent, Agents, HarnessCommand, Usage, attach};
 
+mod observed;
+pub use observed::CancelObserved;
+use observed::Observed;
+
 /// Grace after `session/cancel` before the process is killed (06 §3.5).
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// Longest a harness may take to connect — `initialize` + `session/new` or
@@ -146,6 +150,11 @@ pub struct AcpChild {
     notes: Vec<String>,
     /// A pending [`Respawn`] (its token budget), acted on at `Connected`.
     respawn: Option<usize>,
+    /// Watch-only children the harness runs inside itself (141 §7.2).
+    observed: Observed,
+    /// Where omp keeps its transcripts (`<home>/.omp/agent/sessions`, 141
+    /// §6.4 feed 2): the engine's home; tests point it at a scratch dir.
+    omp_home: std::path::PathBuf,
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
@@ -470,6 +479,8 @@ impl AcpChild {
             pending_options: Vec::new(),
             notes: Vec::new(),
             respawn: None,
+            observed: Observed::default(),
+            omp_home: std::env::home_dir().unwrap_or_default(),
         }
     }
 
@@ -1240,9 +1251,27 @@ impl AcpChild {
     /// was already cancelled (2026-09-24: omp keeps working past its cancel)
     /// is still asked, and released only when the harness closes.
     fn permission(&self, p: Permission) {
+        let cancel = match &self.turn {
+            Some(t) if !t.continuation && !t.cancel.is_cancelled() => t.cancel.clone(),
+            _ => self.alive.clone(),
+        };
+        self.ask_permission(p, self.id, cancel, None);
+    }
+
+    /// The gate round trip for `p`, keyed to `session` (this row, or a
+    /// watch-only child's, 141 §7.2 item 4), answered `cancelled` when
+    /// `cancel` fires first; `answered` is told once the harness has its
+    /// outcome (the child leaves `requires_action`).
+    fn ask_permission(
+        &self,
+        p: Permission,
+        session: SessionId,
+        cancel: CancellationToken,
+        answered: Option<(ActorRef<Self>, String)>,
+    ) {
         let kind = p.tool_call.fields.kind.unwrap_or_default();
         let ask = ExternalApproval {
-            session: self.id,
+            session,
             tool: p
                 .tool_call
                 .fields
@@ -1251,10 +1280,6 @@ impl AcpChild {
                 .unwrap_or_else(|| "tool".into()),
             args: with_kind(p.tool_call.fields.raw_input.clone(), kind),
             risk: acp::risk(kind),
-        };
-        let cancel = match &self.turn {
-            Some(t) if !t.continuation && !t.cancel.is_cancelled() => t.cancel.clone(),
-            _ => self.alive.clone(),
         };
         tokio::spawn(async move {
             let decide = async {
@@ -1269,6 +1294,9 @@ impl AcpChild {
             };
             let o = outcome(&p.options, decision);
             p.respond(o);
+            if let Some((me, ext)) = answered {
+                let _ = me.tell(observed::PermissionAnswered(ext)).await;
+            }
         });
     }
 }
@@ -1546,6 +1574,8 @@ impl Actor for AcpChild {
         _: ActorStopReason,
     ) -> Result<(), Infallible> {
         self.close_harness();
+        // 141 D11: the harness that ran the watch-only children is gone.
+        self.observed_lost().await;
         Ok(())
     }
 }
@@ -1597,6 +1627,9 @@ impl Message<Connected> for AcpChild {
                     self.apply_meter(zero).await;
                 }
                 self.harness = Some(h);
+                // 141 §7.2 item 5: the stored watch-only children, the omp feeds.
+                let me = ctx.actor_ref().clone();
+                self.observed_seed(&me).await;
                 if let Some(tokens) = self.respawn.take() {
                     self.queue_respawn(tokens).await;
                 }
@@ -1752,11 +1785,42 @@ impl Message<Update> for AcpChild {
     type Reply = ();
 
     async fn handle(&mut self, u: Update, ctx: &mut Context<Self, Self::Reply>) {
+        let me = ctx.actor_ref().clone();
         match u {
-            Update::Session(SessionUpdate::Plan(p)) => self.plan(&p).await,
+            // 141 §7.2 item 1: a subagent announce from any source upserts the
+            // watch-only row; idempotent, so `session/load` replay passes too.
+            Update::Subagent(a) => self.observed_upsert(a, &me).await,
+            // 141 §6.1: inter-session messages render as directed lines in
+            // the transcript of the session they were sent to.
+            Update::Session {
+                session,
+                update:
+                    update @ (SessionUpdate::SessionMessage(_) | SessionUpdate::SessionMessageChunk(_)),
+            } => self.observed_directed(&session, update).await,
+            // 141 §7.2 item 2: a `session/update` for another session is a
+            // watch-only child's traffic. The parent's replay gate applies:
+            // before the first prompt on this connection it is `session/load`
+            // replay and is dropped (06 §8.11).
+            Update::Session { session, update }
+                if self
+                    .harness
+                    .as_ref()
+                    .is_some_and(|h| h.session_id() != session) =>
+            {
+                if self.worked {
+                    self.observed_traffic(&session, update, &me).await;
+                }
+            }
+            Update::Session {
+                update: SessionUpdate::Plan(p),
+                ..
+            } => self.plan(&p).await,
             // 06 §8.2: a mid-session switch (`/switch` in omp); an update
             // without a model select keeps the last known value.
-            Update::Session(SessionUpdate::ConfigOptionUpdate(u)) => {
+            Update::Session {
+                update: SessionUpdate::ConfigOptionUpdate(u),
+                ..
+            } => {
                 if let Some(model) = acp::current_model(&u.config_options) {
                     self.set_harness_model(model).await;
                 }
@@ -1765,20 +1829,32 @@ impl Message<Update> for AcpChild {
             // (omp sends the manifest 50 ms after `session/new`; opencode's
             // usage may follow the prompt response). Handled before the turn
             // check; 06 §8.11's replay rule gets these two exceptions.
-            Update::Session(SessionUpdate::AvailableCommandsUpdate(u)) => {
+            Update::Session {
+                update: SessionUpdate::AvailableCommandsUpdate(u),
+                ..
+            } => {
                 self.set_harness_commands(u.available_commands).await;
             }
-            Update::Session(SessionUpdate::UsageUpdate(u)) => self.usage(u).await,
+            Update::Session {
+                update: SessionUpdate::UsageUpdate(u),
+                ..
+            } => self.usage(u).await,
             // 06 §8.4: opencode ≥ 2 marks a provider retry or a compaction
             // in `session_info_update._meta`; no event slot shows these yet.
-            Update::Session(SessionUpdate::SessionInfoUpdate(u)) => {
+            Update::Session {
+                update: SessionUpdate::SessionInfoUpdate(u),
+                ..
+            } => {
                 if let Some(meta) = &u.meta
                     && meta.keys().any(|k| k.starts_with("opencode/"))
                 {
                     tracing::debug!(session = %self.id, "session_info_update meta: {}", serde_json::Value::Object(meta.clone()));
                 }
             }
-            Update::Session(update) => {
+            Update::Session { update, .. } => {
+                // 141 §7.2 item 3: omp task rows ride the parent's tool frames;
+                // announce them, then let the frame reach the parent's card.
+                self.observed_task_frame(&update, &me).await;
                 // 06 §3.5 (2026-09-24): work after the prompt returned opens
                 // a continuation turn. Before any prompt on this connection
                 // the updates are `session/load` replay and stay dropped (§8 rule 11).
@@ -1788,7 +1864,6 @@ impl Message<Update> for AcpChild {
                     }
                     self.continue_turn().await;
                 }
-                let me = ctx.actor_ref().clone();
                 let Some(turn) = &mut self.turn else { return };
                 if turn.continuation {
                     if let Some(q) = turn.quiet.take() {
@@ -1804,7 +1879,12 @@ impl Message<Update> for AcpChild {
                     self.publish(ev).await;
                 }
             }
-            Update::Permission(p) => self.permission(p),
+            // 141 §7.2 item 4: a child's ask is keyed to the child row.
+            Update::Permission(p) => {
+                if let Some(p) = self.observed_permission(p, &me).await {
+                    self.permission(p);
+                }
+            }
             Update::Peer(m) => self.uplink(m).await,
             Update::Closed(why) => self.closed(why, ctx).await,
         }
@@ -2456,8 +2536,8 @@ pub(crate) mod tests {
     /// authoritative empty list, not a missing one.
     #[tokio::test]
     async fn stored_acp_plan_keeps_source_status_and_reopens() {
-        let dir = std::env::temp_dir().join(format!("theuth-acp-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = Scratch::new("acp-plan");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -2508,7 +2588,6 @@ pub(crate) mod tests {
         assert_eq!((snap.version, snap.source), (3, TodoSource::Acp));
         assert!(snap.items.is_empty());
         assert_eq!(store.todos(id).await.unwrap(), snap);
-        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -2751,6 +2830,47 @@ pub(crate) mod tests {
 
     /// One spawned `AcpChild` on a fresh runtime and store, connected to a
     /// [`Fake`] whose handshake is done.
+    /// A test scratch directory under `$TMPDIR`, removed on drop — on a
+    /// passing test and on a panic alike (141 R3 T15: 1 529 leaked
+    /// `theuth-acp-rig-*` dirs filled the shared machine's disk).
+    pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
+
+    impl Scratch {
+        pub(crate) fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("theuth-{tag}-{}", Uuid::now_v7()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 141 R3 T15: the guard deletes its dir on drop — also mid-panic, since
+    /// unwinding drops the test's locals.
+    #[test]
+    fn scratch_is_removed_on_drop() {
+        let path = {
+            let s = Scratch::new("acp-scratch-check");
+            std::fs::write(s.0.join("x"), b"x").unwrap();
+            assert!(s.0.is_dir());
+            s.0.clone()
+        };
+        assert!(!path.exists(), "{path:?}");
+        let path = std::panic::catch_unwind(|| {
+            let s = Scratch::new("acp-scratch-panic");
+            let p = s.0.clone();
+            std::panic::panic_any(p);
+        })
+        .unwrap_err()
+        .downcast::<std::path::PathBuf>()
+        .unwrap();
+        assert!(!path.exists(), "{path:?}");
+    }
+
     struct Rig {
         actor: ActorRef<AcpChild>,
         fake: Fake,
@@ -2759,6 +2879,8 @@ pub(crate) mod tests {
         rt: Runtime,
         events: UnboundedReceiver<AgentEvent>,
         approvals: UnboundedReceiver<ApprovalRequested>,
+        /// The runtime's data dir; deleted with the rig.
+        _dir: Scratch,
     }
 
     impl Rig {
@@ -2797,8 +2919,8 @@ pub(crate) mod tests {
             tune: impl FnOnce(&mut AcpChild),
             handshake: bool,
         ) -> Self {
-            let dir = std::env::temp_dir().join(format!("theuth-acp-rig-{}", Uuid::now_v7()));
-            std::fs::create_dir_all(&dir).unwrap();
+            let scratch = Scratch::new("acp-rig");
+            let dir = scratch.0.clone();
             let rt = Runtime::new(figment::Figment::new(), dir.clone());
             let (etx, events) = unbounded_channel();
             let (atx, approvals) = unbounded_channel();
@@ -2852,6 +2974,7 @@ pub(crate) mod tests {
                 rt,
                 events,
                 approvals,
+                _dir: scratch,
             }
         }
 
@@ -4102,5 +4225,1344 @@ pub(crate) mod tests {
             (ChatRole::Assistant, OMP_BUSY.into()),
             "the original busy error"
         );
+    }
+
+    // ---- 141: watch-only children ------------------------------------
+
+    use crate::{ObservedSource, ObservedState, SessionKind};
+    use acp::{ChildAnnounce, ChildSource, ChildState, CostRule};
+
+    impl Rig {
+        /// A prompt answered `end_turn`: the connection has `worked`, so
+        /// child traffic is no longer `session/load` replay.
+        async fn warm(&mut self) {
+            self.input("go").await;
+            let (id, _) = self.fake.prompt().await;
+            self.fake.end_turn(&id);
+            assert_eq!(stop_reasons(&self.until_finished().await), ["end_turn"]);
+        }
+
+        /// Events up to and including the first one `pick` accepts.
+        async fn until(&mut self, pick: impl Fn(&AgentEvent) -> bool) -> Vec<AgentEvent> {
+            let mut out = Vec::new();
+            loop {
+                let e = tokio::time::timeout(Duration::from_secs(10), self.events.recv())
+                    .await
+                    .expect("an event")
+                    .expect("bus alive");
+                let done = pick(&e);
+                out.push(e);
+                if done {
+                    return out;
+                }
+            }
+        }
+
+        /// The watch-only row `external` under this session.
+        async fn observed(&self, source: ObservedSource, external: &str) -> crate::SessionSummary {
+            let id = self
+                .store
+                .observed_child(self.session, source, external)
+                .await
+                .unwrap()
+                .expect("observed row");
+            self.store.session(id).await.unwrap().unwrap()
+        }
+    }
+
+    fn announce(source: ChildSource, child: &str, state: ChildState) -> ChildAnnounce {
+        let mut a = ChildAnnounce::new(source, child);
+        a.state = Some(state);
+        a
+    }
+
+    fn changed(e: &AgentEvent) -> Option<(SessionId, &str, ObservedState)> {
+        match e {
+            AgentEvent::ObservedChildChanged {
+                child,
+                name,
+                observed,
+                ..
+            } => Some((*child, name.as_str(), observed.state)),
+            _ => None,
+        }
+    }
+
+    /// 141 §6.1/§7.2 (RFD): an announce creates one `observed` row under the
+    /// ACP child — no `agent`, title from the announce, `can_cancel` — and
+    /// publishes `ObservedChildChanged` then `TurnStarted` on the child;
+    /// child-addressed traffic becomes the child's transcript; `idle` with
+    /// usage closes the turn (`TurnFinished` carrying the tokens, a ledger
+    /// row under the child, display-only usage in `detail`); a repeat
+    /// announce updates the same row; `CancelObserved` is `session/cancel`
+    /// on the child's id.
+    #[tokio::test]
+    async fn rfd_child_is_announced_watched_and_cancelled_on_its_own_id() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        rig.warm().await;
+        let mut a = announce(ChildSource::Rfd, "sess_child_1", ChildState::Running);
+        a.title = Some("Reader".into());
+        a.description = Some("read a.txt".into());
+        a.can_cancel = Some(true);
+        rig.actor.tell(Update::Subagent(a)).await.unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnStarted { .. }))
+            .await;
+        let [first, AgentEvent::TurnStarted { session: child, .. }] = &events[..] else {
+            panic!("{events:?}");
+        };
+        let (id, name, state) = changed(first).expect("ObservedChildChanged first");
+        assert_eq!(
+            (id, name, state),
+            (*child, "Reader", ObservedState::Running)
+        );
+        let AgentEvent::ObservedChildChanged {
+            parent, observed, ..
+        } = first
+        else {
+            unreachable!()
+        };
+        assert_eq!(*parent, rig.session);
+        assert_eq!(observed.source, ObservedSource::Rfd);
+        assert_eq!(observed.external, "sess_child_1");
+        assert!(observed.can_cancel);
+        assert_eq!(observed.cost_rule, CostRule::DisplayOnly);
+        assert_eq!(observed.description.as_deref(), Some("read a.txt"));
+        let row = rig.observed(ObservedSource::Rfd, "sess_child_1").await;
+        assert_eq!(row.id, *child);
+        assert_eq!(row.kind, SessionKind::Observed);
+        assert_eq!(row.agent, None);
+        assert_eq!(row.parent, Some(rig.session));
+        assert_eq!(row.name.as_deref(), Some("Reader"));
+
+        // Child traffic lands on the child, not the parent.
+        rig.actor
+            .tell(Update::Session {
+                session: "sess_child_1".into(),
+                update: chunk("alpha"),
+            })
+            .await
+            .unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TextDelta { .. }))
+            .await;
+        assert!(
+            matches!(&events[..], [AgentEvent::TextDelta { session, text, .. }] if session == child && &**text == "alpha"),
+            "{events:?}"
+        );
+
+        // idle{stopReason, usage}: the turn closes with the tokens.
+        let usage: AcpUsage = serde_json::from_value(json!({
+            "inputTokens": 100, "outputTokens": 20, "totalTokens": 120, "cachedReadTokens": 30
+        }))
+        .unwrap();
+        let a = announce(
+            ChildSource::Rfd,
+            "sess_child_1",
+            ChildState::Idle {
+                stop_reason: Some("end_turn".into()),
+                usage: Some(usage),
+            },
+        );
+        rig.actor.tell(Update::Subagent(a)).await.unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
+            .await;
+        assert_eq!(
+            changed(&events[0]).map(|(_, _, s)| s),
+            Some(ObservedState::Idle)
+        );
+        let AgentEvent::TurnFinished {
+            session,
+            stop_reason,
+            usage,
+            ..
+        } = events.last().unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!((session, stop_reason.as_str()), (child, "end_turn"));
+        assert_eq!(
+            (usage.prompt, usage.completion, usage.cached),
+            (130, 20, 30)
+        );
+        let row = rig.observed(ObservedSource::Rfd, "sess_child_1").await;
+        let o = row.observed.unwrap();
+        assert_eq!(o.state, ObservedState::Idle);
+        assert_eq!(o.stop.as_deref(), Some("end_turn"));
+        assert_eq!(o.detail["usage"]["inputTokens"], 100);
+        let rows: Vec<(ChatRole, String)> = rig
+            .store
+            .messages(*child)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, m)| (m.role, crate::loop_::text_of(&m.content)))
+            .collect();
+        assert_eq!(rows[0], (ChatRole::Assistant, "alpha".into()), "{rows:?}");
+        let cost = rig.store.session_cost(*child).await.unwrap().unwrap();
+        assert_eq!(
+            cost.remote_tokens[0].turns, 1,
+            "display-only tokens, under the child"
+        );
+        assert!(cost.direct.returned.is_empty(), "no money for display_only");
+        assert_eq!(
+            rig.store
+                .observed_children(rig.session)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "the second announce updated, not duplicated"
+        );
+
+        // §7.7: the harness said it can cancel this child.
+        rig.actor
+            .tell(CancelObserved { child: *child })
+            .await
+            .unwrap();
+        let m = rig.fake.next().await;
+        assert_eq!(m["method"], "session/cancel", "{m}");
+        assert_eq!(m["params"]["sessionId"], "sess_child_1", "{m}");
+    }
+
+    /// 141 §6.2 (opencode 2.x): `created` → pending (no turn), `running` →
+    /// running + `TurnStarted`; the child's `tool_call` keeps its
+    /// `<child>:<id>` id on the child's events and rows; the child's
+    /// `agent_message_chunk` is assistant text on the child (not a thought on
+    /// the parent); `completed` closes the turn `end_turn`; `failed` carries
+    /// its error as `stop`; cost is `unreported`.
+    #[tokio::test]
+    async fn opencode_child_updates_become_the_childs_transcript() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        rig.warm().await;
+        let ext = "ses_ee4d9a752ffe2XT5Oz2Fldml2j";
+        let mut a = announce(ChildSource::OpencodeExt, ext, ChildState::Pending);
+        a.title = Some("Read a.txt first line".into());
+        rig.actor.tell(Update::Subagent(a)).await.unwrap();
+        let events = rig.until(|e| changed(e).is_some()).await;
+        let (child, _, state) = changed(&events[0]).unwrap();
+        assert_eq!(state, ObservedState::Pending);
+        rig.actor
+            .tell(Update::Subagent(announce(
+                ChildSource::OpencodeExt,
+                ext,
+                ChildState::Running,
+            )))
+            .await
+            .unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnStarted { .. }))
+            .await;
+        assert_eq!(
+            changed(&events[0]).map(|(_, _, s)| s),
+            Some(ObservedState::Running),
+            "{events:?}"
+        );
+        assert_eq!(events.len(), 2, "no turn while pending: {events:?}");
+
+        let call = format!("{ext}:toolu_014DGrCCVSsRX5h8vujs7SZh");
+        rig.actor
+            .tell(Update::Session {
+                session: ext.into(),
+                update: SessionUpdate::ToolCall(
+                    ToolCall::new(call.clone(), "Read a.txt first line: read").kind(ToolKind::Read),
+                ),
+            })
+            .await
+            .unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::ToolCallStarted { .. }))
+            .await;
+        assert!(
+            matches!(&events[..], [AgentEvent::ToolCallStarted { session, call_id, .. }] if *session == child && *call_id == call),
+            "{events:?}"
+        );
+        rig.actor
+            .tell(Update::Session {
+                session: ext.into(),
+                update: update(
+                    "ses_ee4d9a752ffe2XT5Oz2Fldml2j:toolu_014DGrCCVSsRX5h8vujs7SZh",
+                    ToolCallUpdateFields::new()
+                        .status(ToolCallStatus::Completed)
+                        .content(vec![ToolCallContent::from("alpha line one")]),
+                ),
+            })
+            .await
+            .unwrap();
+        rig.actor
+            .tell(Update::Session {
+                session: ext.into(),
+                update: chunk("alpha line one"),
+            })
+            .await
+            .unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TextDelta { .. }))
+            .await;
+        assert!(
+            matches!(events.last(), Some(AgentEvent::TextDelta { session, .. }) if *session == child),
+            "assistant text on the child: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ReasoningDelta { .. })),
+            "never rewritten to a thought"
+        );
+        rig.actor
+            .tell(Update::Subagent(announce(
+                ChildSource::OpencodeExt,
+                ext,
+                ChildState::Completed,
+            )))
+            .await
+            .unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
+            .await;
+        assert_eq!(
+            changed(&events[0]).map(|(_, _, s)| s),
+            Some(ObservedState::Completed)
+        );
+        assert!(
+            matches!(events.last(), Some(AgentEvent::TurnFinished { session, stop_reason, .. }) if *session == child && stop_reason == "end_turn")
+        );
+        let rows = rig.store.messages(child).await.unwrap();
+        assert_eq!(rows[0].1.content.tool_calls()[0].call_id, call);
+        assert_eq!(rows[1].1.content.tool_responses()[0].call_id, call);
+        assert_eq!(crate::loop_::text_of(&rows[2].1.content), "alpha line one");
+        let o = rig
+            .observed(ObservedSource::OpencodeExt, ext)
+            .await
+            .observed
+            .unwrap();
+        assert_eq!(
+            (o.state, o.cost_rule),
+            (ObservedState::Completed, CostRule::Unreported)
+        );
+
+        // A second child fails with an error: the text is its stop.
+        let mut b = announce(
+            ChildSource::OpencodeExt,
+            "ses_other",
+            ChildState::Failed {
+                error: Some("tool exploded".into()),
+            },
+        );
+        b.title = Some("B".into());
+        rig.actor.tell(Update::Subagent(b)).await.unwrap();
+        let events = rig.until(|e| changed(e).is_some()).await;
+        let AgentEvent::ObservedChildChanged { observed, .. } = events.last().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(observed.state, ObservedState::Failed);
+        assert_eq!(observed.stop.as_deref(), Some("tool exploded"));
+        assert_eq!(
+            rig.store
+                .observed_children(rig.session)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    /// 141 §6.2/§7.7 (Q5): a `request_permission` on the root whose
+    /// `toolCallId` is `<child>:<id>` is asked on the child row; the child
+    /// shows `requires_action` until the human answers, then `running` again.
+    #[test]
+    fn child_permission_is_asked_on_the_child_and_flips_requires_action() {
+        crate::with_test_registry(child_permission_scenario());
+    }
+
+    async fn child_permission_scenario() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        tools::registry::start(&rig.rt).await.unwrap();
+        rig.warm().await;
+        let ext = "ses_child";
+        rig.actor
+            .tell(Update::Subagent(announce(
+                ChildSource::OpencodeExt,
+                ext,
+                ChildState::Running,
+            )))
+            .await
+            .unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnStarted { .. }))
+            .await;
+        let (child, ..) = changed(&events[0]).unwrap();
+        rig.fake.permission(
+            "p1",
+            ToolCallUpdate::new(
+                format!("{ext}:toolu_1"),
+                ToolCallUpdateFields::new()
+                    .title("rm -rf build")
+                    .kind(ToolKind::Delete),
+            ),
+            vec![
+                PermissionOption::new("y", "Allow", PermissionOptionKind::AllowOnce),
+                PermissionOption::new("n", "Reject", PermissionOptionKind::RejectOnce),
+            ],
+        );
+        let asked = tokio::time::timeout(Duration::from_secs(10), rig.approvals.recv())
+            .await
+            .expect("approval asked")
+            .unwrap();
+        assert_eq!(asked.session, child, "keyed to the child row");
+        let events = rig.until(|e| changed(e).is_some()).await;
+        assert_eq!(
+            changed(events.last().unwrap()).map(|(_, _, s)| s),
+            Some(ObservedState::RequiresAction)
+        );
+        let approval = ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR)
+            .unwrap()
+            .unwrap();
+        assert!(
+            approval
+                .ask(tools::Resolve {
+                    id: asked.id,
+                    decision: Decision::Allow,
+                })
+                .await
+                .unwrap()
+        );
+        let reply = rig.fake.next().await;
+        assert_eq!(reply["id"], "p1", "{reply}");
+        assert_eq!(reply["result"]["outcome"]["optionId"], "y", "{reply}");
+        let events = rig.until(|e| changed(e).is_some()).await;
+        assert_eq!(
+            changed(events.last().unwrap()).map(|(_, _, s)| s),
+            Some(ObservedState::Running),
+            "back to running once answered"
+        );
+        // A child that cannot be cancelled says so instead of pretending.
+        rig.actor.tell(CancelObserved { child }).await.unwrap();
+        let events = rig.until(|e| matches!(e, AgentEvent::Error { .. })).await;
+        let AgentEvent::Error {
+            session, message, ..
+        } = events.last().unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(*session, child);
+        assert!(
+            message.starts_with("omp: cannot stop this subagent; stop "),
+            "{message}"
+        );
+    }
+
+    /// 141 §6.3 (opencode 1.x, real frames via `task_v1::announce`): the
+    /// recorded `task.{tool_call, in_progress, completed}` frames sent through
+    /// the `Fake` on a harness that claims `OpenCode 1.18.30` → one
+    /// `opencode_task` child `pending → running → completed`, the provisional
+    /// `task:<toolCallId>` row re-keyed to the real session id by the
+    /// completed frame (one row, `acp_session` rewritten), the child's model
+    /// recorded, the parent's own tool card kept. A 2.x harness ignores them.
+    #[tokio::test]
+    async fn opencode_task_frames_announce_and_rekey_one_child() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let frame = |name: &str| -> serde_json::Value {
+            let path = format!(
+                "{}/../acp/fixtures/opencode-1.18.30/task.{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let mut v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
+            v["params"]["sessionId"] = json!("s1");
+            v
+        };
+        let mut rig = Rig::with_agent(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("OpenCode", "1.18.30")),
+        )
+        .await;
+        rig.input("read a.txt").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("tool_call"));
+        let events = rig.until(|e| changed(e).is_some()).await;
+        let (child, _, state) = changed(events.last().unwrap()).unwrap();
+        assert_eq!(state, ObservedState::Pending);
+        rig.fake.send(frame("tool_call_update.in_progress"));
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session == child))
+            .await;
+        assert!(
+            events.iter().any(
+                |e| matches!(changed(e), Some((c, "Read first line of a.txt", ObservedState::Running)) if c == child)
+            ),
+            "{events:?}"
+        );
+        rig.fake.send(frame("tool_call_update.completed"));
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == child))
+            .await;
+        assert!(
+            events.iter().any(
+                |e| matches!(changed(e), Some((c, _, ObservedState::Completed)) if c == child)
+            ),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::HarnessModelChanged { session, model } if *session == child && model == "opencode/big-pickle")),
+            "{events:?}"
+        );
+        // 141 R1 T4 (§6.3): the `<task_result>` text is the child's one
+        // assistant message — shown live and persisted, so the view is not
+        // empty for a harness that streams nothing.
+        assert!(
+            events.iter().any(
+                |e| matches!(e, AgentEvent::TextDelta { session, text, .. } if *session == child && &**text == "alpha line one")
+            ),
+            "{events:?}"
+        );
+        let child_rows: Vec<(ChatRole, String)> = rig
+            .store
+            .messages(child)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, m)| (m.role, crate::loop_::text_of(&m.content)))
+            .collect();
+        assert_eq!(
+            child_rows,
+            [(ChatRole::Assistant, "alpha line one".to_owned())],
+            "one assistant row, nothing empty"
+        );
+        rig.fake.end_turn(&id);
+        rig.until_finished().await;
+        let kids = rig.store.observed_children(rig.session).await.unwrap();
+        assert_eq!(kids.len(), 1, "{kids:?}");
+        let (row, meta) = &kids[0];
+        assert_eq!(row.id, child);
+        assert_eq!(meta.source, ObservedSource::OpencodeTask);
+        assert_eq!(meta.external, "ses_ee4d89f0cffe7zXAvHsSIT0UsD");
+        assert_eq!(
+            meta.tool_call.as_deref(),
+            Some("call_a062fdd9472f454ea6e45c9b")
+        );
+        assert_eq!(meta.detail["agent"], "explore");
+        assert_eq!(row.harness_model.as_deref(), Some("opencode/big-pickle"));
+        assert_eq!(meta.cost_rule, CostRule::Unreported);
+        assert!(
+            rig.store
+                .messages(rig.session)
+                .await
+                .unwrap()
+                .iter()
+                .any(|(_, m)| m
+                    .content
+                    .tool_responses()
+                    .iter()
+                    .any(|r| r.call_id == "call_a062fdd9472f454ea6e45c9b")),
+            "parent keeps its tool card"
+        );
+
+        // opencode 2.x: the same frames are only the parent's tool card.
+        let mut rig = Rig::with_agent(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("OpenCode", "2.0.22")),
+        )
+        .await;
+        rig.input("go").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("tool_call_update.completed"));
+        rig.fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert!(!events.iter().any(|e| changed(e).is_some()), "{events:?}");
+    }
+
+    /// 141 §6.4/§7.6 (omp, rows fed as announces until W5's adapter lands):
+    /// background rows are `counted` — their cumulative `cost` is a
+    /// high-water meter under the child with the `observed` scope, rolling
+    /// up beside the parent's own `usage_update` into the subtree total
+    /// (0.13948325 + 0.12128025 + 0.12170525 = 0.38246875, F23); a nested
+    /// `a.b` row sits under `a`; detail-only updates are coalesced to one
+    /// `ObservedChildChanged` per 250 ms.
+    #[tokio::test]
+    async fn omp_rows_count_their_cost_once_and_nest() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        rig.warm().await;
+        let omp = |id: &str, state: ChildState, cost: f64, tokens: u64| {
+            let mut a = announce(ChildSource::OmpTask, id, state);
+            a.title = Some(id.to_owned());
+            a.parent = id.rsplit_once('.').map(|(p, _)| p.to_owned());
+            a.tool_call = Some("toolu_013x6rgBK7MEUsQq79DoL4YK".into());
+            a.cost_rule = Some(CostRule::Counted);
+            a.model = Some("anthropic/claude-fable-5-1:high".into());
+            a.detail = json!({"cost": cost, "tokens": tokens, "agent": "scout"})
+                .as_object()
+                .cloned()
+                .unwrap();
+            a
+        };
+        rig.actor
+            .tell(Update::Subagent(omp(
+                "ReadA",
+                ChildState::Running,
+                0.1149025,
+                8962,
+            )))
+            .await
+            .unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnStarted { .. }))
+            .await;
+        let (read_a, ..) = changed(&events[0]).unwrap();
+        // Two more snapshots within the throttle: detail only.
+        rig.actor
+            .tell(Update::Subagent(omp(
+                "ReadA",
+                ChildState::Running,
+                0.118,
+                9000,
+            )))
+            .await
+            .unwrap();
+        rig.actor
+            .tell(Update::Subagent(omp(
+                "ReadA",
+                ChildState::Running,
+                0.119,
+                9050,
+            )))
+            .await
+            .unwrap();
+        rig.actor
+            .tell(Update::Subagent(omp(
+                "ReadB",
+                ChildState::Running,
+                0.12170525,
+                9100,
+            )))
+            .await
+            .unwrap();
+        rig.actor
+            .tell(Update::Subagent(omp(
+                "ReadA.sub",
+                ChildState::Running,
+                0.0,
+                0,
+            )))
+            .await
+            .unwrap();
+        let events = rig
+            .until(|e| matches!(changed(e), Some((_, "ReadA.sub", _))))
+            .await;
+        let coalesced = events
+            .iter()
+            .filter(|e| matches!(changed(e), Some((_, "ReadA", _))))
+            .count();
+        // 0 normally; 1 if the box stalled ≥ 250 ms between two tells.
+        assert!(
+            coalesced <= 1,
+            "detail-only snapshots wait for the throttle: {events:?}"
+        );
+        let (sub, ..) = changed(events.last().unwrap()).unwrap();
+        assert_eq!(
+            rig.store.session(sub).await.unwrap().unwrap().parent,
+            Some(read_a),
+            "a.b nests under a"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let events = rig
+            .until(|e| matches!(changed(e), Some((_, "ReadA", _))))
+            .await;
+        let AgentEvent::ObservedChildChanged { observed, .. } = events.last().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(observed.detail["tokens"], 9050, "the latest snapshot, once");
+
+        rig.actor
+            .tell(Update::Subagent(omp(
+                "ReadA",
+                ChildState::Completed,
+                0.12128025,
+                9118,
+            )))
+            .await
+            .unwrap();
+        rig.actor
+            .tell(Update::Subagent(omp(
+                "ReadB",
+                ChildState::Completed,
+                0.12170525,
+                9118,
+            )))
+            .await
+            .unwrap();
+        rig.actor
+            .tell(Update::Subagent(omp(
+                "ReadA.sub",
+                ChildState::Completed,
+                0.0,
+                0,
+            )))
+            .await
+            .unwrap();
+        // The parent's own usage excludes the background children (F23).
+        rig.actor
+            .tell(Update::Session {
+                session: "s1".into(),
+                update: SessionUpdate::UsageUpdate(
+                    UsageUpdate::new(14445, 1_000_000).cost(Cost::new(0.13948325, "USD")),
+                ),
+            })
+            .await
+            .unwrap();
+        let mut finished = 0;
+        while finished < 3 {
+            let events = rig
+                .until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
+                .await;
+            finished += 1;
+            assert!(
+                events
+                    .iter()
+                    .all(|e| !matches!(e, AgentEvent::Error { .. })),
+                "{events:?}"
+            );
+        }
+        // The parent's own meter lands after its `ContextUsed`.
+        rig.until(|e| matches!(e, AgentEvent::ContextUsed { .. }))
+            .await;
+        let parent = rig.session;
+        rig.until(
+            |e| matches!(e, AgentEvent::ModelUsageChanged { session, .. } if *session == parent),
+        )
+        .await;
+        let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
+        let usd = |m: &[Money]| m.iter().find(|m| m.currency == "USD").map(|m| m.nanos);
+        assert_eq!(usd(&cost.direct.returned), Some(139_483_250));
+        assert_eq!(usd(&cost.total.returned), Some(382_468_750), "{cost:?}");
+        for c in &cost.children {
+            assert_eq!(c.scope, crate::cost::CostScope::Observed, "{c:?}");
+        }
+        let a = rig.store.session_cost(read_a).await.unwrap().unwrap();
+        assert_eq!(
+            usd(&a.direct.returned),
+            Some(121_280_250),
+            "high water once"
+        );
+        assert_eq!(a.scope, crate::cost::CostScope::Observed);
+        let o = rig
+            .observed(ObservedSource::OmpTask, "ReadA")
+            .await
+            .observed
+            .unwrap();
+        assert_eq!(
+            o.tool_call.as_deref(),
+            Some("toolu_013x6rgBK7MEUsQq79DoL4YK")
+        );
+        assert_eq!(o.detail["agent"], "scout");
+    }
+
+    /// 141 D11: when the harness connection ends, every non-terminal
+    /// watch-only child is marked `unknown` / "lost contact" and its turn
+    /// closes `unknown`; a finished child keeps its state.
+    #[tokio::test]
+    async fn children_lose_contact_when_the_harness_stops() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        rig.warm().await;
+        rig.actor
+            .tell(Update::Subagent(announce(
+                ChildSource::Rfd,
+                "live",
+                ChildState::Running,
+            )))
+            .await
+            .unwrap();
+        rig.actor
+            .tell(Update::Subagent(announce(
+                ChildSource::OpencodeExt,
+                "done",
+                ChildState::Completed,
+            )))
+            .await
+            .unwrap();
+        rig.until(|e| matches!(changed(e), Some((_, "done", _))))
+            .await;
+        rig.actor.tell(Shutdown).await.unwrap();
+        rig.actor.wait_for_shutdown().await;
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnFinished { stop_reason, .. } if stop_reason == "unknown"))
+            .await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(changed(e), Some((_, "live", ObservedState::Unknown)))),
+            "{events:?}"
+        );
+        let live = rig
+            .observed(ObservedSource::Rfd, "live")
+            .await
+            .observed
+            .unwrap();
+        assert_eq!(live.state, ObservedState::Unknown);
+        assert_eq!(live.stop.as_deref(), Some("lost contact"));
+        let done = rig
+            .observed(ObservedSource::OpencodeExt, "done")
+            .await
+            .observed
+            .unwrap();
+        assert_eq!(
+            done.state,
+            ObservedState::Completed,
+            "terminal rows keep their state"
+        );
+    }
+
+    /// 141 §4.5 test 3: a `session/update` with a `sessionUpdate` this SDK
+    /// does not know is dropped by the transport; the connection survives
+    /// and the next `end_turn` still finishes the turn (R2A §3.2).
+    #[tokio::test]
+    async fn unknown_session_update_kinds_are_tolerated() {
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        rig.input("go").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": "s1", "update": {"sessionUpdate": "totally_unknown", "foo": 1}},
+        }));
+        rig.fake.update(chunk("still here"));
+        rig.fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        assert!(
+            events.iter().any(
+                |e| matches!(e, AgentEvent::TextDelta { text, .. } if &**text == "still here")
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// 141 §13.2 (omp, real frames via W5's `progress_rows`): the recorded
+    /// `task.{completed_stale, mid, final}` frames sent through the `Fake`
+    /// on a harness that claims `oh-my-pi` → two `omp_task` children
+    /// `pending → running → completed`, model from `resolvedModel`, the
+    /// spawn call as `tool_call`, `counted` costs 0.12128025 / 0.12170525
+    /// under the children beside the parent's own tool card; a harness that
+    /// is not omp ignores the rows.
+    #[tokio::test]
+    async fn omp_task_frames_announce_two_children_through_progress_rows() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let frame = |name: &str| -> serde_json::Value {
+            let path = format!(
+                "{}/../acp/fixtures/omp-18.3.1/task.{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let mut v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
+            v["params"]["sessionId"] = json!("s1");
+            v
+        };
+        let mut rig = Rig::with_agent(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("oh-my-pi", "18.3.1")),
+        )
+        .await;
+        rig.input("spawn readers").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("tool_call"));
+        rig.fake.send(frame("completed_stale"));
+        let events = rig
+            .until(|e| matches!(changed(e), Some((_, "ReadB", _))))
+            .await;
+        let (read_a, _, a_state) = events
+            .iter()
+            .find_map(|e| changed(e).filter(|(_, n, _)| *n == "ReadA"))
+            .unwrap();
+        assert_eq!(
+            a_state,
+            ObservedState::Pending,
+            "stale rows are pending, not completed"
+        );
+        assert!(
+            !events.iter().any(
+                |e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session == read_a)
+            ),
+            "no child turn while pending: {events:?}"
+        );
+        rig.fake.send(frame("mid"));
+        let parent = rig.session;
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session != read_a && *session != parent))
+            .await;
+        assert!(
+            events.iter().any(
+                |e| matches!(changed(e), Some((c, "ReadA", ObservedState::Running)) if c == read_a)
+            ),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::HarnessModelChanged { session, model } if *session == read_a && model == "anthropic/claude-fable-5-1:high")),
+            "{events:?}"
+        );
+        // 141 R1 T3 / F18: omp re-sends the spawn acknowledgement's stale
+        // `pending` rows after the live ones moved on — no regression, no
+        // closed-and-reopened child turn.
+        rig.fake.send(frame("completed_stale"));
+        rig.fake.send(frame("final"));
+        rig.fake.end_turn(&id);
+        let mut finished = Vec::new();
+        let mut all = Vec::new();
+        while finished.len() < 3 {
+            let events = rig
+                .until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
+                .await;
+            let AgentEvent::TurnFinished { session, .. } = events.last().unwrap() else {
+                unreachable!()
+            };
+            finished.push(*session);
+            all.extend(events);
+        }
+        assert!(
+            finished.contains(&rig.session) && finished.contains(&read_a),
+            "{finished:?}"
+        );
+        assert!(
+            !all.iter()
+                .any(|e| matches!(changed(e), Some((_, _, ObservedState::Pending)))),
+            "a stale snapshot never moves a row back to pending: {all:?}"
+        );
+        assert_eq!(
+            all.iter()
+                .filter(
+                    |e| matches!(e, AgentEvent::TurnFinished { session, .. } if *session == read_a)
+                )
+                .count(),
+            1,
+            "one child turn: {all:?}"
+        );
+        let child_rows: Vec<(ChatRole, String)> = rig
+            .store
+            .messages(read_a)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, m)| (m.role, crate::loop_::text_of(&m.content)))
+            .collect();
+        assert!(
+            !child_rows
+                .iter()
+                .any(|(r, t)| *r == ChatRole::Assistant && t.is_empty()),
+            "no empty assistant rows on the child: {child_rows:?}"
+        );
+        let kids = rig.store.observed_children(rig.session).await.unwrap();
+        assert_eq!(kids.len(), 2, "{kids:?}");
+        for (row, meta) in &kids {
+            assert_eq!(meta.source, ObservedSource::OmpTask);
+            assert_eq!(meta.state, ObservedState::Completed);
+            assert_eq!(meta.cost_rule, CostRule::Counted);
+            assert_eq!(
+                meta.tool_call.as_deref(),
+                Some("toolu_013x6rgBK7MEUsQq79DoL4YK")
+            );
+            assert_eq!(meta.detail["agent"], "scout");
+            assert_eq!(
+                row.harness_model.as_deref(),
+                Some("anthropic/claude-fable-5-1:high")
+            );
+        }
+        let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
+        let mut child_usd: Vec<u64> = cost
+            .children
+            .iter()
+            .map(|c| {
+                assert_eq!(c.scope, crate::cost::CostScope::Observed, "{c:?}");
+                c.total
+                    .returned
+                    .iter()
+                    .find(|m| m.currency == "USD")
+                    .map_or(0, |m| m.nanos)
+            })
+            .collect();
+        child_usd.sort_unstable();
+        assert_eq!(child_usd, [121_280_250, 121_705_250]);
+        // The parent's own transcript still has the spawn call's card.
+        let rows = rig.rows().await;
+        assert!(
+            rig.store
+                .messages(rig.session)
+                .await
+                .unwrap()
+                .iter()
+                .any(|(_, m)| m
+                    .content
+                    .tool_responses()
+                    .iter()
+                    .any(|r| r.call_id == "toolu_013x6rgBK7MEUsQq79DoL4YK")),
+            "{rows:?}"
+        );
+
+        // Not omp: the same frame is only the parent's tool card.
+        let mut rig = Rig::with_agent(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("OpenCode", "2.0.22")),
+        )
+        .await;
+        rig.input("go").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("final"));
+        rig.fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert!(!events.iter().any(|e| changed(e).is_some()), "{events:?}");
+        assert!(
+            rig.store
+                .observed_children(rig.session)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// 141 §4.5 test 2 (D1 regression): the recorded opencode 2.0.22
+    /// `child_update` frame, sent verbatim through the live `Fake`, becomes
+    /// an `ObservedChildChanged{source: opencode_ext}` for its
+    /// `childSessionId` and a `ToolCallStarted` on the child row with the
+    /// `<child>:<toolu>` id (W1's `child_update` adapter in
+    /// `crates/acp/src/harness/opencode.rs`).
+    #[tokio::test]
+    async fn raw_child_update_frame_reaches_the_observed_child() {
+        let path = format!(
+            "{}/../acp/fixtures/opencode-2.0.22/child_update.tool_call.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let frame: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
+        let ext = frame["params"]["childSessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let call = frame["params"]["update"]["toolCallId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut rig = Rig::new(Duration::from_secs(3600)).await;
+        rig.warm().await;
+        rig.fake.send(frame);
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::ToolCallStarted { .. }))
+            .await;
+        let (child, _, _) = changed(&events[0]).expect("announce first");
+        let AgentEvent::ObservedChildChanged { observed, .. } = &events[0] else {
+            unreachable!()
+        };
+        assert_eq!(observed.source, ObservedSource::OpencodeExt);
+        assert_eq!(observed.external, ext);
+        assert!(
+            matches!(events.last(), Some(AgentEvent::ToolCallStarted { session, call_id, .. }) if *session == child && *call_id == call),
+            "{events:?}"
+        );
+    }
+
+    /// A throwaway omp home for the `Fake`'s session `s1` (141 §6.4 feed 2
+    /// layout): `(home, artifacts dir)`; the parent transcript is empty.
+    fn omp_home() -> (Scratch, std::path::PathBuf) {
+        let home = Scratch::new("acp-omp");
+        let cwd = home.0.join(".omp/agent/sessions/--tmp-x--");
+        let art = cwd.join("2026-10-08T16-00-00-000Z_s1");
+        std::fs::create_dir_all(&art).unwrap();
+        std::fs::write(cwd.join("2026-10-08T16-00-00-000Z_s1.jsonl"), "").unwrap();
+        (home, art)
+    }
+
+    fn omp_fixture_lines(name: &str) -> Vec<String> {
+        let path = format!(
+            "{}/../acp/fixtures/omp-18.3.1/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::read_to_string(&path)
+            .expect(&path)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The child's `counted` USD meter in nanos (0 when none).
+    async fn usd_of(rig: &Rig, child: SessionId) -> u64 {
+        rig.store.session_cost(child).await.unwrap().map_or(0, |c| {
+            c.total
+                .returned
+                .iter()
+                .find(|m| m.currency == "USD")
+                .map_or(0, |m| m.nanos)
+        })
+    }
+
+    async fn child_rows(rig: &Rig, child: SessionId) -> Vec<(ChatRole, String, Vec<String>)> {
+        rig.store
+            .messages(child)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, m)| {
+                (
+                    m.role,
+                    crate::loop_::text_of(&m.content),
+                    m.content
+                        .tool_calls()
+                        .iter()
+                        .map(|c| c.fn_name.clone())
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// 141 R1 T1 + T2 (the common omp case: background spawn, the parent
+    /// answers first, feed 1 falls silent): the child's transcript comes from
+    /// the tail — its `read` call, its per-turn `usage.cost.total` as the
+    /// `counted` meter — and when omp completes it (sidecar first, the yield
+    /// entries a moment later) the tail still drains to EOF: the yield call
+    /// and result land, the cursor reaches the end, the meter is the full
+    /// 0.12128025 USD.
+    #[tokio::test]
+    async fn omp_tail_drains_after_completion_and_meters_counted_cost() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let (home, art) = omp_home();
+        let frame = |name: &str| -> serde_json::Value {
+            let path = format!(
+                "{}/../acp/fixtures/omp-18.3.1/task.{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let mut v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
+            v["params"]["sessionId"] = json!("s1");
+            v
+        };
+        let h = home.0.clone();
+        let mut rig = Rig::build(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("oh-my-pi", "18.3.1")),
+            move |c| c.omp_home = h,
+            true,
+        )
+        .await;
+        rig.input("spawn readers, do not wait").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("completed_stale"));
+        rig.fake.end_turn(&id);
+        let events = rig
+            .until(|e| matches!(changed(e), Some((_, "ReadB", _))))
+            .await;
+        let (read_a, ..) = events
+            .iter()
+            .find_map(|e| changed(e).filter(|(_, n, _)| *n == "ReadA"))
+            .unwrap();
+        assert_eq!(usd_of(&rig, read_a).await, 0);
+
+        // The transcript through the `read` result; nothing more on the wire.
+        let lines = omp_fixture_lines("ReadA.jsonl");
+        let path = art.join("ReadA.jsonl");
+        std::fs::write(&path, format!("{}\n", lines[..9].join("\n"))).unwrap();
+        let events = rig
+            .until(
+                |e| matches!(e, AgentEvent::ToolCallFinished { session, .. } if *session == read_a),
+            )
+            .await;
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::ToolCallStarted { session, name, .. } if *session == read_a && name == "read")),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(changed(e), Some((c, _, ObservedState::Running)) if c == read_a)),
+            "{events:?}"
+        );
+        assert_eq!(
+            usd_of(&rig, read_a).await,
+            114_902_500,
+            "the first turn's cost.total"
+        );
+
+        // 141 R3 T10: feed 1 is silent, so the tail's counts fill the detail.
+        let o = rig
+            .observed(ObservedSource::OmpTask, "ReadA")
+            .await
+            .observed
+            .unwrap();
+        assert_eq!(o.detail["toolCount"], 1, "{:?}", o.detail);
+        assert_eq!(o.detail["tokens"], 4 + 77 + 8881, "{:?}", o.detail);
+        assert_eq!(o.detail["contextTokens"], 8962, "{:?}", o.detail);
+
+        // omp finishes the job: the yield call lands, then the sidecar (the
+        // terminal transition), and only then the yield's result — 141 R3 T7:
+        // the late result still finishes the stored call.
+        std::fs::write(&path, format!("{}\n", lines[..11].join("\n"))).unwrap();
+        rig.until(|e| matches!(e, AgentEvent::ToolCallStarted { session, call_id, .. } if *session == read_a && call_id == "toolu_01CcxeBFS3rftpne67JPvF8V"))
+            .await;
+        std::fs::write(art.join("ReadA.md"), "alpha line one\n").unwrap();
+        rig.until(|e| matches!(changed(e), Some((c, _, ObservedState::Completed)) if c == read_a))
+            .await;
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::ToolCallFinished { session, call_id, .. } if *session == read_a && call_id == "toolu_01CcxeBFS3rftpne67JPvF8V"))
+            .await;
+        assert!(
+            !events.iter().any(|e| matches!(changed(e), Some((c, _, s)) if c == read_a && s != ObservedState::Completed)),
+            "completed stays completed: {events:?}"
+        );
+        assert_eq!(
+            rig.store.observed_cursor(read_a).await.unwrap(),
+            Some(std::fs::metadata(&path).unwrap().len()),
+            "the tail reached EOF after completion"
+        );
+        assert_eq!(
+            usd_of(&rig, read_a).await,
+            121_280_250,
+            "both turns' cost.total, high-water"
+        );
+        let rows = child_rows(&rig, read_a).await;
+        assert!(
+            rows.iter().any(|(_, _, calls)| calls == &["yield"]),
+            "{rows:?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|(r, t, calls)| *r == ChatRole::Assistant && t.is_empty() && calls.is_empty()),
+            "no empty assistant rows: {rows:?}"
+        );
+        let yield_result: Vec<String> = rig
+            .store
+            .messages(read_a)
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|(_, m)| m.content.tool_responses())
+            .filter(|r| r.call_id == "toolu_01CcxeBFS3rftpne67JPvF8V")
+            .map(|r| r.content.clone())
+            .collect();
+        assert_eq!(
+            yield_result,
+            ["Result submitted."],
+            "the late result replaced the placeholder"
+        );
+        let o = rig
+            .observed(ObservedSource::OmpTask, "ReadA")
+            .await
+            .observed
+            .unwrap();
+        assert_eq!(o.detail["toolCount"], 2, "{:?}", o.detail);
+    }
+
+    /// 141 R1 T5: the engine restarts while an omp child is mid-tool; omp
+    /// died with the old engine, aborted the job (`toolResult "Command
+    /// aborted"`, assistant `stopReason: aborted`) and left a zero-byte
+    /// `.md`. The resumed harness actor first marks the stored row `unknown`
+    /// (lost contact), then the tail settles it `cancelled` — never
+    /// `completed`.
+    #[tokio::test]
+    async fn aborted_omp_child_is_cancelled_not_completed_after_a_restart() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let (home, art) = omp_home();
+        let h = home.0.clone();
+        let mut rig = Rig::build(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("oh-my-pi", "18.3.1")),
+            move |c| c.omp_home = h,
+            true,
+        )
+        .await;
+        rig.warm().await;
+        // A row the previous engine life wrote: running when it died.
+        let mut up =
+            crate::store::ObservedUpsert::new(rig.session, ObservedSource::OmpTask, "SlowA");
+        up.name = Some("SlowA");
+        up.state = Some(ObservedState::Running);
+        let (slow_a, _) = rig.store.upsert_observed(up).await.unwrap();
+        // …and the transcript it had tailed so far: the `bash` call, stored
+        // without its result (141 R3 T7 case B); the cursor sits after the
+        // `tool_execution_start` entry.
+        rig.store
+            .append(
+                slow_a,
+                &ChatMessage::from(vec![genai::chat::ToolCall {
+                    call_id: "toolu_01TywjeFAqDnYMUonKBZbjxT".into(),
+                    fn_name: "bash".into(),
+                    fn_arguments: json!({"command": "sleep 50"}),
+                    thought_signatures: None,
+                }]),
+            )
+            .await
+            .unwrap();
+        let lines = omp_fixture_lines("SlowA.aborted.jsonl");
+        std::fs::write(art.join("SlowA.jsonl"), format!("{}\n", lines.join("\n"))).unwrap();
+        let tailed: u64 = lines[..5].iter().map(|l| l.len() as u64 + 1).sum();
+        rig.store.set_observed_cursor(slow_a, tailed).await.unwrap();
+        std::fs::write(art.join("SlowA.md"), "").unwrap();
+        rig.actor.tell(Shutdown).await.unwrap();
+        rig.actor.wait_for_shutdown().await;
+
+        // Boot resumes the harness: a new actor on the same row.
+        let (mut fake, dialer) = Fake::new();
+        let mut child = AcpChild::new(
+            rig.session,
+            "omp".into(),
+            Transport::Dial(dialer),
+            rig.rt.data_dir.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Duration::from_secs(60),
+            rig.store.clone(),
+            rig.rt.clone(),
+            Default::default(),
+            Vec::new(),
+        );
+        child.remote = false;
+        child.omp_home = home.0.clone();
+        let actor = AcpChild::spawn(child);
+        fake.handshake(Vec::new(), Some(Implementation::new("oh-my-pi", "18.3.1")))
+            .await;
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnFinished { session, stop_reason, .. } if *session == slow_a && stop_reason == "cancelled"))
+            .await;
+        let states: Vec<ObservedState> = events
+            .iter()
+            .filter_map(|e| changed(e).filter(|(c, ..)| *c == slow_a).map(|(_, _, s)| s))
+            .collect();
+        assert_eq!(states.first(), Some(&ObservedState::Unknown), "{states:?}");
+        assert_eq!(states.last(), Some(&ObservedState::Cancelled), "{states:?}");
+        assert!(!states.contains(&ObservedState::Completed), "{states:?}");
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::ToolCallFinished { session, output, is_error: true, .. } if *session == slow_a && output.contains("Command aborted"))),
+            "{events:?}"
+        );
+        let row = rig.observed(ObservedSource::OmpTask, "SlowA").await;
+        let o = row.observed.unwrap();
+        assert_eq!(o.state, ObservedState::Cancelled);
+        assert_eq!(o.stop.as_deref(), Some("aborted"));
+        // 141 R3 T7: the drained `Command aborted` finished the stored call.
+        let results: Vec<String> = rig
+            .store
+            .messages(slow_a)
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|(_, m)| m.content.tool_responses())
+            .filter(|r| r.call_id == "toolu_01TywjeFAqDnYMUonKBZbjxT")
+            .map(|r| r.content.clone())
+            .collect();
+        assert_eq!(results, ["ERROR: Command aborted"]);
+        assert_eq!(
+            rig.store.observed_cursor(slow_a).await.unwrap(),
+            Some(std::fs::metadata(art.join("SlowA.jsonl")).unwrap().len())
+        );
+        actor.tell(Shutdown).await.unwrap();
     }
 }

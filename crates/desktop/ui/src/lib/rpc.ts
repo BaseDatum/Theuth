@@ -181,6 +181,7 @@ export function useInvalidateOn(): void {
         search()
       }),
       on('SubagentSpawned', sessions),
+      on('ObservedChildChanged', sessions),
       on('TitleChanged', () => {
         sessions()
         search()
