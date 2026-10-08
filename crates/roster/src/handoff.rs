@@ -174,6 +174,11 @@ impl Tool for DesktopHandoffTool {
     const RETURNS: &'static str = "dict";
     type Args = HandoffArgs;
 
+    /// A human wait (145 §0.4).
+    fn promotable(&self) -> bool {
+        false
+    }
+
     fn description(&self) -> String {
         "Hand the desktop to the user: passwords, passkeys, MFA, CAPTCHAs, payments, identity \
          checks — anything a person must do at the screen. Say in `reason` what you need; the \

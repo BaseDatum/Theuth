@@ -5892,7 +5892,13 @@ impl Turn {
         let cancel = self.cancel.clone();
         let mut cancelled = false;
         let outs = tokio::select! {
-            _ = cancel.cancelled() => { cancelled = true; Vec::new() }
+            _ = cancel.cancelled() => {
+                cancelled = true;
+                // 145 §0.5: the bodies hear it before the synthetic results
+                // below are written; the registry keeps running them (47 §4.2).
+                let _ = registry.tell(tools::CancelCalls { session }).await;
+                Vec::new()
+            }
             outs = join_all(remote.iter().map(|&i| {
                 let c = &calls[i];
                 crash_point(&crash::call_point(i, crash::CALL_BEFORE_STARTED));
@@ -5942,7 +5948,11 @@ impl Turn {
                 // The cell counts itself ([`CellPermit`]): running while the
                 // interpreter executes, not while it awaits its tool calls.
                 let mut out = tokio::select! {
-                    _ = cancel.cancelled() => { cancelled = true; continue }
+                    _ = cancel.cancelled() => {
+                        cancelled = true;
+                        let _ = registry.tell(tools::CancelCalls { session }).await;
+                        continue;
+                    }
                     out = self.python(registry, turn, call) => out,
                 };
                 if let Some(name) = &bridged[i] {
