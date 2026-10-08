@@ -58,7 +58,18 @@ Worker 140-F3, 2026-10-08, branch `feat/140-f3` from 78411fb3 (worktree `~/Devel
 
 ## Gates (`BUILD_LABEL=140-F3 build-lock`, stable rustc 1.96.1, `CARGO_BUILD_JOBS=4`, warm target)
 
-GATES_TABLE
+| gate | result |
+|---|---|
+| `cargo test -p autoresearch` | **117 passed, 0 failed** (106 at 78411fb3 + 11 new: config 2, brief 4, novelty 1, tools 2, app-side 1 replaced; see the table) |
+| `cargo test -p app` | **46 unit + 1 integration passed, 0 failed** (`source_wires_presses_through_the_token` replaces `source_wires_presses_and_approval_maps_them`) |
+| `cargo clippy -p autoresearch --all-targets -- -D warnings` | clean |
+| `cargo fmt -p autoresearch -- --check` | clean; `study_draft.rs` rustfmt-clean; the `tui`/`rpc` files I touched keep their pre-existing fmt diffs (not mine), my lines are rustfmt-shaped |
+| `cargo check -p tui -p rpc -p theuth` | Finished, 0 warnings, built from this tree (`Checking rpc/tui/theuth … theuth-140-f3`) |
+| `bun run check` (tsc -b, whole UI) | 0 errors |
+| `bunx vitest run src/components/autoresearch src/components/settings src/components/chat/slash.test.ts src/lib/nav.test.ts src/rpc/api.test.ts` | **12 files, 66 tests passed** |
+
+Shared-target note (for the closer): `./target` is shared with the sibling fixers and cargo's unit hash for workspace path packages omits the source path, so a sibling's `autoresearch` test binary ran as "fresh" from this tree the first time (4 failures from tests that exist only in their trees). Every number above was taken after `touch`ing my crate's sources so the binary was built from this worktree (`Compiling autoresearch … theuth-140-f3` in the log). The same applies to any crate-level gate the closer runs on the merged tree.
+
 
 ## Deviations
 

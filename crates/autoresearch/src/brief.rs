@@ -1003,8 +1003,14 @@ mod tests {
             .skip(1)
             .take_while(|l| !l.is_empty())
             .collect();
+        // Still a recent experiment, but no dead-end line.
         assert_eq!(section.len(), 1, "{section:?}");
-        assert!(!b.text.contains("perfectly fine retryable"), "{}", b.text);
+        assert!(
+            !section
+                .iter()
+                .any(|l| l.contains("perfectly fine retryable")),
+            "{section:?}"
+        );
     }
 
     /// R-3: a holdout sample on the incumbent's tree is neither counted in n_i
@@ -1030,8 +1036,8 @@ mod tests {
         let b = render(&store, &study, &BriefConfig::default(), &cx(3))
             .await
             .unwrap();
-        // n_i = 3 baseline samples: 3.5 · 0.42 · √(1 + 1/3) = 1.7 (1.64 with the holdout counted).
-        assert!(b.text.contains("A keep needs about 1.7 ms"), "{}", b.text);
+        // n_i = 3 baseline samples: 3.5 · 0.42 · √(1 + 1/3) = 1.697 (1.644 with the holdout counted).
+        assert!(b.text.contains("A keep needs about 1.697 ms"), "{}", b.text);
         assert!(
             b.text
                 .contains("Cases that moved most last time: fixture_a +10 %"),
@@ -1065,9 +1071,12 @@ mod tests {
             full.text
         );
         assert!(!full.text.contains('·'));
-        let t = trim(&full.text, full.text.len() - 1);
-        assert!(t.contains("hot path: parser.rb\n\nCategory balance"), "{t}");
-        assert!(!t.contains("last line"), "{t}");
+        // Trimming the playbook section drops its last line, not the blank line's first half.
+        let text = "head\n\nPlaybook (yours; update with experiment_notes):\nbuild: rake compile\n\nhot path: parser.rb\nlast line\n\nCategory balance: none.\nMode: exploit.\n\nProtocol:\n1.\n";
+        assert_eq!(
+            trim(text, text.len() - 1),
+            "head\n\nPlaybook (yours; update with experiment_notes):\nbuild: rake compile\n\nhot path: parser.rb\n\nCategory balance: none.\nMode: exploit.\n\nProtocol:\n1.\n"
+        );
     }
 
     /// Explore mode and incidents render; an empty study renders the empty markers.
