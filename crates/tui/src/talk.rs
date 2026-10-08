@@ -355,12 +355,13 @@ mod tests {
     }
 
     #[test]
-    fn six_states_three_looks() {
+    fn seven_states_three_looks() {
         for (state, want) in [
             (State::Idle, Look::Idle),
             (State::Listening, Look::Idle),
             (State::Interrupted, Look::Idle),
             (State::Thinking, Look::Thinking),
+            (State::Working, Look::Thinking),
             (State::Speaking, Look::Speaking),
             (State::Holding, Look::Speaking),
         ] {

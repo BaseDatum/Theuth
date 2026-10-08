@@ -818,8 +818,17 @@ impl Talk {
     /// 145 §0.3–0.4: tell the agent the talk's spoken window (`Some(open)`)
     /// or that the talk ended (`None`).
     async fn set_talk(&self, session: SessionId, open: Option<bool>) {
-        // Wired to `agent::SetTalk` once the AGENT worker's PIN is merged.
-        tracing::debug!(%session, ?open, "talk: window");
+        let live = open.map(|open| agent::TalkLive {
+            open,
+            promote_after_ms: (self.cfg.promote_after_ms > 0).then_some(self.cfg.promote_after_ms),
+        });
+        let Some(a) = agents() else {
+            tracing::warn!("talk: set_talk skipped: agent is not running");
+            return;
+        };
+        if let Err(e) = a.ask(agent::SetTalk { session, live }).await {
+            tracing::warn!("talk: set_talk failed: {e}");
+        }
     }
 }
 
