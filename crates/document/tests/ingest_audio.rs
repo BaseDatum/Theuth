@@ -34,7 +34,17 @@ fn the_three_second_wav_decodes_to_three_seconds_and_transcribes_with_word_times
     let t = Instant::now();
     let piece = engine.transcribe(&pcm, true).unwrap();
     let inferred = t.elapsed();
-    let md = document::ingest::timed_blocks(piece.words.iter().map(|w| (w.t0_ms, w.text.clone())), 60_000);
-    eprintln!("TDT load {loaded:?}, 3 s wav with word times {inferred:?}: {} words → {md:?}", piece.words.len());
-    assert!(piece.words.iter().all(|w| w.t1_ms <= 3_500), "{:?}", piece.words);
+    let md = document::ingest::timed_blocks(
+        piece.words.iter().map(|w| (w.t0_ms, w.text.clone())),
+        60_000,
+    );
+    eprintln!(
+        "TDT load {loaded:?}, 3 s wav with word times {inferred:?}: {} words → {md:?}",
+        piece.words.len()
+    );
+    assert!(
+        piece.words.iter().all(|w| w.t1_ms <= 3_500),
+        "{:?}",
+        piece.words
+    );
 }
