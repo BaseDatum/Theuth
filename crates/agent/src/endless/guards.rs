@@ -37,11 +37,7 @@ impl Trip {
 /// The RULER: `node_bytes` bytes of the repeating group (§5.3).
 pub fn ruler(node_bytes: u32) -> String {
     const GROUP: &str = "|0123456789abcdef";
-    GROUP
-        .chars()
-        .cycle()
-        .take(node_bytes as usize)
-        .collect()
+    GROUP.chars().cycle().take(node_bytes as usize).collect()
 }
 
 /// Phrases of the prompt and the step whose 6-grams a line may not borrow
@@ -97,35 +93,247 @@ const STATUS: &[(&str, &str)] = &[
 
 /// 200 common words that never count as rare tokens (G2).
 const STOP: &[&str] = &[
-    "the", "and", "for", "that", "with", "this", "from", "have", "not", "are", "was", "were", "been",
-    "being", "has", "had", "but", "all", "any", "can", "could", "would", "should", "will", "shall",
-    "may", "might", "must", "its", "it's", "into", "onto", "over", "under", "than", "then", "them",
-    "they", "their", "there", "these", "those", "what", "when", "where", "which", "while", "who",
-    "whom", "whose", "why", "how", "also", "about", "after", "again", "against", "because", "before",
-    "between", "both", "does", "doing", "down", "during", "each", "few", "further", "here", "more",
-    "most", "much", "once", "only", "other", "ours", "out", "own", "same", "some", "such", "through",
-    "too", "very", "your", "yours", "you", "yourself", "ourselves", "himself", "herself", "itself",
-    "themselves", "him", "his", "her", "hers", "she", "our", "mine", "myself", "just", "now", "still",
-    "yet", "ever", "never", "always", "often", "sometimes", "already", "another", "every", "either",
-    "neither", "nor", "off", "per", "via", "upon", "within", "without", "above", "below", "around",
-    "among", "along", "across", "behind", "beyond", "toward", "towards", "until", "unless", "since",
-    "like", "unlike", "even", "else", "whether", "though", "although", "however", "therefore", "thus",
-    "hence", "instead", "rather", "quite", "almost", "enough", "well", "back", "away", "many", "several",
-    "various", "whole", "part", "thing", "things", "something", "anything", "nothing", "everything",
-    "someone", "anyone", "nobody", "everyone", "one", "two", "three", "first", "second", "last", "next",
-    "new", "old", "good", "bad", "big", "small", "long", "short", "high", "low", "right", "left", "same",
-    "different", "user", "talk", "tool", "echo", "work", "note", "said", "says", "say", "asked", "asks",
-    "told", "want", "wants", "need", "needs", "make", "made", "get", "got", "use", "used", "using", "run",
-    "ran", "runs", "set", "see", "let", "put", "take", "took", "give", "gave", "come", "came", "went",
+    "the",
+    "and",
+    "for",
+    "that",
+    "with",
+    "this",
+    "from",
+    "have",
+    "not",
+    "are",
+    "was",
+    "were",
+    "been",
+    "being",
+    "has",
+    "had",
+    "but",
+    "all",
+    "any",
+    "can",
+    "could",
+    "would",
+    "should",
+    "will",
+    "shall",
+    "may",
+    "might",
+    "must",
+    "its",
+    "it's",
+    "into",
+    "onto",
+    "over",
+    "under",
+    "than",
+    "then",
+    "them",
+    "they",
+    "their",
+    "there",
+    "these",
+    "those",
+    "what",
+    "when",
+    "where",
+    "which",
+    "while",
+    "who",
+    "whom",
+    "whose",
+    "why",
+    "how",
+    "also",
+    "about",
+    "after",
+    "again",
+    "against",
+    "because",
+    "before",
+    "between",
+    "both",
+    "does",
+    "doing",
+    "down",
+    "during",
+    "each",
+    "few",
+    "further",
+    "here",
+    "more",
+    "most",
+    "much",
+    "once",
+    "only",
+    "other",
+    "ours",
+    "out",
+    "own",
+    "same",
+    "some",
+    "such",
+    "through",
+    "too",
+    "very",
+    "your",
+    "yours",
+    "you",
+    "yourself",
+    "ourselves",
+    "himself",
+    "herself",
+    "itself",
+    "themselves",
+    "him",
+    "his",
+    "her",
+    "hers",
+    "she",
+    "our",
+    "mine",
+    "myself",
+    "just",
+    "now",
+    "still",
+    "yet",
+    "ever",
+    "never",
+    "always",
+    "often",
+    "sometimes",
+    "already",
+    "another",
+    "every",
+    "either",
+    "neither",
+    "nor",
+    "off",
+    "per",
+    "via",
+    "upon",
+    "within",
+    "without",
+    "above",
+    "below",
+    "around",
+    "among",
+    "along",
+    "across",
+    "behind",
+    "beyond",
+    "toward",
+    "towards",
+    "until",
+    "unless",
+    "since",
+    "like",
+    "unlike",
+    "even",
+    "else",
+    "whether",
+    "though",
+    "although",
+    "however",
+    "therefore",
+    "thus",
+    "hence",
+    "instead",
+    "rather",
+    "quite",
+    "almost",
+    "enough",
+    "well",
+    "back",
+    "away",
+    "many",
+    "several",
+    "various",
+    "whole",
+    "part",
+    "thing",
+    "things",
+    "something",
+    "anything",
+    "nothing",
+    "everything",
+    "someone",
+    "anyone",
+    "nobody",
+    "everyone",
+    "one",
+    "two",
+    "three",
+    "first",
+    "second",
+    "last",
+    "next",
+    "new",
+    "old",
+    "good",
+    "bad",
+    "big",
+    "small",
+    "long",
+    "short",
+    "high",
+    "low",
+    "right",
+    "left",
+    "same",
+    "different",
+    "user",
+    "talk",
+    "tool",
+    "echo",
+    "work",
+    "note",
+    "said",
+    "says",
+    "say",
+    "asked",
+    "asks",
+    "told",
+    "want",
+    "wants",
+    "need",
+    "needs",
+    "make",
+    "made",
+    "get",
+    "got",
+    "use",
+    "used",
+    "using",
+    "run",
+    "ran",
+    "runs",
+    "set",
+    "see",
+    "let",
+    "put",
+    "take",
+    "took",
+    "give",
+    "gave",
+    "come",
+    "came",
+    "went",
 ];
 
 /// Case-folded alphanumeric tokens (punctuation stripped).
 pub fn tokens(s: &str) -> Vec<String> {
-    s.split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '_' && c != '/' && c != '.' && c != '-')
-        .filter(|w| !w.is_empty())
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
-        .filter(|w| !w.is_empty())
-        .collect()
+    s.split(|c: char| {
+        !c.is_alphanumeric() && c != '\'' && c != '_' && c != '/' && c != '.' && c != '-'
+    })
+    .filter(|w| !w.is_empty())
+    .map(|w| {
+        w.trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase()
+    })
+    .filter(|w| !w.is_empty())
+    .collect()
 }
 
 fn ngrams(toks: &[String], n: usize) -> HashSet<Vec<String>> {
@@ -291,16 +499,31 @@ mod tests {
         // G5 empty
         assert_eq!(chk("   \n ", input), Err(Trip::Empty));
         // G4 format
-        assert_eq!(chk("<chat> user: rename the config loader", input), Err(Trip::Format));
-        assert_eq!(chk("Output only the line. user: rename the config loader", input), Err(Trip::Format));
         assert_eq!(
-            chk("12+4|user: rename the config loader to load_settings, keep old alias", input),
+            chk("<chat> user: rename the config loader", input),
+            Err(Trip::Format)
+        );
+        assert_eq!(
+            chk(
+                "Output only the line. user: rename the config loader",
+                input
+            ),
+            Err(Trip::Format)
+        );
+        assert_eq!(
+            chk(
+                "12+4|user: rename the config loader to load_settings, keep old alias",
+                input
+            ),
             Ok("user: rename the config loader to load_settings, keep old alias".to_owned()),
             "the id prefix is stripped, not refused"
         );
         // G1 copy
         assert_eq!(
-            chk("user: rename config loader |0123456789abcdef|0123456789abcdef", input),
+            chk(
+                "user: rename config loader |0123456789abcdef|0123456789abcdef",
+                input
+            ),
             Err(Trip::Copy)
         );
         assert_eq!(
@@ -311,16 +534,43 @@ mod tests {
             Err(Trip::Copy)
         );
         // G2 grounding
-        assert_eq!(chk("user: deploy the website to production tonight", input), Err(Trip::Grounding));
-        assert!(chk("user: rename config loader → load_settings; keep old alias one release", input).is_ok());
+        assert_eq!(
+            chk("user: deploy the website to production tonight", input),
+            Err(Trip::Grounding)
+        );
+        assert!(
+            chk(
+                "user: rename config loader → load_settings; keep old alias one release",
+                input
+            )
+            .is_ok()
+        );
         // G3 status
-        assert_eq!(chk("user: rename the config loader to load_settings — done", input), Err(Trip::Status));
-        assert!(chk("user: rename the config loader to load_settings — done", "user: renamed the config loader, done").is_ok());
+        assert_eq!(
+            chk(
+                "user: rename the config loader to load_settings — done",
+                input
+            ),
+            Err(Trip::Status)
+        );
+        assert!(
+            chk(
+                "user: rename the config loader to load_settings — done",
+                "user: renamed the config loader, done"
+            )
+            .is_ok()
+        );
         // size
-        let long = format!("user: rename the config loader to load_settings {}", "x".repeat(600));
+        let long = format!(
+            "user: rename the config loader to load_settings {}",
+            "x".repeat(600)
+        );
         assert_eq!(chk(&long, input), Err(Trip::Size));
         assert!(correction(Trip::Size, &long, input, NB).contains("| ← LIMIT"));
-        assert!(correction(Trip::Status, "user: rename — done, merged", input, NB).contains("done, merged"));
+        assert!(
+            correction(Trip::Status, "user: rename — done, merged", input, NB)
+                .contains("done, merged")
+        );
     }
 
     /// The SCALE regression (§1 item 3): the contaminated gist example as the

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use genai::chat::{
     CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ReasoningEffort,
     StreamEnd, Usage,
@@ -38,15 +39,20 @@ pub const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(120);
 pub enum Step {
     /// `node(0, i)`: compress one unit.
     Unit {
+        /// The unit's kind.
         kind: Kind,
+        /// The unit's text (newlines kept).
         text: String,
         /// Lines already written for earlier units of this stretch (text only).
         earlier: Vec<String>,
     },
     /// `node(l, i)`: merge two child lines.
     Merge {
+        /// Left child line.
         a: String,
+        /// Right child line.
         b: String,
+        /// Lines already written for earlier units of this stretch (text only).
         earlier: Vec<String>,
     },
 }
@@ -96,8 +102,11 @@ impl Step {
 /// One model reply.
 #[derive(Clone, Debug, Default)]
 pub struct Reply {
+    /// The unit's text (newlines kept).
     pub text: String,
+    /// Provider usage, when reported.
     pub usage: Option<Usage>,
+    /// Wall-clock time of the attempt.
     pub latency: Duration,
 }
 
@@ -105,42 +114,81 @@ pub struct Reply {
 /// the next assistant text. `convo` alternates user/assistant after the two
 /// opening user blocks (`ctx`, `step`).
 pub trait Compactor: Send + Sync {
-    fn compress(
-        &self,
-        ctx: &str,
-        convo: &[ChatMessage],
-    ) -> impl Future<Output = Result<Reply, String>> + Send;
+    /// The next assistant text for `convo` under the frozen `ctx`.
+    fn compress<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>>;
+    /// The model (id for `endless_nodes.model`, rates for the USD estimate, provider for the ledger).
+    fn model(&self) -> &Resolved;
     /// Model id for `endless_nodes.model`.
-    fn model_id(&self) -> &str;
+    fn model_id(&self) -> &str {
+        &self.model().id
+    }
     /// The catalog rates for the USD estimate, if known.
-    fn rates(&self) -> Option<models::Cost>;
+    fn rates(&self) -> Option<models::Cost> {
+        self.model().model.as_ref().and_then(|m| m.cost)
+    }
 }
 
 /// One attempt's ledger row (`endless_calls`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CallRow {
+    /// 0-based attempt number.
     pub try_no: u32,
+    /// Reply bytes before any cut.
     pub bytes: Option<u32>,
+    /// The guard that refused it; `None` = accepted.
     pub guard: Option<&'static str>,
-    pub usage_json: Option<String>,
+    /// Provider usage, when reported.
+    pub usage: Option<Usage>,
+    /// Catalog-rate estimate in USD.
     pub usd_estimate: Option<f64>,
+    /// Wall-clock milliseconds.
     pub latency_ms: u64,
 }
 
 /// The result of [`build`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Built {
+    /// The unit's text (newlines kept).
     pub text: String,
     /// Attempts used; negative when no candidate passed (§6).
     pub tries: i32,
+    /// Every attempt, in order.
     pub calls: Vec<CallRow>,
+}
+
+impl Built {
+    /// The attempts' usage summed into one (for the node's `model_calls` row);
+    /// `None` when no attempt reported usage.
+    pub fn usage(&self) -> Option<Usage> {
+        let mut out: Option<Usage> = None;
+        for u in self.calls.iter().filter_map(|c| c.usage.as_ref()) {
+            let o = out.get_or_insert_with(Usage::default);
+            let add = |a: &mut Option<i32>, b: Option<i32>| {
+                if let Some(b) = b {
+                    *a = Some(a.unwrap_or(0).saturating_add(b));
+                }
+            };
+            add(&mut o.prompt_tokens, u.prompt_tokens);
+            add(&mut o.completion_tokens, u.completion_tokens);
+            if let Some(d) = &u.prompt_tokens_details {
+                let od = o.prompt_tokens_details.get_or_insert_with(Default::default);
+                add(&mut od.cached_tokens, d.cached_tokens);
+                add(&mut od.cache_creation_tokens, d.cache_creation_tokens);
+            }
+        }
+        out
+    }
 }
 
 /// Run the retry loop for one node: up to `tries` attempts, each guard or
 /// size failure answered in the same conversation; keep the shortest passing
 /// candidate, else the shortest of all.
 pub async fn build(
-    c: &impl Compactor,
+    c: &dyn Compactor,
     ctx: &str,
     step: &Step,
     node_bytes: u32,
@@ -166,7 +214,7 @@ pub async fn build(
             try_no,
             bytes: Some(raw.len() as u32),
             guard: check.as_ref().err().map(|t| t.as_str()),
-            usage_json: reply.usage.as_ref().and_then(|u| serde_json::to_string(u).ok()),
+            usage: reply.usage.clone(),
             usd_estimate: usd,
             latency_ms: reply.latency.as_millis() as u64,
         });
@@ -183,8 +231,9 @@ pub async fn build(
             }
             Err(trip) => {
                 convo.push(ChatMessage::assistant(raw.clone()));
-                convo.push(ChatMessage::user(guards::correction(trip, &raw, &input, node_bytes)));
-                let _ = trip;
+                convo.push(ChatMessage::user(guards::correction(
+                    trip, &raw, &input, node_bytes,
+                )));
             }
         }
     }
@@ -262,9 +311,12 @@ pub fn observation(u: Option<&Usage>, model: &Resolved) -> CostObservation {
 /// request shape, cache marks via genai's [`CacheControl`] (07 §3).
 #[derive(Clone)]
 pub struct ModelCompactor {
+    /// The session (cache key, ledger owner).
     pub session: SessionId,
+    /// The compactor model (D8).
     pub model: Resolved,
     pub(crate) backend: Backend,
+    /// The COMPACT prompt with `{agent}` substituted.
     pub system: String,
     /// The session's effort when the compactor is the session model (D8).
     pub effort: Option<ReasoningEffort>,
@@ -285,10 +337,17 @@ impl ModelCompactor {
     }
 
     /// `[system][user ctx (marked)][user step][assistant][user correction]…`.
-    pub fn request(&self, t: Transport, ctx: &str, convo: &[ChatMessage]) -> (ChatRequest, ChatOptions) {
+    pub fn request(
+        &self,
+        t: Transport,
+        ctx: &str,
+        convo: &[ChatMessage],
+    ) -> (ChatRequest, ChatOptions) {
         let mut messages = Vec::with_capacity(convo.len() + 2);
         if t == Transport::Anthropic {
-            messages.push(ChatMessage::system(self.system.clone()).with_options(CacheControl::Ephemeral1h));
+            messages.push(
+                ChatMessage::system(self.system.clone()).with_options(CacheControl::Ephemeral1h),
+            );
             messages.push(ChatMessage::user(ctx.to_owned()).with_options(CacheControl::Ephemeral));
         } else {
             messages.push(ChatMessage::user(ctx.to_owned()));
@@ -316,7 +375,21 @@ impl ModelCompactor {
 }
 
 impl Compactor for ModelCompactor {
-    async fn compress(&self, ctx: &str, convo: &[ChatMessage]) -> Result<Reply, String> {
+    fn compress<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(self.compress_inner(ctx, convo))
+    }
+
+    fn model(&self) -> &Resolved {
+        &self.model
+    }
+}
+
+impl ModelCompactor {
+    async fn compress_inner(&self, ctx: &str, convo: &[ChatMessage]) -> Result<Reply, String> {
         let transport = self.backend.transport(&self.model).await?;
         let (req, opts) = self.request(transport, ctx, convo);
         let started = Instant::now();
@@ -336,21 +409,10 @@ impl Compactor for ModelCompactor {
             .await
             .map_err(|_| "timed out".to_owned())??;
         Ok(Reply {
-            text: end
-                .captured_texts()
-                .map(|t| t.concat())
-                .unwrap_or_default(),
+            text: end.captured_texts().map(|t| t.concat()).unwrap_or_default(),
             usage: end.captured_usage,
             latency: started.elapsed(),
         })
-    }
-
-    fn model_id(&self) -> &str {
-        &self.model.id
-    }
-
-    fn rates(&self) -> Option<models::Cost> {
-        self.model.model.as_ref().and_then(|m| m.cost)
     }
 }
 
@@ -368,6 +430,7 @@ mod tests {
     struct Fake {
         replies: Mutex<Vec<String>>,
         sent: Mutex<Vec<Vec<ChatMessage>>>,
+        model: Resolved,
     }
 
     impl Fake {
@@ -375,25 +438,33 @@ mod tests {
             Self {
                 replies: Mutex::new(replies.iter().rev().map(|s| (*s).to_owned()).collect()),
                 sent: Mutex::new(Vec::new()),
+                model: super::super::pump::resolved_for_tests("fake"),
             }
         }
     }
 
     impl Compactor for Fake {
-        async fn compress(&self, _ctx: &str, convo: &[ChatMessage]) -> Result<Reply, String> {
+        fn compress<'a>(
+            &'a self,
+            _ctx: &'a str,
+            convo: &'a [ChatMessage],
+        ) -> BoxFuture<'a, Result<Reply, String>> {
             self.sent.lock().push(convo.to_vec());
-            let text = self.replies.lock().pop().ok_or("script exhausted")?;
-            Ok(Reply {
-                text,
-                usage: None,
-                latency: Duration::from_millis(1),
+            let text = self
+                .replies
+                .lock()
+                .pop()
+                .ok_or_else(|| "script exhausted".to_owned());
+            Box::pin(async move {
+                Ok(Reply {
+                    text: text?,
+                    usage: None,
+                    latency: Duration::from_millis(1),
+                })
             })
         }
-        fn model_id(&self) -> &str {
-            "fake"
-        }
-        fn rates(&self) -> Option<models::Cost> {
-            None
+        fn model(&self) -> &Resolved {
+            &self.model
         }
     }
 
@@ -408,11 +479,22 @@ mod tests {
     /// §14: size enforcement — overshoot, then comply in the same conversation.
     #[tokio::test]
     async fn size_retry_in_same_conversation() {
-        let long = format!("user: rename the config loader to load_settings {}", "x".repeat(600));
-        let fake = Fake::new(&[&long, "user: rename the config loader to load_settings, keep old alias"]);
-        let built = build(&fake, "<chat>\n</chat>", &unit_step(), 512, 5).await.unwrap();
+        let long = format!(
+            "user: rename the config loader to load_settings {}",
+            "x".repeat(600)
+        );
+        let fake = Fake::new(&[
+            &long,
+            "user: rename the config loader to load_settings, keep old alias",
+        ]);
+        let built = build(&fake, "<chat>\n</chat>", &unit_step(), 512, 5)
+            .await
+            .unwrap();
         assert_eq!(built.tries, 2);
-        assert_eq!(built.text, "user: rename the config loader to load_settings, keep old alias");
+        assert_eq!(
+            built.text,
+            "user: rename the config loader to load_settings, keep old alias"
+        );
         assert_eq!(built.calls.len(), 2);
         assert_eq!(built.calls[0].guard, Some("size"));
         assert_eq!(built.calls[1].guard, None);
@@ -428,7 +510,10 @@ mod tests {
     /// Tries exhausted with no passing candidate: the shortest wins, flagged negative.
     #[tokio::test]
     async fn exhausted_tries_take_shortest_and_flag() {
-        let fake = Fake::new(&["user: deploy the website to production tonight", "user: deploy the website"]);
+        let fake = Fake::new(&[
+            "user: deploy the website to production tonight",
+            "user: deploy the website",
+        ]);
         let built = build(&fake, "", &unit_step(), 512, 2).await.unwrap();
         assert_eq!(built.tries, -2);
         assert_eq!(built.text, "user: deploy the website");
@@ -462,8 +547,8 @@ mod tests {
                     provider: None,
                     model: None,
                 },
-                &genai::Client::default(),
-                &crate::supervisor::Auth::default(),
+                &genai::Client::builder().build().unwrap(),
+                &crate::supervisor::Auth::stub(&std::env::temp_dir()),
             ),
             system: prompt("theuth"),
             effort: None,

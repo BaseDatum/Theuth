@@ -147,12 +147,13 @@ pub async fn set_session_memory(&self, id: SessionId, mode: MemoryMode) -> anyho
 pub async fn endless_sessions(&self) -> anyhow::Result<Vec<EndlessSessionRow>>;   // memory='endless': {id, model, effort, desk}
 pub(crate) async fn delete_endless_in(conn: &mut SqliteConnection, sid: &str) -> anyhow::Result<()>; // called from delete_session
 // units / nodes / calls — used by endless::* only; shapes in endless::tree
-pub async fn endless_units(&self, id) -> anyhow::Result<Vec<UnitRow>>;
+pub async fn endless_units(&self, id) -> anyhow::Result<Vec<UnitRow>>;                 // store::endless::UnitRow {i, seq, part, kind, size, turn}
 pub async fn endless_units_put(&self, id, rows: &[UnitRow]) -> anyhow::Result<()>;
-pub async fn endless_nodes(&self, id) -> anyhow::Result<Vec<NodeRow>>;
-pub async fn endless_node_put(&self, id, node: &NodeRow) -> anyhow::Result<()>;       // INSERT OR REPLACE; FTS triggers keep endless_lines_fts
-pub async fn endless_call_put(&self, id, call: &CallRow) -> anyhow::Result<()>;
+pub async fn endless_nodes(&self, id) -> anyhow::Result<Vec<endless::tree::Node>>;
+pub async fn endless_node_put(&self, id, node: &Node) -> anyhow::Result<()>;          // upsert (ON CONFLICT DO UPDATE → the FTS update trigger fires)
+pub async fn endless_calls_put(&self, id, l: u8, i: u64, calls: &[compactor::CallRow]) -> anyhow::Result<()>;
 pub async fn endless_stats(&self, id) -> anyhow::Result<EndlessStats>;
+pub async fn endless_fts_sync(&self) -> anyhow::Result<()>;                           // rebuild the FTS mirror if it drifted (replicas)
 pub async fn endless_recall(&self, id, query: &str, limit: u32) -> anyhow::Result<Vec<(u64, String)>>; // (i, text) by rank
 pub async fn endless_units_like(&self, id, needle: &str, limit: u32) -> anyhow::Result<Vec<u64>>;   // raw fallback: unit indexes whose message text contains needle
 pub async fn endless_messages_from(&self, id, seq: i64) -> anyhow::Result<Vec<EndlessMessage>>;     // {seq, message: ChatMessage, excluded_whole: bool, at: Option<DateTime<Utc>>}, cut_at respected
@@ -189,8 +190,8 @@ CREATE VIRTUAL TABLE endless_lines_fts USING fts5(text, session_id UNINDEXED, i 
 - `endless::tree`: `Node { l: u8, i: u64, text, size, free }`, `Tree` (a `BTreeMap<(u8,u64), Node>` + `t: u64`), `id_n(l,i) -> (id, n)`, `addr(id, n) -> Option<(l,i)>`, `free_merge(a, b, node_bytes) -> Option<String>`.
 - `endless::fold`: `Fold { parts: Vec<Part>, t: u64, cfg: FoldCfg { view_bytes, slack } }`, `Fold::rebuild(tree, t, cfg)` (the pure function of (tree, T)), `append(i)`, `fit(tree)`, `size(tree)`; `render(tree, fold, units_text: impl Fn(u64)->Option<String>) -> Vec<ViewBlock>` with D10 placeholders and the §7.2 marks; `render_lines(...) -> Vec<ViewLine>` for the panel.
 - `endless::guards`: `Trip { Copy, Grounding, Status, Format, Empty, Size }`, `check(line, input, ruler, phrases, node_bytes) -> Result<String /*cleaned*/, Trip>`, `correction(trip, line, node_bytes) -> String`, `ruler(node_bytes) -> String`, `PROMPT_PHRASES`.
-- `endless::compactor`: `COMPACT` prompt, `pub trait Compactor { async fn compress(&self, ctx: &str, step: &Step) -> Result<Reply, String>; }` (`Step::{Unit{kind,text,earlier:Vec<String>}, Merge{a,b,earlier}}`), `ModelCompactor` over `backend::Backend`, `build(compactor, ctx, step, cfg) -> Built { text, tries: i32, calls: Vec<CallRow> }` (size + guard retries, best-candidate rule).
-- `endless::pump`: per-session task; `resume`, rule-3 ordering, `jobs`, retry, progress throttle, backfill accounting.
+- `endless::compactor`: `COMPACT` prompt (`compact_prompt.txt`, `prompt(agent)`), `pub trait Compactor { fn compress<'a>(&'a self, ctx: &'a str, convo: &'a [ChatMessage]) -> BoxFuture<'a, Result<Reply, String>>; fn model(&self) -> &Resolved; }` (`Step::{Unit{kind,text,earlier}, Merge{a,b,earlier}}`, `Step::render(node_bytes)` = block 2), `ModelCompactor` over `backend::Backend` (`request(transport, ctx, convo)` places the marks), `build(&dyn Compactor, ctx, step, node_bytes, tries) -> Built { text, tries: i32, calls: Vec<CallRow> }` (size + guard retries, best-candidate rule), `estimate_usd` / `observation` (the `loop_::estimate` formula).
+- `endless::pump`: per-session task; `resume_all`, rule-3 frontier ordering, `jobs`, retry, progress throttle, backfill accounting, the §9 tools, `set_mode`, `off_head(epoch, view)`.
 
 ## 7. Decisions recorded here (design silent or adjusted)
 
@@ -198,4 +199,7 @@ CREATE VIRTUAL TABLE endless_lines_fts USING fts5(text, session_id UNINDEXED, i 
 2. Frozen contexts live in memory per session (last 8 turns); after a restart an unbuilt node uses the current view as `<chat>` (cache efficiency, not correctness).
 3. Private sessions: `attach(.., store: Some(private_store))`; the pump uses that store; nothing of theirs touches the durable store.
 4. Pricing: `endless_calls.usd_estimate` uses the catalog `models::Cost` formula of `loop_::estimate` (private; duplicated verbatim in `compactor.rs`); the same observation is also settled into `model_calls` as `CallKind::Endless` via `Store::reserve_call`/`settle_call`.
-5. `active()` flips when every level-0 node for units before the backfill mark is built (the tree "covers its history").
+5. `active()` flips when every level-0 node for units before the backfill mark is built (the tree "covers its history"). The mark is "units with `turn == 0`" — rows that committed outside an endless turn (history at `/endless on`, a desk's existing transcript); a fresh endless session or a restart mid-session never backfills.
+6. The live view is `Fold::rebuild(tree, T)` recomputed on change (cached), i.e. literally the pure function; the lab's incremental fold with a progressively built tree is not reproducible from rows, so purity wins over its last few points of prefix stability (measured on the fixture: identical part-prefix share 0.7+ turn to turn at 32 KB).
+7. The compactor's context block and step block are two consecutive `user` messages (genai marks are per message); Anthropic merges consecutive same-role turns. If a provider rejects that, W2/closer: fold them into one message with two `ContentPart::Text`s (loses the per-block mark).
+8. One `model_calls` row per node build (attempts' usage summed), `endless_calls` one row per attempt.

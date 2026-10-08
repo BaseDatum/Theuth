@@ -20,6 +20,8 @@ pub mod compactor;
 pub mod fold;
 pub mod guards;
 pub mod pump;
+#[cfg(test)]
+mod tests;
 pub mod tree;
 pub mod units;
 
@@ -142,14 +144,22 @@ pub struct ViewLine {
 }
 
 /// Guard trips by kind (§6).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct GuardTrips {
+    /// G1 trips.
     pub copy: u32,
+    /// G2 trips.
     pub grounding: u32,
+    /// G3 trips.
     pub status: u32,
+    /// G4 trips.
     pub format: u32,
+    /// G5 trips.
     pub empty: u32,
+    /// Size-limit retries.
     pub size: u32,
 }
 
@@ -157,27 +167,39 @@ pub struct GuardTrips {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct EndlessStats {
+    /// Compactor attempts recorded.
     pub calls: u32,
+    /// Retries by guard.
     pub guard_trips: GuardTrips,
+    /// Prompt tokens, cache buckets included.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub input_tokens: u64,
+    /// Prompt tokens read from cache.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub cache_read_tokens: u64,
+    /// Prompt tokens written to cache.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub cache_write_tokens: u64,
+    /// Completion tokens.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub output_tokens: u64,
+    /// Catalog-rate estimate in USD.
     pub usd_estimate: f64,
 }
 
 /// Backfill progress (D14).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Backfill {
+    /// History units with a level-0 line.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub done: u64,
+    /// History units to cover.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub total: u64,
+    /// Remaining × measured seconds per unit.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub eta_secs: u64,
 }
@@ -186,16 +208,22 @@ pub struct Backfill {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SessionMemory {
+    /// The session's mode.
     pub mode: MemoryMode,
     /// Empty for an epochs session.
     pub view: Vec<ViewLine>,
+    /// Some view part is still being built.
     pub settling: bool,
+    /// Parts rendered per D10 right now.
     pub unbuilt: u32,
+    /// Units so far (`T`).
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub units: u64,
+    /// Compactor totals.
     pub stats: EndlessStats,
     /// Compactor model id; `""` for an epochs session.
     pub model: String,
+    /// D14 progress while history is being covered.
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub backfill: Option<Backfill>,
 }
@@ -205,14 +233,19 @@ pub struct SessionMemory {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub struct EndlessProgress {
+    /// The session.
     pub session: SessionId,
+    /// Nodes built.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub built: u64,
+    /// History units to cover.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub total: u64,
+    /// Some view part is still being built.
     pub settling: bool,
     /// First failure of a node (reported once per node).
     pub error: Option<String>,
+    /// D14 progress while history is being covered.
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub backfill: Option<Backfill>,
 }
@@ -230,8 +263,11 @@ pub struct SetMode {
 /// What `attach` registers for a live session.
 #[derive(Clone)]
 pub struct Attached {
+    /// Compactor model id.
     pub model: models::Resolved,
+    /// The session's reasoning effort.
     pub effort: Option<genai::chat::ReasoningEffort>,
+    /// The agent name for the COMPACT prompt (`theuth` or the desk).
     pub agent: String,
     /// A private tree's own store; `None` = the engine's.
     pub store: Option<Store>,
@@ -246,6 +282,8 @@ pub(crate) struct Inner {
     pub(crate) cfg: EndlessConfig,
     /// Live sessions and their pumps.
     pub(crate) sessions: Mutex<HashMap<SessionId, pump::Handle>>,
+    /// Tests inject a scripted compactor here; `None` = the model (D8).
+    pub(crate) compactor_for_tests: Option<Arc<dyn compactor::Compactor>>,
 }
 
 /// The one handle for the endless mode (137-contract.md §4). Cheap to clone.
@@ -256,7 +294,8 @@ pub struct Endless {
 
 impl Endless {
     /// Construct once per engine, beside the other side-call slots (the
-    /// supervisor; `Auth` is crate-private).
+    /// supervisor; `Auth` is crate-private). W2 wires the call site.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(
         store: Store,
         rt: Runtime,
@@ -274,6 +313,7 @@ impl Endless {
                 catalog,
                 cfg,
                 sessions: Mutex::new(HashMap::new()),
+                compactor_for_tests: None,
             }),
         }
     }
@@ -346,11 +386,7 @@ impl Endless {
     }
 
     /// `date(id)` (§9): the unit's row time.
-    pub async fn date(
-        &self,
-        session: SessionId,
-        id: u64,
-    ) -> Result<Option<DateTime<Utc>>, String> {
+    pub async fn date(&self, session: SessionId, id: u64) -> Result<Option<DateTime<Utc>>, String> {
         pump::date(&self.inner, session, id).await
     }
 
@@ -391,7 +427,8 @@ impl Inner {
 }
 
 /// §9 VIEW_DOC, verbatim.
-pub const VIEW_DOC: &str = "The view: the whole session, oldest first, inside <chat> tags, as one-line
+pub const VIEW_DOC: &str =
+    "The view: the whole session, oldest first, inside <chat> tags, as one-line
 summaries. Each line is  id+n|text  — the n messages from id on, summarized
 (newlines shown as spaces). A summary tags each item with its kind: user,
 talk, tool, echo, work, note. A short message is its own line, word for word.
