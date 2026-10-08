@@ -123,19 +123,18 @@ mod tests {
         }
     }
 
+    type Row = (
+        &'static str,
+        DateTime<Utc>,
+        i32,
+        SignalsSnapshot,
+        Result<(), &'static str>,
+    );
+
     /// The table `sensor.py` mirrors: one row per rule, the reason text verbatim.
-    #[test]
-    fn rule_table() {
-        let cfg = DreamConfig::default(); // window 01:00–06:00, idle 20
+    fn rows() -> Vec<Row> {
         let s = quiet_night();
-        type Row = (
-            &'static str,
-            DateTime<Utc>,
-            i32,
-            SignalsSnapshot,
-            Result<(), &'static str>,
-        );
-        let rows: Vec<Row> = vec![
+        vec![
             (
                 "fires at 02:00 local, idle 60 min",
                 at(2, 0),
@@ -295,8 +294,14 @@ mod tests {
                 },
                 Ok(()),
             ),
-        ];
-        for (name, now, tz, snap, want) in rows {
+        ]
+    }
+
+    #[test]
+    fn rule_table() {
+        let cfg = DreamConfig::default(); // window 01:00–06:00, idle 20
+        let s = quiet_night();
+        for (name, now, tz, snap, want) in rows() {
             assert_eq!(gate(&cfg, &snap, now, tz, Some("me")), want, "{name}");
         }
         // No self engine given: the engine rule is skipped.
@@ -313,6 +318,60 @@ mod tests {
             ),
             Ok(())
         );
+    }
+
+    /// `sensor.py`'s `gate` over the same rows (python3 on PATH; skipped
+    /// otherwise): the two tables answer the same reason strings.
+    #[test]
+    fn python_sensor_answers_the_same_table() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sensor.py"), crate::SENSOR).unwrap();
+        let mut cases = Vec::new();
+        for (name, now, tz, snap, want) in rows() {
+            let mut snap = snap;
+            snap.tz_offset_minutes = tz;
+            cases.push(serde_json::json!({
+                "name": name,
+                "now": now.timestamp(),
+                "signals": snap,
+                "args": {"window": "01:00-06:00", "idle": "20", "heavy_concepts": "300", "heavy_sessions": "40", "engine": "me"},
+                "want": want.err().unwrap_or(""),
+            }));
+        }
+        let script = "import json, sys, datetime\nimport sensor\nfor c in json.load(sys.stdin):\n    now = datetime.datetime.fromtimestamp(c['now'], datetime.timezone.utc)\n    got = sensor.gate(c['args'], c['signals'], now)\n    print(json.dumps([c['name'], got, c['want']]))\n";
+        let out = match std::process::Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .current_dir(dir.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(mut child) => {
+                use std::io::Write as _;
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(serde_json::to_string(&cases).unwrap().as_bytes())
+                    .unwrap();
+                child.wait_with_output().unwrap()
+            }
+            Err(_) => {
+                eprintln!("python3 not on PATH; lockstep test skipped");
+                return;
+            }
+        };
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut n = 0;
+        for line in text.lines() {
+            let row: (String, String, String) = serde_json::from_str(line).unwrap();
+            assert_eq!(row.1, row.2, "python disagrees on {:?}", row.0);
+            n += 1;
+        }
+        assert_eq!(n, rows().len());
     }
 
     #[test]

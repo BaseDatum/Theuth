@@ -46,22 +46,24 @@ pub enum Split {
 }
 
 /// Where a case came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum CaseOrigin {
     /// Mined from the ledger.
+    #[default]
     Real,
     /// Written by a model; never `val`.
     Synthetic,
 }
 
 /// A case's life (136 §6, §7.2 step 5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum CaseState {
     /// Not yet addressed by an edit.
+    #[default]
     Open,
     /// An accepted edit closed it (`closed_by`).
     Closed,

@@ -13,6 +13,8 @@ agent = { workspace = true }  # 136 §2.2 `LedgerSince`, `SetBudget`, `AgentEven
 schedule = { workspace = true }  # 136 §2.3 `FireWith` for `run_now`
 document = { workspace = true }  # 136 §2.4 the `Dreaming` journal document (W3)
 mesh = { workspace = true }  # the engine id written into signals.json (`home_engine`)
+roster = { workspace = true }  # `desks_doing` from `ListAgents` (no desk bus event exists)
+genai = { workspace = true }  # `ChatRole::Assistant` on the agent store's rows (rewind snapshot)
 kameo = { workspace = true }
 tokio = { workspace = true }
 parking_lot = { workspace = true }
@@ -24,6 +26,10 @@ serde_yaml = { workspace = true }  # 136 §2.7 `dreaming.set_settings` persists 
 schemars = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+regex = { workspace = true }  # the token patterns of `scrub`
+sha2 = { workspace = true }  # the train/val split hash (136 §6)
+uuid = { workspace = true }  # time-ordered ids (no ulid crate in the workspace)
+sqlx = { workspace = true }  # read-only `dry_run` over knowledge.sqlite / sessions.sqlite
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
