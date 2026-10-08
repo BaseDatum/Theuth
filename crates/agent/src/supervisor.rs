@@ -13254,7 +13254,10 @@ pub(crate) mod tests {
     /// T2: a peer message to a queued child is held, not routed; when the
     /// running child's turn ends the queued child's first input is its
     /// brief and the held message comes second, under exactly one permit,
-    /// which frees when its turn ends.
+    /// which the supervisor lets go of when its turn ends. The semaphore
+    /// count is not read after that: the held message is a peer input, and
+    /// when y's actor has already opened it as a bounded turn its 50 §8 gate
+    /// takes the permit the instant it frees (a race the test must not pin).
     #[tokio::test]
     async fn held_message_follows_the_brief() {
         let a = agents_with(true).await;
@@ -13297,11 +13300,13 @@ pub(crate) mod tests {
             "y holds the one permit"
         );
         agents.tell(finished(y)).await.unwrap();
-        assert_eq!(
-            pool_state(&agents, p, y).await.0,
-            1,
-            "freed when y's turn ends"
-        );
+        let released = agents
+            .ask(With(move |a: &mut Agents| {
+                a.child_turns.get(&y).is_none_or(|ct| ct.permit.is_none())
+            }))
+            .await
+            .unwrap();
+        assert!(released, "the spawn permit goes when y's turn ends");
     }
 
     /// T3: a queued child stopped by the user never gets its brief: the
