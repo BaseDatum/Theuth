@@ -1382,7 +1382,11 @@ mod tests {
             .unwrap();
         let c = store.session_cost(child).await.unwrap().unwrap();
         assert_eq!(c.scope, CostScope::Observed);
-        assert_eq!(returned(&c.direct), vec![("USD", 121_280_250)], "high water once");
+        assert_eq!(
+            returned(&c.direct),
+            vec![("USD", 121_280_250)],
+            "high water once"
+        );
         let p = store.session_cost(acp).await.unwrap().unwrap();
         assert_eq!(p.scope, CostScope::OpaqueRemoteInclusive);
         assert_eq!(p.children[0].scope, CostScope::Observed);

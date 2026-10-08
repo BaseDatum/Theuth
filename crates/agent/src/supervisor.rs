@@ -326,8 +326,7 @@ pub(crate) enum LiveActor {
 const NOT_NATIVE: &str = "not available for an external harness";
 /// 141 §5.4: the refusal for anything that would drive or message a
 /// watch-only child (`Agents::session()` is the one choke point).
-pub const OBSERVED: &str =
-    "watch-only: the harness runs this subagent; open or message its parent";
+pub const OBSERVED: &str = "watch-only: the harness runs this subagent; open or message its parent";
 /// 141 §5.4: the peer-address refusal (`send_message`, peer intake).
 pub const OBSERVED_PEER: &str = "watch-only harness subagent — message its parent";
 
@@ -13801,22 +13800,22 @@ pub(crate) mod tests {
             .create_session(acp, "omp", Some(root), Some("omp"), None)
             .await
             .unwrap();
-        let mut up = crate::store::ObservedUpsert::new(acp, crate::ObservedSource::OmpTask, "ReadA");
+        let mut up =
+            crate::store::ObservedUpsert::new(acp, crate::ObservedSource::OmpTask, "ReadA");
         up.name = Some("ReadA");
         up.state = Some(ObservedState::Running);
         let (child, created) = a.store.upsert_observed(up).await.unwrap();
         assert!(created);
-        let err = a
-            .session(Some(child), None, None, (None, None))
-            .await
-            .expect_err("watch-only rows are never driven")
-            .to_string();
+        let err = match a.session(Some(child), None, None, (None, None)).await {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("watch-only rows are never driven"),
+        };
         assert_eq!(err, OBSERVED);
         assert!(a.sessions.get(&child).is_none(), "no actor was spawned");
-        let err = a
-            .resolve(root, &format!("session:{child}"))
-            .await
-            .expect_err("not a peer");
+        let err = match a.resolve(root, &format!("session:{child}")).await {
+            Err(e) => e,
+            Ok(_) => panic!("not a peer"),
+        };
         assert!(err.ends_with(OBSERVED_PEER), "{err}");
         let rows = a.directory(root).await.unwrap();
         let row = rows
@@ -13849,7 +13848,11 @@ pub(crate) mod tests {
         assert_eq!(observed.stop.as_deref(), Some("lost contact"));
         let infos = a.agents(root).await;
         let info = infos.iter().find(|i| i.id == child).unwrap();
-        assert_eq!(info.state, AgentState::Idle, "unknown shows idle, labelled by the UI");
+        assert_eq!(
+            info.state,
+            AgentState::Idle,
+            "unknown shows idle, labelled by the UI"
+        );
     }
 
     /// 141 §7.7: `Cancel` on a watch-only child (no actor of its own) is

@@ -1791,8 +1791,7 @@ impl Message<Update> for AcpChild {
             Update::Session {
                 session,
                 update:
-                    update @ (SessionUpdate::SessionMessage(_)
-                    | SessionUpdate::SessionMessageChunk(_)),
+                    update @ (SessionUpdate::SessionMessage(_) | SessionUpdate::SessionMessageChunk(_)),
             } => self.observed_directed(&session, update).await,
             // 141 §7.2 item 2: a `session/update` for another session is a
             // watch-only child's traffic. The parent's replay gate applies:
@@ -4183,8 +4182,8 @@ pub(crate) mod tests {
 
     // ---- 141: watch-only children ------------------------------------
 
-    use acp::{ChildAnnounce, ChildSource, ChildState, CostRule};
     use crate::{ObservedSource, ObservedState, SessionKind};
+    use acp::{ChildAnnounce, ChildSource, ChildState, CostRule};
 
     impl Rig {
         /// A prompt answered `end_turn`: the connection has `worked`, so
@@ -4266,7 +4265,10 @@ pub(crate) mod tests {
             panic!("{events:?}");
         };
         let (id, name, state) = changed(first).expect("ObservedChildChanged first");
-        assert_eq!((id, name, state), (*child, "Reader", ObservedState::Running));
+        assert_eq!(
+            (id, name, state),
+            (*child, "Reader", ObservedState::Running)
+        );
         let AgentEvent::ObservedChildChanged {
             parent, observed, ..
         } = first
@@ -4333,7 +4335,10 @@ pub(crate) mod tests {
             unreachable!()
         };
         assert_eq!((session, stop_reason.as_str()), (child, "end_turn"));
-        assert_eq!((usage.prompt, usage.completion, usage.cached), (130, 20, 30));
+        assert_eq!(
+            (usage.prompt, usage.completion, usage.cached),
+            (130, 20, 30)
+        );
         let row = rig.observed(ObservedSource::Rfd, "sess_child_1").await;
         let o = row.observed.unwrap();
         assert_eq!(o.state, ObservedState::Idle);
@@ -4349,10 +4354,17 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(rows[0], (ChatRole::Assistant, "alpha".into()), "{rows:?}");
         let cost = rig.store.session_cost(*child).await.unwrap().unwrap();
-        assert_eq!(cost.remote_tokens[0].turns, 1, "display-only tokens, under the child");
+        assert_eq!(
+            cost.remote_tokens[0].turns, 1,
+            "display-only tokens, under the child"
+        );
         assert!(cost.direct.returned.is_empty(), "no money for display_only");
         assert_eq!(
-            rig.store.observed_children(rig.session).await.unwrap().len(),
+            rig.store
+                .observed_children(rig.session)
+                .await
+                .unwrap()
+                .len(),
             1,
             "the second announce updated, not duplicated"
         );
@@ -4407,7 +4419,7 @@ pub(crate) mod tests {
             .tell(Update::Session {
                 session: ext.into(),
                 update: SessionUpdate::ToolCall(
-                    ToolCall::new(call.as_str(), "Read a.txt first line: read").kind(ToolKind::Read),
+                    ToolCall::new(call.clone(), "Read a.txt first line: read").kind(ToolKind::Read),
                 ),
             })
             .await
@@ -4478,7 +4490,10 @@ pub(crate) mod tests {
             .await
             .observed
             .unwrap();
-        assert_eq!((o.state, o.cost_rule), (ObservedState::Completed, CostRule::Unreported));
+        assert_eq!(
+            (o.state, o.cost_rule),
+            (ObservedState::Completed, CostRule::Unreported)
+        );
 
         // A second child fails with an error: the text is its stop.
         let mut b = announce(
@@ -4497,7 +4512,11 @@ pub(crate) mod tests {
         assert_eq!(observed.state, ObservedState::Failed);
         assert_eq!(observed.stop.as_deref(), Some("tool exploded"));
         assert_eq!(
-            rig.store.observed_children(rig.session).await.unwrap().len(),
+            rig.store
+                .observed_children(rig.session)
+                .await
+                .unwrap()
+                .len(),
             2
         );
     }
@@ -4573,9 +4592,7 @@ pub(crate) mod tests {
         );
         // A child that cannot be cancelled says so instead of pretending.
         rig.actor.tell(CancelObserved { child }).await.unwrap();
-        let events = rig
-            .until(|e| matches!(e, AgentEvent::Error { .. }))
-            .await;
+        let events = rig.until(|e| matches!(e, AgentEvent::Error { .. })).await;
         let AgentEvent::Error {
             session, message, ..
         } = events.last().unwrap()
@@ -4596,7 +4613,11 @@ pub(crate) mod tests {
     async fn opencode_task_provisional_row_is_rekeyed_to_the_real_id() {
         let mut rig = Rig::new(Duration::from_secs(3600)).await;
         rig.warm().await;
-        let mut a = announce(ChildSource::OpencodeTask, "task:call_1", ChildState::Running);
+        let mut a = announce(
+            ChildSource::OpencodeTask,
+            "task:call_1",
+            ChildState::Running,
+        );
         a.title = Some("Read first line of a.txt".into());
         a.tool_call = Some("call_1".into());
         rig.actor.tell(Update::Subagent(a)).await.unwrap();
@@ -4660,7 +4681,12 @@ pub(crate) mod tests {
             a
         };
         rig.actor
-            .tell(Update::Subagent(omp("ReadA", ChildState::Running, 0.1149025, 8962)))
+            .tell(Update::Subagent(omp(
+                "ReadA",
+                ChildState::Running,
+                0.1149025,
+                8962,
+            )))
             .await
             .unwrap();
         let events = rig
@@ -4669,19 +4695,39 @@ pub(crate) mod tests {
         let (read_a, ..) = changed(&events[0]).unwrap();
         // Two more snapshots within the throttle: detail only.
         rig.actor
-            .tell(Update::Subagent(omp("ReadA", ChildState::Running, 0.118, 9000)))
+            .tell(Update::Subagent(omp(
+                "ReadA",
+                ChildState::Running,
+                0.118,
+                9000,
+            )))
             .await
             .unwrap();
         rig.actor
-            .tell(Update::Subagent(omp("ReadA", ChildState::Running, 0.119, 9050)))
+            .tell(Update::Subagent(omp(
+                "ReadA",
+                ChildState::Running,
+                0.119,
+                9050,
+            )))
             .await
             .unwrap();
         rig.actor
-            .tell(Update::Subagent(omp("ReadB", ChildState::Running, 0.12170525, 9100)))
+            .tell(Update::Subagent(omp(
+                "ReadB",
+                ChildState::Running,
+                0.12170525,
+                9100,
+            )))
             .await
             .unwrap();
         rig.actor
-            .tell(Update::Subagent(omp("ReadA.sub", ChildState::Running, 0.0, 0)))
+            .tell(Update::Subagent(omp(
+                "ReadA.sub",
+                ChildState::Running,
+                0.0,
+                0,
+            )))
             .await
             .unwrap();
         let events = rig
@@ -4692,7 +4738,10 @@ pub(crate) mod tests {
             .filter(|e| matches!(changed(e), Some((_, "ReadA", _))))
             .count();
         // 0 normally; 1 if the box stalled ≥ 250 ms between two tells.
-        assert!(coalesced <= 1, "detail-only snapshots wait for the throttle: {events:?}");
+        assert!(
+            coalesced <= 1,
+            "detail-only snapshots wait for the throttle: {events:?}"
+        );
         let (sub, ..) = changed(events.last().unwrap()).unwrap();
         assert_eq!(
             rig.store.session(sub).await.unwrap().unwrap().parent,
@@ -4709,15 +4758,30 @@ pub(crate) mod tests {
         assert_eq!(observed.detail["tokens"], 9050, "the latest snapshot, once");
 
         rig.actor
-            .tell(Update::Subagent(omp("ReadA", ChildState::Completed, 0.12128025, 9118)))
+            .tell(Update::Subagent(omp(
+                "ReadA",
+                ChildState::Completed,
+                0.12128025,
+                9118,
+            )))
             .await
             .unwrap();
         rig.actor
-            .tell(Update::Subagent(omp("ReadB", ChildState::Completed, 0.12170525, 9118)))
+            .tell(Update::Subagent(omp(
+                "ReadB",
+                ChildState::Completed,
+                0.12170525,
+                9118,
+            )))
             .await
             .unwrap();
         rig.actor
-            .tell(Update::Subagent(omp("ReadA.sub", ChildState::Completed, 0.0, 0)))
+            .tell(Update::Subagent(omp(
+                "ReadA.sub",
+                ChildState::Completed,
+                0.0,
+                0,
+            )))
             .await
             .unwrap();
         // The parent's own usage excludes the background children (F23).
@@ -4736,8 +4800,21 @@ pub(crate) mod tests {
                 .until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
                 .await;
             finished += 1;
-            assert!(events.iter().all(|e| !matches!(e, AgentEvent::Error { .. })), "{events:?}");
+            assert!(
+                events
+                    .iter()
+                    .all(|e| !matches!(e, AgentEvent::Error { .. })),
+                "{events:?}"
+            );
         }
+        // The parent's own meter lands after its `ContextUsed`.
+        rig.until(|e| matches!(e, AgentEvent::ContextUsed { .. }))
+            .await;
+        let parent = rig.session;
+        rig.until(
+            |e| matches!(e, AgentEvent::ModelUsageChanged { session, .. } if *session == parent),
+        )
+        .await;
         let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
         let usd = |m: &[Money]| m.iter().find(|m| m.currency == "USD").map(|m| m.nanos);
         assert_eq!(usd(&cost.direct.returned), Some(139_483_250));
@@ -4746,14 +4823,21 @@ pub(crate) mod tests {
             assert_eq!(c.scope, crate::cost::CostScope::Observed, "{c:?}");
         }
         let a = rig.store.session_cost(read_a).await.unwrap().unwrap();
-        assert_eq!(usd(&a.direct.returned), Some(121_280_250), "high water once");
+        assert_eq!(
+            usd(&a.direct.returned),
+            Some(121_280_250),
+            "high water once"
+        );
         assert_eq!(a.scope, crate::cost::CostScope::Observed);
         let o = rig
             .observed(ObservedSource::OmpTask, "ReadA")
             .await
             .observed
             .unwrap();
-        assert_eq!(o.tool_call.as_deref(), Some("toolu_013x6rgBK7MEUsQq79DoL4YK"));
+        assert_eq!(
+            o.tool_call.as_deref(),
+            Some("toolu_013x6rgBK7MEUsQq79DoL4YK")
+        );
         assert_eq!(o.detail["agent"], "scout");
     }
 
@@ -4787,7 +4871,12 @@ pub(crate) mod tests {
         let events = rig
             .until(|e| matches!(e, AgentEvent::TurnFinished { stop_reason, .. } if stop_reason == "unknown"))
             .await;
-        assert!(events.iter().any(|e| matches!(changed(e), Some((_, "live", ObservedState::Unknown)))), "{events:?}");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(changed(e), Some((_, "live", ObservedState::Unknown)))),
+            "{events:?}"
+        );
         let live = rig
             .observed(ObservedSource::Rfd, "live")
             .await
@@ -4800,7 +4889,11 @@ pub(crate) mod tests {
             .await
             .observed
             .unwrap();
-        assert_eq!(done.state, ObservedState::Completed, "terminal rows keep their state");
+        assert_eq!(
+            done.state,
+            ObservedState::Completed,
+            "terminal rows keep their state"
+        );
     }
 
     /// 141 §4.5 test 3: a `session/update` with a `sessionUpdate` this SDK
@@ -4821,10 +4914,158 @@ pub(crate) mod tests {
         let events = rig.until_finished().await;
         assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, AgentEvent::TextDelta { text, .. } if &**text == "still here")),
+            events.iter().any(
+                |e| matches!(e, AgentEvent::TextDelta { text, .. } if &**text == "still here")
+            ),
             "{events:?}"
+        );
+    }
+
+    /// 141 §13.2 (omp, real frames via W5's `progress_rows`): the recorded
+    /// `task.{completed_stale, mid, final}` frames sent through the `Fake`
+    /// on a harness that claims `oh-my-pi` → two `omp_task` children
+    /// `pending → running → completed`, model from `resolvedModel`, the
+    /// spawn call as `tool_call`, `counted` costs 0.12128025 / 0.12170525
+    /// under the children beside the parent's own tool card; a harness that
+    /// is not omp ignores the rows.
+    #[tokio::test]
+    async fn omp_task_frames_announce_two_children_through_progress_rows() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let frame = |name: &str| -> serde_json::Value {
+            let path = format!(
+                "{}/../acp/fixtures/omp-18.3.1/task.{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let mut v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
+            v["params"]["sessionId"] = json!("s1");
+            v
+        };
+        let mut rig = Rig::with_agent(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("oh-my-pi", "18.3.1")),
+        )
+        .await;
+        rig.input("spawn readers").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("tool_call"));
+        rig.fake.send(frame("completed_stale"));
+        let events = rig
+            .until(|e| matches!(changed(e), Some((_, "ReadB", _))))
+            .await;
+        let (read_a, _, a_state) = events
+            .iter()
+            .find_map(|e| changed(e).filter(|(_, n, _)| *n == "ReadA"))
+            .unwrap();
+        assert_eq!(
+            a_state,
+            ObservedState::Pending,
+            "stale rows are pending, not completed"
+        );
+        assert!(
+            !events.iter().any(
+                |e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session == read_a)
+            ),
+            "no child turn while pending: {events:?}"
+        );
+        rig.fake.send(frame("mid"));
+        let parent = rig.session;
+        let events = rig
+            .until(|e| matches!(e, AgentEvent::TurnStarted { session, .. } if *session != read_a && *session != parent))
+            .await;
+        assert!(
+            events.iter().any(
+                |e| matches!(changed(e), Some((c, "ReadA", ObservedState::Running)) if c == read_a)
+            ),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::HarnessModelChanged { session, model } if *session == read_a && model == "anthropic/claude-fable-5-1:high")),
+            "{events:?}"
+        );
+        rig.fake.send(frame("final"));
+        rig.fake.end_turn(&id);
+        let mut finished = Vec::new();
+        while finished.len() < 3 {
+            let events = rig
+                .until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
+                .await;
+            let AgentEvent::TurnFinished { session, .. } = events.last().unwrap() else {
+                unreachable!()
+            };
+            finished.push(*session);
+        }
+        assert!(
+            finished.contains(&rig.session) && finished.contains(&read_a),
+            "{finished:?}"
+        );
+        let kids = rig.store.observed_children(rig.session).await.unwrap();
+        assert_eq!(kids.len(), 2, "{kids:?}");
+        for (row, meta) in &kids {
+            assert_eq!(meta.source, ObservedSource::OmpTask);
+            assert_eq!(meta.state, ObservedState::Completed);
+            assert_eq!(meta.cost_rule, CostRule::Counted);
+            assert_eq!(
+                meta.tool_call.as_deref(),
+                Some("toolu_013x6rgBK7MEUsQq79DoL4YK")
+            );
+            assert_eq!(meta.detail["agent"], "scout");
+            assert_eq!(
+                row.harness_model.as_deref(),
+                Some("anthropic/claude-fable-5-1:high")
+            );
+        }
+        let cost = rig.store.session_cost(rig.session).await.unwrap().unwrap();
+        let mut child_usd: Vec<u64> = cost
+            .children
+            .iter()
+            .map(|c| {
+                assert_eq!(c.scope, crate::cost::CostScope::Observed, "{c:?}");
+                c.total
+                    .returned
+                    .iter()
+                    .find(|m| m.currency == "USD")
+                    .map_or(0, |m| m.nanos)
+            })
+            .collect();
+        child_usd.sort_unstable();
+        assert_eq!(child_usd, [121_280_250, 121_705_250]);
+        // The parent's own transcript still has the spawn call's card.
+        let rows = rig.rows().await;
+        assert!(
+            rig.store
+                .messages(rig.session)
+                .await
+                .unwrap()
+                .iter()
+                .any(|(_, m)| m
+                    .content
+                    .tool_responses()
+                    .iter()
+                    .any(|r| r.call_id == "toolu_013x6rgBK7MEUsQq79DoL4YK")),
+            "{rows:?}"
+        );
+
+        // Not omp: the same frame is only the parent's tool card.
+        let mut rig = Rig::with_agent(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("OpenCode", "2.0.22")),
+        )
+        .await;
+        rig.input("go").await;
+        let (id, _) = rig.fake.prompt().await;
+        rig.fake.send(frame("final"));
+        rig.fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert!(!events.iter().any(|e| changed(e).is_some()), "{events:?}");
+        assert!(
+            rig.store
+                .observed_children(rig.session)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -4844,7 +5085,10 @@ pub(crate) mod tests {
         );
         let frame: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
-        let ext = frame["params"]["childSessionId"].as_str().unwrap().to_owned();
+        let ext = frame["params"]["childSessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let call = frame["params"]["update"]["toolCallId"]
             .as_str()
             .unwrap()

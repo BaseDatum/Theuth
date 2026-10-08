@@ -250,7 +250,11 @@ impl AcpChild {
     /// 141 §7.2 item 3: a parent-session `tool_call(_update)` that carries omp
     /// task rows announces every row (the frame still reaches the parent's
     /// transcript as a tool event; the roster card replaces it in the UI only).
-    pub(super) async fn observed_task_frame(&mut self, update: &SessionUpdate, me: &ActorRef<Self>) {
+    pub(super) async fn observed_task_frame(
+        &mut self,
+        update: &SessionUpdate,
+        me: &ActorRef<Self>,
+    ) {
         if !self.is_omp() {
             return;
         }
@@ -258,12 +262,7 @@ impl AcpChild {
             return;
         };
         for row in &frame.rows {
-            let mut a = row.announce(&frame);
-            if let Some(b) = &frame.batch_state {
-                a.detail
-                    .insert("batch".into(), serde_json::Value::String(b.clone()));
-            }
-            self.observed_upsert(a, me).await;
+            self.observed_upsert(row.announce(&frame), me).await;
         }
     }
 
@@ -293,11 +292,7 @@ impl AcpChild {
         // Nesting (§5.3): an unknown external parent falls back to this row.
         let parent = match &a.parent {
             None => self.id,
-            Some(ext) => self
-                .observed
-                .by_external
-                .get(ext)
-                .map_or(self.id, |c| c.id),
+            Some(ext) => self.observed.by_external.get(ext).map_or(self.id, |c| c.id),
         };
         let (state, stop, usage) = match &a.state {
             Some(s) => {
@@ -371,7 +366,9 @@ impl AcpChild {
                 })
                 .await;
             }
-            if *m != c.model && let Some(model) = &c.model {
+            if *m != c.model
+                && let Some(model) = &c.model
+            {
                 self.publish(AgentEvent::HarnessModelChanged {
                     session: c.id,
                     model: model.clone(),
@@ -386,8 +383,8 @@ impl AcpChild {
             }
         } else if c.turn.is_some() {
             let tokens = usage.as_ref().map(tokens_of);
-            self.close_child_turn(&mut c, stop_reason_of(c.meta.state), tokens)
-                .await;
+            let stop = stop_reason_of(c.meta.state);
+            self.close_child_turn(&mut c, stop, tokens).await;
         }
         // §7.6: only `counted` writes money; the cumulative cost is the
         // high-water meter of `<acp sid>/<external id>`.
@@ -453,7 +450,11 @@ impl AcpChild {
         if since >= DETAIL_THROTTLE {
             self.emit(c).await;
         } else if c.dirty.is_none() {
-            c.dirty = Some(Self::timer(me, DETAIL_THROTTLE - since, ObservedDirty(c.id)));
+            c.dirty = Some(Self::timer(
+                me,
+                DETAIL_THROTTLE - since,
+                ObservedDirty(c.id),
+            ));
         }
     }
 
@@ -709,7 +710,10 @@ impl AcpChild {
         if whole
             && let Err(e) = self
                 .store
-                .append(session, &ChatMessage::assistant(MessageContent::from_text(&line)))
+                .append(
+                    session,
+                    &ChatMessage::assistant(MessageContent::from_text(&line)),
+                )
                 .await
         {
             tracing::error!(session = %session, "append: {e:#}");
@@ -800,7 +804,9 @@ impl AcpChild {
             .by_external
             .values()
             .any(|c| c.meta.source == ObservedSource::OmpTask && !c.meta.state.is_terminal());
-        let Some(f) = &mut self.observed.omp else { return };
+        let Some(f) = &mut self.observed.omp else {
+            return;
+        };
         if any && f.poll.is_none() {
             f.poll = Some(Self::timer(me, OMP_POLL, OmpTick));
         }
@@ -811,7 +817,9 @@ impl AcpChild {
     /// persist the cursor; `<id>.md` or a parent `async-result` for the job
     /// → `completed`.
     async fn omp_tick(&mut self, me: &ActorRef<Self>) {
-        let Some(f) = &mut self.observed.omp else { return };
+        let Some(f) = &mut self.observed.omp else {
+            return;
+        };
         f.poll = None;
         if f.tailer.is_none()
             && let (Some(home), Some(h)) = (std::env::home_dir(), &self.harness)
@@ -868,6 +876,18 @@ impl AcpChild {
             if settled.contains(&ext) || tailer.sidecar_done(&ext) {
                 if let Some(mut c) = self.observed.by_external.remove(&ext) {
                     if !c.meta.state.is_terminal() {
+                        // `<id>.json` → `detail.result` (§6.4) before the
+                        // terminal event so the roster shows it with "done".
+                        if let Some(r) = tailer.result_json(&ext) {
+                            let mut detail = serde_json::Map::new();
+                            detail.insert("result".into(), r);
+                            let mut up =
+                                ObservedUpsert::new(c.parent, c.meta.source, &c.meta.external);
+                            up.detail = Some(&detail);
+                            if self.store.upsert_observed(up).await.is_ok() {
+                                c.meta.detail["result"] = detail["result"].clone();
+                            }
+                        }
                         self.set_child_state(&mut c, ObservedState::Completed, Some(None))
                             .await;
                         self.close_child_turn(&mut c, "end_turn", None).await;
@@ -909,9 +929,7 @@ impl AcpChild {
                         .await;
                     }
                 }
-                Entry::Assistant {
-                    usage: Some(u), ..
-                } => {
+                Entry::Assistant { usage: Some(u), .. } => {
                     self.record_child_tokens(&c, TurnId::new(), &omp_tokens(u))
                         .await;
                 }
@@ -929,15 +947,12 @@ impl Message<CancelObserved> for AcpChild {
     type Reply = ();
 
     async fn handle(&mut self, m: CancelObserved, _: &mut Context<Self, Self::Reply>) {
-        let Some(c) = self
-            .observed
-            .by_external
-            .values()
-            .find(|c| c.id == m.child)
-        else {
+        let Some(c) = self.observed.by_external.values().find(|c| c.id == m.child) else {
             return;
         };
-        if c.meta.can_cancel && let Some(h) = &self.harness {
+        if c.meta.can_cancel
+            && let Some(h) = &self.harness
+        {
             if let Err(e) = h.cancel_session(&c.meta.external) {
                 self.publish(AgentEvent::Error {
                     session: m.child,
@@ -956,10 +971,7 @@ impl Message<CancelObserved> for AcpChild {
         self.publish(AgentEvent::Error {
             session: m.child,
             turn: None,
-            message: format!(
-                "{}: cannot stop this subagent; stop {parent}",
-                self.name
-            ),
+            message: format!("{}: cannot stop this subagent; stop {parent}", self.name),
         })
         .await;
     }
@@ -968,7 +980,11 @@ impl Message<CancelObserved> for AcpChild {
 impl Message<ObservedDirty> for AcpChild {
     type Reply = ();
 
-    async fn handle(&mut self, ObservedDirty(id): ObservedDirty, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(
+        &mut self,
+        ObservedDirty(id): ObservedDirty,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
         let Some(key) = self
             .observed
             .by_external
@@ -990,7 +1006,11 @@ impl Message<ObservedDirty> for AcpChild {
 impl Message<ObservedSweep> for AcpChild {
     type Reply = ();
 
-    async fn handle(&mut self, ObservedSweep(ext): ObservedSweep, _: &mut Context<Self, Self::Reply>) {
+    async fn handle(
+        &mut self,
+        ObservedSweep(ext): ObservedSweep,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
         if let Some((since, updates)) = self.observed.pending_traffic.get(&ext)
             && since.elapsed() >= PENDING_TRAFFIC
         {
