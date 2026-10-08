@@ -84,7 +84,19 @@ pub fn insert(journal: &str, night: &str, mode: &str, section: &str, markdown: &
         .iter()
         .position(|l| l == &section_heading)
         .map(|i| start + i);
-    let mut body: Vec<String> = markdown.lines().map(str::to_owned).collect();
+    // A `#`/`##`/`###` heading inside the body would read as a night or
+    // section boundary on the next insert: demote it under the section.
+    let mut body: Vec<String> = markdown
+        .lines()
+        .map(|l| {
+            let hashes = l.bytes().take_while(|b| *b == b'#').count();
+            if (1..=3).contains(&hashes) && l[hashes..].starts_with(' ') {
+                format!("####{}", &l[hashes..])
+            } else {
+                l.to_owned()
+            }
+        })
+        .collect();
     match sec {
         Some(s) => {
             let e = lines[s + 1..end]
@@ -197,6 +209,21 @@ mod tests {
         let older = j.find("## 2026-10-07").unwrap();
         let undone = j.find("### Undone").unwrap();
         assert!(newer < older && older < undone, "{j}");
+        // Headings inside a body are demoted, so a later insert finds the
+        // right block (the live night wrote `## Tidy` … `## Summary` inside
+        // its `journal` section and the Undone line landed above them).
+        let j = insert(
+            "",
+            "2026-10-08",
+            "pass",
+            "journal",
+            "## Tidy\n\ntext\n\n### Merged\n- x\n# Summary\ndone\nnot # a heading",
+        );
+        let j = insert(&j, "2026-10-08", "pass", "Undone", "- whole night");
+        assert_eq!(
+            j,
+            "# Dreaming\n\n## 2026-10-08 · pass\n\n### journal\n#### Tidy\n\ntext\n\n#### Merged\n- x\n#### Summary\ndone\nnot # a heading\n\n### Undone\n- whole night\n\n"
+        );
     }
 
     #[tokio::test]

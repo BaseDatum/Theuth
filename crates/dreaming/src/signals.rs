@@ -347,6 +347,7 @@ mod tests {
                 id: "facts/x".into(),
                 op: knowledge::KnowledgeOp::Put,
                 source: knowledge::Source::Harvest,
+                commit: None,
             })
             .await
             .unwrap();
@@ -356,6 +357,7 @@ mod tests {
                 id: "facts/y".into(),
                 op: knowledge::KnowledgeOp::Archive,
                 source: knowledge::Source::Dreaming,
+                commit: None,
             })
             .await
             .unwrap();

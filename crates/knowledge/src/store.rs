@@ -668,16 +668,19 @@ impl Knowledge {
             names.push(format!("edit {}", ix.meta.id));
             events.push((ix.meta.id, KnowledgeOp::Put));
         }
-        if !names.is_empty() {
+        let commit = if names.is_empty() {
+            None
+        } else {
             self.commit(written, removed, format!("sync: {}", names.join(", ")))
-                .await;
-        }
+                .await
+        };
         for (id, op) in events {
             self.rt
                 .publish(KnowledgeChanged {
                     id,
                     op,
                     source: Source::Sync,
+                    commit: commit.clone(),
                 })
                 .await;
         }
@@ -868,6 +871,7 @@ impl Knowledge {
                 id,
                 op: KnowledgeOp::Put,
                 source,
+                commit: w.commit.clone(),
             })
             .await;
         Ok((w.meta, w.created))
@@ -910,6 +914,7 @@ impl Knowledge {
                 id,
                 op: KnowledgeOp::Put,
                 source: Source::Model,
+                commit: w.commit.clone(),
             })
             .await;
         Ok(w.meta)
@@ -935,6 +940,7 @@ impl Knowledge {
                 id,
                 op: KnowledgeOp::Put,
                 source: Source::User,
+                commit: w.commit.clone(),
             })
             .await;
         Ok(w.meta)
@@ -982,7 +988,7 @@ impl Knowledge {
         .await??;
         self.remove_rows(&id).await?;
         removed.sort();
-        self.commit(written, removed, entry).await;
+        let commit = self.commit(written, removed, entry).await;
         if let Some(docs) = document::Handle::lookup() {
             let id = id.clone();
             tokio::spawn(async move {
@@ -998,6 +1004,7 @@ impl Knowledge {
                 id,
                 op: KnowledgeOp::Delete,
                 source: Source::User,
+                commit,
             })
             .await;
         Ok(())
@@ -1212,6 +1219,7 @@ impl Knowledge {
                 id,
                 op: KnowledgeOp::Put,
                 source: Source::User,
+                commit: Some(sha.clone()),
             })
             .await;
         Ok(Change {
@@ -1872,6 +1880,7 @@ impl Knowledge {
                     id: id.clone(),
                     op,
                     source: Source::Dreaming,
+                    commit: commit.clone(),
                 })
                 .await;
         }

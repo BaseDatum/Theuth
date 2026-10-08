@@ -121,6 +121,11 @@ pub struct KnowledgeChanged {
     pub op: KnowledgeOp,
     /// Who did it.
     pub source: Source,
+    /// The commit that recorded it (abbreviated); `None` without a repo or
+    /// when the commit failed. 136: dreaming's undo receipt restores to its
+    /// first parent, so the pre-change state is read without a history walk.
+    #[serde(default)]
+    pub commit: Option<String>,
 }
 
 /// The [`KNOWLEDGE_ACTOR`] actor: wraps the store. Handlers await the store on

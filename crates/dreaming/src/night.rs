@@ -545,11 +545,21 @@ impl Night {
         r.summary.finished_at = Some(now.clone());
         write_record(&self.data_dir, &r)?;
         let mut state = read_state(&self.data_dir);
+        let cap = state
+            .run_request
+            .as_ref()
+            .map_or(self.cfg.budget_usd, |q| q.budget_usd);
         state.last_night = Some(r.summary.clone());
         state.nights += 1;
         state.last_dream_at = Some(now.clone());
         state.run_request = None;
         write_state(&self.data_dir, &state)?;
+        // The code-owned line under the model's prose: counts, spend, undo handles.
+        if let Err(e) =
+            journal::append(&self.data_dir, &night, "Receipt", &receipt_line(&r, cap)).await
+        {
+            tracing::warn!("dreaming: receipt line not written: {e}");
+        }
         if let Err(e) = cases::settle_old(&self.data_dir, Utc::now()) {
             tracing::debug!("dreaming: settle: {e}");
         }
@@ -573,6 +583,46 @@ impl Night {
         self.active = None;
         Ok(r)
     }
+}
+
+/// `- 20 retitled · 21 merged · 10 verified · $0.37 of $3.00 · undo: `dreaming_undo("2026-10-08")` (retitle, merge, verify)`.
+fn receipt_line(r: &NightRecord, cap: f64) -> String {
+    let c = &r.summary.counts;
+    let mut parts: Vec<String> = [
+        (c.triaged, "triaged"),
+        (c.retitled, "retitled"),
+        (c.merged, "merged"),
+        (c.superseded, "superseded"),
+        (c.archived, "archived"),
+        (c.verified, "verified"),
+        (c.cases, "cases"),
+        (c.edits_accepted, "edits accepted"),
+        (c.edits_rejected, "edits rejected"),
+        (c.proposals, "proposals"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, what)| format!("{n} {what}"))
+    .collect();
+    if parts.is_empty() {
+        parts.push("nothing changed".into());
+    }
+    parts.push(format!("${:.2} of ${cap:.2}", r.summary.spend_usd));
+    let mut groups: Vec<&str> = r.knowledge.iter().map(|t| t.group.as_str()).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    let mut handles: Vec<String> = groups.iter().map(|g| (*g).to_owned()).collect();
+    handles.extend(r.backups.iter().map(|s| format!("skill:{s}")));
+    let undo = if handles.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " · undo: `dreaming_undo(\"{}\")` or one group: {}",
+            r.summary.night,
+            handles.join(", ")
+        )
+    };
+    format!("- {}{undo}", parts.join(" · "))
 }
 
 /// `ask` → `Result<NightReceipt, String>` (136 §9.3): open tonight's night
@@ -757,6 +807,40 @@ impl Message<Commit> for Night {
     }
 }
 
+/// The commit `undo` restores `e.id` to: the first parent of the commit the
+/// event names (one tree diff, no history walk — and immune to later writes
+/// to the same id landing before this event is handled); "" when that commit
+/// created the id. An event without a commit falls back to the id's history.
+pub async fn commit_before(k: &knowledge::Knowledge, e: &knowledge::KnowledgeChanged) -> String {
+    if let Some(c) = e.commit.as_deref() {
+        return match k.revision(c, Some(&e.id)).await {
+            Ok(r)
+                if r.files
+                    .iter()
+                    .any(|f| f.status == knowledge::ChangeStatus::Added) =>
+            {
+                String::new()
+            }
+            Ok(r) => r.parent.unwrap_or_default(),
+            Err(err) => {
+                tracing::debug!("dreaming: revision {c} of {}: {err}", e.id);
+                String::new()
+            }
+        };
+    }
+    match k.history(Some(&e.id), 2).await {
+        Ok(h) => h
+            .changes
+            .get(1)
+            .map(|c| c.commit.clone())
+            .unwrap_or_default(),
+        Err(err) => {
+            tracing::debug!("dreaming: history of {}: {err}", e.id);
+            String::new()
+        }
+    }
+}
+
 impl Message<knowledge::KnowledgeChanged> for Night {
     type Reply = ();
 
@@ -790,17 +874,7 @@ impl Message<knowledge::KnowledgeChanged> for Night {
         }
         if !r.knowledge.iter().any(|t| t.id == e.id) {
             let commit_before = match self.knowledge().await {
-                Some(k) => match k.history(Some(&e.id), 2).await {
-                    Ok(h) => h
-                        .changes
-                        .get(1)
-                        .map(|c| c.commit.clone())
-                        .unwrap_or_default(),
-                    Err(err) => {
-                        tracing::debug!("dreaming: history of {}: {err}", e.id);
-                        String::new()
-                    }
-                },
+                Some(k) => commit_before(&k, &e).await,
                 None => String::new(),
             };
             r.knowledge.push(Touched {
@@ -1444,5 +1518,129 @@ mod tests {
         assert_eq!(rows.len(), 1, "3 per 7 days");
         assert_eq!(proposals_this_week(dir.path(), Utc::now()), 3);
         assert_eq!(read_lines::<Proposal>(&proposals_path(dir.path())).len(), 3);
+    }
+
+    /// The receipt's `commit_before` is the parent of the commit the event
+    /// names — even when a later write to the same id landed before the event
+    /// was handled (the live night: a merge then a verify of one id; the
+    /// history-based lookup answered the merge commit and the undo kept the
+    /// merge). A commit that created the id answers "".
+    #[tokio::test]
+    async fn commit_before_is_the_parent_of_the_events_commit_not_the_latest_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_owned());
+        let k = knowledge::Knowledge::open(dir.path(), rt).await.unwrap();
+        let put = |id: &str, title: &str| knowledge::Put {
+            id: id.into(),
+            type_: "fact".into(),
+            title: title.into(),
+            body: "a body".into(),
+            ..Default::default()
+        };
+        k.put(
+            put("facts/a", "An over-long title that dreaming shortens"),
+            knowledge::Source::Model,
+        )
+        .await
+        .unwrap();
+        let retitle = k.retitle("facts/a", "Short", "the rest").await.unwrap();
+        // A later write to the same id, before the retitle event is handled.
+        k.verify("facts/a", knowledge::VerifyOutcome::Ok, None)
+            .await
+            .unwrap();
+        let ev = |commit: Option<String>| knowledge::KnowledgeChanged {
+            id: "facts/a".into(),
+            op: knowledge::KnowledgeOp::Retitle,
+            source: knowledge::Source::Dreaming,
+            commit,
+        };
+        let before = commit_before(&k, &ev(retitle.commit.clone())).await;
+        assert!(!before.is_empty());
+        let parent = k
+            .revision(retitle.commit.as_deref().unwrap(), None)
+            .await
+            .unwrap()
+            .parent
+            .unwrap();
+        assert_eq!(before, parent);
+        k.restore("facts/a", Some(&before)).await.unwrap();
+        assert_eq!(
+            k.get("facts/a").await.unwrap().meta.title,
+            "An over-long title that dreaming shortens"
+        );
+        // The history fallback (no commit on the event) is the pre-fix answer.
+        assert!(!commit_before(&k, &ev(None)).await.is_empty());
+        // A merge into a new canonical: the canonical was created by that commit.
+        k.put(put("facts/b-2026-10-01", "B one"), knowledge::Source::Model)
+            .await
+            .unwrap();
+        let merged = k
+            .merge(
+                &["facts/b-2026-10-01".into()],
+                "facts/b",
+                "living",
+                &[],
+                &knowledge::AgentScope {
+                    owner: String::new(),
+                    line: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        let created = knowledge::KnowledgeChanged {
+            id: "facts/b".into(),
+            op: knowledge::KnowledgeOp::Merge,
+            source: knowledge::Source::Dreaming,
+            commit: merged.commit.clone(),
+        };
+        assert_eq!(commit_before(&k, &created).await, "");
+        let folded = knowledge::KnowledgeChanged {
+            id: "facts/b-2026-10-01".into(),
+            ..created
+        };
+        assert!(!commit_before(&k, &folded).await.is_empty());
+    }
+
+    #[test]
+    fn receipt_line_names_counts_spend_and_undo_handles() {
+        let mut r = NightRecord {
+            summary: NightSummary {
+                night: "2026-10-08".into(),
+                started_at: String::new(),
+                finished_at: None,
+                counts: NightCounts {
+                    retitled: 20,
+                    merged: 21,
+                    verified: 10,
+                    ..Default::default()
+                },
+                spend_usd: 0.3673,
+                mode: "pass".into(),
+                undone: false,
+            },
+            session: None,
+            knowledge: ["retitle", "merge", "merge", "verify"]
+                .iter()
+                .enumerate()
+                .map(|(i, g)| Touched {
+                    id: format!("facts/{i}"),
+                    commit_before: "abc".into(),
+                    group: (*g).into(),
+                    undone: false,
+                })
+                .collect(),
+            backups: vec!["harness".into()],
+            phases: vec![],
+            proposals: vec![],
+            sidecars_undone: vec![],
+        };
+        assert_eq!(
+            receipt_line(&r, 3.0),
+            "- 20 retitled · 21 merged · 10 verified · $0.37 of $3.00 · undo: `dreaming_undo(\"2026-10-08\")` or one group: merge, retitle, verify, skill:harness"
+        );
+        r.summary.counts = NightCounts::default();
+        r.knowledge.clear();
+        r.backups.clear();
+        assert_eq!(receipt_line(&r, 1.0), "- nothing changed · $0.37 of $1.00");
     }
 }
