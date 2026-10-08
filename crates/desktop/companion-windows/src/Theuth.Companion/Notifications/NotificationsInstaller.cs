@@ -24,6 +24,7 @@ internal sealed class NotificationsInstaller : IDisposable
     private readonly Store store;
     private readonly DispatcherQueue dispatcher;
     private NotifyProbe? probe;
+    private PinTipScheduler? pinTip; // W6 item 1
 
     /// <summary>Before any window (§4.4, C1): the handler, then <c>AppNotificationManager.Register()</c>.</summary>
     public static void RegisterNotifications() => Notifier.RegisterEarly();
@@ -93,6 +94,13 @@ internal sealed class NotificationsInstaller : IDisposable
 
         LoginItem.Reconcile(model.Value);
 
+        // W6 item 1 (§4.5): the first-run pin tip — armed from the tray's first NIM_ADD, not during probes (they exit in seconds).
+        if (!W3Flags.AnyProbe && ui is not null)
+        {
+            pinTip = new PinTipScheduler(Notifier, model, dispatcher, () => ui.TrayAddedAt);
+            pinTip.Start();
+        }
+
         if (W3Flags.RequestNotifications)
         {
             // The one non-UI place the urgent consent may be raised — the user runs it (Swift: --request-notifications).
@@ -126,6 +134,7 @@ internal sealed class NotificationsInstaller : IDisposable
     /// <summary>At exit: hooks off, the COM activator unregistered (a later click launches a new process).</summary>
     public void Dispose()
     {
+        pinTip?.Dispose();
         Breakpoints.Dispose();
         DoubleTap.Dispose();
         Notifier.Dispose();

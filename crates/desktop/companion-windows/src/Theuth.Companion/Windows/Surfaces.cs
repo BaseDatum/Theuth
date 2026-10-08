@@ -53,6 +53,8 @@ internal sealed class Surfaces : IDisposable
         {
             if (msg == PInvoke.WM_DISPLAYCHANGE || msg == PInvoke.WM_SETTINGCHANGE) rail?.Layout();
         };
+        // W6 item 3 (C13): the transparency / animation switches, live — the rail and the panel subscribe in their constructors.
+        var effects = SystemEffects.Start(dispatcher, host);
 
         tray = new Tray(host);
         tray.Activated += OnTrayClick;
@@ -71,6 +73,13 @@ internal sealed class Surfaces : IDisposable
         panel = new AttentionPanelWindow(store) { ProbeMode = probe };
         legend = new LegendWindow(store);
         menu = new TrayMenu(host);
+        SystemEffects.ApplyTransitions(legend.Hwnd, effects.AnimationsEnabled);
+        SystemEffects.ApplyTransitions(peek.Hwnd, effects.AnimationsEnabled);
+        effects.Changed += () =>
+        {
+            SystemEffects.ApplyTransitions(legend.Hwnd, effects.AnimationsEnabled);
+            SystemEffects.ApplyTransitions(peek.Hwnd, effects.AnimationsEnabled);
+        };
 
         store.PropertyChanged += OnStoreChanged;
         store.CloseRequested += () => panel.Close(returnFocus: true);
@@ -101,6 +110,9 @@ internal sealed class Surfaces : IDisposable
 
     /// <summary>The global hotkeys (W4: <c>Released</c> for hold-to-talk).</summary>
     public Hotkeys Hotkeys { get; }
+
+    /// <summary>W6 (item 1): when the tray icon's first <c>NIM_ADD</c> succeeded — the pin tip checks promotion ≥ 60 s later; null = no icon.</summary>
+    public DateTimeOffset? TrayAddedAt => tray.AddedAt;
 
     /// <summary>W3: Pause notifications ▸ "1h" · "tomorrow" · "off". The menu rows are disabled until something listens.</summary>
     public event Action<string>? PauseRequested;
@@ -396,6 +408,7 @@ internal sealed class Surfaces : IDisposable
             try { w.CloseForGood(); }
             catch (Exception) { }
         }
+        SystemEffects.Current?.Dispose();
         host.Dispose();
         Log.Write("surfaces down: tray removed, hotkeys released");
     }

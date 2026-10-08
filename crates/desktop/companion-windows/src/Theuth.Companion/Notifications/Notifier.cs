@@ -311,6 +311,34 @@ internal sealed class Notifier : IDisposable
         }
     }
 
+    /// <summary>W6 item 1: the pin tip's view of W3's rules — paused (nothing is posted) and the deferrable class switched off.</summary>
+    public bool IsPaused => policy.IsPaused(DateTimeOffset.Now);
+
+    public bool DeferrableOff => settings.Value.Notify.Deferrable == NotifyMode.Off;
+
+    /// <summary>Posts the first-run pin tip (<see cref="PinTip"/>); logged like every toast. False when not registered or <c>Show</c> threw.</summary>
+    public bool ShowPinTip()
+    {
+        if (!registered)
+        {
+            Log.Write("notifications: NOT registered — pin tip dropped");
+            return false;
+        }
+        try
+        {
+            var n = ToastBuilder.BuildPinTip();
+            manager.Show(n);
+            posted++;
+            Log.Write($"notifications: [tip] post tip level=passive sound=false thread={PinTip.Group} id={PinTip.Tag} tag={PinTip.Tag} group={PinTip.Group} title=\"{PinTip.Title}\" button=\"{PinTip.ButtonLabel}\" uri={PinTip.SettingsUri} toastId={n.Id}");
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.Write($"notifications: [tip] pin tip ERROR hr=0x{e.HResult:X8} {e.Message}");
+            return false;
+        }
+    }
+
     /// <summary>An item answered elsewhere (or a drained batch): the toast leaves the centre too (D8 — matters more than on macOS).</summary>
     private void Withdraw(string id)
     {

@@ -1,0 +1,179 @@
+namespace Theuth.Companion.Core.Tests;
+
+// Design 134 W6 polish: the first-run "pin theuth to the taskbar corner" decision (item 1) and the settings key it persists;
+// the failed-desk-turn receipt (item 7).
+
+public sealed class PinTipTests
+{
+    private const string Exe = @"C:\Users\user\AppData\Local\theuth\companion\Theuth.Companion.exe";
+    private static readonly TimeSpan Late = TimeSpan.FromSeconds(61);
+
+    private static NotifyIconEntry Entry(string exe = Exe, int? promoted = null) => new(exe, promoted);
+
+    private static PinTipVerdict Decide(string? shownFor = null, IEnumerable<NotifyIconEntry>? entries = null, TimeSpan? since = null, bool paused = false, bool off = false) =>
+        PinTip.Decide(shownFor, Exe, entries ?? Array.Empty<NotifyIconEntry>(), since ?? Late, paused, off);
+
+    [Fact]
+    public void NotPromotedShowsOnceTheEntryExists()
+    {
+        Assert.Equal(PinTipVerdict.Show, Decide(entries: new[] { Entry(promoted: 0) }));
+        Assert.Equal(PinTipVerdict.Show, Decide(entries: new[] { Entry(promoted: null) })); // IsPromoted absent = overflow
+        // Another install's row (W2's slot path) does not speak for this exe.
+        Assert.Equal(PinTipVerdict.NoEntryYet, Decide(entries: new[] { Entry(@"C:\Users\user\Develop\theuth-ci-w2\x\Theuth.Companion.exe", 1) }));
+    }
+
+    [Fact]
+    public void PromotedResolvesAndNoEntryWaits()
+    {
+        Assert.Equal(PinTipVerdict.Promoted, Decide(entries: new[] { Entry(promoted: 1) }));
+        Assert.Equal(PinTipVerdict.Promoted, Decide(entries: new[] { Entry(Exe.ToUpperInvariant(), 1) })); // Explorer's casing
+        Assert.Equal(PinTipVerdict.NoEntryYet, Decide());
+        Assert.True(PinTip.Persists(PinTipVerdict.Promoted) && PinTip.Persists(PinTipVerdict.Show));
+        Assert.False(PinTip.Persists(PinTipVerdict.NoEntryYet) || PinTip.Persists(PinTipVerdict.Paused) || PinTip.Persists(PinTipVerdict.Off));
+    }
+
+    [Fact]
+    public void TooEarlyBeforeSixtySeconds()
+    {
+        Assert.Equal(PinTipVerdict.TooEarly, Decide(entries: new[] { Entry(promoted: 0) }, since: TimeSpan.FromSeconds(59)));
+        Assert.Equal(PinTipVerdict.Show, Decide(entries: new[] { Entry(promoted: 0) }, since: TimeSpan.FromSeconds(60)));
+        Assert.False(PinTip.IsFinal(PinTipVerdict.TooEarly) || PinTip.IsFinal(PinTipVerdict.NoEntryYet) || PinTip.IsFinal(PinTipVerdict.Paused));
+    }
+
+    [Fact]
+    public void AlreadyShownIsPerExePath()
+    {
+        Assert.Equal(PinTipVerdict.AlreadyShown, Decide(shownFor: Exe, entries: new[] { Entry(promoted: 0) }));
+        Assert.Equal(PinTipVerdict.AlreadyShown, Decide(shownFor: Exe.ToLowerInvariant() + " ", entries: new[] { Entry(promoted: 0) }));
+        // Shown for the Debug build in a slot ≠ shown for the install: once per install.
+        Assert.Equal(PinTipVerdict.Show, Decide(shownFor: @"C:\Users\user\Develop\theuth-ci-w6\…\Theuth.Companion.exe", entries: new[] { Entry(promoted: 0) }));
+        Assert.True(PinTip.IsFinal(PinTipVerdict.AlreadyShown));
+    }
+
+    [Fact]
+    public void PausedWaitsAndOffStaysSilent()
+    {
+        // W3's informational-toast rules: nothing while paused (re-check later), nothing when the deferrable class is Off.
+        Assert.Equal(PinTipVerdict.Paused, Decide(entries: new[] { Entry(promoted: 0) }, paused: true));
+        Assert.Equal(PinTipVerdict.Promoted, Decide(entries: new[] { Entry(promoted: 1) }, paused: true)); // promotion still resolves
+        Assert.Equal(PinTipVerdict.Off, Decide(entries: new[] { Entry(promoted: 0) }, off: true));
+        Assert.Equal(PinTipVerdict.AlreadyShown, Decide(shownFor: Exe, entries: new[] { Entry(promoted: 0) }, off: true));
+        Assert.True(PinTip.IsFinal(PinTipVerdict.Off));
+    }
+
+    [Fact]
+    public void TheToastTextNamesTheSettingsPath()
+    {
+        Assert.Equal("Keep theuth in view", PinTip.Title);
+        Assert.Contains("Settings › Personalization › Taskbar › Other system tray icons › theuth", PinTip.Body, StringComparison.Ordinal);
+        Assert.Equal("Open taskbar settings", PinTip.ButtonLabel);
+        Assert.Equal("ms-settings:taskbar", PinTip.SettingsUri);
+        Assert.StartsWith("pin tip: check 2 verdict=Show sinceAdd=61s entry=IsPromoted=0", PinTip.Describe(PinTipVerdict.Show, Entry(promoted: 0), Late, 2), StringComparison.Ordinal);
+        Assert.EndsWith("entry=none", PinTip.Describe(PinTipVerdict.NoEntryYet, null, Late, 1), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheShownForKeyRoundTripsAndStaysOutOfTheFileWhenEmpty()
+    {
+        var store = new SettingsStore();
+        var s = new CompanionSettings { PinTipShownFor = Exe };
+        s.Save(store);
+        Assert.Equal(Exe, store.String(PinTip.Key));
+        var back = CompanionSettings.Load(store);
+        Assert.Equal(Exe, back.PinTipShownFor);
+        Assert.Equal(s, back);
+        Assert.NotEqual(s, new CompanionSettings()); // the flag is part of equality, so SettingsModel.Update persists it
+        new CompanionSettings().Save(store);
+        Assert.False(store.Contains(PinTip.Key));
+        Assert.Equal("", CompanionSettings.Load(store).PinTipShownFor);
+        Assert.Contains(PinTip.Key, CompanionSettings.Key.All);
+    }
+}
+
+// Design 134 W6 item 7: a failed desk turn ends the Ask bar's receipt (found live on build-B 2026-10-08 04:06 — every turn failed
+// with a model resolver error while the receipt said "sent — waiting for the desk" forever).
+public sealed class AskReplyFailureTests
+{
+    private const string Resolver = "model: Resolver error for model 'anthropic::claude-sonnet-4-5 (adapter: Anthropic)'. Cause: ApiKeyEnvNotFound { env_name: \"ANTHROPIC_API_KEY\" }";
+
+    private static AskRouter Sent()
+    {
+        var r = new AskRouter();
+        r.Resolved("desk", hub: true);
+        r.Sent("desk");
+        return r;
+    }
+
+    [Fact]
+    public void TheErrorEventEndsTheReceiptWithTheFirstLineClipped()
+    {
+        var r = Sent();
+        Assert.False(r.Observe(new ReplyEvent.Error("other", "noise"))); // another session's error is not ours
+        Assert.True(r.Observe(new ReplyEvent.Error("desk", Resolver + "\nsecond line is not shown")));
+        var reply = r.Reply!;
+        Assert.True(reply.Finished && reply.Failed);
+        var text = reply.FirstTwoLines;
+        Assert.StartsWith("theuth couldn't reply — model: Resolver error for model 'anthropic::claude-sonnet-4-5", text, StringComparison.Ordinal);
+        Assert.EndsWith("…", text, StringComparison.Ordinal);
+        Assert.True(text.Length <= AskReply.FailedPrefix.Length + AskReply.FailedClip);
+        Assert.DoesNotContain("second line", text, StringComparison.Ordinal);
+        // The engine then publishes TurnFinished { stop_reason: "error" }: the finished reply stays as it is.
+        Assert.False(r.Observe(new ReplyEvent.TurnFinished("desk", "error")));
+        Assert.False(r.Observe(new ReplyEvent.TextDelta("desk", "late")));
+        Assert.Equal(text, r.Reply!.FirstTwoLines);
+    }
+
+    [Fact]
+    public void StopReasonErrorEndsTheReceiptEvenWithNothingStreamed()
+    {
+        var r = Sent();
+        Assert.True(r.Observe(new ReplyEvent.TurnFinished("desk", "error")));
+        Assert.True(r.Reply!.Finished && r.Reply.Failed);
+        Assert.Equal("theuth couldn't reply — the desk's turn ended with an error", r.Reply.FirstTwoLines);
+    }
+
+    [Fact]
+    public void CancelledTimedOutAndInterruptedEndTheReceipt()
+    {
+        var r = Sent();
+        Assert.True(r.Observe(new ReplyEvent.TurnFinished("desk", "cancelled")));
+        Assert.Equal("theuth couldn't reply — the turn was cancelled", r.Reply!.FirstTwoLines);
+        r = Sent();
+        Assert.True(r.Observe(new ReplyEvent.TextDelta("desk", "half an answer")));
+        Assert.True(r.Observe(new ReplyEvent.TurnFinished("desk", "timed_out")));
+        Assert.Equal("theuth couldn't reply — the turn was timed out", r.Reply!.FirstTwoLines); // the failure wins over the partial text
+        r = Sent();
+        Assert.True(r.Observe(new ReplyEvent.TurnFinished("desk", "interrupted")));
+        Assert.True(r.Reply!.Failed);
+        Assert.True(AskRouter.IsFailure("error") && AskRouter.IsFailure("cancelled") && AskRouter.IsFailure("timed_out") && AskRouter.IsFailure("interrupted"));
+        Assert.False(AskRouter.IsFailure("end_turn") || AskRouter.IsFailure("stop") || AskRouter.IsFailure(null) || AskRouter.IsFailure("max_tokens"));
+    }
+
+    [Fact]
+    public void ANormalReplyIsUnchanged()
+    {
+        var r = Sent();
+        Assert.False(r.Observe(new ReplyEvent.TurnFinished("desk", "end_turn"))); // the steered-into turn: nothing streamed, not ours
+        Assert.True(r.Observe(new ReplyEvent.TextDelta("desk", "On it — w3 owns crates/rpc\n")));
+        Assert.True(r.Observe(new ReplyEvent.TurnFinished("desk", "end_turn")));
+        var reply = r.Reply!;
+        Assert.True(reply.Finished && !reply.Failed);
+        Assert.Equal("On it — w3 owns crates/rpc", reply.FirstTwoLines);
+        // Older decoders pass no stop reason: still a normal finish.
+        r = Sent();
+        Assert.True(r.Observe(new ReplyEvent.TextDelta("desk", "yes")));
+        Assert.True(r.Observe(new ReplyEvent.TurnFinished("desk")));
+        Assert.False(r.Reply!.Failed);
+    }
+
+    [Fact]
+    public void TheWireShapeCarriesStopReasonAndMessage()
+    {
+        var finished = Theuth.Companion.Rpc.StreamDelta.Decode("{\"type\":\"TurnFinished\",\"session\":\"desk\",\"turn\":7,\"stop_reason\":\"error\",\"usage\":{},\"context\":12}"u8);
+        Assert.Equal(("TurnFinished", "desk", "error"), (finished.Type, finished.Session, finished.StopReason));
+        var error = Theuth.Companion.Rpc.StreamDelta.Decode("{\"type\":\"Error\",\"session\":\"desk\",\"turn\":7,\"message\":\"model: boom\"}"u8);
+        Assert.Equal(("Error", "desk", "model: boom"), (error.Type, error.Session, error.Message));
+        var delta = Theuth.Companion.Rpc.StreamDelta.Decode("{\"type\":\"TextDelta\",\"session\":\"desk\",\"text\":\"hi\"}"u8);
+        Assert.True(delta.StopReason is null && delta.Message is null && delta.Text == "hi");
+    }
+}

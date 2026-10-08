@@ -40,7 +40,9 @@ internal sealed partial class RailWindow : ToolWindow
     private readonly Store store;
     private readonly Grid root;
     private readonly DispatcherQueueTimer poll;
-    private readonly bool animate;
+    private readonly bool wantBackdrop;
+    private bool animate;
+    private Backdrop? backdrop;
     private readonly List<(Mark Mark, FrameworkElement View)> views = new();
     private readonly List<(RECT Rel, Mark Mark)> hits = new();
     private DispatcherQueueTimer? quietTimer;
@@ -58,13 +60,21 @@ internal sealed partial class RailWindow : ToolWindow
         this.store = store;
         Presence = presence;
         Side = side == "left" ? "left" : "right";
-        animate = MarkGlyph.AnimationsEnabled;
+        animate = SystemEffects.AnimationsOn;
+        // W6 item 2 (A7): Thin acrylic on the layered rail window; `--no-rail-acrylic` keeps W2's opaque surface (the A/B switch).
+        wantBackdrop = !Environment.GetCommandLineArgs().Contains("--no-rail-acrylic");
         root = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Top };
         AutomationProperties.SetAutomationId(root, "rail");
         AutomationProperties.SetName(root, "theuth rail");
         FlatButtons.Apply(root.Resources);
         Content = root;
-        root.ActualThemeChanged += (_, _) => Refresh();
+        ApplyEffects(initial: true);
+        root.ActualThemeChanged += (_, _) =>
+        {
+            backdrop?.SetTheme(root.ActualTheme);
+            Refresh();
+        };
+        if (SystemEffects.Current is { } fx) fx.Changed += () => ApplyEffects(initial: false);
         store.PropertyChanged += OnStoreChanged;
         poll = DispatcherQueue.CreateTimer();
         poll.Interval = TimeSpan.FromMilliseconds(40);
@@ -76,7 +86,35 @@ internal sealed partial class RailWindow : ToolWindow
         ShowPassive();
         poll.Start();
         DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, Layout); // measured again once the tree is live
-        Log.Write($"rail shown: rect={Win32.Text(ScreenRect)} exstyle={Win32.ExStyleText(Win32.ExStyle(Hwnd))} affinity=0x{Win32.DisplayAffinity(Hwnd):X} presence={Presence.RawValue()} side={Side} animations={(animate ? "on" : "off")}");
+        Log.Write($"rail shown: rect={Win32.Text(ScreenRect)} exstyle={Win32.ExStyleText(Win32.ExStyle(Hwnd))} affinity=0x{Win32.DisplayAffinity(Hwnd):X} presence={Presence.RawValue()} side={Side} animations={(animate ? "on" : "off")} backdrop={BackdropText}");
+    }
+
+    /// <summary>"acrylic-thin" while the material is attached; "opaque" (transparency off, unsupported, or --no-rail-acrylic).</summary>
+    public string BackdropText => backdrop?.Material ?? "opaque";
+
+    /// <summary>
+    /// C13 live (W6 item 3): "Transparency effects" decides the backdrop (attach / detach, the surface goes opaque),
+    /// "Animation effects" decides the working beat and the window transitions; re-rendered on every change.
+    /// </summary>
+    private void ApplyEffects(bool initial)
+    {
+        bool transparency = SystemEffects.TransparencyOn;
+        bool animations = SystemEffects.AnimationsOn;
+        if (wantBackdrop && transparency && backdrop is null)
+        {
+            backdrop = Backdrop.Attach(this, BackdropKind.AcrylicThin, Palette.ColorOf(Palette.Surface, root.ActualTheme), root.ActualTheme, "rail");
+        }
+        else if ((!transparency || !wantBackdrop) && backdrop is not null)
+        {
+            backdrop.Dispose();
+            backdrop = null;
+            Log.Write("rail: backdrop detached — opaque surface (transparency effects off)");
+        }
+        SystemEffects.ApplyTransitions(Hwnd, animations);
+        if (initial) { animate = animations; return; }
+        animate = animations;
+        Log.Write($"rail: effects applied — backdrop={BackdropText} animations={(animations ? "on" : "off")}");
+        Refresh();
     }
 
     public RailPresence Presence { get; private set; }
@@ -133,14 +171,15 @@ internal sealed partial class RailWindow : ToolWindow
         rectsDirty = true;
         if (collapsed)
         {
-            root.Background = Palette.Tint(Palette.Sand, theme, 0.55);
+            // The sliver's sand tint rides on the acrylic when there is one, on the opaque surface otherwise.
+            root.Background = backdrop is null ? Palette.Tint(Palette.Sand, theme, 0.55) : Palette.Tint(Palette.Sand, theme, 0.45);
             var sliver = new Border { Height = SliverHeight, Background = Palette.Transparent };
             AutomationProperties.SetAutomationId(sliver, "rail-sliver");
             AutomationProperties.SetName(sliver, "theuth rail, quiet");
             root.Children.Add(sliver);
             return;
         }
-        root.Background = Palette.Brush(Palette.Surface, theme);
+        root.Background = backdrop is null ? Palette.Brush(Palette.Surface, theme) : Palette.Transparent;
         var rail = store.Rail;
         var stack = new StackPanel { Spacing = 6, Padding = new Thickness(0, 10, 0, 10), HorizontalAlignment = HorizontalAlignment.Stretch };
         var word = MarkGlyph.Wordmark(theme);

@@ -52,6 +52,26 @@ internal static class ToastBuilder
         return builder.BuildNotification();
     }
 
+    /// <summary>
+    /// 134 W6 item 1: the first-run "pin theuth to the taskbar corner" tip (<see cref="PinTip"/>) — Default scenario (Do not
+    /// disturb applies), muted, body tap = <c>later</c> (nothing), one button that opens <c>ms-settings:taskbar</c> by protocol
+    /// activation (works whether or not the companion still runs; the Settings app, not the companion, is activated).
+    /// </summary>
+    public static AppNotification BuildPinTip()
+    {
+        var builder = new AppNotificationBuilder()
+            .AddArgument(ArgAction, "later")
+            .AddArgument(ArgBanner, PinTip.Tag)
+            .AddArgument(ArgCategory, "tip")
+            .AddText(PinTip.Title)
+            .AddText(PinTip.Body)
+            .SetTag(PinTip.Tag)
+            .SetGroup(PinTip.Group)
+            .MuteAudio()
+            .AddButton(new AppNotificationButton(PinTip.ButtonLabel).SetInvokeUri(new Uri(PinTip.SettingsUri)));
+        return builder.BuildNotification();
+    }
+
     /// <summary>Swift's category table (Notifier.category), per toast: option buttons from the card, then the category's own actions.</summary>
     /// <summary>A button's arguments REPLACE the toast's launch arguments when it is pressed (they are not merged), so every
     /// button repeats <c>banner</c> and <c>item</c>.</summary>
