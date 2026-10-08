@@ -10,11 +10,14 @@ use serde::{Deserialize, Serialize};
 pub type NightId = String;
 
 /// Why a case exists (136 §6).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "kebab-case")]
 pub enum CaseKind {
     /// The user corrected the assistant.
+    #[default]
     Correction,
     /// The user asked again.
     ReAsk,
@@ -46,22 +49,28 @@ pub enum Split {
 }
 
 /// Where a case came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum CaseOrigin {
     /// Mined from the ledger.
+    #[default]
     Real,
     /// Written by a model; never `val`.
     Synthetic,
 }
 
 /// A case's life (136 §6, §7.2 step 5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum CaseState {
     /// Not yet addressed by an edit.
+    #[default]
     Open,
     /// An accepted edit closed it (`closed_by`).
     Closed,
@@ -276,7 +285,9 @@ pub struct NightReceipt {
 }
 
 /// What a proposal asks (136 §4 phase 6).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalKind {
@@ -285,6 +296,7 @@ pub enum ProposalKind {
     /// An always-approved confirmation → a double class / policy change.
     DoubleClass,
     /// A fact re-explained ≥ 2 times → "I'll remember: …".
+    #[default]
     Remember,
 }
 

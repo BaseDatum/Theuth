@@ -1,8 +1,10 @@
-//! The nine `dreaming` tools (design doc 136 §9.4, contract §2.4). Wave C
-//! registers every one with its name, Risk, args and RETURNS; bodies answer
-//! `not built: W3` except `dreaming_state`, which reads `state.json`. Every
+//! The nine `dreaming` tools (design doc 136 §9.4, contract §2.4). Every
 //! mutating tool runs only in the dreaming routine's session or the owner's
 //! own root session (the knowledge `Consolidator` gate, 136 §2.1).
+//! `dreaming_ledger` opens the night and `dreaming_journal{section: "journal"}`
+//! closes it; two journal sections are protocols — `proposals` (a JSON array
+//! of drafts → the inbox) and `meta-note` (replaces `state.meta_note`) — so
+//! the tool table stays at nine.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,7 +17,8 @@ use tools::registry::ToolRegistry;
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::config::DreamConfig;
-use crate::types::{Case, CaseState, EditRecord, NightId, Split};
+use crate::night::{DREAMING_ACTOR, Night, ProposalDraft};
+use crate::types::{Case, CaseKind, CaseOrigin, CaseState, EditRecord, NightId, Split};
 
 /// What every tool needs: the data dir, the config, and the gate.
 pub struct Seams {
@@ -111,14 +114,40 @@ impl Tool for LedgerTool {
             .into()
     }
 
-    async fn call(&self, a: LedgerArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let l = crate::ledger::build(&self.0.data_dir, a.since.as_deref()).await?;
+    async fn call(&self, a: LedgerArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let l = crate::ledger::build(
+            &self.0.data_dir,
+            &self.0.cfg,
+            self.0.knowledge.as_deref(),
+            Some(cx.session),
+            a.since.as_deref(),
+        )
+        .await?;
         Ok(structured(
             format!(
-                "ledger {}..{}: {} sessions",
+                "night {} ({}); ledger {}..{}: {} sessions, {} plain user messages, {} tool errors, {} rewinds; \
+                 backlog fresh {} / untidied {} / open cases {}; tidy candidates: {} fresh, {} retitle, {} duplicate stems, \
+                 {} archive-by-use, {} to verify{}",
+                l.night,
+                l.mode,
                 l.ledger.since,
                 l.ledger.until,
-                l.ledger.sessions.len()
+                l.sessions,
+                l.ledger.user_messages.len(),
+                l.ledger.tool_errors.len(),
+                l.ledger.rewinds.len() + l.pending_rewinds.len(),
+                l.backlog.fresh,
+                l.backlog.untidied,
+                l.backlog.open_cases,
+                l.tidy.fresh.len(),
+                l.tidy.retitle.len(),
+                l.tidy.duplicate_stems.len(),
+                l.tidy.archive_by_use.len(),
+                l.tidy.verify_sample.len(),
+                l.run_request.as_ref().map_or(String::new(), |r| format!(
+                    "; run_request: ${} {:?}",
+                    r.budget_usd, r.mode
+                ))
             ),
             l,
         ))
@@ -146,7 +175,13 @@ impl Tool for StateTool {
     }
 
     async fn call(&self, _: NoArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let st = crate::night::status(&self.0.data_dir, &self.0.cfg);
+        let st = match ActorRef::<Night>::lookup(DREAMING_ACTOR) {
+            Ok(Some(a)) => a
+                .ask(crate::night::Status)
+                .await
+                .unwrap_or_else(|_| crate::night::status(&self.0.data_dir, &self.0.cfg)),
+            _ => crate::night::status(&self.0.data_dir, &self.0.cfg),
+        };
         let text = match &st.last_night {
             Some(n) => format!(
                 "last night {}: {} merged, {} archived, {} edits kept, ${:.2}; budget left tonight ${:.2}",
@@ -166,11 +201,64 @@ impl Tool for StateTool {
     }
 }
 
+/// A case as the Mine phase hands it in (136 §6 shape; the harness fills
+/// `id`, `night`, `at`, `split`). An `id` of an existing case makes this a
+/// state transition (`closed` with `closed_by`, `reopened`, `settled`).
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CaseDraft {
+    /// Empty for a new case; an existing id to change its state.
+    #[serde(default)]
+    pub id: String,
+    /// `correction | re-ask | disapproval | rewind | stop | denial | tool-chain | hint-miss | task-returned`.
+    #[serde(default = "default_kind")]
+    pub kind: CaseKind,
+    /// The generalised intent.
+    #[serde(default)]
+    pub intent: String,
+    /// ≤ 1,200 chars ending just before the mistake.
+    #[serde(default)]
+    pub context: String,
+    /// What the assistant did.
+    #[serde(default)]
+    pub happened: String,
+    /// The user's words, verbatim.
+    #[serde(default)]
+    pub user_words: String,
+    /// What right would have looked like (required for a new case).
+    #[serde(default)]
+    pub ideal: String,
+    /// Free tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// `<skill name>` | `prompt:standing-preferences` | `knowledge:<id>`.
+    #[serde(default)]
+    pub skill_hint: String,
+    /// Where it happened.
+    #[serde(default)]
+    pub source_session: Option<runtime::SessionId>,
+    /// RFC 3339 of the moment; empty = now.
+    #[serde(default)]
+    pub at: String,
+    /// `real` (default) | `synthetic`.
+    #[serde(default)]
+    pub origin: CaseOrigin,
+    /// `open` (default) | `closed` | `reopened` | `settled`.
+    #[serde(default)]
+    pub state: CaseState,
+    /// `edit:<id>` when closing.
+    #[serde(default)]
+    pub closed_by: Option<String>,
+}
+
+fn default_kind() -> CaseKind {
+    CaseKind::Correction
+}
+
 /// Arguments for [`CasePutTool`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CasePutArgs {
-    /// The case (136 §6 shape); `id`, `night`, `split`, `state` are set by the harness when empty.
-    pub case: Case,
+    /// The case.
+    pub case: CaseDraft,
 }
 
 /// `case_put`: append one case to `cases.jsonl`.
@@ -191,8 +279,51 @@ impl Tool for CasePutTool {
 
     async fn call(&self, a: CasePutArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         self.0.mutating(Self::NAME, &cx).await?;
-        crate::cases::append(&self.0.data_dir, &a.case)?;
-        Ok(ToolOutput::ok(a.case.id))
+        let d = a.case;
+        if !d.id.trim().is_empty()
+            && let Ok(existing) = crate::cases::get(&self.0.data_dir, d.id.trim())
+        {
+            anyhow::ensure!(
+                d.state != existing.state,
+                "case {} is already {:?}",
+                existing.id,
+                existing.state
+            );
+            let c = crate::cases::transition(
+                &self.0.data_dir,
+                &existing.id,
+                d.state,
+                d.closed_by.as_deref(),
+            )?;
+            return Ok(ToolOutput::ok(c.id));
+        }
+        anyhow::ensure!(
+            !d.ideal.trim().is_empty(),
+            "a case needs `ideal` (what right looked like); log friction without one as a count, not a case"
+        );
+        anyhow::ensure!(!d.intent.trim().is_empty(), "a case needs `intent`");
+        let case = Case {
+            id: d.id,
+            night: String::new(),
+            kind: d.kind,
+            intent: d.intent,
+            context: d.context,
+            happened: d.happened,
+            user_words: d.user_words,
+            ideal: d.ideal,
+            tags: d.tags,
+            skill_hint: d.skill_hint,
+            source_session: d.source_session.unwrap_or(cx.session),
+            at: d.at,
+            split: Split::Train,
+            origin: d.origin,
+            state: d.state,
+            closed_by: d.closed_by,
+            reopened_at: None,
+        };
+        let night = crate::ledger::tonight();
+        let c = crate::cases::append(&self.0.data_dir, &case, &night)?;
+        Ok(ToolOutput::ok(c.id))
     }
 }
 
@@ -315,9 +446,11 @@ impl Tool for ReplayTool {
             .into()
     }
 
-    async fn call(&self, a: ReplayArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: ReplayArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let r = crate::replay::replay(
             &self.0.data_dir,
+            &self.0.cfg,
+            cx.session,
             &a.case_id,
             a.candidate_text.as_deref(),
             a.target_model.as_deref(),
@@ -332,7 +465,7 @@ impl Tool for ReplayTool {
 pub struct PreferencesSetArgs {
     /// `add | replace | demote`.
     pub op: String,
-    /// The line (≤ 140 chars).
+    /// The line (≤ 140 chars); for `replace`: `"<old line> => <new line>"`.
     pub line: String,
     /// Session ids / `user` backing it.
     #[serde(default)]
@@ -358,6 +491,7 @@ impl Tool for PreferencesSetTool {
         self.0.mutating(Self::NAME, &cx).await?;
         let block = crate::preferences::set(
             &self.0.data_dir,
+            self.0.knowledge.as_deref(),
             &a.op,
             &a.line,
             &a.evidence,
@@ -390,17 +524,95 @@ impl Tool for JournalTool {
 
     fn description(&self) -> String {
         "Dreaming only: append markdown under a section of tonight's entry in the `Dreaming` note (counts, \
-         changed groups with their undo handles, proposals, spend, the meta-note diff)."
+         changed groups with their undo handles, spend). Three sections are special: `proposals` takes a JSON \
+         array of {kind: routine|double_class|remember, title, body, options} and files them for the inbox \
+         (≤ 3 per week); `meta-note` replaces the ≤ 1,200-char meta-note; `journal` closes the night \
+         (counts, spend, last_dream_at) — call it last, once."
             .into()
     }
 
     async fn call(&self, a: JournalArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         self.0.mutating(Self::NAME, &cx).await?;
-        crate::journal::append(&self.0.data_dir, &a.night, &a.section, &a.markdown).await?;
-        Ok(ToolOutput::ok(format!(
-            "journal {}: {}",
-            a.night, a.section
-        )))
+        let actor = ActorRef::<Night>::lookup(DREAMING_ACTOR).ok().flatten();
+        match a.section.as_str() {
+            "proposals" => {
+                let drafts: Vec<ProposalDraft> =
+                    serde_json::from_str(a.markdown.trim()).map_err(|e| {
+                        anyhow::anyhow!("`proposals` takes a JSON array of drafts: {e}")
+                    })?;
+                let n = drafts.len();
+                let actor = actor.ok_or_else(|| anyhow::anyhow!("dreaming is not running"))?;
+                let rows = actor
+                    .ask(crate::night::Propose {
+                        night: a.night.clone(),
+                        drafts,
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let mut md: String = rows
+                    .iter()
+                    .map(|p| {
+                        format!(
+                            "- {} — {} · `proposal:{}`\n",
+                            p.title,
+                            p.options.join(" / "),
+                            p.id
+                        )
+                    })
+                    .collect();
+                if rows.len() < n {
+                    md.push_str(&format!(
+                        "- {} more not filed: the cap is {} rows per 7 days\n",
+                        n - rows.len(),
+                        self.0.cfg.caps.rows_per_week
+                    ));
+                }
+                crate::journal::append(&self.0.data_dir, &a.night, "Proposals", &md).await?;
+                Ok(structured(
+                    format!("{} of {} proposals filed", rows.len(), n),
+                    rows,
+                ))
+            }
+            "meta-note" => {
+                let actor = actor.ok_or_else(|| anyhow::anyhow!("dreaming is not running"))?;
+                let old = actor
+                    .ask(crate::night::SetMetaNote(a.markdown.clone()))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let md = format!(
+                    "Before:\n{}\n\nAfter:\n{}\n",
+                    if old.trim().is_empty() {
+                        "(empty)"
+                    } else {
+                        old.trim()
+                    },
+                    a.markdown.trim()
+                );
+                crate::journal::append(&self.0.data_dir, &a.night, "Meta-note", &md).await?;
+                Ok(ToolOutput::ok("meta-note replaced"))
+            }
+            section => {
+                crate::journal::append(&self.0.data_dir, &a.night, section, &a.markdown).await?;
+                if let Some(actor) = actor {
+                    let phase = section.to_lowercase();
+                    actor
+                        .ask(crate::night::Commit {
+                            night: a.night.clone(),
+                            phase: phase.clone(),
+                            summary: a.markdown.lines().next().unwrap_or("").to_owned(),
+                        })
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    if phase == "journal" {
+                        return Ok(ToolOutput::ok(format!("journal {}: night closed", a.night)));
+                    }
+                }
+                Ok(ToolOutput::ok(format!(
+                    "journal {}: {}",
+                    a.night, a.section
+                )))
+            }
+        }
     }
 }
 
@@ -432,7 +644,25 @@ impl Tool for UndoTool {
 
     async fn call(&self, a: UndoArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         self.0.mutating(Self::NAME, &cx).await?;
-        let r = crate::undo::undo(&self.0.data_dir, &a.night, a.group.as_deref()).await?;
+        let r = match ActorRef::<Night>::lookup(DREAMING_ACTOR) {
+            Ok(Some(actor)) => actor
+                .ask(crate::night::Undo {
+                    night: a.night.clone(),
+                    group: a.group.clone(),
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+            _ => {
+                crate::undo::undo(
+                    &self.0.data_dir,
+                    self.0.knowledge.as_deref(),
+                    None,
+                    &a.night,
+                    a.group.as_deref(),
+                )
+                .await?
+            }
+        };
         Ok(structured(
             format!(
                 "undone {}: {} concepts, {} skills",
@@ -563,6 +793,6 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(e.contains("not built: W3"), "{e}");
+        assert!(e.contains("no case x"), "{e}");
     }
 }

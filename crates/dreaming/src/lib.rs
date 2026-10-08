@@ -9,11 +9,10 @@
 //! - [`signals`]: the `Signals` actor → `signals.json` (§9.3; the gate's input).
 //! - [`night`]: the `Night` actor → `state.json`, status, settings (§9.3).
 //! - [`sensor_rules`]: the gate rule, mirrored by `sensor.py` (§4 phase 0).
-//! - [`ledger`], [`cases`], [`edits`], [`replay`], [`preferences`], [`journal`], [`undo`]: the phases (W3).
+//! - [`ledger`], [`tidy`], [`cases`], [`edits`], [`replay`], [`preferences`], [`journal`], [`undo`]: the phases.
+//! - [`scrub`]: the secrets scrubber every write runs through (§10).
 //! - [`tools`]: the nine tools (§9.4). [`rpc`]: the `dreaming.*` methods (§9.5).
-//!
-//! Wave C (this file's shape) is the contract; behaviour lands in the modules
-//! the `// 136 W3` markers name.
+//! - [`dry_run`]: `t dreaming dry-run` — Recall + rule-only Tidy, zero writes.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -22,6 +21,7 @@ use runtime::Runtime;
 
 pub mod cases;
 pub mod config;
+pub mod dry_run;
 pub mod edits;
 pub mod journal;
 pub mod ledger;
@@ -29,8 +29,10 @@ pub mod night;
 pub mod preferences;
 pub mod replay;
 pub mod rpc;
+pub mod scrub;
 pub mod sensor_rules;
 pub mod signals;
+pub mod tidy;
 pub mod tools;
 pub mod types;
 pub mod undo;
@@ -140,11 +142,9 @@ pub fn install_files(
 
 /// `t dreaming dry-run --data-dir <copy>` (136 §3.3 item 7): Recall plus
 /// the deterministic parts of Tidy with zero writes; the counts the journal
-/// would show. Wave C: the empty report; 136 W3 fills it.
+/// would show ([`dry_run::render`] prints them).
 pub async fn dry_run(data_dir: &Path) -> anyhow::Result<Report> {
-    // 136 W3
-    let _ = data_dir;
-    Ok(Report::default())
+    dry_run::dry_run(data_dir).await
 }
 
 /// The plugin. Reads `dreaming:`; when enabled installs the bundled files,
@@ -299,10 +299,194 @@ mod tests {
         assert!(SENSOR.starts_with("# theuth-sensor: dreaming 1\n"));
     }
 
+    #[test]
+    fn skill_carries_the_judge_prompt_verbatim_and_stays_under_24kb() {
+        assert!(
+            SKILL.contains(crate::replay::JUDGE_PROMPT),
+            "skill.md and replay::JUDGE_PROMPT differ"
+        );
+        assert!(SKILL.len() < 24 * 1024, "{} bytes", SKILL.len());
+        for heading in [
+            "## 0 · Gate",
+            "## 1 · Recall",
+            "## 2 · Tidy",
+            "## 3 · Mine",
+            "## 4 · Rehearse",
+            "## 5 · Settle",
+            "## 6 · Suggest",
+            "## 7 · Journal",
+            "### Proposer prompt",
+            "### Judge prompt",
+        ] {
+            assert!(SKILL.contains(heading), "{heading}");
+        }
+        assert!(SKILL.contains("repeat passes while `dreaming_ledger()` reports backlog"));
+    }
+
+    /// A hash of every regular file under `dir` (sqlite side files excluded).
+    fn fingerprint(dir: &Path) -> std::collections::BTreeMap<String, u64> {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut out = std::collections::BTreeMap::new();
+        let mut stack = vec![dir.to_owned()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().filter_map(Result::ok) {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                let name = p.to_string_lossy().to_string();
+                if name.ends_with("-shm") || name.ends_with("-wal") {
+                    continue;
+                }
+                let mut h = std::hash::DefaultHasher::new();
+                std::fs::read(&p).unwrap().hash(&mut h);
+                out.insert(name, h.finish());
+            }
+        }
+        out
+    }
+
+    /// 30 concepts (fresh, long titles, a dated series, a never-opened noise
+    /// fact, a warning, archived) and a 2-session store: the counts the
+    /// contract names, and not one byte changes.
     #[tokio::test]
-    async fn dry_run_is_the_empty_report_and_writes_nothing() {
+    async fn dry_run_counts_the_fixture_and_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(dry_run(dir.path()).await.unwrap(), Report::default());
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        let d = dir.path();
+        let k = d.join(knowledge::DIR);
+        let old = (chrono::Utc::now() - chrono::Duration::days(40))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        let young = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let write = |rel: &str, type_: &str, title: &str, status: &str, ts: &str, extra: &str| {
+            let p = k.join(format!("{rel}.md"));
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(
+                p,
+                format!("---\ntype: {type_}\ntitle: \"{title}\"\nstatus: {status}\ntimestamp: {ts}\n{extra}---\nbody\n"),
+            )
+            .unwrap();
+        };
+        let long = "a long title ".repeat(12); // 156 chars
+        // 10 fresh short, 8 tidy long, 3 dated records (one series), 2 old records, 1 noise, 1 warning, 1 archived long, 4 plain = 30
+        for i in 0..10 {
+            write(
+                &format!("facts/fresh-{i}"),
+                "fact",
+                "short fresh",
+                "fresh",
+                &young,
+                "",
+            );
+        }
+        for i in 0..8 {
+            write(&format!("facts/long-{i}"), "fact", &long, "tidy", &old, "");
+        }
+        for day in ["2026-10-01", "2026-10-02", "2026-10-03"] {
+            write(
+                &format!("facts/dev-machine-state-{day}"),
+                "record",
+                "state",
+                "tidy",
+                &young,
+                "",
+            );
+        }
+        write("facts/old-record-a", "record", "landed", "tidy", &old, "");
+        write("facts/old-record-b", "record", "landed", "tidy", &old, "");
+        write("facts/noise", "fact", "mcp recon", "tidy", &old, "");
+        write(
+            "facts/warn",
+            "warning",
+            "never paste keys",
+            "tidy",
+            &old,
+            "",
+        );
+        write("facts/dead", "fact", &long, "archived", &old, "");
+        for i in 0..4 {
+            write(
+                &format!("procedures/plain-{i}"),
+                "procedure",
+                "how to",
+                "tidy",
+                &old,
+                "verified: 2026-10-01\n",
+            );
+        }
+        assert_eq!(dry_run::read_metas(d).len(), 30);
+        // The uses table, through the knowledge store's own schema.
+        {
+            let rt = Runtime::new(figment::Figment::new(), d.to_owned());
+            let store = knowledge::Knowledge::open(d, rt).await.unwrap();
+            store
+                .record_shown(
+                    &["facts/noise".into(), "facts/warn".into()],
+                    chrono::Utc::now(),
+                )
+                .await
+                .unwrap();
+            for _ in 0..60 {
+                store
+                    .record_shown(&["facts/noise".into()], chrono::Utc::now())
+                    .await
+                    .unwrap();
+                store
+                    .record_shown(&["facts/warn".into()], chrono::Utc::now())
+                    .await
+                    .unwrap();
+            }
+            store
+                .record_shown(&["facts/long-0".into()], chrono::Utc::now())
+                .await
+                .unwrap();
+        }
+        // Two sessions, one advisor (excluded), one tool error.
+        {
+            let store = agent::store::Store::open(&d.join("sessions.sqlite"), None)
+                .await
+                .unwrap();
+            let a = runtime::SessionId::new();
+            store
+                .create_session(a, "m", None, None, None)
+                .await
+                .unwrap();
+            store
+                .create_session_kind(
+                    runtime::SessionId::new(),
+                    "m",
+                    None,
+                    None,
+                    None,
+                    agent::SessionKind::Advisor,
+                )
+                .await
+                .unwrap();
+            store
+                .create_session(runtime::SessionId::new(), "m", Some(a), None, None)
+                .await
+                .unwrap();
+        }
+        // Let the stores' pools close (a WAL checkpoint on close is theirs, not the dry run's).
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let before = fingerprint(d);
+        let r = dry_run(d).await.unwrap();
+        assert_eq!(
+            r,
+            Report {
+                fresh: 10,
+                retitle_candidates: 8,
+                duplicate_stems: 1,
+                // two records past 14 days + the 61-shown / 0-opened fact; the warning is exempt
+                archive_by_use_candidates: 3,
+                verification_sample: 15,
+                sessions: 2,
+                friction_events: 0,
+            },
+            "{r:?}"
+        );
+        assert_eq!(fingerprint(d), before, "dry run changed a file");
+        assert!(dry_run::render(&r).contains("retitle candidates      8"));
     }
 }
