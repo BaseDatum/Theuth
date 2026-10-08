@@ -212,7 +212,11 @@ pub fn persist(path: &Path, cfg: &DreamConfig) -> std::io::Result<()> {
 /// Carry a settings change into the installed routine file: its `budget:`,
 /// `when:` (window / idle / heavy-day args) and `run_timeout:` lines take
 /// the new values; every other line — `enabled:` above all — stays.
-pub fn update_routine_file(data_dir: &Path, cfg: &DreamConfig, engine: Option<&str>) -> std::io::Result<()> {
+pub fn update_routine_file(
+    data_dir: &Path,
+    cfg: &DreamConfig,
+    engine: Option<&str>,
+) -> std::io::Result<()> {
     let path = data_dir.join(schedule::DIR).join("dreaming.md");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(());
@@ -378,12 +382,6 @@ pub struct ProposalDraft {
     pub options: Vec<String>,
 }
 
-impl Default for ProposalKind {
-    fn default() -> Self {
-        ProposalKind::Remember
-    }
-}
-
 /// Proposals created in the last 7 days (waiting + acted).
 pub fn proposals_this_week(data_dir: &Path, now: chrono::DateTime<Utc>) -> usize {
     let cutoff = now - chrono::Duration::days(7);
@@ -406,7 +404,8 @@ pub fn add_proposals(
     drafts: Vec<ProposalDraft>,
 ) -> anyhow::Result<Vec<Proposal>> {
     let now = Utc::now();
-    let mut room = (cfg.caps.rows_per_week as usize).saturating_sub(proposals_this_week(data_dir, now));
+    let mut room =
+        (cfg.caps.rows_per_week as usize).saturating_sub(proposals_this_week(data_dir, now));
     let mut out = Vec::new();
     for d in drafts {
         if room == 0 {
@@ -440,11 +439,21 @@ pub fn file_counts(data_dir: &Path, night: &str, counts: &mut NightCounts) {
     let e = edits::all(data_dir).unwrap_or_default();
     counts.edits_accepted = e
         .iter()
-        .filter(|x| x.night == night && x.gate.as_ref().is_some_and(|g| g.verdict == crate::types::Verdict::Accepted))
+        .filter(|x| {
+            x.night == night
+                && x.gate
+                    .as_ref()
+                    .is_some_and(|g| g.verdict == crate::types::Verdict::Accepted)
+        })
         .count() as u64;
     counts.edits_rejected = e
         .iter()
-        .filter(|x| x.night == night && x.gate.as_ref().is_some_and(|g| g.verdict == crate::types::Verdict::Rejected))
+        .filter(|x| {
+            x.night == night
+                && x.gate
+                    .as_ref()
+                    .is_some_and(|g| g.verdict == crate::types::Verdict::Rejected)
+        })
         .count() as u64;
     if let Some(r) = read_record(data_dir, night) {
         counts.proposals = r.proposals.len() as u64;
@@ -734,7 +743,11 @@ impl Message<Commit> for Night {
     async fn handle(&mut self, m: Commit, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let mut r = read_record(&self.data_dir, &m.night)
             .ok_or_else(|| format!("no night {} (call dreaming_ledger first)", m.night))?;
-        r.phases.push(format!("{}: {}", m.phase, crate::scrub::clip(&m.summary, 200)));
+        r.phases.push(format!(
+            "{}: {}",
+            m.phase,
+            crate::scrub::clip(&m.summary, 200)
+        ));
         if m.phase == "journal" {
             self.finish(r).await.map_err(|e| e.to_string())?;
         } else {
@@ -778,7 +791,11 @@ impl Message<knowledge::KnowledgeChanged> for Night {
         if !r.knowledge.iter().any(|t| t.id == e.id) {
             let commit_before = match self.knowledge().await {
                 Some(k) => match k.history(Some(&e.id), 2).await {
-                    Ok(h) => h.changes.get(1).map(|c| c.commit.clone()).unwrap_or_default(),
+                    Ok(h) => h
+                        .changes
+                        .get(1)
+                        .map(|c| c.commit.clone())
+                        .unwrap_or_default(),
                     Err(err) => {
                         tracing::debug!("dreaming: history of {}: {err}", e.id);
                         String::new()
@@ -853,8 +870,11 @@ impl Message<Export> for Night {
         let path = dir(&self.data_dir)
             .join("export")
             .join(format!("cases.{}.json", m.format));
-        write_atomic(&path, &serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        write_atomic(
+            &path,
+            &serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(path)
     }
 }
@@ -862,8 +882,12 @@ impl Message<Export> for Night {
 impl Message<RunNow> for Night {
     type Reply = Result<SessionId, String>;
 
-    async fn handle(&mut self, RunNow(req): RunNow, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if !(req.budget_usd > 0.0) || !req.budget_usd.is_finite() {
+    async fn handle(
+        &mut self,
+        RunNow(req): RunNow,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if !(req.budget_usd.is_finite() && req.budget_usd > 0.0) {
             return Err("budget_usd must be a positive number".into());
         }
         let mut state = read_state(&self.data_dir);
@@ -928,8 +952,12 @@ impl Message<Settings> for Night {
 impl Message<SetSettings> for Night {
     type Reply = Result<DreamSettings, String>;
 
-    async fn handle(&mut self, SetSettings(s): SetSettings, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if !(s.budget_usd >= 0.0) || !s.budget_usd.is_finite() {
+    async fn handle(
+        &mut self,
+        SetSettings(s): SetSettings,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        if !(s.budget_usd.is_finite() && s.budget_usd >= 0.0) {
             return Err("budget_usd must be a non-negative number".into());
         }
         if parse_hhmm(&s.window[0]).is_none() || parse_hhmm(&s.window[1]).is_none() {
@@ -945,7 +973,8 @@ impl Message<SetSettings> for Night {
         cfg.models.judge = s.models.judge.clone().filter(|m| !m.is_empty());
         cfg.preferences.auto_from_explicit = s.preferences_auto;
         cfg.digest = s.digest.clone();
-        persist(&self.data_dir.join("config.yaml"), &cfg).map_err(|e| format!("config.yaml: {e}"))?;
+        persist(&self.data_dir.join("config.yaml"), &cfg)
+            .map_err(|e| format!("config.yaml: {e}"))?;
         let home = cfg.home_engine.clone().filter(|h| !h.is_empty());
         if let Err(e) = update_routine_file(&self.data_dir, &cfg, home.as_deref()) {
             tracing::warn!("dreaming: routine file not updated: {e}");
@@ -977,7 +1006,11 @@ impl Message<Propose> for Night {
 impl Message<SetMetaNote> for Night {
     type Reply = Result<String, String>;
 
-    async fn handle(&mut self, SetMetaNote(note): SetMetaNote, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        SetMetaNote(note): SetMetaNote,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let mut state = read_state(&self.data_dir);
         let old = std::mem::take(&mut state.meta_note);
         state.meta_note = crate::scrub::clip(&crate::scrub::scrub(note.trim()), META_NOTE_CHARS);
@@ -1005,7 +1038,8 @@ impl Message<ProposalAct> for Night {
             .iter()
             .map(|r| serde_json::to_string(r).unwrap_or_default() + "\n")
             .collect::<String>();
-        write_atomic(&proposals_path(&self.data_dir), text.as_bytes()).map_err(|e| e.to_string())?;
+        write_atomic(&proposals_path(&self.data_dir), text.as_bytes())
+            .map_err(|e| e.to_string())?;
         append_line(&proposals_done_path(&self.data_dir), &p).map_err(|e| e.to_string())?;
         let night = ledger::tonight();
         let mut note = format!("- {:?} → **{}**", p.title, m.choice);
@@ -1014,7 +1048,12 @@ impl Message<ProposalAct> for Night {
                 let mut state = read_state(&self.data_dir);
                 state.rejected.push(crate::types::RejectedEdit {
                     id: p.id.clone(),
-                    target: format!("proposal:{}", serde_json::to_string(&p.kind).unwrap_or_default().trim_matches('"')),
+                    target: format!(
+                        "proposal:{}",
+                        serde_json::to_string(&p.kind)
+                            .unwrap_or_default()
+                            .trim_matches('"')
+                    ),
                     content: p.title.clone(),
                     reasons: vec![format!("user: {}", m.choice)],
                     night: night.clone(),
@@ -1026,12 +1065,17 @@ impl Message<ProposalAct> for Night {
         } else {
             match p.kind {
                 ProposalKind::Routine => {
-                    let draft = fenced(&p.body).ok_or("the proposal carries no ```markdown schedule file")?;
+                    let draft = fenced(&p.body)
+                        .ok_or("the proposal carries no ```markdown schedule file")?;
                     let name = draft
                         .lines()
                         .find_map(|l| l.strip_prefix("name:"))
                         .map(|n| n.trim().to_owned())
-                        .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                        .filter(|n| {
+                            !n.is_empty()
+                                && n.chars()
+                                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                        })
                         .ok_or("the draft has no valid `name:`")?;
                     let start = m.choice.to_lowercase().contains("start");
                     let mut lines: Vec<String> = draft
@@ -1046,8 +1090,11 @@ impl Message<ProposalAct> for Night {
                     if path.exists() {
                         return Err(format!("a schedule named {name} already exists"));
                     }
-                    write_atomic(&path, (lines.join("\n") + "\n").as_bytes()).map_err(|e| e.to_string())?;
-                    note.push_str(&format!(" — `schedules/{name}.md` written, enabled: {start}"));
+                    write_atomic(&path, (lines.join("\n") + "\n").as_bytes())
+                        .map_err(|e| e.to_string())?;
+                    note.push_str(&format!(
+                        " — `schedules/{name}.md` written, enabled: {start}"
+                    ));
                 }
                 ProposalKind::Remember => {
                     let k = self.knowledge().await.ok_or("knowledge is not running")?;
@@ -1140,10 +1187,17 @@ impl Message<MetricsOver> for Night {
         }
         if let Ok(cases) = cases::all(&self.data_dir) {
             let in_window = |c: &crate::types::Case| {
-                chrono::DateTime::parse_from_rfc3339(&c.at).is_ok_and(|t| t.with_timezone(&Utc) >= since)
+                chrono::DateTime::parse_from_rfc3339(&c.at)
+                    .is_ok_and(|t| t.with_timezone(&Utc) >= since)
             };
-            let closed = cases.iter().filter(|c| in_window(c) && c.closed_by.is_some()).count();
-            let reopened = cases.iter().filter(|c| in_window(c) && c.reopened_at.is_some()).count();
+            let closed = cases
+                .iter()
+                .filter(|c| in_window(c) && c.closed_by.is_some())
+                .count();
+            let reopened = cases
+                .iter()
+                .filter(|c| in_window(c) && c.reopened_at.is_some())
+                .count();
             if closed > 0 {
                 out.repeat_correction_rate = reopened as f64 / closed as f64;
             }
@@ -1185,7 +1239,8 @@ pub fn start(rt: &Runtime, cfg: DreamConfig, engine: &str) -> anyhow::Result<()>
         state.engine = engine.to_owned();
         write_state(&rt.data_dir, &state).context("write dreaming/state.json")?;
     }
-    let actor = Night::spawn_with_mailbox(Night::new(rt, cfg, engine), runtime::subscriber_mailbox());
+    let actor =
+        Night::spawn_with_mailbox(Night::new(rt, cfg, engine), runtime::subscriber_mailbox());
     actor.register(DREAMING_ACTOR)?;
     let rt2 = rt.clone();
     tokio::spawn(async move {
@@ -1289,7 +1344,10 @@ mod tests {
         };
         persist(&cfg_path, &cfg).unwrap();
         let text = std::fs::read_to_string(&cfg_path).unwrap();
-        assert!(text.starts_with("agent:\n  model: x\ndreaming:\n"), "{text}");
+        assert!(
+            text.starts_with("agent:\n  model: x\ndreaming:\n"),
+            "{text}"
+        );
         assert!(text.ends_with("schedule:\n  enabled: true\n"), "{text}");
         assert!(text.contains("  budget_usd: 2.5\n"), "{text}");
         let back: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
@@ -1306,7 +1364,10 @@ mod tests {
         let after = std::fs::read_to_string(&routine).unwrap();
         assert!(after.contains("enabled: false\n"), "{after}");
         assert!(after.contains("budget: 2.5 USD\n"), "{after}");
-        assert!(after.contains("when: dreaming.py window=23:00-05:00 idle=20"), "{after}");
+        assert!(
+            after.contains("when: dreaming.py window=23:00-05:00 idle=20"),
+            "{after}"
+        );
         let spec = schedule::file::parse("dreaming", &after).unwrap();
         assert_eq!(spec.budget.unwrap().nanos, 2_500_000_000);
         assert!(!spec.enabled);
@@ -1354,8 +1415,15 @@ mod tests {
                 backups: vec!["harness".into()],
             }
         );
-        assert_eq!(fenced("text\n```markdown\n---\nname: x\n---\nbody\n```\ntail").as_deref(), Some("---\nname: x\n---\nbody"));
-        assert!(choice_is_no("Not this") && choice_is_no("never save this") && !choice_is_no("Create and start"));
+        assert_eq!(
+            fenced("text\n```markdown\n---\nname: x\n---\nbody\n```\ntail").as_deref(),
+            Some("---\nname: x\n---\nbody")
+        );
+        assert!(
+            choice_is_no("Not this")
+                && choice_is_no("never save this")
+                && !choice_is_no("Create and start")
+        );
     }
 
     #[test]
@@ -1368,9 +1436,11 @@ mod tests {
             body: "because".into(),
             options: vec!["confirm".into(), "not that".into()],
         };
-        let rows = add_proposals(dir.path(), &cfg, "2026-10-08", vec![draft("a"), draft("b")]).unwrap();
+        let rows =
+            add_proposals(dir.path(), &cfg, "2026-10-08", vec![draft("a"), draft("b")]).unwrap();
         assert_eq!(rows.len(), 2);
-        let rows = add_proposals(dir.path(), &cfg, "2026-10-08", vec![draft("c"), draft("d")]).unwrap();
+        let rows =
+            add_proposals(dir.path(), &cfg, "2026-10-08", vec![draft("c"), draft("d")]).unwrap();
         assert_eq!(rows.len(), 1, "3 per 7 days");
         assert_eq!(proposals_this_week(dir.path(), Utc::now()), 3);
         assert_eq!(read_lines::<Proposal>(&proposals_path(dir.path())).len(), 3);

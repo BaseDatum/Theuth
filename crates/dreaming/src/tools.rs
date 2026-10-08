@@ -144,9 +144,10 @@ impl Tool for LedgerTool {
                 l.tidy.duplicate_stems.len(),
                 l.tidy.archive_by_use.len(),
                 l.tidy.verify_sample.len(),
-                l.run_request
-                    .as_ref()
-                    .map_or(String::new(), |r| format!("; run_request: ${} {:?}", r.budget_usd, r.mode))
+                l.run_request.as_ref().map_or(String::new(), |r| format!(
+                    "; run_request: ${} {:?}",
+                    r.budget_usd, r.mode
+                ))
             ),
             l,
         ))
@@ -535,8 +536,10 @@ impl Tool for JournalTool {
         let actor = ActorRef::<Night>::lookup(DREAMING_ACTOR).ok().flatten();
         match a.section.as_str() {
             "proposals" => {
-                let drafts: Vec<ProposalDraft> = serde_json::from_str(a.markdown.trim())
-                    .map_err(|e| anyhow::anyhow!("`proposals` takes a JSON array of drafts: {e}"))?;
+                let drafts: Vec<ProposalDraft> =
+                    serde_json::from_str(a.markdown.trim()).map_err(|e| {
+                        anyhow::anyhow!("`proposals` takes a JSON array of drafts: {e}")
+                    })?;
                 let n = drafts.len();
                 let actor = actor.ok_or_else(|| anyhow::anyhow!("dreaming is not running"))?;
                 let rows = actor
@@ -548,7 +551,14 @@ impl Tool for JournalTool {
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 let mut md: String = rows
                     .iter()
-                    .map(|p| format!("- {} — {} · `proposal:{}`\n", p.title, p.options.join(" / "), p.id))
+                    .map(|p| {
+                        format!(
+                            "- {} — {} · `proposal:{}`\n",
+                            p.title,
+                            p.options.join(" / "),
+                            p.id
+                        )
+                    })
                     .collect();
                 if rows.len() < n {
                     md.push_str(&format!(
@@ -571,7 +581,11 @@ impl Tool for JournalTool {
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 let md = format!(
                     "Before:\n{}\n\nAfter:\n{}\n",
-                    if old.trim().is_empty() { "(empty)" } else { old.trim() },
+                    if old.trim().is_empty() {
+                        "(empty)"
+                    } else {
+                        old.trim()
+                    },
                     a.markdown.trim()
                 );
                 crate::journal::append(&self.0.data_dir, &a.night, "Meta-note", &md).await?;
@@ -590,13 +604,13 @@ impl Tool for JournalTool {
                         .await
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
                     if phase == "journal" {
-                        return Ok(ToolOutput::ok(format!(
-                            "journal {}: night closed",
-                            a.night
-                        )));
+                        return Ok(ToolOutput::ok(format!("journal {}: night closed", a.night)));
                     }
                 }
-                Ok(ToolOutput::ok(format!("journal {}: {}", a.night, a.section)))
+                Ok(ToolOutput::ok(format!(
+                    "journal {}: {}",
+                    a.night, a.section
+                )))
             }
         }
     }

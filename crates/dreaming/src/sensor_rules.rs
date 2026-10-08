@@ -363,7 +363,11 @@ mod tests {
                 return;
             }
         };
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let text = String::from_utf8_lossy(&out.stdout);
         let mut n = 0;
         for line in text.lines() {

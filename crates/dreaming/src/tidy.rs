@@ -19,7 +19,9 @@ pub const NOISE_SHOWN: u64 = 50;
 pub const NOISE_DAYS: i64 = 14;
 
 /// What the rules found; ids only (the model decides from here).
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct Candidates {
     /// `status: fresh`.
     pub fresh: Vec<String>,
@@ -116,8 +118,8 @@ pub fn candidates(
         }
         stems.entry(stem(&m.id)).or_default().push(m.id.clone());
         let age = age_days(m, now);
-        let record_expired = m.type_ == "record"
-            && age.is_some_and(|d| d > i64::from(cfg.lifetimes.record));
+        let record_expired =
+            m.type_ == "record" && age.is_some_and(|d| d > i64::from(cfg.lifetimes.record));
         let noise = m.type_ != "warning"
             && age.is_some_and(|d| d >= NOISE_DAYS)
             && used
@@ -128,7 +130,14 @@ pub fn candidates(
         }
         if matches!(
             m.type_.as_str(),
-            "fact" | "procedure" | "entity" | "hosts" | "host" | "project" | "tool" | "architecture"
+            "fact"
+                | "procedure"
+                | "entity"
+                | "hosts"
+                | "host"
+                | "project"
+                | "tool"
+                | "architecture"
         ) {
             let stale = match verified_age_days(m, now) {
                 Some(d) => d > i64::from(cfg.lifetimes.fact),
@@ -141,11 +150,12 @@ pub fn candidates(
             }
         }
     }
-    c.duplicate_stems = stems
-        .into_values()
-        .filter(|g| g.len() > 1)
-        .collect();
-    verify.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)).then_with(|| a.2.cmp(&b.2)));
+    c.duplicate_stems = stems.into_values().filter(|g| g.len() > 1).collect();
+    verify.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
     c.verify_sample = verify
         .into_iter()
         .take(cfg.caps.verifications as usize)
@@ -186,7 +196,10 @@ mod tests {
 
     #[test]
     fn stems_strip_dates_and_versions_only() {
-        assert_eq!(stem("facts/theuth-dev-machine-state-2026-10-05"), "facts/theuth-dev-machine-state");
+        assert_eq!(
+            stem("facts/theuth-dev-machine-state-2026-10-05"),
+            "facts/theuth-dev-machine-state"
+        );
         assert_eq!(stem("facts/rulings-20261005"), "facts/rulings");
         assert_eq!(stem("procedures/build-v3"), "procedures/build");
         assert_eq!(stem("facts/x-2026-13"), "facts/x-2026-13");
@@ -204,28 +217,81 @@ mod tests {
             meta("facts/c-2026-10-01", "record", "day 1", 20, Status::Tidy),
             meta("facts/c-2026-10-02", "record", "day 2", 3, Status::Tidy),
             meta("facts/noise", "fact", "mcp recon", 30, Status::Tidy),
-            meta("facts/warn", "warning", "never paste keys", 30, Status::Tidy),
+            meta(
+                "facts/warn",
+                "warning",
+                "never paste keys",
+                30,
+                Status::Tidy,
+            ),
             meta("facts/young-noise", "fact", "new", 2, Status::Tidy),
             meta("facts/dead", "fact", &long, 40, Status::Archived),
-            meta("facts/checkable", "fact", "fixed in commit abc1234 at /usr/bin", 40, Status::Tidy),
+            meta(
+                "facts/checkable",
+                "fact",
+                "fixed in commit abc1234 at /usr/bin",
+                40,
+                Status::Tidy,
+            ),
         ];
         let uses = vec![
-            Uses { id: "facts/noise".into(), shown: 361, opened: 0, ..Default::default() },
-            Uses { id: "facts/warn".into(), shown: 283, opened: 0, ..Default::default() },
-            Uses { id: "facts/young-noise".into(), shown: 90, opened: 0, ..Default::default() },
-            Uses { id: "facts/b".into(), shown: 60, opened: 2, ..Default::default() },
+            Uses {
+                id: "facts/noise".into(),
+                shown: 361,
+                opened: 0,
+                ..Default::default()
+            },
+            Uses {
+                id: "facts/warn".into(),
+                shown: 283,
+                opened: 0,
+                ..Default::default()
+            },
+            Uses {
+                id: "facts/young-noise".into(),
+                shown: 90,
+                opened: 0,
+                ..Default::default()
+            },
+            Uses {
+                id: "facts/b".into(),
+                shown: 60,
+                opened: 2,
+                ..Default::default()
+            },
         ];
         let c = candidates(&metas, &uses, &cfg, Utc::now());
         assert_eq!(c.fresh, ["facts/a"]);
         assert_eq!(c.retitle, ["facts/b"]);
-        assert_eq!(c.duplicate_stems, vec![vec!["facts/c-2026-10-01".to_owned(), "facts/c-2026-10-02".to_owned()]]);
+        assert_eq!(
+            c.duplicate_stems,
+            vec![vec![
+                "facts/c-2026-10-01".to_owned(),
+                "facts/c-2026-10-02".to_owned()
+            ]]
+        );
         assert_eq!(c.archive_by_use, ["facts/c-2026-10-01", "facts/noise"]);
         // Verify sample: every fact without `verified`, checkable first, then most shown.
         assert_eq!(c.verify_sample[0], "facts/checkable");
         assert_eq!(c.verify_sample[1], "facts/noise");
-        assert!(!c.verify_sample.iter().any(|i| i == "facts/dead" || i == "facts/warn"));
+        assert!(
+            !c.verify_sample
+                .iter()
+                .any(|i| i == "facts/dead" || i == "facts/warn")
+        );
         assert_eq!(c.untidied(), 1 + 2 + 2);
-        let small = DreamConfig { caps: crate::config::Caps { verifications: 2, ..cfg.caps }, ..cfg };
-        assert_eq!(candidates(&metas, &uses, &small, Utc::now()).verify_sample.len(), 2);
+        let small = DreamConfig {
+            caps: crate::config::Caps {
+                verifications: 2,
+                ..cfg.caps
+            },
+            ..cfg
+        };
+        assert_eq!(
+            candidates(&metas, &uses, &small, Utc::now())
+                .verify_sample
+                .len(),
+            2
+        );
     }
 }

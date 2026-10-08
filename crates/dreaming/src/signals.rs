@@ -46,14 +46,11 @@ pub fn parse_pmset(out: &str) -> (Option<bool>, Option<u8>) {
     } else {
         None
     };
-    let pct = out
-        .lines()
-        .skip(1)
-        .find_map(|l| {
-            l.split_whitespace()
-                .find_map(|w| w.trim_end_matches(';').strip_suffix('%'))
-                .and_then(|n| n.parse::<u8>().ok())
-        });
+    let pct = out.lines().skip(1).find_map(|l| {
+        l.split_whitespace()
+            .find_map(|w| w.trim_end_matches(';').strip_suffix('%'))
+            .and_then(|n| n.parse::<u8>().ok())
+    });
     (on_ac, pct)
 }
 
@@ -118,11 +115,7 @@ impl Signals {
         let now = Utc::now();
         self.snap.written_at = Some(now.format("%Y-%m-%dT%H:%M:%SZ").to_string());
         self.snap.tz_offset_minutes = Local::now().offset().local_minus_utc() / 60;
-        if self.probes
-            && self
-                .power_at
-                .is_none_or(|t| t.elapsed() >= POWER_EVERY)
-        {
+        if self.probes && self.power_at.is_none_or(|t| t.elapsed() >= POWER_EVERY) {
             let (ac, pct) = probe_power();
             self.snap.on_ac = ac;
             self.snap.battery_pct = pct;
@@ -194,7 +187,8 @@ impl Signals {
             at: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             dropped_assistant_text: text,
         };
-        let p = crate::ledger::pending_dir(&self.data_dir).join(format!("{}.json", crate::cases::new_id()));
+        let p = crate::ledger::pending_dir(&self.data_dir)
+            .join(format!("{}.json", crate::cases::new_id()));
         match serde_json::to_vec_pretty(&rewind) {
             Ok(bytes) => {
                 if let Err(e) = write_atomic(&p, &bytes) {
@@ -284,7 +278,8 @@ impl Message<RememberAssistant> for Signals {
     type Reply = ();
 
     async fn handle(&mut self, m: RememberAssistant, _: &mut Context<Self, Self::Reply>) {
-        self.last_assistant.insert(m.0, clip(&scrub(&m.1), REWIND_CHARS));
+        self.last_assistant
+            .insert(m.0, clip(&scrub(&m.1), REWIND_CHARS));
     }
 }
 
@@ -394,7 +389,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let actor = Signals::spawn(quiet(dir.path()));
         let s = SessionId::new();
-        let long = format!("I would run it with sk-abcdefghijklmnop. {}", "x".repeat(3000));
+        let long = format!(
+            "I would run it with sk-abcdefghijklmnop. {}",
+            "x".repeat(3000)
+        );
         actor.tell(RememberAssistant(s, long)).await.unwrap();
         // A rewind of a session with no cache is nothing.
         actor
@@ -450,7 +448,10 @@ mod tests {
         assert_eq!(parse_pmset(ac), (Some(true), Some(100)));
         let batt = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1234)\t37%; discharging; 3:10 remaining present: true\n";
         assert_eq!(parse_pmset(batt), (Some(false), Some(37)));
-        assert_eq!(parse_pmset("Now drawing from 'AC Power'\n"), (Some(true), None));
+        assert_eq!(
+            parse_pmset("Now drawing from 'AC Power'\n"),
+            (Some(true), None)
+        );
         assert_eq!(parse_pmset("garbage"), (None, None));
     }
 }

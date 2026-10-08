@@ -131,8 +131,7 @@ pub async fn append(
 
 /// Push the journal text into the documents store (best effort).
 async fn mirror(data_dir: &Path, text: &str) {
-    let Ok(Some(docs)) =
-        ActorRef::<document::DocumentActor>::lookup(document::DOCUMENT_ACTOR)
+    let Ok(Some(docs)) = ActorRef::<document::DocumentActor>::lookup(document::DOCUMENT_ACTOR)
     else {
         return;
     };
@@ -203,11 +202,17 @@ mod tests {
     #[tokio::test]
     async fn append_writes_the_file_and_tolerates_no_document_actor() {
         let dir = tempfile::tempdir().unwrap();
-        append(dir.path(), &"2026-10-08".to_owned(), "Tidy", "token sk-abcdefghijklmnop")
-            .await
-            .unwrap();
+        append(
+            dir.path(),
+            &"2026-10-08".to_owned(),
+            "Tidy",
+            "token sk-abcdefghijklmnop via {{secret:OPENAI_KEY}}",
+        )
+        .await
+        .unwrap();
         let t = text(dir.path());
-        assert!(t.contains("### Tidy\ntoken [redacted]"), "{t}");
+        assert!(t.contains("### Tidy\ntoken [redacted] via [secret]"), "{t}");
+        assert!(!t.contains("OPENAI_KEY"));
         assert!(t.contains("## 2026-10-08 · nightly"));
     }
 }

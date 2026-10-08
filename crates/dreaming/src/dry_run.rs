@@ -46,7 +46,9 @@ pub fn read_metas(data_dir: &Path) -> Vec<Meta> {
     let mut out = Vec::new();
     let mut stack = vec![root.clone()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.filter_map(Result::ok) {
             let p = e.path();
             if p.is_dir() {
@@ -58,14 +60,24 @@ pub fn read_metas(data_dir: &Path) -> Vec<Meta> {
             if p.extension().is_none_or(|x| x != "md") {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&p) else { continue };
-            let Some(rest) = text.strip_prefix("---\n") else { continue };
-            let Some(end) = rest.find("\n---") else { continue };
-            let Ok(fm) = serde_yaml::from_str::<Fm>(&rest[..end]) else { continue };
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            let Some(rest) = text.strip_prefix("---\n") else {
+                continue;
+            };
+            let Some(end) = rest.find("\n---") else {
+                continue;
+            };
+            let Ok(fm) = serde_yaml::from_str::<Fm>(&rest[..end]) else {
+                continue;
+            };
             if fm.type_.is_empty() {
                 continue;
             }
-            let Ok(rel) = p.strip_prefix(&root) else { continue };
+            let Ok(rel) = p.strip_prefix(&root) else {
+                continue;
+            };
             let id = rel.with_extension("").to_string_lossy().replace('\\', "/");
             out.push(Meta {
                 id,

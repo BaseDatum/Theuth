@@ -208,7 +208,8 @@ mod tests {
             split_for("case-7", CaseOrigin::Real)
         );
         assert!(
-            (0..1000).all(|i| split_for(&format!("case-{i}"), CaseOrigin::Synthetic) == Split::Train)
+            (0..1000)
+                .all(|i| split_for(&format!("case-{i}"), CaseOrigin::Synthetic) == Split::Train)
         );
     }
 
@@ -224,15 +225,24 @@ mod tests {
         assert!(!stored.at.is_empty());
         assert!(!stored.user_words.contains("sk-abc") && stored.user_words.contains("[secret]"));
         assert_eq!(stored.context.chars().count(), CONTEXT_CHARS);
-        let second = append(dir.path(), &sample("", "prompt:standing-preferences"), "2026-10-08").unwrap();
+        let second = append(
+            dir.path(),
+            &sample("", "prompt:standing-preferences"),
+            "2026-10-08",
+        )
+        .unwrap();
         assert_eq!(all(dir.path()).unwrap().len(), 2);
         // Close, then reopen: the log has four lines, the fold has two cases.
-        let closed = transition(dir.path(), &stored.id, CaseState::Closed, Some("edit:e1")).unwrap();
+        let closed =
+            transition(dir.path(), &stored.id, CaseState::Closed, Some("edit:e1")).unwrap();
         assert_eq!(closed.closed_by.as_deref(), Some("edit:e1"));
         let re = transition(dir.path(), &stored.id, CaseState::Reopened, None).unwrap();
         assert!(re.reopened_at.is_some() && re.closed_by.as_deref() == Some("edit:e1"));
         assert_eq!(
-            std::fs::read_to_string(path(dir.path())).unwrap().lines().count(),
+            std::fs::read_to_string(path(dir.path()))
+                .unwrap()
+                .lines()
+                .count(),
             4
         );
         let folded = all(dir.path()).unwrap();
@@ -244,8 +254,14 @@ mod tests {
             1
         );
         assert_eq!(
-            list(dir.path(), None, Some("prompt:standing-preferences"), None, 10)
-                .unwrap()[0]
+            list(
+                dir.path(),
+                None,
+                Some("prompt:standing-preferences"),
+                None,
+                10
+            )
+            .unwrap()[0]
                 .id,
             second.id
         );

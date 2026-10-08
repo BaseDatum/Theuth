@@ -301,9 +301,23 @@ mod tests {
 
     #[test]
     fn skill_carries_the_judge_prompt_verbatim_and_stays_under_24kb() {
-        assert!(SKILL.contains(crate::replay::JUDGE_PROMPT), "skill.md and replay::JUDGE_PROMPT differ");
+        assert!(
+            SKILL.contains(crate::replay::JUDGE_PROMPT),
+            "skill.md and replay::JUDGE_PROMPT differ"
+        );
         assert!(SKILL.len() < 24 * 1024, "{} bytes", SKILL.len());
-        for heading in ["## 0 · Gate", "## 1 · Recall", "## 2 · Tidy", "## 3 · Mine", "## 4 · Rehearse", "## 5 · Settle", "## 6 · Suggest", "## 7 · Journal", "### Proposer prompt", "### Judge prompt"] {
+        for heading in [
+            "## 0 · Gate",
+            "## 1 · Recall",
+            "## 2 · Tidy",
+            "## 3 · Mine",
+            "## 4 · Rehearse",
+            "## 5 · Settle",
+            "## 6 · Suggest",
+            "## 7 · Journal",
+            "### Proposer prompt",
+            "### Judge prompt",
+        ] {
             assert!(SKILL.contains(heading), "{heading}");
         }
         assert!(SKILL.contains("repeat passes while `dreaming_ledger()` reports backlog"));
@@ -357,21 +371,49 @@ mod tests {
         let long = "a long title ".repeat(12); // 156 chars
         // 10 fresh short, 8 tidy long, 3 dated records (one series), 2 old records, 1 noise, 1 warning, 1 archived long, 4 plain = 30
         for i in 0..10 {
-            write(&format!("facts/fresh-{i}"), "fact", "short fresh", "fresh", &young, "");
+            write(
+                &format!("facts/fresh-{i}"),
+                "fact",
+                "short fresh",
+                "fresh",
+                &young,
+                "",
+            );
         }
         for i in 0..8 {
             write(&format!("facts/long-{i}"), "fact", &long, "tidy", &old, "");
         }
         for day in ["2026-10-01", "2026-10-02", "2026-10-03"] {
-            write(&format!("facts/dev-machine-state-{day}"), "record", "state", "tidy", &young, "");
+            write(
+                &format!("facts/dev-machine-state-{day}"),
+                "record",
+                "state",
+                "tidy",
+                &young,
+                "",
+            );
         }
         write("facts/old-record-a", "record", "landed", "tidy", &old, "");
         write("facts/old-record-b", "record", "landed", "tidy", &old, "");
         write("facts/noise", "fact", "mcp recon", "tidy", &old, "");
-        write("facts/warn", "warning", "never paste keys", "tidy", &old, "");
+        write(
+            "facts/warn",
+            "warning",
+            "never paste keys",
+            "tidy",
+            &old,
+            "",
+        );
         write("facts/dead", "fact", &long, "archived", &old, "");
         for i in 0..4 {
-            write(&format!("procedures/plain-{i}"), "procedure", "how to", "tidy", &old, "verified: 2026-10-01\n");
+            write(
+                &format!("procedures/plain-{i}"),
+                "procedure",
+                "how to",
+                "tidy",
+                &old,
+                "verified: 2026-10-01\n",
+            );
         }
         assert_eq!(dry_run::read_metas(d).len(), 30);
         // The uses table, through the knowledge store's own schema.
@@ -379,25 +421,52 @@ mod tests {
             let rt = Runtime::new(figment::Figment::new(), d.to_owned());
             let store = knowledge::Knowledge::open(d, rt).await.unwrap();
             store
-                .record_shown(&["facts/noise".into(), "facts/warn".into()], chrono::Utc::now())
+                .record_shown(
+                    &["facts/noise".into(), "facts/warn".into()],
+                    chrono::Utc::now(),
+                )
                 .await
                 .unwrap();
             for _ in 0..60 {
-                store.record_shown(&["facts/noise".into()], chrono::Utc::now()).await.unwrap();
-                store.record_shown(&["facts/warn".into()], chrono::Utc::now()).await.unwrap();
+                store
+                    .record_shown(&["facts/noise".into()], chrono::Utc::now())
+                    .await
+                    .unwrap();
+                store
+                    .record_shown(&["facts/warn".into()], chrono::Utc::now())
+                    .await
+                    .unwrap();
             }
-            store.record_shown(&["facts/long-0".into()], chrono::Utc::now()).await.unwrap();
+            store
+                .record_shown(&["facts/long-0".into()], chrono::Utc::now())
+                .await
+                .unwrap();
         }
         // Two sessions, one advisor (excluded), one tool error.
         {
-            let store = agent::store::Store::open(&d.join("sessions.sqlite"), None).await.unwrap();
-            let a = runtime::SessionId::new();
-            store.create_session(a, "m", None, None, None).await.unwrap();
-            store
-                .create_session_kind(runtime::SessionId::new(), "m", None, None, None, agent::SessionKind::Advisor)
+            let store = agent::store::Store::open(&d.join("sessions.sqlite"), None)
                 .await
                 .unwrap();
-            store.create_session(runtime::SessionId::new(), "m", Some(a), None, None).await.unwrap();
+            let a = runtime::SessionId::new();
+            store
+                .create_session(a, "m", None, None, None)
+                .await
+                .unwrap();
+            store
+                .create_session_kind(
+                    runtime::SessionId::new(),
+                    "m",
+                    None,
+                    None,
+                    None,
+                    agent::SessionKind::Advisor,
+                )
+                .await
+                .unwrap();
+            store
+                .create_session(runtime::SessionId::new(), "m", Some(a), None, None)
+                .await
+                .unwrap();
         }
         // Let the stores' pools close (a WAL checkpoint on close is theirs, not the dry run's).
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;

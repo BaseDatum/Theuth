@@ -38,7 +38,9 @@ pub const MAX_REJECTED: usize = 200;
 
 /// `<data_dir>/skills/learned/<skill>.md`.
 pub fn sidecar_path(data_dir: &Path, skill: &str) -> PathBuf {
-    agent::skills::dir(data_dir).join("learned").join(format!("{skill}.md"))
+    agent::skills::dir(data_dir)
+        .join("learned")
+        .join(format!("{skill}.md"))
 }
 
 /// `<data_dir>/dreaming/backups/<night>/<skill>.md`.
@@ -101,7 +103,9 @@ pub fn parse(text: &str) -> Vec<Bullet> {
                 since: String::new(),
             };
             for kv in meta.split(';') {
-                let Some((k, v)) = kv.split_once(':') else { continue };
+                let Some((k, v)) = kv.split_once(':') else {
+                    continue;
+                };
                 let v = v.trim();
                 match k.trim() {
                     "helpful" => b.helpful = v.parse().unwrap_or(0),
@@ -125,7 +129,11 @@ pub fn parse(text: &str) -> Vec<Bullet> {
 
 /// Render bullets as the sidecar text (one bullet per line, trailing newline).
 pub fn render(bullets: &[Bullet]) -> String {
-    let mut s = bullets.iter().map(Bullet::render).collect::<Vec<_>>().join("\n");
+    let mut s = bullets
+        .iter()
+        .map(Bullet::render)
+        .collect::<Vec<_>>()
+        .join("\n");
     if !s.is_empty() {
         s.push('\n');
     }
@@ -308,9 +316,7 @@ pub fn apply(
                 ApplyStatus::SkippedUnmatched,
                 format!(
                     "not applied: gate {}",
-                    e.gate
-                        .as_ref()
-                        .map_or("missing", |g| g.verdict.as_str())
+                    e.gate.as_ref().map_or("missing", |g| g.verdict.as_str())
                 ),
             )
         } else {
@@ -385,7 +391,12 @@ mod tests {
     use super::*;
     use crate::types::GateResult;
 
-    fn edit(op: EditOp, content: &str, anchor: Option<&str>, verdict: Option<Verdict>) -> EditRecord {
+    fn edit(
+        op: EditOp,
+        content: &str,
+        anchor: Option<&str>,
+        verdict: Option<Verdict>,
+    ) -> EditRecord {
         EditRecord {
             id: String::new(),
             night: String::new(),
@@ -417,7 +428,12 @@ mod tests {
         let r = apply(
             dir.path(),
             "harness",
-            &[edit(EditOp::Add, "Prefer numbered lists over ask_user forks", None, None)],
+            &[edit(
+                EditOp::Add,
+                "Prefer numbered lists over ask_user forks",
+                None,
+                None,
+            )],
             &night,
         )
         .unwrap();
@@ -460,7 +476,10 @@ mod tests {
         let st = read_state(dir.path());
         assert_eq!(st.rejected.len(), 1);
         assert_eq!(st.rejected[0].content, "Always say yes");
-        assert_eq!(cases::get(dir.path(), "c1").unwrap().state, CaseState::Closed);
+        assert_eq!(
+            cases::get(dir.path(), "c1").unwrap().state,
+            CaseState::Closed
+        );
         assert_eq!(
             cases::get(dir.path(), "c1").unwrap().closed_by.as_deref(),
             Some(format!("edit:{}", logged[0].id).as_str())
@@ -478,7 +497,12 @@ mod tests {
                 ),
                 edit(EditOp::Delete, "", Some("nope"), Some(Verdict::Accepted)),
                 edit(EditOp::Add, &"x".repeat(141), None, Some(Verdict::Accepted)),
-                edit(EditOp::Add, "no anchor needed", Some("missing"), Some(Verdict::Accepted)),
+                edit(
+                    EditOp::Add,
+                    "no anchor needed",
+                    Some("missing"),
+                    Some(Verdict::Accepted),
+                ),
             ],
             &night,
         )
@@ -494,7 +518,10 @@ mod tests {
         );
         let b = parse(&current(dir.path(), "harness"));
         assert_eq!(b.len(), 1);
-        assert_eq!(b[0].content, "Prefer a numbered list in the reply over ask_user forks");
+        assert_eq!(
+            b[0].content,
+            "Prefer a numbered list in the reply over ask_user forks"
+        );
         // The backup is still the first one of the night (empty).
         assert_eq!(
             std::fs::read_to_string(backup_path(dir.path(), "2026-10-08", "harness")).unwrap(),
@@ -504,7 +531,12 @@ mod tests {
         let mut many = parse("");
         for i in 0..12 {
             assert_eq!(
-                apply_one(&mut many, &edit(EditOp::Add, &format!("rule {i}"), None, None), "d").0,
+                apply_one(
+                    &mut many,
+                    &edit(EditOp::Add, &format!("rule {i}"), None, None),
+                    "d"
+                )
+                .0,
                 ApplyStatus::Applied
             );
         }

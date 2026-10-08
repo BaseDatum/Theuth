@@ -74,7 +74,10 @@ mod tests {
         let s = scrub(t);
         assert!(!s.contains("OPENAI_KEY") && s.contains("[secret]"), "{s}");
         assert!(!s.contains("sk-abc123") && !s.contains("ghp_ABC"), "{s}");
-        assert!(!s.contains("eyJhbGci") && !s.contains("AKIAABCDEFGHIJKLMNOP"), "{s}");
+        assert!(
+            !s.contains("eyJhbGci") && !s.contains("AKIAABCDEFGHIJKLMNOP"),
+            "{s}"
+        );
         assert!(s.contains("the sk- prefix alone stays"), "{s}");
         assert_eq!(scrub("nothing here"), "nothing here");
         let mut v = serde_json::json!({"a": ["sk-abcdefghijkl"], "b": {"c": "{{secret:X}}"}});

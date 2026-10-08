@@ -73,7 +73,9 @@ pub fn parse(text: &str) -> Vec<Line> {
                 confirmed: String::new(),
             };
             for kv in meta.split(';') {
-                let Some((k, v)) = kv.split_once(':') else { continue };
+                let Some((k, v)) = kv.split_once(':') else {
+                    continue;
+                };
                 let v = v.trim();
                 match k.trim() {
                     "evidence" => {
@@ -96,7 +98,11 @@ pub fn parse(text: &str) -> Vec<Line> {
 
 /// Render lines as the file text.
 pub fn render(lines: &[Line]) -> String {
-    let mut s = lines.iter().map(Line::render).collect::<Vec<_>>().join("\n");
+    let mut s = lines
+        .iter()
+        .map(Line::render)
+        .collect::<Vec<_>>()
+        .join("\n");
     if !s.is_empty() {
         s.push('\n');
     }
@@ -243,14 +249,20 @@ pub async fn set(
                     id: format!("decisions/preference-{slug}"),
                     type_: "decision".into(),
                     title: l.text.clone(),
-                    description: Some("A standing preference demoted from the system prompt block".into()),
+                    description: Some(
+                        "A standing preference demoted from the system prompt block".into(),
+                    ),
                     tags: vec!["preference".into(), "dreaming".into()],
                     body: format!(
                         "{}\n\nDemoted from the standing preferences block on {today} (in the block since {}, last confirmed {}). Evidence: {}.",
                         l.text,
                         l.since,
                         l.confirmed,
-                        if l.evidence.is_empty() { "none recorded".to_owned() } else { l.evidence.join(", ") }
+                        if l.evidence.is_empty() {
+                            "none recorded".to_owned()
+                        } else {
+                            l.evidence.join(", ")
+                        }
                     ),
                     evidence: l.evidence.clone(),
                     status: Some(knowledge::Status::Tidy),
@@ -300,37 +312,76 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
         let ev = |s: &str| vec![s.to_owned()];
-        let b = set(d, None, "add", "never use ask_user; numbered text", &ev("user"), 3)
-            .await
-            .unwrap();
-        assert_eq!(b, "## Standing preferences (learned)\n- never use ask_user; numbered text");
+        let b = set(
+            d,
+            None,
+            "add",
+            "never use ask_user; numbered text",
+            &ev("user"),
+            3,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            b,
+            "## Standing preferences (learned)\n- never use ask_user; numbered text"
+        );
         // Re-adding confirms: still one line, evidence union.
-        set(d, None, "add", "never use ask_user; numbered text", &ev("s2"), 3)
-            .await
-            .unwrap();
+        set(
+            d,
+            None,
+            "add",
+            "never use ask_user; numbered text",
+            &ev("s2"),
+            3,
+        )
+        .await
+        .unwrap();
         let lines = parse(&std::fs::read_to_string(path(d)).unwrap());
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].evidence, ["user", "s2"]);
-        set(d, None, "add", "commit as you go", &[], 3).await.unwrap();
-        set(d, None, "add", "caveman replies", &[], 3).await.unwrap();
-        let e = set(d, None, "add", "one more", &[], 3).await.unwrap_err().to_string();
+        set(d, None, "add", "commit as you go", &[], 3)
+            .await
+            .unwrap();
+        set(d, None, "add", "caveman replies", &[], 3)
+            .await
+            .unwrap();
+        let e = set(d, None, "add", "one more", &[], 3)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("full"), "{e}");
         let e = set(d, None, "add", &"x".repeat(141), &[], 20)
             .await
             .unwrap_err()
             .to_string();
         assert!(e.contains("141 chars"), "{e}");
-        assert!(set(d, None, "replace", "no separator", &[], 20).await.is_err());
-        let b = set(d, None, "replace", "commit as you go => commit every 20 minutes", &[], 20)
+        assert!(
+            set(d, None, "replace", "no separator", &[], 20)
+                .await
+                .is_err()
+        );
+        let b = set(
+            d,
+            None,
+            "replace",
+            "commit as you go => commit every 20 minutes",
+            &[],
+            20,
+        )
+        .await
+        .unwrap();
+        assert!(b.contains("- commit every 20 minutes") && !b.contains("commit as you go"));
+        let b = set(d, None, "demote", "caveman replies", &[], 20)
             .await
             .unwrap();
-        assert!(b.contains("- commit every 20 minutes") && !b.contains("commit as you go"));
-        let b = set(d, None, "demote", "caveman replies", &[], 20).await.unwrap();
         assert!(!b.contains("caveman"));
         assert_eq!(count(d), 2);
         assert!(set(d, None, "shout", "x", &[], 20).await.is_err());
         // Secrets never enter the block.
-        let b = set(d, None, "add", "use key sk-abcdefghijklmnop", &[], 20).await.unwrap();
+        let b = set(d, None, "add", "use key sk-abcdefghijklmnop", &[], 20)
+            .await
+            .unwrap();
         assert!(b.contains("[redacted]") && !b.contains("sk-abc"));
     }
 }

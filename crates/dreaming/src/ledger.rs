@@ -14,7 +14,7 @@ use kameo::actor::ActorRef;
 use runtime::SessionId;
 
 use crate::config::DreamConfig;
-use crate::night::{self, read_state, write_atomic, BeginNight, Night, DREAMING_ACTOR};
+use crate::night::{self, BeginNight, DREAMING_ACTOR, Night, read_state, write_atomic};
 use crate::scrub::scrub_value;
 use crate::tidy::{self, Candidates};
 use crate::types::{Backlog, NightId, RunRequest};
@@ -144,12 +144,24 @@ pub async fn candidates(
             Err(e) => tracing::warn!("dreaming: knowledge list failed: {e:#}"),
         }
     }
-    let open_cases = crate::cases::list(data_dir, Some(crate::types::CaseState::Open), None, None, usize::MAX)
+    let open_cases = crate::cases::list(
+        data_dir,
+        Some(crate::types::CaseState::Open),
+        None,
+        None,
+        usize::MAX,
+    )
+    .map(|v| v.len() as u64)
+    .unwrap_or(0)
+        + crate::cases::list(
+            data_dir,
+            Some(crate::types::CaseState::Reopened),
+            None,
+            None,
+            usize::MAX,
+        )
         .map(|v| v.len() as u64)
-        .unwrap_or(0)
-        + crate::cases::list(data_dir, Some(crate::types::CaseState::Reopened), None, None, usize::MAX)
-            .map(|v| v.len() as u64)
-            .unwrap_or(0);
+        .unwrap_or(0);
     let backlog = Backlog {
         fresh: cand.fresh.len() as u64,
         untidied: cand.untidied(),
@@ -230,7 +242,8 @@ pub async fn build(
         }
     }
     let pending = pending(data_dir);
-    let pending_rewinds: Vec<agent::LedgerRewind> = pending.iter().map(|(_, r)| r.clone()).collect();
+    let pending_rewinds: Vec<agent::LedgerRewind> =
+        pending.iter().map(|(_, r)| r.clone()).collect();
     let desk_journals = copy_desk_journals(data_dir, &night);
     let (mut tidy, backlog) = candidates(data_dir, cfg, knowledge).await;
     cap(&mut tidy.fresh, cfg.caps.triage as usize);
@@ -314,9 +327,11 @@ mod tests {
         assert_eq!(day.mode, "nightly");
         assert_eq!(day.ledger.since, "2026-10-07T03:00:00Z");
         assert_eq!(day.pending_rewinds.len(), 1);
-        assert!(day.pending_rewinds[0]
-            .dropped_assistant_text
-            .contains("[redacted]"));
+        assert!(
+            day.pending_rewinds[0]
+                .dropped_assistant_text
+                .contains("[redacted]")
+        );
         assert_eq!(day.desk_journals, ["sre-1.md"]);
         assert!(dir(d).join(&day.night).join("journals/sre-1.md").exists());
         assert!(path(d, &day.night).exists());

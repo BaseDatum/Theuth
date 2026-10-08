@@ -81,12 +81,7 @@ pub fn parse_judge(text: &str) -> Option<(f64, String)> {
 pub fn current_learned(data_dir: &Path, skill_hint: &str) -> String {
     if skill_hint == "prompt:standing-preferences" {
         crate::preferences::block(data_dir)
-            .map(|b| {
-                b.lines()
-                    .skip(1)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
+            .map(|b| b.lines().skip(1).collect::<Vec<_>>().join("\n"))
             .unwrap_or_default()
     } else if skill_hint.starts_with("knowledge:") {
         String::new()
@@ -143,7 +138,10 @@ pub async fn replay(
         session,
         target_role,
         target_system(&case.skill_hint, &learned),
-        format!("{}\n\n[The transcript stops here. Your next turn:]", case.context),
+        format!(
+            "{}\n\n[The transcript stops here. Your next turn:]",
+            case.context
+        ),
     )
     .await?;
     let judge_role = cfg
@@ -188,7 +186,11 @@ pub fn gate(baseline: &[f64], candidate: &[f64], cfg: &DreamConfig) -> GateResul
         .zip(candidate)
         .map(|(x, y)| y - x)
         .fold(f64::INFINITY, f64::min);
-    let min_delta = if min_delta.is_finite() { min_delta } else { 0.0 };
+    let min_delta = if min_delta.is_finite() {
+        min_delta
+    } else {
+        0.0
+    };
     let verdict = if n < cfg.gate.min_val_cases as usize {
         Verdict::Unverified
     } else if c - b >= cfg.gate.margin && min_delta >= -cfg.gate.max_regression {
@@ -247,11 +249,19 @@ mod tests {
 
     #[test]
     fn the_judge_never_sees_a_rationale_and_the_frame_names_the_rung() {
-        let u = judge_user("a numbered list", "never use ask_user", "Here are the options: 1. …");
+        let u = judge_user(
+            "a numbered list",
+            "never use ask_user",
+            "Here are the options: 1. …",
+        );
         assert!(!u.contains("rationale") && u.starts_with("IDEAL:\n"));
-        assert!(target_system("harness", "- rule").contains("## Learned (dreaming) — harness\n- rule"));
-        assert!(target_system("prompt:standing-preferences", "- rule")
-            .contains("## Standing preferences (learned)\n- rule"));
+        assert!(
+            target_system("harness", "- rule").contains("## Learned (dreaming) — harness\n- rule")
+        );
+        assert!(
+            target_system("prompt:standing-preferences", "- rule")
+                .contains("## Standing preferences (learned)\n- rule")
+        );
         assert!(!target_system("knowledge:facts/x", "").contains("Learned"));
     }
 }

@@ -53,7 +53,9 @@ pub async fn undo(
             continue;
         }
         let Some(k) = knowledge else {
-            report.errors.push(format!("{}: knowledge is not running", t.id));
+            report
+                .errors
+                .push(format!("{}: knowledge is not running", t.id));
             continue;
         };
         match k.restore(&t.id, Some(&t.commit_before)).await {
@@ -74,7 +76,9 @@ pub async fn undo(
         let bytes = match std::fs::read(&backup) {
             Ok(b) => b,
             Err(e) => {
-                report.errors.push(format!("skill:{skill}: backup unreadable: {e}"));
+                report
+                    .errors
+                    .push(format!("skill:{skill}: backup unreadable: {e}"));
                 continue;
             }
         };
@@ -104,14 +108,21 @@ pub async fn undo(
         if e.night != *night || e.applied_at.is_none() || e.undone_at.is_some() {
             continue;
         }
-        let skill = e.target.strip_prefix("skill:").unwrap_or(&e.target).to_owned();
+        let skill = e
+            .target
+            .strip_prefix("skill:")
+            .unwrap_or(&e.target)
+            .to_owned();
         if !report.skills_restored.contains(&skill) {
             continue;
         }
         e.undone_at = Some(now.clone());
         edits::log(data_dir, &e)?;
         report.edits_undone.push(e.id.clone());
-        if e.gate.as_ref().is_some_and(|g| g.verdict == Verdict::Accepted) {
+        if e.gate
+            .as_ref()
+            .is_some_and(|g| g.verdict == Verdict::Accepted)
+        {
             for c in &e.cases {
                 let _ = cases::transition(data_dir, c, crate::types::CaseState::Reopened, None);
             }
@@ -142,11 +153,7 @@ pub async fn undo(
     }
     write_record(data_dir, &record)?;
     let mut state = read_state(data_dir);
-    if state
-        .last_night
-        .as_ref()
-        .is_some_and(|n| n.night == *night)
-    {
+    if state.last_night.as_ref().is_some_and(|n| n.night == *night) {
         state.last_night = Some(record.summary.clone());
         write_state(data_dir, &state)?;
     }
@@ -159,7 +166,11 @@ pub async fn undo(
         if report.errors.is_empty() {
             String::new()
         } else {
-            format!("; {} errors: {}", report.errors.len(), report.errors.join(" · "))
+            format!(
+                "; {} errors: {}",
+                report.errors.len(),
+                report.errors.join(" · ")
+            )
         }
     );
     if let Err(e) = journal::append(data_dir, night, "Undone", &line).await {
@@ -241,19 +252,35 @@ mod tests {
         .unwrap();
         assert!(r.backup.is_some());
         assert!(edits::sidecar_path(d, "harness").exists());
-        assert_eq!(cases::get(d, "c1").unwrap().state, crate::types::CaseState::Closed);
+        assert_eq!(
+            cases::get(d, "c1").unwrap().state,
+            crate::types::CaseState::Closed
+        );
         // A group that selects another skill does nothing to this one.
-        let other = undo(d, None, None, &night, Some("skill:other")).await.unwrap();
+        let other = undo(d, None, None, &night, Some("skill:other"))
+            .await
+            .unwrap();
         assert!(other.skills_restored.is_empty() && other.edits_undone.is_empty());
         assert!(edits::sidecar_path(d, "harness").exists());
         // The whole night.
         let rep = undo(d, None, None, &night, None).await.unwrap();
         assert_eq!(rep.skills_restored, ["harness"]);
         assert_eq!(rep.edits_undone, ["e1"]);
-        assert!(!edits::sidecar_path(d, "harness").exists(), "empty backup removes the sidecar");
-        assert_eq!(rep.errors.len(), 1, "the created-by-dreaming id has no commit to restore: {:?}", rep.errors);
+        assert!(
+            !edits::sidecar_path(d, "harness").exists(),
+            "empty backup removes the sidecar"
+        );
+        assert_eq!(
+            rep.errors.len(),
+            1,
+            "the created-by-dreaming id has no commit to restore: {:?}",
+            rep.errors
+        );
         assert!(rep.errors[0].contains("facts/new"));
-        assert_eq!(cases::get(d, "c1").unwrap().state, crate::types::CaseState::Reopened);
+        assert_eq!(
+            cases::get(d, "c1").unwrap().state,
+            crate::types::CaseState::Reopened
+        );
         let logged = edits::all(d).unwrap();
         assert!(logged[0].undone_at.is_some());
         let j = journal::text(d);
@@ -262,6 +289,10 @@ mod tests {
         assert!(!read_record(d, &night).unwrap().summary.undone);
         let again = undo(d, None, None, &night, None).await.unwrap();
         assert!(again.skills_restored.is_empty() && again.edits_undone.is_empty());
-        assert!(undo(d, None, None, &"2026-01-01".to_owned(), None).await.is_err());
+        assert!(
+            undo(d, None, None, &"2026-01-01".to_owned(), None)
+                .await
+                .is_err()
+        );
     }
 }
