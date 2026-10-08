@@ -1,6 +1,6 @@
 # 136 — As-built F2 (DREAMING-crate fixes from review R + live proof P)
 
-Status: as-built · 2026-10-08 · worktree `~/Develop/theuth-136-f2`, branch `feat/136-f2`, cut from `6f853263` (P's `f9edd39c` + F1 + F3), `feat/136-dreaming` merged at `ee01d6c8` (P's `7f4160e2` fire-dated night and as-built §6.1/§6.2). Owns `crates/dreaming/**`, `crates/rpc/**` (`dreaming.*`, TS exports); `crates/theuth/src/main.rs` untouched (the plugin API did not move). Commits: `83c6eaed` (every fix), `f5deec15` (night tests, clippy), `ee01d6c8` (merge), plus the as-built commit named in the final message. Line numbers are this tree's at `ee01d6c8`.
+Status: as-built · 2026-10-08 · worktree `~/Develop/theuth-136-f2`, branch `feat/136-f2`, cut from `6f853263` (P's `f9edd39c` + F1 + F3), `feat/136-dreaming` merged at `ee01d6c8` (P's `7f4160e2` fire-dated night and as-built §6.1/§6.2). Owns `crates/dreaming/**`, `crates/rpc/**` (`dreaming.*`, TS exports); `crates/theuth/src/main.rs` untouched (the plugin API did not move). Commits: `83c6eaed` (every fix), `f5deec15` (night tests, clippy), `ee01d6c8` (merge), `789df666` (rpc disabled-path settings, this file). Line numbers are this tree's at `ee01d6c8`.
 
 ## 0. One screen
 
