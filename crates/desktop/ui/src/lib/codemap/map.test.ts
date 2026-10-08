@@ -30,72 +30,72 @@ import { mockMapApi } from './map-adapter'
 import type { CodeMapChanged, CodeMapProgress, MapEdge } from './map-types'
 
 const ROOT = '/Users/sky/Develop/theuth'
+const STORES = 'overall-architecture/cluster:26b565b0'
+const CODEINDEX = 'overall-architecture/unit:crates/codeindex'
+const GIT = 'overall-architecture/unit:crates/codeindex/src/git.rs'
 const events: (CodeMapProgress | CodeMapChanged)[] = []
 const api = mockMapApi((e) => events.push(e))
 const structure = await api.codemap_overview(ROOT)
-const unnamed = await api.codemap_element(ROOT, 'request-lifecycle')
-// the shared fixtures are the generated map: run the mock's generation under a fake clock first
+const unnamed = await api.codemap_element(ROOT, 'overall-architecture')
+// the shared fixtures are the generated map: replay the mock's generation under a fake clock first
 vi.useFakeTimers()
 const job = await api.codemap_generate(ROOT, 'sess', null)
-vi.advanceTimersByTime(500 + 700 * (job.total + 1))
+vi.advanceTimersByTime(700 * 8)
 vi.useRealTimers()
 const index = await api.codemap_overview(ROOT)
 const top = await api.codemap_element(ROOT, 'overall-architecture')
-const stores = await api.codemap_element(ROOT, 'overall-architecture/cluster:9f3a1c2e')
+const stores = await api.codemap_element(ROOT, STORES)
+const codeindex = await api.codemap_element(ROOT, CODEINDEX)
 
-test('tree builds from MapPerspective.tree: headers first, pre-order, folds hide subtrees, depth ≤ 3', () => {
+test('tree builds from MapPerspective.tree: headers first (the depth-0 row folds into the header), pre-order, folds hide subtrees, depth ≤ 3', () => {
   const all = buildTreeRows(index, () => true)
-  expect(all[0]).toMatchObject({ kind: 'perspective', id: 'overall-architecture', depth: 0, open: true })
+  expect(all[0]).toMatchObject({ kind: 'perspective', id: 'overall-architecture', depth: 0, open: true, count: 29, staleCount: 1 })
+  expect(all.filter((r) => r.id === 'overall-architecture')).toHaveLength(1)
   const names = all.map((r) => r.name)
-  // pre-order: Content stores, then its five children, then codeindex's nine
-  const stores = names.indexOf('Content stores')
-  expect(names.slice(stores + 1, stores + 6)).toEqual(['Document authority', 'Knowledge bundle', 'Artifacts', 'Search envelope', 'Code index'])
-  expect(names[stores + 6]).toBe('Walk')
+  const at = names.indexOf('Content stores')
+  expect(names.slice(at + 1, at + 6)).toEqual(['Document authority', 'Knowledge bundle', 'Artifacts', 'Search envelope', 'Code index'])
+  expect(names[at + 6]).toBe('Walk')
   expect(Math.max(...all.map((r) => r.depth))).toBe(3)
-  // a folded Content stores hides its subtree but not its siblings
-  const folded = buildTreeRows(index, (id) => id !== 'overall-architecture/cluster:9f3a1c2e')
+  const folded = buildTreeRows(index, (id) => id !== STORES)
   expect(folded.map((r) => r.name)).not.toContain('Code index')
   expect(folded.map((r) => r.name)).toContain('World access')
   expect(folded.find((r) => r.name === 'Content stores')).toMatchObject({ foldable: true, open: false, count: 5 })
-  // perspective rows carry element counts, stale counts and the imported badge
-  const imported = all.find((r) => r.id === 'imported:.omm')!
-  expect(imported).toMatchObject({ kind: 'perspective', origin: 'imported', count: 3 })
-  expect(all.find((r) => r.id === 'overall-architecture')!.staleCount).toBe(1)
   expect(all.find((r) => r.name === 'Git facts')).toMatchObject({ stale: true, leaf: true })
+  expect(all.find((r) => r.id === 'request-lifecycle')).toMatchObject({ kind: 'perspective', count: 6 })
 })
 
 test('default open set: first perspective plus the selection and its ancestors', () => {
-  const open = defaultOpen(index, 'overall-architecture/unit:crates/codeindex/src/git.rs')
-  expect([...open]).toEqual(expect.arrayContaining(['overall-architecture', 'overall-architecture/cluster:9f3a1c2e', 'overall-architecture/unit:crates/codeindex']))
+  const open = defaultOpen(index, GIT)
+  expect([...open]).toEqual(expect.arrayContaining(['overall-architecture', STORES, CODEINDEX]))
   expect(open.has('request-lifecycle')).toBe(false)
-  expect(parentsOf(index).get('overall-architecture/cluster:9f3a1c2e')).toBe('overall-architecture')
+  expect(parentsOf(index).get(STORES)).toBe('overall-architecture')
+  expect(parentsOf(index).get(CODEINDEX)).toBe(STORES)
 })
 
 test('keyboard table: ↑/↓ move, → unfolds then moves, ← folds then climbs, Enter drills, Esc up', () => {
   const rows = buildTreeRows(index, (id) => id === 'overall-architecture')
-  const stores = rows.findIndex((r) => r.name === 'Content stores')
-  expect(treeKey('ArrowDown', rows, stores)).toEqual({ type: 'move', to: stores + 1 })
+  const at = rows.findIndex((r) => r.name === 'Content stores')
+  expect(treeKey('ArrowDown', rows, at)).toEqual({ type: 'move', to: at + 1 })
   expect(treeKey('ArrowUp', rows, 0)).toBeNull()
-  expect(treeKey('ArrowRight', rows, stores)).toEqual({ type: 'open', id: 'overall-architecture/cluster:9f3a1c2e' })
-  expect(treeKey('ArrowLeft', rows, stores)).toEqual({ type: 'move', to: 0 })
+  expect(treeKey('ArrowRight', rows, at)).toEqual({ type: 'open', id: STORES })
+  expect(treeKey('ArrowLeft', rows, at)).toEqual({ type: 'move', to: 0 })
   expect(treeKey('ArrowLeft', rows, 0)).toEqual({ type: 'close', id: 'overall-architecture' })
-  expect(treeKey('Enter', rows, stores)).toEqual({ type: 'drill', id: 'overall-architecture/cluster:9f3a1c2e' })
-  expect(treeKey('Escape', rows, stores)).toEqual({ type: 'up' })
-  expect(treeKey('x', rows, stores)).toBeNull()
+  expect(treeKey('Enter', rows, at)).toEqual({ type: 'drill', id: STORES })
+  expect(treeKey('Escape', rows, at)).toEqual({ type: 'up' })
+  expect(treeKey('x', rows, at)).toBeNull()
   const open = buildTreeRows(index, () => true)
-  const at = open.findIndex((r) => r.name === 'Content stores')
-  expect(treeKey('ArrowRight', open, at)).toEqual({ type: 'move', to: at + 1 })
-  expect(treeKey('ArrowLeft', open, at + 1)).toEqual({ type: 'move', to: at })
+  const o = open.findIndex((r) => r.name === 'Content stores')
+  expect(treeKey('ArrowRight', open, o)).toEqual({ type: 'move', to: o + 1 })
+  expect(treeKey('ArrowLeft', open, o + 1)).toEqual({ type: 'move', to: o })
 })
 
-test('activity marks: read from trail targets, edited from the edit list, by path prefix up the tree', () => {
+test('activity marks: read from trail targets, edited from the edit list, by path prefix, climbing to ancestors but not the header', () => {
   const marks = marksFor(index, ['crates/codeindex/src/tools.rs#L188', 'a..b', null], ['crates/document/src/anchor.rs'])
   expect(marks.get('overall-architecture/unit:crates/codeindex/src/tools.rs')).toEqual(['read'])
-  expect(marks.get('overall-architecture/unit:crates/codeindex')).toEqual(['read'])
+  expect(marks.get(CODEINDEX)).toEqual(['read'])
   expect(marks.get('overall-architecture/unit:crates/document')).toEqual(['edited'])
   expect(marks.has('overall-architecture/unit:crates/rpc')).toBe(false)
-  // the cluster above both: read through codeindex, edited through document; the perspective header never
-  expect([...marks.get('overall-architecture/cluster:9f3a1c2e')!].sort()).toEqual(['edited', 'read'])
+  expect([...marks.get(STORES)!].sort()).toEqual(['edited', 'read'])
   expect(marks.has('overall-architecture')).toBe(false)
   const rows = buildTreeRows(index, () => true, marks)
   expect(rows.find((r) => r.name === 'code_* tools')!.marks).toEqual(['read'])
@@ -104,11 +104,11 @@ test('activity marks: read from trail targets, edited from the edit list, by pat
 
 test('search: a name hit and a path hit each light the element chain; the mock answers through localSearch', async () => {
   const byName = localSearch(index, 'git facts')
-  expect(byName[0]).toMatchObject({ element: 'overall-architecture/unit:crates/codeindex/src/git.rs', chain: ['overall-architecture', 'overall-architecture/cluster:9f3a1c2e', 'overall-architecture/unit:crates/codeindex'] })
+  expect(byName[0]).toMatchObject({ element: GIT, chain: ['overall-architecture', STORES, CODEINDEX] })
   const byPath = localSearch(index, 'crates/codeindex/src/rank.rs')
   expect(byPath[0]?.name).toBe('Rank')
   const chain = chainOf(byPath)
-  expect(chain.has('overall-architecture/cluster:9f3a1c2e')).toBe(true)
+  expect(chain.has(STORES)).toBe(true)
   expect(chain.has('overall-architecture/unit:crates/codeindex/src/rank.rs')).toBe(true)
   expect(chain.has('request-lifecycle')).toBe(false)
   expect(localSearch(index, '  ')).toEqual([])
@@ -164,37 +164,40 @@ test('evidence renders counts, never the model: Cargo deps, imports, refs, call 
   expect(evidenceCount([{ type: 'bindings', generator: 'ts-rs', output_dir: 'bindings/' }, { type: 'process', site: 's', verb: 'spawn' }])).toBe('generated bindings · spawn')
 })
 
-test('elementGraph: nodes re-labelled from children (name · path), inferred edges dashed with why · count labels, stale hatched, thumbnails on groups', () => {
-  const g = elementGraph(top, 'TB')
+test('elementGraph over the content-stores fixture: nodes from children, why · count labels, thumbnail on the group, inferred edges dashed, stale hatched', () => {
+  const g = elementGraph(stores, 'TB')
   expect(g.graph.direction).toBe('TB')
-  expect(g.graph.nodes).toHaveLength(11)
-  const storesNode = g.graph.nodes.find((n) => n.id === 'cluster:9f3a1c2e')!
-  expect(storesNode).toMatchObject({ label: 'Content stores', sub: 'crates/knowledge', ref: 'crates/knowledge' })
-  expect(g.thumbs.has('cluster:9f3a1c2e')).toBe(true)
-  expect(g.thumbs.has('unit:crates/rpc')).toBe(false)
-  const ws = g.graph.edges.find((e) => e.from === 'cluster:1a2b3c4d')!
-  expect(ws.style).toBe('dashed')
-  expect(ws.label).toBe('WebSocket JSON-RPC')
-  const rpc = g.graph.edges.find((e) => e.from === 'unit:crates/rpc' && e.to === 'cluster:9f3a1c2e')!
-  expect(rpc).toMatchObject({ style: 'solid', label: 'lens, doc, knowledge · 5 Cargo deps' })
-  expect(elementStats(top)).toBe('11 elements · 14 of 15 edges')
-  const labels = new Map(g.graph.nodes.map((n) => [n.id, n.label]))
-  expect(footnote(g, labels)).toBe('dashed = inferred (Clients → RPC facade)')
-  const ci = elementGraph(stores, 'LR')
-  expect(ci.hatch).toEqual([])
-  const deep = elementGraph({ ...stores, children: stores.children.map((c) => ({ ...c, stale: c.name === 'Code index' })) }, 'LR')
-  expect(deep.hatch).toEqual(['unit:crates/codeindex'])
+  expect(g.graph.nodes).toHaveLength(5)
+  expect(g.graph.nodes.find((n) => n.id === 'unit:crates/codeindex')).toMatchObject({ label: 'Code index', sub: 'crates/codeindex', ref: 'crates/codeindex' })
+  expect(g.thumbs.has('unit:crates/codeindex')).toBe(true)
+  expect(g.thumbs.has('unit:crates/document')).toBe(false)
+  expect(g.graph.edges).toHaveLength(6)
+  expect(g.graph.edges.find((e) => e.from === 'unit:crates/knowledge' && e.to === 'unit:crates/document')).toMatchObject({ style: 'solid', label: 'concepts are block documents · 1 Cargo dep' })
+  expect(elementStats(stores)).toBe('5 elements · 6 edges')
+  expect(g.hatch).toEqual([])
+  // one edge turned inferred, one child stale
+  const edited = { ...stores, edges: stores.edges.map((e, i) => (i === 0 ? { ...e, backed: false, evidence: [{ type: 'inferred' as const, reason: 'claimed' }] } : e)), children: stores.children.map((c) => (c.name === 'Code index' ? { ...c, stale: true } : c)) }
+  const d = elementGraph(edited, 'LR')
+  expect(d.graph.edges[0]).toMatchObject({ style: 'dashed', label: 'concepts are block documents' })
+  expect(d.hatch).toEqual(['unit:crates/codeindex'])
+  expect(elementStats(edited)).toBe('5 elements · 5 of 6 edges')
+  const labels = new Map(d.graph.nodes.map((n) => [n.id, n.label]))
+  expect(footnote(d, labels)).toBe('dashed = inferred (Knowledge bundle → Document authority)')
+  expect(elementGraph(codeindex, 'TB').hatch).toEqual(['unit:crates/codeindex/src/git.rs'])
+  // a synthesised (structure) element: children drawn, no edges
+  expect(elementGraph(top, 'TB').graph.nodes).toHaveLength(11)
+  expect(elementGraph(top, 'TB').graph.edges).toHaveLength(0)
   expect(abbrevPath(['a/b', 'c/d', 'e', 'f'])).toBe('a/b · c/d +2')
   expect(abbrevPath(['a'])).toBe('a')
 })
 
-test('snapshot: a parseSpec-valid Graph fence, ≤ 12 nodes, ref on every node, dashed kept', () => {
-  const spec = mapGraphSpec(top) as { elements: { g: { props: { nodes: { id: string; ref: string; label: string }[]; edges: { style?: string }[] } } } }
+test('snapshot: a parseSpec-valid Graph fence, ≤ 12 nodes, ref on every node', () => {
+  const spec = mapGraphSpec(codeindex) as { elements: { g: { props: { nodes: { id: string; ref: string; label: string }[]; edges: { style?: string }[] } } } }
   expect(parseSpec(JSON.stringify(spec))).toMatchObject({ repaired: false, spec: { root: 'g' } })
   const g = spec.elements.g.props
-  expect(g.nodes.length).toBeLessThanOrEqual(12)
+  expect(g.nodes).toHaveLength(9)
   for (const n of g.nodes) expect(n.ref, n.id).toBeTruthy()
-  expect(g.edges.some((e) => e.style === 'dashed')).toBe(true)
+  expect(g.edges.length).toBe(16)
 })
 
 test('route state: ?tab=map&el=<id> round-trips, defaults omitted, junk → Map with no element', () => {
@@ -211,31 +214,36 @@ test('route state: ?tab=map&el=<id> round-trips, defaults omitted, junk → Map 
 test('lines: progress (stage · n of m · $ · calls), provenance (written by · HEAD · ago · $ · calls), imported, structure, list title', () => {
   expect(progressLine({ stage: 'top', done: 5, total: 9, calls: 7, cost_nanos: 310_000_000, currency: 'USD', error: null })).toBe('Mapping perspectives · 5 of 9 · $0.31 · 7 calls')
   expect(progressLine({ stage: 'failed', done: 1, total: 9, calls: 0, cost_nanos: 0, currency: 'USD', error: 'session runs on an external harness' })).toBe('Generation failed · 1 of 9 · session runs on an external harness')
-  expect(money(4_000_000)).toBe('<0.01'.replace('<0.01', '$<0.01'))
+  expect(money(4_000_000)).toBe('$<0.01')
   expect(money(0)).toBe('$0.00')
   const now = Date.now()
-  expect(provenanceLine('generated', { ...stores.provenance!, generated_ms: now - 3 * 60_000, git_head: '5cddad8e9f', cost_nanos: 40_000_000, call_ids: ['a', 'b'] }, now)).toBe('written by claude-fable-5-1 · HEAD 5cddad8e · 3 min ago · $0.04 · 2 calls')
+  expect(provenanceLine('generated', { ...stores.provenance!, generated_ms: now - 3 * 60_000 }, now)).toBe('written by anthropic/claude-opus-4 · HEAD 5cddad8e · 3 min ago · $0.04 · 2 calls')
   expect(provenanceLine('imported', null)).toBe('imported · unknown freshness')
   expect(provenanceLine('structure', null)).toContain('structure view')
-  expect(listTitle(top)).toMatch(/^11 elements · 14 of 15 edges · written /)
+  expect(listTitle(stores)).toMatch(/^5 elements · 6 edges · written /)
+  expect(listTitle(top)).toBe('11 elements · structure view')
 })
 
-test('mock generation: Structure (one perspective, basenames, no prose) → progress per element → done; CodeMapChanged names what to refetch', async () => {
+test('fixture mock: structure overview (basenames, no prose) → map-progress.json replay → generated overview and fixture elements', async () => {
   expect(structure.meta.state).toBe('structure')
   expect(structure.perspectives.map((p) => p.id)).toEqual(['overall-architecture'])
-  expect(structure.perspectives[0]!.tree.find((r) => r.node === 'cluster:9f3a1c2e')!.name).toBe('knowledge')
+  expect(structure.perspectives[0]!.tree.find((r) => r.depth === 1)!.name).toBe('desktop')
   expect(unnamed.origin).toBe('structure')
   expect(unnamed.fields.description).toBe('')
-  expect(job).toMatchObject({ stage: 'done', done: job.total })
-  expect(job.total).toBeGreaterThan(10)
+  expect(unnamed.crumbs).toEqual([['overall-architecture', 'Overall architecture']])
+  expect(job).toMatchObject({ stage: 'done', total: 61 })
   const kinds = events.map((e) => e.type)
-  expect(kinds).toContain('CodeMapProgress')
+  expect(kinds.filter((k) => k === 'CodeMapProgress')).toHaveLength(6)
   expect(kinds).toContain('CodeMapChanged')
-  expect(events.at(-1)).toMatchObject({ type: 'CodeMapChanged', root: ROOT })
-  expect((events.filter((e) => e.type === 'CodeMapProgress') as CodeMapProgress[]).at(-1)!.stage).toBe('done')
+  expect(events.every((e) => e.root === ROOT)).toBe(true)
   expect(index.meta.state).toBe('ready')
-  expect(index.perspectives.map((p) => p.id)).toEqual(['overall-architecture', 'request-lifecycle', 'imported:.omm'])
+  expect(index.perspectives.map((p) => p.id)).toEqual(['overall-architecture', 'request-lifecycle'])
   expect(stores.fields.description).toMatch(/^Durable content/)
-  expect(stores.also_in).toEqual([])
+  expect(stores.crumbs).toEqual([
+    ['overall-architecture', 'Overall architecture'],
+    [STORES, 'Content stores'],
+  ])
+  expect(top.children.map((c) => c.name)).toContain('Content stores')
+  expect(top.children.find((c) => c.name === 'Content stores')!.thumbnail?.nodes).toHaveLength(5)
   expect(await api.codemap_export(ROOT).catch((e: Error) => e.message)).toMatch(/refused/)
 })

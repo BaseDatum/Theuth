@@ -4,9 +4,10 @@
 // `CodeToolRan` on `subscribe_events`.
 //
 // Map tab on fixtures: `VITE_CODEMAP_MOCK=1 bun run dev`, open any chat → the CodeMap button appears after the first
-// replayed call (≈ 0.8 s) → the panel opens on **Map**: `codemap_overview` answers from the in-memory map in
-// `Structure`, the panel sends `codemap_generate`, and the mock replays `CodeMapProgress` / `CodeMapChanged` through
-// `dispatch` for ~6 s while names and prose land. Deep link: `/codemap/<session>/<root>?tab=map&el=overall-architecture%2Fcluster%3A9f3a1c2e`.
+// replayed call (≈ 0.8 s) → the panel opens on **Map**: `codemap_overview` answers `map-overview-structure.json`, the
+// panel sends `codemap_generate`, the mock replays `map-progress.json` through `dispatch` (~5 s) and then serves
+// `map-overview.json` + the `map-element-*.json` fixtures (other elements are synthesised from the tree).
+// Deep link: `/codemap/<session>/<root>?el=overall-architecture%2Fcluster%3A26b565b0`.
 
 import events from '@/components/codemap/__fixtures__/events.json'
 import type { CodeMapChanged } from '@/lib/codemap/map-types'
