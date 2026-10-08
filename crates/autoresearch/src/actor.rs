@@ -1831,7 +1831,7 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
 
     let model = env.cfg.executor(&spec.models, &env.agent);
     let text = schedule_file::text(&spec, &env.cfg, &worktree, &model, start);
-    schedule_file::write(&env.data_dir, &slug, &text)?;
+    schedule_file::write(&env.data_dir, &slug, &text).await?;
     patch(
         env,
         study,
@@ -1866,7 +1866,7 @@ async fn baseline(
     let mut values = Vec::new();
     let mut noisy = 0u32;
     for k in 1..=u32::from(spec.bench.repeats.max(1)) {
-        let s = scored_sample(
+        let s = match scored_sample(
             env,
             spec,
             SampleRequest {
@@ -1882,7 +1882,18 @@ async fn baseline(
             cancel,
             None,
         )
-        .await?;
+        .await
+        {
+            Ok(s) => s,
+            // R-85: Stop now while the sample still waits for the slot or the load
+            // precondition surfaces as the slot's error, not a lost sample.
+            Err(_) if cancel.is_cancelled() => {
+                return Err(Error::refused(
+                    "stopped by you while the baseline was measured; nothing was kept",
+                ));
+            }
+            Err(e) => return Err(e),
+        };
         match s.value {
             Some(_) if s.noisy => noisy += 1,
             Some(v) => values.push(v),

@@ -37,6 +37,8 @@ struct Fake {
     parent: Mutex<String>,
     report_user: Mutex<Option<String>>,
     hang: std::sync::atomic::AtomicBool,
+    /// With `hang`: a cancel surfaces as the slot's wait error instead of a lost sample.
+    hang_errs: std::sync::atomic::AtomicBool,
     release: tokio::sync::Notify,
     fail_next: std::sync::atomic::AtomicBool,
     last_input: Mutex<Option<GateInput>>,
@@ -68,6 +70,7 @@ impl Default for Fake {
             parent: Mutex::new(String::new()),
             report_user: Default::default(),
             hang: Default::default(),
+            hang_errs: Default::default(),
             release: Default::default(),
             fail_next: Default::default(),
             last_input: Default::default(),
@@ -177,6 +180,11 @@ impl Backend for Fake {
             tokio::select! {
                 _ = self.release.notified() => {}
                 _ = cancel.cancelled() => lost = true,
+            }
+            if lost && self.hang_errs.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(Error::refused(
+                    "cancelled while waiting for the load precondition",
+                ));
             }
         }
         let value = if lost {
@@ -2415,9 +2423,19 @@ async fn incumbent_first_confirm_spends_no_candidate_sample() {
 /// R-85: Stop now while preparing cancels the baseline with an explicit reason.
 #[tokio::test]
 async fn stop_now_while_preparing_cancels_the_baseline() {
+    // Lost sample (cancel mid-bench) and the slot's wait error (cancel while waiting
+    // for the load precondition, 140-P live) both end with the R-85 reason.
+    for wait_err in [false, true] {
+        stop_now_while_preparing(wait_err).await;
+    }
+}
+
+async fn stop_now_while_preparing(wait_err: bool) {
     let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
     let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
     fake.hang.store(true, std::sync::atomic::Ordering::SeqCst);
+    fake.hang_errs
+        .store(wait_err, std::sync::atomic::Ordering::SeqCst);
     let sp = spec(&h, "t1", 10);
     create(
         &mut h.studies,

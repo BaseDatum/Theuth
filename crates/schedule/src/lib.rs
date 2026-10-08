@@ -923,9 +923,12 @@ enum Fired {
     Task(String),
 }
 
-/// Internal `tell`: the directory changed (watcher) — re-read it (34 §2.3).
+/// The directory changed — re-read it (34 §2.3). Told by the watcher; asked by a
+/// plugin that wrote a file itself (140 `schedule_file::write`): FSEvents is not
+/// delivered in every launch environment (140-P live: `FSEventStreamStart` false
+/// under the ACP tool tree), and a loop must not depend on it to start.
 #[derive(Clone, Copy, Debug)]
-struct Reconcile;
+pub struct Reconcile;
 
 /// Grace between a fanned-out run's `TurnFinished` and its [`Settle`]: long
 /// enough for the agent's `TurnDone` to start a queued result turn and for
@@ -3193,6 +3196,30 @@ mod fire_tests {
         assert_eq!(actor.ask(GetRunTimeout).await.unwrap(), 90);
         let cfg = std::fs::read_to_string(dir.path().join("config.yaml")).unwrap();
         assert_eq!(cfg, "schedule:\n  run_timeout_secs: 90\n");
+    }
+
+    /// 140-P: a plugin that writes a file asks `Reconcile` itself; the file is
+    /// known before the ask returns, with no dir watcher involved.
+    #[tokio::test]
+    async fn reconcile_ask_reads_a_file_written_after_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _) = actor(dir.path(), &[]).await;
+        let actor = Schedule::spawn(s);
+        assert!(actor.ask(ListSchedules).await.unwrap().is_empty());
+        std::fs::write(
+            dir.path().join(DIR).join("autoresearch-x.md"),
+            "---\nevery: 0s\nmax_runs: 3\nenabled: false\n---\n\nnext experiment\n",
+        )
+        .unwrap();
+        actor.ask(Reconcile).await.unwrap();
+        let names: Vec<String> = actor
+            .ask(ListSchedules)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, vec!["autoresearch-x".to_owned()]);
     }
 
     /// 131 D1: the runtime is reset exactly when the fire clears the frame
