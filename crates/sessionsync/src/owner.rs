@@ -215,7 +215,8 @@ impl Take {
                     }
                     // The user's Resume press is a `ResumeTurn` with no cause:
                     // the supervisor must know it is this takeover (139 §6.3).
-                    if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+                    if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    {
                         let _ = agents
                             .tell(agent::supervisor::TakeoverPending {
                                 session: id,

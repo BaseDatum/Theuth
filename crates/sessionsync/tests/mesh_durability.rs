@@ -75,7 +75,13 @@ async fn session_on(store: &Store) -> SessionId {
 async fn open_turn_on(store: &Store, id: SessionId) -> TurnId {
     let turn = TurnId::new();
     store
-        .step(id, turn, StepKind::InputAccepted, None, &serde_json::json!({}))
+        .step(
+            id,
+            turn,
+            StepKind::InputAccepted,
+            None,
+            &serde_json::json!({}),
+        )
         .await
         .unwrap();
     turn
@@ -92,8 +98,14 @@ async fn t9_journal_prune_travels_through_the_log_and_never_touches_a_foreign_jo
     a.store.finish_turn(id, done, "end_turn").await.unwrap();
     let open = open_turn_on(&a.store, id).await;
     let shipped = b.pull(&a).await;
-    assert!(shipped.iter().all(|r| *r == Applied::Applied), "{shipped:?}");
-    assert!(b.store.resume_plan(id, done).await.is_ok(), "B holds the finished turn");
+    assert!(
+        shipped.iter().all(|r| *r == Applied::Applied),
+        "{shipped:?}"
+    );
+    assert!(
+        b.store.resume_plan(id, done).await.is_ok(),
+        "B holds the finished turn"
+    );
 
     // B's tick: A's finished turn is not B's to prune.
     assert_eq!(b.store.journal_prune(Scope::Here, 0).await.unwrap(), 0);
@@ -106,16 +118,25 @@ async fn t9_journal_prune_travels_through_the_log_and_never_touches_a_foreign_jo
     let before = a.store.log_seq();
     assert_eq!(a.store.journal_prune(Scope::Here, 0).await.unwrap(), 2);
     assert!(a.store.resume_plan(id, done).await.is_err());
-    assert_eq!(a.store.open_turn(id).await.unwrap().map(|(t, _)| t), Some(open));
+    assert_eq!(
+        a.store.open_turn(id).await.unwrap().map(|(t, _)| t),
+        Some(open)
+    );
     assert_eq!(a.store.log_seq(), before + 1);
 
     let applied = b.pull(&a).await;
-    assert_eq!(applied.iter().filter(|r| **r == Applied::Applied).count(), 1);
+    assert_eq!(
+        applied.iter().filter(|r| **r == Applied::Applied).count(),
+        1
+    );
     assert!(
         b.store.resume_plan(id, done).await.is_err(),
         "B's copy lost the pruned turn through the log"
     );
-    assert_eq!(b.store.open_turn(id).await.unwrap().map(|(t, _)| t), Some(open));
+    assert_eq!(
+        b.store.open_turn(id).await.unwrap().map(|(t, _)| t),
+        Some(open)
+    );
     // Nothing more to ship either way; B's tick is still a no-op.
     assert_eq!(b.store.journal_prune(Scope::Here, 0).await.unwrap(), 0);
     assert!(a.pull(&b).await.is_empty());
@@ -135,7 +156,10 @@ async fn t1_t7_replica_displays_the_owners_turn_and_acts_on_nothing() {
 
     let row = b.store.session(id).await.unwrap().unwrap();
     assert_eq!((row.owner.as_str(), row.here), ("a", false));
-    assert_eq!(b.store.open_turn(id).await.unwrap().map(|(t, _)| t), Some(turn));
+    assert_eq!(
+        b.store.open_turn(id).await.unwrap().map(|(t, _)| t),
+        Some(turn)
+    );
     assert!(b.store.open_turns(Scope::Here).await.unwrap().is_empty());
     assert_eq!(b.store.open_turns(Scope::All).await.unwrap().len(), 1);
     assert!(b.store.jobs_open(Scope::Here).await.unwrap().is_empty());
@@ -144,7 +168,13 @@ async fn t1_t7_replica_displays_the_owners_turn_and_acts_on_nothing() {
     assert!(b.store.finish_turn(id, turn, "superseded").await.is_err());
     assert!(
         b.store
-            .step(id, turn, StepKind::Suspended, None, &serde_json::json!({"reason": "shutdown"}))
+            .step(
+                id,
+                turn,
+                StepKind::Suspended,
+                None,
+                &serde_json::json!({"reason": "shutdown"})
+            )
             .await
             .is_err()
     );
