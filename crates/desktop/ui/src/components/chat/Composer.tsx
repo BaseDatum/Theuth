@@ -86,6 +86,7 @@ export function createOptions(draft: DraftCreate): CreateSessionOptions {
   return {
     retention: draft.private ? 'private' : 'durable',
     project: draft.project,
+    notebook: null,
     view: draft.private ? VIEW : null,
     cwd: null,
     model: null,

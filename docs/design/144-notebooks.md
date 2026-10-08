@@ -813,6 +813,25 @@ the mirror, a write answers `-32011` and forwards (`hub.rs:1-6`); `cargo test -p
 replica` green. Notebook pair: a **notebook** link opens every note and source and no session; removing a source closes
 the guest's open tab with `Closed{Revoked}`.
 
+### Status after wave 1
+
+Shipped on `integrate/144` (as-builts `144-as-built-{C,W1,W2,W3,W4,Z}.md`): the container (`DocKind::Notebook/Source`,
+the four replicated tables, membership with the derived grant and `Closed{revoked}`, delete preview/delete/archive);
+nine ingest routes behind one `IngestActor` with live `SourceEvent` cards; the block index (`nb_blocks` FTS5 + `nb_vec`
+vec0, local gte-modernbert embeddings, hybrid `nb_search`, block-level `notes`/`sources`/`notebooks` search
+categories); notebook-bound chats with the `<notebook>` block, `cite_resolve`, `cite_check` on every write, save /
+promote; the desktop notebook page, source card/page, `theuth://` chips + References + open-at-block, Library tab,
+search rows, the `/d` notebook guest view; 19 RPCs and 9 tools. Proven live on a scratch engine: text, PDF, URL,
+past chat and meeting cards reach `completed`; chat answers carry chips that open the source at the pulsed block;
+Save answer as note yields a note with paper chips; vector hits with the real checkpoint; a relay guest edits a note
+seen live on the owner's Mac. Not proven in wave 1: YouTube (captions endpoint answered empty, no `yt-dlp`),
+Confluence/Jira (no MCP server on the scratch engine), m4a/mp4 (no STT checkpoint in the scratch data dir — W1's
+`ingest_audio` test covers the route), a second mesh engine (the `replicate.rs` test covers the tables), the notebook
+guest pair (the relay serves the deployed `/d` bundle, not this tree's). Wave 2 owns the dial and `notebook_context_*`
+(cards show disabled levels), insights (`ingest::insights::after_ingest` is the hook; the Insights tab is a
+placeholder), drift chips inside sources, `source_insights_run` / `insight_promote`. Wave 3 owns Ask across
+notebooks, the four overviews and the audio overview (buttons present, disabled, `title="wave 3"`).
+
 ## 17. Open
 
 1. **"Ask the owner's agent" for members (D13)**: a member's question lands in the owner's notebook session as a steer

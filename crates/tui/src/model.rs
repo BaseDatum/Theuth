@@ -1442,6 +1442,8 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "context_pressure" => (None, "</context_pressure>"),
             "runtime" => (None, "</runtime>"),
             "knowledge" => (None, "</knowledge>"),
+            // 144 §5.3: the bound chat's volatile `<notebook>` block (a harness note like `<knowledge>`).
+            "notebook" => (None, "</notebook>"),
             "nudge" => (None, "</nudge>"),
             "journal" => (None, "</journal>"),
             // 125 §7.4: an advisory steer's row is carded by `AdvisoryAdded`, never echoed.
@@ -10161,7 +10163,7 @@ impl Model {
     fn acp_key(&mut self, code: KeyCode, tx: &UnboundedSender<Command>) -> MenuKey {
         enum Act {
             Move(usize),
-            Send(Command),
+            Send(Box<Command>),
             Probe,
             Close,
             Nothing,
@@ -10182,9 +10184,11 @@ impl Model {
             (KeyCode::Down, _) => Act::Move(step((cursor + 1).min(last), 1)),
             (KeyCode::Esc, _) => Act::Close,
             (KeyCode::Char('p'), _) => Act::Probe,
-            (KeyCode::Enter, Some(AcpRow::Registry(a))) => Act::Send(Command::AddAcp(a.id.clone())),
+            (KeyCode::Enter, Some(AcpRow::Registry(a))) => {
+                Act::Send(Box::new(Command::AddAcp(a.id.clone())))
+            }
             (KeyCode::Char('d') | KeyCode::Backspace, Some(AcpRow::Entry(e))) => {
-                Act::Send(Command::RemoveAcp(e.name.clone()))
+                Act::Send(Box::new(Command::RemoveAcp(e.name.clone())))
             }
             _ => Act::Nothing,
         };
@@ -10205,7 +10209,7 @@ impl Model {
                 }
                 send(tx, Command::ListAcp { probe: true });
             }
-            Act::Send(cmd) => send(tx, cmd),
+            Act::Send(cmd) => send(tx, *cmd),
             Act::Close => self.menu = None,
             Act::Nothing => {}
         }
@@ -13263,9 +13267,12 @@ mod tests {
         assert_eq!(m.session, Some(hit));
         assert!(matches!(rx.try_recv(), Ok(Command::Load { session, .. }) if session == hit));
         // Chips survive the reset a session switch performs.
-        m.search.selected = [true, false, false, false, false, false];
+        m.search.selected = [true, false, false, false, false, false, false, false];
         m.resume(SessionId::new(), &tx);
-        assert_eq!(m.search.selected, [true, false, false, false, false, false]);
+        assert_eq!(
+            m.search.selected,
+            [true, false, false, false, false, false, false, false]
+        );
     }
 
     /// 66 §10: `/attach q` opens the search menu in pick mode; Enter on a hit
@@ -13770,13 +13777,15 @@ mod tests {
             "{wide}"
         );
         assert_eq!(m.board_row(&m.agents[&child], 100), row, "no cost yet");
-        let mut total = CostBucket::default();
-        total.calls = 1;
-        total.dispatched = 1;
-        total.returned = vec![Money {
-            currency: "USD".into(),
-            nanos: 121_280_250,
-        }];
+        let total = CostBucket {
+            calls: 1,
+            dispatched: 1,
+            returned: vec![Money {
+                currency: "USD".into(),
+                nanos: 121_280_250,
+            }],
+            ..Default::default()
+        };
         m.apply(UiEvent::Cost(
             root,
             SessionCost {
@@ -18255,6 +18264,7 @@ mod tests {
             pinned: false,
             archived: false,
             project: project.map(str::to_owned),
+            notebook: None,
             retention: Retention::Durable,
             running: false,
             owner: String::new(),

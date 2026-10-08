@@ -4,6 +4,7 @@
 //! ([`collate`]), calibration and confidence ([`postprocess`]), the gate and the log are ours.
 
 pub mod config;
+pub mod embed;
 pub mod lora;
 pub mod model;
 pub mod weights;

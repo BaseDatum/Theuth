@@ -198,11 +198,16 @@ struct Import {
     applied: bool,
 }
 
-enum ImportReply {
+pub(crate) enum ImportReply {
     None,
     Outcome(ReplySender<Result<ImportOutcome, String>>),
     Created(DocId, ReplySender<Result<DocId, String>>),
     CreatedNote(DocSummary, ReplySender<Result<DocSummary, String>>),
+    /// 144: a notebook — the row's columns ride along with the document summary.
+    CreatedNotebook(
+        crate::notebook::Notebook,
+        ReplySender<Result<crate::notebook::Notebook, String>>,
+    ),
 }
 
 /// What an import did (§4.4).
@@ -229,7 +234,7 @@ pub struct EditOutcome {
 #[derive(kameo::Actor)]
 pub struct DocumentActor {
     pub(crate) store: Store,
-    helper: Helper,
+    pub(crate) helper: Helper,
     pub(crate) cfg: DocumentsConfig,
     pub(crate) rt: Runtime,
     pub(crate) data_dir: PathBuf,
@@ -485,7 +490,7 @@ impl DocumentActor {
     }
 
     /// Start an import through the helper; the transaction returns as a [`HelperEvent::Update`].
-    fn start_import(
+    pub(crate) fn start_import(
         &mut self,
         doc: &DocId,
         markdown: String,
@@ -550,6 +555,11 @@ impl DocumentActor {
     ) {
         if let Err(e) = self.load(doc) {
             reply.send(Err(EditError::Other(e)));
+            return;
+        }
+        // 144 §3.1: a source's text is derived; only the helper (ingest, the insight job) edits it.
+        if let Err(e) = self.source_writable(doc, &by) {
+            reply.send(Err(EditError::Other(e.to_string())));
             return;
         }
         // §6.4: the agent is present before its update lands; the touched ids follow with the update.
@@ -754,7 +764,7 @@ impl DocumentActor {
     }
 
     /// Close, move the directory to `.trash/<id>`, mark deleted, tell subscribers (§7.1, §7.3).
-    async fn delete_doc(&mut self, doc: &DocId) -> Result<(), String> {
+    pub(crate) async fn delete_doc(&mut self, doc: &DocId) -> Result<(), String> {
         let meta = match self.open.remove(doc) {
             Some(o) => {
                 self.helper.close(doc).log("close");
@@ -787,6 +797,7 @@ fn finish_reply(reply: ImportReply, r: Result<ImportOutcome, String>) {
         ImportReply::Outcome(tx) => tx.send(r),
         ImportReply::Created(id, tx) => tx.send(r.map(|_| id)),
         ImportReply::CreatedNote(summary, tx) => tx.send(r.map(|_| summary)),
+        ImportReply::CreatedNotebook(nb, tx) => tx.send(r.map(|_| nb)),
     }
 }
 
@@ -876,7 +887,7 @@ impl DocumentActor {
             Some(s) => StateVector::decode_v1(&unb64(&s)?).map_err(|e| format!("bad sv: {e}"))?,
             None => StateVector::default(),
         };
-        self.admit(&m.doc, &m.by, false)?;
+        self.admit(&m.doc, &m.by, false).await?;
         let o = self.load(&m.doc)?;
         o.idle_since = Instant::now();
         let mut seen = false;
@@ -972,7 +983,8 @@ impl DocumentActor {
             .into());
         }
         let update = unb64(&m.update)?;
-        self.admit(&m.doc, &m.by, true)?;
+        self.admit(&m.doc, &m.by, true).await?;
+        self.source_writable(&m.doc, &m.by)?;
         Ok(self.apply(&m.doc, update, m.by, false, Vec::new()).await?)
     }
 }
@@ -993,7 +1005,7 @@ impl Message<Subscribe> for DocumentActor {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         match self.hub.route() {
-            Ok(None) => tx.send(self.subscribe(m)),
+            Ok(None) => tx.send(self.subscribe(m).await),
             Ok(Some(hub)) => {
                 self.forward(hub, &m.doc, Client::of(&m.by), Cmd::Subscribe { reply: tx })
             }
@@ -1004,8 +1016,8 @@ impl Message<Subscribe> for DocumentActor {
 }
 
 impl DocumentActor {
-    fn subscribe(&mut self, m: Subscribe) -> Result<mpsc::Receiver<DocEvent>, DocError> {
-        self.admit(&m.doc, &m.by, false)?;
+    async fn subscribe(&mut self, m: Subscribe) -> Result<mpsc::Receiver<DocEvent>, DocError> {
+        self.admit(&m.doc, &m.by, false).await?;
         let o = self.load(&m.doc)?;
         o.idle_since = Instant::now();
         let (tx, rx) = mpsc::channel(SUB_QUEUE);
@@ -1040,7 +1052,7 @@ impl Message<AwarenessUpdateMsg> for DocumentActor {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         match self.hub.route() {
-            Ok(None) => tx.send(self.awareness_update(m)),
+            Ok(None) => tx.send(self.awareness_update(m).await),
             Ok(Some(hub)) => self.forward(
                 hub,
                 &m.doc,
@@ -1057,10 +1069,10 @@ impl Message<AwarenessUpdateMsg> for DocumentActor {
 }
 
 impl DocumentActor {
-    fn awareness_update(&mut self, m: AwarenessUpdateMsg) -> Result<(), DocError> {
+    async fn awareness_update(&mut self, m: AwarenessUpdateMsg) -> Result<(), DocError> {
         let bytes = unb64(&m.state)?;
         let u = AwarenessUpdate::decode_v1(&bytes).map_err(|e| format!("bad awareness: {e}"))?;
-        self.admit(&m.doc, &m.by, false)?;
+        self.admit(&m.doc, &m.by, false).await?;
         let o = self.load(&m.doc)?;
         let now = Instant::now();
         let slot = o.awareness_rate.entry(m.by.conn()).or_insert(RateSlot {
@@ -1588,7 +1600,7 @@ impl Message<MetaOf> for DocumentActor {
     type Reply = Result<DocMeta, String>;
 
     async fn handle(&mut self, m: MetaOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.admit(&m.doc, &m.by, false)?;
+        self.admit(&m.doc, &m.by, false).await?;
         Ok(self.load(&m.doc)?.meta.clone())
     }
 }
@@ -1718,8 +1730,15 @@ impl Message<CreateBoard> for DocumentActor {
             tx.send(Err(e));
             return reply;
         }
-        self.create_doc(Binding::Note, Some(&m.root), m.title, m.markdown, m.by, tx)
-            .await;
+        self.create_doc(
+            Binding::Note,
+            Some(&m.root),
+            m.title,
+            m.markdown,
+            m.by,
+            |s| ImportReply::CreatedNote(s, tx),
+        )
+        .await;
         reply
     }
 }
@@ -1734,8 +1753,10 @@ impl Message<CreateNote> for DocumentActor {
             tx.send(Err(e));
             return reply;
         }
-        self.create_doc(Binding::Note, None, m.title, m.markdown, m.by, tx)
-            .await;
+        self.create_doc(Binding::Note, None, m.title, m.markdown, m.by, |s| {
+            ImportReply::CreatedNote(s, tx)
+        })
+        .await;
         reply
     }
 }
@@ -1750,8 +1771,10 @@ impl Message<Create> for DocumentActor {
             tx.send(Err(e));
             return reply;
         }
-        self.create_doc(m.binding, None, m.title, m.markdown, m.by, tx)
-            .await;
+        self.create_doc(m.binding, None, m.title, m.markdown, m.by, |s| {
+            ImportReply::CreatedNote(s, tx)
+        })
+        .await;
         reply
     }
 }
@@ -1759,15 +1782,15 @@ impl Message<Create> for DocumentActor {
 impl DocumentActor {
     /// Meta + index row, `DocumentChanged`, then the headed body as one `replace` import. `board_root`
     /// makes the document a `DocKind::Board` headed by [`board_frontmatter`] (71 §2.1).
-    async fn create_doc(
+    pub(crate) async fn create_doc(
         &mut self,
         binding: Binding,
         board_root: Option<&Path>,
         title: String,
         markdown: String,
         by: Principal,
-        tx: ReplySender<Result<DocSummary, String>>,
-    ) {
+        reply: impl FnOnce(DocSummary) -> ImportReply,
+    ) -> DocId {
         let id = DocId::for_binding(&binding);
         let now = now_ms();
         let meta = DocMeta {
@@ -1791,22 +1814,18 @@ impl DocumentActor {
             created_ms: now,
             updated_ms: now,
         };
+        let reply = reply(DocSummary::from(&meta));
         if let Err(e) = self.store.create(&meta).await {
-            tx.send(Err(format!("{e:#}")));
-            return;
+            finish_reply(reply, Err(format!("{e:#}")));
+            return id;
         }
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
         let mut markdown = with_heading(&meta.title, &markdown);
         if let Some(root) = board_root {
             markdown.insert_str(0, &board_frontmatter(root));
         }
-        self.start_import(
-            &id,
-            markdown,
-            by,
-            ImportMode::Replace,
-            ImportReply::CreatedNote(DocSummary::from(&meta), tx),
-        );
+        self.start_import(&id, markdown, by, ImportMode::Replace, reply);
+        id
     }
 }
 
@@ -1837,7 +1856,8 @@ impl Message<Rename> for DocumentActor {
             return reply;
         }
         let meta = match self.load(&m.doc) {
-            Ok(o) if !o.meta.kind.free_standing() => {
+            // 144 §3.2: a notebook's title is its name — renamed like a note.
+            Ok(o) if !(o.meta.kind.free_standing() || o.meta.kind == DocKind::Notebook) => {
                 tx.send(Err("title_owned_by_binding".into()));
                 return reply;
             }
@@ -1863,42 +1883,47 @@ impl Message<Rename> for DocumentActor {
         );
         self.rt.publish(DocumentChanged::of(&meta, false)).await;
         let me = ctx.actor_ref().clone();
-        tokio::spawn(async move {
-            let outline = match me
-                .ask(Outline {
-                    doc: m.doc.clone(),
-                    depth: Some(1),
-                })
-                .await
-            {
-                Ok(o) => o,
-                Err(e) => return tx.send(Err(e.to_string())),
-            };
-            // A board's first block is its frontmatter (`root:`); the heading follows it.
-            let Some(first) = outline.blocks.iter().find(|b| b["type"] != "frontmatter") else {
-                return tx.send(Ok(()));
-            };
-            let is_h1 = first["type"] == "heading"
-                && first["text"]
-                    .as_str()
-                    .is_some_and(|t| t.starts_with("[h1] "));
-            let Some(id) = first["id"].as_str().filter(|_| is_h1) else {
-                return tx.send(Ok(()));
-            };
-            let r = me
-                .ask(Edit {
-                    doc: m.doc,
-                    edits: vec![BlockEdit::Replace {
-                        blocks: vec![id.to_owned()],
-                        markdown: format!("# {title}"),
-                    }],
-                    by: Principal::Owner { device: None },
-                })
-                .await;
-            tx.send(r.map(|_| ()).map_err(|e| e.to_string()));
-        });
+        tokio::spawn(async move { tx.send(retitle_heading(me, m.doc, title).await) });
         reply
     }
+}
+
+/// The second half of a rename (§7.3): when the document's first block is a level-1 heading, replace
+/// it with `# <title>` as the owner. Runs outside the actor (it asks it twice).
+pub(crate) async fn retitle_heading(
+    me: ActorRef<DocumentActor>,
+    doc: DocId,
+    title: String,
+) -> Result<(), String> {
+    let outline = me
+        .ask(Outline {
+            doc: doc.clone(),
+            depth: Some(1),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    // A board's first block is its frontmatter (`root:`); the heading follows it.
+    let Some(first) = outline.blocks.iter().find(|b| b["type"] != "frontmatter") else {
+        return Ok(());
+    };
+    let is_h1 = first["type"] == "heading"
+        && first["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("[h1] "));
+    let Some(id) = first["id"].as_str().filter(|_| is_h1) else {
+        return Ok(());
+    };
+    me.ask(Edit {
+        doc,
+        edits: vec![BlockEdit::Replace {
+            blocks: vec![id.to_owned()],
+            markdown: format!("# {title}"),
+        }],
+        by: Principal::Owner { device: None },
+    })
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// `ask` → `Result<(), String>`: delete a note (§7.3 UI). Other kinds answer `delete_via_owner`

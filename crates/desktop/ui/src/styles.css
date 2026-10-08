@@ -802,3 +802,65 @@ html .bn-root .theuth-agent-caret {
     pointer-events: none;
   }
 }
+
+/* 144 §6.3: citation chips (Citations.tsx; the same look for `theuth://` links on the paper, numbered by CSS counter)
+   and the 1.5 s pulse on the block a `#<block>` locator opened. */
+.theuth-cite,
+html .bn-editor .bn-inline-content a[href^="theuth://"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin: 0 1px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: 1px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.theuth-cite[data-kind="sources"],
+html .bn-editor .bn-inline-content a[href^="theuth://sources/"] {
+  background: var(--status-info-fg);
+  color: white;
+}
+.theuth-cite[data-dead] {
+  background: var(--fg-tertiary);
+  text-decoration: line-through;
+}
+html .bn-editor {
+  counter-reset: theuth-cite;
+}
+html .bn-editor .bn-inline-content a[href^="theuth://"] {
+  counter-increment: theuth-cite;
+  font-size: 0;
+}
+html .bn-editor .bn-inline-content a[href^="theuth://"]::before {
+  content: counter(theuth-cite);
+  font-size: 10px;
+}
+html .bn-root .theuth-cite-pulse {
+  border-radius: 4px;
+  animation: theuth-cite-pulse 1.5s ease-out forwards;
+}
+@keyframes theuth-cite-pulse {
+  from {
+    background: color-mix(in srgb, var(--primary) 16%, transparent);
+    outline: 2px solid var(--primary);
+  }
+  to {
+    background: transparent;
+    outline: 2px solid transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html .bn-root .theuth-cite-pulse {
+    animation: none;
+    outline: 2px solid var(--primary);
+  }
+}

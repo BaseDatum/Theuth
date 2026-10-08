@@ -21,10 +21,15 @@ use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
 pub mod actor;
+pub mod cite_check;
 pub mod helper;
 pub mod hub;
+pub mod index;
+pub mod ingest;
 pub mod meta;
 pub mod mirror;
+pub mod nb_tools;
+pub mod notebook;
 pub mod relay;
 pub mod search;
 pub mod share;
@@ -45,6 +50,7 @@ pub use helper::{
 };
 pub use hub::{DocError, HUB_MOVED};
 pub use meta::*;
+pub use notebook::*;
 pub use share::{
     Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName, proof,
     secret_hash,
@@ -248,6 +254,24 @@ impl runtime::Plugin for DocumentPlugin {
         let actor =
             DocumentActor::spawn(DocumentActor::new(store.clone(), helper, cfg, rt.clone()));
         actor.register(DOCUMENT_ACTOR)?;
+        // 144 §4.2: the ingest job runner beside the document actor (hub-only by its writes).
+        if let Err(e) = ingest::IngestActor::start(rt, store.clone(), actor.clone()) {
+            tracing::warn!("documents: ingest unavailable: {e:#}");
+        }
+        // 144 §7.1: the block index — first run / model change in the background. The embedder registers in
+        // the decision plugin, which starts after this one: wait for it (bounded) so the first walk embeds
+        // instead of leaving every document lexical-only until its next edit.
+        let (a, rt2) = (actor.clone(), rt.clone());
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                rt2.lookup_when::<decision::embed::EmbedActor>(decision::embed::EMBED_ACTOR),
+            )
+            .await;
+            if let Err(e) = index::reindex(&a).await {
+                tracing::warn!("index: rebuild failed: {e:#}");
+            }
+        });
 
         let a = actor.clone();
         tokio::spawn(async move {
@@ -279,13 +303,17 @@ impl runtime::Plugin for DocumentPlugin {
                 .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
                 .await
             {
-                tools::register(&reg, a, rt2.data_dir.clone()).await;
+                tools::register(&reg, a.clone(), rt2.data_dir.clone()).await;
+                // 144 §13.2: the wave-1 notebook tools beside the `doc_*` ones.
+                nb_tools::register(&reg, a).await;
             }
         });
         // 69: the derived-file watcher, exports and every write are hub duties. `Reconcile` starts the
         // watcher now (a lone engine is its own hub); the lease and the self id flip it from here on.
         let _ = actor.tell(hub::Reconcile).await;
         rt.subscribe::<DocumentActor, mesh::MeshEvent>(&actor).await;
+        // 144 §7.1: every `DocumentChanged` this actor publishes re-indexes the document.
+        rt.subscribe::<DocumentActor, DocumentChanged>(&actor).await;
         let (a, rt2) = (actor.clone(), rt.clone());
         tokio::spawn(async move {
             let Some(m) = rt2.lookup_when::<mesh::Mesh>(mesh::MESH_ACTOR).await else {

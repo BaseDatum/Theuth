@@ -9526,7 +9526,7 @@ fn secret_eq(a: &str, b: &str) -> bool {
 impl Agents {
     /// The store `id`'s tree lives in: a private member's in-memory store,
     /// else the durable one (51 §4.5).
-    fn store_for(&self, id: SessionId) -> &Store {
+    pub(crate) fn store_for(&self, id: SessionId) -> &Store {
         self.private_member
             .get(&id)
             .and_then(|root| self.private.get(root))
@@ -9884,6 +9884,13 @@ impl Message<CreateSession> for Agents {
                         }),
                 )
                 .await?;
+            // 144 §8: the notebook binding is root metadata like `project`.
+            if let Some(nb) = m.options.notebook.as_deref().filter(|n| !n.is_empty()) {
+                self.store
+                    .set_notebook(id, Some(nb))
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
             // The actor is attached by now: `set_mode` sets the column and
             // starts the (empty) tree, so the first turn is already endless.
             if memory == MemoryMode::Endless {

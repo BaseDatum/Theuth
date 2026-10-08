@@ -66,6 +66,7 @@ const session = (id: string, title: string, updated: number, extra: Partial<Sess
   pinned: false,
   archived: false,
   project: null,
+  notebook: null,
   retention: 'durable',
   running: false,
   owner: '',
