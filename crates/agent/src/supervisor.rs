@@ -1955,6 +1955,23 @@ impl Agents {
             self.enqueued.remove(&receipt.id);
             return Ok(());
         }
+        // 139 §8 "Children" (69 P): the parent moved to another engine — its
+        // owner runs the intake. `enqueue_peer` would spawn a local actor for
+        // a session this engine no longer owns, whose intake refuses the row.
+        if let Some(owner) = self.remote_owner(parent).await {
+            let m = Deliver {
+                from: child,
+                to: to_key,
+                text: text.to_owned(),
+                await_reply: false,
+                reply_to: None,
+                request_id: Some(request_id),
+                admitted: CancellationToken::new(),
+            };
+            self.forward_peer(owner, parent, &m, text.to_owned(), receipt, generation)
+                .await?;
+            return Ok(());
+        }
         let record = match self.store.peer_record(parent, receipt.id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
