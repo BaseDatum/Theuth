@@ -37,7 +37,6 @@ pub mod continuation;
 pub mod dreaming_ledger;
 pub mod durability;
 pub mod frame;
-pub mod harvest;
 pub mod loop_;
 pub mod peers;
 pub mod project;
@@ -366,10 +365,15 @@ pub async fn answer_ask(
         }
         (Some(_), Some(_)) => Ok(true),
         (None, Some(answers)) if !answers.is_empty() => {
-            agents()?
-                .ask(LateAnswer { id, answers })
-                .await
-                .map_err(|e| anyhow::anyhow!("late answer: {e}"))?;
+            // No agent actor (a test harness without one): nowhere to
+            // deliver, still "not pending".
+            match agents() {
+                Ok(agents) => agents
+                    .ask(LateAnswer { id, answers })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("late answer: {e}"))?,
+                Err(e) => tracing::warn!(ask = %id.0, "late answer dropped: {e}"),
+            }
             Ok(false)
         }
         (None, _) => Ok(false),
@@ -457,10 +461,11 @@ pub struct Budget {
 
 /// `ask` → `Result<(), String>` (136 §2.2): set or clear a session's money
 /// cap. The schedule plugin sends it on every fire (`None` when the file has
-/// no `budget:`); `Reserved::open` refuses a model call that would pass it and
-/// the turn ends with one `<budget>` note (136 W2). Kept in memory on the
-/// session (`SessionState.budget`); a restarted session has none until the
-/// next fire.
+/// no `budget:`); `Reserved::open` refuses any model call of the session —
+/// round, harvest, compaction or a detached side call — that would pass it;
+/// a refused round call ends the turn with one `<budget>` note (136 W2), a
+/// refused side call answers `budget exhausted: …`. Kept in memory on the
+/// session; a restarted session has none until the next fire.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetBudget {
     /// Target session.

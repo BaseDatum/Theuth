@@ -229,7 +229,7 @@ export function Dreaming() {
 const TIER_HELP: Record<Tier, string> = {
   triage: 'Sorts the fresh entries. Default is the rule-based classifier with no model at all.',
   tidy: 'Retitles, merges, archives, verifies — the cheap, high-volume calls.',
-  propose: 'Writes skill edits and preference lines from the day\u2019s cases.',
+  propose: 'Writes skill edits and preference lines from the day\u2019s cases. v1: the proposer runs as the routine\u2019s own model (the Tidy tier); this pick is saved for when the proposer gets its own call.',
   judge: 'Scores replays behind the gate; another vendor than propose when one is configured.',
 }
 

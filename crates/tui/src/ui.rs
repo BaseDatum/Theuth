@@ -2265,6 +2265,7 @@ mod tests {
                 timestamp: None,
                 owner: "user".into(),
                 visibility: Default::default(),
+                ..Default::default()
             },
             r#match: TextMatch {
                 field: "body".into(),

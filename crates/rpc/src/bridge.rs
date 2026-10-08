@@ -14,6 +14,7 @@ use browser::BrowserEvent;
 use codeindex::CodeindexEvent;
 use document::DocumentChanged;
 use double::{DoubleAnswered, DoublePredicted, DoubleTrainingState, DoubleVersionActivated};
+use dreaming::{DreamNightFinished, DreamNightStarted, DreamUndone};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -140,7 +141,10 @@ forward!(
     DoubleTrainingState,
     DoubleVersionActivated,
     AttentionChanged,
-    ReminderEvent
+    ReminderEvent,
+    DreamNightStarted,
+    DreamNightFinished,
+    DreamUndone
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -201,6 +205,9 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, DoubleTrainingState>(&actor).await;
     rt.subscribe::<Bridge, DoubleVersionActivated>(&actor).await;
     rt.subscribe::<Bridge, AttentionChanged>(&actor).await;
+    rt.subscribe::<Bridge, DreamNightStarted>(&actor).await;
+    rt.subscribe::<Bridge, DreamNightFinished>(&actor).await;
+    rt.subscribe::<Bridge, DreamUndone>(&actor).await;
     rt.subscribe::<Bridge, ReminderEvent>(&actor).await;
     tx
 }

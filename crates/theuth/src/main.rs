@@ -181,6 +181,27 @@ enum Cmd {
         #[command(subcommand)]
         cmd: DoubleCmd,
     },
+    /// The nightly dreaming routine (design doc 136): offline jobs over a data dir, no engine needed.
+    Dreaming {
+        #[command(subcommand)]
+        cmd: DreamingCmd,
+    },
+}
+
+/// `t dreaming …` (136 §3.3 item 7).
+#[derive(clap::Subcommand, Debug)]
+enum DreamingCmd {
+    /// Recall plus the rule-only parts of Tidy over `--data-dir` (its `knowledge/`,
+    /// `knowledge.sqlite`, `sessions.sqlite`) with zero writes; prints the counts the
+    /// night's journal would show. Run it against a copy of a live data dir.
+    DryRun {
+        /// The data dir to read; defaults to the global `--data-dir`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Print the report as one JSON object instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `t double …` (126 §8.4, Revision 2): one-shot jobs, no running engine needed.
@@ -562,6 +583,7 @@ async fn cmd_67(data_dir: &Path, config: &Figment, cmd: Cmd) -> anyhow::Result<(
         // Dispatched by `run` before this: stdout is its protocol channel.
         Cmd::Mcp { .. } => unreachable!("t mcp is served by mcp::run"),
         Cmd::Double { .. } => unreachable!("t double runs without an engine"),
+        Cmd::Dreaming { .. } => unreachable!("t dreaming runs without an engine"),
     };
     match r {
         Ok(v) => {
@@ -873,6 +895,11 @@ agent:
 
 # knowledge:                 # design doc 10; the bundle lives in <data_dir>/knowledge/
 #   enabled: true            # false: no store, no knowledge_* tools, no hints, no harvest
+#   lifetimes:               # 136 §5.2, days: a `record` past its lifetime drops out of hints (dreaming archives it);
+#     record: 14             # `fact`/`procedure`/`entity` lifetimes pace dreaming's verification sample
+#     fact: 30
+#     procedure: 90
+#     entity: 60
 
 # documents:                 # design doc 59; Yjs documents under <data_dir>/documents/, the BlockNote editor
 #   enabled: true            # false: no store, no helper, no doc_* methods; concepts open as raw text
@@ -1447,6 +1474,22 @@ async fn run() -> anyhow::Result<()> {
         .data_dir
         .or_else(|| dirs::home_dir().map(|h| h.join(".theuth")))
         .ok_or_else(|| anyhow::anyhow!("cannot determine data dir; pass --data-dir"))?;
+
+    // 136: the dry run reads a (copied) data dir and must write nothing — not
+    // even `first_run`'s config.yaml / prompt.md.
+    if let Some(Cmd::Dreaming {
+        cmd: DreamingCmd::DryRun { data_dir: dir, json },
+    }) = &cli.cmd
+    {
+        let dir = dir.as_ref().unwrap_or(&data_dir);
+        let report = dreaming::dry_run(dir).await?;
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", dreaming::dry_run::render(&report));
+        }
+        return Ok(());
+    }
 
     let config_path = cli.config.unwrap_or_else(|| data_dir.join("config.yaml"));
     first_run(&data_dir, &config_path)?;

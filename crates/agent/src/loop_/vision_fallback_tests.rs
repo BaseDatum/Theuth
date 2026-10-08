@@ -453,7 +453,7 @@ impl Harness {
         format!("{}/v1/", self.server.as_ref().expect("own server").uri())
     }
 
-    fn resolve(&self, id: &str) -> Resolved {
+    pub(super) fn resolve(&self, id: &str) -> Resolved {
         self.catalog.resolve(id, &|_| true).unwrap()
     }
 

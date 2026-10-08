@@ -24,6 +24,8 @@ pub(crate) struct Side {
     pub store: crate::store::Store,
     pub rt: runtime::Runtime,
     pub closed: tokio_util::sync::CancellationToken,
+    /// 136 §2.2: the session's money cap at the moment the call was asked for.
+    pub budget: Option<crate::Budget>,
     client: genai::Client,
     auth: crate::supervisor::Auth,
 }
@@ -66,6 +68,7 @@ impl Shared {
             store: self.store.clone(),
             rt: self.rt.clone(),
             closed: self.closed.clone(),
+            budget: self.budget.read().clone(),
             client: self.client.clone(),
             auth: self.auth.clone(),
         }
@@ -107,9 +110,8 @@ impl Side {
         };
         let (req, opts) = frame.request(transport, self.session, None);
         let request_id = Uuid::now_v7().to_string();
-        // 136 §2.2: a detached call is not refused by the session's budget
-        // (the state that holds it is the turn's); its cost still counts
-        // toward the next round call's check.
+        // 136 §2.2: a detached call under a budgeted owner is refused like a
+        // round call (`budget exhausted: …`); its cost counts either way.
         let reserved = Reserved::open(
             &self.store,
             &self.rt,
@@ -119,7 +121,7 @@ impl Side {
             self.turn,
             kind,
             &current.model,
-            None,
+            self.budget.as_ref(),
         )
         .await
         .map_err(|e| e.to_string())?;

@@ -292,7 +292,7 @@ dreaming:
   models:                       # [sky] all four configurable in Settings › Dreaming
     triage: null                # null = decide_many only, model tail off
     tidy: <provider/model>      # default: agent.title_model (the cheap one; anthropic/claude-haiku-4-5 here), else the subagent model
-    propose: <provider/model>   # default: agent.subagents.model (anthropic/claude-fable-5-1 here)
+    propose: <provider/model>   # default: agent.subagents.model (anthropic/claude-fable-5-1 here). v1 as built (Z): the proposer runs in the routine's own session, i.e. on the `tidy` model; this value is persisted and shown in Settings but no call reads it until `skill_learned_edit` gains a `propose` side call
     judge: <provider/model>     # default: agent.model when its vendor differs from propose (openai/gpt-5.6-sol here), else propose with another seed
   caps: {triage: 300, merges: 40, archives: 60, verifications: 15, cases: 60, edits_per_target: 4, targets: 3, rows_per_week: 3}
   lifetimes: {record: 14, fact: 30, procedure: 90, entity: 60}

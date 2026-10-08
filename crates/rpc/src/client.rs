@@ -291,6 +291,9 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         double::DoublePredicted,
         double::DoubleAnswered,
         roster::attention::AttentionChanged,
+        dreaming::DreamNightStarted,
+        dreaming::DreamNightFinished,
+        dreaming::DreamUndone,
     );
     tracing::debug!(
         tag = v["type"].as_str().unwrap_or("?"),

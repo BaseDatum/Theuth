@@ -13,16 +13,13 @@ export function useDreamingApi() {
 export const KEY = ['dreaming'] as const
 export const NIGHTS_LIMIT = 10
 
-/**
- * `dreaming.status`, refetched when a routine fires or a turn ends (the night's session is a routine run; the
- * `DreamNight*` events are not in the desktop's event union yet). Reads `state.json` — cheap.
- */
+/** `dreaming.status`, refetched when a night starts, finishes or is undone. Reads `state.json` — cheap. */
 export function useDreamStatus() {
   const api = useDreamingApi()
   const qc = useQueryClient()
   useEffect(() => {
     const invalidate = () => void qc.invalidateQueries({ queryKey: KEY })
-    const offs = [on('Fired', invalidate), on('TurnFinished', invalidate), on('KnowledgeChanged', invalidate)]
+    const offs = [on('DreamNightStarted', invalidate), on('DreamNightFinished', invalidate), on('DreamUndone', invalidate)]
     return () => {
       for (const off of offs) off()
     }

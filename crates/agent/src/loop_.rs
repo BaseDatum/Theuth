@@ -539,9 +539,8 @@ pub struct SessionState {
     /// stops. Its puts are individual commits, so a cut-off harvest is partial,
     /// never inconsistent.
     pub harvest_task: Option<JoinHandle<()>>,
-    /// 136 §2.2: the session's money cap from [`SetBudgetNow`]; in memory
-    /// only. `Reserved::open` refuses a call past it.
-    pub budget: Option<crate::Budget>,
+    /// 136 §2.2: the money cap lives on [`Shared::budget`] (the turn's round
+    /// calls and the session's detached side calls read the same cell).
     /// 136 §2.2: the `<budget>` note a refused call queued; appended once
     /// before the next turn's first model call.
     pub budget_note: Option<String>,
@@ -583,7 +582,6 @@ impl SessionState {
             clamp_warned: false,
             title_task: None,
             harvest_task: None,
-            budget: None,
             budget_note: None,
         }
     }
@@ -634,8 +632,6 @@ pub struct Session {
     titled: bool,
     /// Effort set while a turn ran (or between turns); applied when the next turn starts.
     pending_effort: Option<Option<ReasoningEffort>>,
-    /// 136 §2.2: a budget set while a turn ran; applied when the state comes home.
-    pending_budget: Option<Option<crate::Budget>>,
     /// Scope of the in-flight turn (50 §6.3); meaningless when idle.
     scope: TurnScope,
     /// This session's slot is published to [`PermitGate`] (50 §8).
@@ -693,6 +689,10 @@ struct Shared {
     escalate_model: Arc<RwLock<Option<Resolved>>>,
     /// Preferred subagent model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
+    /// 136 §2.2: the session's money cap from [`SetBudgetNow`]; in memory
+    /// only. `Reserved::open` refuses any call of this owner — round, harvest,
+    /// compaction or a detached side call — that would pass it.
+    budget: Arc<parking_lot::RwLock<Option<crate::Budget>>>,
     store: Store,
     client: Client,
     auth: Auth,
@@ -834,6 +834,7 @@ impl Session {
                 vision_model,
                 escalate_model,
                 subagent_model,
+                budget: Arc::default(),
                 store,
                 client,
                 auth,
@@ -857,7 +858,6 @@ impl Session {
             entered: None,
             titled,
             pending_effort: None,
-            pending_budget: None,
             scope: TurnScope::default(),
             gated: false,
         }
@@ -2029,10 +2029,7 @@ impl Message<SetBudgetNow> for Session {
     type Reply = ();
 
     async fn handle(&mut self, SetBudgetNow(b): SetBudgetNow, _: &mut Context<Self, Self::Reply>) {
-        match self.state.as_mut() {
-            Some(state) => state.budget = b,
-            None => self.pending_budget = Some(b),
-        }
+        *self.shared.budget.write() = b;
     }
 }
 
@@ -2175,12 +2172,9 @@ impl Message<TurnDone> for Session {
     /// but suppressed peer input starts no turn; the next batch is tried.
     async fn handle(
         &mut self,
-        TurnDone(mut state): TurnDone,
+        TurnDone(state): TurnDone,
         ctx: &mut Context<Self, Self::Reply>,
     ) {
-        if let Some(b) = self.pending_budget.take() {
-            state.budget = b;
-        }
         self.state = Some(state);
         self.inflight = None;
         self.scope = TurnScope::default();
@@ -2510,7 +2504,7 @@ impl std::fmt::Display for Refused {
                 currency,
             } => write!(
                 f,
-                "budget: spent {spent} + estimate > cap {cap} ({currency} nanos)"
+                "budget exhausted: spent {spent} + estimate > cap {cap} ({currency} nanos)"
             ),
         }
     }
@@ -3908,6 +3902,7 @@ impl Turn {
         let mut tries = 0;
         let mut stripped = false;
         let mut shrunk = false;
+        let budget = self.shared.budget.read().clone();
         loop {
             let reserved = Reserved::open(
                 &self.shared.store,
@@ -3918,7 +3913,7 @@ impl Turn {
                 self.turn,
                 kind,
                 &current.model,
-                self.state.budget.as_ref(),
+                budget.as_ref(),
             )
             .await
             .map_err(|e| match e {
@@ -6584,7 +6579,7 @@ impl Turn {
                 Vec::new()
             });
         let cwd = self.cwd.to_string_lossy();
-        let instruction = crate::harvest::instruction(&related, &cwd);
+        let instruction = knowledge::harvest::instruction(&related, &cwd);
         let (head, mut full) = self.projected(images);
         full.push(ChatMessage::user(&instruction));
         let text = self
@@ -6608,7 +6603,7 @@ impl Turn {
             // 136 §0.14: title ≤ 120 chars (the rest → a Summary paragraph),
             // `evidence: [this session]`, `status: fresh`.
             let (title, body) =
-                crate::harvest::split_title(&fm.title().unwrap_or_else(|| id.clone()), &doc.body);
+                knowledge::harvest::split_title(&fm.title().unwrap_or_else(|| id.clone()), &doc.body);
             let put = Put {
                 type_: fm.type_().unwrap_or_default(),
                 title,
@@ -7955,7 +7950,9 @@ mod tests {
             pos("- later: Listed skill\n\n## Peers\npeer text\n\nPlugin block.\n\n## Guidance")
                 > pos("## Skills")
         );
-        assert!(!full.contains("rules"));
+        // An `always` skill is inlined, never listed in the index (the header
+        // prose may say "rules" on its own).
+        assert!(!full.contains("- rules:"));
     }
 
     /// A live route generation between two owner roots, and the policy that
@@ -9386,9 +9383,9 @@ mod tests {
         let priced =
             || sse(r#"{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}"#);
         let (base_url, hits, _) = fake_openai(vec![priced(), priced()]).await;
-        let (mut turn, current, transport, _events) =
+        let (turn, current, transport, _events) =
             gateway_turn(&dir, store.clone(), id, base_url).await;
-        turn.state.budget = Some(crate::Budget {
+        *turn.shared.budget.write() = Some(crate::Budget {
             nanos: 10_000_000,
             currency: "USD".into(),
         });
@@ -9451,7 +9448,7 @@ mod tests {
             "no row for a refused call"
         );
         // A cleared budget is no cap; another currency never sees USD spend.
-        turn.state.budget = None;
+        *turn.shared.budget.write() = None;
         assert!(
             turn.call(
                 &current,

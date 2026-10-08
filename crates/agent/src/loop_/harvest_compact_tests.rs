@@ -173,7 +173,7 @@ async fn compaction_returns_before_the_harvest() {
     assert_eq!(meta.status, knowledge::Status::Fresh);
     assert_eq!(meta.evidence, [turn.shared.id.to_string()]);
     assert!(
-        body.contains("\nSummary: The harvest instruction was answered by the fake provider"),
+        body.contains("## Summary\n\nThe harvest instruction was answered by the fake provider"),
         "{body}"
     );
     assert!(

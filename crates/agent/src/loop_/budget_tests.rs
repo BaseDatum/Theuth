@@ -62,8 +62,24 @@ async fn scenario() {
     });
 
     // Turn 1: refused at round 0; `end_turn`, no request, the note queued.
-    let (mut turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
-    turn.state.budget = budget.clone();
+    let (turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
+    *turn.shared.budget.write() = budget.clone();
+    // A detached side call (title, escalate, dreaming's replay) under the same
+    // owner is refused too, with the text the dreaming tools surface.
+    let err = turn
+        .shared
+        .side(turn.turn)
+        .call(
+            h.resolve("openai/textonly"),
+            "s",
+            "replay".into(),
+            Duration::from_secs(5),
+            CallKind::Dream,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.starts_with("budget exhausted: "), "{err}");
+    assert!(h.requests().await.is_empty(), "nothing was sent");
     let state = turn.run(tid, vec![h.input("first ask", false)]).await;
     let events = h.drain().await;
     assert_eq!(stop_reason(&events), Some("end_turn"), "{events:#?}");
@@ -81,6 +97,7 @@ async fn scenario() {
     // Turn 2 (the state handed back by `TurnDone`): the note rides the input,
     // once, before the call; the call is refused again.
     let (mut turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
+    *turn.shared.budget.write() = budget;
     turn.state = state;
     let state = turn.run(tid, vec![h.input("second ask", false)]).await;
     let events = h.drain().await;

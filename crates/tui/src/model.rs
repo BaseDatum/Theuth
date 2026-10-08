@@ -14825,6 +14825,7 @@ mod tests {
             timestamp: None,
             owner: "user".into(),
             visibility: Default::default(),
+            ..Default::default()
         }]));
         assert!(matches!(m.menu, Some(Menu::Knowledge { .. })) && !m.input_focused());
         m.menu_key(KeyCode::Char('h'), "", &tx);

@@ -46,6 +46,9 @@ import type { DoubleTrainingState } from '@/rpc/bindings/DoubleTrainingState'
 import type { DoubleVersionActivated } from '@/rpc/bindings/DoubleVersionActivated'
 import type { AttentionChanged } from '@/rpc/bindings/AttentionChanged'
 import type { ReminderEvent } from '@/rpc/bindings/ReminderEvent'
+import type { DreamNightStarted } from '@/rpc/bindings/DreamNightStarted'
+import type { DreamNightFinished } from '@/rpc/bindings/DreamNightFinished'
+import type { DreamUndone } from '@/rpc/bindings/DreamUndone'
 
 /**
  * `AgentEvent` with the 25 §7 additions the bindings do not carry yet:
@@ -122,3 +125,7 @@ export type WireEvent =
   | AttentionChanged
   /** LIVE-GLYPHS (2026-10-07): a reminder was set, fired or cancelled; the sidebar's timer glyph. */
   | ReminderEvent
+  /** 136 §9.3: the dreaming routine's night began / ended (counts, spend, proposals) / was undone. */
+  | DreamNightStarted
+  | DreamNightFinished
+  | DreamUndone

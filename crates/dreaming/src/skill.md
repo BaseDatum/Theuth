@@ -10,7 +10,7 @@ Work in python cells; every tool below is an `await`able function. Keep each pha
 
 ## Budget order (§4.1)
 
-The night's money (`budget:` in the routine file; a Dream-now run passes its own) is spent in value order and the run **stops cleanly when a `<budget …>` note arrives**: finish no model call after it, skip straight to Journal with what you have, and say in the journal where you stopped. Order: Recall and the `decide_many` triage are free → the triage tail, retitles, merges, supersedes, archives and the verification sample on the cheap `tidy` model (~35 %) → Mine (~15 %) → Rehearse, one gated cluster at a time (~40 %) → Suggest and Journal (pennies). Never start a replay you cannot afford to finish: a cluster with `n` val cases costs `2n` replays (baseline + candidate, each a target call and a judge call) plus one proposal.
+The night's money (`budget:` in the routine file; a Dream-now run passes its own) is spent in value order and the run **stops cleanly when the budget is gone**. Two signals mean the same thing: a `<budget …>` note in your input, or `replay_case` answering an error that starts `budget exhausted:` (its model calls are capped by the same guard). On either: finish no model call after it, skip straight to Journal with what you have, and say in the journal where you stopped. Order: Recall and the `decide_many` triage are free → the triage tail, retitles, merges, supersedes, archives and the verification sample on the cheap `tidy` model (~35 %) → Mine (~15 %) → Rehearse, one gated cluster at a time (~40 %) → Suggest and Journal (pennies). Never start a replay you cannot afford to finish: a cluster with `n` val cases costs `2n` replays (baseline + candidate, each a target call and a judge call) plus one proposal.
 
 **Backlog mode.** The `<schedule>` envelope carries a `<request>` block with `mode: backlog` (and `budget_usd`) when the user pressed Dream now → Backlog. Then run the phases as one pass, and **repeat passes while `dreaming_ledger()` reports backlog (`backlog.fresh > 0` or `backlog.untidied > 0`) and no `<budget>` note has arrived**; each pass journals its own section (`Tidy (pass 2)`, …). `mode: pass` or no request = one pass. The nightly run is one pass.
 
@@ -77,7 +77,7 @@ Cluster by `skill_hint`. A cluster qualifies with ≥ 3 cases, or ≥ 1 case who
 5. **Gate** (the Rust `replay::gate` rule, mirrored here): `n` = val cases; `n < 3` → `unverified`; else accepted iff `mean(k) − mean(b) ≥ 0.1` **and** `min(k_i − b_i) ≥ −0.2`; otherwise `rejected`. Set the same `gate` `{baseline, candidate, min_delta, val_cases, verdict}` on every edit of the proposal.
 6. **Record**: `await skill_learned_edit(skill, edits=<records with gate set>, night=night)` — with every gate set the tool writes the **accepted** edits to `skills/learned/<skill>.md` (backup first), logs all of them to `edits.jsonl`, closes the accepted edits' cases (`closed_by: edit:<id>`) and buffers the rejected ones with their gate numbers. `unverified` edits are logged, not applied: stage them in the journal. For `prompt:standing-preferences` use `preferences_set` (Settle) instead of a sidecar.
 
-Stop when the budget note arrives or the third cluster is done. An all-unmatched proposal is a journal line, not silence.
+Stop when the budget note arrives, when a `replay_case` answers `budget exhausted:` (abandon that cluster: the sidecar is untouched until the record pass), or when the third cluster is done. An all-unmatched proposal is a journal line, not silence.
 
 ### Proposer prompt
 
