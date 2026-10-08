@@ -54,4 +54,9 @@ UI word everywhere: "Watching" / "watch-only"; `observed` appears only in code a
 
 ## 4. Gates (build-lock, `BUILD_LABEL=141-W3`)
 
-(filled in below)
+After `git merge --no-edit feat/141-acp-subagents` (brought one `crates/agent/src/lib.rs` line; a second merge before DONE was "Already up to date"):
+
+- `bunx tsc --noEmit -p .` (crates/desktop/ui) — clean, no output (71 s slot wait; bindings = C's regenerated set, `.bindings-ready` 14:22).
+- `bunx vitest run` on W3's files — `src/lib/session-tree.test.ts src/store/reduce.test.ts src/components/chat/RosterCard.test.ts src/components/chat/ObservedBar.test.ts src/components/sidebar/SessionList.test.ts src/components/chat/slash.test.ts src/components/chat/CostPill.test.ts src/components/chat/ModelMenu.test.ts` → **8 files, 105 tests passed** (14:37; re-run with tsc in one slot at 14:41: 106 passed + the throwaway below).
+- Throwaway SSR smoke (deleted after the run): `SubagentRow` for an observed row rendered `aria-label="watch-only"`, the `omp task` tag, `subagent-blink` on a beat, the greyed `$0.120` inside-parent cost, title `ReadA · watching · running · claude`; idle → `opacity-60` and no `✓`; completed → `✓`; unknown → dashed ring. The same file's `SubagentStrip` render came back empty because `renderToStaticMarkup` reads zustand's server snapshot (initial state), not a seeded store — a harness limit noted in `ToolRunCard.test.ts`; the strip's logic is covered by `stripRows` (session-tree test) and `WatchDot` (ObservedBar test).
+- Not run here per the brief: full `vitest run`, `vite build`, any `vite dev` — Closer.
