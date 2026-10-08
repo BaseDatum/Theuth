@@ -213,6 +213,16 @@ impl Take {
                     if let Err(e) = self.store.append_local_note(id, &note).await {
                         tracing::warn!("sessions: take {id}: note: {e:#}");
                     }
+                    // The user's Resume press is a `ResumeTurn` with no cause:
+                    // the supervisor must know it is this takeover (139 §6.3).
+                    if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
+                        let _ = agents
+                            .tell(agent::supervisor::TakeoverPending {
+                                session: id,
+                                from: from.to_owned(),
+                            })
+                            .await;
+                    }
                 }
                 self.rt
                     .publish(AgentEvent::ResumePending {

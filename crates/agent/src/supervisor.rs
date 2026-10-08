@@ -118,7 +118,7 @@ mod resume;
 pub mod transfer; // 139 W2
 mod waits;
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
-pub use resume::{OpenTurn, ResumeTurn};
+pub use resume::{OpenTurn, ResumeTurn, TakeoverPending};
 pub use transfer::{DrainSession, SessionDrainReport}; // 139 C
 // 109 W3: what a resumed human-wait / peer-wait call asks the supervisor for.
 pub(crate) use waits::{ResumeQuestion, ResumeWait, remaining};
@@ -170,6 +170,11 @@ pub struct Agents {
     /// refuses their inputs (`transfer::draining_error`) until the demote
     /// lands or the hold expires (`transfer::ClearDraining`).
     draining_sessions: HashMap<SessionId, &'static str>,
+    /// 139 §6.3 (D5): sessions a system takeover left `ResumePending` →
+    /// the engine taken from; the user's `resume_turn` (boot-rule cause,
+    /// no `suspended` row) resumes them as `Takeover{from}` and runs the
+    /// §7 jobs / child-waits pass instead of reading as a `crash`.
+    pending_takeovers: HashMap<SessionId, String>,
     /// The communication policy (50 §2.1, §8), shared read-only with the
     /// tool registry; every mutation and admission happens in this mailbox.
     pub(crate) communication: SharedPolicy,
@@ -8349,6 +8354,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             sessions: HashMap::new(),
             running: HashSet::new(),
             draining_sessions: HashMap::new(),
+            pending_takeovers: HashMap::new(),
             communication: communication.clone(),
             network: network::NetworkState::default(),
             waits: HashMap::new(),
@@ -10087,6 +10093,7 @@ pub(crate) mod tests {
             sessions: HashMap::new(),
             running: HashSet::new(),
             draining_sessions: HashMap::new(),
+            pending_takeovers: HashMap::new(),
             communication: SharedPolicy::new(Policy::new(communication, "config")),
             network: network::NetworkState::default(),
             waits: HashMap::new(),
