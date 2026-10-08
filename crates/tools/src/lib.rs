@@ -57,9 +57,6 @@ pub use ask::{
 };
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
-/// 145 §0.5: the cancellation token every [`ToolCx`] carries, re-exported so
-/// crates that build a `ToolCx` need no `tokio-util` dependency of their own.
-pub use tokio_util::sync::CancellationToken;
 pub use jobs::{
     Adopt, CancelJob, CancelOrigin, InstallActivity, JOBS_ACTOR, JobCounts, JobEvent, JobExit,
     JobId, JobView, Jobs, ListJobs, LiveCounts, LiveCountsRow,
@@ -93,6 +90,9 @@ pub use reminder::{
 };
 pub use resources::{CloseAck, CloseTree, TreeOpened};
 pub use resources::{Retention, SessionResources};
+/// 145 §0.5: the cancellation token every [`ToolCx`] carries, re-exported so
+/// crates that build a `ToolCx` need no `tokio-util` dependency of their own.
+pub use tokio_util::sync::CancellationToken;
 
 /// What a tool body fails with (`Tool::call`'s error); the type a promoted
 /// call's future resolves to (145 §2.2).

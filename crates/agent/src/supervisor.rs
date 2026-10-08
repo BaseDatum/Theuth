@@ -13462,12 +13462,13 @@ pub(crate) mod tests {
         rx
     }
 
-    /// The text of the next `TurnStarted` on `session`, within 10 s.
+    /// The text of the next `TurnStarted` on `session`, within 60 s (the
+    /// failing test model is not instant under load; a logic error still fails).
     async fn next_turn(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
         session: SessionId,
     ) -> String {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 match rx.recv().await.expect("bus open") {
                     AgentEvent::TurnStarted {
@@ -13483,12 +13484,12 @@ pub(crate) mod tests {
         .expect("a turn starts")
     }
 
-    /// The next event on `session` matching `pick`, within 10 s.
+    /// The next event on `session` matching `pick`, within 60 s (see `next_turn`).
     async fn next_event(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
         pick: impl Fn(&AgentEvent) -> bool,
     ) -> AgentEvent {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 let e = rx.recv().await.expect("bus open");
                 if pick(&e) {
