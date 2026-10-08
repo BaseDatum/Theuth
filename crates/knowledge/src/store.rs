@@ -1357,6 +1357,7 @@ impl Knowledge {
                     id: m.id,
                     op: KnowledgeOp::Put,
                     source: Source::User,
+                    commit: Some(sha.clone()),
                 })
                 .await;
         }
