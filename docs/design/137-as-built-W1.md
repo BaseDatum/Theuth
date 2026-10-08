@@ -19,7 +19,13 @@ Branch `feat/137-w1`, worktree `~/Develop/theuth-137-w1`, base a0046c22. Skeleto
 | `crates/agent/tests/fixtures/endless/B.haiku.tree.jsonl`, `B.main.jsonl` | lab fixtures (structure only; never asserted on content). |
 | edits outside | `lib.rs` (`pub mod endless`, re-exports, `AgentConfig.endless`, `SessionSummary.memory`), `store.rs` (`pub mod endless`, `memory` in `SessionRow`/`session_cols!`/`summary`, `delete_endless_in` in `delete_session`), `store/capture.rs` (`ATTACHED` += 3 tables), `lifecycle.rs` (`CreateSessionOptions.memory`), `runtime/src/side_call.rs` (`CallKind::Endless`), `rpc/src/api.rs` (4 trait methods + `Err("not yet")` stubs), `rpc/src/export.rs` (7 new TS exports), test literals of `SessionSummary` in `session_read.rs`, `slack/ui.rs`, `telegram/commands.rs`, `tui/attach.rs`, `tui/model.rs` (`memory: Default::default()`). |
 
-## Gates (exact commands, result lines)
+## Revision 1 (design §17, brief message 03:09) — commit "137 W1: revision 1 interfaces"
+
+Added: config fields/defaults (view_bytes 128 KB, default_desk true, default_meeting, meeting_view_bytes, backfill_max_units), `resolved_compactor_model`, the R1-D3 chain in `compactor_for` (`Endless::new(.., title_model)`), `UnitFilter` (+ `keeps`), `BackfillEstimate`, `set_view_bytes`, `render_snapshot`, `render_with_budget`, `backfill_estimate`, the R1-D4 base in the fold/render/schedule/zoom (`sessions.endless_base`), the filter at ingestion (`sessions.endless_filter`), `set_mode(session, mode, filter, epoch)` usable on any idle session with a transcript. Tests: `backfill_cap_sets_base_and_keeps_raw_history_reachable`, `compactor_chain_and_meeting_filter`, fold base case in `fixture_fold_invariants_and_refold_equality`, store meta round trip. Contract §8 lists the exact semantics.
+
+Gates after the revision: `cargo test -p agent --lib --no-fail-fast endless` → `test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 463 filtered out; finished in 0.56s`; `cargo clippy -p agent -p rpc --no-deps -- -D warnings` → `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 41.55s`; `cargo fmt -p agent -p rpc` clean.
+
+## Gates before the revision (exact commands, result lines)
 
 - `BUILD_LABEL=137-W1 build-lock cargo check -p agent -p rpc` → `Finished \`dev\` profile` (no errors; skeleton commit and every checkpoint).
 - `BUILD_LABEL=137-W1 build-lock cargo test -p agent --lib --no-fail-fast endless` → `test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 463 filtered out; finished in 0.54s`.

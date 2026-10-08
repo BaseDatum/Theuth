@@ -15,9 +15,12 @@ W2 replaces the four stub bodies in `rpc/api.rs`, registers the event (§6), con
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EndlessConfig {
-    pub default_chat: bool,   // false
-    pub default_desk: bool,   // false
-    pub view_bytes: u32,      // 64_000 (clamped 16_000..=256_000 at use)
+    pub default_chat: bool,       // false
+    pub default_desk: bool,       // TRUE (R1-D7)
+    pub default_meeting: bool,    // false (R1-D6)
+    pub view_bytes: u32,          // 128_000 (R1-D2; clamped 16_000..=256_000 at use)
+    pub meeting_view_bytes: u32,  // 32_000 (R1-D6)
+    pub backfill_max_units: u32,  // 2_000 (R1-D4)
     pub node_bytes: u32,      // 512
     pub slack: f32,           // 0.125 (clamped 0.0..=0.5)
     pub settle_secs: u32,     // 45
@@ -25,8 +28,10 @@ pub struct EndlessConfig {
     pub tries: u8,            // 5
     pub retry_secs: u32,      // 10
     pub cap_chars: u32,       // 30_000
-    pub model: Option<String> // None = the session's model (D8)
+    pub model: Option<String> // None → `agent.title_model` → the session's model (R1-D3)
 }
+/// R1-D3, for Settings / the panel: `agent.endless.model` → `agent.title_model` → `session_model`.
+pub fn resolved_compactor_model(cfg: &AgentConfig, session_model: &str) -> String;
 ```
 `AgentConfig.endless: EndlessConfig` (serde default). Settings writes go through the existing `write_nested_config_value(path, "agent", "endless", key, value)` path — W2/W3.
 
@@ -36,6 +41,8 @@ All: `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSc
 
 ```rust
 pub enum MemoryMode { #[default] Epochs, Endless }        // as_str(): "epochs" | "endless"; FromStr; Default = Epochs
+pub enum UnitFilter { #[default] All, Meeting }           // R1-D6; "all" | "meeting"; `keeps(&Unit) -> bool`; stored in sessions.endless_filter
+pub struct BackfillEstimate { pub units: u64, pub eta_secs: u64, pub usd: f64 }   // R1-D4
 pub struct ViewLine { pub id: u64, pub n: u64, pub level: u8, pub text: String, pub built: bool }
 pub struct GuardTrips { pub copy: u32, pub grounding: u32, pub status: u32, pub format: u32, pub empty: u32, pub size: u32 }
 pub struct EndlessStats { pub calls: u32, pub guard_trips: GuardTrips, pub input_tokens: u64, pub cache_read_tokens: u64, pub cache_write_tokens: u64, pub output_tokens: u64, pub usd_estimate: f64 }
@@ -79,7 +86,8 @@ Constructed by the supervisor (W2) next to the other side-call slots:
 ```rust
 impl Endless {
     pub(crate) fn new(store: Store, rt: Runtime, client: genai::Client, auth: crate::supervisor::Auth,
-                      catalog: Arc<models::Catalog>, cfg: EndlessConfig) -> Self;   // crate-private: `Auth` is
+                      catalog: Arc<models::Catalog>, cfg: EndlessConfig,
+                      title_model: Option<String> /* agent.title_model, R1-D3 chain */) -> Self;   // crate-private: `Auth` is
 
     /// Engine start (109): one pump per `sessions.memory = 'endless'` session with unbuilt nodes.
     /// Returns how many pumps started. Models resolve from `sessions.model`; agent name from `sessions.desk` or "theuth".
@@ -107,16 +115,29 @@ impl Endless {
     /// derives units from the store itself (restart-safe), so no rows are passed.
     pub fn on_rows_committed(&self, session: SessionId);
 
+    /// R1-D2: per-session view budget (agents file `view_bytes:`); in-memory on the attached state,
+    /// so call it after `attach` (and again after a restart). Unset = `agent.endless.view_bytes`.
+    pub fn set_view_bytes(&self, session: SessionId, bytes: u32);
+    /// R1-D1: the turn's render without freezing a context (a native child's first message).
+    pub async fn render_snapshot(&self, session: SessionId) -> anyhow::Result<Vec<ViewBlock>>;
+    /// R1-D6: the view folded to `bytes` (W4: `agent.endless.meeting_view_bytes` for the meeting head).
+    pub async fn render_with_budget(&self, session: SessionId, bytes: u32) -> anyhow::Result<Vec<ViewBlock>>;
+    /// R1-D4: `{units, eta_secs, usd}` of the backfill a switch-on would start (or the one under way);
+    /// first 20 built nodes calibrate, else 5 s / $0.02 per unit. Works for unattached sessions too.
+    pub async fn backfill_estimate(&self, session: SessionId) -> anyhow::Result<BackfillEstimate>;
+
     /// Tools (§9). Errors are user-facing strings for the tool result.
     pub async fn zoom(&self, session: SessionId, id: u64, n: u64) -> Result<Vec<ViewLine>, String>;   // n==1 → one line, text = "kind: <whole unit>"
     pub async fn recall(&self, session: SessionId, query: &str, limit: u8) -> Result<Vec<ViewLine>, String>; // text ends with " (raw)" for fallback rows
     pub async fn date(&self, session: SessionId, id: u64) -> Result<Option<chrono::DateTime<chrono::Utc>>, String>;
 
-    /// `/endless on|off` (8.6). Caller guarantees the session is idle.
-    /// `Endless`: sets the column, starts backfill (D14), returns `memory.backfill` with the ETA.
-    /// `Epochs`: stops the pump, sets the column, returns `head = Some(text)` — the
-    /// `<context_summary epoch=n style="endless">…</context_summary>` text W2 writes as the next epoch head.
-    pub async fn set_mode(&self, session: SessionId, mode: MemoryMode, epoch: u32) -> anyhow::Result<SetMode>;
+    /// `/endless on|off` (8.6). Caller guarantees the session is idle; a transcript is fine (R1-D7 desks).
+    /// `Endless`: fixes `filter` and the R1-D4 base (`max(0, T − backfill_max_units)`, filter applied) the
+    /// FIRST time a tree is started for the session (later switches keep them), sets the column, starts the
+    /// backfill (D14), returns `memory.backfill` with the ETA. `Epochs`: stops the pump, sets the column,
+    /// returns `head = Some(text)` — the `<context_summary epoch=n style="endless">…</context_summary>`
+    /// text W2 writes as the next epoch head. `filter` is ignored for `Epochs`.
+    pub async fn set_mode(&self, session: SessionId, mode: MemoryMode, filter: UnitFilter, epoch: u32) -> anyhow::Result<SetMode>;
 
     /// RPC `session_memory` body data; `mode: epochs` + empty view for a non-endless session.
     pub async fn memory(&self, session: SessionId) -> anyhow::Result<SessionMemory>;
@@ -144,6 +165,8 @@ Pump/event hook: the pump publishes `EndlessProgress` with `rt.publish(...)` on 
 ```rust
 pub async fn session_memory(&self, id: SessionId) -> anyhow::Result<MemoryMode>;
 pub async fn set_session_memory(&self, id: SessionId, mode: MemoryMode) -> anyhow::Result<()>;
+pub async fn endless_meta(&self, id) -> anyhow::Result<EndlessMeta>;          // {mode, filter: UnitFilter, base: u64} (sessions.memory / endless_filter / endless_base)
+pub async fn set_endless_meta(&self, id, filter: UnitFilter, base: u64) -> anyhow::Result<()>;
 pub async fn endless_sessions(&self) -> anyhow::Result<Vec<EndlessSessionRow>>;   // memory='endless': {id, model, effort, desk}
 pub(crate) async fn delete_endless_in(conn: &mut SqliteConnection, sid: &str) -> anyhow::Result<()>; // called from delete_session
 // units / nodes / calls — used by endless::* only; shapes in endless::tree
@@ -162,6 +185,8 @@ pub async fn endless_messages_from(&self, id, seq: i64) -> anyhow::Result<Vec<En
 ### 5.1 Migration `crates/agent/migrations/0037_endless.sql`
 ```sql
 ALTER TABLE sessions ADD COLUMN memory TEXT NOT NULL DEFAULT 'epochs';
+ALTER TABLE sessions ADD COLUMN endless_base INTEGER NOT NULL DEFAULT 0;      -- R1-D4
+ALTER TABLE sessions ADD COLUMN endless_filter TEXT NOT NULL DEFAULT 'all';   -- R1-D6
 CREATE TABLE endless_units (
   session_id TEXT NOT NULL REFERENCES sessions(id),
   i INTEGER NOT NULL, seq INTEGER NOT NULL, part INTEGER NOT NULL,
@@ -203,3 +228,13 @@ CREATE VIRTUAL TABLE endless_lines_fts USING fts5(text, session_id UNINDEXED, i 
 6. The live view is `Fold::rebuild(tree, T)` recomputed on change (cached), i.e. literally the pure function; the lab's incremental fold with a progressively built tree is not reproducible from rows, so purity wins over its last few points of prefix stability (measured on the fixture: identical part-prefix share 0.7+ turn to turn at 32 KB).
 7. The compactor's context block and step block are two consecutive `user` messages (genai marks are per message); Anthropic merges consecutive same-role turns. If a provider rejects that, W2/closer: fold them into one message with two `ContentPart::Text`s (loses the per-block mark).
 8. One `model_calls` row per node build (attempts' usage summed), `endless_calls` one row per attempt.
+
+## 8. Revision 1 (design §17) — what changed here
+
+- Config: `view_bytes` 128_000, `default_desk` true, new `default_meeting`, `meeting_view_bytes`, `backfill_max_units`; `resolved_compactor_model(&AgentConfig, session_model)`; `Endless::new` takes `title_model`.
+- Base (R1-D4): the fold tiles `[base, T)`; the view's first line is `0+<base>|(earlier history, not summarized; recall searches it)` when `base > 0` (`fold::EARLIER`); `zoom(id, 1)` works for any unit, `zoom(id, n>1)` below the base is `No line`; recall's raw fallback searches every unit (it always did: `endless_units` caches units below the base too — they are derived and cached, just never built). `SessionMemory.view[0]` is that line (`built: false`, `n = base`).
+- Filter (R1-D6): applied at ingestion; dropped parts never become units (indexes stay dense). Fixed at first switch-on with the base, persisted in `sessions`.
+- Per-session budget (R1-D2): in-memory `set_view_bytes` (W2 calls it after `attach` from the agents file); not persisted — a restart falls back to the config until W2 calls it again.
+- `render_snapshot` / `render_with_budget(bytes)`: no turn counted, no context frozen; `render_with_budget` re-folds at `bytes` without disturbing the live fold.
+- Backfill ETA/cost: `backfill_estimate`; `Backfill.total` is now the covered span (`T − base` at switch-on), not `T`.
+- W2 call for R1-D7 desks at landing: `set_mode(desk, Endless, UnitFilter::All, next_epoch)` when idle; `info!` the `backfill_estimate` first. W4 meetings: `set_mode(meeting, Endless, UnitFilter::Meeting, …)`, head section from `render_with_budget(meeting, cfg.endless.meeting_view_bytes)`.

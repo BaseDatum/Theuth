@@ -112,8 +112,8 @@ pub use cost::{
     TokenTotals,
 };
 pub use endless::{
-    Backfill, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips, MemoryMode,
-    SessionMemory, ViewLine,
+    Backfill, BackfillEstimate, Endless, EndlessConfig, EndlessProgress, EndlessStats, GuardTrips,
+    MemoryMode, SessionMemory, UnitFilter, ViewLine, resolved_compactor_model,
 };
 pub use lifecycle::{
     Authorize, Authorized, CreateSession, LeaveSession, PrivateTrees, ResumePrivate, TreeOpened,
