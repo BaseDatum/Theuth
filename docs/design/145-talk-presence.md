@@ -1,11 +1,23 @@
 # 145 — Talk presence: the conversation continues while the work runs
 
-Status: CONTRACT, 2026-10-08 14:45. Written by the orchestrator from Sky's four rulings of 14:20
-(`decisions/theuth-talk-borrow-rulings-from-qwen-audio-agent-2026-10-08`) after the qwen-audio-agent recon
-(`facts/theuth-borrow-list-from-qwen-audio-agent-2026-10-08`; reports in
-`~/.theuth/briefs/2026-10-08/qwen-audio-agent/`). Two omp workers build it off this commit: W1 TALK
-(`crates/talk`, the TUI and desktop talk mappings) and W2 AGENT (`crates/agent`, `crates/tools`). Amends 76
-§0.9, §4.8, §4.11 and 77 §2.1; builds nothing of 77 B/C.
+Status: BUILT 2026-10-08 (contract 14:45 → workers DONE 17:49 → integrated 19:5x). Written by the orchestrator from
+Sky's four rulings of 14:20 (`decisions/theuth-talk-borrow-rulings-from-qwen-audio-agent-2026-10-08`) after the
+qwen-audio-agent recon (`facts/theuth-borrow-list-from-qwen-audio-agent-2026-10-08`; reports beside this file as
+`145-recon-*.md` / `145-research-*.md` / `145-borrow-card.md`). Built by two omp workers off the contract commit
+7b608c4f: W1 TALK (`feat/145-talk` a7c42f34 + 7deacea2) and W2 AGENT (`feat/145-agent` f4b2a940), integrated on
+`feat/145-int` with the orchestrator's cross-crate fixes (20 `ToolCx` literals outside both workers' crates,
+`InputsParked` arms in slack and the TUI, `JobEvent.kind` fixtures, 60 s test helpers, `..cx(false)` base). Merged-tree
+gates: agent 527/527 · talk 29/29 · tools 184/184 · clippy talk/agent/tools/tui `-D warnings` · fmt (ours) · bindings
+regenerated · tsc 0 · vite build · vitest 202/202 · `cargo check --workspace`. Deviations from §2 (names kept): W1 —
+`Working` is also entered from `Speaking` when the queue drains with a call outstanding; the window's "gate closed"
+term is `turn_start.is_none()`; an `Approval` while `Listening` is spoken without a state change. W2 — parking lives in
+`Agents::input`/`inject` (not `route`); a coalesced batch rides the first ticket; `promote_after` reaches `ToolCx`
+through a registry message `SetPromoteAfter{session, after}` (not a `ToolCall` field); `CancelCalls{session}` fires a
+turn's in-flight tokens; `Adopt` replies `Result<JobId, String>`; `JobEvent::{Started,Finished}` gained
+`#[serde(default)] kind: JobKind` with `JobKind::Promoted` (promoted rows have `log: None`); `job_result(.., kind, ..)`
+replaces the `pty: bool` argument. Follow-ups: shell/python/MCP observing `cx.cancel`; parked inputs are lost on an
+engine restart (§6). Engine + desktop rebuild owed; by-hand acceptance (§5, last paragraph) after the rebuild. Amends 76
+§0.9, §4.8, §4.11 and 77 §2.1 (amendment notes written into both); builds nothing of 77 B/C.
 
 ## 0. Decisions in one screen
 
