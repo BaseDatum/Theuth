@@ -56,12 +56,15 @@ export function countsLine(c: NightCounts): string {
   return parts.length ? parts.join(', ') : 'nothing to tidy'
 }
 
-/** The Routines row subtitle / status card line: `last night: 14 merged, 31 archived, $4.100`; `undone` marks a reverted night. */
-export function nightLine(night: NightSummary | null): string {
+/** The status card's line: `14 merged, 31 archived, $4.100`, `(undone)` appended for a reverted night; `no nights yet`. */
+export function nightText(night: NightSummary | null): string {
   if (!night) return 'no nights yet'
   const line = `${countsLine(night.counts)}, ${usd(night.spend_usd)}`
-  return night.undone ? `last night (undone): ${line}` : `last night: ${line}`
+  return night.undone ? `${line} (undone)` : line
 }
+
+/** The Routines row subtitle: `last night: 14 merged, 31 archived, $4.100`. */
+export const nightLine = (night: NightSummary | null): string => (night ? `last night: ${nightText(night)}` : nightText(night))
 
 /** `Mon 08:00` ⇄ `{ day, time }`; an unparseable digest reads as Monday 08:00 so the controls always show something. */
 export const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const
@@ -128,21 +131,21 @@ export function reduceSettings(s: DreamSettings, c: SettingsChange): DreamSettin
 }
 
 /**
- * What a tier's `null` resolves to (§9.2 defaults), for the picker's first entry: triage has no model (rules only);
- * tidy follows the title model, then the subagent model; propose the subagent model; judge the session default when
- * its provider differs from propose, else propose again.
+ * What a tier's `null` resolves to (§9.2 defaults), for the picker's first entry: triage has no model (`null`, rules
+ * only); tidy follows the title model, then the subagent model; propose the subagent model; judge the session default
+ * when its provider differs from propose, else propose again with another seed.
  */
-export function resolvedDefault(tier: Tier, d: { title: string | null; subagent: string | null; session: string }): string {
+export function resolvedDefault(tier: Tier, d: { title: string | null; subagent: string | null; session: string }): { model: string | null; seed: boolean } {
   const propose = d.subagent ?? d.session
   switch (tier) {
     case 'triage':
-      return 'rules only'
+      return { model: null, seed: false }
     case 'tidy':
-      return d.title ?? propose
+      return { model: d.title ?? propose, seed: false }
     case 'propose':
-      return propose
+      return { model: propose, seed: false }
     case 'judge':
-      return d.session.split('/')[0] !== propose.split('/')[0] ? d.session : `${propose} (another seed)`
+      return d.session.split('/')[0] !== propose.split('/')[0] ? { model: d.session, seed: false } : { model: propose, seed: true }
   }
 }
 

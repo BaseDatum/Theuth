@@ -15,7 +15,7 @@ export type State = (typeof STATES)[number]
 
 const state = (): State | null => {
   if (!import.meta.env.DEV) return null
-  const s = import.meta.env.VITE_DREAMING_FIXTURE ?? globalThis.localStorage?.getItem('dreaming-fixture')
+  const s = globalThis.localStorage?.getItem('dreaming-fixture') ?? import.meta.env.VITE_DREAMING_FIXTURE
   return STATES.find((x) => x === s) ?? null
 }
 
@@ -121,14 +121,22 @@ function wait<T>(v: T): Promise<T> {
   return promise
 }
 
+/** One wrapper per connection, so the fixture's edits (a pause, an answered proposal) survive re-renders. */
+const wrapped = new WeakMap<Api, Api>()
+
 /** The engine's `Api` with the dreaming methods (and the `dreaming` routine row) answered here when a fixture state is on; the same object otherwise. */
 export function dreamingFixture(api: Api): Api {
   const s = state()
   if (!s) return api
-  const f = FIXTURES[s]
+  let w = wrapped.get(api)
+  if (!w) wrapped.set(api, (w = wrap(api, FIXTURES[s])))
+  return w
+}
+
+function wrap(api: Api, f: (typeof FIXTURES)[State]): Api {
   let settings = f.settings
   let routineEnabled = f.routineEnabled
-  const nights = [...f.nights]
+  const nights = f.nights.map((n) => ({ ...n }))
   let proposals = [...f.proposals]
   const row = (): ScheduleInfo => ({
     name: 'dreaming',

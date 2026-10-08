@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { FIXTURES, NIGHT, QUIET_NIGHT, SETTINGS, UNDONE_NIGHT } from '@/dev/dreaming-fixture'
-import { countsLine, formatDigest, isPaused, nightLine, parseDigest, pauseUntil, reduceSettings, resolvedDefault, undoLine, usd } from './dreaming'
+import { countsLine, formatDigest, isPaused, nightLine, nightText, parseDigest, pauseUntil, reduceSettings, resolvedDefault, undoLine, usd } from './dreaming'
 
 describe('formatting', () => {
   test('counts line omits zeros, pluralises, and says so when nothing happened', () => {
@@ -12,7 +12,9 @@ describe('formatting', () => {
   test('night line per fixture state: none, a night, an undone night', () => {
     expect(nightLine(FIXTURES.empty.status.last_night)).toBe('no nights yet')
     expect(nightLine(FIXTURES.night.status.last_night)).toBe(`last night: ${countsLine(NIGHT.counts)}, $4.100`)
-    expect(nightLine(FIXTURES.paused.status.last_night)).toBe(`last night (undone): ${countsLine(UNDONE_NIGHT.counts)}, $0.930`)
+    expect(nightLine(FIXTURES.paused.status.last_night)).toBe(`last night: ${countsLine(UNDONE_NIGHT.counts)}, $0.930 (undone)`)
+    expect(nightText(FIXTURES.disabled.status.last_night)).toBe('nothing to tidy, $0.000')
+    expect(nightText(null)).toBe('no nights yet')
   })
 
   test('usd goes through the money formatter (half-up at three decimals)', () => {
@@ -86,14 +88,14 @@ describe('reduceSettings', () => {
 describe('resolvedDefault (§9.2)', () => {
   const d = { title: 'anthropic/claude-haiku-4-5', subagent: 'anthropic/claude-fable-5-1', session: 'openai/gpt-5.6-sol' }
   test('tidy follows the title model, propose the subagent model, judge the other vendor', () => {
-    expect(resolvedDefault('triage', d)).toBe('rules only')
-    expect(resolvedDefault('tidy', d)).toBe('anthropic/claude-haiku-4-5')
-    expect(resolvedDefault('propose', d)).toBe('anthropic/claude-fable-5-1')
-    expect(resolvedDefault('judge', d)).toBe('openai/gpt-5.6-sol')
+    expect(resolvedDefault('triage', d)).toEqual({ model: null, seed: false })
+    expect(resolvedDefault('tidy', d)).toEqual({ model: 'anthropic/claude-haiku-4-5', seed: false })
+    expect(resolvedDefault('propose', d)).toEqual({ model: 'anthropic/claude-fable-5-1', seed: false })
+    expect(resolvedDefault('judge', d)).toEqual({ model: 'openai/gpt-5.6-sol', seed: false })
   })
   test('without helper models everything falls to the session default; same vendor → another seed', () => {
     const bare = { title: null, subagent: null, session: 'anthropic/claude-fable-5-1' }
-    expect(resolvedDefault('tidy', bare)).toBe('anthropic/claude-fable-5-1')
-    expect(resolvedDefault('judge', bare)).toBe('anthropic/claude-fable-5-1 (another seed)')
+    expect(resolvedDefault('tidy', bare)).toEqual({ model: 'anthropic/claude-fable-5-1', seed: false })
+    expect(resolvedDefault('judge', bare)).toEqual({ model: 'anthropic/claude-fable-5-1', seed: true })
   })
 })

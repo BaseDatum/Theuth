@@ -237,5 +237,7 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
 /** 136 §8: the `dreaming` row says what last night did (`dreaming.status`) instead of its trigger sentence. */
 function DreamingSentence({ fallback }: { fallback: string }) {
   const status = useDreamStatus()
-  return <>{status.data ? `runs at night when the Mac is idle; ${nightLine(status.data.last_night)}` : fallback}</>
+  if (!status.data) return <>{fallback}</>
+  const line = `runs at night when the Mac is idle; ${nightLine(status.data.last_night)}`
+  return <span title={line}>{line}</span>
 }
