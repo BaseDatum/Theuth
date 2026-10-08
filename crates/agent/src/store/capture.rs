@@ -89,12 +89,16 @@ impl Session {
     }
 
     /// Forget every recorded change: the extension has no reset, so this
-    /// deletes and recreates the session on the same handle.
+    /// deletes and recreates the session on the same handle. The caller holds
+    /// the connection's handle lock (`WriteTx::commit`), so the worker thread
+    /// is idle and the delete cannot race the preupdate hook.
     pub(crate) fn reset(&mut self) -> anyhow::Result<()> {
         let fresh = unsafe { Self::create(self.db) }?;
-        // Drop the old session after the new one exists so the handle never
+        // Delete the old session after the new one exists so the handle never
         // loses its preupdate hook in between.
-        let _old = std::mem::replace(self, fresh);
+        let old = std::mem::replace(self, fresh);
+        unsafe { ffi::sqlite3session_delete(old.ptr.as_ptr()) };
+        std::mem::forget(old);
         Ok(())
     }
 
@@ -365,7 +369,12 @@ impl Drop for Group {
 }
 
 impl Drop for Session {
-    fn drop(&mut self) {
-        unsafe { ffi::sqlite3session_delete(self.ptr.as_ptr()) };
-    }
+    /// Deliberately leaks the session (a few KB, once per store lifetime).
+    /// Statements run on sqlx's worker thread, which cannot be stopped
+    /// mid-`sqlite3_step`; a `Store` dropped while the worker is still inside
+    /// the preupdate hook (a runtime shutting down, a background pump write)
+    /// would otherwise `sqlite3session_delete` under the hook's feet — a
+    /// use-after-free seen as `SIGSEGV` in `sessionPreupdateOneChange`. The
+    /// only deletes are in [`Session::reset`], under the handle lock.
+    fn drop(&mut self) {}
 }
