@@ -16,6 +16,7 @@ use super::{Agents, LiveActor, transfer};
 use crate::durability::{ResumeCause, ResumeMode};
 use crate::loop_::Resume;
 use crate::store::Scope;
+use crate::store::durability::OpenTurnRow;
 
 /// `tell`: resume `turn` of `session` from its journal (§4.1). The actor is
 /// created as `Agents::session` does for a lazy load and handed
@@ -86,15 +87,22 @@ impl Message<OpenTurn> for Agents {
 }
 
 impl Agents {
+    /// 146 D5: the one `open_turns(Scope::Here)` the boot pass shares.
+    pub(super) async fn open_here(&self) -> Vec<OpenTurnRow> {
+        self.store
+            .open_turns(Scope::Here)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!("109: open_turns: {e:#}");
+                Vec::new()
+            })
+    }
+
     /// §4.6 step 10: every open turn, most recently active first, to its
     /// actor; `resume_parallel` run at a time, the rest wait on the shared
-    /// slot inside their turn task. Honours `durability.resume`.
-    pub(super) async fn resume_scan(&mut self) {
-        // 139 D1: a replica never reaches `resume_turn` for the owner's turn.
-        let open = match self.store.open_turns(Scope::Here).await {
-            Ok(open) => open,
-            Err(e) => return tracing::error!("109: open_turns: {e:#}"),
-        };
+    /// slot inside their turn task. Honours `durability.resume`. `open` is
+    /// the boot pass's one `open_turns(Scope::Here)` (146 D5).
+    pub(super) async fn resume_scan(&mut self, open: &[OpenTurnRow]) {
         if open.is_empty() {
             return;
         }
@@ -110,7 +118,7 @@ impl Agents {
             ResumeMode::Ask => {}
             ResumeMode::Auto => {
                 let slots = Arc::new(Semaphore::new(self.cfg.durability.resume_parallel.max(1)));
-                for (session, turn, _) in open {
+                for (session, turn, _) in open.iter().copied() {
                     self.resume_turn(session, turn, Some(slots.clone()), None, None)
                         .await;
                 }
@@ -266,7 +274,8 @@ pub(crate) mod tests {
         let (mine, _) = own_turn(&b).await;
         std::sync::Arc::make_mut(&mut b.cfg).durability.resume = ResumeMode::Auto;
 
-        b.resume_scan().await;
+        let open = b.open_here().await;
+        b.resume_scan(&open).await;
         assert!(b.sessions.contains_key(&mine), "own turn resumed");
         assert!(!b.sessions.contains_key(&foreign), "a's turn untouched");
 

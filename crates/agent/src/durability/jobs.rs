@@ -23,6 +23,7 @@ use tools::jobs::{LostJob, LostReason, Reaped};
 use tools::{JOBS_ACTOR, JobExit, JobKind, JobRow, JobState, Jobs, PtyScreenRow};
 
 use crate::durability::CallState;
+use crate::store::durability::OpenTurnRow;
 use crate::store::{Scope, Store};
 
 /// Bytes of a lost job's log quoted in its `<job_result>` (`jobs.rs::TAIL`).
@@ -53,9 +54,19 @@ pub struct ReapReport {
 
 /// §5.4, for every `jobs` row in `running` — a `resume: off` session's row
 /// included (§15 Q6): kill the group if it is alive, settle the row `lost`,
-/// then hand the rows to the jobs actor. Nothing is skipped.
+/// then hand the rows to the jobs actor. Nothing is skipped. Reads the open
+/// turns itself; the boot pass passes its own set ([`reap_jobs_in`], 146 D5).
 pub async fn reap_jobs(store: &Store) -> ReapReport {
-    let (report, reaped) = reap(store).await;
+    let open = store.open_turns(Scope::Here).await.unwrap_or_else(|e| {
+        tracing::error!("109 reaper: open_turns: {e:#}");
+        Vec::new()
+    });
+    reap_jobs_in(store, &open).await
+}
+
+/// [`reap_jobs`] over an already computed open-turn set (`Scope::Here`).
+pub async fn reap_jobs_in(store: &Store, open: &[OpenTurnRow]) -> ReapReport {
+    let (report, reaped) = reap(store, open).await;
     tell_jobs(reaped).await;
     report
 }
@@ -142,7 +153,7 @@ pub async fn settle_transferred(store: &Store, session: SessionId, from: &str) -
 
 /// The store half of [`reap_jobs`]: kill, settle, and build what the jobs
 /// actor is told.
-pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
+pub(crate) async fn reap(store: &Store, open: &[OpenTurnRow]) -> (ReapReport, Reaped) {
     let restarted_at = Utc::now();
     let mut report = ReapReport::default();
     let mut reaped = Reaped {
@@ -164,20 +175,15 @@ pub(crate) async fn reap(store: &Store) -> (ReapReport, Reaped) {
     // A job whose call is a `started` row of an open turn is reported by the
     // job rule inside the resumed batch (§4.3): no `<job_result>` for it.
     let mut in_batch: HashSet<(SessionId, String)> = HashSet::new();
-    match store.open_turns(Scope::Here).await {
-        Ok(open) => {
-            for (session, turn, _) in open {
-                if let Ok(calls) = store.calls_of(session, turn).await {
-                    in_batch.extend(
-                        calls
-                            .into_iter()
-                            .filter(|c| c.state == CallState::Started)
-                            .map(|c| (session, c.call_id)),
-                    );
-                }
-            }
+    for (session, turn, _) in open {
+        if let Ok(calls) = store.calls_of(*session, *turn).await {
+            in_batch.extend(
+                calls
+                    .into_iter()
+                    .filter(|c| c.state == CallState::Started)
+                    .map(|c| (*session, c.call_id)),
+            );
         }
-        Err(e) => tracing::error!("109 reaper: open_turns: {e:#}"),
     }
     let now_ms = restarted_at.timestamp_millis();
     let mut lost = Vec::new();
@@ -460,7 +466,8 @@ mod tests {
         assert!(tree.alive(), "the leaked group should outlive the engine");
 
         let store = Store::open(&path, None).await.unwrap();
-        let (report, reaped) = reap(&store).await;
+        let open = store.open_turns(Scope::Here).await.unwrap();
+        let (report, reaped) = reap(&store, &open).await;
         assert_eq!((report.killed, report.lost, report.orphaned), (1, 1, 0));
         let gone = async {
             while tree.alive() {
@@ -559,7 +566,8 @@ mod tests {
         tx.commit().await.unwrap();
         assert!(store.call_started(a, "c2").await.unwrap());
 
-        let (report, reaped) = reap(&store).await;
+        let open = store.open_turns(Scope::Here).await.unwrap();
+        let (report, reaped) = reap(&store, &open).await;
         assert_eq!((report.killed, report.lost, report.orphaned), (0, 3, 0));
         assert!(store.jobs_open(Scope::Here).await.unwrap().is_empty());
         let by_id = |id: &str| reaped.jobs.iter().find(|j| j.row.id.0 == id).unwrap();
@@ -623,7 +631,8 @@ mod tests {
         mine.engine = "b".into();
         store.job_put(&mine).await.unwrap();
 
-        let (report, reaped) = reap(&store).await;
+        let open = store.open_turns(Scope::Here).await.unwrap();
+        let (report, reaped) = reap(&store, &open).await;
         assert_eq!((report.killed, report.lost, report.orphaned), (0, 1, 0));
         assert_eq!(reaped.jobs.len(), 1);
         assert_eq!(reaped.jobs[0].row.id.0, "j2");
