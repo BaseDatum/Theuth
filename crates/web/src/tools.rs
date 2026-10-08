@@ -965,6 +965,8 @@ mod tests {
             call_id: "c".into(),
             quiet: false,
             resources: tools::SessionResources::durable_arc(&std::env::temp_dir()),
+            cancel: tools::CancellationToken::new(),
+            promote_after: None,
         }
     }
 

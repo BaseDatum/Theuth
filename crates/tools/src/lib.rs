@@ -57,6 +57,9 @@ pub use ask::{
 };
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
+/// 145 §0.5: the cancellation token every [`ToolCx`] carries, re-exported so
+/// crates that build a `ToolCx` need no `tokio-util` dependency of their own.
+pub use tokio_util::sync::CancellationToken;
 pub use jobs::{
     CancelJob, CancelOrigin, InstallActivity, JOBS_ACTOR, JobCounts, JobEvent, JobExit, JobId,
     JobView, Jobs, ListJobs, LiveCounts, LiveCountsRow,

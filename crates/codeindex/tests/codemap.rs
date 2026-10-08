@@ -115,7 +115,9 @@ fn cx(data: &Path, call_id: &str) -> tools::ToolCx {
         call_id: call_id.to_owned(),
         quiet: false,
         resources: tools::SessionResources::durable_arc(data),
-    }
+    },
+    cancel: tools::CancellationToken::new(),
+    promote_after: None,
 }
 
 fn tool_ran(ev: &CodeindexEvent) -> Option<(&str, &str, &codeindex::CodeToolSummary, u64)> {
