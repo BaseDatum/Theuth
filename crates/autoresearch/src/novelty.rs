@@ -25,9 +25,9 @@ pub struct Novelty {
     pub similar: Vec<SimilarExperiment>,
 }
 
-/// Experiment states that count as dead ends (140 §7.3).
-const DEAD_ENDS: &str =
-    "('discarded', 'crashed', 'checks_failed', 'rejected_by_review', 'refused')";
+/// Experiment states that count as dead ends (140 §7.3): measured and lost.
+/// `refused` is not one — nothing was measured, a retry is legitimate.
+const DEAD_ENDS: &str = "('discarded', 'crashed', 'checks_failed', 'rejected_by_review')";
 /// FTS candidates examined per check.
 const CANDIDATES: i64 = 20;
 
@@ -331,6 +331,27 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(n, Novelty::default());
+    }
+
+    /// R-70: a `refused` run was never measured — its patch hash and idea are
+    /// neither a duplicate nor similar.
+    #[tokio::test]
+    async fn refused_runs_are_not_dead_ends() {
+        let (_d, s) = store().await;
+        past(
+            &s,
+            5,
+            ExperimentState::Refused,
+            "cache the parsed template between renders",
+            "caching",
+            "h5",
+        )
+        .await;
+        let a = args("cache the parsed template across renders", "caching");
+        assert_eq!(
+            check(&s, "s", &a, "h5", 0.6, true).await.unwrap(),
+            Novelty::default()
+        );
     }
 
     /// Open ideas whose words the experiment's idea covers are marked tried; others stay open.

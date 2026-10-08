@@ -33,13 +33,18 @@ export function Finished({ detail }: { detail: StudyDetail }) {
       hint={detail.info.stop_reason ? stopReasonLabel(detail.info.stop_reason) : undefined}
       actions={
         <>
-          {detail.info.report_doc && (
+          {/* A documents-store id links; a file-path fallback (no store) is named, not linked (R-98). */}
+          {detail.info.report_doc && !detail.info.report_doc.includes('/') ? (
             <Button asChild variant="outline" size="xs">
               <Link to="/notes/$id" params={{ id: detail.info.report_doc }} search={{}}>
                 <FileText /> Report
               </Link>
             </Button>
-          )}
+          ) : detail.info.report_doc ? (
+            <code className="font-mono text-xs text-fg-tertiary" title="The report was written to this file">
+              {detail.info.report_doc}
+            </code>
+          ) : null}
           <DiscardStudy slug={detail.info.slug} pending={control.isPending} onConfirm={() => control.mutate({ op: 'discard' })} />
         </>
       }

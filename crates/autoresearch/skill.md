@@ -97,7 +97,7 @@ warm: "bundle install"
 budget: {usd: 20, per_experiment_usd: 1.5, hours: 10, experiments: 120}
 parallel: 1
 models: {executor: null, review: null, advisor: null}
-window: null                         # or a `when:` sensor path for "Start in idle window"
+window: null                         # or a bare `when:` sensor file name (`idle.py`, no path) for "Start in idle window"
 ```
 
 The card shows five plain lines plus warnings (no check, no holdout, wall-clock without `exclusive`, empty scope, budget above the threshold) and the buttons **Start now · Start in idle window · Edit · Discard**. Then **stop and wait**. The press arrives as the user's next message beginning `[app study-drafts …]`:
@@ -117,6 +117,6 @@ If the card reports a failed start (dirty tree, benchmark crash, σ too large), 
 
 ## Never
 
-- Never start the study yourself: the press is the approval. `autoresearch_control {op: start}` exists for a user who asks in words after the card was shown — not instead of the card.
+- Never start the study yourself: the press is the approval. There is no tool that starts a drafted study (`autoresearch_start` is the card's own press and needs a token you do not have); a user who asks in words after the card was shown is asked to press Start.
 - Never write benchmark scripts, fixtures or state into the user's checkout; never commit there.
 - Never promise discovery: this is disciplined metric search over the user's own benchmark. Most keeps are small; the gate makes them real.

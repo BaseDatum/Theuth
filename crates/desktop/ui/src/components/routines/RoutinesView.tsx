@@ -3,7 +3,7 @@ import { FlaskConical, MessageSquarePlus, Play, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { Pulse } from '@/components/chat/Pulse'
 import { useDreamStatus } from '@/components/dreaming/queries'
-import { useStudies } from '@/components/autoresearch/queries'
+import { KEY as AUTORESEARCH_KEY, useAutoresearchApi, useStudies } from '@/components/autoresearch/queries'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { useAction } from '@/components/settings/shared'
@@ -13,6 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { nightLine } from '@/lib/dreaming'
 import { cn } from '@/lib/utils'
+import type { ControlOp } from '@/rpc/bindings/ControlOp'
 import type { ScheduleInfo } from '@/rpc/bindings/ScheduleInfo'
 import type { SensorInfo } from '@/rpc/bindings/SensorInfo'
 import { type Kind, type Result, fromInfo, kindOf, lastCheckText, relative, resultKind, resultLabel, runCount, sentence, sortRoutines, verdictText } from './helpers'
@@ -165,13 +166,24 @@ export const sensorArgs = (s: Pick<ScheduleInfo, 'sensor' | 'when_sensor'>, sens
 
 function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | undefined }) {
   const api = useRoutinesApi()
+  const autoresearch = useAutoresearchApi()
   const navigate = useNavigate()
   const notHub = useNotHub()
+  // 140 §13.1 / R1-D4: an `autoresearch-<slug>` schedule is a study — `study` badge, opens the Study view, says its headline.
+  const study = s.name.startsWith('autoresearch-') ? s.name.slice('autoresearch-'.length) : null
   const fire = useAction((name: string) => api.fire_schedule(name), {
     keys: [KEY],
     onSuccess: (session) => void navigate({ to: '/c/$session', params: { session } }),
   })
   const enable = useAction((enabled: boolean) => api.enable_schedule(s.name, enabled), { keys: [KEY] })
+  // R-86: a study's Run now / switch go through the plugin (`run_once`, `pause`, `resume`), which flips the file's
+  // `enabled:` *and* the ledger (§8.6: the toggle is the same line); a bare `enable_schedule` would desync the state pill.
+  const control = useAction((op: ControlOp) => autoresearch['autoresearch.control'](study ?? '', op), {
+    keys: [KEY, AUTORESEARCH_KEY],
+    onSuccess: (_info, op) => {
+      if (op.op === 'run_once' && study !== null) void navigate({ to: '/autoresearch/$slug', params: { slug: study }, search: {} })
+    },
+  })
   // 40 §6: the §1.12 verdict on demand; refusals (`not a watcher`, a broken dry run) toast as errors.
   const test = useAction((name: string) => api.test_schedule(name), {
     keys: [KEY],
@@ -179,8 +191,6 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
   })
   const r = fromInfo(s)
   const title = [s.when, s.when_sensor].filter(Boolean).join(' · ')
-  // 140 §13.1 / R1-D4: an `autoresearch-<slug>` schedule is a study — `study` badge, opens the Study view, says its headline.
-  const study = s.name.startsWith('autoresearch-') ? s.name.slice('autoresearch-'.length) : null
   const body = (
     <>
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -228,7 +238,7 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
         </Link>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="xs" disabled={fire.isPending || s.error !== null || s.running} onClick={() => fire.mutate(s.name)}>
+        <Button variant="outline" size="xs" disabled={fire.isPending || control.isPending || s.error !== null || s.running} onClick={() => (study !== null ? control.mutate({ op: 'run_once' }) : fire.mutate(s.name))}>
           <Play /> Run now
         </Button>
         {s.when_sensor !== null && (
@@ -239,9 +249,9 @@ function RoutineRow({ s, sensors }: { s: ScheduleInfo; sensors: SensorInfo[] | u
         <Switch
           size="sm"
           checked={s.enabled}
-          disabled={enable.isPending || s.error !== null}
+          disabled={enable.isPending || control.isPending || s.error !== null}
           aria-label={`${s.enabled ? 'Pause' : 'Resume'} ${s.name}`}
-          onCheckedChange={(v) => enable.mutate(v)}
+          onCheckedChange={(v) => (study !== null ? control.mutate({ op: v ? 'resume' : 'pause' }) : enable.mutate(v))}
         />
       </div>
     </li>

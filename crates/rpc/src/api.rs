@@ -5785,11 +5785,15 @@ impl ApiServer for Server {
     }
 
     // 140 §12.5: every method asks the `autoresearch` actor through `autoresearch::rpc_impl`
-    // (`dreaming_err` maps "is not running" to `NOT_RUNNING`); `settings.get` answers from the
-    // section when the plugin is disabled.
+    // (`dreaming_err` maps "is not running" to `NOT_RUNNING`); `list` is empty and
+    // `settings.get` / `settings.set` answer from the section when the plugin is disabled, so
+    // the Library tab and Settings › Autoresearch work (and can re-enable it) without the actor.
 
     async fn autoresearch_list(&self) -> RpcResult<Vec<autoresearch::StudyInfo>> {
-        autoresearch::rpc_impl::list().await.map_err(dreaming_err)
+        match autoresearch::rpc_impl::list().await {
+            Err(e) if e.ends_with("is not running") => Ok(Vec::new()),
+            r => r.map_err(dreaming_err),
+        }
     }
 
     async fn autoresearch_get(&self, slug: String) -> RpcResult<autoresearch::StudyDetail> {
@@ -5864,9 +5868,14 @@ impl ApiServer for Server {
         &self,
         config: autoresearch::AutoresearchConfig,
     ) -> RpcResult<autoresearch::AutoresearchConfig> {
-        autoresearch::rpc_impl::set_settings(config)
-            .await
-            .map_err(dreaming_err)
+        match autoresearch::rpc_impl::set_settings(config.clone()).await {
+            Err(e) if e.ends_with("is not running") => {
+                autoresearch::config::persist(&self.rt.data_dir.join("config.yaml"), &config)
+                    .map_err(|e| dreaming_err(format!("config.yaml: {e}")))?;
+                Ok(config)
+            }
+            r => r.map_err(dreaming_err),
+        }
     }
 
     async fn endless_settings_get(&self) -> RpcResult<EndlessConfig> {

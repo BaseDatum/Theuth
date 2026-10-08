@@ -122,7 +122,13 @@ delivered to the user; add `until:` (a shell check) or `max_runs:` and it
 loops until done, `every: 0s` for back to back, `approvals: false` for
 unattended, `schedule_done` when the model decides —
 [`docs/design/34-schedule.md`](docs/design/34-schedule.md),
-[`docs/design/33-loops.md`](docs/design/33-loops.md)), `artifact`
+[`docs/design/33-loops.md`](docs/design/33-loops.md)), `autoresearch` (measured
+experiment loops: a study names a goal, a benchmark that prints `METRIC name=value`,
+a correctness check and the files that may change; one idea per experiment in an
+engine-managed git worktree, kept only when it beats the measured noise and passes
+the check, the evaluator frozen in custody, every keep reviewed by a second model,
+finalized into independently measured changesets you land —
+[`docs/design/140-autoresearch.md`](docs/design/140-autoresearch.md)), `artifact`
 (the `show` tool: files the agent makes for you, shown as cards in the chat —
 markdown, code, CSV, images, SVG, PDFs compiled in-process from markdown or
 Typst; a content-addressed store under `~/.theuth/artifacts/` —
@@ -158,7 +164,7 @@ model access, then send the request again.
 Config (`~/.theuth/`, created on first run; details in
 [`docs/design/01-config-and-subagents.md`](docs/design/01-config-and-subagents.md) §1):
 
-- `config.yaml` — every plugin reads its own section; `THEUTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `documents`, `knowledge`, `web`, `scrape`, `codeindex`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `a2a`, `update`, `artifact`, `app`, `voice`, `slack` and `telegram` sections with their defaults:
+- `config.yaml` — every plugin reads its own section; `THEUTH_<SECTION>__<KEY>` env overrides. `agent.model` is a models.dev id (`anthropic/claude-sonnet-4-5`); `/model` rewrites that one line in place. The `agent`, `tools`, `secrets`, `documents`, `knowledge`, `web`, `scrape`, `codeindex`, `search_providers`, `browser`, `computer`, `link`, `nodes`, `schedule`, `autoresearch`, `a2a`, `update`, `artifact`, `app`, `voice`, `slack` and `telegram` sections with their defaults:
 
   ```yaml
   agent:
@@ -262,6 +268,11 @@ Config (`~/.theuth/`, created on first run; details in
   schedule:                       # design docs 34 + 33; `~/.theuth/schedules/*.md` files, `/schedules` lists them
     enabled: true                 # false: no watcher, no actor, no `schedule` tool, no prompt block
     run_timeout_secs: 1800        # a run still going after this is cancelled and reported as `timeout`; a file's `run_timeout:` overrides it
+  autoresearch:                   # design doc 140; studies under `~/.theuth/autoresearch/`, one `schedules/autoresearch-<slug>.md` each; Settings › Autoresearch
+    enabled: true                 # false: no tools, no actor; `autoresearch.list` is empty and settings still persist
+    defaults: { repeats: 3, bench_timeout: 600s, checks_timeout: 300s, crash_retries: 2, budget: { usd: 20, per_experiment_usd: 1.5, hours: 10, experiments: 120 } }
+    review: { model: null, on_suspicious: revert, pause_after: 3 }   # model: null = a model of another vendor than the executor; "off" disables
+    models: { executor: null, advisor: null }   # null = agent.model / the Advisor settings model
   a2a:                            # design doc 50 §6; remote agents over A2A 1.0. `/a2a` shows status, `/a2a reload` re-reads ~/.theuth/a2a/peers.yaml
     enabled: false                # false: no actor, no listener, no card fetch, no credential load. Also needs agent.communication: true
     listen: 127.0.0.1:7780        # loopback only; restart to change
@@ -325,6 +336,7 @@ forgets one; `/skills` lists skills (⏎ hands one to the model, `s` shows it; `
 `/undo` drops the last turn (yours and the reply), `/redo` restores it; `/shake [images|documents|messages|tools|summary]` removes chosen content from the model's context without dropping what came after it — bare `/shake` opens a picker, a category (e.g. `/shake images`) pre-selects every matching occurrence in the current context, Space toggles a row, Enter reviews the exact targets (a removed tool exchange or assistant message takes its protocol companions with it) and confirms; no model call, later replies stay, the original rows stay in the transcript as collapsed *removed* cards and `/undo` does not bring the content back (attach or send it again); works on idle native sessions only ([`docs/design/48-shake.md`](docs/design/48-shake.md)); `/edit [n]` edits a user message and regenerates from it, `/regen [n]` regenerates the reply to a turn, `/fork [n]` opens a new session with the conversation through a turn; URLs in the transcript are OSC 8 hyperlinks (click them in a terminal that supports it, e.g. ghostty/iTerm2/kitty/WezTerm);
 `/jobs` lists the session's shell jobs, `/jobs kill <id>` stops one (a running job's card shows its last 10 output lines live);
 `/schedules` lists the scheduled runs and loops with their next and last fire and run count, `/schedules run <name>` fires one now, `/schedules pause|resume <name>` flips its `enabled:` line, `/schedules history <name>` shows its runs and reports;
+`/autoresearch` lists the studies with state and headline, `/autoresearch <slug>` prints one with its last 10 experiments, `/autoresearch pause|resume|stop|stop_now <slug>` and `/autoresearch steer <slug> <text>` control one, `/autoresearch <goal>` hands the setup skill to the model;
 `/artifacts` lists the files the agent has shown in this session and its subagents (⏎ opens one with the OS, `s` shows it inline, `e` exports it); a `▣` artifact card's path is a `file://` link, `o` opens the newest one, Ctrl+O renders markdown, code and CSV inline; `/apps` is the same picker for the apps the agent built — the TUI cannot run them (`interactive on desktop/web`), so `s`/Ctrl+O show the `.openui` source read-only and `e` exports it;
 `/secrets` lists the vault's secrets with their versions (`a` adds one into a masked field, `r` replaces the value as a new version, `h` shows history and restores an older version, `d` deletes); `/secrets add [name]`, `/secrets rm <name>`, `/secrets restore <name> [n]` skip the menu; when the agent calls `secret_request` a masked box asks you to type it;
 `/acp` manages external ACP harnesses;
