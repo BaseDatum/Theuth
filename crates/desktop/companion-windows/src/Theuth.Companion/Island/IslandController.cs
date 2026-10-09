@@ -22,6 +22,8 @@ internal sealed class IslandController : IDisposable
     private readonly SettingsStore settings;
     private readonly IslandModel model = new();
     private readonly DispatcherQueueTimer hideTimer;
+    private readonly DispatcherQueueTimer oracleTimer;
+    private DispatcherQueueTimer? fixtureTimer;
     private PointSettings point;
     private MeetingSnapshot snapshot = MeetingSnapshot.Empty;
     private DateTimeOffset? lastTopicOrBrief;
@@ -38,9 +40,15 @@ internal sealed class IslandController : IDisposable
         point = PointSettings.Load(settings);
         Window = new IslandWindow(dispatcher, model, Act, SaveModel);
         Window.DisplayChanged += () => dispatcher.TryEnqueue(() => { if (Window.IsShown) Window.Relayout(); });
+        if (!Flags.Shareable && Window.HiddenFromCapture != model.HiddenFromCapture) Window.SetHiddenFromCapture(model.HiddenFromCapture);
         hideTimer = dispatcher.CreateTimer();
         hideTimer.IsRepeating = false;
         hideTimer.Tick += (_, _) => Evaluate();
+        // D11: the oracle chip queries decision_mode('meeting') every 30 s while a meeting is on the island.
+        oracleTimer = dispatcher.CreateTimer();
+        oracleTimer.Interval = TimeSpan.FromSeconds(30);
+        oracleTimer.IsRepeating = true;
+        oracleTimer.Tick += (_, _) => PollOracle();
         store.EventReceived += OnEvent;
         store.MeetingRefetched += Hydrate;
         store.GlobalKeyPressed += OnGlobalDown;
@@ -59,6 +67,41 @@ internal sealed class IslandController : IDisposable
     public IslandModel Model => model;
 
     public PointSettings PointSettings => point;
+
+    /// <summary>Settings › Island "Always show".</summary>
+    public void SetAlwaysShow(bool on)
+    {
+        model.AlwaysShow = on;
+        SaveModel();
+        Evaluate();
+        Log.Write($"island: always show = {(on ? "on" : "off")}");
+    }
+
+    /// <summary>Settings › Island eye default (also the Alt+Shift+E toggle's persisted value).</summary>
+    public void SetHiddenFromCapture(bool hidden)
+    {
+        model.HiddenFromCapture = hidden;
+        SaveModel();
+        if (Window.HiddenFromCapture != hidden) Window.SetHiddenFromCapture(hidden);
+        EyeChanged?.Invoke(hidden);
+    }
+
+    /// <summary>Settings › Island "Reset position" for one monitor.</summary>
+    public void ResetPosition(ScreenMonitor m)
+    {
+        var f = model.SnapBack(m.AsIslandDisplay(), (Window.ScreenRect.right - Window.ScreenRect.left, Window.ScreenRect.bottom - Window.ScreenRect.top));
+        if (Window.IsShown && Window.Monitor?.Device == m.Device) Window.Place(new Windows.Graphics.RectInt32(f.X, f.Y, f.Width, f.Height));
+        SaveModel();
+        Log.Write($"island: position reset for {m.Device}");
+    }
+
+    public void ResetAllPositions()
+    {
+        model.ResetAll();
+        SaveModel();
+        if (Window.IsShown) Window.Relayout();
+        Log.Write("island: all positions reset");
+    }
 
     public void SavePointSettings(PointSettings s)
     {
@@ -103,6 +146,11 @@ internal sealed class IslandController : IDisposable
     {
         var prev = snapshot;
         snapshot = next;
+        if (change is MeetingChange.Level lv)
+        {
+            Window.SetLevels(lv.MicRms, lv.SystemRms); // ~6/s: the bars resize in place, no re-render
+            return;
+        }
         if (change is MeetingChange.TopicAdded or MeetingChange.Brief) lastTopicOrBrief = DateTimeOffset.Now;
         else if (change is null && next.LastTopicOrBriefMs is { } ms && next.Meeting is not null && lastTopicOrBrief is null)
             lastTopicOrBrief = DateTimeOffset.Now; // a hydrate with pending topics counts as "just arrived" at most once
@@ -138,12 +186,35 @@ internal sealed class IslandController : IDisposable
         {
             Window.HideIsland();
         }
+        if (snapshot.Meeting is not null && !fixture) { if (!oracleTimer.IsRunning) { oracleTimer.Start(); PollOracle(); } }
+        else oracleTimer.Stop();
         hideTimer.Stop();
         if (IslandModel.HideDue(snapshot.State, lastTopicOrBrief) is { } due && due > now && !model.AlwaysShow)
         {
             hideTimer.Interval = due - now + TimeSpan.FromMilliseconds(50);
             hideTimer.Start();
         }
+    }
+
+    /// <summary><c>decision_mode('meeting')</c> → the chip's effective mode word (<c>ModeInfo.effective</c>: a word, or an object whose first key is the word).</summary>
+    private void PollOracle()
+    {
+        _ = store.Client.CallAsync<System.Text.Json.JsonElement>("decision_mode", "meeting").ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+            {
+                Log.Write($"island: decision_mode failed: {t.Exception?.GetBaseException().Message}");
+                return;
+            }
+            string? word = null;
+            var e = t.Result;
+            if (e.ValueKind == System.Text.Json.JsonValueKind.Object && e.TryGetProperty("effective", out var eff))
+            {
+                if (eff.ValueKind == System.Text.Json.JsonValueKind.String) word = eff.GetString();
+                else if (eff.ValueKind == System.Text.Json.JsonValueKind.Object) foreach (var p in eff.EnumerateObject()) { word = p.Name; break; }
+            }
+            dispatcher.TryEnqueue(() => Window.SetOracleMode(word?.ToLowerInvariant()));
+        }, TaskScheduler.Default);
     }
 
     /// <summary>The chosen monitor: the one the island was on, else the one with the mouse, else the primary.</summary>
@@ -206,8 +277,7 @@ internal sealed class IslandController : IDisposable
     private void ToggleEye()
     {
         bool hidden = !Window.HiddenFromCapture;
-        Window.SetHiddenFromCapture(hidden);
-        EyeChanged?.Invoke(hidden);
+        SetHiddenFromCapture(hidden);
         Log.Write($"island: eye → {(hidden ? "hidden from capture" : "visible in capture")}");
     }
 
@@ -240,8 +310,23 @@ internal sealed class IslandController : IDisposable
             new[] { "Opened Tuesday by Sky; retries the ingest job three times before it files an incident", "Blocked on the schema change in PR #418", "Owner: ops desk" }, "Auto", 650_000)), now);
         s = MeetingReducer.Reduce(s, new MeetingChange.Utterance("fixture-meeting", "System", 740_000, "so the ingest retry is still failing on the schema", false, true, "s2"), now);
         s = MeetingReducer.Reduce(s, new MeetingChange.Utterance("fixture-meeting", "Mic", 745_000, "yes, PR 418 lands tomorrow", false, true, null), now);
+        s = MeetingReducer.Reduce(s, new MeetingChange.OracleDecision("fixture-meeting", new MeetingOracleRow("batch-1", "brief", false, true)), now);
         Apply(s, new MeetingChange.TopicAdded("fixture-meeting", new MeetingTopic("t2", "Standup", 700_000)));
-        Log.Write("island: fixture meeting applied (recording 12:31, 2 topics, 1 brief, 2 lines)");
+        Window.SetOracleMode("shadow");
+        // Level pulses at 6/s, as the engine sends them.
+        int tick = 0;
+        fixtureTimer = dispatcher.CreateTimer();
+        fixtureTimer.Interval = TimeSpan.FromMilliseconds(160);
+        fixtureTimer.IsRepeating = true;
+        fixtureTimer.Tick += (_, _) =>
+        {
+            tick++;
+            float mic = (float)(0.05 + 0.35 * Math.Abs(Math.Sin(tick / 3.0)));
+            float sys = (float)(0.03 + 0.25 * Math.Abs(Math.Sin(tick / 5.0 + 1)));
+            Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.Level("fixture-meeting", mic, sys), DateTimeOffset.Now), new MeetingChange.Level("fixture-meeting", mic, sys));
+        };
+        fixtureTimer.Start();
+        Log.Write("island: fixture meeting applied (recording 12:31, 2 topics, 1 brief, 2 lines, oracle shadow·brief, level pulses)");
     }
 
     private bool fixture;
@@ -251,6 +336,8 @@ internal sealed class IslandController : IDisposable
         if (disposed) return;
         disposed = true;
         hideTimer.Stop();
+        oracleTimer.Stop();
+        fixtureTimer?.Stop();
         store.EventReceived -= OnEvent;
         store.MeetingRefetched -= Hydrate;
         store.GlobalKeyPressed -= OnGlobalDown;

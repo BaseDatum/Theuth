@@ -45,7 +45,9 @@ internal sealed class PointController : IDisposable
     private string live = "";
     private string answer = "";
     private string? hint;
+    private string? toolName;
     private bool working;
+    private bool replaying;
     private bool locked;
     private bool escRegistered;
     private int gesture;
@@ -445,6 +447,7 @@ internal sealed class PointController : IDisposable
         {
             case "TurnStarted":
                 working = true;
+                toolName = null;
                 RenderVoice();
                 break;
             case "TextDelta":
@@ -452,6 +455,12 @@ internal sealed class PointController : IDisposable
                 RenderVoice();
                 break;
             case "ToolCallStarted":
+                working = true;
+                toolName = ToolNameOf(json);
+                RenderVoice();
+                break;
+            case "ToolCallFinished":
+                toolName = null;
                 RenderVoice();
                 break;
             case "Error":
@@ -464,7 +473,8 @@ internal sealed class PointController : IDisposable
             case "TurnFinished":
                 working = false;
                 Log.Write($"point: desk turn finished ({d.StopReason}) — {answer.Length} chars{(settings().Speak ? ", speaking" : "")}");
-                if (settings().Speak && answer.Trim().Length > 0)
+                toolName = null;
+                if (settings().Speak && answer.Trim().Length > 0 && !replaying)
                 {
                     var spoken = answer;
                     _ = store.Client.CallRawAsync("speak", deskSession, spoken).ContinueWith(t => { if (t.IsFaulted) Log.Write($"point: speak failed: {t.Exception?.GetBaseException().Message}"); }, TaskScheduler.Default);
@@ -473,6 +483,41 @@ internal sealed class PointController : IDisposable
                 Step(new PointEvent.PanelDone()); // Sending → Replying
                 After(doneTimer, (int)PointMachine.DoneMs); // Replying → Idle + Conceal
                 break;
+        }
+    }
+
+    private static string? ToolNameOf(byte[] json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>
+    /// <c>--point-replay</c>: the answer card through the real path without a model — a recorded desk sequence (TurnStarted ·
+    /// ToolCallStarted/Finished · TextDelta × n · TurnFinished) fed into <c>Store.HandleEvent</c> (so it arrives through
+    /// <c>EventReceived</c> like the engine's stream) for a fake desk session after a simulated send. <c>speak</c> is skipped.
+    /// </summary>
+    public async Task ReplayAsync(string text, IReadOnlyList<string> jsonLines, int gapMs = 350)
+    {
+        gesture++;
+        replaying = true;
+        state = new PointState.Sending(Now);
+        deskSession = "replay-desk";
+        desk = deskSession;
+        live = text;
+        answer = "";
+        working = true;
+        hint = null;
+        island.SetVoice(View("working"));
+        Log.Write($"point-replay: {jsonLines.Count} events for {deskSession}");
+        foreach (var line in jsonLines)
+        {
+            await Task.Delay(gapMs);
+            store.HandleEvent(System.Text.Encoding.UTF8.GetBytes(line));
         }
     }
 
@@ -522,12 +567,13 @@ internal sealed class PointController : IDisposable
         {
             "listening" => PointFlow.ListeningStatus(held, VoiceKeyChord, locked),
             "sending" => "sending to theuth's desk…",
-            "working" => "theuth is working…",
+            "working" => toolName is { } tn ? $"theuth is working… · {tn}" : "theuth is working…",
             "done" => "theuth's desk",
             _ => hint ?? "",
         };
         string? card = phase is "working" or "done" ? answer : null;
-        return new VoiceView(phase, phase == "hint" ? "" : live.Length > 0 ? live : dictation.LiveText, status, card, hint, locked, working);
+        return new VoiceView(phase, phase == "hint" ? "" : live.Length > 0 ? live : dictation.LiveText, status, card, hint, locked, working,
+            deskSession is { } ds ? $"theuth://c/{ds}" : null);
     }
 
     // MARK: Esc

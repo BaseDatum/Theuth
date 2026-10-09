@@ -14,6 +14,9 @@ namespace Theuth.Companion;
 /// </summary>
 internal sealed class WW3Install : IDisposable
 {
+    /// <summary>The running install (the Settings pages edit through it); null in builds without W2's surfaces.</summary>
+    public static WW3Install? Current { get; private set; }
+
     public IslandController Island { get; }
 
     public PointController Point { get; }
@@ -31,17 +34,21 @@ internal sealed class WW3Install : IDisposable
             Log.Write("149 WW3: not installed (no W2 surfaces)");
             return null;
         }
-        var settings = SettingsStore.Load(SettingsStore.DefaultPath);
+        // The ONE settings store (SettingsModel.Shared's): a second instance's Flush would drop the other's keys.
+        var settings = Settings.SettingsModel.Shared.Store;
         var island = new IslandController(store, dispatcher, settings);
         var point = new PointController(store, dispatcher, island, surfaces.Hotkeys, () => island.PointSettings);
         island.EyeChanged += hidden => point.SetHiddenFromCapture(hidden);
         var install = new WW3Install(island, point);
+        Current = install;
         if (Environment.GetCommandLineArgs().Contains("--point-probe")) PointProbe.Run(dispatcher, point, island);
+        if (Environment.GetCommandLineArgs().Contains("--point-replay")) PointProbe.Replay(dispatcher, point);
         return install;
     }
 
     public void Dispose()
     {
+        if (Current == this) Current = null;
         Point.Dispose();
         Island.Dispose();
     }

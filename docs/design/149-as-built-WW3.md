@@ -132,6 +132,64 @@ about. The TS gates (C: `App.tsx:386-400`, `Island.tsx:70-72`, `routes/island.ts
   H3 part 2 (the Mac W2 point-and-say) not yet forwarded; `PointMachineTests` already carries the 16 + 1 names of C's stub.
 - WE1's UIA reader: once in the engine, the `[screen …]` line gains the element/app/window/URL; nothing changes in the companion.
 
+## R1 (02:41 → ) — the orchestrator's four gaps
+
+### R1.1 Meters + oracle chip (§3.6 / D11)
+- `IslandWindow.Meters()`: mic (faience) and system (sand) bars, 3 epx wide, 3–14 epx tall, on the closed pill (before the
+  speaker word and the rec dot) and at the head of the open strip; `SetLevels(mic, system)` resizes the two rectangles in place —
+  `MeetingEvent::Level` (~6/s) never re-renders the tree (`IslandController.Apply` short-circuits on `MeetingChange.Level`).
+- The pill shows `meters · ‹speaker› · ● mm:ss · N topics` (`SpeakerWord` = the newest line's `me` / `Speaker N` / `them`).
+- `IslandWindow.OracleChip()` = `Island.tsx OracleChip`: the effective mode word in caps + `deciding` (gold) / `skip` / `brief` /
+  `→ model` for 6 s after a verdict; hidden when the mode is off and nothing is live. `IslandController.PollOracle()` calls
+  `decision_mode('meeting')` (`Client.CallAsync<JsonElement>`, `effective` as a word or the object's first key) at once and every
+  30 s while a meeting is on the island (not in fixture mode).
+- `--island-fixture` now also pulses Level at 6/s and seeds an oracle verdict (`shadow` · `brief`).
+
+### R1.2 Answer card (§3.7, D14, Rev 1 #10)
+- `TurnStarted` → "theuth is working…", `ToolCallStarted{name}` → "theuth is working… · ‹name›", `TextDelta` streams into the
+  card, `TurnFinished` → "done" + `speak(desk, text)` when the setting is on (skipped in replay), `Error` → the message for 4 s.
+- "Open Ctrl+O" button in the card footer and Ctrl+O in the voice mode → `theuth://c/<desk>` (`VoiceView.OpenUrl`).
+- Refusal hints (`PointFlow.RefusalHint`) show as the voice mode's hint line for 2 s.
+- `--point-replay`: 4 s after start `PointController.ReplayAsync` puts the machine in Sending for `replay-desk`, shows the voice
+  mode and feeds a recorded `TurnStarted · ToolCallStarted/Finished(screen_context) · TextDelta ×3 · TurnFinished` through
+  `Store.HandleEvent` (350 ms apart) — the same path the engine's stream takes (`EventReceived`).
+
+### R1.3 Settings pages (§3.8)
+- `Settings/SettingsWindow.WW3.cs` (+ three marked lines in W3's `SettingsWindow.cs`: the page keys, the nav items, the switch) —
+  **Island**: Always show · Hidden from capture (eye default, `islandHiddenFromCapture`, applied to the island and the overlays) ·
+  the PTT/eye chords as read from the key table ("change them in Keys") · Reset position per monitor (`settings-island-reset-<n>`,
+  enabled when a frame is saved) · Reset all. **Voice key**: the chord line · on/off · Send the screen · Read what the pointer
+  touched (Auto — the engine's UI Automation reader / Off) · Draw the trail (always / while the mouse button is held) · Speak the
+  answer · Reset hints · the 52 §8 disclosure (`settings-voice-disclosure`).
+- One backing store: `SettingsModel.Store` (one new internal property) is handed to the island/point settings so no flush drops
+  another page's keys; `WW3Install.Current` lets the pages edit the live controller.
+- DPI note for WE1: `app.manifest` declares `dpiAwareness PerMonitorV2`, so `PointerSampler`'s `GetCursorPos` values are physical
+  virtual-screen pixels — the engine's pointer space; no conversion.
+
+### R1 gates (desk held by ww3 03:19 → 03:28, released; installed companion restarted; Run key = installed exe)
+- build-B Debug 0/0 at ffe8f121 (and cb6429e3 minus the dropped edits); Mac Core **236 passed / 0 failed**.
+- **Meters + oracle chip**: `--island-fixture --shareable` → the open strip shows the two meters, `● 12:46`, the `SHADOW` oracle chip
+  (`r1-island-open-meters-oracle.png`); the closed pill `▌▌ me · ● 13:04 · 2 topics` (`r1-island-pill-meters.png`). `decision_mode`
+  is not called in fixture mode (no engine mode on build-B); the poll path logs `island: decision_mode failed: …` on an engine that
+  refuses it.
+- **Answer card**: `--point-replay --shareable` → log `point-replay: 7 events for replay-desk` → `point: desk turn finished (end_turn) —
+  128 chars` → `sending --PanelDone--> replying` → 6 s later `replying --PanelDone--> idle fx=Conceal`. Screenshot mid-stream:
+  `● theuth is working… / what is this at the top of my screen / [That's the theuth island — the meeting pill showing a 12-minute
+  recording with two topics. Click it to see the brief on PROJ-12.] working… · Open Ctrl+O · Esc hides` (`r1-answer-card-working.png`).
+  The finished frame ("done · Open Ctrl+O") lived 03:23:37.8–03:23:43.8 per the log; my three capture attempts landed outside that
+  6 s window — the state transitions are in the log, the text in the working frame is already the complete reply.
+- **Settings pages**: `--settings` → Island (`r1-settings-island.png`: Always show, Hidden from capture, PTT/eye chords line, per-monitor
+  Reset position, Reset all) and Voice key (`r1-settings-voice.png`: chord line, on/off, Send the screen, Read what the pointer touched
+  = "Auto — the engine's UI Automation reader", Draw the trail, Speak the answer, the disclosure below the fold). The nav items are
+  reached through UIA (`settings-island`, `settings-voice`); synthetic mouse clicks on the NavigationView did not select (same for W3's
+  pages — WinUI needs the activation click first).
+- **Round-trip**: toggling `settings-island-always` → `settings.json` carries `"islandAlwaysShow": true, "islandHiddenFromCapture": true`
+  (read back with `ww3-gate settings-json`); the next launch showed the idle pill `● no meeting · 0 topics` (Always show on).
+- **Hover-open recheck**: with windows-mcp `mouse_control move` (SendInput → real `WM_MOUSEMOVE`) the pill opened after 0.3 s and closed
+  0.1 s after the pointer left — the earlier miss was `SetCursorPos`, which moves the cursor without a mouse message to the window.
+- DPI (WE1's note): `app.manifest` is PerMonitorV2 → `GetCursorPos` is physical; the samples the engine stamped (`circled (480,381)–
+  (1120,660)` on the 1920 × 1080 display) confirm it.
+
 ## Revision history
 - v1 — 02:50: WW1 DONE 0b3de92e merged (Hotkeys.Gate replaces WW3's meeting-row gating; MeetingEvent is one tolerant record, enums string-backed — the island reads the raw stream through MeetingWire, unaffected).
 - v0 — 2026-10-09 01:40–02:40: Core + app written, WW1 skeleton (2c965119) and C (0280c0a7) merged, three build-B rounds, the UI round
