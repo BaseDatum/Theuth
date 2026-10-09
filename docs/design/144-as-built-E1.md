@@ -101,8 +101,35 @@ contract: `docs/design/144-wave2-contract.md` §1; design §4.3, §5.1–5.3, §
   forwarded), the four refusals; `insight_promote` note title/body/trailer/membership, explicit notebook, unknown block.
 
 ## Proof
+- `crates/document/tests/insights.rs` ran against a helper built from this tree (`packages/documents` `bun run
+  build:helper` under build-lock; main's `dist/` helper of Sep 26 predates the `theuth:` link schema and dropped the
+  trailer's link — the test caught it). Observed: the default insight lands as `## Insights` → `### Dense summary ·
+  mock/model · 2026-10-09` → blocks, `insights == 1`, two `Changed{Completed}` events, a same-text refresh adds no
+  call and no section; a failing model → `meta.insight_error = "provider said no"`, `error: None`, `insights == 0`;
+  `insight_run(toc)` then `insight_run(skill legal-review)` share one `## Insights`, return the `###` heading ids,
+  forward `insight_model`; `insight_promote` note = `# Table of contents — Failover notes` + the blocks + `*From*
+  *[Failover notes](theuth://sources/<id>#<block>)** · mock/model · 2026-10-09*` (BlockNote's emphasis split, as
+  Z recorded for W3's provenance line), filed in the source's notebook, or only in the explicit one.
+- `notebooks_block.rs` pins the exact block for pinned/default levels (`full` → `summary` → `mention`, `off` absent,
+  allow-list over rendered ids) and that `estimate_of(plan(…))` totals equal the injected text's chars / 4.
+- Live engine: not exercised (read-only rule; the closer's live proof). The side-call path (`WakeSession` →
+  `SideCall`, `CreateSession { notebook }` fallback) is exercised only by compilation and the W3 `title()` precedent;
+  `[INFERENCE]` that a resumed idle chat answers a `SideCall` the way a live one does (`Agents::actor` is the same
+  resume every `Undo`/`Regenerate`/`SetToolset` uses).
 
 ## Gates
+All through `mbx` under `build-lock` (`BUILD_LABEL=144-E1`), crate-level, worktree `theuth-144-e1`:
+- `build-lock mbx test -p agent -p document -p rpc --no-run`: clean (0 warnings).
+- bare `mbx test -p agent -p document -p rpc --no-fail-fast`: agent 566 (+2 ignored, pre-existing) + binding 2 +
+  block 6; document lib 74 + actor 11 + cite_check_links 4 + index_search 3 + ingest_audio 1 + ingest_job 5 +
+  insights 2 + replicate 1; rpc 56 + prompts 1 — 0 failed. (`actor::limits_doc_size_update_size_awareness_cap`
+  failed once with `Exported` where `Update` was awaited while three sibling builds ran; it passed in the run before
+  and alone right after — a pre-existing timing test, no 144-E1 diff in `actor.rs`.)
+- `build-lock mbx clippy -p agent -p document -p rpc --all-targets -- -D warnings`: clean.
+- `cargo fmt -p agent -p document -p rpc`: clean.
+- Lesson for siblings: keep the package set identical between the `--no-run` build and the bare run, and never set
+  env vars (`THEUTH_DOCUMENTS_HELPER`) on the `mbx` command — both change mbx's target digest and trigger a full
+  rebuild; the tree's own `packages/documents/dist/theuth-documents` is found by `helper_path()` without any env.
 
 ## Deviations
 - **Wave-1 tests updated** (`crates/agent/tests/notebooks_block.rs`): the four `render` calls pass `&Pins::new()`;
@@ -165,6 +192,9 @@ contract: `docs/design/144-wave2-contract.md` §1; design §4.3, §5.1–5.3, §
   string[]`. After `insight_run` / the default insight a `SourceEvent { type: "Changed", source, status: "completed" }`
   arrives on `subscribe_events` — re-run the estimate on it. `ContextEstimate.items` is in injection order; `empty`
   drives the "nothing in context — the agent sees only the description" line before send.
+- **U1 — `lib/citations.ts isProvenanceLine`**: a promoted insight's trailer round-trips as
+  `*From* *[<source title>](theuth://sources/<id>#<block>)** · <model> · <date>*` (the same emphasis split Z fixed
+  for `*Answer from* *[chat](…)**`); accept `*From*` beside `*Answer from*` so the Notes column labels it.
 - **Closer**: regenerate bindings (`mbx test -p rpc --features ts --lib export_bindings` + the copy line);
   `methods.json` gains the seven names above.
 - **runtime (`side_call.rs`)**: a `CallKind::Insight` (`"insight"` in `as_str`/`FromStr`) so insight cost rows stop
