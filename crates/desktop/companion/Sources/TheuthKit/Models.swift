@@ -662,17 +662,30 @@ public enum Degradation: Codable, Equatable, Sendable {
     }
 }
 
-/// `Support`: `"Full"`, `{"Partial": why}` or `{"None": why}`.
+/// `Support` (`crates/meeting/src/lib.rs:211`, `#[serde(tag = "kind", content = "reason")]`): `{"kind":"Full"}`,
+/// `{"kind":"Partial","reason":…}`, `{"kind":"None","reason":…}`. 149 W3: the live engine answers this shape — the contract's
+/// externally-tagged reading (`"Full"` / `{"Partial": why}`) threw on `meeting_status` and is kept only as a fallback.
 public enum MeetingSupport: Codable, Equatable, Sendable {
     case full
     case partial(String)
     case unsupported(String)
+
+    private struct Tagged: Decodable { let kind: String; let reason: String? }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         if let s = try? c.decode(String.self) {
             guard s == "Full" else { throw DecodingError.dataCorruptedError(in: c, debugDescription: "unknown support \(s)") }
             self = .full; return
+        }
+        if let t = try? c.decode(Tagged.self) {
+            switch t.kind {
+            case "Full": self = .full
+            case "Partial": self = .partial(t.reason ?? "")
+            case "None": self = .unsupported(t.reason ?? "")
+            default: throw DecodingError.dataCorruptedError(in: c, debugDescription: "unknown support kind \(t.kind)")
+            }
+            return
         }
         let o = try c.decode([String: String].self)
         if let why = o["Partial"] { self = .partial(why) }
@@ -681,13 +694,15 @@ public enum MeetingSupport: Codable, Equatable, Sendable {
     }
 
     public func encode(to encoder: Encoder) throws {
-        var c = encoder.singleValueContainer()
+        var c = encoder.container(keyedBy: Keys.self)
         switch self {
-        case .full: try c.encode("Full")
-        case .partial(let w): try c.encode(["Partial": w])
-        case .unsupported(let w): try c.encode(["None": w])
+        case .full: try c.encode("Full", forKey: .kind)
+        case .partial(let w): try c.encode("Partial", forKey: .kind); try c.encode(w, forKey: .reason)
+        case .unsupported(let w): try c.encode("None", forKey: .kind); try c.encode(w, forKey: .reason)
         }
     }
+
+    private enum Keys: String, CodingKey { case kind, reason }
 }
 
 public enum BriefSource: String, Codable, Sendable {
