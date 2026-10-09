@@ -435,6 +435,11 @@ public partial class StoreModel : INotifyPropertyChanged
             await CommitAsk(ask.Text);
             return;
         }
+        if (h.Action.ItemFree)
+        {
+            await CommitItemFree(h); // 149 WW2
+            return;
+        }
         try
         {
             var latest = await engine.AttentionListAsync();
@@ -474,6 +479,35 @@ public partial class StoreModel : INotifyPropertyChanged
             }
             Receipt = ok ? new ReceiptRow.Sent($"{h.Who} · {h.Label}") : ReceiptRow.Stale.Instance;
             log($"committed {h.Action} ok={(ok ? "true" : "false")}");
+        }
+        catch (Exception e)
+        {
+            Receipt = new ReceiptRow.Failed(Describe(e));
+            log($"commit failed: {Describe(e)}");
+        }
+        _ = Refetch();
+        ExpireReceipt(3);
+    }
+
+    /// <summary>149 WW2 (D3): stop a tree · pause a desk · talk into a row — no item, so no E5 re-read; the hold was the confirmation.</summary>
+    private async Task CommitItemFree(Held h)
+    {
+        try
+        {
+            switch (h.Action)
+            {
+                case CardAction.StopTree st: await engine.CancelAsync(st.Session, CancelScope.Tree); break;
+                case CardAction.PauseDesk pd: await engine.AgentPauseAsync(pd.Name, true); break;
+                case CardAction.SendInputTo si: await engine.SendInputAsync(si.Session, si.Text); break;
+                default: return;
+            }
+            Receipt = new ReceiptRow.Sent(h.Action switch
+            {
+                CardAction.StopTree => $"{h.Who} · stopped",
+                CardAction.PauseDesk => $"{h.Who} · paused",
+                _ => $"{h.Who} · sent",
+            });
+            log($"committed {h.Action}");
         }
         catch (Exception e)
         {

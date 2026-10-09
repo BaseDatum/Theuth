@@ -8,6 +8,8 @@ extension KeyboardShortcuts.Name {
     static let openPanel = Self("openPanel", default: .init(.space, modifiers: [.control, .shift]))
     /// Unbound by default (`KeyAction.openAskBar`).
     static let openAskBar = Self("openAskBar")
+    /// 149 W1: `⌃⇧A` toggles the agents panel (`KeyAction.openAgents`).
+    static let openAgents = Self("openAgents", default: .init(.a, modifiers: [.control, .shift]))
 }
 
 /// The `anywhere` scope: the table's global rows pushed into KeyboardShortcuts (Carbon registration), the
@@ -17,7 +19,10 @@ extension KeyboardShortcuts.Name {
 enum Hotkeys {
     /// 149: a global row is probed and registered only once it is listed here — W1 adds `.openAgents`, W2 `.voiceKey`,
     /// W3 `.meetingPtt`/`.meetingEye`; an unlisted row's chord is data for Settings › Keys and the Windows twin.
-    static let names: [KeyAction: KeyboardShortcuts.Name] = [.openPanel: .openPanel, .openAskBar: .openAskBar]
+    static let names: [KeyAction: KeyboardShortcuts.Name] = [.openPanel: .openPanel, .openAskBar: .openAskBar,
+                                                             .meetingPtt: .meetingPtt, .meetingEye: .meetingEye, // 149 W3
+                                                             .openAgents: .openAgents, // 149 W1
+    ]
 
     /// Launch: resolve the saved global chords against the registrar (fallback to the default with a notice),
     /// persist the outcome, then hand every global row to KeyboardShortcuts.

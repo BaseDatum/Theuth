@@ -20,7 +20,7 @@ Contract: `docs/design/149-companion-native.md` §5.1/§5.2/§6/§8/§11-C + Rev
 - Decision: `DecisionModeKind` `:584`, `ModeInfo` `:586`.
 - Meeting (`crates/meeting/src/lib.rs:139-243, 268-376, 415-520, 686-765`): `Track` `:598`, `PostStage` `:600`,
   `MeetingState` `:603` (externally tagged — bare word or `{"Post": stage}`, `.other` for newer words, `isLive`),
-  `Degradation` `:635` (`{"SttDown": track}` / `{"PermissionDenied": p}`), `MeetingSupport` `:666` (`.full|.partial|.unsupported`),
+  `Degradation` `:635` (`{"SttDown": track}` / `{"PermissionDenied": p}`), `MeetingSupport` (`.full|.partial|.unsupported`; W3 corrected the wire shape to `{kind, reason}` — see below),
   `BriefSource` `:693`, `TopicGone` `:697`, `Topic` `:699`, `Brief` `:711`, `Utterance` `:728`, `Level` `:741`,
   `MeetingProcess` `:749` (the Rust `ProcessInfo`; renamed — Foundation's `ProcessInfo` shadowed it in `Discovery.swift:9`),
   `OracleDecision` `:757` (`batchId`, `family` only), `PermissionState` `:762`, `MeetingPermissions` `:764`,
@@ -113,11 +113,15 @@ rasterises each with `NSImage` → `NSBitmapImageRep` to `<name>-{16,20,24,32}.p
 
 ## Gates
 - `BUILD_LABEL=149-C build-lock bash crates/desktop/companion/test.sh` — ✔ 176 tests in 28 suites passed, 74 skipped (the stubs) (`/tmp/149-C-test.log`).
-- `BUILD_LABEL=149-C build-lock swift build -c release --package-path crates/desktop/companion` — see the DONE line (`/tmp/149-C-release.log`).
-- `bash scripts/bundle-companion.sh` → `Contents/Resources/harness/*.png` — see the DONE line (`/tmp/149-C-bundle.log`).
+- `BUILD_LABEL=149-C build-lock swift build -c release --package-path crates/desktop/companion` — ✔ `Build complete! (158.31s)` (`/tmp/149-C-release.log`).
+- `bash scripts/bundle-companion.sh` — ✔ `target/release/companion/Theuth Companion.app` (2.13.0), `codesign --verify --strict` ok,
+  `Contents/Resources/harness/` = 30 files, 24 PNGs (`/tmp/149-C-bundle.log`).
 - `BUILD_LABEL=149-C build-lock mbx test -p desktop --no-run` ✔ · `mbx test -p desktop deep_link` ✔ `deep_link_routes ... ok` · `cargo fmt -p desktop` ✔ no diff
   (`/tmp/149-C-desktop-build2.log`, `/tmp/149-C-desktop-test.log`).
-- `bunx vitest run src/lib src/components/meeting` / `bunx tsc -b --noEmit` — see the DONE line (`/tmp/149-C-vitest.log`, `/tmp/149-C-tsc.log`).
+- `BUILD_LABEL=149-C build-lock bunx vitest run src/lib src/components/meeting` — ✔ 83 files, 515 tests (`/tmp/149-C-vitest.log`) ·
+  `BUILD_LABEL=149-C build-lock bunx tsc -b --noEmit` — ✔ clean (`/tmp/149-C-tsc.log`), after `bun install --frozen-lockfile` in `crates/desktop/ui`
+  and `packages/apps` and the bindings regen (`mbx test -p rpc --features ts --lib export_bindings` → 795 files copied to `UI/rpc/bindings/`;
+  the first attempt hit the tool's 1 h cap behind the lock, the second ran 49 min).
 - No probe was run: C adds no surface (comment-line insertion points, data rows, models); nothing launched, no permission dialog.
 
 ## Deviations / open items
@@ -125,5 +129,9 @@ rasterises each with `NSImage` → `NSBitmapImageRep` to `<name>-{16,20,24,32}.p
   W0 owns `attention.rs`. The Swift side is already tolerant (`context` optional, Revision 1 names).
 - `MeetingEvent` has 15 variants, not 13; `speak` takes `(session, text)`; both as read in the source.
 - `MeshStatus`/`meshStatus()` reused from CompanionCore (130 W3), not re-added to TheuthKit; `AgentsModel.groups` takes that type.
-- Fixtures were derived from the Rust structs, not the ts-rs `.ts` files (absent in the fresh worktree; the regen command was issued).
+- Fixtures were derived from the Rust structs first; the ts-rs bindings (regenerated later) were cross-read and found two gaps: `Support` is
+  `#[serde(tag = "kind", content = "reason")]`, not externally tagged (W3 fixed `MeetingSupport` + two fixtures against the live engine before
+  this cross-check landed; W3's version stands), and `Degradation` has two words past the excerpt I read — `NoNote`, `DiarizationDown` — which
+  decode as `.other("NoNote")`/`.other("DiarizationDown")` (left so, not added as cases: W3's `IslandViews.swift:223` switches exhaustively).
+  Everything else matched.
 - `Hotkeys.start` probe narrowed to registered rows (above) — a one-line guard in a shared file, needed by the new global rows.

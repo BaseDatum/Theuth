@@ -25,7 +25,9 @@ final class PanelController {
     }
 
     let panel: KeyPanel
-    private let store: Store
+    let store: Store // 149 W1: `PanelController+W1` (PanelProbe.swift) reads it
+    /// 149 W1 (§3.3): the card's reply text, P's attachment and V's hold-to-talk.
+    let w1: CardState
     private let hosting: NSHostingView<PanelView>
     private var subs = Set<AnyCancellable>()
     private var keyMonitor: Any?
@@ -35,8 +37,10 @@ final class PanelController {
 
     init(store: Store) {
         self.store = store
+        w1 = CardState(store: store)
         panel = KeyPanel(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 200),
                          styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.appearance = Type.dark // 149 W1 §3.9: dark-first glass
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.sharingType = Flags.shareable ? .readOnly : .none
@@ -48,13 +52,13 @@ final class PanelController {
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .utilityWindow
 
-        hosting = NSHostingView(rootView: PanelView(store: store))
+        hosting = NSHostingView(rootView: PanelView(store: store, w1: w1))
         // The window frame is set by `relayout` (≤ 560 pt): autoresizing only, no constraints that could grow it.
         hosting.autoresizingMask = [.width, .height]
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 200))
         container.wantsLayer = true
-        container.layer?.cornerRadius = 12
+        container.layer?.cornerRadius = Type.cardRadius // 149 W1 §3.9: cards 24
         container.layer?.cornerCurve = .continuous
         container.layer?.masksToBounds = true
         container.layer?.borderWidth = 0.5
@@ -66,7 +70,7 @@ final class PanelController {
         // grow the window past `relayout`'s frame.
         if #available(macOS 26, *) {
             let glass = NSGlassEffectView()
-            glass.cornerRadius = 12
+            glass.cornerRadius = Type.cardRadius
             backdrop = glass
         } else {
             let effect = NSVisualEffectView()
@@ -93,6 +97,12 @@ final class PanelController {
             NSWorkspace.shared.open(url)
             self?.close(returnKey: false)
         }
+        // 149 W1: the reply row and the hold-to-talk change the card's height too.
+        w1.objectWillChange.merge(with: w1.voice.objectWillChange).receive(on: RunLoop.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.relayout() } }
+            .store(in: &subs)
+        w1.onPoint = { [weak self] in self?.pointAndAttach() }
+        w1.onStop = { [weak self] in self?.stopAgent() }
     }
 
     /// Summon: remember the frontmost app, place, take key. Never activates this app.
@@ -103,8 +113,9 @@ final class PanelController {
         relayout(now: true)
         panel.ignoresMouseEvents = false
         panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(nil) // 149 W1: the reply field is always there; R/space/a click focuses it, not the key window
         if keyMonitor == nil {
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] e in // 149 W1: key-up releases V
                 MainActor.assumeIsolated {
                     guard let self, self.panel.isKeyWindow else { return e }
                     return self.handle(e) ? nil : e
@@ -132,13 +143,18 @@ final class PanelController {
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         store.noteFor = nil
         store.ask.replyFor = nil // W3
+        w1.voice.cancel() // 149 W1: a hold dies with the panel; P's attachment too
+        w1.attached = nil
         panel.orderOut(nil)
         if returnKey, let app = previousApp, app != .current { app.activate() }
         previousApp = nil
     }
 
     /// The grammar (W6: the table, panel scope); while the send-back note field or the R field is up only ⎋ is ours.
+    /// 149 W1: V/P/X (`.talk/.point/.stopAgent`, no intent) resolve through the table first; key-ups only matter to V.
     private func handle(_ e: NSEvent) -> Bool {
+        if let a = SettingsModel.shared.keys.action(for: LegendController.press(e).chord, in: .panel), handleW1(a, e) { return true }
+        guard e.type == .keyDown else { return false }
         let intent = KeyGrammar.intent(for: LegendController.press(e), scope: .panel, table: SettingsModel.shared.keys,
                                        textFieldFocused: store.noteFor != nil || store.ask.replyFor != nil)
         guard intent != .none else { return false }

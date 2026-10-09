@@ -4,5 +4,7 @@
   "session": null,
   "elapsed_ms": 0,
   "degraded": [],
-  "supported": "Full"
+  "supported": {
+    "kind": "Full"
+  }
 }
