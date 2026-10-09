@@ -127,6 +127,12 @@ public sealed record AttentionItem
     /// <summary>149 E6: the item's conversation (<c>request</c> / <c>last_reply</c>); null on engines before W0 — see Core <c>AttentionContext</c>.</summary>
     public ItemContext? Context { get; init; }
 
+    /// <summary>149 C: the item's priority word (<c>low</c> · <c>normal</c> · <c>high</c> · …; kept verbatim) — null when the engine has none.</summary>
+    public string? Priority { get; init; }
+
+    /// <summary>149 C: the engine's rank; 5 when absent (the value for an item without a priority).</summary>
+    public uint Rank { get; init; } = 5;
+
     /// <summary>When the wait began: E2's <c>waiting_since_ms</c>, else <c>at_ms</c>.</summary>
     [JsonIgnore]
     public DateTimeOffset WaitingSince => DateTimeOffset.FromUnixTimeMilliseconds((long)(WaitingSinceMs ?? AtMs));
@@ -464,6 +470,9 @@ public sealed record Packet
 
     public Recommendation? Recommendation { get; init; }
     public string? To { get; init; }
+
+    /// <summary>149 C: what goes wrong if the recommendation is wrong (<c>if_wrong</c>); the card's last line.</summary>
+    public string? IfWrong { get; init; }
 
     /// <summary>The pre-pick: the forwarding manager's <c>recommendation.option</c> wins over <c>recommended</c> (103 F2).</summary>
     [JsonIgnore]

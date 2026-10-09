@@ -128,7 +128,7 @@ public sealed class Models149Tests
         Assert.Equal("""["s1",null]""", TheuthJson.EncodeParams("s1", ((CancelScope?)null)?.Word()));
         Assert.Equal("""[null,"look",["/tmp/a.png"],"next_turn",null]""", TheuthJson.EncodeParams(null, "look", new[] { "/tmp/a.png" }, Delivery.NextTurn.Word(), null));
         var req = new ScreenContextReq { Samples = new ValueList<PointerSample> { new(0, 1.5f, 2) }, Color = "#ff0000", SinceMs = 3000, Accessibility = true };
-        Assert.Equal("""[{"samples":[{"t_ms":0,"x":1.5,"y":2}],"color":"#ff0000","since_ms":3000,"accessibility":true}]""", TheuthJson.EncodeParams(req));
+        Assert.Equal("""[{"samples":[{"t_ms":0,"x":1.5,"y":2,"pen":true}],"color":"#ff0000","since_ms":3000,"accessibility":true}]""", TheuthJson.EncodeParams(req));
         var reply = TheuthJson.Deserialize<ScreenContextReply>("""{"lines":["[screen 1 …]"],"files":["C:\\a.png"]}""");
         Assert.Single(reply.Files);
     }

@@ -346,7 +346,8 @@ public sealed class KeyTable : IEquatable<KeyTable>
         Row(KeyAction.AgentsStop, KeyScope.Agents, "Stop the agent (hold)", Key("x", 'X')),
         Row(KeyAction.AgentsEscape, KeyScope.Agents, "Undo the hold, else close", Chord.Escape, isFixed: true),
         Row(KeyAction.IslandMute, KeyScope.Island, "Mute (pause the meeting)", Key("m", 'M')),
-        Row(KeyAction.IslandStop, KeyScope.Island, "Stop the meeting (hold)", Key("m", 'M', ChordModifiers.Control | ChordModifiers.Shift)),
+        // §8 says ⌃⇧M; local scopes store chords without Shift (NormalizedLocal), so Ctrl+M — a typed Ctrl+Shift+M resolves to it (C did the same).
+        Row(KeyAction.IslandStop, KeyScope.Island, "Stop the meeting (hold)", Key("m", 'M', ChordModifiers.Control)),
         Row(KeyAction.IslandDismiss, KeyScope.Island, "Dismiss the topic", Key("e", 'E')),
         Row(KeyAction.IslandDeeper, KeyScope.Island, "Deeper", Key("d", 'D')),
         Row(KeyAction.IslandSend, KeyScope.Island, "Send the request", Chord.ReturnKey),

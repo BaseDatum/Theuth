@@ -30,6 +30,17 @@ public sealed partial class Store
         hotkeysInstalled = true;
         hotkeys.Pressed += GlobalKeyDown;
         hotkeys.Released += GlobalKeyUp;
-        Log.Write("149: global keys forwarded to Store (voiceKey, openAgents, meetingPtt, meetingEye)");
+        // §8: the meeting push-to-talk and eye rows are registered only while a meeting is live — re-applied on every change.
+        hotkeys.Gate = a => a is not (KeyAction.MeetingPtt or KeyAction.MeetingEye) || MeetingLive;
+        bool live = MeetingLive;
+        PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(MeetingLive) || MeetingLive == live) return;
+            live = MeetingLive;
+            Log.Write($"149: meeting live={live.ToString().ToLowerInvariant()} — re-registering the global rows");
+            hotkeys.Apply(hotkeys.Applied ?? Keys);
+        };
+        hotkeys.Apply(hotkeys.Applied ?? Keys);
+        Log.Write("149: global keys forwarded to Store (voiceKey, openAgents; meetingPtt/meetingEye while a meeting is live)");
     }
 }

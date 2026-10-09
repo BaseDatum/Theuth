@@ -192,6 +192,22 @@ public sealed class FixtureTests
         ["packet_review"] = b => TheuthJson.Deserialize<Packet>(b),
         ["pending_prompts"] = b => WireEvent.Decode(b),
         ["turn_finished"] = b => WireEvent.Decode(b),
+        // 149 C's shared fixtures (Fixture149Tests reads them in detail).
+        ["attention_item_149_context"] = b => TheuthJson.Deserialize<AttentionItem>(b),
+        ["attention_item_149_no_context"] = b => TheuthJson.Deserialize<AttentionItem>(b),
+        ["packet_149_if_wrong"] = b => TheuthJson.Deserialize<Packet>(b),
+        ["list_sessions_149"] = b => TheuthJson.Deserialize<ValueList<SessionSummary>>(b),
+        ["sessions_status_149"] = b => TheuthJson.Deserialize<SessionsStatus>(b),
+        ["meeting_status_149"] = b => TheuthJson.Deserialize<MeetingStatus>(b),
+        ["meeting_status_149_idle"] = b => TheuthJson.Deserialize<MeetingStatus>(b),
+        ["meeting_status_149_post"] = b => TheuthJson.Deserialize<MeetingStatus>(b),
+        ["meeting_topics_149"] = b => TheuthJson.Deserialize<ValueList<Topic>>(b),
+        ["meeting_briefs_149"] = b => TheuthJson.Deserialize<ValueList<Brief>>(b),
+        ["meeting_live_149"] = b => TheuthJson.Deserialize<ValueList<Utterance>>(b),
+        ["meeting_permissions_149"] = b => TheuthJson.Deserialize<MeetingPermissions>(b),
+        ["meeting_events_149"] = b => TheuthJson.Deserialize<ValueList<MeetingEvent>>(b),
+        ["screen_context_reply_149"] = b => TheuthJson.Deserialize<ScreenContextReply>(b),
+        ["decision_mode_149"] = b => TheuthJson.Deserialize<ModeInfo>(b),
     };
 
     public static TheoryData<string> FixtureNames()
