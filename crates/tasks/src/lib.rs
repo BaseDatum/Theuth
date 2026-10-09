@@ -606,7 +606,11 @@ impl Message<ListTasks> for Tasks {
 impl Message<WaitingOnUser> for Tasks {
     type Reply = Result<Vec<ledger::Waiting>, String>;
 
-    async fn handle(&mut self, m: WaitingOnUser, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: WaitingOnUser,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.ledger.waiting_on_user(&m.0).await
     }
 }

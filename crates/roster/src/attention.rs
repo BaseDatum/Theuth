@@ -282,6 +282,8 @@ pub struct Inputs {
     pub task_sessions: HashMap<String, String>,
     /// 109 §8.3: resumes that need a human.
     pub resumes: Vec<ResumeNeed>,
+    /// 146 D4: the latest boot pass counts; one `resume:boot:<at_ms>` item.
+    pub boot: Option<agent::durability::BootPass>,
     /// Items from registered [`Source`]s (126), already shaped.
     pub external: Vec<AttentionItem>,
     /// 130 E2: ask id → ms since epoch the `AskRequested` arrived (the actor
@@ -762,6 +764,29 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             )
         });
     }
+    // 146 D4: one restart-recovery notice per boot, live while respawns run;
+    // a boot that resumed nothing and lost nothing says nothing.
+    if let Some(b) = inputs
+        .boot
+        .as_ref()
+        .filter(|b| b.resuming + b.respawned + b.waiting > 0 || !b.lost.is_empty())
+    {
+        let title = boot_title(b);
+        let detail = (!b.lost.is_empty()).then(|| {
+            "lost children were told to their parents (<child_lost>); resume one with send_message or spawn a fresh child with a RESUME brief".to_owned()
+        });
+        out.push(AttentionItem {
+            // The first lost child: the HUD's Dismiss needs a session (kept when lost > 0).
+            session: b.lost.first().map(|(s, _)| s.to_string()),
+            ..item(
+                format!("resume:boot:{}", b.at_ms),
+                AttentionKind::Resume,
+                title,
+                detail,
+                b.at_ms,
+            )
+        });
+    }
     out.extend(inputs.external.iter().cloned());
 
     // 130 E3: one receipt per root / desk session; waits on nobody.
@@ -882,6 +907,54 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
+/// 146 D4: "Restarted 14:12 · 3 sessions resumed · 2 subagents back · 1 restarted fresh · 1 waiting · 3 lost (a, b, c)".
+pub fn boot_title(b: &agent::durability::BootPass) -> String {
+    let plural = |n: u32, one: &str, many: &str| {
+        if n == 1 {
+            one.to_owned()
+        } else {
+            many.to_owned()
+        }
+    };
+    let when = chrono::DateTime::from_timestamp_millis(b.at_ms as i64).map_or_else(
+        || "?".into(),
+        |d| d.with_timezone(&chrono::Local).format("%H:%M").to_string(),
+    );
+    let mut parts = vec![format!("Restarted {when}")];
+    if b.resuming > 0 {
+        parts.push(format!(
+            "{} {} resumed",
+            b.resuming,
+            plural(b.resuming, "session", "sessions")
+        ));
+    }
+    if b.respawned > b.fresh {
+        let back = b.respawned - b.fresh;
+        parts.push(format!(
+            "{} {} back",
+            back,
+            plural(back, "subagent", "subagents")
+        ));
+    }
+    if b.fresh > 0 {
+        parts.push(format!("{} restarted fresh", b.fresh));
+    }
+    if b.waiting > 0 {
+        parts.push(format!("{} waiting", b.waiting));
+    }
+    if !b.lost.is_empty() {
+        let names: Vec<&str> = b.lost.iter().map(|(_, n)| n.as_str()).collect();
+        parts.push(format!("{} lost ({})", b.lost.len(), names.join(", ")));
+    }
+    parts.join(" · ")
+}
+
+/// 146 D4: `tell` the actor sends itself 60 s after a clean pass settled.
+struct ClearBoot(u64);
+
+/// 146 D4: how long a clean boot notice stays after the last respawn settled.
+const BOOT_CLEAR: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The [`ATTENTION_ACTOR`] actor.
 #[derive(kameo::Actor)]
 pub struct Attention {
@@ -903,6 +976,8 @@ pub struct Attention {
     /// 130 E3: assistant text of each running turn since its last tool call —
     /// the "final text" once `TurnFinished` arrives. One entry per running session.
     texts: HashMap<runtime::SessionId, String>,
+    /// 146 D4: the latest boot pass; `None` once cleared.
+    boot: Option<agent::durability::BootPass>,
 }
 
 impl Attention {
@@ -923,6 +998,7 @@ impl Attention {
                 last_ids: HashSet::new(),
                 ask_since: HashMap::new(),
                 texts: HashMap::new(),
+                boot: None,
             },
             runtime::subscriber_mailbox(),
         );
@@ -931,10 +1007,19 @@ impl Attention {
         rt.subscribe::<Self, ApprovalResolved>(&actor).await;
         rt.subscribe::<Self, ArtifactShown>(&actor).await;
         rt.subscribe::<Self, agent::AgentEvent>(&actor).await;
+        rt.subscribe::<Self, agent::durability::BootPass>(&actor)
+            .await;
         rt.subscribe::<Self, AskRequested>(&actor).await;
         rt.subscribe::<Self, tools::AskResolved>(&actor).await;
         rt.subscribe::<Self, tasks::activity::ActivityAppended>(&actor)
             .await;
+        // 146 D4: a pass that settled inside the agent plugin's start was
+        // published before this subscription; take it as if it arrived now.
+        if let Ok(Some(ag)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            && let Ok(Some(pass)) = ag.ask(agent::supervisor::LastBootPass).await
+        {
+            let _ = actor.tell(pass).await;
+        }
         Ok(actor)
     }
 
@@ -1078,6 +1163,7 @@ impl Attention {
             desks,
             task_sessions,
             resumes,
+            boot: self.boot.clone(),
             external: {
                 let mut v = Vec::new();
                 for s in &self.sources {
@@ -1529,6 +1615,57 @@ impl Message<ApprovalResolved> for Attention {
     ) -> Self::Reply {
         self.pending.remove(&m.id);
         self.recheck_quietly().await;
+    }
+}
+
+/// 146 D4: the boot pass's counts, re-sent as respawns settle. The item id
+/// is stable (`resume:boot:<at_ms>`), so a count change alone does not move
+/// the id set: the HUD is nudged with an empty-diff `AttentionChanged`. A
+/// settled pass that lost nothing clears itself 60 s later; one with losses
+/// stays until dismissed.
+impl Message<agent::durability::BootPass> for Attention {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        b: agent::durability::BootPass,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) {
+        let settled = b.waiting == 0;
+        let clean = b.lost.is_empty();
+        let at_ms = b.at_ms;
+        self.boot = Some(b);
+        let before = self.last_ids.clone();
+        if let Ok(items) = self.recheck().await
+            && before == self.last_ids
+        {
+            self.rt
+                .publish(AttentionChanged {
+                    count: items.len() as u32,
+                    ids_added: Vec::new(),
+                    ids_removed: Vec::new(),
+                    at_ms: now_ms(),
+                })
+                .await;
+        }
+        if settled && clean {
+            let me = ctx.actor_ref().clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(BOOT_CLEAR).await;
+                let _ = me.tell(ClearBoot(at_ms)).await;
+            });
+        }
+    }
+}
+
+impl Message<ClearBoot> for Attention {
+    type Reply = ();
+
+    async fn handle(&mut self, ClearBoot(at_ms): ClearBoot, _: &mut Context<Self, Self::Reply>) {
+        if self.boot.as_ref().is_some_and(|b| b.at_ms == at_ms) {
+            self.boot = None;
+            self.recheck_quietly().await;
+        }
     }
 }
 
@@ -2437,6 +2574,58 @@ mod tests {
             .map(|i| i.id)
             .collect();
         assert_eq!(left, [items[1].id.clone()]);
+    }
+
+    /// 146 D4: one `resume:boot:<ts>` item with live counts and the lost
+    /// names; its session is the first lost child (the Dismiss button's
+    /// gate); a pass that resumed and lost nothing raises no item; dismissal
+    /// sticks across re-derives because `at_ms` is the boot time.
+    #[test]
+    fn boot_pass_item() {
+        use agent::durability::BootPass;
+        let (w1, w2) = (runtime::SessionId::new(), runtime::SessionId::new());
+        let pass = BootPass {
+            at_ms: 1_000,
+            resuming: 3,
+            respawned: 2,
+            fresh: 1,
+            waiting: 2,
+            lost: vec![(w1, "omp-125R1-W1".into()), (w2, "omp-125R1-W2".into())],
+        };
+        let inputs = Inputs {
+            boot: Some(pass.clone()),
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 5_000);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "resume:boot:1000");
+        assert_eq!(items[0].kind, AttentionKind::Resume);
+        assert!(
+            items[0].title.ends_with(
+                " · 3 sessions resumed · 1 subagent back · 1 restarted fresh · 2 waiting · 2 lost (omp-125R1-W1, omp-125R1-W2)"
+            ),
+            "{}",
+            items[0].title
+        );
+        assert!(items[0].title.starts_with("Restarted "));
+        assert_eq!(items[0].session.as_deref(), Some(w1.to_string().as_str()));
+        assert_eq!(items[0].at_ms, 1_000);
+        let dismissed = HashMap::from([(
+            "resume:boot:1000".to_owned(),
+            State {
+                dismissed_ms: Some(2_000),
+                snoozed_until_ms: None,
+            },
+        )]);
+        assert!(derive(&inputs, &dismissed, 5_000).is_empty());
+        let quiet = Inputs {
+            boot: Some(BootPass {
+                at_ms: 1_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(derive(&quiet, &HashMap::new(), 5_000).is_empty());
     }
 
     /// 139 D5 / Q9: a system takeover's `ResumePending` raises one `resume:`

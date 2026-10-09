@@ -23,8 +23,8 @@ use crate::types::{
 };
 use crate::vm::{
     Blocker, HostFacts, ImageRef, LogLine, Mount, Pending, Preflight, ResizeOutcome,
-    ResourceChange, Resources, RuntimeState, SnapshotId, VirtState, VmHandle, VmMetrics,
-    VmRuntime, VmSnapshotInfo, VmStatus,
+    ResourceChange, Resources, RuntimeState, SnapshotId, VirtState, VmHandle, VmMetrics, VmRuntime,
+    VmSnapshotInfo, VmStatus,
 };
 use crate::{Progress, Target, make_engine, sq};
 
@@ -50,7 +50,10 @@ impl SecretStore for VaultSecrets {
             .ok_or("secrets vault unavailable")?;
         let expected = vault.get_versioned(name).map(|(v, _)| v);
         // `set_if_version` is the writer for reserved `/` rows (37 §11).
-        match vault.set_if_version(name, value, "sandbox", expected).await? {
+        match vault
+            .set_if_version(name, value, "sandbox", expected)
+            .await?
+        {
             Some(_) => Ok(()),
             None => Err(format!("{name}: concurrent write; retry")),
         }
@@ -301,7 +304,9 @@ impl SandboxActor {
     ) -> Self {
         Self {
             store: Store::new(rt.data_dir.clone()),
-            bringups: Arc::new(tokio::sync::Semaphore::new(cfg.max_concurrent_bringups.max(1))),
+            bringups: Arc::new(tokio::sync::Semaphore::new(
+                cfg.max_concurrent_bringups.max(1),
+            )),
             rt,
             cfg,
             vm,
@@ -341,7 +346,9 @@ impl SandboxActor {
 
     async fn publish_changed(&mut self, rec: &Computer) {
         let info = self.info(rec).await;
-        self.rt.publish(SandboxEvent::Changed { sandbox: info }).await;
+        self.rt
+            .publish(SandboxEvent::Changed { sandbox: info })
+            .await;
     }
 
     /// This engine's side of a VM (contract §2.10 inputs).
@@ -504,7 +511,9 @@ impl SandboxActor {
             if self.inflight.contains(&rec.name)
                 || matches!(
                     vm.state,
-                    SandboxState::Creating { .. } | SandboxState::Failed { .. } | SandboxState::Destroying
+                    SandboxState::Creating { .. }
+                        | SandboxState::Failed { .. }
+                        | SandboxState::Destroying
                 )
             {
                 continue;
@@ -522,9 +531,14 @@ impl SandboxActor {
                 self.metrics.remove(&rec.name);
             }
             // The runtime's snapshot list is the truth (bug 6: restore/rename left it stale).
-            let snapshots = self.all_snapshots(&rec.name).await.ok().filter(|l| *l != vm.snapshots);
+            let snapshots = self
+                .all_snapshots(&rec.name)
+                .await
+                .ok()
+                .filter(|l| *l != vm.snapshots);
             // `ready` means "brought up, not yet seen running": running confirms it.
-            let changed = vm.state != state && !(vm.state == SandboxState::Ready && status != VmStatus::Running);
+            let changed = vm.state != state
+                && !(vm.state == SandboxState::Ready && status != VmStatus::Running);
             if (changed || snapshots.is_some())
                 && let Ok((_, r)) = self.store.update(&rec.name, |r| {
                     if changed {
@@ -579,7 +593,10 @@ impl SandboxActor {
         let runtime = self.vm()?;
         let mut list = Vec::new();
         for n in [name.to_owned(), format!("{name}-r")] {
-            let h = VmHandle { name: n, runtime_id: None };
+            let h = VmHandle {
+                name: n,
+                runtime_id: None,
+            };
             list.extend(runtime.snapshots(&h).await.map_err(|e| format!("{e:#}"))?);
         }
         list.sort_by_key(|s| s.at_ms);
@@ -603,7 +620,11 @@ impl SandboxActor {
             .map_err(|e| format!("{e:#}"))?;
         let mut list = self.all_snapshots(name).await?;
         list.sort_by_key(|s| s.at_ms);
-        let auto: Vec<SnapshotId> = list.iter().filter(|s| s.auto).map(|s| s.id.clone()).collect();
+        let auto: Vec<SnapshotId> = list
+            .iter()
+            .filter(|s| s.auto)
+            .map(|s| s.id.clone())
+            .collect();
         if auto.len() > self.cfg.snapshots_keep {
             for old in &auto[..auto.len() - self.cfg.snapshots_keep] {
                 if let Err(e) = runtime.delete_snapshot(old).await {
@@ -649,7 +670,9 @@ impl SandboxActor {
         let name = spec.name.clone();
         self.vm()?;
         if !valid_name(&name) {
-            return Err(format!("name {name:?}: use 1–63 characters of a–z, 0–9 and -"));
+            return Err(format!(
+                "name {name:?}: use 1–63 characters of a–z, 0–9 and -"
+            ));
         }
         if self.store.get(&name).is_ok() {
             return Err(format!("a sandbox named {name} already exists"));
@@ -659,9 +682,16 @@ impl SandboxActor {
                 return Err(format!("an engine named {name} is already in the mesh"));
             }
             Ok(_) => {}
-            Err(e) => tracing::warn!("sandbox create: mesh status unavailable ({e:#}); name not checked"),
+            Err(e) => {
+                tracing::warn!("sandbox create: mesh status unavailable ({e:#}); name not checked")
+            }
         }
-        let vms = self.store.load_all().iter().filter(|r| r.vm.is_some()).count();
+        let vms = self
+            .store
+            .load_all()
+            .iter()
+            .filter(|r| r.vm.is_some())
+            .count();
         if vms >= self.cfg.vm.max_vms {
             return Err(format!(
                 "{vms} sandbox VMs already exist; sandbox.vm.max_vms is {}",
@@ -696,7 +726,9 @@ impl SandboxActor {
         // stay so the user can still restore them.
         if let Ok(runtime) = self.vm() {
             for s in self.all_snapshots(&name).await.unwrap_or_default() {
-                if s.auto && let Err(e) = runtime.delete_snapshot(&s.id).await {
+                if s.auto
+                    && let Err(e) = runtime.delete_snapshot(&s.id).await
+                {
                     tracing::warn!("create {name}: stale snapshot {}: {e:#}", s.id.0);
                 }
             }
@@ -728,9 +760,15 @@ impl SandboxActor {
                 },
                 network: spec.network.unwrap_or(d.network),
                 autostart: spec.autostart.unwrap_or(true),
-                state: SandboxState::Creating { step: "create".into() },
+                state: SandboxState::Creating {
+                    step: "create".into(),
+                },
                 pending: PendingView::default(),
-                setup: Setup { step: "create".into(), at_ms: now, error: None },
+                setup: Setup {
+                    step: "create".into(),
+                    at_ms: now,
+                    error: None,
+                },
                 snapshots: Vec::new(),
                 runtime_name: name.clone(),
                 local_t: spec.local_t.clone(),
@@ -742,7 +780,9 @@ impl SandboxActor {
         self.spawn_bringup(&name, origin, me)?;
         let info = self.info(&rec).await;
         self.rt
-            .publish(SandboxEvent::Changed { sandbox: info.clone() })
+            .publish(SandboxEvent::Changed {
+                sandbox: info.clone(),
+            })
             .await;
         Ok(info)
     }
@@ -751,15 +791,27 @@ impl SandboxActor {
         let runtime = self.vm()?;
         let rec = self.store.get(name)?;
         let vm = rec.vm()?;
-        if matches!(vm.state, SandboxState::Creating { .. } | SandboxState::Failed { .. }) {
-            return Err(format!("{name} is not brought up yet ({}); use retry", state_str(&vm.state)));
+        if matches!(
+            vm.state,
+            SandboxState::Creating { .. } | SandboxState::Failed { .. }
+        ) {
+            return Err(format!(
+                "{name} is not brought up yet ({}); use retry",
+                state_str(&vm.state)
+            ));
         }
         let h = rec.vm_handle()?;
         if vm.pending.shares || vm.pending.ports {
             let host = self.host_side();
             let spec = bringup::vm_spec(&rec, &host, &h.name).map_err(|e| format!("{e:#}"))?;
-            runtime.set_mounts(&h, &spec.mounts).await.map_err(|e| format!("{e:#}"))?;
-            runtime.set_ports(&h, &spec.ports).await.map_err(|e| format!("{e:#}"))?;
+            runtime
+                .set_mounts(&h, &spec.mounts)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            runtime
+                .set_ports(&h, &spec.ports)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
         }
         let (_, r) = self.store.update(name, |r| {
             r.set_state(SandboxState::Starting);
@@ -767,7 +819,10 @@ impl SandboxActor {
         })?;
         self.publish_changed(&r).await;
         let out = self.progress(name, None);
-        runtime.start(&h, &out).await.map_err(|e| format!("{e:#}"))?;
+        runtime
+            .start(&h, &out)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         let (_, r) = self.store.update(name, |r| {
             r.vm_mut()?.pending = PendingView::default();
             r.set_state(SandboxState::Running);
@@ -821,17 +876,26 @@ pub fn state_str(s: &SandboxState) -> String {
 fn check_ceilings(host: &HostFacts, max_cpus: u8, max_memory_mib: u32) -> Result<(), String> {
     let host_mib = (host.mem_bytes >> 20) as u32;
     if max_memory_mib >= host_mib {
-        return Err(format!("max_memory {max_memory_mib} MiB exceeds this host's {host_mib} MiB"));
+        return Err(format!(
+            "max_memory {max_memory_mib} MiB exceeds this host's {host_mib} MiB"
+        ));
     }
     if u32::from(max_cpus) > host.cores {
-        return Err(format!("max_cpus {max_cpus} exceeds this host's {} cores", host.cores));
+        return Err(format!(
+            "max_cpus {max_cpus} exceeds this host's {} cores",
+            host.cores
+        ));
     }
     Ok(())
 }
 
 /// Validate share host paths (79 §5.6, S1 finding 7: canonicalised) and fill
 /// default guest paths `/shared/<basename>` with a numeric suffix on collision.
-pub fn validate_shares(shares: &[Mount], data_dir: &Path, msb_home: &str) -> Result<Vec<Mount>, String> {
+pub fn validate_shares(
+    shares: &[Mount],
+    data_dir: &Path,
+    msb_home: &str,
+) -> Result<Vec<Mount>, String> {
     let home = dirs::home_dir().unwrap_or_default();
     let msb = if msb_home.is_empty() {
         home.join(".microsandbox")
@@ -840,7 +904,10 @@ pub fn validate_shares(shares: &[Mount], data_dir: &Path, msb_home: &str) -> Res
     };
     let mut out: Vec<Mount> = Vec::new();
     for m in shares {
-        let raw = m.host.to_str().ok_or_else(|| format!("{}: not UTF-8", m.host.display()))?;
+        let raw = m
+            .host
+            .to_str()
+            .ok_or_else(|| format!("{}: not UTF-8", m.host.display()))?;
         if raw.is_empty() || !m.host.is_absolute() {
             return Err(format!("{raw}: share paths must be absolute"));
         }
@@ -977,7 +1044,11 @@ impl Message<Retry> for SandboxActor {
     async fn handle(&mut self, m: Retry, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let rec = self.store.get(&m.name)?;
         let SandboxState::Failed { step, .. } = rec.state() else {
-            return Err(format!("{} is not failed ({})", m.name, state_str(&rec.state())));
+            return Err(format!(
+                "{} is not failed ({})",
+                m.name,
+                state_str(&rec.state())
+            ));
         };
         if step != "create"
             && let Err(e) = self.auto_snapshot(&m.name, "retry").await
@@ -1040,7 +1111,10 @@ impl Message<Pause> for SandboxActor {
     async fn handle(&mut self, m: Pause, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let runtime = self.vm()?;
         let rec = self.store.get(&m.name)?;
-        runtime.pause(&rec.vm_handle()?).await.map_err(|e| format!("{e:#}"))?;
+        runtime
+            .pause(&rec.vm_handle()?)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         let rec = self.refresh(&m.name).await?;
         Ok(self.info(&rec).await)
     }
@@ -1052,7 +1126,10 @@ impl Message<Resume> for SandboxActor {
     async fn handle(&mut self, m: Resume, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let runtime = self.vm()?;
         let rec = self.store.get(&m.name)?;
-        runtime.resume(&rec.vm_handle()?).await.map_err(|e| format!("{e:#}"))?;
+        runtime
+            .resume(&rec.vm_handle()?)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         let rec = self.refresh(&m.name).await?;
         Ok(self.info(&rec).await)
     }
@@ -1080,7 +1157,9 @@ impl Message<Resize> for SandboxActor {
                 ));
             }
         }
-        if c.root_disk_mib.is_some_and(|d| d < vm.resources.root_disk_mib) {
+        if c.root_disk_mib
+            .is_some_and(|d| d < vm.resources.root_disk_mib)
+        {
             return Err(format!(
                 "the root disk only grows ({} MiB now)",
                 vm.resources.root_disk_mib
@@ -1119,12 +1198,18 @@ impl Message<Resize> for SandboxActor {
             v.resources = Resources {
                 cpus: a.cpus.or(n.cpus).unwrap_or(v.resources.cpus),
                 max_cpus: a.max_cpus.or(n.max_cpus).unwrap_or(v.resources.max_cpus),
-                memory_mib: a.memory_mib.or(n.memory_mib).unwrap_or(v.resources.memory_mib),
+                memory_mib: a
+                    .memory_mib
+                    .or(n.memory_mib)
+                    .unwrap_or(v.resources.memory_mib),
                 max_memory_mib: a
                     .max_memory_mib
                     .or(n.max_memory_mib)
                     .unwrap_or(v.resources.max_memory_mib),
-                root_disk_mib: a.root_disk_mib.or(n.root_disk_mib).unwrap_or(v.resources.root_disk_mib),
+                root_disk_mib: a
+                    .root_disk_mib
+                    .or(n.root_disk_mib)
+                    .unwrap_or(v.resources.root_disk_mib),
             };
             v.pending.resources = outcome.restart_required;
             v.updated_ms = record::now_ms();
@@ -1144,7 +1229,10 @@ impl Message<SetShares> for SandboxActor {
         let rec = self.store.get(&m.name)?;
         let h = rec.vm_handle()?;
         let status = runtime.status(&h).await.map_err(|e| format!("{e:#}"))?;
-        let pending = runtime.set_mounts(&h, &shares).await.map_err(|e| format!("{e:#}"))?;
+        let pending = runtime
+            .set_mounts(&h, &shares)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
         let (_, rec) = self.store.update(&m.name, |r| {
             let v = r.vm_mut()?;
             v.shares = shares.clone();
@@ -1172,7 +1260,13 @@ impl Message<Snapshot> for SandboxActor {
         if m.full {
             return Err("full (memory) snapshots are not available for a systemd guest in v1; take a disk snapshot (full: false)".into());
         }
-        if m.label.is_empty() || m.label.starts_with("auto-") || !m.label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.') {
+        if m.label.is_empty()
+            || m.label.starts_with("auto-")
+            || !m
+                .label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        {
             return Err("label: use letters, digits, - _ . and not the auto- prefix".into());
         }
         let rec = self.store.get(&m.name)?;
@@ -1230,7 +1324,11 @@ impl Message<Restore> for SandboxActor {
             .await
             .map_err(|e| format!("{e:#}"))?;
         if let Err(e) = runtime.destroy(&old).await {
-            tracing::warn!("restore {}: old vm {} not destroyed: {e:#}", m.name, old.name);
+            tracing::warn!(
+                "restore {}: old vm {} not destroyed: {e:#}",
+                m.name,
+                old.name
+            );
         }
         self.store.update(&m.name, |r| {
             let v = r.vm_mut()?;
@@ -1262,7 +1360,10 @@ impl Message<Destroy> for SandboxActor {
             ));
         }
         if self.inflight.contains(&m.name) {
-            return Err(format!("{}: bring-up in progress; wait for it to finish or fail", m.name));
+            return Err(format!(
+                "{}: bring-up in progress; wait for it to finish or fail",
+                m.name
+            ));
         }
         let (_, rec) = self.store.update(&m.name, |r| {
             r.set_state(SandboxState::Destroying);
@@ -1277,9 +1378,15 @@ impl Message<Destroy> for SandboxActor {
         if let Ok(runtime) = self.vm() {
             // Sweep both runtime names regardless of the record's state (smoke bug 4: a `gone`
             // record left its stopped msb row and snapshot groups behind).
-            let handles = [m.name.clone(), format!("{}-r", m.name)].map(|n| VmHandle { name: n, runtime_id: None });
+            let handles = [m.name.clone(), format!("{}-r", m.name)].map(|n| VmHandle {
+                name: n,
+                runtime_id: None,
+            });
             if m.keep_snapshots
-                && runtime.status(&rec.vm_handle()?).await.is_ok_and(|s| s != VmStatus::Gone)
+                && runtime
+                    .status(&rec.vm_handle()?)
+                    .await
+                    .is_ok_and(|s| s != VmStatus::Gone)
                 && let Err(e) = self.auto_snapshot(&m.name, "destroy").await
             {
                 tracing::warn!("destroy {}: auto snapshot: {e}", m.name);
@@ -1305,7 +1412,9 @@ impl Message<Destroy> for SandboxActor {
         }
         self.metrics.remove(&m.name);
         self.store.remove(&m.name)?;
-        self.rt.publish(SandboxEvent::Removed { name: m.name }).await;
+        self.rt
+            .publish(SandboxEvent::Removed { name: m.name })
+            .await;
         Ok(())
     }
 }
@@ -1313,7 +1422,11 @@ impl Message<Destroy> for SandboxActor {
 impl Message<DesktopAccess> for SandboxActor {
     type Reply = Result<types::DesktopAccess, String>;
 
-    async fn handle(&mut self, m: DesktopAccess, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: DesktopAccess,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let rec = self.store.get(&m.name)?;
         let vm = rec.vm()?;
         if !vm.desktop.enabled {
@@ -1349,7 +1462,11 @@ impl Message<PreflightNow> for SandboxActor {
 impl Message<InstallRuntime> for SandboxActor {
     type Reply = Result<(), String>;
 
-    async fn handle(&mut self, _: InstallRuntime, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        _: InstallRuntime,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let runtime = self.vm()?;
         let out = self.progress("runtime", None);
         runtime.install(&out).await.map_err(|e| format!("{e:#}"))?;
@@ -1420,7 +1537,11 @@ impl Message<Terminal> for SandboxActor {
         let rec = self.store.get(&m.name)?;
         let vm = rec.vm()?;
         if !matches!(vm.state, SandboxState::Ready | SandboxState::Running) {
-            return Err(format!("{} is not running ({})", m.name, state_str(&vm.state)));
+            return Err(format!(
+                "{} is not running ({})",
+                m.name,
+                state_str(&vm.state)
+            ));
         }
         let msb = crate::vm::install::msb_path(&self.cfg.vm.home)
             .ok_or("the microsandbox runtime is not installed")?;
@@ -1473,10 +1594,13 @@ impl Message<EnsureVm> for SandboxActor {
         match self.store.get(&m.name) {
             Ok(rec) => {
                 let rec = match rec.state() {
-                    SandboxState::Stopped | SandboxState::Crashed => return self.start(&m.name).await,
-                    SandboxState::Ready | SandboxState::Running | SandboxState::Paused | SandboxState::Starting => {
-                        self.refresh(&m.name).await.unwrap_or(rec)
+                    SandboxState::Stopped | SandboxState::Crashed => {
+                        return self.start(&m.name).await;
                     }
+                    SandboxState::Ready
+                    | SandboxState::Running
+                    | SandboxState::Paused
+                    | SandboxState::Starting => self.refresh(&m.name).await.unwrap_or(rec),
                     _ => rec,
                 };
                 Ok(self.info(&rec).await)
@@ -1515,7 +1639,9 @@ pub fn spawn_health(actor: ActorRef<SandboxActor>, every: Duration) {
             if let Err(e) = actor.tell(Reconcile { autostart: false }).await {
                 // A panic inside a handler stops the actor; every later sandbox_* call then
                 // fails with "actor not running". Say so once instead of dying quietly.
-                tracing::error!("sandbox actor is gone ({e}); health tick stopped — restart the engine to recover");
+                tracing::error!(
+                    "sandbox actor is gone ({e}); health tick stopped — restart the engine to recover"
+                );
                 break;
             }
         }
@@ -1547,7 +1673,11 @@ mod tests {
             self.0.lock().get(name).map(|v| Zeroizing::new(v.clone()))
         }
         async fn delete(&self, name: &str) -> Result<(), String> {
-            self.0.lock().remove(name).map(|_| ()).ok_or_else(|| format!("unknown {name}"))
+            self.0
+                .lock()
+                .remove(name)
+                .map(|_| ())
+                .ok_or_else(|| format!("unknown {name}"))
         }
     }
 
@@ -1639,7 +1769,10 @@ mod tests {
             "id": "0000000000000000000000000000000000000000000000000000000000000000",
             "name": "lab", "relay": "", "addrs": [{ "Ip": addr }], "token": "T"
         });
-        format!("1.{}", BASE32_NOPAD.encode(&serde_json::to_vec(&v).unwrap()))
+        format!(
+            "1.{}",
+            BASE32_NOPAD.encode(&serde_json::to_vec(&v).unwrap())
+        )
     }
 
     async fn rig(tag: &str, mock: MockVmRuntime, mut cfg: SandboxConfig) -> Rig {
@@ -1660,7 +1793,8 @@ mod tests {
         let join = Arc::new(Join::default());
         let secrets = Arc::new(MemSecrets::default());
         let events = Arc::new(Mutex::new(Vec::new()));
-        let col = Collector::spawn_with_mailbox(Collector(events.clone()), runtime::subscriber_mailbox());
+        let col =
+            Collector::spawn_with_mailbox(Collector(events.clone()), runtime::subscriber_mailbox());
         rt.subscribe::<Collector, SandboxEvent>(&col).await;
         let actor = SandboxActor::spawn(SandboxActor::with(
             rt,
@@ -1708,7 +1842,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        panic!("{name} never reached the state; last: {:?}", r.actor.ask(List).await.unwrap());
+        panic!(
+            "{name} never reached the state; last: {:?}",
+            r.actor.ask(List).await.unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1717,10 +1854,18 @@ mod tests {
         let origin = Some((runtime::SessionId::new(), "call-1".to_owned()));
         let first = r
             .actor
-            .ask(Create { spec: spec("lab"), origin: origin.clone() })
+            .ask(Create {
+                spec: spec("lab"),
+                origin: origin.clone(),
+            })
             .await
             .unwrap();
-        assert_eq!(first.state, SandboxState::Creating { step: "create".into() });
+        assert_eq!(
+            first.state,
+            SandboxState::Creating {
+                step: "create".into()
+            }
+        );
         let done = wait_state(&r, "lab", |s| *s == SandboxState::Ready).await;
         assert_eq!(done.engine.as_deref(), Some("vm-engine-0"));
         let vm = done.vm.unwrap();
@@ -1729,17 +1874,27 @@ mod tests {
         assert!(vm.desktop.is_none());
         // Every step in order, then ready.
         let calls = r.mock.calls();
-        let idx = |p: &str| calls.iter().position(|c| c.starts_with(p)).unwrap_or_else(|| panic!("{p} in {calls:?}"));
-        assert!(idx("create lab") < idx("exec lab: uname") && idx("exec lab: uname") < idx("exec lab: runuser"));
+        let idx = |p: &str| {
+            calls
+                .iter()
+                .position(|c| c.starts_with(p))
+                .unwrap_or_else(|| panic!("{p} in {calls:?}"))
+        };
+        assert!(
+            idx("create lab") < idx("exec lab: uname")
+                && idx("exec lab: uname") < idx("exec lab: runuser")
+        );
         // The pairing string handed to the mesh points at the host loopback port.
         let added = r.join.added.lock().clone();
         assert_eq!(added.len(), 1);
         let body = added[0].strip_prefix("1.").unwrap();
-        let p: serde_json::Value = serde_json::from_slice(
-            &data_encoding::BASE32_NOPAD.decode(body.as_bytes()).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(p["addrs"], serde_json::json!([{ "Ip": format!("127.0.0.1:{}", vm.mesh_port.unwrap()) }]));
+        let p: serde_json::Value =
+            serde_json::from_slice(&data_encoding::BASE32_NOPAD.decode(body.as_bytes()).unwrap())
+                .unwrap();
+        assert_eq!(
+            p["addrs"],
+            serde_json::json!([{ "Ip": format!("127.0.0.1:{}", vm.mesh_port.unwrap()) }])
+        );
         assert_eq!(p["name"], "lab");
         // Progress events carry the origin; the record file has the guest config bits.
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1747,15 +1902,26 @@ mod tests {
         let progress: Vec<_> = evs
             .iter()
             .filter_map(|e| match e {
-                SandboxEvent::Progress { step, call_id, .. } => Some((step.clone(), call_id.clone())),
+                SandboxEvent::Progress { step, call_id, .. } => {
+                    Some((step.clone(), call_id.clone()))
+                }
                 _ => None,
             })
             .collect();
-        assert!(progress.iter().any(|(s, c)| s == "pair" && c.as_deref() == Some("call-1")), "{progress:?}");
+        assert!(
+            progress
+                .iter()
+                .any(|(s, c)| s == "pair" && c.as_deref() == Some("call-1")),
+            "{progress:?}"
+        );
         assert!(evs.iter().any(|e| matches!(e, SandboxEvent::Changed { sandbox } if sandbox.state == SandboxState::Ready)));
         let vmm = r.mock.vm("lab").unwrap();
-        assert!(vmm.spec.files.iter().any(|f| f.path == "/data/config.yaml" && String::from_utf8_lossy(&f.bytes).contains("class: vm")));
-        assert_eq!(vmm.spec.labels.get("io.theuth.sandbox").map(String::as_str), Some("lab"));
+        assert!(vmm.spec.files.iter().any(|f| f.path == "/data/config.yaml"
+            && String::from_utf8_lossy(&f.bytes).contains("class: vm")));
+        assert_eq!(
+            vmm.spec.labels.get("io.theuth.sandbox").map(String::as_str),
+            Some("lab")
+        );
         let _ = std::fs::remove_dir_all(&r.dir);
     }
 
@@ -1767,12 +1933,34 @@ mod tests {
             ExecOutput { status: 1, stdout: vec![], stderr: b"boom\n".to_vec() },
         );
         let r = rig("retry", mock, SandboxConfig::default()).await;
-        r.actor.ask(Create { spec: spec("lab"), origin: None }).await.unwrap();
+        r.actor
+            .ask(Create {
+                spec: spec("lab"),
+                origin: None,
+            })
+            .await
+            .unwrap();
         let failed = wait_state(&r, "lab", |s| matches!(s, SandboxState::Failed { .. })).await;
-        assert_eq!(failed.state, SandboxState::Failed { step: "first_run".into(), error: "first_run: boom".into() });
+        assert_eq!(
+            failed.state,
+            SandboxState::Failed {
+                step: "first_run".into(),
+                error: "first_run: boom".into()
+            }
+        );
         let before = r.mock.calls().len();
         // A second Create for the same name is refused.
-        assert!(r.actor.ask(Create { spec: spec("lab"), origin: None }).await.map_err(err).unwrap_err().contains("already exists"));
+        assert!(
+            r.actor
+                .ask(Create {
+                    spec: spec("lab"),
+                    origin: None
+                })
+                .await
+                .map_err(err)
+                .unwrap_err()
+                .contains("already exists")
+        );
         // Fix the guest (a later canned entry does not win: first match wins, so insert a new mock? no — the
         // mock returns the first prefix match; use a fresh canned list order by re-canning the exact line).
         r.mock.canned("runuser -u engine -- env THEUTH_DATA_DIR=/data PATH=\"/usr/local/bin:$PATH\" t --secret-list", ok(""));
@@ -1781,23 +1969,50 @@ mod tests {
         let again = wait_state(&r, "lab", |s| matches!(s, SandboxState::Failed { .. })).await;
         assert_eq!(again.state, failed.state);
         let after: Vec<String> = r.mock.calls()[before..].to_vec();
-        assert!(!after.iter().any(|c| c.starts_with("create ")), "retry re-created: {after:?}");
-        assert!(after.iter().any(|c| c.contains("t --secret-list")), "{after:?}");
-        assert!(after.iter().any(|c| c.starts_with("snapshot lab: auto-retry-")), "{after:?}");
+        assert!(
+            !after.iter().any(|c| c.starts_with("create ")),
+            "retry re-created: {after:?}"
+        );
+        assert!(
+            after.iter().any(|c| c.contains("t --secret-list")),
+            "{after:?}"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|c| c.starts_with("snapshot lab: auto-retry-")),
+            "{after:?}"
+        );
         let _ = std::fs::remove_dir_all(&r.dir);
     }
 
     #[tokio::test]
     async fn preflight_blockers_refuse_create_with_every_sentence() {
-        let mut p = MockVmRuntime::blocked_preflight("unsupported_arch", "microsandbox needs Apple Silicon");
+        let mut p = MockVmRuntime::blocked_preflight(
+            "unsupported_arch",
+            "microsandbox needs Apple Silicon",
+        );
         p.blockers.push(Blocker {
             code: "disk_low".into(),
             message: "3 GiB free; a VM needs root_disk + image + 2 GiB".into(),
             fix: Some("free some disk".into()),
             installable: false,
         });
-        let r = rig("blocked", MockVmRuntime::new().with_preflight(p), SandboxConfig::default()).await;
-        let e = r.actor.ask(Create { spec: spec("lab"), origin: None }).await.map_err(err).unwrap_err();
+        let r = rig(
+            "blocked",
+            MockVmRuntime::new().with_preflight(p),
+            SandboxConfig::default(),
+        )
+        .await;
+        let e = r
+            .actor
+            .ask(Create {
+                spec: spec("lab"),
+                origin: None,
+            })
+            .await
+            .map_err(err)
+            .unwrap_err();
         assert_eq!(
             e,
             "microsandbox needs Apple Silicon\n3 GiB free; a VM needs root_disk + image + 2 GiB — free some disk"
@@ -1809,35 +2024,138 @@ mod tests {
     #[tokio::test]
     async fn create_validates_name_and_mesh_uniqueness() {
         let r = rig("names", MockVmRuntime::new(), SandboxConfig::default()).await;
-        assert!(r.actor.ask(Create { spec: spec("Lab!"), origin: None }).await.map_err(err).unwrap_err().contains("a–z"));
-        assert!(r.actor.ask(Create { spec: spec("mac"), origin: None }).await.map_err(err).unwrap_err().contains("already in the mesh"));
+        assert!(
+            r.actor
+                .ask(Create {
+                    spec: spec("Lab!"),
+                    origin: None
+                })
+                .await
+                .map_err(err)
+                .unwrap_err()
+                .contains("a–z")
+        );
+        assert!(
+            r.actor
+                .ask(Create {
+                    spec: spec("mac"),
+                    origin: None
+                })
+                .await
+                .map_err(err)
+                .unwrap_err()
+                .contains("already in the mesh")
+        );
         let _ = std::fs::remove_dir_all(&r.dir);
     }
 
     #[tokio::test]
     async fn resize_validation_and_outcome() {
         let r = rig("resize", MockVmRuntime::new(), SandboxConfig::default()).await;
-        r.actor.ask(Create { spec: spec("lab"), origin: None }).await.unwrap();
+        r.actor
+            .ask(Create {
+                spec: spec("lab"),
+                origin: None,
+            })
+            .await
+            .unwrap();
         wait_state(&r, "lab", |s| *s == SandboxState::Ready).await;
-        let e = r.actor.ask(Resize { name: "lab".into(), change: ResourceChange { cpus: Some(0), ..Default::default() } }).await.map_err(err).unwrap_err();
+        let e = r
+            .actor
+            .ask(Resize {
+                name: "lab".into(),
+                change: ResourceChange {
+                    cpus: Some(0),
+                    ..Default::default()
+                },
+            })
+            .await
+            .map_err(err)
+            .unwrap_err();
         assert!(e.contains("at least 1"));
-        let e = r.actor.ask(Resize { name: "lab".into(), change: ResourceChange { root_disk_mib: Some(1), ..Default::default() } }).await.map_err(err).unwrap_err();
+        let e = r
+            .actor
+            .ask(Resize {
+                name: "lab".into(),
+                change: ResourceChange {
+                    root_disk_mib: Some(1),
+                    ..Default::default()
+                },
+            })
+            .await
+            .map_err(err)
+            .unwrap_err();
         assert!(e.contains("only grows"));
         // Metrics sample: 512 MiB used → floor 1024 MiB.
         r.actor.ask(Metrics { name: "lab".into() }).await.unwrap();
-        let e = r.actor.ask(Resize { name: "lab".into(), change: ResourceChange { memory_mib: Some(1000), ..Default::default() } }).await.map_err(err).unwrap_err();
+        let e = r
+            .actor
+            .ask(Resize {
+                name: "lab".into(),
+                change: ResourceChange {
+                    memory_mib: Some(1000),
+                    ..Default::default()
+                },
+            })
+            .await
+            .map_err(err)
+            .unwrap_err();
         assert!(e.contains("512 MiB"), "{e}");
         // Ceilings above the host (mock: 8 cores / 16 GiB) are refused; within it, recorded for the next start.
-        let e = r.actor.ask(Resize { name: "lab".into(), change: ResourceChange { max_cpus: Some(12), ..Default::default() } }).await.map_err(err).unwrap_err();
+        let e = r
+            .actor
+            .ask(Resize {
+                name: "lab".into(),
+                change: ResourceChange {
+                    max_cpus: Some(12),
+                    ..Default::default()
+                },
+            })
+            .await
+            .map_err(err)
+            .unwrap_err();
         assert!(e.contains("8 cores"), "{e}");
-        let e = r.actor.ask(Resize { name: "lab".into(), change: ResourceChange { max_memory_mib: Some(65536), ..Default::default() } }).await.map_err(err).unwrap_err();
+        let e = r
+            .actor
+            .ask(Resize {
+                name: "lab".into(),
+                change: ResourceChange {
+                    max_memory_mib: Some(65536),
+                    ..Default::default()
+                },
+            })
+            .await
+            .map_err(err)
+            .unwrap_err();
         assert!(e.contains("16384 MiB"), "{e}");
-        let o = r.actor.ask(Resize { name: "lab".into(), change: ResourceChange { cpus: Some(3), memory_mib: Some(3072), max_cpus: Some(6), ..Default::default() } }).await.unwrap();
-        assert_eq!((o.applied.cpus, o.applied.memory_mib), (Some(3), Some(3072)));
+        let o = r
+            .actor
+            .ask(Resize {
+                name: "lab".into(),
+                change: ResourceChange {
+                    cpus: Some(3),
+                    memory_mib: Some(3072),
+                    max_cpus: Some(6),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            (o.applied.cpus, o.applied.memory_mib),
+            (Some(3), Some(3072))
+        );
         assert!(o.restart_required);
         let i = wait_state(&r, "lab", |_| true).await;
         let vm = i.vm.unwrap();
-        assert_eq!((vm.resources.cpus, vm.resources.memory_mib, vm.resources.max_cpus), (3, 3072, 6));
+        assert_eq!(
+            (
+                vm.resources.cpus,
+                vm.resources.memory_mib,
+                vm.resources.max_cpus
+            ),
+            (3, 3072, 6)
+        );
         assert!(vm.pending.resources);
         let _ = std::fs::remove_dir_all(&r.dir);
     }
@@ -1851,16 +2169,31 @@ mod tests {
         std::fs::write(tmp.join("file"), b"x").unwrap();
         let data = tmp.join("data");
         std::fs::create_dir_all(&data).unwrap();
-        let m = |h: &Path, g: &str| Mount { host: h.to_path_buf(), guest: g.into(), readonly: false };
+        let m = |h: &Path, g: &str| Mount {
+            host: h.to_path_buf(),
+            guest: g.into(),
+            readonly: false,
+        };
         let bad = |h: &Path| validate_shares(&[m(h, "")], &data, "").unwrap_err();
         assert!(bad(Path::new("relative")).contains("absolute"));
         assert!(bad(Path::new("/")).contains("cannot be shared"));
         assert!(bad(&tmp.join("file")).contains("not a directory"));
-        assert!(bad(&tmp.join("missing")).contains("No such file") || bad(&tmp.join("missing")).contains("not found"));
+        assert!(
+            bad(&tmp.join("missing")).contains("No such file")
+                || bad(&tmp.join("missing")).contains("not found")
+        );
         assert!(bad(&data).contains("data dir"));
-        assert!(validate_shares(&[m(Path::new("/a,b"), "")], &data, "").unwrap_err().contains(", : or ;"));
+        assert!(
+            validate_shares(&[m(Path::new("/a,b"), "")], &data, "")
+                .unwrap_err()
+                .contains(", : or ;")
+        );
         let out = validate_shares(
-            &[m(&tmp.join("Develop"), ""), m(&tmp.join("other").join("Develop"), ""), m(&tmp.join("Develop"), "/mnt/x")],
+            &[
+                m(&tmp.join("Develop"), ""),
+                m(&tmp.join("other").join("Develop"), ""),
+                m(&tmp.join("Develop"), "/mnt/x"),
+            ],
             &data,
             "",
         )
@@ -1876,50 +2209,152 @@ mod tests {
         let r = rig("restore", MockVmRuntime::new(), SandboxConfig::default()).await;
         let mut s = spec("lab");
         s.desktop = Some(true);
-        r.actor.ask(Create { spec: s, origin: None }).await.unwrap();
+        r.actor
+            .ask(Create {
+                spec: s,
+                origin: None,
+            })
+            .await
+            .unwrap();
         // Desktop on: the verify step would GET noVNC on the loopback port, which nothing answers.
         let failed = wait_state(&r, "lab", |s| matches!(s, SandboxState::Failed { .. })).await;
-        assert!(matches!(&failed.state, SandboxState::Failed { step, .. } if step == "verify"), "{:?}", failed.state);
-        assert!(r.secrets.get(&vnc_row("lab")).await.is_some(), "vnc password stored at create");
-        assert!(failed.vm.as_ref().unwrap().desktop.as_ref().unwrap().host_port.is_some());
+        assert!(
+            matches!(&failed.state, SandboxState::Failed { step, .. } if step == "verify"),
+            "{:?}",
+            failed.state
+        );
+        assert!(
+            r.secrets.get(&vnc_row("lab")).await.is_some(),
+            "vnc password stored at create"
+        );
+        assert!(
+            failed
+                .vm
+                .as_ref()
+                .unwrap()
+                .desktop
+                .as_ref()
+                .unwrap()
+                .host_port
+                .is_some()
+        );
         // Snapshot, then restore: the runtime name flips to `lab-r`, the old VM is destroyed, the record keeps its name.
-        let snap = r.actor.ask(Snapshot { name: "lab".into(), label: "clean".into(), full: false }).await.unwrap();
+        let snap = r
+            .actor
+            .ask(Snapshot {
+                name: "lab".into(),
+                label: "clean".into(),
+                full: false,
+            })
+            .await
+            .unwrap();
         assert_eq!(snap.id.0, "lab:clean");
-        assert!(r.actor.ask(Snapshot { name: "lab".into(), label: "mem".into(), full: true }).await.map_err(err).unwrap_err().contains("not available"));
-        let i = r.actor.ask(Restore { name: "lab".into(), id: snap.id.clone() }).await.unwrap();
+        assert!(
+            r.actor
+                .ask(Snapshot {
+                    name: "lab".into(),
+                    label: "mem".into(),
+                    full: true
+                })
+                .await
+                .map_err(err)
+                .unwrap_err()
+                .contains("not available")
+        );
+        let i = r
+            .actor
+            .ask(Restore {
+                name: "lab".into(),
+                id: snap.id.clone(),
+            })
+            .await
+            .unwrap();
         assert_eq!(i.state, SandboxState::Running);
         let rec = Store::new(&r.dir).get("lab").unwrap();
         assert_eq!(rec.vm().unwrap().runtime_name, "lab-r");
         assert_eq!(r.mock.vm("lab").unwrap().status, VmStatus::Gone);
         assert_eq!(r.mock.vm("lab-r").unwrap().status, VmStatus::Running);
-        assert_eq!(r.mock.vm("lab-r").unwrap().spec.ports.len(), 2, "ports re-applied on restore");
+        assert_eq!(
+            r.mock.vm("lab-r").unwrap().spec.ports.len(),
+            2,
+            "ports re-applied on restore"
+        );
         let calls = r.mock.calls();
-        assert!(calls.iter().any(|c| c.starts_with("snapshot lab: auto-restore-")));
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.starts_with("snapshot lab: auto-restore-"))
+        );
         // Bug 6: the record's list spans both runtime names (`lab:clean`, `lab:auto-restore-*`).
-        let listed: Vec<String> = rec.vm().unwrap().snapshots.iter().map(|s| s.id.0.clone()).collect();
+        let listed: Vec<String> = rec
+            .vm()
+            .unwrap()
+            .snapshots
+            .iter()
+            .map(|s| s.id.0.clone())
+            .collect();
         assert!(listed.contains(&"lab:clean".to_owned()), "{listed:?}");
-        assert!(listed.iter().any(|s| s.starts_with("lab:auto-restore-")), "{listed:?}");
+        assert!(
+            listed.iter().any(|s| s.starts_with("lab:auto-restore-")),
+            "{listed:?}"
+        );
         // Restore again flips back; the auto snapshot now lands in the `lab-r` group.
-        let i = r.actor.ask(Restore { name: "lab".into(), id: snap.id }).await.unwrap();
+        let i = r
+            .actor
+            .ask(Restore {
+                name: "lab".into(),
+                id: snap.id,
+            })
+            .await
+            .unwrap();
         assert_eq!(i.state, SandboxState::Running);
         let rec = Store::new(&r.dir).get("lab").unwrap();
         assert_eq!(rec.vm().unwrap().runtime_name, "lab");
-        let listed: Vec<String> = rec.vm().unwrap().snapshots.iter().map(|s| s.id.0.clone()).collect();
-        assert!(listed.iter().any(|s| s.starts_with("lab-r:auto-restore-")), "{listed:?}");
+        let listed: Vec<String> = rec
+            .vm()
+            .unwrap()
+            .snapshots
+            .iter()
+            .map(|s| s.id.0.clone())
+            .collect();
+        assert!(
+            listed.iter().any(|s| s.starts_with("lab-r:auto-restore-")),
+            "{listed:?}"
+        );
         // Destroy without keeping snapshots: peer removed, both runtime names gone, every
         // snapshot of both groups deleted (bug 4), vault row gone, record gone, Removed published.
-        r.actor.ask(Destroy { name: "lab".into(), keep_snapshots: false }).await.unwrap();
+        r.actor
+            .ask(Destroy {
+                name: "lab".into(),
+                keep_snapshots: false,
+            })
+            .await
+            .unwrap();
         assert!(r.actor.ask(List).await.unwrap().is_empty());
         assert!(r.secrets.get(&vnc_row("lab")).await.is_none());
-        assert_eq!(r.join.removed.lock().clone(), vec!["vm-engine-0".to_owned()]);
+        assert_eq!(
+            r.join.removed.lock().clone(),
+            vec!["vm-engine-0".to_owned()]
+        );
         assert_eq!(r.mock.vm("lab").unwrap().status, VmStatus::Gone);
         assert_eq!(r.mock.vm("lab-r").unwrap().status, VmStatus::Gone);
         for n in ["lab", "lab-r"] {
-            let h = VmHandle { name: n.into(), runtime_id: None };
-            assert!(r.mock.snapshots(&h).await.unwrap().is_empty(), "{n} group swept");
+            let h = VmHandle {
+                name: n.into(),
+                runtime_id: None,
+            };
+            assert!(
+                r.mock.snapshots(&h).await.unwrap().is_empty(),
+                "{n} group swept"
+            );
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
-        assert!(r.events.lock().iter().any(|e| matches!(e, SandboxEvent::Removed { name } if name == "lab")));
+        assert!(
+            r.events
+                .lock()
+                .iter()
+                .any(|e| matches!(e, SandboxEvent::Removed { name } if name == "lab"))
+        );
         let _ = std::fs::remove_dir_all(&r.dir);
     }
 
@@ -1929,23 +2364,71 @@ mod tests {
     #[tokio::test]
     async fn destroy_of_a_gone_record_sweeps_groups_and_create_prunes_auto() {
         let r = rig("gone", MockVmRuntime::new(), SandboxConfig::default()).await;
-        r.actor.ask(Create { spec: spec("lab"), origin: None }).await.unwrap();
+        r.actor
+            .ask(Create {
+                spec: spec("lab"),
+                origin: None,
+            })
+            .await
+            .unwrap();
         wait_state(&r, "lab", |s| *s == SandboxState::Ready).await;
-        r.actor.ask(Snapshot { name: "lab".into(), label: "keep".into(), full: false }).await.unwrap();
-        let h = VmHandle { name: "lab".into(), runtime_id: None };
+        r.actor
+            .ask(Snapshot {
+                name: "lab".into(),
+                label: "keep".into(),
+                full: false,
+            })
+            .await
+            .unwrap();
+        let h = VmHandle {
+            name: "lab".into(),
+            runtime_id: None,
+        };
         let out = Progress::silent();
-        r.mock.snapshot(&h, "auto-retry-1", false, &out).await.unwrap();
+        r.mock
+            .snapshot(&h, "auto-retry-1", false, &out)
+            .await
+            .unwrap();
         // The VM vanishes underneath the record.
         r.mock.destroy(&h).await.unwrap();
-        r.actor.ask(Destroy { name: "lab".into(), keep_snapshots: true }).await.unwrap();
-        assert_eq!(r.mock.snapshots(&h).await.unwrap().len(), 2, "kept: named + auto");
+        r.actor
+            .ask(Destroy {
+                name: "lab".into(),
+                keep_snapshots: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            r.mock.snapshots(&h).await.unwrap().len(),
+            2,
+            "kept: named + auto"
+        );
         // Same name again: the stale auto snapshot goes, `lab:keep` stays.
-        r.actor.ask(Create { spec: spec("lab"), origin: None }).await.unwrap();
+        r.actor
+            .ask(Create {
+                spec: spec("lab"),
+                origin: None,
+            })
+            .await
+            .unwrap();
         wait_state(&r, "lab", |s| *s == SandboxState::Ready).await;
-        let left: Vec<String> = r.mock.snapshots(&h).await.unwrap().iter().map(|s| s.id.0.clone()).collect();
+        let left: Vec<String> = r
+            .mock
+            .snapshots(&h)
+            .await
+            .unwrap()
+            .iter()
+            .map(|s| s.id.0.clone())
+            .collect();
         assert_eq!(left, ["lab:keep"]);
         // Destroy without keeping: the named one goes too.
-        r.actor.ask(Destroy { name: "lab".into(), keep_snapshots: false }).await.unwrap();
+        r.actor
+            .ask(Destroy {
+                name: "lab".into(),
+                keep_snapshots: false,
+            })
+            .await
+            .unwrap();
         assert!(r.mock.snapshots(&h).await.unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&r.dir);
     }
@@ -1953,12 +2436,24 @@ mod tests {
     #[tokio::test]
     async fn reconcile_follows_the_runtime() {
         let r = rig("reconcile", MockVmRuntime::new(), SandboxConfig::default()).await;
-        r.actor.ask(Create { spec: spec("lab"), origin: None }).await.unwrap();
+        r.actor
+            .ask(Create {
+                spec: spec("lab"),
+                origin: None,
+            })
+            .await
+            .unwrap();
         wait_state(&r, "lab", |s| *s == SandboxState::Ready).await;
         r.actor.tell(Reconcile { autostart: false }).await.unwrap();
         let i = wait_state(&r, "lab", |s| *s == SandboxState::Running).await;
-        assert!(i.vm.unwrap().metrics.is_some(), "metrics sampled while running");
-        let h = crate::vm::VmHandle { name: "lab".into(), runtime_id: None };
+        assert!(
+            i.vm.unwrap().metrics.is_some(),
+            "metrics sampled while running"
+        );
+        let h = crate::vm::VmHandle {
+            name: "lab".into(),
+            runtime_id: None,
+        };
         r.mock.stop(&h, Duration::ZERO).await.unwrap();
         r.actor.tell(Reconcile { autostart: false }).await.unwrap();
         wait_state(&r, "lab", |s| *s == SandboxState::Stopped).await;
@@ -1975,13 +2470,26 @@ mod tests {
     #[tokio::test]
     async fn shares_set_pending_and_stop_start_apply_them() {
         let r = rig("shares", MockVmRuntime::new(), SandboxConfig::default()).await;
-        r.actor.ask(Create { spec: spec("lab"), origin: None }).await.unwrap();
+        r.actor
+            .ask(Create {
+                spec: spec("lab"),
+                origin: None,
+            })
+            .await
+            .unwrap();
         wait_state(&r, "lab", |s| *s == SandboxState::Ready).await;
         let dir = r.dir.join("Develop");
         std::fs::create_dir_all(&dir).unwrap();
         let p = r
             .actor
-            .ask(SetShares { name: "lab".into(), shares: vec![Mount { host: dir.clone(), guest: String::new(), readonly: true }] })
+            .ask(SetShares {
+                name: "lab".into(),
+                shares: vec![Mount {
+                    host: dir.clone(),
+                    guest: String::new(),
+                    readonly: true,
+                }],
+            })
             .await
             .unwrap();
         assert!(p.restart_required, "running vm → restart required");
@@ -1989,8 +2497,22 @@ mod tests {
         let vm = i.vm.unwrap();
         assert!(vm.pending.shares);
         assert_eq!(vm.shares[0].guest, "/shared/Develop");
-        assert!(r.mock.calls().iter().any(|c| c == "put lab: /data/config.yaml"), "guest config rewritten");
-        let i = r.actor.ask(Stop { name: "lab".into(), grace_secs: 1, force: false }).await.unwrap();
+        assert!(
+            r.mock
+                .calls()
+                .iter()
+                .any(|c| c == "put lab: /data/config.yaml"),
+            "guest config rewritten"
+        );
+        let i = r
+            .actor
+            .ask(Stop {
+                name: "lab".into(),
+                grace_secs: 1,
+                force: false,
+            })
+            .await
+            .unwrap();
         assert_eq!(i.state, SandboxState::Stopped);
         let i = r.actor.ask(Start { name: "lab".into() }).await.unwrap();
         assert_eq!(i.state, SandboxState::Running);
@@ -2028,7 +2550,14 @@ mod tests {
         assert_eq!(p.blockers[0].code, "runtime_missing");
         assert_eq!(p.blockers[0].message, "vm runtime not built");
         assert!(dir.join("sandbox").join("runtime.json").exists());
-        let e = actor.ask(Create { spec: spec("lab"), origin: None }).await.map_err(err).unwrap_err();
+        let e = actor
+            .ask(Create {
+                spec: spec("lab"),
+                origin: None,
+            })
+            .await
+            .map_err(err)
+            .unwrap_err();
         assert_eq!(e, "vm runtime not built");
         let list = actor.ask(List).await.unwrap();
         assert_eq!(list.len(), 1);

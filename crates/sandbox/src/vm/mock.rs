@@ -10,8 +10,8 @@ use parking_lot::Mutex;
 
 use super::{
     Blocker, HostFacts, LogLine, Mount, Pending, Port, Preflight, ResizeOutcome, ResizeStatus,
-    ResourceChange, Resources, RuntimeState, SnapshotId, VmSnapshotInfo, VirtState, VmHandle,
-    VmMetrics, VmRuntime, VmSpec, VmStatus,
+    ResourceChange, Resources, RuntimeState, SnapshotId, VirtState, VmHandle, VmMetrics, VmRuntime,
+    VmSnapshotInfo, VmSpec, VmStatus,
 };
 use crate::types::VmDefaults;
 use crate::{Cmd, ExecOutput, Progress};
