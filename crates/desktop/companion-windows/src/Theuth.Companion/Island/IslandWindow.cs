@@ -79,6 +79,7 @@ internal sealed partial class IslandWindow : ToolWindow
     private readonly Action<IslandAction> act;
     private readonly Action save;
     private readonly Grid root;
+    private readonly ContentControl focusHost;
     private readonly Border shell;
     private readonly StackPanel body;
     private readonly DispatcherQueueTimer clockTimer;
@@ -146,14 +147,28 @@ internal sealed partial class IslandWindow : ToolWindow
             shell.BorderBrush = Theme.Brush(NativeLook.CardStroke, root.ActualTheme);
             Render();
         });
-        Content = root;
+        // Island fix §N: a focusable host around the content, so a click on the strip/pane can give the island keyboard focus (a Grid
+        // cannot take focus) without focusing the request box; its KeyDown sees every key the island's controls do not eat.
+        focusHost = new ContentControl
+        {
+            Content = root,
+            IsTabStop = true,
+            UseSystemFocusVisuals = false,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Stretch,
+        };
+        AutomationProperties.SetAutomationId(focusHost, "island-focus");
+        Content = focusHost;
         // Island fix D1: no PointerEntered/PointerExited model. The pointer leaving never collapses the island (and the
         // inactive NOACTIVATE window drops pointer events anyway, which is why hover-driven state was unreliable here).
         root.PointerExited += (_, _) => model.PointerLeft();
         root.PointerPressed += OnPressed;
         root.PointerMoved += OnMoved;
         root.PointerReleased += OnReleased;
-        root.KeyDown += OnKeyDown;
+        focusHost.KeyDown += OnKeyDown;
+        // Every press, a control's included: take the foreground so the request box and the island keys get the keyboard. The
+        // NOACTIVATE window is not activated by a click on build-B (typed text went to the app behind it).
+        root.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => TakeForeground()), handledEventsToo: true);
         // A re-render that lands while the left button is down over the island would replace the control under the press and
         // the click would never fire (a live meeting re-renders on every partial utterance): it waits for the release.
         renderRetry = Timer(40, () => Render());
@@ -236,7 +251,7 @@ internal sealed partial class IslandWindow : ToolWindow
             dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () => { root.InvalidateMeasure(); root.UpdateLayout(); Render(); });
             Log.Write($"island shown: rect={Win32.Text(ScreenRect)} on {m.Device} mode={model.Mode} exstyle={Win32.ExStyleText(Win32.ExStyle(Hwnd))} affinity=0x{Win32.DisplayAffinity(Hwnd):X}");
         }
-        if (snapshot.State == "Recording") clockTimer.Start();
+        if (snapshot.State == "Recording" && !clockTimer.IsRunning) clockTimer.Start();
     }
 
     /// <summary>Whether the close animation is running (the window is still shown).</summary>
@@ -344,12 +359,15 @@ internal sealed partial class IslandWindow : ToolWindow
     {
         if ((s.Oracle.Count > 0 ? s.Oracle[^1] : null) != (snapshot.Oracle.Count > 0 ? snapshot.Oracle[^1] : null)) verdictAt = DateTimeOffset.Now;
         snapshot = s;
-        if (s.State == "Recording" && IsShown) clockTimer.Start(); else clockTimer.Stop();
+        // Start only when stopped: Start() on a running DispatcherQueueTimer restarts its interval, and a talking meeting updates
+        // several times a second — the clock would never tick.
+        if (s.State == "Recording" && IsShown) { if (!clockTimer.IsRunning) clockTimer.Start(); } else clockTimer.Stop();
         // A partial utterance changes only the transcript row: update it in place instead of rebuilding every control (a
         // rebuild under a press loses the click, and a rebuild under typing loses the request box's focus).
         if (renderedKey is not null && renderedKey == RenderKey())
         {
             if (transcript is not null && s.Lines.Count > 0) { var l = s.Lines[^1]; transcript.Text = $"{l.Who} {l.Text}"; }
+            clock?.SetValue(TextBlock.TextProperty, IslandModel.Clock(s.Elapsed(DateTimeOffset.Now)));
             return;
         }
         Render();
@@ -571,8 +589,7 @@ internal sealed partial class IslandWindow : ToolWindow
         {
             if (key.KeyCode == VirtualKeys.Return && request is not null)
             {
-                var text = request.Text.Trim();
-                if (text.Length > 0) { Log.Write("island: key Enter island-request"); act(new IslandAction.Request(text)); request.Text = ""; requestDraft = ""; }
+                if (request.Text.Trim().Length > 0) { Log.Write("island: key Enter island-request"); SendRequest(); }
                 e.Handled = true;
             }
             // §N: J/K type letters here; ↓/↑ walk the briefs only while the box is empty (else they move the caret).
@@ -612,7 +629,7 @@ internal sealed partial class IslandWindow : ToolWindow
     private void LeaveBox()
     {
         wantsKey = false;
-        root.Focus(FocusState.Programmatic);
+        focusHost.Focus(FocusState.Programmatic);
         HandBack();
     }
 
@@ -700,7 +717,18 @@ internal sealed partial class IslandWindow : ToolWindow
     private void FocusIsland()
     {
         if (voice is not null) { HandBack(); return; }
-        root.Focus(FocusState.Programmatic);
+        TakeForeground();
+        if (request is null || request.FocusState == FocusState.Unfocused) focusHost.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>The island becomes the foreground window (remembering the one it took it from, for Esc / a drag's hand-back).</summary>
+    private void TakeForeground()
+    {
+        if (IsForeground) return;
+        var fg = PInvoke.GetForegroundWindow();
+        if (!fg.IsNull && fg != Hwnd && !Win32.IsOurs(fg)) previous = fg;
+        bool ok = PInvoke.SetForegroundWindow(Hwnd);
+        Log.Write($"island: took the foreground for keys ({(ok || IsForeground ? "ok" : "refused")})");
     }
 
     /// <summary>149 NATIVE: a Fluent glyph button (eye, dismiss, chevrons), optionally with a word beside the glyph.</summary>
@@ -952,8 +980,27 @@ internal sealed partial class IslandWindow : ToolWindow
             request.GotFocus += (_, _) => { wantsKey = true; requestFocused = true; };
             request.LostFocus += (_, _) => { wantsKey = false; requestFocused = false; };
             request.TextChanged += (_, _) => { if (request is { } rb) requestDraft = rb.Text; };
-            body.Children.Add(request);
+            // D3: the send arrow beside the box (Enter does the same).
+            var send = IconBtn(NativeLook.Glyph.Up, "Send to the meeting (Enter)", SendRequest, "island-send");
+            send.VerticalAlignment = VerticalAlignment.Stretch;
+            var boxRow = new Grid { ColumnSpacing = 4 };
+            boxRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            boxRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(send, 1);
+            boxRow.Children.Add(request);
+            boxRow.Children.Add(send);
+            body.Children.Add(boxRow);
         }
+    }
+
+    /// <summary>The request box's text → <c>meeting_request</c> (the send arrow and Enter).</summary>
+    private void SendRequest()
+    {
+        var text = (request?.Text ?? requestDraft).Trim();
+        if (text.Length == 0) return;
+        act(new IslandAction.Request(text));
+        if (request is not null) request.Text = "";
+        requestDraft = "";
     }
 
     private void RenderVoice(VoiceView v)
