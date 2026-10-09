@@ -840,7 +840,7 @@ internal sealed partial class IslandWindow : ToolWindow
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(7, 0, 7, 1),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = Text(n == 1 ? "1 topic" : $"{n} topics", 11.5, n > 0 ? NativeLook.OnAccent : NativeLook.TextSecondary, FontWeights.SemiBold),
+            Child = n > 0 ? OnAccentText(n == 1 ? "1 topic" : $"{n} topics", 11.5, FontWeights.SemiBold) : Text($"{n} topics", 11.5, NativeLook.TextSecondary, FontWeights.SemiBold),
         };
         AutomationProperties.SetAutomationId(count, "island-topics");
         row.Children.Add(count);
@@ -866,11 +866,18 @@ internal sealed partial class IslandWindow : ToolWindow
         if (OracleChip() is { } oracle) strip.Children.Add(oracle);
         // The degradation badges and the activity line sit on their own row under the strip: in the strip they ran under the
         // mute/stop/eye buttons (build-B, "no echo cancel · model down") and covered them.
-        var badges = Row(4);
-        foreach (var d in s.Degraded.Take(3)) badges.Children.Add(Badge(Degraded(d), NativeLook.Accent));
+        var badges = new StackPanel { Orientation = Orientation.Vertical, Spacing = 4 };
+        StackPanel? badgeRow = null;
+        void AddBadge(FrameworkElement b)
+        {
+            // Two per row: every label fits whole at the island's 440 epx (R1: "model do…" was a hard cut in the strip).
+            if (badgeRow is null || badgeRow.Children.Count == 2) { badgeRow = Row(4); badges.Children.Add(badgeRow); }
+            badgeRow.Children.Add(b);
+        }
+        foreach (var d in s.Degraded.Take(4)) AddBadge(Badge(Degraded(d), NativeLook.Accent));
         if (s.Listening) strip.Children.Add(Badge("listening…", NativeLook.Accent));
         else if (s.ApprovalWaiting) strip.Children.Add(Badge("approval waiting", NativeLook.Accent));
-        else if (s.Activity is { } a) badges.Children.Add(Text(a, 12, NativeLook.TextSecondary));
+        else if (s.Activity is { } a) { var act0 = Text(a, 12, NativeLook.TextSecondary); ToolTipService.SetToolTip(act0, a); badges.Children.Add(act0); }
         var right = Row(2);
         right.HorizontalAlignment = HorizontalAlignment.Right;
         if (s.Meeting is not null && MeetingReducer.Live(s.State))
@@ -1060,15 +1067,43 @@ internal sealed partial class IslandWindow : ToolWindow
         body.Children.Add(pane);
     }
 
-    private Border Badge(string text, string key) => new()
+    private Border Badge(string text, string key)
     {
-        Background = Theme.Brush(NativeLook.ControlFill, root.ActualTheme),
-        BorderBrush = Theme.Brush(key, root.ActualTheme), BorderThickness = new Thickness(1),
-        CornerRadius = new CornerRadius(4),
-        Padding = new Thickness(6, 0, 6, 1),
-        VerticalAlignment = VerticalAlignment.Center,
-        Child = Text(text, 11, key == NativeLook.Accent ? NativeLook.AccentText : key), // R1: accent TEXT resource inside an accent-outlined badge
-    };
+        // R1: accent TEXT resource inside an accent-outlined badge. Island fix R1: the whole label always shows (badges have their
+        // own rows); a label longer than the cap ends in an ellipsis with the full text as the tooltip, never a hard cut.
+        var label = Text(text, 11, key == NativeLook.Accent ? NativeLook.AccentText : key);
+        label.MaxWidth = 196;
+        var b = new Border
+        {
+            Background = Theme.Brush(NativeLook.ControlFill, root.ActualTheme),
+            BorderBrush = Theme.Brush(key, root.ActualTheme), BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(6, 0, 6, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = label,
+        };
+        ToolTipService.SetToolTip(b, text);
+        AutomationProperties.SetName(b, text);
+        return b;
+    }
+
+    /// <summary>
+    /// Text on an accent FILL: <c>TextOnAccentFillColorPrimary</c> (the native-look table), unless the system accent is so dark (or
+    /// light) that Windows' derived on-accent colour is unreadable on it — then the other theme's on-accent colour (R1).
+    /// </summary>
+    private TextBlock OnAccentText(string s, double size, FontWeight? weight = null)
+    {
+        var t = Text(s, size, NativeLook.OnAccent, weight);
+        var theme = root.ActualTheme == ElementTheme.Dark ? ElementTheme.Dark : ElementTheme.Light;
+        var fill = Theme.ColorOf(NativeLook.Accent, theme);
+        var on = Theme.ColorOf(NativeLook.OnAccent, theme);
+        if (!NativeLook.OnAccentReadable((fill.R, fill.G, fill.B), (on.R, on.G, on.B)))
+        {
+            var other = theme == ElementTheme.Dark ? ElementTheme.Light : ElementTheme.Dark;
+            t.Foreground = Theme.Brush(NativeLook.OnAccent, other);
+        }
+        return t;
+    }
 
     /// <summary>The degradation badges of <c>Island.tsx:37-47</c>, by word.</summary>
     private static string Degraded(string d) => d switch

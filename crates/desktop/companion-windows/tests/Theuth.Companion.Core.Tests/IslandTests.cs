@@ -114,6 +114,19 @@ public sealed class IslandModelTests
     // MARK: island fix (Sky 2026-10-09 15:50) — D1 open while live · D2 visibility, no linger · D3 per-display memory
 
     [Fact]
+    public void TextOnAnAccentFillStaysReadable() // island fix R1
+    {
+        // build-B's indigo accent in dark: fill #2C06AB, Windows' on-accent text black → 1.7:1 — flip to white (≈12:1).
+        Assert.False(NativeLook.OnAccentReadable((0x2C, 0x06, 0xAB), (0, 0, 0)));
+        Assert.True(NativeLook.OnAccentReadable((0x2C, 0x06, 0xAB), (255, 255, 255)));
+        // The default blue accent in dark (#60CDFF) with black text, and in light (#005FB8) with white text, stay as Windows made them.
+        Assert.True(NativeLook.OnAccentReadable((0x60, 0xCD, 0xFF), (0, 0, 0)));
+        Assert.True(NativeLook.OnAccentReadable((0x00, 0x5F, 0xB8), (255, 255, 255)));
+        Assert.Equal(21, NativeLook.Contrast((0, 0, 0), (255, 255, 255)), 3);
+        Assert.Equal(1, NativeLook.Contrast((10, 20, 30), (10, 20, 30)), 3);
+    }
+
+    [Fact]
     public void ShownIffLiveOrAlwaysShow_NoLinger()
     {
         var m = new IslandModel();

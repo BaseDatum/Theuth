@@ -357,6 +357,8 @@ internal sealed class IslandController : IDisposable
         s = MeetingReducer.Reduce(s, new MeetingChange.TopicAdded("fixture-meeting", new MeetingTopic("t2", "Standup", 700_000)), now);
         s = MeetingReducer.Reduce(s, new MeetingChange.Brief("fixture-meeting", new MeetingBrief("b1", "t1", "PROJ-12 — the ingest retry",
             new[] { "Opened Tuesday by Sky; retries the ingest job three times before it files an incident", "Blocked on the schema change in PR #418", "Owner: ops desk" }, "Auto", 650_000)), now);
+        // Island fix R1: the two degradations a model-less build-B meeting shows, so the badge row is proven on the fixture too.
+        s = MeetingReducer.Reduce(s, new MeetingChange.State("fixture-meeting", "Recording", new[] { "MicNoAec", "ModelDown" }), now);
         // Island fix §N: three briefs so the walk (pills, older/newer, J/K/↑/↓) wraps visibly.
         s = MeetingReducer.Reduce(s, new MeetingChange.Brief("fixture-meeting", new MeetingBrief("b2", "t2", "Standup — what moved since Tuesday",
             new[] { "Ingest retry fix is in review", "Pricing page layout still open", "Demo moved to Friday" }, "Tap", 700_500)), now);
