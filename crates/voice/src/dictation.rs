@@ -13,7 +13,7 @@
 //! between dictations, dropped only after a model failure so the next
 //! `Prewarm` reloads. Add `voice.dictation_idle_secs` if RSS complaints arrive.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -26,10 +26,11 @@ use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::dictionary::{Dictionary, Entry, EntryId, Kind, Negative, Scope, Source, Variant};
+use crate::dictionary::{Dictionary, Entry, EntryId, Negative, Scope};
 use crate::history::{HistoryRow, Store, SuggestionAnswer as Answer, SuggestionId};
 use crate::live::{MODEL_RATE, Text, Utterer};
 use crate::mic::{Capture, Chunk, RATE};
+use crate::shape::end::EndParser;
 use crate::shape::{EndCommand, EndPhrases, Preset, ShapeConfig, ShapePresets, Shaped, Shaper};
 use crate::{
     AppProfile, Destination, DeviceState, DictationId, DictationOpts, DictationTimings,
@@ -41,9 +42,9 @@ const LEVELS: usize = 8;
 /// How long the task waits for an audio chunk before rechecking cancel and deadline.
 const POLL: Duration = Duration::from_millis(50);
 /// §7.3: after `Send` arms, no new speech for this long …
-pub const SETTLE: Duration = Duration::from_millis(1500);
+pub const SETTLE: Duration = Duration::from_millis(crate::shape::end::SETTLE_MS);
 /// §7.3: … then this much closed-gate silence stops the dictation.
-pub const SILENCE: Duration = Duration::from_millis(350);
+pub const SILENCE: Duration = Duration::from_millis(crate::shape::end::SILENCE_MS);
 /// §8.3: a capture that yields no PCM for this long is not ready.
 const READY_TIMEOUT: Duration = Duration::from_secs(2);
 /// §8.3: consecutive 160 ms windows at or under the thresholds that mark a dead device.
@@ -59,8 +60,6 @@ const REARM_MAX: Duration = Duration::from_secs(5);
 /// Source chunks kept while no utterance is open, prepended to the history
 /// audio so the gate's pre-roll is on the recording (§6.2 `PCM_RETENTION`).
 const TAIL_CHUNKS: usize = 25;
-/// Dictation → surface pairs remembered for `Correction` (§6.3's card names the surface).
-const RECENT: usize = 32;
 
 /// Load the streaming model and the VAD if not loaded; never opens the mic.
 /// Replies with the current state (`Loading` while in flight).
@@ -315,12 +314,6 @@ struct Standby {
     generation: u64,
 }
 
-/// A suggestion card out there, waiting for its answer (§6.3).
-struct Pending {
-    heard: String,
-    typed: String,
-}
-
 /// The `voice.*` keys this actor reads, live (the RPC setters update them).
 struct Settings {
     shape: ShapePresets,
@@ -410,9 +403,6 @@ pub struct Dictation {
     standby_generation: u64,
     /// §8.7: the last finished dictation's numbers.
     last: Option<DictationTimings>,
-    pending: HashMap<SuggestionId, Pending>,
-    /// Recent dictations' surfaces, for the suggestion card.
-    recent: VecDeque<(DictationId, Surface)>,
 }
 
 impl Dictation {
@@ -442,8 +432,6 @@ impl Dictation {
             standby: None,
             standby_generation: 0,
             last: None,
-            pending: HashMap::new(),
-            recent: VecDeque::new(),
         }
     }
 
@@ -460,9 +448,10 @@ impl Dictation {
         }
         self.stores_opened = true;
         let data_dir = self.rt.data_dir.clone();
-        if self.cfg.history.enabled {
+        if Store::recording_allowed(&self.cfg.history, false) {
+            let h = &self.cfg.history;
             match Store::open(&data_dir).await {
-                Ok(s) => self.store = Some(s),
+                Ok(s) => self.store = Some(s.with_budget(h.rows, u64::from(h.audio_mib) << 20)),
                 Err(e) => tracing::warn!("voice: history store: {e:#}"),
             }
         }
@@ -626,10 +615,7 @@ impl Dictation {
                 has_audio: false,
             },
         });
-        self.recent.push_back((id, surface));
-        if self.recent.len() > RECENT {
-            self.recent.pop_front();
-        }
+        let commands = opts.commands.clone();
         let press = opts
             .press_ago_ms
             .and_then(|ms| recv.checked_sub(Duration::from_millis(u64::from(ms))))
@@ -645,11 +631,13 @@ impl Dictation {
                 phrases: self.cfg.phrases.clone(),
                 dict: self.snapshot.clone(),
                 app: opts.app,
+                surface,
+                commands,
             },
             prev: String::new(),
             finals: Vec::new(),
             utterance: None,
-            armed: None,
+            parser: EndParser::new(&self.cfg.phrases),
             send_at: None,
             quiet_since: None,
             press,
@@ -745,36 +733,6 @@ impl Dictation {
             tokio::time::sleep(standby).await;
             let _ = me.tell(StandbyExpired(generation)).await;
         });
-    }
-
-    /// §6.3 step 3: one card per due pair; the id lives here until answered.
-    async fn suggest(&mut self, id: DictationId, due: Vec<crate::Correction>) {
-        let surface = self
-            .recent
-            .iter()
-            .find(|(d, _)| *d == id)
-            .map_or(Surface::Composer, |(_, s)| *s);
-        for c in due {
-            let sid = SuggestionId::new();
-            self.pending.insert(
-                sid,
-                Pending {
-                    heard: c.heard.clone(),
-                    typed: c.typed.clone(),
-                },
-            );
-            self.rt
-                .publish(VoiceEvent::DictionarySuggestion {
-                    id: sid,
-                    heard: c.heard,
-                    typed: c.typed,
-                    // The store's due rule is 2 in 7 days (§6.2); it reports no count.
-                    occurrences: 2,
-                    surface,
-                    has_audio: false,
-                })
-                .await;
-        }
     }
 }
 
@@ -933,14 +891,25 @@ impl Message<Correction> for Dictation {
     type Reply = Result<(), String>;
     async fn handle(&mut self, m: Correction, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.open_stores().await;
-        let Some(store) = self.store.clone() else {
+        let Some(store) = self.store.clone().filter(|_| self.cfg.history.learn) else {
             return Ok(());
         };
         let due = store
             .correction(m.id, &m.sent_text)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        self.suggest(m.id, due).await;
+        for s in due {
+            self.rt
+                .publish(VoiceEvent::DictionarySuggestion {
+                    id: s.id,
+                    heard: s.heard,
+                    typed: s.typed,
+                    occurrences: s.occurrences,
+                    surface: s.surface,
+                    has_audio: s.has_audio,
+                })
+                .await;
+        }
         Ok(())
     }
 }
@@ -952,42 +921,15 @@ impl Message<AnswerSuggestion> for Dictation {
         m: AnswerSuggestion,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let Some(p) = self.pending.remove(&m.id) else {
+        let Some(store) = self.store.clone() else {
             return Err("unknown suggestion".into());
         };
-        match m.answer {
-            Answer::Add => {
-                self.dictionary.put(Entry {
-                    id: EntryId(uuid::Uuid::now_v7().to_string()),
-                    canonical: p.typed.clone(),
-                    kind: Kind::Term,
-                    spoken: vec![p.heard.clone()],
-                    variants: vec![Variant {
-                        heard: p.heard,
-                        metaphone: (String::new(), String::new()),
-                        seen: 1,
-                        last_ms: unix_ms(),
-                    }],
-                    scope: Scope::Global,
-                    source: Source::Learned,
-                    tags: Vec::new(),
-                });
-                self.snapshot = self.dictionary.snapshot();
-            }
-            Answer::Never => {
-                self.dictionary.negative(Negative {
-                    heard_lc: p.heard.to_lowercase(),
-                    canonical: p.typed,
-                });
-                self.snapshot = self.dictionary.snapshot();
-            }
-            Answer::NotNow => {}
-        }
-        if let Some(store) = &self.store {
-            store
-                .answer(m.id, m.answer)
-                .await
-                .map_err(|e| format!("{e:#}"))?;
+        store
+            .answer(m.id, m.answer, &mut self.dictionary)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if m.answer != Answer::NotNow {
+            self.snapshot = self.dictionary.snapshot();
         }
         Ok(())
     }
@@ -1199,20 +1141,16 @@ struct ShaperOwned {
     phrases: EndPhrases,
     dict: Arc<Dictionary>,
     app: Option<AppProfile>,
+    surface: Surface,
+    commands: Vec<String>,
 }
 
 impl ShaperOwned {
-    fn shape(&self, prev: &str, raw: &str, is_final: bool) -> Shaped {
-        #[allow(unused_mut)]
-        let mut s = Shaper::new(self.cfg, &self.phrases, &self.dict, self.app.as_ref())
-            .shape(prev, raw, is_final);
-        // Until A1's parser arms (`shape/end.rs` is a stub at the PIN), the actor
-        // tests arm on an exact phrase at the tail; harmless once the parser lands.
-        #[cfg(test)]
-        if s.command.is_none() && self.cfg.end_commands {
-            s.command = tests::end_phrase(&self.phrases, raw);
-        }
-        s
+    fn shape(&self, parser: &mut EndParser, prev: &str, raw: &str, is_final: bool) -> Shaped {
+        Shaper::new(self.cfg, &self.phrases, &self.dict, self.app.as_ref())
+            .with_surface(self.surface)
+            .with_commands(self.commands.iter().cloned())
+            .shape_with(parser, prev, raw, is_final)
     }
 }
 
@@ -1230,10 +1168,10 @@ struct Task {
     prev: String,
     /// Closed utterances kept: `(utterance, raw, shaped)`; "scratch that" pops one.
     finals: Vec<(u32, String, String)>,
-    /// The utterance the last piece belonged to; a new one clears `armed`.
+    /// The utterance the last piece belonged to; a new one resets `parser`.
     utterance: Option<u32>,
-    /// §7.1: once a command arms in an utterance it stays until the final.
-    armed: Option<EndCommand>,
+    /// §7.1: the end-command state machine of the open utterance.
+    parser: EndParser,
     /// §7.3: when the last piece carrying `Send` arrived; `None` once new speech followed.
     send_at: Option<Instant>,
     /// §7.3: since when the gate has been closed after the settle.
@@ -1559,20 +1497,18 @@ impl Task {
         }
     }
 
-    /// §4.6: every piece through the shaper; end commands sticky per utterance
-    /// (§7.1); "scratch that" re-sends the previous closed utterance empty (§7.4).
+    /// §4.6: every piece through the shaper with the utterance's end parser
+    /// (§7.1 state); "scratch that" re-sends the previous closed utterance empty (§7.4).
     fn texts(&mut self, texts: Vec<Text>) {
         for t in texts {
             let now = Instant::now();
             if self.utterance != Some(t.utterance) {
                 self.utterance = Some(t.utterance);
-                self.armed = None;
+                self.parser.reset();
             }
-            let mut s = self.shaper.shape(&self.prev, &t.text, t.is_final);
-            match s.command {
-                Some(c) => self.armed = Some(c),
-                None => s.command = self.armed,
-            }
+            let s = self
+                .shaper
+                .shape(&mut self.parser, &self.prev, &t.text, t.is_final);
             self.send_at = matches!(s.command, Some(EndCommand::Send { .. })).then_some(now);
             self.first_partial.get_or_insert(now);
             if t.is_final {
@@ -1650,20 +1586,6 @@ mod tests {
                 .partition(|(i, _)| *i == at);
             self.script = later;
             now.into_iter().map(|(_, t)| t).collect()
-        }
-    }
-
-    /// The test shim for A1's parser: an exact phrase at the tail arms.
-    pub(super) fn end_phrase(p: &EndPhrases, raw: &str) -> Option<EndCommand> {
-        let raw = raw
-            .trim_end_matches(|c: char| !c.is_alphanumeric())
-            .to_lowercase();
-        if p.send.iter().any(|s| raw.ends_with(&s.to_lowercase())) {
-            Some(EndCommand::Send { near_miss: false })
-        } else if p.scratch.iter().any(|s| raw.ends_with(&s.to_lowercase())) {
-            Some(EndCommand::ScratchThat)
-        } else {
-            None
         }
     }
 
