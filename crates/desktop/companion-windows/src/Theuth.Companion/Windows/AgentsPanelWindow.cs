@@ -605,7 +605,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // name + last
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // children count
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // mic
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // ✕
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // stop
         var dot = PillGlyphs.RowDot(r.State, theme, SystemEffects.AnimationsOn);
         dot.VerticalAlignment = VerticalAlignment.Center;
         grid.Children.Add(dot);

@@ -594,7 +594,7 @@ internal sealed partial class IslandWindow : ToolWindow
         string effective = oracleMode ?? "off";
         if (effective == "off" && s.Deciding is null && last is null) return null;
         string? verdict = s.Deciding is not null ? "deciding" : last is not null && DateTimeOffset.Now - verdictAt < TimeSpan.FromSeconds(6)
-            ? last.Disposition == "skip" ? "skip" : last.Disposition == "brief" ? "brief" : "→ model" : null;
+            ? last.Disposition == "skip" ? "skip" : last.Disposition == "brief" ? "brief" : "to model" : null;
         var row = Row(4);
         if (effective != "off") row.Children.Add(Text(effective.ToUpperInvariant(), 10, NativeLook.TextTertiary));
         if (verdict is not null) row.Children.Add(Text(verdict, 10.5, s.Deciding is not null ? NativeLook.Accent : NativeLook.TextSecondary));

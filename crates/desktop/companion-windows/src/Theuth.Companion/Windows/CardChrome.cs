@@ -40,10 +40,10 @@ internal static class CardChrome
         Child = new TextBlock { Text = NativeLook.KeyCapText(cap), FontSize = Caps, Foreground = Theme.Brush(strong ? NativeLook.TextPrimary : NativeLook.TextSecondary, theme) },
     };
 
-    /// <summary>A button "‹label› ‹cap›" (or the cap alone) that acts without activating the companion (D6: real buttons). A cap of "✕" / "Esc" is the close button: a Cancel glyph beside the Esc cap.</summary>
+    /// <summary>A button "‹label› ‹cap›" (or the cap alone) that acts without activating the companion (D6: real buttons). A lone "Esc" cap is the close button: a Cancel glyph beside the Esc cap.</summary>
     public static Button KeyCapButton(ElementTheme theme, string? label, string cap, Action act, string? automationId = null)
     {
-        bool close = label is "✕" or "×" || (string.IsNullOrEmpty(label) && cap is "✕" or "×" or "Esc" or "esc");
+        bool close = string.IsNullOrEmpty(label) && cap is "Esc" or "esc";
         if (close) label = null;
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
         if (close) row.Children.Add(Theme.Icon(NativeLook.Glyph.Cancel, theme, NativeLook.TextSecondary, 12));

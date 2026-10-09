@@ -128,7 +128,7 @@ public static class CardAnatomyModel
 
         var keys = new List<KeyHint>();
         foreach (var o in card.Options) keys.Add(new KeyHint(o.Key.ToString(), o.Label));
-        if (card.Recommended is not null) keys.Add(new KeyHint("⏎", "recommended"));
+        if (card.Recommended is not null) keys.Add(new KeyHint("Enter", "recommended")); // 149 NATIVE: the key name, not ⏎
         if (count > 1) keys.Add(new KeyHint("J K", "next · previous"));
         if (replies)
         {
