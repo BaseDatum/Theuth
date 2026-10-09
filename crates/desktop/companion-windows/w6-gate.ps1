@@ -28,6 +28,7 @@
     theme [show|light|dark]  149 NATIVE: Windows "Choose your mode" — AppsUseLightTheme + SystemUsesLightTheme (HKCU …\Themes\Personalize)
                              and the WM_SETTINGCHANGE "ImmersiveColorSet" broadcast Settings sends; `show` prints both values
     hotkey               send Ctrl+Shift+Space (SendInput) — opens/closes the panel
+    hold-panel [ms]      149 NATIVE proof: hold Ctrl+Shift+Space for ms (default 4000) with SendInput — the Ask pill records while held
     shot <name> [x y w h] screenshot (whole screen or a region) to C:\Users\user\tools\pkg\w6\<name>.png and print its size
 #>
 param(
@@ -256,6 +257,15 @@ switch ($Action) {
         }
         $p = Get-ItemProperty $key -ErrorAction SilentlyContinue
         Say "theme: AppsUseLightTheme=$(if ($null -eq $p.AppsUseLightTheme) { '<absent>' } else { $p.AppsUseLightTheme }) SystemUsesLightTheme=$(if ($null -eq $p.SystemUsesLightTheme) { '<absent>' } else { $p.SystemUsesLightTheme }) at $(Get-Date -Format 'HH:mm:ss.fff')"
+    }
+    'hold-panel' {
+        Native
+        $ms = if ($Rest.Count -gt 0) { [int]$Rest[0] } else { 4000 }
+        [void][W6Native]::Key(0x11, $false); [void][W6Native]::Key(0x10, $false); [void][W6Native]::Key(0x20, $false)
+        Say "hold-panel: Ctrl+Shift+Space down at $(Get-Date -Format 'HH:mm:ss.fff') for $ms ms"
+        Start-Sleep -Milliseconds $ms
+        [void][W6Native]::Key(0x20, $true); [void][W6Native]::Key(0x10, $true); [void][W6Native]::Key(0x11, $true)
+        Say "hold-panel: up at $(Get-Date -Format 'HH:mm:ss.fff')"
     }
     'hotkey' {
         Native
