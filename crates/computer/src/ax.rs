@@ -232,6 +232,8 @@ pub use windows_uia::{frontmost, own_bundle_id};
 /// a refused read (UIPI, a dead provider) is `None`, nothing panics.
 #[cfg(target_os = "windows")]
 mod windows_uia {
+    use std::cell::RefCell;
+    use std::collections::HashSet;
     use std::path::Path;
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
     use std::thread;
@@ -252,7 +254,7 @@ mod windows_uia {
         IUIAutomationElement, IUIAutomationTreeWalker, IUIAutomationValuePattern,
         TreeScope_Descendants, UIA_CONTROLTYPE_ID, UIA_ControlTypePropertyId,
         UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_HyperlinkControlTypeId,
-        UIA_ValuePatternId, UIA_WindowControlTypeId,
+        UIA_PaneControlTypeId, UIA_ValuePatternId, UIA_WindowControlTypeId,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
@@ -273,6 +275,12 @@ mod windows_uia {
     pub(super) const TRANSACTION_TIMEOUT_MS: u32 = 1000;
     /// How far the control view is walked up looking for the top-level window.
     const PARENT_DEPTH: usize = 32;
+    /// Retries of a hit on a bare Chromium pane, and the pause between them
+    /// (the macOS reader's `MANUAL_RETRIES` / `MANUAL_PAUSE`).
+    const CHROMIUM_RETRIES: usize = 3;
+    const CHROMIUM_PAUSE: Duration = Duration::from_millis(120);
+    /// The window class of Chromium's content area.
+    const CHROMIUM_CONTENT_CLASS: &str = "Chrome_RenderWidgetHostHWND";
     /// Longest window title read back through `GetWindowTextW`.
     const TITLE_CHARS: usize = 512;
 
@@ -376,6 +384,8 @@ mod windows_uia {
         auto: IUIAutomation,
         walker: IUIAutomationTreeWalker,
         root: IUIAutomationElement,
+        /// Processes whose bare Chromium pane was already retried.
+        retried: RefCell<HashSet<i32>>,
     }
 
     impl Uia {
@@ -405,16 +415,47 @@ mod windows_uia {
             let walker = unsafe { auto.ControlViewWalker() }.ok()?;
             // SAFETY: live interface.
             let root = unsafe { auto.GetRootElement() }.ok()?;
-            Some(Self { auto, walker, root })
+            Some(Self {
+                auto,
+                walker,
+                root,
+                retried: RefCell::new(HashSet::new()),
+            })
         }
 
         /// The element under a physical screen pixel and the app/window owning it.
+        /// Chromium content (browsers, Electron, WebView2) answers a bare
+        /// `Chrome_RenderWidgetHostHWND` pane until its accessibility tree is
+        /// built, which the first UIA query itself switches on: such a hit is
+        /// retried up to [`CHROMIUM_RETRIES`] times, once per process per reader.
         fn hit(&self, (x, y): (i32, i32)) -> Option<AxHit> {
             // SAFETY: live interface; `POINT` by value.
-            let el = unsafe { self.auto.ElementFromPoint(POINT { x, y }) }.ok()?;
+            let mut el = unsafe { self.auto.ElementFromPoint(POINT { x, y }) }.ok()?;
             // SAFETY: live element.
             let pid = unsafe { el.CurrentProcessId() }.ok().filter(|p| *p > 0);
-            let ct = control_type(&el);
+            let mut ct = control_type(&el);
+            if let Some(pid) = pid
+                && bare_chromium(&el, ct)
+                && self.retried.borrow_mut().insert(pid)
+            {
+                tracing::debug!(
+                    pid,
+                    "bare Chromium pane under the pointer; retrying the hit"
+                );
+                for _ in 0..CHROMIUM_RETRIES {
+                    thread::sleep(CHROMIUM_PAUSE);
+                    // SAFETY: as above.
+                    let Ok(again) = (unsafe { self.auto.ElementFromPoint(POINT { x, y }) }) else {
+                        break;
+                    };
+                    let again_ct = control_type(&again);
+                    let done = !bare_chromium(&again, again_ct);
+                    (el, ct) = (again, again_ct);
+                    if done {
+                        break;
+                    }
+                }
+            }
             let top = self.top_window(&el);
             let window_level =
                 ct == UIA_WindowControlTypeId.0 || top.as_ref().is_some_and(|w| self.same(w, &el));
@@ -518,6 +559,16 @@ mod windows_uia {
     fn clean(s: String) -> Option<String> {
         let t = s.trim();
         (!t.is_empty()).then(|| t.to_owned())
+    }
+
+    /// A nameless pane whose class is Chromium's content host: the tree is not
+    /// built yet (see [`Uia::hit`]).
+    fn bare_chromium(el: &IUIAutomationElement, ct: i32) -> bool {
+        (ct == UIA_PaneControlTypeId.0 || ct == 0)
+            && name(el).is_none()
+            // SAFETY: live element.
+            && unsafe { el.CurrentClassName() }
+                .is_ok_and(|c| c.to_string() == CHROMIUM_CONTENT_CLASS)
     }
 
     fn control_type(el: &IUIAutomationElement) -> i32 {
@@ -662,6 +713,49 @@ mod windows_uia {
             );
             let front = frontmost();
             eprintln!("frontmost: {front:?}");
+            // Diagnostics: the control-view chain from the hit up to the root, on this thread.
+            // SAFETY: the test thread has no COM state yet; balanced below.
+            let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            assert!(hr.is_ok(), "CoInitializeEx: {hr:?}");
+            {
+                let uia = Uia::new().expect("IUIAutomation");
+                let (x, y) = super::super::physical_point(centre, (0, 0), WINDOWS_CAPTURE_RATIO);
+                // SAFETY: live interface.
+                let mut cur = unsafe { uia.auto.ElementFromPoint(POINT { x, y }) }.ok();
+                let mut depth = 0;
+                while let Some(el) = cur {
+                    // SAFETY: live element.
+                    let (pid, hwnd, class) = unsafe {
+                        (
+                            el.CurrentProcessId().ok(),
+                            el.CurrentNativeWindowHandle().ok(),
+                            el.CurrentClassName().ok().map(|b| b.to_string()),
+                        )
+                    };
+                    eprintln!(
+                        "  [{depth}] type={} name={:?} class={class:?} pid={pid:?} hwnd={hwnd:?} text={:?} root={}",
+                        control_type(&el),
+                        name(&el),
+                        hwnd.filter(|h| !h.is_invalid()).and_then(|h| {
+                            let mut buf = [0u16; TITLE_CHARS];
+                            // SAFETY: `buf` is the slice written into.
+                            let n = unsafe { GetWindowTextW(h, &mut buf) };
+                            clean(String::from_utf16_lossy(
+                                &buf[..usize::try_from(n).unwrap_or(0)],
+                            ))
+                        }),
+                        uia.same(&el, &uia.root),
+                    );
+                    depth += 1;
+                    if depth > PARENT_DEPTH {
+                        break;
+                    }
+                    // SAFETY: live walker and element.
+                    cur = unsafe { uia.walker.GetParentElement(&el) }.ok();
+                }
+            }
+            // SAFETY: balances the CoInitializeEx above; every interface was dropped.
+            unsafe { CoUninitialize() };
         }
 
         /// No desktop needed: COM, the automation object and the root element exist,
