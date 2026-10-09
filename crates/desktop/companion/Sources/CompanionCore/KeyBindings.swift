@@ -1,4 +1,5 @@
 import Foundation
+import TheuthKit
 
 /// One key combination, AppKit-free. Printable keys match by the typed character (layout-independent, what the
 /// user sees on the cap); everything else (⏎ ⎋ Space arrows F-keys) by the Carbon virtual key code, which is also
@@ -125,13 +126,15 @@ public enum KeyAction: String, CaseIterable, Codable, Sendable {
     case agentsNext, agentsPrevious, agentsOpenSession, agentsOpenSessionCmd, agentsTalk, agentsStop, agentsEscape
     case islandMute, islandStop, islandDismiss, islandDeeper, islandSend, islandEscape, islandNext, islandPrevious
     case pointEscape
+    // 153 §15 ★ (anywhere): the dictate-anywhere and command mode keys; intents are wired by C1.
+    case dictateAnywhere, command
 
     /// What the Attention panel / Ask bar does; `nil` for the global rows (the app's hotkey handlers).
     public var intent: Intent? {
         switch self {
         case .openPanel, .openAskBar: return nil
         // 149: global rows are the app's handlers; `replyFocus` is R's alias (Revision 1 row 18); the rest are wired by W1/W2/W3.
-        case .openAgents, .voiceKey, .meetingPtt, .meetingEye: return nil
+        case .openAgents, .voiceKey, .meetingPtt, .meetingEye, .dictateAnywhere, .command: return nil
         case .replyFocus: return .reply
         case .talk, .point, .stopAgent, .askPoint: return nil
         case .agentsNext: return .next
@@ -218,6 +221,9 @@ public struct KeyTable: Equatable, Sendable {
         row(.voiceKey, .anywhere, "Voice key — point and say", key("s", 1, .control)),
         row(.meetingPtt, .anywhere, "Meeting push-to-talk", key("`", 50, .option)),
         row(.meetingEye, .anywhere, "Meeting eye (hide from capture)", key("e", 14, [.option, .shift])),
+        // 153 §15 ★ — anywhere (W-d): hold/lock as the voice key; the recorder's `check` refuses one mode key's chord for another
+        row(.dictateAnywhere, .anywhere, "Dictate anywhere", key("d", 2, [.control, .option])),
+        row(.command, .anywhere, "Command", key("c", 8, [.control, .option])),
         // 149 §8 ★ — panel
         row(.replyFocus, .panel, "Focus the reply field", .space),
         row(.talk, .panel, "Hold to talk into the reply", key("v", 9)),
@@ -384,5 +390,50 @@ public struct KeyTable: Equatable, Sendable {
             return GlobalResolution(chord: def, notice: "\(saved.symbol) is held by another app — using \(def.symbol)")
         }
         return GlobalResolution(chord: nil, notice: "\(saved.symbol) is held by another app — no hotkey until you pick another")
+    }
+}
+
+/// 153 §14.3 companion-local settings (`UserDefaults`, the `VoiceKeySettings` pattern): the mode keys' switches, the gesture per
+/// mode (§12.6), the any-app delivery switches (§13) and the per-app rows. Settings › Dictation / › Command bind the same keys.
+public enum ModeKeySettings {
+    /// §12.6: hold · double-tap locks (default, W-i) or tap-toggles / long-press-talks.
+    public enum Gesture: String, CaseIterable, Codable, Sendable { case holdLock, automatic }
+    /// The three voice-key modes (§10.1); one `PointController` per mode.
+    public enum Mode: String, CaseIterable, Codable, Sendable { case ask, dictate, command }
+
+    public static let dictateAnywhereEnabledKey = "dictateAnywhereEnabled", commandKeyEnabledKey = "commandKeyEnabled",
+                      micOnKeyDownKey = "micOnKeyDown", modifierOnlyKeysKey = "modifierOnlyKeys",
+                      leaveTextOnClipboardKey = "leaveTextOnClipboard", checkPasteLandedKey = "checkPasteLanded",
+                      appProfilesKey = "appProfiles"
+    /// `gesture.<mode>`.
+    public static func gestureKey(_ mode: Mode) -> String { "gesture.\(mode.rawValue)" }
+
+    public static func dictateAnywhereEnabled(_ d: UserDefaults) -> Bool { flag(d, dictateAnywhereEnabledKey, true) }
+    public static func commandKeyEnabled(_ d: UserDefaults) -> Bool { flag(d, commandKeyEnabledKey, true) }
+    /// §8.5: the OS mic opens on key-down (default on); off = at the 250 ms hold threshold, as before 153.
+    public static func micOnKeyDown(_ d: UserDefaults) -> Bool { flag(d, micOnKeyDownKey, true) }
+    /// §12.6 / Q1: opt-in; needs Input Monitoring.
+    public static func modifierOnlyKeys(_ d: UserDefaults) -> Bool { flag(d, modifierOnlyKeysKey, false) }
+    /// §13.3: off = the lease restores the clipboard after the paste settles.
+    public static func leaveTextOnClipboard(_ d: UserDefaults) -> Bool { flag(d, leaveTextOnClipboardKey, false) }
+    /// §13.4: verify the paste (three reads) and show the failure card when it did not land.
+    public static func checkPasteLanded(_ d: UserDefaults) -> Bool { flag(d, checkPasteLandedKey, true) }
+
+    public static func gesture(_ mode: Mode, _ d: UserDefaults) -> Gesture {
+        d.string(forKey: gestureKey(mode)).flatMap(Gesture.init(rawValue:)) ?? .holdLock
+    }
+
+    /// §13's per-app rows, stored as one JSON blob (the `AppProfile` wire shape, so a row is sent as-is in `DictationOpts.app`).
+    public static func appProfiles(_ d: UserDefaults) -> [AppProfile] {
+        guard let data = d.data(forKey: appProfilesKey) else { return [] }
+        return (try? TheuthJSON.decoder.decode([AppProfile].self, from: data)) ?? []
+    }
+
+    public static func setAppProfiles(_ profiles: [AppProfile], _ d: UserDefaults) {
+        d.set(try? TheuthJSON.encoder.encode(profiles), forKey: appProfilesKey)
+    }
+
+    private static func flag(_ d: UserDefaults, _ key: String, _ def: Bool) -> Bool {
+        d.object(forKey: key) == nil ? def : d.bool(forKey: key)
     }
 }

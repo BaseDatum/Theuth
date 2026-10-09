@@ -1,0 +1,16 @@
+{
+  "model": {
+    "state": "ready"
+  },
+  "active": null,
+  "input_device": "MacBook Pro Microphone",
+  "last": {
+    "surface": "companion",
+    "press_to_first_pcm_ms": 42,
+    "press_to_first_partial_ms": 310,
+    "press_to_first_final_ms": 890,
+    "stop_to_final_ms": 420,
+    "polish_ms": null,
+    "device": "MacBook Pro Microphone"
+  }
+}

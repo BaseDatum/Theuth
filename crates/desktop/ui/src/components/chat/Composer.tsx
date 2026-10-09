@@ -30,6 +30,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { DictionarySuggestion } from '@/components/ui/DictionarySuggestion'
 import * as dictation from '@/lib/dictation'
 import { extFor, putAttachment } from '@/lib/files'
 import { usePanes } from '@/lib/panes'
@@ -76,7 +77,7 @@ import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/Voic
 import type { FrameSource, VisualFrame } from '@/lib/audio/types'
 import { analyserSource, tapOrLevels } from '@/lib/visual-source'
 import { QueuedChips } from './QueuedChips'
-import { type Ctx, FRESH, type HarnessMenu, type SlashItem, draftSkill, isCommand, run, sendRaw, slashMenu } from './slash'
+import { COMMANDS, type Ctx, FRESH, type HarnessMenu, type SlashItem, draftSkill, isCommand, run, sendRaw, slashMenu } from './slash'
 
 /** New Chat options (51 §8.3, 137 §11.3): `private` selects memory-only retention; `project` is root metadata; `endless` the summary-tree memory. */
 export type DraftCreate = { private: boolean; project: string | null; endless: boolean }
@@ -113,6 +114,21 @@ export function appendDraft(session: string, text: string, head = ''): void {
   const cur = useDrafts.getState().by[session] ?? EMPTY
   useDrafts.getState().set(session, { ...cur, text: cur.text ? `${cur.text}${text}` : `${head}${text}` })
 }
+
+/** 153 §4.2 stage 4: the slash commands dictation may write — theuth's, and the harness's with their slash (`skill:x` → `/skill:x`). */
+export function dictationCommands(harness: readonly { name: string }[] | null | undefined): string[] {
+  return [...COMMANDS.map((c) => c.name), ...(harness ?? []).map((c) => (c.name.startsWith('/') ? c.name : `/${c.name}`))]
+}
+
+/**
+ * 153 §7.4 "send it": `auto` is the landed value waiting to be sent; it fires once the box's `text` is that value and
+ * is cleared in the same step, so one spoken send is one `submit()`. A dictation that only armed the phrase on a
+ * partial lands with `send: false` (`lib/dictation.finish`) and never sets `auto`.
+ */
+export function spokenSend(auto: string | null, text: string): { fire: boolean; auto: string | null } {
+  return auto !== null && text === auto ? { fire: true, auto: null } : { fire: false, auto }
+}
+
 /** Recorder containers in preference order (45 §7.2): WebKit gives AAC in MP4, Chromium Opus in WebM; the engine decodes all. */
 const AUDIO_MIMES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
 /** A send's ack is one round trip ("returns once queued"): longer means a socket the OS never closed (70 SEND-NEVER-LOSES). */
@@ -434,7 +450,7 @@ export function Composer({
     const ta = ref.current
     const at = ta?.selectionStart ?? text.length
     setOwner(true)
-    void dictation.start(api, text.slice(0, at), text.slice(at), useEngines.getState().active !== LOCAL)
+    void dictation.start(api, text.slice(0, at), text.slice(at), useEngines.getState().active !== LOCAL, false, dictationCommands(harnessCommands))
   }
   const dictateRef = useRef(dictate)
   dictateRef.current = dictate
@@ -455,13 +471,30 @@ export function Composer({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [live, api])
+  /** 153 §6.1: the dictation whose words are in the box, until the next send reports it (`''`/null = nothing to report). */
+  const lastDictation = useRef<string | null>(null)
+  /** 153 §7.4 "send it": the landed value to `submit()` once the box says it; `null` otherwise. */
+  const [autoSend, setAutoSend] = useState<string | null>(null)
+  /** This pane's identity for `correction` → the suggestion card lands under the pane that sent (§6.3 step 4). */
+  const me = useRef({})
+  const suggestion = dictation.useSuggestion()
   useEffect(
     () =>
-      dictation.onFinish(({ value, caret }) => {
-        if (ownerRef.current) setPending({ text: value, caret })
+      dictation.onFinish(({ value, caret, id, send }) => {
+        if (!ownerRef.current) return
+        setPending({ text: value, caret })
+        lastDictation.current = id || null
+        if (send) setAutoSend(value)
       }),
     [],
   )
+  // The spoken "send it" fires once the landed text is the box's text — the same path as ⏎, exactly once.
+  useEffect(() => {
+    const r = spokenSend(autoSend, text)
+    if (!r.fire) return
+    setAutoSend(r.auto)
+    void submit()
+  })
   // Idle again (finished, discarded, or `start` failed) → nobody owns it. `start` flips the phase synchronously,
   // so the same batch that sets `owner` never sees idle.
   useEffect(() => {
@@ -706,6 +739,9 @@ export function Composer({
   const submit = async (spoken?: string, interject = false) => {
     const line = spoken ?? text.trim()
     if ((!line && !skill && !held) || busy) return
+    // 153 §6.1: the typed box after a dictation is what was actually sent — the engine learns single-word edits from it.
+    if (spoken === undefined && lastDictation.current) dictation.correction(api, lastDictation.current, line, me.current)
+    lastDictation.current = null
     setBusy(true)
     const mode = (id: string) => speech.setVoiceMode(id, spoken !== undefined)
     const clientId = unsent ?? crypto.randomUUID()
@@ -1268,6 +1304,11 @@ export function Composer({
                     </TooltipTrigger>
                     <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
                   </Tooltip>
+                  {dict.active.device && (
+                    <p role="status" className="mt-1 px-2 text-xs text-fg-tertiary">
+                      {dict.active.device.state === 'lost' ? 'mic lost — reconnecting…' : `mic changed → ${dict.active.device.name ?? 'default'}`}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <Textarea
@@ -1397,14 +1438,15 @@ export function Composer({
             ))}
         </div>
       </div>
+      {suggestion && suggestion.reporter === me.current && <DictionarySuggestion s={suggestion} api={api} className="mt-2" />}
     </div>
   )
 }
 
 /**
  * The read-only box while dictating (54 §5.1): `before`, a separating space when `before` does not end in one,
- * each utterance (muted until the VAD closes it), a space when `after` does not start with one or punctuation, `after`.
- * The spacing rules mirror `splice()`; the caret is hidden and nothing here takes input.
+ * each utterance's shaped text (153 §3.1; muted until the VAD closes it), a space when `after` does not start with
+ * one or punctuation, `after`. The spacing rules mirror `splice()`; the caret is hidden and nothing here takes input.
  */
 function DictatedText({
   before,
@@ -1417,7 +1459,7 @@ function DictatedText({
   utts: dictation.Utt[]
   className: string
 }) {
-  const spoken = utts.filter((u) => u.text !== '')
+  const spoken = utts.filter((u) => dictation.shown(u) !== '')
   const lead = spoken.length && before && !/\s$/.test(before) ? ' ' : ''
   const trail = spoken.length && after && !/^[\s.,;:!?)]/.test(after) ? ' ' : ''
   return (
@@ -1432,7 +1474,7 @@ function DictatedText({
       {spoken.map((u, i) => (
         <Fragment key={i}>
           {i > 0 && ' '}
-          <span className={cn('transition-colors duration-150', !u.final && 'text-fg-tertiary')}>{u.text}</span>
+          <span className={cn('transition-colors duration-150', !u.final && 'text-fg-tertiary')}>{dictation.shown(u)}</span>
         </Fragment>
       ))}
       {trail}

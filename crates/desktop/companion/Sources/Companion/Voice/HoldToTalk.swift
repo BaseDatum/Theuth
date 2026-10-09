@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CompanionCore
+import TheuthKit
 
 /// 149 W1: hold-to-talk into a field (§3.2 per-row mic, §3.3 V on the card; §5.4 A). `AskVoiceMachine` + `VoiceRecorder`
 /// + the engine's dictation stream, exactly the Ask bar's path (`AskBarPanel.swift`), with the text handed to `onText`
@@ -22,6 +23,8 @@ final class HoldToTalk: ObservableObject {
     var target: String?
     /// The dictated text, trimmed, non-empty.
     var onText: ((String) -> Void)?
+    /// 153 §7.4 "send it": the text should go out without the caller's hold; `nil` falls back to `onText`.
+    var onSend: ((String) -> Void)?
 
     private let store: Store
     private var machine = AskVoiceMachine()
@@ -31,6 +34,8 @@ final class HoldToTalk: ObservableObject {
     private var sendTask: Task<Void, Never>?
     private var pending: [[Int16]] = []
     private var stopWanted = false
+    /// §8.5: the recorder is open; chunks before the id wait in `pending`.
+    private var micOpen = false
     /// 149g: as `AskBarController.hold` — the start's reply and refusal belong to the hold that sent them.
     private var hold = 0
 
@@ -43,10 +48,12 @@ final class HoldToTalk: ObservableObject {
 
     var isBusy: Bool { machine.isBusy }
 
-    /// Key-down / pointer-down on the mic. A press under `AskVoiceMachine.holdThreshold` is a tap and does nothing.
+    /// Key-down / pointer-down on the mic. A press under `AskVoiceMachine.holdThreshold` is a tap and does nothing — with
+    /// "Open the mic on key-down" (153 §8.5) the recorder opens now and a tap discards it.
     func press(target: String? = nil) {
         guard !AskFlags.automated, !machine.isBusy else { return }
         self.target = target
+        machine.micOnKeyDown = ModeKeySettings.micOnKeyDown(Settings.defaults)
         event(.keyDown(Date()))
     }
 
@@ -81,29 +88,34 @@ final class HoldToTalk: ObservableObject {
             switch fx {
             case .tap:
                 break
+            case .openMic:
+                startMic()
+            case .discardMic:
+                micOpen = false
+                recorder.cancel()
+                pending = []
             case .startRecording:
                 recording = true
                 status = "listening…"
                 begin()
-                let g = hold
-                Task { [weak self] in
-                    guard let self, let why = await self.recorder.start(), g == self.hold else { return }
-                    self.event(.failed(why))
-                }
+                if !micOpen { startMic() }
             case .stopDictation:
                 recording = false
                 finishing = true
                 status = "finishing…"
+                micOpen = false
                 recorder.stop()
                 end()
             case .setText(let text):
-                finishing = false
-                status = nil
-                liveText = ""; partial = ""; levels = []
+                landed()
                 onText?(text)
+            case .sendNow(let text):
+                landed()
+                (onSend ?? onText)?(text)
             case .fail(let why):
                 recording = false
                 finishing = false
+                micOpen = false
                 recorder.cancel()
                 if let id = store.ask.dictation.id { enqueue { [store] in try await store.client.dictationStop(id: id) } }
                 store.ask.dictation = AskDictation() // 149g: a start still in flight lands into a reset session and stops itself
@@ -112,6 +124,24 @@ final class HoldToTalk: ObservableObject {
                 status = why == "cancelled" ? nil : why
                 Log.write("hold-to-talk: \(why)")
             }
+        }
+    }
+
+    private func landed() {
+        recording = false
+        finishing = false
+        status = nil
+        micOpen = false
+        recorder.cancel()
+        liveText = ""; partial = ""; levels = []
+    }
+
+    private func startMic() {
+        micOpen = true
+        let g = hold
+        Task { [weak self] in
+            guard let self, let why = await self.recorder.start(), g == self.hold else { return }
+            self.event(.failed(why))
         }
     }
 
@@ -127,13 +157,14 @@ final class HoldToTalk: ObservableObject {
 
     private func begin() {
         _ = store.ask.dictation.handle(.start)
-        pending = []
         stopWanted = false
         hold += 1
         let g = hold
+        let pressed = machine.pressedAt
         enqueue { [weak self, store] in
             do {
-                let id = try await store.client.dictationStart()
+                let ago = pressed.map { UInt32(max(0, Date().timeIntervalSince($0)) * 1000) }
+                let id = try await store.client.dictationStart(opts: DictationOpts(surface: .companion, destination: .agentPrompt, pressAgoMs: ago))
                 guard let self else { return }
                 guard store.ask.dictation.awaitsStart(from: g, current: self.hold) else {
                     Log.write("hold-to-talk: dictation_start → \(id) landed after the hold ended: dictation_stop")
@@ -155,7 +186,7 @@ final class HoldToTalk: ObservableObject {
     }
 
     private func feed(_ chunk: [Int16]) {
-        if let id = store.ask.dictation.id { send(chunk, id: id) } else if store.ask.dictation.phase == .starting { pending.append(chunk) }
+        if let id = store.ask.dictation.id { send(chunk, id: id) } else if store.ask.dictation.phase == .starting || micOpen { pending.append(chunk) }
     }
 
     private func send(_ chunk: [Int16], id: String) {
@@ -174,15 +205,13 @@ final class HoldToTalk: ObservableObject {
     }
 
     private func dictationChanged(_ d: AskDictation) {
-        guard machine.isBusy else { return }
+        guard machine.isBusy, !machine.isPressed else { return }
         liveText = d.finalText
         partial = d.partialText
         levels = d.levels
-        if !d.isActive, case .stopping = machine.state {
-            event(d.error.map { .failed($0) } ?? .dictated(d.liveText))
-        } else if !d.isActive, let e = d.error, machine.isRecording {
-            apply([.fail(e)])
-        }
+        if d.isActive, let h = d.deviceHint { status = h } else if d.isActive, d.send { status = "sending…" }
+        // 153 §7.3: the engine may end the dictation itself ("send it" settled); a finish while recording lands like a release.
+        if !d.isActive { event(d.error.map { .failed($0) } ?? .dictated(d.liveText, send: d.send)) }
     }
 }
 

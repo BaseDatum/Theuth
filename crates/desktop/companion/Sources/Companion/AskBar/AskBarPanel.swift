@@ -4,6 +4,7 @@ import Combine
 import CompanionCore
 import KeyboardShortcuts
 import SwiftUI
+import TheuthKit
 
 /// The Ask bar (D7, §4.3): a second non-activating, key-when-summoned glass panel, 480 pt, top-centre of the
 /// mouse's screen. One field, the hints row, the receipt row. Everything typed goes to theuth's desk (R4).
@@ -25,6 +26,10 @@ final class AskBarController: NSObject {
     private var voice = AskVoiceMachine()
     private var voiceTimer: Timer?
     private let recorder = VoiceRecorder()
+    /// §8.5: the recorder is open (at key-down, or with `.startRecording`); chunks before the id buffer in `pendingChunks`.
+    private var micOpen = false
+    /// 153 §6.4: the dictionary suggestion card under the bar (`AskBarInstall` creates it).
+    var suggestionCard: DictionarySuggestionCard?
 
     init(store: Store, attention: PanelController) {
         self.store = store
@@ -130,11 +135,13 @@ final class AskBarController: NSObject {
         store.submitAsk(text)
     }
 
-    /// Typing during a voice hold keeps editing instead of sending (§4.3); typed edits win over late partials.
+    /// Typing during a voice hold keeps editing instead of sending (§4.3); typed edits win over late partials. An emptied
+    /// field leaves nothing to correct (153 §6.1).
     private func typedDuringVoiceHold(_ text: String) {
         guard let v = state.voiceText, text != v else { return }
         state.voiceText = nil
         _ = store.ask.dictation.handle(.typed)
+        if text.isEmpty { _ = store.ask.dictation.handle(.settled) }
         if store.undo.held != nil { store.perform(.escape) }
     }
 
@@ -142,8 +149,10 @@ final class AskBarController: NSObject {
 
     /// 149s K1: every press goes through the hold machine. A tap (`.tap`) toggles the Attention panel — empty state
     /// included, never the Ask bar; a hold (`.startRecording`) talks: the Ask bar opens if it is not up and dictates.
+    /// 153 §8.5: with "Open the mic on key-down" the recorder opens at the press and a tap discards it.
     func hotkeyDown() {
         guard !AskFlags.automated else { return }
+        voice.micOnKeyDown = ModeKeySettings.micOnKeyDown(Settings.defaults)
         voiceEvent(.keyDown(Date()))
     }
 
@@ -153,6 +162,7 @@ final class AskBarController: NSObject {
     }
 
     private func perform(_ a: SurfaceKey.Action) {
+        guard !AskFlags.automated else { return AskLog.write("probe: \(a) suppressed (no key, no toggle)") } // a probe's tap/hold acts on nothing
         switch a {
         case .togglePanel: attention.toggle(anchor: .mouse) // taking key closes an open Ask bar (`didResignKey`)
         case .toggleAskBar: toggle()
@@ -186,33 +196,35 @@ final class AskBarController: NSObject {
             switch fx {
             case .tap:
                 perform(SurfaceKey.panel.action(held: false))
+            case .openMic:
+                startMic()
+            case .discardMic:
+                micOpen = false
+                recorder.cancel()
+                pendingChunks = []
+                AskLog.write("voice: tap — mic discarded, no dictation")
             case .startRecording:
                 perform(SurfaceKey.panel.action(held: true))
                 state.recording = true
                 state.status = "listening…"
                 beginDictation()
-                // A mic refusal landing after this hold ended (Esc, close) must not fail the next one. Probes never open the mic.
-                let g = hold
-                if !AskFlags.automated {
-                    Task { [weak self] in
-                        guard let self, let why = await self.recorder.start(), g == self.hold else { return }
-                        self.voiceEvent(.failed(why))
-                    }
-                }
+                if !micOpen { startMic() }
             case .stopDictation:
                 state.recording = false
                 state.status = "finishing…"
+                micOpen = false
                 recorder.stop() // flushes the tail chunk through `onChunk`
                 endDictation()
             case .setText(let text):
-                state.status = nil
-                state.live = false
-                state.voiceText = text
-                state.text = text
+                landed(text)
                 if AskFlags.automated { AskLog.write("probe: send suppressed") } else { store.submitAsk(text) } // the same 3 s hold; typing or ⎋ keeps editing
+            case .sendNow(let text):
+                landed(text)
+                if AskFlags.automated { AskLog.write("probe: send suppressed (send it)") } else { store.sendAskNow(text) } // §7.4: no hold
             case .fail(let why):
                 state.recording = false
                 state.live = false
+                micOpen = false
                 recorder.cancel()
                 // 149g: every exit stops what it started and ends the hold — a `dictation_start` still in flight lands into a
                 // reset session and stops its own id (`beginDictation`), instead of being adopted by nobody.
@@ -222,6 +234,28 @@ final class AskBarController: NSObject {
                 state.status = why
                 AskLog.write("voice: \(why)")
             }
+        }
+    }
+
+    /// The dictated text is in the field; the engine ended the dictation (or we did), so the microphone closes here.
+    private func landed(_ text: String) {
+        state.recording = false
+        state.status = nil
+        state.live = false
+        state.voiceText = text
+        state.text = text
+        micOpen = false
+        recorder.cancel()
+    }
+
+    /// A mic refusal landing after this hold ended (Esc, close) must not fail the next one. Probes never open the mic.
+    private func startMic() {
+        micOpen = true
+        guard !AskFlags.automated else { return }
+        let g = hold
+        Task { [weak self] in
+            guard let self, let why = await self.recorder.start(), g == self.hold else { return }
+            self.voiceEvent(.failed(why))
         }
     }
 
@@ -254,18 +288,21 @@ final class AskBarController: NSObject {
         }
     }
 
-    /// `dictation_start(16000)`; chunks that arrive before the id are held and flushed in order.
+    /// `dictation_start(16000, {surface: companion, destination: agent_prompt, press_ago_ms})` (153 §14.2); chunks that arrive
+    /// before the id are held and flushed in order.
     func beginDictation() {
         _ = store.ask.dictation.handle(.start)
         state.live = true
         state.partial = ""
-        pendingChunks = []; stopWanted = false
+        stopWanted = false
         hold += 1
         let g = hold
+        let pressed = voice.pressedAt
         enqueue { [weak self, store] in
             do {
                 if let d = self?.probeStartDelay, d > .zero { try? await Task.sleep(for: d) }
-                let id = try await store.client.dictationStart()
+                let ago = pressed.map { UInt32(max(0, Date().timeIntervalSince($0)) * 1000) }
+                let id = try await store.client.dictationStart(opts: DictationOpts(surface: .companion, destination: .agentPrompt, pressAgoMs: ago))
                 guard let self else { return }
                 guard store.ask.dictation.awaitsStart(from: g, current: self.hold) else {
                     AskLog.write("dictation_start → \(id) landed after the hold ended: dictation_stop")
@@ -288,9 +325,10 @@ final class AskBarController: NSObject {
         }
     }
 
-    /// One ~100 ms chunk from the microphone (or the probe's synthesizer).
+    /// One ~100 ms chunk from the microphone (or the probe's synthesizer). §8.5: chunks before the id — the start in flight, or
+    /// the mic opened at key-down and the press not yet a hold — wait in order; a tap drops them (`.discardMic`).
     func feed(_ chunk: [Int16]) {
-        if let id = store.ask.dictation.id { send(chunk, id: id) } else if store.ask.dictation.phase == .starting { pendingChunks.append(chunk) }
+        if let id = store.ask.dictation.id { send(chunk, id: id) } else if store.ask.dictation.phase == .starting || micOpen { pendingChunks.append(chunk) }
     }
 
     private func send(_ chunk: [Int16], id: String) {
@@ -309,17 +347,20 @@ final class AskBarController: NSObject {
         }
     }
 
-    /// The Store reduced a `Dictation*` event: show the live text, pulse the mic, finish the machine.
+    /// The Store reduced a `Dictation*` event: show the live text, pulse the mic, finish the machine. 153: a `DictationDevice`
+    /// hint and "send it" arming show in the status slot; a finish while still recording (the engine settled "send it", §7.3)
+    /// lands like a release.
     private func dictationChanged(_ d: AskDictation, takeText: Bool) {
         if takeText, state.live {
             state.text = d.finalText
             state.partial = d.partialText
         }
         state.level = d.levels.max() ?? 0
-        if !d.isActive {
-            if case .stopping = voice.state { voiceEvent(d.error.map { .failed($0) } ?? .dictated(d.liveText)) }
-            else if let e = d.error, state.live { apply([.fail(e)]) } // Error finish while still recording
+        if d.isActive, state.live {
+            if let h = d.deviceHint { state.status = h } else if d.send { state.status = "sending…" }
         }
+        guard !d.isActive, voice.isBusy, !voice.isPressed else { return } // pressed: no dictation of ours yet (a foreign finish)
+        voiceEvent(d.error.map { .failed($0) } ?? .dictated(d.liveText, send: d.send))
     }
 
     // MARK: --synthetic-dictation (probe): 2 s of a 440 Hz tone through the same path, no microphone, no send
@@ -330,6 +371,11 @@ final class AskBarController: NSObject {
     var probeStartDelay: Duration = .zero
     var voiceState: AskVoiceMachine.State { voice.state }
     var probeStatus: String? { state.status }
+    /// 153 §8.5 probe: force "Open the mic on key-down" for the run (the owner's defaults untouched); `probeMicOpen` is the
+    /// controller's recorder flag (probes never open the real microphone — `startMic` returns before `recorder.start`).
+    var probeMicOnKeyDown: Bool { get { voice.micOnKeyDown } set { voice.micOnKeyDown = newValue } }
+    var probeMicOpen: Bool { micOpen }
+    var probePendingChunks: Int { pendingChunks.count }
 
     func probeDictation(seconds: TimeInterval, done: @escaping () -> Void) {
         prewarm()
@@ -371,16 +417,24 @@ final class AskBarController: NSObject {
 
     private func place() {
         hosting.layoutSubtreeIfNeeded()
-        let size = NSSize(width: Self.width, height: max(72, hosting.fittingSize.height))
+        let frame = Self.frame(for: NSSize(width: Self.width, height: max(72, hosting.fittingSize.height)))
+        panel.setFrame(frame, display: true)
+        hosting.frame = panel.contentView?.bounds ?? .zero
+    }
+
+    /// Where a `size` panel sits: top-centre of the mouse's screen, ≈ 20 % down, clamped 8 pt inside the visible frame.
+    static func frame(for size: NSSize) -> NSRect {
         let m = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(m) } ?? NSScreen.main!
         let v = screen.visibleFrame
         var p = NSPoint(x: v.midX - size.width / 2, y: v.maxY - v.height * 0.2 - size.height)
         p.x = min(max(v.minX + 8, p.x), v.maxX - size.width - 8)
         p.y = min(max(v.minY + 8, p.y), v.maxY - size.height - 8)
-        panel.setFrame(NSRect(origin: p, size: size), display: true)
-        hosting.frame = panel.contentView?.bounds ?? .zero
+        return NSRect(origin: p, size: size)
     }
+
+    /// 153 §6.4: the suggestion card hangs under the Ask bar — its frame while open, else where it would open.
+    var anchorFrame: NSRect { isOpen ? panel.frame : Self.frame(for: NSSize(width: Self.width, height: 72)) }
 }
 
 /// The Attention panel's glass, for a second panel (W1's `PanelController.init` builds the same by hand).

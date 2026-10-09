@@ -2,6 +2,7 @@
 //! renderer and the non-TTY line printer; no I/O here.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
@@ -42,7 +43,7 @@ use uuid::Uuid;
 
 use crate::broadcast::{Broadcast, BroadcastStage};
 use crate::clip::Image;
-use crate::dictation::{Dictating, Phase};
+use crate::dictation::{self, Dictating, Phase, Suggestion};
 use crate::pathac::PathState;
 use crate::search;
 use crate::talk::Talking;
@@ -879,10 +880,34 @@ pub enum Command {
     },
     /// `dictation_prewarm`: load the streaming STT model once at startup (54 §0.5).
     DictationPrewarm,
-    /// `dictation_start`: open the mic; the reply is [`UiEvent::DictationStarting`] or [`UiEvent::DictationFailed`].
-    DictationStart,
+    /// `dictation_start(None, opts)` (153 §14.1: `Surface::Tui`, `AgentPrompt`, the slash commands,
+    /// `press_ago_ms` from `pressed`); the reply is [`UiEvent::DictationStarting`] or [`UiEvent::DictationFailed`].
+    DictationStart {
+        /// When Ctrl+D was pressed (153 §8.7).
+        pressed: std::time::Instant,
+    },
     /// `dictation_stop(id)`: close the mic; `DictationFinished` follows on the bus.
     DictationStop(voice::DictationId),
+    /// `dictation_correction(id, sent_text)` (153 §6.1): fire-and-forget at send.
+    DictationCorrection {
+        /// The dictation that contributed to the message.
+        id: voice::DictationId,
+        /// What went out.
+        text: String,
+    },
+    /// `dictionary_suggestion_answer(id, answer)` (153 §6.3).
+    SuggestionAnswer {
+        /// The suggestion shown.
+        id: voice::SuggestionId,
+        /// `y` add · `n` not now · `N` never.
+        answer: voice::SuggestionAnswer,
+    },
+    /// `/voice`: `voice_status` + `dictation_status` + `list_input_devices` → one `Info` (153 §8.1/8.7).
+    VoiceStatus,
+    /// `/voice mic <name|default>` → `set_input_devices` (153 §8.1).
+    SetInputDevices(Vec<String>),
+    /// `/voice shape <full|plain|off>` → `set_shape(Surface::Tui, preset)` (153 §4.5).
+    SetShape(voice::Preset),
     /// `talk_start(session, "device", null)`: a live spoken conversation (76 §5.1);
     /// `session: None` = no session yet: one is created first (`SessionOpened`), as the desktop's
     /// Talk entry does, on the draft's pending model/effort when there is one (148 R1).
@@ -1656,6 +1681,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     ("/todos", "", "show or hide the plan card (F2)"),
     ("/dictate", "", "toggle dictation (Ctrl+D)"),
+    (
+        "/voice",
+        "[mic <name|default> | shape <full|plain|off>]",
+        "dictation: mics and last timings; pick the mic; the TUI's shaping preset",
+    ),
     (
         "/talk",
         "",
@@ -3828,6 +3858,13 @@ pub struct Model {
     pub dictation_model: voice::ModelState,
     /// `(value, caret)` the editor must take this frame: a dictation stopped or was discarded.
     pub pending_input: Option<(String, usize)>,
+    /// The spliced value to submit this frame: a dictation ended on "send it" (153 §7.4).
+    pub pending_send: Option<String>,
+    /// The last dictation that landed in the editor, until the editor is sent or emptied
+    /// (153 §6.1: its `dictation_correction` goes with the send).
+    pub dictated: Option<voice::DictationId>,
+    /// The dictionary suggestion shown under the composer (153 §6.4), until answered or 20 s.
+    pub suggestion: Option<Suggestion>,
     /// The talk this view started (76 §0.12); `Some` whether or not the view is open.
     pub talk: Option<Talking>,
     /// The `/talk` pane covers the transcript; Esc closes it, the talk keeps running.
@@ -4082,7 +4119,11 @@ impl Model {
     /// slash popup rides on the box) and the todo card not focused (F2). A
     /// shown `secret_request` types into the box (masked).
     pub fn input_focused(&self) -> bool {
-        if self.approval().is_some() || self.dictation.is_some() || self.talk_view {
+        if self.approval().is_some()
+            || self.dictation.is_some()
+            || self.suggestion.is_some()
+            || self.talk_view
+        {
             return false;
         }
         if self.secret_request().is_some() {
@@ -5782,9 +5823,10 @@ impl Model {
         }
     }
 
-    /// Fold a voice bus event in (54 §4.4): the model state, and the five
-    /// dictation events for the dictation this view started. Other ids
-    /// (another frontend's dictation) and TTS events are ignored.
+    /// Fold a voice bus event in (54 §4.4, 153 §3.1): the model state, the
+    /// dictation events for the dictation this view started, and a
+    /// dictionary suggestion for this surface. Other ids (another frontend's
+    /// dictation) and TTS events are ignored.
     fn apply_voice(&mut self, ev: voice::VoiceEvent) {
         use voice::VoiceEvent::*;
         match ev {
@@ -5806,10 +5848,12 @@ impl Model {
                 utterance,
                 text,
                 is_final,
+                shaped,
+                command,
                 ..
             } => {
                 if let Some(d) = self.dictation.as_mut().filter(|d| d.id == id) {
-                    d.set_utt(utterance as usize, text, is_final);
+                    d.text_event(utterance as usize, text, shaped, command, is_final);
                 }
             }
             DictationFinished { id, reason } => {
@@ -5818,12 +5862,47 @@ impl Model {
                 };
                 // Esc already restored `before + after`.
                 if !d.discard {
-                    self.pending_input = Some(d.splice());
+                    if !dictation::body(&d.utts).is_empty() {
+                        self.dictated = Some(id);
+                    }
+                    let (value, caret) = d.splice();
+                    // "send it" (153 §7.4): the spliced value takes the send key's path.
+                    if d.send && !value.trim().is_empty() {
+                        self.pending_send = Some(value);
+                    } else {
+                        self.pending_input = Some((value, caret));
+                    }
                 }
                 if let voice::FinishReason::Error { message } = reason {
                     self.entries
                         .push(Entry::Error(format!("dictation: {message}")));
                 }
+            }
+            DictationDevice { id, device, state } => {
+                if let Some(d) = self.dictation.as_mut().filter(|d| d.id == id) {
+                    d.mic = Some(match state {
+                        voice::DeviceState::Lost => "mic lost — reconnecting…".to_owned(),
+                        voice::DeviceState::Changed => {
+                            format!("mic → {}", device.as_deref().unwrap_or("?"))
+                        }
+                    });
+                }
+            }
+            DictionarySuggestion {
+                id,
+                heard,
+                typed,
+                occurrences,
+                surface: voice::Surface::Tui,
+                ..
+            } => {
+                self.suggestion = Some(Suggestion {
+                    id,
+                    heard,
+                    typed,
+                    occurrences,
+                    shown_ms: now_ms(),
+                });
             }
             SpeechFinished { id, .. } => {
                 if let Some(t) = &mut self.talk {
@@ -5833,7 +5912,6 @@ impl Model {
             VoiceModel { .. }
             | SpeechStarted { .. }
             | SpeechAudio { .. }
-            | DictationDevice { .. }
             | DictionarySuggestion { .. } => {}
         }
     }
@@ -5902,32 +5980,63 @@ impl Model {
 
     /// Ctrl+D / `/dictate` (54 §5.2). Idle with the model `Ready`: anchor the
     /// caret at `before | after` and start. Idle otherwise: say why, do
-    /// nothing. Dictating: stop (keep the text). Starting or stopping: no-op.
+    /// nothing. Dictating: stop (keep the text); a key during the "send it"
+    /// settle keeps editing instead of sending (153 §3.1). Starting or
+    /// stopping: no-op.
     pub fn toggle_dictation(&mut self, before: String, after: String) -> Option<Command> {
-        if let Some(d) = &mut self.dictation {
-            if d.phase != Phase::Dictating {
+        self.stop_dictation(false).or_else(|| {
+            if self.dictation.is_some() || self.dictation_pending.is_some() {
                 return None;
             }
-            d.phase = Phase::Stopping;
-            return Some(Command::DictationStop(d.id));
+            let reason = match &self.dictation_model {
+                voice::ModelState::Ready => {
+                    self.dictation_pending = Some((before, after));
+                    return Some(Command::DictationStart {
+                        pressed: std::time::Instant::now(),
+                    });
+                }
+                voice::ModelState::Loading => "dictation: model loading…".to_owned(),
+                voice::ModelState::Missing => {
+                    "dictation: model missing (~/.theuth/models/nemotron-streaming-en or voice.dictation_model_dir)"
+                        .to_owned()
+                }
+                voice::ModelState::Failed { message } => format!("dictation: {message}"),
+            };
+            self.entries.push(Entry::Info(reason));
+            None
+        })
+    }
+
+    /// Stop the running dictation, keeping the text. `send`: ⏎ during the
+    /// "send it" settle — "send now" — keeps the submit; any other key drops it.
+    pub fn stop_dictation(&mut self, send: bool) -> Option<Command> {
+        let d = self
+            .dictation
+            .as_mut()
+            .filter(|d| d.phase == Phase::Dictating)?;
+        d.phase = Phase::Stopping;
+        d.send &= send;
+        Some(Command::DictationStop(d.id))
+    }
+
+    /// `y` / `n` / `N` on the suggestion line (153 §6.4); Esc is "not now".
+    pub fn answer_suggestion(&mut self, answer: voice::SuggestionAnswer) -> Option<Command> {
+        let s = self.suggestion.take()?;
+        Some(Command::SuggestionAnswer { id: s.id, answer })
+    }
+
+    /// When the suggestion line auto-dismisses (unix ms); `None` without one.
+    pub fn suggestion_wake(&self) -> Option<u64> {
+        self.suggestion
+            .as_ref()
+            .map(|s| s.shown_ms + dictation::SUGGESTION_MS)
+    }
+
+    /// Drop a suggestion past its 20 s: "not now" without the cooldown, so no RPC.
+    pub fn expire_suggestion(&mut self, now_ms: u64) {
+        if self.suggestion.as_ref().is_some_and(|s| s.expired(now_ms)) {
+            self.suggestion = None;
         }
-        if self.dictation_pending.is_some() {
-            return None;
-        }
-        let reason = match &self.dictation_model {
-            voice::ModelState::Ready => {
-                self.dictation_pending = Some((before, after));
-                return Some(Command::DictationStart);
-            }
-            voice::ModelState::Loading => "dictation: model loading…".to_owned(),
-            voice::ModelState::Missing => {
-                "dictation: model missing (~/.theuth/models/nemotron-streaming-en or voice.dictation_model_dir)"
-                    .to_owned()
-            }
-            voice::ModelState::Failed { message } => format!("dictation: {message}"),
-        };
-        self.entries.push(Entry::Info(reason));
-        None
     }
 
     /// Esc while dictating: the editor takes `before + after` back now, the
@@ -7018,6 +7127,10 @@ impl Model {
                     send(tx, cmd);
                 }
             }
+            "/voice" => match voice_cmd(arg) {
+                Ok(cmd) => send(tx, cmd),
+                Err(e) => self.entries.push(Entry::Error(e.into())),
+            },
             "/talk" => {
                 if let Some(cmd) = self.toggle_talk(false) {
                     send(tx, cmd);
@@ -7198,6 +7311,16 @@ impl Model {
     /// asked), else the next turn's input. Also the raw path of a harness
     /// slash command picked from the popup (141 D15 c): no `use_skill`.
     fn send_text(&mut self, line: &str, interject: bool, tx: &UnboundedSender<Command>) {
+        // 153 §6.1: what went out, when a dictation contributed to it (fire-and-forget).
+        if let Some(id) = self.dictated.take() {
+            send(
+                tx,
+                Command::DictationCorrection {
+                    id,
+                    text: line.to_owned(),
+                },
+            );
+        }
         let (text, files) = self.expand_pastes(line);
         match self.session {
             // Mid-turn, or mid-`/compact` (a mini-turn without `TurnStarted`;
@@ -11749,6 +11872,77 @@ pub fn vision_model_line(m: Option<&ModelInfo>) -> String {
     }
 }
 
+/// `/voice [mic <name|default> | shape <full|plain|off>]` (153 §8.1, §4.5).
+pub fn voice_cmd(arg: &str) -> Result<Command, &'static str> {
+    const USAGE: &str = "usage: /voice [mic <name|default> | shape <full|plain|off>]";
+    match arg
+        .split_once(char::is_whitespace)
+        .map_or((arg, ""), |(c, r)| (c, r.trim()))
+    {
+        ("", _) => Ok(Command::VoiceStatus),
+        ("mic", "default") => Ok(Command::SetInputDevices(Vec::new())),
+        ("mic", name) if !name.is_empty() => Ok(Command::SetInputDevices(vec![name.to_owned()])),
+        ("shape", "full") => Ok(Command::SetShape(voice::Preset::Full)),
+        ("shape", "plain") => Ok(Command::SetShape(voice::Preset::Plain)),
+        ("shape", "off") => Ok(Command::SetShape(voice::Preset::Off)),
+        _ => Err(USAGE),
+    }
+}
+
+/// The `/voice` reply (153 §8.1, §8.7): the mic preference and what the host
+/// enumerates, the running dictation's device, the last dictation's timings.
+pub fn voice_line(
+    status: &voice::VoiceStatus,
+    dictation: &voice::DictationState,
+    devices: &[voice::InputDevice],
+) -> String {
+    let ms = |v: Option<u32>| v.map_or_else(|| "—".to_owned(), |v| format!("{v} ms"));
+    let mut out = format!(
+        "voice: model {:?} · mic preference: {}",
+        status.model,
+        if status.input_devices.is_empty() {
+            "system default".to_owned()
+        } else {
+            status.input_devices.join(" › ")
+        }
+    );
+    for d in devices {
+        let _ = write!(
+            out,
+            "\n  {} {}{}",
+            if status.input_devices.contains(&d.name) {
+                "●"
+            } else {
+                "○"
+            },
+            d.name,
+            if d.default { "  (system default)" } else { "" }
+        );
+    }
+    if let Some(dev) = &dictation.input_device {
+        let _ = write!(out, "\n  dictating on {dev}");
+    }
+    match &dictation.last {
+        Some(t) => {
+            let _ = write!(
+                out,
+                "\n  last dictation: {:?} · mic {} · first words {} · final {} · stop → final {}{}",
+                t.surface,
+                ms(t.press_to_first_pcm_ms),
+                ms(t.press_to_first_partial_ms),
+                ms(t.press_to_first_final_ms),
+                ms(t.stop_to_final_ms),
+                t.device
+                    .as_deref()
+                    .map_or_else(String::new, |d| format!(" · {d}"))
+            );
+        }
+        None => out.push_str("\n  last dictation: none yet"),
+    }
+    out.push_str("\n  /voice mic <name|default> picks the mic · /voice shape <full|plain|off> sets the TUI preset");
+    out
+}
+
 /// The `/aws` reply: which AWS profile Bedrock calls use, harness-wide.
 pub fn aws_profile_line(p: &AwsProfiles) -> String {
     let now = match &p.selected {
@@ -12863,7 +13057,7 @@ mod tests {
         }));
         assert!(matches!(
             m.toggle_dictation("hello".into(), "world".into()),
-            Some(Command::DictationStart)
+            Some(Command::DictationStart { .. })
         ));
         // A second press while the reply is pending does nothing.
         assert!(m.toggle_dictation(String::new(), String::new()).is_none());
@@ -12962,7 +13156,283 @@ mod tests {
         m.apply(UiEvent::DictationFailed("already dictating".into()));
         assert!(m.dictation_pending.is_none());
         m.submit("/dictate", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::DictationStart)));
+        assert!(matches!(rx.try_recv(), Ok(Command::DictationStart { .. })));
+    }
+
+    fn text_ev(
+        id: voice::DictationId,
+        utterance: u32,
+        text: &str,
+        shaped: &str,
+        command: Option<voice::EndCommand>,
+        is_final: bool,
+    ) -> UiEvent {
+        UiEvent::Voice(voice::VoiceEvent::DictationText {
+            id,
+            utterance,
+            text: text.into(),
+            is_final,
+            shaped: shaped.into(),
+            command,
+            actions: vec![],
+        })
+    }
+
+    fn ready_dictating(before: &str, after: &str) -> (Model, voice::DictationId) {
+        let mut m = Model::default();
+        m.apply(UiEvent::Voice(voice::VoiceEvent::DictationModel {
+            state: voice::ModelState::Ready,
+        }));
+        m.toggle_dictation(before.into(), after.into());
+        let id = voice::DictationId(Uuid::now_v7());
+        m.apply(UiEvent::DictationStarting(id));
+        m.apply(UiEvent::Voice(voice::VoiceEvent::DictationStarted { id }));
+        (m, id)
+    }
+
+    /// 153 §7.4 / §16 row 13: "send it" splices then submits once, with the
+    /// correction report; a key during the settle keeps editing; ⏎ sends now.
+    #[test]
+    fn send_it_submits_once() {
+        use voice::{EndCommand, FinishReason, VoiceEvent};
+        let send = Some(EndCommand::Send { near_miss: false });
+        let (tx, mut rx) = unbounded_channel();
+        let (mut m, id) = ready_dictating("", "");
+        m.session = Some(SessionId::new());
+        m.apply(text_ev(
+            id,
+            0,
+            "hello world send it",
+            "hello world",
+            send,
+            false,
+        ));
+        assert!(m.dictation.as_ref().unwrap().send);
+        m.apply(text_ev(
+            id,
+            0,
+            "hello world send it",
+            "hello world",
+            send,
+            true,
+        ));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+            id,
+            reason: FinishReason::Done,
+        }));
+        assert_eq!(m.pending_send.take(), Some("hello world".into()));
+        assert!(m.pending_input.is_none() && m.dictation.is_none());
+        assert_eq!(m.dictated, Some(id));
+        // The UI loop submits the value: the correction goes first, then the message.
+        m.submit("hello world", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::DictationCorrection { id: i, text }) if i == id && text == "hello world"
+        ));
+        assert!(matches!(rx.try_recv(), Ok(Command::Send { text, .. }) if text == "hello world"));
+        assert!(m.dictated.is_none());
+        // A second `Finished` for the same id is nothing.
+        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+            id,
+            reason: FinishReason::Done,
+        }));
+        assert!(m.pending_send.is_none() && m.pending_input.is_none());
+        assert!(rx.try_recv().is_err());
+
+        // Armed, then a typed key: stop without the send; the splice lands in the editor.
+        let (mut m, id) = ready_dictating("a", "");
+        m.apply(text_ev(id, 0, "x send it", "x", send, false));
+        assert!(matches!(m.stop_dictation(false), Some(Command::DictationStop(i)) if i == id));
+        assert!(!m.dictation.as_ref().unwrap().send);
+        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+            id,
+            reason: FinishReason::Done,
+        }));
+        assert_eq!(m.pending_input.take(), Some(("a x".into(), 3)));
+        assert!(m.pending_send.is_none());
+
+        // Armed, then ⏎: "send now" keeps the submit; a new utterance without the phrase disarms.
+        let (mut m, id) = ready_dictating("", "");
+        m.apply(text_ev(id, 0, "x send it", "x", send, true));
+        m.apply(text_ev(id, 1, "more", "more", None, false));
+        assert!(!m.dictation.as_ref().unwrap().send);
+        m.apply(text_ev(id, 1, "more send it", "more", send, false));
+        assert!(matches!(
+            m.stop_dictation(true),
+            Some(Command::DictationStop(_))
+        ));
+        assert!(m.dictation.as_ref().unwrap().send);
+        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+            id,
+            reason: FinishReason::Done,
+        }));
+        assert_eq!(m.pending_send.take(), Some("x more".into()));
+
+        // "send it" with nothing to send: the (empty) splice lands, no submit, no correction.
+        let (mut m, id) = ready_dictating("", "");
+        m.apply(text_ev(id, 0, "send it", "", send, true));
+        m.apply(UiEvent::Voice(VoiceEvent::DictationFinished {
+            id,
+            reason: FinishReason::Done,
+        }));
+        assert_eq!(m.pending_input.take(), Some((String::new(), 0)));
+        assert!(m.pending_send.is_none() && m.dictated.is_none());
+    }
+
+    /// 153 §6.4: the suggestion line takes the keys, answers once, ignores
+    /// other surfaces and dismisses itself after 20 s without an RPC.
+    #[test]
+    fn suggestion_keys() {
+        use voice::{SuggestionAnswer, SuggestionId, Surface, VoiceEvent};
+        let suggestion = |surface: Surface| {
+            UiEvent::Voice(VoiceEvent::DictionarySuggestion {
+                id: SuggestionId(Uuid::now_v7()),
+                heard: "parakeet tee dee tee".into(),
+                typed: "Parakeet TDT".into(),
+                occurrences: 2,
+                surface,
+                has_audio: false,
+            })
+        };
+        let mut m = Model::default();
+        m.apply(suggestion(Surface::Composer));
+        assert!(m.suggestion.is_none() && m.input_focused());
+        m.apply(suggestion(Surface::Tui));
+        let s = m.suggestion.clone().expect("shown");
+        assert!(!m.input_focused());
+        assert!(s.line().contains("“parakeet tee dee tee” → “Parakeet TDT”"));
+        assert_eq!(m.suggestion_wake(), Some(s.shown_ms + 20_000));
+        m.expire_suggestion(s.shown_ms + 19_999);
+        assert!(m.suggestion.is_some());
+        for (answer, label) in [
+            (SuggestionAnswer::Add, "y"),
+            (SuggestionAnswer::NotNow, "n"),
+            (SuggestionAnswer::Never, "N"),
+        ] {
+            m.suggestion = Some(s.clone());
+            assert!(
+                matches!(
+                    m.answer_suggestion(answer),
+                    Some(Command::SuggestionAnswer { id, answer: a }) if id == s.id && a == answer
+                ),
+                "{label}"
+            );
+            assert!(m.suggestion.is_none() && m.input_focused());
+            // Answered once: a second key does nothing.
+            assert!(m.answer_suggestion(answer).is_none());
+        }
+        m.suggestion = Some(s.clone());
+        m.expire_suggestion(s.shown_ms + 20_000);
+        assert!(m.suggestion.is_none() && m.suggestion_wake().is_none());
+    }
+
+    /// 153 §8.2: the mic note rides the header; other ids are ignored.
+    #[test]
+    fn dictation_device_note() {
+        use voice::{DeviceState, VoiceEvent};
+        let (mut m, id) = ready_dictating("", "");
+        m.apply(UiEvent::Voice(VoiceEvent::DictationDevice {
+            id: voice::DictationId(Uuid::now_v7()),
+            device: None,
+            state: DeviceState::Lost,
+        }));
+        assert!(m.dictation.as_ref().unwrap().mic.is_none());
+        m.apply(UiEvent::Voice(VoiceEvent::DictationDevice {
+            id,
+            device: None,
+            state: DeviceState::Lost,
+        }));
+        assert_eq!(
+            m.dictation.as_ref().unwrap().mic.as_deref(),
+            Some("mic lost — reconnecting…")
+        );
+        m.apply(UiEvent::Voice(VoiceEvent::DictationDevice {
+            id,
+            device: Some("Shure MV7".into()),
+            state: DeviceState::Changed,
+        }));
+        assert_eq!(
+            m.dictation.as_ref().unwrap().mic.as_deref(),
+            Some("mic → Shure MV7")
+        );
+    }
+
+    /// 153 §8.1/8.7: `/voice` parses to its three commands; bad forms are usage.
+    #[test]
+    fn voice_cmd_parses() {
+        use voice::Preset;
+        assert!(matches!(voice_cmd(""), Ok(Command::VoiceStatus)));
+        assert!(
+            matches!(voice_cmd("mic default"), Ok(Command::SetInputDevices(v)) if v.is_empty())
+        );
+        assert!(matches!(
+            voice_cmd("mic Shure MV7"),
+            Ok(Command::SetInputDevices(v)) if v == ["Shure MV7"]
+        ));
+        assert!(matches!(
+            voice_cmd("shape plain"),
+            Ok(Command::SetShape(Preset::Plain))
+        ));
+        assert!(matches!(
+            voice_cmd("shape off"),
+            Ok(Command::SetShape(Preset::Off))
+        ));
+        assert!(matches!(
+            voice_cmd("shape full"),
+            Ok(Command::SetShape(Preset::Full))
+        ));
+        for bad in ["mic", "shape", "shape loud", "nonsense"] {
+            assert!(voice_cmd(bad).is_err(), "{bad}");
+        }
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.submit("/voice mic default", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::SetInputDevices(v)) if v.is_empty()));
+        m.submit("/voice shape", &tx);
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Error(e)) if e.starts_with("usage: /voice"))
+        );
+        // The reply line: preference, enumerated mics, last timings.
+        let status = voice::VoiceStatus {
+            model: voice::ModelState::Ready,
+            accelerator: String::new(),
+            voice: String::new(),
+            voices: vec![],
+            speaking: None,
+            queued: vec![],
+            input_devices: vec!["Shure MV7".into()],
+        };
+        let dictation = voice::DictationState {
+            model: voice::ModelState::Ready,
+            active: None,
+            input_device: None,
+            last: Some(voice::DictationTimings {
+                surface: voice::Surface::Tui,
+                press_to_first_pcm_ms: Some(42),
+                press_to_first_partial_ms: Some(310),
+                press_to_first_final_ms: Some(890),
+                stop_to_final_ms: None,
+                polish_ms: None,
+                device: Some("Shure MV7".into()),
+            }),
+        };
+        let devices = vec![
+            voice::InputDevice {
+                name: "Shure MV7".into(),
+                default: false,
+            },
+            voice::InputDevice {
+                name: "MacBook Pro Microphone".into(),
+                default: true,
+            },
+        ];
+        let line = voice_line(&status, &dictation, &devices);
+        assert!(line.contains("mic preference: Shure MV7"));
+        assert!(line.contains("● Shure MV7\n"));
+        assert!(line.contains("○ MacBook Pro Microphone  (system default)"));
+        assert!(line.contains(
+            "last dictation: Tui · mic 42 ms · first words 310 ms · final 890 ms · stop → final — · Shure MV7"
+        ));
     }
 
     /// 76 §0.12: `/talk` with no session asks for one (`TalkStart { session: None }`),

@@ -258,4 +258,76 @@ struct FixtureTests {
         #expect(String(decoding: try TheuthJSON.encoder.encode([AnyEncodable("s"), AnyEncodable(CancelScope.tree)]), as: UTF8.self) == #"["s","tree"]"#)
         #expect(String(decoding: try TheuthJSON.encoder.encode([AnyEncodable(Delivery.nextTurn), AnyEncodable(Delivery?.none)]), as: UTF8.self) == #"["next_turn",null]"#)
     }
+
+    // MARK: 153 (design 153 §14.1/§14.4; fixtures written from the Rust types' serde attributes — the ts-rs bindings are the cross-check)
+
+    private func json<T: Encodable>(_ v: T) throws -> String { String(decoding: try TheuthJSON.encoder.encode(v), as: UTF8.self) }
+
+    @Test func dictationOptsEncodeLikeSerde() throws {
+        let full = try decode(DictationOpts.self, "153-dictation_opts")
+        #expect(full.surface == .anyApp && full.destination == .anyApp(app: "com.apple.Terminal") && full.pressAgoMs == 42)
+        #expect(full.app?.terminal == true && full.app?.commands == ["/clear"] && full.app?.polishPrompt == nil)
+        // Round trip keeps the tag/field names (`kind`, `any_app`, `press_ago_ms`).
+        #expect(try TheuthJSON.decoder.decode(DictationOpts.self, from: try TheuthJSON.encoder.encode(full)) == full)
+        let defaults = try decode(DictationOpts.self, "153-dictation_opts_defaults")
+        #expect(defaults == DictationOpts(), "serde(default): nulls decode to the empty opts")
+        #expect(try json(DictationOpts()) == #"{"commands":[]}"#, "nil optionals are omitted, the engine defaults them")
+        #expect(try json(DictationOpts(surface: .companion, destination: .agentPrompt, pressAgoMs: 7))
+                == #"{"commands":[],"destination":{"kind":"agent_prompt"},"press_ago_ms":7,"surface":"companion"}"#)
+        // The trailing positional of `dictation_start`: `[16000, null]` is today's call.
+        #expect(try json([AnyEncodable(UInt32(16_000)), AnyEncodable(DictationOpts?.none)]) == "[16000,null]")
+    }
+
+    @Test func dictationEventsEveryNewShape() throws {
+        let items = try JSONSerialization.jsonObject(with: try fixture("153-dictation_events")) as! [Any]
+        let wires = try items.map { try TheuthJSON.decoder.decode(DictationWire.self, from: JSONSerialization.data(withJSONObject: $0)) }
+        #expect(wires.map(\.type) == ["DictationText", "DictationText", "DictationText", "DictationDevice", "DictationDevice", "DictionarySuggestion", "DictationFinished"])
+        #expect(wires[0].shaped == "Hi Dana," && wires[0].command == .send(nearMiss: false) && wires[0].actions == [] && wires[0].isFinal == false)
+        #expect(wires[1].command == .scratchThat && wires[1].actions == ["new_line"] && wires[1].actions?.compactMap(Action.init(rawValue:)) == [.newLine])
+        #expect(wires[2].shaped == nil && wires[2].command == nil && wires[2].actions == nil, "a pre-153 engine's event still decodes")
+        #expect(wires[3].device == "AirPods Pro" && wires[3].state == .changed)
+        #expect(wires[4].device == nil && wires[4].state == .lost)
+        #expect(wires[6].reason?.reason == "done")
+        let device = try TheuthJSON.decoder.decode(DictationDevice.self, from: JSONSerialization.data(withJSONObject: items[4]))
+        #expect(device.state == .lost && device.device == nil)
+        let s = try TheuthJSON.decoder.decode(DictionarySuggestion.self, from: JSONSerialization.data(withJSONObject: items[5]))
+        #expect(s.heard == "parakeet tee dee tee" && s.typed == "Parakeet TDT" && s.occurrences == 2 && s.surface == .composer && s.hasAudio)
+        #expect(try json(SuggestionAnswer.notNow) == #""not_now""#)
+    }
+
+    @Test func dictionaryEntriesEveryScope() throws {
+        let entries = try decode([Entry].self, "153-dictionary_list")
+        #expect(entries.map(\.scope) == [.global, .surface(.tui), .app("com.apple.Terminal")])
+        #expect(entries.map(\.kind) == [.term, .command, .abbrev] && entries.map(\.source) == [.user, .learned, .user])
+        #expect(entries[0].variants == [Variant(heard: "parakeet t d t", metaphone: ["PRKT", "PRKT"], seen: 3, lastMs: 1_791_448_800_000)])
+        // `dictionary_put` sends the same shape back: tagged scope, tuple-as-array metaphone.
+        #expect(try json(Entry(id: "user:rg", canonical: "rg", kind: .abbrev, spoken: ["ripgrep"], scope: .app("com.apple.Terminal")))
+                == #"{"canonical":"rg","id":"user:rg","kind":"abbrev","scope":{"app":"com.apple.Terminal","scope":"app"},"source":"user","spoken":["ripgrep"],"tags":[],"variants":[]}"#)
+        #expect(try json(Scope.surface(.anyApp)) == #"{"scope":"surface","surface":"any_app"}"#)
+    }
+
+    @Test func historyPolishAndStatus() throws {
+        let rows = try decode([HistoryRow].self, "153-dictation_history")
+        #expect(rows[0].surface == .anyApp && rows[0].app == "com.apple.Notes" && rows[0].polished != nil && rows[0].hasAudio && rows[0].pressMs == 42)
+        #expect(rows[1].finishedMs == nil && rows[1].reason.hasPrefix("error:") && rows[1].audioBytes == 0)
+        let ok = try decode(PolishReply.self, "153-polish_reply")
+        #expect(ok.text == "Hi Dana, the deploy is done." && ok.ms == 820 && ok.refused == nil)
+        let refused = try decode(PolishReply.self, "153-polish_reply_refused")
+        #expect(refused.text == nil && refused.refused == "agent_prompt is never polished")
+        let timings = try decode(DictationTimings.self, "153-dictation_timings")
+        #expect(timings.surface == .companion && timings.pressToFirstPartialMs == 310 && timings.polishMs == nil)
+        let status = try decode(DictationState.self, "153-dictation_status")
+        #expect(status.model == .ready && status.active == nil && status.inputDevice == "MacBook Pro Microphone" && status.last == timings)
+        let voice = try decode(VoiceStatus.self, "153-voice_status")
+        #expect(voice.model == .failed(message: "checkpoint missing") && voice.inputDevices == ["AirPods Pro", "MacBook Pro Microphone"])
+        let devices = try decode([InputDevice].self, "153-input_devices")
+        #expect(devices.map(\.default) == [false, true])
+        #expect(try decode(EndPhrases.self, "153-end_phrases") == EndPhrases())
+        let model = try decode(ModelInfo.self, "153-model_info")
+        #expect(model.id == "anthropic/claude-haiku" && model.provider == "anthropic")
+        // `set_shape(surface, preset)` and `polish(text, destination, session)` positional params.
+        #expect(try json([AnyEncodable(Surface.tui), AnyEncodable(ShapePreset.plain)]) == #"["tui","plain"]"#)
+        #expect(try json([AnyEncodable("t"), AnyEncodable(Destination.anyApp(app: "com.apple.Notes")), AnyEncodable(String?.none)])
+                == #"["t",{"app":"com.apple.Notes","kind":"any_app"},null]"#)
+    }
 }

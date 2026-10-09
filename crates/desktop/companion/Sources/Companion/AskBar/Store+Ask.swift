@@ -56,16 +56,37 @@ extension Store {
         hold(Held(itemId: "", who: "theuth", label: t, action: .askTheuth(text: t)))
     }
 
+    /// 153 §7.4 "send it": the phrase was the confirmation — no 3 s hold, straight to `commitAsk`.
+    func sendAskNow(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        speaker.stop()
+        Task { await commitAsk(t) }
+    }
+
     /// S3: the Ask bar's toggle, or `--probe-speak`'s override (a probe never writes the owner's defaults).
     var askSpeakEnabled: Bool { AskFlags.probeSpeak || SpokenReplies.ask(Settings.defaults) }
 
     /// After the hold: resolve theuth's desk once per session, `send_input(desk, text, [], null, null)`, then
-    /// collect the desk's reply from the event stream into the receipt row and the Done zone.
+    /// collect the desk's reply from the event stream into the receipt row and the Done zone. 153 §6.1: when the text came
+    /// from a dictation (`correctionId`), `dictation_correction(id, sent_text)` goes out beside it — the engine diffs what was
+    /// dictated against what was sent; §3.3: the reply also drives the answer card (`showAnswerCard`, C1's view).
     func commitAsk(_ text: String) async {
         guard !AskFlags.automated else { return AskLog.write("probe: send suppressed (commit)") }
+        if let dictated = ask.dictation.correctionId {
+            _ = ask.dictation.handle(.settled)
+            Task { [client = client!] in
+                do { try await client.dictationCorrection(id: dictated, sentText: text); AskLog.write("dictation_correction(\(dictated)) sent") }
+                catch { Log.write("dictation_correction failed: \(error)") }
+            }
+        }
+        askCard.begin(question: text, kind: .ask) // `begin` enters `.thinking` itself
+        askCard.status = "thinking"
+        showAnswerCard(askCard)
         do {
             let session = try await resolveDesk()
             _ = try await client.sendInput(session: session, text: text)
+            askCard.session = session // O / a typed follow-up on the card go to the desk that answered
             let id = "ask:\(UUID().uuidString)"
             ask.router.sent(on: session)
             ask.current = id
@@ -77,6 +98,9 @@ extension Store {
             ask.router.forget() // a refused or closed desk is resolved again on the next send
             setReceipt(.failed("\(error)"))
             expireReceipt(after: 6)
+            askCard.phase = .failed
+            askCard.status = "couldn't reply — \(error)"
+            showAnswerCard(askCard)
             AskLog.write("ask failed: \(error)")
         }
     }
@@ -119,11 +143,13 @@ extension Store {
     }
 
     /// Every event, raw: `TextDelta`/`TurnFinished`/`Error` on the desk feed the reply while one is being collected
-    /// (a failed or cancelled turn ends it with the reason); `Dictation*` (W6) feed the live dictation.
+    /// (a failed or cancelled turn ends it with the reason); `Dictation*` (W6) feed the live dictation; `DictionarySuggestion`
+    /// (153 §6.3) the card.
     func askObserve(_ data: Data) {
         guard let d = try? TheuthJSON.decoder.decode(Delta.self, from: data) else { return }
         if d.type == "PendingPrompts" { return focusDeltas() }
         if d.type.hasPrefix("Dictation") { return dictationObserve(data) }
+        if d.type == "DictionarySuggestion" { return suggestionObserve(data) }
         guard let r = ask.router.reply, !r.finished, let session = d.session else { return }
         let event: ReplyEvent
         switch d.type {
@@ -137,41 +163,45 @@ extension Store {
         let text = reply.receiptText
         if let id = ask.current { ask.receipts.update(id: id, text: text) }
         setReceipt(.reply(who: "theuth", text: text.isEmpty ? "…" : text, session: reply.session))
+        // 153 §3.3: the same stream drives the answer card (`AnswerCardState` is C1's model; the view is theirs too).
+        askCard.phase = reply.failure == nil ? .answer : .failed
+        askCard.text = reply.text
+        askCard.status = reply.failure.map { "couldn't reply — \($0)" } ?? ""
+        askCard.turnFinished = reply.finished
+        showAnswerCard(askCard)
         guard reply.finished else { return }
         expireReceipt(after: 12)
         // S3: the same reply the receipt row shows, spoken through the voice key's path once it is final; partials never.
         if SpokenReplies.shouldSpeak(enabled: askSpeakEnabled, reply: reply) { speaker.speak(reply.text, on: reply.session, from: .askBar) }
     }
 
-    // MARK: live dictation (W6; design 54 §8)
-
-    private struct DictationWire: Decodable {
-        struct Reason: Decodable { let reason: String; let message: String? }
-        let type: String
-        let id: String?
-        let utterance: Int?
-        let text: String?
-        let isFinal: Bool?
-        let levels: [Float]?
-        let reason: Reason?
-        enum CodingKeys: String, CodingKey { case type, id, utterance, text, isFinal = "final", levels, reason }
-    }
+    // MARK: live dictation (W6; design 54 §8) — decoded with `TheuthKit.DictationWire` (153 §14.4)
 
     /// Reduce one `Dictation*` event; `onDictation(dictation, takeText)` lets the Ask bar update its field.
     private func dictationObserve(_ data: Data) {
         onDictationWire?(String(decoding: data, as: UTF8.self))
-        guard let w = try? TheuthJSON.decoder.decode(DictationWire.self, from: data), let id = w.id else { return }
-        let take: Bool
-        switch w.type {
-        // 149g: `DictationStarted` is broadcast for every dictation (the voice key's, Tauri's); a surface's own id is its
-        // `dictation_start` reply — adopting the wire's while `.starting` took a foreign dictation as ours.
-        case "DictationStarted": return
-        case "DictationText": take = ask.dictation.handle(.text(id: id, utterance: w.utterance ?? 0, text: w.text ?? "", final: w.isFinal ?? false))
-        case "DictationLevel": take = ask.dictation.handle(.level(id: id, levels: w.levels ?? []))
-        case "DictationFinished": take = ask.dictation.handle(.finished(id: id, error: w.reason?.reason == "error" ? (w.reason?.message ?? "dictation failed") : nil))
-        default: return
-        }
+        guard let w = try? TheuthJSON.decoder.decode(DictationWire.self, from: data), let e = AskDictation.event(w) else { return }
+        let take = ask.dictation.handle(e)
         onDictation?(ask.dictation, take)
+    }
+
+    /// 153 §6.3: the engine proposes a dictionary entry after a correction; the card (`DictionarySuggestionCard`) shows
+    /// `ask.suggestion` and answers through `answerSuggestion`. A newer suggestion replaces an unanswered one.
+    private func suggestionObserve(_ data: Data) {
+        guard let s = try? TheuthJSON.decoder.decode(DictionarySuggestion.self, from: data) else { return }
+        ask.suggestion = s
+        AskLog.write("dictionary suggestion \(s.id): \(s.heard) → \(s.typed)")
+    }
+
+    /// `dictionary_suggestion_answer(id, answer)`; `nil` = the 20 s auto-dismiss, which the engine counts itself (§6.4: no cooldown).
+    func answerSuggestion(_ answer: SuggestionAnswer?) {
+        guard let s = ask.suggestion else { return }
+        ask.suggestion = nil
+        guard let answer else { return }
+        Task {
+            do { try await client.dictionarySuggestionAnswer(id: s.id, answer: answer); AskLog.write("suggestion \(s.id) → \(answer.rawValue)") }
+            catch { Log.write("dictionary_suggestion_answer failed: \(error)") }
+        }
     }
 
     /// The last 24 h of `user@companion` activity (E4) → the Done zone; runs after every refetch.
@@ -194,6 +224,8 @@ extension Store {
 }
 
 @MainActor private var activityLogged = false
+/// §3.3: the Ask bar's one answer card, fed by `commitAsk` and the reply stream; `Store.showAnswerCard` renders it (C1).
+@MainActor private var askCard = CompanionCore.AnswerCardState()
 
 /// stderr plus `/tmp/130-w3-probe.log` during `--ask-probe`.
 enum AskLog {
