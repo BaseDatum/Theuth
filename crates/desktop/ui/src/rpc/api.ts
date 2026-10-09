@@ -159,6 +159,15 @@ import type { NotebookDetail } from '@/rpc/bindings/NotebookDetail'
 import type { NotebookItem } from '@/rpc/bindings/NotebookItem'
 import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
 import type { ItemKind } from '@/rpc/bindings/ItemKind'
+import type { ContextLevel } from '@/rpc/bindings/ContextLevel'
+import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
+import type { InsightInstruction } from '@/rpc/bindings/InsightInstruction'
+import type { InsightRun } from '@/rpc/bindings/InsightRun'
+import type { AskStarted } from '@/rpc/bindings/AskStarted'
+import type { AskSummary } from '@/rpc/bindings/AskSummary'
+import type { OverviewKind } from '@/rpc/bindings/OverviewKind'
+import type { OverviewRun } from '@/rpc/bindings/OverviewRun'
+import type { Overview } from '@/rpc/bindings/Overview'
 import type { ItemRemoved } from '@/rpc/bindings/ItemRemoved'
 import type { DeletePreview } from '@/rpc/bindings/DeletePreview'
 import type { SourceAddArgs } from '@/rpc/bindings/SourceAddArgs'
@@ -440,6 +449,28 @@ export interface Api {
   save_answer_as_note(session: SessionId, turn: number, notebook: DocId): Promise<SavedAnswer>
   /** Append the assistant message at `turn` to `note` under `## From chat · <date>`. Owner only. */
   promote_answer(session: SessionId, turn: number, note: DocId): Promise<null>
+  /** 144 wave 2 §5.1: pin a notebook item's dial level for `session`. Owner only. */
+  notebook_context_set(session: SessionId, item: string, kind: ItemKind, level: ContextLevel): Promise<null>
+  /** Back to the default rule for `item` in `session`. Owner only. */
+  notebook_context_clear(session: SessionId, item: string): Promise<null>
+  /** Pin every live item of `notebook` (of `kind` when given) at `level` for `session`. Owner only. */
+  notebook_context_set_all(session: SessionId, notebook: DocId, kind: ItemKind | null, level: ContextLevel): Promise<null>
+  /** §5.2: what the next turn's `<notebook>` block carries; `session: null` = a new thread (the default rule). Owner only. */
+  notebook_context_estimate(notebook: DocId, session: SessionId | null): Promise<ContextEstimate>
+  /** §4.3: one more insight section on a source (a builtin or a `notebook_insight` skill); the `###` heading's block id. Hub only. */
+  insight_run(source: DocId, instruction: InsightInstruction): Promise<InsightRun>
+  /** Promote an insight section to a note with the provenance trailer, filed in `notebook` (or every notebook holding the source). Hub only. */
+  insight_promote(source: DocId, block: string, notebook: DocId | null): Promise<DocId>
+  /** The three builtins, then the skills whose front matter has `notebook_insight: true`. */
+  insight_skills(): Promise<string[]>
+  /** §9: ask across `scope`; a new `kind: ask` session streams `NotebookAsk` on `subscribe_events`. Owner only. */
+  notebook_ask(scope: DocId[], question: string, save_into: DocId | null): Promise<AskStarted>
+  /** The ask sessions, newest first. Owner only. */
+  notebook_ask_list(limit: number | null): Promise<AskSummary[]>
+  /** §10: generate (or regenerate → next version) one overview of `notebook` in its overview session. Owner only. */
+  notebook_overview_run(notebook: DocId, kind: OverviewKind): Promise<OverviewRun>
+  /** The overviews of `notebook`, newest version first per kind. Owner only. */
+  notebook_overviews(notebook: DocId): Promise<Overview[]>
   /** Rewrite a schedule's `enabled:` line (33 §3.5; the toggle); rejects with `no such schedule`. */
   enable_schedule(name: string, enabled: boolean): Promise<ScheduleInfo>
   /** Copy artifact `id`'s blob to `dest` (parent created; refuses to overwrite); returns `dest` (35 §3.5). */
@@ -1183,6 +1214,9 @@ export const METHODS = [
   'handoffs_list',
   'harness_options',
   'info',
+  'insight_promote',
+  'insight_run',
+  'insight_skills',
   'invite_node',
   'knowledge_delete',
   'knowledge_get',
@@ -1271,7 +1305,13 @@ export const METHODS = [
   'mesh_status',
   'nb_search',
   'new_session',
+  'notebook_ask',
+  'notebook_ask_list',
   'notebook_chats',
+  'notebook_context_clear',
+  'notebook_context_estimate',
+  'notebook_context_set',
+  'notebook_context_set_all',
   'notebook_create',
   'notebook_delete',
   'notebook_delete_preview',
@@ -1280,6 +1320,8 @@ export const METHODS = [
   'notebook_item_remove',
   'notebook_items_list',
   'notebook_list',
+  'notebook_overview_run',
+  'notebook_overviews',
   'notebook_update',
   'packet_get',
   'path_complete',

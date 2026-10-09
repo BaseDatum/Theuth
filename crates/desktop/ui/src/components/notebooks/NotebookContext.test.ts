@@ -13,7 +13,7 @@ vi.hoisted(() => {
 // `vi.mock` is hoisted above the imports: the doubles the factories close over must be hoisted with them.
 const m = vi.hoisted(() => ({
   api: {
-    create_session: vi.fn(async () => ({ session: 'fresh1', retention: 'durable' })),
+    create_session: vi.fn(async (_opts: Record<string, unknown>) => ({ session: 'fresh1', retention: 'durable' })),
     rename_session: vi.fn(async () => null),
   },
   ctx: { notebook_context_set: vi.fn(async () => null) },

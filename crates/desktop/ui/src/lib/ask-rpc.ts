@@ -1,50 +1,21 @@
-// 144 §9/§10 (wave 2 contract §2): ask across notebooks and overviews over RPC. The four methods are E2's and not
-// yet on `rpc/api.ts`'s `Api` (its `METHODS` must equal the server's `methods.json`), so this module binds them on the
-// connection's client itself; once the closer adds them to `Api`, `AskApi` becomes `Pick<Api, …>` and `useAskApi`
-// returns `useApi()` — the callers do not change.
+// 144 §9/§10 (wave 2 contract §2): ask across notebooks and overviews over RPC — the query keys, the `NotebookAsk`
+// event fold and the hooks the ask view and the overviews section share.
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useApi } from '@/lib/rpc'
+import type { Api } from '@/rpc/api'
 import type { AskBranch } from '@/rpc/bindings/AskBranch'
 import type { AskEvent } from '@/rpc/bindings/AskEvent'
 import type { AskHit } from '@/rpc/bindings/AskHit'
-import type { AskStarted } from '@/rpc/bindings/AskStarted'
-import type { AskSummary } from '@/rpc/bindings/AskSummary'
-import type { DocId } from '@/rpc/bindings/DocId'
-import type { Overview } from '@/rpc/bindings/Overview'
-import type { OverviewKind } from '@/rpc/bindings/OverviewKind'
-import type { OverviewRun } from '@/rpc/bindings/OverviewRun'
 import type { SessionId } from '@/rpc/bindings/SessionId'
-import type { RpcClient } from '@/rpc/client'
 import type { WireEvent } from '@/rpc/events'
-import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
 
-export interface AskApi {
-  /** Start an ask run over `scope` (live notebooks); the answer lands in the returned `kind: ask` session (§9). */
-  notebook_ask(scope: DocId[], question: string, save_into: DocId | null): Promise<AskStarted>
-  /** Past asks, newest first. */
-  notebook_ask_list(limit: number | null): Promise<AskSummary[]>
-  /** Generate (or regenerate) one overview kind; the result is an artifact item of the notebook (§10). */
-  notebook_overview_run(notebook: DocId, kind: OverviewKind): Promise<OverviewRun>
-  /** Every version of every kind, newest version first per kind. */
-  notebook_overviews(notebook: DocId): Promise<Overview[]>
-}
-
-const METHODS = ['notebook_ask', 'notebook_ask_list', 'notebook_overview_run', 'notebook_overviews'] as const satisfies readonly (keyof AskApi)[]
-
-/** The §2 methods over one client; params positional, in trait order, like `makeApi`. */
-export function askApi(client: RpcClient): AskApi {
-  const api = {} as Record<keyof AskApi, (...args: unknown[]) => Promise<unknown>>
-  for (const name of METHODS) api[name] = (...args) => client.call(name, args)
-  return api as unknown as AskApi
-}
+/** Contract §2: ask across notebooks and overviews (E2's four `Api` methods). */
+export type AskApi = Pick<Api, 'notebook_ask' | 'notebook_ask_list' | 'notebook_overview_run' | 'notebook_overviews'>
 
 /** The connected engine's §2 methods; like `useApi`, only rendered once connected. */
-export function useAskApi(): AskApi {
-  const client = useConnection((s) => s.client)
-  if (!client) throw new Error('useAskApi before the connection opened')
-  return useMemo(() => askApi(client), [client])
-}
+export const useAskApi = (): AskApi => useApi()
 
 export const askKeys = {
   list: ['notebooks', 'asks'] as const,

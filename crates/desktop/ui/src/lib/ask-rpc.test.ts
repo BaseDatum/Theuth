@@ -1,8 +1,7 @@
 import { expect, test, vi } from 'vitest'
 import type { AskEvent } from '@/rpc/bindings/AskEvent'
-import { EMPTY_ASK, applyAskEvent, askApi, askEventOf, hitHref } from './ask-rpc'
+import { EMPTY_ASK, applyAskEvent, askEventOf, hitHref } from './ask-rpc'
 
-vi.mock('@/store/connection', () => ({ useConnection: () => null }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
 
 test('askEventOf takes the NotebookAsk frame of its session only (contract §2 wire shape)', () => {
@@ -34,13 +33,4 @@ test('applyAskEvent folds plan → branch hits → partials (replacing) → answ
 test('hitHref is the §6.1 chip grammar; no block → the document', () => {
   expect(hitHref({ id: 'd1', block: 'b1', title: '', score: 0 }, 'sources')).toBe('theuth://sources/d1#b1')
   expect(hitHref({ id: 'n1', block: null, title: '', score: 0 }, 'notes')).toBe('theuth://notes/n1')
-})
-
-test('askApi sends the four §2 methods positionally over the client', async () => {
-  const call = vi.fn(async (method: string, params: unknown[]) => ({ method, params }))
-  const api = askApi({ call } as never)
-  await api.notebook_ask(['a', 'b'], 'why?', null)
-  await api.notebook_overview_run('nb', 'mind_map')
-  expect(call).toHaveBeenNthCalledWith(1, 'notebook_ask', [['a', 'b'], 'why?', null])
-  expect(call).toHaveBeenNthCalledWith(2, 'notebook_overview_run', ['nb', 'mind_map'])
 })
