@@ -114,17 +114,6 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         Content = host;
         // 149 WW2 (§7.4 #2): opaque with DWM rounded corners (the system shadow stays); the W6 backdrop path is kept as-is below.
         if (!Shape.RoundCorners(Hwnd)) Log.Write("panel: DWM rounded corners unavailable (rectangular)");
-        talk = new RowTalk(store, DispatcherQueue);
-        talk.LiveText += t =>
-        {
-            if (!talkBusy || replyBox.Parent is null) return;
-            replyBox.Text = t;
-            replyBox.SelectionStart = t.Length;
-        };
-        talk.Finished += OnCardTalkFinished;
-        host.PreviewKeyUp += OnPreviewKeyUp;
-        replyBox.GotFocus += (_, _) => { if (replyCap is { } c) c.Visibility = Visibility.Collapsed; };
-        replyBox.LostFocus += (_, _) => { if (replyCap is { } c) c.Visibility = replyBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed; };
         // W6 item 2 (§4.2, A7): Mica Base, Acrylic Base where Mica is unsupported, the opaque surface when transparency effects are off.
         ApplyEffects(initial: true);
         if (SystemEffects.Current is { } fx) fx.Changed += () => ApplyEffects(initial: false);
@@ -152,6 +141,18 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             replyBox.Text = "";
             store.SubmitReply(text);
         };
+
+        talk = new RowTalk(store, DispatcherQueue);
+        talk.LiveText += t =>
+        {
+            if (!talkBusy || replyBox.Parent is null) return;
+            replyBox.Text = t;
+            replyBox.SelectionStart = t.Length;
+        };
+        talk.Finished += OnCardTalkFinished;
+        host.PreviewKeyUp += OnPreviewKeyUp;
+        replyBox.GotFocus += (_, _) => { if (replyCap is { } c) c.Visibility = Visibility.Collapsed; };
+        replyBox.LostFocus += (_, _) => { if (replyCap is { } c) c.Visibility = replyBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed; };
 
         Activated += (_, e) =>
         {
@@ -304,7 +305,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             }
             return;
         }
-        if (textField && press.Chord == Chord.Escape && host.XamlRoot is { } xr2 && FocusManager.GetFocusedElement(xr2) == replyBox && store.HeldNow is null && store.NoteFor is null)
+        if (textField && press.Chord == Chord.Escape && host.XamlRoot is { } xr2 && ReferenceEquals(FocusManager.GetFocusedElement(xr2), replyBox) && store.HeldNow is null && store.NoteFor is null)
         {
             // Esc in the always-visible reply field: leave the field first (a second Esc closes the panel).
             e.Handled = true;

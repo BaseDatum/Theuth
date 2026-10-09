@@ -483,7 +483,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     private void Capsule(int physicalHeight)
     {
         int r = Math.Min(Physical(28), physicalHeight / 2);
-        if (!Shape.Set(Hwnd, new[] { new Shape.Blob(0, 0, Physical(Width), physicalHeight, r) })) Log.Write($"ask bar: SetWindowRgn failed {Win32.LastError()}");
+        if (!Interop.Shape.Set(Hwnd, new[] { new Interop.Shape.Blob(0, 0, Physical(Width), physicalHeight, r) })) Log.Write($"ask bar: SetWindowRgn failed {Win32.LastError()}");
     }
 
     // MARK: brushes and small views

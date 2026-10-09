@@ -31,6 +31,9 @@ internal static class Shape
     [DllImport("user32.dll", SetLastError = true)]
     private static extern int SetWindowRgn(nint hwnd, nint rgn, bool redraw);
 
+    /// <summary>CsWin32's <c>HWND.Value</c> is a <c>void*</c> in this generator version.</summary>
+    private static unsafe nint H(HWND h) => (nint)h.Value;
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(nint hwnd, uint attr, ref int value, int size);
 
@@ -40,7 +43,7 @@ internal static class Shape
     /// <summary>Shape the window as the union of <paramref name="blobs"/>; the system owns the region afterwards. Empty → the whole rectangle.</summary>
     public static bool Set(HWND hwnd, IReadOnlyList<Blob> blobs)
     {
-        if (blobs.Count == 0) return SetWindowRgn(hwnd.Value, 0, true) != 0;
+        if (blobs.Count == 0) return SetWindowRgn(H(hwnd), 0, true) != 0;
         nint all = 0;
         foreach (var b in blobs)
         {
@@ -58,16 +61,16 @@ internal static class Shape
             DeleteObject(r);
         }
         if (all == 0) return false;
-        return SetWindowRgn(hwnd.Value, all, true) != 0; // SetWindowRgn takes ownership
+        return SetWindowRgn(H(hwnd), all, true) != 0; // SetWindowRgn takes ownership
     }
 
     /// <summary>Back to a rectangle.</summary>
-    public static void Clear(HWND hwnd) => SetWindowRgn(hwnd.Value, 0, true);
+    public static void Clear(HWND hwnd) => SetWindowRgn(H(hwnd), 0, true);
 
     /// <summary>DWM's rounded corners (Windows 11; ~8 px, the system shadow stays). False when DWM refused (Windows 10).</summary>
     public static bool RoundCorners(HWND hwnd, bool round = true)
     {
         int v = round ? DWMWCP_ROUND : DWMWCP_DONOTROUND;
-        return DwmSetWindowAttribute(hwnd.Value, DWMWA_WINDOW_CORNER_PREFERENCE, ref v, sizeof(int)) == 0;
+        return DwmSetWindowAttribute(H(hwnd), DWMWA_WINDOW_CORNER_PREFERENCE, ref v, sizeof(int)) == 0;
     }
 }

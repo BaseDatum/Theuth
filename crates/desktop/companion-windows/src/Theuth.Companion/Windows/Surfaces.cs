@@ -77,12 +77,12 @@ internal sealed class Surfaces : IDisposable
         rail.AgentsClicked += pillRect => OpenAgents(new PanelAnchor(PanelAnchorKind.Rail, pillRect, rail.Side == "left"), null);
         rail.AskClicked += _ => { if (!probe) store.Perform(Intent.AskBar); };
         rail.PointClicked += () => { Log.Write("rail: point pressed"); PointRequested?.Invoke(null); };
-        rail.MoreClicked += at => { if (!probe) menu.Show(BuildMenu(), at); };
         rail.DotHovered += session => store.HoveredSession = session;
         agents.LegendRequested += () => ShowLegend(fromPanel: false);
         panel.PointRequested += card => { Log.Write($"panel: point pressed on {card.Item.Id}"); panel.Close(returnFocus: false); PointRequested?.Invoke(card); };
         legend = new LegendWindow(store);
         menu = new TrayMenu(host);
+        rail.MoreClicked += at => { if (!probe) menu.Show(BuildMenu(), at); };
         SystemEffects.ApplyTransitions(legend.Hwnd, effects.AnimationsEnabled);
         effects.Changed += () => SystemEffects.ApplyTransitions(legend.Hwnd, effects.AnimationsEnabled);
 

@@ -98,6 +98,17 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         talkBox = new TextBox { PlaceholderText = "Listening…", FontSize = 13, IsSpellCheckEnabled = false, TextWrapping = TextWrapping.Wrap, AcceptsReturn = false, MaxLength = 4000 };
         AutomationProperties.SetAutomationId(talkBox, "agent-talk-field");
         AutomationProperties.SetName(talkBox, "Say to this agent");
+        var layout = new Grid();
+        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(receiptRow, 1);
+        layout.Children.Add(scroll);
+        layout.Children.Add(receiptRow);
+        host = new UserControl { Content = layout, IsTabStop = true, UseSystemFocusVisuals = false };
+        AutomationProperties.SetAutomationId(host, "agents-panel");
+        AutomationProperties.SetName(host, "Agents panel");
+        host.PreviewKeyDown += OnPreviewKeyDown;
+        host.PreviewKeyUp += OnPreviewKeyUp;
         talkBox.KeyDown += (_, e) =>
         {
             if (e.Key == VirtualKey.Enter)
@@ -127,17 +138,6 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
             }
         };
 
-        var layout = new Grid();
-        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(receiptRow, 1);
-        layout.Children.Add(scroll);
-        layout.Children.Add(receiptRow);
-        host = new UserControl { Content = layout, IsTabStop = true, UseSystemFocusVisuals = false };
-        AutomationProperties.SetAutomationId(host, "agents-panel");
-        AutomationProperties.SetName(host, "Agents panel");
-        host.PreviewKeyDown += OnPreviewKeyDown;
-        host.PreviewKeyUp += OnPreviewKeyUp;
         host.ActualThemeChanged += (_, _) => { if (IsOpen) Render(force: true); };
         Content = host;
         if (!Shape.RoundCorners(Hwnd)) Log.Write("agents panel: DWM rounded corners unavailable (rectangular)");
