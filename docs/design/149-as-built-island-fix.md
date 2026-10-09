@@ -54,8 +54,9 @@ therefore asserts that a synthetic click on the eye produces the very log line t
    movement would have become `.detached` in place.
 6. **The window-level double-click** — `IslandWindow.sendEvent` :46 called `onDoubleClick` for any double-click inside `drawn`
    except the box: a quick double-click on a topic would have snapped the island back (pre-empting the control).
-7. **Key on any click** — `wantsKeyOnClick` :71 made the panel key for any click inside `drawn`; `KeyBindings.swift:98` says the
-   island takes key only in its request box.
+7. **Key on any click** — `wantsKeyOnClick` :71 made the panel key for any click inside `drawn`; `KeyBindings.swift:98` said the
+   island takes key only in its request box. (The first fix narrowed it to the box; §N restores key-on-any-island-click by
+   ruling, with the box focused only by its own click — and the comment now says so.)
 
 ## The fixes
 - `CompanionCore/IslandModel.swift` — `linger` and `lastActivity` gone. `live(_:)` (Starting/Recording/Paused/Stopping),
@@ -115,7 +116,7 @@ to have appeared: AFTER `eye click … setEye logged "eye hidden=true → sharin
 | box takes key → ⎋ releases | FAIL `boxFocused=false`; ⎋ closed the pane | PASS `key=true boxFocused=true` → `key=false boxFocused=false state=open` |
 | grip drag (down, 10 × 20 px, up) | FAIL `moved=0.0 dragPoll=false` | PASS `moved=200.0 state=detached` frame remembered for the display UUID |
 | grip double-click | FAIL (no detached grip) | PASS `state=open frames=[:]` back at the screen top |
-| **total** | **1/14** | **16/16** (`clicks`, twice from the bundle), **16/16** (`clicks-nonotch`, 3 consecutive bundle runs; one earlier run 15/16 — the hover flake below, before the retrying sweep) |
+| **total** | **1/14** | **16/16** (`clicks`, twice from the bundle), **16/16** (`clicks-nonotch`, 3 consecutive bundle runs; one earlier run 15/16 — the hover flake below, before the retrying sweep); with §N's eight key steps **24/24** (`clicks` and `clicks-nonotch`, final bundle) |
 | `stop`: Done through the decoder → hidden ≤ 1 s | decoded PASS, hidden FAIL `visible=true` | 3/3 PASS `visible=false shown=false` |
 
 PNGs (window captures of the probe's own window): `/tmp/149i-clicks-start.png` (open, pointer far away), `-menu.png`
@@ -140,11 +141,54 @@ sharing — viewers can see the island" / "Hidden from screen sharing (best effo
 - System colours only; no hex (grep stays empty). The state follows `ui.eyeHidden` — under a `--shareable` probe `sharingType`
   stays `.readOnly` by design, so the probe's `-hidden.png` shows the green glyph while the capture could still see the window.
 
+## §N — keyboard cycling of the briefs (J/K, ↑/↓)
+Owner, 16:12: "we should probably use the same J and K keys to cycle through briefs as well, and you should also probably be
+bound to the up and down arrows." Ruling: while the island is the key window, J / ↓ = next brief, K / ↑ = previous brief,
+wrapping (the Attention panel's J/K convention); the focused topic follows the shown brief exactly as a click does.
+- **Direction.** Next = down the stack = older = the pane's ↓ chevron (`meetingMove(-1)`); previous = newer = the ↑ chevron.
+  `MeetingReducer.move(_:_:wrap:)` (`CompanionCore/MeetingReducer.swift:152`): the chevrons clamp as before, the keys wrap;
+  an empty stack is left alone (the old clamp could set cursor −1 there). `Store.meetingMove(_:wrap:)` is the one path for
+  chevrons and keys; `IslandController.meetingChanged` moves `ui.focusedTopic` to the shown brief's topic whenever the cursor
+  or current brief changes — click, key or the stack's own jump alike.
+- **Key table** (`CompanionCore/KeyBindings.swift`): `.islandNext` J (38) "Next brief", `.islandPrevious` K (40) "Previous
+  brief" in the `.island` scope; fixed aliases `↓ → islandNext`, `↑ → islandPrevious`. Settings › Keys and the Legend list them
+  (table-driven). `KeyScope.island`'s doc no longer says "key only in its request box".
+- **Making the island key.** `wantsKeyOnClick` is back to "anywhere inside the drawn island" (`IslandPanel.swift:74`): a click
+  on the strip or pane makes the panel key without focusing the request box (verified: `pane click takes key, box unfocused`);
+  only a click on the box focuses its field. The handler still never swallows the event.
+- **Inside the request box** (`IslandModel.cyclesBrief(arrow:boxFocused:textEmpty:)`, `IslandPanel.swift:338`): J and K type
+  letters, never cycle; ↑/↓ cycle only while the text is empty, otherwise SwiftUI's field gets them (caret). ⎋ in the field blurs
+  it and the island stays key; ⎋ with no field focus hands key back to the previous app, as before (`escape()`).
+- **Root-cause fix on the way:** arrow presses never matched the `.down`/`.up` aliases in any panel — AppKit sets the implicit
+  `.function` modifier flag on arrow/F-key events and `LegendController.press` copied it into the chord, while the aliases carry
+  none. `press(e)` (`Settings/Legend.swift:79`) now drops `.function` for non-character keys (it stays a real modifier on
+  character keys). This also makes the Attention and agents panels' ↓/↑ aliases match real arrow presses [INFERENCE for those two
+  panels: same code path, not probed here].
+- **Tests** (192 → 194): `IslandModelTests.briefKeysCycleOutsideTheBoxAndOnlyArrowsInAnEmptyBox` (the six field-rule cases
+  + the J/K/↑/↓ rows resolve in `.island`), `MeetingReducerTests.keyCycleWrapsAtBothEnds` (wrap both ways, clamp untouched,
+  empty stack unchanged).
+- **Probe** (`clicks`, 16 → 24 steps, `/tmp/149i-probe-after.log`): synthetic click on the brief pane → `key=true
+  boxFocused=false`; J → `cursor=0 … focusedTopic=0`; K → `cursor=1 … focusedTopic=1`; ↑ at the newest → `cursor=0` (wrap);
+  ↓ at the oldest → `cursor=1` (wrap); click the box → focused; type `x`, then J K ↑ ↓ → `text="xjk" cursor=1` (J/K typed,
+  nothing cycled, arrows left the text); box emptied, ↑ → `cursor=0` while still focused; ⎋ → `key=true boxFocused=false
+  firstResponder=IslandWindow`; ⎋ → `key=false`. **24/24 PASS** — `clicks` 3/3 and `clicks-nonotch` 2/2 from the debug build,
+  and from the bundle whenever this probe held the keyboard focus (see below). Before the `press` fix the same run was 20/24:
+  both arrow steps and, with them, the two ⎋ steps failed.
+- **Shared-machine hazard, found and guarded.** Synthetic keyboard events go to the FRONTMOST app's key window. In several bundle
+  runs the first J (and once K) after the pane click did not arrive, and the diagnostic line read `key=true active=true
+  frontmost=io.theuth.mac` — the owner was working in his desktop app, which held the keyboard focus, so those keystrokes went
+  to HIS window. `postKey` now withholds every key (⎋ included) unless `NSWorkspace.shared.frontmostApplication == .current`,
+  logging `WITHHELD — keyboard focus is with <bundle>`; the pane is clicked once more if the focus is elsewhere after the first
+  click; a withheld step fails honestly instead of typing into the owner's app. From 16:00 on the owner's desktop app held the
+  focus for every bundle run (52+ `WITHHELD` lines), so the later `clicks` runs read 17–19/24 with all 16 click steps passing and
+  the 8 key steps withheld; the §N proof is the six focused runs above (3 debug + 3 bundle, 24/24 each). Runs with a
+  `WITHHELD`/`J not acted` line are environmental, not the island's behaviour.
+
 ## Gates (all `env BUILD_LABEL=149i build-lock …`)
-- `bash crates/desktop/companion/test.sh` — **192 tests in 30 suites passed** (`/tmp/149i-test.log`; 190 + `IslandModelTests`
+- `bash crates/desktop/companion/test.sh` — **194 tests in 30 suites passed** (`/tmp/149i-test.log`; 190 + `IslandModelTests`
   reshaped: `visibleWhileLive`, `visibleWhenAlwaysShow`, `hiddenTheMomentTheMeetingIsNotLive`,
   `attachedLayoutIsOpenWhileLiveUnlessCollapsed`, `collapseIsRememberedForTheCurrentMeetingOnly`,
-  `aGripClickOnTheOpenPaneSnapsBackNotDetaches`; the drag/snap-back/UUID/off-screen tests unchanged).
+  `aGripClickOnTheOpenPaneSnapsBackNotDetaches`, §N's two; the drag/snap-back/UUID/off-screen tests unchanged).
 - `swift build -c release --package-path crates/desktop/companion` — Build complete (inside the bundle script).
 - `bash scripts/bundle-companion.sh` + `codesign --verify --deep --strict "target/release/companion/Theuth Companion.app"` —
   `valid on disk · satisfies its Designated Requirement` (`/tmp/149i-bundle.log`, 2.14.0).
@@ -170,3 +214,5 @@ sharing — viewers can see the island" / "Hidden from screen sharing (best effo
 3. Drag the island by its left grip onto the external display and let go: it stays there, detached; double-click the handle at
    its top: it returns to the top of the screen.
 4. ⌃M to stop (or Stop in ⋮): the island fades and is gone within a second; the notes/summary afterwards show no island.
+5. (§N) Click the brief pane, then J / ↓ and K / ↑: the brief and the highlighted topic walk the stack and wrap; click the
+   request box, type a word: J/K type, ↑/↓ move the caret; ⎋ leaves the box, a second ⎋ gives the keyboard back to your app.

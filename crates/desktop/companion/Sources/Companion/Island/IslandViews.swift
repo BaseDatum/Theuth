@@ -329,6 +329,7 @@ struct BriefPane: View {
             .foregroundColor(.secondary)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
+        .islandRect("brief", ui)
     }
 }
 

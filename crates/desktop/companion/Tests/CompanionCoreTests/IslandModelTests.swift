@@ -36,6 +36,20 @@ struct IslandModelTests {
         #expect(IslandModel.attached(live: false, collapsed: false) == .closed) // the idle wordmark ("Always show")
     }
 
+    @Test func briefKeysCycleOutsideTheBoxAndOnlyArrowsInAnEmptyBox() {
+        // 149i §N: J/K and ↑/↓ cycle while the box is not focused; in the box J/K type (never cycle), ↑/↓ cycle only when empty.
+        #expect(IslandModel.cyclesBrief(arrow: false, boxFocused: false, textEmpty: false))
+        #expect(IslandModel.cyclesBrief(arrow: true, boxFocused: false, textEmpty: false))
+        #expect(!IslandModel.cyclesBrief(arrow: false, boxFocused: true, textEmpty: true), "J in the empty box types")
+        #expect(!IslandModel.cyclesBrief(arrow: false, boxFocused: true, textEmpty: false))
+        #expect(IslandModel.cyclesBrief(arrow: true, boxFocused: true, textEmpty: true), "↓ in the empty box cycles")
+        #expect(!IslandModel.cyclesBrief(arrow: true, boxFocused: true, textEmpty: false), "↓ with text moves the caret")
+        let t = KeyTable()
+        #expect(t.action(for: Chord(chars: "j", keyCode: 38), in: .island) == .islandNext)
+        #expect(t.action(for: Chord(chars: "K", keyCode: 40, modifiers: .shift), in: .island) == .islandPrevious)
+        #expect(t.action(for: .down, in: .island) == .islandNext && t.action(for: .up, in: .island) == .islandPrevious)
+    }
+
     @Test func collapseIsRememberedForTheCurrentMeetingOnly() {
         var m = IslandModel()
         m.meetingChanged(to: "m1")

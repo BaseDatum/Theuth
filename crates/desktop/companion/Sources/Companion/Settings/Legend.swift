@@ -74,8 +74,13 @@ final class LegendController {
         previousApp = nil
     }
 
+    /// The event as a table chord. Arrow/F-keys arrive with AppKit's implicit `.function` flag, which no row or alias carries
+    /// (149i §N: ↓/↑ never matched `.down`/`.up`); it is a real modifier only on a character key.
     static func press(_ e: NSEvent) -> CompanionCore.KeyPress {
-        CompanionCore.KeyPress(chars: e.charactersIgnoringModifiers ?? "", keyCode: e.keyCode, modifiers: Hotkeys.modifiers(e.modifierFlags))
+        let chars = e.charactersIgnoringModifiers ?? ""
+        var m = Hotkeys.modifiers(e.modifierFlags)
+        if !Chord(chars: chars).isCharKey { m.remove(.function) }
+        return CompanionCore.KeyPress(chars: chars, keyCode: e.keyCode, modifiers: m)
     }
 
     private func place() {

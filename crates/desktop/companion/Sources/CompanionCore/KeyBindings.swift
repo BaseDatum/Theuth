@@ -95,7 +95,7 @@ public enum KeyScope: String, CaseIterable, Codable, Sendable {
     case askBar
     /// 149: while the agents panel is key.
     case agents
-    /// 149: the island takes key only in its request box.
+    /// 149: while the island is key (a click on it; the request box focuses only when clicked).
     case island
     /// 149: between the voice key's press and the send.
     case pointAndSay
@@ -123,7 +123,7 @@ public enum KeyAction: String, CaseIterable, Codable, Sendable {
     case replyFocus, talk, point, stopAgent
     case askPoint
     case agentsNext, agentsPrevious, agentsOpenSession, agentsOpenSessionCmd, agentsTalk, agentsStop, agentsEscape
-    case islandMute, islandStop, islandDismiss, islandDeeper, islandSend, islandEscape
+    case islandMute, islandStop, islandDismiss, islandDeeper, islandSend, islandEscape, islandNext, islandPrevious
     case pointEscape
 
     /// What the Attention panel / Ask bar does; `nil` for the global rows (the app's hotkey handlers).
@@ -139,7 +139,7 @@ public enum KeyAction: String, CaseIterable, Codable, Sendable {
         case .agentsOpenSession, .agentsOpenSessionCmd: return .openSession
         case .agentsTalk, .agentsStop: return nil
         case .agentsEscape, .islandEscape, .pointEscape: return .escape
-        case .islandMute, .islandStop, .islandDismiss, .islandDeeper, .islandSend: return nil
+        case .islandMute, .islandStop, .islandDismiss, .islandDeeper, .islandSend, .islandNext, .islandPrevious: return nil
         case .answer1: return .answer(1)
         case .answer2: return .answer(2)
         case .answer3: return .answer(3)
@@ -233,11 +233,13 @@ public struct KeyTable: Equatable, Sendable {
         row(.agentsTalk, .agents, "Hold to talk into the row", key("v", 9)),
         row(.agentsStop, .agents, "Stop the agent (hold)", key("x", 7)),
         row(.agentsEscape, .agents, "Close", .escape, fixed: true),
-        // 149 §8 ★ — island (key only in the request box)
+        // 149 §8 ★ — island (while the island is key; in the request box only ⏎/⎋ act, ↑/↓ cycle when it is empty — 149i §N)
         row(.islandMute, .island, "Mute (pause)", key("m", 46)),
         row(.islandStop, .island, "Stop the meeting (hold)", key("m", 46, .control)), // §8 ⌃⇧M: local chords drop ⇧ (`normalizedLocal`)
         row(.islandDismiss, .island, "Dismiss the topic", key("e", 14)),
         row(.islandDeeper, .island, "Deeper", key("d", 2)),
+        row(.islandNext, .island, "Next brief", key("j", 38)),
+        row(.islandPrevious, .island, "Previous brief", key("k", 40)),
         row(.islandSend, .island, "Send the request", .returnKey),
         row(.islandEscape, .island, "Leave the box", .escape, fixed: true),
         // 149 §8 ★ — pointAndSay (registered only between press and send)
@@ -280,8 +282,9 @@ public struct KeyTable: Equatable, Sendable {
     /// Fixed synonyms, never rebound: ↓/↑ walk, keypad ⏎ answers, `?` opens the legend. Shown in the legend.
     public static let aliases: [(chord: Chord, action: KeyAction)] = [
         (.down, .next), (.up, .previous), (.keypadEnter, .answerRecommended), (key("?", 44), .legend), (key("?", 44), .askLegend),
-        // 149: the agents panel walks like the Attention panel; keypad ⏎ sends in the island's box.
+        // 149: the agents panel and the island walk like the Attention panel; keypad ⏎ sends in the island's box.
         (.down, .agentsNext), (.up, .agentsPrevious), (.keypadEnter, .agentsOpenSession), (.keypadEnter, .islandSend),
+        (.down, .islandNext), (.up, .islandPrevious),
     ]
 
     /// Every row with its effective chord, table order.

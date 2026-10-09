@@ -69,11 +69,9 @@ final class IslandController {
     func install() {
         ui.onGrip = { [weak self] e in e.clickCount == 2 ? self?.snapBack() : self?.beginDrag(e) }
         ui.onCollapseToggle = { [weak self] in self?.toggleCollapsed() }
-        // Key only in the request box (KeyBindings `.island`): buttons fire on the first click without it.
-        window.wantsKeyOnClick = { [weak self] p in
-            guard let self, let box = self.ui.rects["box"] else { return false }
-            return self.flip(box).contains(p)
-        }
+        // §N: a click anywhere on the drawn island makes the panel key (J/K/↑/↓ then cycle the briefs) without focusing the
+        // request box — only a click on the box focuses its field. Never swallows the event.
+        window.wantsKeyOnClick = { [weak self] p in self?.drawnAppKit.contains(p) ?? false }
         store.$meeting.receive(on: RunLoop.main).sink { [weak self] s in MainActor.assumeIsolated { self?.meetingChanged(s) } }.store(in: &subs)
         store.$connection.receive(on: RunLoop.main).sink { [weak self] c in
             MainActor.assumeIsolated {
@@ -97,7 +95,10 @@ final class IslandController {
     private func meetingChanged(_ s: MeetingSlice?) {
         let slice = s ?? .empty
         if slice.oracle.last != seen.oracle.last { fadeVerdict() }
+        let moved = slice.cursor != seen.cursor || slice.current?.id != seen.current?.id
         seen = slice
+        // The focused topic follows the shown brief — one path for the chevrons, J/K/↑/↓ and the stack's own moves (§N).
+        if moved, let t = slice.current?.topic, let i = slice.topics.firstIndex(where: { $0.id == t }), ui.focusedTopic != i { ui.focusedTopic = i }
         model.meetingChanged(to: slice.meeting)
         if !Flags.islandProbe { setLiveHotkeys(slice.isLive || slice.state == .starting) }
         refreshVisibility()
@@ -334,6 +335,12 @@ final class IslandController {
     private func handle(_ e: NSEvent) -> Bool {
         let press = LegendController.press(e)
         guard let action = SettingsModel.shared.keys.action(for: press.chord, in: .island) else { return false }
+        // §N: J/K/↑/↓ cycle the briefs (wrapping) — in the box J/K type, the arrows cycle only while it is empty.
+        if action == .islandNext || action == .islandPrevious {
+            guard IslandModel.cyclesBrief(arrow: !press.chord.isCharKey, boxFocused: ui.boxFocused, textEmpty: ui.requestText.isEmpty) else { return false }
+            store.meetingMove(action == .islandNext ? -1 : 1, wrap: true) // next = down the stack (older), as the pane's ↓ chevron
+            return true
+        }
         // While the box has focus single keys type; only ⏎ and ⎋ act (KeyGrammar's rule).
         if ui.boxFocused, action != .islandSend, action != .islandEscape { return false }
         let s = store.meeting ?? .empty
@@ -364,9 +371,9 @@ final class IslandController {
         return true
     }
 
-    /// ⎋: leave the box → undo a stop hold → close the ⋮ menu and hand key back (the pane stays: D1 has no hover close).
+    /// ⎋: leave the box (the island stays key, §N) → undo a stop hold → close the ⋮ menu and hand key back to the previous app.
     private func escape() {
-        if ui.boxFocused { ui.blurTick += 1; resignKey(); return }
+        if ui.boxFocused { ui.blurTick += 1; return }
         if ui.stopHoldStarted != nil { ui.stopHoldStarted = nil; stopTimer?.invalidate(); return }
         ui.menuOpen = false
         resignKey()

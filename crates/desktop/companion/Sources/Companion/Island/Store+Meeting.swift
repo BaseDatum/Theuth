@@ -58,10 +58,11 @@ extension Store {
     func meetingResume() { meetingAct("meeting_resume") { try await $0.meetingResume() } }
     func meetingStop() { meetingAct("meeting_stop") { try await $0.meetingStop() } }
 
-    /// Step the brief cursor (the island controller mirrors every cursor change with `meeting_cursor`).
-    func meetingMove(_ delta: Int) {
+    /// Step the brief cursor — the pane's chevrons clamp, the J/K/↑/↓ keys `wrap` (149i §N); one path, the island controller
+    /// mirrors every cursor change with `meeting_cursor` and moves the focused topic to the shown brief's.
+    func meetingMove(_ delta: Int, wrap: Bool = false) {
         guard let s = meeting else { return }
-        let n = MeetingReducer.move(s, delta)
+        let n = MeetingReducer.move(s, delta, wrap: wrap)
         if n != s { meeting = n }
     }
 

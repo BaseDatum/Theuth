@@ -106,11 +106,42 @@ extension IslandController {
             logRects(["pill"])
             await click("pill")
             check("pill click opens", collapsed && ui.state == .open && !model.collapsed, "state=\(ui.state) collapsed=\(model.collapsed)")
-            // The request box takes key on click; ⎋ hands it back.
-            await click("box")
-            check("box takes key", window.isKeyWindow && ui.boxFocused, "key=\(window.isKeyWindow) boxFocused=\(ui.boxFocused) active=\(NSApp.isActive)")
-            postKey(53)
-            await sleep(0.5)
+            // §N: a click on the pane makes the island key without focusing the box; J/↓ = older (next), K/↑ = newer, wrapping;
+            // the focused topic follows the shown brief.
+            await click("brief"); await sleep(0.6) // the window server needs a moment before it routes keys to the new key window
+            if NSWorkspace.shared.frontmostApplication != .current { // the owner clicked elsewhere meanwhile: once more, as he would
+                IslandLog.write("probe: keyboard focus with \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil") after the pane click — clicking the pane again")
+                await click("brief"); await sleep(0.6)
+            }
+            check("pane click takes key, box unfocused", window.isKeyWindow && !ui.boxFocused, "key=\(window.isKeyWindow) boxFocused=\(ui.boxFocused) cursor=\(store.meeting?.cursor ?? -1)")
+            postKey(38); await sleep(0.5) // J
+            if store.meeting?.cursor != 0 {
+                await sleep(1)
+                IslandLog.write("probe: J not acted after 0.5 s — after 1.5 s cursor=\(store.meeting?.cursor ?? -1) key=\(window.isKeyWindow) active=\(NSApp.isActive) frontmost=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil") firstResponder=\(window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")")
+                if store.meeting?.cursor != 0 { IslandLog.write("probe: J once more"); postKey(38); await sleep(0.5) }
+            }
+            check("J → next (older) brief + topic", store.meeting?.cursor == 0 && ui.focusedTopic == 0, "cursor=\(store.meeting?.cursor ?? -1) brief=\(store.meeting?.current?.title ?? "none") focusedTopic=\(ui.focusedTopic)")
+            postKey(40); await sleep(0.5) // K
+            check("K → previous (newer) brief + topic", store.meeting?.cursor == 1 && ui.focusedTopic == 1, "cursor=\(store.meeting?.cursor ?? -1) brief=\(store.meeting?.current?.title ?? "none") focusedTopic=\(ui.focusedTopic)")
+            postKey(126); await sleep(0.5) // ↑ at the newest → wraps to the oldest
+            check("↑ wraps", store.meeting?.cursor == 0, "cursor=\(store.meeting?.cursor ?? -1)")
+            postKey(125); await sleep(0.5) // ↓ at the oldest → wraps to the newest
+            check("↓ wraps", store.meeting?.cursor == 1, "cursor=\(store.meeting?.cursor ?? -1)")
+            // The request box: click focuses the field; typing works; J/K type letters, ↑/↓ move the caret — no cycling.
+            await click("box"); await sleep(0.3)
+            if !ui.boxFocused { IslandLog.write("probe: box not focused after the click — once more"); await click("box"); await sleep(0.3) }
+            check("box click focuses the field", window.isKeyWindow && ui.boxFocused, "key=\(window.isKeyWindow) boxFocused=\(ui.boxFocused) active=\(NSApp.isActive)")
+            postKey(7); await sleep(0.5) // x
+            let typed = ui.requestText
+            for k: CGKeyCode in [38, 40, 126, 125] { postKey(k); await sleep(0.4) }
+            check("box keys never cycle", typed == "x" && ui.requestText == "xjk" && store.meeting?.cursor == 1,
+                  "typed=\"\(typed)\" after J K ↑ ↓: text=\"\(ui.requestText)\" cursor=\(store.meeting?.cursor ?? -1)")
+            ui.requestText = ""
+            postKey(126); await sleep(0.5) // ↑ in the EMPTY box cycles
+            check("↑ in the empty box cycles", ui.boxFocused && store.meeting?.cursor == 0, "boxFocused=\(ui.boxFocused) cursor=\(store.meeting?.cursor ?? -1)")
+            postKey(53); await sleep(0.5) // ⎋ blurs the field, the island stays key
+            check("esc blurs, island stays key", window.isKeyWindow && !ui.boxFocused && ui.isOpen, "key=\(window.isKeyWindow) boxFocused=\(ui.boxFocused) state=\(ui.state) firstResponder=\(window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")")
+            postKey(53); await sleep(0.5) // ⎋ again hands key back
             check("esc releases key", !window.isKeyWindow && !ui.boxFocused && ui.isOpen, "key=\(window.isKeyWindow) boxFocused=\(ui.boxFocused) state=\(ui.state)")
             // The grip: down, 10 moves of 20 px, up → detached ~200 px lower on this display; double-click → back.
             let uuid = IslandGeometry.uuid(of: s)
@@ -192,8 +223,15 @@ extension IslandController {
         e.post(tap: .cghidEventTap)
     }
 
+    /// Keyboard events go to the FRONTMOST app's key window. On this shared machine the owner may click into his app between
+    /// two steps; a keystroke would then land in his window — so every key (⎋ included) is withheld unless this process is
+    /// frontmost, and that step fails saying so.
     private func postKey(_ code: CGKeyCode) {
-        IslandLog.write("probe key: code \(code) down/up at .cghidEventTap (key window=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none"))")
+        let front = NSWorkspace.shared.frontmostApplication
+        guard front == .current else {
+            return IslandLog.write("probe key: code \(code) WITHHELD — keyboard focus is with \(front?.bundleIdentifier ?? "nil"), not this probe (owner active); step will fail")
+        }
+        IslandLog.write("probe key: code \(code) down/up at .cghidEventTap (key window=\(NSApp.keyWindow.map { "\($0.className)" } ?? "none"), frontmost=this probe)")
         CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
         CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
     }

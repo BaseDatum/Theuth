@@ -46,6 +46,12 @@ public struct IslandModel: Equatable, Sendable {
     /// 149i D1 — the attached layout: live → the strip + pane, unless the user collapsed it; otherwise the pill.
     public static func attached(live: Bool, collapsed: Bool) -> IslandState { live && !collapsed ? .open : .closed }
 
+    /// 149i §N — whether a next/previous key (J/K or ↑/↓) cycles the briefs: always while the request box is not focused; in
+    /// the box J and K type letters (never cycle) and the arrows cycle only while the text is empty (else they move the caret).
+    public static func cyclesBrief(arrow: Bool, boxFocused: Bool, textEmpty: Bool) -> Bool {
+        !boxFocused || (arrow && textEmpty)
+    }
+
     /// A click on the pill/strip: collapsed ↔ open, for `meeting`.
     public mutating func toggleCollapsed(meeting: String?) { collapsed.toggle(); collapsedMeeting = meeting }
 
