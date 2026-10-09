@@ -2,7 +2,7 @@
 
 *Worker W153D, 2026-10-09 19:15 → (see the DONE line), worktree `~/Develop/theuth-153w-d`, branch `feat/153w-d` (pushed to basedatum only),
 cut from `integrate/153w` = main 6aadda9a; merged PIN-B 4fcbcf1e (W153B records), PIN-C 1e9f40b9 (W153C keys + AnswerCardWindow) and H-A
-5afea171 (wave A on main). Design: `docs/design/153-voice-anywhere.md` §3.2, §7.4, §13 (13.1–13.9), §14, §16.1 proof 23–26.*
+5afea171 (wave A on main) and H-BC 253f1ada (waves B+C on main). Design: `docs/design/153-voice-anywhere.md` §3.2, §7.4, §13 (13.1–13.9), §14, §16.1 proof 23–26.*
 
 ## 1. What was built
 
@@ -30,9 +30,12 @@ cut from `integrate/153w` = main 6aadda9a; merged PIN-B 4fcbcf1e (W153B records)
 ## 2. Verification
 
 - **Mac**: `dotnet test tests/Theuth.Companion.Core.Tests` — **451/451** after PIN-C and H-A (baseline 310; my three suites add 84; W153C's merge adds the rest).
-- **build-B**: `Theuth.Companion.slnx` Debug x64 — **0 errors, 0 warnings**, 25–35 s, at every pushed head (bd76e6be, 847e44b6, 43056f0a, 0fed68f9, 8363bce3, d6727560).
+- **build-B**: `Theuth.Companion.slnx` Debug x64 — **0 errors, 0 warnings**, 25–35 s, at every pushed head (bd76e6be, 847e44b6, 43056f0a, 0fed68f9, 8363bce3, d6727560, 95e4a0dd — 50 s).
 - **Live rounds** (desk lock, the Debug companion `--shareable --probe-anyapp-watch`, the installed engine without a model; evidence in `~/.theuth/briefs/2026-10-09/153-windows/evidence/W153D/`):
-  ROUND-RESULTS-PLACEHOLDER
+  - **Round 1** (20:13–20:27, Debug companion at 847e44b6): a focused menu item → `CertainlyNot · NotATextTarget`, hint + failure card (`01-refusal-menuitem-failure-card.png`). The first direct insertion exposed the XAML/TSF burst race (`02-…-BUG.png`, `03-…-BUG.png`) → deviation 3; the probe watcher's truncation race fixed (debounced read).
+  - **Round 2** (20:24–20:33, at 8363bce3): paced direct typing **Landed ×2** in Win11 Notepad (`04-direct-paced-landed-notepad.png`); long and multi-line text → **lease Landed ×4, clipboard restored 4/4 (equal to before, 4 formats)**, "✓ 2 lines into Notepad (304 chars)" (`05-…png`); Edge password field → lease, verification **Unknown** by design, "send it" → **no Return** ("not sent — secure field") (`08-…png`); Edge read-only field → `CertainlyNot · ReadOnly`, card PNG; rewrite on an Edge textarea selection → the panel on the AnswerCard, "couldn't rewrite — rpc -32601: Method not found" (installed engine pre-wave-A) (`09-…png`); a synthetic lock while the panel was up turned the press into a refine → **bug, fixed in 2a57c1d6** (Locked always refuses; Replace and Try again check the gate). Counters at the end: gestures 8 · refused 2 · direct 2 · leases 5 · landed 6 · notLanded 0 · unknown 1 · userActed 0 · restored 5/5.
+  - **Round 3** (20:46–20:50, at 95e4a0dd): synthetic `WTS_SESSION_LOCK` → the press is refused `Locked` ("Screen locked — nothing typed"), card shown, clipboard untouched, unlock seen; **the real key path**: Ctrl+Alt+D held 2.0 s over Notepad → W153C's PointMachine armed → holding → `anyapp: key gesture Started #1` → `press (key) → Editable … direct=True` → `dictation … live (surface any_app, destination Notepad.exe)` on the WASAPI mic (16 kHz) → release → `Stopped` → `DictationFinished` → "Nothing recognized" (nobody spoke).
+  - After each round: the Debug companion stopped, Notepad/Edge closed, the installed companion restarted, the Run key checked, clipboard history registry back to off, the desk released.
 
 ## 3. Deviations (each the closest faithful variant; none silent)
 1. **Secure fields follow the design, not the brief.** The brief said "IsPassword → refuse"; §13.1/§7.4/§16.1 #24–25 say secure → editable, delivered by the lease, never Return (Mac parity, R6). Built as the design: lease, no verification (bullets only), "send it" → "not sent — secure field". Read-only (and disabled) controls are refused as the brief asked.
@@ -47,7 +50,7 @@ cut from `integrate/153w` = main 6aadda9a; merged PIN-B 4fcbcf1e (W153B records)
 10. **Terminal defaults**: Windows Terminal, conhost/OpenConsole, cmd, PowerShell/pwsh, WezTerm, Alacritty, mintty, PuTTY, ConEmu, Hyper, Tabby are terminals unless a user profile says otherwise (their surfaces take the lease, `AppProfile.terminal` goes to the engine's stage 9).
 11. **The pill is the island's voice view** (`IslandController.SetVoice`, 149 §P placement), no second pill window.
 
-## 5. H-BC alignment (`docs/design/153-as-built-BC.md`, rows naming Windows / the companion / wave D)
+## 4. H-BC alignment (`docs/design/153-as-built-BC.md`, rows naming Windows / the companion / wave D)
 | Row | Followed? | How |
 |---|---|---|
 | §4.4 field text = `shaped ?? text`; "send it"/"scratch that" alone shape to `""` on purpose | yes | deliveries take `DictationEvent.DisplayText` (`shaped ?? text`); an empty final is never delivered |
@@ -58,5 +61,13 @@ cut from `integrate/153w` = main 6aadda9a; merged PIN-B 4fcbcf1e (W153B records)
 | Hand-offs (Windows twin): constants holdThreshold 250, tapToggleMs 400, doneMs 6000, `dictation_start` params | yes where they touch D | the gesture timing is W153C's one PointMachine; any-app sends `[16000, {surface: any_app, destination: {kind: any_app, app: <exe>}, app: AppProfile, commands, press_ago_ms}]`; the done pill uses §3.2's 1.2 s |
 | Card pixel parity (`/tmp/153-zb/153-card-*.png`) | yes | the failure card IS the AnswerCard (title · red subtitle in the Failed tone, Esc cap); the Mac any-app card does not exist yet (Mac wave D not built) |
 
-## 4. Open items
-- OPEN-ITEMS-PLACEHOLDER
+## 5. Open items
+- **Win+V proof of the history hints**: on build-B's session Windows' clipboard history stayed `ClipboardHistoryDisabled` even after the Settings toggle (`06-…png`, `07-…OPEN-ITEM.png`), so "excluded from history" is proven only as "the hints are written" (log + `WinRT Clipboard.GetHistoryItemsAsync` = 0). Needs a console session where history activates.
+- **Live rewrite and polish** need H-ENGINE (the build-B package of main): the panel, refine, Replace/Copy/Try again are proven against the RPC error path only.
+- **Real speech into any app**: the key path is proven to `dictation … live` and the finish; spoken words (shaped finals → delivery) need someone talking at build-B's mic or the engine's file source.
+- **Settings › Dictation "Apps" editor** (H-BC §14.3) — the blob is read; the editor is W153B's file.
+- **§8.6 media duck/pause while dictating** not built (Windows twin: `IAudioEndpointVolume` / VK_MEDIA_PLAY_PAUSE).
+- **"scratch that" after a delivery** is logged, not undone — the "undo last" affordance (§7.4) needs a card button that does not exist yet.
+- **Counters UI** (§16.1 #26 debug row): `AnyAppController.Current.Counters` exists; no Settings row shows it.
+- **Multi-display**: built against the monitor of the focused window; verified on one display only.
+- **Mac wave D test names**: none existed when this landed; the C# suites follow proof 23's §13.1/§13.3/§13.4 tables, re-align names when the Swift suites land.
