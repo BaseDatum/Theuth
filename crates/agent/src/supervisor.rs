@@ -1238,7 +1238,8 @@ impl Agents {
             self.rt.clone(),
             materialised,
             mcp_servers,
-        );
+        )
+        .with_activity(self.cfg.activity);
         let actor = LiveActor::Acp(AcpChild::spawn_with_mailbox(
             child,
             runtime::subscriber_mailbox(),
@@ -2330,6 +2331,8 @@ impl Agents {
             }
         }
         self.idle_check(session).await;
+        // 155 §5.3: idle/done (and running's end) are state-relevant.
+        self.check_peer_waits(session).await;
     }
 
     /// Answer the live waiter of `request` with `text` as `child`'s reply
@@ -2507,6 +2510,8 @@ impl Message<AgentEvent> for Agents {
                         },
                     );
                 }
+                // 155 §5.3: a turn starting ends `idle`/`done`.
+                self.check_peer_waits(session).await;
             }
             AgentEvent::TurnFinished {
                 session,
@@ -2574,6 +2579,7 @@ impl Message<ApprovalRequested> for Agents {
             (ev.id, ev.tool, Utc::now().timestamp_millis().max(0) as u64),
         );
         self.network_approval(session, true).await;
+        self.check_peer_waits(session).await; // 155 §5.3: `blocked`
     }
 }
 
@@ -2590,6 +2596,7 @@ impl Message<ApprovalResolved> for Agents {
         self.approvals.retain(|_, (id, ..)| *id != ev.id);
         for s in sessions {
             self.network_approval(s, false).await;
+            self.check_peer_waits(s).await; // 155 §5.3: `blocked` ended
         }
     }
 }
@@ -2605,6 +2612,7 @@ impl Message<ActivityRegistered> for Agents {
     async fn handle(&mut self, _: ActivityRegistered, _: &mut Context<Self, Self::Reply>) {
         self.ledger.certify();
         self.rearm_reminders_for(None).await;
+        self.rebuild_peer_waits().await; // 155 §5.4
         // 146 D5: one `open_turns(Here)` for the whole pass.
         let open = self.open_here().await;
         // 109 §4.6 step 10, in this order: no `ResumeTurn` before the reaper.
@@ -3126,7 +3134,6 @@ pub(crate) fn job_idle(
 /// The `<child_stalled>` wrapper (155 §4.1): the parent's wake for a child
 /// whose activity monitor fired; `last` only when non-empty; `body` is the
 /// one sentence of guidance.
-#[allow(dead_code)] // 155 C skeleton: W1's `ChildStalled` handler renders with it.
 pub(crate) fn child_stalled(
     name: &str,
     session: SessionId,
@@ -3151,7 +3158,6 @@ pub(crate) fn child_stalled(
 
 /// The `<peer_state>` wrapper (155 §5.3): a `wait_peer` settled — the word
 /// it reached (or `not_running` / `timeout`) and the one-line reason.
-#[allow(dead_code)] // 155 C skeleton: W1's wait settlement renders with it.
 pub(crate) fn peer_state(
     name: &str,
     session: SessionId,
@@ -5434,10 +5440,13 @@ impl Agents {
             .map(|(id, _)| *id)
             .collect();
         let mut activity = self.activity_for(&ids).await;
+        let now = Instant::now();
         let mut out: Vec<PeerInfo> = same
             .into_iter()
             .map(|(id, mut info)| {
-                info.activity = activity.remove(&id).map(peer_activity);
+                info.activity = activity
+                    .remove(&id)
+                    .map(|a| peer_activity(a, self.activity.stalled_secs(id, now)));
                 info
             })
             .collect();
@@ -5477,7 +5486,7 @@ fn remote_parent_row(p: &RemoteParent) -> PeerInfo {
 /// detail without `Awaiting { from }` / `Approval { tool }` content. `Stored`
 /// when no actor is loaded; `Offline` is never derived here (no node-down
 /// notion reaches the supervisor).
-fn peer_activity(a: SessionActivity) -> PeerActivity {
+fn peer_activity(a: SessionActivity, stalled_secs: Option<u64>) -> PeerActivity {
     let state = if !a.live {
         PeerLiveState::Stored
     } else {
@@ -5499,8 +5508,7 @@ fn peer_activity(a: SessionActivity) -> PeerActivity {
         jobs: a.jobs,
         ptys: a.ptys,
         children: a.children,
-        // ponytail: skeleton (155 C); W1 fills it from `Agents.activity.stalls`.
-        stalled_secs: None,
+        stalled_secs,
     }
 }
 
@@ -11239,6 +11247,55 @@ pub(crate) mod tests {
         let w = job_idle(&id, &long, None, 0, 0, 1, None, "", "", at());
         assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
         assert!(!w.contains(&"a".repeat(121)));
+    }
+
+    /// 155 §4.1: every attribute, `last` escaped and omitted when empty;
+    /// `<peer_state>` likewise.
+    #[test]
+    fn child_stalled_and_peer_state_wrappers() {
+        let child: SessionId = "01999999-0000-7000-8000-000000000001".parse().unwrap();
+        let w = child_stalled(
+            "w<2>",
+            child,
+            crate::activity::StallPhase::Silent,
+            184,
+            "shell: echo \"a\" <b>",
+            "w2 has sent no session update for 184 s.",
+            at(),
+        );
+        assert_eq!(
+            w,
+            format!(
+                "<child_stalled child=\"w&lt;2&gt;\" session=\"{child}\" phase=\"silent\" quiet_secs=\"184\" last=\"shell: echo &quot;a&quot; &lt;b&gt;\" at=\"14:03\">\nw2 has sent no session update for 184 s.\n</child_stalled>"
+            )
+        );
+        let w = child_stalled(
+            "w1",
+            child,
+            crate::activity::StallPhase::NoFirstUpdate,
+            60,
+            "",
+            "body",
+            at(),
+        );
+        assert!(w.starts_with(&format!(
+            "<child_stalled child=\"w1\" session=\"{child}\" phase=\"no_first_update\" quiet_secs=\"60\" at=\"14:03\">\n"
+        )));
+        assert!(!w.contains("last="));
+        let w = peer_state(
+            "w1",
+            child,
+            crate::activity::PeerStateWord::NotRunning,
+            3,
+            "w1 is gone.",
+            at(),
+        );
+        assert_eq!(
+            w,
+            format!(
+                "<peer_state child=\"w1\" session=\"{child}\" state=\"not_running\" since_secs=\"3\" at=\"14:03\">\nw1 is gone.\n</peer_state>"
+            )
+        );
     }
 
     #[test]
