@@ -251,6 +251,7 @@ internal sealed class IslandController : IDisposable
     {
         Window.SetVoice(v);
         Evaluate();
+        Window.LogVoicePill();
     }
 
     // MARK: actions

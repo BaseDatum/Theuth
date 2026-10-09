@@ -431,8 +431,17 @@ internal sealed partial class IslandWindow : ToolWindow
             var f = IslandModel.DefaultFrame(anchor.AsIslandDisplay(), size);
             Place(new RectInt32(f.X, f.Y, f.Width, f.Height));
         }
-        if (v is not null && (starting || v.Phase != phase))
-            Log.Write($"island: voice pill phase={v.Phase} rect={Win32.Text(ScreenRect)} on {monitor?.Device} {(model.Meeting is null ? "(top centre, fixed for the gesture)" : "(below the meeting strip)")}");
+        voiceLogDue = v is not null && (starting || v.Phase != phase);
+    }
+
+    private bool voiceLogDue;
+
+    /// <summary>After the controller showed/placed the window: one line per voice phase with the pill's rect (the §P proof).</summary>
+    public void LogVoicePill()
+    {
+        if (!voiceLogDue || voice is not { } v) return;
+        voiceLogDue = false;
+        Log.Write($"island: voice pill phase={v.Phase} rect={Win32.Text(ScreenRect)} on {monitor?.Device} {(model.Meeting is null ? "(top centre, fixed for the gesture)" : "(below the meeting strip)")}");
     }
 
     /// <summary>§P: the display the voice gesture started on (no meeting live): the pill is placed top-centre there, ignoring the saved offset.</summary>
