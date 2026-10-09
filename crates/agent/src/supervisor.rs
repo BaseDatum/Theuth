@@ -94,7 +94,7 @@ use crate::{
     Loaded, Login, LoginFinished, LoginInfo, Logout, MarkDesk, ModelInfo, NewRootSession,
     NewSession, PinSession, PinTitle, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate,
     RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    ResetRuntime, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
+    ResetRuntime, ResolveModel, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
     SessionContextBreakdown, SessionModel, SessionRead, SessionSummary, SetCompactStyle,
     SetCompaction, SetDeskModel, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds,
     SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel,
@@ -3994,6 +3994,33 @@ impl Message<SideCall> for Agents {
     }
 }
 
+impl Agents {
+    /// Resolve `id` through the catalog and refuse a provider without
+    /// credentials — the check behind [`SetSubagentModel`] and [`ResolveModel`]
+    /// (148 R4). An unknown id under a keyed provider passes through.
+    fn resolve_keyed(&self, id: &str) -> Result<Resolved, String> {
+        let r = self.catalog.resolve(id, &*self.configured)?;
+        if let Some(p) = &r.provider
+            && !(self.configured)(Catalog::adapter(p))
+        {
+            return Err(format!("provider `{p}` has no credentials"));
+        }
+        Ok(r)
+    }
+}
+
+impl Message<ResolveModel> for Agents {
+    type Reply = Result<ModelInfo, String>;
+
+    async fn handle(
+        &mut self,
+        m: ResolveModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<ModelInfo, String> {
+        self.resolve_keyed(&m.model).map(|r| ModelInfo::from(&r))
+    }
+}
+
 impl Message<SideCallable> for Agents {
     type Reply = Result<(), String>;
 
@@ -4023,15 +4050,7 @@ impl Message<SetSubagentModel> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<Option<ModelInfo>, String> {
         let resolved = match &m.model {
-            Some(id) => {
-                let r = self.catalog.resolve(id, &*self.configured)?;
-                if let Some(p) = &r.provider
-                    && !(self.configured)(Catalog::adapter(p))
-                {
-                    return Err(format!("provider `{p}` has no credentials"));
-                }
-                Some(r)
-            }
+            Some(id) => Some(self.resolve_keyed(id)?),
             None => None,
         };
         let info = resolved.as_ref().map(ModelInfo::from);
@@ -10048,10 +10067,18 @@ impl Message<CreateSession> for Agents {
         // private byte exists.
         if let Some(reg) = Self::registry()? {
             // A handler `Err` (missing owners) is lifted into `HandlerError`.
-            reg.ask(ParticipantsReady).await.map_err(|e| match e {
-                SendError::HandlerError(missing) => format!("private mode unavailable: {missing}"),
-                e => format!("private mode unavailable: {e}"),
-            })?;
+            match reg.ask(ParticipantsReady).await {
+                Ok(()) => {}
+                Err(SendError::HandlerError(missing)) => {
+                    return Err(format!("private mode unavailable: {missing}"));
+                }
+                // Test-only race guard: `registry()` found ANOTHER test's live
+                // registry (one global name per test binary) and it stopped
+                // before this ask — the same "no registry" rule `registry()`
+                // applies under cfg(test) when none is found.
+                Err(_) if cfg!(test) => {}
+                Err(e) => return Err(format!("private mode unavailable: {e}")),
+            }
         }
         let store = Store::open_memory().await.map_err(|e| format!("{e:#}"))?;
         let root = SessionId::new();
@@ -10396,14 +10423,17 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
     }
 }
 
-/// 148 R1 (`test-support`): [`bare_agents`] with every catalog provider
-/// treated as configured, spawned and registered as [`AGENT_ACTOR`] so a
+/// 148 R1 (`test-support`): [`bare_agents`] with `configured` deciding which
+/// providers count as keyed, spawned and registered as [`AGENT_ACTOR`] so a
 /// dependent crate's tests (the roster's desks) can talk to a live engine
 /// that never calls a model. `Err` when an actor already holds the name.
 #[cfg(feature = "test-support")]
-pub async fn spawn_test_agents(rt: Runtime) -> Result<ActorRef<Agents>, String> {
+pub async fn spawn_test_agents(
+    rt: Runtime,
+    configured: impl Fn(&str) -> bool + Send + Sync + 'static,
+) -> Result<ActorRef<Agents>, String> {
     let mut a = bare_agents(rt, None, false).await;
-    a.configured = Arc::new(|_: &str| true);
+    a.configured = Arc::new(configured);
     let agents = Agents::spawn(a);
     agents.register(AGENT_ACTOR).map_err(|e| e.to_string())?;
     Ok(agents)
@@ -11718,6 +11748,34 @@ pub(crate) mod tests {
             .unwrap();
         let kept = open(&agents).await;
         assert_eq!(agents.ask(DeskModelKeys).await.unwrap(), vec![kept]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 148 R4: `ResolveModel` refuses a provider without credentials with
+    /// `SetSubagentModel`'s words, accepts a keyed one (canonical id), lets an
+    /// unknown id under a keyed provider pass through, and moves nothing.
+    #[tokio::test]
+    async fn resolve_model_checks_credentials_without_side_effects() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let default = a.default_model.clone();
+        assert_eq!(
+            a.resolve_keyed("nope/none").unwrap_err(),
+            "provider `nope` has no credentials"
+        );
+        assert_eq!(
+            a.resolve_keyed("othervis/eyes").unwrap_err(),
+            "provider `othervis` has no credentials"
+        );
+        assert_eq!(a.resolve_keyed("testvis/eyes").unwrap().id, "testvis/eyes");
+        assert_eq!(
+            a.resolve_keyed("testvis/unlisted").unwrap().id,
+            "testvis/unlisted"
+        );
+        assert_eq!(a.default_model, default);
+        assert!(!dir.join("config.yaml").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
