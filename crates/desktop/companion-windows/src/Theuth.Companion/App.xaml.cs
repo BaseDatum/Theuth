@@ -60,6 +60,7 @@ public partial class App : Application
         Store = Store.Create(dispatcher, EngineProbe.Locate);
         probe = new EngineProbe(Store, dispatcher, Flags.Probe, Quit);
         probe.Start();
+        if (Flags.Probe is not null) Probe149.Install(Store); // 149 WW1: the new read-only calls in the probe log
         // W2: the rail, panel, tray and hotkeys bind to Store here (before Start, to see the first refetch).
         Ui.Surfaces.Start(Store, dispatcher, Quit);
         // W3: notifier (policy on the Store's items), breakpoint sources, Settings window, Run key, --probe-notify — after the

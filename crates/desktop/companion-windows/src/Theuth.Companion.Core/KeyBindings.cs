@@ -28,6 +28,9 @@ public static class VirtualKeys
     public const ushort F1 = 0x70, F24 = 0x87;
     public const ushort OemComma = 0xBC, OemPeriod = 0xBE, Oem2Slash = 0xBF;
 
+    /// <summary><c>VK_OEM_3</c>: the backtick / tilde key on a US layout (149 §8: the meeting push-to-talk Alt+`).</summary>
+    public const ushort Oem3Backtick = 0xC0;
+
     /// <summary>
     /// The numeric keypad's Enter: Windows reports it as <c>VK_RETURN</c> with the extended-key flag
     /// (<c>KeyStatus.IsExtendedKey</c>); the companion encodes it as <c>VK_RETURN | 0x100</c> so it stays a key of its own,
@@ -155,6 +158,15 @@ public enum KeyScope
 
     /// <summary>While the Ask bar is active.</summary>
     AskBar,
+
+    /// <summary>149 §8: while the agents panel is active.</summary>
+    Agents,
+
+    /// <summary>149 §8: the island — key only in its request box.</summary>
+    Island,
+
+    /// <summary>149 §8: between the voice key's press and the send (point-and-say).</summary>
+    PointAndSay,
 }
 
 /// <summary>Every action a key can trigger; <see cref="KeyText.RawValue(KeyAction)"/> is the persisted id.</summary>
@@ -164,6 +176,19 @@ public enum KeyAction
     Answer1, Answer2, Answer3, AnswerRecommended, Escape, Next, Previous, Snooze, Clear,
     OpenDiff, OpenBoard, OpenSession, Reply, AskBar, Legend, Settings,
     AskSend, AskEscape, AskOpenSession, AskLegend,
+
+    // 149 §8 (★ rows). anywhere:
+    OpenAgents, VoiceKey, MeetingPtt, MeetingEye,
+    // panel:
+    TalkReply, PointAttach, StopAgent,
+    // askBar:
+    AskPoint,
+    // agents:
+    AgentsNext, AgentsPrevious, AgentsOpen, AgentsOpenSession, AgentsTalk, AgentsStop, AgentsEscape,
+    // island:
+    IslandMute, IslandStop, IslandDismiss, IslandDeeper, IslandSend, IslandEscape,
+    // pointAndSay:
+    PointCancel,
 }
 
 public static class KeyText
@@ -173,6 +198,9 @@ public static class KeyText
         KeyScope.Anywhere => "Anywhere",
         KeyScope.Panel => "Attention panel",
         KeyScope.AskBar => "Ask bar",
+        KeyScope.Agents => "Agents panel",
+        KeyScope.Island => "Meeting island",
+        KeyScope.PointAndSay => "Point and say",
         _ => "",
     };
 
@@ -212,6 +240,10 @@ public static class KeyText
         KeyAction.Legend or KeyAction.AskLegend => Core.Intent.Legend,
         KeyAction.Settings => Core.Intent.Settings,
         KeyAction.AskSend => Core.Intent.Send,
+        KeyAction.AgentsEscape or KeyAction.IslandEscape or KeyAction.PointCancel => Core.Intent.Escape,
+        KeyAction.AgentsNext => Core.Intent.Next,
+        KeyAction.AgentsPrevious => Core.Intent.Previous,
+        KeyAction.AgentsOpen or KeyAction.AgentsOpenSession => Core.Intent.OpenSession,
         _ => null,
     };
 
@@ -297,6 +329,30 @@ public sealed class KeyTable : IEquatable<KeyTable>
         Row(KeyAction.AskOpenSession, KeyScope.AskBar, "Open the desk's session", Key("o", 'O', ChordModifiers.Control)),
         Row(KeyAction.AskLegend, KeyScope.AskBar, "Keyboard shortcuts", Key("/", VirtualKeys.Oem2Slash, ChordModifiers.Control)),
         Row(KeyAction.AskEscape, KeyScope.AskBar, "Undo the hold, else close", Chord.Escape, isFixed: true),
+        // 149 §8 ★ rows, Windows defaults (⌃⇧A → Ctrl+Shift+A; the voice key ⌃S → Ctrl+Alt+Space, D16 / 7.4 #3; ⌥` → Alt+`; ⌥⇧E → Alt+Shift+E).
+        Row(KeyAction.OpenAgents, KeyScope.Anywhere, "Open the agents panel", Key("a", 'A', ChordModifiers.Control | ChordModifiers.Shift)),
+        Row(KeyAction.VoiceKey, KeyScope.Anywhere, "Voice key — point and say (hold; double-tap locks)", Key(" ", VirtualKeys.Space, ChordModifiers.Control | ChordModifiers.Alt)),
+        Row(KeyAction.MeetingPtt, KeyScope.Anywhere, "Meeting push-to-talk (while a meeting is live)", Key("`", VirtualKeys.Oem3Backtick, ChordModifiers.Alt)),
+        Row(KeyAction.MeetingEye, KeyScope.Anywhere, "Meeting eye — hide from capture (while live)", Key("e", 'E', ChordModifiers.Alt | ChordModifiers.Shift)),
+        Row(KeyAction.TalkReply, KeyScope.Panel, "Hold to talk into the reply", Key("v", 'V')),
+        Row(KeyAction.PointAttach, KeyScope.Panel, "Point — attach the screen", Key("p", 'P')),
+        Row(KeyAction.StopAgent, KeyScope.Panel, "Stop the agent (hold)", Key("x", 'X')),
+        Row(KeyAction.AskPoint, KeyScope.AskBar, "Point — attach the screen", Key("p", 'P')),
+        Row(KeyAction.AgentsNext, KeyScope.Agents, "Next row", Key("j", 'J')),
+        Row(KeyAction.AgentsPrevious, KeyScope.Agents, "Previous row", Key("k", 'K')),
+        Row(KeyAction.AgentsOpen, KeyScope.Agents, "Open the row's session", Chord.ReturnKey),
+        Row(KeyAction.AgentsOpenSession, KeyScope.Agents, "Open the session in theuth", Key("o", 'O', ChordModifiers.Control)),
+        Row(KeyAction.AgentsTalk, KeyScope.Agents, "Hold to talk into the row", Key("v", 'V')),
+        Row(KeyAction.AgentsStop, KeyScope.Agents, "Stop the agent (hold)", Key("x", 'X')),
+        Row(KeyAction.AgentsEscape, KeyScope.Agents, "Undo the hold, else close", Chord.Escape, isFixed: true),
+        Row(KeyAction.IslandMute, KeyScope.Island, "Mute (pause the meeting)", Key("m", 'M')),
+        // §8 says ⌃⇧M; local scopes store chords without Shift (NormalizedLocal), so Ctrl+M — a typed Ctrl+Shift+M resolves to it (C did the same).
+        Row(KeyAction.IslandStop, KeyScope.Island, "Stop the meeting (hold)", Key("m", 'M', ChordModifiers.Control)),
+        Row(KeyAction.IslandDismiss, KeyScope.Island, "Dismiss the topic", Key("e", 'E')),
+        Row(KeyAction.IslandDeeper, KeyScope.Island, "Deeper", Key("d", 'D')),
+        Row(KeyAction.IslandSend, KeyScope.Island, "Send the request", Chord.ReturnKey),
+        Row(KeyAction.IslandEscape, KeyScope.Island, "Leave the request box", Chord.Escape, isFixed: true),
+        Row(KeyAction.PointCancel, KeyScope.PointAndSay, "Cancel", Chord.Escape, isFixed: true),
     };
 
     /// <summary>Fixed synonyms, never rebound: ↓/↑ walk, keypad Enter answers, <c>?</c> opens the legend. Shown in the legend.</summary>
@@ -304,6 +360,9 @@ public sealed class KeyTable : IEquatable<KeyTable>
     {
         (Chord.Down, KeyAction.Next), (Chord.Up, KeyAction.Previous), (Chord.NumpadEnter, KeyAction.AnswerRecommended),
         (Key("?", VirtualKeys.Oem2Slash), KeyAction.Legend), (Key("?", VirtualKeys.Oem2Slash), KeyAction.AskLegend),
+        // 149 §8: space = focus the reply field (alias of R, Revision 1 #18); Ctrl+P = point while typing in the Ask bar; ↓/↑ walk the agents rows.
+        (Chord.Space, KeyAction.Reply), (Key("p", 'P', ChordModifiers.Control), KeyAction.AskPoint),
+        (Chord.Down, KeyAction.AgentsNext), (Chord.Up, KeyAction.AgentsPrevious),
     };
 
     /// <summary>Every row with its effective chord, table order.</summary>
