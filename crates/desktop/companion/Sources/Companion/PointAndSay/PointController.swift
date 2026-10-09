@@ -69,23 +69,22 @@ final class PointController {
     /// The last `meeting_status` seen: a live meeting leases the mic, so a press is refused with the "Meeting running" hint.
     private var meetingLive = false
     private var prewarmed = false
+    /// `--probe-point`'s gesture phase: the Stop sequence runs to the point of `desk_open` and stops there.
+    var dryRun = false
 
     init(store: Store) {
         self.store = store
-        applyHotkey(SettingsModel.shared.value)
-        SettingsModel.shared.$value.removeDuplicates().dropFirst().receive(on: RunLoop.main)
-            .sink { [weak self] v in MainActor.assumeIsolated { self?.applyHotkey(v) } }
-            .store(in: &subs)
-        KeyboardShortcuts.onKeyDown(for: .voiceKey) { [weak self] in
-            guard !AskFlags.automated else { return }
-            self?.send(.pressed)
+        // A probe registers nothing: a Carbon hot key swallows the chord for every app while the process lives.
+        if !AskFlags.automated {
+            applyHotkey(SettingsModel.shared.value)
+            SettingsModel.shared.$value.removeDuplicates().dropFirst().receive(on: RunLoop.main)
+                .sink { [weak self] v in MainActor.assumeIsolated { self?.applyHotkey(v) } }
+                .store(in: &subs)
+            KeyboardShortcuts.onKeyDown(for: .voiceKey) { [weak self] in self?.send(.pressed) }
+            KeyboardShortcuts.onKeyUp(for: .voiceKey) { [weak self] in self?.send(.released) }
+            KeyboardShortcuts.onKeyDown(for: .pointEscape) { [weak self] in self?.send(.esc) }
+            KeyboardShortcuts.disable(.pointEscape)
         }
-        KeyboardShortcuts.onKeyUp(for: .voiceKey) { [weak self] in
-            guard !AskFlags.automated else { return }
-            self?.send(.released)
-        }
-        KeyboardShortcuts.onKeyDown(for: .pointEscape) { [weak self] in self?.send(.esc) }
-        KeyboardShortcuts.disable(.pointEscape)
         recorder.onChunk = { [weak self] c in self?.feed(c) }
         card.onEscape = { [weak self] in self?.send(.esc) }
         card.onOpen = { [weak self] in
@@ -151,7 +150,10 @@ final class PointController {
             overlays.reveal(catchMouse: mouse)
             sampler.onTick = { [weak self] s, _ in self?.tick(s) }
             sampler.start(t0: now, penAlways: !mouse, displays: displays)
-            card.hide(returnKey: false)
+            card.hide(returnKey: false) // a question from `.replying`: the old reply is over
+            doneTimer?.invalidate(); doneTimer = nil
+            stopSpeaking()
+            router = AskRouter()
             pill.state.reset(chord: chordSymbol)
             pill.show(near: NSEvent.mouseLocation)
             KeyboardShortcuts.enable(.pointEscape)
@@ -239,6 +241,7 @@ final class PointController {
         guard g == gesture, case .sending = state else { return }
         let note = t.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !note.isEmpty else { return finish(hint: "Nothing recognized") }
+        if dryRun { return finish(hint: "probe — stopped before desk_open (would send \(note.count) chars, \(ctx?.files.count ?? 0) files)") }
         let desk: String
         do { desk = try await store.resolveDesk() } catch { return finish(hint: "\(error)") } // off the hub: names the hub
         guard g == gesture, case .sending = state else { return }

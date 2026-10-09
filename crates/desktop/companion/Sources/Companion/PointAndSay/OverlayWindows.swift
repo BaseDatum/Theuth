@@ -114,6 +114,7 @@ final class OverlayView: NSView {
         }
         if let r = ringAt {
             let d = OverlayModel.ringDiameter
+            ring.strokeColor = color
             ring.path = CGPath(ellipseIn: CGRect(x: r.x - d / 2, y: r.y - d / 2, width: d, height: d), transform: nil)
             ring.isHidden = false
         } else {

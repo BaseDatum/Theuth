@@ -109,6 +109,25 @@ enum PointProbe {
         c.card.state.text = "Probe: this card shows the desk's streamed reply. Nothing was sent — the probe stopped before desk_open."
         c.card.show(near: NSEvent.mouseLocation, key: false)
         PointLog.write("answer card shown (not key): frame=\(c.card.panel.frame) visible=\(c.card.isVisible) key=\(c.card.panel.isKeyWindow); stopped before desk_open — nothing sent")
+
+        // Gesture phase: the real driver — press → Armed → tick → Holding → the sampler over the real pointer, the pill
+        // following it, the tone through `feed` → release → the Stop sequence — with `dryRun`, which stops it before
+        // `desk_open` even if the model hears words in a tone. No hotkey, no microphone, no Esc registration.
+        try? await Task.sleep(for: .seconds(4))
+        c.card.hide(returnKey: false)
+        c.dryRun = true
+        c.send(.pressed)
+        try? await Task.sleep(for: .milliseconds(400))
+        PointLog.write("gesture: after 400 ms state=\(c.state) overlays=\(c.overlays.revealed) pill=\(c.pill.isVisible) samples=\(c.sampler.samples.count) point.slice=\(store.point.map { "\($0.state)" } ?? "nil")")
+        for i in 0..<20 {
+            let start = i * VoiceRecorder.chunk
+            c.feed((0..<VoiceRecorder.chunk).map { j in Int16(sin(2 * .pi * 440 * Double(start + j) / VoiceRecorder.sampleRate) * 0.3 * 32767) })
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let sampled = c.sampler.samples.count
+        c.send(.released)
+        try? await Task.sleep(for: .seconds(3))
+        PointLog.write("gesture: released after ~2.4 s with \(sampled) samples → state=\(c.state) overlays=\(c.overlays.revealed) card=\(c.card.isVisible) pill=\(c.pill.isVisible) hint=\"\(c.pill.state.hint)\" point.slice=\(store.point.map { "\($0.state)" } ?? "nil")")
     }
 
     // MARK: the detector
