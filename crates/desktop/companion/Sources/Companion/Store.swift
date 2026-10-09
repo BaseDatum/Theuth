@@ -105,6 +105,7 @@ final class Store: ObservableObject {
         }
         askObserve(data)
         // 149 W3: meetingObserve(data) — MeetingEvent.decode(data) → MeetingReducer.reduce(meeting, …)
+        pointObserve(data) // 149 W2: the voice key's dictation, the desk's reply, Speech*
     }
 
     /// Debounced 250 ms (130 §5.2); never on a timer.
