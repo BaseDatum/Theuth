@@ -89,7 +89,8 @@ Branch `feat/149w-ww1` (basedatum), worktree `~/Develop/theuth-149w-ww1`, off `i
 
 ## Verification
 - Mac (`~/.dotnet`, `nice -n 10`): `dotnet build Theuth.Companion.Portable.slnf -warnaserror` clean; `dotnet test Theuth.Companion.Portable.slnf`
-  — **Core 169 / 169, Rpc 68 / 68** (was 146 / 23 before WW1; the Rpc suite now runs in 8 s, see Deviations).
+  — **Core 169 / 169, Rpc 68 / 68** (was 146 / 23 before WW1). R1: three consecutive Rpc runs under `--blame-hang 90s` at load ~36:
+  4 s · 5 s · 4 s, all 68/68; Core 169/169 (see Deviations 10 for the hang's root cause).
 - build-B Debug build (`Theuth.Companion.slnx`, Platform=x64, slot ww1): skeleton `2c965119` → exit 0, 0 errors, 0 warnings, 46 s
   (id 20261009T010102-3); `b9022543` → 0 / 0, 41 s (20261009T013133-39); `7ed29d98` → 0 / 0, 37 s (20261009T013451-53).
 - Live read-only smoke on build-B's installed engine: see §Live smoke below.
@@ -140,10 +141,17 @@ with files, `screen_context`, `speak` — all covered by the loopback-engine and
    `hotkey meetingPtt: not registered now (gated)` in its log.
 9. **`Refetch149Async` runs after every W1 refetch** (sessions + status + mesh, ~3 local calls per 250 ms debounce), not on its own timer;
    `meeting_status` is fetched only on connect and on meeting events, so an idle engine is not polled.
-10. **Two Rpc test classes serialised.** With `RpcClient149Tests` added, xunit ran two loopback Kestrel hosts in parallel and the test host
-    hung (blame dump after 4 min; `AnOlderEngineAnswersMethodNotFoundWithItsCode` + `AnErrorReplyThrowsTheEnginesCodeAndMessage`
-    in flight). Both classes now share `[Collection("loopback engine")]`; the whole Rpc suite went from 7 min to 8 s on the Mac,
-    which suggests the pre-149 run was already paying for host contention.
+10. **The Rpc test host hang — root cause and fix (R1).** Under load the test host hung at the first loopback engine start; the
+    hang dump (`dotnet-dump analyze … clrstack -all`, 03:22) shows the test thread inside `WebApplication.CreateSlimBuilder()` →
+    `ApplyDefaultAppConfigurationSlim` → `JsonConfigurationSource.Build` → `FileConfigurationProvider..ctor` → `ChangeToken.OnChange` →
+    `OnChangeTokenFired` → `RegisterChangeTokenCallback` → … recursing without end: the slim builder adds `appsettings*.json` with
+    `reloadOnChange: true`, and on macOS under load the `PhysicalFileProvider` watch token fires at once, forever (the 51 % CPU seen on the
+    spinning host). Fix: `FakeEngine` builds with `WebApplication.CreateEmptyBuilder()` + `UseKestrelCore()` — no file configuration, no
+    watcher — plus `xunit.runner.json` `parallelizeTestCollections: false` for the Rpc assembly (one Kestrel host at a time) and a 15 s
+    bound (`FakeEngine.Bound`) on every server/client await, `StartAsync` and `DisposeAsync`, so a regression fails instead of hanging.
+    Proof at load ~36: three consecutive full Rpc runs under `--blame-hang --blame-hang-timeout 90s` — 68/68 in 4 s, 5 s, 4 s — and
+    Core 169/169 in 0.5 s. (The earlier "one collection" change was a symptom patch; it stays, harmlessly.) The pre-149 7-minute Rpc runs
+    were the same mechanism in its slow form.
 11. **E6 is decoded but not yet produced by any engine** (W0 / H2 pending at the time of writing); every card bubble on build-B comes
     from the interim join. `Fixture149Tests.AttentionItemContextPriorityRank` pins the wire shape.
 

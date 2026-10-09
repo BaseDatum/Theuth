@@ -50,6 +50,13 @@ public sealed class Models149Tests
         Assert.Equal(new MeetingState("Recording"), events[1].State);
         Assert.Equal(new[] { new Degradation("MicNoAec"), new Degradation("SttDown", "Mic"), new Degradation("PermissionDenied", "Microphone") }, events[1].Degraded);
         Assert.Equal(new MeetingState("Post", "Transcribing"), events[2].State);
+        // Words beyond the design's list (NoNote, DiarizationDown) and a word from a newer engine decode as themselves; Support keeps its reason.
+        var later = WireEvent.Decode("""{"type":"State","meeting":"m1","state":"Stopping","degraded":["NoNote","DiarizationDown","BrandNew2027",{"Future":{"x":1}}]}""");
+        Assert.Equal(new[] { "NoNote", "DiarizationDown", "BrandNew2027", "Future" }, ((MeetingEvent)later.Payload!).Degraded.Select(d => d.Kind));
+        Assert.Equal(new MeetingState("Stopping"), ((MeetingEvent)later.Payload!).State);
+        var partial = TheuthJson.Deserialize<MeetingSupport>("""{"kind":"Partial","reason":"no system audio"}""");
+        Assert.Equal(("Partial", "no system audio"), (partial.Kind, partial.Reason));
+        Assert.Equal(("None", "no devices"), (TheuthJson.Deserialize<MeetingSupport>("""{"kind":"None","reason":"no devices"}""").Kind, TheuthJson.Deserialize<MeetingSupport>("""{"kind":"None","reason":"no devices"}""").Reason));
         Assert.Equal(0.25f, events[3].MicRms);
         Assert.Equal("Speaker 1", events[4].AsUtterance!.Who);
         Assert.True(events[4].IsFinal ?? true);

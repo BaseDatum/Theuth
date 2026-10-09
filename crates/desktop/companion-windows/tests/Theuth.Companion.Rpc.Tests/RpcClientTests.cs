@@ -53,9 +53,14 @@ internal sealed class FakeEngine : IAsyncDisposable
 
     public static async Task<FakeEngine> StartAsync()
     {
-        var builder = WebApplication.CreateSlimBuilder();
+        // The EMPTY builder, on purpose (149 WW1 R1): CreateSlimBuilder adds appsettings*.json with reloadOnChange, whose
+        // PhysicalFileProvider change token can fire forever on macOS under load — the test host then spins inside
+        // FileConfigurationProvider..ctor → ChangeToken.OnChange (hang dump 2026-10-09 03:22). No file configuration,
+        // no watcher: Kestrel core on a loopback port and nothing else.
+        var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions());
         builder.Logging.ClearProviders();
-        builder.WebHost.UseKestrel(o => o.Listen(IPAddress.Loopback, 0));
+        builder.WebHost.UseKestrelCore();
+        builder.WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, 0));
         var app = builder.Build();
         FakeEngine? engine = null;
         app.UseWebSockets();
@@ -68,12 +73,14 @@ internal sealed class FakeEngine : IAsyncDisposable
             engine.current = ws;
             await engine.ServeAsync(ws, ctx.RequestAborted);
         });
-        await app.StartAsync();
+        await app.StartAsync().WaitAsync(Bound);
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
         engine = new FakeEngine(app, new Uri(address.Replace("http://", "ws://") + "/"));
         return engine;
     }
 
+    /// <summary>Every await in these tests is bounded (R1): a regression fails in 15 s instead of hanging the test host.</summary>
+    public static readonly TimeSpan Bound = TimeSpan.FromSeconds(15);
     private async Task ServeAsync(WebSocket ws, CancellationToken ct)
     {
         var buffer = new byte[64 * 1024];
@@ -115,8 +122,10 @@ internal sealed class FakeEngine : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         current?.Abort();
-        await app.StopAsync();
-        await app.DisposeAsync();
+        using var cts = new CancellationTokenSource(Bound);
+        try { await app.StopAsync(cts.Token); }
+        catch (OperationCanceledException) { /* a connection that would not drain; the host is disposed below */ }
+        await app.DisposeAsync().AsTask().WaitAsync(Bound);
     }
 }
 
@@ -156,6 +165,10 @@ public sealed class RpcClientTests
 {
     private static string Params(JsonElement request) => request.GetProperty("params").GetRawText();
 
+    private static Task<T> B<T>(Task<T> t) => t.WaitAsync(FakeEngine.Bound);
+
+    private static Task B(Task t) => t.WaitAsync(FakeEngine.Bound);
+
     [Fact]
     public async Task UpgradeCarriesTheBearerTokenAndTheCompanionClientHeader()
     {
@@ -164,7 +177,7 @@ public sealed class RpcClientTests
         await using var client = new RpcClient(new EngineLocation(engine.Url, "tok-64"), rec.OnState, rec.OnEvent);
         client.Start();
         await rec.WaitOpenCountAsync(1);
-        var items = await client.AttentionListAsync();
+        var items = await B(client.AttentionListAsync());
         Assert.Empty(items);
         Assert.True(engine.Upgrades.TryPeek(out var up));
         Assert.Equal("Bearer tok-64", up.Authorization);
@@ -188,15 +201,15 @@ public sealed class RpcClientTests
         client.Start();
         await rec.WaitOpenCountAsync(1);
 
-        Assert.True(await client.AnswerAskAsync("ask-1", null));
-        Assert.True(await client.AnswerAskAsync("ask-1", new Answer[] { new Answer.Choice(1) }));
-        Assert.True(await client.ResolveApprovalAsync("ap-1", Decision.Deny));
-        Assert.Equal("s-1", await client.SendInputAsync("s-1", "hi"));
-        await client.AttentionSnoozeAsync("ask:1", 1_791_450_600_000);
-        await client.AttentionDismissAsync("show:1");
-        await client.TaskDecideAsync("decision:7", "B");
-        await client.TaskMoveAsync("task-9", "todo", null);
-        Assert.Null(await client.PacketGetAsync("decision:7"));
+        Assert.True(await B(client.AnswerAskAsync("ask-1", null)));
+        Assert.True(await B(client.AnswerAskAsync("ask-1", new Answer[] { new Answer.Choice(1) })));
+        Assert.True(await B(client.ResolveApprovalAsync("ap-1", Decision.Deny)));
+        Assert.Equal("s-1", await B(client.SendInputAsync("s-1", "hi")));
+        await B(client.AttentionSnoozeAsync("ask:1", 1_791_450_600_000));
+        await B(client.AttentionDismissAsync("show:1"));
+        await B(client.TaskDecideAsync("decision:7", "B"));
+        await B(client.TaskMoveAsync("task-9", "todo", null));
+        Assert.Null(await B(client.PacketGetAsync("decision:7")));
 
         string P(string method, int nth = 0) => Params(engine.RequestsFor(method).ElementAt(nth));
         Assert.Equal("""["ask-1",null]""", P("answer_ask"));
@@ -247,7 +260,7 @@ public sealed class RpcClientTests
         await using var client = new RpcClient(new EngineLocation(engine.Url, "t"), rec.OnState, rec.OnEvent);
         client.Start();
         await rec.WaitOpenCountAsync(1);
-        var e = await Assert.ThrowsAsync<RpcException>(() => client.CallRawAsync("mesh_status"));
+        var e = await Assert.ThrowsAsync<RpcException>(() => B(client.CallRawAsync("mesh_status")));
         Assert.Equal(-32601, e.Code);
         Assert.Equal("rpc -32601: Method not found", e.ToString());
     }
@@ -257,7 +270,7 @@ public sealed class RpcClientTests
     {
         var rec = new Recorder();
         await using var client = new RpcClient(new EngineLocation(new Uri("ws://127.0.0.1:9/"), "t"), rec.OnState, rec.OnEvent);
-        var e = await Assert.ThrowsAsync<RpcException>(() => client.AttentionListAsync());
+        var e = await Assert.ThrowsAsync<RpcException>(() => B(client.AttentionListAsync()));
         Assert.Equal(-32300, e.Code);
     }
 
@@ -283,7 +296,7 @@ public sealed class RpcClientTests
         var states = rec.StatesSnapshot();
         Assert.Equal(RpcClient.State.Reconnecting, states[2]);
         Assert.Equal(RpcClient.State.Open, states[^1]);
-        Assert.Empty(await client.AttentionListAsync()); // the new socket serves calls
+        Assert.Empty(await B(client.AttentionListAsync())); // the new socket serves calls
     }
 
     [Fact]
