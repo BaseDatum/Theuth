@@ -72,7 +72,7 @@ struct AnswerCardView: View {
 
     /// `thinking` ticks its elapsed seconds (§12.4: never looks frozen).
     @ViewBuilder private var statusText: some View {
-        if s.phase == .thinking, let since = s.thinkingSince {
+        if s.phase == .thinking, !model.approvalPending, let since = s.thinkingSince {
             TimelineView(.periodic(from: since, by: 1)) { ctx in
                 let secs = Int(ctx.date.timeIntervalSince(since))
                 Text("· \(s.status.isEmpty ? "thinking" : s.status) · \(secs) s").font(.body).foregroundColor(.tertiary).lineLimit(1)
@@ -142,7 +142,7 @@ struct AnswerCardView: View {
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(RoundedRectangle(cornerRadius: Type.buttonRadius, style: .continuous).strokeBorder(Color.separator))
         if !model.approvalPending {
-            caps([(isCommand ? "⌃⌥C" : "⌃S", "hold to follow up"), ("⏎", "or type"), ("J K", "thread"), ("⌘L", "list"), ("O", "open"), ("⎋", "collapse")])
+            caps([(isCommand ? "⌃⌥C" : "⌃S", "follow up"), ("J K", "thread"), ("⌘L", "list"), ("O", "open"), ("⎋", "collapse")])
         }
     }
 

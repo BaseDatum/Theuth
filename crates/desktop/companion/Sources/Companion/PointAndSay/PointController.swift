@@ -76,8 +76,10 @@ final class PointController {
     private(set) var mode = PointMachine.Mode.ask
     /// §12.6: the gesture table chosen at press (per mode).
     private var gestureKind = PointMachine.Gesture.holdLock
-    /// The press landed while the card was up in the same mode: the send is a follow-up in the thread (§10.5 / §12.2).
-    private var followUp = false
+    /// The press landed while the card was up: the send is a follow-up in its thread when the mode matches (§10.5 / §12.2);
+    /// the card steps aside for the pill (both live in the island area) and comes back at the send or a discard.
+    private var cardWasUp = false
+    private var followUp: Bool { cardWasUp && card.state.kind == cardKind && card.state.session != nil }
     let sampler = PointerSampler()
     let overlays = OverlayWindows()
     let pill = VoicePill()
@@ -263,8 +265,8 @@ final class PointController {
             sampler.onTick = { [weak self] s, _ in self?.tick(s) }
             sampler.start(t0: now, penAlways: !mouse, displays: displays)
             // §10.5 / §12.2: a hold while the card is up in the same mode is a follow-up in its thread; else the old reply is over.
-            followUp = card.isVisible && card.state.kind == cardKind && card.state.session != nil
-            if !followUp { card.hide(returnKey: false) }
+            cardWasUp = card.isVisible
+            card.hide(returnKey: false)
             doneTimer?.invalidate(); doneTimer = nil
             speaker.stop() // S3: a new gesture silences whatever is speaking, the Ask bar's reply included
             router = AskRouter()
@@ -278,7 +280,6 @@ final class PointController {
         case .relabel(let m):
             mode = m
             pill.state.chord = chordSymbol(m); pill.state.label = Self.pillLabel(m)
-            followUp = card.isVisible && card.state.kind == cardKind && card.state.session != nil
             PointLog.write("point mode → \(m)")
         case .stop(let reason):
             let g = gesture
@@ -286,6 +287,8 @@ final class PointController {
         case .discard(let reason, let hint):
             teardownGesture()
             if let hint { pill.showHint(hint, near: NSEvent.mouseLocation) } else { pill.hide() }
+            if followUp { card.show(near: NSEvent.mouseLocation, key: !AskFlags.automated) } // the thread it interrupted stays
+            cardWasUp = false
             PointLog.write("point discarded: \(reason)")
         case .conceal:
             card.hide(returnKey: true)
@@ -372,8 +375,8 @@ final class PointController {
         do { try await deliver(body, files: ctx?.files ?? [], to: desk) } catch { return finish(hint: "\(error)") }
         guard g == gesture, case .sending = state else { return }
         PointLog.write("point sent to desk \(desk) (\(note.count) chars, \(ctx?.files.count ?? 0) files, reason \(reason), mode \(mode), follow-up \(followUp))")
-        if followUp, card.state.kind == kind { card.state.followUp(question: note) }
-        else { card.state.begin(question: note, kind: kind) }
+        if followUp { card.state.followUp(question: note) } else { card.state.begin(question: note, kind: kind) }
+        cardWasUp = false
         card.state.session = desk
         card.state.status = mode == .command ? "heard → working" : "working…"
         pill.hide()
@@ -421,6 +424,8 @@ final class PointController {
         PointLog.write("point not sent: \(hint)")
         send(.cancel)
         pill.showHint(hint, near: NSEvent.mouseLocation)
+        if followUp { card.show(near: NSEvent.mouseLocation, key: !AskFlags.automated) }
+        cardWasUp = false
     }
 
     static func runLoopTurn() async {
@@ -605,11 +610,10 @@ final class PointController {
         guard let r = router.reply, !r.finished, let session = w.session, session == r.session else { return }
         switch w.type {
         case "TextDelta":
-            router.observe(.textDelta(session: session, text: w.text ?? ""))
-            card.state.command?.observe(.textDelta(w.text ?? ""))
+            if router.observe(.textDelta(session: session, text: w.text ?? "")) { card.state.command?.observe(.textDelta(w.text ?? "")) }
         case "TurnFinished":
-            router.observe(.turnFinished(session: session, stopReason: w.stopReason ?? ""))
-            card.state.command?.observe(.turnFinished(stopReason: w.stopReason ?? ""))
+            // A turn that ended before anything streamed is the one we steered into, not the reply (`AskRouter`): the reducer follows.
+            if router.observe(.turnFinished(session: session, stopReason: w.stopReason ?? "")) { card.state.command?.observe(.turnFinished(stopReason: w.stopReason ?? "")) }
         case "Error":
             router.observe(.error(session: session, message: w.message ?? ""))
             card.state.command?.observe(.turnFinished(stopReason: "error"))

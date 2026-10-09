@@ -99,7 +99,7 @@ enum CommandProbe {
             s.tools = ["read_file"]
             s.phase = .answer; s.turnFinished = true; s.status = "replied"
             s.expanded = true
-            s.current = 1
+            s.current = 0 // "1 of 2": the earlier block with its bullets and code, the dots showing the thread
             return s
         case "failed":
             s.text = ""
