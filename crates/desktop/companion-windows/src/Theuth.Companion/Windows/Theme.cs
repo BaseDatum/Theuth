@@ -34,7 +34,7 @@ internal static class Theme
     /// <summary>A brush for a status tone (the shared mapping table).</summary>
     public static Brush Status(StatusTone tone, ElementTheme theme) => Brush(NativeLook.Brush(tone), theme);
 
-    public static Color ColorOf(string key, ElementTheme theme) => Brush(key, theme) is SolidColorBrush s ? s.Color : Colors.Transparent;
+    public static Color ColorOf(string key, ElementTheme theme) => Brush(key, theme) is SolidColorBrush s ? s.Color : Microsoft.UI.Colors.Transparent;
 
     /// <summary>The system accent colour itself (<c>SystemAccentColor</c>) — e.g. for the point-and-say trail raster.</summary>
     public static Color Accent()
@@ -48,7 +48,7 @@ internal static class Theme
         catch (Exception) { return Color.FromArgb(255, 0, 120, 212); } // Windows' default accent, only when every API fails
     }
 
-    public static SolidColorBrush Transparent { get; } = new(Colors.Transparent);
+    public static SolidColorBrush Transparent { get; } = new(Microsoft.UI.Colors.Transparent);
 
     /// <summary>An element not yet in a live tree reports <c>Default</c>: that is the system's theme (live, from UISettings).</summary>
     public static ElementTheme Resolve(ElementTheme theme) => theme == ElementTheme.Default ? System : theme;
@@ -152,7 +152,7 @@ internal static class Theme
         }
         catch (Exception)
         {
-            return new SolidColorBrush(theme == ElementTheme.Light ? Colors.Black : Colors.White);
+            return new SolidColorBrush(theme == ElementTheme.Light ? Microsoft.UI.Colors.Black : Microsoft.UI.Colors.White);
         }
     }
 
