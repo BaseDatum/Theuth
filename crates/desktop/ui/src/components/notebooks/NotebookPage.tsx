@@ -7,6 +7,7 @@ import { useDocument } from '@/components/editor/useDocument'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { ChatColumn } from '@/components/notebooks/ChatColumn'
+import { type AskSearch, NotebookHeaderActions } from '@/components/notebooks/NotebookHeaderActions'
 import { NotesColumn } from '@/components/notebooks/NotesColumn'
 import { firstLine, useDescription, useNotebook, useNotebookItems } from '@/components/notebooks/useNotebook'
 import { useNotes } from '@/components/notes/useNotes'
@@ -16,15 +17,16 @@ import { Button } from '@/components/ui/button'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { type Side, type Tab, layout, useNotebookColumns } from '@/lib/notebook-columns'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
+import { isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 
 const route = getRouteApi('/notebooks_/$id')
 
-/** `/notebooks/$id` (144 §12.1): sources | chat | notes. `?new` = just created: the title is selected; `?tab` = the phone's open column. */
+/** `/notebooks/$id` (144 §12.1): sources | chat | notes. `?new` = just created: the title is selected; `?tab` = the phone's open column; `?ask` = the Ask dialog (wave 2). */
 export function NotebookPage() {
   const { id } = route.useParams()
-  const { new: isNew, tab } = route.useSearch()
-  return <Notebook key={id} id={id} isNew={isNew === true} tab={tab ?? 'chat'} />
+  const { new: isNew, tab, ask } = route.useSearch()
+  return <Notebook key={id} id={id} isNew={isNew === true} tab={tab ?? 'chat'} ask={ask} />
 }
 
 const TABS: { key: Tab; label: (sources: number, notes: number) => string }[] = [
@@ -33,7 +35,7 @@ const TABS: { key: Tab; label: (sources: number, notes: number) => string }[] = 
   { key: 'notes', label: (_, n) => `Notes · ${n}` },
 ]
 
-function Notebook({ id, isNew, tab }: { id: string; isNew: boolean; tab: Tab }) {
+function Notebook({ id, isNew, tab, ask }: { id: string; isNew: boolean; tab: Tab; ask: AskSearch }) {
   const nb = useNotebooksApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -64,8 +66,10 @@ function Notebook({ id, isNew, tab }: { id: string; isNew: boolean; tab: Tab }) 
   useEffect(() => {
     if (!isNew || !ready) return
     titleInput.current?.select()
-    void navigate({ to: '/notebooks/$id', params: { id }, search: tab === 'chat' ? {} : { tab }, replace: true })
-  }, [isNew, ready, id, tab, navigate])
+    void navigate({ to: '/notebooks/$id', params: { id }, search: { ...(tab === 'chat' ? {} : { tab }), ...(ask === undefined ? {} : { ask }) }, replace: true })
+  }, [isNew, ready, id, tab, ask, navigate])
+  // The Ask dialog is URL state (`?ask`), so `/ask` in the composer and the header button share one path.
+  const setAsk = (next: AskSearch) => void navigate({ to: '/notebooks/$id', params: { id }, search: { ...(tab === 'chat' ? {} : { tab }), ...(next === undefined ? {} : { ask: next }) }, replace: true })
 
   const mobile = useIsMobile()
   const collapsed = useNotebookColumns((s) => s.collapsed)
@@ -73,11 +77,13 @@ function Notebook({ id, isNew, tab }: { id: string; isNew: boolean; tab: Tab }) 
   const l = layout(mobile, collapsed)
   const members = live.provider?.meta?.members.length ?? 0
   const chat = (composerOnly?: boolean) => <ChatColumn notebook={id} title={title || 'Untitled'} notes={notes} composerOnly={composerOnly} />
+  // 143's pop-out rule: its own window has no band (SectionBand returns null) and no way back; the row is the drag bar.
+  const popped = isPopout()
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
       <SectionBand group="library" />
-      <SectionRow back={{ to: '/notebooks', label: 'Back to notebooks', className: 'md:hidden' }}>
+      <SectionRow back={popped ? undefined : { to: '/notebooks', label: 'Back to notebooks', className: 'md:hidden' }}>
         <TitleInput ref={titleInput} value={title} disabled={!row} onCommit={(t) => t !== title && rename.mutate(t)} />
         {description && <span className="hidden max-w-[520px] truncate text-xs text-fg-tertiary lg:inline">{description}</span>}
         <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -88,13 +94,7 @@ function Notebook({ id, isNew, tab }: { id: string; isNew: boolean; tab: Tab }) 
               {live.status.kind === 'live' && ' · live'}
             </Chip>
           )}
-          <Button variant="outline" size="sm" disabled title="wave 3" className="hidden md:inline-flex">
-            Ask across notebooks
-          </Button>
-          <Button variant="outline" size="sm" disabled title="wave 3" className="hidden md:inline-flex">
-            Overviews ▾
-          </Button>
-          {live.provider && <ShareAction provider={live.provider} />}
+          <NotebookHeaderActions notebook={id} ask={ask} onAskChange={setAsk} share={live.provider && <ShareAction provider={live.provider} />} />
           {l.mode === 'columns' && (
             <>
               <Button variant="ghost" size="icon-sm" aria-label={collapsed.sources ? 'Expand sources' : 'Collapse sources'} aria-pressed={collapsed.sources} onClick={() => toggle('sources')}>

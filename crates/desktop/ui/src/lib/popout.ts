@@ -1,6 +1,6 @@
-// A chat, an artifact, a note, a meeting or a PTY in its own desktop window: the same bundle at the same route with
-// `?window=<label>`. The label (`popout-<kind>-<id>`) is what the Tauri host keys the window on (focus-if-open,
-// remembered size/position, the `popout-*` capability); in a browser it is the `window.open` name.
+// A chat, an artifact, a note, a notebook, a meeting or a PTY in its own desktop window: the same bundle at the same
+// route with `?window=<label>`. The label (`popout-<kind>-<id>`) is what the Tauri host keys the window on
+// (focus-if-open, remembered size/position, the `popout-*` capability); in a browser it is the `window.open` name.
 
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -12,6 +12,8 @@ export type PopoutTarget =
   | { kind: 'artifact'; callId: string }
   /** `/notes/$id`: the note's editor alone; `fresh` (a note just created) adds `?new=true` so the page selects the title. */
   | { kind: 'note'; doc: string; fresh?: true }
+  /** `/notebooks/$id` (144 wave 2, Sky's ruling): the notebook's three columns alone; landscape, ~1100 × 720. */
+  | { kind: 'notebook'; notebook: string }
   /** `/meetings/$id`: the control center alone. */
   | { kind: 'meeting'; meeting: string }
   /** `/meetings/$id?pane=note`: the meeting's note editor alone (`?pane` is what tells it from `meeting`). */
@@ -32,13 +34,15 @@ const idOf = (t: PopoutTarget): string =>
       ? t.callId
       : t.kind === 'note'
         ? t.doc
-        : t.kind === 'vm'
-          ? t.name
-          : t.kind === 'pty'
-            ? `${t.session}-${t.job}`
-            : t.kind === 'codemap'
-              ? `${t.session}-${t.root}`
-              : t.meeting
+        : t.kind === 'notebook'
+          ? t.notebook
+          : t.kind === 'vm'
+            ? t.name
+            : t.kind === 'pty'
+              ? `${t.session}-${t.job}`
+              : t.kind === 'codemap'
+                ? `${t.session}-${t.root}`
+                : t.meeting
 
 const pathOf = (t: PopoutTarget): string =>
   t.kind === 'chat' || t.kind === 'talk'
@@ -47,13 +51,15 @@ const pathOf = (t: PopoutTarget): string =>
       ? `/artifacts/${encodeURIComponent(t.callId)}`
       : t.kind === 'note'
         ? `/notes/${encodeURIComponent(t.doc)}${t.fresh ? '?new=true' : ''}`
-        : t.kind === 'vm'
-          ? `/vm/${encodeURIComponent(t.name)}`
-          : t.kind === 'pty'
-            ? `/pty/${encodeURIComponent(t.session)}/${encodeURIComponent(t.job)}`
-            : t.kind === 'codemap'
-              ? `/codemap/${encodeURIComponent(t.session)}/${encodeURIComponent(t.root)}`
-              : `/meetings/${encodeURIComponent(t.meeting)}${t.kind === 'meeting-note' ? '?pane=note' : ''}`
+        : t.kind === 'notebook'
+          ? `/notebooks/${encodeURIComponent(t.notebook)}`
+          : t.kind === 'vm'
+            ? `/vm/${encodeURIComponent(t.name)}`
+            : t.kind === 'pty'
+              ? `/pty/${encodeURIComponent(t.session)}/${encodeURIComponent(t.job)}`
+              : t.kind === 'codemap'
+                ? `/codemap/${encodeURIComponent(t.session)}/${encodeURIComponent(t.root)}`
+                : `/meetings/${encodeURIComponent(t.meeting)}${t.kind === 'meeting-note' ? '?pane=note' : ''}`
 
 /** Tauri window labels allow `[A-Za-z0-9/:_-]`; ids are passed through the same filter. */
 const safe = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_')
@@ -81,6 +87,7 @@ export function popoutTarget(href: string): PopoutTarget | null {
   if (head === 'vm') return { kind: 'vm', name: decodeURIComponent(id) }
   if (head === 'artifacts') return { kind: 'artifact', callId: decodeURIComponent(id) }
   if (head === 'notes') return { kind: 'note', doc: decodeURIComponent(id) }
+  if (head === 'notebooks') return { kind: 'notebook', notebook: decodeURIComponent(id) }
   if (head === 'meetings') {
     const meeting = decodeURIComponent(id)
     return url.searchParams.get('pane') === 'note' ? { kind: 'meeting-note', meeting } : { kind: 'meeting', meeting }
@@ -109,10 +116,18 @@ export const popoutSession = (t: PopoutTarget | null): string | null =>
  */
 export const canPopout = (): boolean => container() !== 'ios'
 
+/** 144 wave 2: a notebook's three columns want a landscape window (~1100 × 720), clamped to the screen; the Tauri
+ * host sizes by label in `crates/desktop/src/commands.rs::open_window`, a browser takes `window.open` features. */
+export function popoutSize(t: PopoutTarget, screen: { availWidth: number; availHeight: number }): { width: number; height: number } | null {
+  if (t.kind !== 'notebook') return null
+  return { width: Math.min(1100, screen.availWidth), height: Math.min(720, screen.availHeight) }
+}
+
 /** Open `t` in its own window (or focus it); a browser gets a named `window.open`. */
 export function openPopout(t: PopoutTarget): Promise<void> {
   if (isTauri()) return invoke<void>('open_window', { label: popoutLabel(t), url: popoutUrl(t) })
-  window.open(popoutUrl(t), popoutLabel(t))
+  const size = popoutSize(t, window.screen)
+  window.open(popoutUrl(t), popoutLabel(t), size ? `width=${size.width},height=${size.height}` : undefined)
   return Promise.resolve()
 }
 

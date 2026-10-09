@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { canPopout, noteOpenMode, popoutLabel, popoutMeeting, popoutSession, popoutTarget, popoutUrl } from './popout'
+import { canPopout, noteOpenMode, popoutLabel, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl } from './popout'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -45,6 +45,21 @@ test('143 D4: a fresh note pops out with ?new=true ahead of window=; the flag ne
   expect(popoutTarget('tauri://localhost/notes/d1?new=true&window=popout-note-d1')).toEqual({ kind: 'note', doc: 'd1' })
   // The meeting-note url is unchanged by the general `&` rule.
   expect(popoutUrl({ kind: 'meeting-note', meeting: 'm1' })).toBe('/meetings/m1?pane=note&window=popout-meeting-note-m1')
+})
+
+test('144 wave 2: a notebook pops out at /notebooks/$id with label popout-notebook-<id>; the window is landscape, clamped to the screen', () => {
+  const t = { kind: 'notebook', notebook: 'nb1' } as const
+  expect(popoutUrl(t)).toBe('/notebooks/nb1?window=popout-notebook-nb1')
+  expect(popoutLabel(t)).toBe('popout-notebook-nb1')
+  expect(popoutTarget('tauri://localhost/notebooks/nb1?window=popout-notebook-nb1')).toEqual(t)
+  // A reload keeps the target: the route state is the URL, nothing from the main window.
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  expect(popoutTarget('/notebooks?window=x')).toBeNull()
+  expect(popoutSession(t)).toBeNull()
+  expect(popoutMeeting(t)).toBeNull()
+  expect(popoutSize(t, { availWidth: 1920, availHeight: 1080 })).toEqual({ width: 1100, height: 720 })
+  expect(popoutSize(t, { availWidth: 1024, availHeight: 640 })).toEqual({ width: 1024, height: 640 })
+  expect(popoutSize({ kind: 'note', doc: 'd1' }, { availWidth: 1920, availHeight: 1080 })).toBeNull()
 })
 
 test('143 D3: a new note opens in its own window only on a desktop or browser that can; a phone or iOS navigates', () => {
