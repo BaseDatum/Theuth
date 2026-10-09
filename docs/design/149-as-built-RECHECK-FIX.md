@@ -114,3 +114,19 @@ desk released.
 - Observed, not fixed (not on the list): Settings › Keys row labels ("Voice key — point and say (hold; double-…", "Meeting push-to-talk
   (while a meeting is…") clip at the default window size the same way the Voice-key label did; `KeyRow.Make` is the place.
 - The `w6-gate.ps1 grep` regex argument cannot contain `|` or spaces (service arg rule) — one pattern per call.
+
+## §R1 — Settings › Keys row labels clipped at 720×520 (orchestrator R1, 08:29)
+
+`Settings/ShortcutRecorder.cs` `KeyRow.Make`: the label `TextBlock` in the row's star column gets `TextWrapping.Wrap`, so "Voice key —
+point and say (hold; double-tap locks)", "Meeting push-to-talk (while a meeting is live)" and "Meeting eye — hide from capture (while
+live)" wrap onto two lines instead of clipping; the recorder (170 epx) and the ↺ button keep their widths. The row's verdict line
+(`settings-keys-notice-<action>`) wraps too (`MaxWidth = 340`) so a long "Already used by …" cannot run off the page. The other
+pages were checked at the default 720×520 on build-B: Rail, Island, Voice key (fixed in the main wave), Notifications, Undo delay,
+Launch at login and Engine read whole — Combo labels already wrap since the main wave, every caption wraps, Toggle labels are ≤ 35
+chars. No Core change.
+
+- Gates: Mac Core 274/274, Rpc 68/68; build-B Debug x64 @ 4af43cc8 0 errors / 0 warnings (25 s, job 20261009T073017-260).
+- Proof (Debug 4af43cc8 `--background --shareable --settings keys`, desk 08:30–08:32): `FIX-R1-settings-keys-labels-wrap.jpg` (every
+  Anywhere row whole, two-line labels), `FIX-R1-settings-notifications-720x520.jpg`, `FIX-R1-settings-island-720x520.jpg`.
+- Restored: kill-mine → start-installed (pid 15040) → `Run\TheuthCompanion = "…\companion\Theuth.Companion.exe" --background` → desk released.
+  (The installed pre-fix companion hits D1 again on this restart, as before — until the packaged fix is installed.)
