@@ -6,7 +6,7 @@ import { head } from '@/components/attention/Bundle'
 import { usePacket } from '@/components/attention/queries'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { cn } from 'cn'
 import { useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
@@ -44,16 +44,22 @@ function ReadAloud({ session, entryKey, text }: { session: string; entryKey: str
   return <ActionButton icon={mine ? Square : Volume2} label={mine ? 'Stop' : 'Read aloud'} onClick={toggle} className="size-8 shrink-0 [&_svg]:size-4" />
 }
 
-/** The `Type your own…` box; the `Input` carries the dictation mic (54). `kept`: words that are not the pick stay visible but dimmed. */
-function OwnAnswer({ value, active, kept, onChange, onFocus, ref }: { value: string; active: boolean; kept: boolean; onChange: (v: string) => void; onFocus: () => void; ref: Ref<HTMLInputElement> }) {
+/**
+ * The `Type your own…` box: a one-line `Textarea` that grows with its text (154; CSS only, `field-sizing: content` —
+ * WebKit < 26.2 and Firefox keep one line, like the composer); the mic is the dictation one (54). Enter inserts a
+ * newline; Send answers is the only send. `kept`: words that are not the pick stay visible but dimmed.
+ */
+function OwnAnswer({ value, active, kept, onChange, onFocus, ref }: { value: string; active: boolean; kept: boolean; onChange: (v: string) => void; onFocus: () => void; ref: Ref<HTMLTextAreaElement> }) {
   return (
-    <Input
+    <Textarea
       ref={ref}
+      oneLine
+      rows={1}
       placeholder="Type your own…"
       value={value}
       onChange={(e) => onChange(e.target.value)}
       onFocus={onFocus}
-      className={cn('h-8 min-w-0 flex-1 text-base md:text-sm', active && 'border-fg-accent', kept && 'text-fg-secondary')}
+      className={cn('min-w-0 flex-1 pointer-coarse:mt-1.5', active && 'border-fg-accent', kept && 'text-fg-secondary')}
     />
   )
 }
@@ -88,7 +94,7 @@ export function QuestionBlock({
   const typing = draft?.kind === 'text'
   const skipped = draft?.kind === 'skipped'
   const ownText = own ?? (typing ? draft.text : '')
-  const box = useRef<HTMLInputElement>(null)
+  const box = useRef<HTMLTextAreaElement>(null)
   const setText = useCallback((text: string) => (onOwn ? onOwn(text) : onChange({ kind: 'text', text })), [onChange, onOwn])
   // The box's words become the pick when they are non-blank and not already chosen; ○ on a blank box just focuses it.
   const chooseOwn = (focusIfBlank: boolean) => {
@@ -135,10 +141,20 @@ export function QuestionBlock({
         })}
         {locked ? (
           (typing || skipped) && (
-            <Input readOnly value={typing ? draft.text : ''} placeholder="Skipped" className={cn('h-8 text-base md:text-sm', typing && 'border-fg-accent')} />
+            // The whole answer as sent, in the box's look; an `Input` cut a long one off (154).
+            <div
+              className={cn(
+                'min-h-8 whitespace-pre-wrap [overflow-wrap:anywhere] rounded-md border border-input bg-transparent px-3 py-[3px] text-base shadow-xs md:py-[5px] md:text-sm dark:bg-input/30',
+                typing ? 'border-fg-accent' : 'text-muted-foreground',
+              )}
+            >
+              {typing ? draft.text : 'Skipped'}
+            </div>
           )
         ) : (
-          <div className="flex items-center gap-2">
+          // ○ and Skip stay level with the box's first line as it grows. pointer-coarse: ○ is 44 px and the one-line box 32,
+          // so the box and Skip start 6 px down — where `items-center` put them.
+          <div className="flex items-start gap-2">
             <Button
               type="button"
               size="icon-sm"
@@ -157,6 +173,7 @@ export function QuestionBlock({
               variant={skipped ? 'secondary' : 'ghost'}
               aria-pressed={skipped}
               onClick={() => onChange(skipped ? null : { kind: 'skipped' })}
+              className="pointer-coarse:mt-1.5"
             >
               {skipped ? 'Skipped' : 'Skip'}
             </Button>
