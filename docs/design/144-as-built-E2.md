@@ -132,6 +132,10 @@ Tests (brief item 4), all in-crate unit tests on scripted doubles — no live mo
   `Runs` alias on the way).
 - `mbx check -p tui -p slack -p telegram --tests`: clean, 6 m 22 s (the `SessionKind` arm: no exhaustive match
   outside `store/advisor.rs`, so these only confirm the enum growth compiles).
+- Note from the mbx owner (01:36, for every later gate): run `mbx test` with the SAME `-p` set as the `--no-run`
+  (feature unification makes `-p a` alone a different build); `MBX_SCHEDULER_TESTS=0 mbx test …` if a test runner
+  sits at ~1 % CPU. The voice run above was `-p voice` alone after a `-p agent -p rpc -p voice --no-run` — hence the
+  recompile and the doctest stall noted there; the agent/rpc runs matched their build.
 
 ## Deviations
 - **Branches are concurrent in-process side calls, not `spawn_subagent` children** (the brief's allowed fallback).
