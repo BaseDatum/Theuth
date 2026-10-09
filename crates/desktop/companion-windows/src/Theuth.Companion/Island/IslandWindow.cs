@@ -1135,17 +1135,22 @@ internal sealed partial class IslandWindow : ToolWindow
     /// Text on an accent FILL: <c>TextOnAccentFillColorPrimary</c> (the native-look table), unless the system accent is so dark (or
     /// light) that Windows' derived on-accent colour is unreadable on it — then the other theme's on-accent colour (R1).
     /// </summary>
+    private string? onAccentLogged;
+
     private TextBlock OnAccentText(string s, double size, FontWeight? weight = null)
     {
         var t = Text(s, size, NativeLook.OnAccent, weight);
         var theme = root.ActualTheme == ElementTheme.Dark ? ElementTheme.Dark : ElementTheme.Light;
         var fill = Theme.ColorOf(NativeLook.Accent, theme);
         var on = Theme.ColorOf(NativeLook.OnAccent, theme);
-        if (!NativeLook.OnAccentReadable((fill.R, fill.G, fill.B), (on.R, on.G, on.B)))
+        bool readable = NativeLook.OnAccentReadable((fill.R, fill.G, fill.B), (on.R, on.G, on.B));
+        if (!readable)
         {
             var other = theme == ElementTheme.Dark ? ElementTheme.Light : ElementTheme.Dark;
             t.Foreground = Theme.Brush(NativeLook.OnAccent, other);
         }
+        string probe = $"{theme} fill=#{fill.R:X2}{fill.G:X2}{fill.B:X2} on=#{on.R:X2}{on.G:X2}{on.B:X2} readable={readable}";
+        if (probe != onAccentLogged) { onAccentLogged = probe; Log.Write($"island: text on accent fill — {probe}{(readable ? "" : " → the other theme's on-accent colour")}"); }
         return t;
     }
 
