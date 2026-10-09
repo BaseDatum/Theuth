@@ -156,7 +156,8 @@ impl Agents {
         let (mut acp, mut native) = (Vec::new(), Vec::new());
         for row in open {
             match self.store.session(row.0).await {
-                Ok(Some(s)) if s.agent.is_some() => acp.push((s.parent, row.0)),
+                // 141: an observed (watch-only) harness child is nobody's to respawn.
+                Ok(Some(s)) if s.agent.is_some() && driven(&s) => acp.push((s.parent, row.0)),
                 _ => native.push(*row),
             }
         }
@@ -255,6 +256,10 @@ impl Agents {
         text: &str,
         from: Option<&str>,
     ) {
+        // 141: no journal for a session kind this engine does not drive.
+        if !matches!(self.store.session(child).await, Ok(Some(row)) if driven(&row)) {
+            return;
+        }
         let parent = self
             .sessions
             .get(&child)
@@ -380,6 +385,10 @@ impl Agents {
         let Some(agent) = row.agent.as_deref() else {
             return Ok(Outcome::Skipped);
         };
+        // 141: only a child this engine drives; an observed one is left alone.
+        if !driven(&row) {
+            return Ok(Outcome::Skipped);
+        }
         if !row.here {
             tracing::warn!(session = %child, owner = %row.owner, "139: child owned elsewhere; not respawned here");
             return Ok(Outcome::Lost(format!("it is owned by {}", row.owner)));
@@ -485,6 +494,13 @@ impl Agents {
         }
         Ok(actor)
     }
+}
+
+/// 141 coordination: whether `row` is an ACP child this engine drives
+/// (`store::durability::DRIVEN_KINDS`); 125's advisors and 141's observed
+/// (watch-only) children are not.
+fn driven(row: &crate::SessionSummary) -> bool {
+    row.kind == crate::SessionKind::Chat
 }
 
 /// What a relaunched child is told first ([`Agents::relaunch_acp_child`]).
