@@ -47,5 +47,7 @@
   <!-- W4: NAudio.Wasapi (D7, R2-4) — the microphone for the Ask bar's live dictation. -->
   <PropertyGroup>
     <NAudioWasapiVersion>3.1.0</NAudioWasapiVersion>
+    <!-- 149 WW3 R3: Concentus (pure managed Opus decoder, MIT) for the companion's speech playback. -->
+    <ConcentusVersion>2.2.2</ConcentusVersion>
   </PropertyGroup>
 </Project>

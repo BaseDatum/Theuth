@@ -1,0 +1,35 @@
+{
+  "state": "Recording",
+  "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+  "session": "s-meeting-1",
+  "elapsed_ms": 751234,
+  "degraded": [
+    "MicNoAec",
+    {
+      "SttDown": "System"
+    }
+  ],
+  "cursor": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e31",
+  "topics": [
+    {
+      "id": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e21",
+      "label": "quarterly numbers",
+      "at_ms": 751000,
+      "brief": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e31",
+      "cached": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e31",
+      "source": "Cache"
+    },
+    {
+      "id": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e22",
+      "label": "launch date",
+      "at_ms": 760500,
+      "brief": null
+    }
+  ],
+  "approval_waiting": false,
+  "supported": {
+    "kind": "Partial",
+    "reason": "no process tap on this host"
+  },
+  "accelerator": "CPUExecutionProvider"
+}

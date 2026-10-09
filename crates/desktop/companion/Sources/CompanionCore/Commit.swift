@@ -14,6 +14,9 @@ public protocol StoreEngine: Sendable {
     func steer(session: String, text: String) async throws -> String
     func agentApprove(name: String) async throws
     func agentRemove(name: String, note: String?) async throws
+    // 149 W1
+    func cancel(session: String, scope: CancelScope?) async throws
+    func sendInput(session: String?, text: String, files: [String], delivery: Delivery?, id: String?) async throws -> String
 }
 
 extension RpcClient: StoreEngine {}
@@ -56,6 +59,9 @@ public enum Commit {
             case .hireAgent(let name): try await engine.agentApprove(name: name)
             case .declineHire(let name): try await engine.agentRemove(name: name, note: nil)
             case .unblock(let task): try await engine.taskMove(id: task, state: "todo", note: nil)
+            case .stopAgent(let session, _): try await engine.cancel(session: session, scope: .tree)
+            case .replyWithScreen(let session, let text, let files):
+                _ = try await engine.sendInput(session: session, text: text, files: files, delivery: nil, id: nil)
             case .reviewSendBack, .askTheuth: return .skipped
             }
             return ok ? .sent : .stale

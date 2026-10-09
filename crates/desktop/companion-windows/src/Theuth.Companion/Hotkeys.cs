@@ -41,14 +41,26 @@ internal sealed class Hotkeys : IDisposable
 
     public IReadOnlyDictionary<KeyAction, Chord> Registered => registered.Values.ToDictionary(v => v.Action, v => v.Chord);
 
+    /// <summary>149 WW1: rows this answers false for are skipped by <see cref="Apply"/> (the meeting PTT / eye rows only while a meeting is live, §8); null = every row.</summary>
+    public Func<KeyAction, bool>? Gate { get; set; }
+
+    /// <summary>The table last applied, for a re-<see cref="Apply"/> when the gate's answer changes.</summary>
+    public KeyTable? Applied { get; private set; }
+
     /// <summary>(Re-)registers the table's global rows; W3 calls it again when Settings › Keys changes.</summary>
     public void Apply(KeyTable table)
     {
         UnregisterAll();
+        Applied = table;
         var notices = new List<string>();
         int id = FirstId;
         foreach (var b in table.BindingsIn(KeyScope.Anywhere))
         {
+            if (Gate is { } gate && !gate(b.Action))
+            {
+                Log.Write($"hotkey {b.Action.RawValue()}: not registered now (gated)");
+                continue;
+            }
             var r = KeyTable.ResolveGlobal(b.Chord, b.DefaultChord, CanRegister);
             if (r.Notice is { } n)
             {

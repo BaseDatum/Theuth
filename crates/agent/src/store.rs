@@ -3006,19 +3006,40 @@ impl Store {
     /// "final answer" of the most recent turn. Vision notes are not user
     /// messages here: a maintenance note after a reply does not erase it.
     pub async fn last_turn_text(&self, id: SessionId) -> anyhow::Result<String> {
+        Ok(self.last_exchange(id).await?.1)
+    }
+
+    /// 149 E6: the session's last exchange — what the user last typed (the
+    /// clock stamp and attachment markers stripped; a markers-only input
+    /// names its first attachment) and the assistant text after it as
+    /// [`Self::last_turn_text`]. `(None, "")` for an empty session.
+    pub async fn last_exchange(&self, id: SessionId) -> anyhow::Result<(Option<String>, String)> {
         let mut conn = self.read.acquire().await?;
         let rows = rows_in(&mut conn, id, 0).await?;
-        let start = rows
+        let last_user = rows
             .iter()
-            .rposition(|r| r.message.role == ChatRole::User && !r.is_note())
-            .map_or(0, |i| i + 1);
-        Ok(rows[start..]
+            .rposition(|r| r.message.role == ChatRole::User && !r.is_note());
+        let request = last_user.and_then(|i| {
+            let text = text_of(&rows[i].message.content);
+            let p = crate::attach::parse(crate::clock::strip(&text));
+            let body = p.body.trim();
+            if body.is_empty() {
+                p.refs
+                    .into_iter()
+                    .map(|r| r.title)
+                    .find(|t| !t.trim().is_empty())
+            } else {
+                Some(body.to_owned())
+            }
+        });
+        let reply = rows[last_user.map_or(0, |i| i + 1)..]
             .iter()
             .filter(|r| r.message.role == ChatRole::Assistant)
             .map(|r| text_of(&r.message.content))
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
-            .join("\n"))
+            .join("\n");
+        Ok((request, reply))
     }
 
     /// Set the project label on the root above `session` (51 §3: a child call
@@ -4334,7 +4355,9 @@ mod tests {
         for m in [
             ChatMessage::user("earlier"),
             ChatMessage::assistant(MessageContent::from_text("stale")),
-            ChatMessage::user("task"),
+            ChatMessage::user(
+                "<time now=\"2026-01-01 00:00 +00:00\"/>\n[attached note n1 \"Groceries\"]\ntask",
+            ),
             ChatMessage::assistant(MessageContent::from_text("first")),
             ChatMessage::from(vec![ToolCall {
                 call_id: "c1".into(),
@@ -4348,6 +4371,11 @@ mod tests {
             store.append(id, &m).await.unwrap();
         }
         assert_eq!(store.last_turn_text(id).await.unwrap(), "first\nsecond");
+        let (request, reply) = store.last_exchange(id).await.unwrap();
+        assert_eq!(
+            (request.as_deref(), reply.as_str()),
+            (Some("task"), "first\nsecond")
+        );
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

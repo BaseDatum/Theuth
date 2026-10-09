@@ -22,4 +22,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Theuth.Companion.Core\Theuth.Companion.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- 149 WW3 R3: real SpeechAudio packets recorded from build-B's engine (speak() client sink). -->
+    <None Update="Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

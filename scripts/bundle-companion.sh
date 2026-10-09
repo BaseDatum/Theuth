@@ -36,6 +36,8 @@ echo "== icons (theuth's own: the Tauri tray glyph and the main app's .icns)"
 ICONS="$ROOT/crates/desktop/icons"
 cp "$ICONS/tray.png" "$ICONS/tray@2x.png" "$APP/Contents/Resources/"
 cp "$ICONS/icon.icns" "$APP/Contents/Resources/AppIcon.icns"
+# 149: the harness glyph set (SVG + 16/20/24/32 PNGs from scripts/render-harness-icons.swift) → Contents/Resources/harness/.
+cp -R "$ROOT/crates/desktop/companion-assets/harness" "$APP/Contents/Resources/harness"
 ICON_KEY="<key>CFBundleIconFile</key><string>AppIcon</string>"
 
 cat > "$APP/Contents/Info.plist" <<EOF
@@ -59,7 +61,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>NSSupportsAutomaticTermination</key><false/>
   <key>NSSupportsSuddenTermination</key><false/>
   $ICON_KEY
-  <key>NSMicrophoneUsageDescription</key><string>Theuth Companion records only while you hold the hotkey in the Ask bar, to dictate a request to theuth.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Theuth Companion records only while you hold a hotkey — the Ask bar's, an agent row's mic, or the voice key (⌃S) — to dictate a request to theuth.</string>
 </dict>
 </plist>
 EOF

@@ -1,0 +1,24 @@
+[
+  {
+    "track": "Mic",
+    "t0_ms": 1000,
+    "t1_ms": 2400,
+    "text": "Let's start with the numbers.",
+    "request": false
+  },
+  {
+    "track": "System",
+    "t0_ms": 2500,
+    "t1_ms": 5200,
+    "text": "Revenue is up twelve percent.",
+    "request": false,
+    "speaker": "s2"
+  },
+  {
+    "track": "Mic",
+    "t0_ms": 6000,
+    "t1_ms": 7100,
+    "text": "When do we launch?",
+    "request": true
+  }
+]

@@ -1,0 +1,27 @@
+{
+  "key": "decision:dec-9",
+  "task": "task-9",
+  "kind": "decision",
+  "by": "agent:w3",
+  "at_ms": 1791448600000,
+  "question": "Round half up or bankers'?",
+  "summary": "Two call sites disagree.",
+  "board": null,
+  "options": [
+    {
+      "label": "Half up",
+      "description": "matches the invoices"
+    },
+    {
+      "label": "Bankers'",
+      "description": "matches the ledger"
+    }
+  ],
+  "recommended": 0,
+  "pointers": [],
+  "checks": [],
+  "recommendation": null,
+  "items": [],
+  "to": "user",
+  "if_wrong": "Invoices and the ledger drift by a cent per line until someone notices."
+}

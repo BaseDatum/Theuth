@@ -12,7 +12,7 @@ import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
 import { describe } from '@/lib/describe'
 import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
-import { companionAlive, onCompanionAlive } from '@/lib/companion'
+import { companionAlive, onCompanionAlive, useCompanionAlive } from '@/lib/companion'
 import { FocusTracker, Throttle, deriveFocus, typeCounts } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
@@ -384,10 +384,12 @@ function useGlobalShortcuts(): void {
 function useVoiceKeyBinding(): void {
   const chord = useShortcuts((s) => s.chords['voice-key'])
   const enabled = voiceKey.useVoiceKeySettings((s) => s.enabled)
+  // 149 D15/D22: the companion owns the chord while it runs — `""` unregisters; its exit re-binds `want`.
+  const companion = useCompanionAlive()
   const bound = useRef<string | null>(null)
   useEffect(() => {
     if (AUX || !isDesktop()) return
-    const want = enabled ? chord : ''
+    const want = enabled && !companion ? chord : ''
     voiceKeyBind(want).then(
       () => (bound.current = want),
       (e: unknown) => {
@@ -395,7 +397,7 @@ function useVoiceKeyBinding(): void {
         if (bound.current !== null && enabled && bound.current !== '') useShortcuts.getState().set('voice-key', bound.current)
       },
     )
-  }, [chord, enabled])
+  }, [chord, enabled, companion])
   useEffect(() => {
     if (AUX || !isDesktop()) return
     const off = onPointRefused((p) => {

@@ -41,6 +41,9 @@ internal sealed class SettingsModel
 
     public KeyTable Keys => Value.Keys;
 
+    /// <summary>149 WW3: the one backing store, shared with the island / voice-key settings so no flush drops the other's keys.</summary>
+    internal SettingsStore Store => store;
+
     /// <summary>Apply <paramref name="edit"/> to a copy; when it changed anything, persist and notify.</summary>
     public void Update(Action<CompanionSettings> edit)
     {

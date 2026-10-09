@@ -1,0 +1,14 @@
+{
+  "state": {
+    "Post": "Diarizing"
+  },
+  "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+  "session": "s-meeting-1",
+  "elapsed_ms": 900000,
+  "degraded": [
+    {
+      "PermissionDenied": "AudioCapture"
+    }
+  ],
+  "supported": null
+}

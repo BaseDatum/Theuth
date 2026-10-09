@@ -5140,6 +5140,7 @@ impl roster::attention::Source for AttentionSource {
             waiting_since_ms: None,
             summary: None,
             next_steps: Vec::new(),
+            context: None,
             priority: None,
             rank: 5,
         };

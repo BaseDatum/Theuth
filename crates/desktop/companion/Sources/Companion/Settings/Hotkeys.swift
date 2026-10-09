@@ -8,6 +8,8 @@ extension KeyboardShortcuts.Name {
     static let openPanel = Self("openPanel", default: .init(.space, modifiers: [.control, .shift]))
     /// Unbound by default (`KeyAction.openAskBar`).
     static let openAskBar = Self("openAskBar")
+    /// 149 W1: `⌃⇧A` toggles the agents panel (`KeyAction.openAgents`).
+    static let openAgents = Self("openAgents", default: .init(.a, modifiers: [.control, .shift]))
 }
 
 /// The `anywhere` scope: the table's global rows pushed into KeyboardShortcuts (Carbon registration), the
@@ -15,14 +17,19 @@ extension KeyboardShortcuts.Name {
 /// KeyboardShortcuts' own UserDefaults entry is rewritten from it at launch and on every change.
 @MainActor
 enum Hotkeys {
-    static let names: [KeyAction: KeyboardShortcuts.Name] = [.openPanel: .openPanel, .openAskBar: .openAskBar]
+    /// 149: a global row is probed and registered only once it is listed here — W1 adds `.openAgents`, W2 `.voiceKey`,
+    /// W3 `.meetingPtt`/`.meetingEye`; an unlisted row's chord is data for Settings › Keys and the Windows twin.
+    static let names: [KeyAction: KeyboardShortcuts.Name] = [.openPanel: .openPanel, .openAskBar: .openAskBar,
+                                                             .meetingPtt: .meetingPtt, .meetingEye: .meetingEye, // 149 W3
+                                                             .openAgents: .openAgents, // 149 W1
+    ]
 
     /// Launch: resolve the saved global chords against the registrar (fallback to the default with a notice),
     /// persist the outcome, then hand every global row to KeyboardShortcuts.
     static func start(_ model: SettingsModel) {
         var table = model.value.keys
         var notices: [String] = []
-        for b in table.bindings(in: .anywhere) {
+        for b in table.bindings(in: .anywhere) where names[b.action] != nil {
             let r = KeyTable.resolveGlobal(saved: b.chord, default: b.defaultChord, canRegister: canRegister)
             if r.chord != b.chord { table.set(r.chord, for: b.action) }
             if let n = r.notice { notices.append(n); Log.write("hotkey: \(n)") }
