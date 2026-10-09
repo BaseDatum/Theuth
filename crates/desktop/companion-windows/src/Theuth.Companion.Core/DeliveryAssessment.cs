@@ -370,6 +370,9 @@ public static class AnyAppCopy
     public static string RewritePill(int selected) => $"Rewrite · {selected} chars selected · say what to change";
 
     /// <summary>The listening caption under the pill: "Ctrl+Alt+D held · shape on" or "… locked".</summary>
+    /// <summary>The any-app pill's chord segment, the Mac trailer (H3-D2): "Ctrl+Alt+D held" / "Ctrl+Alt+D locked".</summary>
+    public static string Chord(string chord, bool locked) => $"{chord} {(locked ? "locked" : "held")}";
+
     public static string Held(string chord, bool locked, bool shape) =>
         $"{chord} {(locked ? "locked" : "held")} · shape {(shape ? "on" : "off")}";
 

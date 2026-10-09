@@ -32,6 +32,10 @@ internal static class AskFlags
     /// <summary>153 W153B: <c>--ask-live sendit|learn</c> (with <c>--ask-probe N</c>) — built-in phrases through the real engine inside a voice press.</summary>
     public static string? Live { get; } = Value("--ask-live");
 
+    /// <summary>153 W153B-R1: <c>--ask-live-tail MS</c> — silence appended after the synthesized phrase before the release (a press
+    /// that ends a moment after the last word, as people release a key); 0 = release on the last sample.</summary>
+    public static int LiveTailMs { get; } = int.TryParse(Value("--ask-live-tail"), out var ms) && ms is > 0 and <= 5000 ? ms : 0;
+
     /// <summary>153 W153B: with <c>--settings dictation</c>, render the Settings › Dictation page to <c>%TEMP%\153-w153b-settings-dictation.png</c> once it loaded.</summary>
     public static bool DictationShot { get; } = Args.Contains("--dictation-shot");
 

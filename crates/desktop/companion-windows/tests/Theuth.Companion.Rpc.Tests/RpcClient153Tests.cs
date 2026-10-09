@@ -108,6 +108,45 @@ public sealed class RpcClient153Tests
         Assert.Equal("""["shorter","x",{"id":"a","name":"A","terminal":false,"polish":false,"learn":false,"commands":[]},null]""", P("rewrite", 1));
     }
 
+    private const string VoiceSettingsJson = """{"shape":{"composer":"full","tui":"full","companion":"plain","phone":"full","any_app":"loud"},"end_commands":{"send":["send it","ship it"],"scratch":["scratch that"],"literal":"literal"},"input_devices":["Shure MV7","Microphone Array (Realtek)"],"standby_secs":18446744073709551615,"duck_media":"pause","polish_model":"openai/gpt-5.6-mini","polish_profiles":{"code.exe":"terse"},"history":{"enabled":true,"rows":50,"audio_mib":16,"learn":false}}""";
+
+    /// <summary>153 F1 (main bfafefeb): <c>voice_settings()</c> takes no params and decodes the live keys — an unknown preset word stays a
+    /// word (no throw), the u64 standby round-trips at its maximum; an engine before F1 answers -32601 and the connection survives.</summary>
+    [Fact]
+    public async Task VoiceSettingsReadsTheLiveKeysAndAnEngineBeforeF1AnswersMethodNotFound()
+    {
+        await using var engine = await FakeEngine.StartAsync();
+        var f1 = true;
+        engine.Respond = r => r.GetProperty("method").GetString() == "voice_settings"
+            ? f1
+                ? FakeEngine.Reply(r, VoiceSettingsJson)
+                : $$$"""{"jsonrpc":"2.0","id":{{{r.GetProperty("id").GetRawText()}}},"error":{"code":-32601,"message":"Method not found"}}"""
+            : FakeEngine.DefaultRespond(r);
+        var rec = new Recorder();
+        await using var client = new RpcClient(new EngineLocation(engine.Url, "t"), rec.OnState, rec.OnEvent);
+        client.Start();
+        await rec.WaitOpenCountAsync(1);
+
+        var s = await B(client.VoiceSettingsAsync());
+        var sent = engine.RequestsFor("voice_settings").Single();
+        Assert.True(!sent.TryGetProperty("params", out var p) || p.ValueKind is JsonValueKind.Null || p.GetArrayLength() == 0, "voice_settings takes no params");
+        Assert.Equal(ShapePreset.Plain, s.Shape.Preset(Surface.Companion));
+        Assert.Equal(ShapePreset.Full, s.Shape.Preset(Surface.Composer));
+        Assert.Null(s.Shape.Preset(Surface.AnyApp));
+        Assert.Equal("loud", s.Shape.Word(Surface.AnyApp));
+        Assert.Equal(new[] { "send it", "ship it" }, s.EndCommands.Send.ToArray());
+        Assert.Equal(new[] { "Shure MV7", "Microphone Array (Realtek)" }, s.InputDevices.ToArray());
+        Assert.Equal(ulong.MaxValue, s.StandbySecs);
+        Assert.Equal("pause", s.DuckMedia);
+        Assert.Equal("openai/gpt-5.6-mini", s.PolishModel);
+        Assert.Equal("terse", s.PolishProfiles["code.exe"]);
+        Assert.Equal(new HistoryConfig { Enabled = true, Rows = 50, AudioMib = 16, Learn = false }, s.History);
+
+        f1 = false;
+        Assert.Equal(-32601, (await Assert.ThrowsAsync<RpcException>(() => B(client.VoiceSettingsAsync()))).Code);
+        Assert.Empty(await B(client.AttentionListAsync()));
+    }
+
     [Fact]
     public async Task AnEngineBefore153AnswersTheNewMethodsWithMethodNotFound()
     {

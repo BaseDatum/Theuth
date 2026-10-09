@@ -248,4 +248,35 @@ public sealed class Models153Tests
         Assert.Empty(custom.Scratch);
         Assert.Equal("literal", custom.Literal);
     }
+
+    /// <summary>153 F1: the Rust <c>voice_settings_round_trip_defaults</c> JSON (VoiceSettings::from(&amp;VoiceConfig::default())) decodes to the
+    /// C# defaults, and a sparse reply (an older F1 or a missing key) fills the same defaults instead of throwing.</summary>
+    [Fact]
+    public void VoiceSettingsDefaultsMatchTheEngine()
+    {
+        const string defaults = """{"shape":{"composer":"full","tui":"full","companion":"full","phone":"full","any_app":"full"},"end_commands":{"send":["send it"],"scratch":["scratch that"],"literal":"literal"},"input_devices":[],"standby_secs":8,"duck_media":"off","polish_model":null,"polish_profiles":{},"history":{"enabled":true,"rows":200,"audio_mib":64,"learn":true}}""";
+        var d = TheuthJson.Deserialize<VoiceSettings>(defaults);
+        var sparse = TheuthJson.Deserialize<VoiceSettings>("""{"shape":{},"history":{"rows":10},"input_devices":null}""");
+        foreach (var s in new[] { d, sparse })
+        {
+            foreach (var surface in Enum.GetValues<Surface>()) Assert.Equal(ShapePreset.Full, s.Shape.Preset(surface));
+            Assert.Equal(new[] { "send it" }, s.EndCommands.Send.ToArray());
+            Assert.Equal(new[] { "scratch that" }, s.EndCommands.Scratch.ToArray());
+            Assert.Equal("literal", s.EndCommands.Literal);
+            Assert.Empty(s.InputDevices);
+            Assert.Equal(8UL, s.StandbySecs);
+            Assert.Equal("off", s.DuckMedia);
+            Assert.Null(s.PolishModel);
+            Assert.Empty(s.PolishProfiles);
+            Assert.True(s.History.Enabled);
+            Assert.Equal(64U, s.History.AudioMib);
+            Assert.True(s.History.Learn);
+        }
+        Assert.Equal(200U, d.History.Rows);
+        Assert.Equal(10U, sparse.History.Rows);
+        // Wire names: what the engine reads back is what Serialize writes (snake_case keys, any_app, audio_mib, end_commands; a null polish_model is omitted).
+        var json = TheuthJson.Serialize(d);
+        foreach (var key in new[] { "\"any_app\"", "\"end_commands\"", "\"input_devices\"", "\"standby_secs\"", "\"duck_media\"", "\"polish_profiles\"", "\"audio_mib\"" })
+            Assert.Contains(key, json);
+    }
 }
