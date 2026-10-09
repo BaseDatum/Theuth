@@ -27,6 +27,8 @@ struct AskBarView: View {
     @ObservedObject var store: Store
     @ObservedObject var state: AskBarState
     @ObservedObject var settings = SettingsModel.shared
+    /// 149s S4: the shared speaker; the glyph shows while it speaks for this surface.
+    @ObservedObject var speaker: Speaker
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -69,6 +71,7 @@ struct AskBarView: View {
                 Hint("⎋", store.undo.held == nil ? "keeps editing" : "undo").fixedSize()
                 Text("· theuth routes it").font(Type.caps).foregroundColor(.tertiary).fixedSize()
                 Spacer(minLength: 0)
+                if speaker.surface == .askBar { SpeakingGlyph { speaker.stop() } }
                 if let s = state.status {
                     Text(s).font(Type.caps).foregroundColor(state.recording ? .accentColor : .tertiary).lineLimit(1)
                 }
