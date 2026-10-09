@@ -521,7 +521,7 @@ mod desktop {
         log_err(app.emit("navigate", route), "emit navigate");
     }
 
-    /// 130 D10: `theuth://attention/<id>` · `theuth://c/<session>` · `theuth://new` from the companion
+    /// 130 D10: `theuth://attention/<id>` · `theuth://c/<session>` · `theuth://new` · `theuth://meetings` (149) from the companion
     /// (or anything else) → [`navigate`]; `theuth://quit` → [`request_quit`]; unknown shapes are logged and dropped. On Windows a cold start
     /// by a link has the URL in argv: the plugin parsed it in its own setup, before this listener existed,
     /// so `get_current()` replays it (macOS delivers `RunEvent::Opened` later and reads `None` here).
@@ -567,6 +567,8 @@ mod desktop {
             ("attention", false) => Some(format!("/attention/{rest}")),
             ("c", false) => Some(format!("/c/{rest}")),
             ("new", true) => Some("/new".into()),
+            // 149 §5.2: the companion's idle island pill opens the meetings list.
+            ("meetings", true) => Some("/meetings".into()),
             _ => None,
         }
     }
@@ -609,6 +611,9 @@ mod desktop {
             assert_eq!(route("theuth://c/s-42/").as_deref(), Some("/c/s-42"));
             assert_eq!(route("theuth://new").as_deref(), Some("/new"));
             assert_eq!(route("theuth://new/extra"), None);
+            assert_eq!(route("theuth://meetings").as_deref(), Some("/meetings"));
+            assert_eq!(route("theuth://meetings/").as_deref(), Some("/meetings"));
+            assert_eq!(route("theuth://meetings/abc"), None);
             assert_eq!(route("theuth://attention"), None);
             assert_eq!(route("theuth://settings/general"), None);
             assert_eq!(route("https://attention/x"), None);

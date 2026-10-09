@@ -4,6 +4,7 @@
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { create } from 'zustand'
 import { isApple } from '@/lib/chord'
+import { container } from '@/lib/platform'
 
 const KEY = 'shortcuts'
 
@@ -49,7 +50,9 @@ export const DEFS: Record<ShortcutId, Def> = {
   shortcuts: { label: 'Show shortcuts', chord: 'Mod+Slash', scope: 'window' },
   dictate: { label: 'Dictate', chord: 'Control+D', scope: 'window', inEditable: true },
   // 96 §0.1: registered by the Rust shell (`voice_key_bind`), not by `App.tsx`; adjacent to `dictate` on purpose.
-  'voice-key': { label: 'Ask theuth about the screen', chord: 'Control+S', scope: 'global' },
+  // 149 D16: ⌃S on macOS; Ctrl+Alt+Space elsewhere (the companions' §8 table mirrors it); a persisted override wins.
+  // `container() === 'macos'` is `hotkeys.ts`'s `isMacDesktop()`, inlined: hotkeys.ts imports this module (cycle at init).
+  'voice-key': { label: 'Ask theuth about the screen', chord: container() === 'macos' ? 'Control+S' : 'Control+Alt+Space', scope: 'global' },
   talk: { label: 'Stop the talk', chord: 'Mod+T', scope: 'window', inEditable: true },
   'talk-transcript': { label: 'Show or hide the talk transcript', chord: 'Mod+Shift+T', scope: 'window', inEditable: true },
   send: { label: 'Send', chord: 'Enter', scope: 'composer' },

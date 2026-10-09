@@ -60,15 +60,22 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
     public var waitingSinceMs: UInt64?
     public var summary: String?
     public var nextSteps: [String]
+    // 149 (optional on today's engine): E6's conversation context (Revision 1 row 5), 132 D4's order.
+    public var context: ItemContext?
+    public var priority: Priority?
+    /// 132 D4: higher first; the engine's value for an item without a priority (`Priority::Medium.weight()`) when absent.
+    public var rank: UInt32
 
     public init(id: String, kind: AttentionKind, title: String, detail: String? = nil, atMs: UInt64,
                 task: String? = nil, agent: String? = nil, session: String? = nil, approval: String? = nil,
                 decision: String? = nil, packet: String? = nil, ask: AskRequested? = nil, turn: UInt32? = nil,
-                waitingSinceMs: UInt64? = nil, summary: String? = nil, nextSteps: [String] = []) {
+                waitingSinceMs: UInt64? = nil, summary: String? = nil, nextSteps: [String] = [],
+                context: ItemContext? = nil, priority: Priority? = nil, rank: UInt32 = 5) {
         self.id = id; self.kind = kind; self.title = title; self.detail = detail; self.atMs = atMs
         self.task = task; self.agent = agent; self.session = session; self.approval = approval
         self.decision = decision; self.packet = packet; self.ask = ask; self.turn = turn
         self.waitingSinceMs = waitingSinceMs; self.summary = summary; self.nextSteps = nextSteps
+        self.context = context; self.priority = priority; self.rank = rank
     }
 
     public init(from decoder: Decoder) throws {
@@ -87,6 +94,9 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
         ask = try c.decodeIfPresent(AskRequested.self, forKey: .ask)
         turn = try c.decodeIfPresent(UInt32.self, forKey: .turn)
         waitingSinceMs = try c.decodeIfPresent(UInt64.self, forKey: .waitingSinceMs)
+        context = try c.decodeIfPresent(ItemContext.self, forKey: .context)
+        priority = try c.decodeIfPresent(Priority.self, forKey: .priority)
+        rank = try c.decodeIfPresent(UInt32.self, forKey: .rank) ?? 5
         summary = try c.decodeIfPresent(String.self, forKey: .summary)
         nextSteps = try c.decodeIfPresent([String].self, forKey: .nextSteps) ?? []
     }
@@ -94,6 +104,16 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
     /// When the wait began: E2's `waiting_since_ms`, else `at_ms`.
     public var waitingSince: Date { Date(timeIntervalSince1970: Double(waitingSinceMs ?? atMs) / 1000) }
 }
+
+/// 149 E6 (Revision 1 row 5): the conversation a session-born item sits in; both ≤ 160 chars, `nil` when unknown.
+public struct ItemContext: Codable, Equatable, Sendable {
+    public var request: String?
+    public var lastReply: String?
+    public init(request: String? = nil, lastReply: String? = nil) { self.request = request; self.lastReply = lastReply }
+}
+
+/// `tasks::Priority`, snake_case (132 D4).
+public enum Priority: String, Codable, Sendable { case urgent, high, medium, low }
 
 /// W0 E1 — optional on today's engine.
 public struct AttentionChanged: Codable, Equatable, Sendable {
@@ -377,15 +397,17 @@ public struct Packet: Codable, Equatable, Sendable {
     public var checks: [Check]
     public var recommendation: Recommendation?
     public var to: String?
+    /// 132 D2: one honest line on the cost of a wrong answer (149 reads it).
+    public var ifWrong: String?
 
     public init(key: String, task: String, kind: PacketKind, by: String = "user", atMs: UInt64 = 0,
                 question: String? = nil, summary: String = "", board: String? = nil, options: [PacketOption] = [],
                 recommended: UInt32? = nil, pointers: [Pointer] = [], checks: [Check] = [],
-                recommendation: Recommendation? = nil, to: String? = nil) {
+                recommendation: Recommendation? = nil, to: String? = nil, ifWrong: String? = nil) {
         self.key = key; self.task = task; self.kind = kind; self.by = by; self.atMs = atMs
         self.question = question; self.summary = summary; self.board = board; self.options = options
         self.recommended = recommended; self.pointers = pointers; self.checks = checks
-        self.recommendation = recommendation; self.to = to
+        self.recommendation = recommendation; self.to = to; self.ifWrong = ifWrong
     }
 
     public init(from decoder: Decoder) throws {
@@ -404,6 +426,7 @@ public struct Packet: Codable, Equatable, Sendable {
         checks = try c.decodeIfPresent([Check].self, forKey: .checks) ?? []
         recommendation = try c.decodeIfPresent(Recommendation.self, forKey: .recommendation)
         to = try c.decodeIfPresent(String.self, forKey: .to)
+        ifWrong = try c.decodeIfPresent(String.self, forKey: .ifWrong)
     }
 
     /// The pre-pick: the forwarding manager's `recommendation.option` wins over `recommended` (103 F2).
@@ -466,4 +489,405 @@ public enum WireEvent: Equatable, Sendable {
         "ActivityAppended", "ApprovalRequested", "ApprovalResolved", "ArtifactShown", "AskRequested", "AskResolved",
         "NodeAdded", "NodeOnline", "NodeRemoved", "NodeRevoked", "SecretRequested", "SecretResolved", "Takeover",
     ]
+}
+
+// MARK: 149 — sessions (crates/agent/src/lib.rs:2232, crates/sessionsync/src/types.rs:251); `MeshStatus` lives in CompanionCore/AskRouter.swift
+
+/// `list_sessions` row; only what the agents panel reads. `owner` is `""` for this engine's own sessions.
+public struct SessionSummary: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var title: String
+    public var name: String?
+    public var agent: String?
+    public var parent: String?
+    public var cwd: String?
+    public var project: String?
+    public var desk: String?
+    public var updatedAt: Date?
+    public var running: Bool
+    public var owner: String
+    public var archived: Bool
+
+    public init(id: String, title: String = "", name: String? = nil, agent: String? = nil, parent: String? = nil,
+                cwd: String? = nil, project: String? = nil, desk: String? = nil, updatedAt: Date? = nil,
+                running: Bool = false, owner: String = "", archived: Bool = false) {
+        self.id = id; self.title = title; self.name = name; self.agent = agent; self.parent = parent; self.cwd = cwd
+        self.project = project; self.desk = desk; self.updatedAt = updatedAt; self.running = running
+        self.owner = owner; self.archived = archived
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        agent = try c.decodeIfPresent(String.self, forKey: .agent)
+        parent = try c.decodeIfPresent(String.self, forKey: .parent)
+        cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        project = try c.decodeIfPresent(String.self, forKey: .project)
+        desk = try c.decodeIfPresent(String.self, forKey: .desk)
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
+        running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
+        owner = try c.decodeIfPresent(String.self, forKey: .owner) ?? ""
+        archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+    }
+}
+
+/// `sessions_status`: the counts that label the host groups.
+public struct SessionsStatus: Codable, Equatable, Sendable {
+    public var engine: String
+    public var here: UInt32
+    public var elsewhere: UInt32
+    public var logSeq: UInt64
+    public var lastSnapshot: String?
+}
+
+// MARK: 149 — agent control (crates/agent/src/lib.rs:156, 340)
+
+/// `cancel(session, scope)`: `tree` stops the children too.
+public enum CancelScope: String, Codable, Sendable { case root, tree }
+
+/// `send_input`/`steer` delivery.
+public enum Delivery: String, Codable, Sendable { case steer, nextTurn = "next_turn" }
+
+// MARK: 149 — point-and-say (crates/computer/src/lib.rs:142-163, pointer.rs:12-22)
+
+public struct PointerSample: Codable, Equatable, Sendable {
+    /// ms since the key press.
+    public var tMs: UInt32
+    /// Logical global points.
+    public var x: Float
+    public var y: Float
+    public var pen: Bool
+    public init(tMs: UInt32, x: Float, y: Float, pen: Bool = true) { self.tMs = tMs; self.x = x; self.y = y; self.pen = pen }
+}
+
+public struct ScreenContextReq: Codable, Equatable, Sendable {
+    public var samples: [PointerSample]
+    public var color: String
+    public var sinceMs: UInt64
+    public var accessibility: Bool
+    public init(samples: [PointerSample], color: String, sinceMs: UInt64, accessibility: Bool) {
+        self.samples = samples; self.color = color; self.sinceMs = sinceMs; self.accessibility = accessibility
+    }
+}
+
+/// What the engine read under the trail: AX lines and the PNGs to attach as `files`.
+public struct ScreenContextReply: Codable, Equatable, Sendable {
+    public var lines: [String]
+    public var files: [String]
+    public init(lines: [String] = [], files: [String] = []) { self.lines = lines; self.files = files }
+}
+
+// MARK: 149 — decision (crates/decision/src/lib.rs:584, gate.rs:18)
+
+public enum DecisionModeKind: String, Codable, Sendable { case shadow, active, off }
+
+public struct ModeInfo: Codable, Equatable, Sendable {
+    public var mode: DecisionModeKind
+    public var effective: DecisionModeKind
+    public var reason: String?
+    public var enabled: Bool
+    public var installed: Bool
+    public var budgetMs: UInt64
+    public var escalateBudgetMs: UInt64
+}
+
+// MARK: 149 — meeting (crates/meeting/src/lib.rs:139-243, 268-520, 686-765; ids are uuid strings)
+
+public enum Track: String, Codable, Sendable { case mic = "Mic", system = "System" }
+
+public enum PostStage: String, Codable, Sendable { case transcribing = "Transcribing", diarizing = "Diarizing", aligning = "Aligning" }
+
+/// `MeetingState`: externally tagged — a bare word, or `{"Post": "<stage>"}`; anything newer is `.other`.
+public enum MeetingState: Codable, Equatable, Sendable {
+    case idle, starting, recording, paused, stopping, review, summarizing, done, failed
+    case post(PostStage)
+    case other(String)
+
+    static let words: [String: MeetingState] = [
+        "Idle": .idle, "Starting": .starting, "Recording": .recording, "Paused": .paused, "Stopping": .stopping,
+        "Review": .review, "Summarizing": .summarizing, "Done": .done, "Failed": .failed,
+    ]
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let s = try? c.decode(String.self) { self = Self.words[s] ?? .other(s); return }
+        let o = try c.decode([String: PostStage].self)
+        guard let stage = o["Post"] else { throw DecodingError.dataCorruptedError(in: c, debugDescription: "unknown meeting state \(o.keys)") }
+        self = .post(stage)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .post(let s): try c.encode(["Post": s])
+        case .other(let s): try c.encode(s)
+        default: try c.encode(Self.words.first { $0.value == self }!.key)
+        }
+    }
+
+    /// `UI/store/meeting.ts`'s `live`: recording or paused.
+    public var isLive: Bool { self == .recording || self == .paused }
+}
+
+/// `Degradation`: a bare word, or `{"SttDown": "<track>"}` / `{"PermissionDenied": "<permission>"}`.
+public enum Degradation: Codable, Equatable, Sendable {
+    case micNoAec, modelDown, diskLow, nearMaxLength
+    case sttDown(Track)
+    case permissionDenied(String)
+    case other(String)
+
+    static let words: [String: Degradation] = [
+        "MicNoAec": .micNoAec, "ModelDown": .modelDown, "DiskLow": .diskLow, "NearMaxLength": .nearMaxLength,
+    ]
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let s = try? c.decode(String.self) { self = Self.words[s] ?? .other(s); return }
+        let o = try c.decode([String: String].self)
+        if let t = o["SttDown"], let track = Track(rawValue: t) { self = .sttDown(track) }
+        else if let p = o["PermissionDenied"] { self = .permissionDenied(p) }
+        else { self = .other(o.keys.first ?? "") }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .sttDown(let t): try c.encode(["SttDown": t.rawValue])
+        case .permissionDenied(let p): try c.encode(["PermissionDenied": p])
+        case .other(let s): try c.encode(s)
+        default: try c.encode(Self.words.first { $0.value == self }!.key)
+        }
+    }
+}
+
+/// `Support`: `"Full"`, `{"Partial": why}` or `{"None": why}`.
+public enum MeetingSupport: Codable, Equatable, Sendable {
+    case full
+    case partial(String)
+    case unsupported(String)
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let s = try? c.decode(String.self) {
+            guard s == "Full" else { throw DecodingError.dataCorruptedError(in: c, debugDescription: "unknown support \(s)") }
+            self = .full; return
+        }
+        let o = try c.decode([String: String].self)
+        if let why = o["Partial"] { self = .partial(why) }
+        else if let why = o["None"] { self = .unsupported(why) }
+        else { throw DecodingError.dataCorruptedError(in: c, debugDescription: "unknown support \(o.keys)") }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .full: try c.encode("Full")
+        case .partial(let w): try c.encode(["Partial": w])
+        case .unsupported(let w): try c.encode(["None": w])
+        }
+    }
+}
+
+public enum BriefSource: String, Codable, Sendable {
+    case auto = "Auto", tap = "Tap", request = "Request", deeper = "Deeper", typed = "Typed", cache = "Cache", oracle = "Oracle"
+}
+
+public enum TopicGone: String, Codable, Sendable { case viewed = "Viewed", dismissed = "Dismissed", expired = "Expired" }
+
+public struct Topic: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var label: String
+    public var atMs: UInt64
+    public var brief: String?
+    public var cached: String?
+    public var source: BriefSource?
+    public init(id: String, label: String, atMs: UInt64, brief: String? = nil, cached: String? = nil, source: BriefSource? = nil) {
+        self.id = id; self.label = label; self.atMs = atMs; self.brief = brief; self.cached = cached; self.source = source
+    }
+}
+
+public struct Brief: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var topic: String?
+    public var title: String
+    public var bullets: [String]
+    public var source: BriefSource
+    public var atMs: UInt64
+    public var parent: String?
+    public var cached: String?
+    public init(id: String, topic: String? = nil, title: String, bullets: [String] = [], source: BriefSource = .auto,
+                atMs: UInt64 = 0, parent: String? = nil, cached: String? = nil) {
+        self.id = id; self.topic = topic; self.title = title; self.bullets = bullets; self.source = source
+        self.atMs = atMs; self.parent = parent; self.cached = cached
+    }
+}
+
+/// One transcript line (`meeting_live` rows and the `Utterance` event's body).
+public struct Utterance: Codable, Equatable, Sendable {
+    public var track: Track
+    public var t0Ms: UInt64
+    public var t1Ms: UInt64
+    public var text: String
+    public var request: Bool
+    public var speaker: String?
+    public init(track: Track, t0Ms: UInt64, t1Ms: UInt64, text: String, request: Bool = false, speaker: String? = nil) {
+        self.track = track; self.t0Ms = t0Ms; self.t1Ms = t1Ms; self.text = text; self.request = request; self.speaker = speaker
+    }
+}
+
+/// The 10 Hz meters (`Level` event), linear RMS of the last 100 ms per track.
+public struct Level: Codable, Equatable, Sendable {
+    public var meeting: String
+    public var micRms: Float
+    public var systemRms: Float
+    public init(meeting: String, micRms: Float, systemRms: Float) { self.meeting = meeting; self.micRms = micRms; self.systemRms = systemRms }
+}
+
+/// `meeting::ProcessInfo` (the tapped app); named apart from Foundation's `ProcessInfo`.
+public struct MeetingProcess: Codable, Equatable, Sendable {
+    public var pid: UInt32
+    public var name: String
+    public var bundleId: String?
+    public var active: Bool
+}
+
+/// The oracle's verdict (crates/meeting/src/oracle.rs:89); the island flashes `batchId`, the rest is not read.
+public struct OracleDecision: Codable, Equatable, Sendable {
+    public var batchId: String
+    public var family: String
+}
+
+public enum PermissionState: String, Codable, Sendable { case granted = "Granted", denied = "Denied", notDetermined = "NotDetermined" }
+
+public struct MeetingPermissions: Codable, Equatable, Sendable {
+    public var microphone: PermissionState
+    public var audioCapture: PermissionState
+}
+
+/// `meeting_status` (`Status`, exported as `MeetingStatus`). `supported` is `nil` when no loopback backend opens.
+public struct MeetingStatus: Codable, Equatable, Sendable {
+    public var state: MeetingState
+    public var meeting: String?
+    public var session: String?
+    public var elapsedMs: UInt64
+    public var degraded: [Degradation]
+    public var cursor: String?
+    public var topics: [Topic]
+    public var approvalWaiting: Bool
+    public var supported: MeetingSupport?
+    public var accelerator: String
+
+    public init(state: MeetingState = .idle, meeting: String? = nil, session: String? = nil, elapsedMs: UInt64 = 0,
+                degraded: [Degradation] = [], cursor: String? = nil, topics: [Topic] = [], approvalWaiting: Bool = false,
+                supported: MeetingSupport? = nil, accelerator: String = "") {
+        self.state = state; self.meeting = meeting; self.session = session; self.elapsedMs = elapsedMs
+        self.degraded = degraded; self.cursor = cursor; self.topics = topics; self.approvalWaiting = approvalWaiting
+        self.supported = supported; self.accelerator = accelerator
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        state = try c.decode(MeetingState.self, forKey: .state)
+        meeting = try c.decodeIfPresent(String.self, forKey: .meeting)
+        session = try c.decodeIfPresent(String.self, forKey: .session)
+        elapsedMs = try c.decodeIfPresent(UInt64.self, forKey: .elapsedMs) ?? 0
+        degraded = try c.decodeIfPresent([Degradation].self, forKey: .degraded) ?? []
+        cursor = try c.decodeIfPresent(String.self, forKey: .cursor)
+        topics = try c.decodeIfPresent([Topic].self, forKey: .topics) ?? []
+        approvalWaiting = try c.decodeIfPresent(Bool.self, forKey: .approvalWaiting) ?? false
+        supported = try c.decodeIfPresent(MeetingSupport.self, forKey: .supported)
+        accelerator = try c.decodeIfPresent(String.self, forKey: .accelerator) ?? ""
+    }
+}
+
+/// The meeting items of the `subscribe_events` stream (`#[serde(tag = "type")]`, crates/meeting/src/lib.rs:268-376):
+/// `MeetingEvent.decode` answers `nil` for every other `type`, so it sits beside `WireEvent.decode` on the same bytes.
+public enum MeetingEvent: Equatable, Sendable {
+    case started(meeting: String, session: String, process: MeetingProcess, at: String)
+    case state(meeting: String, state: MeetingState, degraded: [Degradation])
+    case level(Level)
+    /// `final == false` is the rolling partial of an open utterance.
+    case utterance(meeting: String, utterance: Utterance, final: Bool)
+    case topicAdded(meeting: String, topic: Topic)
+    case topicRemoved(meeting: String, topic: String, why: TopicGone)
+    case brief(meeting: String, brief: Brief)
+    case listening(meeting: String, held: Bool)
+    case approvalWaiting(meeting: String, waiting: Bool)
+    case postProgress(meeting: String, stage: PostStage, pct: UInt8)
+    case reviewReady(meeting: String)
+    case summarized(meeting: String, title: String)
+    case deleted(meeting: String)
+    case oracleDeciding(meeting: String, batchId: String)
+    case oracleDecision(meeting: String, decision: OracleDecision)
+
+    public static let types: Set<String> = [
+        "Started", "State", "Level", "Utterance", "TopicAdded", "TopicRemoved", "Brief", "Listening", "ApprovalWaiting",
+        "PostProgress", "ReviewReady", "Summarized", "Deleted", "OracleDeciding", "OracleDecision",
+    ]
+
+    /// Every field of every variant but the two topic ones, optional (`topic` is an object in `TopicAdded` and an
+    /// id in `TopicRemoved`, so those decode on their own).
+    private struct Raw: Decodable {
+        let type: String
+        let meeting: String?
+        let session: String?, process: MeetingProcess?, at: String?
+        let state: MeetingState?, degraded: [Degradation]?
+        let micRms: Float?, systemRms: Float?
+        let track: Track?, t0Ms: UInt64?, t1Ms: UInt64?, text: String?, request: Bool?, `final`: Bool?, speaker: String?
+        let brief: Brief?
+        let held: Bool?, waiting: Bool?
+        let stage: PostStage?, pct: UInt8?
+        let title: String?, batchId: String?, decision: OracleDecision?
+    }
+    private struct TopicAddedRaw: Decodable { let topic: Topic }
+    private struct TopicRemovedRaw: Decodable { let topic: String; let why: TopicGone }
+    private struct Missing: Error, CustomStringConvertible { let description: String }
+
+    public static func decode(_ data: Data) throws -> MeetingEvent? {
+        let d = TheuthJSON.decoder
+        let r = try d.decode(Raw.self, from: data)
+        guard Self.types.contains(r.type) else { return nil }
+        func need<T>(_ v: T?, _ key: String) throws -> T {
+            guard let v else { throw Missing(description: "\(r.type) without `\(key)`") }
+            return v
+        }
+        let meeting = try need(r.meeting, "meeting")
+        switch r.type {
+        case "Started":
+            return .started(meeting: meeting, session: try need(r.session, "session"), process: try need(r.process, "process"), at: try need(r.at, "at"))
+        case "State":
+            return .state(meeting: meeting, state: try need(r.state, "state"), degraded: r.degraded ?? [])
+        case "Level":
+            return .level(Level(meeting: meeting, micRms: try need(r.micRms, "mic_rms"), systemRms: try need(r.systemRms, "system_rms")))
+        case "Utterance":
+            let u = Utterance(track: try need(r.track, "track"), t0Ms: try need(r.t0Ms, "t0_ms"), t1Ms: try need(r.t1Ms, "t1_ms"),
+                              text: try need(r.text, "text"), request: r.request ?? false, speaker: r.speaker)
+            return .utterance(meeting: meeting, utterance: u, final: r.final ?? true)
+        case "TopicAdded":
+            return .topicAdded(meeting: meeting, topic: try d.decode(TopicAddedRaw.self, from: data).topic)
+        case "TopicRemoved":
+            let t = try d.decode(TopicRemovedRaw.self, from: data)
+            return .topicRemoved(meeting: meeting, topic: t.topic, why: t.why)
+        case "Brief":
+            return .brief(meeting: meeting, brief: try need(r.brief, "brief"))
+        case "Listening":
+            return .listening(meeting: meeting, held: try need(r.held, "held"))
+        case "ApprovalWaiting":
+            return .approvalWaiting(meeting: meeting, waiting: try need(r.waiting, "waiting"))
+        case "PostProgress":
+            return .postProgress(meeting: meeting, stage: try need(r.stage, "stage"), pct: try need(r.pct, "pct"))
+        case "ReviewReady":
+            return .reviewReady(meeting: meeting)
+        case "Summarized":
+            return .summarized(meeting: meeting, title: try need(r.title, "title"))
+        case "Deleted":
+            return .deleted(meeting: meeting)
+        case "OracleDeciding":
+            return .oracleDeciding(meeting: meeting, batchId: try need(r.batchId, "batch_id"))
+        default:
+            return .oracleDecision(meeting: meeting, decision: try need(r.decision, "decision"))
+        }
+    }
 }

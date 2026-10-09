@@ -99,6 +99,36 @@ struct KeyTableTests {
         #expect(KeyGrammar.intent(for: KeyPress(chars: "/", keyCode: 44, command: true), scope: .askBar) == .legend)
         #expect(KeyGrammar.intent(for: KeyPress(chars: ",", keyCode: 43, command: true)) == .settings)
     }
+
+    // 149 §8: the ★ rows, the six scopes, the per-platform default table.
+    @Test func rows149UniqueAcrossSixScopesAndSpaceIsReplyInThePanelOnly() {
+        let t = KeyTable()
+        #expect(KeyScope.allCases.count == 6)
+        #expect(t.isUniquePerScope)
+        #expect(t.action(for: .space, in: .panel) == .replyFocus)
+        #expect(KeyGrammar.intent(for: KeyPress(chars: " ", keyCode: 49)) == .reply, "space is R's alias (Revision 1 row 18)")
+        #expect(KeyGrammar.intent(for: KeyPress(chars: " ", keyCode: 49), textFieldFocused: true) == .none, "typed once the field has focus")
+        #expect(t.action(for: .space, in: .askBar) == nil)
+        #expect(t.action(for: .space, in: .agents) == nil)
+        #expect(t.action(for: Chord(chars: "s", keyCode: 1, modifiers: .control), in: .anywhere) == .voiceKey)
+        #expect(t.action(for: Chord(chars: "a", keyCode: 0, modifiers: [.control, .shift]), in: .anywhere) == .openAgents)
+        #expect(t.action(for: Chord(chars: "v", keyCode: 9), in: .panel) == .talk)
+        #expect(t.action(for: Chord(chars: "v", keyCode: 9), in: .agents) == .agentsTalk, "same chord across scopes")
+        #expect(t.action(for: Chord(chars: "M", keyCode: 46, modifiers: [.control, .shift]), in: .island) == .islandStop, "⌃⇧M typed; ⇧ drops in a local scope")
+        #expect(t.action(for: .escape, in: .pointAndSay) == .pointEscape)
+        #expect(t.binding(.pointEscape).fixed && t.binding(.islandEscape).fixed && t.binding(.agentsEscape).fixed)
+        #expect(t.action(for: .down, in: .agents) == .agentsNext, "↓ alias in the agents panel")
+        #expect(t.check(Chord(chars: "s", keyCode: 1, modifiers: .control), for: .openAgents) == .usedBy(.voiceKey))
+    }
+
+    @Test func perPlatformDefaults() {
+        #expect(KeyTable.defaultChord(for: .voiceKey, on: .macOS) == Chord(chars: "s", keyCode: 1, modifiers: .control))
+        #expect(KeyTable.defaultChord(for: .voiceKey, on: .windows) == Chord(chars: " ", keyCode: 49, modifiers: [.control, .option]))
+        #expect(KeyTable.defaultChord(for: .voiceKey, on: .linux) == KeyTable.defaultChord(for: .voiceKey, on: .windows))
+        #expect(KeyTable.defaultChord(for: .voiceKey, on: .macOS) == KeyTable().chord(for: .voiceKey), "macOS is the table")
+        #expect(KeyTable.defaultChord(for: .openAgents, on: .windows) == KeyTable().chord(for: .openAgents), "no per-platform row: the table's chord")
+        #expect(KeyTable.defaultChord(for: .openAskBar, on: .windows) == nil)
+    }
 }
 
 struct RailPresenceTests {
