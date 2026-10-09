@@ -243,6 +243,7 @@ internal sealed class IslandController : IDisposable
             if (a is IslandAction.Tap t0) { snapshot = MeetingReducer.MarkTapped(snapshot, t0.Topic); Window.Update(snapshot); }
             if (a is IslandAction.Dismiss d0) Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.TopicRemoved("fixture-meeting", d0.Topic, "Dismissed"), DateTimeOffset.Now), null);
             if (a is IslandAction.Mute) Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.State("fixture-meeting", snapshot.State == "Paused" ? "Recording" : "Paused", Array.Empty<string>()), DateTimeOffset.Now), null);
+            if (a is IslandAction.Stop) FixtureStop();
             return;
         }
         switch (a)
@@ -326,10 +327,44 @@ internal sealed class IslandController : IDisposable
             Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.Level("fixture-meeting", mic, sys), DateTimeOffset.Now), new MeetingChange.Level("fixture-meeting", mic, sys));
         };
         fixtureTimer.Start();
+        // A live meeting re-renders the island on every partial utterance (~3/s while someone talks): the fixture talks too, so a
+        // click or a drag is proven against the same churn a real meeting makes.
+        int word = 0;
+        string[] words = "so the ingest retry is still failing on the schema and PR 418 lands tomorrow after the review".Split(' ');
+        fixtureTalk = dispatcher.CreateTimer();
+        fixtureTalk.Interval = TimeSpan.FromMilliseconds(350);
+        fixtureTalk.IsRepeating = true;
+        fixtureTalk.Tick += (_, _) =>
+        {
+            if (!MeetingReducer.Live(snapshot.State)) return;
+            word = word % words.Length + 1;
+            var u = new MeetingChange.Utterance("fixture-meeting", "System", 760_000, string.Join(' ', words.Take(word)), false, word == words.Length, "s2");
+            Apply(MeetingReducer.Reduce(snapshot, u, DateTimeOffset.Now), u);
+        };
+        fixtureTalk.Start();
         Log.Write("island: fixture meeting applied (recording 12:31, 2 topics, 1 brief, 2 lines, oracle shadow·brief, level pulses)");
     }
 
     private bool fixture;
+    private DispatcherQueueTimer? fixtureTalk;
+
+    /// <summary>The fixture's stand-in for the engine's <c>meeting_stop</c>: Stopping now, Done 500 ms later (the engine's typical drain).</summary>
+    private void FixtureStop()
+    {
+        if (!MeetingReducer.Live(snapshot.State)) return;
+        Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.State("fixture-meeting", "Stopping", Array.Empty<string>()), DateTimeOffset.Now), null);
+        Log.Write("island: fixture state → Stopping");
+        var t = dispatcher.CreateTimer();
+        t.Interval = TimeSpan.FromMilliseconds(500);
+        t.IsRepeating = false;
+        t.Tick += (_, _) =>
+        {
+            fixtureTalk?.Stop();
+            Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.State("fixture-meeting", "Done", Array.Empty<string>()), DateTimeOffset.Now), null);
+            Log.Write("island: fixture state → Done");
+        };
+        t.Start();
+    }
 
     public void Dispose()
     {
@@ -338,6 +373,7 @@ internal sealed class IslandController : IDisposable
         hideTimer.Stop();
         oracleTimer.Stop();
         fixtureTimer?.Stop();
+        fixtureTalk?.Stop();
         store.EventReceived -= OnEvent;
         store.MeetingRefetched -= Hydrate;
         store.GlobalKeyPressed -= OnGlobalDown;

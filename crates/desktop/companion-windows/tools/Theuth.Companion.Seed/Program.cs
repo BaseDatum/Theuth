@@ -38,6 +38,8 @@ public static class Program
             Console.WriteLine("  blocked   a user task blocked on a non-decision blocker");
             Console.WriteLine("  hire      a proposed agent seed-<n> (agent_put with proposed_by)");
             Console.WriteLine("  not seedable without a model: " + string.Join(", ", NeedsAModel.Keys));
+            Console.WriteLine("  meeting start|pause|resume|stop|status  a REAL local meeting on the engine (all system audio, consent given;");
+            Console.WriteLine("            records without a model — topics/briefs need one), for the island's lifecycle proofs (149 island fix)");
             return 0;
         }
         int count = 1;
@@ -65,6 +67,8 @@ public static class Program
             Console.Error.WriteLine("seed: the engine did not answer within 10 s");
             return 2;
         }
+
+        if (kinds.Count > 0 && kinds[0] == "meeting") return await Meeting(client, kinds.Skip(1).FirstOrDefault() ?? "status");
 
         int failures = 0;
         if (kinds.Contains("clear")) await Clear(client);
@@ -199,6 +203,59 @@ public static class Program
         catch (RpcException)
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 149 island fix: drive a real meeting on the local engine so the island's lifecycle (Starting · Recording · Paused ·
+    /// Stopping · Done) can be proven on a model-less machine. <c>start</c> records all system audio (<c>process: null</c>) with
+    /// consent given; the meeting records and transcribes locally, briefs need a model. Prints <c>meeting_status</c> after.
+    /// </summary>
+    private static async Task<int> Meeting(RpcClient c, string op)
+    {
+        try
+        {
+            switch (op)
+            {
+                case "start":
+                {
+                    var started = await c.CallRawAsync("meeting_start", new { process = (uint?)null, title = "Island probe", consent = true });
+                    Console.WriteLine($"meeting_start → {System.Text.Encoding.UTF8.GetString(started)}");
+                    break;
+                }
+                case "pause": await c.CallRawAsync("meeting_pause"); Console.WriteLine("meeting_pause ok"); break;
+                case "resume": await c.CallRawAsync("meeting_resume"); Console.WriteLine("meeting_resume ok"); break;
+                case "stop": await c.CallRawAsync("meeting_stop"); Console.WriteLine("meeting_stop ok"); break;
+                case "status": break;
+                default:
+                    Console.Error.WriteLine($"seed meeting: unknown op {op} (start, pause, resume, stop, status)");
+                    return 2;
+            }
+        }
+        catch (RpcException e)
+        {
+            Console.Error.WriteLine($"seed meeting {op} failed: {e}");
+            await PrintStatus(c);
+            return 1;
+        }
+        await PrintStatus(c);
+        return 0;
+    }
+
+    private static async Task PrintStatus(RpcClient c)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await c.CallRawAsync("meeting_status"));
+            var root = doc.RootElement;
+            string state = root.TryGetProperty("state", out var s) ? s.ToString() : "?";
+            string meeting = root.TryGetProperty("meeting", out var m) ? m.ToString() : "-";
+            string degraded = root.TryGetProperty("degraded", out var d) ? d.ToString() : "[]";
+            Console.WriteLine($"meeting_status state={state} meeting={meeting} degraded={degraded}");
+        }
+        catch (RpcException e)
+        {
+            Console.Error.WriteLine($"meeting_status failed: {e}");
         }
     }
 
