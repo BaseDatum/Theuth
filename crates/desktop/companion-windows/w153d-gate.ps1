@@ -75,11 +75,11 @@ function FindWindow([string] $part) {
 }
 function Front([string] $part) {
     $w = FindWindow $part
-    if ($w -eq [IntPtr]::Zero) { Say "focus: no visible window titled *$part*"; return $false }
+    if ($w -eq [IntPtr]::Zero) { Say "focus: no visible window titled *$part*"; return }
     $ok = [GdNative]::Front($w)
+    Start-Sleep -Milliseconds 300
     $fg = [GdNative]::GetForegroundWindow()
-    Say "focus: '$([GdNative]::Title($w))' hwnd=0x$($w.ToInt64().ToString('X')) pid=$([GdNative]::Pid($w)) -> $ok (foreground '$([GdNative]::Title($fg))')"
-    return $ok
+    Say "focus: '$([GdNative]::Title($w))' hwnd=0x$($w.ToInt64().ToString('X')) pid=$([GdNative]::Pid($w)) -> $ok (foreground now '$([GdNative]::Title($fg))')"
 }
 
 switch ($Action) {
@@ -91,7 +91,7 @@ switch ($Action) {
         Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$f`""
         Start-Sleep -Seconds 3
         Get-Process -Name 'Notepad' -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | ForEach-Object { Remember $_.Id; Say "notepad: started pid=$($_.Id)" }
-        [void](Front 'w153d-notepad')
+        Front 'w153d-notepad'
     }
     'edge-fields' {
         $html = @'
@@ -114,9 +114,9 @@ switch ($Action) {
         Start-Sleep -Seconds 4
         Get-Process -Name 'msedge' -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | ForEach-Object { Remember $_.Id }
         Say "edge-fields: $f opened in $edge"
-        [void](Front 'W153D fields')
+        Front 'W153D fields'
     }
-    'focus' { [void](Front (Words ($Rest -join ' '))) }
+    'focus' { Front (Words ($Rest -join ' ')) }
     'probe' {
         $line = ($Rest -join ' ')
         New-Item -ItemType Directory -Force -Path (Split-Path $trigger) | Out-Null
