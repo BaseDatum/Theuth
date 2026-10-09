@@ -105,15 +105,18 @@ internal static class AskFixtures
     // MARK: --ask-live sendit|learn — the real engine (after H-ENGINE), synthesized speech, no microphone (args cannot carry spaces: phrases are built in)
 
     public const string SendItPhrase = "Ship it tonight. Send it.";
+
+    /// <summary>R1: one utterance — the system voice's pause after "tonight." made the engine split "Send it." off and hear only "Send".</summary>
+    public const string SendItCommaPhrase = "Ship it tonight, send it.";
     public const string LearnPhrase = "Please restart the zorblax service.";
     public const string LearnWord = "Zorblax";
 
     public static void Live(string name, Store store, AskBarInstall install, DispatcherQueue dispatcher)
     {
         AskLog.Write($"ask-live {name}: real engine dictation of synthesized speech inside a voice press");
-        if (name == "sendit")
+        if (name is "sendit" or "sendit-comma")
         {
-            _ = SpeakPress(SendItPhrase, store, install, dispatcher, () => After(dispatcher, 3, () => { Shot(install, "7-live-sendit"); TraceLive(store, install, "sendit +3 s"); }));
+            _ = SpeakPress(name == "sendit" ? SendItPhrase : SendItCommaPhrase, store, install, dispatcher, () => After(dispatcher, 3, () => { Shot(install, "7-live-sendit"); TraceLive(store, install, "sendit +3 s"); }));
             return;
         }
         // learn: dictate, undo the hold, correct one word, send — twice; the second correction makes the engine publish the card.
