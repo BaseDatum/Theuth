@@ -51,33 +51,30 @@ public sealed partial class Store
         }
     }
 
-    /// <summary>The <c>list_sessions</c> rows the agents panel and the card status line read. WW1's Store fills <see cref="SessionRows"/>; until then it is empty and the interim join degrades gracefully.</summary>
+    /// <summary>WW1's <c>list_sessions</c> rows (<see cref="StoreModel.Sessions"/>) in the Core's row shape, refreshed with them.</summary>
     public IReadOnlyList<SessionRow> SessionRows { get; private set; } = Array.Empty<SessionRow>();
 
-    /// <summary>This engine's mesh identity for the host grouping (self id, display name, mesh name, peers); defaults name this PC.</summary>
-    public (string SelfId, string SelfName, string? MeshName, IReadOnlyList<HostPeer> Peers) Mesh { get; private set; } =
-        ("", Environment.MachineName, null, Array.Empty<HostPeer>());
-
-    /// <summary>Called once by the composition root: derive the agents panel on every refetch.</summary>
+    /// <summary>Called once by the composition root: derive the agents panel on every refetch (WW1's <c>SessionsRefetched</c> follows each <c>Refetch</c>).</summary>
     public void InstallWw2()
     {
         if (ww2Installed) return;
         ww2Installed = true;
         Refetched += DeriveAgents;
+        SessionsRefetched += DeriveAgents;
         DeriveAgents();
     }
 
-    /// <summary>WW1's Store hands over fresh sessions / mesh facts (the SKELETON's collections); re-derives at once.</summary>
-    public void SetSessions(IReadOnlyList<SessionRow> sessions, string selfId, string selfName, string? meshName, IReadOnlyList<HostPeer> peers)
-    {
-        SessionRows = sessions;
-        Mesh = (selfId, selfName, meshName, peers);
-        DeriveAgents();
-    }
+    private static SessionRow Row(SessionSummary s) =>
+        new(s.Id, s.Title, s.Owner, s.Running, s.Agent, s.Cwd, s.Project, s.Parent, s.Desk, s.Name, s.UpdatedAt, s.Archived);
 
     private void DeriveAgents()
     {
-        var (selfId, selfName, meshName, peers) = Mesh;
+        SessionRows = Sessions.Select(Row).ToList();
+        var mesh = Mesh;
+        string selfId = SelfEngineId;
+        string selfName = mesh?.SelfName is { Length: > 0 } n ? n : Environment.MachineName;
+        string? meshName = null; // mesh_status carries no mesh name in the Core DTO: the group says "on 🌐 mesh"
+        IReadOnlyList<HostPeer> peers = mesh?.Peers.Select(p => new HostPeer(p.Id, p.Name)).ToList() ?? new List<HostPeer>();
         AgentsPanel = AgentsModel.Derive(Activity, Agents, SessionRows, Items, selfId, selfName, peers, DateTimeOffset.Now, meshName);
         var remote = new HashSet<string>(StringComparer.Ordinal);
         foreach (var r in AgentsPanel.Rows)
@@ -91,8 +88,12 @@ public sealed partial class Store
 
     public AgentInfo? ActivityOf(string? session) => session is null ? null : Activity.FirstOrDefault(a => a.Id == session);
 
-    /// <summary>E6 context for an item when the engine carries it (WW1 decodes <c>AttentionItem.context</c>); null → the interim join.</summary>
-    public Func<AttentionItem, ItemContextText?>? ContextReader { get; set; }
+    /// <summary>E6 context (WW1 decodes <c>AttentionItem.context</c>) or the §6 interim join, through WW1's <see cref="StoreModel.ContextFor"/>.</summary>
+    public ItemContextText? ContextText(AttentionItem item)
+    {
+        var r = ContextFor(item);
+        return r.IsEmpty ? null : new ItemContextText(r.Request, r.LastReply);
+    }
 
     /// <summary>The focused card's anatomy (§3.3): header position, status line, bubbles, options, reply row, footer verbs.</summary>
     public CardAnatomy? FocusedAnatomy
@@ -103,7 +104,7 @@ public sealed partial class Store
             var item = card.Item;
             var agent = ActivityOf(item.Session);
             bool gone = item.Session is not null && agent is null && Activity.Count > 0 && SessionRows.Count > 0 && SessionRow(item.Session) is null;
-            return CardAnatomyModel.Make(card, Panel.Focus + 1, Panel.Items.Count, agent, SessionRow(item.Session), ContextReader?.Invoke(item), DateTimeOffset.Now, gone);
+            return CardAnatomyModel.Make(card, Panel.Focus + 1, Panel.Items.Count, agent, SessionRow(item.Session), ContextText(item), DateTimeOffset.Now, gone);
         }
     }
 

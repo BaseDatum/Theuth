@@ -434,9 +434,9 @@ internal sealed class Ww2Engine(FakeEngine inner) : IStoreEngine
     public Task SetEventFocusAsync(IReadOnlyList<string> sessions) => Inner.SetEventFocusAsync(sessions);
     public Task<ValueList<ActivityEntry>> ActivityListAsync(ActivityFilter filter) => Inner.ActivityListAsync(filter);
 
-    public Task CancelAsync(string session, string scope)
+    public Task CancelAsync(string session, CancelScope? scope)
     {
-        Inner.Calls.Add($"cancel {session} {scope}");
+        Inner.Calls.Add($"cancel {session} {(scope == CancelScope.Tree ? "tree" : "root")}");
         return Task.CompletedTask;
     }
 

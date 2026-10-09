@@ -124,6 +124,9 @@ public sealed record AttentionItem
     [JsonConverter(typeof(NullAsEmptyListConverter<string>))]
     public ValueList<string> NextSteps { get; init; } = new();
 
+    /// <summary>149 E6: the item's conversation (<c>request</c> / <c>last_reply</c>); null on engines before W0 — see Core <c>AttentionContext</c>.</summary>
+    public ItemContext? Context { get; init; }
+
     /// <summary>When the wait began: E2's <c>waiting_since_ms</c>, else <c>at_ms</c>.</summary>
     [JsonIgnore]
     public DateTimeOffset WaitingSince => DateTimeOffset.FromUnixTimeMilliseconds((long)(WaitingSinceMs ?? AtMs));
@@ -512,6 +515,28 @@ public sealed record WireEvent(string Type, object? Payload)
         ["TurnFinished"] = typeof(TurnFinished),
         ["AttentionChanged"] = typeof(AttentionChanged),
         ["Lagged"] = typeof(Lagged),
+        // 149 WW1: the agents panel, the island and the voice key read these (every field optional: never throws).
+        ["SubagentSpawned"] = typeof(SubagentSpawned),
+        ["ActivityAppended"] = typeof(ActivityAppended),
+        ["DictationStarted"] = typeof(DictationEvent),
+        ["DictationLevel"] = typeof(DictationEvent),
+        ["DictationText"] = typeof(DictationEvent),
+        ["DictationFinished"] = typeof(DictationEvent),
+        ["Started"] = typeof(MeetingEvent),
+        ["State"] = typeof(MeetingEvent),
+        ["Level"] = typeof(MeetingEvent),
+        ["Utterance"] = typeof(MeetingEvent),
+        ["TopicAdded"] = typeof(MeetingEvent),
+        ["TopicRemoved"] = typeof(MeetingEvent),
+        ["Brief"] = typeof(MeetingEvent),
+        ["Listening"] = typeof(MeetingEvent),
+        ["ApprovalWaiting"] = typeof(MeetingEvent),
+        ["PostProgress"] = typeof(MeetingEvent),
+        ["ReviewReady"] = typeof(MeetingEvent),
+        ["Summarized"] = typeof(MeetingEvent),
+        ["Deleted"] = typeof(MeetingEvent),
+        ["OracleDeciding"] = typeof(MeetingEvent),
+        ["OracleDecision"] = typeof(MeetingEvent),
     };
 
     /// <summary>Decodes one stream item; throws when it has no string <c>type</c> or a typed kind does not decode.</summary>
