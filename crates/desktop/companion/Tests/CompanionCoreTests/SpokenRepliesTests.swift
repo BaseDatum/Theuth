@@ -21,6 +21,12 @@ private actor FakeSpeechClient: SpeechClient {
     }
 
     func stopSpeaking(id: String?) async throws { stops.append(id) }
+
+    /// The Speaker's `stop_speaking` runs in its own Task; wait for it (bounded, so a missing stop fails instead of hanging).
+    func awaitStops(_ n: Int) async -> [String?] {
+        for _ in 0..<2000 where stops.count < n { await Task.yield() }
+        return stops
+    }
 }
 
 @MainActor
@@ -75,11 +81,9 @@ struct SpeakerTests {
         #expect(spoke.count == 1 && spoke[0].text == "All green." && spoke[0].session == "desk")
         s.stop()
         #expect(s.surface == nil && s.id == nil && sink.stops >= 1)
-        await Task.yield(); await Task.yield()
-        #expect(await client.stops == ["sp-1"], "Esc / a new ask stops the current id, nothing else")
+        #expect(await client.awaitStops(1) == ["sp-1"], "Esc / a new ask stops the current id, nothing else")
         s.stop()
-        await Task.yield()
-        #expect(await client.stops == ["sp-1"], "nothing speaking: no second stop")
+        #expect(await client.awaitStops(2) == ["sp-1"], "nothing speaking: no second stop")
     }
 
     @Test func aNewSpeakSilencesTheOtherSurfaceFirst() async {
@@ -87,8 +91,7 @@ struct SpeakerTests {
         let s = Speaker(sink: sink); s.client = client
         await s.speak("ask reply", on: "desk", from: .askBar).value
         await s.speak("voice reply", on: "desk", from: .voiceKey).value
-        await Task.yield(); await Task.yield()
-        #expect(await client.stops == ["sp-1"], "the Ask bar's utterance is stopped before the voice key's starts")
+        #expect(await client.awaitStops(1) == ["sp-1"], "the Ask bar's utterance is stopped before the voice key's starts")
         #expect(s.surface == .voiceKey && s.id == "sp-2")
     }
 
@@ -97,15 +100,15 @@ struct SpeakerTests {
         let s = Speaker(sink: sink); s.client = client
         await client.hold()
         let t = s.speak("late", on: "desk", from: .askBar)
-        await Task.yield()
+        var spins = 0
+        while await client.speaks.isEmpty, spins < 2000 { spins += 1; await Task.yield() } // the speak call is in flight, gated
         s.stop() // Esc before the engine answered: no id yet
         #expect(s.surface == nil)
         #expect(await client.stops.isEmpty)
         await client.release()
         await t.value
-        await Task.yield(); await Task.yield()
         #expect(s.id == nil && s.surface == nil, "the late id is not adopted")
-        #expect(await client.stops == ["sp-1"], "…but the engine is told to stop it")
+        #expect(await client.awaitStops(1) == ["sp-1"], "…but the engine is told to stop it")
     }
 
     @Test func playbackEndingClearsTheSurface() async {
@@ -116,8 +119,7 @@ struct SpeakerTests {
         #expect(s.surface == .voiceKey, "a foreign id is not ours")
         s.ended("sp-1")
         #expect(s.surface == nil && s.id == nil)
-        await Task.yield()
-        #expect(await client.stops.isEmpty, "a natural end sends no stop_speaking")
+        #expect(await client.awaitStops(1).isEmpty, "a natural end sends no stop_speaking")
     }
 
     @Test func speakFailureGoesQuiet() async {
