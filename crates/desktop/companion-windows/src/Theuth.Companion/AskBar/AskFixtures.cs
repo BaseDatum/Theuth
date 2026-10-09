@@ -101,6 +101,81 @@ internal static class AskFixtures
         AskLog.Write($"ask-fixture suggestion: card shown={(card?.IsShown == true ? "true" : "false")} current={card?.Showing?.Id ?? "none"} backdrop={card?.BackdropText ?? "-"} text=\"{(card?.Showing is { } c ? SuggestionCopy.Sentence(c) + " " + SuggestionCopy.Detail(c) : "")}\"");
     }
 
+
+    // MARK: --ask-live sendit|learn — the real engine (after H-ENGINE), synthesized speech, no microphone (args cannot carry spaces: phrases are built in)
+
+    public const string SendItPhrase = "Ship it tonight. Send it.";
+    public const string LearnPhrase = "Please restart the zorblax service.";
+    public const string LearnWord = "Zorblax";
+
+    public static void Live(string name, Store store, AskBarInstall install, DispatcherQueue dispatcher)
+    {
+        AskLog.Write($"ask-live {name}: real engine dictation of synthesized speech inside a voice press");
+        if (name == "sendit")
+        {
+            _ = SpeakPress(SendItPhrase, store, install, dispatcher, () => After(dispatcher, 3, () => { Shot(install, "7-live-sendit"); TraceLive(store, install, "sendit +3 s"); }));
+            return;
+        }
+        // learn: dictate, undo the hold, correct one word, send — twice; the second correction makes the engine publish the card.
+        void Round(int n) => _ = SpeakPress(LearnPhrase, store, install, dispatcher, () => After(dispatcher, 3.0, () => Correct(store, install, n, dispatcher)));
+        Round(1);
+        After(dispatcher, 16, () => Round(2));
+        After(dispatcher, 36, async () =>
+        {
+            TraceLive(store, install, "learn +36 s");
+            if (install.Suggestions is { } card && await card.CapturePng(AskFlags.Png("8-live-suggestion"))) AskLog.Write($"ask-live shot 8-live-suggestion: {AskFlags.Png("8-live-suggestion")}");
+        });
+    }
+
+    private static void Correct(Store store, AskBarInstall install, int round, DispatcherQueue dispatcher)
+    {
+        var model = install.Model;
+        var text = model.Text;
+        if (store.HeldNow is not null) store.Perform(Intent.Escape); // keep editing: the hold is undone, nothing was sent
+        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var target = words.OrderByDescending(w => Similar(w, LearnWord)).FirstOrDefault() ?? "";
+        var bare = target.TrimEnd('.', ',', '!', '?');
+        var fix = bare == LearnWord ? "ZorbLax" : LearnWord;
+        var edited = bare.Length == 0 ? text : text.Replace(bare, fix, StringComparison.Ordinal);
+        model.FieldEdited(edited);
+        AskLog.Write($"ask-live learn round {round}: dictated=\"{text}\" corrected \"{bare}\" → \"{fix}\" field=\"{model.FieldText}\"");
+        model.Submit();
+        After(dispatcher, 4, () => TraceLive(store, install, $"learn round {round} +4 s"));
+    }
+
+    private static int Similar(string word, string target)
+    {
+        var w = word.ToLowerInvariant();
+        int score = 0;
+        foreach (var gram in new[] { "zor", "orb", "rbl", "bla", "lax", "lak", "lac" }) if (w.Contains(gram, StringComparison.Ordinal)) score += 2;
+        return score * 10 + Math.Min(9, word.Length);
+    }
+
+    private static void TraceLive(Store store, AskBarInstall install, string what) =>
+        AskLog.Write($"ask-live {what}: field=\"{install.Model.FieldText}\" voice={install.Model.VoiceState.Kind} held={(store.HeldNow is null ? "no" : "yes")} receipt={Describe(store.Receipt)} card={install.Suggestions?.Showing?.Typed ?? "none"}");
+
+    private static async Task SpeakPress(string text, Store store, AskBarInstall install, DispatcherQueue dispatcher, Action released)
+    {
+        try
+        {
+            using var synth = new global::Windows.Media.SpeechSynthesis.SpeechSynthesizer();
+            var stream = await synth.SynthesizeTextToStreamAsync(text);
+            var bytes = new byte[(int)stream.Size];
+            using (var reader = new global::Windows.Storage.Streams.DataReader(stream.GetInputStreamAt(0)))
+            {
+                await reader.LoadAsync((uint)bytes.Length);
+                reader.ReadBytes(bytes);
+            }
+            var pcm = AskAudio.Pcm16Mono16k(bytes) ?? throw new InvalidOperationException("unreadable WAV");
+            AskLog.Write($"ask-live: voice \"{synth.Voice.DisplayName}\" says \"{text}\" → {pcm.Length / 16000.0:F2} s at 16 kHz");
+            install.Model.ProbeSpeechPress(pcm, released);
+        }
+        catch (Exception e)
+        {
+            AskLog.Write($"ask-live: synthesizer failed ({e.GetType().Name}: {e.Message})");
+        }
+    }
+
     private static string Describe(StoreModel.ReceiptRow? r) =>
         AskBarModel.ReceiptLines(r, 0) is { } l ? $"\"{l.Text}\" / \"{l.Trailing}\"" : "none";
 

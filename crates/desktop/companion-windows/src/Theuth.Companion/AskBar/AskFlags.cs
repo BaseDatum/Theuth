@@ -29,6 +29,9 @@ internal static class AskFlags
     /// real engine's shaped text and a spoken "send it" land through the voice path and send).</summary>
     public static bool Press { get; } = Args.Contains("--ask-press");
 
+    /// <summary>153 W153B: <c>--ask-live sendit|learn</c> (with <c>--ask-probe N</c>) — built-in phrases through the real engine inside a voice press.</summary>
+    public static string? Live { get; } = Value("--ask-live");
+
     /// <summary>153 W153B: with <c>--settings dictation</c>, render the Settings › Dictation page to <c>%TEMP%\153-w153b-settings-dictation.png</c> once it loaded.</summary>
     public static bool DictationShot { get; } = Args.Contains("--dictation-shot");
 

@@ -43,6 +43,7 @@ internal static class AskProbe
             AskLog.Write($"ask-probe bar shown activated=true visible={Word(w.IsVisible)} pos={w.Position.X},{w.Position.Y} size={w.Size.Width}x{w.Size.Height} foreground={(install.Bar.IsForeground ? "ask-bar" : "other")}");
             if (AskFlags.Replay) _ = Replay(store);
             if (AskFlags.Fixture is { } fx) AskFixtures.Run(fx, store, install, dispatcher); // 153 W153B
+            if (AskFlags.Live is { } live) After(dispatcher, 2, () => AskFixtures.Live(live, store, install, dispatcher)); // 153 W153B (after the desk resolves)
         });
         After(dispatcher, seconds, () =>
         {
