@@ -103,8 +103,9 @@ use crate::{
     Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{
-    AdvisorConfig, DurableStore, ObservedState, SessionCostQuery, SessionKind, SpendReportQuery,
-    SubagentsConfig, UnloadSession,
+    AdvisorConfig, DurableStore, GetPolishModel, ModelRole, ObservedState, Polish, PolishReply,
+    Rewrite, SessionCostQuery, SessionKind, SetPolishModel, SpendReportQuery, SubagentsConfig,
+    UnloadSession, cost::CallKind, polish,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
@@ -148,6 +149,9 @@ pub struct Agents {
     compact_style: Arc<RwLock<CompactStyle>>,
     /// Live title model (07 §15); `None` = each session's own model. Shared with every session.
     title_model: Arc<RwLock<Option<Resolved>>>,
+    /// Live polish model (153 §9.2, `voice.polish_model`); `None` = the title model, then
+    /// each session's own model. Shared with every session once A5 wires `ModelRole::Polish`.
+    polish_model: Arc<RwLock<Option<Resolved>>>,
     /// Live subagent default model (`agent.subagents.model`); `None` = `agent.model`.
     /// Children spawned without `model` use it; the system prompt names it. Shared with every session.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
@@ -1010,6 +1014,7 @@ impl Agents {
         .with_kind(kind)
         .with_advisor(advised)
         .with_budget(budget)
+        .with_polish_model(self.polish_model.clone())
         .with_endless(self.endless.clone())
         .with_parent_view(parent_view);
         let actor = Session::spawn_with_mailbox(session, runtime::subscriber_mailbox());
@@ -3910,6 +3915,190 @@ impl Message<GetTitleModel> for Agents {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(ModelInfo::from)
+    }
+}
+
+impl Message<SetPolishModel> for Agents {
+    type Reply = Result<Option<ModelInfo>, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetPolishModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<ModelInfo>, String> {
+        let resolved = match &m.model {
+            Some(id) => Some(self.catalog.resolve(id, &*self.configured)?),
+            None => None,
+        };
+        let info = resolved.as_ref().map(ModelInfo::from);
+        *self.polish_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
+        let path = self.rt.data_dir.join("config.yaml");
+        let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
+        if let Err(e) = runtime::write_config_value(&path, "voice", "polish_model", value) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(info)
+    }
+}
+
+impl Message<GetPolishModel> for Agents {
+    type Reply = Option<ModelInfo>;
+
+    async fn handle(
+        &mut self,
+        _: GetPolishModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<ModelInfo> {
+        self.polish_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(ModelInfo::from)
+    }
+}
+
+/// 153 §9: one `CallKind::Polish` side call on `ModelRole::Polish`, charged to
+/// `session` (theuth's desk when `None`), run detached; the reply fails closed
+/// to `refused` so the caller keeps the shaped text.
+impl Message<Polish> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<PolishReply, String>>;
+
+    async fn handle(&mut self, m: Polish, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        // §9.1: the agent reads raw text fine; never a model call.
+        let target = if m.destination == voice::Destination::AgentPrompt {
+            Err("agent prompt".to_owned())
+        } else {
+            self.polish_target(m.session).await
+        };
+        let cfg = self.voice_config();
+        let system = polish::polish_system(&cfg, &m.destination);
+        let user = polish::polish_user(&m.text, &m.destination);
+        tokio::spawn(async move {
+            let out = match target {
+                Ok((session, actor)) => {
+                    let call = SideCall {
+                        session,
+                        role: ModelRole::Polish,
+                        system,
+                        user,
+                        budget: polish::POLISH_BUDGET,
+                        kind: CallKind::Polish,
+                    };
+                    polish_call(actor, call, |t| polish::check_polish(&m.text, t)).await
+                }
+                Err(why) => refused(why),
+            };
+            if let Some(tx) = tx {
+                tx.send(Ok(out));
+            }
+        });
+        reply
+    }
+}
+
+/// 153 §13.6: the spoken instruction is the user message, the selection goes
+/// into the system prompt through `voice.rewrite_template`; charged to theuth's desk.
+impl Message<Rewrite> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<PolishReply, String>>;
+
+    async fn handle(&mut self, m: Rewrite, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let target = self.polish_target(None).await;
+        let cfg = self.voice_config();
+        let system = polish::rewrite_system(&cfg, &m.selection, &m.app, m.thread.as_deref());
+        tokio::spawn(async move {
+            let out = match target {
+                Ok((session, actor)) => {
+                    let call = SideCall {
+                        session,
+                        role: ModelRole::Polish,
+                        system,
+                        user: m.instruction,
+                        budget: polish::POLISH_BUDGET,
+                        kind: CallKind::Polish,
+                    };
+                    polish_call(actor, call, |t| polish::check_rewrite(&m.selection, t)).await
+                }
+                Err(why) => refused(why),
+            };
+            if let Some(tx) = tx {
+                tx.send(Ok(out));
+            }
+        });
+        reply
+    }
+}
+
+impl Agents {
+    /// The session a polish call is charged to and runs on: `session`, else
+    /// theuth's desk (W-h), resumed from the store when idle. `Err` = why
+    /// polish is refused (no desk, external harness, closed, …).
+    async fn polish_target(
+        &mut self,
+        session: Option<SessionId>,
+    ) -> Result<(SessionId, ActorRef<Session>), String> {
+        let id = match session {
+            Some(id) => id,
+            None => self
+                .store
+                .desk_session("theuth")
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "no session".to_owned())?,
+        };
+        let (id, live) = self
+            .session(Some(id), None, None, (None, None))
+            .await
+            .map_err(|e| e.to_string())?;
+        let actor = live.native()?.clone();
+        Ok((id, actor))
+    }
+
+    /// The live `voice.` section (polish profiles, rewrite template); defaults when unreadable.
+    fn voice_config(&self) -> voice::VoiceConfig {
+        self.rt
+            .section::<voice::VoiceConfig>("voice")
+            .unwrap_or_default()
+    }
+}
+
+fn refused(why: impl Into<String>) -> PolishReply {
+    PolishReply {
+        refused: Some(why.into()),
+        ..PolishReply::default()
+    }
+}
+
+/// Ask `actor` the call and shape the answer: `timed out` → `refused: timeout`
+/// (§9.5), a provider error → `refused: <error>`, a reply that fails `check` →
+/// `refused: <why>`; `ms` and `model` are set whenever the model answered.
+async fn polish_call(
+    actor: ActorRef<Session>,
+    call: SideCall,
+    check: impl FnOnce(&str) -> Result<String, &'static str>,
+) -> PolishReply {
+    let out = match actor.ask(call).await {
+        Ok(r) => r,
+        Err(SendError::HandlerError(e)) if e == "timed out" => return refused("timeout"),
+        Err(SendError::HandlerError(e)) => return refused(e),
+        Err(e) => return refused(e.to_string()),
+    };
+    let ms = u32::try_from(out.latency.as_millis()).unwrap_or(u32::MAX);
+    let model = Some(out.model);
+    match check(&out.text) {
+        Ok(text) => PolishReply {
+            text: Some(text),
+            model,
+            ms,
+            refused: None,
+        },
+        Err(why) => PolishReply {
+            text: None,
+            model,
+            ms,
+            refused: Some(why.to_owned()),
+        },
     }
 }
 
@@ -9221,6 +9410,17 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .map_err(|e| tracing::warn!("agent.title_model: {e}"))
             .ok()
     });
+    // 153 §9.2: the polish slot lives under `voice.`, read the same way; unresolvable → warn, chain falls through.
+    let polish_model = rt
+        .section::<voice::VoiceConfig>("voice")
+        .ok()
+        .and_then(|v| v.polish_model)
+        .and_then(|id| {
+            catalog
+                .resolve(&id, &*configured)
+                .map_err(|e| tracing::warn!("voice.polish_model: {e}"))
+                .ok()
+        });
     let subagent_model = cfg.subagents.model.as_deref().and_then(|id| {
         catalog
             .resolve(id, &*configured)
@@ -9328,6 +9528,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             favorite_models: cfg.favorite_models.clone(),
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             title_model: Arc::new(RwLock::new(title_model)),
+            polish_model: Arc::new(RwLock::new(polish_model)),
             subagent_model: Arc::new(RwLock::new(subagent_model)),
             desk_models: HashMap::new(),
             vision_model: Arc::new(RwLock::new(vision_model)),
@@ -10382,6 +10583,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         cfg,
         compact_style: Arc::default(),
         title_model: Arc::default(),
+        polish_model: Arc::default(),
         subagent_model: Arc::default(),
         vision_model: Arc::default(),
         escalate_model: Arc::default(),
@@ -11433,6 +11635,98 @@ pub(crate) mod tests {
         assert_eq!(back.escalate_model, cfg.escalate_model);
         let cfg: AgentConfig = serde_yaml::from_str("model: x/y\n").unwrap();
         assert_eq!(cfg.escalate_model, None);
+    }
+
+    /// 153 §9.2: `set_polish_model` validates against the catalog, writes
+    /// `voice.polish_model` to config.yaml and swaps the live slot; `None` clears both.
+    #[tokio::test]
+    async fn set_polish_model_persists() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis" || ns == "othervis");
+        let agents = Agents::spawn(a);
+
+        // Validated like `title_model`: an ambiguous bare id is refused and nothing is written.
+        let e = agents
+            .ask(SetPolishModel {
+                model: Some("eyes".into()),
+            })
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("ambiguous"), "{e:?}");
+        assert!(!dir.join("config.yaml").exists());
+        assert!(agents.ask(GetPolishModel).await.unwrap().is_none());
+
+        let info = agents
+            .ask(SetPolishModel {
+                model: Some("blind".into()),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.id, "testvis/blind");
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(yaml.contains("voice:\n"), "{yaml}");
+        assert!(yaml.contains("  polish_model: testvis/blind\n"), "{yaml}");
+        assert_eq!(
+            agents
+                .ask(GetPolishModel)
+                .await
+                .unwrap()
+                .map(|m| m.id)
+                .as_deref(),
+            Some("testvis/blind")
+        );
+        // Re-read as the `voice.` section the boot path deserialises.
+        let all: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let v: voice::VoiceConfig = serde_yaml::from_value(all["voice"].clone()).unwrap();
+        assert_eq!(v.polish_model.as_deref(), Some("testvis/blind"));
+
+        assert!(
+            agents
+                .ask(SetPolishModel { model: None })
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(agents.ask(GetPolishModel).await.unwrap().is_none());
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(!yaml.contains("testvis/blind"), "{yaml}");
+    }
+
+    /// 153 §9.1: an agent prompt is never polished — no model call, no session
+    /// lookup, `refused: "agent prompt"`; a human destination with no session
+    /// and no desk fails closed with `refused: "no session"`.
+    #[tokio::test]
+    async fn polish_refuses_agent_prompt() {
+        let (_scratch, a) = agents().await;
+        let agents = Agents::spawn(a);
+        let r = agents
+            .ask(Polish {
+                text: "hello there".into(),
+                destination: voice::Destination::AgentPrompt,
+                session: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            r,
+            PolishReply {
+                refused: Some("agent prompt".into()),
+                ..PolishReply::default()
+            }
+        );
+        let r = agents
+            .ask(Polish {
+                text: "hello there".into(),
+                destination: voice::Destination::Document,
+                session: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(r.refused.as_deref(), Some("no session"));
+        assert!(r.text.is_none());
     }
 
     /// 148 R1: a pick with a session switches that session alone, manual or

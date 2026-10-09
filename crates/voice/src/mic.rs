@@ -60,6 +60,77 @@ impl Capture {
         Self::open_with(Aec::None).map(|(cap, rx, _)| (cap, rx))
     }
 
+    /// 153 §8.1: walk `prefs` in order (names the host does not enumerate are
+    /// skipped), then the system default, then the first input; the third
+    /// value is the name that opened (`"default"` when the host names none).
+    pub fn open_on(prefs: &[String]) -> anyhow::Result<(Capture, Receiver<Chunk>, String)> {
+        let devices = list_input_devices();
+        for name in prefs {
+            if !devices.iter().any(|d| &d.name == name) {
+                continue;
+            }
+            match Self::open_named(Some(name.clone())) {
+                Ok((cap, rx)) => return Ok((cap, rx, name.clone())),
+                Err(e) => tracing::info!("voice: microphone {name:?}: {e:#}"),
+            }
+        }
+        let default = devices
+            .iter()
+            .find(|d| d.default)
+            .or(devices.first())
+            .map(|d| d.name.clone());
+        let err = match Self::open_named(None) {
+            Ok((cap, rx)) => return Ok((cap, rx, default.unwrap_or_else(|| "default".into()))),
+            Err(e) => e,
+        };
+        match devices.first().filter(|d| !d.default) {
+            Some(first) => Self::open_named(Some(first.name.clone()))
+                .map(|(cap, rx)| (cap, rx, first.name.clone())),
+            None => Err(err),
+        }
+    }
+
+    /// A capture that owns no thread (tests feed the receiver themselves).
+    #[cfg(test)]
+    pub(crate) fn fake() -> Capture {
+        Capture {
+            stop: Arc::new(AtomicBool::new(false)),
+            thread: None,
+            #[cfg(target_os = "macos")]
+            unit: None,
+        }
+    }
+
+    /// The plain (no AEC) open of one named input, or the default when `None`.
+    fn open_named(device: Option<String>) -> anyhow::Result<(Capture, Receiver<Chunk>)> {
+        let (tx, rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::Builder::new()
+            .name("voice-mic".into())
+            .spawn({
+                let stop = stop.clone();
+                move || run(&stop, &tx, &ready_tx, device)
+            })?;
+        let mut cap = Capture {
+            stop,
+            thread: Some(thread),
+            #[cfg(target_os = "macos")]
+            unit: None,
+        };
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok((cap, rx)),
+            Ok(Err(e)) => {
+                cap.join();
+                anyhow::bail!("microphone: {e}")
+            }
+            Err(_) => {
+                cap.join();
+                anyhow::bail!("microphone: capture thread exited before starting")
+            }
+        }
+    }
+
     /// [`Capture::open`] with echo cancellation when `want` asks for it and
     /// the host has it; the third value is what actually opened.
     pub fn open_with(want: Aec) -> anyhow::Result<(Capture, Receiver<Chunk>, Aec)> {
@@ -92,32 +163,7 @@ impl Capture {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = want;
-        let (tx, rx) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread = std::thread::Builder::new()
-            .name("voice-mic".into())
-            .spawn({
-                let stop = stop.clone();
-                move || run(&stop, &tx, &ready_tx)
-            })?;
-        let mut cap = Capture {
-            stop,
-            thread: Some(thread),
-            #[cfg(target_os = "macos")]
-            unit: None,
-        };
-        match ready_rx.recv() {
-            Ok(Ok(())) => Ok((cap, rx, Aec::None)),
-            Ok(Err(e)) => {
-                cap.join();
-                anyhow::bail!("microphone: {e}")
-            }
-            Err(_) => {
-                cap.join();
-                anyhow::bail!("microphone: capture thread exited before starting")
-            }
-        }
+        Self::open_named(None).map(|(cap, rx)| (cap, rx, Aec::None))
     }
 
     fn join(&mut self) {
@@ -136,11 +182,31 @@ impl Drop for Capture {
     }
 }
 
+/// 153 §8.1: the host's input devices, the system default flagged. Empty when
+/// the host enumerates nothing (no audio backend); never an error.
+pub fn list_input_devices() -> Vec<crate::InputDevice> {
+    flexaudio::devices()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| d.source_kind == SourceKind::Mic)
+        .map(|d| crate::InputDevice {
+            name: d.name,
+            default: d.is_default,
+        })
+        .collect()
+}
+
 /// The capture thread: open + start the device, then pump chunks until stopped,
 /// the receiver is gone, or the device fails.
-fn run(stop: &AtomicBool, tx: &Sender<Chunk>, ready: &Sender<Result<(), String>>) {
+fn run(
+    stop: &AtomicBool,
+    tx: &Sender<Chunk>,
+    ready: &Sender<Result<(), String>>,
+    device_id: Option<String>,
+) {
     let cfg = StreamConfig {
         kind: SourceKind::Mic,
+        device_id,
         output: OutputFormat {
             sample_rate: RATE,
             channels: 1,
