@@ -173,3 +173,6 @@ no probe flag — from a terminal; the real companion would double-register ⌃�
 - Hover detection polls `NSEvent.mouseLocation` at 10 Hz while the island is shown (Notchmeister: tracking areas are unreliable at the notch);
   no hover-open while detached (it is always open there).
 - Live check 5 not run by this wave (the orchestrator's; one running companion at a time on this machine).
+- **One C-owned file touched** (`COMP/TheuthKit/Models.swift`, `MeetingSupport` only, + two fixtures): a wire-shape bug that made every
+  `meeting_status` decode fail on the live engine — the island could never show. Self-contained (one enum), no other wave edits it; the
+  closer should keep W3's version. The Windows twin's `Support` mirror should be checked for the same `{kind, reason}` shape.
