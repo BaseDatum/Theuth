@@ -1,7 +1,7 @@
 import Foundation
 import TheuthKit
 
-// 149 W1 fills the bodies (design 149 §3.1, §5.1). C fixes the shapes.
+// 149 W1 (design 149 §3.1, D1, §5.1). C fixed the shapes.
 
 /// The four separate pills (D1): inbox · agents · actions · more. Geometry in points.
 public struct RailPills: Equatable, Sendable {
@@ -31,8 +31,30 @@ public struct RailPills: Equatable, Sendable {
 
     public init(pills: [Pill]) { self.pills = pills }
 
-    /// The pills for a `Rail` (`RailModel.derive`, unchanged) and the live level bars.
+    public subscript(_ kind: Kind) -> Pill { pills.first { $0.kind == kind }! }
+
+    /// The whole stack: four pills and three gaps.
+    public static var stackHeight: Double { Double(Kind.allCases.count) * height + Double(Kind.allCases.count - 1) * gap }
+
+    /// What the collapsed 4 × 120 sliver says for VoiceOver: the counts survive the collapse.
+    public var sliverLabel: String {
+        let needs = self[.inbox].count
+        let agents = self[.agents].dots.filter { !$0.isNeedsYou }.count + self[.agents].overflow
+        var parts = ["Theuth rail"]
+        parts.append(needs == 0 ? "nothing needs you" : needs == 1 ? "1 needs you" : "\(needs) need you")
+        if agents > 0 { parts.append(agents == 1 ? "1 agent" : "\(agents) agents") }
+        return parts.joined(separator: ", ")
+    }
+
+    /// The pills for a `Rail` (`RailModel.derive`, unchanged) and the live level bars. The agents pill carries every mark
+    /// (gold needs-you dots first, then the agents) — `Rail` already caps them at `maxDots` with `overflow`.
     public static func derive(rail: Rail, levels: [Float], hovered: Kind?) -> RailPills {
-        fatalError("149 W1")
+        RailPills(pills: [
+            Pill(kind: .inbox, count: rail.needsYouCount, hovered: hovered == .inbox),
+            Pill(kind: .agents, count: rail.marks.count + rail.overflow, dots: Array(rail.marks.prefix(maxDots)),
+                 overflow: rail.overflow + max(0, rail.marks.count - maxDots), hovered: hovered == .agents),
+            Pill(kind: .actions, levels: levels.map { min(1, max(0, $0)) }, hovered: hovered == .actions),
+            Pill(kind: .more, hovered: hovered == .more),
+        ])
     }
 }

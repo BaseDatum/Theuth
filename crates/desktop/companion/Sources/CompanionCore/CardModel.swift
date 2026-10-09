@@ -23,6 +23,11 @@ public enum CardAction: Equatable, Sendable {
     case declineHire(name: String)
     /// Blocked → Unblock: `task_move(task, todo)` (the ledger allows blocked → todo).
     case unblock(task: String)
+    /// 149 W1 (D3, Revision 1 row 2): Stop agent X on a running/waiting card → `cancel(session, "tree")`; `children` names
+    /// the pill ("Stopping w3 and 2 children"). A cancel is final: no undo after the hold.
+    case stopAgent(session: String, children: Int)
+    /// 149 W1 (§3.3 P): the typed/dictated reply with `screen_context`'s PNGs attached → `send_input(session, text, files)`.
+    case replyWithScreen(session: String, text: String, files: [String])
     /// Not sendable yet: the app must collect the note and hold `.reviewSendBackNote` instead.
     public var needsNote: Bool {
         if case .reviewSendBack = self { return true }
@@ -62,6 +67,8 @@ public struct Card: Equatable, Sendable {
     public var moreOptions: Int
     /// The item can be cleared with E.
     public var clearable: Bool
+    /// 149 W1: `Packet.if_wrong` (132 D2) — one line above the options.
+    public var ifWrong: String?
 
     public var recommended: CardOption? { options.first { $0.recommended } }
     public var sessionURL: URL? { item.session.map(DeepLink.session) }
@@ -71,7 +78,8 @@ public struct Card: Equatable, Sendable {
     public static func make(item: AttentionItem, packet: Packet? = nil, approval: ApprovalRequested? = nil,
                             agentModel: String? = nil) -> Card {
         var card = Card(item: item, who: item.agent ?? shortSession(item.session) ?? "theuth", model: agentModel,
-                        question: item.title, why: item.detail, options: [], chips: [], moreOptions: 0, clearable: false)
+                        question: item.title, why: item.detail, options: [], chips: [], moreOptions: 0, clearable: false,
+                        ifWrong: packet?.ifWrong.flatMap { $0.isEmpty ? nil : $0 })
         switch item.kind {
         case .ask:
             guard let ask = item.ask, ask.questions.count == 1, let q = ask.questions.first else {

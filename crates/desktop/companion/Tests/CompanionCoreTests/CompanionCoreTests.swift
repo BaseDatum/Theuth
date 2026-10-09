@@ -116,6 +116,15 @@ struct PanelModelTests {
         #expect(p.focused == nil)
         #expect(p.position == "")
     }
+
+    /// 149 §3.3 Ordering (132 D4): rank desc inside a group, then oldest first; groups still win over rank.
+    @Test func rankOrdersWithinAGroupOldestFirstOnTies() {
+        var urgent = item("ask:urgent", .ask, ago: 5); urgent.rank = 9; urgent.priority = .urgent
+        var low = item("ask:low", .ask, ago: 900); low.rank = 1
+        var urgentDone = item("finished:u", .finished, ago: 1); urgentDone.rank = 9
+        let p = PanelModel(items: [low, item("ask:b", .ask, ago: 30), urgentDone, urgent, item("ask:old", .ask, ago: 600)])
+        #expect(p.items.map(\.id) == ["ask:urgent", "ask:old", "ask:b", "ask:low", "finished:u"])
+    }
 }
 
 struct UndoQueueTests {

@@ -15,12 +15,15 @@ public struct CompanionSettings: Equatable, Sendable {
     public var launchAtLogin = false
     /// W6 (R2-4): every key binding's override, one table for the grammar, the legend and Settings › Keys.
     public var keys = KeyTable()
+    /// 149 W1 (D1, §3.8): the rail as four separate pills; off = 130's one strip (the escape hatch, kept for a week).
+    public var railPills = true
 
     public init() {}
 
     public enum Key: String, CaseIterable {
         case railSide, railDisplay, railCollapse, railPresence, doubleTapOption, undoDelay
         case notifyBlocking, notifyDeferrable, notifyError, soundOnErrors, launchAtLogin, keyOverrides
+        case railPills // 149 W1
     }
 
     public static func load(from d: UserDefaults) -> CompanionSettings {
@@ -38,6 +41,7 @@ public struct CompanionSettings: Equatable, Sendable {
         if d.object(forKey: Key.soundOnErrors.rawValue) != nil { s.notify.soundOnErrors = d.bool(forKey: Key.soundOnErrors.rawValue) }
         s.launchAtLogin = d.bool(forKey: Key.launchAtLogin.rawValue)
         if let j = d.string(forKey: Key.keyOverrides.rawValue) { s.keys = KeyTable(json: j) }
+        if d.object(forKey: Key.railPills.rawValue) != nil { s.railPills = d.bool(forKey: Key.railPills.rawValue) }
         return s
     }
 
@@ -53,6 +57,7 @@ public struct CompanionSettings: Equatable, Sendable {
         d.set(notify.soundOnErrors, forKey: Key.soundOnErrors.rawValue)
         d.set(launchAtLogin, forKey: Key.launchAtLogin.rawValue)
         d.set(keys.json, forKey: Key.keyOverrides.rawValue)
+        d.set(railPills, forKey: Key.railPills.rawValue)
     }
 
     /// `~/.theuth/companion.json`, read by the Tauri shell at start (R1-2).

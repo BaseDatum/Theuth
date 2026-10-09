@@ -28,7 +28,8 @@
   ],
   "approval_waiting": false,
   "supported": {
-    "Partial": "no process tap on this host"
+    "kind": "Partial",
+    "reason": "no process tap on this host"
   },
   "accelerator": "CPUExecutionProvider"
 }

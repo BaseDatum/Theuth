@@ -30,18 +30,33 @@ public struct IslandModel: Equatable, Sendable {
         self.state = state; self.frames = frames; self.alwaysShow = alwaysShow
     }
 
-    /// D10: live meeting, or ≤ `linger` after the last topic/brief, or "Always show".
+    /// D10: live meeting, or ≤ `linger` after the last topic/brief, or "Always show". Starting/Stopping count as live
+    /// (`Island.tsx:70`): the strip is up from the first second.
     public static func visible(_ slice: MeetingSlice, lastActivity: Date?, alwaysShow: Bool, now: Date) -> Bool {
-        fatalError("149 W3")
+        if alwaysShow { return true }
+        switch slice.state {
+        case .starting, .recording, .paused, .stopping: return true
+        default: break
+        }
+        guard let at = lastActivity else { return false }
+        return now.timeIntervalSince(at) <= linger
     }
 
     /// A drag ended at `frame`: within `snapBack` of the notch → `.closed`, else `.detached` and remembered.
     public mutating func dragEnded(frame: CGRect, notch: CGRect, display: String) {
-        fatalError("149 W3")
+        let d = hypot(frame.midX - notch.midX, frame.midY - notch.midY)
+        if d <= Self.snapBack {
+            state = .closed
+            frames[display] = nil
+        } else {
+            state = .detached(frame: frame)
+            frames[display] = frame
+        }
     }
 
     /// The remembered frame for `display`, rejected when it intersects none of `visibleFrames`.
     public func frame(for display: String, visibleFrames: [CGRect]) -> CGRect? {
-        fatalError("149 W3")
+        guard let f = frames[display] else { return nil }
+        return visibleFrames.contains { $0.intersects(f) } ? f : nil
     }
 }

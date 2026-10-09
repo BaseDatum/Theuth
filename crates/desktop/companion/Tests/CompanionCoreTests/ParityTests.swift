@@ -46,6 +46,11 @@ private final class RecordingEngine: StoreEngine, @unchecked Sendable {
     func steer(session: String, text: String) async throws -> String { try record("steer \(session) \(text)", "input-1") }
     func agentApprove(name: String) async throws { try record("agent_approve \(name)", ()) }
     func agentRemove(name: String, note: String?) async throws { try record("agent_remove \(name) \(note ?? "null")", ()) }
+    // 149 W1
+    func cancel(session: String, scope: CancelScope?) async throws { try record("cancel \(session) \(scope?.rawValue ?? "null")", ()) }
+    func sendInput(session: String?, text: String, files: [String], delivery: Delivery?, id: String?) async throws -> String {
+        try record("send_input \(session ?? "null") \(text) files=\(files)", session ?? "")
+    }
 }
 
 struct PerKindOptionTests {
