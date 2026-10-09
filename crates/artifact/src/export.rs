@@ -169,12 +169,11 @@ impl State {
         };
         let Some(dest) = m.dest else {
             let args = ShowArgs {
-                path: None,
                 content: Some(content),
                 name: Some(format!("{}.{ext}", file_stem(&m.title))),
                 title: Some(m.title),
                 source: Some(Source::Markdown),
-                height: None,
+                ..ShowArgs::default()
             };
             let (session, call_id) = m
                 .record

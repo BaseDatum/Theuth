@@ -19,7 +19,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 use tools::SessionResources;
 
 use crate::archive;
-use crate::kind::{self, Receipt};
+use crate::kind::{self, Check, Receipt};
 use crate::pdf::{self, Source};
 use crate::search;
 use crate::tools::ShowArgs;
@@ -397,6 +397,113 @@ fn blob_name(id: &str, name: &str) -> String {
     }
 }
 
+/// One `show` after its arguments are resolved and its draft saved (150 §D1).
+struct Input {
+    name: String,
+    /// What is shown: `content`'s bytes, the file's bytes, or the edited text.
+    bytes: Vec<u8>,
+    /// The text, when `bytes` came from `content`, `edits` or a `.md`/`.typ` file under a `.pdf` name.
+    content: Option<String>,
+    /// The `path` argument.
+    origin: Option<PathBuf>,
+    /// The draft this call wrote (content / edits).
+    draft: Option<PathBuf>,
+    /// PDF source language.
+    source: Source,
+    title: Option<String>,
+    height: Option<u32>,
+    /// Run the page check (150 §D4).
+    check: bool,
+    /// `show{edits}`: how many.
+    edits: Option<usize>,
+    /// `show{edits}` started from a published HTML blob.
+    base_inlined: bool,
+}
+
+/// A failure inside [`State::publish`]; `refused` = the page check said no (150 §D4).
+struct ShowError {
+    msg: String,
+    refused: bool,
+}
+
+impl ShowError {
+    fn refused(msg: String) -> Self {
+        Self { msg, refused: true }
+    }
+}
+
+impl From<String> for ShowError {
+    fn from(msg: String) -> Self {
+        Self {
+            msg,
+            refused: false,
+        }
+    }
+}
+
+fn src_ext(source: Source) -> &'static str {
+    match source {
+        Source::Typst => "typ",
+        Source::Markdown => "md",
+    }
+}
+
+/// `name` as a draft file name, or `None` when it could not be a plain basename
+/// (150 §D1): a separator, NUL, a leading `.` (covers `..`), empty, or over 200 bytes.
+fn safe_draft_name(name: &str) -> Option<&str> {
+    let ok = !name.is_empty()
+        && name.len() <= 200
+        && !name.starts_with('.')
+        && !name.contains(['/', '\\', '\0']);
+    ok.then_some(name)
+}
+
+/// The draft file for `name`: the name itself when safe and it has an extension,
+/// else `draft-<sha8>.<ext|txt>`; a `.pdf` name gets `.md`/`.typ` appended.
+fn draft_file(name: Option<&str>, source: Source, content: &[u8]) -> String {
+    let safe = name
+        .and_then(safe_draft_name)
+        .filter(|n| kind::ext(n).is_some());
+    let mut file = match safe {
+        Some(n) => n.to_owned(),
+        None => {
+            let ext = name
+                .and_then(kind::ext)
+                .filter(|e| !e.is_empty() && e.bytes().all(|b| b.is_ascii_alphanumeric()))
+                .unwrap_or_else(|| "txt".to_owned());
+            format!("draft-{}.{ext}", &sha16(content)[..8])
+        }
+    };
+    if name.is_some_and(|n| kind::of(n) == Kind::Pdf) {
+        file.push('.');
+        file.push_str(src_ext(source));
+    }
+    file
+}
+
+/// 150 §D5: exact replacements in order, each seeing the previous result;
+/// all or nothing. `old` must occur exactly once unless `all`.
+fn apply_edits(mut text: String, edits: &[crate::tools::ShowEdit]) -> Result<String, String> {
+    let n = edits.len();
+    for (i, e) in edits.iter().enumerate() {
+        let label = format!("edit {} of {n}", i + 1);
+        if e.old.is_empty() {
+            return Err(format!("{label}: old is empty"));
+        }
+        let found = text.matches(&*e.old).count();
+        match (found, e.all.unwrap_or(false)) {
+            (0, _) => return Err(format!("{label}: old not found")),
+            (1, _) | (_, true) => text = text.replace(&*e.old, &e.new),
+            (k, false) => {
+                return Err(format!(
+                    "{label}: old found {k} times — add context or pass all: true"
+                ));
+            }
+        }
+    }
+    Ok(text)
+}
+
 /// Document title for a markdown body: the front matter `title:` when there is
 /// one (the same key the PDF template prints), else the first `#` heading.
 fn doc_title(text: &str) -> Option<String> {
@@ -641,6 +748,11 @@ impl State {
 
     /// [`Self::show`] with `bind` = whether a markdown record becomes a document (59 §7.2);
     /// exports (72) are copies of a document and must not.
+    ///
+    /// 150 §D1: text sent as `content` or made by `edits` is saved as a draft
+    /// under `drafts/<session>/` before anything can fail, and every later
+    /// failure ends with the line that says how to fix that file instead of
+    /// resending it.
     pub(crate) async fn show_as(
         &self,
         session: SessionId,
@@ -648,18 +760,219 @@ impl State {
         args: ShowArgs,
         bind: bool,
     ) -> Result<Shown, String> {
-        let t0 = Instant::now();
-        let (name, bytes, origin, content) = match (args.path, args.content) {
-            (Some(_), Some(_)) => return Err("pass either path or content, not both".into()),
-            (None, None) => return Err("pass path (an existing file) or content + name".into()),
-            (None, Some(content)) => {
-                let name = args.name.ok_or("content requires name")?;
+        let input = self.resolve(session, args).await?;
+        let fix = input.draft.as_ref().map(|d| {
+            let publish = match kind::of(&input.name) {
+                Kind::Pdf => format!(
+                    "show{{path: \"{}\", name: \"{}\"}}",
+                    d.display(),
+                    input.name
+                ),
+                _ => format!("show{{path: \"{}\"}}", d.display()),
+            };
+            format!(
+                "saved at {} — fix it with show{{name: \"{}\", edits: [{{old, new}}]}}, or \
+                 edit() that file and {publish}; do not resend the {}",
+                d.display(),
+                input.name,
+                if kind::of(&input.name) == Kind::Html {
+                    "page"
+                } else {
+                    "content"
+                }
+            )
+        });
+        match self.publish(session, call_id, input, bind).await {
+            Ok(shown) => Ok(shown),
+            Err(ShowError { mut msg, refused }) => {
+                if let Some(f) = &fix {
+                    msg.push('\n');
+                    msg.push_str(f);
+                }
+                if refused {
+                    msg.push_str(if fix.is_some() {
+                        ", or pass check: false to publish anyway"
+                    } else {
+                        " — pass check: false to publish anyway"
+                    });
+                }
+                Err(msg)
+            }
+        }
+    }
+
+    /// `<dir>/drafts/<session>/` (150 §D1): the working copies of this session's text artifacts.
+    pub fn drafts_dir(&self, session: SessionId) -> PathBuf {
+        self.dir.join("drafts").join(session.to_string())
+    }
+
+    /// Save `text` as the draft for `name` (`None` or no extension → `draft-<sha8>.txt`; a
+    /// `.pdf` name → `<name>.md|.typ` per `source`). Temp + rename: last writer wins.
+    pub(crate) async fn save_draft(
+        &self,
+        session: SessionId,
+        name: Option<&str>,
+        source: Source,
+        text: &str,
+    ) -> Result<PathBuf, String> {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let file = draft_file(name, source, text.as_bytes());
+        let dir = self.drafts_dir(session);
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| format!("draft dir {}: {e}", dir.display()))?;
+        let path = dir.join(&file);
+        let part = dir.join(format!(
+            ".{file}.{}.{}.part",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let written = async {
+            tokio::fs::write(&part, text).await?;
+            tokio::fs::rename(&part, &path).await
+        }
+        .await;
+        if let Err(e) = written {
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(format!("draft {}: {e}", path.display()));
+        }
+        Ok(path)
+    }
+
+    /// The text `show{name, edits}` starts from (150 §D5): the draft, else the
+    /// latest version's blob (HTML: images already inlined) or PDF source.
+    async fn edit_base(
+        &self,
+        session: SessionId,
+        name: &str,
+        source: Option<Source>,
+    ) -> Result<(String, Source, bool), String> {
+        if let Some(file) = safe_draft_name(name) {
+            let dir = self.drafts_dir(session);
+            let candidates: Vec<(String, Source)> = if kind::of(name) == Kind::Pdf {
+                source
+                    .map_or(vec![Source::Markdown, Source::Typst], |s| vec![s])
+                    .into_iter()
+                    .map(|s| (format!("{file}.{}", src_ext(s)), s))
+                    .collect()
+            } else {
+                vec![(file.to_owned(), source.unwrap_or_default())]
+            };
+            for (f, s) in candidates {
+                let p = dir.join(f);
+                match tokio::fs::read_to_string(&p).await {
+                    Ok(text) => return Ok((text, s, false)),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(format!("{name}: draft {}: {e}", p.display())),
+                }
+            }
+        }
+        let Some(latest) = self.latest(session, name).await? else {
+            return Err(format!(
+                "{name}: no draft or version of {name} in this session"
+            ));
+        };
+        let (path, s) = match latest.kind {
+            Kind::Html | Kind::Markdown | Kind::Text | Kind::Mermaid | Kind::Csv | Kind::Svg => {
+                (latest.path, Source::Markdown)
+            }
+            Kind::Pdf => match latest.source {
+                Some(src) => {
+                    let s = match kind::ext(&src.to_string_lossy()).as_deref() {
+                        Some("typ") => Source::Typst,
+                        _ => Source::Markdown,
+                    };
+                    (src, s)
+                }
+                None => return Err(format!("{name}: edits apply to text artifacts only")),
+            },
+            _ => return Err(format!("{name}: edits apply to text artifacts only")),
+        };
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|e| format!("{name}: {}: {e}", path.display()))?;
+        let text = String::from_utf8(bytes).map_err(|_| format!("{name}: not UTF-8 text"))?;
+        Ok((text, s, latest.kind == Kind::Html))
+    }
+
+    /// Turn the arguments into one [`Input`], saving the draft first (150 §D1).
+    async fn resolve(&self, session: SessionId, args: ShowArgs) -> Result<Input, String> {
+        let base = Input {
+            name: String::new(),
+            bytes: Vec::new(),
+            content: None,
+            origin: None,
+            draft: None,
+            source: args.source.unwrap_or_default(),
+            title: args.title,
+            height: args.height,
+            check: args.check.unwrap_or(true),
+            edits: None,
+            base_inlined: false,
+        };
+        let too_big = |name: &str, len: usize| {
+            format!(
+                "{name}: {} exceeds {} (not saved as a draft)",
+                kind::human(len as u64),
+                kind::human(MAX_BYTES)
+            )
+        };
+        match (args.path, args.content, args.edits) {
+            (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
+                Err("pass one of path, content or edits".into())
+            }
+            (None, None, None) => {
+                Err("pass path (an existing file), content + name, or name + edits".into())
+            }
+            (None, Some(content), None) => {
+                let name = args.name.filter(|n| kind::ext(n).is_some());
+                if content.len() as u64 > MAX_BYTES {
+                    return Err(too_big(name.as_deref().unwrap_or("content"), content.len()));
+                }
+                let draft = self
+                    .save_draft(session, name.as_deref(), base.source, &content)
+                    .await?;
+                let Some(name) = name else {
+                    return Err(format!(
+                        "content requires name with an extension — saved at {d}; publish it \
+                         with show{{path: \"{d}\", name: \"<name with extension>\"}}",
+                        d = draft.display()
+                    ));
+                };
+                Ok(Input {
+                    name,
+                    bytes: content.clone().into_bytes(),
+                    content: Some(content),
+                    draft: Some(draft),
+                    ..base
+                })
+            }
+            (None, None, Some(edits)) => {
+                let name = args.name.ok_or("edits require name")?;
                 if kind::ext(&name).is_none() {
                     return Err(format!("{name}: name needs an extension"));
                 }
-                (name, content.clone().into_bytes(), None, Some(content))
+                let (text, source, base_inlined) =
+                    self.edit_base(session, &name, args.source).await?;
+                let content = apply_edits(text, &edits).map_err(|e| format!("{name}: {e}"))?;
+                if content.len() as u64 > MAX_BYTES {
+                    return Err(too_big(&name, content.len()));
+                }
+                let draft = self
+                    .save_draft(session, Some(&name), source, &content)
+                    .await?;
+                Ok(Input {
+                    name,
+                    bytes: content.clone().into_bytes(),
+                    content: Some(content),
+                    draft: Some(draft),
+                    source,
+                    edits: Some(edits.len()),
+                    base_inlined,
+                    ..base
+                })
             }
-            (Some(path), None) => {
+            (Some(path), None, None) => {
                 let meta = tokio::fs::metadata(&path)
                     .await
                     .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -681,15 +994,138 @@ impl State {
                 let bytes = tokio::fs::read(&path)
                     .await
                     .map_err(|e| format!("{}: {e}", path.display()))?;
-                (name, bytes, Some(path), None)
+                // 150 §D1b: a markdown/Typst file under a `.pdf` name is compiled like `content`.
+                let pdf_source = match kind::ext(&path.to_string_lossy()).as_deref() {
+                    Some("md" | "markdown") if kind::of(&name) == Kind::Pdf => {
+                        Some(Source::Markdown)
+                    }
+                    Some("typ") if kind::of(&name) == Kind::Pdf => Some(Source::Typst),
+                    _ => None,
+                };
+                let (content, source) = match pdf_source {
+                    Some(s) => {
+                        let text = String::from_utf8(bytes.clone())
+                            .map_err(|_| format!("{}: not UTF-8 text", path.display()))?;
+                        (Some(text), s)
+                    }
+                    None => (None, base.source),
+                };
+                Ok(Input {
+                    name,
+                    bytes,
+                    content,
+                    origin: Some(path),
+                    source,
+                    ..base
+                })
             }
+        }
+    }
+
+    /// 150 §D4: render the inlined page hidden in the connected app. `Err` =
+    /// the console logged errors (the refusal text); `Ok` = what the receipt says.
+    async fn check_page(
+        &self,
+        session: SessionId,
+        name: &str,
+        html: &[u8],
+    ) -> Result<Check, String> {
+        use crate::preview::{self, Outcome};
+        if !preview::feed_live() {
+            return Ok(Check::Skipped("no renderer connected".into()));
+        }
+        let Ok(text) = std::str::from_utf8(html) else {
+            return Ok(Check::Skipped("page is not UTF-8".into()));
         };
+        if text.chars().count() > preview::MAX_HTML {
+            return Ok(Check::Skipped(format!(
+                "page over {} chars",
+                preview::MAX_HTML
+            )));
+        }
+        let outcome = preview::render(
+            &self.rt,
+            session,
+            text.to_owned(),
+            preview::DEFAULT_WIDTH,
+            None,
+        )
+        .await;
+        Ok(match outcome {
+            Outcome::Done { loaded: false, .. } => {
+                Check::Skipped("the page did not finish loading".into())
+            }
+            Outcome::Done {
+                content_height,
+                console,
+                client,
+                ..
+            } => {
+                let errors: Vec<&str> = console
+                    .iter()
+                    .filter(|l| l.level == preview::ConsoleLevel::Error)
+                    .map(|l| l.text.as_str())
+                    .collect();
+                if !errors.is_empty() {
+                    let mut msg = format!(
+                        "{name}: not published — the page logged {} error(s):",
+                        errors.len()
+                    );
+                    for e in errors.iter().take(3) {
+                        msg.push_str("\n[error] ");
+                        msg.extend(e.chars().take(300));
+                    }
+                    return Err(msg);
+                }
+                let warnings = console
+                    .iter()
+                    .filter(|l| l.level == preview::ConsoleLevel::Warning)
+                    .count();
+                // The web client reports 80 for a frame it could not measure.
+                let measured =
+                    !(client == preview::Client::Web && content_height == 80 && console.is_empty());
+                Check::Ok {
+                    client: client.as_str(),
+                    height: measured.then_some(content_height),
+                    warnings,
+                }
+            }
+            Outcome::NoRenderer => Check::Skipped("no renderer connected".into()),
+            Outcome::Failed(reason) => Check::Skipped(format!("client failed: {reason}")),
+            Outcome::TimedOut => Check::Skipped("timed out after 15 s".into()),
+            Outcome::Cancelled => Check::Skipped("cancelled".into()),
+        })
+    }
+
+    /// Validate → kind → compile/rasterise/inline → page check → blob → version → insert → publish.
+    async fn publish(
+        &self,
+        session: SessionId,
+        call_id: String,
+        input: Input,
+        bind: bool,
+    ) -> Result<Shown, ShowError> {
+        let t0 = Instant::now();
+        let Input {
+            name,
+            bytes,
+            content,
+            origin,
+            draft,
+            source,
+            title,
+            height,
+            check,
+            edits,
+            base_inlined,
+        } = input;
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_BYTES {
             return Err(format!(
                 "{name}: {} exceeds {}",
                 kind::human(bytes.len() as u64),
                 kind::human(MAX_BYTES)
-            ));
+            )
+            .into());
         }
 
         // 120 §9a: a compiled `.pdf` is sniffed by its compiler; everything else by its bytes.
@@ -697,9 +1133,34 @@ impl State {
             (Kind::Pdf, Some(_)) => (Kind::Pdf, None),
             (k, _) => sniff::demote(k, &bytes),
         };
+        let text_kind = matches!(
+            kind,
+            Kind::Html | Kind::Markdown | Kind::Text | Kind::Mermaid | Kind::Csv | Kind::Svg
+        ) || (kind == Kind::Pdf && content.is_some());
+        // 150 §D1: a shown file refreshes the draft for its name once it is published,
+        // unless the file shown is that draft.
+        let refresh = match (&origin, text_kind) {
+            (Some(o), true)
+                if *o
+                    != self
+                        .drafts_dir(session)
+                        .join(draft_file(Some(&name), source, &bytes)) =>
+            {
+                Some(match &content {
+                    Some(c) => c.clone().into_bytes(),
+                    None => bytes.clone(),
+                })
+            }
+            _ => None,
+        };
         let mut receipt = Receipt {
             demoted,
-            height: args.height.map(|h| (h, h.clamp(80, 2000))),
+            height: height.map(|h| (h, h.clamp(80, 2000))),
+            edits,
+            base_inlined,
+            file: text_kind
+                .then(|| draft.clone().or_else(|| origin.clone()))
+                .flatten(),
             ..Receipt::default()
         };
         let mut source_file = None;
@@ -713,12 +1174,7 @@ impl State {
 
         let bytes = match (kind, &content) {
             (Kind::Pdf, Some(content)) => {
-                let source = args.source.unwrap_or(Source::Markdown);
-                let src_ext = if matches!(source, Source::Typst) {
-                    "typ"
-                } else {
-                    "md"
-                };
+                let src_ext = src_ext(source);
                 if src_ext == "md" {
                     heading_src = Some(content.as_str());
                 }
@@ -760,6 +1216,14 @@ impl State {
                 .map_err(|e| format!("{name}: {e}"))??;
                 receipt.images = Some(images);
                 receipt.lines = Some(count_lines(&bytes));
+                // 150 §D4: the page as it would be published, checked before it is.
+                if check {
+                    receipt.check = Some(
+                        self.check_page(session, &name, &bytes)
+                            .await
+                            .map_err(ShowError::refused)?,
+                    );
+                }
                 bytes
             }
             (Kind::Markdown | Kind::Text | Kind::Mermaid, _) => {
@@ -791,8 +1255,7 @@ impl State {
             Kind::Markdown => std::str::from_utf8(&bytes).ok(),
             _ => heading_src,
         };
-        let title = args
-            .title
+        let title = title
             .or_else(|| text_for_title.and_then(doc_title))
             .unwrap_or_else(|| name.clone());
 
@@ -891,6 +1354,21 @@ impl State {
         self.search.invalidate();
         if bind && artifact.kind == Kind::Markdown {
             self.bind_document(&artifact, &bytes).await;
+        }
+        if let Some(raw) = refresh {
+            match String::from_utf8(raw) {
+                Ok(text) => {
+                    if let Err(e) = self
+                        .save_draft(session, Some(&artifact.name), source, &text)
+                        .await
+                    {
+                        tracing::warn!(target: "artifact", name = %artifact.name, "{e}");
+                    }
+                }
+                Err(_) => {
+                    tracing::debug!(target: "artifact", name = %artifact.name, "no draft: not UTF-8")
+                }
+            }
         }
 
         tracing::info!(
@@ -1552,10 +2030,16 @@ impl State {
     }
 
     /// Drop every row of `session`, artifacts and app invocations alike, in
-    /// one transaction; the next sweep collects the blobs. The index is
-    /// invalidated even when the delete fails: its builds filter by live
-    /// sessions, so the dead session's rows vanish from search anyway.
+    /// one transaction, and its `drafts/<session>/` (150 §D1); the next sweep
+    /// collects the blobs. The index is invalidated even when the delete
+    /// fails: its builds filter by live sessions, so the dead session's rows
+    /// vanish from search anyway.
     pub async fn delete_session(&self, session: SessionId) -> anyhow::Result<()> {
+        if let Err(e) = tokio::fs::remove_dir_all(self.drafts_dir(session)).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(target: "artifact", %session, "drafts not removed: {e}");
+        }
         let session = session.to_string();
         let deleted = async {
             let mut tx = self.pool.begin().await?;
@@ -1772,12 +2256,34 @@ mod tests {
         (state, dir)
     }
 
+    /// `show{content}` as the existing tests mean it: the page check off, so a
+    /// `FEED` installed by the preview tests never makes these wait for a renderer.
     fn content(name: &str, text: &str) -> ShowArgs {
         ShowArgs {
             content: Some(text.to_owned()),
             name: Some(name.to_owned()),
+            check: Some(false),
             ..ShowArgs::default()
         }
+    }
+
+    /// `<dir>/drafts/<session>/<file>`.
+    fn draft(s: &State, sess: SessionId, file: &str) -> PathBuf {
+        s.drafts_dir(sess).join(file)
+    }
+
+    /// The one fix line every failure after the draft ends with (150 §D2).
+    fn fix_line(path: &Path, name: &str) -> String {
+        format!(
+            "saved at {p} — fix it with show{{name: \"{name}\", edits: [{{old, new}}]}}, or edit() \
+             that file and show{{path: \"{p}\"}}; do not resend the {}",
+            if name.ends_with(".html") {
+                "page"
+            } else {
+                "content"
+            },
+            p = path.display()
+        )
     }
 
     fn by_path(path: PathBuf) -> ShowArgs {
@@ -1812,7 +2318,7 @@ mod tests {
         assert_eq!(shown.artifact.bytes as usize, stored.len());
         let line = kind::receipt(&shown.artifact, &shown.receipt);
         assert!(line.contains(" · 2 images inlined)"), "{line}");
-        assert!(line.ends_with("Check it with page_preview when it has scripts."));
+        assert!(line.ends_with("never resend the page."), "{line}");
         // A page without local images is stored byte for byte.
         let plain = s
             .show(
@@ -1827,9 +2333,12 @@ mod tests {
         assert!(!kind::receipt(&plain.artifact, &plain.receipt).contains("inlined"));
     }
 
+    /// 150 §D1/§D2: the page is saved before the inlining can fail; the error
+    /// names the draft and says how to fix it; no blob is written.
     #[tokio::test]
-    async fn html_show_fails_listing_missing_images() {
+    async fn html_show_fails_listing_missing_images_and_keeps_the_draft() {
         let (s, d) = open().await;
+        let sess = SessionId::new();
         let missing = d.path().join("gone.png");
         let secret = d.path().join("token.svg");
         std::fs::write(&secret, b"ghp_notansvg").unwrap();
@@ -1839,28 +2348,33 @@ mod tests {
             s = secret.display()
         );
         let err = s
-            .show(SessionId::new(), "c1".into(), content("chart.html", &html))
+            .show(sess, "c1".into(), content("chart.html", &html))
             .await
             .unwrap_err();
+        let draft = draft(&s, sess, "chart.html");
         assert_eq!(
             err,
             format!(
                 "chart.html: these local images could not be read: {} — use absolute paths to \
-                 existing image files, or remove them",
-                missing.display()
+                 existing image files, or remove them\n{}",
+                missing.display(),
+                fix_line(&draft, "chart.html")
             )
         );
+        assert_eq!(std::fs::read_to_string(&draft).unwrap(), html);
         // Every path exists but one is not an image: listed once, nothing stored.
         let html = format!("<img src=\"{s}\"><img src=\"{s}\">", s = secret.display());
         let err = s
-            .show(SessionId::new(), "c2".into(), content("chart.html", &html))
+            .show(sess, "c2".into(), content("chart.html", &html))
             .await
             .unwrap_err();
         assert!(
             err.contains(&format!("could not be read: {} — ", secret.display())),
             "{err}"
         );
+        assert_eq!(std::fs::read_to_string(&draft).unwrap(), html);
         assert!(blobs(&s.dir).is_empty());
+        assert!(s.list(Some(sess), false).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1929,10 +2443,13 @@ mod tests {
         assert_eq!(pdf.artifact.kind, Kind::Pdf);
     }
 
+    /// Files directly in `dir` (not the index, not `drafts/`).
     fn blobs(dir: &Path) -> Vec<String> {
         let mut v: Vec<String> = std::fs::read_dir(dir)
             .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .map(|e| e.unwrap())
+            .filter(|e| e.file_type().unwrap().is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| !n.starts_with(DB))
             .collect();
         v.sort();
@@ -2021,13 +2538,384 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, format!("{}: 33 MB exceeds 32 MB", big.display()));
 
+        // 150 §D1: nameless content is still saved, and the error says how to publish it.
         let mut args = content("x.txt", "hi");
         args.name = None;
+        let saved = draft(&s, sess, &format!("draft-{}.txt", &sha16(b"hi")[..8]));
         assert_eq!(
             s.show(sess, "c".into(), args).await.unwrap_err(),
-            "content requires name"
+            format!(
+                "content requires name with an extension — saved at {p}; publish it with \
+                 show{{path: \"{p}\", name: \"<name with extension>\"}}",
+                p = saved.display()
+            )
         );
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), "hi");
         assert!(s.list(Some(sess), false).await.unwrap().is_empty());
+    }
+
+    /// 150 §D1/§D2: a successful `show{content}` leaves the draft equal to the
+    /// source and the receipt names it; `show{path}` names the path and
+    /// refreshes the draft; binary kinds name nothing.
+    #[tokio::test]
+    async fn show_names_the_editable_file() {
+        let (s, d) = open().await;
+        let sess = SessionId::new();
+        let shown = s
+            .show(sess, "c1".into(), content("notes.md", "# Hi\n\nbody\n"))
+            .await
+            .unwrap();
+        let draft = draft(&s, sess, "notes.md");
+        assert_eq!(shown.receipt.file.as_deref(), Some(draft.as_path()));
+        assert_eq!(std::fs::read_to_string(&draft).unwrap(), "# Hi\n\nbody\n");
+        let line = kind::receipt(&shown.artifact, &shown.receipt);
+        assert!(
+            line.ends_with(&format!(" · file {}", draft.display())),
+            "{line}"
+        );
+
+        let file = d.path().join("plan.md");
+        std::fs::write(&file, "plan\n").unwrap();
+        let shown = s
+            .show(sess, "c2".into(), by_path(file.clone()))
+            .await
+            .unwrap();
+        assert_eq!(shown.receipt.file.as_deref(), Some(file.as_path()));
+        let plan = self::draft(&s, sess, "plan.md");
+        assert_eq!(std::fs::read_to_string(&plan).unwrap(), "plan\n");
+        // Showing the draft itself refreshes nothing and names the draft.
+        let shown = s
+            .show(sess, "c3".into(), by_path(plan.clone()))
+            .await
+            .unwrap();
+        assert_eq!(shown.receipt.file.as_deref(), Some(plan.as_path()));
+
+        let png = d.path().join("shot.png");
+        std::fs::write(&png, PNG).unwrap();
+        let shown = s.show(sess, "c4".into(), by_path(png)).await.unwrap();
+        assert_eq!(shown.receipt.file, None);
+        assert!(!kind::receipt(&shown.artifact, &shown.receipt).contains(" · file "));
+    }
+
+    /// 150 §D5: `show{name, edits}` — draft base, version base, every refusal.
+    #[tokio::test]
+    async fn edits_make_a_new_version_or_change_nothing() {
+        let (s, d) = open().await;
+        let sess = SessionId::new();
+        let edits = |name: &str, list: Vec<(&str, &str, Option<bool>)>| ShowArgs {
+            name: Some(name.to_owned()),
+            edits: Some(
+                list.into_iter()
+                    .map(|(old, new, all)| crate::tools::ShowEdit {
+                        old: old.into(),
+                        new: new.into(),
+                        all,
+                    })
+                    .collect(),
+            ),
+            check: Some(false),
+            ..ShowArgs::default()
+        };
+        s.show(sess, "c1".into(), content("a.md", "hello world\nx x\n"))
+            .await
+            .unwrap();
+        let v2 = s
+            .show(
+                sess,
+                "c2".into(),
+                edits(
+                    "a.md",
+                    vec![("world", "there", None), ("x", "y", Some(true))],
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(v2.artifact.version, 2);
+        assert_eq!(v2.receipt.edits, Some(2));
+        let draft = draft(&s, sess, "a.md");
+        assert_eq!(v2.receipt.file.as_deref(), Some(draft.as_path()));
+        assert_eq!(
+            std::fs::read_to_string(&v2.artifact.path).unwrap(),
+            "hello there\ny y\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&draft).unwrap(),
+            "hello there\ny y\n"
+        );
+        let line = kind::receipt(&v2.artifact, &v2.receipt);
+        assert!(line.starts_with("shown a.md (v2 · "), "{line}");
+        assert!(line.contains(" · 2 edits applied)"), "{line}");
+
+        // Empty edits republish the draft unchanged.
+        let v3 = s
+            .show(sess, "c3".into(), edits("a.md", vec![]))
+            .await
+            .unwrap();
+        assert_eq!(
+            (v3.artifact.version, v3.artifact.id.as_str()),
+            (3, v2.artifact.id.as_str())
+        );
+        assert!(!kind::receipt(&v3.artifact, &v3.receipt).contains("applied"));
+
+        // Failures: nothing written, the edit named.
+        let before = std::fs::read_to_string(&draft).unwrap();
+        for (list, want) in [
+            (
+                vec![("nope", "x", None)],
+                "a.md: edit 1 of 1: old not found",
+            ),
+            (
+                vec![("there", "here", None), ("y", "z", None)],
+                "a.md: edit 2 of 2: old found 2 times — add context or pass all: true",
+            ),
+            (vec![("", "x", None)], "a.md: edit 1 of 1: old is empty"),
+        ] {
+            assert_eq!(
+                s.show(sess, "cx".into(), edits("a.md", list))
+                    .await
+                    .unwrap_err(),
+                want
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&draft).unwrap(), before);
+        assert_eq!(s.list(Some(sess), false).await.unwrap().len(), 3);
+        assert_eq!(
+            s.show(sess, "cx".into(), edits("nope.md", vec![]))
+                .await
+                .unwrap_err(),
+            "nope.md: no draft or version of nope.md in this session"
+        );
+        let mut both = edits("a.md", vec![]);
+        both.content = Some("x".into());
+        assert_eq!(
+            s.show(sess, "cx".into(), both).await.unwrap_err(),
+            "pass one of path, content or edits"
+        );
+        let mut both = edits("a.md", vec![]);
+        both.path = Some(d.path().join("a.md"));
+        assert_eq!(
+            s.show(sess, "cx".into(), both).await.unwrap_err(),
+            "pass one of path, content or edits"
+        );
+        let mut nameless = edits("a.md", vec![]);
+        nameless.name = None;
+        assert_eq!(
+            s.show(sess, "cx".into(), nameless).await.unwrap_err(),
+            "edits require name"
+        );
+
+        // No draft: the latest version's blob is the base (HTML: inlined already).
+        let png = d.path().join("i.png");
+        std::fs::write(&png, PNG).unwrap();
+        s.show(
+            sess,
+            "h1".into(),
+            content(
+                "p.html",
+                &format!("<img src=\"{}\"><b>a</b>", png.display()),
+            ),
+        )
+        .await
+        .unwrap();
+        std::fs::remove_file(self::draft(&s, sess, "p.html")).unwrap();
+        let h2 = s
+            .show(
+                sess,
+                "h2".into(),
+                edits("p.html", vec![("<b>a</b>", "<b>b</b>", None)]),
+            )
+            .await
+            .unwrap();
+        assert!(h2.receipt.base_inlined);
+        let text = std::fs::read_to_string(&h2.artifact.path).unwrap();
+        assert!(text.contains("data:image/png;base64,") && text.ends_with("<b>b</b>"));
+        assert!(kind::receipt(&h2.artifact, &h2.receipt).contains("images already inlined"));
+        // The png shown as a picture is not editable text.
+        s.show(sess, "i1".into(), by_path(png)).await.unwrap();
+        assert_eq!(
+            s.show(sess, "cx".into(), edits("i.png", vec![]))
+                .await
+                .unwrap_err(),
+            "i.png: edits apply to text artifacts only"
+        );
+    }
+
+    /// 150 §D1: a `name` that is not a plain basename never leaves `drafts/<session>/`.
+    #[tokio::test]
+    async fn draft_names_never_escape_the_drafts_dir() {
+        let (s, d) = open().await;
+        let sess = SessionId::new();
+        for (i, name) in ["../../evil.html", "a/b.html", ".hidden.html", "..", "x"]
+            .into_iter()
+            .enumerate()
+        {
+            let text = format!("<p>{name}</p>");
+            let r = s.show(sess, format!("c{i}"), content(name, &text)).await;
+            let expected = s.drafts_dir(sess).join(format!(
+                "draft-{}.{}",
+                &sha16(text.as_bytes())[..8],
+                if name.ends_with(".html") {
+                    "html"
+                } else {
+                    "txt"
+                }
+            ));
+            assert_eq!(std::fs::read_to_string(&expected).unwrap(), text, "{name}");
+            if kind::ext(name).is_some() {
+                let shown = r.unwrap();
+                assert_eq!(shown.receipt.file.as_deref(), Some(expected.as_path()));
+            } else {
+                assert!(r.unwrap_err().contains("saved at "));
+            }
+        }
+        for stray in ["evil.html", "b.html", ".hidden.html", "x"] {
+            assert!(!d.path().join(stray).exists(), "{stray}");
+            assert!(!s.dir.join(stray).exists(), "{stray}");
+        }
+        assert!(!d.path().parent().unwrap().join("evil.html").exists());
+        let names: Vec<String> = std::fs::read_dir(s.drafts_dir(sess))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 5);
+        assert!(names.iter().all(|n| n.starts_with("draft-")), "{names:?}");
+        assert!(safe_draft_name("report.html").is_some());
+        assert!(safe_draft_name(&"x".repeat(201)).is_none());
+        assert!(safe_draft_name("a\0.html").is_none());
+        assert!(safe_draft_name("a\\b.html").is_none());
+    }
+
+    /// 150 §D1b: a markdown file under a `.pdf` name is compiled like `content`.
+    #[tokio::test]
+    async fn path_of_markdown_source_compiles_to_pdf() {
+        let (s, d) = open().await;
+        let sess = SessionId::new();
+        let src = d.path().join("r.md");
+        std::fs::write(&src, "# Hi\n\nbody\n").unwrap();
+        let shown = s
+            .show(
+                sess,
+                "c1".into(),
+                ShowArgs {
+                    name: Some("r.pdf".into()),
+                    ..by_path(src.clone())
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(shown.artifact.kind, Kind::Pdf);
+        assert_eq!(shown.artifact.pages, Some(1));
+        assert_eq!(shown.artifact.title, "Hi");
+        assert_eq!(shown.artifact.origin.as_deref(), Some(src.as_path()));
+        assert!(shown.artifact.source.is_some());
+        assert_eq!(shown.receipt.file.as_deref(), Some(src.as_path()));
+        // The draft for the name holds the source, so `edits` can follow.
+        let pdf_draft = draft(&s, sess, "r.pdf.md");
+        assert_eq!(
+            std::fs::read_to_string(&pdf_draft).unwrap(),
+            "# Hi\n\nbody\n"
+        );
+        let v2 = s
+            .show(
+                sess,
+                "c2".into(),
+                ShowArgs {
+                    name: Some("r.pdf".into()),
+                    edits: Some(vec![crate::tools::ShowEdit {
+                        old: "body".into(),
+                        new: "text".into(),
+                        all: None,
+                    }]),
+                    ..ShowArgs::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(v2.artifact.version, 2);
+        assert_eq!(
+            std::fs::read_to_string(&pdf_draft).unwrap(),
+            "# Hi\n\ntext\n"
+        );
+        assert_eq!(v2.receipt.file.as_deref(), Some(pdf_draft.as_path()));
+        // A failed compile still names the draft, with the PDF publish form.
+        let err = s
+            .show(
+                sess,
+                "c3".into(),
+                ShowArgs {
+                    name: Some("t.pdf".into()),
+                    source: Some(Source::Typst),
+                    ..content("t.pdf", "#let x = \n")
+                },
+            )
+            .await
+            .unwrap_err();
+        let t = draft(&s, sess, "t.pdf.typ");
+        assert!(err.starts_with("t.pdf: compile failed\n"), "{err}");
+        assert!(
+            err.ends_with(&format!(
+                "saved at {p} — fix it with show{{name: \"t.pdf\", edits: [{{old, new}}]}}, or \
+                 edit() that file and show{{path: \"{p}\", name: \"t.pdf\"}}; do not resend the \
+                 content",
+                p = t.display()
+            )),
+            "{err}"
+        );
+        // A real PDF under the name is shown as today, nothing compiled.
+        let real = d.path().join("real.pdf");
+        std::fs::write(&real, b"%PDF-1.4\n%%EOF\n").unwrap();
+        let shown = s.show(sess, "c4".into(), by_path(real)).await.unwrap();
+        assert_eq!(shown.artifact.kind, Kind::Pdf);
+        assert_eq!(shown.artifact.source, None);
+        assert_eq!(shown.receipt.file, None);
+    }
+
+    #[tokio::test]
+    async fn delete_session_removes_its_drafts() {
+        let (s, _d) = open().await;
+        let sess = SessionId::new();
+        s.show(sess, "c1".into(), content("a.md", "a\n"))
+            .await
+            .unwrap();
+        assert!(s.drafts_dir(sess).exists());
+        s.delete_session(sess).await.unwrap();
+        assert!(!s.drafts_dir(sess).exists());
+    }
+
+    #[test]
+    fn apply_edits_is_exact_and_ordered() {
+        let e = |old: &str, new: &str, all: Option<bool>| crate::tools::ShowEdit {
+            old: old.into(),
+            new: new.into(),
+            all,
+        };
+        assert_eq!(
+            apply_edits(
+                "a b a".into(),
+                &[e("a", "c", Some(true)), e("c b", "d", None)]
+            )
+            .unwrap(),
+            "d c"
+        );
+        assert_eq!(
+            apply_edits("a b a".into(), &[e("a", "c", None)]).unwrap_err(),
+            "edit 1 of 1: old found 2 times — add context or pass all: true"
+        );
+        assert_eq!(
+            apply_edits("a".into(), &[e("a", "b", None), e("a", "c", None)]).unwrap_err(),
+            "edit 2 of 2: old not found"
+        );
+        assert_eq!(apply_edits("a".into(), &[]).unwrap(), "a");
+        assert_eq!(draft_file(Some("r.pdf"), Source::Typst, b""), "r.pdf.typ");
+        assert_eq!(draft_file(Some("r.pdf"), Source::Markdown, b""), "r.pdf.md");
+        assert_eq!(
+            draft_file(None, Source::Markdown, b"hi"),
+            format!("draft-{}.txt", &sha16(b"hi")[..8])
+        );
+        assert_eq!(
+            draft_file(Some("a/b.csv"), Source::Markdown, b"hi"),
+            format!("draft-{}.csv", &sha16(b"hi")[..8])
+        );
     }
 
     #[tokio::test]
@@ -2190,12 +3078,15 @@ mod tests {
         let mut retitled = app(s1, "c1", "root = X\n", None);
         retitled.title = "Other".into();
         assert!(s.commit(retitled).await.is_err());
-        // Ordinary `show` cannot overwrite a committed app under its call id.
-        assert_eq!(
-            s.show(s1, "c1".into(), content("panel.openui", "root = Z\n"))
-                .await
-                .unwrap_err(),
-            "panel.openui: call c1 already recorded"
+        // Ordinary `show` cannot overwrite a committed app under its call id
+        // (the draft is still saved, so the error ends with the fix line).
+        let err = s
+            .show(s1, "c1".into(), content("panel.openui", "root = Z\n"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("panel.openui: call c1 already recorded\nsaved at "),
+            "{err}"
         );
         let kept = s.record("c1").await.unwrap();
         assert_eq!((kept.id.as_str(), kept.kind), (a.id.as_str(), Kind::App));
