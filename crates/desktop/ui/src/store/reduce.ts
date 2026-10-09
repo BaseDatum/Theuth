@@ -284,12 +284,12 @@ function userEntries(
           text: c.text,
           context,
         };
-      // 61 §2.3: `j4 idle 63s · omp1`, the screen as the body.
+      // 61 §2.3: `j4 idle 63s · omp1`, the screen as the body; 155 §6.5: `· <why>` when the engine says why it fired.
       case "job_idle":
         return {
           id: nextId(),
           kind: "peer",
-          from: `${c.id} idle ${c.quiet}s${c.name === undefined ? "" : ` · ${c.name}`}`,
+          from: `${c.id} idle ${c.quiet}s${c.name === undefined ? "" : ` · ${c.name}`}${c.why === undefined ? "" : ` · ${c.why}`}`,
           text: c.text,
           context,
         };

@@ -1055,8 +1055,9 @@ pub struct Attention {
     /// 146 D4: the latest boot pass; `None` once cleared.
     boot: Option<agent::durability::BootPass>,
     /// 155 §7.4: item id → episode start, for `alert` ids and the delay.
-    #[allow(dead_code)] // 155 C skeleton: W3 decorates items in `recheck` with it.
     episodes: crate::alert::Episodes,
+    /// 155 §7.4: the ms the armed [`AlertDue`] fires at; `None` when none is armed.
+    alert_due: Option<u64>,
 }
 
 /// `tell` (internal, 155 §7.4): the earliest `alert_delay_ms` passed —
@@ -1084,6 +1085,7 @@ impl Attention {
                 texts: HashMap::new(),
                 boot: None,
                 episodes: crate::alert::Episodes::default(),
+                alert_due: None,
             },
             runtime::subscriber_mailbox(),
         );
@@ -1312,11 +1314,33 @@ impl Attention {
     }
 
     /// 130 E1: derive now and announce the difference from the last derive.
+    /// 155 §7.4: then decorate every item's `alert` through the episode map
+    /// and arm one [`AlertDue`] at the earliest delay still open.
     async fn recheck(&mut self) -> Result<Vec<AttentionItem>, String> {
         let inputs = self.gather().await;
         let states = states(&self.pool).await.map_err(|e| e.to_string())?;
         let now = now_ms();
-        let items = derive(&inputs, &states, now);
+        let mut items = derive(&inputs, &states, now);
+        let delay = self
+            .rt
+            .section::<crate::config::RosterConfig>("roster")
+            .unwrap_or_default()
+            .alert_delay_ms;
+        self.episodes.retain(items.iter().map(|i| i.id.as_str()));
+        for i in &mut items {
+            i.alert = self.episodes.alert(i, now, delay);
+        }
+        if let Some(due) = self.episodes.next_due(now, delay)
+            && self.alert_due.is_none_or(|armed| due < armed)
+        {
+            self.alert_due = Some(due);
+            if let Ok(Some(me)) = ActorRef::<Self>::lookup(ATTENTION_ACTOR) {
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(due - now)).await;
+                    let _ = me.tell(AlertDue).await;
+                });
+            }
+        }
         if let Some(ev) = changed(&self.last_ids, &items, now) {
             self.last_ids = items.iter().map(|i| i.id.clone()).collect();
             self.rt.publish(ev).await;
@@ -1852,9 +1876,24 @@ impl Message<ListAttention> for Attention {
 impl Message<AlertDue> for Attention {
     type Reply = ();
 
-    /// 155 §7.4: a delay window closed; derive again so the alert shows.
+    /// 155 §7.4: a delay window closed; derive again so the alert shows, and
+    /// nudge clients with an empty-diff `AttentionChanged` when the id set
+    /// alone would not have (the item is the same, its `alert` is new).
     async fn handle(&mut self, _: AlertDue, _: &mut Context<Self, Self::Reply>) {
-        // ponytail: skeleton (155 C); W3 fills (`recheck_quietly` once wired).
+        self.alert_due = None;
+        let before = self.last_ids.clone();
+        if let Ok(items) = self.recheck().await
+            && before == self.last_ids
+        {
+            self.rt
+                .publish(AttentionChanged {
+                    count: items.len() as u32,
+                    ids_added: Vec::new(),
+                    ids_removed: Vec::new(),
+                    at_ms: now_ms(),
+                })
+                .await;
+        }
     }
 }
 
