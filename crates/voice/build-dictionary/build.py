@@ -166,12 +166,13 @@ def talon():
 def homebrew():
     with source("homebrew-formula"):
         for f in json.loads(fetch("formula.json", "https://formulae.brew.sh/api/formula.json")):
-            add(f["name"], "term", f.get("aliases", []) + f.get("oldnames", []), ["brew", "terminal"])
+            # No `aliases` / `oldnames`: in the replacement direction ("golang" → go) they rewrite prose.
+            add(f["name"], "term", [], ["brew", "terminal"])
     with source("homebrew-cask"):
         for c in json.loads(fetch("cask.json", "https://formulae.brew.sh/api/cask.json")):
             names = [n for n in c.get("name", []) if n]
             if names:
-                add(names[0], "term", names[1:] + [c["token"].replace("-", " ")], ["brew", "app"])
+                add(names[0], "term", names[1:], ["brew", "app"])
 
 
 def tldr():
@@ -193,21 +194,10 @@ def ohmyzsh():
 def linguist():
     with source("linguist-languages"):
         src = fetch("languages.yml", "https://raw.githubusercontent.com/github-linguist/linguist/main/lib/linguist/languages.yml")
-        name, aliases, in_aliases = None, [], False
+        # Names only; the `aliases` ("man" → Roff, "python3" → Python) rewrite prose in the replacement direction.
         for line in src.splitlines():
             if re.match(r"^\S", line) and line.rstrip().endswith(":") and not line.startswith("#"):
-                if name:
-                    add(name, "term", aliases, ["linguist", "language"])
-                name = line.rstrip()[:-1].strip('"')
-                aliases, in_aliases = [], False
-            elif line.startswith("  aliases:"):
-                in_aliases = True
-            elif in_aliases and line.startswith("  - "):
-                aliases.append(line[4:].strip().strip('"'))
-            elif line.startswith("  ") and not line.startswith("  - "):
-                in_aliases = False
-        if name:
-            add(name, "term", aliases, ["linguist", "language"])
+                add(line.rstrip()[:-1].strip('"'), "term", [], ["linguist", "language"])
 
 
 def pypi():
@@ -228,9 +218,10 @@ def botocore():
             if mm and mm.group(1) not in seen:
                 seen.add(mm.group(1))
                 md = json.load(tar.extractfile(m))["metadata"]
-                full = md.get("serviceFullName", "")
-                abbr = md.get("serviceAbbreviation", "")
-                add(mm.group(1), "term", [full, abbr], ["aws", "terminal"])
+                add(mm.group(1), "term", [], ["aws", "terminal"])
+                for name in (md.get("serviceFullName", ""), md.get("serviceAbbreviation", "")):
+                    if name and len(name.split()) <= 5:
+                        add(name, "term", [], ["aws"])
 
 
 def kubernetes():
@@ -254,7 +245,8 @@ def models_dev():
             add(clean(p.get("name") or pid), "term", [pid.replace("-", " ")], ["ai", "provider"])
             for mid, m in p.get("models", {}).items():
                 sid = mid.rsplit("/", 1)[-1]
-                spoken = [sid.replace("-", " ")] if re.fullmatch(r"[A-Za-z0-9.-]{1,40}", sid) else []
+                # Ids with a digit or a hyphen only: a bare word id ("small" → Auto Small) rewrites prose.
+                spoken = [sid.replace("-", " ")] if re.fullmatch(r"[A-Za-z0-9.-]{1,40}", sid) and re.search(r"[0-9-]", sid) else []
                 add(clean(m.get("name") or mid), "term", spoken, ["ai", "model"])
 
 
@@ -280,6 +272,8 @@ def huggingface():
 
 
 CURATED = """
+# Only names the model would plausibly hear; English words that happen to be product names (Arc, Slack,
+# Windows, React…) are left out: a Title-case hit would capitalise them in prose.
 Claude Code|claude code
 Codex
 Cursor
@@ -311,6 +305,7 @@ Swift
 Xcode|x code
 Homebrew|home brew
 kubectl|keep_case|cube control|cube c t l
+k8s|kates
 Kubernetes|cooper netties
 Terraform|terra form
 Docker
@@ -345,14 +340,9 @@ JavaScript|java script
 Python
 Node.js|node j s|node
 Deno
-React
-Svelte
-Tailwind|tail wind
 Next.js|next j s
 Nuxt
 Vue
-Angular
-Electron
 Zod
 tokio|keep_case
 serde|keep_case|sir dee
@@ -363,20 +353,15 @@ ripgrep|keep_case|rip grep
 fzf|keep_case
 tmux|keep_case|t mux
 Neovim|neo vim
-Vim
 Emacs|e max
 VS Code|vs code|visual studio code
 JetBrains|jet brains
-Zed
 Ghostty|ghosty
-Warp
 iTerm|i term
 WezTerm|wez term
 Alacritty
-Kitty
 Linux
 macOS|mac o s|mac os
-Windows
 iOS|i o s
 Android
 WebSocket|web socket
@@ -418,11 +403,7 @@ Together AI|together a i
 Fireworks AI|fireworks a i
 xAI|x a i
 Grok
-Perplexity
-Cohere
-Bedrock|bed rock
 Vertex AI|vertex a i
-Azure
 AWS|a w s
 GCP|g c p
 Cloudflare|cloud flare
@@ -431,36 +412,25 @@ Netlify
 Supabase|supa base
 Firebase|fire base
 Nginx|engine x
-Caddy
 systemd|keep_case|system d
 Ansible
 Pulumi
-Helm
-Argo CD|argo c d
 Prometheus
 Grafana
 Datadog|data dog
-Sentry
 OpenTelemetry|open telemetry
 Jira
-Linear
-Notion
-Slack
-Discord
 Figma
 Raycast|ray cast
-Alfred
-Finder
-Safari
-Chrome
 Firefox
-Arc
 """
 
 
 def curated():
     with source("curated-harnesses"):
         for line in CURATED.strip().splitlines():
+            if line.startswith("#"):
+                continue
             parts = [p.strip() for p in line.split("|")]
             tags = ["curated"] + (["keep_case"] if "keep_case" in parts[1:] else [])
             add(parts[0], "term", [p for p in parts[1:] if p != "keep_case"], tags)
