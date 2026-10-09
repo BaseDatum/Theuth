@@ -50,6 +50,8 @@ internal sealed partial class ShortcutRecorder : Button
     private readonly SettingsModel model;
     private readonly TextBlock text = new() { FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextAlignment = TextAlignment.Center };
     private bool recording;
+    /// <summary>153 §12.6: the left/right modifier pressed alone since recording began (0 = none, or another key came too).</summary>
+    private ushort loneModifier;
 
     public ShortcutRecorder(KeyAction action, SettingsModel model)
     {
@@ -65,6 +67,7 @@ internal sealed partial class ShortcutRecorder : Button
         AutomationProperties.SetName(this, $"Shortcut for {model.Keys.Binding(action).Label}");
         Click += (_, _) => { if (recording) End(); else Begin(); };
         PreviewKeyDown += OnPreviewKeyDown;
+        PreviewKeyUp += OnPreviewKeyUp;
         LostFocus += (_, _) => { if (recording) End(); };
         Redraw();
     }
@@ -95,6 +98,7 @@ internal sealed partial class ShortcutRecorder : Button
     private void Begin()
     {
         recording = true;
+        loneModifier = 0;
         Focus(FocusState.Programmatic);
         Redraw();
     }
@@ -109,7 +113,14 @@ internal sealed partial class ShortcutRecorder : Button
     {
         if (!recording) return;
         var key = e.Key;
-        if (IsModifier(key)) { e.Handled = true; return; }
+        if (IsModifier(key))
+        {
+            // 153 §12.6: a lone left/right modifier may become the chord (released with no other key, the option on, a family row).
+            loneModifier = loneModifier == 0 && ModeKeysAllowLone() ? SidedModifier(key, e.KeyStatus) : (ushort)0xFFFF;
+            e.Handled = true;
+            return;
+        }
+        loneModifier = 0xFFFF;
         var mods = CurrentModifiers();
         if (mods == ChordModifiers.None)
         {
@@ -128,14 +139,53 @@ internal sealed partial class ShortcutRecorder : Button
         e.Handled = true;
     }
 
+    private void OnPreviewKeyUp(object sender, KeyRoutedEventArgs e)
+    {
+        if (!recording || !IsModifier(e.Key)) return;
+        var vk = loneModifier;
+        if (vk is 0 or 0xFFFF || SidedModifier(e.Key, e.KeyStatus) != vk) return;
+        loneModifier = 0;
+        e.Handled = true;
+        Record(new Chord("", vk));
+        End();
+    }
+
+    /// <summary>The modifier-only option is on and this row is one of the three mode keys (153 §12.6).</summary>
+    private bool ModeKeysAllowLone() => KeyTable.ModeOf(action) is not null && WW3Install.Current?.Island.ModeKeys.ModifierOnlyKeys == true;
+
+    /// <summary>Left/right from the scan code: Right Ctrl and Right Alt are extended keys; Right Shift is scan code 0x36.</summary>
+    private static ushort SidedModifier(VirtualKey key, CorePhysicalKeyStatus status) => key switch
+    {
+        VirtualKey.LeftShift => VirtualKeys.LShift,
+        VirtualKey.RightShift => VirtualKeys.RShift,
+        VirtualKey.LeftControl => VirtualKeys.LControl,
+        VirtualKey.RightControl => VirtualKeys.RControl,
+        VirtualKey.LeftMenu => VirtualKeys.LMenu,
+        VirtualKey.RightMenu => VirtualKeys.RMenu,
+        VirtualKey.Shift => status.ScanCode == 0x36 ? VirtualKeys.RShift : VirtualKeys.LShift,
+        VirtualKey.Control => status.IsExtendedKey ? VirtualKeys.RControl : VirtualKeys.LControl,
+        VirtualKey.Menu => status.IsExtendedKey ? VirtualKeys.RMenu : VirtualKeys.LMenu,
+        VirtualKey.LeftWindows => VirtualKeys.LWin,
+        VirtualKey.RightWindows => VirtualKeys.RWin,
+        _ => 0,
+    };
+
     /// <summary>The recorded chord through the collision policy (internal so a probe can drive it without key events).</summary>
     public void Record(Chord chord)
     {
         var scope = KeyTable.ScopeOf(action);
         var table = model.Keys;
-        var verdict = table.Check(chord, action, scope == KeyScope.Anywhere ? HotkeyProbe.Reserved : null);
+        bool lone = WW3Install.Current?.Island.ModeKeys.ModifierOnlyKeys == true;
+        var verdict = table.Check(chord, action, scope == KeyScope.Anywhere ? HotkeyProbe.Reserved : null, lone);
         switch (verdict.Kind)
         {
+            case VerdictKind.ModeKeyClash:
+                // 153 §15: the voice key, Dictate anywhere and Command switch one another mid-gesture — never the same chord.
+                model.SetRowNotice(action, new RowNotice($"{chord.Symbol} is {table.Binding(verdict.Owner!.Value).Label.Split(" — ")[0]}'s key — the voice key, Dictate anywhere and Command need three different keys"));
+                break;
+            case VerdictKind.NeedsModifierOnly:
+                model.SetRowNotice(action, new RowNotice($"{chord.Symbol} alone needs “Modifier-only keys” on (below)"));
+                break;
             case VerdictKind.Unchanged:
                 model.SetRowNotice(action, null);
                 break;
@@ -146,7 +196,7 @@ internal sealed partial class ShortcutRecorder : Button
                 model.SetRowNotice(action, new RowNotice($"Already used by {table.Binding(verdict.Owner!.Value).Label}", chord));
                 break;
             default:
-                if (scope == KeyScope.Anywhere && !HotkeyProbe.CanRegister(chord))
+                if (scope == KeyScope.Anywhere && !chord.IsModifierOnly && !HotkeyProbe.CanRegister(chord))
                 {
                     model.SetRowNotice(action, new RowNotice($"{chord.Symbol} is held by another app — pick another"));
                     return;
@@ -273,6 +323,82 @@ internal static class KeyRow
             }
             column.Children.Add(line);
         }
+        if (KeyTable.ModeOf(binding.Action) is { } mode) ModeRowExtras(column, binding, mode, redrawAll);
         return column;
+    }
+
+    /// <summary>
+    /// 153 §12.6 / §15 / §14.3 under each of the three mode keys: the AltGr line when the layout forced the fallback, the row's switch
+    /// (Dictate anywhere, Command), the gesture picker (Hold · double-tap locks / Automatic), Command's "Include the screen" (H3-C1,
+    /// default off) and — under the voice key — the opt-in "Modifier-only keys" (a WH_KEYBOARD_LL hook). Saved through the island
+    /// controller (<c>gesture.&lt;mode&gt;</c>, <c>dictateAnywhereEnabled</c>, <c>commandKeyEnabled</c>, <c>commandIncludeScreen</c>, <c>modifierOnlyKeys</c>).
+    /// </summary>
+    private static void ModeRowExtras(StackPanel column, KeyBinding binding, PointMode mode, Action redrawAll)
+    {
+        var raw = binding.Action.RawValue();
+        if (Hotkeys.Current?.AltGrNotices.TryGetValue(binding.Action, out var altgr) == true)
+        {
+            var t = new TextBlock { Text = altgr, FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxWidth = 420, Foreground = Theme.Brush(NativeLook.TextSecondary, ElementTheme.Default) };
+            AutomationProperties.SetAutomationId(t, $"settings-keys-altgr-{raw}");
+            column.Children.Add(t);
+        }
+        if (WW3Install.Current?.Island is not { } island) return;
+        var settings = island.ModeKeys;
+        var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(0, 0, 0, 4) };
+        if (binding.Action is KeyAction.DictateAnywhere or KeyAction.Command)
+        {
+            var on = new ToggleSwitch { IsOn = settings.Enabled(binding.Action), OnContent = "On", OffContent = "Off", MinWidth = 0 };
+            AutomationProperties.SetAutomationId(on, $"settings-keys-enabled-{raw}");
+            AutomationProperties.SetName(on, $"{binding.Label.Split(" — ")[0]} on");
+            on.Toggled += (_, _) =>
+            {
+                var next = island.ModeKeys.Clone();
+                if (binding.Action == KeyAction.DictateAnywhere) next.DictateAnywhereEnabled = on.IsOn;
+                else next.CommandKeyEnabled = on.IsOn;
+                island.SaveModeKeys(next);
+            };
+            line.Children.Add(on);
+        }
+        var gesture = new ComboBox { MinWidth = 220, FontSize = 12 };
+        foreach (var g in Enum.GetValues<Gesture>()) gesture.Items.Add(new ComboBoxItem { Content = g.Title(), Tag = g.RawValue() });
+        gesture.SelectedIndex = settings.GestureFor(mode) == Gesture.Automatic ? 1 : 0;
+        AutomationProperties.SetAutomationId(gesture, $"settings-keys-gesture-{raw}");
+        AutomationProperties.SetName(gesture, $"Gesture for {binding.Label.Split(" — ")[0]}");
+        gesture.SelectionChanged += (_, _) =>
+        {
+            var pick = gesture.SelectedIndex == 1 ? Gesture.Automatic : Gesture.HoldLock;
+            if (island.ModeKeys.GestureFor(mode) == pick) return;
+            var next = island.ModeKeys.Clone();
+            next.SetGesture(mode, pick);
+            island.SaveModeKeys(next);
+        };
+        line.Children.Add(gesture);
+        column.Children.Add(line);
+        if (binding.Action == KeyAction.Command)
+        {
+            var screen = new CheckBox { Content = "Include the screen with a command", IsChecked = settings.CommandIncludeScreen, FontSize = 12 };
+            AutomationProperties.SetAutomationId(screen, "settings-keys-command-screen");
+            screen.Click += (_, _) =>
+            {
+                var next = island.ModeKeys.Clone();
+                next.CommandIncludeScreen = screen.IsChecked == true;
+                island.SaveModeKeys(next);
+            };
+            column.Children.Add(screen);
+        }
+        if (binding.Action == KeyAction.VoiceKey)
+        {
+            var lone = new CheckBox { Content = "Modifier-only keys (a lone Right Ctrl, Right Alt… for the three mode keys)", IsChecked = settings.ModifierOnlyKeys, FontSize = 12 };
+            AutomationProperties.SetAutomationId(lone, "settings-keys-modifier-only");
+            ToolTipService.SetToolTip(lone, "Windows cannot register a modifier alone as a hotkey; with this on the companion watches key codes with a low-level keyboard hook. A hold that sees another key (Ctrl+C) is a shortcut, not the key.");
+            lone.Click += (_, _) =>
+            {
+                var next = island.ModeKeys.Clone();
+                next.ModifierOnlyKeys = lone.IsChecked == true;
+                island.SaveModeKeys(next);
+                redrawAll();
+            };
+            column.Children.Add(lone);
+        }
     }
 }
