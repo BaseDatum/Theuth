@@ -852,7 +852,7 @@ collapsed form (`PointController.cs:419`), the expanded form opens the window.
 | failed | `TurnFinished { error\|cancelled }`, send error | failed colour | "couldn't reply — ‹why›" | ⎋ only | auto-hides |
 **Stop freezes**: Esc during thinking sends `cancel(desk, "root")` and the card shows the frozen partial answer with "stopped" — it does not
 disappear. **Hide is generation-checked**: `AnswerCard.hide(generation:)` ignores a hide whose generation is older than the latest `begin`
-(a new gesture while a 6 s timer runs), the rule the 149f fix applied to `dictation_start` replies (`docs/design/149-as-built-voice-key-fix.md:93-97`).
+(a new gesture while a 6 s timer runs), the rule the 149f fix applied to `dictation_start` replies (`docs/design/149-as-built-voice-key-fix.md:90-94`).
 Nothing vanishes before the work is done: `doneMs` arms only after `TurnFinished` *and* speech ended *and* collapsed.
 
 ### 12.5 Pointer-screen presentation (D14)
@@ -964,3 +964,157 @@ direct insertion ≤ 200 chars and `Ctrl+V` for the lease; clipboard formats `CF
 a registered session format; `RegisterHotKey` for the key (§15); the failure card and rewrite panel as `ToolWindow`s; `WTS_SESSION_LOCK`
 for the lock refusal. The Core project gets the pure parts (`DeliveryAssessment.cs`, `ClipboardLease.cs` state, `PasteVerifier.cs`
 decision) with tests mirroring the Swift ones (§16).
+
+## 14. Engine and RPC changes
+
+Everything additive and serde-defaulted: a client that never sends the new params or reads the new fields behaves as today. FROZEN — a
+wave that needs a change amends §18 first.
+
+### 14.1 Rust types in `crates/voice` (ts-rs exported where marked; mirrors in §14.4)
+```rust
+// VOICE/shape/mod.rs — §4.1 verbatim: ShapeConfig, Shaped, EndCommand, Action, Replaced, RuleId, EndPhrases, Shaper.
+// VOICE/lib.rs
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[ts]
+#[serde(rename_all = "snake_case")]
+pub enum Surface { Composer, Tui, Companion, Phone, AnyApp }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[ts]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Destination { AgentPrompt, Document, MessageReply, AnyApp { app: String } }
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[ts]
+#[serde(default)]
+pub struct DictationOpts { pub surface: Option<Surface>, pub destination: Option<Destination>,
+    /// §13's per-app row for shaping (terminal spacing, commands); the engine never persists it.
+    pub app: Option<AppProfile>,
+    /// Slash commands the surface accepts (stage 4); empty = none recognised.
+    pub commands: Vec<String>,
+    /// §8.7: `now − press` on the caller's clock at the moment of the call.
+    pub press_ago_ms: Option<u32> }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[ts]
+pub struct AppProfile { pub id: String, pub name: String, pub terminal: bool, pub polish: bool, pub learn: bool,
+                        pub polish_prompt: Option<String>, pub rewrite_prompt: Option<String>, pub commands: Vec<String> }
+// VoiceEvent::DictationText gains (serde default, additive):
+//   shaped: String, command: Option<EndCommand>, actions: Vec<Action>
+// New VoiceEvent variants:
+//   DictationDevice { id: DictationId, device: Option<String>, state: DeviceState }      // §8.2  DeviceState = Changed | Lost
+//   DictionarySuggestion { id: SuggestionId, heard: String, typed: String, occurrences: u32, surface: Surface, has_audio: bool }
+// DictationState (VOICE/dictation.rs:103-110) gains: input_device: Option<String>, last: Option<DictationTimings>
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[ts]
+pub struct DictationTimings { pub surface: Surface, pub press_to_first_pcm_ms: Option<u32>, pub press_to_first_partial_ms: Option<u32>,
+    pub press_to_first_final_ms: Option<u32>, pub stop_to_final_ms: Option<u32>, pub polish_ms: Option<u32>, pub device: Option<String> }
+// VOICE/dictionary/mod.rs — §5 verbatim: Dictionary, Entry, Scope, Variant, Negative, Match, matcher constants.
+// VOICE/history/mod.rs — §6: HistoryRow, Correction, SuggestionAnswer { Add, NotNow, Never }, learn::{candidates, due}.
+// VoiceConfig (VOICE/lib.rs:424-448) gains, all #[serde(default)]:
+//   shape: ShapePresets { composer, tui, companion, phone, any_app: Preset }   Preset = Full | Plain | Off
+//   end_commands: EndPhrases, input_devices: Vec<String>, standby_secs: u64 (8), duck_media: Duck (Off|Duck|Pause),
+//   polish_model: Option<String>, polish_profiles: BTreeMap<String, String>, rewrite_template: Option<String>,
+//   history: HistoryConfig { enabled: bool (true), rows: u32 (200), audio_mib: u32 (64), learn: bool (true) }
+// Actor messages (VOICE/dictation.rs): StartDictation { source, opts: DictationOpts }; new Correction { id, sent_text },
+//   SuggestionAnswer { id, answer }, DictionaryOp (§5.6), Timings; the Task carries ShaperOwned + a history writer handle.
+```
+
+### 14.2 RPC methods and events (`api.rs`; positional params in order; every field named)
+| Method | Params | Reply | Notes |
+|---|---|---|---|
+| `dictation_start` (changed) | `sample_rate: Option<u32>`, **`opts: Option<DictationOpts>`** (trailing optional) | `DictationId` | `None` opts = today (`api.rs:1585-1586`, `:6272-6297`) |
+| `dictation_correction` (new) | `id: DictationId`, `sent_text: String` | `()` | §6.1; any authenticated peer (text only, the phone included) |
+| `dictation_history` (new) | `limit: Option<u32>` | `Vec<HistoryRow>` | local peers only (as the daemon mic, `:6279-6283`) |
+| `dictation_history_forget` (new) | `id: Option<DictationId>` | `()` | one row, or everything when `None` |
+| `dictation_audio_get` (new) | `id: DictationId`, `utterance: Option<u32>` | `String` (base64 i16 16 kHz) | local peers only; `Err("no audio")` when evicted |
+| `dictionary_list` (new) | `scope: Option<Scope>` | `Vec<Entry>` | user + learned; the packaged set is reported as a count + version |
+| `dictionary_put` (new) | `entry: Entry` | `Entry` | upsert by canonical + scope |
+| `dictionary_delete` (new) | `id: EntryId` | `bool` | |
+| `dictionary_suggestion_answer` (new) | `id: SuggestionId`, `answer: SuggestionAnswer` | `()` | §6.3 step 4 |
+| `list_input_devices` (new) | — | `Vec<InputDevice { name, default: bool }>` | §8.1 |
+| `set_input_devices` (new) | `names: Vec<String>` | `()` | writes `voice.input_devices` |
+| `set_shape` (new) | `surface: Surface`, `preset: Preset` | `()` | `write_nested_config_value(.., "voice", "shape", surface, preset)` |
+| `set_end_phrases` (new) | `phrases: EndPhrases` | `()` | |
+| `polish_model` / `set_polish_model` (new) | — / `model: Option<String>` | `Option<ModelInfo>` | §9.2, mirrors `title_model` (`api.rs:456-459`) |
+| `polish` (new) | `text: String`, `destination: Destination`, `session: Option<SessionId>` | `PolishReply { text: Option<String>, model: Option<String>, ms: u32, refused: Option<String> }` | the companion's any-app and rewrite path; `Agents` side call (W-h) |
+| `rewrite` (new) | `instruction: String`, `selection: String`, `app: AppProfile`, `thread: Option<Vec<(String, String)>>` | `PolishReply` | §13.6 |
+| `dictation_status` (changed reply) | — | `DictationState + input_device + last` | §8.7 |
+| `voice_status` (changed reply) | — | `+ input_devices: Vec<String>` | §8.1 |
+Events on `subscribe_events`: `DictationText` (+ `shaped`, `command`, `actions`), `DictationDevice`, `DictionarySuggestion`. Agent side:
+`Agents` gains `Polish { text, destination, session: Option<SessionId> }` and `ModelRole::Polish`; `CallKind::Polish`
+(`crates/runtime/src/side_call.rs:19-40`). Tools: `applescript`, `shortcuts`, `powershell` registered by `crates/computer` (§11); the
+`computer` prompt block gains the command paragraph (§10.2).
+
+### 14.3 Settings keys (engine `config.yaml`; written by the RPCs above)
+`voice.shape.{composer,tui,companion,phone,any_app}`, `voice.end_commands.{send,scratch,literal}`, `voice.input_devices`,
+`voice.standby_secs`, `voice.duck_media`, `voice.polish_model`, `voice.polish_profiles.<destination>`, `voice.rewrite_template`,
+`voice.history.{enabled,rows,audio_mib,learn}`, `computer.native`. Companion-local (`UserDefaults` / the C# settings store, the
+`VoiceKeySettings` pattern, `COMP/Companion/PointAndSay/PointController.swift:529-538`): `dictateAnywhereEnabled`, `commandKeyEnabled`,
+`gesture` (holdLock | automatic) per mode, `micOnKeyDown`, `appProfiles: [AppProfile]`, `leaveTextOnClipboard`, `checkPasteLanded`,
+`modifierOnlyKeys`. Desktop-local: nothing new beyond the Settings › Voice tab reading the engine.
+
+### 14.4 Companion ↔ engine messages (Swift and C# mirrors, hand-written `Codable`/records pinned by fixtures exported with `just ts-desktop`, 130 D11)
+| Shape | Swift (`COMP/TheuthKit/Models.swift`) | C# (`WIN/Theuth.Companion.Rpc`) |
+|---|---|---|
+| `DictationOpts`, `Surface`, `Destination`, `AppProfile` | `struct DictationOpts: Codable` … | `record DictationOpts(...)` |
+| `DictationText` + `shaped/command/actions` | `DictationWire` gains `shaped: String?`, `command: EndCommandWire?`, `actions: [String]?` (`COMP/Companion/AskBar/Store+Ask.swift:148-158`) | `StreamDelta`/the dictation decoder gains the same optionals |
+| `DictationDevice`, `DictionarySuggestion` | new `Decodable`s routed in `dictationObserve` (`:161-175`) | new cases in `OnEvent` (`WIN/Theuth.Companion/PointAndSay/PointController.cs:592`) |
+| `DictationTimings` | `struct DictationTimings: Codable` | record |
+| `PolishReply`, `Entry`, `HistoryRow` | structs | records |
+| RPC wrappers | `RpcClient.dictationStart(sampleRate:opts:)`, `.dictationCorrection`, `.polish`, `.rewrite`, `.dictionarySuggestionAnswer`, `.dictationHistory`, `.dictationAudioGet` (`COMP/CompanionCore/AskRpc.swift` pattern) | `RpcClient.149.cs` siblings |
+Pure machines (tested on the Mac for both platforms): `PointMachine` + `switchMode` + `Gesture.automatic`; `AskVoiceMachine` + `.openMic`;
+`DeliveryAssessment` (roles → verdict); `ClipboardLease` (snapshot/write/paste/settle generations); `PasteVerifier` (three reads → verdict);
+`SpokenApproval` (grammar → `Decision?`); `CommandCard` reducer (events → rows); `AnswerCardState` + generation.
+
+### 14.5 TS bindings touched (`just ts-desktop`)
+`VoiceEvent.ts` (new fields/variants), `DictationState.ts`, new `DictationOpts.ts`, `Surface.ts`, `Destination.ts`, `AppProfile.ts`,
+`DictationTimings.ts`, `EndCommand.ts`, `Action.ts`, `Entry.ts`, `HistoryRow.ts`, `PolishReply.ts`, `CallKind.ts` (+ `polish`);
+`UI/src/rpc/api.ts` gains the methods above beside `dictation_*` (`UI/src/rpc/api.ts:358-367`). `UI/lib/dictation.ts`: `Utt` gains
+`shaped` and `command` (`:16-17`); `applyEvent` stores both (`:71-77`); `splice` uses `shaped` (`:43-53`); `start()` passes `opts`
+(`:272`); a `correction` report at send; the `DictionarySuggestion` listener. `Composer.tsx`: "send it" → `submit()`; the suggestion card.
+`components/settings/Voice.tsx` (new tab) and `SettingsDialog.tsx:66` gains the row.
+
+### 14.6 File ownership per crate (one owner per file per wave; §16 has the waves)
+| Crate / dir | Files | Wave |
+|---|---|---|
+| `crates/voice` | `src/shape/*`, `src/dictionary/*`, `src/history/*`, `migrations/*`, `data/dictionary.v1.bin` + `data/THIRD_PARTY.md` (§5), `src/dictation.rs` (opts, shaper, timings, re-arm, standby), `src/mic.rs` (`open_on`, device list), `src/lib.rs` (types, config) | A |
+| `crates/runtime` | `src/side_call.rs` (`CallKind::Polish`) | A |
+| `crates/agent` | `src/loop_/side.rs` (`ModelRole::Polish`), `src/supervisor.rs` (`Polish`, `polish_model` slot + setter) | A |
+| `crates/rpc` | `src/api.rs` (methods/events above), bindings | A |
+| `crates/computer` | `src/native.rs`, `src/lib.rs` (registration + prompt paragraph) | C |
+| `crates/desktop/ui` | `lib/dictation.ts`, `components/chat/Composer.tsx`, `components/ui/{dictation,DictionarySuggestion}.tsx`, `components/settings/{Voice,SettingsDialog}.tsx`, `rpc/api.ts` | B |
+| `crates/tui` | `src/dictation.rs`, `src/ui.rs` (shaped text, send it, suggestion line, `/voice`) | B |
+| `crates/desktop/companion` | `TheuthKit/Models.swift`, `CompanionCore/{AskVoice,PointMachine,KeyBindings,DeliveryAssessment,ClipboardLease,PasteVerifier,SpokenApproval,CommandCard}.swift`, `Companion/{PointAndSay/*,AnyApp/*,AskBar/*,Voice/*,Settings/*}` | B (fields/suggestion), C (card/command/keys), D (any-app) |
+| `crates/desktop/companion-windows` | the twins of each Swift file, `Hotkeys.cs`, `AnswerCardWindow.cs`, `AnyApp/*.cs` | B/C/D twins |
+| `skills/native-apps` | `SKILL.md` + recipes | C |
+
+## 15. The shared key table
+
+One `KeyTable` on both platforms (`COMP/CompanionCore/KeyBindings.swift:193-245`, `platformDefaults` `:251-257`; `WIN/Theuth.Companion.Core/KeyBindings.cs:335`).
+Rows marked ★ are new in 153; 149 §8's rows are repeated so the table is whole (`docs/design/149-companion-native.md:876-913`).
+
+| Scope | Action | macOS default / Windows | Notes |
+|---|---|---|---|
+| anywhere | Open the panel · hold to talk | ⌃⇧Space / Ctrl+Shift+Space | unchanged |
+| anywhere | Open the Ask bar | unbound | unchanged |
+| anywhere | Open the agents panel | ⌃⇧A / Ctrl+Shift+A | unchanged |
+| anywhere | Voice key — point and say (ask) | ⌃S / Ctrl+Alt+Space | unchanged (`KeyBindings.swift:218`, `:253-255`) |
+| anywhere ★ | Dictate anywhere | **⌃⌥D / Ctrl+Alt+D** (W-d) | hold/lock as the voice key; Automatic option per §12.6 |
+| anywhere ★ | Command | **⌃⌥C / Ctrl+Alt+C** (W-d) | same gesture; while another mode's gesture is live this key switches it |
+| anywhere | Meeting push-to-talk · Meeting eye | ⌥` / Alt+` · ⌥⇧E / Alt+Shift+E | unchanged, only while a meeting is live |
+| panel · askBar · agents · island | as 149 §8 | | unchanged |
+| pointAndSay | ⎋ cancel | fixed | registered between press and send; the 149g held-⎋ twin (`KeyBindings.swift:270-275`) applies to the two new chords (⌃⌥⎋ for both) |
+| pointAndSay ★ | ⏎ expand/collapse the card · O open · J/K thread · ⌘L list | fixed in the card | the card is key (`AnswerCard.swift:84-86`) |
+| pointAndSay ★ | ⏎ approve · ⎋ deny (approval box up) | fixed | §10.6; the box's keys take precedence over expand/dismiss while shown |
+| settings ★ | Gesture: Hold · double-tap locks / Automatic | per mode | §12.6 |
+| settings ★ | Modifier-only chord (incl. fn) | opt-in, needs Input Monitoring / `WH_KEYBOARD_LL` | §12.6 |
+
+**Collisions checked.**
+- macOS ⌃⌥D: no entry in `CopySymbolicHotKeys` (⌘⌥D is Dock hide; ⌃D is EOF/forward-delete — 96 §0.1's reason to avoid it,
+  `docs/design/96-point-and-say.md:29-45`; ⌃⌥D is neither); Cocoa text views bind no ⌃⌥ letter; terminals with "option as meta" see ⌃⌥D as
+  ESC + ⌃D only when the hot key is *not* registered — once registered Carbon swallows it everywhere (the 96 trade-off, accepted). ⌃⌥C: no
+  system default; not a Cocoa binding; Xcode/VS Code bind ⌘⌥C/⌃⌥C only in user keymaps (rebindable in Settings › Keys as every row).
+- Save/Find/Spotlight: ⌘S/⌘F/⌘Space untouched (no ⌘ in any new chord). Office: Word's ⌃⌥C = © autocorrect symbol on Windows (Ctrl+Alt+C)
+  and ⌃⌥D? none; on macOS Office uses ⌘-chords — no clash.
+- **Windows AltGr** (W-d): on layouts where right-Alt is AltGr, `Ctrl+Alt+D` / `Ctrl+Alt+C` are AltGr+D / AltGr+C — US-International types
+  `ð` / `©`, Icelandic `ð`, Polish AltGr+C = `ć`, Czech/Slovak `AltGr+C` = `&`. At registration the companion probes the active layout with
+  `ToUnicodeEx(VK_D, …, keystate Ctrl+Alt)`: a character result → the row is registered as **Ctrl+Shift+Alt+D / +C** instead and the
+  Keys tab shows "AltGr on this layout — using Ctrl+Shift+Alt+D"; the probe re-runs on `WM_INPUTLANGCHANGE`. `MOD_NOREPEAT` stays
+  (`WIN/Theuth.Companion/Hotkeys.cs:11`, `:199`). Ctrl+Alt+Space (voice key) has no AltGr glyph on any layout checked (space).
+- Same-scope uniqueness: the persisted-table test extends to the two rows (149 §8 collision policy); the recorder's `check` refuses the
+  voice key's chord for the new rows and vice versa (`KeyBindings.swift:318-335`).
+- The Tauri shell's Settings › Shortcuts (`UI/lib/shortcuts.ts:50-54`) gains no new rows: dictate-anywhere and command exist only with a
+  companion (D1 lives there); the `voice-key` row's "read-only while a companion is alive" rule (149 §8) is unchanged.
