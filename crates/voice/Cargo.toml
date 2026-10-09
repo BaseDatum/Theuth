@@ -38,6 +38,10 @@ sqlx = { workspace = true }
 rphonetic = { workspace = true }
 strsim = { workspace = true }
 fst = { workspace = true, optional = true }
+# 153 §5.2 (A2): the packaged dictionary — gz in the binary, sha256-checked against data/dictionary.json.
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+sha2 = { workspace = true }
 
 # 76 §0.5: Apple's VoiceProcessingIO mic unit (AEC + AGC + NS), moved here from the meeting crate.
 [target.'cfg(target_os = "macos")'.dependencies]
