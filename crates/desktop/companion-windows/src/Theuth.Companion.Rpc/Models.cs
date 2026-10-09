@@ -531,6 +531,9 @@ public sealed record WireEvent(string Type, object? Payload)
         ["DictationLevel"] = typeof(DictationEvent),
         ["DictationText"] = typeof(DictationEvent),
         ["DictationFinished"] = typeof(DictationEvent),
+        // 153 W153B: the two new dictation events (Models.153.cs; every field optional — never throws).
+        ["DictationDevice"] = typeof(DictationDevice),
+        ["DictionarySuggestion"] = typeof(DictionarySuggestion),
         ["Started"] = typeof(MeetingEvent),
         ["State"] = typeof(MeetingEvent),
         ["Level"] = typeof(MeetingEvent),
@@ -605,7 +608,9 @@ public sealed record StreamDelta
 
 /// <summary>
 /// <c>DictationStarted</c> · <c>DictationText</c> · <c>DictationLevel</c> · <c>DictationFinished</c> (design 54 §8, the
-/// engine's streamed dictation), the shape <c>Store+Ask.swift</c>'s <c>DictationWire</c> reads.
+/// engine's streamed dictation), the shape <c>Store+Ask.swift</c>'s <c>DictationWire</c> reads. 153 §14.4 row 2:
+/// <c>DictationText</c> gains <see cref="Shaped"/>, <see cref="Command"/>, <see cref="Actions"/> (serde default; null from an
+/// engine before 153).
 /// </summary>
 public sealed record DictationEvent
 {
@@ -625,6 +630,21 @@ public sealed record DictationEvent
 
     public ValueList<float>? Levels { get; init; }
     public FinishReason? Reason { get; init; }
+
+    /// <summary>153 §4: <see cref="Text"/> after shaping — what the field shows and sends. Present (possibly empty: "send it" alone shapes
+    /// to "") from a 153 engine; null from an older one.</summary>
+    public string? Shaped { get; init; }
+
+    /// <summary>153 §7: a spoken end command armed / fired on this piece, sticky for the utterance; the field acts on <c>send</c> after
+    /// <c>DictationFinished</c> (§7.3).</summary>
+    public EndCommand? Command { get; init; }
+
+    /// <summary>153 W-j: the shaping actions on this piece as wire words (<c>new_line</c> · <c>new_paragraph</c> · <c>tab</c>; already rendered
+    /// into <see cref="Shaped"/>), raw so a newer word never throws — <see cref="WireWords153.ParseAction"/> types them.</summary>
+    public ValueList<string>? Actions { get; init; }
+
+    /// <summary>What a companion field shows for this piece: <see cref="Shaped"/> when the engine sent it (even empty), else <see cref="Text"/>.</summary>
+    [JsonIgnore] public string? DisplayText => Shaped ?? Text;
 
     public static DictationEvent Decode(ReadOnlySpan<byte> utf8) => TheuthJson.Deserialize<DictationEvent>(utf8);
 }
