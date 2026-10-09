@@ -50,6 +50,24 @@ struct IslandModelTests {
         #expect(t.action(for: .down, in: .island) == .islandNext && t.action(for: .up, in: .island) == .islandPrevious)
     }
 
+    @Test func dictationPillLivesInTheIslandArea() {
+        // 149i §P: centred on the island anchor, under the notch / in the fallback slot / below a live island; never at the pointer.
+        let visible = CGRect(x: 0, y: 0, width: 2560, height: 1403)
+        let size = CGSize(width: 320, height: 40)
+        let underNotch = IslandModel.pillFrame(size: size, anchor: notch, notch: true, island: nil, visible: visible)
+        #expect(underNotch.midX == notch.midX && underNotch.maxY == notch.minY - 6 && underNotch.size == size)
+        let slot = CGRect(x: 1130, y: 1380, width: 300, height: 30) // the fallback pill under the menu bar
+        let inSlot = IslandModel.pillFrame(size: size, anchor: slot, notch: false, island: nil, visible: visible)
+        #expect(inSlot.midX == slot.midX && inSlot.maxY == slot.maxY, "no notch: the pill fills the fallback slot")
+        let island = CGRect(x: 920, y: 1160, width: 560, height: 280) // the live island's open pane hanging from the notch
+        let below = IslandModel.pillFrame(size: size, anchor: notch, notch: true, island: island, visible: visible)
+        #expect(below.maxY == island.minY - 6 && below.midX == notch.midX && !below.intersects(island), "a live island pushes it below itself")
+        // Kept inside the visible frame on a narrow display.
+        let narrow = IslandModel.pillFrame(size: CGSize(width: 320, height: 40), anchor: CGRect(x: 0, y: 760, width: 200, height: 37), notch: true, island: nil,
+                                           visible: CGRect(x: 0, y: 0, width: 400, height: 760))
+        #expect(narrow.minX == 8)
+    }
+
     @Test func collapseIsRememberedForTheCurrentMeetingOnly() {
         var m = IslandModel()
         m.meetingChanged(to: "m1")

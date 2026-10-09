@@ -52,6 +52,21 @@ public struct IslandModel: Equatable, Sendable {
         !boxFocused || (arrow && textEmpty)
     }
 
+    /// 149i §P — the point-and-say dictation pill and the answer card live in the island area for the whole gesture, never at
+    /// the pointer: hanging under the hardware notch, or filling the fallback slot under the menu bar (`anchor` is what
+    /// `IslandGeometry.anchor` gives the island on the pointer's display); directly below a live attached island there
+    /// (`island`, its drawn frame), never overlapping it. Centred on the anchor, kept inside `visible` (bottom-left coordinates).
+    public static func pillFrame(size: CGSize, anchor: CGRect, notch: Bool, island: CGRect?, visible: CGRect) -> CGRect {
+        let gap: CGFloat = 6
+        let top: CGFloat
+        if let i = island { top = i.minY - gap }
+        else if notch { top = anchor.minY - gap }
+        else { top = anchor.maxY }
+        let x = min(max(visible.minX + 8, anchor.midX - size.width / 2), visible.maxX - size.width - 8)
+        let y = max(visible.minY + 8, top - size.height)
+        return CGRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
     /// A click on the pill/strip: collapsed ↔ open, for `meeting`.
     public mutating func toggleCollapsed(meeting: String?) { collapsed.toggle(); collapsedMeeting = meeting }
 

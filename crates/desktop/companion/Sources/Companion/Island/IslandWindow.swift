@@ -124,3 +124,18 @@ enum IslandGeometry {
     static func relative(_ r: NSRect, to s: NSScreen) -> NSRect { r.offsetBy(dx: -s.frame.minX, dy: -s.frame.minY) }
     static func global(_ r: NSRect, from s: NSScreen) -> NSRect { r.offsetBy(dx: s.frame.minX, dy: s.frame.minY) }
 }
+
+/// 149i §P: the island area on the display under `point`, for a `size` panel — the point-and-say pill and answer card are placed
+/// here once per gesture and never follow the pointer. Reuses the island's own anchor; a live attached island on that display
+/// pushes the frame below itself.
+enum IslandArea {
+    @MainActor static func frame(size: NSSize, on point: NSPoint) -> NSRect {
+        guard let s = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main ?? NSScreen.screens.first else {
+            return NSRect(origin: point, size: size)
+        }
+        let a = IslandGeometry.anchor(on: s, forceNoNotch: false, fakeNotch: false)
+        var island: NSRect?
+        if let c = (NSApp.delegate as? AppDelegate)?.island, c.shown, !c.ui.isDetached, c.window.screen === s { island = c.drawnGlobal }
+        return IslandModel.pillFrame(size: size, anchor: a.rect, notch: a.notch, island: island, visible: s.visibleFrame)
+    }
+}

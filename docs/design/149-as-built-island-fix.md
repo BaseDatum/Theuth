@@ -184,11 +184,40 @@ wrapping (the Attention panel's J/K convention); the focused topic follows the s
   the 8 key steps withheld; the §N proof is the six focused runs above (3 debug + 3 bundle, 24/24 each). Runs with a
   `WITHHELD`/`J not acted` line are environmental, not the island's behaviour.
 
+## §P — the point-and-say pill and answer card live in the island area, not at the pointer
+Owner, 16:44: "whenever I do the Control S and I draw a path the little dictation window that shows what I'm saying shouldn't
+follow around the cursor. It should just be in the notch prompt area." Ruling: during a ⌃S gesture the live-dictation pill
+("Listening… · ⌃S held", the live text, level bars) and the answer card after the send sit in the ISLAND AREA of the display
+under the pointer — the notch slot when that display has a notch, else the fallback position under the menu bar at its top
+centre (the same geometry `IslandGeometry.anchor` gives the island) — fixed for the whole gesture, never repositioned with the
+pointer; only the trail/ring overlays follow it. A live attached island on that display pushes them directly below itself.
+This closes W2's deviation "VoiceMode hosted in a pointer-side pill until W3's island exists".
+- **Placement** `IslandModel.pillFrame(size:anchor:notch:island:visible:)` (`CompanionCore/IslandModel.swift:60`, pure): centred
+  on the anchor; top = the island's bottom − 6 when one is live and attached, else the notch's bottom − 6, else the fallback
+  slot's top (the pill fills the slot); clamped inside the display's visible frame. `IslandArea.frame(size:on:)`
+  (`Island/IslandWindow.swift:131`) resolves the pointer's display, reuses `IslandGeometry.anchor` (no duplicate geometry) and
+  reads the live island (`shown`, attached, same screen → `drawnGlobal`).
+- **Pill** `Island/VoiceModeView.swift` `VoicePill`: `show(near:)` remembers the display point and places once; `follow` is
+  gone; the frame is recomputed in place (same display point) when the state changes so the capsule grows with the live
+  text without moving. **Card** `PointAndSay/AnswerCard.swift` `place()` uses the same `IslandArea`. **Controller**
+  `PointAndSay/PointController.swift:254` `tick` only redraws the trail.
+- **Tests** (194 → 195): `IslandModelTests.dictationPillLivesInTheIslandArea` — under the notch, in the fallback slot, below
+  a live island (no overlap), clamped on a narrow display.
+- **Probe** `--probe-point 52 --shareable` (`PointProbe.swift:132`, the dry-run gesture): logs `PILL AREA: pointer=… island
+  anchor=… notch=… pill=… (want midX=… maxY=…)`, walks the synthetic pointer across the display at five points during the
+  2 s tone hold, records the pill frame after every chunk, captures `/tmp/149i-pill-notch-area.png`, and reports PASS when the
+  pill's centre line and top equal the anchor's and no frame moved. Log copied to `/tmp/149i-probe-point.log`. Result (bundle,
+  pid 37418): `island anchor=(1130, 1380, 300, 30) notch=false pill=(1141, 1374, 278, 36) (want midX=1280 maxY=1410)` →
+  pointer walked from (1577, 718) to (1400, 760) → `pill frames over the gesture: ["(1141, 1374, 278, 36)"] → PASS (inArea=true
+  moved=false)`; the answer card `frame=(1060, 1283, 440, 127)` (same slot, top 1410); the 149f/149g scenarios (HOLD, REFUSED
+  HOLD, CANCEL IN FLIGHT, RELEASE BEFORE START, ESC DURING HOLD, synthetic ⌃⎋) all still PASS; the no-trail assertion PASS.
+  This Mac has no notch, so the notch case is covered by the unit test, not the PNG.
+
 ## Gates (all `env BUILD_LABEL=149i build-lock …`)
-- `bash crates/desktop/companion/test.sh` — **194 tests in 30 suites passed** (`/tmp/149i-test.log`; 190 + `IslandModelTests`
+- `bash crates/desktop/companion/test.sh` — **195 tests in 30 suites passed** (`/tmp/149i-test.log`; 190 + `IslandModelTests`
   reshaped: `visibleWhileLive`, `visibleWhenAlwaysShow`, `hiddenTheMomentTheMeetingIsNotLive`,
   `attachedLayoutIsOpenWhileLiveUnlessCollapsed`, `collapseIsRememberedForTheCurrentMeetingOnly`,
-  `aGripClickOnTheOpenPaneSnapsBackNotDetaches`, §N's two; the drag/snap-back/UUID/off-screen tests unchanged).
+  `aGripClickOnTheOpenPaneSnapsBackNotDetaches`, §N's two, §P's one; the drag/snap-back/UUID/off-screen tests unchanged).
 - `swift build -c release --package-path crates/desktop/companion` — Build complete (inside the bundle script).
 - `bash scripts/bundle-companion.sh` + `codesign --verify --deep --strict "target/release/companion/Theuth Companion.app"` —
   `valid on disk · satisfies its Designated Requirement` (`/tmp/149i-bundle.log`, 2.14.0).
