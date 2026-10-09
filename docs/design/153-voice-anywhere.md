@@ -789,3 +789,178 @@ verify step (read back), the pitfalls (Reminders' list indexing, Calendar's time
 `native::exec_without_shell` (an argument containing `; echo pwned` is passed verbatim to `osascript` and comes back as a syntax error, not
 executed); a macOS-only `#[ignore]` live test `applescript_returns_result_line` (`return "ok"`); Windows `powershell_returns_stdout`. Policy
 integration: `tools::policy_asks_for_mutating_native_tool` over the registry test harness.
+
+## 12. The answer surface
+
+### 12.1 One AnswerCard (D12)
+Today: the voice key's `AnswerCardView` — plain `Text(state.text).lineLimit(12)`, "O open the desk · ⎋ dismiss"
+(`COMP/Companion/PointAndSay/AnswerCard.swift:24-56`) — and the Ask bar's receipt row with `firstTwoLines` (`COMP/CompanionCore/AskRouter.swift:118-127`).
+New: one `AnswerCard` (the class name stays; `AnswerCardState` grows) used by the Ask bar (replacing the receipt row's *display*; the
+`Receipt` model and `activity_list` merge stay for history), the voice key and command mode. One instance in the Store (`store.answer`), one
+generation counter, one panel.
+
+### 12.2 Anatomy
+Collapsed (today's two-line receipt, 440 pt wide as `AnswerCard.width`, `AnswerCard.swift:88`):
+```
+┌ theuth desk · replied just now                              🔈  ⎋ ┐
+│ The failing test is `vad::gate_onset`; the 160 ms onset frame      │
+│ count changed in vad.rs:112 …                                      │
+│ ⏎ expand · O open · ⎋                                               │
+└────────────────────────────────────────────────────────────────────┘
+```
+Expanded (⏎, click, or any scroll; 440 × ≤ 70 % of the screen's visible height, scrolls inside):
+```
+┌ theuth desk · 2 of 3  ● ● ○                                 🔈  ⎋ ┐
+│ “why does the onset test fail”                                      │
+│ The failing test is `vad::gate_onset`. The onset run is now 8       │
+│ frames (160 ms) but the fixture feeds 7.                             │
+│  • fix the fixture → vad.rs:112                                      │
+│  • or keep 7 and lower ONSET_MS to 140                               │
+│ Recommend the first; it matches design 54 §0.3.                      │
+│ [read_file] [code_symbol] [cargo test -p voice]          ← tools, as they ran │
+│ ┌ follow up… ───────────────────────────────────────────┐  ⏎        │
+│ └───────────────────────────────────────────────────────┘           │
+│ hold ⌃⇧Space to follow up · or type ⏎ · O open · ⎋                  │
+└────────────────────────────────────────────────────────────────────┘
+```
+- **Markdown**: SwiftUI `Text(AttributedString(markdown:))` for inline marks, plus a tiny block renderer for lists, headings and fenced code
+  (monospace block, horizontal scroll) — the Windows twin uses the `MarkdownTextBlock` of the Community Toolkit already referenced by 134, or a
+  `RichTextBlock` fallback. Streaming: the text re-renders per `TextDelta` with the caret of the last line shimmering.
+- **Tool names** as chips in the order they started; a running one pulses; clicking a chip opens the desk session at that call (`theuth://c/<desk>`).
+- **Follow-up in place**: the field sends `send_input`/`steer` with the same marker family as the surface that opened the card (none for Ask,
+  `[voice note, N s]` for the voice key's hold, `[command, N s]` for command); the card appends a new question block and the dots advance.
+- **Session list**: the header dots are the *thread* positions (requests in this card since it opened); ◀ ▶ / J K move; the list view (⌘L)
+  shows the last 20 answers from history (`activity_list` 24 h, as the receipts do today, `COMP/Companion/AskBar/Store+Ask.swift:183-187`).
+- **Collapsed form = the receipt's two lines** (`firstTwoLines` reused), then the key caps.
+
+### 12.3 Expand notch ↔ panel and back
+The card is one `KeyPanel` (`GlassPanel.make`, `AnswerCard.swift:84-86`) that **resizes** between the two anatomies with a 180 ms animation;
+it does not move surfaces: at the notch (the island's voice view, 96 §0.3) the collapsed form is the island's content, and expanding detaches
+it into the panel *at the pointer's screen* (D14) — the island returns to its meeting content or hides (as 149 §5.4 D step 6). Collapse (⏎
+again, or ⎋ once while expanded) folds back to the collapsed card at the same place; the island is not re-entered (one surface at a time;
+technique A:L183, our placement). Windows: the card is a `ToolWindow` sibling of the island; the island keeps today's voice view for the
+collapsed form (`PointController.cs:419`), the expanded form opens the window.
+
+### 12.4 State honesty (D13) — the table every state passes
+| State | Enter on | Shows | Copy | Leaves on | Never |
+|---|---|---|---|---|---|
+| listening | press | rec dot, words | "· ⌃S held · theuth's desk" | release/lock/Esc | — |
+| finishing | release | muted words, concealed overlays | "finishing…" | final text (cap 8 s, `PointController.swift:47-48`) / "Nothing recognized" | hides before the text is in |
+| thinking | `TurnStarted` | shimmer "thinking", tool chips as they start, elapsed s | "thinking · code_refs · 4 s" | `TurnFinished`/error | looks frozen (shimmer + elapsed tick every second) |
+| answer | first `TextDelta`/`TurnFinished` | streamed text | "replied" | 6 s `doneMs` **only if** collapsed and not speaking | vanishes while speaking or expanded |
+| speaking | `Speaker.surface == ours` (149s) | glyph | "click to stop" | speech end / Esc / new gesture | — |
+| failed | `TurnFinished { error\|cancelled }`, send error | failed colour | "couldn't reply — ‹why›" | ⎋ only | auto-hides |
+**Stop freezes**: Esc during thinking sends `cancel(desk, "root")` and the card shows the frozen partial answer with "stopped" — it does not
+disappear. **Hide is generation-checked**: `AnswerCard.hide(generation:)` ignores a hide whose generation is older than the latest `begin`
+(a new gesture while a 6 s timer runs), the rule the 149f fix applied to `dictation_start` replies (`docs/design/149-as-built-voice-key-fix.md:93-97`).
+Nothing vanishes before the work is done: `doneMs` arms only after `TurnFinished` *and* speech ended *and* collapsed.
+
+### 12.5 Pointer-screen presentation (D14)
+Already true for the pill and the card (`PointController.swift:200`, `:306`; `AnswerCard.swift:118`, `:162-163`). Extend to the island-hosted
+voice view: when the pointer's screen is not the island's (`IslandPanel.swift:156` picks the notched screen), the voice mode renders in a
+second lightweight `VoicePill` at the pointer and the island stays with its meeting content (W2's pre-W3 fallback host, `VoiceModeView.swift:6-7`,
+kept as the multi-display path). Windows: `Monitor.cs` already resolves the monitor under the cursor for overlays; the voice view follows it.
+
+### 12.6 "Automatic" hotkey option and modifier-only keys
+Settings › Voice key (and › Dictation, › Command) gain a gesture picker: **Hold · double-tap locks** (default, W-i) · **Automatic** — tap < 0.4 s
+toggles (press again to stop), longer = push-to-talk; no double-tap lock in this mode (technique A:L170). `PointMachine` gets `Gesture = .holdLock |
+.automatic` with two more transitions (`armed → recordingToggled` on release < 400 ms; `recordingToggled → sending` on the next press) and the
+ported tests. **Modifier-only keys incl. fn (macOS)**: a chord with no key (`Chord.keyCode == nil`, `Modifiers.function` exists,
+`COMP/CompanionCore/KeyBindings.swift:7-15`) cannot be a Carbon hot key; the companion installs an `NSEvent` global `flagsChanged` monitor and
+tracks physical key codes per modifier group (fn 63; ⌘ 55/54, ⌥ 58/61, ⌃ 59/62, ⇧ 56/60 — A:L171) so left/right are distinct; the row is enabled
+only after macOS grants Input Monitoring [INFERENCE: a global key monitor needs `kTCCServiceListenEvent`; §18 Q1], with the hint "set
+System Settings › Keyboard › Press 🌐 key to: Do Nothing". Chord protection: another key during the hold → the release is ignored (A:L172).
+The recorder's `check` gains `.needsInputMonitoring` beside `.reservedByMacOS` (`KeyBindings.swift:318-335`). Windows: `RegisterHotKey`
+cannot bind a modifier alone; a low-level keyboard hook (`WH_KEYBOARD_LL`) is the twin, opt-in the same way (no permission dialog on Windows).
+
+### 12.7 Windows twin
+`AnswerCardWindow : ToolWindow` (new) with the two anatomies; the island voice view = collapsed form; `MarkdownTextBlock`; the same
+generation-checked hide; `AskRouter.FirstTwoLines` (`WIN/Theuth.Companion.Core/AskRouter.cs:168-192`) reused; the Automatic gesture in
+`PointMachine.cs`; the hook-based modifier-only option.
+
+## 13. Any-app dictation
+
+### 13.1 Target assessment (three-way; refuse only when certain)
+At the press (before the mic is live) the companion reads the focused element: macOS `AXUIElementCreateSystemWide` → `kAXFocusedUIElement`
+(`crates/computer/src/ax.rs` already hit-tests and reads roles for the pointer, `:736`, `:126`; the companion does its own read in Swift
+because the engine's AX grant is theuth.app's, 149 §9); Windows `IUIAutomation.GetFocusedElement` (`ax.rs:163`'s `uia_role` mapping reused
+for the names).
+| Verdict | macOS roles / attributes | Windows UIA | Then |
+|---|---|---|---|
+| editable | `AXTextField`, `AXTextArea`, `AXComboBox`, `AXSearchField`; or `kAXValue` settable (`AXUIElementIsAttributeSettable`) | `ControlType.Edit`/`Document` with `ValuePattern` not read-only or `TextPattern` | direct insertion (W-m) when `kAXSelectedText` is settable and the read-back confirms; else lease |
+| unknown | `AXGroup`, `AXWebArea`, `AXWindow`, `AXScrollArea`, `AXUnknown`, no focused element readable (GPU terminals, VMs, Electron web views, games) | `Pane`, `Custom`, `Document` without patterns, elevated windows (UIPI) | clipboard lease + verification (paste works where AX does not) |
+| certainly not | `AXButton`, `AXMenu*`, `AXStaticText`, `AXSlider`, `AXCheckBox`, `AXRadioButton`, `AXImage`, `AXToolbar`, `AXTable` row | `Button`, `MenuItem`, `Text`, `Slider`, `CheckBox`, `Image`, `ListItem` | refuse: hint "Nothing to type into — ‹role›" 2.5 s, no recording (the words are not lost because none were spoken) |
+Secure: `AXSecureTextField` / UIA `IsPassword` → editable, delivered by lease, **never Return** (§7.4). The focused element is captured once
+(`pid`, element ref, window id); every delivery re-checks focus and goes `paused` if it moved (§3.2).
+
+### 13.2 Direct insertion (W-m)
+Only on `editable`: write `kAXSelectedText` (replaces the selection or inserts at the caret), then read `kAXValue`/`kAXNumberOfCharacters`
+back within 150 ms; a mismatch (some apps accept the write and ignore it) falls through to the lease for *this and every later utterance* of
+the gesture. Windows: `ValuePattern.SetValue` is a whole-value replace and is **not** used for insertion; `TextPattern` has no insert — so
+Windows direct insertion = `SendInput` with `KEYEVENTF_UNICODE` for ≤ 200 chars per utterance (chunked), else lease. No CGEvent typing on
+macOS (CGEvent unicode posting needs the Accessibility grant too and is slower than a paste for a sentence — A:L113 uses it first for
+terminals; our terminals are "unknown" and take the lease).
+
+### 13.3 Clipboard lease (sequence; technique A:L117-119)
+```
+1 snapshot    every NSPasteboardItem type → data (cap 32 MiB per representation; larger → the restore keeps only the text types)   | Win: OpenClipboard, EnumClipboardFormats, GetClipboardData per format (CF_UNICODETEXT, CF_HDROP, CF_DIB, registered formats by name)
+2 write       one item: public.utf8-plain-text + org.nspasteboard.TransientType + .ConcealedType + .AutoGeneratedType + io.theuth.dictation-session = <gesture id> | Win: CF_UNICODETEXT + "ExcludeClipboardContentFromMonitorProcessing" + "CanIncludeInClipboardHistory"=0 + "CanUploadToCloudClipboard"=0 + a registered "theuth.dictation-session" format
+3 paste       CGEvent ⌘V to the captured pid (post to the app's event tap, not the session) after releasing our own physical modifiers | Win: SendInput Ctrl+V to the foreground thread; our hotkey modifiers released first (keybd_event up for Ctrl/Alt)
+4 return      the caller continues (next utterance may queue; deliveries are serialised through one lease slot)
+5 settle      at 500 ms: if the pasteboard still holds our session id → restore the snapshot (changeCount re-read first); else (the user copied) do nothing | same by the registered format
+6 verify      §13.4 in parallel with 5
+```
+The user's clipboard is back within 0.5 s; clipboard managers skip the item (the nspasteboard conventions); a paste that lands after 500 ms
+pastes the *restored* clipboard — the verification catches that as "not landed" and the card offers the words. Setting "Leave the
+dictated text on the clipboard" (default off) skips 5.
+
+### 13.4 Paste verification
+Reads `kAXValue` (≤ 60 000 chars), `kAXNumberOfCharacters` and `kAXSelectedTextRange` before the paste and at **150 / 350 / 1000 ms**
+after; focus moved → `unknown` (no card); user typed meanwhile → `userActed` (no card); all three unchanged at 1000 ms → **notLanded**
+(technique A:L128). Windows: `TextPattern.DocumentRange.GetText(60000)` + `GetSelection`; elements without `TextPattern` → `unknown`. Direct
+insertions verify once at 150 ms (that is their read-back). Only lease deliveries run the full triple and only while the setting "Check that
+the text landed" is on (default on).
+
+### 13.5 The failure card
+```
+┌ Couldn't type into Terminal · paste not landed                   ⎋ ┐
+│ git rebase -i HEAD~3 then force push with lease                    │
+│ [ Copy ]  [ Try again ]  [ Open in theuth ]                         │
+│ checked at 150 · 350 · 1000 ms — field unchanged · clipboard restored │
+└────────────────────────────────────────────────────────────────────┘
+```
+Kinds (typed, logged, counted in the debug row): `noEditableTarget`, `accessibilityNotTrusted`, `clipboardSnapshotFailed`,
+`clipboardWriteFailed`, `pasteCommandFailed`, `targetUnavailable` (app quit), `restoreFailed`, `pasteNotLanded`. Copy puts the shaped text on
+the clipboard *without* markers; Try again re-runs the lease once focus is back in the same element; Open in theuth puts the text in the
+Composer of theuth's desk (`theuth://compose?text=`). The card stays until acted on (D13); the words are also in history (§6.5).
+
+### 13.6 Rewrite on the selection
+Entry: the dictate-anywhere key while the focused element reports a non-empty `kAXSelectedText` (fallback: `kAXSelectedTextRange` + value
+slice; Windows `TextPattern.GetSelection`) → the pill says "Rewrite · 312 chars selected · say what to change". The spoken instruction is the
+**user message**; the selection goes into the **system prompt** through a template (`voice.rewrite_template`, default "The user selected the
+following text in {app}; apply their spoken instruction to it and reply with the replacement text only:\n\n{selection}"); the model is
+§9's chain (`ModelRole::Polish`), the call `CallKind::Polish` on theuth's desk; multi-turn: holding again while the panel is up refines
+("shorter", "more formal") with the previous reply as the assistant turn. The panel shows the proposal; **Replace** restores focus to the
+captured element first (hiding alone races the paste — A:L165), then delivers through §13.2/13.3 so the selection is replaced; ⎋ discards.
+Per-app profile may pin a tone (`AppProfile.rewrite_prompt`). Rewrite is never automatic and never runs on an `AgentPrompt` surface.
+
+### 13.7 Permissions
+macOS: **Accessibility** for the companion (`AXIsProcessTrustedWithOptions` prompt once; theuth.app's grant does not cover the login item —
+149 §9's rule, `docs/design/149-companion-native.md:922-924`) — without it: lease-only delivery works (paste needs no grant), assessment and
+verification are `unknown`, the pill says "Accessibility off — pasting blind", Settings › Dictation shows the grant button. Input Monitoring
+only for §12.6's modifier-only keys. Windows: UIA needs no grant; UIPI blocks reads/`SendInput` into elevated windows → `unknown` and the
+lease may fail with `pasteCommandFailed` ("elevated window") — the card says so.
+
+### 13.8 What we refuse
+Certainly-not targets (§13.1); our own windows (the companion's panels, theuth.app's Composer — which has its own Ctrl+D; focus in them →
+hint "Use Ctrl+D here"); a target whose pid died mid-gesture; Return into secure fields; any delivery while the screen is locked
+(`CGSessionCopyCurrentDictionary` `CGSSessionScreenIsLocked` / `WTS_SESSION_LOCK`); text > 20 000 chars in one gesture (the words go to the
+card instead). Never: reading the target's full value for anything but verification; sending the target's content anywhere (the rewrite
+selection goes only to the chosen model, and the history row stores our text, not the app's).
+
+### 13.9 Windows twin (summary of the per-step twins above)
+UIA `GetFocusedElement` + `ControlType`/`ValuePattern`/`TextPattern` for assessment and verification; `SendInput` `KEYEVENTF_UNICODE` for
+direct insertion ≤ 200 chars and `Ctrl+V` for the lease; clipboard formats `CF_UNICODETEXT` + the three Windows clipboard-history hints +
+a registered session format; `RegisterHotKey` for the key (§15); the failure card and rewrite panel as `ToolWindow`s; `WTS_SESSION_LOCK`
+for the lock refusal. The Core project gets the pure parts (`DeliveryAssessment.cs`, `ClipboardLease.cs` state, `PasteVerifier.cs`
+decision) with tests mirroring the Swift ones (§16).
