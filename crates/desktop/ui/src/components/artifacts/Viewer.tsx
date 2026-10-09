@@ -12,7 +12,8 @@ import { MermaidView } from '@/components/artifacts/MermaidView'
 import { ArtifactMenu, PopoutButton, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
 import { Img, useDocumentUrl, useFileUrl } from '@/components/chat/Attachments'
 import { HtmlPage } from '@/components/chat/HtmlPage'
-import { fenced, plugins, shikiTheme } from '@/components/chat/MessageAssistant'
+import { CitationsProvider, References } from '@/components/chat/Citations'
+import { fenced, markdownComponents, plugins, rehypePlugins, shikiTheme } from '@/components/chat/MessageAssistant'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -44,19 +45,26 @@ const MD_CLASS =
 
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
 
-/** Committed markdown through streamdown; `http(s)` links open with the OS. */
+/**
+ * Committed markdown through streamdown; `http(s)` links open with the OS. 144 wave 2 (Z2): a notebook overview is a
+ * markdown artifact whose every claim carries a `theuth://` chip — rendered with the chat's citation components
+ * (`CitationLink` + References) instead of streamdown's `[blocked]`.
+ */
 function Markdown({ text }: { text: string }) {
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     const href = e.target instanceof Element ? e.target.closest('a')?.getAttribute('href') : null
-    if (!href || href.startsWith('#')) return
+    if (!href || href.startsWith('#') || href.startsWith('theuth://')) return
     e.preventDefault()
     if (/^https?:/.test(href)) openUrl(href).catch(fail)
   }
   return (
     <div onClickCapture={onClick} className="px-6 py-4">
-      <Streamdown mode="static" plugins={plugins} shikiTheme={shikiTheme} linkSafety={{ enabled: false }} className={MD_CLASS}>
-        {text}
-      </Streamdown>
+      <CitationsProvider text={text}>
+        <Streamdown mode="static" plugins={plugins} rehypePlugins={rehypePlugins} components={markdownComponents} shikiTheme={shikiTheme} linkSafety={{ enabled: false }} className={MD_CLASS}>
+          {text}
+        </Streamdown>
+        <References />
+      </CitationsProvider>
     </div>
   )
 }
