@@ -41,6 +41,8 @@ use crate::{
 const LEVELS: usize = 8;
 /// How long the task waits for an audio chunk before rechecking cancel and deadline.
 const POLL: Duration = Duration::from_millis(50);
+/// 153-F2: at most this much queued audio is fed through the model after a stop.
+const DRAIN_MAX: Duration = Duration::from_secs(5);
 /// §7.3: after `Send` arms, no new speech for this long …
 pub const SETTLE: Duration = Duration::from_millis(crate::shape::end::SETTLE_MS);
 /// §7.3: … then this much closed-gate silence stops the dictation.
@@ -125,8 +127,9 @@ pub struct PushAudio {
     pub pcm: Vec<i16>,
 }
 
-/// Stop `id` (idempotent; unknown id → `Ok`). The open utterance is flushed
-/// first; [`VoiceEvent::DictationFinished`] follows the reply.
+/// Stop `id` (idempotent; unknown id → `Ok`). Audio already pushed is fed and
+/// the open utterance flushed first (further [`PushAudio`] is refused);
+/// [`VoiceEvent::DictationFinished`] follows the reply.
 #[derive(Clone, Copy, Debug)]
 pub struct StopDictation {
     /// Dictation to stop.
@@ -848,7 +851,11 @@ fn check_rate(rate: u32) -> Result<(), String> {
 impl Message<PushAudio> for Dictation {
     type Reply = Result<(), String>;
     async fn handle(&mut self, m: PushAudio, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some(r) = self.active.as_mut().filter(|r| r.id == m.id) else {
+        let Some(r) = self
+            .active
+            .as_mut()
+            .filter(|r| r.id == m.id && !r.cancel.is_cancelled())
+        else {
             return Err("not dictating".into());
         };
         let Some(remote) = r.remote.as_mut() else {
@@ -878,7 +885,16 @@ impl Message<StopDictation> for Dictation {
     ) -> Self::Reply {
         let known = self.active.as_ref().is_some_and(|r| r.id == m.id);
         tracing::info!("voice: dictation stop id={} known={known}", m.id);
-        if let Some(r) = self.active.as_ref().filter(|r| r.id == m.id) {
+        if let Some(r) = self.active.as_mut().filter(|r| r.id == m.id) {
+            // The sub-chunk remainder, zero-padded, goes ahead of the cancel: the
+            // task drains what is queued before it closes (153-F2).
+            if let Some(remote) = r.remote.as_mut()
+                && !remote.pending.is_empty()
+            {
+                let mut chunk = std::mem::take(&mut remote.pending);
+                chunk.resize(remote.chunk, 0.0);
+                let _ = remote.tx.send(Ok(chunk));
+            }
             r.cancel.cancel();
         }
         Ok(())
@@ -1345,6 +1361,13 @@ impl Task {
                 }
             }
         };
+        // A stop (cancel or the settle) is not a discard: what the source already
+        // delivered reaches the model before the close, else a model slower than
+        // real time drops the last words (153-F2). Deadline and error paths don't.
+        let reason = match reason {
+            Ok(FinishReason::Done) => self.drain(&feed.rx).map(|()| FinishReason::Done),
+            r => r,
+        };
         // The mic stays open through the flush (which may take a second) only
         // for standby; a mic error drops it now.
         let healthy = !matches!(reason, Ok(FinishReason::Error { .. }));
@@ -1394,6 +1417,24 @@ impl Task {
             done.engine = Some(self.live);
         }
         done
+    }
+
+    /// The chunks queued when the stop landed, through the model; bounded to
+    /// [`DRAIN_MAX`] of audio for a mic that keeps delivering. A mic error ends it.
+    fn drain(&mut self, rx: &Receiver<Chunk>) -> anyhow::Result<()> {
+        let mut left = self.rate as usize * DRAIN_MAX.as_secs() as usize;
+        let mut chunks = 0;
+        while left > 0 {
+            let Ok(Ok(c)) = rx.try_recv() else { break };
+            left = left.saturating_sub(c.len());
+            chunks += 1;
+            self.chunk(&c, false)?;
+        }
+        tracing::debug!(
+            "voice: dictation {} drained {chunks} chunks at stop",
+            self.id
+        );
+        Ok(())
     }
 
     /// §7.3: `Send` armed, `SETTLE` without new speech, then `SILENCE` of closed gate.
@@ -1891,7 +1932,12 @@ mod tests {
             .collect();
         actor.ask(PushAudio { id, pcm }).await.expect("push");
         actor.ask(StopDictation { id }).await.expect("stop");
-        let after_stop = actor.ask(PushAudio { id, pcm: vec![0; 320] }).await;
+        let after_stop = actor
+            .ask(PushAudio {
+                id,
+                pcm: vec![0; 320],
+            })
+            .await;
         let mut last_final = None;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let reason = loop {
@@ -1914,7 +1960,11 @@ mod tests {
         let (text, command) = last_final.expect("the final before the stop");
         assert_eq!(text, "ship it tonight send it");
         assert_eq!(command, Some(EndCommand::Send { near_miss: false }));
-        assert_eq!(handler_err(after_stop), "not dictating", "audio after the stop");
+        assert_eq!(
+            handler_err(after_stop),
+            "not dictating",
+            "audio after the stop"
+        );
     }
 
     /// §7.4: "scratch that" at a final re-sends the previous closed utterance empty.
