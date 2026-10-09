@@ -343,6 +343,22 @@ public sealed class SettingsPersistenceTests
     }
 
     [Fact]
+    public void RailPillsEscapeHatchDefaultsOnAndRoundTrips()
+    {
+        // 149 §3.8 (recheck N4): pills by default; off = the pre-149 single strip; an absent key means pills.
+        var d = new SettingsStore();
+        Assert.True(CompanionSettings.Load(d).RailPills);
+        var s = new CompanionSettings { RailPills = false };
+        Assert.NotEqual(new CompanionSettings(), s);
+        s.Save(d);
+        Assert.False(d.Bool("railPills"));
+        Assert.False(CompanionSettings.Load(d).RailPills);
+        d.Remove("railPills");
+        Assert.True(CompanionSettings.Load(d).RailPills);
+        Assert.Contains("railPills", CompanionSettings.Key.All);
+    }
+
+    [Fact]
     public void W2CollapseToggleMigratesToPresence()
     {
         var d = new SettingsStore();

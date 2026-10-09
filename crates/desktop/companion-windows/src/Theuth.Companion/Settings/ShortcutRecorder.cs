@@ -206,7 +206,8 @@ internal static class KeyRow
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var label = new TextBlock { Text = binding.Label, VerticalAlignment = VerticalAlignment.Center };
+        // 149 recheck fix R1: a long label ("Voice key — point and say (hold; double-tap locks)") wraps in its star column instead of clipping at 720×520.
+        var label = new TextBlock { Text = binding.Label, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
         Grid.SetColumn(label, 0);
         row.Children.Add(label);
         FrameworkElement control;
@@ -252,6 +253,8 @@ internal static class KeyRow
                 Text = notice.Text,
                 FontSize = 12,
                 VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 340,
                 Foreground = Theme.Brush("SystemFillColorCautionBrush", 0xC0),
             });
             AutomationProperties.SetAutomationId(line, $"settings-keys-notice-{binding.Action.RawValue()}");

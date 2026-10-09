@@ -125,12 +125,12 @@ internal sealed class NotificationsInstaller : IDisposable
         if (old.LaunchAtLogin != now.LaunchAtLogin) LoginItem.Apply(now.LaunchAtLogin, now);
         if (old.DoubleTapAlt != now.DoubleTapAlt && !now.DoubleTapAlt) DoubleTap.Uninstall();
         bool surfaces = old.Keys != now.Keys || old.UndoDelay != now.UndoDelay
-            || old.RailSide != now.RailSide || old.RailDisplay != now.RailDisplay || old.RailPresence != now.RailPresence;
+            || old.RailSide != now.RailSide || old.RailDisplay != now.RailDisplay || old.RailPresence != now.RailPresence || old.RailPills != now.RailPills;
         if (!surfaces) return;
         // W2 applies keys (hotkeys + grammar + legend), the undo delay and the rail live; without surfaces the Store gets the delay.
         if (Ui.Surfaces.Current is { } ui) ui.ApplySettings(now);
         else store.ApplySettings(now);
-        Log.Write($"settings: applied live (keys={(old.Keys != now.Keys ? "changed" : "same")} undo={now.UndoDelay} rail={now.RailPresence.RawValue()} {now.RailSide})");
+        Log.Write($"settings: applied live (keys={(old.Keys != now.Keys ? "changed" : "same")} undo={now.UndoDelay} rail={now.RailPresence.RawValue()} {now.RailSide} {(now.RailPills ? "pills" : "strip")})");
     }
 
     /// <summary>At exit: hooks off, the COM activator unregistered (a later click launches a new process).</summary>
