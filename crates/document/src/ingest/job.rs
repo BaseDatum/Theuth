@@ -11,7 +11,7 @@ use std::time::Instant;
 use crate::actor::{ImportMarkdown, Snapshot};
 use crate::helper::ImportMode;
 use crate::ingest::{
-    Ctx, cap_chars, insights, permanent, project, provisional_title, routes, summaries, word_count,
+    Ctx, cap_chars, insights, permanent, provisional_title, routes, summaries, word_count,
 };
 use crate::meta::{DocId, DocKind, DocumentChanged, Principal};
 use crate::notebook::{SourceEvent, SourceStatus};
@@ -73,11 +73,7 @@ pub async fn run(ctx: &Ctx, id: &DocId, refresh: bool) {
                 deleted: false,
             };
             crate::index::on_document_changed(&ev);
-            if let Ok(mut docs) = summaries(&ctx.store).await
-                && let Some(doc) = docs.remove(id)
-            {
-                insights::after_ingest(&project(out.row, doc, None));
-            }
+            tokio::spawn(insights::after_ingest(ctx.clone(), id.clone()));
         }
         Err(e) => {
             let mut msg = format!("{e:#}");

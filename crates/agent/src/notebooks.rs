@@ -24,8 +24,11 @@ use crate::{HistoryEntry, ModelRole, ReadSession, SessionSummary, SideCall};
 /// §6.2 / §13.3: the static `notebooks` prompt block, appended to the system prompt of a bound session only.
 pub const PROMPT: &str = "**Notebooks.** This chat is bound to a notebook. Each turn ends with a `<notebook id title>` block: \
 its `<description>` and one `<item kind id title level status>` per source, note, chat or artifact. `level=\"full\"` \
-holds the item's markdown with `<!-- id -->` before every block; `level=\"mention\"` is one line — `doc_read(<id>)` \
-(or `session_read` / `artifact_read`) when you need it; `status=\"truncated\"` names the first omitted block. \
+holds the item's markdown with `<!-- id -->` before every block; `level=\"summary\"` is the one-line mention plus \
+the source's `## Insights` blocks (a note's first heading and opening); `level=\"mention\"` is one line — \
+`doc_read(<id>)` (or `session_read` / `artifact_read`) when you need it; `status=\"truncated\"` names the first \
+omitted block; `status=\"omitted\"` means the budget cut it to a mention. Items the user switched off are not \
+listed. \
 Cite with markdown links to `theuth://` ids you were given: `[runbook §4.2](theuth://sources/01K7…S1#b12)`. \
 Cite the block, not the document, whenever you quote or rely on a passage; cite a meeting or a recording at its \
 time `@41:12`. Never invent an id; the ids you may cite are listed at the end of the `<notebook>` block. Call \
@@ -397,7 +400,7 @@ fn twelve_words(s: &str) -> String {
 }
 
 /// One registry call as `session`; a tool error is this function's error.
-async fn invoke(
+pub(crate) async fn invoke(
     session: SessionId,
     name: &str,
     args: serde_json::Value,
@@ -421,24 +424,36 @@ async fn invoke(
     Ok(out)
 }
 
-/// The `<notebook …>` block for a bound turn (§5.3): fetched through the registry as `session`, rendered by
-/// [`render`]. A notebook that cannot be read still yields a block saying so — never a silent empty context.
+/// The `<notebook …>` block for a bound turn (§5.3): the session's pins, the items fetched through the
+/// registry as `session`, rendered by [`render`]. A notebook that cannot be read still yields a block
+/// saying so — never a silent empty context.
 pub async fn block(store: &Store, session: SessionId, notebook: &str, budget: Budget) -> String {
-    match fetch(store, session, notebook).await {
-        Ok((title, description, items)) => render(notebook, &title, &description, items, budget),
+    let pins = match store.context_get(session).await {
+        Ok(rows) => crate::notebook_context::pins_of(rows),
+        Err(e) => {
+            tracing::warn!(%session, "session_context not read: {e:#}");
+            Default::default()
+        }
+    };
+    match fetch(Some(store), session, notebook).await {
+        Ok((title, description, items)) => {
+            render(notebook, &title, &description, items, &pins, budget)
+        }
         Err(e) => render(
             notebook,
             "",
             &format!("(the notebook could not be read this turn: {e:#})"),
             Vec::new(),
+            &pins,
             budget,
         ),
     }
 }
 
-/// `notebook_get`, the description, then one read per item.
-async fn fetch(
-    store: &Store,
+/// `notebook_get`, the description, then one read per item. Session titles need the store; without
+/// one (the estimate off the loop) they are filled by the caller.
+pub(crate) async fn fetch(
+    store: Option<&Store>,
     session: SessionId,
     notebook: &str,
 ) -> anyhow::Result<(String, String, Vec<Item>)> {
@@ -489,7 +504,8 @@ async fn fetch(
                 item.body = body;
             }
             "session" => {
-                if let Ok(sid) = id.parse::<SessionId>()
+                if let Some(store) = store
+                    && let Ok(sid) = id.parse::<SessionId>()
                     && let Ok(Some(s)) = store.session(sid).await
                 {
                     item.title = crate::attach::session_title(&s.title, None, Some(s.created_at));
@@ -565,25 +581,15 @@ fn heading_title(markdown: &str) -> String {
     crate::attach::seed_title(first.unwrap_or_default())
 }
 
-/// What one item's text became under the budget.
-#[derive(Debug, PartialEq, Eq)]
-enum Fit<'a> {
-    /// Whole body shown.
-    Full,
-    /// Cut at a block boundary: the kept prefix, `(shown tokens, total tokens)`, the first omitted block id.
-    Truncated(&'a str, u32, u32, Option<String>),
-    /// Mention line only.
-    Mention,
-}
-
-/// §5.3 as reduced for this wave: notes and sources `full` newest first while under the budget; the first one
-/// that does not fit is `truncated` at a block boundary; the rest and every session/artifact are `mention`.
-/// Order = full, mention; newest first within a level; the allow-list sentence closes the block.
+/// §5.3: the description, then every item [`crate::notebook_context::plan`] placed — full, summary,
+/// mention, newest first within a level; `off` items are not rendered — and the allow-list sentence over
+/// the rendered ids. Nothing rendered → the "nothing in context" sentence.
 pub fn render(
     id: &str,
     title: &str,
     description: &str,
-    mut items: Vec<Item>,
+    items: Vec<Item>,
+    pins: &crate::notebook_context::Pins,
     budget: Budget,
 ) -> String {
     let mut out = format!("<notebook id=\"{id}\" title=\"{}\">\n", attr(title));
@@ -600,95 +606,34 @@ pub fn render(
     }
     out.push_str("</description>\n");
 
-    items.sort_by_key(|i| std::cmp::Reverse(i.added_ms));
-    let mut left = budget.context_budget_tokens;
-    let mut spent_truncation = false;
-    let mut full: Vec<String> = Vec::new();
-    let mut mention: Vec<String> = Vec::new();
-    for it in &items {
-        let fit = match &it.body {
-            Some(body) if left > 0 => {
-                let total = tokens(body);
-                if total <= left {
-                    left -= total;
-                    Fit::Full
-                } else if spent_truncation {
-                    Fit::Mention
-                } else {
-                    spent_truncation = true;
-                    match cut_blocks(body, left as usize * 4) {
-                        Some((kept, omitted)) => {
-                            let shown = tokens(kept);
-                            left -= shown.min(left);
-                            Fit::Truncated(kept, shown, total, omitted)
-                        }
-                        None => Fit::Mention,
-                    }
-                }
-            }
-            _ => Fit::Mention,
-        };
+    let placed = crate::notebook_context::plan(&items, pins, budget.context_budget_tokens);
+    let mut ids: Vec<&str> = Vec::new();
+    for p in placed
+        .iter()
+        .filter(|p| p.level != crate::notebook_context::Level::Off)
+    {
+        let it = p.item;
         let origin = if it.origin.is_empty() {
             String::new()
         } else {
             format!(" origin=\"{}\"", attr(&it.origin))
         };
-        let head = |level: &str, status: &str| {
-            format!(
-                "<item kind=\"{}\" id=\"{}\" title=\"{}\"{origin} level=\"{level}\" status=\"{status}\">",
-                it.kind,
-                it.id,
-                attr(&it.title)
-            )
-        };
-        match fit {
-            Fit::Full => full.push(format!(
-                "{}\n{}</item>",
-                head("full", "available"),
-                it.body.as_deref().unwrap_or_default().trim_end()
-            )),
-            Fit::Truncated(kept, shown, total, first_omitted) => {
-                let kept = kept.trim_end();
-                let omitted = first_omitted
-                    .map(|b| format!("; first omitted block {b}"))
-                    .unwrap_or_default();
-                full.push(format!(
-                    "{}\n{kept}\n[truncated: {shown} of {total} tokens shown; the rest with doc_read(blocks=[…]){omitted}]</item>",
-                    head("full", "truncated")
-                ));
-            }
-            Fit::Mention => {
-                let status = if it.body.is_some() {
-                    "omitted"
-                } else {
-                    "available"
-                };
-                let line = match it.kind.as_str() {
-                    "source" => format!(
-                        "mention only: {} words; read with doc_read(\"source:{}\") if needed",
-                        it.words, it.id
-                    ),
-                    "note" => format!(
-                        "mention only: {} words; read with doc_read(\"{}\") if needed",
-                        it.words, it.id
-                    ),
-                    "session" => format!("mention only: read with session_read(\"{}\")", it.id),
-                    _ => format!("mention only: read with artifact_read(\"{}\")", it.id),
-                };
-                mention.push(format!("{}\n{line}</item>", head("mention", status)));
-            }
-        }
+        out.push_str(&format!(
+            "<item kind=\"{}\" id=\"{}\" title=\"{}\"{origin} level=\"{}\" status=\"{}\">\n{}</item>\n",
+            it.kind,
+            it.id,
+            attr(&it.title),
+            p.level.as_str(),
+            p.status.as_str(),
+            p.text.trim_end()
+        ));
+        ids.push(&it.id);
     }
-    for s in full.iter().chain(&mention) {
-        out.push_str(s);
-        out.push('\n');
-    }
-    if items.is_empty() {
+    if ids.is_empty() {
         out.push_str(
-            "Nothing in context — you see only the description; there are no ids to cite.\n",
+            "nothing in context — the agent sees only the description; there are no ids to cite.\n",
         );
     } else {
-        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
         out.push_str(&format!(
             "You may cite only these ids: {} (and the blocks inside them).\n",
             ids.join(", ")
@@ -703,14 +648,14 @@ pub fn tokens(s: &str) -> u32 {
     (s.chars().count() / 4) as u32
 }
 
-fn attr(s: &str) -> String {
+pub(crate) fn attr(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('"', "&quot;")
         .replace('<', "&lt;")
 }
 
 /// `s` cut to at most `chars` characters on a char boundary.
-fn cut(s: &str, chars: usize) -> &str {
+pub(crate) fn cut(s: &str, chars: usize) -> &str {
     match s.char_indices().nth(chars) {
         Some((i, _)) => &s[..i],
         None => s,
@@ -719,7 +664,7 @@ fn cut(s: &str, chars: usize) -> &str {
 
 /// The longest prefix of `body` made of whole `<!-- id -->` blocks within `chars`, and the first omitted
 /// block's id; `None` when not even the first block fits. A body without block marks is cut on a line.
-fn cut_blocks(body: &str, chars: usize) -> Option<(&str, Option<String>)> {
+pub(crate) fn cut_blocks(body: &str, chars: usize) -> Option<(&str, Option<String>)> {
     let starts: Vec<usize> = body
         .match_indices("<!-- ")
         .map(|(i, _)| i)

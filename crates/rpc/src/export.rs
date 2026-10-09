@@ -197,6 +197,8 @@ async fn export_bindings() {
         document::ContextStatus,
         document::ContextItem,
         document::ContextEstimate,
+        document::InsightInstruction,
+        document::InsightRun,
         document::CiteKind,
         document::Citation,
         document::SourceEvent,

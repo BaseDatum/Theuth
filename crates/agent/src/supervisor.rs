@@ -1406,8 +1406,8 @@ impl Agents {
     }
 
     /// The live (or resumed) actor for `session`, with the lookup error as the
-    /// caller's `Err` string.
-    async fn actor(&mut self, session: SessionId) -> Result<LiveActor, String> {
+    /// caller's `Err` string. `pub(crate)` for `notebook_context::WakeSession` (144 §4.3).
+    pub(crate) async fn actor(&mut self, session: SessionId) -> Result<LiveActor, String> {
         self.session(Some(session), None, None, (None, None))
             .await
             .map(|(_, actor)| actor)
