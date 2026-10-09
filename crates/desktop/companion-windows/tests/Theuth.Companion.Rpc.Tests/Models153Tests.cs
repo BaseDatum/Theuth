@@ -42,6 +42,9 @@ public sealed class Models153Tests
         var scratched = DictationEvent.Decode("""{"type":"DictationText","id":"d1","utterance":0,"text":"","final":true,"shaped":"","command":null,"actions":[]}"""u8);
         Assert.Equal("", scratched.DisplayText);
         Assert.Null(scratched.Command);
+        // H3-B1's rule: an empty shaped without a command falls back to the raw text.
+        var bare = DictationEvent.Decode("""{"type":"DictationText","id":"d1","utterance":3,"text":".","final":true,"shaped":"","command":null,"actions":[]}"""u8);
+        Assert.Equal(".", bare.DisplayText);
     }
 
     [Fact]

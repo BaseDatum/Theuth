@@ -650,8 +650,12 @@ public sealed record DictationEvent
     [JsonConverter(typeof(TolerantWordConverter<DeviceState>))]
     public DeviceState? State { get; init; }
 
-    /// <summary>What a companion field shows for this piece: <see cref="Shaped"/> when the engine sent it (even empty), else <see cref="Text"/>.</summary>
-    [JsonIgnore] public string? DisplayText => Shaped ?? Text;
+    /// <summary>
+    /// What a companion field shows for this piece — the rule the Mac clients use (H3-B1): <see cref="Shaped"/> when non-empty, else
+    /// "" when an end command was on the piece ("send it" / "scratch that" alone shape to ""), else the raw <see cref="Text"/> (an
+    /// engine before 153 sends no <c>shaped</c>; an earlier utterance re-sent with empty text empties it).
+    /// </summary>
+    [JsonIgnore] public string? DisplayText => !string.IsNullOrEmpty(Shaped) ? Shaped : Command is not null ? "" : Text;
 
     public static DictationEvent Decode(ReadOnlySpan<byte> utf8) => TheuthJson.Deserialize<DictationEvent>(utf8);
 }
