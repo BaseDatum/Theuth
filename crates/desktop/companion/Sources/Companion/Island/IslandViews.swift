@@ -25,12 +25,21 @@ final class IslandUI: ObservableObject {
     /// Reported by the views, in SwiftUI's window-global (top-left) coordinates.
     @Published var drawn: CGRect = .zero
     @Published var boxRect: CGRect = .zero
+    /// Every control's frame by name (`islandRect`), same coordinates; read by the probes, never by the views.
+    var rects: [String: CGRect] = [:]
     /// The topic E dismisses (0 = the first; hover moves it).
     @Published var focusedTopic = 0
 
     var onDragStart: ((NSEvent) -> Void)?
     var isOpen: Bool { if case .closed = state { return false } else { return true } }
     var isDetached: Bool { if case .detached = state { return true } else { return false } }
+}
+
+extension View {
+    /// Reports this control's SwiftUI-global frame under `name` (`IslandUI.rects`).
+    func islandRect(_ name: String, _ ui: IslandUI) -> some View {
+        onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { ui.rects[name] = $0 }
+    }
 }
 
 /// The island's root inside the (oversized when attached) window: the pill/pane sits top-centre and animates in
@@ -166,6 +175,7 @@ struct DetachedIsland: View {
             Capsule().fill(Color.primary.opacity(0.2)).frame(width: 36, height: 4).padding(.top, 8).padding(.bottom, 2)
                 .frame(maxWidth: .infinity).contentShape(Rectangle())
                 .background(DragGrip(ui: ui))
+                .islandRect("grip-detached", ui)
                 .accessibilityLabel("Drag handle; double-click returns the island to the notch")
             OpenIsland(ui: ui, store: store, width: IslandLayout.detachedWidth, attached: false)
         }
@@ -182,7 +192,7 @@ struct Strip: View {
     var body: some View {
         HStack(spacing: 6) {
             // The left 24 pt is always the grip.
-            Color.clear.frame(width: 18, height: IslandLayout.stripHeight).contentShape(Rectangle()).background(DragGrip(ui: ui))
+            Color.clear.frame(width: 18, height: IslandLayout.stripHeight).contentShape(Rectangle()).background(DragGrip(ui: ui)).islandRect("grip", ui)
             Meters(level: slice.level, height: 16)
             RecClock(slice: slice, now: ui.now, font: .subheadline)
             OracleChip(ui: ui, slice: slice)
@@ -191,14 +201,15 @@ struct Strip: View {
                     StripButton(slice.state == .paused ? "resume" : "pause", icon: slice.state == .paused ? "play.fill" : "pause.fill") {
                         ui.menuOpen = false
                         slice.state == .paused ? store.meetingResume() : store.meetingPause()
-                    }
-                    StripButton("stop", icon: "stop.fill") { ui.menuOpen = false; store.meetingStop() }
-                    StripButton(nil, icon: "xmark") { ui.menuOpen = false }
+                    }.islandRect("pause", ui)
+                    StripButton("stop", icon: "stop.fill") { ui.menuOpen = false; store.meetingStop() }.islandRect("stop", ui)
+                    StripButton(nil, icon: "xmark") { ui.menuOpen = false }.islandRect("menu-close", ui)
                 } else {
                     ForEach(Array(slice.topics.enumerated()), id: \.element.id) { i, t in
-                        TopicButton(topic: t, tapped: slice.tapped.contains(t.id), focused: i == ui.focusedTopic,
+                        TopicButton(ui: ui, topic: t, tapped: slice.tapped.contains(t.id), focused: i == ui.focusedTopic,
                                     tap: { store.meetingTap(t.id) }, dismiss: { store.meetingDismiss(t.id) })
                             .onHover { if $0 { ui.focusedTopic = i } }
+                            .islandRect("topic:\(t.id)", ui)
                     }
                     ForEach(badges, id: \.self) { Text($0).font(.caption).foregroundColor(.tertiary).lineLimit(1) }
                     if let a = slice.activity {
@@ -219,8 +230,8 @@ struct Strip: View {
             RoundButton(icon: ui.eyeHidden ? "eye.slash" : "eye",
                         label: ui.eyeHidden ? "Hidden from screen sharing (best effort)" : "Visible in screen sharing") {
                 ui.eyeHidden.toggle()
-            }
-            RoundButton(icon: "ellipsis", label: "Pause or stop") { ui.menuOpen.toggle() }
+            }.islandRect("eye", ui)
+            RoundButton(icon: "ellipsis", label: "Pause or stop") { ui.menuOpen.toggle() }.islandRect("menu", ui)
         }
         .padding(.leading, 4).padding(.trailing, 8)
         .frame(height: IslandLayout.stripHeight)
@@ -248,6 +259,7 @@ struct Strip: View {
 }
 
 struct TopicButton: View {
+    let ui: IslandUI
     let topic: Topic
     let tapped: Bool
     let focused: Bool
@@ -262,6 +274,7 @@ struct TopicButton: View {
             else if topic.cached != nil { Circle().fill(Color.accentColor).frame(width: 5, height: 5).accessibilityLabel("cached brief") }
             if hovering {
                 Button(action: dismiss) { Image(systemName: "xmark").font(.caption2).foregroundColor(.tertiary) }.buttonStyle(.plain).accessibilityLabel("Dismiss")
+                    .islandRect("dismiss:\(topic.id)", ui)
             }
         }
         .padding(.horizontal, 10).frame(height: 28).frame(maxWidth: 128)
@@ -294,7 +307,7 @@ struct BriefPane: View {
                 }
                 HStack(spacing: 8) {
                     StripButton("deeper", icon: "plus.magnifyingglass") { store.meetingDeeper(brief.id) }
-                        .help("Ask for a longer, more specific brief on this")
+                        .help("Ask for a longer, more specific brief on this").islandRect("deeper", ui)
                     if !ui.boxFocused, let d = SettingsModel.shared.keys.chord(for: .islandDeeper)?.symbol { Hint(d, "deeper") }
                     Text(brief.source.rawValue.lowercased()).font(.caption).foregroundColor(.tertiary)
                 }.padding(.top, 2)
@@ -303,7 +316,7 @@ struct BriefPane: View {
             VStack(spacing: 2) {
                 Button { store.meetingMove(1) } label: { Image(systemName: "chevron.up") }.buttonStyle(.plain)
                     .disabled(slice.cursor >= slice.briefs.count - 1).opacity(slice.cursor >= slice.briefs.count - 1 ? 0.3 : 1)
-                    .accessibilityLabel("Newer brief")
+                    .accessibilityLabel("Newer brief").islandRect("newer", ui)
                 if slice.unseen > 0 {
                     HStack(spacing: 2) { Image(systemName: "arrow.up"); Text("\(slice.unseen) new") }
                         .font(.caption.weight(.semibold)).foregroundStyle(.white)
@@ -312,7 +325,7 @@ struct BriefPane: View {
                 }
                 Button { store.meetingMove(-1) } label: { Image(systemName: "chevron.down") }.buttonStyle(.plain)
                     .disabled(slice.cursor <= 0).opacity(slice.cursor <= 0 ? 0.3 : 1)
-                    .accessibilityLabel("Older brief")
+                    .accessibilityLabel("Older brief").islandRect("older", ui)
                 Text("\(slice.cursor + 1)/\(slice.briefs.count)").font(.caption2.monospaced()).foregroundColor(.tertiary)
             }
             .foregroundColor(.secondary)
@@ -335,7 +348,7 @@ struct TranscriptRow: View {
                     Text("\(slice.lines.count)").font(Type.mono)
                     Spacer()
                 }.foregroundColor(.tertiary).contentShape(Rectangle())
-            }.buttonStyle(.plain)
+            }.buttonStyle(.plain).islandRect("transcript", ui)
             if ui.transcriptOpen {
                 ForEach(Array(slice.lines.suffix(6).enumerated()), id: \.offset) { _, l in
                     HStack(alignment: .top, spacing: 6) {
@@ -370,12 +383,12 @@ struct RequestBox: View {
                 .onSubmit(send)
                 .onChange(of: focused) { _, f in ui.boxFocused = f }
                 .onChange(of: ui.blurTick) { _, _ in focused = false }
-                .accessibilityLabel("Ask the meeting agent")
+                .accessibilityLabel("Ask the meeting agent").islandRect("box", ui)
             Button(action: send) { Image(systemName: "arrow.up").font(.subheadline.weight(.semibold)) }
                 .buttonStyle(.plain).foregroundColor(.secondary)
                 .disabled(ui.requestText.trimmingCharacters(in: .whitespaces).isEmpty)
                 .opacity(ui.requestText.trimmingCharacters(in: .whitespaces).isEmpty ? 0.3 : 1)
-                .accessibilityLabel("Send request")
+                .accessibilityLabel("Send request").islandRect("send", ui)
         }
         .padding(.horizontal, 14).padding(.vertical, 7)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { ui.boxRect = $0 }

@@ -30,19 +30,19 @@ final class IslandController {
     let window: IslandWindow
     let ui = IslandUI()
     private(set) var model = IslandModel()
-    private let store: Store
-    private let hosting: IslandHostingView<IslandRoot>
+    let store: Store
+    let hosting: IslandHostingView<IslandRoot>
     private var subs = Set<AnyCancellable>()
     private var tick: Timer?
     private var hoverTimer: Timer?
     private var hoverSince: Date?
     private var hoverLeftAt: Date?
-    private var dragPoll: Timer?
+    private(set) var dragPoll: Timer?
     private var stopTimer: Timer?
     private var oracleTimer: Timer?
     private var keyMonitor: Any?
     private var previousApp: NSRunningApplication?
-    private var lastActivity: Date?
+    var lastActivity: Date?
     private var cursorSent: String?
     private var cursorEverSent = false
     /// The slice as last seen, for growth detection (the publisher's timing is not relied on).
@@ -153,7 +153,7 @@ final class IslandController {
 
     // MARK: placement (D9: notch geometry from AppKit, frames per display UUID, validated)
 
-    private var screen: NSScreen? { IslandGeometry.targetScreen(forceNoNotch: forceNoNotch) }
+    var screen: NSScreen? { IslandGeometry.targetScreen(forceNoNotch: forceNoNotch) }
 
     /// The saved frame for this display (validated against its visibleFrame) → detached; else the notch default.
     private func restoreOrDefault() {
@@ -199,13 +199,13 @@ final class IslandController {
     }
 
     /// SwiftUI's global (top-left) rect → the hosting view's AppKit (bottom-left) rect.
-    private func flip(_ r: CGRect) -> NSRect {
+    func flip(_ r: CGRect) -> NSRect {
         NSRect(x: r.minX, y: hosting.bounds.height - r.maxY, width: r.width, height: r.height)
     }
-    private func flip(_ p: NSPoint) -> CGPoint { CGPoint(x: p.x, y: hosting.bounds.height - p.y) }
-    private var drawnAppKit: NSRect { flip(ui.drawn) }
+    func flip(_ p: NSPoint) -> CGPoint { CGPoint(x: p.x, y: hosting.bounds.height - p.y) }
+    var drawnAppKit: NSRect { flip(ui.drawn) }
     /// The drawn island in global screen coordinates.
-    private var drawnGlobal: NSRect { drawnAppKit.offsetBy(dx: window.frame.minX, dy: window.frame.minY) }
+    var drawnGlobal: NSRect { drawnAppKit.offsetBy(dx: window.frame.minX, dy: window.frame.minY) }
 
     private func uiChanged() {
         DispatchQueue.main.async { [self] in
@@ -398,10 +398,14 @@ final class IslandController {
     // MARK: probes (§10): --probe-island <closed|open|detached|nonotch> · --probe-eye
 
     private func runIslandProbe(_ which: String) {
-        forceNoNotch = which == "nonotch"
+        forceNoNotch = which.hasSuffix("nonotch")
         fakeNotch = !forceNoNotch && NSScreen.screens.allSatisfy { IslandGeometry.notch(of: $0) == nil }
         if fakeNotch { IslandLog.write("probe: no screen has a notch — a 200 × 37 notch is pretended at the top centre") }
         guard let s = screen else { return IslandLog.write("probe: no screen") }
+        if which.hasPrefix("clicks") || which.hasPrefix("stop") || which.hasPrefix("open-no-hover") {
+            Task { await runInputProbe(which) }
+            return
+        }
         let uuid = IslandGeometry.uuid(of: s)
         let visible = IslandGeometry.relative(s.visibleFrame, to: s)
         // The validation path: an off-screen frame saved under this display is rejected and logged; then, for the
@@ -439,7 +443,7 @@ final class IslandController {
         }
     }
 
-    private func logProbeState(_ which: String) {
+    func logProbeState(_ which: String) {
         let info = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? [])
             .first { ($0[kCGWindowNumber as String] as? Int) == window.windowNumber }
         IslandLog.write("probe \(which): state=\(ui.state) shown=\(shown) visible=\(window.isVisible) key=\(window.isKeyWindow) active=\(NSApp.isActive) number=\(window.windowNumber) level=\(window.level.rawValue) sharing=\(window.sharingType.rawValue) frame=\(window.frame) drawn=\(drawnGlobal) anchor=\(ui.anchor.map { "\($0.rect) notch=\($0.notch) uuid=\(IslandGeometry.uuid(of: $0.screen))" } ?? "none") hitTestOutside=\(hosting.hitTest(NSPoint(x: 2, y: 2)) == nil)")

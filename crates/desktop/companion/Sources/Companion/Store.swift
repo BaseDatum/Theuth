@@ -46,6 +46,8 @@ final class Store: ObservableObject {
     @Published var meeting: MeetingSlice?
     /// 149 W2: point-and-say's live state; nil while idle.
     @Published var point: PointSlice?
+    /// 149i: under a probe (`AskFlags.automated`) every suppressed meeting RPC's label lands here, so a click can be asserted.
+    var meetingActs: [String] = []
 
     private(set) var undo = UndoQueue<Held>(delay: Settings.undoDelay)
     private(set) var client: RpcClient!
