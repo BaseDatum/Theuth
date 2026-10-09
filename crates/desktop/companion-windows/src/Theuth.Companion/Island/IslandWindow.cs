@@ -321,7 +321,9 @@ internal sealed partial class IslandWindow : ToolWindow
         var all = ScreenMonitor.All();
         monitor = all.FirstOrDefault(x => x.Device == monitor.Device) ?? ScreenMonitor.At(all, 0, 0);
         var size = CurrentSize();
-        var (frame, _) = model.Place(monitor.AsIslandDisplay(), size);
+        var (frame, _) = voiceAnchor is { } va && va.Device == monitor.Device
+            ? (IslandModel.DefaultFrame(va.AsIslandDisplay(), size), false) // §P: the voice pill is top-centre, never the saved offset
+            : model.Place(monitor.AsIslandDisplay(), size);
         Place(new RectInt32(frame.X, frame.Y, frame.Width, frame.Height));
     }
 
@@ -408,9 +410,33 @@ internal sealed partial class IslandWindow : ToolWindow
     /// <summary>Point-and-say's voice mode; null returns the island to its meeting content.</summary>
     public void SetVoice(VoiceView? v)
     {
+        bool starting = v is not null && voice is null;
+        string? phase = voice?.Phase;
         voice = v;
+        bool wasAnchored = voiceAnchor is not null;
+        if (v is null) voiceAnchor = null;
+        if (starting && model.Meeting is null)
+        {
+            // §P (Sky 16:44): the live-dictation pill and the answer card sit in the island area — top centre of the display under the
+            // pointer when the gesture starts — and stay there for the whole gesture; only the trail/ring overlays follow the pointer.
+            var all = ScreenMonitor.All();
+            voiceAnchor = PInvoke.GetCursorPos(out var c) ? ScreenMonitor.At(all, c.X, c.Y) : ScreenMonitor.At(all, 0, 0);
+            monitor = voiceAnchor;
+        }
         Render();
+        if (v is null && wasAnchored && IsShown && !hiding) Relayout(); // back to the island's own place ("Always show")
+        if (voiceAnchor is { } anchor && IsShown && !hiding)
+        {
+            var size = CurrentSize();
+            var f = IslandModel.DefaultFrame(anchor.AsIslandDisplay(), size);
+            Place(new RectInt32(f.X, f.Y, f.Width, f.Height));
+        }
+        if (v is not null && (starting || v.Phase != phase))
+            Log.Write($"island: voice pill phase={v.Phase} rect={Win32.Text(ScreenRect)} on {monitor?.Device} {(model.Meeting is null ? "(top centre, fixed for the gesture)" : "(below the meeting strip)")}");
     }
+
+    /// <summary>§P: the display the voice gesture started on (no meeting live): the pill is placed top-centre there, ignoring the saved offset.</summary>
+    private ScreenMonitor? voiceAnchor;
 
     public bool InVoiceMode => voice is not null;
 
@@ -655,7 +681,12 @@ internal sealed partial class IslandWindow : ToolWindow
         transcript = null;
         micBar = null;
         sysBar = null;
-        if (voice is { } v) RenderVoice(v);
+        if (voice is { } v)
+        {
+            // §P: during a voice gesture with a live meeting the pill sits directly below the meeting's strip.
+            if (model.Meeting is not null) { shell.CornerRadius = new CornerRadius(8); RenderStrip(); }
+            RenderVoice(v, padShell: model.Meeting is null);
+        }
         else if (model.Mode == IslandMode.Closed) RenderPill();
         else RenderOpen();
         renderedKey = voice is null ? RenderKey() : null;
@@ -852,6 +883,14 @@ internal sealed partial class IslandWindow : ToolWindow
     {
         shell.CornerRadius = new CornerRadius(8);
         shell.Padding = new Thickness(10, 6, 10, 8);
+        RenderStrip();
+        var s = snapshot;
+        RenderPane(s);
+    }
+
+    /// <summary>The meeting strip (and its badge rows): the open island's head, and what the voice pill sits under while a meeting is live (§P).</summary>
+    private void RenderStrip()
+    {
         var s = snapshot;
         // The strip: grip · rec · clock · topics · badges · mute · stop · eye.
         var strip = Row(6);
@@ -897,6 +936,10 @@ internal sealed partial class IslandWindow : ToolWindow
         stripGrid.Children.Add(right);
         body.Children.Add(stripGrid);
         if (badges.Children.Count > 0) body.Children.Add(badges);
+    }
+
+    private void RenderPane(MeetingSnapshot s)
+    {
 
         // Topic buttons (tapped = greyed until the brief lands).
         if (s.Topics.Count > 0)
@@ -1014,10 +1057,11 @@ internal sealed partial class IslandWindow : ToolWindow
         requestDraft = "";
     }
 
-    private void RenderVoice(VoiceView v)
+    private void RenderVoice(VoiceView v, bool padShell = true)
     {
         shell.CornerRadius = new CornerRadius(8);
-        shell.Padding = new Thickness(14, 8, 14, 10);
+        if (padShell) shell.Padding = new Thickness(14, 8, 14, 10);
+        else shell.Padding = new Thickness(10, 6, 10, 10);
         var pane = new StackPanel { Spacing = 4 };
         AutomationProperties.SetAutomationId(pane, "island-voice");
         var head = Row(8);
