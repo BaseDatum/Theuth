@@ -3,7 +3,9 @@
 //! numbers, the dictionary, spoken end commands (§7) and terminal spacing,
 //! per-surface switches from `voice.shape.<surface>` (§4.5).
 //!
-//! 153-C stub — A1 fills: every body here returns its input unchanged.
+//! Stages in §4.2 order over one token list (`tokens.rs`), each a function the
+//! config switch skips; the end parser (`end.rs`) is owned by the actor per
+//! utterance and fed through [`Shaper::shape_with`].
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +13,16 @@ use crate::dictionary::Dictionary;
 use crate::{AppProfile, Surface};
 
 pub mod end;
+
+mod dictionary_stage;
+mod literals;
+mod numbers;
+mod punctuation;
+mod tokens;
+
+pub use end::{EndParser, NEAR_MISS_MIN_LEN, SETTLE_MS, SILENCE_MS};
+
+pub(crate) use dictionary_stage::Lookup;
 
 /// Per-surface switches; resolved once at `StartDictation` from `voice.shape.<surface>` (§4.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -180,34 +192,212 @@ pub struct Shaper<'a> {
     phrases: &'a EndPhrases,
     dict: &'a Dictionary,
     app: Option<&'a AppProfile>,
+    surface: Surface,
+    commands: Vec<String>,
+    mentions: Vec<String>,
+    tlds: Vec<String>,
+    exts: Vec<String>,
 }
 
 impl<'a> Shaper<'a> {
-    /// Resolved once per dictation at `StartDictation` (§4.6).
+    /// Resolved once per dictation at `StartDictation` (§4.6). TLD / extension /
+    /// mention / path terms come from the dictionary's tagged user and learned
+    /// entries plus the built-in lists.
     pub fn new(
         cfg: ShapeConfig,
         phrases: &'a EndPhrases,
         dict: &'a Dictionary,
         app: Option<&'a AppProfile>,
     ) -> Self {
+        let tagged = |tag: &str| -> Vec<String> {
+            dict.list(None)
+                .into_iter()
+                .filter(|e| e.tags.iter().any(|t| t == tag))
+                .map(|e| e.canonical)
+                .collect()
+        };
         Self {
             cfg,
             phrases,
             dict,
             app,
+            surface: Surface::Composer,
+            commands: app.map(|a| a.commands.clone()).unwrap_or_default(),
+            mentions: tagged("mention"),
+            tlds: tagged("tld"),
+            exts: tagged("ext"),
         }
+    }
+
+    /// The dictating surface (`DictationOpts.surface`; terminal spacing applies to `Tui`).
+    pub fn with_surface(mut self, surface: Surface) -> Self {
+        self.surface = surface;
+        self
+    }
+
+    /// Slash commands the surface accepts (`DictationOpts.commands`), added to the app row's.
+    pub fn with_commands(mut self, commands: impl IntoIterator<Item = String>) -> Self {
+        self.commands.extend(commands);
+        self
+    }
+
+    /// `@mention` names (`agents_list`), added to the dictionary's `mention`-tagged terms.
+    pub fn with_mentions(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.mentions.extend(names);
+        self
     }
 
     /// `prev`: the surface's text before this utterance (context for the first token); `raw`: the model's text so far;
     /// `is_final`: the VAD closed it. Deterministic; `shape(.., raw, true)` is the text delivered.
+    ///
+    /// Stateless: a fresh [`EndParser`], so only an exact end phrase is seen. The actor
+    /// uses [`Shaper::shape_with`] with its per-utterance parser for arming and near misses.
     pub fn shape(&self, prev: &str, raw: &str, is_final: bool) -> Shaped {
-        // 153-C stub — A1 fills (§4.2 stages).
-        let _ = (prev, is_final, self.cfg, self.phrases, self.dict, self.app);
-        Shaped {
-            text: raw.to_owned(),
-            command: None,
-            actions: Vec::new(),
-            replaced: Vec::new(),
+        self.shape_with(&mut EndParser::new(self.phrases), prev, raw, is_final)
+    }
+
+    /// [`Shaper::shape`] with the utterance's end-command parser (§7.1 state across pieces).
+    pub fn shape_with(
+        &self,
+        parser: &mut EndParser,
+        prev: &str,
+        raw: &str,
+        is_final: bool,
+    ) -> Shaped {
+        self.ctx().run(parser, prev, raw, is_final)
+    }
+
+    fn ctx(&self) -> Ctx<'_> {
+        Ctx {
+            cfg: self.cfg,
+            phrases: self.phrases,
+            dict: self.dict,
+            terminal: self.surface == Surface::Tui || self.app.is_some_and(|a| a.terminal),
+            commands: &self.commands,
+            mentions: &self.mentions,
+            tlds: &self.tlds,
+            exts: &self.exts,
         }
     }
 }
+
+/// Everything the stages read; tests build one directly (with a fake [`Lookup`]).
+pub(crate) struct Ctx<'a> {
+    pub(crate) cfg: ShapeConfig,
+    pub(crate) phrases: &'a EndPhrases,
+    pub(crate) dict: &'a dyn Lookup,
+    pub(crate) terminal: bool,
+    pub(crate) commands: &'a [String],
+    pub(crate) mentions: &'a [String],
+    pub(crate) tlds: &'a [String],
+    pub(crate) exts: &'a [String],
+}
+
+// ponytail: built-in lists cover the common cases; §5's packaged TLD/extension lists arrive through
+// the dictionary's tags once A2 exposes them — add a `Dictionary::tagged(tag)` and drop these.
+const TLDS: &[&str] = &[
+    "com", "org", "net", "io", "dev", "ai", "co", "app", "sh", "me", "us", "uk", "de", "fr", "eu",
+    "edu", "gov", "info", "xyz", "cloud", "tech", "rs", "ch", "nl", "se", "no", "jp", "au", "ca",
+];
+const EXTS: &[&str] = &[
+    "sh", "rs", "py", "js", "ts", "tsx", "jsx", "mjs", "md", "json", "yaml", "yml", "toml", "txt",
+    "html", "css", "go", "java", "c", "h", "cpp", "hpp", "cs", "swift", "kt", "rb", "php", "sql",
+    "csv", "png", "jpg", "jpeg", "gif", "svg", "pdf", "zip", "gz", "tar", "lock", "env", "log",
+    "exe", "dll", "so", "dylib", "wasm", "xml", "ini", "cfg",
+];
+
+fn has(list: &[&str], extra: &[String], w: &str) -> bool {
+    list.iter().any(|x| x.eq_ignore_ascii_case(w))
+        || extra.iter().any(|x| x.eq_ignore_ascii_case(w))
+}
+
+impl Ctx<'_> {
+    fn is_tld(&self, w: &str) -> bool {
+        has(TLDS, self.tlds, w)
+    }
+    fn is_ext(&self, w: &str) -> bool {
+        has(EXTS, self.exts, w)
+    }
+    fn is_command(&self, w: &str) -> bool {
+        has(&[], self.commands, w)
+    }
+    fn is_mention(&self, w: &str) -> bool {
+        has(&[], self.mentions, w)
+    }
+    fn number_word(&self, w: &str) -> bool {
+        numbers::is_number_word(w)
+    }
+
+    /// The §4.2 stages in order; every switch skips its stage.
+    pub(crate) fn run(
+        &self,
+        parser: &mut EndParser,
+        prev: &str,
+        raw: &str,
+        is_final: bool,
+    ) -> Shaped {
+        let cfg = self.cfg;
+        let mut toks = tokens::tokenize(raw);
+        if cfg.punctuation || cfg.literals || cfg.end_commands {
+            punctuation::literal_escape(&mut toks, self);
+        }
+        if cfg.punctuation {
+            punctuation::spoken(&mut toks);
+            punctuation::spelled_letters(&mut toks);
+            punctuation::gates(&mut toks, self, is_final);
+        }
+        if cfg.literals {
+            literals::literals(&mut toks, self);
+        }
+        if cfg.numbers {
+            numbers::numbers(&mut toks);
+        }
+        if cfg.punctuation {
+            punctuation::cleanup(&mut toks);
+        }
+        if cfg.dictionary {
+            dictionary_stage::dictionary(&mut toks, self.dict);
+        }
+        let mut command = None;
+        if cfg.end_commands {
+            let feed = toks
+                .iter()
+                .filter(|t| matches!(t.kind, tokens::Kind::Word | tokens::Kind::Hidden))
+                .map(|t| t.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            command = parser.feed(&feed, is_final);
+            let mut n = parser.consumed();
+            if command.is_some() && n > 0 {
+                // Drop from the phrase's first word to the end, then a trailing model mark.
+                let mut cut = toks.len();
+                while n > 0 && cut > 0 {
+                    cut -= 1;
+                    if matches!(toks[cut].kind, tokens::Kind::Word | tokens::Kind::Hidden) {
+                        n -= 1;
+                    }
+                }
+                toks.truncate(cut);
+                while toks.last().is_some_and(|t| t.asr) {
+                    toks.pop();
+                }
+            }
+        }
+        let (mut text, actions, replaced) = tokens::render(&toks, prev);
+        if cfg.terminal_spacing && self.terminal && is_final {
+            let last = text.rsplit(char::is_whitespace).next().unwrap_or("");
+            if last.starts_with(['/', '@']) {
+                text.truncate(text.trim_end().len());
+            }
+        }
+        Shaped {
+            text,
+            command,
+            actions,
+            replaced,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
