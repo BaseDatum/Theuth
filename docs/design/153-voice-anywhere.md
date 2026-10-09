@@ -403,3 +403,135 @@ a user entry added mid-dictation applies from the next one.
 `model_punctuation_cleanup_only_adjacent`; `dictionary_self_expansion_guard`; `end_command_arms_on_partial_and_sticks`; `near_miss_tolerance_len_over_5_min_5_chars`
 ("end" never passes as "send"); `literal_escapes_end_phrase_and_symbol`; `terminal_spacing_only_on_terminal_surfaces`; `partial_then_final_is_idempotent_on_plain_prose`;
 `shape_is_total_over_fuzzed_utf8` (proptest, 10 k cases, no panic); `presets_full_plain_off_resolve`; `scratch_that_drops_previous_final_only`.
+
+## 6. Correction learning and history
+
+### 6.1 Observation in our own fields (D4) — no accessibility tree needed
+The surfaces we own know exactly what was dictated and what was sent. Each keeps, per dictation id, the shaped spans it inserted (the
+`Splice` region: `UI/lib/dictation.ts:43-53`; `AskDictation.finalText`, `COMP/CompanionCore/AskVoice.swift:151`; the TUI's `splice`,
+`crates/tui/src/dictation.rs:138`) and, at **send** (Composer `submit()`, `Composer.tsx:706`; the companion's `commitAsk`,
+`COMP/Companion/AskBar/Store+Ask.swift:64`; the TUI's send), reports `dictation_correction(id, sent_text)` (§14.2) with the text actually
+sent. The engine diffs the dictated region against the corresponding slice of `sent_text` (anchored by the surrounding unchanged words, ±8
+tokens — the grounding idea of A:L87, over text instead of audio). No report when the field was cleared or the dictation was discarded.
+
+### 6.2 Policy constants (`VOICE/history/learn.rs`, pure, tested)
+| Constant | Value | Rule |
+|---|---|---|
+| `SINGLE_WORD` | both sides one token, ≤ 40 chars, ≥ 2 alphanumerics, a letter on each side | multi-word edits are grammar, not vocabulary |
+| `INFLECTIONS` | `'s s es ies ed ing` | an edit that only adds/removes one of these is rejected (A:L85's rule, our list) |
+| case-only edits | allowed | brand capitalisation ("github" → "GitHub") is a valid rule |
+| `SUGGEST_AFTER` | 2 occurrences in 7 days (same heard → typed pair, case-insensitive on heard) | one slip is noise |
+| `DISMISS_COOLDOWN` | 7 days per pair | "Not now" is respected |
+| `IGNORES_PER_SESSION` | 3 | after three ignored cards in one engine run, no more cards until restart |
+| `NEVER` | permanent per pair | "Never for this" writes a negative (§5.3) |
+| `PCM_RETENTION` | 120 s per dictation, max 15 min total | the audio of the corrected utterance can be played in the card ("▶ play what you said") and is the ground truth for §5's acoustic variant |
+
+### 6.3 Candidate → suggestion flow
+1. `dictation_correction` lands → `learn::candidates(dictated_spans, sent_text) -> Vec<Candidate { heard, typed, utterance, offset }>`.
+2. Each candidate passes `SINGLE_WORD` and `INFLECTIONS`; survivors are appended to `corrections` (§6.5) with the dictation id.
+3. `learn::due(pair, history, now)` → when `SUGGEST_AFTER` holds and no cooldown/never row exists and the session's ignores < 3, the engine
+   publishes `VoiceEvent::DictionarySuggestion { id, heard, typed, occurrences, surface, has_audio }`.
+4. The surface that produced the last occurrence shows the card (W-o); the answer goes back as `dictionary_suggestion_answer(id, Add | NotNow |
+   Never)`. `Add` writes a user entry with the heard variant (§5.3); `NotNow` writes the cooldown; `Never` a negative.
+
+### 6.4 The suggestion card (one component per client; mock frame D)
+```
+┌ Dictionary · 2 times this week ──────────────────────────────────┐
+│ You changed “parakeet tee dee tee” → “Parakeet TDT” after        │
+│ dictating. Heard the same way twice (Composer, 7 days).          │
+│ Add it as a replacement?                                          │
+│ [ Add ]  [ Not now ]  [ Never for this ]        ▶ play what you said │
+└───────────────────────────────────────────────────────────────────┘
+```
+Desktop: `components/ui/DictionarySuggestion.tsx` under the Composer / field; TUI: a one-line prompt under the composer (`a`dd · `n`ot now ·
+`v`never · `p`lay); companion macOS: a `GlassPanel` card at the Ask bar's anchor; Windows: a `ToolWindow` twin. Auto-dismiss 20 s counts as
+"Not now" without the cooldown. "play" fetches `dictation_audio_get(id, utterance)` (§14.2) — 16 kHz i16 — and plays it locally.
+
+### 6.5 History store schema (D9, W-f) — `<data_dir>/voice.db`, sqlx, migrations under `crates/voice/migrations/` (the `crates/artifact`
+pattern, `crates/artifact/src/store.rs:627-640`)
+```sql
+CREATE TABLE dictations (
+  id TEXT PRIMARY KEY,            -- DictationId (uuid v7)
+  started_ms INTEGER NOT NULL, finished_ms INTEGER,
+  surface TEXT NOT NULL,          -- composer | tui | companion | phone | any_app
+  destination TEXT NOT NULL,      -- agent_prompt | document | message_reply | any_app:<bundle or exe>
+  app TEXT,                       -- any-app: bundle id / exe; else NULL
+  raw TEXT NOT NULL, shaped TEXT NOT NULL, polished TEXT,   -- finals joined; polished NULL unless §9 ran
+  delivered TEXT,                 -- what actually went out (polished ?? shaped), after end-command edits
+  press_ms INTEGER, first_partial_ms INTEGER, first_final_ms INTEGER, final_ms INTEGER,  -- §8.6 (relative to press)
+  reason TEXT NOT NULL,           -- done | stopped | error:<message>
+  audio_bytes INTEGER NOT NULL DEFAULT 0, audio_path TEXT   -- <data_dir>/voice/history/<id>.pcm16, NULL when evicted
+);
+CREATE TABLE corrections (
+  id INTEGER PRIMARY KEY, dictation_id TEXT NOT NULL REFERENCES dictations(id) ON DELETE CASCADE,
+  utterance INTEGER NOT NULL, heard TEXT NOT NULL, typed TEXT NOT NULL, at_ms INTEGER NOT NULL
+);
+CREATE TABLE suggestion_state (          -- cooldowns and nevers, keyed by the pair
+  heard_lc TEXT NOT NULL, typed TEXT NOT NULL, state TEXT NOT NULL,   -- cooldown | never | added
+  until_ms INTEGER, PRIMARY KEY (heard_lc, typed)
+);
+CREATE INDEX dictations_started ON dictations(started_ms);
+```
+Budget: `HISTORY_ROWS = 200` (older rows deleted, cascade), `AUDIO_BUDGET = 64 MiB` (oldest `audio_path` files unlinked first, row kept with
+`audio_path NULL`), PCM kept ≥ 120 s regardless of budget for the newest dictation. The task streams the 16 kHz f32 → i16 PCM to the file
+while dictating (the only new disk write in the dictation path; `dictation.rs:7`'s "Nothing is written to disk" is amended, §17); a private
+session (`SessionResources.is_private`, the pattern at `crates/agent/src/loop_.rs:5302`) or `voice.history.enabled: false` writes neither
+row nor audio.
+
+### 6.6 Any-app observation (W-g: designed, optional, not in wave D)
+For a delivery into another app the companion may watch the target element for 30 s after the paste (AX `kAXValueChanged` /
+`kAXSelectedTextChanged` notifications, 20 verification reads × 50 ms, a 3 s inactivity stop, fields > 100 000 chars ignored — A:L83) and
+report `dictation_correction` the same way. Gated by `AppProfile.learn: bool` (default false) and by Accessibility being granted. Windows twin:
+UIA `TextPattern` `TextChanged` event on the focused element. Ships only after wave D's delivery numbers are in (§16).
+
+### 6.7 Undo polish, budget, privacy
+- **Undo polish** (D8): `dictation_history(limit)` returns rows with `raw/shaped/polished`; the surface's history row offers "use the raw text" —
+  the Composer re-splices, any-app re-delivers through the same lease (§13.3). The companion's hold pill gets "⎋ undo polish" for 3 s after a
+  polished delivery (the existing `UndoQueue` hold, 149 §5.4 A).
+- **Settings › Voice › History**: rows (time · surface → destination · the delivered text, raw on hover · timings · ▶ when audio exists · ✕),
+  "Clear history", "Keep audio" (default on, 64 MiB), "Learn from my corrections" (default on), "Off" switch for the whole store.
+- **Privacy**: local only; nothing leaves the machine; the agent never reads the store; the Telegram/Slack/Signal channels and the mesh have no
+  RPC to it; a relay peer gets `dictation_history` refused like the daemon mic (`api.rs:6279-6283`'s rule).
+
+## 7. Spoken end commands
+
+### 7.1 Parser on partials (`VOICE/shape/end.rs`, a state machine the shaper feeds per piece)
+```
+Idle ──(tail of a partial matches a send phrase exactly)──▶ Armed{utt, at_ms}
+Armed ──(later partial of the same utterance drops the phrase: re-decode "send it"→"sent it"/"send")──▶ Armed   (sticky: once armed, stays)
+Armed ──(final: phrase present, or a near miss within max(1, len/5) edits for phrases ≥ 5 chars; nothing for shorter)──▶ Send{near_miss}
+Armed ──(final without the phrase and beyond tolerance, or the user typed / pressed a key)──▶ Idle
+Any   ──("literal" precedes the phrase)──▶ Idle (the words are written)
+```
+The arming is per utterance; the phrase and the words after it are removed from `shaped.text`. Technique after A:L95 (arming, stickiness,
+tolerance); constants ours: `ARM_ON_PARTIAL = true`, `NEAR_MISS_MIN_LEN = 5`, `TOLERANCE = max(1, len / 5)`.
+
+### 7.2 Phrases (configurable, `voice.end_commands`, §4.5)
+| Command | Default phrases | Effect |
+|---|---|---|
+| `Send` | "send it" | §7.4 per surface |
+| `ScratchThat` | "scratch that" | the previous *closed* utterance is emptied (actor re-sends it empty, §4.6); on a partial it only arms |
+| literal | "literal" | the next phrase or symbol word is written as said |
+| actions | "new line", "new paragraph", "tab" | shaping actions, not end commands (W-j) |
+
+### 7.3 Settle and silence (D5)
+When `Send` arms on a partial the surface shows "sending in 1.5 s"; the actor starts `SETTLE = 1.5 s` and stops the dictation itself when,
+after the settle, `SILENCE = 0.35 s` of frames below the gate threshold have passed (the `Gate` already counts silent frames,
+`VOICE/vad.rs:111-112`). Speech inside the window resets the settle; the user typing or pressing a key (surfaces call `dictation_stop`
+themselves) ends it. The event `DictationText { command: Send }` is what the surface acts on after `DictationFinished`.
+
+### 7.4 Per-surface actions
+| Surface | "send it" | "scratch that" | Secure field |
+|---|---|---|---|
+| Composer | the spliced value lands, then `submit()` (`Composer.tsx:706`) — a steer if a turn runs, exactly like ⏎ | empties the utterance; the splice re-renders | n/a |
+| TUI | same: splice then the send key's path | same | n/a |
+| Companion Ask bar / V / row mic | `setText` then `commitAsk` with **no 3 s hold** (the phrase was the confirmation; `COMP/Companion/AskBar/Store+Ask.swift:51-57`) | same | n/a |
+| Voice key / command | release already sends; "send it" while locked = the tap that sends | same | n/a |
+| Any-app (§13) | deliver the last utterance, then press Return **only** if the target is `editable` and not `AXSecureTextField` / UIA `IsPassword`, focus is still the captured element, and no physical modifier is down; else deliver without Return and caption "not sent — secure field" / "not sent — focus moved" | re-deliver the utterance as empty = not possible after paste → the card offers "undo last" (⌘Z/Ctrl+Z into the target, once, only if focus unchanged) | never Return |
+
+### 7.5 Tests
+`end::arms_on_partial`, `end::sticky_across_redecode`, `end::near_miss_only_when_armed_and_len_ge_5`, `end::end_is_not_send`,
+`end::literal_disarms`, `end::scratch_arms_then_fires_on_final`, `dictation::send_it_settle_then_silence_stops` (actor test with a synthetic
+remote feed: phrase in a partial, 1.5 s, 0.35 s of zeros → `DictationFinished { Done }` and the `Send` command on the last text event),
+`dictation::typing_cancels_settle` (a `StopDictation` mid-settle wins), Swift `AskVoiceMachineTests.sendItSkipsTheHold`, TS
+`Composer.test.ts: send it submits once`.
