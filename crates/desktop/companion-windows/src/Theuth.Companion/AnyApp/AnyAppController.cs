@@ -3,6 +3,7 @@ using Microsoft.UI.Dispatching;
 using Theuth.Companion.Core;
 using Theuth.Companion.Island;
 using Theuth.Companion.Rpc;
+using Theuth.Companion.Ui;
 using Theuth.Companion.Voice;
 
 namespace Theuth.Companion.AnyApp;
@@ -29,12 +30,14 @@ internal sealed class AnyAppController
     private readonly VoiceRecorder recorder;
     private readonly DictationLease dictation = new();
     private readonly DispatcherQueueTimer pillTimer;
-    private FailureCardWindow? card;
-    private RewritePanelWindow? panel;
     private RewriteState? rewrite;
     private Gesture? live;
     private int generation;
     private Task? starting;
+    private int keyGesture = -1;
+    private bool beginning;
+    private string? pendingEnd;
+    private bool pendingCancel;
 
     public AnyAppController(Store store, DispatcherQueue dispatcher, AnyAppSettings settings)
     {
@@ -124,6 +127,8 @@ internal sealed class AnyAppController
         public string Selection = "";
         public bool Paused;
         public DateTimeOffset Pressed = DateTimeOffset.Now;
+        public int KeyId = -1;
+        public readonly List<string> Heard = new();
     }
 
     private sealed record RewriteState(FocusCapture Capture, Assessment Assessment, AppProfile Profile, string Selection, List<(string Instruction, string Result)> Thread)
@@ -150,7 +155,7 @@ internal sealed class AnyAppController
         LastCapture = capture;
         Log.Write($"anyapp: press ({source}) → {Describe(capture, a)} · read {capture.ReadMs} ms");
         Counters.Gestures++;
-        bool refine = panel is { IsOpen: true } && rewrite is not null;
+        bool refine = cardKind == CardKind.Rewrite && rewrite is not null && CardShown;
         if (a.Refused && !refine)
         {
             Counters.Refused++;
@@ -384,6 +389,7 @@ internal sealed class AnyAppController
         g.Pending.Clear();
         foreach (var p in kept) g.Pending.Enqueue(p);
         if (text.Trim().Length == 0) return;
+        g.Heard.Add(text.Trim());
         g.Pending.Enqueue((utterance, text));
         _ = PumpAsync(g);
     }
@@ -633,9 +639,35 @@ internal sealed class AnyAppController
         if (words.Length > 0) Fail(g, kind, words, footer, canRetry: kind != DeliveryFailure.TargetUnavailable || detail == "focus moved", detail);
     }
 
+    // MARK: the one AnswerCard (PIN-C, §12.1 D12): the failure card (§13.5) and the rewrite panel (§13.6) are W153C's AnswerCardWindow
+
+    private enum CardKind { None, Failure, Rewrite }
+
+    private CardKind cardKind;
+    private int cardGen = -1;
+    private bool cardEventsWired;
+    private string? cardStatus;
     private FailureCardModel? cardModel;
     private FocusCapture? cardCapture;
     private Assessment? cardAssessment;
+    private RewriteModel? rewriteModel;
+
+    /// <summary>The shared card, its events routed to us only while the generation we began is the card's.</summary>
+    private AnswerCardWindow Card()
+    {
+        var w = AnswerCardWindow.Shared();
+        if (!cardEventsWired)
+        {
+            cardEventsWired = true;
+            w.ActionInvoked += (gen, id) => { if (gen == cardGen && cardKind != CardKind.None) OnCardAction(id); };
+            w.KeyIntent += (gen, intent) => { if (gen == cardGen && cardKind != CardKind.None) OnCardKey(intent); };
+            w.Dismissed += gen => { if (gen == cardGen && cardKind != CardKind.None) CloseCard("esc"); };
+        }
+        return w;
+    }
+
+    /// <summary>Our card is the one on screen (nobody began a newer generation).</summary>
+    public bool CardShown => cardKind != CardKind.None && AnswerCardWindow.Instance is { } w && w.Generation == cardGen && w.IsShown;
 
     private void ShowCard(Gesture g)
     {
@@ -646,79 +678,159 @@ internal sealed class AnyAppController
         ShowCard(model, g.Capture, g.Assessment);
     }
 
-    /// <summary>Show (or replace) the card — also the probe's fixture path.</summary>
+    /// <summary>Show (or replace) the failure card — also the probe's fixture path. It stays until acted on (D13).</summary>
     public void ShowCard(FailureCardModel model, FocusCapture? capture, Assessment? assessment)
     {
         cardModel = model;
         cardCapture = capture;
         cardAssessment = assessment;
-        if (card is null)
-        {
-            card = new FailureCardWindow();
-            card.CopyRequested += () => _ = CardCopyAsync();
-            card.RetryRequested += () => _ = CardRetryAsync();
-            card.OpenRequested += () => _ = CardOpenAsync();
-            card.Dismissed += how => { Log.Write($"anyapp-card: closed by {how}"); cardModel = null; };
-        }
-        card.Show(model);
+        cardStatus = null;
+        var w = Card();
+        cardGen = w.Begin("anyapp-failure");
+        cardKind = CardKind.Failure;
+        w.Present(cardGen, FailureContent(), expanded: false);
+        Log.Write($"anyapp-card: shown (answer card gen {cardGen}) — {model.Title} · {model.Text.Length} chars · footer \"{model.Footer}\"");
     }
 
-    public FailureCardWindow? Card => card;
+    private AnswerCardContent FailureContent()
+    {
+        var m = cardModel!;
+        var actions = new List<CardButton> { new("copy", "Copy", null, Primary: true) };
+        if (m.CanRetry) actions.Add(new CardButton("retry", "Try again"));
+        actions.Add(new CardButton("open", "Open in theuth", "O"));
+        return new AnswerCardContent
+        {
+            Title = $"Couldn't type into {(m.App.Length > 0 ? m.App : "the app")}",
+            Subtitle = AnyAppCopy.Kind(m.Kind) + (m.Detail is { Length: > 0 } d ? $" — {d}" : ""),
+            Collapsed = m.Text,
+            Body = "```text\n" + m.Text + "\n```", // verbatim when expanded: the words are not markdown
+            Status = cardStatus ?? "",
+            Tone = CardTone.Failed,
+            Actions = actions,
+            Footer = m.Footer,
+        };
+    }
+
+    private void SetCardStatus(string s)
+    {
+        cardStatus = s;
+        if (CardShown && cardKind == CardKind.Failure) AnswerCardWindow.Instance!.Present(cardGen, FailureContent());
+    }
+
+    private void CloseCard(string why)
+    {
+        var kind = cardKind;
+        cardKind = CardKind.None;
+        AnswerCardWindow.Instance?.Hide(cardGen, why);
+        Log.Write($"anyapp-card: {(kind == CardKind.Rewrite ? "rewrite panel discarded" : "closed")} ({why})");
+        if (kind == CardKind.Rewrite) { rewrite = null; rewriteModel = null; }
+        cardModel = null;
+    }
+
+    private void OnCardAction(string id)
+    {
+        Log.Write($"anyapp-card: action {id}");
+        switch (id)
+        {
+            case "copy": _ = CardCopyAsync(); break;
+            case "retry": _ = CardRetryAsync(); break;
+            case "open": _ = CardOpenAsync(); break;
+            case "replace": _ = ReplaceAsync(); break;
+            case "discard": CloseCard("discard"); break;
+        }
+    }
+
+    private void OnCardKey(CardKeyIntent intent)
+    {
+        switch (intent)
+        {
+            case CardKeyIntent.Dismiss: CloseCard("esc"); break;
+            case CardKeyIntent.Open when cardKind == CardKind.Failure: _ = CardOpenAsync(); break;
+        }
+    }
 
     private async Task CardCopyAsync()
     {
-        if (cardModel is not { } m || card is null) return;
+        if (cardModel is not { } m) return;
         bool ok = await clipboard.CopyPlainAsync(m.Text);
         Log.Write($"anyapp-card: Copy → {(ok ? "the words are on the clipboard (no markers)" : "FAILED")}");
-        card.SetStatus(ok ? "Copied — paste it where you want it" : "Couldn't use the clipboard");
+        SetCardStatus(ok ? "Copied — paste it where you want it" : "Couldn't use the clipboard");
     }
 
     private async Task CardOpenAsync()
     {
-        if (cardModel is not { } m || card is null) return;
+        if (cardModel is not { } m) return;
         var uri = new Uri("theuth://compose?text=" + Uri.EscapeDataString(m.Text));
         bool ok = await Ui.Links.Open(uri);
         Log.Write($"anyapp-card: Open in theuth → {(ok ? "theuth://compose" : "FAILED")}");
-        if (ok) card.Dismiss("open");
-        else card.SetStatus("Couldn't open theuth");
+        if (ok) CloseCard("open");
+        else SetCardStatus("Couldn't open theuth");
     }
 
     /// <summary>Try again (§13.5): focus back in the same element, then the lease once more; the card closes when the words land.</summary>
     private async Task CardRetryAsync()
     {
-        if (cardModel is not { } m || card is null || cardCapture is not { } c || cardAssessment is not { } a) return;
-        if (live is not null) { card.SetStatus("Finish the dictation first"); return; }
-        card.SetStatus("Trying again…");
+        if (cardModel is not { } m || cardCapture is not { } c || cardAssessment is not { } a) return;
+        if (live is not null) { SetCardStatus("Finish the dictation first"); return; }
+        SetCardStatus("Trying again…");
         if (!await reader.RestoreFocusAsync(c))
         {
             Log.Write($"anyapp-card: Try again — could not put focus back in {a.App}");
-            card.SetStatus($"Click into {a.App} where the words should go, then Try again");
+            SetCardStatus($"Click into {a.App} where the words should go, then Try again");
             return;
         }
         var g = new Gesture { Generation = ++generation, Id = Guid.NewGuid().ToString("N")[..12], Source = GestureSource.Fixture, Capture = c, Assessment = a, FellBack = true };
         g.Lease = new ClipboardLease(g.Id, settings.LeaveTextOnClipboard);
+        live = g; // a failure inside the retry stays with the retry (no second card)
         var verdict = await LeaseAsync(g, m.Text);
+        if (live == g) live = null;
         Log.Write($"anyapp-card: Try again → {verdict}");
         if (verdict is PasteVerdict.Landed or PasteVerdict.Unknown or PasteVerdict.UserActed && g.Failures.Count == 0)
         {
-            card.Dismiss("landed");
+            CloseCard("landed");
             return;
         }
         g.Failures.Clear();
-        card.SetStatus("Still not landed — Copy, or Open in theuth");
+        SetCardStatus("Still not landed — Copy, or Open in theuth");
     }
 
-    // MARK: rewrite on the selection (§13.6)
+    // MARK: rewrite on the selection (§13.6), on the same card
 
     private async Task RunRewriteAsync(Gesture g)
     {
         var instruction = string.Join(" ", g.Instruction).Trim();
         if (instruction.Length == 0) { Hint("Nothing recognized — say what to change"); return; }
-        var state = rewrite is not null && panel is { IsOpen: true }
+        var state = rewrite is not null && cardKind == CardKind.Rewrite && CardShown
             ? rewrite
             : new RewriteState(g.Capture, g.Assessment, g.Profile, g.Selection, new List<(string, string)>());
         rewrite = state;
         await RewriteAsync(state, instruction);
+    }
+
+    private void ShowRewrite(RewriteModel m)
+    {
+        rewriteModel = m;
+        var w = Card();
+        if (!(CardShown && cardKind == CardKind.Rewrite)) cardGen = w.Begin("rewrite");
+        cardKind = CardKind.Rewrite;
+        var actions = new List<CardButton>();
+        if (m.Proposal is { Length: > 0 } && !m.Busy) actions.Add(new CardButton("replace", "Replace", null, Primary: true));
+        actions.Add(new CardButton("discard", "Discard", "Esc"));
+        var excerpt = m.Selection.Length > 140 ? m.Selection[..140] + "…" : m.Selection;
+        w.Present(cardGen, new AnswerCardContent
+        {
+            Title = $"Rewrite in {(m.App.Length > 0 ? m.App : "the app")}",
+            Subtitle = $"{m.Selection.Length} chars selected",
+            Request = m.Instruction,
+            Body = m.Proposal ?? "",
+            Collapsed = m.Proposal ?? m.State,
+            Status = m.State,
+            Tone = m.Failed ? CardTone.Failed : m.Busy ? CardTone.Working : CardTone.Normal,
+            Busy = m.Busy,
+            Actions = actions,
+            Footer = $"Selection: “{excerpt}”{(m.Meta is { Length: > 0 } meta ? " · " + meta : "")}",
+        }, expanded: true);
+        Log.Write($"anyapp-rewrite: card gen {cardGen} — {m.State} · instruction {m.Instruction.Length} chars · selection {m.Selection.Length} chars · proposal {(m.Proposal?.Length ?? 0)} chars");
     }
 
     /// <summary>One rewrite turn: the spoken instruction is the user message, the selection goes in through the engine's template.</summary>
@@ -730,8 +842,7 @@ internal sealed class AnyAppController
 
     private async Task RewriteAsync(RewriteState state, string instruction)
     {
-        EnsurePanel();
-        panel!.Show(new RewriteModel(state.Assessment.App, instruction, state.Selection, null, "rewriting…", null, true, false));
+        ShowRewrite(new RewriteModel(state.Assessment.App, instruction, state.Selection, null, "rewriting…", null, true, false));
         var thread = state.Thread.Count > 0 ? state.Thread : null;
         PolishReply? reply = null;
         string? error = null;
@@ -745,42 +856,34 @@ internal sealed class AnyAppController
         }
         catch (Exception e) { error = Why(e); }
         int ms = (int)(DateTimeOffset.Now - started).TotalMilliseconds;
+        if (rewrite != state) return; // discarded while the model worked
         if (reply is { Text: { Length: > 0 } text })
         {
             state.Thread.Add((instruction, text));
             state.Proposal = text;
-            panel.Show(new RewriteModel(state.Assessment.App, instruction, state.Selection, text, $"Replace puts this over your selection · hold {Chord} to refine", $"{reply.Model ?? "model"} · {reply.Ms} ms", false, false));
+            ShowRewrite(new RewriteModel(state.Assessment.App, instruction, state.Selection, text, $"Replace puts this over your selection · hold {Chord} to refine", $"{reply.Model ?? "model"} · {reply.Ms} ms", false, false));
             Log.Write($"anyapp: rewrite → {text.Length} chars by {reply.Model} in {reply.Ms} ms (turn {state.Thread.Count})");
         }
         else
         {
             var why = error ?? reply?.Refused ?? "no reply";
-            panel.Show(new RewriteModel(state.Assessment.App, instruction, state.Selection, state.Proposal, $"couldn't rewrite — {why}", $"{ms} ms", false, true));
+            ShowRewrite(new RewriteModel(state.Assessment.App, instruction, state.Selection, state.Proposal, $"couldn't rewrite — {why}", $"{ms} ms", false, true));
             Log.Write($"anyapp: rewrite failed after {ms} ms — {why}");
         }
     }
 
-    private void EnsurePanel()
-    {
-        if (panel is not null) return;
-        panel = new RewritePanelWindow();
-        panel.ReplaceRequested += () => _ = ReplaceAsync();
-        panel.Dismissed += how => { Log.Write($"anyapp-rewrite: discarded ({how})"); rewrite = null; };
-    }
-
-    public RewritePanelWindow? Panel => panel;
-
     /// <summary>Replace: focus back in the captured element first (hiding alone races the paste — A:L165), then deliver over the selection.</summary>
     private async Task ReplaceAsync()
     {
-        if (rewrite is not { Proposal: { Length: > 0 } proposal } state || panel is null) return;
-        panel.Retire();
+        if (rewrite is not { Proposal: { Length: > 0 } proposal } state || rewriteModel is not { } m) return;
+        AnswerCardWindow.Instance?.Hide(cardGen, "replace");
         if (!await reader.RestoreFocusAsync(state.Capture))
         {
             Log.Write($"anyapp-rewrite: Replace — could not put focus back in {state.Assessment.App}");
-            panel.Show(new RewriteModel(state.Assessment.App, state.Thread[^1].Instruction, state.Selection, proposal, $"Couldn't return to {state.Assessment.App} — click into it and press Replace again", null, false, true));
+            ShowRewrite(m with { State = $"Couldn't return to {state.Assessment.App} — click into it and press Replace again", Failed = true });
             return;
         }
+        cardKind = CardKind.None;
         var g = new Gesture { Generation = ++generation, Id = Guid.NewGuid().ToString("N")[..12], Source = GestureSource.Fixture, Capture = state.Capture, Assessment = state.Assessment, Profile = state.Profile };
         g.Lease = new ClipboardLease(g.Id, settings.LeaveTextOnClipboard);
         var before = await reader.ReadAsync(g.Capture);
@@ -788,7 +891,76 @@ internal sealed class AnyAppController
         var verdict = method == DeliveryMethod.Direct ? await DirectAsync(g, proposal, before) : await LeaseAsync(g, proposal);
         Log.Write($"anyapp-rewrite: Replace → {method} · {verdict}");
         rewrite = null;
+        rewriteModel = null;
         if (g.Failures.Count > 0) ShowCard(g);
+    }
+
+    // MARK: the dictate-anywhere key (PIN-C: Hotkeys.DictateAnywhere after the one PointMachine)
+
+    /// <summary>
+    /// W153C's mode-key gesture for Dictate anywhere: Started → the press (assess, then listen); Locked → hands-free; Stopped → deliver
+    /// the rest; Discarded → drop (the PointController shows the hint); Switched into dictation → begin with the words so far in front;
+    /// Switched out of it → handled by <see cref="TakeWords"/>; Refused → the PointController shows the hint.
+    /// </summary>
+    public void OnGesture(ModeGesture e)
+    {
+        Log.Write($"anyapp: key gesture {e.GetType().Name} #{e.Id} ({e.Mode.RawValue()}){(e is ModeGesture.Stopped s0 ? $" {s0.Reason} after {s0.HeldMs} ms" : e is ModeGesture.Discarded d0 ? $" {d0.Reason}" : "")}");
+        switch (e)
+        {
+            case ModeGesture.Started s when s.Mode == PointMode.Dictate:
+                _ = BeginKeyAsync(s.Id, null);
+                break;
+            case ModeGesture.Switched sw when sw.To == PointMode.Dictate:
+                _ = BeginKeyAsync(sw.Id, sw.Words);
+                break;
+            case ModeGesture.Locked l when l.Id == keyGesture:
+                ShowLock();
+                break;
+            case ModeGesture.Stopped st when st.Id == keyGesture:
+                if (beginning) pendingEnd = st.Reason;
+                else _ = EndAsync(st.Reason);
+                break;
+            case ModeGesture.Discarded d when d.Id == keyGesture:
+                if (beginning) pendingCancel = true;
+                else Cancel(d.Reason);
+                break;
+            case ModeGesture.Switched sw when sw.From == PointMode.Dictate && sw.Id == keyGesture:
+                if (live is { KeyId: var k } && k == sw.Id) TakeWords(sw.Id); // TakeDictateWords normally ran first
+                break;
+        }
+    }
+
+    private async Task BeginKeyAsync(int id, string? words)
+    {
+        keyGesture = id;
+        beginning = true;
+        pendingEnd = null;
+        pendingCancel = false;
+        bool ok;
+        try { ok = await BeginAsync("key"); }
+        finally { beginning = false; }
+        if (!ok || live is not { } g) return;
+        g.KeyId = id;
+        if (words is { Length: > 0 })
+        {
+            Log.Write($"anyapp: switched in with {words.Length} chars heard so far — they go first");
+            OnFinal(g, -1, words);
+        }
+        if (pendingCancel) { Cancel("discarded during the press"); return; }
+        if (pendingEnd is { } why) _ = EndAsync(why);
+    }
+
+    /// <summary>
+    /// PIN-C <c>Hotkeys.TakeDictateWords</c>: the gesture switches from dictation to ask/command (§10.1) — stop the capture without
+    /// delivering more and hand back every word heard in this gesture (those already typed stay in the target).
+    /// </summary>
+    public string TakeWords(int gestureId)
+    {
+        if (live is not { } g || g.KeyId != gestureId) return "";
+        var words = string.Join(" ", g.Heard.Concat(g.Partial.Length > 0 ? new[] { g.Partial } : Array.Empty<string>()));
+        Log.Write($"anyapp: switched out of dictation — handing {words.Length} chars to the ask/command gesture ({g.Lines} line(s) were already typed)");
+        Cancel("switched out of dictation");
+        return words;
     }
 
     // MARK: lock (§13.8, §13.9)
@@ -857,6 +1029,15 @@ internal sealed class AnyAppController
 
     private static string Why(Exception e) => e is RpcException r ? r.ToString() : e.Message;
 }
+
+/// <summary>What the failure card shows (§13.5): the typed kind, the words that did not land, the footer's evidence.</summary>
+internal sealed record FailureCardModel(string App, DeliveryFailure Kind, string Text, string Footer, bool CanRetry, string? Detail = null)
+{
+    public string Title => AnyAppCopy.CardTitle(App, Kind) + (Detail is { Length: > 0 } d ? $" — {d}" : "");
+}
+
+/// <summary>What the rewrite panel shows (§13.6).</summary>
+internal sealed record RewriteModel(string App, string Instruction, string Selection, string? Proposal, string State, string? Meta, bool Busy, bool Failed);
 
 /// <summary>§16.1 #26: the delivery counters the debug row reads (pasteNotLanded ≤ 1 and clipboard restored = N after N lease gestures).</summary>
 internal sealed class AnyAppCounters

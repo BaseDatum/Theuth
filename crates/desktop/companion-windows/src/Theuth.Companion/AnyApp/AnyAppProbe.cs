@@ -111,7 +111,7 @@ internal static class AnyAppProbe
         {
             nint fg = AnyAppNative.GetForegroundWindow();
             Log.Write($"anyapp-probe: run — foreground 0x{fg:X} \"{AnyAppNative.TitleOf(fg)}\" pid {AnyAppNative.ProcessOf(fg)} · locked={c.Locked}");
-            if (o.ContainsKey("card")) { ShowFixtureCard(c); return; }
+            if (o.ContainsKey("card")) { ShowFixtureCard(c); await PngAsync(o); return; }
             if (o.ContainsKey("history")) await HistoryAsync(c, null);
             bool lockProbe = o.TryGetValue("lock", out var lk) && lk == "1";
             if (lockProbe)
@@ -120,7 +120,7 @@ internal static class AnyAppProbe
                 Log.Write($"anyapp-probe: synthetic WM_WTSSESSION_CHANGE(WTS_SESSION_LOCK) posted to our window 0x{c.Window.Handle:X} → {posted}");
                 await Task.Delay(300);
             }
-            if (o.TryGetValue("rewrite", out var instruction)) { await RewriteAsync(c, Text(instruction)); return; }
+            if (o.TryGetValue("rewrite", out var instruction)) { await RewriteAsync(c, Text(instruction)); await PngAsync(o); return; }
             if (!o.TryGetValue("text", out var spec)) return;
             var text = Text(spec);
             string? before = await c.Clipboard.TextAsync();
@@ -156,6 +156,7 @@ internal static class AnyAppProbe
                 bool posted = c.Window.Synthesize(SessionLockGate.WtsSessionUnlock);
                 Log.Write($"anyapp-probe: synthetic WM_WTSSESSION_CHANGE(WTS_SESSION_UNLOCK) → {posted}");
             }
+            await PngAsync(o);
             Log.Write($"anyapp-probe: done — counters {c.Counters}");
         }
         catch (Exception e) { Log.Write($"anyapp-probe: failed — {e.GetType().Name}: {e.Message}"); }
@@ -224,6 +225,17 @@ internal static class AnyAppProbe
             if (dictated is not null) Log.Write($"anyapp-probe: history items holding the dictated text: {hits} {(hits == 0 ? "(excluded — the hints worked)" : "(LEAKED into history)")}");
         }
         catch (Exception e) { Log.Write($"anyapp-probe: clipboard history unavailable — {e.GetType().Name} 0x{e.HResult:X8} {e.Message}"); }
+    }
+
+    /// <summary><c>png=&lt;name&gt;</c>: the answer card's XAML rendered to <c>%TEMP%\153-anyapp-&lt;name&gt;.png</c> (W153C's
+    /// <c>w153c-gate.ps1 pngs/b64</c> fetch it) — the card is excluded from capture unless <c>--shareable</c>; the render is not.</summary>
+    private static async Task PngAsync(IReadOnlyDictionary<string, string> o)
+    {
+        if (!o.TryGetValue("png", out var name)) return;
+        await Task.Delay(700); // the card's layout pass
+        var path = Path.Combine(Path.GetTempPath(), $"153-anyapp-{name}.png");
+        bool ok = Ui.AnswerCardWindow.Instance is { } w && await w.CapturePng(path);
+        Log.Write($"anyapp-probe: card png {path} → {(ok ? "written" : "no card shown")}");
     }
 
     private static string Quote(string? s) => s is null ? "(none)" : "\"" + (s.Length > 60 ? s[..60] + "…" : s).Replace("\n", "\\n", StringComparison.Ordinal) + "\"";
