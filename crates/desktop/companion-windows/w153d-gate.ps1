@@ -58,7 +58,8 @@ public static class GdNative {
     public static uint Pid(IntPtr h) { uint p; GetWindowThreadProcessId(h, out p); return p; }
     public static bool Front(IntPtr h) {
         ShowWindow(h, 9); // SW_RESTORE
-        keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero); // a tap of Alt lifts the foreground lock
+        // Alt down + an unassigned key + Alt up lifts the foreground lock; the masked Alt opens no menu (a bare Alt tap would).
+        keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0xE8, 0, 0, UIntPtr.Zero); keybd_event(0xE8, 0, 2, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero);
         bool ok = SetForegroundWindow(h);
         return ok || GetForegroundWindow() == h;
     }
@@ -117,6 +118,11 @@ switch ($Action) {
         Front 'W153D fields'
     }
     'focus' { Front (Words ($Rest -join ' ')) }
+    'esc' {
+        # Escape to the foreground window (leaves a menu mode the old bare-Alt focus trick left behind).
+        [GdNative]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero); [GdNative]::keybd_event(0x1B, 0, 2, [UIntPtr]::Zero)
+        Say "esc: sent to '$([GdNative]::Title([GdNative]::GetForegroundWindow()))'"
+    }
     'probe' {
         $line = ($Rest -join ' ')
         New-Item -ItemType Directory -Force -Path (Split-Path $trigger) | Out-Null
