@@ -2830,19 +2830,22 @@ impl Reserved {
 
     /// Settle with `usage` (what the stream's `End` carried; `None` for a
     /// failed or cancelled attempt) and tell every affected owner its usage
-    /// revision moved.
+    /// revision moved. Returns the priced money (returned, else estimated).
     async fn settle(
         mut self,
         status: CallStatus,
         usage: Option<&genai::chat::Usage>,
         model: &Resolved,
-    ) {
-        let Some(call) = self.call.take() else { return };
+    ) -> Option<Money> {
         let mut obs = observe(usage, model);
         if status != CallStatus::Settled {
             obs.unknown_reason = Some(status.to_string());
         }
-        settle(&self.store, &self.rt, &call, status, obs).await;
+        let priced = obs.returned.as_ref().or(obs.estimated.as_ref()).cloned();
+        if let Some(call) = self.call.take() {
+            settle(&self.store, &self.rt, &call, status, obs).await;
+        }
+        priced
     }
 }
 
@@ -10298,6 +10301,9 @@ mod tests {
         );
         let cost = store.session_cost(id).await.unwrap().unwrap();
         assert_eq!(cost.direct.returned[0].nanos, 250_000_000);
+        // F1: the reply carries the priced amount and the row's request id.
+        assert_eq!(reply.cost_nanos, Some(250_000_000));
+        assert_eq!(reply.request_id.as_deref(), Some(rows[0].1.as_str()));
         assert_eq!(next_usage_changed(&mut events).await, (id, cost.revision));
 
         // The second scripted stream never sends `[DONE]`; the budget ends it.

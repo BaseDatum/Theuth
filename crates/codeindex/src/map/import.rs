@@ -421,14 +421,14 @@ fn is_element_dir(d: &Path) -> bool {
         || FIELD_FILES.iter().any(|(f, _)| d.join(f).is_file())
 }
 
-/// `kebab-case-dir` → `Kebab case dir`.
+/// `kebab-case-dir` → `Kebab case dir` (the first char, whatever its width).
 fn humanize(dir: &str) -> String {
-    let mut s = dir.replace(['-', '_'], " ");
-    if let Some(c) = s.get(..1) {
-        let up = c.to_uppercase();
-        s.replace_range(..1, &up);
+    let s = dir.replace(['-', '_'], " ");
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().chain(chars).collect(),
+        None => s,
     }
-    s
 }
 
 /// A top-level `key: value` scalar of a flat YAML document; `None` for a
@@ -525,5 +525,7 @@ mod tests {
         assert_eq!(path_like("Claude Code / Codex / Cursor"), None);
         assert_eq!(path_like("~/.omm/credentials.json"), None);
         assert_eq!(humanize("overall-architecture"), "Overall architecture");
+        assert_eq!(humanize("élan_vital"), "Élan vital");
+        assert_eq!(humanize(""), "");
     }
 }

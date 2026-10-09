@@ -297,17 +297,20 @@ impl Skeleton {
         }
     }
 
-    /// Group `files` by their first path segment under `prefix`.
+    /// Group `files` by their first path segment under `prefix`. A file that
+    /// is not strictly under `prefix/` (the unit IS that file, or a sibling
+    /// sharing the prefix's bytes) is not grouped: a file unit has no children.
     fn group(&self, files: &[usize], prefix: &str) -> Vec<Child> {
-        let cut = if prefix.is_empty() {
-            0
-        } else {
-            prefix.len() + 1
-        };
         let mut dirs: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
         let mut direct: Vec<usize> = Vec::new();
         for &i in files {
-            let rest = &self.files[i].path[cut..];
+            let path = self.files[i].path.as_str();
+            let rest = if prefix.is_empty() {
+                Some(path)
+            } else {
+                path.strip_prefix(prefix).and_then(|r| r.strip_prefix('/'))
+            };
+            let Some(rest) = rest else { continue };
             match rest.split_once('/') {
                 Some((d, _)) => dirs.entry(d).or_default().push(i),
                 None => direct.push(i),
@@ -604,11 +607,12 @@ fn clip(s: &str, max: usize, left: bool) -> String {
     if n <= max {
         return s.to_owned();
     }
+    let keep = max.saturating_sub(1);
     if left {
-        let tail: String = s.chars().skip(n - (max - 1)).collect();
+        let tail: String = s.chars().skip(n - keep).collect();
         format!("…{tail}")
     } else {
-        let head: String = s.chars().take(max - 1).collect();
+        let head: String = s.chars().take(keep).collect();
         format!("{head}…")
     }
 }
@@ -1575,6 +1579,8 @@ mod tests {
         assert_eq!(clip("abc", 5, false), "abc");
         assert_eq!(clip("abcdefgh", 5, false), "abcd…");
         assert_eq!(clip("abcdefgh", 5, true), "…efgh");
+        assert_eq!(clip("ünïcödé", 4, false), "ünï…");
+        assert_eq!(clip("abc", 0, true), "…");
     }
 
     use std::sync::Arc;
@@ -2053,6 +2059,97 @@ mod tests {
             burst_ms <= plain_ms.max(100),
             "a burst touch must not cost the rank: {ms:?}"
         );
+    }
+
+    /// F1 regression: a root whose top level has a FILE unit (`tsup.config.ts`)
+    /// and a unicode-named file. `group` used to slice `path[prefix.len()+1..]`
+    /// and panic on the file unit; overview, element(file), search and
+    /// recompute must all come back.
+    #[tokio::test]
+    async fn file_unit_and_unicode_names_do_not_panic() {
+        let (data, repo) = (temp("data"), temp("repo"));
+        workspace(&repo.0, 3);
+        write(
+            &repo.0,
+            "tsup.config.ts",
+            "export const config = { entry: ['src/ünïcode-ñ.ts'] };\n",
+        );
+        write(
+            &repo.0,
+            "src/ünïcode-ñ.ts",
+            "export function héllo(): string { return 'wörld'; }\n",
+        );
+        write(
+            &repo.0,
+            "src/other.ts",
+            "import { héllo } from './ünïcode-ñ';\nhéllo();\n",
+        );
+        let (ix, ri) = indexed(&data.0, &repo.0).await;
+        let sk = Skeleton::load(&ri).await.unwrap();
+        let top = sk.top_level();
+        let file_unit = top
+            .iter()
+            .find(|c| c.path == "tsup.config.ts")
+            .expect("the top-level file is a child");
+        assert_eq!(file_unit.kind, "file");
+        assert!(
+            sk.children_of("tsup.config.ts").is_empty(),
+            "a file unit has no children"
+        );
+        assert!(
+            sk.children_of("tsup.config").is_empty(),
+            "a prefix sharing bytes is not a parent"
+        );
+        let src = sk.children_of("src");
+        assert!(src.iter().any(|c| c.path == "src/ünïcode-ñ.ts"), "{src:?}");
+        let ov = overview(
+            &ix,
+            Overview {
+                root: ri.root.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let p = &ov.perspectives[0];
+        let file_id = element_id(STRUCTURE_PERSPECTIVE, "unit:tsup.config.ts");
+        assert!(p.tree.iter().any(|r| r.id == file_id), "{:?}", p.tree);
+        let el = element(
+            &ix,
+            Element {
+                root: ri.root.clone(),
+                element: file_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(el.kind, "file");
+        assert!(el.children.is_empty());
+        let hits = search(
+            &ix,
+            Search {
+                root: ri.root.clone(),
+                query: "src/ünïcode-ñ.ts".to_owned(),
+                limit: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!hits.is_empty());
+        let hits = search(
+            &ix,
+            Search {
+                root: ri.root.clone(),
+                query: "ünïc".to_owned(),
+                limit: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            hits.iter().any(|h| h.element.contains("ünïcode")),
+            "{hits:?}"
+        );
+        recompute(&ix, &ri).await.unwrap();
     }
 
     /// `cargo test -p codeindex structure_view_of_real_repos -- --ignored --nocapture`:
