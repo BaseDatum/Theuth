@@ -43,6 +43,11 @@ public static class G3Native {
     [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
     [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint n, INPUT[] inputs, int size);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    public static uint Mouse(uint flags) {
+        var i = new INPUT { type = 0 };
+        i.u.mi = new MOUSEINPUT { dwFlags = flags };
+        return SendInput(1, new[] { i }, Marshal.SizeOf<INPUT>());
+    }
     public static uint Key(ushort vk, bool up) {
         var i = new INPUT { type = 1 };
         i.u.ki = new KEYBDINPUT { wVk = vk, dwFlags = up ? 2u : 0u };
@@ -126,6 +131,30 @@ switch ($Action) {
         Start-Sleep -Milliseconds 1600
         Chord $true; Start-Sleep -Milliseconds 60; Chord $false
         Say "tap-voice: done at $(Get-Date -Format 'HH:mm:ss.fff')"
+    }
+    'drag' {
+        # a slow mouse drag: left down at (x0, y0), 40 steps over ~700 ms to (x1, y1), left up; then a second line says where the cursor is
+        $x0 = [int]$Rest[0]; $y0 = [int]$Rest[1]; $x1 = [int]$Rest[2]; $y1 = [int]$Rest[3]
+        [void][G3Native]::SetCursorPos($x0, $y0)
+        Start-Sleep -Milliseconds 120
+        [void][G3Native]::Mouse(0x0002)
+        Start-Sleep -Milliseconds 120
+        for ($i = 1; $i -le 40; $i++) {
+            [void][G3Native]::SetCursorPos([int]($x0 + ($x1 - $x0) * $i / 40), [int]($y0 + ($y1 - $y0) * $i / 40))
+            Start-Sleep -Milliseconds 16
+        }
+        Start-Sleep -Milliseconds 150
+        [void][G3Native]::Mouse(0x0004)
+        Say "drag: ($x0,$y0) -> ($x1,$y1) done at $(Get-Date -Format 'HH:mm:ss.fff')"
+    }
+    'dblclick' {
+        $x = [int]$Rest[0]; $y = [int]$Rest[1]
+        [void][G3Native]::SetCursorPos($x, $y)
+        Start-Sleep -Milliseconds 100
+        [void][G3Native]::Mouse(0x0002); Start-Sleep -Milliseconds 40; [void][G3Native]::Mouse(0x0004)
+        Start-Sleep -Milliseconds 120
+        [void][G3Native]::Mouse(0x0002); Start-Sleep -Milliseconds 40; [void][G3Native]::Mouse(0x0004)
+        Say "dblclick: ($x,$y) at $(Get-Date -Format 'HH:mm:ss.fff')"
     }
     'esc' { [void][G3Native]::Key(0x1B, $false); Start-Sleep -Milliseconds 40; [void][G3Native]::Key(0x1B, $true); Say 'esc: sent' }
     'move' {
