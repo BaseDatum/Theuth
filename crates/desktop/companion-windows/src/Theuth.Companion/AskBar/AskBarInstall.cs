@@ -20,6 +20,9 @@ internal sealed class AskBarInstall
 
     public AskBarModel Model { get; }
 
+    /// <summary>153 W153B: the dictionary suggestion card (§6.4), anchored under the Ask bar while it is on screen.</summary>
+    public Ui.SuggestionCardWindow? Suggestions { get; private set; }
+
     private AskBarInstall(AskBarWindow bar, AskBarModel model)
     {
         Bar = bar;
@@ -31,9 +34,23 @@ internal sealed class AskBarInstall
         store.AskProbe = AskFlags.Probe is not null || AskFlags.Replay;
         var bar = new AskBarWindow(store, dispatcher);
         var model = new AskBarModel(store, store.Dictation, bar, new DispatcherScheduler(dispatcher), () => DateTimeOffset.Now, Log.Write,
-            keys: () => store.Keys, automated: AskFlags.Automated);
+            keys: () => store.Keys, automated: AskFlags.Automated,
+            micOnKeyDown: () => Settings.SettingsModel.Shared.Dictation.MicOnKeyDown); // 153 §8.5
         bar.Bind(model);
         var install = new AskBarInstall(bar, model);
+        // 153 §8.1: the companion's recorder follows the engine's voice.input_devices — read at every connect.
+        store.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(StoreModel.Connection) && store.Connection == Rpc.RpcClient.State.Open) _ = RefreshMicPreference(store);
+        };
+        try
+        {
+            install.Suggestions = Ui.SuggestionCardWindow.Install(store, () => bar.IsShown ? bar.ScreenRect : null); // 153 §6.4
+        }
+        catch (Exception e)
+        {
+            Log.Write($"suggestion card: install failed: {e.GetType().Name}: {e.Message}");
+        }
         store.InstallSpokenReplies(() => Settings.SettingsModel.Shared.Value.AskSpeak); // spoken replies: an Ask reply is read aloud once final when the switch is on
         if (Ui.Surfaces.Current is { } surfaces)
         {
@@ -85,5 +102,20 @@ internal sealed class AskBarInstall
         else if (AskFlags.Probe is { } seconds) AskProbe.Run(seconds, store, install, dispatcher, quit);
         else if (AskFlags.Ask) model.Open();
         return install;
+    }
+
+    /// <summary>153 §8.1: <c>voice_status.input_devices</c> → <see cref="MicPreference.Names"/>; an engine before 153 leaves the default.</summary>
+    private static async Task RefreshMicPreference(Store store)
+    {
+        try
+        {
+            var names = (await store.Client.VoiceStatusAsync()).InputDevices;
+            MicPreference.Names = names;
+            Log.Write($"ask bar: microphone preference from the engine: {(names.Count == 0 ? "system default" : string.Join(" → ", names))}");
+        }
+        catch (Exception e)
+        {
+            Log.Write($"ask bar: voice_status failed ({e.Message}) — the recorder uses the system default");
+        }
     }
 }

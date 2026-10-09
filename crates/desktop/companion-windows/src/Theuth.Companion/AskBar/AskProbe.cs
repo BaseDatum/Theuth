@@ -42,6 +42,7 @@ internal static class AskProbe
             var w = install.Bar.AppWindow;
             AskLog.Write($"ask-probe bar shown activated=true visible={Word(w.IsVisible)} pos={w.Position.X},{w.Position.Y} size={w.Size.Width}x{w.Size.Height} foreground={(install.Bar.IsForeground ? "ask-bar" : "other")}");
             if (AskFlags.Replay) _ = Replay(store);
+            if (AskFlags.Fixture is { } fx) AskFixtures.Run(fx, store, install, dispatcher); // 153 W153B
         });
         After(dispatcher, seconds, () =>
         {

@@ -1,5 +1,6 @@
 using Microsoft.UI.Dispatching;
 using Theuth.Companion.Core;
+using Theuth.Companion.Rpc;
 
 namespace Theuth.Companion.Voice;
 
@@ -9,6 +10,10 @@ namespace Theuth.Companion.Voice;
 /// <c>dictation_stop</c> (the Ask bar's calls, <c>Store.Dictation</c>), the Store's <see cref="AskDictation"/> reducer for the
 /// live text and levels, then the caller sends the text with <c>send_input(session, text)</c> after the 3 s hold. One owner
 /// thread. The Ask bar is untouched: it keeps routing through theuth's desk (D21).
+/// 153 W153B: <c>dictation_start(16000, {surface: companion, destination: agent_prompt, press_ago_ms})</c>; the live text is the
+/// engine's <c>shaped</c> (the Store's reducer); <see cref="SendIt"/> tells the caller the spoken "send it" ended the dictation
+/// (§7.4: send at once, no hold); at the commit of the row's send the text actually sent goes back as <c>dictation_correction</c>
+/// (§6.1); a dictation the engine ends while the key is still held (the "send it" settle) closes the recorder.
 /// </summary>
 internal sealed class RowTalk
 {
@@ -20,6 +25,10 @@ internal sealed class RowTalk
     private bool prewarmed;
     private bool stopWanted;
     private DispatcherQueueTimer? finishCap;
+    /// <summary>153 §8.7: when the press began (press_ago_ms at dictation_start).</summary>
+    private DateTimeOffset pressAt;
+    /// <summary>153 §6.1: the last dictation that produced text, and the session it went into — reported once at the commit.</summary>
+    private (string Id, string Session)? dictated;
 
     public RowTalk(Store store, DispatcherQueue dispatcher)
     {
@@ -29,7 +38,11 @@ internal sealed class RowTalk
         recorder.OnChunk = Feed;
         recorder.OnFailed = why => Fail(why);
         store.DictationChanged += OnDictation;
+        store.Committing += OnCommitting;
     }
+
+    /// <summary>153 §7.4: the dictation that just finished ended on the spoken "send it" — the caller sends without the hold.</summary>
+    public bool SendIt { get; private set; }
 
     /// <summary>Between <see cref="Begin"/> and the finish.</summary>
     public bool Busy { get; private set; }
@@ -63,6 +76,8 @@ internal sealed class RowTalk
         if (Busy) return;
         Busy = true;
         Target = target;
+        SendIt = false;
+        pressAt = DateTimeOffset.Now;
         stopWanted = false;
         pending.Clear();
         store.Ask.Dictation.Handle(AskDictation.Event.Start.Instance);
@@ -72,7 +87,12 @@ internal sealed class RowTalk
             string id;
             try
             {
-                id = await store.Dictation.StartAsync();
+                id = await store.Dictation.StartAsync(new DictationOpts
+                {
+                    Surface = Surface.Companion,
+                    Destination = Destination.AgentPrompt,
+                    PressAgoMs = (uint)Math.Clamp((DateTimeOffset.Now - pressAt).TotalMilliseconds, 0, uint.MaxValue),
+                });
             }
             catch (Exception e)
             {
@@ -177,10 +197,27 @@ internal sealed class RowTalk
         Busy = false;
         finishCap?.Stop();
         finishCap = null;
+        recorder.Cancel(); // 153 §7.3: the engine may end it (the "send it" settle) while the key is still held — the mic closes either way
         var target = Target;
         Target = null;
-        Log.Write($"row talk: finished target={target} chars={text.Length} error={error ?? "none"}");
+        SendIt = error is null && store.Ask.Dictation.SendIt;
+        dictated = error is null && text.Trim().Length > 0 && target is not null && store.Ask.Dictation.LastId is { } id ? (id, target) : null;
+        Log.Write($"row talk: finished target={target} chars={text.Length} error={error ?? "none"} sendIt={(SendIt ? "true" : "false")}");
         Finished?.Invoke(text.Trim(), error);
+    }
+
+    /// <summary>
+    /// 153 §6.1: a held send is going out — when it carries text into the session this row mic dictated into, report the sent text
+    /// for that dictation, once. (The agents panel's target is the row's session; a card's V targets the card's session.)
+    /// </summary>
+    private void OnCommitting(StoreModel.Held h)
+    {
+        if (dictated is not { } d || StoreModel.SentText(h.Action) is not { } sent) return;
+        if (StoreModel.SentSession(h.Action) is { } session && session != d.Session) return;
+        if (StoreModel.SentSession(h.Action) is null && h.Action is not CardAction.SendNextStep) return;
+        dictated = null;
+        Log.Write($"row talk: dictation_correction({d.Id}) at send ({sent.Length} chars)");
+        Enqueue(() => store.Dictation.CorrectionAsync(d.Id, sent));
     }
 
     private void OnDictation(AskDictation d, bool take)

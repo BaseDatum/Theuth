@@ -403,7 +403,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         // The text shows in the field under the row for the 3 s hold; Esc keeps editing, Enter re-sends.
         talkLive = text;
         talkEditing = true;
-        if (row is not null) store.SendToRow(row, text);
+        if (row is not null) { if (talk.SendIt && row.Session is { } ss && row.CanTalk) store.SendInputNow(row.Name, ss, text); else store.SendToRow(row, text); } // 153 W153B: a spoken "send it" skips the hold
         Render(force: true);
         talkBox.Focus(FocusState.Programmatic);
         talkBox.SelectionStart = talkBox.Text.Length;
