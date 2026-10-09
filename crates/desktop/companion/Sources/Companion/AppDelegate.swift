@@ -24,7 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // W6: the saved global chords are probed against other apps' registrations before KeyboardShortcuts
         // registers them (fallback to the default with a notice, never a dialog).
-        Hotkeys.start(SettingsModel.shared)
+        // 149 W1: never in a probe — a second instance beside the login item shares its UserDefaults suite, and the
+        // exclusive-registration probe would read the real companion's own chords as "held by another app" and persist nil.
+        if !Flags.anyProbe { Hotkeys.start(SettingsModel.shared) }
         KeyboardShortcuts.onKeyUp(for: .openPanel) { [weak self] in
             guard let self, Flags.probe == nil else { return }
             self.askBar.hotkeyUp() // W3: Attention panel when something needs you, else the Ask bar

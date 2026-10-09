@@ -163,6 +163,9 @@ enum RailProbe {
         func log(_ phase: String) {
             W1Log.write("probe-rail phase=\(phase) frame=\(rail.panel.frame) visible=\(rail.panel.isVisible) key=\(rail.panel.isKeyWindow) ignoresMouse=\(rail.panel.ignoresMouseEvents) active=\(NSApp.isActive) needsYou=\(store.rail.needsYouCount) marks=\(store.rail.marks.count) levels=\(store.ask.dictation.levels.count) hover=\(W1Hover.shared.session ?? "nil")")
         }
+        // Phase 1 is pinned too: the user's presence (`alwaysSliver`) or side must not decide what the screenshot shows.
+        rail.sideOverride = "right"
+        rail.probeCollapse(false)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { log("pills") }
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds / 3) {
             rail.probeCollapse(true)

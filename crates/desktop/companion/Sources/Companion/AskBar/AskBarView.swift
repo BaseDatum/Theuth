@@ -62,12 +62,13 @@ struct AskBarView: View {
                 }
             }
             .padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 8)
-            HStack(spacing: 12) {
-                if let hold = settings.keys.chord(for: .openPanel)?.symbol { Hint("hold \(hold)", "to talk") }
-                Text("release → sends to theuth in \(Int(store.undo.delay)) s").font(Type.caps).foregroundColor(.sand)
-                Hint("⎋", store.undo.held == nil ? "keeps editing" : "undo")
-                Text("theuth routes it").font(Type.caps).foregroundColor(.sand)
-                Spacer()
+            // One line: "hold ⌃⇧Space to talk · release → sends in 3 s · ⎋ keeps editing · theuth routes it".
+            HStack(spacing: 8) {
+                if let hold = settings.keys.chord(for: .openPanel)?.symbol { Hint("hold \(hold)", "to talk").fixedSize() }
+                Text("· release → sends in \(Int(store.undo.delay)) s ·").font(Type.caps).foregroundColor(.sand).fixedSize()
+                Hint("⎋", store.undo.held == nil ? "keeps editing" : "undo").fixedSize()
+                Text("· theuth routes it").font(Type.caps).foregroundColor(.sand).fixedSize()
+                Spacer(minLength: 0)
                 if let s = state.status {
                     Text(s).font(Type.caps).foregroundColor(state.recording ? .carnelian : .sand).lineLimit(1)
                 }

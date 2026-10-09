@@ -119,7 +119,7 @@ final class Store: ObservableObject {
     /// The three lists at once (+ 149's sessions/status/mesh, each tolerated missing on an older engine), then the packets;
     /// one in flight, a request during it runs once after it.
     func refetch() {
-        guard fetchGate.begin() else { return }
+        guard !w1Frozen, fetchGate.begin() else { return } // 149 W1: a seeded probe never takes the engine's lists
         Task {
             do {
                 async let a = client.attentionList()
@@ -302,10 +302,12 @@ final class Store: ObservableObject {
 
     // MARK: 149 W1 probes
 
-    /// `--probe-rail/--probe-agents/--probe-panel`: the engine's lists replaced by fixtures (re-applied after every
-    /// refetch so a reachable engine cannot overwrite them); `connection` reads open so the surfaces render the fixture.
+    /// `--probe-rail/--probe-agents/--probe-panel`: the engine's lists replaced by fixtures; from then on `refetch` is a no-op
+    /// (a reachable engine cannot overwrite them) and `connection` reads open so the surfaces render the fixture.
+    private var w1Frozen = false
     func w1Seed(items: [AttentionItem], agents: [AgentSummary], activity: [AgentInfo], sessions: [SessionSummary],
                 mesh: MeshStatus?, status: SessionsStatus?, packets: [String: Packet] = [:]) {
+        w1Frozen = true
         self.items = items; self.agents = agents; self.activity = activity; self.sessions = sessions
         meshStatus = mesh; sessionsStatus = status
         for (k, v) in packets { self.packets[k] = v }

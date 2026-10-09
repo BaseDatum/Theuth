@@ -44,7 +44,11 @@ public struct HostGroup: Equatable, Sendable, Identifiable {
     public var id: String
     public var title: String
     public var rows: [AgentRow]
-    public init(id: String, title: String, rows: [AgentRow]) { self.id = id; self.title = title; self.rows = rows }
+    /// The engine's display name ("studio") — a remote row's "on ‹node›" suffix and "open it on ‹node›" tooltip; `nil` = this Mac.
+    public var node: String?
+    public init(id: String, title: String, rows: [AgentRow], node: String? = nil) {
+        self.id = id; self.title = title; self.rows = rows; self.node = node
+    }
 }
 
 public enum AgentsModel {
@@ -124,7 +128,7 @@ public enum AgentsModel {
         for host in remoteHosts {
             let name = peers.first { $0.id == host }?.name ?? String(host.prefix(8))
             let count = remoteHosts.count == 1 ? (status.map { " · \($0.elsewhere)" } ?? "") : ""
-            groups.append(HostGroup(id: host, title: "on \(name)" + count, rows: rows.filter { $0.host == host }))
+            groups.append(HostGroup(id: host, title: "on \(name)" + count, rows: rows.filter { $0.host == host }, node: name))
         }
         return groups
     }

@@ -462,7 +462,7 @@ struct AgentsPanelView: View {
                         Text(g.title).font(Type.caps).foregroundColor(.sand).padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 2)
                         ForEach(g.rows) { row in
                             let recording = voice.target == row.session && (voice.recording || voice.finishing)
-                            AgentRowView(row: row, peer: g.title, focused: state.focusedRow?.id == row.id, recording: recording,
+                            AgentRowView(row: row, peer: g.node ?? g.title, focused: state.focusedRow?.id == row.id, recording: recording,
                                          levels: voice.levels, hover: hover) { state.onEvent?($0) }
                                 .id(row.id)
                             if state.replyFor == row.id || recording {
@@ -497,7 +497,7 @@ struct AgentsPanelView: View {
 /// dot/spinner · harness icon · name · ⑂N · last · mic · ✕ (§3.2). Focused: faience wash + 3 pt bar (One's green → faience).
 struct AgentRowView: View {
     let row: AgentRow
-    /// The group's title — a remote row's "on ‹peer›" suffix and tooltip.
+    /// The group's node name — a remote row's "on ‹peer›" suffix and tooltip.
     let peer: String
     let focused: Bool
     let recording: Bool
@@ -512,7 +512,7 @@ struct AgentRowView: View {
         HStack(spacing: 8) {
             dot.frame(width: 10, height: 10)
             HarnessIcon(key: row.harness)
-            Text(row.name).font(Type.body).lineLimit(1)
+            Text(row.name).font(Type.body).lineLimit(1).layoutPriority(1)
             if row.children > 0 { Text("⑂\(row.children)").font(Type.mono).foregroundColor(.ink2) }
             if !row.live { Text("on \(peer)").font(Type.caps).foregroundColor(.sand).lineLimit(1) }
             if !row.last.isEmpty { Text(row.last).font(Type.meta).foregroundColor(.ink2).lineLimit(1) }
