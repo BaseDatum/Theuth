@@ -71,3 +71,91 @@ Writer's calls (each marked "(writer's call)" where it is made):
 > "make sure that the windows agent builds the same fixes"
 
 Every companion or UI change in this design names its Windows equivalent in the section that makes it (D15); §15 carries both platforms' key table; §16 gives each wave a Windows twin owner.
+
+## 2. Where we stand
+
+Facts relied on, re-read in this worktree. The study's appendix B inventoried main `4bd11af3`; main moved to `6e395770` with only docs, a
+Windows-companion wave and the spoken-replies fix in between, so every cite below was re-opened here rather than carried.
+
+### 2.1 What exists (the pipeline every surface shares)
+- **One engine-owned streaming STT.** `Dictation` actor (`VOICE/dictation.rs:161-176`) holds one `Utterer` (`VOICE/live.rs:34-58`): Nemotron
+  streaming session + TEN-VAD + gate + resampler; 560 ms windows (`VOICE/stt.rs:32-34`, `WINDOW = 8_960`); gate constants pre-roll 20 frames,
+  onset 10 (160 ms), close 19 (≈300 ms), max utterance 15 s, turn 2 s, threshold 0.5 (`VOICE/vad.rs:107-117`). The task reads 20 ms chunks,
+  reports RMS every 8 chunks and feeds the utterer (`VOICE/dictation.rs:558-623`); a deadline of `dictation_max_secs` (300) stops it
+  (`:566-574`, `VOICE/lib.rs:443`, `:459`).
+- **Two audio sources, one slot.** `AudioSource::Mic` opens the daemon's default input at 48 kHz with `Aec::None` (`VOICE/dictation.rs:56-68`,
+  `:241-251`, `VOICE/mic.rs:22`, `:59-61`); `Remote { sample_rate }` takes mono i16 pushed by `dictation_audio`, rechunked to 20 ms
+  (`:413-435`). One dictation per daemon (`"already dictating"`, `:232-237`); a talk leases the engine (`"talking"`, `:235-237`, `:311-325`).
+  Device loss ends the dictation: the mic thread sends `Err("device lost")` once and returns (`VOICE/mic.rs:160-170`).
+- **Events.** `DictationModel`, `DictationStarted`, `DictationLevel` (8 RMS values), `DictationText { id, utterance, text, final }` (append-only
+  per utterance, whole text so far), `DictationFinished { reason }` (`VOICE/lib.rs:383-421`); `FinishReason` = Done | Stopped | Error
+  (`:320-334`). The only shaping today: `piece()` trims a stray leading `.,?!;:` and whitespace (`VOICE/live.rs:218-233`); `append` keeps the
+  model's SentencePiece spacing verbatim (`:235-244`).
+- **RPC.** `dictation_prewarm` / `dictation_start(sample_rate: Option<u32>)` / `dictation_audio(id, pcm)` / `dictation_stop(id)` /
+  `dictation_status()` (`api.rs:1575-1602`); a relay peer may not open the daemon mic (`:6279-6283`); a remote dictation stops when its
+  connection closes (`:6289-6295`). `speak(session, text)` / `stop_speaking(id)` (`:1557-1561`). `resolve_approval(id, decision)`
+  (`:640-641`) with `Decision = Allow | Deny` (`crates/tools/src/approval.rs:32-37`).
+- **Config.** `voice:` section = `enabled`, `voice`, `model_dir`, `stt_model_dir`, `stt_idle_secs`, `dictation_model_dir`,
+  `dictation_max_secs`, `player_buffer_ms`, `player_device` — no input device, nothing about shaping (`VOICE/lib.rs:424-464`). The plugin
+  spawns `Transcriber`, `Dictation`, `Voice` and registers a prompt block (`:967-1021`); `runtime::write_nested_config_value(path, section,
+  subsection, key, value)` writes `section.subsection.key` preserving the YAML (`crates/runtime/src/lib.rs:142-148`); `write_config_value` is
+  how `set_title_model` persists (`crates/agent/src/supervisor.rs:3891-3895`).
+- **Desktop / phone.** `UI/lib/dictation.ts`: `splice(before, after, utts)` joins utterances with spaces and adds a lead/trail space
+  (`:43-53`); `applyEvent` replaces the whole utterance per `DictationText` (`:71-77`); `start()` anchors the caret and streams the browser
+  mic on a relay engine (`:261-291`). Composer: Ctrl+D / Mic toggles (`UI/components/chat/Composer.tsx:418-438`), Esc discards (`:448-457`),
+  the finished value lands as one undo step (`:460-462`, `:493-505`); `submit()` at `:706`. Every shadcn `Input`/`Textarea` has the mic through
+  `useFieldDictation → dictation.useBox` (`UI/components/ui/dictation.tsx:56-66`). Shortcuts: `dictate` Control+D window-scope, `voice-key`
+  Control+S on macOS / Control+Alt+Space elsewhere, global (`UI/lib/shortcuts.ts:50-54`). Settings has a Voice key tab
+  (`UI/components/settings/SettingsDialog.tsx:66`, `:108`) and no Voice tab.
+- **TUI.** In-process, same splice semantics and tests (`crates/tui/src/dictation.rs:1-3`, `:138`).
+- **Companion (macOS).** Hold-to-talk machine: a press < 0.25 s is a tap, ≥ 0.25 s records, 60 s max (`COMP/CompanionCore/AskVoice.swift:35-38`,
+  `:47-74`); empty text → "Nothing recognized" (`:64-67`); K1 surface keys (`:80-92`). `AskDictation` reduces the stream; `finalText` joins finals
+  (`:97-105`, `:151`). `HoldToTalk` drops the text into a field via `onText` (`COMP/Companion/Voice/HoldToTalk.swift:5-8`, `:99-103`); the
+  Ask bar sends after the 3 s undo hold (`COMP/Companion/AskBar/AskBarPanel.swift:212`, `COMP/Companion/AskBar/Store+Ask.swift:51-57`).
+  Voice key: `PointMachine` hold 200 / double-tap 300 / min note 800 / done 6 000 (`COMP/CompanionCore/PointMachine.swift:10-22`); on `.start`
+  the recorder and `dictation_start` begin at the press (`COMP/Companion/PointAndSay/PointController.swift:188-204`, `:359-368`) — the voice
+  key is already at 0 ms; the Stop sequence conceals the overlays, flushes the text (cap 8 s, `:47-48`), gets `screen_context`, and
+  `send_input`s or `steer`s `[voice note, N s] …` + the `[screen …]` lines to theuth's desk (`:271-308`, `:311-313`). The answer card: plain
+  `Text` with `lineLimit(12)`, status "working…" / "working · ‹tool›" / "replied" / "couldn't reply — …", "O open the desk · ⎋ dismiss"
+  (`COMP/Companion/PointAndSay/AnswerCard.swift:6-7`, `:24-56`, `:88`), shown near the mouse on the screen under it (`:118`, `:162-163`).
+  The Ask receipt shows the reply's first two lines (`COMP/CompanionCore/AskRouter.swift:118-127`); the router always targets theuth's desk,
+  no agent picker (`:34-41`, `:53-57`). The island hosts the voice view (`COMP/Companion/Island/VoiceModeView.swift:5-21`) on the notched
+  screen (`COMP/Companion/Island/IslandPanel.swift:156`). Key table and per-platform defaults: `COMP/CompanionCore/KeyBindings.swift:193-245`,
+  `:251-257`; the recorder refuses symbolic hot keys and bare keys (`:318-335`); `Modifiers.function` exists (`:7-15`). Settings tabs: Rail ·
+  Keys · Notifications · Engine · Island · Voice key (`COMP/Companion/Settings/SettingsWindow.swift:61-66`).
+- **Companion (Windows).** `RegisterHotKey` with `MOD_NOREPEAT` per anywhere row (`WIN/Theuth.Companion/Hotkeys.cs:10-11`, `:95`, `:199`);
+  voice key Ctrl+Alt+Space (`WIN/Theuth.Companion.Core/KeyBindings.cs:335`); the same hold thresholds 0.25 / 60 (`WIN/Theuth.Companion.Core/AskVoice.cs:63-66`);
+  `DictationLease` is the 149 fix's pure generation guard (`WIN/Theuth.Companion.Core/DictationLease.cs:1-20`); the voice key's answer is drawn
+  inside the island window (`WIN/Theuth.Companion/PointAndSay/PointController.cs:419`, `:590-615`); `FirstTwoLines` mirrors the Swift receipt
+  (`WIN/Theuth.Companion.Core/AskRouter.cs:168-192`).
+- **Agent and tools.** `SendInput { session, text, files, delivery, id }` / `Steer` (`crates/agent/src/lib.rs:245-260`, `:268-278`); side
+  calls with a role chain `Escalate → title → session`, `Title → session` (`crates/agent/src/loop_/side.rs:37-61`) and `Side::call(model, system,
+  user, budget, kind)` (`:83-90`); `CallKind` lives in `crates/runtime/src/side_call.rs:19-40`. `Risk = ReadOnly | Mutating | Destructive`
+  (`crates/tools/src/lib.rs:118-125`), `PolicyAction = Allow | Ask | Deny` (`:444-453`), `tools.policy` per class (`:487-495`). The eight
+  `computer_*` tools through one macro (`crates/computer/src/tools.rs:66-88`, `:394-407`); `computer_type` (`:330-339`), `computer_key` with the
+  refused chords (`:348-360`), `computer_open` (`:383-392`); the plugin registers its prompt block (`crates/computer/src/lib.rs:297-302`); AX
+  helpers `granted()` / `uia_role()` / `hit_at` (`crates/computer/src/ax.rs:134-138`, `:163`, `:736`). The voice-note marker and prompt:
+  `note_text` / `is_note` / `PROMPT` (`VOICE/lib.rs:155-179`).
+- **Model files.** `scripts/fetch-models.sh` keeps a REQUIRED list current with per-file `{repo, path, revision, etag, size, sha256}` records
+  (`:1-13`, `:42-60`); the models catalog is `data/models.json` merged with `<data_dir>/models.json` (`crates/models/src/lib.rs:1-2`, `:316`).
+  Sqlite in a crate: `SqliteConnectOptions` + WAL + `sqlx::migrate!("./migrations")` (`crates/artifact/src/store.rs:627-640`).
+
+### 2.2 What is missing (the gaps this design fills)
+No shaping, no dictionary, no spoken end command, no history, no latency numbers, no input-device choice, no re-arm on device change, no
+delivery into other apps, no rewrite, no command mode outside the agent turn, no AppleScript/Shortcuts/PowerShell tool, a thin two-line Ask
+receipt and a card that cannot be followed up in place (study §4 table and appendix B §A1–A8; the cites above confirm each on this tree).
+`dictation.rs:7` states "Nothing is written to disk" and 54 §12 rejected persisting dictation audio (`docs/design/54-dictation.md:573-575`) —
+D9 amends both (§17, §18).
+
+### 2.3 In flight
+`fix/149-island` at `03fe260a` (island eye tint, probe sweeps; local branch, not on main) and its Windows twin `fix/149w-island`. Wave C
+(§16) starts after they land; nothing here touches `IslandPanel.swift`'s placement or visibility code, and the voice view keeps being hosted
+by the island (96 §0.3 rule, `docs/design/96-point-and-say.md:51-61`).
+
+### 2.4 The latency inference — INFERENCE, measured by D7 before any promise
+The study put the first partial at ≥ 0.7 s after speech start (onset 160 ms + one 560 ms window; appendix B §A1(b)). Re-reading the gate:
+the onset opens the utterance at `end − (ONSET + PREROLL) × FRAME` (`VOICE/live.rs:153-157`), so 480 ms of the first window are already in
+the buffer when the onset is confirmed, and `feed_full` feeds the first window once `total − fed ≥ WINDOW` (`:177-191`) — about 80 ms later.
+Structural floor ≈ 160 + 80 = 240 ms after speech start, plus one encoder step and the RPC hop; the first window "often" emits nothing
+(`VOICE/stt.rs:255`), so the first *word* commonly waits for the second window (+560 ms). Both numbers are [INFERENCE]; §8.6's metric replaces
+them with press → first partial → final per surface, as R5 asks.
