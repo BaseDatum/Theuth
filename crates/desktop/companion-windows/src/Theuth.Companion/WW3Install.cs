@@ -14,6 +14,8 @@ namespace Theuth.Companion;
 /// </summary>
 internal sealed class WW3Install : IDisposable
 {
+    private static readonly List<DispatcherQueueTimer> probeTimers = new();
+
     /// <summary>The running install (the Settings pages edit through it); null in builds without W2's surfaces.</summary>
     public static WW3Install? Current { get; private set; }
 
@@ -39,10 +41,28 @@ internal sealed class WW3Install : IDisposable
         var island = new IslandController(store, dispatcher, settings);
         var point = new PointController(store, dispatcher, island, surfaces.Hotkeys, () => island.PointSettings);
         island.EyeChanged += hidden => point.SetHiddenFromCapture(hidden);
+        // 149 R2: WW2's seam — P on a card (attach the screen to its reply) and the rail's point glyph (a locked gesture).
+        store.InstallWw3();
+        surfaces.PointRequested += card => point.OnPointRequested(card?.Item.Session);
         var install = new WW3Install(island, point);
         Current = install;
         if (Environment.GetCommandLineArgs().Contains("--point-probe")) PointProbe.Run(dispatcher, point, island);
         if (Environment.GetCommandLineArgs().Contains("--point-replay")) PointProbe.Replay(dispatcher, point);
+        // 149 R3: --speech-probe → 4 s after start, speak a line through the desk and log decode + device (--speech-dump keeps the packets).
+        // Dispatcher timers are not kept alive by the queue (PointProbe's finding): `probeTimers` holds these until they fire.
+        if (Environment.GetCommandLineArgs().Contains("--speech-probe"))
+        {
+            var t = dispatcher.CreateTimer(); t.Interval = TimeSpan.FromSeconds(4); t.IsRepeating = false;
+            t.Tick += (_, _) => _ = point.ProbeSpeakAsync("Testing the Windows speaker. One, two, three. The island is listening.");
+            probeTimers.Add(t); t.Start();
+        }
+        // 149 R3: --capture-probe → the trail-pixel assertion (overlays up vs the Stop sequence), see PointController.CaptureProbeAsync.
+        if (Environment.GetCommandLineArgs().Contains("--capture-probe"))
+        {
+            var t = dispatcher.CreateTimer(); t.Interval = TimeSpan.FromSeconds(4); t.IsRepeating = false;
+            t.Tick += (_, _) => _ = point.CaptureProbeAsync();
+            probeTimers.Add(t); t.Start();
+        }
         return install;
     }
 

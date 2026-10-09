@@ -194,3 +194,66 @@ about. The TS gates (C: `App.tsx:386-400`, `Island.tsx:70-72`, `routes/island.ts
 - v1 — 02:50: WW1 DONE 0b3de92e merged (Hotkeys.Gate replaces WW3's meeting-row gating; MeetingEvent is one tolerant record, enums string-backed — the island reads the raw stream through MeetingWire, unaffected).
 - v0 — 2026-10-09 01:40–02:40: Core + app written, WW1 skeleton (2c965119) and C (0280c0a7) merged, three build-B rounds, the UI round
   with evidence under `~/.theuth/briefs/2026-10-09/149-windows/evidence/ww3/`.
+
+## R2 — `Surfaces.PointRequested(Card?)` wired (orchestrator's R2, 03:29–03:55)
+
+WW2 raises `PointRequested(card)` from P on a card's reply row and `PointRequested(null)` from the rail's actions-pill point glyph; both
+were logged and dropped until now.
+
+| Layer | File | What |
+|---|---|---|
+| Core | `StoreModel.WW3.cs` (new partial) | the **attachment park**: `AttachToReply(session, files)` (a second P replaces), `ReplyAttachmentsFor(session)`, `TakeReplyAttachments(session)` (drained by the send), `ClearReplyAttachments`, `ReplyAttachmentsChanged` event, `AttachedText(n)` ("1 screenshot attached" · "N screenshots attached") |
+| Core | `StoreModel.cs` (one marked case) | `CardAction.SendInputTo` → `send_input(session, text, files)` when the park has files for that session, else the two-arg call as before |
+| App | `PointAndSay/PointController.cs` | `OnPointRequested(string? cardSession)`: **(a)** card → `AttachScreenAsync`: one `PointSample` at `GetCursorPos`, `overlays.Hide()` + one dispatcher turn (D13), `ScreenContext(…)` with the accessibility setting, PNGs parked on the card's session; **(b)** null → the glyph drives the machine Idle → Armed (Start: overlays, sampler, dictation) → Tap1 → **Locked** (ShowLock) in one call; the glyph again while Locked = `Pressed` = send ("tap"); Esc = Discard as for the key |
+| App | `WW3Install.cs` | `surfaces.PointRequested += card => point.OnPointRequested(card?.Item.Session)`; `store.InstallWw3()` |
+| App | `Store.WW3.cs` (new partial) | `ReplyAttachmentsChanged` → `PropertyChanged("ReplyAttachments")` so WW2's panel re-renders |
+| App | `Windows/AttentionPanelWindow.cs` (two marked blocks, WW2's file) | the reply row reads the park: placeholder becomes "1 screenshot attached · Type your answer…" (UIA name too), the P cap gets a malachite 1 px ring and the id `reply-point-attached`; the park count joins `Key()` so the memo re-renders |
+| Tests | `ReplyAttachmentsTests.cs` | attach · replace · take · clear · the change events · `AttachedText` |
+
+### R2 gates (desk held 03:42 → 03:54, released; installed companion restarted; `Run\TheuthCompanion` = installed exe `--background`)
+- Mac Core **259 / 0** (incl. the merged integrate tests); build-B Debug **0 / 0** at 35143e36 and 8e4fa00e.
+- **(b) glyph → locked gesture** (`r2-glyph-locked.png`): `rail: point pressed` → `idle --Pressed--> armed fx=Start` → `glyph → locked`;
+  the island reads `● 00:01 · locked — tap to send · theuth's desk · [locked]`, dictation live on the Realtek array. `esc` →
+  `locked --Esc--> idle fx=Discard`. Glyph · 1.6 s · glyph → `locked --Pressed--> sending fx=Stop` → `screen_context → 1 line, 1 file`
+  → "Nothing recognized" → `sending --Cancel--> idle` (nobody spoke; the send path up to the text check is the same as the key's).
+- **(a) P on a card** (`r2-card-attached.png`, `--ww2-fixture` ask card `ask:fx-1`): `panel: point pressed on ask:fx-1` → WW2 closes the
+  panel → `point: screen_context → 1 line(s), 1 file(s): [screen 1/1 · pointer: ended on (1481,473) · accessibility: off]` →
+  `P on card session fx-ask-session → 1 file(s) parked for the reply`; re-opening the panel shows the reply field
+  "1 screenshot attached · Type your answer…" (UIA `reply-field` name) and the malachite P ring (`reply-point-attached`). Round 1
+  (`r2-card-attached-round1.png`) drew the caption as an overlay that collided with the placeholder — moved into the placeholder in 8e4fa00e.
+  The reply itself was not sent (the fixture session is not a real one); the file path is `TakeReplyAttachments` → `send_input(…, files)`,
+  unit-tested.
+- The panel's `Ctrl+Shift+Space` did not toggle the panel from either SendInput source this round (w6-gate `hotkey`, windows-mcp
+  `keyboard_control`): registration is fine (`openPanel … registered id=0x134`, re-applied once by WW1's gate), but no `WM_HOTKEY` line
+  followed the presses — the inbox pill opened the panel instead. Not my seam; not investigated (the voice key's Ctrl+Alt+Space from the
+  same SendInput path worked in R1).
+
+## R3 — speech on Windows · constants · capture assertion (orchestrator's R3 / Mac W2 hand-off, 03:56–04:38)
+
+| Layer | File | What |
+|---|---|---|
+| Core | `SpeechDecoder.cs` (new) | Concentus (pure managed Opus, MIT, `Concentus` 2.2.2 via `ConcentusVersion` in `Directory.Build.props`) decoder for the engine's client-sink speech: `SpeechStarted {id, session, sample_rate 24000, chars}` · `SpeechAudio {id, session, seq, opus}` (one 80 ms mono packet, base64) · `SpeechFinished` (voice/lib.rs:325–359; `speak` = `Sink::Client`, api.rs). `Decode(base64, seq)` → PCM16 with PLC for gaps; `Rms()`; `SpeechWire` reads the three events off the raw stream |
+| Core | — | **Finding:** Concentus 2.2.2's 24 kHz decoder path returns near-silence (max \|s\| ≈ 9) for packets its own 24 kHz encoder produced, while the same packets decoded at 48 kHz give max 7 944 — so the companion decodes at Opus's native **48 kHz** (`OutputRate`, 3840 samples per 80 ms packet) and feeds NAudio 48 kHz PCM; pinned by `ConcentusTwentyFourKilohertzPathIsWhyWeDecodeAtFortyEight` |
+| App | `PointAndSay/SpeechPlayer.cs` (new) | follows `deskSession`: `SpeechStarted` → `WasapiOut(default render endpoint, shared, 60 ms)` over a `BufferedWaveProvider(48 kHz/16/1, 60 s)`; each packet decoded + appended; `SpeechFinished` drains then closes; `Stop()` cuts at once; `--speech-dump` writes the packets to `%LOCALAPPDATA%\theuth\companion\speech-dump.json` |
+| App | `PointAndSay/PointController.cs` | `OnEvent` hands speech events to the player first; `Start()` (a new gesture) and `Discard()` (Esc) call `speech.Stop()` + `stop_speaking`; `Conceal()` keeps `deskSession` while an utterance is live so the rest of the packets still arrive; `ProbeSpeakAsync` (`--speech-probe`); `CaptureProbeAsync` (`--capture-probe`); `ScreenContext(…, color)` |
+| App | `WW3Install.cs` | `--speech-probe` and `--capture-probe` timers (held in `probeTimers` — dispatcher timers are not kept alive by the queue, the first capture-probe launch never fired for that reason) |
+| Tests | `SpeechDecoderTests.cs` + `Fixtures/speech-packets-build-b.json` | encoder round-trip (20 ms packets — Concentus's encoder refuses 80 ms frames with OPUS_BAD_ARG; the engine's 80 ms packets are code-3 multi-frame packets every decoder takes), PLC on gaps, the 24-vs-48 kHz finding, `SpeechWire`, and **65 real packets recorded from build-B's engine** (`speak(desk, "Testing the Windows speaker…")`, 19 391 bytes): 3840 samples each, 0 gaps, mean rms > 0.03, ≥ 20 loud frames |
+| Gate | `ww3-gate.ps1 speech-dump` | reads the dump back through the build service |
+
+### R3 gates (desk held 04:17 → 04:38, released; installed companion restarted; `Run\TheuthCompanion` = installed exe `--background`)
+- Mac Core **265 / 0**; build-B Debug **0 / 0** at 46ea98da (the intermediate 7d73d291 … c6fe193c iterated NAudio 3.1's API: `WasapiOut`
+  is `[Obsolete]` → `#pragma warning disable CS0618` (TreatWarningsAsErrors), `BufferedWaveProvider(format, TimeSpan)`).
+- **1. Speech** (`--speech-probe --speech-dump`): `speech-probe: speak(01a11896-…, 70 chars) → 01a11eaa-…` → `speech: … started
+  (engine rate 24000 Hz, decoding at 48000 Hz) → device opened "Speaker/HP (Realtek High Definition Audio)" state=Playing` →
+  `1 packets, 3840 samples each … buffered=80 ms` → `25 packets … buffered=1870 ms` → `50 packets … 3350 ms` → `finished (?) — 65 packets
+  decoded, mean rms 0.079 (not silent), device=Speaker/HP (Realtek High Definition Audio), gaps=0` → `dumped 65 packets`. **The device
+  opened and reported Playing with 3.3 s buffered; nobody could listen** — the decode is proven by rms, the playback by WASAPI's state.
+  `SpeechFinished.reason` decoded as `?` (the field is an enum object, not a string — cosmetic, left).
+- **2. Constants**: `PointMachine.HoldMs = 200`, `DoubleTapMs = 300`, `MinNoteMs = 800` = `machine.rs` `HOLD_MS/DOUBLE_TAP_MS/MIN_NOTE_MS`. No change.
+- **3. Capture assertion** (`--capture-probe`, 68 samples over ~2.1 s, a 140 px loop): **overlays UP (WDA_NONE) → 1 351 malachite px**
+  (1 205 in the 1568×882 display overview + 146 in the crop); **real Stop sequence (WDA_EXCLUDEFROMCAPTURE + Hide + one dispatcher turn,
+  then `screen_context`) → 51 px** (51 in the overview = the desktop's noise floor within ±24/channel of malachite-over-dark; 0 in the crop).
+  Two earlier runs are why the probe looks the way it does: the engine PAINTS the pointer path it is given into every PNG
+  (`computer/context.rs` `stamp()`, `TRAIL_ALPHA` 0.85, the request's `color`), so with the true samples both captures counted ~3 900
+  "trail" pixels (run 1), and with magenta asked of the engine its stroke covered the overlay's exactly (run 2: 69 vs 55). The final probe
+  hands the engine the samples shifted 300 px right (its stroke and crop land beside the real loop) and counts the overlay's malachite.

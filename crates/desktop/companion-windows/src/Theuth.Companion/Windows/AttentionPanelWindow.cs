@@ -427,6 +427,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         if (store.FocusedCard is { } c)
         {
             sb.Append(c.Item.Id).Append('|').Append(c.Question).Append('|').Append(c.Why).Append('|').Append(c.Model).Append('|').Append(c.MoreOptions).Append(c.Clearable);
+            sb.Append('|').Append(store.ReplyAttachmentsFor(c.Item.Session).Count); // 149 WW3 R2: the parked P screenshots
             foreach (var o in c.Options) sb.Append('|').Append(o.Key).Append(o.Label).Append(o.Detail).Append(o.Recommended);
             foreach (var ch in c.Chips) sb.Append('|').Append(ch.Text).Append(ch.Ok);
         }
@@ -664,6 +665,17 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             fieldWrap.Children.Add(cap);
             Grid.SetColumn(fieldWrap, 1);
             row.Children.Add(fieldWrap);
+            // 149 WW3 R2: the P screenshots parked for this reply (Store.AttachToReply) — "N screenshots attached".
+            // The caption rides in the placeholder ("1 screenshot attached · Type your answer…") so it never overlaps the typed text;
+            // the P cap turns malachite while something is parked.
+            if (StoreModel.AttachedText(store.ReplyAttachmentsFor(card.Item.Session).Count) is { } attachedText)
+            {
+                replyBox.PlaceholderText = attachedText + " · " + anatomy.Reply.Placeholder;
+                AutomationProperties.SetName(replyBox, replyBox.PlaceholderText);
+                AutomationProperties.SetAutomationId(point, "reply-point-attached");
+                point.BorderBrush = Palette.Brush(Palette.Malachite, theme);
+                point.BorderThickness = new Thickness(1);
+            }
             var mic = CardChrome.IconCap(theme, "\uE720", "V", talkBusy ? "Listening" : "Hold to talk", anatomy.Reply.Talk, () => { }, "reply-mic");
             if (anatomy.Reply.Talk)
             {

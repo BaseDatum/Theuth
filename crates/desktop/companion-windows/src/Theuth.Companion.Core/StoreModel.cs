@@ -498,7 +498,10 @@ public partial class StoreModel : INotifyPropertyChanged
             {
                 case CardAction.StopTree st: await engine.CancelAsync(st.Session, CancelScope.Tree); break;
                 case CardAction.PauseDesk pd: await engine.AgentPauseAsync(pd.Name, true); break;
-                case CardAction.SendInputTo si: await engine.SendInputAsync(si.Session, si.Text); break;
+                case CardAction.SendInputTo si: // 149 WW3: the parked P screenshots ride with the reply
+                    if (TakeReplyAttachments(si.Session) is { Count: > 0 } files) await engine.SendInputAsync(si.Session, si.Text, files);
+                    else await engine.SendInputAsync(si.Session, si.Text);
+                    break;
                 default: return;
             }
             Receipt = new ReceiptRow.Sent(h.Action switch

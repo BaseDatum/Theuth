@@ -18,6 +18,7 @@
     shot <name> [x y w h] screenshot (whole screen or a region) to C:\Users\user\tools\pkg\ww3\<name>.png
     b64 <name>           that PNG as base64 lines (read back through GET /log)
     engine-log [N]       the last N lines (default 40) of the installed engine's log mentioning screen_context / meeting / dictation
+    speech-dump          the --speech-dump packets file (%LOCALAPPDATA%\theuth\companion\speech-dump.json) as DUMP lines
     settings-json        print settings.json
 #>
 param(
@@ -208,6 +209,10 @@ switch ($Action) {
         if (-not $f) { Say "engine-log: nothing under $dir"; break }
         Say "-- $($f.FullName)"
         Select-String -Path $f.FullName -Pattern 'screen_context|screen context|meeting|dictation|companion' | Select-Object -Last $n | ForEach-Object { Say (Clip $_.Line 300) }
+    }
+    'speech-dump' {
+        $p = Join-Path $env:LOCALAPPDATA 'theuth\companion\speech-dump.json'
+        if (Test-Path $p) { $txt = Get-Content -Raw $p; for ($i = 0; $i -lt $txt.Length; $i += 1800) { Say ('DUMP ' + $txt.Substring($i, [Math]::Min(1800, $txt.Length - $i))) } } else { Say "no $p" }
     }
     'settings-json' {
         $p = Join-Path $env:LOCALAPPDATA 'theuth\companion\settings.json'

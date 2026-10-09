@@ -33,6 +33,8 @@ internal sealed class PointController : IDisposable
     private readonly PointerSampler sampler;
     private readonly VoiceRecorder recorder;
     private readonly AskDictation dictation = new();
+    /// <summary>149 R3: plays the desk's client-sink speech (SpeechStarted/Audio/Finished for <see cref="deskSession"/>).</summary>
+    private readonly SpeechPlayer speech;
     private readonly DateTimeOffset epoch = DateTimeOffset.Now;
     private readonly DispatcherQueueTimer tick;
     private readonly DispatcherQueueTimer hintTimer;
@@ -74,6 +76,7 @@ internal sealed class PointController : IDisposable
         hotkeys.Released += OnHotkeyReleased;
         island.Window.Hotkey += id => { if (id == EscHotkeyId) Step(new PointEvent.Esc()); };
         store.DictationWire += OnDictationWire;
+        speech = new SpeechPlayer(() => deskSession) { Dump = Environment.GetCommandLineArgs().Contains("--speech-dump") };
         store.EventReceived += OnEvent; // WW1's raw stream hook (Store.WW1.cs)
         Log.Write($"point-and-say: installed (voice key {VoiceKeyChord}; annotate={settings().Annotate}; screen={(settings().IncludeScreen ? "on" : "off")}; speak={(settings().Speak ? "on" : "off")})");
     }
@@ -144,6 +147,45 @@ internal sealed class PointController : IDisposable
     /// <summary>Simulated press/release for the probe (<c>--point-probe</c>) and tests on build-B.</summary>
     public void Simulate(PointEvent e) => Step(e);
 
+    /// <summary>
+    /// 149 R2 — <c>Surfaces.PointRequested(card)</c>: P on a card's reply row (card != null) captures the screen NOW without a
+    /// gesture — one sample at the pointer, overlays hidden, <c>screen_context</c>, the PNGs parked on the card's session
+    /// (<c>Store.AttachToReply</c>) so the reply row says "N screenshots attached" and the send carries them; the rail's point
+    /// glyph (card == null) starts a point-and-say gesture LOCKED, as if the voice key had been double-tapped — Esc cancels, a tap
+    /// of the voice key or the glyph again ends it and sends.
+    /// </summary>
+    public void OnPointRequested(string? cardSession)
+    {
+        if (cardSession is not null) { _ = AttachScreenAsync(cardSession); return; }
+        if (state.IsGesture || state is PointState.Sending)
+        {
+            // The glyph again while locked/holding: the tap that sends (Locked → Pressed = send).
+            if (state is PointState.Locked) Step(new PointEvent.Pressed());
+            return;
+        }
+        // Idle/Replying → Armed (Start) → a tap (Released < HOLD) → Tap1 → a second press inside the window → Locked.
+        var t = Now;
+        Step(new PointEvent.Pressed());
+        if (state is not PointState.Armed) return; // refused
+        var (s1, _) = PointMachine.Step(state, new PointEvent.Released(), t, null);
+        var (s2, fx2) = PointMachine.Step(s1, new PointEvent.Pressed(), t + 1, null);
+        state = s2;
+        tick.Stop();
+        foreach (var fx in fx2) Run(fx);
+        Log.Write($"point: glyph → {state.Json} (locked gesture; Esc cancels, the voice key or the glyph again sends)");
+    }
+
+    private async Task AttachScreenAsync(string session)
+    {
+        if (!PInvoke.GetCursorPos(out var p)) return;
+        var sample = new PointSample(0, p.X, p.Y, true);
+        overlays.Hide();
+        await Yield();
+        var (lines, files) = await ScreenContext(new[] { sample }, 0, settings().AccessibilityOn);
+        store.AttachToReply(session, files);
+        Log.Write($"point: P on card session {session} → {files.Count} file(s) parked for the reply{(lines.Count > 0 ? "; " + lines[0] : "")}");
+    }
+
     private void Step(PointEvent e)
     {
         if (disposed) return;
@@ -189,6 +231,7 @@ internal sealed class PointController : IDisposable
         hintTimer.Stop();
         var s = settings();
         _ = store.Client.CallRawAsync("stop_speaking", (object?)null).ContinueWith(_ => { }, TaskScheduler.Default);
+        speech.Stop();
         lastStatusSecond = uint.MaxValue;
         overlays.Reveal();
         sampler.Start(s.AnnotateMouse);
@@ -346,14 +389,14 @@ internal sealed class PointController : IDisposable
         return dictation.LiveText;
     }
 
-    private async Task<(IReadOnlyList<string> Lines, IReadOnlyList<string> Files)> ScreenContext(PointSample[] samples, long durationMs, bool accessibility)
+    private async Task<(IReadOnlyList<string> Lines, IReadOnlyList<string> Files)> ScreenContext(PointSample[] samples, long durationMs, bool accessibility, string? color = null)
     {
         try
         {
             var req = new
             {
                 samples = samples.Select(p => new { t_ms = p.TMs, x = (float)p.X, y = (float)p.Y, pen = p.Pen }).ToArray(),
-                color = PointFlow.TrailHex,
+                color = color ?? PointFlow.TrailHex,
                 since_ms = durationMs,
                 accessibility,
             };
@@ -403,6 +446,8 @@ internal sealed class PointController : IDisposable
         dictationId = null;
         gesture++;
         working = false;
+        speech.Stop(); // 149 R3: Esc also cuts the spoken answer (stop_speaking goes with the next Start)
+        _ = store.Client.CallRawAsync("stop_speaking", (object?)null).ContinueWith(_ => { }, TaskScheduler.Default);
         deskSession = null;
         if (hintText is { } h)
         {
@@ -424,8 +469,23 @@ internal sealed class PointController : IDisposable
         doneTimer.Stop();
         UnregisterEsc();
         working = false;
-        deskSession = null;
+        // 149 R3: the card is gone but the voice may still be mid-sentence — SpeechPlayer follows deskSession, so keep it set
+        // until the utterance finishes (SpeechFinished) or the next gesture; a null here would drop the rest of the packets.
+        if (speech.Utterance is null) deskSession = null;
         island.SetVoice(null);
+    }
+
+    /// <summary><c>--speech-probe</c>: open the desk, ask the engine to speak a line, and let <see cref="SpeechPlayer"/> report.</summary>
+    public async Task ProbeSpeakAsync(string text)
+    {
+        try
+        {
+            var target = await DeskAsync();
+            deskSession = target;
+            var id = await store.Client.CallAsync<string>("speak", target, text);
+            Log.Write($"speech-probe: speak({target}, {text.Length} chars) → {id}");
+        }
+        catch (Exception e) { Log.Write($"speech-probe: failed: {Why(e)}"); }
     }
 
     private void ShowHint(string h)
@@ -440,6 +500,7 @@ internal sealed class PointController : IDisposable
     private void OnEvent(string type, byte[] json)
     {
         if (deskSession is null) return;
+        if (speech.Handle(type, json)) return; // 149 R3: the speech packets never reach the card
         StreamDelta d;
         try { d = StreamDelta.Decode(json); } catch (Exception) { return; }
         if (d.Session != deskSession) return;
@@ -592,6 +653,97 @@ internal sealed class PointController : IDisposable
         escRegistered = false;
     }
 
+    // MARK: 149 R3 — capture assertion (the Mac W2 probe's twin)
+
+    /// <summary>
+    /// <c>--capture-probe</c>: start a gesture, draw a loop with the pointer, then (A) call <c>screen_context</c> with the overlays
+    /// UP and capture-visible (WDA_NONE) — the overlay's malachite stroke must be in the PNG — and (B) run the real Stop sequence
+    /// (hide every overlay, WDA_EXCLUDEFROMCAPTURE, one dispatcher turn) before <c>screen_context</c> — it must be gone.
+    /// The engine itself paints the pointer path into the PNG from the samples (<c>computer/context.rs</c>, <c>TRAIL_ALPHA</c>
+    /// 0.85, in the request's <c>color</c>): the first run of this probe counted ~3 900 "trail" pixels in BOTH captures for that
+    /// reason. So the probe asks the engine to paint in MAGENTA (<c>#ff00ff</c>) and counts malachite (the overlay) and magenta
+    /// (the engine) separately — malachite must go to 0 after the Stop sequence while magenta stays (the engine drew it).
+    /// </summary>
+    public async Task<string> CaptureProbeAsync()
+    {
+        if (!PInvoke.GetCursorPos(out var origin)) return "no cursor";
+        Step(new PointEvent.Pressed());
+        if (state is not PointState.Armed) { Log.Write($"capture-probe: refused ({state.Json})"); return "refused"; }
+        await Task.Delay(250);
+        // A loop ~140 px across, 48 steps 25 ms apart — the sampler (16 ms) records it, the overlay draws it.
+        for (int i = 0; i <= 48; i++)
+        {
+            double a = 2 * Math.PI * i / 48;
+            PInvoke.SetCursorPos(origin.X + (int)(70 * Math.Cos(a)), origin.Y + (int)(70 * Math.Sin(a)));
+            await Task.Delay(25);
+        }
+        await Task.Delay(200);
+        var samples = sampler.Samples.ToArray();
+        long durationMs = samples.Length > 0 ? samples[^1].TMs : 0;
+        // The engine paints the path it is given and crops around it: hand it the loop shifted 300 px right, so its magenta
+        // stroke and its crop sit beside the overlay's real loop, which stays countable in the display overview (second run of
+        // this probe: with the true samples the engine's stroke covered the overlay's exactly — 69 vs 55 malachite px, no signal).
+        var shifted = samples.Select(s => new PointSample(s.TMs, s.X + 300, s.Y, s.Pen)).ToArray();
+        // (A) overlays up and visible to capture
+        overlays.SetHiddenFromCapture(false);
+        await Yield();
+        var (_, filesUp) = await ScreenContext(shifted, durationMs, false, ProbeColor);
+        var up = await CountTrail(filesUp);
+        // (B) the real Stop sequence: WDA_EXCLUDEFROMCAPTURE + hidden + one dispatcher turn, then the engine captures
+        overlays.SetHiddenFromCapture(true);
+        overlays.Hide();
+        await Yield();
+        var (_, filesDown) = await ScreenContext(shifted, durationMs, false, ProbeColor);
+        var down = await CountTrail(filesDown);
+        var line = $"capture-probe: {samples.Length} samples over {durationMs} ms; overlays UP → malachite px {up.Trail} (engine magenta {up.Green}) in {up.Files} file(s) {up.Size}; STOP sequence → malachite px {down.Trail} (engine magenta {down.Green}) in {down.Files} file(s) {down.Size}";
+        Log.Write(line);
+        overlays.SetHiddenFromCapture(!Flags.Shareable);
+        Step(new PointEvent.Cancel());
+        return line;
+    }
+
+    /// <summary>±24 of 255 per channel: a 0.85-alpha stroke drifts from the pure colour by up to 0.15 × the ground.</summary>
+    public const int TrailTolerance = 24;
+    /// <summary>What the probe asks the engine to paint the path in, so the overlay's malachite is countable on its own.</summary>
+    public const string ProbeColor = "#ff00ff";
+
+    private static async Task<(int Trail, int Green, int Files, string Size)> CountTrail(IReadOnlyList<string> files)
+    {
+        int trail = 0, green = 0, n = 0; string size = "";
+        foreach (var path in files)
+        {
+            try
+            {
+                using var stream = File.OpenRead(path);
+                var decoder = await global::Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream.AsRandomAccessStream());
+                var data = await decoder.GetPixelDataAsync(global::Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8, global::Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
+                    new global::Windows.Graphics.Imaging.BitmapTransform(), global::Windows.Graphics.Imaging.ExifOrientationMode.IgnoreExifOrientation, global::Windows.Graphics.Imaging.ColorManagementMode.DoNotColorManage);
+                var px = data.DetachPixelData();
+                size += $"{(n > 0 ? "+" : "")}{decoder.PixelWidth}x{decoder.PixelHeight}";
+                n++;
+                int trailBefore = trail;
+                int tr = (int)(PointFlow.TrailRgb >> 16 & 0xff), tg = (int)(PointFlow.TrailRgb >> 8 & 0xff), tb = (int)(PointFlow.TrailRgb & 0xff);
+                for (int i = 0; i + 3 < px.Length; i += 4)
+                {
+                    int b = px[i], g = px[i + 1], r = px[i + 2];
+                    if (Near(r, g, b, tr, tg, tb, 0x10) || Near(r, g, b, tr, tg, tb, 0xf0)) trail++;
+                    if (Near(r, g, b, 0xff, 0x00, 0xff, 0x10) || Near(r, g, b, 0xff, 0x00, 0xff, 0xf0)) green++; // the engine's magenta
+                }
+                Log.Write($"capture-probe: {Path.GetFileName(path)} {decoder.PixelWidth}x{decoder.PixelHeight} malachite={trail - trailBefore}");
+            }
+            catch (Exception e) { Log.Write($"capture-probe: {path}: {e.Message}"); }
+        }
+        return (trail, green, n, size);
+
+        static bool Near(int r, int g, int b, int tr, int tg, int tb, int ground)
+        {
+            int cr = (int)(tr * TrailRaster.TrailAlpha + ground * (1 - TrailRaster.TrailAlpha));
+            int cg = (int)(tg * TrailRaster.TrailAlpha + ground * (1 - TrailRaster.TrailAlpha));
+            int cb = (int)(tb * TrailRaster.TrailAlpha + ground * (1 - TrailRaster.TrailAlpha));
+            return Math.Abs(r - cr) <= TrailTolerance && Math.Abs(g - cg) <= TrailTolerance && Math.Abs(b - cb) <= TrailTolerance;
+        }
+    }
+
     public void Dispose()
     {
         if (disposed) return;
@@ -600,6 +752,7 @@ internal sealed class PointController : IDisposable
         hotkeys.Released -= OnHotkeyReleased;
         store.DictationWire -= OnDictationWire;
         store.EventReceived -= OnEvent;
+        speech.Dispose();
         UnregisterEsc();
         sampler.Dispose();
         recorder.Cancel();
