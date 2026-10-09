@@ -27,9 +27,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 149 W1: never in a probe — a second instance beside the login item shares its UserDefaults suite, and the
         // exclusive-registration probe would read the real companion's own chords as "held by another app" and persist nil.
         if !Flags.anyProbe { Hotkeys.start(SettingsModel.shared) }
+        // 149s K1: the panel key's tap toggles the Attention panel (empty state included), its hold talks; the Ask bar key
+        // toggles the Ask bar only. Both halves of the panel key go through `AskBarController`'s hold machine (key-down in
+        // `installAskBar`); 130-W3's "Attention panel when something needs you, else the Ask bar" is gone.
         KeyboardShortcuts.onKeyUp(for: .openPanel) { [weak self] in
             guard let self, Flags.probe == nil else { return }
-            self.askBar.hotkeyUp() // W3: Attention panel when something needs you, else the Ask bar
+            self.askBar.hotkeyUp()
         }
         KeyboardShortcuts.onKeyUp(for: .openAskBar) { [weak self] in
             guard let self, !AskFlags.automated else { return }

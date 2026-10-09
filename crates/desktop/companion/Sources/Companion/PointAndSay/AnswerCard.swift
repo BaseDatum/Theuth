@@ -13,6 +13,8 @@ final class AnswerCardState: ObservableObject {
     @Published var text = ""
     @Published var failed = false
     @Published var speaking = false
+    /// 149s S4: the speaker glyph is a button; clicking it stops the utterance.
+    var onStop: (() -> Void)?
 
     func begin(question: String) {
         self.question = question; status = "working…"; text = ""; failed = false; speaking = false
@@ -27,10 +29,7 @@ struct AnswerCardView: View {
             HStack(spacing: 8) {
                 Text("theuth").font(.body.weight(.semibold)).foregroundColor(.primary).lineLimit(1).fixedSize()
                 Text("· \(state.status)").font(.body).foregroundColor(state.failed ? .failed : .tertiary).lineLimit(1).truncationMode(.tail).layoutPriority(0)
-                if state.speaking {
-                    Image(systemName: "speaker.wave.2.fill").font(.subheadline).foregroundColor(.done)
-                        .accessibilityLabel("Speaking")
-                }
+                if state.speaking { SpeakingGlyph { state.onStop?() } }
                 Spacer()
                 Cap("esc")
             }
@@ -68,6 +67,20 @@ private struct Cap: View {
     }
 }
 
+/// 149s S4: "speaking" on the surface that asked for it — the SF speaker glyph in the accent; a click stops the utterance.
+struct SpeakingGlyph: View {
+    let stop: () -> Void
+
+    var body: some View {
+        Button(action: stop) {
+            Image(systemName: "speaker.wave.2.fill").font(.subheadline).foregroundColor(.accentColor)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Speaking")
+        .accessibilityHint("Click to stop")
+    }
+}
+
 /// The glass panel (`GlassPanel.make`, the Ask bar's) that takes key without activating the companion so ⎋ and O work
 /// as soon as the reply lands; dismissed, it hands key back to the app the user was in (the Ask bar's rule).
 @MainActor
@@ -81,6 +94,10 @@ final class AnswerCard {
     private var subs = Set<AnyCancellable>()
     var onEscape: (() -> Void)?
     var onOpen: (() -> Void)?
+    var onStop: (() -> Void)? {
+        get { state.onStop }
+        set { state.onStop = newValue }
+    }
 
     init() {
         let (panel, container) = GlassPanel.make(width: Self.width, height: 120)

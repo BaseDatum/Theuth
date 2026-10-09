@@ -48,16 +48,21 @@ extension Store {
 
     // MARK: the Ask bar
 
-    /// ⏎ in the Ask bar: the same hold (⎋ undoes), then `commitAsk`.
+    /// ⏎ in the Ask bar: the same hold (⎋ undoes), then `commitAsk`. S3: a new ask silences the reply still being spoken.
     func submitAsk(_ text: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
+        speaker.stop()
         hold(Held(itemId: "", who: "theuth", label: t, action: .askTheuth(text: t)))
     }
+
+    /// S3: the Ask bar's toggle, or `--probe-speak`'s override (a probe never writes the owner's defaults).
+    var askSpeakEnabled: Bool { AskFlags.probeSpeak || SpokenReplies.ask(Settings.defaults) }
 
     /// After the hold: resolve theuth's desk once per session, `send_input(desk, text, [], null, null)`, then
     /// collect the desk's reply from the event stream into the receipt row and the Done zone.
     func commitAsk(_ text: String) async {
+        guard !AskFlags.automated else { return AskLog.write("probe: send suppressed (commit)") }
         do {
             let session = try await resolveDesk()
             _ = try await client.sendInput(session: session, text: text)
@@ -132,7 +137,10 @@ extension Store {
         let text = reply.receiptText
         if let id = ask.current { ask.receipts.update(id: id, text: text) }
         setReceipt(.reply(who: "theuth", text: text.isEmpty ? "…" : text, session: reply.session))
-        if reply.finished { expireReceipt(after: 12) }
+        guard reply.finished else { return }
+        expireReceipt(after: 12)
+        // S3: the same reply the receipt row shows, spoken through the voice key's path once it is final; partials never.
+        if SpokenReplies.shouldSpeak(enabled: askSpeakEnabled, reply: reply) { speaker.speak(reply.text, on: reply.session, from: .askBar) }
     }
 
     // MARK: live dictation (W6; design 54 §8)
@@ -214,6 +222,8 @@ enum AskFlags {
     }()
     /// W6: with `--ask-probe`, stream a synthetic tone through the live dictation path.
     static let syntheticDictation = CommandLine.arguments.contains("--synthetic-dictation")
+    /// 149s: with `--ask-probe`, the spoken-reply scenario (`AskProbe.speakScenario`); also turns Ask speech on for the run.
+    static let probeSpeak = CommandLine.arguments.contains("--probe-speak")
     /// Any automated run: no hotkey, no microphone, no sends.
     static var automated: Bool { Flags.anyProbe || probe != nil }
 }

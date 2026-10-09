@@ -41,6 +41,7 @@ enum AskProbe {
                     }
                 }
                 if AskFlags.syntheticDictation { runDictation(store: store, askBar: askBar) }
+                if AskFlags.probeSpeak { Task { await speakScenario(store: store, askBar: askBar) } }
             }
         }.store(in: &subs)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
@@ -142,5 +143,60 @@ enum AskProbe {
         do { try await store.client.dictationStop(id: held) } catch { dlog("dictation_stop \(held) failed: \(error)") }
         await settle()
         dlog("REFUSED: probe's dictation stopped → active=\(await active() ?? "nil")")
+    }
+
+    // MARK: --probe-speak (149s S3): the Ask reply spoken through the shared speaker, against the live engine
+
+    static let speakLog = URL(fileURLWithPath: "/tmp/149s-speak-probe.log")
+
+    private static func slog(_ s: String) {
+        AskLog.write(s)
+        let line = "[companion \(Date()) pid \(getpid())] \(s)\n"
+        if let h = try? FileHandle(forWritingTo: speakLog) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+        else { try? Data(line.utf8).write(to: speakLog) }
+    }
+
+    /// `askSpeak` is on through `AskFlags.probeSpeak` (the owner's defaults untouched). A fixture reply — `TextDelta` partials
+    /// then `TurnFinished` on the resolved desk — runs through `askObserve`, the path a real reply takes; nothing is sent to the
+    /// desk (`send_input` never called), but `speak` goes to the live engine and its `SpeechAudio` packets decode here into a
+    /// MUTED player (volume 0: the probe never sounds on the owner's Mac). Asserts: `speak` called once with the final text, no
+    /// speak on partials, packets decoded, then a second ask (`submitAsk` → `.escape` undoes the hold before it can send) stops
+    /// the utterance and `stop_speaking` goes out for its id.
+    private static func speakScenario(store: Store, askBar: AskBarController) async {
+        try? FileManager.default.removeItem(at: speakLog)
+        func settle(_ s: Double) async { try? await Task.sleep(for: .seconds(s)) }
+        func event(_ type: String, _ session: String, _ extra: [String: String]) -> Data {
+            var o = extra; o["type"] = type; o["session"] = session
+            return try! JSONSerialization.data(withJSONObject: o)
+        }
+        guard let desk = store.ask.router.deskSession else { return slog("SPEAK skipped: no desk") }
+        store.speech.volume = 0
+        var speaks: [String] = [], stops: [String] = []
+        store.speaker.log = { line in
+            if line.hasPrefix("speak(") { speaks.append(line) }
+            if line.hasPrefix("stop ") { stops.append(line) }
+            slog("speaker: \(line)")
+        }
+        slog("SPEAK: askSpeak=\(store.askSpeakEnabled) (override, defaults untouched: askSpeak key=\(Settings.defaults.object(forKey: SpokenReplies.askKey).map { "\($0)" } ?? "unset")) desk=\(desk.prefix(8))… muted=true")
+        let text = "Probe reply: the spoken-reply path works end to end."
+        store.ask.router.sent(on: desk) // what `commitAsk` does after `send_input`; the send itself never happens here
+        store.askObserve(event("TextDelta", desk, ["text": "Probe reply: "]))
+        store.askObserve(event("TextDelta", desk, ["text": "the spoken-reply path "]))
+        slog("partials fed → speaks=\(speaks.count) surface=\(String(describing: store.speaker.surface))")
+        let noPartialSpeak = speaks.isEmpty
+        store.askObserve(event("TextDelta", desk, ["text": "works end to end."]))
+        store.askObserve(event("TurnFinished", desk, ["stop_reason": "end_turn"]))
+        await settle(4)
+        let decoded = store.speech.decoded
+        slog("final fed → speaks=\(speaks) id=\(store.speaker.id ?? "nil") surface=\(String(describing: store.speaker.surface)) playing=\(store.speech.isPlaying) decoded=\(decoded) receipt=\(String(describing: store.receipt))")
+        slog("ASSERT speak once with the final text, none for partials: \((noPartialSpeak && speaks.count == 1 && speaks[0].hasPrefix("speak(askBar) \(text.count) chars")) ? "PASS" : "FAIL")")
+        slog("ASSERT SpeechAudio received and decoded: \(decoded > 0 ? "PASS" : "FAIL") (\(decoded) packets)")
+        let id = store.speaker.id
+        store.submitAsk("probe — second ask, undone")
+        store.perform(.escape) // undo the hold: nothing reaches the desk
+        await settle(1)
+        slog("second ask → surface=\(String(describing: store.speaker.surface)) playing=\(store.speech.isPlaying) stops=\(stops) receipt=\(String(describing: store.receipt))")
+        slog("ASSERT a second ask stops it (stop_speaking for its id): \((store.speaker.surface == nil && !store.speech.isPlaying && id != nil && stops == ["stop \(id!)"]) ? "PASS" : "FAIL")")
+        slog("SPEAK done — nothing sent (receipts=\(store.ask.receipts.count))")
     }
 }
