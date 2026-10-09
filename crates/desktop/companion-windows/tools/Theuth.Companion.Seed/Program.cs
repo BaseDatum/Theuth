@@ -80,7 +80,7 @@ public static class Program
                 }
                 for (int n = 1; n <= count; n++)
                 {
-                    try { Console.WriteLine(await SeedOne(client, kind, title, n)); }
+                    try { Console.WriteLine(await SeedOne(client, kind, title, n, agentName)); }
                     catch (Exception e)
                     {
                         failures++;
@@ -93,7 +93,7 @@ public static class Program
         return failures == 0 ? 0 : 1;
     }
 
-    private static async Task<string> SeedOne(RpcClient c, string kind, string? title, int n)
+    private static async Task<string> SeedOne(RpcClient c, string kind, string? title, int n, string? agentName = null)
     {
         var stamp = DateTimeOffset.Now.ToString("HHmmss", CultureInfo.InvariantCulture);
         switch (kind)
