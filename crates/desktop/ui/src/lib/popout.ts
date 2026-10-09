@@ -127,7 +127,8 @@ export function popoutSize(t: PopoutTarget, screen: { availWidth: number; availH
 export function openPopout(t: PopoutTarget): Promise<void> {
   if (isTauri()) return invoke<void>('open_window', { label: popoutLabel(t), url: popoutUrl(t) })
   const size = popoutSize(t, window.screen)
-  window.open(popoutUrl(t), popoutLabel(t), size ? `width=${size.width},height=${size.height}` : undefined)
+  if (size) window.open(popoutUrl(t), popoutLabel(t), `width=${size.width},height=${size.height}`)
+  else window.open(popoutUrl(t), popoutLabel(t))
   return Promise.resolve()
 }
 

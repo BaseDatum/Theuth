@@ -22,7 +22,7 @@ vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
 vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: unknown }) => unknown) => sel({ client: {} }) }))
 vi.mock('@/lib/popout', () => ({ canPopout: () => false, noteOpenMode: () => 'navigate', openPopout: vi.fn() }))
 vi.mock('@/lib/citations', () => ({ isProvenanceLine: (md: string) => md.includes('*Answer from [') }))
-vi.mock('@/components/chat/Citations', () => ({ citationCount: () => 2 }))
+vi.mock('@/components/chat/Citations', () => ({ citationCount: () => 2, CitationLink: () => null }))
 vi.mock('@/components/notebooks/NotebookContext', () => ({ useNotebookSession: () => 'sess1' }))
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),

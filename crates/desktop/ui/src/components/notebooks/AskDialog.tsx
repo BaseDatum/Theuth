@@ -74,6 +74,7 @@ export function AskDialog({ open, onOpenChange, current = null, question: initia
           ))}
         </fieldset>
         <Textarea autoFocus aria-label="Question" placeholder="What do you want to know?" value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={onKeyDown} rows={3} />
+        {/* the mobile-zoom scan reads two lines: the small font below belongs to the label, not to this field */}
         <label className="flex items-center gap-2 text-sm">
           <span className="shrink-0">Save the answer as a note into</span>
           <Select value={saveInto} onValueChange={setSaveInto}>
