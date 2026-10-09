@@ -8,7 +8,7 @@ import { X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { toast } from 'sonner'
 import { dragSource } from '@/components/chat/AttachChip'
-import { useNotebookSession } from '@/components/notebooks/NotebookContext'
+import { useEnsureNotebookSession, useNotebookSession } from '@/components/notebooks/NotebookContext'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { type EstimateItem, useContextDefaults } from '@/lib/notebook-context'
 import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
@@ -96,11 +96,15 @@ function Refetch({ id, className, children }: { id: string; className?: string; 
   )
 }
 
-/** What the dial writes: the session's row when a thread exists, the device default always (§5.1 W-g). */
+/**
+ * What the dial writes: the device default always, then the session's row — creating the notebook's thread first when
+ * there is none yet (`useEnsureNotebookSession`), so the first message already carries the dial (§5.1 W-g).
+ */
 export function useDial(notebook: string) {
   const ctx = useContextApi()
   const qc = useQueryClient()
   const session = useNotebookSession(notebook)
+  const ensure = useEnsureNotebookSession(notebook)
   const defaults = useContextDefaults()
   const done = () => void qc.invalidateQueries({ queryKey: ['notebooks', 'estimate', notebook] })
   const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
@@ -108,15 +112,21 @@ export function useDial(notebook: string) {
     session,
     set(item: string, kind: ItemKind, level: ContextLevel) {
       defaults.set(notebook, item, kind, level)
-      if (session) ctx.notebook_context_set(session, item, kind, level).then(done, fail)
+      ensure()
+        .then((s) => ctx.notebook_context_set(s, item, kind, level))
+        .then(done, fail)
     },
     clear(item: string) {
       defaults.clear(notebook, item)
-      if (session) ctx.notebook_context_clear(session, item).then(done, fail)
+      ensure()
+        .then((s) => ctx.notebook_context_clear(s, item))
+        .then(done, fail)
     },
     setAll(items: readonly { id: string; kind: ItemKind }[], kind: ItemKind, level: ContextLevel) {
       defaults.setAll(notebook, items, level)
-      if (session) ctx.notebook_context_set_all(session, notebook, kind, level).then(done, fail)
+      ensure()
+        .then((s) => ctx.notebook_context_set_all(s, notebook, kind, level))
+        .then(done, fail)
     },
   }
 }

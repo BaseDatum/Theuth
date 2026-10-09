@@ -47,7 +47,7 @@ vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: unknown }) => unknown) => sel({ client: {} }) }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('@/lib/notebooks-rpc', async (original) => ({ ...(await original<typeof NbRpc>()), useNotebooksApi: () => ({}), useContextApi: () => ({}) }))
-vi.mock('@/components/notebooks/NotebookContext', () => ({ useNotebookSession: () => 'sess1' }))
+vi.mock('@/components/notebooks/NotebookContext', () => ({ useNotebookSession: () => 'sess1', useEnsureNotebookSession: () => async () => 'sess1' }))
 vi.mock('@/components/notebooks/useNotebook', () => ({
   useSources: () => ({ data: [fixture, second], isPending: false, isError: false }),
   useContextEstimate: () => ({ data: estimate }),

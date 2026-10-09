@@ -118,6 +118,14 @@ async fn session_context_rows_round_trip_per_session() {
         store.context_get(a).await.unwrap(),
         vec![("N1".to_owned(), "note".to_owned(), "off".to_owned())]
     );
+    // Deleting a session takes its dial rows with it; the other session keeps its own.
+    store
+        .create_session(a, "m", None, None, None)
+        .await
+        .unwrap();
+    store.delete_session(a).await.unwrap();
+    assert!(store.context_get(a).await.unwrap().is_empty());
+    assert_eq!(store.context_get(b).await.unwrap().len(), 1);
     let pins = agent::notebook_context::pins_of(vec![
         ("N1".into(), "note".into(), "off".into()),
         ("C1".into(), "session".into(), "full".into()),

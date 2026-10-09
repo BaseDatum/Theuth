@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { DRAG_TYPE, droppedRef } from '@/lib/attach'
-import { isProvenanceLine } from '@/lib/citations'
+import { provenanceOf } from '@/lib/citations'
 import type { EstimateItem } from '@/lib/notebook-context'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { canPopout, noteOpenMode, openPopout } from '@/lib/popout'
@@ -131,7 +131,7 @@ function Row({ id, notebook, summary, context, onRemove }: { id: string; noteboo
   const api = useApi()
   const md = useQuery({ queryKey: ['doc', 'markdown', id], queryFn: () => api.doc_markdown(id) })
   const title = summary?.title || firstLine(md.data) || 'Untitled'
-  const saved = !!md.data && isProvenanceLine(md.data)
+  const saved = md.data ? provenanceOf(md.data) : null
   const kind = summary?.kind
   return (
     <li id={`item-${id}`} className="group flex flex-col gap-1.5 rounded-lg border border-border-subtle bg-background px-2.5 py-2">
@@ -142,7 +142,7 @@ function Row({ id, notebook, summary, context, onRemove }: { id: string; noteboo
           <span className="flex flex-wrap items-center gap-1 text-[11px] text-fg-tertiary">
             {saved ? (
               <>
-                <span className="rounded-full border border-emerald-700/50 px-1.5 text-emerald-700">AI</span> from chat · {citationCount(md.data ?? '')} citations kept
+                <span className="rounded-full border border-emerald-700/50 px-1.5 text-emerald-700">AI</span> from {saved} · {citationCount(md.data ?? '')} citations kept
               </>
             ) : (
               summary && <span>edited {ago(new Date(Number(summary.updated_ms)).toISOString())}</span>

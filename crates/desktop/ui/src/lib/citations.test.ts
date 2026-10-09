@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { type Cite, collectCitations, isProvenanceLine, locatorLabel, locatorMs, parseTheuthHref, routeOf } from './citations'
+import { type Cite, collectCitations, isProvenanceLine, locatorLabel, locatorMs, parseTheuthHref, provenanceOf, routeOf } from './citations'
 
 const cite = (href: string): Cite => parseTheuthHref(href) as Cite
 
@@ -54,7 +54,11 @@ test('locatorLabel and provenance detection', () => {
   expect(locatorLabel(cite('theuth://meetings/m1@41:12'))).toBe('@41:12')
   expect(locatorLabel(cite('theuth://sessions/s1#7'))).toBe('turn 7')
   expect(locatorLabel(cite('theuth://knowledge/k'))).toBe('')
-  expect(isProvenanceLine('Body\n\n*Answer from [RDS drill](theuth://sessions/s1#3)*')).toBe(true)
-  expect(isProvenanceLine('Body\n\n*Answer from* *[chat](theuth://sessions/s1#1)** · m · d*')).toBe(true)
+  expect(provenanceOf('Body\n\n*Answer from [RDS drill](theuth://sessions/s1#3)*')).toBe('chat')
+  expect(provenanceOf('Body\n\n*Answer from* *[chat](theuth://sessions/s1#1)** · m · d*')).toBe('chat')
+  // 144 §4.3: a promoted insight's trailer, plain and with the helper's emphasis split.
+  expect(provenanceOf('Body\n\n*From [Failover notes](theuth://sources/s1#b1) · m · 2026-10-09*')).toBe('source')
+  expect(provenanceOf('Body\n\n*From* *[Failover notes](theuth://sources/s1#b1)** · m · d*')).toBe('source')
   expect(isProvenanceLine('See [RDS drill](theuth://sessions/s1#3)')).toBe(false)
+  expect(isProvenanceLine('*From [x](theuth://notes/n1)*')).toBe(false)
 })

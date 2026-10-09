@@ -77,5 +77,9 @@ export function locatorLabel(cite: Cite): string {
   return cite.kind === 'sessions' ? `turn ${cite.locator.slice(1)}` : cite.locator
 }
 
-/** A note saved from a chat answer carries `*Answer from [chat](theuth://sessions/…)*` (§8); the helper may re-export the emphasis as `*Answer from* *[chat](…)**`. */
-export const isProvenanceLine = (markdown: string): boolean => /\*Answer from\*?\s+\*?\[[^\]]*\]\(theuth:\/\/sessions\//.test(markdown)
+/** A note saved from a chat answer carries `*Answer from [chat](theuth://sessions/…)*` (§8); a promoted insight carries
+ * `*From [<source>](theuth://sources/<id>#<block>) · <model> · <date>*` (§4.3). The helper may re-export the emphasis as
+ * `*Answer from* *[chat](…)**`. Answers where the note came from, `null` for a hand-written note. */
+export const provenanceOf = (markdown: string): 'chat' | 'source' | null =>
+  /\*Answer from\*?\s+\*?\[[^\]]*\]\(theuth:\/\/sessions\//.test(markdown) ? 'chat' : /\*From\*?\s+\*?\[[^\]]*\]\(theuth:\/\/sources\//.test(markdown) ? 'source' : null
+export const isProvenanceLine = (markdown: string): boolean => provenanceOf(markdown) !== null

@@ -2914,6 +2914,11 @@ impl Store {
                 .bind(&sid)
                 .execute(&mut *tx)
                 .await?;
+            // 144 §5.1 (E1 hand-off): the dial rows of a deleted thread go with it (no FK on the table).
+            sqlx::query("DELETE FROM session_context WHERE session = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
             durability::delete_journal_in(&mut tx, &sid).await?;
             endless::delete_endless_in(&mut tx, &sid).await?;
             sqlx::query("DELETE FROM sessions WHERE id = ?")

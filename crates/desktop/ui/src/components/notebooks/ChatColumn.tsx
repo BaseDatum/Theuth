@@ -5,13 +5,13 @@ import { useEffect } from 'react'
 import { toast } from 'sonner'
 import { Composer } from '@/components/chat/Composer'
 import { Transcript } from '@/components/chat/Transcript'
-import { NotebookContext, useNotebookSession, useOpenThread } from '@/components/notebooks/NotebookContext'
+import { NotebookContext, applyContextDefaults, useNotebookSession, useOpenThread } from '@/components/notebooks/NotebookContext'
 import { useContextEstimate, useNotebook, useNotebookChats } from '@/components/notebooks/useNotebook'
 import { ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import type { AttachRef } from '@/lib/attach'
-import { contextLine, remembered, useContextDefaults } from '@/lib/notebook-context'
+import { contextLine } from '@/lib/notebook-context'
 import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
@@ -68,8 +68,9 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
     try {
       await nb.session_set_notebook(id, notebook)
       // §5.1 W-g: the device defaults become this thread's rows. The composer has already sent the first message, so
-      // the first turn may still run on the default rule (the same seam wave 1's `session_set_notebook` has).
-      await Promise.all(remembered(useContextDefaults.getState().defaults, notebook).map((r) => ctx.notebook_context_set(id, r.item, r.kind, r.level)))
+      // that turn ran on the default rule unless a dial was touched first (then `useEnsureNotebookSession` created
+      // the thread with its rows before the send and this path never runs).
+      await applyContextDefaults(ctx, id, notebook)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     }
