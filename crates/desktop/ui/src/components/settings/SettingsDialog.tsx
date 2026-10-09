@@ -14,6 +14,7 @@ import {
   MessageCircle,
   MessageSquare,
   Mic,
+  MicVocal,
   Moon,
   Monitor,
   Radio,
@@ -47,6 +48,7 @@ import { Search } from '@/components/settings/Search'
 import { Mesh } from '@/components/settings/Mesh'
 import { Shortcuts } from '@/components/settings/Shortcuts'
 import { VoiceKey } from '@/components/settings/VoiceKey'
+import { Voice } from '@/components/settings/Voice'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -63,6 +65,7 @@ const TABS = [
   ['memory', 'Memory', InfinityIcon],
   ['computer', 'Computer', Monitor],
   ['meetings', 'Meetings', Mic],
+  ['voice', 'Voice', MicVocal],
   ['voice-key', 'Voice key', AudioLines],
   ['search', 'Search', SearchIcon],
   ['labs', 'Labs', FlaskConical],
@@ -106,6 +109,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'computer' && <Computer />}
       {tab === 'meetings' && <Meetings />}
       {tab === 'voice-key' && <VoiceKey />}
+      {tab === 'voice' && <Voice />}
       {tab === 'search' && <Search />}
       {tab === 'labs' && <Labs />}
       {tab === 'double' && <Double />}

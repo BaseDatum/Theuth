@@ -261,8 +261,8 @@ import type {
   LoadedPage,
   LoginInfo,
   ProviderInfo,
-  VoiceStatus,
 } from '@/rpc/extra'
+import type { VoiceStatus } from '@/rpc/bindings/VoiceStatus'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 import type { MemoryMode } from '@/rpc/bindings/MemoryMode'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
@@ -1068,7 +1068,7 @@ export interface Api {
   use_skill(session: SessionId | null, name: string, args: string): Promise<SessionId>
   /** The vision fallback model (52 §3.1), `null` when off; may name a model that is no longer available. */
   vision_model(): Promise<ModelInfo | null>
-  /** Model state, voices and the utterance in flight (43 §6); `-32001` when the voice plugin is disabled. */
+  /** Model state, voices, the utterance in flight (43 §6) and `input_devices` (153 §8.1); `-32001` when the voice plugin is disabled. */
   voice_status(): Promise<VoiceStatus>
   withdraw(session: SessionId, id: InputId): Promise<string>
   // 136 §2.7: the dreaming plugin's nine methods, dotted on the wire (`api['dreaming.status']()`). The actor absent
