@@ -5649,6 +5649,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "enum-iterator"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4549325971814bda7a44061bf3fe7e487d447cba01e4220a4b454d630d7a016"
+dependencies = [
+ "enum-iterator-derive",
+]
+
+[[package]]
+name = "enum-iterator-derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "685adfa4d6f3d765a26bc5dbc936577de9abf756c1feeb3089b01dd395034842"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "enum-ordinalize"
 version = "4.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6410,6 +6430,12 @@ dependencies = [
  "libc",
  "winapi",
 ]
+
+[[package]]
+name = "fst"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ab85b9b05e3978cc9a9cf8fea7f01b494e1a09ed3037e16ba39edc7a29eb61a"
 
 [[package]]
 name = "funty"
@@ -17408,6 +17434,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rphonetic"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff25b017e5fc22fd7b340d08779112a2a2fe2f448a9fb53cb629258f342ee018"
+dependencies = [
+ "document-features",
+ "either",
+ "enum-iterator",
+ "nom 8.0.0",
+ "regex",
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -24353,6 +24394,7 @@ dependencies = [
  "cpal",
  "figment",
  "flexaudio",
+ "fst",
  "kameo",
  "markdown",
  "models",
@@ -24362,10 +24404,13 @@ dependencies = [
  "parakeet-rs",
  "parking_lot",
  "ptts",
+ "rphonetic",
  "rubato 0.16.2",
  "runtime",
  "schemars 1.2.2",
  "serde",
+ "sqlx 0.9.0",
+ "strsim",
  "symphonia",
  "tokio",
  "tokio-util",
