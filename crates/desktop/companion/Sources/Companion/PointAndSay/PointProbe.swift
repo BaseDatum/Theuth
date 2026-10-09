@@ -67,9 +67,15 @@ enum PointProbe {
         PointLog.write("spiral drawn: \(samples.count) samples on \(displays.count) displays")
         // The request path: one short pen-down segment per display, far from the spiral, so the engine's own stamp (in
         // carnelian) never lands where the detector looks.
-        let reqSamples: [PointerSample] = displays.enumerated().flatMap { i, d in
-            (0..<12).map { k in
-                PointerSample(tMs: UInt32(i * 200 + k * 16), x: Float(d.frame.minX + d.frame.width * 0.15 + Double(k) * 4), y: Float(d.frame.minY + d.frame.height * 0.85), pen: true)
+        var reqSamples: [PointerSample] = []
+        for (i, d) in displays.enumerated() {
+            let f: CGRect = d.frame
+            let x0: Double = f.minX + f.width * 0.15
+            let y: Float = Float(f.minY + f.height * 0.85)
+            for k in 0..<12 {
+                let t = UInt32(i * 200 + k * 16)
+                let x = Float(x0 + Double(k) * 4)
+                reqSamples.append(PointerSample(tMs: t, x: x, y: y, pen: true))
             }
         }
         let carnelian = "#c45a48"
