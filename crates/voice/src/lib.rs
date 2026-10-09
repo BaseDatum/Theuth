@@ -303,6 +303,9 @@ pub struct VoiceStatus {
     /// Utterances waiting behind it, in order (76 §0.4).
     #[serde(default)]
     pub queued: Vec<SpeechId>,
+    /// `voice.input_devices` (153 §8.1): the ordered mic preference the companions read too.
+    #[serde(default)]
+    pub input_devices: Vec<String>,
 }
 
 /// Which client surface a dictation feeds (153 §4.5); `None` in [`DictationOpts`] = `Composer`.
@@ -1079,6 +1082,7 @@ impl Message<Status> for Voice {
             voices: self.voices.clone(),
             speaking: self.current.as_ref().map(|c| c.id),
             queued: self.queue.iter().map(|q| q.id).collect(),
+            input_devices: self.cfg.input_devices.clone(),
         }
     }
 }
