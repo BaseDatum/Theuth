@@ -27,6 +27,14 @@ public interface IStoreEngine
 
     /// <summary>134 W2 — Decline a hire: <c>agent_remove(name, note)</c>.</summary>
     Task AgentRemoveAsync(string name, string? note) => Task.FromException(new NotSupportedException("agent_remove"));
+
+    // 149 WW2 (D3): the agents panel's verbs. Default members so earlier fakes compile; the app routes them over the client.
+
+    /// <summary>149 WW2 — <c>cancel(session, scope)</c>; <paramref name="scope"/> <c>tree</c> stops every running descendant (133 §4).</summary>
+    Task CancelAsync(string session, string scope) => Task.FromException(new NotSupportedException("cancel"));
+
+    /// <summary>149 WW2 — <c>agent_pause(name, paused)</c>.</summary>
+    Task AgentPauseAsync(string name, bool paused) => Task.FromException(new NotSupportedException("agent_pause"));
 }
 
 /// <summary>Timers on the Store's owner thread (the app: <c>DispatcherQueueTimer</c>; tests: virtual time). Dispose cancels.</summary>
@@ -59,4 +67,6 @@ public sealed class RpcStoreEngine(RpcClient client) : IStoreEngine
     public Task<ValueList<ActivityEntry>> ActivityListAsync(ActivityFilter filter) => Client.ActivityListAsync(filter);
     public Task AgentApproveAsync(string name) => Client.CallRawAsync("agent_approve", name);
     public Task AgentRemoveAsync(string name, string? note) => Client.CallRawAsync("agent_remove", name, note);
+    public Task CancelAsync(string session, string scope) => Client.CallRawAsync("cancel", session, scope); // 149 WW2
+    public Task AgentPauseAsync(string name, bool paused) => Client.CallRawAsync("agent_pause", name, paused); // 149 WW2
 }

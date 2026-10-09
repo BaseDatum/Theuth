@@ -411,3 +411,87 @@ public sealed class CardAnatomyTests
         Assert.Equal("Stopping w1 and 1 child · Esc undo", CardAnatomyModel.StopPill("w1", 1));
     }
 }
+
+
+/// <summary><see cref="FakeEngine"/> plus the 149 WW2 verbs (cancel · agent_pause), recorded in the same call list.</summary>
+internal sealed class Ww2Engine(FakeEngine inner) : IStoreEngine
+{
+    public FakeEngine Inner { get; } = inner;
+    public Task<ValueList<AttentionItem>> AttentionListAsync() => Inner.AttentionListAsync();
+    public Task<ValueList<AgentSummary>> AgentsListAsync() => Inner.AgentsListAsync();
+    public Task<ValueList<AgentInfo>> ListActivityAsync() => Inner.ListActivityAsync();
+    public Task<Packet?> PacketGetAsync(string key) => Inner.PacketGetAsync(key);
+    public Task<bool> AnswerAskAsync(string id, IReadOnlyList<Answer>? answers) => Inner.AnswerAskAsync(id, answers);
+    public Task<bool> ResolveApprovalAsync(string id, Decision decision) => Inner.ResolveApprovalAsync(id, decision);
+    public Task TaskDecideAsync(string decision, string answer) => Inner.TaskDecideAsync(decision, answer);
+    public Task TaskMoveAsync(string id, string state, string? note) => Inner.TaskMoveAsync(id, state, note);
+    public Task<string> SendInputAsync(string session, string text) => Inner.SendInputAsync(session, text);
+    public Task AttentionDismissAsync(string id) => Inner.AttentionDismissAsync(id);
+    public Task AttentionSnoozeAsync(string id, ulong untilMs) => Inner.AttentionSnoozeAsync(id, untilMs);
+    public Task<string> SteerAsync(string session, string text) => Inner.SteerAsync(session, text);
+    public Task<MeshStatus> MeshStatusAsync() => Inner.MeshStatusAsync();
+    public Task<string> DeskOpenAsync(string name) => Inner.DeskOpenAsync(name);
+    public Task SetEventFocusAsync(IReadOnlyList<string> sessions) => Inner.SetEventFocusAsync(sessions);
+    public Task<ValueList<ActivityEntry>> ActivityListAsync(ActivityFilter filter) => Inner.ActivityListAsync(filter);
+
+    public Task CancelAsync(string session, string scope)
+    {
+        Inner.Calls.Add($"cancel {session} {scope}");
+        return Task.CompletedTask;
+    }
+
+    public Task AgentPauseAsync(string name, bool paused)
+    {
+        Inner.Calls.Add($"agent_pause {name} {(paused ? "true" : "false")}");
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>149 WW2 D3: ✕ and the row mic go through the Store's hold — Esc before the commit takes it back; a commit is final.</summary>
+public sealed class RowVerbHoldTests
+{
+    private readonly ManualScheduler clock = new();
+    private readonly FakeEngine fake = new();
+    private readonly StoreModel store;
+
+    public RowVerbHoldTests() => store = new StoreModel(new Ww2Engine(fake), clock, () => clock.Now);
+
+    [Fact]
+    public void StopTreeHoldsThenCancelsTheTreeWithoutAnItemReRead()
+    {
+        store.Hold(new StoreModel.Held("", "w3-149-island", "Stopping w3-149-island and 2 children · Esc undo", new CardAction.StopTree("s-3")));
+        var holding = Assert.IsType<StoreModel.ReceiptRow.Holding>(store.Receipt);
+        Assert.Equal("w3-149-island", holding.Held.Who);
+        clock.Advance(2.9);
+        Assert.Empty(fake.Calls);
+        clock.Advance(0.2);
+        Assert.Contains("cancel s-3 tree", fake.Calls);
+        Assert.DoesNotContain(fake.Calls, c => c.StartsWith("attention_list", StringComparison.Ordinal) && fake.Calls.IndexOf(c) < fake.Calls.IndexOf("cancel s-3 tree"));
+        var sent = Assert.IsType<StoreModel.ReceiptRow.Sent>(store.Receipt);
+        Assert.Equal("w3-149-island · stopped", sent.Text); // a cancel is final: no "undo" after the commit
+    }
+
+    [Fact]
+    public void EscDuringTheHoldTakesTheStopBack()
+    {
+        store.Hold(new StoreModel.Held("", "w1", "Stopping w1 · Esc undo", new CardAction.StopTree("s-1")));
+        clock.Advance(1);
+        store.Perform(Intent.Escape);
+        Assert.IsType<StoreModel.ReceiptRow.Undone>(store.Receipt);
+        clock.Advance(3);
+        Assert.DoesNotContain(fake.Calls, c => c.StartsWith("cancel", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PauseDeskAndRowTalkCommitTheirOwnCalls()
+    {
+        store.Hold(new StoreModel.Held("", "theuth", "Pausing theuth · Esc undo", new CardAction.PauseDesk("theuth")));
+        clock.Advance(3.1);
+        Assert.Contains("agent_pause theuth true", fake.Calls);
+        store.Hold(new StoreModel.Held("", "w1", "sent · Esc undo", new CardAction.SendInputTo("s-1", "ship it")));
+        clock.Advance(3.1);
+        Assert.Contains(fake.Calls, c => c.StartsWith("send_input s-1", StringComparison.Ordinal) && c.Contains("ship it", StringComparison.Ordinal));
+        var sent = Assert.IsType<StoreModel.ReceiptRow.Sent>(store.Receipt);
+        Assert.Equal("w1 · sent", sent.Text);
+    }
+}
