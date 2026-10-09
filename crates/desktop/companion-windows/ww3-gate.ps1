@@ -17,7 +17,7 @@
     key <name>           149 island fix: tap one key with SendInput (j k m e d up down esc enter); prints the time
     ctrl-m               149 island fix: Ctrl down, M down/up, Ctrl up (the island's stop key; a RegisterHotKey-free SendInput chord)
     type <text>          149 island fix: type letters/digits into the focused control with SendInput (A-Z 0-9 only)
-    hold-draw [ms]       149 island fix §P: hold Ctrl+Alt+Space and sweep the mouse left → right across the screen and back down
+    hold-sweep [ms]      149 island fix §P: hold Ctrl+Alt+Space and sweep the mouse left → right across the screen and back down
                          over ms (default 6000, 16 ms steps, SendInput moves), then release — the pill must stay put
     move <x> <y>         move the mouse to screen (x, y)
     draw                 move the mouse along a small loop (≈ 1 s) — the trail
@@ -182,11 +182,11 @@ switch ($Action) {
         [void][G3Native]::Key($vk, $false); Start-Sleep -Milliseconds 40; [void][G3Native]::Key($vk, $true)
         Say "key: $name at $(Get-Date -Format 'HH:mm:ss.fff')"
     }
-    'hold-draw' {
+    'hold-sweep' {
         $ms = if ($Rest.Count -gt 0) { [int]$Rest[0] } else { 6000 }
         [void][G3Native]::SetCursorPos(200, 500)
         Start-Sleep -Milliseconds 100
-        Say "hold-draw: chord down at $(Get-Date -Format 'HH:mm:ss.fff')"
+        Say "hold-sweep: chord down at $(Get-Date -Format 'HH:mm:ss.fff')"
         Chord $true
         $steps = [int]($ms / 16)
         for ($i = 0; $i -le $steps; $i++) {
@@ -198,7 +198,7 @@ switch ($Action) {
             Start-Sleep -Milliseconds 16
         }
         Chord $false
-        Say "hold-draw: chord up at $(Get-Date -Format 'HH:mm:ss.fff') after $ms ms"
+        Say "hold-sweep: chord up at $(Get-Date -Format 'HH:mm:ss.fff') after $ms ms"
     }
     'ctrl-m' {
         [void][G3Native]::Key(0x11, $false); Start-Sleep -Milliseconds 30

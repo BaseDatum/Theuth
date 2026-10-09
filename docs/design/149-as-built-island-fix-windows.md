@@ -117,3 +117,56 @@ helpers as the strip.
   after the fix (render before placement/show) it painted on show in every round.
 - Test keystrokes (j, k, arrows) landed in an open, unsaved Notepad on build-B during the before/foreground diagnosis; it was
   not saved.
+
+## §R1 — legibility (orchestrator review 16:41)
+
+1. **Text on an accent fill.** The collapsed pill's topic count already used `TextOnAccentFillColorPrimaryBrush`; the defect is
+   that Windows derives it per theme (black in dark, white in light), and on build-B's very dark indigo accent the dark-theme
+   pair is `fill=#2C06AB on=#000000` = 1.7:1 (logged: `island: text on accent fill — Dark fg=#FF000000 fill=#2C06AB on=#000000
+   readable=False`). Now `OnAccentText()` keeps the system on-accent colour when it reaches WCAG 4.5:1 on the fill
+   (`NativeLook.OnAccentReadable`) and otherwise uses white or black, whichever contrasts more (`NativeLook.BestTextOn`).
+   Measured trap: asking the *other* theme's dictionary for `TextOnAccentFillColorPrimary` in a running app returns the
+   *current* theme's colour (`#000000` in dark), so the fallback is computed, not looked up. The only filled accent element on
+   the island is the topic count; "N new", the oracle verdict, listening/approval and the badge labels are accent *text* on a
+   neutral background (`AccentTextFillColorPrimary`, unchanged), fills stay `AccentFillColorDefault`. Core test
+   `TextOnAnAccentFillStaysReadable`. Evidence: `fix-r1-02-collapsed-dark` (white "2 topics" on the indigo fill),
+   `fix-r1-03-collapsed-light`.
+   Observation, not changed (the R1 rule keeps it): accent *text* on the dark neutral background is also low-contrast with this
+   accent (`AccentTextFillColorPrimaryBrush [Dark] = #FF3408CD`, the badge labels in `fix-r1-01-open-badges-dark`); the same
+   contrast guard could be applied there if wanted.
+2. **Whole badge labels.** The badges left the strip (286fd4b5) for their own rows, two per row, each label whole; a label over
+   196 epx ends in an ellipsis with the full text as tooltip and UIA name — never a hard cut. The fixture now carries the two
+   build-B degradations (`MicNoAec`, `ModelDown`). Evidence: `fix-r1-01-open-badges-dark`, `fix-r1-04-open-badges-light`
+   ("no echo cancel · model down" whole).
+
+## §P — the voice pill stays in the island area (Sky 16:44)
+
+**What it was on Windows.** Nothing followed the cursor: point-and-say's live text and answer card are the island window's
+voice mode (`IslandController.SetVoice` → `IslandWindow.RenderVoice`), shown where the island is placed — the island's saved
+per-display offset when it had been dragged, else top-centre — on the monitor the island last used (not necessarily the one
+under the pointer). With a meeting live, the voice mode REPLACED the meeting content. Only the trail/ring overlays (one layered
+window per monitor) follow the pointer.
+
+**Now.** At gesture start with no meeting, the pill is placed top-centre of the display under the pointer
+(`IslandModel.DefaultFrame`, the island's own anchor code), ignoring any saved offset, and stays there for the whole gesture
+(`voiceAnchor`; a display change during the gesture re-places to the same top-centre). With a meeting live, the island keeps its
+place and the voice pane renders directly below the meeting strip (`RenderStrip()` + `RenderVoice`). When the gesture ends the
+island goes back to its own place ("Always show") or hides. One log line per voice phase with the pill's rect after it is shown.
+
+**Proof (build-B, `ww3-gate hold-sweep`: Ctrl+Alt+Space held while SendInput moves sweep the pointer across the screen).**
+- No meeting: `16:57:30.059 island: voice pill phase=listening rect=(740,6) 440x64 on \\.\DISPLAY1 (top centre, fixed for the
+  gesture)` → `16:57:33.172 phase=sending rect=(740,6) 440x64`; screenshots `fix-p-11-voice-start` / `-12-voice-mid` (trail
+  drawn far from the pill) / `-13-voice-end`: the pill never moves.
+- Meeting live (fixture): `16:54:25.566 island: voice pill phase=listening rect=(740,6) 440x91 … (below the meeting strip)` →
+  `16:54:28.408 phase=sending rect=(740,6) 440x91`; `fix-p-01/02/03-meeting-voice-*`: strip + badges, the pill under them, the
+  trail following the pointer.
+- The answer card could not be shown: the engine has no model, the desk turn ends in "Nothing recognized"; it renders in the
+  same voice pane, so it inherits the placement.
+
+## Gates (final)
+
+Mac Core.Tests 310/310 · Rpc.Tests 68/68 · build-B Debug x64 slnx on the final head: 0 warnings, 0 errors.
+
+Also on build-B during these rounds: a Windows "t.exe – Application Error" dialog (access violation at 0x7FFD2941D325, from one
+of the crashed engine processes) and a "Let's get you signed in" Microsoft-account dialog were left on screen; the running
+engine (3 × t.exe since 16:36) and the installed companion are healthy, Run value restored.
