@@ -40,7 +40,7 @@ struct RailPillsView: View {
 
     var body: some View {
         if collapsed {
-            Capsule().fill(Color.sand.opacity(0.35)).frame(width: RailController.sliver, height: 120)
+            Capsule().fill(Color.tertiary.opacity(0.35)).frame(width: RailController.sliver, height: 120)
                 .accessibilityLabel(pills.sliverLabel)
         } else {
             VStack(spacing: Self.gap) {
@@ -60,10 +60,10 @@ struct RailPillsView: View {
         case .inbox:
             VStack(spacing: 3) {
                 Wordmark()
-                Text("\(pill.count)").font(Type.mono).foregroundColor(pill.count > 0 ? .gold : .ink2)
+                Text("\(pill.count)").font(Type.mono).foregroundColor(pill.count > 0 ? .accentColor : .secondary)
                     .accessibilityLabel("\(pill.count) need you")
                 if !connectionOpen {
-                    Circle().fill(Color.carnelian).frame(width: 4, height: 4).help("engine unreachable")
+                    Circle().fill(Color.failed).frame(width: 4, height: 4).help("engine unreachable")
                 }
             }
         case .agents:
@@ -74,21 +74,21 @@ struct RailPillsView: View {
                 }
                 .frame(width: CGFloat(cols) * Self.dot + CGFloat(cols - 1) * Self.dotGap)
                 if pill.overflow > 0 {
-                    Text("+\(pill.overflow)").font(Type.mono).foregroundColor(.ink2)
+                    Text("+\(pill.overflow)").font(Type.mono).foregroundColor(.secondary)
                 }
             }
         case .actions:
             VStack(spacing: 8) {
-                Image(systemName: "text.cursor").font(.system(size: 14)).foregroundColor(.ink2).accessibilityLabel("Ask")
+                Image(systemName: "text.cursor").font(.body).foregroundColor(.secondary).accessibilityLabel("Ask")
                 if pill.levels.isEmpty {
-                    Image(systemName: "mic").font(.system(size: 14)).foregroundColor(.ink2).accessibilityLabel("Talk")
+                    Image(systemName: "mic").font(.body).foregroundColor(.secondary).accessibilityLabel("Talk")
                 } else {
                     LevelBars(levels: pill.levels, height: 14)
                 }
-                Image(systemName: "scope").font(.system(size: 14)).foregroundColor(.ink2).accessibilityLabel("Point")
+                Image(systemName: "scope").font(.body).foregroundColor(.secondary).accessibilityLabel("Point")
             }
         case .more:
-            Text("···").font(Type.body).foregroundColor(.ink2).accessibilityLabel("More")
+            Image(systemName: "ellipsis").font(Type.body).foregroundColor(.secondary).accessibilityLabel("More")
         }
     }
 
@@ -97,8 +97,8 @@ struct RailPillsView: View {
             .padding(.vertical, 10)
             .frame(width: Self.size)
             .frame(minHeight: Self.size)
-            .background(Capsule().fill(Color.surface.opacity(0.88)))
-            .overlay(Capsule().stroke(Color.rule, lineWidth: 0.5))
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().stroke(Color.separator, lineWidth: 0.5))
             .contentShape(Capsule())
             .onTapGesture { onPill(kind, anchors["pill:\(kind)"] ?? .zero) }
             .background(anchor("pill:\(kind)"))
@@ -108,7 +108,7 @@ struct RailPillsView: View {
     private func dot(_ mark: Mark) -> some View {
         let hovered = hoveredId == mark.id || (mark.session != nil && hover.session == mark.session)
         return Group {
-            if mark.state == .working, !reduceMotion { WorkingArc() } else { MarkView(state: mark.state) }
+            if mark.state == .working, !reduceMotion { ProgressView().controlSize(.mini) } else { MarkView(state: mark.state) }
         }
         .frame(width: Self.dot, height: Self.dot)
         .scaleEffect(hovered ? 1.4 : 1)
@@ -130,18 +130,6 @@ struct RailPillsView: View {
         GeometryReader { g in
             Color.clear.preference(key: RailAnchorKey.self, value: [key: g.frame(in: .named("rail"))])
         }
-    }
-}
-
-/// `.working` in the pills: a 0.38 s rotating faience arc (the mock's `.spin`), not MarkView's opacity beat.
-struct WorkingArc: View {
-    @State private var spin = false
-
-    var body: some View {
-        Circle().trim(from: 0, to: 0.7)
-            .stroke(Color.faience, lineWidth: 2)
-            .rotationEffect(.degrees(spin ? 360 : 0))
-            .onAppear { withAnimation(.linear(duration: 0.38).repeatForever(autoreverses: false)) { spin = true } }
     }
 }
 

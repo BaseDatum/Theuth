@@ -112,10 +112,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusItem(_ r: Rail) {
         guard let button = statusItem.button else { return }
         if r.needsYouCount > 0 {
-            // The gold dot and the count beside the template glyph.
-            button.attributedTitle = NSAttributedString(string: " ●\(r.needsYouCount)", attributes: [
-                .foregroundColor: Palette.gold,
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
+            // The accent count beside the template glyph — the count alone is how macOS badges a menu-bar extra.
+            button.attributedTitle = NSAttributedString(string: " \(r.needsYouCount)", attributes: [
+                .foregroundColor: NSColor.controlAccentColor,
+                .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold),
             ])
             button.setAccessibilityValue("\(r.needsYouCount) need you")
         } else {

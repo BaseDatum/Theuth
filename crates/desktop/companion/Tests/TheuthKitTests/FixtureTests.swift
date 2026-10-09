@@ -252,9 +252,9 @@ struct FixtureTests {
         let mode = try decode(ModeInfo.self, "decision_mode_149")
         #expect(mode.mode == .shadow && mode.effective == .off && !mode.installed && mode.budgetMs == 1500)
         // The request encodes with the engine's snake_case keys and the pointer's `pen`.
-        let req = ScreenContextReq(samples: [PointerSample(tMs: 0, x: 10, y: 20)], color: "malachite", sinceMs: 1_791_448_800_000, accessibility: true)
+        let req = ScreenContextReq(samples: [PointerSample(tMs: 0, x: 10, y: 20)], color: "#007aff", sinceMs: 1_791_448_800_000, accessibility: true)
         #expect(String(decoding: try TheuthJSON.encoder.encode(req), as: UTF8.self)
-                == #"{"accessibility":true,"color":"malachite","samples":[{"pen":true,"t_ms":0,"x":10,"y":20}],"since_ms":1791448800000}"#)
+                == ##"{"accessibility":true,"color":"#007aff","samples":[{"pen":true,"t_ms":0,"x":10,"y":20}],"since_ms":1791448800000}"##)
         #expect(String(decoding: try TheuthJSON.encoder.encode([AnyEncodable("s"), AnyEncodable(CancelScope.tree)]), as: UTF8.self) == #"["s","tree"]"#)
         #expect(String(decoding: try TheuthJSON.encoder.encode([AnyEncodable(Delivery.nextTurn), AnyEncodable(Delivery?.none)]), as: UTF8.self) == #"["next_turn",null]"#)
     }

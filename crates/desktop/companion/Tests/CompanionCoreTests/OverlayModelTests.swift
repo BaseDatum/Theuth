@@ -58,4 +58,14 @@ struct OverlayModelTests {
         let seam = OverlayModel.paths(samples: [sample(10, 10), sample(10, 700), sample(20, 20)], displays: Self.displays)
         #expect(seam == [OverlayPath(display: "A", points: [CGPoint(x: 10, y: 10), CGPoint(x: 20, y: 20)], ring: CGPoint(x: 20, y: 20))])
     }
+
+    /// 149n: `screen_context.color` is the accent colour as `#rrggbb` (the companion feeds the resolved sRGB components).
+    @Test func trailColourIsSevenCharHex() {
+        #expect(OverlayModel.hex(red: 0, green: 0.478, blue: 1) == "#007aff")
+        #expect(OverlayModel.hex(red: 1, green: 1, blue: 1) == "#ffffff")
+        // Out-of-range components clamp instead of wrapping.
+        let clamped = OverlayModel.hex(red: 1.2, green: -0.1, blue: 0.5)
+        #expect(clamped == "#ff0080")
+        #expect(clamped.count == 7 && clamped.hasPrefix("#"))
+    }
 }

@@ -118,7 +118,7 @@ final class ShortcutRecorderView: NSView {
         let color: NSColor
         if recording { text = "Type a shortcut…"; color = .secondaryLabelColor }
         else if let chord { text = chord.symbol; color = .labelColor }
-        else { text = "unassigned"; color = model.keys.binding(action).defaultChord == nil ? .secondaryLabelColor : Palette.carnelian } // lost to a move: warning colour
+        else { text = "unassigned"; color = model.keys.binding(action).defaultChord == nil ? .secondaryLabelColor : .systemRed } // lost to a move: warning colour
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: color]
         let s = NSAttributedString(string: text, attributes: attrs)
         let size = s.size()
@@ -146,7 +146,7 @@ struct KeyRow: View {
                 Text(binding.label)
                 Spacer()
                 if binding.fixed {
-                    Text(binding.chord?.symbol ?? "").font(.system(size: 12, weight: .medium)).frame(width: 150)
+                    Text(binding.chord?.symbol ?? "").font(.callout.weight(.medium)).frame(width: 150)
                         .foregroundStyle(.secondary).help("Fixed: ⎋ cancels the recorder and closes every surface")
                 } else {
                     ShortcutRecorder(action: binding.action, model: model).frame(width: 150, height: 24)

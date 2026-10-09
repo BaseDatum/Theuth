@@ -40,7 +40,6 @@ final class PanelController {
         w1 = CardState(store: store)
         panel = KeyPanel(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 200),
                          styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.appearance = Type.dark // 149 W1 §3.9: dark-first glass
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.sharingType = Flags.shareable ? .readOnly : .none
@@ -58,11 +57,11 @@ final class PanelController {
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 200))
         container.wantsLayer = true
-        container.layer?.cornerRadius = Type.cardRadius // 149 W1 §3.9: cards 24
+        container.layer?.cornerRadius = Type.cardRadius // 149n: native card radius 12
         container.layer?.cornerCurve = .continuous
         container.layer?.masksToBounds = true
         container.layer?.borderWidth = 0.5
-        container.layer?.borderColor = Palette.border.cgColor
+        container.layer?.borderColor = NSColor.separatorColor.cgColor
 
         let backdrop: NSView
         // Liquid Glass on 26+, the HUD material before; both honour Reduce Transparency through AppKit. The

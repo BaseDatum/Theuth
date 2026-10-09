@@ -3,7 +3,7 @@ import CompanionCore
 import TheuthKit
 
 /// 149 §3.7 / D13: one click-through, borderless, non-activating panel per `NSScreen` at `.popUpMenu` (101), the trail and
-/// the 14 pt ring stroked natively (`CAShapeLayer`, `OverlayModel.strokeWidth`, round caps, alpha 0.85, malachite). Built
+/// the 14 pt ring stroked natively (`CAShapeLayer`, `OverlayModel.strokeWidth`, round caps, alpha 0.85, the system accent colour). Built
 /// lazily per gesture from the current screen set; the screenshot never sees them because `conceal()` orders every one
 /// out and the caller awaits one run-loop turn before `screen_context` (`DESK/point/mod.rs:307-322`'s rule).
 @MainActor
@@ -89,7 +89,7 @@ final class OverlayView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
-        let color = Palette.malachite.cgColor
+        let color = NSColor.controlAccentColor.cgColor // resolved at draw time: follows the user's accent
         while runs.count > paths.count { runs.removeLast().removeFromSuperlayer() }
         while runs.count < paths.count {
             let l = CAShapeLayer()
