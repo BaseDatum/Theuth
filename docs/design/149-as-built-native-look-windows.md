@@ -111,3 +111,13 @@ Tools: `w6-gate.ps1` (`theme show|light|dark`, `hold-panel`) · `tools/Theuth.Co
 5. **Idle vs remote** are both hollow rings (secondary vs tertiary stroke) — as the 130 shape table already had them.
 6. `AgentsPanel` focused row = subtle fill + accent selection pill (Windows list idiom) instead of the Mac's accent-tinted row.
 7. Trailing `//` comments and probe log lines still contain arrows; the display picker says "1920×1080"; none render as icons.
+
+
+## R1 (09:49 → 09:57) — accent TEXT uses the text resources; main folded again
+
+- **Accent-coloured text → `AccentTextFillColorPrimaryBrush`** (`NativeLook.AccentText`, plus `AccentTextSecondary/Tertiary` for lesser text, test `AccentTextIsATextResourceNotAFill`). Applied to: the panel sub-line ("N need you · M done"), "(Recommended)" and "recommended · Enter", the inbox count digit (pills and strip), the island's "N new", verdict, "listening…"/"approval waiting", hint text and the text inside accent-outlined badges, the Ask bar's recording mic glyph + status, the reply row's recording mic glyph. **Fills keep `AccentFillColorDefaultBrush`**: dots, notched rings, the long position dot, the left needs-you bar, the recommended badge/outline, the Clear pill, the undo countdown bar, the agents selection pill, level bars, the island meter/rec dot, the trail.
+- Mapping rows: *text ON accent* = `TextOnAccentFillColorPrimaryBrush` (digits in the recommended badge, the check/dash/pause marks, the wordmark's inner square, the Clear pill's label) · *accent TEXT* = `AccentTextFillColorPrimaryBrush` (the list above) · *accent FILL* = `AccentFillColorDefaultBrush`.
+- Resolved on build-B: `AccentTextFillColorPrimaryBrush [Dark] = #FF3408CD` (= `SystemAccentColorLight3`), `[Light] = #FF120249` (= `SystemAccentColorDark2`); `AccentFillColorDefaultBrush [Dark] = #FF2C06AB` (Light2). With build-B's deep-indigo accent `#1F047A`, WinUI's own Light3 is still dim — a WinUI `HyperlinkButton` on this machine reads the same; the companion now uses exactly the resource the system's controls use, nothing tuned.
+- Fold: `origin/main` (one commit, iOS Info.plist) merged.
+- Gates: Core 283/283, Rpc 68/68; build-B Debug 0/0 (20261009T085219-331 at 0315a59f).
+- Evidence (re-shot on the same running instance, light and dark): `panel-decision-dark`, `panel-long-title-{light,dark}`, `pills-agents-fixture-{light,dark}`, plus `panel-ask-fixture-{light,dark}` (the `--ww2-fixture` ask card: bubbles, "(Recommended)" accent text, Stop agent in Critical). The pre-R1 versions are kept as `*-r0.png`.
