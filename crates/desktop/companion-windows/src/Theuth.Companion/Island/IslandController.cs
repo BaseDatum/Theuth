@@ -26,6 +26,7 @@ internal sealed class IslandController : IDisposable
     private DateTimeOffset? lostSince;
     private DispatcherQueueTimer? fixtureTimer;
     private PointSettings point;
+    private ModeKeySettings modeKeys;
     private MeetingSnapshot snapshot = MeetingSnapshot.Empty;
     private string? cursorSent;
     private bool disposed;
@@ -38,6 +39,7 @@ internal sealed class IslandController : IDisposable
         model.Load(settings);
         model.FrameRejected += (device, off) => Log.Write($"island: saved frame for {device} ({off.Dx},{off.Dy}) is off its work area — rejected and forgotten");
         point = PointSettings.Load(settings);
+        modeKeys = ModeKeySettings.Load(settings); // 153 §14.3: gesture per mode, the two new rows' switches, modifier-only keys
         Window = new IslandWindow(dispatcher, model, Act, SaveModel);
         Window.DisplayChanged += () => dispatcher.TryEnqueue(() => { if (Window.IsShown) Window.Relayout(); });
         if (!Flags.Shareable && Window.HiddenFromCapture != model.HiddenFromCapture) Window.SetHiddenFromCapture(model.HiddenFromCapture);
@@ -107,6 +109,20 @@ internal sealed class IslandController : IDisposable
     {
         point = s;
         try { s.Save(settings); } catch (Exception e) { Log.Write($"island: point settings save failed: {e.Message}"); }
+    }
+
+    /// <summary>153 §12.6 / §14.3: the mode keys' companion-local settings (<c>gesture.&lt;mode&gt;</c>, <c>dictateAnywhereEnabled</c>, <c>commandKeyEnabled</c>, <c>modifierOnlyKeys</c>).</summary>
+    public ModeKeySettings ModeKeys => modeKeys;
+
+    /// <summary>Settings › Keys changed a gesture, a switch or the modifier-only option (the hotkeys re-apply).</summary>
+    public event Action? ModeKeysChanged;
+
+    public void SaveModeKeys(ModeKeySettings s)
+    {
+        modeKeys = s.Clone();
+        try { modeKeys.Save(settings); } catch (Exception e) { Log.Write($"island: mode key settings save failed: {e.Message}"); }
+        Log.Write($"island: mode keys — gesture ask={modeKeys.GestureFor(PointMode.Ask).RawValue()} dictate={modeKeys.GestureFor(PointMode.Dictate).RawValue()} command={modeKeys.GestureFor(PointMode.Command).RawValue()} dictateAnywhere={(modeKeys.DictateAnywhereEnabled ? "on" : "off")} command={(modeKeys.CommandKeyEnabled ? "on" : "off")} modifierOnly={(modeKeys.ModifierOnlyKeys ? "on" : "off")}");
+        ModeKeysChanged?.Invoke();
     }
 
     private void SaveModel()
