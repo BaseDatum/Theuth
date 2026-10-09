@@ -38,7 +38,9 @@ async fn runtime_builds_and_preflight_answers() {
 fn spec(share: &std::path::Path, ports: Vec<Port>) -> VmSpec {
     VmSpec {
         name: NAME.into(),
-        image: ImageRef::Oci { r#ref: IMAGE.into() },
+        image: ImageRef::Oci {
+            r#ref: IMAGE.into(),
+        },
         cpus: 1,
         max_cpus: 2,
         memory_mib: 1024,
@@ -78,7 +80,10 @@ async fn vm_round_trip() {
     let rt = vm::runtime(&VmConfig::default()).unwrap();
     let out = Progress::stdout();
     let pf = rt.preflight().await;
-    assert!(matches!(pf.runtime, RuntimeState::Installed { .. }), "{pf:?}");
+    assert!(
+        matches!(pf.runtime, RuntimeState::Installed { .. }),
+        "{pf:?}"
+    );
     assert!(pf.blockers.is_empty(), "{:?}", pf.blockers);
 
     let h = VmHandle {
@@ -103,17 +108,30 @@ async fn vm_round_trip() {
     let h = rt.create(&spec, &out).await.unwrap();
     assert_eq!(rt.status(&h).await.unwrap(), VmStatus::Running);
     assert_eq!(
-        sh(rt.as_ref(), &h, "cat /proc/1/comm /etc/preboot /shared/a/host.txt").await,
+        sh(
+            rt.as_ref(),
+            &h,
+            "cat /proc/1/comm /etc/preboot /shared/a/host.txt"
+        )
+        .await,
         "systemd\nyeshost"
     );
     // Idempotent create adopts the running VM.
     let again = rt.create(&spec, &out).await.unwrap();
     assert_eq!(again.name, h.name);
 
-    rt.put(&h, "/opt/x/run.sh", Bytes::from_static(b"#!/bin/sh\necho ran"), 0o755)
-        .await
-        .unwrap();
-    assert_eq!(sh(rt.as_ref(), &h, "/opt/x/run.sh; stat -c %a /opt/x/run.sh").await, "ran\n755");
+    rt.put(
+        &h,
+        "/opt/x/run.sh",
+        Bytes::from_static(b"#!/bin/sh\necho ran"),
+        0o755,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sh(rt.as_ref(), &h, "/opt/x/run.sh; stat -c %a /opt/x/run.sh").await,
+        "ran\n755"
+    );
 
     let r = rt
         .resize(
@@ -131,12 +149,29 @@ async fn vm_round_trip() {
     assert_eq!(r.applied.root_disk_mib, Some(6144));
     assert_eq!(r.next_start.max_memory_mib, Some(3072));
     assert!(r.restart_required);
-    assert!(matches!(r.status, ResizeStatus::Applied | ResizeStatus::Converging), "{r:?}");
+    assert!(
+        matches!(r.status, ResizeStatus::Applied | ResizeStatus::Converging),
+        "{r:?}"
+    );
     assert_eq!(sh(rt.as_ref(), &h, "nproc").await, "2");
-    assert!(rt.resize(&h, ResourceChange { root_disk_mib: Some(1024), ..Default::default() }).await.is_err(), "disk shrink must be refused");
+    assert!(
+        rt.resize(
+            &h,
+            ResourceChange {
+                root_disk_mib: Some(1024),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err(),
+        "disk shrink must be refused"
+    );
 
     let m = rt.metrics(&h).await.unwrap();
-    assert!(m.memory_limit_bytes >= 1024 << 20 && m.uptime_secs < 3600, "{m:?}");
+    assert!(
+        m.memory_limit_bytes >= 1024 << 20 && m.uptime_secs < 3600,
+        "{m:?}"
+    );
     assert!(!rt.logs(&h, 3).await.unwrap().is_empty());
 
     sh(rt.as_ref(), &h, "echo m1 > /root/marker").await;
@@ -154,7 +189,12 @@ async fn vm_round_trip() {
     assert!(!p.restart_required);
     rt.start(&h, &out).await.unwrap();
     assert_eq!(
-        sh(rt.as_ref(), &h, "cat /proc/1/comm /root/marker; ls -d /shared/b; nproc").await,
+        sh(
+            rt.as_ref(),
+            &h,
+            "cat /proc/1/comm /root/marker; ls -d /shared/b; nproc"
+        )
+        .await,
         "systemd\nm1\n/shared/b\n2"
     );
 
@@ -162,8 +202,14 @@ async fn vm_round_trip() {
     assert_eq!(snap.0, format!("{NAME}:clean"));
     assert!(rt.snapshot(&h, "full", true, &out).await.is_err());
     let snaps = rt.snapshots(&h).await.unwrap();
-    assert!(snaps.iter().any(|s| s.label == "clean" && !s.auto), "{snaps:?}");
-    assert!(snaps.iter().any(|s| s.auto), "reconfigure helper snapshot: {snaps:?}");
+    assert!(
+        snaps.iter().any(|s| s.label == "clean" && !s.auto),
+        "{snaps:?}"
+    );
+    assert!(
+        snaps.iter().any(|s| s.auto),
+        "reconfigure helper snapshot: {snaps:?}"
+    );
     assert!(rt.list().await.unwrap().iter().any(|x| x.name == NAME));
 
     rt.pause(&h).await.unwrap();

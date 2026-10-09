@@ -644,7 +644,9 @@ async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
     chan.rt.subscribe::<Bus, ArtifactShown>(&bus).await;
     chan.rt.subscribe::<Bus, secrets::SecretsEvent>(&bus).await;
     chan.rt.subscribe::<Bus, mesh::MeshEvent>(&bus).await;
-    chan.rt.subscribe::<Bus, double::DoublePredicted>(&bus).await;
+    chan.rt
+        .subscribe::<Bus, double::DoublePredicted>(&bus)
+        .await;
     chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
     // 67 §4.7: who "we" are, once the mesh is up; the follower re-reads the
     // last lease it saw against that id.

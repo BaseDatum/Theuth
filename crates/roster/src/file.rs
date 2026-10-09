@@ -215,7 +215,9 @@ pub fn write_atomic(dir: &Path, name: &str, text: &str) -> std::io::Result<PathB
 /// The built-in default agent (67 §0 decision 1, §6.1): never a file. Charter
 /// = `<data_dir>/prompt.md` (a one-line stand-in when it is empty or absent),
 /// `reports_to: user`, `tools: destructive`, no `mcp` limit, no budget.
-pub fn default_agent(data_dir: &Path) -> AgentFile {
+/// `model` is the live `roster.theuth_model` (148 E3; `None` = the default
+/// for new sessions).
+pub fn default_agent(data_dir: &Path, model: Option<String>) -> AgentFile {
     let prompt = std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default();
     let body = prompt.trim();
     let body = if body.is_empty() {
@@ -227,7 +229,7 @@ pub fn default_agent(data_dir: &Path) -> AgentFile {
         name: AgentName::theuth(),
         title: AgentName::DEFAULT.to_owned(),
         reports_to: "user".to_owned(),
-        model: None,
+        model,
         effort: None,
         tools: Some("destructive".to_owned()),
         mcp: None,
@@ -466,14 +468,21 @@ mod tests {
     fn default_agent_is_theuth() {
         let dir = std::env::temp_dir().join(format!("roster-default-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let t = default_agent(&dir);
+        let t = default_agent(&dir, None);
         assert!(t.name.is_default());
         assert_eq!(t.reports_to, "user");
         assert_eq!(t.tools.as_deref(), Some("destructive"));
         assert_eq!(t.mcp, None);
+        assert_eq!(t.model, None, "unset = the default for new sessions");
         assert!(!t.body.is_empty());
         std::fs::write(dir.join("prompt.md"), "Standing instructions.\n").unwrap();
-        assert_eq!(default_agent(&dir).body, "Standing instructions.");
+        let t = default_agent(&dir, Some("testvis/eyes".to_owned()));
+        assert_eq!(t.body, "Standing instructions.");
+        assert_eq!(
+            t.model.as_deref(),
+            Some("testvis/eyes"),
+            "148 E3: the live roster.theuth_model"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

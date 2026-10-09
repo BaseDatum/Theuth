@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{DesktopView, PendingView, SandboxInfo, SandboxState, VmView};
-use crate::vm::{ImageRef, Mount, NetPolicy, Resources, VmSnapshotInfo, VmHandle, VmMetrics};
+use crate::vm::{ImageRef, Mount, NetPolicy, Resources, VmHandle, VmMetrics, VmSnapshotInfo};
 use crate::{DIR, Handle};
 
 /// The record.
@@ -117,9 +117,12 @@ pub fn now_ms() -> u64 {
 impl Computer {
     /// The VM half, or `Err` naming the backend.
     pub fn vm(&self) -> Result<&VmRecord, String> {
-        self.vm
-            .as_ref()
-            .ok_or_else(|| format!("{} is a {} engine, not a sandbox VM", self.name, self.backend))
+        self.vm.as_ref().ok_or_else(|| {
+            format!(
+                "{} is a {} engine, not a sandbox VM",
+                self.name, self.backend
+            )
+        })
     }
 
     /// Mutable VM half; `Err` for docker/ssh.
@@ -335,7 +338,8 @@ mod tests {
 
     #[test]
     fn old_docker_record_loads_and_projects() {
-        let old = "name: eng\nbackend: docker\nhandle: { id: abc123 }\nengine: 7f3a\ncreated_ms: 5\n";
+        let old =
+            "name: eng\nbackend: docker\nhandle: { id: abc123 }\nengine: 7f3a\ncreated_ms: 5\n";
         let rec: Computer = serde_yaml::from_str(old).unwrap();
         assert_eq!(rec.vm, None);
         let info = rec.info("host", None);

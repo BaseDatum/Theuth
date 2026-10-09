@@ -105,8 +105,8 @@ table is the complete list as implemented; `[…]` marks optional arguments.
 
 | Command | Does |
 |---|---|
-| `/model [id]` | pick a model; writes `agent.model` |
-| `/effort [level\|clear]` | reasoning effort for this session and as the default |
+| `/model [id]` | pick a model for this session (or the one about to start); the default is `agent.model` |
+| `/effort [level\|clear]` | reasoning effort for this session; the default is `agent.effort` |
 | `/vision [model\|off]`, `/title [model\|off]` | image fallback model; session-title model |
 | `/aws [profile\|clear]` | Bedrock profile |
 | `/provider [add\|rm <name>]` | named OpenAI-compatible gateways (`add` prompts for name, URL, key). The built-in Zen (`opencode`) and OpenRouter (`openrouter`) providers are not gateways: key them with `/secrets add opencode` / `openrouter` |

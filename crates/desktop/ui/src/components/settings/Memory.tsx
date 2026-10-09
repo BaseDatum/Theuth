@@ -111,10 +111,10 @@ export function Memory() {
         </Row>
       </Section>
       <Section title="Compactor">
-        <Row label="Compactor model" description="Writes the one-line summaries in the background. Unset, it follows the title model (your cheap side-call choice) when one is set, else the session's own model.">
+        <Row stack label="Compactor model" description="Writes the one-line summaries in the background. Unset, it follows the title model (your cheap side-call choice) when one is set, else the session's own model.">
           <ModelCombobox
             aria-label="Compactor model"
-            className="max-w-64"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
             value={s?.model}
             none={{ label: resolved }}

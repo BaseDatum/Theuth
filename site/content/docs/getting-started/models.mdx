@@ -136,12 +136,12 @@ Bedrock is listed in `/model` as soon as theuth can see *some* credential source
 
 ## Choosing a model
 
-**`agent.model`** in `~/.theuth/config.yaml` is the model new sessions start on (`anthropic/claude-sonnet-4-5` if you never change it). Each session then carries its own model.
+**`agent.model`** in `~/.theuth/config.yaml` is the model new sessions start on (`anthropic/claude-sonnet-4-5` if you never change it). On the desktop it is Settings › Chat › **Models › New sessions**, with the default effort beside it; the same section holds the **Subagents** default (theuth subagents unless you ask the agent for a specific model; external harnesses keep their own) and the **theuth agent** model. Each session then carries its own model.
 
 - Terminal: `/model` opens the picker — rows are `provider/model  name  200k`, `· vision` marks image-capable models, typing filters by id or name, ⏎ switches. `/model <id>` switches without the picker.
 - Desktop: the model name in the chat header is the picker (*Search models*; the current model stays pinned at the top whatever you type). `/model` in the composer opens it too.
 
-Switching **by hand** does two things: the current session changes model from its next model call (mid-turn included), and the pick becomes the new default — `agent.model` in `config.yaml` is rewritten in place, so the next new chat starts on it. Switches made by schedules or by `/model` inside a Slack thread, Signal session or Telegram topic change only that session. There is no separate "set default" command; picking a model in any chat is it. Running subagents keep the model they started with.
+Switching inside a chat changes **that chat only**: the session changes model from its next model call (mid-turn included) and the default is untouched. A pick on the new-chat screen, before the first send, applies to the chat it creates. The one place a `/model` still sets the default is Slack, Signal or Telegram *outside* a thread, session or topic — there is no session to switch. Running subagents keep the model they started with.
 
 Switching to a model that cannot take the session's current effort level clears the level and says so.
 
@@ -151,7 +151,7 @@ Effort is a setting beside the model, not part of its id. Precedence: the sessio
 
 - `/effort` opens a picker of the levels the current model accepts plus `clear`; `/effort <level>` and `/effort clear` skip it. On the desktop the **Effort** group sits under the models in the same picker.
 - The levels come from the catalog per model: typically `low`, `medium`, `high`, sometimes `minimal`, `xhigh` or `max`; `off` is offered for every steerable model so the default can be undone. Models that take a raw thinking budget accept a number of tokens instead; models with no reasoning support say so (`<model> has no reasoning effort levels`).
-- A manual change also becomes the default (`agent.effort`), the same way `/model` does; `clear` removes the line.
+- A change inside a chat applies to that chat only; the default (`agent.effort`) is set next to the default model in Settings › Chat › **Models › New sessions**. `clear` returns the session to the default.
 - Effort changes take effect at the **next turn**, not mid-turn (Anthropic rejects changing thinking inside a tool-use turn).
 
 The header shows the level as `· high` beside the model; nothing is shown while unset.

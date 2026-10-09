@@ -881,7 +881,7 @@ agent:
   #   provider: {order: [anthropic], allow_fallbacks: false}  # OpenRouter `provider` preferences, sent verbatim when set
   #   referer: https://theuth.io   # HTTP-Referer override; X-OpenRouter-Title via `title`
   # subagents:
-  #   model: null              # preferred subagent model when spawn_subagent omits `model`, named in the system prompt; default: agent.model. /subagent or Settings → Agent loop
+  #   model: null              # subagent default model when spawn_subagent omits `model`, named in the system prompt; default: agent.model. /subagent or Settings → Chat → Models
   #   max_depth: 1
   #   max_concurrent: 16       # native child spawn turns at once per orchestrator tree; further spawns queue and the parent is told
   #   max_concurrent_external: 32  # external (ACP harness / mesh-node) child spawn turns at once per orchestrator tree; a separate pool
@@ -1048,6 +1048,7 @@ agent:
 #   episode_idle_secs: 21600 # a desk idle this long closes its episode and writes its journal
 #   episode_context_pct: 60  # … or at this percent of its context window
 #   journal_max_bytes: 8192  # ceiling on roster/journal/<name>.md
+#   theuth_model:            # the built-in theuth agent's model (its desk and the work it starts); unset = same as new sessions. Settings › Chat writes it
 
 # tasks:                     # task records, wakes, checkout, disposition (design doc 67 §7); `t tasks list`
 #   orphan_secs: 120         # a checkout whose engine is unreachable this long is orphaned and the owner re-woken
@@ -1683,7 +1684,16 @@ async fn run() -> anyhow::Result<()> {
             let attach = matches!(host, Host::Tui | Host::Prompt | Host::Acp);
             if !attach || running.url.is_none() {
                 eprintln!("{running}");
-                std::process::exit(3);
+                // 146 D6: a second engine on one data dir is not a crash —
+                // headless / desktop daemons exit 0 so launchd
+                // (`SuccessfulExit=false`), systemd (`on-failure`) and the
+                // desktop do not restart-loop against the holder.
+                let code = if matches!(host, Host::Headless | Host::Desktop) {
+                    0
+                } else {
+                    3
+                };
+                std::process::exit(code);
             }
             match rpc::client::connect(&running).await {
                 Ok(ws) => Some((std::sync::Arc::new(ws), running)),
