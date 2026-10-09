@@ -70,7 +70,7 @@ struct PanelView: View {
                 }
             } else {
                 HStack {
-                    Text("Inbox").font(Type.body).fontWeight(.semibold)
+                    Text("Inbox").font(Type.body).fontWeight(.semibold).lineLimit(1).truncationMode(.tail).layoutPriority(0)
                     Spacer()
                     HeaderButton(symbol: "xmark", key: "esc", hint: "Close") { store.perform(.escape) }
                 }
@@ -123,7 +123,7 @@ struct CardHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 10) {
-                Text(anatomy.header.name).font(Type.body).fontWeight(.semibold).lineLimit(1)
+                Text(anatomy.header.name).font(Type.body).fontWeight(.semibold).lineLimit(1).truncationMode(.tail).layoutPriority(0)
                 PositionDots(position: anatomy.header.position, count: anatomy.header.count)
                 Spacer(minLength: 4)
                 HStack(spacing: 8) {
@@ -132,6 +132,7 @@ struct CardHeader: View {
                     HeaderButton(symbol: nil, key: "?", hint: "Keyboard shortcuts") { store.perform(.legend) }
                     HeaderButton(symbol: "xmark", key: "esc", hint: "Close") { store.perform(.escape) }
                 }
+                .fixedSize().layoutPriority(1)
             }
             if !store.panel.items.isEmpty {
                 Text(anatomy.header.glance).font(Type.caps).foregroundColor(.secondary)
@@ -181,22 +182,24 @@ struct HeaderButton: View {
             .foregroundColor(.secondary)
             .contentShape(Rectangle())
         }
+        .fixedSize().layoutPriority(1)
         .buttonStyle(.borderless)
         .help(hint)
         .accessibilityLabel(hint)
     }
 }
 
-/// A key cap at `Type.capRadius`; gold when it is the recommended answer.
+/// A key cap at `Type.capRadius`; accent when it is the recommended answer. Never wraps: the title beside it gives way.
 struct KeyCap: View {
     let key: String
     var gold = false
     init(_ key: String, gold: Bool = false) { self.key = key; self.gold = gold }
     var body: some View {
-        Text(key).font(Type.mono).lineLimit(1).fixedSize()
+        Text(key).font(Type.mono).lineLimit(1)
             .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 18)
             .background(RoundedRectangle(cornerRadius: Type.capRadius).fill(gold ? Color.accentColor : Color.primary.opacity(0.1)))
             .foregroundColor(gold ? .white : .primary)
+            .fixedSize().layoutPriority(1)
     }
 }
 
@@ -206,10 +209,10 @@ struct Hint: View {
     init(_ key: String, _ label: String) { self.key = key; self.label = label }
     var body: some View {
         HStack(spacing: 4) {
-            Text(key).font(Type.mono).padding(.horizontal, 4).padding(.vertical, 1)
+            Text(key).font(Type.mono).lineLimit(1).padding(.horizontal, 4).padding(.vertical, 1)
                 .background(RoundedRectangle(cornerRadius: Type.capRadius).stroke(Color.separator, lineWidth: 1))
-            Text(label).font(.caption)
-        }.foregroundColor(.tertiary)
+            Text(label).font(.caption).lineLimit(1)
+        }.foregroundColor(.tertiary).fixedSize().layoutPriority(1)
     }
 }
 

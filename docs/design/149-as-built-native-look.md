@@ -163,9 +163,19 @@ companion pid 89373 untouched; all exit 0)
 | `--probe-point 14` | `/tmp/149n-point-pill.png` (voice pill), `/tmp/149n-point-overlay.png` (full-screen spiral in accent), `/tmp/149n-point-card.png` (answer card); `/tmp/149-W2-probe.log`: control `120/120` → stop `0/120`, **PASS** |
 | `--probe-eye` | not captured (it toggles `sharingType` and logs; nothing to look at) |
 
-Fixed after looking: the header `esc` key cap wrapped letter-by-letter under the new `.borderless` close button (`KeyCap` now
-`.lineLimit(1).fixedSize()`); the open island's notch-height strip is black again (first cut was material beside the notch); the point
-probe's first detector (0.3, nominal light-mode accent) read 0/120 on the control capture — see Point-and-say above.
+Fixed after looking: the open island's notch-height strip is black again (first cut was material beside the notch); the point probe's
+first detector (0.3, nominal light-mode accent) read 0/120 on the control capture — see Point-and-say above.
+
+R1 (owner's review of the probes, 09:09), every PNG above re-captured afterwards:
+1. Header key caps wrapped one letter per line ("e / s / c") beside long card titles. The rule is now in the shared views: `KeyCap`,
+   `Hint`, `HeaderButton` and the answer card's `Cap` are `.lineLimit(1).fixedSize().layoutPriority(1)`; the title beside them gives way —
+   `.lineLimit(1).truncationMode(.tail).layoutPriority(0)` on the card header name, the Inbox title, the Agents title and the answer card's
+   status. The island request box pairs a field with an arrow button, no caps. Confirmed in `149n-panel-{finished,ask,approval,review,empty}.png`
+   ("w3-149-island", "w2-149-point", "w1-149-parity", "w2-149-overlay"), `149n-agents.png`, `149n-ask.png`, `149n-point-card.png`.
+2. The omp harness glyph read as a subscript "o" + "MP". `crates/desktop/companion-assets/harness/omp.svg` is the owner's lowercase wordmark
+   (o, m, p on one x-height, p with a descender; `/tmp/omp-wordmark.svg` verbatim); `swift scripts/render-harness-icons.swift` regenerated
+   `omp-{16,20,24,32}.png` (the other glyphs' PNGs re-rendered byte-identical). Confirmed "omp" at 16 px in the panel status line
+   (`149n-panel-finished.png`, `-approval.png`) and 20 px in the agents rows (`149n-agents.png`).
 
 ## Deviations and what is not native
 - `Color.tertiary/.separator/.failed/.done/.paused` are five aliases to system colours in `Palette.swift` (the file keeps its name: it also

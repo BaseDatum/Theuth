@@ -25,8 +25,8 @@ struct AnswerCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("theuth").font(.body.weight(.semibold)).foregroundColor(.primary)
-                Text("· \(state.status)").font(.body).foregroundColor(state.failed ? .failed : .tertiary).lineLimit(1)
+                Text("theuth").font(.body.weight(.semibold)).foregroundColor(.primary).lineLimit(1).fixedSize()
+                Text("· \(state.status)").font(.body).foregroundColor(state.failed ? .failed : .tertiary).lineLimit(1).truncationMode(.tail).layoutPriority(0)
                 if state.speaking {
                     Image(systemName: "speaker.wave.2.fill").font(.subheadline).foregroundColor(.done)
                         .accessibilityLabel("Speaking")
@@ -61,9 +61,10 @@ private struct Cap: View {
     let k: String
     init(_ k: String) { self.k = k }
     var body: some View {
-        Text(k).font(.caption.weight(.medium).monospaced()).foregroundColor(.primary)
+        Text(k).font(.caption.weight(.medium).monospaced()).foregroundColor(.primary).lineLimit(1)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(RoundedRectangle(cornerRadius: Type.capRadius, style: .continuous).fill(Color.primary.opacity(0.1)))
+            .fixedSize().layoutPriority(1)
     }
 }
 

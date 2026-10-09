@@ -440,16 +440,16 @@ struct AgentsPanelView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text("Agents").font(Type.body).fontWeight(.semibold)
+            Text("Agents").font(Type.body).fontWeight(.semibold).lineLimit(1).truncationMode(.tail).layoutPriority(0)
             Spacer()
             Hint("J K", "move")
             Button { state.onEvent?(.close) } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "xmark").font(.caption)
-                    Text("esc").font(Type.mono).padding(.horizontal, 4).padding(.vertical, 1)
+                    Text("esc").font(Type.mono).lineLimit(1).padding(.horizontal, 4).padding(.vertical, 1)
                         .background(RoundedRectangle(cornerRadius: Type.capRadius).stroke(Color.separator, lineWidth: 1))
                 }.foregroundColor(.secondary)
-            }.buttonStyle(.borderless).help("Close").accessibilityLabel("Close")
+            }.buttonStyle(.borderless).fixedSize().layoutPriority(1).help("Close").accessibilityLabel("Close")
         }
         .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 6)
     }
