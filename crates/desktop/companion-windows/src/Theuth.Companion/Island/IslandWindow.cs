@@ -345,8 +345,9 @@ internal sealed partial class IslandWindow : ToolWindow
         EndDrag(snap: true);
         if (!wasMoved && voice is null)
         {
-            // A click on the pill (not a drag) opens and pins.
-            if (model.Mode == IslandMode.Closed) OpenIsland(pin: true);
+            // A click on the pill (not a drag) opens and pins; the idle pill ("Always show", no meeting) deep-links to theuth://meetings.
+            if (model.Mode == IslandMode.Closed && snapshot.Meeting is null) act(new IslandAction.OpenMeetings());
+            else if (model.Mode == IslandMode.Closed) OpenIsland(pin: true);
             else model.Pinned = true;
         }
         if (!wantsKey) HandBack();

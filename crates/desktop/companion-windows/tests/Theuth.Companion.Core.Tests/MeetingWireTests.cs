@@ -43,7 +43,9 @@ public sealed class MeetingWireTests
         Assert.Equal(new MeetingOracleRow("batch-7", "brief", true, true), od.Decision);
         Assert.Equal(new MeetingChange.Activity("s1", "read_file…"), D("""{"type":"ToolCallStarted","session":"s1","name":"read_file"}"""));
         Assert.Equal(new MeetingChange.Activity("s1", null), D("""{"type":"TurnFinished","session":"s1","turn":"t","stop_reason":"end_turn","context":1}"""));
-        Assert.Null(D("""{"type":"Level","meeting":"m1","mic_rms":0.1,"system_rms":0.2}"""));
+        var lv = Assert.IsType<MeetingChange.Level>(D("""{"type":"Level","meeting":"m1","mic_rms":0.1,"system_rms":0.2}"""));
+        Assert.Equal((0.1f, 0.2f), (lv.MicRms, lv.SystemRms));
+        Assert.Null(D("""{"type":"Summarized","meeting":"m1","title":"Standup"}""")); // nothing for the island (the slice keeps its state)
         Assert.Null(D("""{"type":"AttentionChanged"}"""));
         Assert.Null(MeetingWire.Decode("Brief", "not json"u8));
     }

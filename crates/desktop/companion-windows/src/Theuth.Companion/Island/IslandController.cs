@@ -35,6 +35,7 @@ internal sealed class IslandController : IDisposable
         this.dispatcher = dispatcher;
         this.settings = settings;
         model.Load(settings);
+        model.FrameRejected += (device, off) => Log.Write($"island: saved frame for {device} ({off.Dx},{off.Dy}) is off its work area — rejected and forgotten");
         point = PointSettings.Load(settings);
         Window = new IslandWindow(dispatcher, model, Act, SaveModel);
         Window.DisplayChanged += () => dispatcher.TryEnqueue(() => { if (Window.IsShown) Window.Relayout(); });

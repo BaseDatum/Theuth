@@ -51,6 +51,9 @@ public abstract record MeetingChange
 
     public sealed record Utterance(string Meeting, string Track, long T0Ms, string Text, bool Request, bool Final, string? Speaker) : MeetingChange;
 
+    /// <summary><c>Level</c>: the meters (kept on the snapshot for the strip; <c>meeting.ts</c> drives them from a ref).</summary>
+    public sealed record Level(string Meeting, float MicRms, float SystemRms) : MeetingChange;
+
     public sealed record Listening(string Meeting, bool Held) : MeetingChange;
 
     public sealed record ApprovalWaiting(string Meeting, bool Waiting) : MeetingChange;
@@ -116,6 +119,11 @@ public sealed record MeetingSnapshot
 
     /// <summary>The last <see cref="MeetingReducer.LinesKeep"/> live rows, oldest first; at most one open row per track.</summary>
     public IReadOnlyList<MeetingLine> Lines { get; init; } = Array.Empty<MeetingLine>();
+
+    /// <summary>The last <c>Level</c> (0–1 RMS) per track.</summary>
+    public float MicLevel { get; init; }
+
+    public float SystemLevel { get; init; }
 
     /// <summary>The brief under the cursor.</summary>
     public MeetingBrief? Current => Cursor >= 0 && Cursor < Briefs.Count ? Briefs[Cursor] : null;
@@ -227,6 +235,8 @@ public static class MeetingReducer
                 var kept = s.Lines.Where(l => !(l.Open && l.Track == u.Track));
                 return s with { Lines = kept.Append(line).TakeLast(LinesKeep).ToArray() };
             }
+            case MeetingChange.Level lv:
+                return s.Meeting == lv.Meeting ? s with { MicLevel = lv.MicRms, SystemLevel = lv.SystemRms } : s;
             case MeetingChange.Activity act:
                 return s.Session == act.Session ? s with { Activity = act.Text } : s;
             default:

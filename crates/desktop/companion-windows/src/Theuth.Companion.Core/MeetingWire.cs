@@ -13,7 +13,7 @@ public static class MeetingWire
     public static readonly IReadOnlySet<string> EventTypes = new HashSet<string>(StringComparer.Ordinal)
     {
         "Started", "State", "TopicAdded", "TopicRemoved", "Brief", "Utterance", "Listening", "ApprovalWaiting",
-        "PostProgress", "ReviewReady", "Deleted", "OracleDeciding", "OracleDecision",
+        "PostProgress", "ReviewReady", "Deleted", "OracleDeciding", "OracleDecision", "Level",
     };
 
     public static readonly IReadOnlySet<string> ActivityTypes = new HashSet<string>(StringComparer.Ordinal)
@@ -53,6 +53,9 @@ public static class MeetingWire
             case "Utterance":
                 return new MeetingChange.Utterance(meeting, Str(e, "track") ?? "System", Long(e, "t0_ms"), Str(e, "text") ?? "", Bool(e, "request"),
                     e.TryGetProperty("final", out var f) && f.ValueKind != JsonValueKind.Undefined ? f.ValueKind == JsonValueKind.True : true, Str(e, "speaker"));
+            case "Level":
+                return new MeetingChange.Level(meeting, e.TryGetProperty("mic_rms", out var mr) && mr.ValueKind == JsonValueKind.Number ? (float)mr.GetDouble() : 0,
+                    e.TryGetProperty("system_rms", out var sr) && sr.ValueKind == JsonValueKind.Number ? (float)sr.GetDouble() : 0);
             case "Listening": return new MeetingChange.Listening(meeting, Bool(e, "held"));
             case "ApprovalWaiting": return new MeetingChange.ApprovalWaiting(meeting, Bool(e, "waiting"));
             case "PostProgress": return new MeetingChange.PostProgress(meeting, Str(e, "stage") ?? "", (int)Long(e, "pct"));

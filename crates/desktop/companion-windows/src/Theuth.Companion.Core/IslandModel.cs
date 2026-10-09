@@ -51,6 +51,9 @@ public sealed class IslandModel
 
     private readonly Dictionary<string, (int Dx, int Dy)> frames = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>A saved frame no longer lands on its monitor's work area (it shrank or moved): rejected and forgotten; the window logs it.</summary>
+    public event Action<string, (int Dx, int Dy)>? FrameRejected;
+
     public IslandMode Mode { get; private set; } = IslandMode.Closed;
 
     /// <summary>Settings › Island "Always show": the closed pill stays when nothing is live.</summary>
@@ -85,6 +88,7 @@ public sealed class IslandModel
             var r = new PxRect(d.WorkArea.X + off.Dx, d.WorkArea.Y + off.Dy, size.Width, size.Height);
             if (r.Intersects(d.WorkArea)) return (r, true);
             frames.Remove(d.Device); // off-screen memory (a monitor shrank): forget it
+            FrameRejected?.Invoke(d.Device, off);
         }
         return (DefaultFrame(d, size), false);
     }
