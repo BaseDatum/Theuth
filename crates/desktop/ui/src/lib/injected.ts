@@ -14,6 +14,8 @@ export const ENGINE_NOTICES = {
   vision: { title: 'Images unseen', description: 'theuth told the model no vision model is configured, so the pending images were not looked at.' },
   nudge: { title: 'Nudge', description: 'theuth asked the desk to dispose of its task before the turn ends (70 DESK-PROTOCOL 3).' },
   journal: { title: 'Journal', description: 'theuth asked the desk to write its episode journal before the desk closes.' },
+  /** 152 D5: `loop_::budget_note` — `<budget spent cap currency>`, the only notice with attributes. */
+  budget: { title: 'Budget spent', description: "theuth told the model the session's money budget is spent and the turn ended." },
 }
 
 /** One card an engine-wrapped input renders as. */
@@ -36,9 +38,16 @@ export type Injected =
   /** 125 §5.4: one `<advisory severity="…">` element of an advisor row — a card, never a `you` bubble. */
   | { kind: 'advisory'; severity: AdvisorSeverity; text: string }
   | { kind: 'engine'; notice: keyof typeof ENGINE_NOTICES; text: string }
+  /** 152 D1: `<resume_handoff>` (146 D10/D11). `restored`: the harness kept its context; else a fresh process got the
+   * handoff's sections. `clock` is `HH:MM:SS` as written (`at` is the Entry's ms); `text` is the whole inner text, always kept. */
+  | { kind: 'resume'; restored: boolean; clock: string; working?: string; previous?: string; sections: ResumeSection[]; omitted?: string[]; text: string }
+  /** 152 D2: `<child_lost name session at why>` in a parent — a child not respawned after a restart (146 D4). */
+  | { kind: 'lost'; name: string; session: string; clock: string; why: string; text: string }
+
+export type ResumeSection = { title: string; text: string; count?: number }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
-const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="', desk: 'agent="', advisory: 'severity="' }
+const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="', desk: 'agent="', advisory: 'severity="', child_lost: 'name="' }
 // `surface_error` (30 §8): the correction round is quiet on the desktop — the fence shows its own failure state — so the
 // `<surface_error>` / `<surface_error final="true">` notes render nothing; the notice entry above stays for other clients.
 // 144 §5.3: `<notebook id title>` is the bound chat's volatile context block — a harness note the context line already
@@ -113,6 +122,95 @@ export function parseSpoken(text: string): { secs: number; interrupted: boolean;
   return m ? { secs: Number(m[1]), interrupted: m[2] !== undefined, text: text.trimStart().slice(m[0].length) } : null
 }
 
+/** `handoff::render_restored`'s header: the time and, when there was one, the interrupted prompt's excerpt. */
+const RESTORED = /^The theuth engine restarted at (\d{2}:\d{2}:\d{2})(?: while you were working on: "([\s\S]*?)")?\. Your session with this harness has been restored/
+/** `handoff::render`'s header: the time and the harness session that could not be loaded. */
+const FRESH = /^The theuth engine restarted at (\d{2}:\d{2}:\d{2}) and your previous harness session(?: (\S+))? could not be loaded,[^\n]*\n/
+
+/** `handoff::render`'s sections in order: the line-start head of each and how its body is quoted. */
+const SECTIONS: { title: string; head: RegExp; quoted?: true; count?: true }[] = [
+  { title: 'Original brief', head: /^Your original brief: "/m, quoted: true },
+  { title: 'Interrupted prompt', head: /^The prompt you were interrupted in: "/m, quoted: true },
+  { title: 'Last report', head: /^What you had reported last: "/m, quoted: true },
+  { title: 'Uncommitted work', head: /^Uncommitted work(?: in [^\n]*)? \(git status --porcelain, (\d+) lines\):\n/m, count: true },
+  { title: 'Diff', head: /^Diff since the last commit \(git diff --stat, (\d+) lines\):\n/m, count: true },
+  { title: 'Queued messages', head: /^Messages queued for you while you were away \((\d+)\):\n/m, count: true },
+  { title: 'Open todos', head: /^Open todos \((\d+)\):\n/m, count: true },
+]
+const OMITTED = /^\(omitted for the handoff budget: ([^\n]*)\)\n?/m
+const FOOTER = /^The full earlier transcript is available with session_read\(/m
+
+/**
+ * 152 D1: a `<resume_handoff>` body as a card. Defensive: whatever does not match stays as text — a malformed note is
+ * still a `resume` card with the remainder in a final `Note` section, never a raw bubble, never a lost word.
+ */
+function resume(text: string): Extract<Injected, { kind: 'resume' }> {
+  const restored = RESTORED.exec(text)
+  if (restored) {
+    const [, clock, working] = restored
+    return { kind: 'resume', restored: true, clock: clock as string, ...(working === undefined ? {} : { working }), sections: [], text }
+  }
+  const fresh = FRESH.exec(text)
+  const out: Extract<Injected, { kind: 'resume' }> = { kind: 'resume', restored: false, clock: fresh?.[1] ?? '', sections: [], text }
+  if (fresh?.[2] !== undefined) out.previous = fresh[2]
+  // Section heads in document order; the body of one runs to the next head (or the omitted line / footer). The header
+  // sentences, any unparsed lead and the footer end up in the `Note` section: every character stays readable.
+  let rest = fresh ? text.slice(fresh[0].length) : text
+  const note: string[] = fresh ? [fresh[0].trim()] : []
+  const footer = FOOTER.exec(rest)
+  const tail = footer ? rest.slice(footer.index).trim() : ''
+  rest = footer ? rest.slice(0, footer.index) : rest
+  const omitted = OMITTED.exec(rest)
+  if (omitted) {
+    out.omitted = (omitted[1] as string).split(', ')
+    rest = rest.slice(0, omitted.index) + rest.slice(omitted.index + omitted[0].length)
+  }
+  const heads = SECTIONS.flatMap((s) => {
+    const m = s.head.exec(rest)
+    return m ? [{ s, at: m.index, len: m[0].length, count: m[1] === undefined ? undefined : Number(m[1]) }] : []
+  }).sort((a, b) => a.at - b.at)
+  const lead = rest.slice(0, heads[0]?.at ?? rest.length).trim()
+  if (lead) note.push(lead)
+  if (tail) note.push(tail)
+  heads.forEach((h, i) => {
+    const end = heads[i + 1]?.at ?? rest.length
+    let body = rest.slice(h.at + h.len, end).trimEnd()
+    // A quoted section ends with its closing quote unless the budget cut it (`… [N chars cut]`).
+    if (h.s.quoted && body.endsWith('"')) body = body.slice(0, -1)
+    out.sections.push({ title: h.s.title, text: body, ...(h.count === undefined ? {} : { count: h.count }) })
+  })
+  if (note.length) out.sections.push({ title: 'Note', text: note.join('\n\n') })
+  return out
+}
+
+/** One line of an endless parent's view (137 §7.2) as a native child's opener carries it. */
+export type ParentViewLine = { id: number; n: number; text: string; earlier: boolean }
+
+const VIEW_LINE = /^(\d+)\+(\d+)\|([\s\S]*)$/
+const EARLIER = '(earlier history, not summarized; recall searches it)'
+
+/**
+ * 152 D3: the `<chat>\n…\n</chat>` view an endless parent hands a native child before its brief (137 R1-D1), reloaded
+ * as one string with the brief (`text_of` joins the parts). Only the exact shape matches — every non-empty line inside
+ * is `id+n|text` — so a human typing `<chat>` keeps a normal bubble. `rest` is everything after `</chat>`.
+ */
+export function splitParentView(text: string): { lines: ParentViewLine[]; bytes: number; rest: string } | null {
+  const t = text.trimStart()
+  if (!t.startsWith('<chat>\n')) return null
+  const end = t.indexOf('</chat>')
+  if (end < 0) return null
+  const body = t.slice('<chat>\n'.length, end)
+  const lines: ParentViewLine[] = []
+  for (const raw of body.split('\n')) {
+    if (raw === '') continue
+    const m = VIEW_LINE.exec(raw)
+    if (!m) return null
+    const [, id, n, line] = m as unknown as [string, string, string, string]
+    lines.push({ id: Number(id), n: Number(n), text: line, earlier: id === '0' && line === EARLIER })
+  }
+  return { lines, bytes: new TextEncoder().encode(body).length, rest: t.slice(end + '</chat>'.length) }
+}
+
 /**
  * Classify one user input (mirrors `agent::skills::injected` and
  * `tui::model::injected`). A skill injection (`<skill name="…">…</skill>`
@@ -146,8 +244,10 @@ export function classify(text: string): Injected[] | null {
     const open = rest.slice(1, gt)
     const name = open.split(' ', 1)[0] as string
     const key = CARD[name]
-    const notice = Object.hasOwn(ENGINE_NOTICES, open) ? open as keyof typeof ENGINE_NOTICES : undefined
-    if (key === undefined && !HIDDEN[name] && notice === undefined) return null
+    // A notice is its bare tag (a human's `<rounds source="user">` stays text); `<budget spent cap currency>` is the one
+    // engine notice that carries attributes (152 D5).
+    const notice = Object.hasOwn(ENGINE_NOTICES, open) ? open as keyof typeof ENGINE_NOTICES : name === 'budget' ? name : undefined
+    if (key === undefined && !HIDDEN[name] && notice === undefined && name !== 'resume_handoff') return null
     const close = `</${name}>`
     const end = rest.indexOf(close, gt)
     if (end < 0) return null
@@ -161,6 +261,8 @@ export function classify(text: string): Injected[] | null {
       // Only todo continuations escape their body at emission; other notes are already literal text.
       if (notice === 'todo_continue') body = body.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
       out.push({ kind: 'engine', notice, text: body })
+    } else if (name === 'resume_handoff') {
+      out.push(resume(rest.slice(gt + 1, end).trim()))
     } else if (key !== undefined) {
       const from = attr(open, key)
       if (from === undefined) return null
@@ -198,6 +300,8 @@ export function classify(text: string): Injected[] | null {
         out.push({ kind: 'peer', from, text: body })
       } else if (name === 'advisory') {
         out.push({ kind: 'advisory', severity: from === 'concern' || from === 'blocker' ? from : 'nit', text: unescape(body.trim()) })
+      } else if (name === 'child_lost') {
+        out.push({ kind: 'lost', name: unescape(from), session: attr(open, 'session="') ?? '', clock: attr(open, 'at="') ?? '', why: unescape(attr(open, 'why="') ?? ''), text: body.trim() })
       } else if (name === 'desk') {
         const j = body.indexOf('</journal>')
         out.push({ kind: 'desk', agent: from, charter: inner(body, 'charter'), journal: inner(body, 'journal'), manual: j < 0 ? '' : body.slice(j + '</journal>'.length).trim() })

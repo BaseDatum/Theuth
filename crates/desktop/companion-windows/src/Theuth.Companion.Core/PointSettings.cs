@@ -20,7 +20,15 @@ public sealed class PointSettings : IEquatable<PointSettings>
     /// <summary><c>always</c> (the whole hold draws) or <c>mouse</c> (only while the left button is held).</summary>
     public string Annotate { get; set; } = "always";
 
-    public bool Speak { get; set; } = true;
+    /// <summary>
+    /// Sky 2026-10-09 15:58: spoken replies are opt-in — OFF by default. <see cref="SpeakSet"/> says the user flipped the switch
+    /// themselves; a stored <c>voiceKeySpeak: true</c> that was only ever written back by an unrelated save (every Voice key edit saved
+    /// all six keys, with the old default true) does not count — those users get off too (<see cref="Load"/>).
+    /// </summary>
+    public bool Speak { get; set; }
+
+    /// <summary>The Speak switch was set by the user in Settings (the only way a stored <c>voiceKeySpeak</c> is honoured).</summary>
+    public bool SpeakSet { get; set; }
 
     public int HintsShown { get; set; }
 
@@ -32,6 +40,9 @@ public sealed class PointSettings : IEquatable<PointSettings>
     {
         public const string Enabled = "voiceKeyEnabled", IncludeScreen = "voiceKeyIncludeScreen", Accessibility = "voiceKeyAccessibility";
         public const string Annotate = "voiceKeyAnnotate", Speak = "voiceKeySpeak", HintsShown = "voiceKeyHintsShown";
+
+        /// <summary>Written only when the user toggles Speak; absent = never set explicitly → off.</summary>
+        public const string SpeakSet = "voiceKeySpeakSet";
     }
 
     public static PointSettings Load(SettingsStore d)
@@ -41,7 +52,8 @@ public sealed class PointSettings : IEquatable<PointSettings>
         if (d.Contains(Key.IncludeScreen)) s.IncludeScreen = d.Bool(Key.IncludeScreen);
         if (d.String(Key.Accessibility) is "off") s.Accessibility = "off";
         if (d.String(Key.Annotate) is "mouse") s.Annotate = "mouse";
-        if (d.Contains(Key.Speak)) s.Speak = d.Bool(Key.Speak);
+        s.SpeakSet = d.Bool(Key.SpeakSet);
+        s.Speak = s.SpeakSet && d.Bool(Key.Speak); // opt-in: only an explicitly set switch turns it on
         s.HintsShown = (int)Math.Max(0, d.Double(Key.HintsShown));
         return s;
     }
@@ -53,17 +65,18 @@ public sealed class PointSettings : IEquatable<PointSettings>
         d.Set(Key.Accessibility, Accessibility);
         d.Set(Key.Annotate, Annotate);
         d.Set(Key.Speak, Speak);
+        d.Set(Key.SpeakSet, SpeakSet);
         d.Set(Key.HintsShown, (double)HintsShown);
         d.Flush();
     }
 
     public bool Equals(PointSettings? o) =>
         o is not null && Enabled == o.Enabled && IncludeScreen == o.IncludeScreen && Accessibility == o.Accessibility
-        && Annotate == o.Annotate && Speak == o.Speak && HintsShown == o.HintsShown;
+        && Annotate == o.Annotate && Speak == o.Speak && SpeakSet == o.SpeakSet && HintsShown == o.HintsShown;
 
     public override bool Equals(object? obj) => Equals(obj as PointSettings);
 
-    public override int GetHashCode() => HashCode.Combine(Enabled, IncludeScreen, Accessibility, Annotate, Speak, HintsShown);
+    public override int GetHashCode() => HashCode.Combine(Enabled, IncludeScreen, Accessibility, Annotate, Speak, SpeakSet, HintsShown);
 }
 
 /// <summary>The pure bits of the point-and-say flow (<c>UI/lib/voice-key.ts</c>): the note line and the refusal hints.</summary>

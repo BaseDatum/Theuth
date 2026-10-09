@@ -1335,3 +1335,32 @@ test('109 REPORT: a Loaded.resume row with a report fills the banner counts; a l
   expect(apply(s, { type: 'TurnStarted', session: S, turn: T, text: 'x', model: 'm', turn_seq: 1 }, ctx()).resume).toBe(s.resume)
   expect(apply(s, { type: 'TurnStarted', session: S, turn: 'next', text: 'x', model: 'm', turn_seq: 2 }, ctx()).resume).toBeUndefined()
 })
+
+test('152: an endless parent view opener becomes the parent view card, then the brief row with the stamp time', () => {
+  const view = '<chat>\n0+40|(earlier history, not summarized; recall searches it)\n40+16|Early weeks.\n56+1|Now: hand over.\n</chat>'
+  const stamp = '<time now="2026-10-03 00:05 +01:00 (Fri)" tz="Europe/Berlin"/>'
+  const out = fromHistory({ role: 'user', text: `${view}${stamp}\nYour full brief is …`, turn: 3, context: msg(3) })
+  expect(out).toHaveLength(2)
+  expect(out[0]).toMatchObject({ kind: 'parentView', bytes: 99, context: msg(3), at: Date.parse('2026-10-03T00:05+01:00') })
+  expect(out[0]?.kind === 'parentView' ? out[0].lines.map((l) => l.id) : []).toEqual([0, 40, 56])
+  expect(out[1]).toMatchObject({ kind: 'user', text: 'Your full brief is …', turn: 3, at: Date.parse('2026-10-03T00:05+01:00') })
+  // Without the stamp the brief is the plain text after `</chat>`.
+  expect(fromHistory({ role: 'user', text: `${view}\nbrief`, turn: 3 })[1]).toMatchObject({ kind: 'user', text: 'brief' })
+  // A human typing `<chat>` keeps one normal bubble.
+  expect(fromHistory({ role: 'user', text: '<chat>\nhello\n</chat>', turn: 3 })).toMatchObject([{ kind: 'user', text: '<chat>\nhello\n</chat>' }])
+})
+
+test('152: resume_handoff and child_lost rows are cards, never user entries; a live resume prompt is echoed', () => {
+  const resume = '<resume_handoff>\nThe theuth engine restarted at 14:54:32 while you were working on: "x". Your session with this harness has been restored with its context.\n</resume_handoff>'
+  const rows = fromHistory({ role: 'user', text: resume, turn: 9, context: msg(9) })
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({ kind: 'resume', restored: true, clock: '14:54:32', working: 'x', context: msg(9) })
+  const lost = '<child_lost name="k" session="s1" at="09:37" why="its parent is archived">\nk was lost.\n</child_lost>'
+  expect(fromHistory({ role: 'user', text: lost, turn: null, context: msg(10) })).toMatchObject([{ kind: 'lost', name: 'k', session: 's1', clock: '09:37', why: 'its parent is archived', text: 'k was lost.' }])
+  // Live: an ACP child's resume prompt arrives only as `TurnStarted`, so it is echoed as its card (other wrappers have delivery events).
+  const live = run([{ type: 'TurnStarted', session: S, turn: T, text: resume, model: 'm', turn_seq: 9 }])
+  expect(live.entries.map((e) => e.kind)).toEqual(['resume'])
+  expect(run([{ type: 'TurnStarted', session: S, turn: T, text: lost, model: 'm', turn_seq: 9 }]).entries).toEqual([])
+  // The settled reload adopts the live card's id.
+  expect(adopt(live.entries, rows)[0]?.id).toBe(live.entries[0]?.id)
+})

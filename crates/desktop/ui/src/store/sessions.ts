@@ -1,6 +1,6 @@
 import { type StoreApi, createStore } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
-import type { Injected } from '@/lib/injected';
+import type { Injected, ParentViewLine } from '@/lib/injected';
 import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
@@ -136,7 +136,10 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       origin?: PeerOrigin;
       seq?: number;
     }
-  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' }>
+  | Extract<Injected, { kind: 'engine' | 'desk' | 'wake' | 'resume' | 'lost' }>
+  /** 152 D3: the view an endless parent handed a native child before its brief (137 R1-D1); folded, the lines render
+   * only while open. Reload/reseed only: a live `TurnStarted` carries the brief without the view. */
+  | { kind: "parentView"; lines: ParentViewLine[]; bytes: number }
   /** A vision consultation note (52 §6): a stored user-role row, never a `you` bubble. `text` is the row body
    * (`<vision_observation>…`), empty for a live card until the settled reload; `note` is the typed metadata,
    * absent live. `failed` marks a live `VisionProgress` failure whose per-source statuses are not known yet. */
