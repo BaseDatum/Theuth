@@ -109,6 +109,15 @@ Brief: `~/Develop/theuth-144-briefs/wave2/Z2.md`. Contract: `docs/design/144-wav
   passed, 0 failed** (`test-run3.log`); clippy clean (`clippy3.log`); `BUILD_SLOTS=1 mbx check --workspace --all-targets
   --exclude desktop` rc 0 (`check-ws4.log`); tsc 0 errors (`tsc8.log`); vitest `notebooks sources editor notes lib rpc`
   → **102 files / 575 tests** (`vitest5.log`); vite build rc 0 (`vite-build4.log`). No live re-proof.
+- **R3 round (fold `origin/main` f41067e2, 149 COMPANION-NATIVE: clean, 218 files, `api.rs` additive, nothing of ours)**:
+  `cargo fmt --check` clean (`fmt4.log`); `mbx test … --no-run` 0 warnings (`test-norun6.log`); bare run, same `-p` set
+  (the rpc/agent binaries cannot be singled out without changing the set, so the full run) → 19 binaries, **882 passed,
+  1 failed** (`test-run4.log`): `document tests/ingest_job.rs::pasted_text_runs_to_completed_and_refresh_tracks_freshness`
+  (`attempts` 1 vs 2 after `source_refresh` — the poll read the row before the refresh job bumped it; wave 1's test, green
+  in R1/R2) → **5/5 three times in a row alone** (`test-ingest-job-{1,2,3}.log`), a timing flake under load. Bindings
+  re-exported (`bindings3.log`, 809 files — `AttentionItem.context` arrived) and copied; tsc 0 (`tsc9.log`); vitest
+  `notebooks` + `rpc` **12 files / 30 tests** (`vitest6.log`); `BUILD_SLOTS=1 mbx check --workspace --all-targets
+  --exclude desktop` rc 0 (`check-ws5.log`).
 
 ## Live proof
 
