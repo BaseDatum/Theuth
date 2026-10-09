@@ -361,6 +361,7 @@ impl ChildActivity {
     pub fn fire(&mut self, now: Instant) -> Option<Stall>;
     pub fn tools_in_progress(&self) -> u32;
     pub fn last(&self) -> &str;
+    pub fn stalled(&self) -> Option<StallPhase>;   // the open episode's phase
 }
 
 /// The §5.1 words; `until` accepts the first four after `running`.
@@ -429,6 +430,10 @@ pub(crate) fn child_stalled(name: &str, session: SessionId, phase: StallPhase, q
 pub(crate) fn peer_state(name: &str, session: SessionId, state: PeerStateWord, since_secs: u64, body: &str, now) -> String;
 impl Message<ChildStalled> for Agents { type Reply = (); }                          // supervisor/activity.rs
 impl Message<WaitPeer> for Agents { type Reply = Result<PeerWaitRegistered, String>; }
+impl Agents {                                                                        // supervisor/activity.rs
+    pub(crate) async fn check_peer_waits(&mut self, child: SessionId);               // §5.3, every transition
+    pub(crate) async fn rebuild_peer_waits(&mut self);                               // §5.4, boot
+}
 // registration: reg.ask(RegisterTool(Arc::new(WaitPeerTool))) after PeerMessageTool
 
 // peers.rs
@@ -462,6 +467,7 @@ impl TreeQuiet {
     pub fn new(thresholds: PtyThresholds) -> Self;
     pub fn saw(&mut self, now: Instant, sample: Option<platform::TreeSample>, foreground_is_leader: bool);
     pub fn quiet(&self) -> bool;         // true until two samples exist
+    pub fn last_sample(&self) -> Option<(Instant, platform::TreeSample)>;
     pub fn moved_since(&self, t: Instant) -> bool;
 }
 
@@ -538,6 +544,8 @@ Wire additions the clients see after the bindings regen: `AttentionItem.alert?: 
 PIN dependencies: none at wave start — every cross-wave type is in the `155 C: skeleton` commit (`WaitKind::PeerState`, `JobEvent::Idle.why`, `acp::Reports`, `Alert`, `PeerStateWord`, `TreeSample`). W1 renders `why` from the field W2 fills; W3 reads `Reports` only through `EntryInfo`. If a worker must change a frozen shape, it messages the orchestrator first and lists the deviation in DONE.
 
 Integrator (after the three DONEs): merge in the order W2 → W1 → W3 (tools below agent below roster/rpc), `cargo fmt -p` the touched crates, `mbx check -p agent -p tools -p roster -p rpc -p acp -p platform --tests`, the bindings export + copy, `bunx tsc --noEmit -p crates/desktop/ui`, `swift build` for the companion, then the live proofs of §11 on a scratch engine and the as-built `docs/design/155-as-built.md`.
+
+The skeleton commit also carries one-line literal updates outside the three waves' crates — `crates/nodes/src/lib.rs` (test `acp::Entry`), `crates/tui/src/model.rs` (test `EntryInfo`), `crates/double/src/actor.rs` and `crates/autoresearch/src/actor.rs` (`AttentionItem.alert: None`), `crates/desktop/ui/src/store/reduce.test.ts` (`why: ''`) — so `--workspace` still compiles. No wave touches those again.
 
 ## 11 Proof list
 
