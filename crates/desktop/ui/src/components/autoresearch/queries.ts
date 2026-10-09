@@ -119,13 +119,14 @@ export function useDrafts() {
 
 /**
  * One draft's `DraftView` (D3). `resultId` = `lastSetupResultId(entries)`: every new `autoresearch_draft` /
- * `autoresearch_probe` result in the setup session refetches it — no new event type.
+ * `autoresearch_probe` result in the setup session refetches it — no new event type. The rail's `drafts` row
+ * (`n of m settled`) changes with the same results, so it refetches too (live proof Z: it stayed at the last edit).
  */
 export function useDraft(draftId: string | null, resultId: string | null) {
   const api = useAutoresearchApi()
   const qc = useQueryClient()
   useEffect(() => {
-    if (draftId && resultId) void qc.invalidateQueries({ queryKey: [...KEY, 'draft', draftId] })
+    if (draftId && resultId) for (const queryKey of draftKeys(draftId)) void qc.invalidateQueries({ queryKey })
   }, [qc, draftId, resultId])
   return useQuery({ queryKey: [...KEY, 'draft', draftId], queryFn: () => api['autoresearch.draft'](draftId ?? ''), enabled: draftId !== null })
 }

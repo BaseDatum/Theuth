@@ -89,6 +89,12 @@ export const discardMessage = (slug: string): string => `[study draft ${slug}] d
 export const CARD_PRESS = /^study draft ([a-z0-9-]{1,32}): open in autoresearch$/m
 /** The §6.4 compact card's slug grammar; `StudyDraftBridge` and the pane both match it. */
 export const DRAFTS_APP = 'study-drafts'
+/**
+ * The setup pane (`/autoresearch/new`) already shows the study draft as its panel, so the `study-drafts` card
+ * published there must not slide the chat's artifact sheet over it on every re-draft (`ArtifactPanel` asks);
+ * everywhere else, and every other app, opens as before.
+ */
+export const autoOpens = (artifactName: string, pathname: string): boolean => !(artifactName === DRAFTS_APP && pathname.startsWith('/autoresearch/new'))
 
 // ── the session's entries ─────────────────────────────────────────────────────────────────────────────────────────
 

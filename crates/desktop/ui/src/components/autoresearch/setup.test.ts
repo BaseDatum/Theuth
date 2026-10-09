@@ -1,7 +1,7 @@
 import { expect, test, vi } from 'vitest'
 import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
 import { type Entry, useSessions } from '@/store/sessions'
-import { CARD_PRESS, discardMessage, editMessage, lastSetupResultId, latestStudyDraft, leafValue, recentRepos, seedText, sessionTitle, sparkPoints, startSetupChat } from './setup'
+import { CARD_PRESS, autoOpens, discardMessage, editMessage, lastSetupResultId, latestStudyDraft, leafValue, recentRepos, seedText, sessionTitle, sparkPoints, startSetupChat } from './setup'
 import { studies } from './fixtures'
 
 const tool = (callId: string, name: string, args: unknown, result?: boolean): Entry => ({ id: callId, kind: 'tool', callId, name, args, pending: false, child: false, ...(result ? { result: { output: 'ok', isError: false, files: [] } } : {}) })
@@ -79,4 +79,11 @@ test('sparkPoints: one point per sample scaled into the box; null below two valu
   expect(sparkPoints([1])).toBeNull()
   expect(sparkPoints([0, 10], 56, 12)).toBe('0.0,10.5 56.0,1.5')
   expect(sparkPoints([5, 5, 5])?.split(' ')).toHaveLength(3)
+})
+
+test('autoOpens: the study-drafts card never slides the artifact sheet over the setup pane; elsewhere, and every other app, it does (live proof Z)', () => {
+  expect(autoOpens('study-drafts', '/autoresearch/new')).toBe(false)
+  expect(autoOpens('study-drafts', '/autoresearch/new?chat=s1')).toBe(false)
+  expect(autoOpens('study-drafts', '/c/s1')).toBe(true)
+  expect(autoOpens('sort-study-setup', '/autoresearch/new')).toBe(true)
 })

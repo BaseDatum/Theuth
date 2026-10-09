@@ -540,6 +540,13 @@ pub fn view_of(root: &Path, d: Draft, started: bool) -> DraftView {
     if let Err(e) = validate_spec(spec) {
         blocking.push(e);
     }
+    // What `create` refuses at Start (custody R-8: an absolute script path outside the drafts
+    // dir, a relative one that is no repo file) blocks Start here, with the same words.
+    if base_sha.is_some()
+        && let Err(e) = crate::custody::check_commands(spec, repo, &drafts_dir(root, &spec.slug))
+    {
+        blocking.push(e.to_string());
+    }
     DraftView {
         draft_id: spec.slug.clone(),
         origin: d.origin,
@@ -857,6 +864,13 @@ pub async fn probe(
     let repo = PathBuf::from(spec.repo.trim());
     let base_sha = git::resolve_base(&repo, &spec.base, true)?;
     let dir = drafts_dir(root, draft_id);
+    // The probe measures what the study will run: a script the custody refuses is refused here.
+    crate::custody::check_commands(&spec, &repo, &dir)?;
+    // ponytail: one lock for every probe — two calls in one agent turn (`asyncio.gather`) raced
+    // on `probe/wt` and both failed; bench probes hold the exclusive slot anyway. Per-draft
+    // locks if concurrent setups ever matter.
+    static PROBES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one_at_a_time = PROBES.lock().await;
     let probe_dir = dir.join("probe");
     let wt = probe_dir.join("wt");
     let runs = probe_dir.join("runs");
@@ -1551,6 +1565,68 @@ mod tests {
             fingerprint(ProbeKind::Bench, &s, "abc"),
             fingerprint(ProbeKind::Check, &s, "abc")
         );
+    }
+
+    /// Live proof Z (2026-10-09): the agent called two probes in one turn (`asyncio.gather`,
+    /// two tool tasks); both raced on `probe/wt` and both failed. Probes now run one at a time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_probes_of_one_draft_both_succeed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = toy_repo(tmp.path());
+        let root = tmp.path().join("root");
+        write_draft(&root, &spec(&repo), SessionId::new(), true, vec![]).unwrap();
+        let task = || {
+            let root = root.clone();
+            tokio::spawn(async move {
+                probe(
+                    &root,
+                    &cfg(),
+                    "toy",
+                    ProbeKind::Check,
+                    None,
+                    &CancellationToken::new(),
+                )
+                .await
+            })
+        };
+        let (a, b) = tokio::join!(task(), task());
+        assert!(a.unwrap().unwrap().ok && b.unwrap().unwrap().ok);
+        assert!(!drafts_dir(&root, "toy").join("probe").exists());
+    }
+
+    /// Live proof Z: a study with `holdout.command = <user checkout>/holdout.sh` was Started from
+    /// a `ready` panel and failed at once in custody. The view blocks Start with custody's
+    /// reason and the probe refuses to measure such a script.
+    #[tokio::test]
+    async fn scripts_outside_custody_block_start_and_the_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = toy_repo(tmp.path());
+        let root = tmp.path().join("root");
+        let mut s = spec(&repo);
+        s.bench.command = repo.join("bench.sh").display().to_string();
+        write_draft(&root, &s, SessionId::new(), false, vec![]).unwrap();
+        let v = view(&root, "toy", false).unwrap();
+        assert!(!v.ready, "{v:?}");
+        assert!(
+            v.blocking
+                .iter()
+                .any(|b| b.starts_with("bench: `") && b.contains("is not a file in the repo")),
+            "{:?}",
+            v.blocking
+        );
+        let e = probe(
+            &root,
+            &cfg(),
+            "toy",
+            ProbeKind::Bench,
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("is not a file in the repo"), "{e}");
+        assert!(!drafts_dir(&root, "toy").join("probe").exists());
     }
 
     #[test]
