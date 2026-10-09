@@ -107,7 +107,7 @@ final class DictionarySuggestionCard {
         hosting.frame = panel.contentView?.bounds ?? .zero
         panel.ignoresMouseEvents = false
         panel.orderFrontRegardless()
-        AskLog.write("suggestion card shown \(s.id) frame=\(panel.frame)")
+        AskLog.write("suggestion card shown \(s.id) frame=\(panel.frame) number=\(panel.windowNumber)")
         dismiss = Timer.scheduledTimer(withTimeInterval: Self.dismissAfter, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.store.answerSuggestion(nil) }
         }
