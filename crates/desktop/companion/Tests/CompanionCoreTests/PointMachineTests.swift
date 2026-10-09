@@ -150,6 +150,52 @@ struct PointMachineTests {
         #expect(PointMachine.sampleHz == 60)
         #expect(PointMachine.doneMs == 6_000)
     }
+
+    // MARK: 153 §3.5 / §12.6
+
+    /// Another mode's key while a gesture is live relabels it and changes nothing else; idle/sending/replying ignore it.
+    @Test func switchModeKeepsRecording() {
+        for st in [S.armed(t0: 0), .holding(t0: 0), .tap1(t0: 0, released: 10), .locked(t0: 0), .toggled(t0: 0)] {
+            expectStep(s(st, .switchMode(.command), 50), st, [.relabel(.command)], "\(st)")
+        }
+        for st in [S.idle, .sending(t0: 0), .replying] {
+            expectStep(s(st, .switchMode(.ask), 50), st, [], "\(st)")
+        }
+        // The gesture goes on as before: a relabelled hold still sends on release.
+        var (st, _) = s(.idle, .pressed, 0)
+        (st, _) = s(st, .switchMode(.command), 300)
+        expectStep(s(st, .released, 1200), .sending(t0: 0), [.stop(reason: "release")])
+    }
+
+    func a(_ st: S, _ e: E, _ now: UInt64) -> (S, [F]) { PointMachine.step(st, e, now: now, refused: nil, gesture: .automatic) }
+
+    /// Automatic: a tap (< 400 ms) toggles hands-free and the next press sends; a longer press is push-to-talk.
+    @Test func automaticTapTogglesHoldTalks() {
+        expectStep(a(.armed(t0: 0), .released, PointMachine.tapToggleMs - 1), .toggled(t0: 0), [.showLock])
+        expectStep(a(.toggled(t0: 0), .released, 500), .toggled(t0: 0), [])
+        expectStep(a(.toggled(t0: 0), .pressed, 2000), .sending(t0: 0), [.stop(reason: "tap")])
+        expectStep(a(.toggled(t0: 0), .pressed, Self.minNote - 1), .idle, [.discard(reason: "short", hint: PointMachine.automaticHint)])
+        expectStep(a(.toggled(t0: 0), .esc, 500), .idle, [.discard(reason: "esc", hint: PointMachine.automaticHint)])
+        // Push-to-talk: the hold tick lands at 400 ms, the release sends.
+        expectStep(a(.armed(t0: 0), .tick(now: Self.hold), Self.hold), .armed(t0: 0), [])
+        expectStep(a(.armed(t0: 0), .tick(now: 400), PointMachine.tapToggleMs), .holding(t0: 0), [])
+        expectStep(a(.holding(t0: 0), .released, 1500), .sending(t0: 0), [.stop(reason: "release")])
+        expectStep(a(.armed(t0: 0), .released, 1500), .sending(t0: 0), [.stop(reason: "release")])
+    }
+
+    /// Automatic never enters `tap1`/`locked`: a second quick press is the send, not a lock.
+    @Test func automaticNoDoubleTapLock() {
+        var (st, _) = a(.idle, .pressed, 0)
+        (st, _) = a(st, .released, 100)
+        #expect(st == .toggled(t0: 0))
+        let (next, fx) = a(st, .pressed, 250)
+        #expect(next == .idle && fx == [.discard(reason: "short", hint: PointMachine.automaticHint)], "a second tap inside 800 ms is a short note, never a lock")
+        (st, _) = a(.idle, .pressed, 0)
+        (st, _) = a(st, .released, 100)
+        expectStep(a(st, .pressed, 900), .sending(t0: 0), [.stop(reason: "tap")])
+        // The hold/double-tap table is untouched by default.
+        expectStep(s(.tap1(t0: 0, released: 100), .pressed, 250), .locked(t0: 0), [.showLock])
+    }
 }
 
 /// 149f: the hot key's key-down/key-up through `VoiceKeyGate` into the machine — the controller's `keyDown`/`keyUp` as a pure

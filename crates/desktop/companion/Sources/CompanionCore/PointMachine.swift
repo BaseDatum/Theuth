@@ -2,7 +2,8 @@ import Foundation
 import TheuthKit
 
 // The one-to-one port of `crates/desktop/src/point/machine.rs:6-144` (design 149 §3.7, D12); the 16 behavioural tests
-// live in `PointMachineTests`. C fixed the shapes and the 96 §4.1 constants.
+// live in `PointMachineTests`. C fixed the shapes and the 96 §4.1 constants. 153 §3.5/§12.6 add `switchMode` (another
+// mode's key while a gesture is live relabels it) and the `automatic` gesture (tap toggles, hold talks, no double-tap lock).
 
 /// The voice key's gesture machine — hold to talk, double-tap to lock — as a pure reducer over the hotkey's
 /// pressed/released stream, Esc, the panel's replies and timer ticks. No clock, no I/O: the controller owns the
@@ -20,6 +21,14 @@ public enum PointMachine {
     public static let doneMs: UInt64 = 6_000
     /// Shown on a missed double-tap, a too-short note, and Esc mid-gesture.
     public static let hint = "Hold to talk · double-tap to lock"
+    /// 153 §12.6 Automatic: a release before this toggles hands-free; a longer press is push-to-talk.
+    public static let tapToggleMs: UInt64 = 400
+    public static let automaticHint = "Tap to toggle · hold to talk"
+
+    public typealias Mode = ModeKeySettings.Mode
+    public typealias Gesture = ModeKeySettings.Gesture
+
+    public static func hint(for gesture: Gesture) -> String { gesture == .automatic ? automaticHint : hint }
 
     public enum State: Equatable, Sendable {
         case idle
@@ -27,6 +36,8 @@ public enum PointMachine {
         case holding(t0: UInt64)
         case tap1(t0: UInt64, released: UInt64)
         case locked(t0: UInt64)
+        /// 153 §12.6 Automatic: a tap < `tapToggleMs` toggled hands-free; the next press sends.
+        case toggled(t0: UInt64)
         case sending(t0: UInt64)
         case replying
     }
@@ -36,6 +47,8 @@ public enum PointMachine {
         /// A timer armed on entering `armed`/`tap1`; `now` is the time it was armed for.
         case tick(now: UInt64)
         case panelDone, cancel
+        /// 153 §10.1: another mode's key while this gesture is live — the state and the recording continue.
+        case switchMode(Mode)
     }
 
     public enum Effect: Equatable, Sendable {
@@ -48,26 +61,39 @@ public enum PointMachine {
         case discard(reason: String, hint: String?)
         case conceal
         case refuse(reason: String)
+        /// The pill relabels; the destination at release is the new mode's.
+        case relabel(Mode)
     }
 
     /// One transition. `refused` is the standing reason (a live meeting leases the mic), answered instead of
-    /// `.start` on a press from `.idle`/`.replying`.
-    public static func step(_ s: State, _ e: Event, now: UInt64, refused: String?) -> (State, [Effect]) {
+    /// `.start` on a press from `.idle`/`.replying`. `gesture` picks the hold/double-tap table (default) or §12.6's
+    /// automatic one (release < `tapToggleMs` toggles; `tap1`/`locked` never occur).
+    public static func step(_ s: State, _ e: Event, now: UInt64, refused: String?, gesture: Gesture = .holdLock) -> (State, [Effect]) {
+        let hint = hint(for: gesture)
         switch (s, e) {
         case (.idle, .pressed), (.replying, .pressed):
             if let refused { return (s, [.refuse(reason: refused)]) }
             return (.armed(t0: now), [.start])
+        case (.armed, .switchMode(let m)), (.holding, .switchMode(let m)), (.tap1, .switchMode(let m)),
+             (.locked, .switchMode(let m)), (.toggled, .switchMode(let m)):
+            return (s, [.relabel(m)])
+        case (.armed(let t0), .released) where gesture == .automatic:
+            return elapsed(now, t0) < tapToggleMs ? (.toggled(t0: t0), [.showLock]) : send(t0, now, "release", hint)
+        case (.armed(let t0), .tick) where gesture == .automatic:
+            return elapsed(now, t0) >= tapToggleMs ? (.holding(t0: t0), []) : (s, [])
+        case (.toggled(let t0), .pressed):
+            return send(t0, now, "tap", hint)
         case (.armed(let t0), .released):
-            return elapsed(now, t0) >= holdMs ? send(t0, now, "release") : (.tap1(t0: t0, released: now), [])
+            return elapsed(now, t0) >= holdMs ? send(t0, now, "release", hint) : (.tap1(t0: t0, released: now), [])
         case (.armed(let t0), .tick) where elapsed(now, t0) >= holdMs:
             return (.holding(t0: t0), [])
         case (.holding(let t0), .released):
-            return send(t0, now, "release")
-        case (.armed, .esc), (.holding, .esc), (.locked, .esc):
+            return send(t0, now, "release", hint)
+        case (.armed, .esc), (.holding, .esc), (.locked, .esc), (.toggled, .esc):
             return discard("esc", hint)
         case (.tap1, .esc), (.sending, .esc):
             return discard("esc", nil)
-        case (.armed, .cancel), (.holding, .cancel), (.tap1, .cancel), (.locked, .cancel):
+        case (.armed, .cancel), (.holding, .cancel), (.tap1, .cancel), (.locked, .cancel), (.toggled, .cancel):
             return discard("cancel", nil)
         case (.tap1(let t0, let released), .pressed):
             if elapsed(now, released) <= doubleTapMs { return (.locked(t0: t0), [.showLock]) }
@@ -77,7 +103,7 @@ public enum PointMachine {
         case (.tap1(_, let released), .tick) where elapsed(now, released) > doubleTapMs:
             return discard("double-tap-missed", hint)
         case (.locked(let t0), .pressed):
-            return send(t0, now, "tap")
+            return send(t0, now, "tap", hint)
         case (.sending, .panelDone):
             return (.replying, [])
         case (.sending, .cancel):
@@ -90,7 +116,7 @@ public enum PointMachine {
     }
 
     /// A note ends: send it, or discard one shorter than `minNoteMs`.
-    private static func send(_ t0: UInt64, _ now: UInt64, _ reason: String) -> (State, [Effect]) {
+    private static func send(_ t0: UInt64, _ now: UInt64, _ reason: String, _ hint: String) -> (State, [Effect]) {
         elapsed(now, t0) < minNoteMs ? discard("short", hint) : (.sending(t0: t0), [.stop(reason: reason)])
     }
 

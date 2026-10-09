@@ -92,7 +92,8 @@ merged tree (clippy, tests, workspace check re-run after the last merge).
   lists 448 methods including all 17 new names + `voice_status`.
 - `BUILD_SLOTS=1 … mbx check --workspace --exclude desktop` → `Finished dev profile … in 3m 10s`, 0 errors, 0 warnings (workspace.log).
 - `cargo fmt -p voice -p rpc -p agent -p runtime -p tui -- --check` → clean (exit 0, empty output).
-- After the final A4 merge `02cefd6f` (`bef55869`), re-run on the final tree: `mbx clippy -p voice -p rpc -p agent -p runtime --tests`
+- After the final A4 merge `02cefd6f` (`bef55869`), re-run on the final tree: `mbx check -p voice -p rpc -p agent -p runtime -p tui
+  --tests` → `Finished dev profile … in 3m 17s`, 0 errors, 0 warnings (check3.log); `mbx clippy -p voice -p rpc -p agent -p runtime --tests`
   → `Finished dev profile … in 2m 21s`, 0 warnings (clippy3.log); `mbx test … --no-run` → `Finished test profile … in 5m 49s`; bare
   `MBX_SCHEDULER_TESTS=0 mbx test -p voice -p rpc -p agent -p runtime` (test-run3.log): agent `test result: ok. 592 passed; 0 failed;
   2 ignored` (173 s; the two known load flakes passed first time in all three runs), `notebooks_binding` 2, `notebooks_block` 6; rpc `56

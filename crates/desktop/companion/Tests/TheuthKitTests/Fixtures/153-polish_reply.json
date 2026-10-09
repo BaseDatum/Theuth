@@ -1,0 +1,6 @@
+{
+  "text": "Hi Dana, the deploy is done.",
+  "model": "anthropic/claude-haiku",
+  "ms": 820,
+  "refused": null
+}

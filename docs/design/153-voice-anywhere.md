@@ -1313,3 +1313,14 @@ rewrite panel reuse it).
   actor message is `AnswerSuggestion`, `VoiceStatus` ships without a `dictionary` field, `Shaper` gained builders
   `with_surface` / `with_commands` / `with_mentions` and `shape_with(&mut EndParser, …)` (the parser is the actor's, one per utterance);
   §4.2 gates read TLD / extension lists from the packaged `Path` pairs on top of the built-in lists (the talon lists lack `dev`, `io`, `rs`).
+- 2026-10-09 waves B+C as built — see `153-as-built-BC.md`. Section-level amendments: §7.4 Ask "send it" skips the undo hold (`.sendNow` →
+  `commitAsk`; Composer/TUI `submit()` once at `DictationFinished` with a final `command: send`); §8.5 the mic opens at key-down with chunks
+  buffered until `started`, a tap (< 250 ms) discards them and never starts a dictation; §10.3 `purpose` is a top-level key of every tool
+  call's `args` (explicit on `applescript`/`shortcuts`/`powershell`, `**extra` kwarg elsewhere) with `checking:`/`executing:`/`verifying:`
+  prefixes, ≤ 60 chars, fallback `reason` → tool name; §10.4 the 12th `ToolCallStarted` freezes the card and cancels; §10.6 the approval
+  listen is an 8 s companion dictation reading `text` only (no per-call end-command switch); §11.2 risk reclassifier and `computer.native`
+  policy not built (all three native tools `Risk::Mutating`, default `Ask`); §12.2 voice follow-up = hold the mode key, typed marker
+  `[command, 1 s]`; §12.4 `Phase.speaking` dropped — `speaking` is a parallel flag; §12.6 modifier-only chords = settings row + grant
+  button only; §4.1 `Shaped.replaced` is not on the wire (fields show `shaped`, fallback `text` only when no end command rode the piece);
+  §14.3 no getter for the shape preset / end phrases (surfaces remember the last written value); §14.4 `DictationWire` is the public
+  `TheuthKit` mirror; §6.4 auto-dismiss sends no RPC and ▶ plays `dictation_audio_get(id, null)`.
