@@ -337,6 +337,13 @@ impl Tool for StudyDraftTool {
     }
 
     async fn call(&self, spec: StudySpec, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        // Windows: no `/bin/bash` for the study's commands — refuse before a card is shown.
+        if cfg!(windows) {
+            return Ok(ToolOutput::err(format!(
+                "autoresearch_draft: {}",
+                autoresearch::WINDOWS_UNSUPPORTED
+            )));
+        }
         if let Err(e) = validate_spec(&spec) {
             return Ok(ToolOutput::err(format!("autoresearch_draft: {e}")));
         }

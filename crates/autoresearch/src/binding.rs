@@ -70,9 +70,12 @@ pub fn toolset(parallel: u8) -> agent::Toolset {
 }
 
 /// The schedule crate's confinement for `autoresearch-*` files (140 §8.3):
-/// a running or paused study fires under [`toolset`]; any other name under the
-/// prefix (unknown slug, finished study whose file survived) is orphaned and
-/// the schedule ends its loop. Registered once at plugin start with
+/// a running or paused study fires under [`toolset`] with its worktree as
+/// the session's write root (F4E: `write_file` / `edit` refuse anything
+/// outside it; the user's checkout stays untouched even by a model that
+/// ignores the brief); any other name under the prefix (unknown slug,
+/// finished study whose file survived) is orphaned and the schedule ends its
+/// loop. Registered once at plugin start with
 /// `schedule::confine(SCHEDULE_PREFIX, confinement(store))`.
 pub fn confinement(store: Store) -> schedule::ToolsetResolver {
     Arc::new(move |name: &str| {
@@ -83,11 +86,32 @@ pub fn confinement(store: Store) -> schedule::ToolsetResolver {
                 return Ok(None);
             };
             let study = store.get_study(&slug).await.map_err(|e| e.to_string())?;
-            Ok(study
+            study
                 .filter(|s| matches!(s.state, StudyState::Running | StudyState::Paused { .. }))
-                .map(|s| toolset(s.spec.parallel)))
+                .map(|s| {
+                    Ok(schedule::Confine {
+                        toolset: toolset(s.spec.parallel),
+                        write_root: Some(actor::worktree_of(&s).map_err(|e| e.to_string())?),
+                    })
+                })
+                .transpose()
         })
     })
+}
+
+/// 140 F4E: seat `session` in `worktree` — relative file-tool paths resolve
+/// there and `write_file` / `edit` refuse anything outside it. The schedule
+/// does this on every fire through [`confinement`]; the plugin repeats it
+/// where a session runs without a fire (restart recovery, a wave's slot child).
+pub fn seat(session: runtime::SessionId, worktree: &std::path::Path) {
+    tools::seat::set_cwd(session, Some(worktree.to_path_buf()));
+    tools::seat::set_write_root(session, Some(worktree.to_path_buf()));
+}
+
+/// Lift [`seat`]: the session is no longer a study's (finished, discarded, failed).
+pub fn unseat(session: runtime::SessionId) {
+    tools::seat::set_cwd(session, None);
+    tools::seat::set_write_root(session, None);
 }
 
 /// `ScheduleEvent::Fired` for one of ours → record the session (140 §8.2).
@@ -377,6 +401,7 @@ mod tests {
         let mut s = StudyRecord::new(spec, None);
         s.state = state;
         s.session = Some(runtime::SessionId::new());
+        s.worktree = Some(format!("/studies/{slug}/worktree"));
         store.create_study(&s).await.unwrap();
         s
     }
@@ -447,8 +472,10 @@ mod tests {
     }
 
     /// R-5: the schedule applies the toolset itself, before the prompt, from
-    /// this resolver — a live study gets §8.3 (waves add `spawn_subagent`),
-    /// anything else under the prefix is orphaned so the schedule ends the file.
+    /// this resolver — a live study gets §8.3 (waves add `spawn_subagent`) and
+    /// its worktree as the session's write root (F4E); anything else under the
+    /// prefix is orphaned so the schedule ends the file; a live study without
+    /// a worktree refuses the fire rather than firing unconfined.
     #[tokio::test]
     async fn confinement_resolves_live_studies_only() {
         let dir = tempfile::tempdir().unwrap();
@@ -464,14 +491,50 @@ mod tests {
         )
         .await;
         study(&store, "done", StudyState::Finished, 1).await;
+        let mut bare = StudyRecord::new(
+            crate::types::StudySpec {
+                slug: "bare".into(),
+                ..Default::default()
+            },
+            None,
+        );
+        bare.state = StudyState::Running;
+        store.create_study(&bare).await.unwrap();
         let r = confinement(store);
         let seq = r("autoresearch-seq").await.unwrap().unwrap();
-        assert!(seq.tools.iter().any(|t| t == "experiment_begin"));
-        assert!(!seq.tools.iter().any(|t| t == "spawn_subagent"));
+        assert!(seq.toolset.tools.iter().any(|t| t == "experiment_begin"));
+        assert!(!seq.toolset.tools.iter().any(|t| t == "spawn_subagent"));
+        assert_eq!(
+            seq.write_root.as_deref(),
+            Some(std::path::Path::new("/studies/seq/worktree"))
+        );
         let wave = r("autoresearch-wave").await.unwrap().unwrap();
-        assert!(wave.tools.iter().any(|t| t == "spawn_subagent"));
+        assert!(wave.toolset.tools.iter().any(|t| t == "spawn_subagent"));
+        assert_eq!(
+            wave.write_root.as_deref(),
+            Some(std::path::Path::new("/studies/wave/worktree"))
+        );
         assert!(r("autoresearch-done").await.unwrap().is_none());
         assert!(r("autoresearch-nope").await.unwrap().is_none());
         assert!(r("autoresearch-").await.unwrap().is_none());
+        let e = r("autoresearch-bare").await.unwrap_err();
+        assert!(e.contains("no worktree"), "{e}");
+    }
+
+    /// F4E: [`seat`] puts the session's cwd and write root on the worktree;
+    /// [`unseat`] lifts both.
+    #[test]
+    fn seat_and_unseat_round_trip() {
+        let s = runtime::SessionId::new();
+        seat(s, std::path::Path::new("/w"));
+        assert_eq!(
+            tools::seat::seat_of(s),
+            tools::Seat {
+                cwd: Some("/w".into()),
+                write_root: Some("/w".into()),
+            }
+        );
+        unseat(s);
+        assert_eq!(tools::seat::seat_of(s), tools::Seat::default());
     }
 }

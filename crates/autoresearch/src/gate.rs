@@ -69,7 +69,10 @@ pub fn step(cfg: &GateCfg, input: &GateInput) -> GateStep {
     let x_c = mean(&input.candidate);
     let x_i = mean(&input.incumbent);
     let delta = normalise(cfg.direction, x_c, x_i);
-    let delta_pct = pct(delta, x_i);
+    // Revision 2: `delta_pct` is the raw relative change (negative = the value went down),
+    // the one convention the ledger, brief, trailer, headline and UI share; `delta` stays
+    // direction-normalised for the arithmetic.
+    let delta_pct = pct(x_c - x_i, x_i);
     let min_eff = cfg.min_effect.against(x_i);
     let sigma = input.sigma;
     let decide = |verdict: Verdict, z: Option<f64>| GateStep::Decide {
@@ -527,7 +530,25 @@ mod tests {
         };
         assert_eq!(z, None);
         assert_eq!(delta, 10.0);
-        assert!((delta_pct - 1.0).abs() < 1e-9);
+        // Revision 2: Δ % is the raw change — a lower-is-better win reads negative…
+        assert!((delta_pct + 1.0).abs() < 1e-9, "{delta_pct}");
+        // …and a higher-is-better win positive; `delta` is normalised in both.
+        let higher = GateCfg {
+            direction: Direction::Higher,
+            ..cfg
+        };
+        let GateStep::Decide {
+            verdict,
+            delta,
+            delta_pct,
+            ..
+        } = step(&higher, &input(&[1010.0], &[1000.0], 0.0))
+        else {
+            panic!()
+        };
+        assert_eq!(verdict, Verdict::Improved);
+        assert_eq!(delta, 10.0);
+        assert!((delta_pct - 1.0).abs() < 1e-9, "{delta_pct}");
     }
 
     #[test]

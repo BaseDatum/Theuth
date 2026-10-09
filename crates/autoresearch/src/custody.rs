@@ -137,6 +137,7 @@ pub struct ScopeDiff {
 /// --ignore-blank-lines HEAD` plus the non-blank lines of untracked files as `added`.
 /// A file the novelty hash staged as intent-to-add and the model then deleted is no change.
 pub fn scope_diff(spec: &StudySpec, worktree: &Path) -> Result<ScopeDiff> {
+    let junk = globs(build_junk(spec))?;
     let status = git(
         worktree,
         &["status", "--porcelain=v2", "--untracked-files=all", "-z"],
@@ -164,6 +165,8 @@ pub fn scope_diff(spec: &StudySpec, worktree: &Path) -> Result<ScopeDiff> {
             _ => {}
         }
     }
+    changed.retain(|p| !junk.is_match(p));
+    untracked.retain(|p| !junk.is_match(p));
     changed.sort();
     changed.dedup();
 
@@ -219,10 +222,10 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String> {
 }
 
 /// The spec's globs as one matcher; a plain path or `dir/` also matches everything under it.
-fn globs(patterns: &[String]) -> Result<globset::GlobSet> {
+fn globs<S: AsRef<str>>(patterns: &[S]) -> Result<globset::GlobSet> {
     let mut set = globset::GlobSetBuilder::new();
     for p in patterns {
-        let p = p.trim_end_matches('/');
+        let p = p.as_ref().trim_end_matches('/');
         for pat in [p.to_owned(), format!("{p}/**")] {
             set.add(
                 globset::GlobBuilder::new(&pat)
@@ -234,6 +237,37 @@ fn globs(patterns: &[String]) -> Result<globset::GlobSet> {
     }
     set.build()
         .map_err(|e| Error::refused(format!("globs: {e}")))
+}
+
+/// Build junk a keep never commits, a scope diff never counts and drift repair never
+/// sees (140 §6 Revision 2), as `:(glob)` pathspecs; [`build_junk`] applies the scope exemption.
+pub const BUILD_JUNK: [&str; 4] = [
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/.DS_Store",
+    "**/node_modules/**",
+];
+
+/// [`BUILD_JUNK`] for `spec`: empty when a `scope` entry names a junk kind explicitly
+/// (`*.pyc`, `vendor/node_modules/**`) — then it is the user's call and a keep commits it.
+pub fn build_junk(spec: &StudySpec) -> &'static [&'static str] {
+    const NAMES: [&str; 4] = ["__pycache__", ".pyc", ".DS_Store", "node_modules"];
+    if spec
+        .scope
+        .iter()
+        .any(|s| NAMES.iter().any(|n| s.contains(n)))
+    {
+        &[]
+    } else {
+        &BUILD_JUNK
+    }
+}
+
+/// Whether `path` is [`BUILD_JUNK`] (spec-independent: drift repair has no scope exemption).
+pub fn is_build_junk(path: &str) -> bool {
+    static JUNK: std::sync::LazyLock<globset::GlobSet> =
+        std::sync::LazyLock::new(|| globs(&BUILD_JUNK).expect("constant globs"));
+    JUNK.is_match(path)
 }
 
 /// sha256 hex of a file.

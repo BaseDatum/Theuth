@@ -56,6 +56,10 @@ pub const AUTORESEARCH_ACTOR: &str = "autoresearch";
 pub const DIR: &str = "autoresearch";
 /// Schedule file stem prefix: `autoresearch-<slug>` (140 §8.1).
 pub const SCHEDULE_PREFIX: &str = "autoresearch-";
+/// Why a study cannot run on Windows (2026-10-09): bench, check and holdout commands run under
+/// `/bin/bash -lc` (runner.rs, custody.rs), which a stock Windows box does not have. `Create` and
+/// the draft tool refuse with this text before anything is written.
+pub const WINDOWS_UNSUPPORTED: &str = "autoresearch needs a POSIX shell (/bin/bash) for bench, check and holdout commands — on Windows run studies from WSL or a macOS/Linux engine";
 /// The bundled `autoresearch` skill (binary-owned; `<data_dir>/skills/autoresearch.md`; W6 writes it).
 pub const SKILL: &str = include_str!("../skill.md");
 /// Where the skill is written, root-relative.
