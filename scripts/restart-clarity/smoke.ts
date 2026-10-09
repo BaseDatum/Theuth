@@ -578,7 +578,7 @@ async function P6() {
   const beforeIdx = med([time(old), time(old), time(old)]);
   const afterIdx = med([time(neu), time(neu), time(neu)]);
   Bun.spawnSync(["sqlite3", BACKUP_DB, "DROP INDEX IF EXISTS turn_steps_turn_at"]);
-  check("window rewrite is faster than the correlated subquery", after < before, `${rows}: old ${before}s → new ${after}s (with 0042 index: old ${beforeIdx}s, new ${afterIdx}s)`);
+  check("window rewrite is faster than the correlated subquery", after < before, `${rows}: old ${before}s → new ${after}s (with 0043 index: old ${beforeIdx}s, new ${afterIdx}s)`);
 }
 
 // ---- main -------------------------------------------------------------------
