@@ -198,6 +198,28 @@ async fn generate(
     append(ctx, source, heading, &reply.model, text).await
 }
 
+/// The model's own `#`/`##`/`###` headings inside an insight (`# Summary`, `# Key points`) become `####`, so the
+/// `###` section stays one section for `section_of` and the UI's reader (both end a section at `#`–`###`).
+fn demote_headings(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut fenced = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        }
+        let hashes = line.bytes().take_while(|b| *b == b'#').count();
+        if !fenced && (1..=3).contains(&hashes) && line[hashes..].starts_with(' ') {
+            out.push_str("####");
+            out.push_str(&line[hashes..]);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out.truncate(out.trim_end_matches('\n').len());
+    out
+}
+
 /// Append `### <heading> · <model> · <date>` + `text` under `## Insights` (created when absent) as
 /// `Principal::Helper`; bump `sources.insights`, clear `insight_error`, emit `Changed{Completed}`.
 /// Returns the `###` heading's block id.
@@ -210,7 +232,11 @@ pub(crate) async fn append(
 ) -> Result<String, String> {
     let annotated = markdown(ctx, source, true).await?;
     let has = has_insights(&annotated);
-    let section = format!("### {heading} · {model} · {}\n\n{text}\n", today());
+    let section = format!(
+        "### {heading} · {model} · {}\n\n{}\n",
+        today(),
+        demote_headings(text)
+    );
     let markdown = if has {
         section
     } else {
@@ -553,6 +579,24 @@ mod tests {
     use super::*;
 
     const DOC: &str = "<!-- a -->\n# Runbook\n\n<!-- b -->\nStep one.\n\n<!-- c -->\n## Insights\n\n<!-- d -->\n### Dense summary · anthropic/claude-haiku · 2026-10-09\n\n<!-- e -->\nA tight summary.\n\n<!-- f -->\n- point one\n- point two\n\n<!-- g -->\n### Open questions · m · 2026-10-10\n\n<!-- h -->\n- why?\n";
+
+    /// Z2 live-proof defect: Sonnet's default insight opened with `# Summary` / `# Key points`, which `section_of`
+    /// and the UI read as the end of the `###` section (an empty insight, an empty promoted note).
+    #[test]
+    fn model_headings_inside_an_insight_are_demoted_below_the_section() {
+        let demoted = demote_headings(
+            "# Summary\n\nText.\n\n## Key points\n\n- one\n\n### deep\n\n```\n# not a heading\n```\n#hashtag\n",
+        );
+        assert_eq!(
+            demoted,
+            "#### Summary\n\nText.\n\n#### Key points\n\n- one\n\n#### deep\n\n```\n# not a heading\n```\n#hashtag"
+        );
+        let doc = format!(
+            "<!-- c -->\n## Insights\n\n<!-- d -->\n### Dense summary · m · 2026-10-09\n\n<!-- e -->\n{}\n",
+            demote_headings("# Summary\n\nText.")
+        );
+        assert_eq!(section_of(&doc, "d").unwrap().1, "#### Summary\n\nText.");
+    }
 
     #[test]
     fn section_lookup_from_heading_or_inner_block_and_the_heading_split() {
