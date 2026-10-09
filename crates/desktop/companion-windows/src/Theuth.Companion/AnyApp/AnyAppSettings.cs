@@ -18,6 +18,9 @@ internal sealed class AnyAppSettings
     public const string AppProfilesKey = "appProfiles";
     /// <summary>§8.6 (H3-D2, the Mac's key): toggle Play/Pause at a non-refused press and again at the finish; opt-in, default off.</summary>
     public const string PauseMediaKey = "pauseMediaWhileDictating";
+    /// <summary>Windows: injected keystrokes are lossy in Win11 Notepad (live rounds 1, 4, 5), so the lease is the default delivery;
+    /// paced direct typing (§13.2) only when this is on.</summary>
+    public const string DirectInsertionKey = "directInsertion";
 
     private readonly SettingsStore store;
 
@@ -29,6 +32,7 @@ internal sealed class AnyAppSettings
 
     public bool CheckPasteLanded => !store.Contains(CheckPasteLandedKey) || store.Bool(CheckPasteLandedKey);
     public bool PauseMedia => store.Contains(PauseMediaKey) && store.Bool(PauseMediaKey);
+    public bool DirectInsertion => store.Contains(DirectInsertionKey) && store.Bool(DirectInsertionKey);
 
     /// <summary>The user's per-app rows (an unreadable value is no rows, never an exception).</summary>
     public IReadOnlyList<AppProfile> Profiles
@@ -72,5 +76,5 @@ internal sealed class AnyAppSettings
     }
 
     public string Describe() =>
-        $"enabled={(Enabled ? "on" : "off")} leaveTextOnClipboard={(LeaveTextOnClipboard ? "on" : "off")} checkPasteLanded={(CheckPasteLanded ? "on" : "off")} pauseMedia={(PauseMedia ? "on" : "off")} profiles={Profiles.Count}";
+        $"enabled={(Enabled ? "on" : "off")} leaveTextOnClipboard={(LeaveTextOnClipboard ? "on" : "off")} checkPasteLanded={(CheckPasteLanded ? "on" : "off")} pauseMedia={(PauseMedia ? "on" : "off")} directInsertion={(DirectInsertion ? "on" : "off")} profiles={Profiles.Count}";
 }

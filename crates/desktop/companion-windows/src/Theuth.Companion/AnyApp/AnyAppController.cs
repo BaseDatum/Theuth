@@ -481,6 +481,7 @@ internal sealed class AnyAppController
                 var before = await QuietReadAsync(g);
                 string delivered = AnyAppSpacing.Lead(text, before.Readable ? before.BeforeCaret : null, g.Previous);
                 var method = DeliveryAssessment.Method(g.Assessment, delivered, g.FellBack, keysHeld: Typist.ModifierDown);
+                if (method == DeliveryMethod.Direct && !settings.DirectInsertion) method = DeliveryMethod.Lease; // Windows default: injected keystrokes are lossy (rounds 1, 4, 5)
                 var verdict = method == DeliveryMethod.Direct ? await DirectAsync(g, delivered, before) : await LeaseAsync(g, delivered);
                 g.Delivered.Add(u);
                 if (verdict is PasteVerdict.Landed or PasteVerdict.Unknown or PasteVerdict.UserActed)
