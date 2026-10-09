@@ -1,17 +1,25 @@
 import { Link } from '@tanstack/react-router'
+import { Trash2 } from 'lucide-react'
 import { memo, useMemo } from 'react'
+import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
+import type { DraftSummary } from '@/rpc/bindings/DraftSummary'
 import type { StopReason } from '@/rpc/bindings/StopReason'
 import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
 import type { StudyState } from '@/rpc/bindings/StudyState'
 import { STATE_CLASS, delta, experimentsText, matches, sortStudies, stateLabel } from './model'
-import { useStudies } from './queries'
+import { useDiscardDraft, useDrafts, useStudies } from './queries'
 
-/** The rail body: every study as a row — slug, state pill, headline delta, experiments n/N, the goal. ponytail: not virtualized; studies are tens, not thousands. */
+/**
+ * The rail body: the setting-up drafts first (151 D6), then every study as a row — slug, state pill, headline delta,
+ * experiments n/N, the goal. ponytail: not virtualized; studies are tens, not thousands.
+ */
 export function StudyList({ q, active }: { q: string; active: string | undefined }) {
   const list = useStudies()
+  const drafts = useDrafts()
   const rows = useMemo(() => sortStudies((list.data ?? []).filter((s) => matches(s, q))), [list.data, q])
+  const setting = useMemo(() => (drafts.data ?? []).filter((d) => matches({ slug: d.draft_id, goal: d.goal }, q)), [drafts.data, q])
   if (list.isPending) {
     return (
       <div className="space-y-2 p-3">
@@ -22,20 +30,48 @@ export function StudyList({ q, active }: { q: string; active: string | undefined
     )
   }
   if (list.isError) return <p className="p-3 text-sm text-danger">{list.error.message}</p>
-  if (list.data.length === 0) {
+  if (list.data.length === 0 && setting.length === 0) {
     return (
       <p className="p-3 text-sm text-fg-tertiary">
-        No studies yet. Ask theuth in any chat: <code className="font-mono text-[12px]">/autoresearch &lt;goal&gt;</code>
+        No studies yet. Press <b>New study</b>, or ask theuth in any chat: <code className="font-mono text-[12px]">/autoresearch &lt;goal&gt;</code>
       </p>
     )
   }
-  if (rows.length === 0) return <p className="p-3 text-sm text-fg-tertiary">No matches</p>
+  if (rows.length === 0 && setting.length === 0) return <p className="p-3 text-sm text-fg-tertiary">No matches</p>
   return (
     <nav className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1" aria-label="Studies">
+      {setting.map((d) => (
+        <DraftRow key={d.draft_id} draft={d} active={active === 'new'} />
+      ))}
       {rows.map((s) => (
         <Row key={s.slug} info={s} active={active === s.slug} />
       ))}
     </nav>
+  )
+}
+
+/** D6: a draft without a study — dashed amber dot, `Setting up · n of m settled`, Discard on hover (the label says the consequence; no second confirmation). */
+function DraftRow({ draft: d, active }: { draft: DraftSummary; active: boolean }) {
+  const discard = useDiscardDraft()
+  return (
+    <div className={cn('group relative rounded-[10px] text-sm hover:bg-layer-2', active && 'bg-layer-3 hover:bg-layer-3')} data-draft={d.draft_id}>
+      <Link to="/autoresearch/new" search={d.origin ? { chat: d.origin } : {}} className="flex flex-col gap-0.5 px-2.5 py-2">
+        <div className="flex items-center gap-2">
+          <span aria-hidden className="size-2 shrink-0 rounded-full border border-dashed border-warning" />
+          <span className="min-w-0 flex-1 truncate font-medium">{d.draft_id}</span>
+          <span className="inline-flex h-5 shrink-0 items-center rounded-full border border-warning-border/40 bg-warning-bg px-2 text-[11px] font-medium whitespace-nowrap text-warning group-hover:invisible">{d.ready ? 'ready' : 'setting up'}</span>
+        </div>
+        <p className="text-xs text-fg-secondary tabular-nums">
+          Setting up · {d.settled} of {d.total} settled
+        </p>
+        <p className="truncate text-xs text-fg-tertiary" title={d.goal || d.repo}>
+          {d.goal || d.repo}
+        </p>
+      </Link>
+      <Button variant="ghost" size="xs" className="absolute top-1.5 right-1.5 hidden text-fg-secondary group-hover:inline-flex" disabled={discard.isPending} onClick={() => discard.mutate(d.draft_id)} title="Deletes the draft; the chat stays">
+        <Trash2 /> Discard draft
+      </Button>
+    </div>
   )
 }
 

@@ -50,10 +50,10 @@ export function useStudies() {
   return useQuery({ queryKey: [...KEY, 'list'], queryFn: () => api['autoresearch.list']() })
 }
 
-/** The detail (with the live `tail`) is refetched by `ExperimentProgress` while a sample runs; no polling. */
-export function useStudy(slug: string) {
+/** The detail (with the live `tail`) is refetched by `ExperimentProgress` while a sample runs; no polling. `enabled` false = the setup pane before Start. */
+export function useStudy(slug: string, enabled = true) {
   const api = useAutoresearchApi()
-  return useQuery({ queryKey: [...KEY, slug, 'detail'], queryFn: () => api['autoresearch.get'](slug) })
+  return useQuery({ queryKey: [...KEY, slug, 'detail'], queryFn: () => api['autoresearch.get'](slug), enabled })
 }
 
 /** Every experiment, newest first, paged by `before` until a page comes back short: the table, the tally and the Restore lookup see the whole study. */
@@ -144,7 +144,7 @@ export function useDraftConfirm(draftId: string) {
 
 export function useDiscardDraft(onSuccess?: (draftId: string) => void) {
   const api = useAutoresearchApi()
-  return useAction((draftId: string) => api['autoresearch.discard_draft'](draftId), { keys: [[...KEY, 'drafts']], onSuccess: (_r, id) => onSuccess?.(id) })
+  return useAction((draftId: string) => api['autoresearch.discard_draft'](draftId), { keys: [[...KEY, 'drafts'], [...KEY, 'draft']], onSuccess: (_r, id) => onSuccess?.(id) })
 }
 
 /** The panel's Start buttons: the existing `autoresearch.create {draft_id, start}`; the list, the drafts and the draft (`started`) all change. */

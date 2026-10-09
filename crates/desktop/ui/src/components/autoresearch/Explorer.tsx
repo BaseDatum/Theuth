@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Outlet, getRouteApi, useParams } from '@tanstack/react-router'
-import { FlaskConical, RefreshCw, Search } from 'lucide-react'
+import { Link, Outlet, getRouteApi, useParams, useRouterState } from '@tanstack/react-router'
+import { FlaskConical, Plus, RefreshCw, Search } from 'lucide-react'
 import { useState } from 'react'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
@@ -20,7 +20,10 @@ const route = getRouteApi('/autoresearch')
 export function Explorer() {
   const qc = useQueryClient()
   const initial = route.useSearch()
-  const { slug: active } = useParams({ strict: false })
+  const { slug } = useParams({ strict: false })
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  // 151 §4.7: `/autoresearch/new` is a page of the outlet too (the static route beats `$slug`; ENG reserves the slug).
+  const active = slug ?? (pathname === '/autoresearch/new' ? 'new' : undefined)
   const [q, setQ] = useState(initial.q ?? '')
   const list = useStudies()
   useAutoresearchEvents()
@@ -50,6 +53,11 @@ export function Explorer() {
               </TooltipTrigger>
               <TooltipContent>Refresh</TooltipContent>
             </Tooltip>
+            <Button asChild size="sm" className="shrink-0">
+              <Link to="/autoresearch/new" search={{}}>
+                <Plus /> New study
+              </Link>
+            </Button>
           </SectionRow>
           <StudyList q={q} active={active} />
         </aside>
@@ -71,8 +79,13 @@ function Empty({ any }: { any: boolean }) {
       <p className="mt-2 text-sm text-fg-secondary">
         An autoresearch study optimises one measured number in a repo, overnight, in its own worktree — one idea per experiment, kept only when it beats the noise.
       </p>
-      <p className="mt-3 text-sm">
-        Ask theuth in any chat: <code className="rounded-md bg-layer-2 px-1.5 py-0.5 font-mono text-[13px]">/autoresearch &lt;goal&gt;</code>
+      <Button asChild size="sm" className="mt-4">
+        <Link to="/autoresearch/new" search={{}}>
+          <Plus /> Set one up with theuth
+        </Link>
+      </Button>
+      <p className="mt-3 text-xs text-fg-tertiary">
+        or type <code className="rounded-md bg-layer-2 px-1.5 py-0.5 font-mono text-[12px]">/autoresearch &lt;goal&gt;</code> in any chat
       </p>
     </div>
   )
