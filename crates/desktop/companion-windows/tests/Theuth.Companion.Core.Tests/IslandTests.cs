@@ -127,6 +127,17 @@ public sealed class IslandModelTests
     }
 
     [Fact]
+    public void AnEngineGoneForTheGraceEndsTheLiveMeeting()
+    {
+        Assert.Equal("Recording", IslandModel.EffectiveState("Recording", null));
+        Assert.Equal("Stopping", IslandModel.EffectiveState("Stopping", TimeSpan.FromSeconds(2.9)));
+        Assert.Equal("Failed", IslandModel.EffectiveState("Stopping", IslandModel.EngineLostGrace));
+        Assert.Equal("Failed", IslandModel.EffectiveState("Paused", TimeSpan.FromMinutes(1)));
+        Assert.Equal("Idle", IslandModel.EffectiveState("Idle", TimeSpan.FromMinutes(1)));
+        Assert.False(new IslandModel().ShouldShow(IslandModel.EffectiveState("Stopping", TimeSpan.FromSeconds(5))));
+    }
+
+    [Fact]
     public void OpenWhileLiveInEveryLiveState()
     {
         var m = new IslandModel();

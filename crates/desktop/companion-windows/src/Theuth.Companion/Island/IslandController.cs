@@ -22,6 +22,8 @@ internal sealed class IslandController : IDisposable
     private readonly SettingsStore settings;
     private readonly IslandModel model = new();
     private readonly DispatcherQueueTimer oracleTimer;
+    private readonly DispatcherQueueTimer engineLost;
+    private DateTimeOffset? lostSince;
     private DispatcherQueueTimer? fixtureTimer;
     private PointSettings point;
     private MeetingSnapshot snapshot = MeetingSnapshot.Empty;
@@ -44,6 +46,9 @@ internal sealed class IslandController : IDisposable
         oracleTimer.Interval = TimeSpan.FromSeconds(30);
         oracleTimer.IsRepeating = true;
         oracleTimer.Tick += (_, _) => PollOracle();
+        engineLost = dispatcher.CreateTimer();
+        engineLost.IsRepeating = false;
+        engineLost.Tick += (_, _) => EngineLost();
         store.EventReceived += OnEvent;
         store.MeetingRefetched += Hydrate;
         store.GlobalKeyPressed += OnGlobalDown;
@@ -164,7 +169,19 @@ internal sealed class IslandController : IDisposable
     private void OnStoreChanged(object? sender, PropertyChangedEventArgs e)
     {
         // The meeting state itself arrives through MeetingRefetched (WW1 refetches on connect and on meeting events).
-        if (e.PropertyName == nameof(StoreModel.Connection) && store.Connection == RpcClient.State.Open) Log.Write("island: engine connected");
+        if (e.PropertyName != nameof(StoreModel.Connection)) return;
+        if (store.Connection == RpcClient.State.Open)
+        {
+            lostSince = null;
+            engineLost.Stop();
+            Log.Write("island: engine connected");
+        }
+        else if (lostSince is null)
+        {
+            lostSince = DateTimeOffset.Now;
+            engineLost.Interval = IslandModel.EngineLostGrace + TimeSpan.FromMilliseconds(50);
+            engineLost.Start();
+        }
     }
 
     // MARK: visibility (D10)
@@ -187,6 +204,16 @@ internal sealed class IslandController : IDisposable
         }
         if (snapshot.Meeting is not null && MeetingReducer.Live(snapshot.State) && !fixture) { if (!oracleTimer.IsRunning) { oracleTimer.Start(); PollOracle(); } }
         else oracleTimer.Stop();
+    }
+
+    /// <summary>The engine connection stayed closed for <see cref="IslandModel.EngineLostGrace"/>: a live meeting ends on the island (a reconnect hydrates it back).</summary>
+    private void EngineLost()
+    {
+        if (disposed || fixture || lostSince is not { } since) return;
+        var state = IslandModel.EffectiveState(snapshot.State, DateTimeOffset.Now - since);
+        if (state == snapshot.State) return;
+        Log.Write($"island: engine connection closed for {(DateTimeOffset.Now - since).TotalSeconds:0.0} s while {snapshot.State} — the meeting is presented as ended");
+        Apply(snapshot with { State = state }, null);
     }
 
     /// <summary><c>decision_mode('meeting')</c> → the chip's effective mode word (<c>ModeInfo.effective</c>: a word, or an object whose first key is the word).</summary>
@@ -397,6 +424,7 @@ internal sealed class IslandController : IDisposable
         if (disposed) return;
         disposed = true;
         oracleTimer.Stop();
+        engineLost.Stop();
         fixtureTimer?.Stop();
         fixtureTalk?.Stop();
         store.EventReceived -= OnEvent;

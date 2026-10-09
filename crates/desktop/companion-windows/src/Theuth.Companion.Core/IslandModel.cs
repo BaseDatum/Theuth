@@ -160,6 +160,17 @@ public sealed class IslandModel
     /// <summary>D2: the close animation when a meeting ends (Done · Failed · anything not live); ≤ 300 ms, then the window is gone.</summary>
     public static readonly TimeSpan CloseAnimation = TimeSpan.FromMilliseconds(180);
 
+    /// <summary>
+    /// The engine connection has been closed this long: a live meeting is presented as ended (the island goes) — the engine that
+    /// recorded it is gone or unreachable, and nothing else would ever end it (build-B: the engine died at <c>meeting_stop</c> and the
+    /// island stayed on "Stopping"). A reconnect hydrates the real state back.
+    /// </summary>
+    public static readonly TimeSpan EngineLostGrace = TimeSpan.FromSeconds(3);
+
+    /// <summary>The state the island presents: <paramref name="state"/>, or <c>Failed</c> once the engine has been gone for <see cref="EngineLostGrace"/>.</summary>
+    public static string EffectiveState(string state, TimeSpan? disconnectedFor) =>
+        disconnectedFor is { } d && d >= EngineLostGrace && IsLive(state) ? "Failed" : state;
+
     private readonly HashSet<string> collapsed = new(StringComparer.Ordinal);
 
     /// <summary>The meeting the island last presented (null when none is live).</summary>

@@ -864,10 +864,13 @@ internal sealed partial class IslandWindow : ToolWindow
         AutomationProperties.SetAutomationId(clock, "island-clock");
         strip.Children.Add(clock);
         if (OracleChip() is { } oracle) strip.Children.Add(oracle);
-        foreach (var d in s.Degraded.Take(2)) strip.Children.Add(Badge(Degraded(d), NativeLook.Accent));
+        // The degradation badges and the activity line sit on their own row under the strip: in the strip they ran under the
+        // mute/stop/eye buttons (build-B, "no echo cancel · model down") and covered them.
+        var badges = Row(4);
+        foreach (var d in s.Degraded.Take(3)) badges.Children.Add(Badge(Degraded(d), NativeLook.Accent));
         if (s.Listening) strip.Children.Add(Badge("listening…", NativeLook.Accent));
         else if (s.ApprovalWaiting) strip.Children.Add(Badge("approval waiting", NativeLook.Accent));
-        else if (s.Activity is { } a) strip.Children.Add(Text(a, 12, NativeLook.TextSecondary));
+        else if (s.Activity is { } a) badges.Children.Add(Text(a, 12, NativeLook.TextSecondary));
         var right = Row(2);
         right.HorizontalAlignment = HorizontalAlignment.Right;
         if (s.Meeting is not null && MeetingReducer.Live(s.State))
@@ -886,6 +889,7 @@ internal sealed partial class IslandWindow : ToolWindow
         stripGrid.Children.Add(strip);
         stripGrid.Children.Add(right);
         body.Children.Add(stripGrid);
+        if (badges.Children.Count > 0) body.Children.Add(badges);
 
         // Topic buttons (tapped = greyed until the brief lands).
         if (s.Topics.Count > 0)
