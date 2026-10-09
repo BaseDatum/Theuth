@@ -33,6 +33,8 @@ internal static class Probe149
             var m = store.Meeting;
             Log.Write($"probe149 meeting_status={(m is null ? "n/a" : $"state={m.State} meeting={m.Meeting ?? "none"} topics={m.Topics.Count} supported={m.Supported.Kind} degraded=[{string.Join(",", m.Degraded)}]")} briefs={store.Briefs.Count} live={store.Live.Count}");
         };
-        Log.Write("probe149 installed (list_sessions · sessions_status · mesh_status · meeting_status · list_agents)");
+        var iconDir = Path.Combine(AppContext.BaseDirectory, HarnessIcon.Folder);
+        int icons = Directory.Exists(iconDir) ? Directory.GetFiles(iconDir, "*.png").Length : 0;
+        Log.Write($"probe149 installed (list_sessions · sessions_status · mesh_status · meeting_status · list_agents); harness icons beside the exe: {icons} png in {HarnessIcon.Folder} (sample {HarnessIcon.For("omp")} exists={File.Exists(Path.Combine(iconDir, HarnessIcon.For("omp"))).ToString().ToLowerInvariant()})");
     }
 }
