@@ -751,6 +751,18 @@ pub struct SetSubagentModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetSubagentModel;
 
+/// `ask` → `Result<ModelInfo, String>` (148 R4): resolve `model` through the
+/// catalog AND refuse a provider without credentials, exactly as
+/// [`SetSubagentModel`] validates ("provider `x` has no credentials"). No
+/// side effects: the roster validates `roster.theuth_model` and an agent
+/// file's `model:` with it. An unknown id under a keyed provider still
+/// resolves (pass-through), as everywhere else.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolveModel {
+    /// `provider/model` or a bare model id.
+    pub model: String,
+}
+
 /// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
 /// finished frame (design doc 10 §5.2). `Err("turn in flight")` while a turn
 /// runs, `Err("harvest in flight")` while the previous harvest still does; the
