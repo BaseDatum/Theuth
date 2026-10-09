@@ -1328,3 +1328,7 @@ rewrite panel reuse it).
   input_devices, standby_secs, duck_media, polish_model, polish_profiles, history), so surfaces read the presets / end phrases back
   instead of remembering the last written value; §14.5 the voice dictionary's `Kind` / `Source` export to TS as `EntryKind` /
   `EntrySource` (the bare names collided with the artifact `Kind` and knowledge `Source` bindings).
+- 2026-10-10 F2 — see `153-as-built-A.md` "F2" (Windows live finding: the words before `dictation_stop` were lost without ≈2.5 s of tail).
+  §14.1 `StopDictation` feeds the audio already pushed (queued chunks + the sub-chunk remainder, ≤ 5 s) through the model before the close
+  and refuses later `PushAudio`; the §7.3 settle drains the same way. A deeper decoder flush in `finish()` (2–6 zero windows) was measured
+  and rejected: the pad + one zero window already flushes the tail (one zero window ≈ 57 ms), more perturbed the decoder.
