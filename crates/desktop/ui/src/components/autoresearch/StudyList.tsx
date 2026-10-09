@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 import type { StopReason } from '@/rpc/bindings/StopReason'
 import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
 import type { StudyState } from '@/rpc/bindings/StudyState'
-import { STATE_CLASS, experimentsText, improved, matches, pct, sortStudies, stateLabel } from './model'
+import { STATE_CLASS, delta, experimentsText, matches, sortStudies, stateLabel } from './model'
 import { useStudies } from './queries'
 
 /** The rail body: every study as a row — slug, state pill, headline delta, experiments n/N, the goal. ponytail: not virtualized; studies are tens, not thousands. */
@@ -44,8 +44,22 @@ export function StatePill({ state, currentN, stop, short, className }: { state: 
   return <span className={cn('inline-flex h-5 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium whitespace-nowrap', STATE_CLASS[state.state], className)}>{short ? state.state : stateLabel(state, currentN, stop)}</span>
 }
 
+/**
+ * The one Δ rendering (140 §5.2 Revision 2): the raw signed change (`−2.6 %`; negative = the value went down), coloured
+ * and worded (hover) by the metric's direction — a sign is never flipped. `muted` keeps the number grey (a run that was
+ * not kept).
+ */
+export function Delta({ direction, delta_pct, muted, className }: { direction: 'lower' | 'higher'; delta_pct: number | null | undefined; muted?: boolean; className?: string }) {
+  const d = delta(direction, delta_pct)
+  const tone = muted || d.tone === 'muted' ? 'text-fg-secondary' : d.tone === 'success' ? 'text-success' : 'text-danger'
+  return (
+    <span className={cn('tabular-nums', tone, className)} title={d.word ? `${d.word} — ${direction} is better` : undefined}>
+      {d.text}
+    </span>
+  )
+}
+
 const Row = memo(function Row({ info: s, active }: { info: StudyInfo; active: boolean }) {
-  const better = improved(s.metric.direction, s.delta_pct)
   return (
     <Link
       to="/autoresearch/$slug"
@@ -59,7 +73,7 @@ const Row = memo(function Row({ info: s, active }: { info: StudyInfo; active: bo
         <StatePill state={s.state} short />
       </div>
       <div className="flex items-center gap-2 text-xs text-fg-secondary">
-        <span className={cn('tabular-nums font-medium', s.delta_pct !== null && (better ? 'text-success' : 'text-fg-secondary'))}>{s.delta_pct === null ? (s.state.state === 'preparing' ? 'measuring baseline' : '—') : pct(s.delta_pct)}</span>
+        {s.delta_pct === null ? <span className="font-medium text-fg-secondary">{s.state.state === 'preparing' ? 'measuring baseline' : '—'}</span> : <Delta direction={s.metric.direction} delta_pct={s.delta_pct} className="font-medium" />}
         <span className="text-fg-tertiary">·</span>
         <span className="tabular-nums">{experimentsText(s)} experiments</span>
         <span className="min-w-0 flex-1 truncate text-fg-tertiary">{s.metric.name}</span>

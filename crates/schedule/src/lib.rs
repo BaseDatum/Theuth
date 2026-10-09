@@ -43,13 +43,23 @@ pub const DIR: &str = "schedules";
 /// Sqlite file under `data_dir` holding run history (34 §7).
 pub const DB: &str = "schedule.sqlite";
 
+/// What a confining owner applies to a fire's session (140 §8.3, F4E).
+#[derive(Clone, Debug)]
+pub struct Confine {
+    /// Applied with `agent::SetToolset` before the prompt.
+    pub toolset: agent::Toolset,
+    /// Seated as the session's write root (`tools::seat`): the writing file
+    /// tools refuse any path outside it. `None` lifts a previous one.
+    pub write_root: Option<PathBuf>,
+}
+
 /// A plugin's confinement for the sessions of the schedules it owns
-/// (140 §8.3): given the file stem, `Ok(Some(toolset))` is applied with
-/// `agent::SetToolset` before the prompt is sent on every fire,
-/// `Ok(None)` says the owner no longer knows the schedule (the loop ends),
-/// `Err` refuses this fire (the next tick retries).
+/// (140 §8.3): given the file stem, `Ok(Some(confine))` is applied before
+/// the prompt is sent on every fire, `Ok(None)` says the owner no longer
+/// knows the schedule (the loop ends), `Err` refuses this fire (the next
+/// tick retries).
 pub type ToolsetResolver = Arc<
-    dyn Fn(&str) -> Pin<Box<dyn Future<Output = Result<Option<agent::Toolset>, String>> + Send>>
+    dyn Fn(&str) -> Pin<Box<dyn Future<Output = Result<Option<Confine>, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -75,7 +85,7 @@ enum Confinement {
     /// No owner claims the name: an ordinary schedule.
     Unconfined,
     /// Applied before the prompt on every fire.
-    Toolset(agent::Toolset),
+    Confined(Confine),
     /// The owner no longer knows the schedule: the loop ends.
     Orphaned,
 }
@@ -95,7 +105,7 @@ async fn toolset_for(name: &str) -> Result<Confinement, String> {
         return Ok(Confinement::Unconfined);
     };
     match r(name).await {
-        Ok(Some(t)) => Ok(Confinement::Toolset(t)),
+        Ok(Some(c)) => Ok(Confinement::Confined(c)),
         Ok(None) => Ok(Confinement::Orphaned),
         Err(e) => Err(format!("toolset: {e}")),
     }
@@ -1303,9 +1313,9 @@ impl Schedule {
 
         // 140 §8.3: a confined schedule runs under its owner's toolset or not
         // at all; an orphaned one (its owner forgot it) ends like a broken `until`.
-        let toolset = match toolset_for(name).await? {
+        let confine = match toolset_for(name).await? {
             Confinement::Unconfined => None,
-            Confinement::Toolset(t) => Some(t),
+            Confinement::Confined(c) => Some(c),
             Confinement::Orphaned => {
                 let why = "toolset gone: no owner for this schedule".to_owned();
                 self.end(name, why.clone()).await;
@@ -1346,6 +1356,9 @@ impl Schedule {
             }
             None => new_session(&agents, name, cwd.clone(), model, subject.as_deref()).await?,
         };
+        // 140 F4E: the file's `cwd:` seats the session — relative file-tool
+        // paths and the session shell follow it (in memory, re-sent per fire).
+        ::tools::seat::set_cwd(session, cwd.clone());
         // 136 §2.2: in memory on the session, so every fire re-sends it (like approvals).
         if let Err(e) = agents
             .ask(agent::SetBudget {
@@ -1393,12 +1406,14 @@ impl Schedule {
 
         // 140 §8.3: the toolset lands in the session's mailbox ahead of the
         // prompt, so the first turn's rebase already reads it; a confinement
-        // that cannot be applied refuses the fire.
-        if let Some(toolset) = toolset {
+        // that cannot be applied refuses the fire. The write root (F4E) is
+        // seated first: it is in force before any tool call of the turn.
+        if let Some(c) = confine {
+            ::tools::seat::set_write_root(session, c.write_root);
             agents
                 .ask(agent::SetToolset {
                     session,
-                    toolset: Some(toolset),
+                    toolset: Some(c.toolset),
                 })
                 .await
                 .map_err(|e| format!("toolset not applied: {e}"))?;

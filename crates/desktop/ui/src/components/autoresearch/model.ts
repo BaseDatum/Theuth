@@ -341,12 +341,15 @@ export function holdoutByN(series: Pick<StudyChartSeries, 'holdout'>): { n: numb
   return [...sums].map(([n, e]) => ({ n, metric: e.sum / e.count })).sort((a, b) => a.n - b.n)
 }
 
-/** The Holdout card: first checkpoint = the base, last = the latest incumbent (means per `n`); raw Δ % (the caller judges the direction). */
+/**
+ * The Holdout card: first checkpoint = the base, last = the latest incumbent (means per `n`); raw Δ % (the caller judges
+ * the direction). `null` until an incumbent was measured — the base alone is not a "base → base" result (140 §13 Revision 2).
+ */
 export function holdoutSummary(series: Pick<StudyChartSeries, 'holdout'>): { base: number; latest: number; delta_pct: number; n: number } | null {
   const pts = holdoutByN(series)
   const first = pts[0]
   const last = pts.at(-1)
-  if (!first || !last) return null
+  if (!first || !last || pts.length < 2) return null
   return { base: first.metric, latest: last.metric, delta_pct: first.metric === 0 ? 0 : ((last.metric - first.metric) / Math.abs(first.metric)) * 100, n: last.n }
 }
 
@@ -369,6 +372,17 @@ export function keepNeedsPct(sigma: number | null, incumbent: number | null, min
 
 /** Lower is better → a negative Δ is an improvement. */
 export const improved = (direction: 'lower' | 'higher', delta_pct: number | null): boolean => delta_pct !== null && (direction === 'lower' ? delta_pct < 0 : delta_pct > 0)
+
+/**
+ * The one Δ convention (140 §5.2 Revision 2): `delta_pct` is the raw relative change (negative = the value went down) and is
+ * shown as such; better/worse is a word and a colour from the metric's direction, never a flipped sign.
+ */
+export function delta(direction: 'lower' | 'higher', delta_pct: number | null | undefined): { text: string; word: 'better' | 'worse' | ''; tone: 'success' | 'danger' | 'muted' } {
+  const d = delta_pct ?? null
+  if (d === null || !Number.isFinite(d) || d === 0) return { text: pct(d), word: '', tone: 'muted' }
+  const better = improved(direction, d)
+  return { text: pct(d), word: better ? 'better' : 'worse', tone: better ? 'success' : 'danger' }
+}
 
 const STATE_ORDER: Record<StudyState['state'], number> = { running: 0, finalizing: 1, paused: 2, preparing: 3, finished: 4, failed: 5, draft: 6, discarded: 7 }
 

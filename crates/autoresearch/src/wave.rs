@@ -125,6 +125,9 @@ pub async fn on_agent_event(a: &mut Studies, e: &agent::AgentEvent) -> Result<()
         }
         agent::AgentEvent::TurnFinished { session, .. } => {
             let child = CHILDREN.lock().remove(session);
+            if child.is_some() {
+                binding::unseat(*session);
+            }
             let env = a.env();
             // 140-P live: `spawn_subagent` returns at once and the supervisor's turn ends
             // while the slots still work (their results come back as later turns), so the
@@ -706,9 +709,20 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
             tracing::warn!(%slug, k, "candidate worktree not removed: {e}");
         }
     }
+    let sigma_before = study.sigma;
     study.sigma = Some(actor::segment_sigma(env, &study).await?);
     env.store.update_study(&study).await?;
     promotion.incumbent = study.incumbent_sha.clone();
+    // §5.3 Revision 2: the last promoted keep is judged against the σ the wave was measured under.
+    if let Some(n) = promotion.promoted.last()
+        && let Some(exp) = env.store.get_experiment(slug, *n).await?
+    {
+        let before = StudyRecord {
+            sigma: sigma_before,
+            ..study.clone()
+        };
+        actor::regime_segment(env, &before, &exp).await;
+    }
     env.store
         .append_event(
             slug,
@@ -1240,6 +1254,18 @@ mod tests {
         assert_eq!(slot_of(child), Some(k));
         let mine = &brief.slots.as_ref().unwrap()[0];
         assert_eq!(mine.k, k);
+        // F4E: the child is seated in its slot worktree; the supervisor is not moved.
+        assert_eq!(
+            tools::seat::seat_of(child),
+            tools::Seat {
+                cwd: Some(mine.worktree.clone().into()),
+                write_root: Some(mine.worktree.clone().into()),
+            }
+        );
+        assert_ne!(
+            tools::seat::seat_of(h.session).write_root.as_deref(),
+            Some(Path::new(&mine.worktree))
+        );
         assert!(
             brief.text.contains(&format!("<slot k=\"{k}\"")),
             "{}",
