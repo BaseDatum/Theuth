@@ -505,6 +505,10 @@ internal sealed class PointController : IDisposable
         Log.Write($"point: took {handed.Length} chars from the AnyApp controller; {to.RawValue()} records the rest");
     }
 
+    /// <summary>An engine before 153 refusing <c>dictation_start</c>'s trailing opts (invalid params / unknown shape) — never a refusal such as "already dictating".</summary>
+    private static bool OptsRefused(RpcException e) =>
+        e.Code is -32602 or -32601 || (e.Message.Contains("param", StringComparison.OrdinalIgnoreCase) && !e.Message.Contains("dictat", StringComparison.OrdinalIgnoreCase));
+
     private static string Join(string a, string b) => string.Join(" ", new[] { a.Trim(), b.Trim() }.Where(x => x.Length > 0));
 
     /// <summary>A switch into dictation: everything this controller captured stops (no send); the engine's one dictation is freed.</summary>
@@ -542,7 +546,7 @@ internal sealed class PointController : IDisposable
             // agent_prompt, commands: [], press_ago_ms}]; an engine before 153 refuses the trailing param → the one-argument call.
             var opts = new DictationOpts { Surface = Surface.Companion, Destination = Destination.AgentPrompt, PressAgoMs = (uint)Math.Min(uint.MaxValue, Now > gestureStartMs ? Now - gestureStartMs : 0) };
             try { id = await store.Client.DictationStartAsync(AskAudio.SampleRate, opts); }
-            catch (RpcException pe) when (pe.Code is -32602 or -32601)
+            catch (RpcException pe) when (OptsRefused(pe))
             {
                 if (!optsRefusedLogged) { optsRefusedLogged = true; Log.Write($"point: dictation_start with opts refused ({pe.Code}) — an engine before 153: the one-argument call"); }
                 id = await store.Dictation.StartAsync();
@@ -1154,7 +1158,7 @@ internal sealed class PointController : IDisposable
         try
         {
             try { id = await store.Client.DictationStartAsync(AskAudio.SampleRate, new DictationOpts { Surface = Surface.Companion, Destination = Destination.AgentPrompt }); }
-            catch (RpcException e) when (e.Code is -32602 or -32601)
+            catch (RpcException e) when (OptsRefused(e))
             {
                 Log.Write($"point: dictation_start with opts refused ({e.Code}) — an engine before 153: the one-argument call");
                 id = await store.Dictation.StartAsync();
