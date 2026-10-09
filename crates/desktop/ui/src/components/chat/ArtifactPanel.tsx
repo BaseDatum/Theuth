@@ -8,6 +8,7 @@ import {
 } from "react";
 import { AppView, preloadAppView } from "@/components/apps/AppView";
 import { ArtifactView } from "@/components/artifacts/Viewer";
+import { autoOpens } from "@/components/autoresearch/setup";
 import { Button } from "@/components/ui/button";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import {
@@ -196,7 +197,7 @@ export function ArtifactPanel({ session }: { session: string }) {
         useSessions.getState().setArtifactPanel(session, id);
     };
     const offShown = on("ArtifactShown", (e) => {
-      if (e.session !== session) return;
+      if (e.session !== session || !autoOpens(e.artifact.name, window.location.pathname)) return;
       // A new version of the lineage already on screen is adopted (latest mode) or ignored (pinned) by the open
       // `Content`; changing the key would remount it and drop its state and any running action.
       const s = useSessions.getState().sessions[session];

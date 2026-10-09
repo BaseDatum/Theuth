@@ -115,6 +115,8 @@ import type { StartWhen } from '@/rpc/bindings/StartWhen'
 import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
 import type { StudyIdea } from '@/rpc/bindings/StudyIdea'
 import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
+import type { DraftSummary } from '@/rpc/bindings/DraftSummary'
+import type { DraftView } from '@/rpc/bindings/DraftView'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { Node } from '@/rpc/bindings/Node'
 import type { Pairing } from '@/rpc/bindings/Pairing'
@@ -1063,6 +1065,16 @@ export interface Api {
   'autoresearch.settings.get'(): Promise<AutoresearchConfig>
   /** Persist the whole section and apply it live. */
   'autoresearch.settings.set'(config: AutoresearchConfig): Promise<AutoresearchConfig>
+  /** 151 §4.4: the live draft panel — rows with engine-computed states, `ready`, what blocks Start. */
+  'autoresearch.draft'(draft_id: string): Promise<DraftView>
+  /** 151 D6: drafts with no study yet (the rail's "Setting up" rows), newest first. */
+  'autoresearch.drafts'(): Promise<DraftSummary[]>
+  /** 151 D3: a leaf set in the panel (`metric.name`, `scope`, …; text, parsed by the engine) — user-set and confirmed. */
+  'autoresearch.draft_edit'(draft_id: string, field: string, value: string): Promise<DraftView>
+  /** 151 D3: a row OK'd in the panel (`proposed` → `confirmed`). */
+  'autoresearch.draft_confirm'(draft_id: string, field: string): Promise<DraftView>
+  /** 151 D3: discard a draft — the drafts dir is removed, later Starts are refused. */
+  'autoresearch.discard_draft'(draft_id: string): Promise<null>
 }
 
 /** Every request method name, sorted; `api.test.ts` checks it against `bindings/methods.json`. */
@@ -1097,6 +1109,11 @@ export const METHODS = [
   'attention_snooze',
   'autoresearch.control',
   'autoresearch.create',
+  'autoresearch.discard_draft',
+  'autoresearch.draft',
+  'autoresearch.draft_confirm',
+  'autoresearch.draft_edit',
+  'autoresearch.drafts',
   'autoresearch.experiment',
   'autoresearch.experiments',
   'autoresearch.get',

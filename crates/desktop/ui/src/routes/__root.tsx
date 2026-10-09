@@ -2,6 +2,7 @@ import { Outlet, createRootRoute, useNavigate, useParams } from '@tanstack/react
 import { type CSSProperties, useEffect, useState } from 'react'
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { DragOverlay } from '@/components/chat/Panes'
+import { StudyDraftBridge } from '@/components/autoresearch/SetupPane'
 import { MeetingBar } from '@/components/meeting/MeetingBar'
 import { settings } from '@/components/chat/slash'
 import { RoutineDraftBridge } from '@/components/routines/RoutineChat'
@@ -57,6 +58,7 @@ function Root() {
       <AppSidebar session={session} />
       <SearchHost />
       <RoutineDraftBridge />
+      <StudyDraftBridge />
       <DragOverlay />
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
         <Outlet />

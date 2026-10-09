@@ -1213,6 +1213,8 @@ wire! {
         pub budget: BudgetSpec,
         /// The study session once bound.
         pub session: Option<SessionId>,
+        /// 151 D7: the chat the draft was set up in (the setup pane; start and result cards go there).
+        pub origin: Option<SessionId>,
         /// The experiment in flight.
         pub current: Option<u32>,
         /// Its phase.
@@ -1253,6 +1255,168 @@ wire! {
         pub tail: Option<String>,
         /// Finalize's holdout result (`61.0 → 49.7 (−18.5 %)`, §11.1) once finished.
         pub final_holdout: Option<String>,
+    }
+}
+
+// ───────────────────────────── 151 setup: the living draft ─────────────────────────────
+
+wire! {
+    /// 151 §5: the state of one draft row, computed by the engine, never by the UI.
+    #[derive(Copy, Default, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum FieldState as "DraftFieldState" {
+        /// Engine evidence matches the current spec (repo resolves; a probe whose fingerprint matches).
+        Verified,
+        /// The agent listed it as agreed, or the user set / OK'd it in the panel.
+        Confirmed,
+        /// Present, not confirmed: "Needs your OK".
+        #[default]
+        Proposed,
+        /// Equal to the config default and untouched (budget, parallel, models).
+        Default,
+        /// Required and absent.
+        Missing,
+        /// Optional and absent (holdout, window, guards, warm, evaluator paths).
+        Optional,
+    }
+}
+
+wire! {
+    /// One row of the live draft panel (151 §4.3 rows).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct DraftField {
+        /// Row name: `goal | repo | metric | bench | checks | holdout | scope | budget | window` then the advanced rows.
+        pub name: String,
+        /// The engine's one-line rendering of the row's value (empty when absent).
+        pub value: String,
+        /// The state.
+        pub state: FieldState,
+        /// Evidence line for `verified` (`584660bf · clean tree`, `5 runs · 412 ms · ±1.6%`).
+        pub evidence: Option<String>,
+    }
+}
+
+wire! {
+    /// `autoresearch.draft {draft_id}` (151 §4.1): the panel's data.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct DraftView {
+        /// The draft id (the spec's slug).
+        pub draft_id: String,
+        /// The spec as last written.
+        pub spec: StudySpec,
+        /// The setup session.
+        pub origin: Option<SessionId>,
+        /// Rows in fixed order, main nine then advanced.
+        pub fields: Vec<DraftField>,
+        /// Main rows not `proposed` / `missing`.
+        pub settled: u32,
+        /// Main rows (9).
+        pub total: u32,
+        /// No required row missing or proposed, `window` not proposed, `validate_spec` passes.
+        pub ready: bool,
+        /// What blocks Start, in row order (the panel footer).
+        pub blocking: Vec<String>,
+        /// The repo's tree is dirty: offer "Start with my uncommitted changes".
+        pub dirty: bool,
+        /// The last `autoresearch_draft` was `partial: true`.
+        pub partial: bool,
+        /// Bumped by every write of spec.json.
+        pub version: u32,
+        /// RFC 3339 of the last write.
+        pub updated_at: String,
+        /// Probe results whose fingerprint still matches the spec (the sparkline).
+        pub probes: Vec<ProbeResult>,
+        /// A study with this slug exists: the panel flips to the status card.
+        pub started: bool,
+    }
+}
+
+wire! {
+    /// `autoresearch.drafts` (151 D6): one setting-up row of the rail.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct DraftSummary {
+        /// The draft id (the spec's slug).
+        pub draft_id: String,
+        /// The goal so far.
+        pub goal: String,
+        /// The repo path.
+        pub repo: String,
+        /// The setup session (`/autoresearch/new?chat=<origin>`).
+        pub origin: Option<SessionId>,
+        /// Main rows settled.
+        pub settled: u32,
+        /// Main rows (9).
+        pub total: u32,
+        /// Start would be accepted.
+        pub ready: bool,
+        /// RFC 3339 of the last write.
+        pub updated_at: String,
+    }
+}
+
+wire! {
+    /// What `autoresearch_probe` measures (151 D4).
+    #[derive(Copy, Default, Eq, PartialOrd, Ord)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ProbeKind {
+        /// `bench.command`, `repeats` samples (clamped 3..=10).
+        #[default]
+        Bench,
+        /// `checks.command` once.
+        Check,
+        /// `holdout.command`, `holdout.repeats` samples.
+        Holdout,
+    }
+}
+
+wire! {
+    /// One probe's result (`<root>/drafts/<id>/probe.json`, 151 §6.2); `verified` only while `fingerprint` matches.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct ProbeResult {
+        /// Which command.
+        pub kind: ProbeKind,
+        /// Every sample exited 0 with the primary present (check: exit 0).
+        pub ok: bool,
+        /// The primary's values, one per clean sample (empty for check).
+        pub values: Vec<f64>,
+        /// Median of `values`.
+        pub median: Option<f64>,
+        /// `100 × pooled σ / |mean|` — the baseline's estimator (`gate::pooled_sigma`).
+        pub noise_pct: Option<f64>,
+        /// `metric.unit`.
+        pub unit: String,
+        /// Samples taken (including crashes).
+        pub samples: u32,
+        /// Wall time of the whole probe.
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        pub duration_ms: u64,
+        /// Exit code of the last (or failing) command.
+        pub exit: Option<i32>,
+        /// Last 30 lines / 4 KiB of the failing command's log (empty when `ok`).
+        pub log_tail: String,
+        /// RFC 3339.
+        pub at: String,
+        /// sha256 over every input the result depends on (151 §6.2 step 5).
+        pub fingerprint: String,
+    }
+}
+
+wire! {
+    /// `autoresearch_draft` arguments (151 D5): the spec plus the living-draft flags.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct DraftArgs as "StudyDraftArgs" {
+        /// The spec (every field of 140 §4.1, flattened).
+        #[serde(flatten)]
+        pub spec: StudySpec,
+        /// Relaxed validation (slug + repo only); compact card instead of the full card.
+        pub partial: bool,
+        /// Rows the agent lists as agreed with the user (151 §4.3 row names).
+        pub confirmed: Vec<String>,
     }
 }
 
@@ -1608,6 +1772,14 @@ pub struct Settings;
 #[derive(Clone, Debug)]
 pub struct SetSettings(pub crate::config::AutoresearchConfig);
 
+/// `DraftRoot` → the drafts' root (`<data_dir>/autoresearch` or `root:`), for the 151 draft RPCs.
+#[derive(Clone, Debug, Default)]
+pub struct DraftRoot;
+
+/// `StudySlugs` → every study's slug (a draft with a study is "started"; the rail skips it).
+#[derive(Clone, Debug, Default)]
+pub struct StudySlugs;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1655,6 +1827,42 @@ mod tests {
         assert_eq!(serde_json::from_value::<StudyEvent>(j).unwrap(), e);
         let op: ControlOp = serde_json::from_str(r#"{"op":"restore","n":4}"#).unwrap();
         assert_eq!(op, ControlOp::Restore { n: 4 });
+    }
+
+    /// 151 D5: `autoresearch_draft` keeps taking a bare spec (`partial` false, nothing
+    /// confirmed); the flattened spec and the flags read from one object, and the
+    /// enums wire as snake_case.
+    #[test]
+    fn draft_args_flatten_the_spec_with_default_flags() {
+        let a: DraftArgs = serde_json::from_str(r#"{"slug":"x","goal":"g","repo":"/r"}"#).unwrap();
+        assert_eq!(
+            (a.spec.slug.as_str(), a.partial, a.confirmed.len()),
+            ("x", false, 0)
+        );
+        assert_eq!(a.spec.budget, BudgetSpec::default());
+        let a: DraftArgs = serde_json::from_str(
+            r#"{"slug":"x","repo":"/r","partial":true,"confirmed":["goal","repo"],"metric":{"name":"t"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                a.partial,
+                a.confirmed.as_slice(),
+                a.spec.metric.name.as_str()
+            ),
+            (true, &["goal".to_owned(), "repo".to_owned()][..], "t")
+        );
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["slug"], "x", "{v}");
+        assert_eq!(v["partial"], true, "{v}");
+        assert_eq!(
+            serde_json::to_value([FieldState::Verified, FieldState::Missing]).unwrap(),
+            serde_json::json!(["verified", "missing"])
+        );
+        assert_eq!(
+            serde_json::from_str::<ProbeKind>(r#""holdout""#).unwrap(),
+            ProbeKind::Holdout
+        );
     }
 
     /// A spec with only the required keys fills the R1 defaults; the §4.1 YAML parses.

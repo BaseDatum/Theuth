@@ -36,6 +36,7 @@ pub mod rpc_impl;
 pub mod runner;
 pub mod scanner;
 pub mod schedule_file;
+pub mod setup;
 pub mod slot;
 pub mod stop;
 pub mod store;
@@ -178,6 +179,26 @@ impl Message<Settings> for Studies {
 
     async fn handle(&mut self, _: Settings, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         Ok(self.cfg.clone())
+    }
+}
+
+impl Message<DraftRoot> for Studies {
+    type Reply = std::result::Result<PathBuf, String>;
+
+    async fn handle(&mut self, _: DraftRoot, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Ok(self.root.clone())
+    }
+}
+
+impl Message<StudySlugs> for Studies {
+    type Reply = std::result::Result<Vec<String>, String>;
+
+    async fn handle(&mut self, _: StudySlugs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store
+            .list_studies()
+            .await
+            .map(|v| v.into_iter().map(|s| s.slug).collect())
+            .map_err(|e| e.to_string())
     }
 }
 

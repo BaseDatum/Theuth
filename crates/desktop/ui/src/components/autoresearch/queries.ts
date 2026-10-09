@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { useApi } from '@/lib/rpc'
 import type { ControlOp } from '@/rpc/bindings/ControlOp'
 import type { IdeaChange } from '@/rpc/bindings/IdeaChange'
+import type { StartWhen } from '@/rpc/bindings/StartWhen'
 import type { StudyEvent } from '@/rpc/bindings/StudyEvent'
 import { on } from '@/store/sessions'
 import { autoresearchFixture } from './fixtures'
@@ -49,10 +50,10 @@ export function useStudies() {
   return useQuery({ queryKey: [...KEY, 'list'], queryFn: () => api['autoresearch.list']() })
 }
 
-/** The detail (with the live `tail`) is refetched by `ExperimentProgress` while a sample runs; no polling. */
-export function useStudy(slug: string) {
+/** The detail (with the live `tail`) is refetched by `ExperimentProgress` while a sample runs; no polling. `enabled` false = the setup pane before Start. */
+export function useStudy(slug: string, enabled = true) {
   const api = useAutoresearchApi()
-  return useQuery({ queryKey: [...KEY, slug, 'detail'], queryFn: () => api['autoresearch.get'](slug) })
+  return useQuery({ queryKey: [...KEY, slug, 'detail'], queryFn: () => api['autoresearch.get'](slug), enabled })
 }
 
 /** Every experiment, newest first, paged by `before` until a page comes back short: the table, the tally and the Restore lookup see the whole study. */
@@ -106,4 +107,49 @@ export function useSteer(slug: string, onSuccess?: () => void) {
 export function useIdea(slug: string) {
   const api = useAutoresearchApi()
   return useAction((op: IdeaChange) => api['autoresearch.idea'](slug, op), { keys: [[...KEY, slug]] })
+}
+
+// ── 151 setup (§4.7) ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The rail's setting-up rows (D6); invalidated by edit / confirm / discard / start. */
+export function useDrafts() {
+  const api = useAutoresearchApi()
+  return useQuery({ queryKey: [...KEY, 'drafts'], queryFn: () => api['autoresearch.drafts']() })
+}
+
+/**
+ * One draft's `DraftView` (D3). `resultId` = `lastSetupResultId(entries)`: every new `autoresearch_draft` /
+ * `autoresearch_probe` result in the setup session refetches it — no new event type. The rail's `drafts` row
+ * (`n of m settled`) changes with the same results, so it refetches too (live proof Z: it stayed at the last edit).
+ */
+export function useDraft(draftId: string | null, resultId: string | null) {
+  const api = useAutoresearchApi()
+  const qc = useQueryClient()
+  useEffect(() => {
+    if (draftId && resultId) for (const queryKey of draftKeys(draftId)) void qc.invalidateQueries({ queryKey })
+  }, [qc, draftId, resultId])
+  return useQuery({ queryKey: [...KEY, 'draft', draftId], queryFn: () => api['autoresearch.draft'](draftId ?? ''), enabled: draftId !== null })
+}
+
+const draftKeys = (draftId: string) => [[...KEY, 'draft', draftId], [...KEY, 'drafts']]
+
+export function useDraftEdit(draftId: string, onSuccess?: (v: { field: string; value: string }) => void) {
+  const api = useAutoresearchApi()
+  return useAction((v: { field: string; value: string }) => api['autoresearch.draft_edit'](draftId, v.field, v.value), { keys: draftKeys(draftId), onSuccess: (_view, v) => onSuccess?.(v) })
+}
+
+export function useDraftConfirm(draftId: string) {
+  const api = useAutoresearchApi()
+  return useAction((field: string) => api['autoresearch.draft_confirm'](draftId, field), { keys: draftKeys(draftId) })
+}
+
+export function useDiscardDraft(onSuccess?: (draftId: string) => void) {
+  const api = useAutoresearchApi()
+  return useAction((draftId: string) => api['autoresearch.discard_draft'](draftId), { keys: [[...KEY, 'drafts'], [...KEY, 'draft']], onSuccess: (_r, id) => onSuccess?.(id) })
+}
+
+/** The panel's Start buttons: the existing `autoresearch.create {draft_id, start}`; the list, the drafts and the draft (`started`) all change. */
+export function useStartDraft(draftId: string) {
+  const api = useAutoresearchApi()
+  return useAction((start: StartWhen) => api['autoresearch.create'](draftId, start), { keys: [KEY] })
 }

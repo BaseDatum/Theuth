@@ -6,16 +6,18 @@
 //! buttons run a `Mutation("autoresearch_start", {draft_id, token})` — the
 //! `StartDraft` message `autoresearch.create {draft_id, start}` sends — with
 //! the press token the draft file holds and the model never sees, and only on
-//! success tell the chat `study draft <slug>: started`; *Edit* and *Discard*
-//! are `@ToAssistant` only. The spec is written to `<autoresearch
+//! success tell the chat `study draft <slug>: started`; *Discard* runs the
+//! token-checked `autoresearch_discard` the same way (151 addition A) and
+//! *Edit* is `@ToAssistant` only. The spec is written to `<autoresearch
 //! root>/drafts/<slug>/spec.json` (beside the setup's scripts, never the user's
 //! checkout) so the press can find it; nothing else exists until the press.
 //! With the autoresearch plugin off (no actor) the tool refuses before writing.
 
 use std::sync::Arc;
 
+use autoresearch::setup::{self, validate_partial};
 use autoresearch::tools::{IDLE_SENSOR, draft_spec_path, live_cfg, validate_spec, write_draft};
-use autoresearch::{AutoresearchConfig, Direction, StudySpec};
+use autoresearch::{AutoresearchConfig, Direction, DraftArgs, FieldState, StudySpec};
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use crate::actor::Core;
@@ -297,8 +299,14 @@ pub fn source(spec: &StudySpec, warnings: &[String], token: &str) -> String {
         "bEdit = Button(\"Edit\", Action([@ToAssistant({})]), \"tertiary\")\n",
         lit(&format!("study draft {slug}: edit"))
     ));
+    // 151 addition A: Discard deletes the draft (token-checked, like Start) and then tells the chat.
     out.push_str(&format!(
-        "bDiscard = Button(\"Discard\", Action([@ToAssistant({})]), \"tertiary\", \"destructive\")\n",
+        "discard = Mutation(\"autoresearch_discard\", {{draft_id: {}, token: {}}})\n",
+        lit(slug),
+        lit(token)
+    ));
+    out.push_str(&format!(
+        "bDiscard = Button(\"Discard\", Action([@Run(discard), @ToAssistant({})]), \"tertiary\", \"destructive\")\n",
         lit(&format!("study draft {slug}: discarded"))
     ));
     let starts: &[&str] = if dirty {
@@ -321,22 +329,85 @@ pub fn source(spec: &StudySpec, warnings: &[String], token: &str) -> String {
     out
 }
 
+/// 151 §6.4: the compact card of a partial draft — one line and **Open in
+/// Autoresearch**, whose press the UI's `StudyDraftBridge` turns into navigation.
+pub fn source_compact(slug: &str, settled: u32, total: u32) -> String {
+    format!(
+        "root = Card([head, line, buttons])\n\
+         head = CardHeader({}, {})\n\
+         line = TextContent({}, \"small\")\n\
+         buttons = Buttons([bOpen])\n\
+         bOpen = Button(\"Open in Autoresearch\", Action([@ToAssistant({})]))\n",
+        lit(slug),
+        lit(&format!("study draft {slug}")),
+        lit(&format!(
+            "Study draft {slug} · {settled} of {total} settled"
+        )),
+        lit(&format!("study draft {slug}: open in autoresearch"))
+    )
+}
+
+/// 151 §6.4: the tool text of a partial draft.
+pub fn compact_text(view: &autoresearch::DraftView, sticky: &[String]) -> String {
+    let rows = |state: FieldState| -> String {
+        let v: Vec<&str> = view
+            .fields
+            .iter()
+            .filter(|f| f.state == state)
+            .map(|f| f.name.as_str())
+            .collect();
+        if v.is_empty() {
+            "none".to_owned()
+        } else {
+            v.join(", ")
+        }
+    };
+    format!(
+        "drafted study `{}` (partial, v{}): {} of {} settled; missing: {}; needs OK: {}{}. Keep talking; re-draft with \
+         confirmed: […] after each settled answer; run autoresearch_probe after writing or changing bench/check/holdout; \
+         draft without partial when everything is settled.",
+        view.draft_id,
+        view.version,
+        view.settled,
+        view.total,
+        rows(FieldState::Missing),
+        rows(FieldState::Proposed),
+        sticky_notes(sticky)
+    )
+}
+
+/// `; <row> was set by the user …` per sticky row (151 §4.6), empty when none.
+fn sticky_notes(sticky: &[String]) -> String {
+    sticky
+        .iter()
+        .map(|r| format!("; {}", setup::sticky_note(r)))
+        .collect()
+}
+
 #[async_trait::async_trait]
 impl Tool for StudyDraftTool {
     const NAME: &'static str = "autoresearch_draft";
     const RISK: Risk = Risk::ReadOnly;
     const RETURNS: &'static str = "dict";
-    type Args = StudySpec;
+    type Args = DraftArgs;
 
     fn description(&self) -> String {
         "Propose an autoresearch study for the user to approve: the goal, the metric and its direction, the \
          benchmark command, the correctness check, an optional holdout, the scope and off-limits paths, budgets. \
          Shows a draft card; the user's Start press creates the study — this call writes nothing. Benchmark scripts \
-         written during setup belong under the autoresearch drafts directory, never in the user's checkout."
+         written during setup belong under the autoresearch drafts directory, never in the user's checkout. \
+         `partial: true` (setup in the Autoresearch tab) relaxes validation to slug + repo and shows a compact card; \
+         `confirmed` lists the rows the user agreed to."
             .into()
     }
 
-    async fn call(&self, spec: StudySpec, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: DraftArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        // 151 D5: `partial` / `confirmed` are stored with the spec (ENG builds the relaxed validation and the compact card).
+        let DraftArgs {
+            spec,
+            partial,
+            confirmed,
+        } = a;
         // Windows: no `/bin/bash` for the study's commands — refuse before a card is shown.
         if cfg!(windows) {
             return Ok(ToolOutput::err(format!(
@@ -344,7 +415,12 @@ impl Tool for StudyDraftTool {
                 autoresearch::WINDOWS_UNSUPPORTED
             )));
         }
-        if let Err(e) = validate_spec(&spec) {
+        let valid = if partial {
+            validate_partial(&spec)
+        } else {
+            validate_spec(&spec)
+        };
+        if let Err(e) = valid {
             return Ok(ToolOutput::err(format!("autoresearch_draft: {e}")));
         }
         // The live section from the actor: refuses when the plugin is off
@@ -354,7 +430,7 @@ impl Tool for StudyDraftTool {
             Err(e) => return Ok(ToolOutput::err(format!("autoresearch_draft: {e}"))),
         };
         let root = cfg.root(&self.core.rt.data_dir);
-        let token = match write_draft(&root, &spec, cx.session) {
+        let (token, sticky) = match write_draft(&root, &spec, cx.session, partial, confirmed) {
             Ok(t) => t,
             Err(e) => {
                 return Ok(ToolOutput::err(format!(
@@ -363,10 +439,24 @@ impl Tool for StudyDraftTool {
                 )));
             }
         };
-        let warnings = warnings(&spec, &cfg);
+        let slug = &spec.slug;
+        // 151 §5: the same view the panel reads (states, settled count, version).
+        let view = match setup::view(&root, slug, false) {
+            Ok(v) => v,
+            Err(e) => return Ok(ToolOutput::err(format!("autoresearch_draft: {e}"))),
+        };
+        let warnings = if partial {
+            Vec::new()
+        } else {
+            warnings(&spec, &cfg)
+        };
         let app = AppArgs {
             name: APP_NAME.into(),
-            source: source(&spec, &warnings, &token),
+            source: if partial {
+                source_compact(slug, view.settled, view.total)
+            } else {
+                source(&spec, &warnings, &token)
+            },
             title: Some("Study draft".into()),
             edit: false,
             base_call_id: None,
@@ -383,24 +473,33 @@ impl Tool for StudyDraftTool {
             Ok(v) => v,
             Err(e) => return Ok(ToolOutput::err(format!("autoresearch_draft: {e}"))),
         };
-        let slug = &spec.slug;
-        let content = format!(
-            "drafted study card `{slug}` (record_call_id {}):\n{}\n{}\nWait for the user. Their press arrives as a message \
-             beginning `[app {APP_NAME} …]` with `study draft {slug}: started | edit | discarded`. started → the harness is \
-             already preparing it (the press created the study; call nothing); edit → ask what to change and call \
-             autoresearch_draft again; discarded → answer one line, call nothing.",
-            loaded.artifact.call_id,
-            lines(&spec).join("\n"),
-            if warnings.is_empty() {
-                "no warnings".to_owned()
-            } else {
-                format!("warnings: {}", warnings.join(" / "))
-            },
-        );
+        let content = if partial {
+            compact_text(&view, &sticky)
+        } else {
+            format!(
+                "drafted study card `{slug}` (record_call_id {}):\n{}\n{}{}\nWait for the user. Their press arrives as a message \
+                 beginning `[app {APP_NAME} …]` with `study draft {slug}: started | edit | discarded`. started → the harness is \
+                 already preparing it (the press created the study; call nothing); edit → ask what to change and call \
+                 autoresearch_draft again; discarded → the draft is deleted; answer one line, call nothing.",
+                loaded.artifact.call_id,
+                lines(&spec).join("\n"),
+                if warnings.is_empty() {
+                    "no warnings".to_owned()
+                } else {
+                    format!("warnings: {}", warnings.join(" / "))
+                },
+                sticky_notes(&sticky),
+            )
+        };
         Ok(ToolOutput {
             structured: Some(serde_json::json!({
                 "record_call_id": loaded.artifact.call_id,
                 "draft_id": slug,
+                "partial": partial,
+                "settled": view.settled,
+                "total": view.total,
+                "ready": view.ready,
+                "sticky": sticky,
                 "warnings": warnings,
             })),
             ..ToolOutput::ok(content)
@@ -554,7 +653,7 @@ mod tests {
 
     /// The press path (R-10): Start buttons run `autoresearch_start` with the
     /// draft's press token (never `autoresearch_control`) then tell the chat;
-    /// Edit/Discard only tell the chat.
+    /// Discard deletes through its own token-checked mutation; Edit only tells the chat.
     #[test]
     fn source_wires_presses_through_the_token() {
         let s = source(&spec(), &["No holdout".into()], "tok123");
@@ -569,7 +668,8 @@ mod tests {
         assert!(s.contains("bStart = Button(\"Start now\", Action([@Run(start), @ToAssistant(\"study draft sort-speed: started\")]))\n"), "{s}");
         assert!(s.contains("bWindow = Button(\"Start in idle window\", Action([@Run(startWindow), @ToAssistant(\"study draft sort-speed: started\")]), \"secondary\")\n"), "{s}");
         assert!(s.contains("bEdit = Button(\"Edit\", Action([@ToAssistant(\"study draft sort-speed: edit\")]), \"tertiary\")\n"));
-        assert!(s.contains("bDiscard = Button(\"Discard\", Action([@ToAssistant(\"study draft sort-speed: discarded\")]), \"tertiary\", \"destructive\")\n"));
+        assert!(s.contains("discard = Mutation(\"autoresearch_discard\", {draft_id: \"sort-speed\", token: \"tok123\"})\n"), "{s}");
+        assert!(s.contains("bDiscard = Button(\"Discard\", Action([@Run(discard), @ToAssistant(\"study draft sort-speed: discarded\")]), \"tertiary\", \"destructive\")\n"), "{s}");
         // R-11: the third Start snapshots the user's dirty tree (`include_dirty`); the result line covers it.
         assert!(s.contains("startDirty = Mutation(\"autoresearch_start\", {draft_id: \"sort-speed\", token: \"tok123\", include_dirty: true})\n"), "{s}");
         assert!(
@@ -610,5 +710,54 @@ mod tests {
             "{s3}"
         );
         assert!(lines(&dirty)[0].ends_with("(base HEAD + your uncommitted changes)"));
+    }
+
+    /// 151 §6.4: a partial draft is one line and one button, no token, no Start.
+    #[test]
+    fn partial_draft_renders_the_compact_card() {
+        let s = source_compact("sort-speed", 3, 9);
+        assert_eq!(
+            s,
+            "root = Card([head, line, buttons])\n\
+             head = CardHeader(\"sort-speed\", \"study draft sort-speed\")\n\
+             line = TextContent(\"Study draft sort-speed · 3 of 9 settled\", \"small\")\n\
+             buttons = Buttons([bOpen])\n\
+             bOpen = Button(\"Open in Autoresearch\", Action([@ToAssistant(\"study draft sort-speed: open in autoresearch\")]))\n"
+        );
+        assert!(!s.contains("Mutation"));
+        let view = autoresearch::DraftView {
+            draft_id: "sort-speed".into(),
+            version: 2,
+            settled: 3,
+            total: 9,
+            fields: vec![
+                autoresearch::DraftField {
+                    name: "goal".into(),
+                    state: FieldState::Missing,
+                    ..Default::default()
+                },
+                autoresearch::DraftField {
+                    name: "bench".into(),
+                    state: FieldState::Proposed,
+                    ..Default::default()
+                },
+                autoresearch::DraftField {
+                    name: "scope".into(),
+                    state: FieldState::Proposed,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let t = compact_text(&view, &["budget".into()]);
+        assert!(
+            t.starts_with(
+                "drafted study `sort-speed` (partial, v2): 3 of 9 settled; missing: goal; needs OK: bench, scope; \
+                 budget was set by the user in the panel; your change needs their OK. Keep talking;"
+            ),
+            "{t}"
+        );
+        assert!(t.ends_with("draft without partial when everything is settled."));
+        assert!(compact_text(&view, &[]).contains("needs OK: bench, scope. Keep talking"));
     }
 }

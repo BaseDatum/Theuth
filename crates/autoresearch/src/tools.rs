@@ -83,6 +83,12 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, seams: Arc<Seams>) {
         .ask(RegisterTool(Arc::new(ControlTool(s.clone()))))
         .await;
     let _ = reg.ask(RegisterTool(Arc::new(StartTool(s.clone())))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(DiscardTool(s.clone()))))
+        .await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(crate::setup::ProbeTool(s.clone()))))
+        .await;
 }
 
 /// Text for the transcript, the same data as a Python value for the runtime.
@@ -119,7 +125,10 @@ pub fn draft_spec_path(root: &Path, draft_id: &str) -> PathBuf {
 }
 
 /// The draft on disk: the spec, the chat it was drafted in (start and result
-/// cards go there) and the press token the card's Start buttons carry.
+/// cards go there), the press token the card's Start buttons carry, and the
+/// 151 living-draft fields (§4.2): `partial`, the rows the agent listed as
+/// `confirmed`, the rows the user set in the panel (`user_set`, sticky),
+/// `version` bumped per write and `updated_at`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Draft {
     /// The spec the card shows.
@@ -131,24 +140,78 @@ pub struct Draft {
     /// draft written before tokens existed (re-draft to start it).
     #[serde(default)]
     pub token: Option<String>,
+    /// The last `autoresearch_draft` was `partial: true` (151 D5).
+    #[serde(default)]
+    pub partial: bool,
+    /// Rows the agent listed as agreed with the user (151 §4.3 row names).
+    #[serde(default)]
+    pub confirmed: Vec<String>,
+    /// Rows the user set through `autoresearch.draft_edit`; kept across re-drafts.
+    #[serde(default)]
+    pub user_set: Vec<String>,
+    /// Bumped by every write of this file.
+    #[serde(default)]
+    pub version: u32,
+    /// RFC 3339 of the last write.
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 /// Write a draft beside its setup scripts (the draft id is the slug); returns
-/// the press token for the card.
+/// the press token for the card and the sticky rows (151 §5): rows the user
+/// set in the panel whose value this write changed — applied, but dropped
+/// from `confirmed` so the panel asks for their OK again.
+///
+/// `confirmed` = the caller's list ∪ the previous file's rows whose value did
+/// not change (a panel OK the agent never saw survives a re-draft) − the sticky rows.
 ///
 /// ponytail: the token lives in the card source and in this file, both
 /// readable by a model with `read_file`/`shell`; it closes the ordinary path
 /// (a root tool the model calls), which is what §12.4 asks — a determined
 /// model is §8.3's acknowledged limit.
-pub fn write_draft(root: &Path, spec: &StudySpec, origin: SessionId) -> std::io::Result<String> {
+pub fn write_draft(
+    root: &Path,
+    spec: &StudySpec,
+    origin: SessionId,
+    partial: bool,
+    mut confirmed: Vec<String>,
+) -> std::io::Result<(String, Vec<String>)> {
     let path = draft_spec_path(root, &spec.slug);
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
+    // 151 §4.2: `user_set` and `version` survive a re-draft; the token does not (R-10).
+    let previous = read_draft(root, &spec.slug).ok();
+    let sticky = previous
+        .as_ref()
+        .map(|p| crate::setup::sticky_rows(p, spec))
+        .unwrap_or_default();
+    for row in previous
+        .as_ref()
+        .map(|p| crate::setup::still_confirmed(p, spec))
+        .unwrap_or_default()
+    {
+        if !confirmed.contains(&row) {
+            confirmed.push(row);
+        }
+    }
+    confirmed.retain(|r| !sticky.contains(r));
     let token = SessionId::new().0.simple().to_string();
-    let draft = serde_json::json!({ "spec": spec, "origin": origin, "token": token });
+    let draft = Draft {
+        spec: spec.clone(),
+        origin: Some(origin),
+        token: Some(token.clone()),
+        partial,
+        confirmed,
+        user_set: previous
+            .as_ref()
+            .map(|d| d.user_set.clone())
+            .unwrap_or_default(),
+        version: previous.as_ref().map_or(1, |d| d.version + 1),
+        updated_at: crate::store::now(),
+    };
     std::fs::write(&path, serde_json::to_vec_pretty(&draft)?)?;
-    Ok(token)
+    Ok((token, sticky))
 }
 
 /// Read a draft (`StartDraft`); `Refused` names a missing draft.
@@ -160,10 +223,8 @@ pub fn read_draft(root: &Path, draft_id: &str) -> crate::Result<Draft> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-/// What `autoresearch_draft` refuses before drawing a card (140 §4.1): the slug rule,
-/// a goal, a repo, a metric name, a benchmark command, sane budgets, a parsable `min_effect`.
-pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
-    let slug = &spec.slug;
+/// The slug rule (140 §4.1) plus 151 §6.1: `new` is the setup page's route (`/autoresearch/new`).
+pub fn check_slug(slug: &str) -> Result<(), String> {
     if slug.is_empty()
         || slug.len() > 32
         || !slug
@@ -172,6 +233,16 @@ pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
     {
         return Err(format!("slug `{slug}` must match [a-z0-9-]{{1,32}}"));
     }
+    if slug == "new" {
+        return Err("slug `new` is reserved (it is the setup page's route); pick another".into());
+    }
+    Ok(())
+}
+
+/// What `autoresearch_draft` refuses before drawing a card (140 §4.1): the slug rule,
+/// a goal, a repo, a metric name, a benchmark command, sane budgets, a parsable `min_effect`.
+pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
+    check_slug(&spec.slug)?;
     if spec.goal.trim().is_empty() {
         return Err("goal is empty".into());
     }
@@ -696,6 +767,58 @@ impl Tool for StartTool {
     }
 }
 
+/// `autoresearch_discard` arguments: the draft card's Discard press (151 addition A).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DiscardArgs {
+    /// The draft id (the spec's slug).
+    pub draft_id: String,
+    /// The press token `autoresearch_draft` wrote into the card.
+    pub token: String,
+}
+
+/// Delete a draft only with its press token (the card's Discard button); a
+/// later Start press finds no draft and is refused.
+pub fn discard_with_token(root: &Path, draft_id: &str, token: &str) -> crate::Result<()> {
+    let draft = read_draft(root, draft_id)?;
+    if draft.token.is_none() || draft.token.as_deref() != Some(token.trim()) {
+        return Err(crate::Error::refused(
+            "autoresearch_discard: not the draft card's press (token mismatch) — a draft is discarded from \
+             the card's Discard button or the Autoresearch tab, not from a tool call",
+        ));
+    }
+    crate::setup::discard(root, draft_id)
+}
+
+/// The draft card's Discard press (151 addition A): removes the draft like
+/// `autoresearch.discard_draft`, so a card-discarded draft does not sit in the
+/// rail as "Setting up" forever. Registered like any tool, useless to the
+/// model: it never sees the token.
+pub struct DiscardTool(pub Arc<Seams>);
+
+#[async_trait::async_trait]
+impl Tool for DiscardTool {
+    const NAME: &'static str = "autoresearch_discard";
+    const RISK: Risk = Risk::Mutating;
+    type Args = DiscardArgs;
+
+    fn description(&self) -> String {
+        "Internal: the Discard press of an autoresearch draft card. It needs the press token the card holds, which \
+         you do not have — a user who wants a draft gone presses Discard on the card or in the Autoresearch tab."
+            .into()
+    }
+
+    async fn call(&self, a: DiscardArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let cfg = live_cfg().await?;
+        let root = cfg.root(&self.0.data_dir);
+        discard_with_token(&root, a.draft_id.trim(), &a.token)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(ToolOutput::ok(format!(
+            "draft `{}` discarded",
+            a.draft_id.trim()
+        )))
+    }
+}
+
 /// `autoresearch_status` arguments.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct StatusArgs {
@@ -806,9 +929,10 @@ pub struct ControlArgs {
 
 /// R-13: a bound study session or a wave child may not control studies —
 /// `segment` is the user's alone (§5.3), and `merge`/`discard`/`stop_now`
-/// belong to the user's chats. The Toolset normally hides this tool there;
-/// this holds when it does not (a first fire before the toolset lands).
-async fn refuse_study_sessions(session: SessionId) -> anyhow::Result<()> {
+/// belong to the user's chats; 151 D4: the probe is a setup-chat tool too.
+/// The Toolset normally hides these tools there; this holds when it does not
+/// (a first fire before the toolset lands).
+pub(crate) async fn refuse_study_sessions(session: SessionId, tool: &str) -> anyhow::Result<()> {
     let studies = if crate::wave::is_child(session) {
         Vec::new()
     } else {
@@ -818,7 +942,7 @@ async fn refuse_study_sessions(session: SessionId) -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("{e}"))?
     };
     if is_study_side(session, &studies) {
-        anyhow::bail!("autoresearch_control is not available inside a study session");
+        anyhow::bail!("{tool} is not available inside a study session");
     }
     Ok(())
 }
@@ -855,7 +979,7 @@ impl Tool for ControlTool {
         if slug.is_empty() {
             anyhow::bail!("slug is required");
         }
-        refuse_study_sessions(cx.session).await?;
+        refuse_study_sessions(cx.session, Self::NAME).await?;
         let text = a.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
         let op = match a.op.trim() {
             "pause" => ControlOp::Pause,
@@ -1368,7 +1492,7 @@ mod tests {
             ..Default::default()
         };
         let origin = SessionId::new();
-        let token = write_draft(dir.path(), &spec, origin).unwrap();
+        let (token, _) = write_draft(dir.path(), &spec, origin, false, Vec::new()).unwrap();
         assert_eq!(token.len(), 32, "{token}");
         assert_eq!(
             draft_spec_path(dir.path(), "sort-speed"),
@@ -1377,11 +1501,35 @@ mod tests {
         let d = read_draft(dir.path(), "sort-speed").unwrap();
         assert_eq!(d.token.as_deref(), Some(token.as_str()));
         assert_eq!((d.spec, d.origin), (spec.clone(), Some(origin)));
+        // 151 §4.2: a fresh draft is version 1, final, nothing confirmed or user-set.
+        assert_eq!(
+            (d.version, d.partial, d.confirmed.len(), d.user_set.len()),
+            (1, false, 0, 0)
+        );
+        assert!(!d.updated_at.is_empty());
         assert_ne!(
-            write_draft(dir.path(), &spec, origin).unwrap(),
+            write_draft(dir.path(), &spec, origin, true, vec!["goal".into()])
+                .unwrap()
+                .0,
             token,
             "a re-draft gets a new token"
         );
+        // 151 §4.2: a re-draft bumps the version, stores `partial` / `confirmed`, keeps `user_set`.
+        let d = read_draft(dir.path(), "sort-speed").unwrap();
+        assert_eq!(
+            (d.version, d.partial, d.confirmed.clone()),
+            (2, true, vec!["goal".to_owned()])
+        );
+        let mut kept = d;
+        kept.user_set = vec!["budget".into()];
+        std::fs::write(
+            draft_spec_path(dir.path(), "sort-speed"),
+            serde_json::to_vec(&kept).unwrap(),
+        )
+        .unwrap();
+        write_draft(dir.path(), &spec, origin, false, Vec::new()).unwrap();
+        let d = read_draft(dir.path(), "sort-speed").unwrap();
+        assert_eq!((d.version, d.user_set), (3, vec!["budget".to_owned()]));
         let e = read_draft(dir.path(), "nope").unwrap_err().to_string();
         assert!(e.starts_with("no draft `nope`"), "{e}");
         std::fs::create_dir_all(dir.path().join("drafts/old")).unwrap();
@@ -1392,7 +1540,7 @@ mod tests {
         .unwrap();
         assert_eq!(read_draft(dir.path(), "old").unwrap().token, None);
         // R-11: the third Start button flips `include_dirty` on the draft; the token survives.
-        let token = write_draft(dir.path(), &spec, origin).unwrap();
+        let (token, _) = write_draft(dir.path(), &spec, origin, false, Vec::new()).unwrap();
         let d = mark_include_dirty(dir.path(), "sort-speed").unwrap();
         assert!(d.spec.include_dirty);
         assert_eq!(d.token.as_deref(), Some(token.as_str()));
@@ -1451,5 +1599,86 @@ mod tests {
         assert!(is_study_side(child, &studies));
         assert!(is_study_side(child, &[]));
         assert!(!is_study_side(root, &studies));
+    }
+
+    /// 151 §6.1: `new` is the setup page's route and cannot be a slug.
+    #[test]
+    fn slug_new_is_reserved() {
+        let e = check_slug("new").unwrap_err();
+        assert!(e.starts_with("slug `new` is reserved"), "{e}");
+        check_slug("new-study").unwrap();
+        assert!(
+            validate_spec(&StudySpec {
+                slug: "new".into(),
+                ..Default::default()
+            })
+            .is_err()
+        );
+    }
+
+    /// 151 addition A: the card's Discard press deletes the draft only with its token,
+    /// and the Start press that follows finds no draft.
+    #[test]
+    fn card_discard_needs_the_token_and_removes_the_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = StudySpec {
+            slug: "gone".into(),
+            ..Default::default()
+        };
+        let (token, _) = write_draft(dir.path(), &spec, SessionId::new(), true, vec![]).unwrap();
+        let draft_dir = crate::drafts_dir(dir.path(), "gone");
+        let e = discard_with_token(dir.path(), "gone", "wrong")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("token mismatch"), "{e}");
+        assert!(draft_dir.is_dir(), "a wrong token removes nothing");
+        discard_with_token(dir.path(), "gone", &token).unwrap();
+        assert!(!draft_dir.exists());
+        // The Start press (`autoresearch_start` reads the draft first) is refused.
+        let e = read_draft(dir.path(), "gone").unwrap_err().to_string();
+        assert!(e.starts_with("no draft `gone`"), "{e}");
+        let e = discard_with_token(dir.path(), "gone", &token)
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("no draft `gone`"), "{e}");
+    }
+
+    /// 151 D4: the probe is refused to a study-side session (here a registered wave
+    /// child, which needs no actor to be recognised).
+    #[tokio::test]
+    async fn probe_is_refused_in_a_study_session() {
+        let (parent, child) = (SessionId::new(), SessionId::new());
+        crate::wave::register_child(parent, child);
+        let tool = crate::setup::ProbeTool(Arc::new(Seams {
+            data_dir: std::env::temp_dir(),
+            cfg: AutoresearchConfig::default(),
+            agent: AgentDefaults::default(),
+        }));
+        let e = tool
+            .call(
+                crate::setup::ProbeArgs {
+                    draft_id: "x".into(),
+                    ..Default::default()
+                },
+                ToolCx {
+                    session: child,
+                    call_id: "c".into(),
+                    quiet: false,
+                    resources: Arc::new(tools::SessionResources {
+                        root: std::env::temp_dir(),
+                        retention: tools::Retention::Durable,
+                        generation: 1,
+                    }),
+                    cancel: tokio_util::sync::CancellationToken::new(),
+                    promote_after: None,
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            e,
+            "autoresearch_probe is not available inside a study session"
+        );
     }
 }

@@ -1,5 +1,5 @@
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
-import { Flag, OctagonX, Pause, Play, Scissors, SkipForward, StepForward } from 'lucide-react'
+import { ChevronRight, Flag, OctagonX, Pause, Play, Scissors, SkipForward, StepForward } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog'
 import { SectionRow } from '@/components/nav/SectionRow'
@@ -78,6 +78,13 @@ export function StudyView() {
           </span>
         }
       >
+        {info.origin && (
+          <Button asChild variant="ghost" size="xs" className="ml-auto 2xl:ml-0">
+            <Link to="/autoresearch/new" search={{ chat: info.origin }}>
+              Setup chat <ChevronRight />
+            </Link>
+          </Button>
+        )}
         <div className="ml-auto hidden 2xl:flex">
           <Controls info={info} />
         </div>

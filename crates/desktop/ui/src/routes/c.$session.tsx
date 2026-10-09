@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { AdvisorPill } from '@/components/chat/AdvisorPill'
@@ -76,7 +76,7 @@ function SessionRoute() {
 /** Header, transcript, todo card, composer. Loads the newest page and the agent subtree on first visit; events keep both live.
  * `first`: the top-left pane, the only one that inserts the sidebar toggle and macOS traffic-light inset. Also the chat a
  * meeting page embeds under its transcript (`ControlCenter`), which passes `first={false}`. */
-export function LiveSession({ session, first }: { session: string; first: boolean }) {
+export function LiveSession({ session, first, aboveComposer }: { session: string; first: boolean; /** 151 R1: a host's strip right above the composer (the setup pane's phone "Draft n of m" pill). */ aboveComposer?: ReactNode }) {
   const api = useApi()
   const navigate = useNavigate()
   const focused = usePanes((s) => s.focused) === session
@@ -148,6 +148,7 @@ export function LiveSession({ session, first }: { session: string; first: boolea
       <Transcript key={`t:${session}`} session={session} />
       <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <TodoCard key={`d:${session}`} session={session} />
+      {aboveComposer}
       {watching ? <ObservedBar session={session} /> : <Composer key={`c:${session}`} session={session} />}
     </>
   )

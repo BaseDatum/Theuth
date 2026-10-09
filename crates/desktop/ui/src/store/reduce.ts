@@ -315,6 +315,7 @@ function userEntries(
       case "wake":
       case "resume":
       case "lost":
+      case "autoresearch":
         return { id: nextId(), ...c, context };
     }
   }).concat(card);
@@ -547,6 +548,8 @@ function signature(e: Entry): string {
       return `r${e.clock}\n${e.text}`;
     case "lost":
       return `l${e.session}\n${e.clock}`;
+    case "autoresearch":
+      return `ar${e.slug}\n${e.event}\n${e.text}`;
     case "parentView":
       return `pv${e.lines.length}\n${e.bytes}`;
     case "vision":

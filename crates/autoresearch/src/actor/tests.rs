@@ -3004,3 +3004,19 @@ fn cards_render_valid_json_render_fences() {
         "{result}"
     );
 }
+
+/// 151 R1 (D7): a desktop setup chat has no Slack/Signal/Telegram sink, so the card reaches the
+/// origin session as an `<autoresearch slug event>` input; the shape is what `injected.ts` and
+/// `tui::model::injected` classify, attributes XML-escaped.
+#[test]
+fn origin_cards_are_wrapped_for_the_desktop_classifier() {
+    let w = wrapped("sort-speed", "started", "```json-render\n{}\n```");
+    assert_eq!(
+        w,
+        "<autoresearch slug=\"sort-speed\" event=\"started\">\n```json-render\n{}\n```\n</autoresearch>"
+    );
+    assert!(
+        wrapped("a\"<b>&", "failed", "x")
+            .starts_with("<autoresearch slug=\"a&quot;&lt;b&gt;&amp;\" event=\"failed\">\n")
+    );
+}
