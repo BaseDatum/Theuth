@@ -71,6 +71,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     desc: 'knowledge base: list, search, history, restore, harvest',
   },
   {
+    name: '/autoresearch',
+    hint: '[<goal> | <slug> | list | pause|resume|stop|stop_now <slug> | steer <slug> <text>]',
+    desc: 'autoresearch studies (140): list, open, pause/resume/stop/steer one directly; a goal or anything else hands the skill to the model',
+  },
+  {
     name: '/login',
     hint: '[name]',
     desc: 'log in to a provider or MCP server (picker without name)',
@@ -493,6 +498,31 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
         return
       }
       throw new Error('usage: /skills [add <url> | rm <name> | sync]')
+    case '/autoresearch': {
+      // §13.1: list/status/pause/resume/stop/steer are direct RPC; anything else (a goal, a control in words) is the skill.
+      if (!arg || sub === 'list' || sub === 'status') return navigate({ to: '/autoresearch' })
+      if (sub === 'pause' || sub === 'resume' || sub === 'stop' || sub === 'stop_now' || sub === 'stop-now') {
+        if (!rest) throw new Error(`usage: /autoresearch ${sub} <slug>`)
+        const op = sub === 'pause' ? 'pause' : sub === 'resume' ? 'resume' : sub === 'stop' ? 'stop_after' : 'stop_now'
+        const info = await api['autoresearch.control'](rest, { op })
+        toast(`${info.slug}: ${info.state.state}`)
+        return
+      }
+      if (sub === 'steer') {
+        const [slug, text] = split(rest)
+        if (!slug || !text) throw new Error('usage: /autoresearch steer <slug> <text>')
+        await api['autoresearch.steer'](slug, text)
+        toast(`${slug}: steer queued for the next experiment`)
+        return
+      }
+      // One word that names a study opens it.
+      if (!rest && (await api['autoresearch.list']()).some((s) => s.slug === sub)) return navigate({ to: '/autoresearch/$slug', params: { slug: sub }, search: {} })
+      const id = session ?? (await api.new_session())
+      if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
+      await api.use_skill(id, 'autoresearch', arg)
+      if (!session) await navigate({ to: '/c/$session', params: { session: id } })
+      return
+    }
     case '/knowledge':
       if (!arg) return navigate({ to: '/knowledge' })
       if (sub === 'history') {

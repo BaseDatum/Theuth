@@ -202,9 +202,10 @@ function useModel({ session }: Props, done: () => void): Model {
   const resume = async () => {
     if (!session) return
     try {
-      await api.resume_child(session)
+      const r = await api.resume_child(session)
       void qc.invalidateQueries({ queryKey: harnessOptionsKey(session) })
-      toast('harness resumed in its previous context')
+      // 146 D8: the engine says whether there was interrupted work to continue.
+      toast(r === 'prompted' ? 'resuming the interrupted task' : 'reconnected; the harness was idle, nothing to continue')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     }

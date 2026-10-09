@@ -14,6 +14,7 @@ link = { workspace = true }
 agent = { workspace = true }
 roster = { workspace = true }
 schedule = { workspace = true }
+autoresearch = { workspace = true }  # 140 §4.1 the study draft card (`study_draft.rs`): the spec, its validation, the drafts dir
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -34,7 +35,7 @@ tracing-subscriber = { workspace = true }
 tempfile = "3"
 
 [features]
-ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "artifact/ts", "agent/ts", "schedule/ts"]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "artifact/ts", "agent/ts", "schedule/ts", "autoresearch/ts"]
 
 [lints]
 workspace = true

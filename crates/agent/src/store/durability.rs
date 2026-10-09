@@ -445,12 +445,44 @@ impl Scope {
     }
 }
 
+/// One open turn as `open_turns` lists it: `(session, turn, last activity)`.
+pub type OpenTurnRow = (SessionId, TurnId, DateTime<Utc>);
+
 /// The window that picks each turn's newest non-partial step and its last
-/// activity time (`last_at` includes partial rows).
+/// activity time (`last_at` includes partial rows). 146 D5: one window pass
+/// over the table — partial rows sort last inside their partition, so
+/// `rn = 1` is the newest non-partial step and `MAX(at)` sees every row —
+/// instead of a correlated `MAX(at)` subquery per row (1.1 s → 0.08 s over
+/// 25k rows; migration 0042 indexes the per-turn `at` lookups).
 const NEWEST: &str = "SELECT session_id, turn_id, kind, \
-     ROW_NUMBER() OVER (PARTITION BY session_id, turn_id ORDER BY n DESC) AS rn, \
-     (SELECT MAX(at) FROM turn_steps t2 WHERE t2.session_id = t1.session_id AND t2.turn_id = t1.turn_id) AS last_at \
-     FROM turn_steps t1 WHERE kind != 'assistant_partial'";
+     ROW_NUMBER() OVER (PARTITION BY session_id, turn_id ORDER BY (kind = 'assistant_partial'), n DESC) AS rn, \
+     MAX(at) OVER (PARTITION BY session_id, turn_id) AS last_at \
+     FROM turn_steps";
+
+/// 146 D1/D8: the mid-prompt predicate over `m`, a `messages` row (the
+/// session's last): a prompt the harness never answered (`User`), a
+/// `ToolCall` without its `Tool` response, or a `Tool` response the model
+/// never answered. An idle child ends on `Assistant` text; a lost one on a
+/// `System` note.
+const MIDPROMPT: &str = "(json_extract(m.body, '$.role') IN ('User', 'Tool') \
+     OR (json_extract(m.body, '$.role') = 'Assistant' AND EXISTS \
+         (SELECT 1 FROM json_each(m.body, '$.content') WHERE json_type(value, '$.ToolCall') IS NOT NULL)))";
+
+/// 146 D10/D11: `text` without its leading `<time …/>` line, whitespace
+/// collapsed, cut to `max` chars with an ellipsis.
+pub fn excerpt(text: &str, max: usize) -> String {
+    let body = text
+        .trim_start()
+        .strip_prefix("<time")
+        .and_then(|rest| rest.split_once("/>"))
+        .map_or(text, |(_, after)| after);
+    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let cut: String = flat.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
 
 impl Store {
     /// [`step_in`] in its own transaction: the `suspended` row (§9), tests,
@@ -600,10 +632,7 @@ impl Store {
     /// active first (§4.6 step 10's `resume_scan`). `suspended` is open.
     /// `Scope::Here` keeps the turns of sessions this engine owns (139 D1):
     /// a replica never lists the owner's live turn as its own to act on.
-    pub async fn open_turns(
-        &self,
-        scope: Scope,
-    ) -> anyhow::Result<Vec<(SessionId, TurnId, DateTime<Utc>)>> {
+    pub async fn open_turns(&self, scope: Scope) -> anyhow::Result<Vec<OpenTurnRow>> {
         let rows: Vec<(String, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT o.session_id, o.turn_id, o.last_at FROM ({NEWEST}) o \
              JOIN sessions s ON s.id = o.session_id \
@@ -634,6 +663,65 @@ impl Store {
         .await?;
         row.map(|(t, at)| Ok((parse_turn(&t)?, parse_dt(&at)?)))
             .transpose()
+    }
+
+    /// 146 D9: the ACP child's journal. An ACP child owes work from the
+    /// moment the supervisor hands it a prompt (or its harness opens a turn)
+    /// until that turn ends; one `input_accepted` row marks it, so
+    /// `open_turns` lists a mid-prompt child like a native open turn. At
+    /// most one open turn per child: a second prompt while one is open
+    /// writes nothing. `Ok(Some(turn))` when a row was written.
+    pub async fn acp_turn_open(
+        &self,
+        session: SessionId,
+        payload: &Value,
+    ) -> anyhow::Result<Option<TurnId>> {
+        if self.open_turn(session).await?.is_some() {
+            return Ok(None);
+        }
+        let turn = TurnId::new();
+        self.step(session, turn, StepKind::InputAccepted, None, payload)
+            .await?;
+        Ok(Some(turn))
+    }
+
+    /// 146 D9: the ACP child's turn ended (`stop_reason`): its open journal
+    /// turn gets `turn_finished` (and `sessions.last_stop`). `Ok(false)` when
+    /// none was open.
+    pub async fn acp_turn_close(
+        &self,
+        session: SessionId,
+        stop_reason: &str,
+    ) -> anyhow::Result<bool> {
+        let Some((turn, _)) = self.open_turn(session).await? else {
+            return Ok(false);
+        };
+        let mut tx = self.begin_write().await?;
+        turn_finished_in(&mut tx, session, turn, stop_reason).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// 146 D10/D11: the first and the last `User` row's text of `session`
+    /// — the child's original brief and the prompt it was interrupted in —
+    /// each capped to `max` chars (the `<time …/>` line dropped). Empty
+    /// strings when there is none.
+    pub async fn prompt_excerpts(&self, session: SessionId, max: usize) -> (String, String) {
+        let one = |order: &'static str| async move {
+            let row: Option<(Option<String>,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT json_extract(body, '$.content[0].Text') FROM messages \
+                 WHERE session_id = ? AND json_extract(body, '$.role') = 'User' \
+                 ORDER BY seq {order} LIMIT 1"
+            )))
+            .bind(session.to_string())
+            .fetch_optional(&self.read)
+            .await
+            .ok()
+            .flatten();
+            row.and_then(|(t,)| t).unwrap_or_default()
+        };
+        let (first, last) = (one("ASC").await, one("DESC").await);
+        (excerpt(&first, max), excerpt(&last, max))
     }
 
     /// What `ResumeTurn` acts on (§4.1, §4.2): the newest step that is not
@@ -1306,6 +1394,51 @@ impl Store {
         .fetch_all(&self.read)
         .await?;
         rows.into_iter().map(wait_of).collect()
+    }
+
+    /// 146 D1: ACP children here that were mid-prompt when the engine died
+    /// ([`MIDPROMPT`] over their last `messages` row) with their parent,
+    /// newest first; bounded to rows updated after `since`. A harness-made
+    /// `System` note (the lost note, `append_local_note`) ends the match, so
+    /// a child marked lost is not scanned again. D9: the fallback for
+    /// children from before the ACP journal — a child with any `turn_steps`
+    /// row is the journal's (`open_turns`), never this heuristic's.
+    /// Only `kind = 'chat'` rows: advisors and 141's watch-only `observed`
+    /// children (never driven, no `agent`) are not respawned.
+    pub async fn midprompt_acp_children(
+        &self,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<(SessionId, SessionId)>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT c.id, c.parent FROM sessions c \
+             JOIN messages m ON m.session_id = c.id \
+               AND m.seq = (SELECT MAX(seq) FROM messages WHERE session_id = c.id) \
+             WHERE c.agent IS NOT NULL AND c.parent IS NOT NULL AND c.kind = 'chat' \
+               AND (c.owner = '' OR c.owner = ?1) AND c.updated_at > ?2 AND {MIDPROMPT} \
+               AND NOT EXISTS (SELECT 1 FROM turn_steps t WHERE t.session_id = c.id) \
+             ORDER BY c.updated_at DESC"
+        )))
+        .bind(&*self.me)
+        .bind(since.to_rfc3339())
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(c, p)| Ok((parse_session(&c)?, parse_session(&p)?)))
+            .collect()
+    }
+
+    /// 146 D8: whether one session's last `messages` row is mid-prompt
+    /// ([`MIDPROMPT`]) — the Resume button's "is there work to continue".
+    /// A session with no rows is not.
+    pub async fn midprompt(&self, session: SessionId) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT 1 FROM messages m WHERE m.session_id = ?1 \
+             AND m.seq = (SELECT MAX(seq) FROM messages WHERE session_id = ?1) AND {MIDPROMPT}"
+        )))
+        .bind(session.to_string())
+        .fetch_optional(&self.read)
+        .await?;
+        Ok(row.is_some())
     }
 
     /// The session's job rows, oldest first (`jobs()` after a restart, §5.1).

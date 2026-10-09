@@ -76,13 +76,14 @@ pub fn evaluate(facts: &Facts, cfg: &VmConfig) -> Preflight {
     let virt = match (facts.host.os.as_str(), facts.host.arch.as_str()) {
         ("macos", "aarch64") => VirtState::Ok { via: "hvf".into() },
         ("macos", _) => {
-            let why = "microsandbox needs Apple Silicon (M1 or later); this Mac is Intel".to_owned();
+            let why =
+                "microsandbox needs Apple Silicon (M1 or later); this Mac is Intel".to_owned();
             blockers.push(block("unsupported_arch", why.clone(), None));
             VirtState::Unsupported { why }
         }
         ("windows", _) => {
-            let why =
-                "Windows support in microsandbox is a preview; not enabled in this version".to_owned();
+            let why = "Windows support in microsandbox is a preview; not enabled in this version"
+                .to_owned();
             blockers.push(block("unsupported_os", why.clone(), None));
             VirtState::Unsupported { why }
         }
@@ -138,7 +139,9 @@ pub fn evaluate(facts: &Facts, cfg: &VmConfig) -> Preflight {
         RuntimeState::Incomplete { why } => blockers.push(Blocker {
             code: "runtime_incomplete".into(),
             message: format!("The microsandbox runtime is only half installed ({why})."),
-            fix: Some("remove <home>/bin/msb and <home>/lib/libkrunfw*, then Set up runtime".into()),
+            fix: Some(
+                "remove <home>/bin/msb and <home>/lib/libkrunfw*, then Set up runtime".into(),
+            ),
             installable: true,
         }),
     }
@@ -255,17 +258,22 @@ fn glibc_version() -> Option<(u32, u32)> {
     if std::env::consts::OS != "linux" {
         return None;
     }
-    let out = std::process::Command::new("ldd").arg("--version").output().ok()?;
-    let first = String::from_utf8_lossy(&out.stdout).lines().next()?.to_owned();
+    let out = std::process::Command::new("ldd")
+        .arg("--version")
+        .output()
+        .ok()?;
+    let first = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .to_owned();
     let ver = first.rsplit(' ').next()?;
     let (major, minor) = ver.split_once('.')?;
     Some((major.parse().ok()?, minor.trim().parse().ok()?))
 }
 
 fn on_path(bin: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|p| {
-        std::env::split_paths(&p).any(|d| d.join(bin).is_file())
-    })
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
 }
 
 #[cfg(test)]
@@ -330,10 +338,19 @@ mod tests {
         f.kvm_rw = false;
         let p = evaluate(&f, &VmConfig::default());
         assert_eq!(codes(&p), ["kvm_not_writable"]);
-        assert!(p.blockers[0].fix.as_deref().unwrap().contains("usermod -aG kvm"));
+        assert!(
+            p.blockers[0]
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("usermod -aG kvm")
+        );
         f.kvm_rw = true;
         f.glibc = Some((2, 17));
-        assert_eq!(codes(&evaluate(&f, &VmConfig::default())), ["glibc_too_old"]);
+        assert_eq!(
+            codes(&evaluate(&f, &VmConfig::default())),
+            ["glibc_too_old"]
+        );
     }
 
     #[test]
@@ -351,16 +368,24 @@ mod tests {
         let p = evaluate(&f, &VmConfig::default());
         assert_eq!(codes(&p), ["runtime_missing"]);
         assert!(!p.blockers[0].installable);
-        f.runtime = RuntimeState::Incomplete { why: "no libkrunfw".into() };
+        f.runtime = RuntimeState::Incomplete {
+            why: "no libkrunfw".into(),
+        };
         let p = evaluate(&f, &VmConfig::default());
         assert_eq!(codes(&p), ["runtime_incomplete"]);
         assert!(p.blockers[0].installable && p.blockers[0].message.contains("no libkrunfw"));
         // A failed extraction is an installable blocker on top of the state.
-        f.runtime = RuntimeState::Embedded { version: "0.7.4".into(), extracted: false, home: "/h".into() };
+        f.runtime = RuntimeState::Embedded {
+            version: "0.7.4".into(),
+            extracted: false,
+            home: "/h".into(),
+        };
         f.extract_failed = Some("read-only file system".into());
         let p = evaluate(&f, &VmConfig::default());
         assert_eq!(codes(&p), ["runtime_extract_failed"]);
-        assert!(p.blockers[0].installable && p.blockers[0].message.contains("read-only file system"));
+        assert!(
+            p.blockers[0].installable && p.blockers[0].message.contains("read-only file system")
+        );
     }
 
     #[test]
@@ -384,7 +409,11 @@ mod tests {
         cfg.defaults.memory_mib = crate::types::AutoOr::Value(3072);
         let p = evaluate(&f, &cfg);
         assert_eq!(codes(&p), ["disk_low"]);
-        assert!(p.blockers[0].message.contains("24 GiB"), "{}", p.blockers[0].message);
+        assert!(
+            p.blockers[0].message.contains("24 GiB"),
+            "{}",
+            p.blockers[0].message
+        );
         let w: Vec<&str> = p.warnings.iter().map(|b| b.code.as_str()).collect();
         assert_eq!(w, ["memory_low", "docker_missing"]);
     }

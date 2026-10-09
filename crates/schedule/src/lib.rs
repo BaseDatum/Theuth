@@ -43,6 +43,64 @@ pub const DIR: &str = "schedules";
 /// Sqlite file under `data_dir` holding run history (34 §7).
 pub const DB: &str = "schedule.sqlite";
 
+/// A plugin's confinement for the sessions of the schedules it owns
+/// (140 §8.3): given the file stem, `Ok(Some(toolset))` is applied with
+/// `agent::SetToolset` before the prompt is sent on every fire,
+/// `Ok(None)` says the owner no longer knows the schedule (the loop ends),
+/// `Err` refuses this fire (the next tick retries).
+pub type ToolsetResolver = Arc<
+    dyn Fn(&str) -> Pin<Box<dyn Future<Output = Result<Option<agent::Toolset>, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// `(name prefix, resolver)` pairs registered by [`confine`].
+static CONFINED: std::sync::RwLock<Vec<(String, ToolsetResolver)>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// Register `resolver` for every schedule whose name starts with `prefix`
+/// (140 §8.3). Call at plugin start, before the schedule plugin's first tick;
+/// the registry is process-wide and needs no actor. A later call for the
+/// same prefix replaces the earlier one.
+pub fn confine(prefix: &str, resolver: ToolsetResolver) {
+    let mut c = CONFINED
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    c.retain(|(p, _)| p != prefix);
+    c.push((prefix.to_owned(), resolver));
+}
+
+/// What [`toolset_for`] found for a name.
+enum Confinement {
+    /// No owner claims the name: an ordinary schedule.
+    Unconfined,
+    /// Applied before the prompt on every fire.
+    Toolset(agent::Toolset),
+    /// The owner no longer knows the schedule: the loop ends.
+    Orphaned,
+}
+
+/// The confinement a fire of `name` must run under. Resolver errors are
+/// prefixed `toolset:` and refuse the fire.
+async fn toolset_for(name: &str) -> Result<Confinement, String> {
+    let resolver = {
+        let c = CONFINED
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        c.iter()
+            .find(|(p, _)| name.starts_with(p.as_str()))
+            .map(|(_, r)| r.clone())
+    };
+    let Some(r) = resolver else {
+        return Ok(Confinement::Unconfined);
+    };
+    match r(name).await {
+        Ok(Some(t)) => Ok(Confinement::Toolset(t)),
+        Ok(None) => Ok(Confinement::Orphaned),
+        Err(e) => Err(format!("toolset: {e}")),
+    }
+}
+
 /// `schedule:` config section (34 §9).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -496,7 +554,8 @@ pub struct RunInfo {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "type")]
 pub enum ScheduleEvent {
-    /// A schedule's prompt entered its session.
+    /// A schedule's prompt is entering its session (published just before
+    /// `SendInput`, after the session's toolset and budget are set).
     Fired {
         /// File stem.
         name: String,
@@ -864,9 +923,12 @@ enum Fired {
     Task(String),
 }
 
-/// Internal `tell`: the directory changed (watcher) — re-read it (34 §2.3).
+/// The directory changed — re-read it (34 §2.3). Told by the watcher; asked by a
+/// plugin that wrote a file itself (140 `schedule_file::write`): FSEvents is not
+/// delivered in every launch environment (140-P live: `FSEventStreamStart` false
+/// under the ACP tool tree), and a loop must not depend on it to start.
 #[derive(Clone, Copy, Debug)]
-struct Reconcile;
+pub struct Reconcile;
 
 /// Grace between a fanned-out run's `TurnFinished` and its [`Settle`]: long
 /// enough for the agent's `TurnDone` to start a queued result turn and for
@@ -1239,6 +1301,18 @@ impl Schedule {
             return Ok(Fired::Task(task));
         }
 
+        // 140 §8.3: a confined schedule runs under its owner's toolset or not
+        // at all; an orphaned one (its owner forgot it) ends like a broken `until`.
+        let toolset = match toolset_for(name).await? {
+            Confinement::Unconfined => None,
+            Confinement::Toolset(t) => Some(t),
+            Confinement::Orphaned => {
+                let why = "toolset gone: no owner for this schedule".to_owned();
+                self.end(name, why.clone()).await;
+                return Err(why);
+            }
+        };
+
         let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
             .ok()
             .flatten()
@@ -1317,6 +1391,27 @@ impl Schedule {
             }
         }
 
+        // 140 §8.3: the toolset lands in the session's mailbox ahead of the
+        // prompt, so the first turn's rebase already reads it; a confinement
+        // that cannot be applied refuses the fire.
+        if let Some(toolset) = toolset {
+            agents
+                .ask(agent::SetToolset {
+                    session,
+                    toolset: Some(toolset),
+                })
+                .await
+                .map_err(|e| format!("toolset not applied: {e}"))?;
+        }
+        // 140 §8.2: published before the prompt so a subscriber's binding
+        // (`studies.session`) is on record before the session's first tool call.
+        self.rt
+            .publish(ScheduleEvent::Fired {
+                name: name.to_owned(),
+                session,
+                at: now,
+            })
+            .await;
         agents
             .ask(agent::SendInput {
                 session: Some(session),
@@ -1374,13 +1469,6 @@ impl Schedule {
                 next_of(&e.spec, now, Some(now))
             };
         }
-        self.rt
-            .publish(ScheduleEvent::Fired {
-                name: name.to_owned(),
-                session,
-                at: now,
-            })
-            .await;
         Ok(Fired::Session(session))
     }
 
@@ -2971,6 +3059,61 @@ mod fire_tests {
         );
     }
 
+    /// 140 §8.3: a confined schedule fires only under its owner's toolset.
+    /// A resolver error refuses the fire (nothing recorded, retried next
+    /// tick); an orphaned name ends the loop like a broken `until`. Ordinary
+    /// names are untouched by the registry. (The applied toolset reaches the
+    /// session's mailbox before the prompt — `fire_with` runs `SetToolset`
+    /// then `SendInput` on the same `Agents` ask path.)
+    #[tokio::test]
+    async fn confined_schedule_refuses_or_ends_without_its_toolset() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, _) = actor(
+            dir.path(),
+            &[
+                ("study-a", "---\nevery: 0s\nmax_runs: 5\n---\ngo\n"),
+                ("study-b", "---\nevery: 0s\nmax_runs: 5\n---\ngo\n"),
+                ("plain", "---\nevery: 0s\nmax_runs: 5\n---\ngo\n"),
+            ],
+        )
+        .await;
+        confine(
+            "study-",
+            Arc::new(|name: &str| {
+                let name = name.to_owned();
+                Box::pin(async move {
+                    match name.as_str() {
+                        "study-a" => Err("ledger busy".to_owned()),
+                        _ => Ok(None),
+                    }
+                })
+            }),
+        );
+        let e = s
+            .fire("study-a", Local::now(), true, None)
+            .await
+            .unwrap_err();
+        assert_eq!(e, "toolset: ledger busy");
+        assert!(dir.path().join(DIR).join("study-a.md").exists());
+        assert!(s.store.history("study-a", 5).await.unwrap().is_empty());
+
+        let e = s
+            .fire("study-b", Local::now(), true, None)
+            .await
+            .unwrap_err();
+        assert!(e.starts_with("toolset gone"), "{e}");
+        assert!(!dir.path().join(DIR).join("study-b.md").exists());
+        let h = s.store.history("study-b", 5).await.unwrap();
+        assert_eq!(
+            h[0].result.as_deref(),
+            Some("toolset gone: no owner for this schedule")
+        );
+
+        // An unconfined name gets as far as the agent lookup (none in tests).
+        let e = s.fire("plain", Local::now(), true, None).await.unwrap_err();
+        assert_eq!(e, "agent is not running");
+    }
+
     #[tokio::test]
     async fn max_runs_stops_new_tasks_and_until_closes_them() {
         let dir = tempfile::tempdir().unwrap();
@@ -3053,6 +3196,30 @@ mod fire_tests {
         assert_eq!(actor.ask(GetRunTimeout).await.unwrap(), 90);
         let cfg = std::fs::read_to_string(dir.path().join("config.yaml")).unwrap();
         assert_eq!(cfg, "schedule:\n  run_timeout_secs: 90\n");
+    }
+
+    /// 140-P: a plugin that writes a file asks `Reconcile` itself; the file is
+    /// known before the ask returns, with no dir watcher involved.
+    #[tokio::test]
+    async fn reconcile_ask_reads_a_file_written_after_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _) = actor(dir.path(), &[]).await;
+        let actor = Schedule::spawn(s);
+        assert!(actor.ask(ListSchedules).await.unwrap().is_empty());
+        std::fs::write(
+            dir.path().join(DIR).join("autoresearch-x.md"),
+            "---\nevery: 0s\nmax_runs: 3\nenabled: false\n---\n\nnext experiment\n",
+        )
+        .unwrap();
+        actor.ask(Reconcile).await.unwrap();
+        let names: Vec<String> = actor
+            .ask(ListSchedules)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, vec!["autoresearch-x".to_owned()]);
     }
 
     /// 131 D1: the runtime is reset exactly when the fire clears the frame
@@ -4367,7 +4534,10 @@ mod watch_tests {
         assert!(sched.consumed.contains("w") && sched.entries["w"].next.is_none());
         assert!(rec.calls.lock().unwrap().is_empty());
 
-        // no `created:` → the file's mtime stands in: not expired now, expired 2m on
+        // no `created:` → first load stamps it (else the file's mtime stands in):
+        // not expired at that instant, expired 2m on. The test clock starts from
+        // the stamp itself, not the wall clock, so a slow load (machine under
+        // load) cannot run the 1m ttl out before the first tick.
         let dir = tempfile::tempdir().unwrap();
         let (mut sched, _) = watcher(
             dir.path(),
@@ -4375,9 +4545,16 @@ mod watch_tests {
             fs_exists_true(),
         )
         .await;
-        let t0 = Local::now();
+        let spec = sched.entries["w"].spec.clone().unwrap();
+        let t0 = sched
+            .created_of(&spec)
+            .expect("first load stamps created:")
+            .max(sched.entries["w"].next.expect("armed at load"));
         assert_eq!(step(&mut sched, t0).await, Some(CheckOutcome::Fired));
-        assert!(sched.tick(t0 + s(120)).await.is_empty(), "past mtime + 1m");
+        assert!(
+            sched.tick(t0 + s(120)).await.is_empty(),
+            "past created + 1m"
+        );
         assert_eq!(results(&sched, 1).await, ["expired"]);
 
         // a check still in flight is a row, not a second check

@@ -423,6 +423,12 @@ pub enum Command {
     EnableSchedule(String, bool),
     /// `test_schedule`: `/schedules test <name>` — the 40 §1.12 verdict.
     TestSchedule(String),
+    /// `autoresearch.list` / `autoresearch.get` + last 10 experiments: `/autoresearch [<slug>]` (140 §13.1).
+    AutoresearchStatus(Option<String>),
+    /// `autoresearch.control`: `/autoresearch pause|resume|stop|stop_now <slug>`.
+    AutoresearchControl(String, autoresearch::ControlOp),
+    /// `autoresearch.steer`: `/autoresearch steer <slug> <text>`.
+    AutoresearchSteer(String, String),
     /// `tasks_list` for one project (`None` = every project) (67 §12).
     ListTasks(Option<String>),
     /// `agents_list`: the roster (67 §12).
@@ -1632,6 +1638,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "/schedules",
         "[run <name>|test <name>|history <name>|pause <name>|resume <name>]",
         "scheduled prompts: list, fire one now, show its runs, pause or resume a loop",
+    ),
+    (
+        "/autoresearch",
+        "[<goal> | <slug> | list | pause|resume|stop|stop_now <slug> | steer <slug> <text>]",
+        "autoresearch studies (140): list, open, pause/resume/stop/steer one directly; a goal or anything else hands the `autoresearch` skill to the model",
     ),
     (
         "/tasks",
@@ -7044,6 +7055,44 @@ impl Model {
                     send(tx, Command::TestSchedule(name.trim().to_owned()))
                 }
                 _ => self.entries.push(Entry::Info(SCHEDULES_USAGE.into())),
+            },
+            // 140 §13.1: list/status/pause/resume/stop/steer are direct RPC; a goal (or a control in words) hands
+            // the `autoresearch` skill to the model (the model calls autoresearch_draft/status/control).
+            "/autoresearch" => match arg
+                .split_once(' ')
+                .map_or((arg, ""), |(a, b)| (a, b.trim()))
+            {
+                ("", _) | ("list", "") | ("status", "") => {
+                    send(tx, Command::AutoresearchStatus(None))
+                }
+                ("status", slug) if !slug.is_empty() => {
+                    send(tx, Command::AutoresearchStatus(Some(slug.to_owned())))
+                }
+                (op @ ("pause" | "resume" | "stop" | "stop_now"), slug) if !slug.is_empty() => {
+                    let op = match op {
+                        "pause" => autoresearch::ControlOp::Pause,
+                        "resume" => autoresearch::ControlOp::Resume,
+                        "stop" => autoresearch::ControlOp::StopAfter,
+                        _ => autoresearch::ControlOp::StopNow,
+                    };
+                    send(tx, Command::AutoresearchControl(slug.to_owned(), op))
+                }
+                ("steer", rest) if rest.contains(' ') => {
+                    let (slug, text) = rest.split_once(' ').unwrap_or((rest, ""));
+                    send(
+                        tx,
+                        Command::AutoresearchSteer(slug.to_owned(), text.trim().to_owned()),
+                    )
+                }
+                // One word that is not a verb: a slug (the engine says so if it is not).
+                (slug, "")
+                    if slug
+                        .bytes()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') =>
+                {
+                    send(tx, Command::AutoresearchStatus(Some(slug.to_owned())))
+                }
+                _ => self.use_skill("autoresearch".into(), arg.to_owned(), tx),
             },
             "/tasks" => send(tx, Command::ListTasks(self.project.clone())),
             "/roster" => send(tx, Command::ListRoster),

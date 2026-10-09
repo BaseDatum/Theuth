@@ -13,6 +13,7 @@ use agent::{
 use app::AppCallChanged;
 use artifact::ArtifactShown;
 use artifact::preview::{PagePreviewRequested, PagePreviewResolved};
+use autoresearch::StudyEvent;
 use browser::BrowserEvent;
 use codeindex::CodeindexEvent;
 use document::{DocumentChanged, SourceEvent};
@@ -149,6 +150,7 @@ forward!(
     DreamNightStarted,
     DreamNightFinished,
     DreamUndone,
+    StudyEvent,
     EndlessProgress
 );
 
@@ -214,6 +216,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, DreamNightStarted>(&actor).await;
     rt.subscribe::<Bridge, DreamNightFinished>(&actor).await;
     rt.subscribe::<Bridge, DreamUndone>(&actor).await;
+    rt.subscribe::<Bridge, StudyEvent>(&actor).await;
     rt.subscribe::<Bridge, ReminderEvent>(&actor).await;
     rt.subscribe::<Bridge, EndlessProgress>(&actor).await;
     tx

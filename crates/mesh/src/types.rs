@@ -141,9 +141,7 @@ pub struct EngineStats {
 /// the cheap way: Apple silicon → `metal`; `/dev/nvidia0` → `cuda`; else
 /// `cpu` (a probed machine with no training-grade GPU — an Intel iGPU still
 /// says `gpu = true`). Spelled like `models.accelerator`.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Accelerator {

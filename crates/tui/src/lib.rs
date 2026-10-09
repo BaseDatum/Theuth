@@ -584,6 +584,47 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             let v = msg(api.test_schedule(name).await)?;
             UiEvent::Info(schedule::validate::render(&v))
         }
+        // 140 §13.1: the TUI's direct forms render as text (no chart).
+        Command::AutoresearchStatus(slug) => {
+            let studies = msg(api.autoresearch_list().await)?;
+            let mut text = match &slug {
+                Some(s) => {
+                    let Some(info) = studies.iter().find(|i| &i.slug == s) else {
+                        return Err(anyhow::anyhow!("no autoresearch study `{s}`"));
+                    };
+                    autoresearch::tools::render_info(info)
+                }
+                None if studies.is_empty() => {
+                    "no autoresearch studies (start one: /autoresearch <goal>)".to_owned()
+                }
+                None => studies
+                    .iter()
+                    .map(autoresearch::tools::render_info)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+            if let Some(s) = slug {
+                let rows = msg(api.autoresearch_experiments(s, None, 10).await)?;
+                if !rows.is_empty() {
+                    text.push_str("\nLast experiments (newest first):");
+                    for e in &rows {
+                        text.push('\n');
+                        text.push_str(&autoresearch::tools::render_row(e));
+                    }
+                }
+            }
+            UiEvent::Info(text)
+        }
+        Command::AutoresearchControl(slug, op) => {
+            let info = msg(api.autoresearch_control(slug, op).await)?;
+            UiEvent::Info(autoresearch::tools::render_info(&info))
+        }
+        Command::AutoresearchSteer(slug, text) => {
+            let id = msg(api.autoresearch_steer(slug.clone(), text).await)?;
+            UiEvent::Info(format!(
+                "steer #{id} queued: the next experiment of `{slug}` reads it; the loop does not pause"
+            ))
+        }
         Command::ComputerStatus => UiEvent::Computer(msg(api.computer_permissions().await)?),
         Command::CancelJob { session, id } => {
             msg(api.cancel_job(session, tools::JobId(id.clone())).await)?;
@@ -710,10 +751,16 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::HarnessOptionSet(config_id, value, r)
         }
         Command::ResumeChild(session) => {
-            msg(api.resume_child(session).await)?;
-            UiEvent::Info(
-                "harness resumed in its previous context; send a message to continue".into(),
-            )
+            // 146 D8: a child that died mid-prompt continues its task.
+            let text = match msg(api.resume_child(session).await)? {
+                agent::supervisor::ChildResumed::Prompted => {
+                    "harness resumed; resuming the interrupted task"
+                }
+                agent::supervisor::ChildResumed::Idle => {
+                    "harness reconnected in its previous context; it was idle, nothing to continue — send a message"
+                }
+            };
+            UiEvent::Info(text.into())
         }
         Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(session).await)?),
         Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),

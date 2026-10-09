@@ -30,6 +30,7 @@ import {
   adopt,
   empty,
   fromHistory,
+  interruptDangling,
   nextId,
   recordCall,
   reconcileTodos,
@@ -121,6 +122,8 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       /** `Date.now()` at `ToolCallStarted` / `ToolCallFinished`; live cards only (history rows carry no times). */
       startedAt?: number;
       finishedAt?: number;
+      /** 146 D7: a dead ACP child's trailing call, loaded with `running === false`: greyed, no spinner. */
+      interrupted?: true;
     }
   /** `⟵ from` card: a peer message, a subagent result or a job result. `origin` is the engine-authenticated
    * provenance (50 §9) of a peer exchange, from `PeerDelivered` live or `HistoryEntry::User.peer` on replay; a card
@@ -431,7 +434,9 @@ export const createSessions = (): SessionsApi =>
             set((st) => ({ sessions: { ...st.sessions, [id]: cur } }));
           return false;
         }
-        const entries = loaded.history.flatMap(fromHistory);
+        const raw = loaded.history.flatMap(fromHistory);
+        // 146 D7: an ACP child that is not running cannot still be inside its last tool call.
+        const entries = loaded.agent && !loaded.running ? interruptDangling(raw) : raw;
         const browser =
           cur.browser ||
           loaded.history.some(

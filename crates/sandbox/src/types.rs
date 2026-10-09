@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::vm::{ImageRef, Mount, NetPolicy, Resources, VmSnapshotInfo, VmMetrics};
+use crate::vm::{ImageRef, Mount, NetPolicy, Resources, VmMetrics, VmSnapshotInfo};
 
 /// One sandbox record as the UI and `sandbox_list` see it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
