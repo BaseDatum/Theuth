@@ -144,7 +144,7 @@ export function QuestionBlock({
             // The whole answer as sent, in the box's look; an `Input` cut a long one off (154).
             <div
               className={cn(
-                'min-h-8 whitespace-pre-wrap break-words rounded-md border border-input bg-transparent px-3 py-[3px] text-base shadow-xs md:py-[5px] md:text-sm dark:bg-input/30',
+                'min-h-8 whitespace-pre-wrap [overflow-wrap:anywhere] rounded-md border border-input bg-transparent px-3 py-[3px] text-base shadow-xs md:py-[5px] md:text-sm dark:bg-input/30',
                 typing ? 'border-fg-accent' : 'text-muted-foreground',
               )}
             >
