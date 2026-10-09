@@ -170,6 +170,8 @@ final class PointController {
     /// The table's `voiceKey` / `command` chords into KeyboardShortcuts; off = unregistered. NOT in `Hotkeys.names`: that
     /// launch probe would see Tauri's ⌃S (still bound until `companion-alive` lands, D22) and persist the row as unassigned.
     private func applyHotkey(_ v: CompanionSettings) {
+        guard !AskFlags.automated else { return } // a probe registers nothing (the Settings tabs call `hotkeyChanged` on appear)
+        var heldSeen: [KeyboardShortcuts.Shortcut] = []
         let rows: [(KeyAction, Bool, KeyboardShortcuts.Name, KeyboardShortcuts.Name)] = [
             (.voiceKey, VoiceKeySettings.enabled, .voiceKey, .pointEscapeHeld),
             (.command, ModeKeySettings.commandKeyEnabled(Settings.defaults), .commandKey, .commandEscapeHeld),
@@ -183,7 +185,9 @@ final class PointController {
                 PointLog.write("hotkey \(name.rawValue) \(want.map { "registered \($0)" } ?? "unregistered")")
             }
             // 149g: ⎋ as the held chord makes it; `setShortcut` registers at once, so it goes off again unless a gesture is live.
-            let held = chord.flatMap { KeyTable.escapeDuringHold(of: $0, reserved: Hotkeys.reserved) }.map(Hotkeys.shortcut)
+            // The held-⎋ twin is one Carbon registration per chord: ⌃⌥D and ⌃⌥C share ⌃⌥⎋, so the second row leaves it to the first.
+            var held = chord.flatMap { KeyTable.escapeDuringHold(of: $0, reserved: Hotkeys.reserved) }.map(Hotkeys.shortcut)
+            if let h = held { if heldSeen.contains(h) { held = nil } else { heldSeen.append(h) } }
             guard KeyboardShortcuts.getShortcut(for: heldName) != held else { continue }
             KeyboardShortcuts.setShortcut(held, for: heldName)
             switch state {
