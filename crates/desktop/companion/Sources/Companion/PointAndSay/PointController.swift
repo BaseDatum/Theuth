@@ -559,14 +559,16 @@ final class PointController {
         let reason: Reason?
         let name: String?
         let callId: String?
+        /// `ToolCallStarted.args` (`crates/agent/src/lib.rs` `args: serde_json::Value`); `arguments` accepted too (C2's wording).
         let args: JSONValue?
+        let arguments: JSONValue?
         let isError: Bool?
         let tool: String?
         let risk: String?
         let decision: String?
         let timedOut: Bool?
         enum CodingKeys: String, CodingKey {
-            case type, id, session, text, stopReason, message, utterance, isFinal = "final", levels, reason, name, callId, args, isError, tool, risk, decision, timedOut
+            case type, id, session, text, stopReason, message, utterance, isFinal = "final", levels, reason, name, callId, args, arguments, isError, tool, risk, decision, timedOut
         }
     }
 
@@ -621,7 +623,9 @@ final class PointController {
             guard let n = w.name else { return }
             card.state.tools.append(n)
             card.state.status = "working · \(n)"
-            let purpose = w.args?["purpose"]?.string ?? w.args?["reason"]?.string
+            // C2 (1fa78c3b): `purpose` is a top-level key of the tool's arguments on every tool; absent → the tool name.
+            let args = w.args ?? w.arguments
+            let purpose = args?["purpose"]?.string ?? args?["reason"]?.string
             if card.state.command?.observe(.toolCallStarted(id: w.callId ?? n, tool: n, purpose: purpose)) == true { capReached(session) }
             return
         case "ToolCallFinished":

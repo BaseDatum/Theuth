@@ -74,7 +74,7 @@ purpose, cap 12 freezes, verdict parse); `AnswerCardStateTests` ×3 (stale hide 
 - Not run (needs Sky at the keyboard + the C2 prompt block): §16 row 21 live ⌃⌥C → approval by voice → ✓ line; mode switch mid-hold.
 
 ## Hand-offs
-- **C2 (engine prompt)**: the card reads `purpose` (fallback `reason`) from `ToolCallStarted.args`; prefixes `checking:` / `executing:` /
+- **C2 (engine, DONE 1fa78c3b — aligned)**: the card reads the top-level `purpose` key of `ToolCallStarted.args` (wire key `args`; `arguments` also accepted; fallback `reason`); prefixes `checking:` / `executing:` /
   `verifying:` (case-insensitive, colon required) type the row; the text after the colon ≤ 60 chars (clipped); no/unknown prefix → the
   row says `running`/`ran` with the text (or the tool name). Final line: first non-blank char `✓` or `✗`. The user line is
   `[command, N s] ‹words›` (N ≥ 1, ceil of the hold), `[screen …]` lines follow only if the user turned the screen on.
