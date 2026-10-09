@@ -27,6 +27,48 @@ pub fn pcm16k(path: &Path) -> anyhow::Result<Vec<f32>> {
     voice::resample(pcm, rate, RATE)
 }
 
+/// libopus decodes every packet at this rate (RFC 7845 §5.1), whatever the input rate was.
+pub const OPUS_RATE: u32 = 48_000;
+
+/// 156 D10: the samples of `ranges` (ms, in time order) from the Ogg Opus track at `path`,
+/// concatenated, at [`OPUS_RATE`]. The same samples `voice::decode` + slicing gives — the
+/// stream is read and decoded from its start so libopus sees the same packet history — but
+/// decoding stops at the last range's end and nothing outside the ranges is kept, so memory is
+/// bounded by the ranges, not the track.
+// ponytail: decode from packet 0 (~1 s per hour of track); page seeking via granule positions if a click ever feels slow.
+pub fn opus_ranges(path: &Path, ranges: &[(u64, u64)]) -> anyhow::Result<Vec<f32>> {
+    let at = |ms: u64| (ms * u64::from(OPUS_RATE) / 1000) as usize;
+    let want: Vec<(usize, usize)> = ranges.iter().map(|&(a, b)| (at(a), at(b))).collect();
+    let end = want.iter().map(|r| r.1).max().unwrap_or(0);
+    let mut out = Vec::with_capacity(want.iter().map(|(a, b)| b.saturating_sub(*a)).sum());
+    let mut reader = ::ogg::PacketReader::new(std::io::BufReader::new(std::fs::File::open(path)?));
+    let mut dec = opus::Decoder::new(OPUS_RATE, opus::Channels::Mono)?;
+    let mut buf = vec![0f32; 5760];
+    // `OpusHead` and `OpusTags` first (RFC 7845 §3); the demuxer `voice::decode` uses skips them too.
+    let mut headers = 2;
+    let mut pos = 0usize;
+    while pos < end {
+        // A truncated or damaged tail ends the stream, as `voice::decode`'s `while let Ok` does.
+        let Ok(Some(p)) = reader.read_packet() else {
+            break;
+        };
+        if headers > 0 {
+            headers -= 1;
+            continue;
+        }
+        let n = dec.decode_float(&p.data, &mut buf, false)?;
+        let next = pos + n;
+        for &(a, b) in &want {
+            let (lo, hi) = (a.max(pos), b.min(next));
+            if lo < hi {
+                out.extend_from_slice(&buf[lo - pos..hi - pos]);
+            }
+        }
+        pos = next;
+    }
+    Ok(out)
+}
+
 /// Utterance spans `(t0_ms, t1_ms)` of `pcm` (16 kHz) per the live gate
 /// (`voice::live`): TEN-VAD frames → [`Gate`] edges, onset backdated by the
 /// gate's onset run and pre-roll. Needs `ort` loaded ([`Engine::load`] first).
@@ -120,5 +162,42 @@ mod tests {
             [(0, 5_000), (5_000, 12_000), (20_000, 21_000)]
         );
         assert!(disjoint(&[]).is_empty());
+    }
+
+    /// 156 D10: a 3 s synthetic track through the crate's own encoder and writer; the bounded
+    /// decode of a range is exactly the full decode sliced, and the whole-track range is the
+    /// full decode.
+    #[test]
+    fn opus_ranges_match_the_full_decode_sliced() {
+        use crate::ogg::{FRAME, RATE as ENC_RATE, Writer};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mic.opus");
+        let mut enc =
+            opus::Encoder::new(ENC_RATE, opus::Channels::Mono, opus::Application::Voip).unwrap();
+        let mut w = Writer::new(std::fs::File::create(&path).unwrap(), 7, 0, &[]).unwrap();
+        let frames = 150; // 3 s of 20 ms frames
+        let mut buf = vec![0u8; 4000];
+        for f in 0..frames {
+            let pcm: Vec<f32> = (0..FRAME)
+                .map(|i| {
+                    let t = (f * FRAME + i) as f32 / ENC_RATE as f32;
+                    (t * 440.0 * std::f32::consts::TAU).sin() * 0.5
+                })
+                .collect();
+            let n = enc.encode_float(&pcm, &mut buf).unwrap();
+            w.packet(buf[..n].to_vec(), f + 1 == frames).unwrap();
+        }
+        drop(w);
+        let (full, rate) = voice::decode(std::fs::read(&path).unwrap(), "opus").unwrap();
+        assert_eq!(rate, OPUS_RATE);
+        assert_eq!(full.len(), frames * FRAME * 2, "3 s at 48 kHz");
+        let at = |ms: u64| (ms * u64::from(OPUS_RATE) / 1000) as usize;
+        let cut = opus_ranges(&path, &[(1_234, 2_345)]).unwrap();
+        assert_eq!(cut, full[at(1_234)..at(2_345)]);
+        // Two ranges concatenate in order; the end past the track clamps; a range past the end is empty.
+        let two = opus_ranges(&path, &[(100, 200), (2_900, 9_000)]).unwrap();
+        assert_eq!(two, [&full[at(100)..at(200)], &full[at(2_900)..]].concat());
+        assert!(opus_ranges(&path, &[(5_000, 6_000)]).unwrap().is_empty());
+        assert_eq!(opus_ranges(&path, &[(0, 60_000)]).unwrap(), full);
     }
 }
