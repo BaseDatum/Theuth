@@ -120,7 +120,7 @@ export function StudyView() {
             <Stat label="Incumbent" sub={info.baseline_mean !== null ? `base ${metric(info.baseline_mean, unit)}` : 'measuring the baseline'}>
               {metric(info.incumbent.mean, unit)} {info.delta_pct !== null && <Delta direction={direction} delta_pct={info.delta_pct} className="text-sm font-semibold" />}
             </Stat>
-            <Stat label="Noise σ" sub={info.sigma !== null && info.baseline_mean ? `${pct((info.sigma / Math.abs(info.baseline_mean)) * 100).replace(/^[+−]/, '')}${needs !== null ? ` · a keep needs ≈ ${pct(needs).replace(/^[+−]/, '')}` : ''}` : `${d.spec.bench.repeats} baseline samples`}>
+            <Stat label="Noise σ" sub={info.sigma !== null && info.incumbent.mean ? `${pct((info.sigma / Math.abs(info.incumbent.mean)) * 100).replace(/^[+−]/, '')}${needs !== null ? ` · a keep needs ≈ ${pct(needs).replace(/^[+−]/, '')}` : ''}` : `${d.spec.bench.repeats} baseline samples`}>
               {metric(info.sigma, unit)}
             </Stat>
             <Stat label="Kept" sub={[counts.reverted > 0 && `${counts.reverted} reverted by review`, counts.crashed > 0 && `${counts.crashed} crashed`, counts.checks_failed > 0 && `${counts.checks_failed} failed checks`].filter(Boolean).join(' · ') || 'nothing reverted'}>

@@ -1195,7 +1195,7 @@ wire! {
         pub base_sha: Option<String>,
         /// The incumbent.
         pub incumbent: Incumbent,
-        /// Baseline mean of the current segment.
+        /// The study base's measured mean (segment 0's baseline); `delta_pct` is vs this.
         pub baseline_mean: Option<f64>,
         /// Pooled σ of the current segment.
         pub sigma: Option<f64>,

@@ -527,9 +527,8 @@ impl Ctx<'_> {
                         .to_owned(),
                 );
                 self.store
-                    .get_segment(&self.study.slug, self.study.segment)
+                    .base_mean(&self.study.slug)
                     .await?
-                    .and_then(|s| s.baseline_mean)
                     .unwrap_or(f64::NAN)
             }
         };

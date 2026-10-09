@@ -83,7 +83,7 @@ pub async fn render(
         .count();
 
     let x_i = study.incumbent_mean;
-    let base = segment.as_ref().and_then(|s| s.baseline_mean);
+    let base = store.base_mean(slug).await?;
     let closed: Vec<&ExperimentRecord> =
         experiments.iter().filter(|e| is_closed(e.state)).collect();
     let kept: Vec<&ExperimentRecord> = closed
@@ -988,6 +988,42 @@ mod tests {
         }
         // The ★ marks only the user idea (plus the section header's legend).
         assert_eq!(b.text.matches('★').count(), 2);
+    }
+
+    /// 140-P2 live: on a regime segment the metric line read `+0 % vs base` — the Δ was taken
+    /// against the new segment's baseline (= the keep). "Base" is the study base (segment 0);
+    /// the segment line names the regime change.
+    #[tokio::test]
+    async fn vs_base_reads_the_study_base_on_a_later_segment() {
+        let (_d, store, mut study) = fixture(2, 0, 0, 0).await;
+        study.segment = 1;
+        store
+            .put_segment(&SegmentRecord {
+                slug: "sort-speed".into(),
+                segment: 1,
+                opened_at: "2026-10-08T01:00:00Z".into(),
+                opened_by: By::Plugin,
+                reason: Some("regime change at #1: Δ 1.1 ms ≥ 10σ (σ 0.10)".into()),
+                custody: Default::default(),
+                baseline_mean: Some(41.2),
+                baseline_n: 2,
+            })
+            .await
+            .unwrap();
+        let b = render(&store, &study, &BriefConfig::default(), &cx(3))
+            .await
+            .unwrap();
+        for needle in [
+            "segment=\"1\">",
+            "Incumbent 41.2 ms = −2.6 % vs base (better)",
+            "Segment 1: opened automatically — regime change at #1: Δ 1.1 ms ≥ 10σ (σ 0.10). Earlier experiments stay listed but left the statistics.",
+        ] {
+            assert!(
+                b.text.contains(needle),
+                "missing {needle:?} in:\n{}",
+                b.text
+            );
+        }
     }
 
     /// Dead ends collapse by similarity with ×N and group by category.

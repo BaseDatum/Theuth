@@ -1008,11 +1008,9 @@ async fn check_overfit(
     let holdout_delta = gate::normalise(direction, mean(incumbent_holdout), mean(&base_holdout));
     let search_delta = match (
         study.incumbent_mean,
-        env.store.get_segment(&study.slug, study.segment).await?,
+        env.store.base_mean(&study.slug).await?,
     ) {
-        (Some(inc), Some(seg)) => seg
-            .baseline_mean
-            .map(|b| gate::normalise(direction, inc, b)),
+        (Some(inc), Some(b)) => Some(gate::normalise(direction, inc, b)),
         _ => None,
     };
     if holdout_delta < -2.0 * sigma && search_delta.is_some_and(|d| d > 0.0) {
@@ -1177,11 +1175,7 @@ fn info_from(
 /// `StudyInfo` with counts, base and spend filled from the ledger.
 pub async fn info_full(env: &Env, study: &StudyRecord) -> Result<StudyInfo> {
     let (closed, kept) = counts(&env.store, &study.slug).await?;
-    let base_mean = env
-        .store
-        .get_segment(&study.slug, study.segment)
-        .await?
-        .and_then(|s| s.baseline_mean);
+    let base_mean = env.store.base_mean(&study.slug).await?;
     // A finished study has no live tree to ask (R-115: no agent ask per `autoresearch.list`
     // row), but its closed experiments' cost is a ledger sum — $0 was wrong (140-P live).
     let spend = if is_terminal(&study.state) {
@@ -5156,18 +5150,10 @@ impl roster::attention::Source for AttentionSource {
         for s in studies {
             match &s.state {
                 StudyState::Finished => {
-                    let delta = match (
-                        s.incumbent_mean,
-                        self.0
-                            .get_segment(&s.slug, 0)
-                            .await
-                            .ok()
-                            .flatten()
-                            .and_then(|g| g.baseline_mean),
-                    ) {
-                        (Some(i), Some(b)) => {
-                            fmt_pct(pct(gate::normalise(s.spec.metric.direction, i, b), b))
-                        }
+                    // Revision 2's one Δ convention: raw change, never direction-normalised
+                    // (140-P2 live: the row read `+100.0 %` for 7356 → 3.1 ms).
+                    let delta = match (s.incumbent_mean, self.0.base_mean(&s.slug).await) {
+                        (Some(i), Ok(Some(b))) => fmt_pct(pct(i - b, b)),
                         _ => "—".into(),
                     };
                     out.push(item(

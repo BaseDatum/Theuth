@@ -1183,6 +1183,8 @@ async fn experiment_budget_stops_and_finalizes_with_the_result_card_data() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].id, "autoresearch:finished:t1");
     assert_eq!(items[0].kind, roster::attention::AttentionKind::Review);
+    // 140-P2 live: the row read `+100.0 %` for a lower-is-better win; Δ is the raw change.
+    assert_eq!(items[0].title, "Study t1 finished: -5.0 % · Review");
     // Discard after finish removes the worktree and ends in `discarded`.
     let info = control(
         &mut h.studies,
@@ -1973,6 +1975,15 @@ async fn a_regime_change_opens_a_segment_at_the_keep() {
             .any(|l| l.contains("segment 1 opened automatically at #1")),
         "{:?}",
         d.needs_eyes
+    );
+    // 140-P2 live: the headline read "+0 % vs base" after the regime segment (the Δ was taken
+    // against the new segment's baseline). "Base" is the study base; the brief's line is
+    // `brief::tests::vs_base_reads_the_study_base_on_a_later_segment` (the Fake renders none).
+    assert_eq!(d.info.baseline_mean, Some(100.0));
+    assert!(
+        (d.info.delta_pct.unwrap() + 49.75).abs() < 1e-9,
+        "{:?}",
+        d.info.delta_pct
     );
 
     // A keep under the threshold, or with the knob off, leaves the segment alone.
