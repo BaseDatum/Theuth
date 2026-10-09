@@ -223,5 +223,7 @@ were logged and dropped until now.
   (`r2-card-attached-round1.png`) drew the caption as an overlay that collided with the placeholder — moved into the placeholder in 8e4fa00e.
   The reply itself was not sent (the fixture session is not a real one); the file path is `TakeReplyAttachments` → `send_input(…, files)`,
   unit-tested.
-- The panel's `Ctrl+Shift+Space` hotkey did not toggle the panel from SendInput in this round (registered twice in the log, id 0x134, once
-  by WW2's surfaces and once by my install order?) — the inbox pill opened it. Noted for WW2/integration; not changed here.
+- The panel's `Ctrl+Shift+Space` did not toggle the panel from either SendInput source this round (w6-gate `hotkey`, windows-mcp
+  `keyboard_control`): registration is fine (`openPanel … registered id=0x134`, re-applied once by WW1's gate), but no `WM_HOTKEY` line
+  followed the presses — the inbox pill opened the panel instead. Not my seam; not investigated (the voice key's Ctrl+Alt+Space from the
+  same SendInput path worked in R1).
