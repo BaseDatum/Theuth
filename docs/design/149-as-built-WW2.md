@@ -1,7 +1,7 @@
 # 149 — as-built WW2: the WinUI surfaces of §3.1–3.5 on Windows (pills rail · agents panel by host · card anatomy · empty state · Ask pill)
 
 Branch `feat/149w-ww2` off `integrate/149` 77fa225f (= main dd19bf63 + the design), worker `ww2-surfaces` (theuth subagent),
-2026-10-09 01:38 → __END__ BST. Merged WW1's SKELETON 2c965119 (02:04) and the 149 contract C 0280c0a7 (H1, 02:10).
+2026-10-09 01:38 → 03:20 BST. Merged WW1's SKELETON 2c965119 (02:04) and the 149 contract C 0280c0a7 (H1, 02:10).
 Verified on the Mac (Core/Rpc tests) and on build-B (Windows 11, slot `ww2`, Debug x64; one 1920×1080 virtual display —
 multi-display behaviour is built, not verified). The installed engine on build-B is theuth with no model credential, so every
 screen that needs an agent turn was rendered from the `--ww2-fixture` overlay (named per screenshot below).
@@ -31,11 +31,36 @@ screen that needs an agent turn was rendered from the `--ww2-fixture` overlay (n
 
 ## 2. Verification
 
-- Mac: `dotnet test Theuth.Companion.Portable.slnf` → Core **183/183** (161 WW1 + 22 WW2), Rpc **43/43** (02:05, after the SKELETON merge).
-- build-B Debug x64 of the whole solution (`Theuth.Companion.slnx`, slot `ww2`): a1ec4959 → **0 errors / 0 warnings**, 39 s (job 20261009T012218-24); earlier rounds 2ed44bdf (3 errors: DispatcherQueue ambiguity) and 78d4cf14 (15 errors: Shape ambiguity, HWND.Value is `void*`, nullable flow in ctor lambdas) fixed in a1ec4959.
-- UI round(s) on build-B under the desk lock (owner `ww2`): __UI__
+- Mac: Core **191/191** at d978afc1 (after merging WW1's final 0b3de92e; 22 of them WW2's); Rpc **43/43** at 78d9375c (the SKELETON merge) — the Rpc suite at the merged head is WW1's and ran separately (see the report).
+- build-B Debug x64 of the whole solution (`Theuth.Companion.slnx`, slot `ww2`): **d978afc1 → 0 errors / 0 warnings**, 31 s (job 20261009T021157-88); also f357cf5e (the UI round's build, 0/0, 43 s, 20261009T015031-67) and a1ec4959 (0/0, 39 s). Earlier rounds 2ed44bdf (3 errors: DispatcherQueue ambiguity) and 78d4cf14 (15: Shape ambiguity, HWND.Value is `void*`, nullable flow in ctor lambdas) were fixed in a1ec4959.
+- UI round on build-B under the desk lock (owner `ww2`): one round 03:00–03:10 (acquired 03:00:30 after WE1, released 03:10:30, 10 min). Launches from slot `ww2` at f357cf5e with
+  `--shareable` (the companion's windows are capture-excluded otherwise — the first launch without it produced empty screenshots):
+  (a) `--ww2-fixture --shareable`: pills with the gold badge and 7 dots (2 gold · 2 spinners · 2 rings incl. the real `theuth · desk` · 1 done) — `01`, `02`;
+  the agents panel from the agents pill: "this PC" with 5 rows (2 needs-you · w3-149-island running with ⑂2 and its child indented · docs-149 writer idle · theuth · desk) and
+  "build-B · on 🌐 lab" with 2 hollow rows, mic/✕ disabled, header counts "2 need you · 2 working · 2 on the mesh", real harness PNGs — `03`;
+  keys through `keyboard_control` on the panel's HWND: J J K K (focus moved; the focused row faience), X on w3-149-island → the hold row
+  "w3-149-island · Stopping w3-149-island and 2 children — sending · Esc undo · 3" with the carnelian hold bar — `04`; Esc → "Taken back" — `05`;
+  the inbox pill → the ask card (header name + position dots + J K ? ✕ esc, "Waiting for your answer · 5 m · theuth" with the omp icon,
+  the faience request bubble and the dark last-reply bubble, the bold question, 3 options with "(Recommended)" and the gold cap, the reply row
+  [▣ P] [Type your answer… R] [🎙 V] [↑ ⏎], footer "Stop agent X · Snooze S") — `06`; J → the approval card (Allow (Recommended) · Deny,
+  "Deny with a note" field, Stop agent X · Snooze S) — `07`; J → the finished card ("Finished · 4 m · theuth", the request bubble, "Next steps" over
+  2 options, "Tell w3-149-island what next", **Clear E and no Stop**) — `08`; the actions pill's ask glyph → the Ask pill idle (capsule, §3.5 hint row) — `09`.
+  (b) `--shareable` on the real engine (attention_list=0): the idle pills without a badge, one ring for the desk — `10`; the inbox pill → the empty state
+  "Nothing needs you." / "Suspiciously quiet — questions and finished work land here." — `11`.
+  (c) `--ask-probe 12 --synthetic-dictation --shareable`: the bar shows and closes idle (the probe's synthetic dictation needs the hotkey press, which
+  `--automated` makes inert) — **the Ask pill while recording was NOT captured**; the level-bars code path (`PillGlyphs.LevelBars` from
+  `store.Ask.Dictation.Levels`) is the same one the rail's actions pill uses and is wired on every `DictationChanged`; owed to a round with a real hold.
+  Ctrl+Shift+A injected through `keyboard_control` at the Tauri window did not reach `RegisterHotKey` (no `agents panel open` line); the panel opened from the
+  pill and the dot instead — the hotkey registration itself is in the log (`hotkey openAgents = Ctrl+Shift+A registered … id=0x135`).
+  After the round: `kill-mine`, `start-installed`, `w5-gate.ps1 reg` → `Run\TheuthCompanion = "%LOCALAPPDATA%\theuth\companion\Theuth.Companion.exe" --background`.
+  Two defects seen in the round are fixed in d978afc1 (build-B 0/0, Core 191/191): the badge drew under the inbox pill (`Canvas.ZIndex` pinned) and the
+  hold receipt said "Esc undo" twice (`StopLabel` for the held action, `StopPill` keeps the design's wording).
 
-Evidence: `~/.theuth/briefs/2026-10-09/149-windows/evidence/ww2/` — __EVIDENCE__
+Evidence: `~/.theuth/briefs/2026-10-09/149-windows/evidence/ww2/` — `00-desktop-before-ww2-round.png` · `01-pills-with-badge-fixture.png` · `02-inbox-badge-zoom-round1-clipped.png` (the badge defect, fixed after the round) ·
+`03-agents-panel-by-host-fixture.png` · `04-agents-stop-hold-x-esc-undo.png` · `05-agents-after-esc-undone.png` · `06-card-ask-fixture.png` ·
+`07-card-approval-fixture.png` · `08-card-finished-fixture.png` · `09-ask-pill-idle.png` · `10-pills-idle-no-badge-real-engine.png` · `11-empty-state-real-engine.png`.
+Every file whose name says `fixture` was rendered with `--ww2-fixture` (cards: ask/approval/finished items and the agent rows are fixture data; the decision/blocked/hire
+kinds were not seeded this round — `seed.ps1` was not needed for the anatomy, which is kind-driven and tested in `CardAnatomyTests`).
 
 ## 3. Deviations from the design (and why)
 
