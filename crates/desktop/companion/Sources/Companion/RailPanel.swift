@@ -272,14 +272,14 @@ struct MarkView: View {
                 .rotationEffect(.degrees(clock(kind)))
                 .frame(width: 10, height: 10)
         case .working:
-            Circle().fill(Color.accentColor).frame(width: 10, height: 10)
+            Circle().fill(Color.secondary).frame(width: 10, height: 10) // running = no colour (Reduce Motion stand-in for ProgressView)
                 .opacity(beat ? 0.55 : 1)
                 .onAppear {
                     guard !reduceMotion else { return }
                     withAnimation(.easeInOut(duration: 0.38).repeatForever(autoreverses: true)) { beat = true }
                 }
         case .idle:
-            Circle().strokeBorder(Color.accentColor, lineWidth: 1.5).frame(width: 10, height: 10)
+            Circle().strokeBorder(Color.secondary, lineWidth: 1.5).frame(width: 10, height: 10)
         case .finished:
             Circle().fill(Color.done).frame(width: 10, height: 10)
                 .overlay(Image(systemName: "checkmark").font(.system(size: 5, weight: .heavy)).foregroundColor(.white)) // native: glyph inside a 10 pt dot

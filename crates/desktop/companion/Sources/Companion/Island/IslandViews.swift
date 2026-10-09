@@ -86,7 +86,7 @@ struct ClosedPill: View {
         HStack(spacing: 10) {
             if s.isLive || s.state == .starting || s.state == .stopping {
                 Meters(level: s.level, height: h * 0.45)
-                Text(s.state == .paused ? "paused" : (speaker(s) ?? "Meeting")).font(font.weight(.semibold)).lineLimit(1).layoutPriority(1)
+                Text(s.state == .paused ? "paused" : (speaker(s) ?? "Meeting")).font(font.weight(.semibold)).foregroundColor(s.state == .paused ? .paused : .primary).lineLimit(1).layoutPriority(1)
                 Spacer(minLength: notch ? size.width - 20 : 4)
                 RecClock(slice: s, now: ui.now, font: small)
                 if !s.topics.isEmpty {
@@ -415,8 +415,8 @@ struct RecClock: View {
     let font: Font
     var body: some View {
         HStack(spacing: 4) {
-            if slice.state == .paused { Image(systemName: "pause.fill").font(font).imageScale(.small) }
-            else { Circle().fill(Color.failed).frame(width: 7, height: 7).overlay(Circle().stroke(Color.failed.opacity(0.3), lineWidth: 3)) }
+            if slice.state == .paused { Image(systemName: "pause.fill").font(font).imageScale(.small).foregroundColor(.paused) }
+            else { Circle().fill(Color.accentColor).frame(width: 7, height: 7).overlay(Circle().stroke(Color.accentColor.opacity(0.3), lineWidth: 3)) }
             Text(MeetingReducer.mmss(MeetingReducer.elapsed(slice, now: now))).font(font.monospaced()).monospacedDigit().lineLimit(1).fixedSize()
         }
         .foregroundColor(.secondary)

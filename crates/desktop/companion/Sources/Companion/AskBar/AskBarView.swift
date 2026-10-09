@@ -57,7 +57,7 @@ struct AskBarView: View {
                 } else {
                     Image(systemName: state.recording ? "mic.fill" : "mic")
                         .font(.title3)
-                        .foregroundColor(state.recording ? .failed : .secondary)
+                        .foregroundColor(state.recording ? .accentColor : .secondary)
                         .accessibilityLabel(state.recording ? "Listening" : "Hold the hotkey to dictate")
                 }
             }
@@ -70,7 +70,7 @@ struct AskBarView: View {
                 Text("· theuth routes it").font(Type.caps).foregroundColor(.tertiary).fixedSize()
                 Spacer(minLength: 0)
                 if let s = state.status {
-                    Text(s).font(Type.caps).foregroundColor(state.recording ? .failed : .tertiary).lineLimit(1)
+                    Text(s).font(Type.caps).foregroundColor(state.recording ? .accentColor : .tertiary).lineLimit(1)
                 }
             }
             .padding(.horizontal, 22).padding(.bottom, 12)

@@ -410,7 +410,7 @@ struct ReplyRow: View {
                 ChipView(text: "screen attached · \(a.files.count)", color: .done)
             }
             if let s = voice.status {
-                Text(s).font(Type.caps).foregroundColor(voice.recording ? .failed : .tertiary)
+                Text(s).font(Type.caps).foregroundColor(voice.recording ? .accentColor : .tertiary)
             }
         }
         .onAppear { replyFocused = store.ask.replyFor == card.item.id }

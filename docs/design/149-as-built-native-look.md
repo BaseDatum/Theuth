@@ -39,6 +39,21 @@ Tests touched: `FixtureTests.swift:255-257` (`color: "malachite"` → `"#007aff"
 
 ## Mapping
 
+### Status semantics (fixed by the owner 08:39; the Windows companion applies the same table)
+| State | Colour |
+|---|---|
+| needs you / waiting on the user (asks, approvals, selection, the recording mic) | `Color.accentColor` |
+| running / in flight | NO colour: secondary text + `ProgressView().controlSize(.small)` |
+| done / finished | `Color(nsColor: .systemGreen)` (`Color.done`) |
+| failed / error / stop | `.systemRed` (`Color.failed`) |
+| paused / blocked / waiting on something that is not the user | `.systemOrange` (`Color.paused`), not yellow |
+| remote / unknown (E7 fallback) | hollow `Circle` stroked in `.tertiaryLabelColor` (`Color.tertiary`) |
+
+Applied: needs-you rings/bar/count, recommended option, focused row/field, Ask-bar and reply-row mic + status while recording, the voice
+pill's listening dot and the island's rec dot = accent; `MarkView(.working)` (the Reduce Motion stand-in) and `.idle` = `.secondary`
+filled / hollow, live spinners = `ProgressView`; finished/sent = green; error/stop/undo-stop = red; the island's paused clock glyph and
+"paused" pill text = orange; remote agent rows and lapsed marks = hollow tertiary.
+
 ### Colours (old token → system colour)
 | Old | New | Where |
 |---|---|---|
@@ -46,9 +61,9 @@ Tests touched: `FixtureTests.swift:255-257` (`color: "malachite"` → `"#007aff"
 | `.ink2` / `Palette.text2` | `.secondary` | meta text, icons at rest |
 | `.sand` | `Color.tertiary` = `Color(nsColor: .tertiaryLabelColor)` | dim text, placeholders, hollow remote dots, lapsed ring, hints |
 | `.gold` | `Color.accentColor` (`NSColor.controlAccentColor`) | needs-you rings/bar/count, recommended option, wordmark, oracle bolt, "N new" badge, mic meter |
-| `.faience` | `Color.accentColor` | focused row/field, working dot (filled), idle dot (stroke) |
+| `.faience` | `Color.accentColor` for focus/selection (focused row/field); `.secondary` for working (filled) and idle (hollow) dots | AgentsPanel rows, reply field, MarkView |
 | `.malachite` | `Color.done` = `Color(nsColor: .systemGreen)` | sent/finished/ok chips and receipts, "Done" zone, mic transcript track |
-| `.carnelian` | `Color.failed` = `Color(nsColor: .systemRed)` | failed, stop/pause tints, rec dot, recording mic + status, lost chord |
+| `.carnelian` | `Color.failed` = `Color(nsColor: .systemRed)` for failed, stop/pause-the-desk tints, lost chord; `Color.accentColor` for the recording mic + status, the voice pill's dot and the island's rec dot (waiting on the user) | PanelView, AskBar, AgentsPanel, VoiceModeView, RecClock |
 | `.surface` fills | materials: SwiftUI `.regularMaterial` (rail, pills, island open/detached/no-notch), `NSVisualEffectView(.hudWindow)` / `NSGlassEffectView` (panels, Ask bar, legend, answer card, voice pill) | every background |
 | `.rule` / `Palette.border` | `Color.separator` / `NSColor.separatorColor` | strokes, panel borders; `Divider()` plain |
 | `Color.ink.opacity(x)` | `Color.primary.opacity(x)` | hover/row/field tints (same opacity) |
@@ -56,7 +71,7 @@ Tests touched: `FixtureTests.swift:255-257` (`color: "malachite"` → `"#007aff"
 | `Color.white.opacity(0.1)` (answer-card caps) | `Color.primary.opacity(0.1)` | AnswerCard `Cap` |
 | `NSColor(hex: 0x12100e, 0.91)` | `NSVisualEffectView` `.hudWindow` | voice pill |
 | `Palette.gold` (menu bar title) | `NSColor.controlAccentColor` | status item count |
-| waiting / orange | `.orange` where Settings already used it (hotkey notice, Accessibility notice, pause line); no alias needed | Settings |
+| paused / orange | `Color.paused` = `.systemOrange`: the island's paused clock glyph and "paused" pill text; Settings' notices already used `.orange` | IslandViews, Settings |
 | text ON an accent fill | `.white` (as macOS draws selected text) | recommended key cap, "N new" badge, wordmark inner square, finished check, error bar |
 
 `Color.systemBlue` is used nowhere.
@@ -153,11 +168,13 @@ Fixed after looking: the header `esc` key cap wrapped letter-by-letter under the
 probe's first detector (0.3, nominal light-mode accent) read 0/120 on the control capture — see Point-and-say above.
 
 ## Deviations and what is not native
-- `Color.tertiary/.separator/.failed/.done` are four aliases to system colours in `Palette.swift` (the file keeps its name: it also
+- `Color.tertiary/.separator/.failed/.done/.paused` are five aliases to system colours in `Palette.swift` (the file keeps its name: it also
   holds `Log`, `Flags`, `Settings`, `LevelBars`). `Type` stays as six text-style aliases plus four radii. No hex, no palette.
 - The notch pill (`ClosedPill`, `notch == true`) and the notch-height strip of the attached open pane are `Color.black` — the hardware
   notch is black (the brief's one exception).
-- `ProgressView().controlSize(.mini)` inside a 10 pt dot frame is the system spinner at its smallest; it is grey, not accent, as macOS draws it.
+- The status table asks for `ProgressView().controlSize(.small)` for running; the rail-pill and agents-row dots are 10 pt frames and `.small`
+  is 16 pt, so those two sites use `.controlSize(.mini)` (the island strip's activity spinner is already `.mini` in a 10 pt text line). Under
+  Reduce Motion the running dot is a static `.secondary` circle (`MarkView(.working)`), since a `ProgressView` would still spin.
 - Two fixed point sizes remain, commented: MarkView's 5 pt heavy checkmark inside the 10 pt finished dot and `HarnessIcon`'s fallback letter
   (`size * 0.55`). `ShortcutRecorder` keeps `NSFont.systemFont(ofSize: 12, weight: .medium)` for its AppKit attributed string (pre-existing,
   not a palette use).

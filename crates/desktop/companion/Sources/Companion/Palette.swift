@@ -6,9 +6,12 @@ import SwiftUI
 extension Color {
     static let tertiary = Color(nsColor: .tertiaryLabelColor)
     static let separator = Color(nsColor: .separatorColor)
-    /// Status: red = failed / stopped, green = done / sent (Settings' notices use `.orange` for waiting). Accent = needs you / selection.
+    /// Status (shared with the Windows companion): needs you / waiting on the user = accent · running = no colour (secondary +
+    /// ProgressView) · done = green · failed / stop = red · paused / blocked, waiting on something else = orange · remote / unknown =
+    /// hollow tertiary circle.
     static let failed = Color(nsColor: .systemRed)
     static let done = Color(nsColor: .systemGreen)
+    static let paused = Color(nsColor: .systemOrange)
 }
 
 /// stderr plus `/tmp/130-w1-probe.log` during `--probe` and `/tmp/130-w6-probe.log` during a W6 probe (`open`

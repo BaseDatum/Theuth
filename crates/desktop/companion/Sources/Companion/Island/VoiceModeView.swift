@@ -29,10 +29,10 @@ struct VoiceModeView: View {
                 Image(systemName: "info.circle").font(.body).foregroundColor(.tertiary)
                 Text(state.hint).font(.body).foregroundColor(.primary).lineLimit(2)
             } else {
-                Circle().fill(Color.failed).frame(width: 10, height: 10)
+                Circle().fill(Color.accentColor).frame(width: 10, height: 10)
                     .scaleEffect(1 + CGFloat(min(1, state.level)) * 0.6)
                     .animation(.linear(duration: 0.1), value: state.level)
-                    .shadow(color: .failed.opacity(0.3), radius: 3)
+                    .shadow(color: .accentColor.opacity(0.3), radius: 3)
                 words
                 Text(trailer).font(.body).foregroundColor(.tertiary).lineLimit(1)
             }
