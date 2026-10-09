@@ -145,3 +145,29 @@ text`, no command, `Finished { Done }`, `last.surface == Composer`), `timings_re
 - Duck/pause (§8.6) is the companion's; `voice.duck_media` is already read into config.
 - `AppProfile.polish_prompt` is not appended by `polish` (no `AppProfile` on the RPC); put per-app text under `voice.polish_profiles.<bundle id>`.
 - Rebuilding the dataset: `python3 crates/voice/build-dictionary/build.py` (network; `--offline` reuses `cache/`), commit `data/*`.
+
+## F1 (2026-10-09 23:05) — follow-up fix: ts-rs name collision + `voice_settings` getter
+Branch `fix/153-f1` off main `f4834cf3`; three commits `153-F1: …`.
+- **Finding 1 — bindings collision.** `crates/voice/src/dictionary/mod.rs`: `Kind` / `Source` carry `ts(export, rename = "EntryKind")` /
+  `ts(rename = "EntrySource")` (Rust names unchanged; Swift mirrors were already `EntryKind`/`EntrySource`). Regenerated bindings:
+  `EntryKind.ts` / `EntrySource.ts` appear, `Entry.ts` imports them, `Kind.ts` is the artifact kind again and `Source.ts` the knowledge
+  source; `ls bindings | sort | uniq -d` is empty (847 files). No UI import of the voice `Kind`/`Source` existed (`extra.ts` imports the artifact `Kind`).
+- **Finding 2 — `voice_settings()`.** `crates/voice/src/lib.rs`: `VoiceSettings { shape, end_commands, input_devices, standby_secs, duck_media,
+  polish_model, polish_profiles, history }` + `From<&VoiceConfig>`; `HistoryConfig` now ts-exported. `dictation.rs`: `CurrentSettings` message —
+  the actor's live keys (shape / phrases / devices / standby / history, as the `Setting` handler left them) over `rt.section("voice")` for the
+  config-only keys. `rpc/src/api.rs`: `voice_settings()` in the trait + the "153 dictation history / dictionary" region; `polish_model` is overlaid
+  from `Agents`' `GetPolishModel` slot (the `voice_status` ↔ `InputDevicePrefs` pattern). `export.rs` lists `HistoryConfig`, `VoiceSettings`.
+- **Readers.** Desktop `components/settings/Voice.tsx`: `useQuery(voice_settings)`; `set_shape` / `set_end_phrases` / `set_input_devices` /
+  `set_polish_model` invalidate it; the `useRemembered` localStorage memory is deleted; shaping selects stay disabled until the getter answers;
+  phrase rows are keyed on the server value. `rpc/api.ts` + `METHODS` (sorted). TUI `lib.rs`/`model.rs`: `/voice` adds
+  `shape: tui … · composer … · companion … · phone … · any app …` from `voice_settings` (a failed read drops the row, like the device list).
+  Companion untouched (DictationSettings still points at the desktop).
+- **Tests.** voice `voice_settings_round_trip_defaults` (field-for-field mirror + serde round trip); tui `voice_cmd_parses` extended (no settings →
+  no `shape:` row; tui `plain` prints); `Voice.test.ts` asserts `voice_settings` is called once and the end-phrase inputs show its values.
+- **Gates** (`/tmp/153-f1/`): `mbx check -p voice -p rpc -p tui --tests` 0 err/warn · `mbx clippy …` 0 warn · `mbx test … --no-run` + bare
+  `MBX_SCHEDULER_TESTS=0 mbx test -p voice -p rpc -p tui` → 298 passed, 0 failed (rpc 56, tui 166, voice 73 + 1 ignored) · bindings export ok,
+  `methods.json` has `voice_settings` · `tsc --noEmit` 0 errors · `vitest run api.test.ts Voice.test.ts dictation.test.ts` 3 files / 15 tests pass ·
+  `cargo fmt -p voice -p rpc -p tui -- --check` clean.
+- **Deviations.** First bare test run hit `rpc engine::tests::second_acquire_in_one_process_is_running` ("engine.lock is held but engine.json is
+  missing") — untouched file, passed on rerun; flaky under the shared machine. `standby_secs` is `bigint` in TS (u64). Radix `Select` renders no
+  value text under `renderToStaticMarkup`, so the preset itself is proven by the Rust tests, the UI test by the enabled trigger + phrase inputs.

@@ -48,6 +48,7 @@ import type { Surface } from '@/rpc/bindings/Surface'
 import type { Preset } from '@/rpc/bindings/Preset'
 import type { EndPhrases } from '@/rpc/bindings/EndPhrases'
 import type { PolishReply } from '@/rpc/bindings/PolishReply'
+import type { VoiceSettings } from '@/rpc/bindings/VoiceSettings'
 import type { Delivery } from '@/rpc/bindings/Delivery'
 import type { Decision } from '@/rpc/bindings/Decision'
 import type { Gate } from '@/rpc/bindings/Gate'
@@ -76,6 +77,8 @@ import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefId } from '@/rpc/bindings/BriefId'
 import type { EditOp } from '@/rpc/bindings/EditOp'
+import type { Enrolled } from '@/rpc/bindings/Enrolled'
+import type { EnrollTarget } from '@/rpc/bindings/EnrollTarget'
 import type { EscalateModel } from '@/rpc/bindings/EscalateModel'
 import type { CachedBrief } from '@/rpc/bindings/CachedBrief'
 import type { CachedBriefPut } from '@/rpc/bindings/CachedBriefPut'
@@ -404,6 +407,8 @@ export interface Api {
   set_shape(surface: Surface, preset: Preset): Promise<null>
   /** 153 §7.2: persist `voice.end_commands`. */
   set_end_phrases(phrases: EndPhrases): Promise<null>
+  /** 153 F1: the live `voice.*` settings every `set_*` above wrote (shape presets, end phrases, devices, polish model, …). */
+  voice_settings(): Promise<VoiceSettings>
   /** 153 §9.2: `voice.polish_model`, `null` = the chain (title model, then the session's). */
   polish_model(): Promise<ModelInfo | null>
   set_polish_model(model: string | null): Promise<ModelInfo | null>
@@ -785,6 +790,8 @@ export interface Api {
   meeting_segment_audio(id: MeetingId, track: Track, t0_ms: number, t1_ms: number): Promise<string>
   /** Remove an enrolled profile; transcripts keep the name. */
   meeting_speaker_delete(profile: ProfileId): Promise<null>
+  /** 156: a voiceprint from the speech of `segments` (one track): a new profile, or folded into an enrolled one. */
+  meeting_speaker_enroll(id: MeetingId, segments: number[], target: EnrollTarget): Promise<Enrolled>
   /** Enrolled speaker profiles, embedding omitted. */
   meeting_speakers(): Promise<Profile[]>
   /** Replies once the devices are open; `consent` must be `true`. */
@@ -1363,6 +1370,7 @@ export const METHODS = [
   'meeting_resume',
   'meeting_segment_audio',
   'meeting_speaker_delete',
+  'meeting_speaker_enroll',
   'meeting_speakers',
   'meeting_start',
   'meeting_status',
@@ -1563,6 +1571,7 @@ export const METHODS = [
   'update_status',
   'use_skill',
   'vision_model',
+  'voice_settings',
   'voice_status',
   'withdraw',
 ] as const satisfies readonly (keyof Api)[]

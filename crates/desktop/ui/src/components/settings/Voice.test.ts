@@ -43,6 +43,16 @@ vi.mock('@/lib/rpc', async (original) => ({
       { name: 'Shure MV7', default: false },
     ],
     voice_status: async () => ({ model: { state: 'ready' }, accelerator: '', voice: 'af', voices: [], speaking: null, queued: [], input_devices: ['Shure MV7'] }),
+    voice_settings: record('voice_settings', {
+      shape: { composer: 'plain', tui: 'full', companion: 'full', phone: 'off', any_app: 'full' },
+      end_commands: { send: ['ship it', 'send it'], scratch: ['scratch that'], literal: 'verbatim' },
+      input_devices: ['Shure MV7'],
+      standby_secs: 8,
+      duck_media: 'off',
+      polish_model: null,
+      polish_profiles: {},
+      history: { enabled: true, rows: 200, audio_mib: 64, learn: true },
+    }),
     list_models: async () => [{ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' }],
     polish_model: async () => null,
     dictation_history: record('dictation_history', [row, polishedRow]),
@@ -64,9 +74,14 @@ async function render(): Promise<string> {
   return paint()
 }
 
-test('the page reads the engine: the preferred mic is selected, the polish row names the chain, history rows show raw → shaped (+ polished), the debug row the four numbers', async () => {
+test('the page reads the engine: the preferred mic is selected, shaping + end phrases come from voice_settings (nothing remembered locally), the polish row names the chain, history rows show raw → shaped (+ polished), the debug row the four numbers', async () => {
   const html = await render()
   expect(html).toMatch(/aria-label="Input device"[^>]*>.*Shure MV7/s)
+  expect(calls.voice_settings).toHaveLength(1)
+  // Radix renders no value text server-side; the enabled trigger proves `voice_settings` landed, the phrase inputs its content.
+  expect(html).toMatch(/<button(?![^>]*\sdisabled(?:=""|\s|>))[^>]*aria-label="Composer shaping"/)
+  expect(html).toContain('value="ship it, send it"')
+  expect(html).toContain('value="verbatim"')
   expect(html).toContain('Chain (title model, then session)')
   expect(html).toContain('never polished')
   expect(calls.dictation_history?.[0]).toEqual([50])

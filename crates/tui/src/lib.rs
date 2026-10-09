@@ -1164,7 +1164,14 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             let status = msg(api.voice_status().await)?;
             let dictation = msg(api.dictation_status().await)?;
             let devices = api.list_input_devices().await.unwrap_or_default();
-            UiEvent::Info(model::voice_line(&status, &dictation, &devices))
+            // Like the device list: a failed read drops its row, not the whole reply.
+            let settings = api.voice_settings().await.ok();
+            UiEvent::Info(model::voice_line(
+                &status,
+                &dictation,
+                &devices,
+                settings.as_ref(),
+            ))
         }
         Command::SetInputDevices(names) => {
             msg(api.set_input_devices(names.clone()).await)?;

@@ -1663,6 +1663,10 @@ pub trait Api {
     /// 153 §7.2: persist `voice.end_commands`.
     #[method(name = "set_end_phrases")]
     async fn set_end_phrases(&self, phrases: voice::EndPhrases) -> RpcResult<()>;
+    /// 153 F1: the live user-facing `voice.*` settings — what `set_shape`, `set_end_phrases`,
+    /// `set_input_devices` and `set_polish_model` left behind, plus the config-only keys.
+    #[method(name = "voice_settings")]
+    async fn voice_settings(&self) -> RpcResult<voice::VoiceSettings>;
     /// 153 §9: polish `text` for a human reader at `destination`; `AgentPrompt` is refused.
     /// Fails closed: `text: None` + `refused` means deliver the shaped text.
     #[method(name = "polish")]
@@ -1802,6 +1806,14 @@ pub trait Api {
     /// Enrolled speaker profiles (embedding omitted).
     #[method(name = "meeting_speakers")]
     async fn meeting_speakers(&self) -> RpcResult<Vec<meeting::Profile>>;
+    /// 156: a voiceprint from the speech of `segments` (one track): a new profile, or folded into an enrolled one.
+    #[method(name = "meeting_speaker_enroll")]
+    async fn meeting_speaker_enroll(
+        &self,
+        id: meeting::MeetingId,
+        segments: Vec<u32>,
+        target: meeting::EnrollTarget,
+    ) -> RpcResult<meeting::Enrolled>;
     /// Delete a speaker profile file. Transcripts keep their labels.
     #[method(name = "meeting_speaker_delete")]
     async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()>;
@@ -6624,6 +6636,15 @@ impl ApiServer for Server {
         send(&dictation()?, voice::Setting::EndPhrases(phrases)).await
     }
 
+    async fn voice_settings(&self) -> RpcResult<voice::VoiceSettings> {
+        let mut settings = send(&dictation()?, voice::CurrentSettings).await?;
+        // The live slot (`set_polish_model`), not the one read at startup.
+        settings.polish_model = ask::<Agents, _>(agent::AGENT_ACTOR, GetPolishModel)
+            .await?
+            .map(|m| m.id);
+        Ok(settings)
+    }
+
     // ---- 153 polish / rewrite (A5 fills the bodies) ------------------------------------------
 
     async fn polish(
@@ -6850,6 +6871,23 @@ impl ApiServer for Server {
 
     async fn meeting_speakers(&self) -> RpcResult<Vec<meeting::Profile>> {
         send(&meeting()?, meeting::ListSpeakers).await
+    }
+
+    async fn meeting_speaker_enroll(
+        &self,
+        id: meeting::MeetingId,
+        segments: Vec<u32>,
+        target: meeting::EnrollTarget,
+    ) -> RpcResult<meeting::Enrolled> {
+        send(
+            &meeting()?,
+            meeting::EnrollSegments {
+                meeting: id,
+                segments,
+                target,
+            },
+        )
+        .await
     }
 
     async fn decision_mode(&self, prefix: String) -> RpcResult<decision::ModeInfo> {

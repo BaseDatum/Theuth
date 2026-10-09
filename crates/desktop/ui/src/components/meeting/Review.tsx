@@ -1,23 +1,34 @@
-// 04 §7: the review pane on `/meetings/$id` once the post pipeline lands on `Review` — the speaker legend
-// (rename, accept a proposed profile, enroll), the segment list (play a span, multi-select → relabel/merge,
-// click a word → split, click the text → fix it), then *Done reviewing* and *Summarize*. Every edit is one
-// `meeting_edit` call whose answer replaces the cached transcript. `readOnly` (while `Summarizing`, and once
-// `Done`) is the same list without the legend's editors, the edit handlers or the buttons, so edits never race
-// the summary turn. A summary failure is shown by the lifecycle strip above, not here.
+// 04 §7 / 156: the transcript pane on `/meetings/$id` in every ended state (Review, Summarizing, Done) — the
+// speaker legend (rename, accept a proposed profile, enroll; Review only), then the segment list: click a
+// timestamp to hear the segment (Web Audio, `lib/segment-audio.ts`), tick rows (shift for a range) and use the
+// sticky bar or the row's `\u22ef` menu to enroll the speech as a new speaker or fold it into an enrolled one
+// (`meeting_speaker_enroll`); in Review the same selection also relabels/merges, a word click splits and a text
+// click fixes it. Every edit is one RPC whose answer replaces the cached transcript. `readOnly` (Summarizing,
+// Done) keeps playback, selection and enrollment but drops the edit handlers, so edits never race the summary
+// turn. "Done reviewing"/"Summarize" live in the page header (`MeetingActions`), not here.
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { LoaderCircle, Volume2 } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { Volume2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { getSharedAudioContext } from '@/hooks/use-audio-context'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { SegmentPlayer, playError } from '@/lib/segment-audio'
+import { enrollBlock, enrolledToast, rowBlock, secondsText, selectClick, speechMs } from '@/lib/segment-select'
 import { cn } from '@/lib/utils'
 import type { EditOp } from '@/rpc/bindings/EditOp'
+import type { EnrollTarget } from '@/rpc/bindings/EnrollTarget'
+import type { Enrolled } from '@/rpc/bindings/Enrolled'
 import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
 import type { Segment } from '@/rpc/bindings/Segment'
 import type { SpeakerLabel } from '@/rpc/bindings/SpeakerLabel'
+import { EnrollDialog } from './EnrollDialog'
+import { SegmentMenu } from './SegmentMenu'
 
 /** `mm:ss` on the recording clock; minutes run past 59. */
 export const mmss = (ms: number): string => {
@@ -35,7 +46,6 @@ export function Review({ id, readOnly = false }: { id: string; readOnly?: boolea
   const edit = useAction((ops: EditOp[]) => api.meeting_edit(id, ops), {
     onSuccess: (t) => qc.setQueryData(queryKeys.meetingTranscript(id), t),
   })
-  const summarize = useAction(() => api.meeting_summarize(id))
   const t = transcript.data
   return (
     <div className="flex flex-col gap-4 py-2">
@@ -51,20 +61,6 @@ export function Review({ id, readOnly = false }: { id: string; readOnly?: boolea
             </div>
           )}
           <SegmentList id={id} transcript={t} onEdit={readOnly ? undefined : (ops) => edit.mutate(ops)} />
-          {!readOnly && (
-            <div className="flex items-center gap-2 border-t border-border-subtle pt-4">
-              {t.reviewed_at ? (
-                <span className="text-[13px] text-fg-tertiary">Reviewed at {new Date(t.reviewed_at).toLocaleString()}</span>
-              ) : (
-                <Button variant="outline" disabled={edit.isPending} onClick={() => edit.mutate([{ op: 'Reviewed' }])}>
-                  Done reviewing
-                </Button>
-              )}
-              <Button disabled={!t.reviewed_at || summarize.isPending} onClick={() => summarize.mutate()}>
-                {summarize.isPending && <LoaderCircle className="animate-spin" />} Summarize
-              </Button>
-            </div>
-          )}
         </>
       )}
     </div>
@@ -136,30 +132,50 @@ function SpeakerChip({ label, onEdit }: { label: SpeakerLabel; onEdit: (op: Edit
 }
 
 /**
- * `[mm:ss] chip text` per segment. With `onEdit`: checkboxes → relabel/merge toolbar, text click → `FixText`,
- * `⋯` → words, word click → `Split`. Without: read-only, playback still works.
+ * `[mm:ss] chip text \u22ef` per segment, in every ended state: timestamp → play/stop, checkbox (shift for a
+ * range) → the sticky bar with the speech total and the enroll actions, `\u22ef` → `SegmentMenu`. With `onEdit`
+ * (Review) the bar also relabels/merges, the text click → `FixText`, the words view → `Split`.
  */
 export function SegmentList({ id, transcript, onEdit }: { id: string; transcript: MeetingTranscript; onEdit?: (ops: EditOp[]) => void }) {
   const api = useApi()
-  const audio = useRef<HTMLAudioElement>(null)
+  const qc = useQueryClient()
   const [playing, setPlaying] = useState<number | null>(null)
+  const player = useRef<SegmentPlayer>(null)
+  player.current ??= new SegmentPlayer(getSharedAudioContext, setPlaying)
+  useEffect(() => () => player.current?.stop(), [])
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [anchor, setAnchor] = useState<number | null>(null)
   const [editing, setEditing] = useState<number | null>(null)
   const [words, setWords] = useState<Set<number>>(new Set())
+  /** Segments the enroll dialog is open for. */
+  const [enrolling, setEnrolling] = useState<number[] | null>(null)
+  const profiles = useQuery({ queryKey: queryKeys.meetingSpeakers, queryFn: () => api.meeting_speakers() })
   const names = new Map(transcript.speakers.map((s) => [s.id, s.name]))
-  const play = useAction(async (seg: Segment) => {
-    const b64 = await api.meeting_segment_audio(id, seg.track, Number(seg.t0_ms), Number(seg.t1_ms))
-    const el = audio.current
-    if (!el) return
-    if (el.src) URL.revokeObjectURL(el.src)
-    el.src = URL.createObjectURL(new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], { type: 'audio/wav' }))
-    setPlaying(seg.id)
-    await el.play()
-  })
-  const toggle = (set: Set<number>, k: number) => {
-    const next = new Set(set)
+  const order = transcript.segments.map((s) => s.id)
+  const ids = order.filter((k) => selected.has(k))
+  const speech = speechMs(transcript.segments, selected)
+  const block = enrollBlock(transcript.segments, selected)
+
+  const play = (seg: Segment) =>
+    player.current
+      ?.toggle(seg.id, Number(seg.t0_ms), Number(seg.t1_ms), (t0, t1) => api.meeting_segment_audio(id, seg.track, t0, t1))
+      .catch((e: unknown) => toast.error(playError(e)))
+  const enrolled = (r: Enrolled, target: EnrollTarget) => {
+    qc.setQueryData(queryKeys.meetingTranscript(id), r.transcript)
+    void qc.invalidateQueries({ queryKey: queryKeys.meetingSpeakers })
+    toast.success(enrolledToast(r, target))
+    setSelected(new Set())
+  }
+  const addTo = useAction(
+    ({ segments, profile }: { segments: number[]; profile: string }) => api.meeting_speaker_enroll(id, segments, { kind: 'Existing', profile }),
+    { onSuccess: (r, v) => enrolled(r, { kind: 'Existing', profile: v.profile }) },
+  )
+  /** What a row's menu acts on: the selection when the row is in a multi-selection, else the row alone. */
+  const targets = (seg: Segment) => (selected.has(seg.id) && ids.length > 1 ? ids : [seg.id])
+  const toggleWords = (k: number) => {
+    const next = new Set(words)
     if (!next.delete(k)) next.add(k)
-    return next
+    setWords(next)
   }
   const commit = (seg: Segment, text: string) => {
     setEditing(null)
@@ -169,28 +185,55 @@ export function SegmentList({ id, transcript, onEdit }: { id: string; transcript
     onEdit?.(ops)
     setSelected(new Set())
   }
-  const ids = transcript.segments.filter((s) => selected.has(s.id)).map((s) => s.id)
   return (
     <div className="flex flex-col gap-2">
-      <audio ref={audio} onEnded={() => setPlaying(null)} onPause={() => setPlaying(null)} />
-      {onEdit && ids.length > 0 && (
-        <div className="sticky top-0 z-10 flex items-center gap-2 rounded-lg border border-border-subtle bg-background p-2 text-[13px]">
-          <span className="text-fg-secondary">{ids.length} selected</span>
-          <Select onValueChange={(speaker) => bulk([{ op: 'Relabel', segments: ids, speaker }])}>
-            <SelectTrigger size="sm" className="w-44">
-              <SelectValue placeholder="Relabel →" />
-            </SelectTrigger>
-            <SelectContent>
-              {transcript.speakers.map((s) => (
-                <SelectItem key={s.id} value={s.id}>
-                  {s.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button size="sm" variant="outline" disabled={ids.length < 2} onClick={() => bulk([{ op: 'Merge', segments: ids }])}>
-            Merge
+      {ids.length > 0 && (
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-border-subtle bg-background p-2 text-[13px]">
+          <span className="text-fg-secondary">
+            {ids.length} selected {'\u00b7'} {secondsText(speech)} of speech
+          </span>
+          <Button size="sm" variant="outline" disabled={block !== null} title={block ?? undefined} onClick={() => setEnrolling(ids)}>
+            Enroll as new{'\u2026'}
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="outline" disabled={block !== null || addTo.isPending} title={block ?? undefined}>
+                Add to {'\u25b8'}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {profiles.data?.length ? (
+                profiles.data.map((p) => (
+                  <DropdownMenuItem key={p.id} onSelect={() => addTo.mutate({ segments: ids, profile: p.id })}>
+                    {p.name}
+                    <span className="ml-auto pl-3 text-[11px] text-fg-tertiary">{p.samples} samples</span>
+                  </DropdownMenuItem>
+                ))
+              ) : (
+                <DropdownMenuItem disabled>{profiles.data ? 'No enrolled speakers yet' : 'Loading speakers\u2026'}</DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {block && <span className="text-[12px] text-fg-tertiary">{block}</span>}
+          {onEdit && (
+            <>
+              <Select onValueChange={(speaker) => bulk([{ op: 'Relabel', segments: ids, speaker }])}>
+                <SelectTrigger size="sm" className="w-44">
+                  <SelectValue placeholder={'Relabel \u2192'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {transcript.speakers.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button size="sm" variant="outline" disabled={ids.length < 2} onClick={() => bulk([{ op: 'Merge', segments: ids }])}>
+                Merge
+              </Button>
+            </>
+          )}
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
             Clear
           </Button>
@@ -198,68 +241,93 @@ export function SegmentList({ id, transcript, onEdit }: { id: string; transcript
       )}
       {transcript.segments.length === 0 && <Empty>No speech was transcribed.</Empty>}
       <div className="text-[13px] leading-6">
-        {transcript.segments.map((seg) => (
-          <div key={seg.id} className={cn('flex items-start gap-2 py-0.5', selected.has(seg.id) && 'bg-fg-accent/10')}>
-            {onEdit && <input type="checkbox" className="mt-1.5" checked={selected.has(seg.id)} onChange={() => setSelected(toggle(selected, seg.id))} />}
-            <button
-              type="button"
-              className="flex shrink-0 items-center gap-1 font-mono text-fg-tertiary tabular-nums hover:text-fg-accent"
-              title="Play"
-              onClick={() => play.mutate(seg)}
-            >
-              {mmss(Number(seg.t0_ms))}
-              {playing === seg.id && <Volume2 className="size-3 text-fg-accent" />}
-            </button>
-            <span className={chipClass(seg.speaker)}>{names.get(seg.speaker) ?? seg.speaker}</span>
-            {editing === seg.id ? (
-              <Input
-                autoFocus
-                className="h-6 flex-1"
-                defaultValue={seg.text}
-                onBlur={(e) => commit(seg, e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commit(seg, e.currentTarget.value)
-                  else if (e.key === 'Escape') {
-                    e.currentTarget.value = seg.text
-                    setEditing(null)
-                  }
+        {transcript.segments.map((seg) => {
+          const own = targets(seg)
+          return (
+            <div key={seg.id} className={cn('flex items-start gap-2 py-0.5', selected.has(seg.id) && 'bg-fg-accent/10')}>
+              <input
+                type="checkbox"
+                className="mt-1.5"
+                aria-label={`Select segment at ${mmss(Number(seg.t0_ms))}`}
+                checked={selected.has(seg.id)}
+                readOnly
+                onClick={(e) => {
+                  setSelected(selectClick(selected, order, anchor, seg.id, e.shiftKey))
+                  setAnchor(seg.id)
                 }}
               />
-            ) : words.has(seg.id) ? (
-              <span className="min-w-0 flex-1">
-                {seg.words.map((w, k) => (
-                  <button
-                    key={`${seg.id}-${k}`}
-                    type="button"
-                    disabled={!onEdit || k === 0}
-                    title={onEdit && k > 0 ? 'Split here' : undefined}
-                    className={cn('rounded px-0.5', onEdit && k > 0 && 'hover:bg-fg-accent/20')}
-                    onClick={() => onEdit?.([{ op: 'Split', segment: seg.id, at_word: k }])}
-                  >
-                    {w.text}
-                  </button>
-                ))}
-              </span>
-            ) : onEdit ? (
-              <button type="button" className="min-w-0 flex-1 text-left break-words hover:bg-accent/50" title="Edit text" onClick={() => setEditing(seg.id)}>
-                {seg.text}
-              </button>
-            ) : (
-              <span className="min-w-0 flex-1 break-words">{seg.text}</span>
-            )}
-            {seg.words.length > 1 && (
               <button
                 type="button"
-                className={cn('shrink-0 px-1 text-fg-tertiary hover:text-fg', words.has(seg.id) && 'text-fg-accent')}
-                title="Words"
-                onClick={() => setWords(toggle(words, seg.id))}
+                className={cn('flex shrink-0 items-center gap-1 font-mono text-fg-tertiary tabular-nums hover:text-fg-accent', playing === seg.id && 'text-fg-accent')}
+                title={playing === seg.id ? 'Stop' : 'Play'}
+                onClick={() => void play(seg)}
               >
-                ⋯
+                {mmss(Number(seg.t0_ms))}
+                {playing === seg.id && <Volume2 className="size-3 text-fg-accent" />}
               </button>
-            )}
-          </div>
-        ))}
+              <span className={chipClass(seg.speaker)}>{names.get(seg.speaker) ?? seg.speaker}</span>
+              {editing === seg.id ? (
+                <Input
+                  autoFocus
+                  className="h-6 flex-1"
+                  defaultValue={seg.text}
+                  onBlur={(e) => commit(seg, e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commit(seg, e.currentTarget.value)
+                    else if (e.key === 'Escape') {
+                      e.currentTarget.value = seg.text
+                      setEditing(null)
+                    }
+                  }}
+                />
+              ) : onEdit && words.has(seg.id) ? (
+                <span className="min-w-0 flex-1">
+                  {seg.words.map((w, k) => (
+                    <button
+                      key={`${seg.id}-${k}`}
+                      type="button"
+                      disabled={k === 0}
+                      title={k > 0 ? 'Split here' : undefined}
+                      className={cn('rounded px-0.5', k > 0 && 'hover:bg-fg-accent/20')}
+                      onClick={() => onEdit([{ op: 'Split', segment: seg.id, at_word: k }])}
+                    >
+                      {w.text}
+                    </button>
+                  ))}
+                </span>
+              ) : onEdit ? (
+                <button type="button" className="min-w-0 flex-1 text-left break-words hover:bg-accent/50" title="Edit text" onClick={() => setEditing(seg.id)}>
+                  {seg.text}
+                </button>
+              ) : (
+                <span className="min-w-0 flex-1 break-words">{seg.text}</span>
+              )}
+              <SegmentMenu
+                count={own.length}
+                block={own === ids ? block : rowBlock(seg)}
+                playing={playing === seg.id}
+                profiles={profiles.data}
+                wordsOpen={onEdit ? words.has(seg.id) : undefined}
+                onPlay={() => void play(seg)}
+                onWords={onEdit && seg.words.length > 1 ? () => toggleWords(seg.id) : undefined}
+                onEnrollNew={() => setEnrolling(own)}
+                onAddTo={(p) => addTo.mutate({ segments: own, profile: p.id })}
+              />
+            </div>
+          )
+        })}
       </div>
+      {enrolling && (
+        <EnrollDialog
+          open
+          onOpenChange={(o) => !o && setEnrolling(null)}
+          count={enrolling.length}
+          speechMs={speechMs(transcript.segments, enrolling)}
+          profiles={profiles.data}
+          enroll={(target) => api.meeting_speaker_enroll(id, enrolling, target)}
+          onDone={enrolled}
+        />
+      )}
     </div>
   )
 }

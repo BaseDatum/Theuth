@@ -10,7 +10,7 @@ pub mod diarize;
 pub mod transcribe;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use runtime::Runtime;
@@ -301,4 +301,18 @@ fn me_embedding(
     }
     let mut e = diarize::Embedder::open(models)?;
     e.compute(&diarize::to_i16(&speech)).map(Some)
+}
+
+/// 156 D14: the voice in `spans` (ms on the track at `path`) through the embedding model,
+/// as [`me_embedding`] does for the mic words: decoded only as far as the last span
+/// ([`transcribe::opus_ranges`]), concatenated, resampled to 16 kHz. Blocking (seconds).
+pub fn embed_spans(
+    path: &Path,
+    spans: &[(u64, u64)],
+    models: &diarize::Models,
+) -> anyhow::Result<Vec<f32>> {
+    let cut = transcribe::opus_ranges(path, spans)?;
+    let speech = voice::resample(cut, transcribe::OPUS_RATE, transcribe::RATE)?;
+    let mut e = diarize::Embedder::open(models)?;
+    e.compute(&diarize::to_i16(&speech))
 }
