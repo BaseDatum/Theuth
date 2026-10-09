@@ -87,8 +87,51 @@ overviews, the audio overview (design 144 §9, §10, §13; wave-2 contract §2).
   Overview, OverviewRun` exported.
 
 ## Proof
+Tests (brief item 4), all in-crate unit tests on scripted doubles — no live model, no checkpoint:
+- `SessionKind::Ask` round trips: `store::tests::ask_kind_round_trips_through_the_row` (`kind_str`/`kind_of`,
+  serde `"ask"`, `set_kind` on a real row, still listed) + `kind_of_observed_round_trips`.
+- Plan JSON validation + fallback: `ask::tests::plan_json_validates_and_falls_back` (scope filter, cap, prose
+  around the JSON, four rejects, `single_branch`) and `bad_plan_retries_once_then_runs_a_single_branch` (two
+  `Role::Plan` calls, then one branch = the question over the scope).
+- Allow-list filter: `ask::tests::allow_list_filter_drops_unlisted_chips_only` (an unlisted chip becomes its label;
+  listed chips and non-`theuth://` links untouched; `href_doc` on `#`, `?s=`, `@mm:ss`, bare ids).
+- Event order on a mocked model: `ask::tests::event_order_plan_branches_answer_done` — `Script` driver (the mock:
+  a trait object answering plan / branch / synthesis by `Role`, recording events and the commit): `Plan` first,
+  then exactly one `Branch` before its `Partial` per branch (a branch with no hits still emits `Branch` and a
+  `Partial` without a model call), `Answer` with the stray chip stripped, `commit` before `Done { ok: true }`;
+  `five_branches_run_concurrently`: 5 notebooks → 5 branches, 13 events, **41 ms** wall for the five-branch mocked
+  ask (each search sleeps 5 ms; serial would be ≥ 25 ms + 7 model calls; asserted `< 200 ms`). The planner in the
+  tests is the `Script` double; live it is `notebooks.ask_model` → the ask session's model (`ModelRole::Named` /
+  `Session`).
+- Overview run records the item and lists newest first: `overviews::tests::list_orders_versions_newest_first_
+  with_the_live_run_on_top` (v2 before v1; the running row v3 on top; a failed audio run → `overview.mp3` v2 with the
+  error; another notebook's rows excluded; script before mp3 at equal version), `follow_turn_collects_the_show_
+  that_landed` (a foreign turn's `show` skipped until our `TurnStarted`; a failed `show` ignored; the landed one
+  with `v2` from the receipt and the content from the args), `receipt_version_parses_show_output`,
+  `instructions_name_their_file`. Filing the `notebook_items` row is `file_artifact` → registry `notebook_add` (W1's
+  tool; exercised live only).
+- Audio joiner + voice per turn on a stub `Synth`: `voice::clip::tests::dialogue_switches_voice_per_turn_and_joins_
+  with_350_ms_silences` (3 turns → 3×1920 + 2×8400 samples, speech/silence layout, voices `alba, peter_yearsley,
+  alba` in call order, one turn → no gap) and `voice::tests::dialogue_clip_joins_turns_with_gaps` (through the actor
+  on `FakeSynth`: `duration_ms` = 2×400 ms + 350, empty turn skipped, all-empty → `None`). Script → turns:
+  `overview_audio::tests::script_splits_into_speaker_turns`; voice assignment and the one-voice note:
+  `voices_alternate_or_fall_back_to_one_with_a_note`.
+- MP3 encode of 1 s PCM: `voice::clip::tests::encodes_a_second_of_tone` (pre-existing, 4–9 KB, sync word).
+- Not proven live (no engine may be driven on this machine, rule 10): a real ask over Sky's notebooks, a real
+  overview turn, the TTS of a full script. The seams those use are wave 1's (`nb_search`, `doc_read`, `show`,
+  `notebook_add`, `SendInput`, `SideCall`, `voice::Synthesize`) with the argument shapes read from their sources.
 
 ## Gates
+(`BUILD_LABEL=144-E2 build-lock mbx …` compiles under the lock; tests run bare; logs in `/tmp/144/w2/E2-*.log`.)
+- `cargo fmt -p agent -p rpc -p voice`: clean.
+- `mbx test -p agent -p rpc -p voice --no-run`: clean (0 warnings).
+- `mbx test -p agent --tests`: lib **575 passed** (+2 ignored, pre-existing) + `notebooks_binding` 1 +
+  `notebooks_block` 5, 0 failed. `mbx test -p rpc --tests`: **56 + 1**, 0 failed. `mbx test -p voice --lib`:
+  **27 passed**, 0 failed (incl. `live`/`stt` on the installed Nemotron/Parakeet checkpoints).
+- `mbx clippy -p agent -p rpc -p voice --all-targets -- -D warnings`: clean (one `type_complexity` fixed with the
+  `Runs` alias on the way).
+- `mbx check -p tui -p slack -p telegram --tests`: clean, 6 m 22 s (the `SessionKind` arm: no exhaustive match
+  outside `store/advisor.rs`, so these only confirm the enum growth compiles).
 
 ## Deviations
 - **Branches are concurrent in-process side calls, not `spawn_subagent` children** (the brief's allowed fallback).
