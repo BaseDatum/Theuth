@@ -45,6 +45,8 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     private readonly Grid root;
     private readonly TextBox field;
     private readonly FontIcon mic;
+    private readonly Grid micSlot; // 149 WW2 (D8): the mic glyph, or the carnelian level bars while recording
+    private readonly TextBlock liveView; // 149 WW2 (§3.5): finals in ink, the open partial in sand, while the dictation owns the field
     private readonly ScaleTransform micScale = new() { CenterX = 8, CenterY = 8 };
     private readonly Run escWords;
     private readonly Run holdKey;
@@ -122,10 +124,17 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         mic = new FontIcon { Glyph = "\uE720", FontSize = 14, Foreground = ink2, VerticalAlignment = VerticalAlignment.Center, RenderTransform = micScale };
         AutomationProperties.SetAutomationId(mic, "ask-mic");
         AutomationProperties.SetName(mic, "Hold the hotkey to dictate");
-        Grid.SetColumn(mic, 2);
+        micSlot = new Grid { Width = 44, Height = 24, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right };
+        micSlot.Children.Add(mic);
+        Grid.SetColumn(micSlot, 2);
+        liveView = new TextBlock { FontSize = 15, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed, Padding = new Thickness(0, 4, 0, 4) };
+        AutomationProperties.SetAutomationId(liveView, "ask-live");
+        AutomationProperties.SetLiveSetting(liveView, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        Grid.SetColumn(liveView, 1);
         fieldRow.Children.Add(cursorGlyph);
         fieldRow.Children.Add(field);
-        fieldRow.Children.Add(mic);
+        fieldRow.Children.Add(liveView);
+        fieldRow.Children.Add(micSlot);
         Grid.SetRow(fieldRow, 0);
 
         // Row 1: hints · status — one wrapping line of runs (Ctrl+Shift+Space is longer than ⌃⇧Space; 480 epx holds it on two lines)
@@ -136,13 +145,15 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         AutomationProperties.SetAutomationId(hintText, "ask-hints");
         // W6 (C12): no fixed Name — Narrator reads the hint text itself (a TextBlock's Name falls back to its Text).
         holdKey = Key("hold Ctrl+Shift+Space");
-        escWords = Words(" cancel");
-        hintText.Inlines.Add(Key("⏎"));
-        hintText.Inlines.Add(Words(" send to theuth · it routes    "));
+        escWords = Words(" keeps editing");
+        // 149 §3.5 hint row: "hold Ctrl+Shift+Space to talk · release → sends to theuth in 3 s · Esc keeps editing · theuth routes it"
         hintText.Inlines.Add(holdKey);
-        hintText.Inlines.Add(Words(" to talk · release to send in 3 s    "));
+        hintText.Inlines.Add(Words(" to talk · release → sends to theuth in 3 s · "));
         hintText.Inlines.Add(Key("Esc"));
         hintText.Inlines.Add(escWords);
+        hintText.Inlines.Add(Words(" · theuth routes it · "));
+        hintText.Inlines.Add(Key("⏎"));
+        hintText.Inlines.Add(Words(" send"));
         Grid.SetColumn(hintText, 0);
         var statusPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
         status = new TextBlock { FontSize = 10.5, Foreground = sand, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center };
@@ -190,6 +201,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         };
         Content = root;
         Place(new RectInt32(0, 0, Physical(Width), Physical(96)));
+        Capsule(Physical(96));
 
         recorder.OnChunk = c => model?.Feed(c);
         recorder.OnFailed = why => model?.MicrophoneFailed(why);
@@ -365,6 +377,30 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         micScale.ScaleX = scale;
         micScale.ScaleY = scale;
         AutomationProperties.SetName(mic, model.Recording ? "Listening" : "Hold the hotkey to dictate");
+        // 149 WW2 (D8): N carnelian bars from DictationLevel.levels replace the mic glyph while recording (mirrored in the rail's actions pill).
+        micSlot.Children.Clear();
+        if (model.Recording)
+        {
+            var bars = Ui.PillGlyphs.LevelBars(store.Ask.Dictation.Levels, 22, 4, root.ActualTheme);
+            AutomationProperties.SetAutomationId(bars, "ask-levels");
+            AutomationProperties.SetName(bars, "Listening");
+            micSlot.Children.Add(bars);
+        }
+        else micSlot.Children.Add(mic);
+        // 149 WW2 (§3.5): while the dictation owns the field, finals in ink and the open partial in sand (a TextBox cannot colour a range).
+        if (model.Live && (model.Text.Length > 0 || model.Partial.Length > 0))
+        {
+            liveView.Inlines.Clear();
+            if (model.Text.Length > 0) liveView.Inlines.Add(new Run { Text = model.Text, Foreground = ink });
+            if (model.Partial.Length > 0) liveView.Inlines.Add(new Run { Text = (model.Text.Length > 0 ? " " : "") + model.Partial, Foreground = sand });
+            liveView.Visibility = Visibility.Visible;
+            field.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            liveView.Visibility = Visibility.Collapsed;
+            field.Visibility = Visibility.Visible;
+        }
         holdKey.Text = model.HoldHint;
         status.Text = model.Status ?? "";
         status.Foreground = model.Recording ? carnelian : sand;
@@ -375,7 +411,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
 
     private void RenderReceipt()
     {
-        escWords.Text = store.HeldNow is null ? " cancel" : " undo";
+        escWords.Text = store.HeldNow is null ? " keeps editing" : " undo";
         var lines = AskBarModel.ReceiptLines(store.Receipt, store.HoldRemaining);
         if (lines is not { } l)
         {
@@ -426,6 +462,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         x = Math.Min(Math.Max(wa.X + 8, x), wa.X + wa.Width - w - 8);
         y = Math.Min(Math.Max(wa.Y + 8, y), wa.Y + wa.Height - h - 8);
         Place(new RectInt32(x, y, w, h));
+        Capsule(h);
     }
 
     /// <summary>Size the window to its content (the receipt row comes and goes and grows to two lines).</summary>
@@ -438,7 +475,15 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         {
             var p = AppWindow.Position;
             Place(new RectInt32(p.X, p.Y, Physical(Width), h));
+            Capsule(h);
         }
+    }
+
+    /// <summary>149 §3.5 / §7.4 #2: the bar is a 28 epx-radius capsule (<c>SetWindowRgn</c>); a regioned window has no DWM shadow (as-built WW2 §Deviations).</summary>
+    private void Capsule(int physicalHeight)
+    {
+        int r = Math.Min(Physical(28), physicalHeight / 2);
+        if (!Shape.Set(Hwnd, new[] { new Shape.Blob(0, 0, Physical(Width), physicalHeight, r) })) Log.Write($"ask bar: SetWindowRgn failed {Win32.LastError()}");
     }
 
     // MARK: brushes and small views
