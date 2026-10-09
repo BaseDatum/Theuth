@@ -126,16 +126,19 @@ internal static class PillGlyphs
         return row;
     }
 
-    /// <summary>The harness icon (D18): <c>Assets/harness/&lt;key&gt;.png</c> from the shared set once H1 lands; until the file exists, a 2-letter cap tinted ink.</summary>
+    /// <summary>The harness icon (D18): the shared set's PNG (<see cref="HarnessIcon"/>, <c>Assets\harness\&lt;family&gt;-&lt;size&gt;.png</c> beside the exe); until the file exists, a 2-letter cap tinted ink.</summary>
     public static FrameworkElement Harness(string key, ElementTheme theme, double size = 18)
     {
-        var k = key.Length == 0 ? "theuth" : key;
-        var path = HarnessIconPath(k);
+        var family = HarnessIcon.Family(key);
+        int px = size <= 16 ? 16 : size <= 20 ? 20 : size <= 24 ? 24 : 32;
+        var path = HarnessIconPath(family, px);
         if (path is not null)
         {
-            return new Image { Width = size, Height = size, Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(path)), Stretch = Stretch.Uniform };
+            var img = new Image { Width = size, Height = size, Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(path)), Stretch = Stretch.Uniform };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(img, family);
+            return img;
         }
-        var cap = k switch { "omp" => "om", "opencode" => "oc", "claude" => "cl", "codex" => "cx", "theuth" => "th", _ => k.Length >= 2 ? k[..2] : k };
+        var cap = family switch { "omp" => "om", "opencode" => "oc", "claude" => "cl", "codex" => "cx", "theuth" => "th", _ => "?" };
         return new Border
         {
             Width = size, Height = size, CornerRadius = new CornerRadius(5), Background = Palette.Tint(Palette.Ink, theme, 0.13),
@@ -149,28 +152,21 @@ internal static class PillGlyphs
 
     private static readonly Dictionary<string, string?> iconPaths = new(StringComparer.Ordinal);
 
-    /// <summary>The shared icon set copied beside the exe as <c>Assets/harness/*.png</c> (the 24 px size); null when absent.</summary>
-    private static string? HarnessIconPath(string key)
+    /// <summary><c>Assets\harness\&lt;family&gt;-&lt;px&gt;.png</c> beside the exe (WW1's csproj copies the shared set), else the 1× name, else <c>unknown</c>; null when absent.</summary>
+    private static string? HarnessIconPath(string family, int px)
     {
+        var key = $"{family}-{px}";
         lock (iconPaths)
         {
             if (iconPaths.TryGetValue(key, out var cached)) return cached;
             string? found = null;
             try
             {
-                var dir = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "harness");
-                foreach (var name in new[] { $"{key}-24.png", $"{key}@24.png", $"{key}_24.png", $"{key}.png" })
+                var dir = System.IO.Path.Combine(AppContext.BaseDirectory, HarnessIcon.Folder);
+                foreach (var name in new[] { HarnessIcon.For(family, px), HarnessIcon.For(family), HarnessIcon.For(HarnessIcon.Unknown, px), HarnessIcon.For(HarnessIcon.Unknown) })
                 {
                     var p = System.IO.Path.Combine(dir, name);
                     if (System.IO.File.Exists(p)) { found = p; break; }
-                }
-                if (found is null && key != "unknown")
-                {
-                    foreach (var name in new[] { "unknown-24.png", "unknown.png" })
-                    {
-                        var p = System.IO.Path.Combine(dir, name);
-                        if (System.IO.File.Exists(p)) { found = p; break; }
-                    }
                 }
             }
             catch (Exception) { }
