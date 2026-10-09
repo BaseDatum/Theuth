@@ -1,7 +1,7 @@
 //! Kind by extension, mime, the CSV parse the TUI shares, and the one-line
 //! receipt the model reads (35 §3.1–§3.2).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{Artifact, Kind};
 
@@ -111,6 +111,30 @@ pub struct Receipt {
     pub height: Option<(u32, u32)>,
     /// Why the kind was demoted to [`Kind::File`] by the ingest sniff (120 §9a).
     pub demoted: Option<&'static str>,
+    /// The editable source file of a text kind: the draft, or the `path` shown (150 §D2).
+    pub file: Option<PathBuf>,
+    /// `show{edits}`: how many were applied (150 §D5); `Some(0)` = republished unchanged.
+    pub edits: Option<usize>,
+    /// `show{edits}` on an HTML page whose only base was the published blob: images already inlined.
+    pub base_inlined: bool,
+    /// The pre-publish page check of an `.html` page (150 §D4).
+    pub check: Option<Check>,
+}
+
+/// How `show`'s page check ended (150 §D4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Check {
+    /// A client rendered the page and its console had no `error` line.
+    Ok {
+        /// Who rendered (`desktop`, `web`, `phone`).
+        client: &'static str,
+        /// The reported height; `None` for the web client's unmeasured 80.
+        height: Option<u32>,
+        /// `warning` lines.
+        warnings: usize,
+    },
+    /// Published unchecked: no renderer, the client failed, timed out, or never finished loading.
+    Skipped(String),
 }
 
 /// `1024 B` → `1 KB`, `212 MB`.
@@ -123,9 +147,10 @@ pub fn human(bytes: u64) -> String {
     }
 }
 
-/// `shown report.pdf (v1 · 3 pages · 84 KB) · source report.md`;
+/// `shown report.pdf (v1 · 3 pages · 84 KB) · source report.md · file <draft>`;
 /// `shown archive.zip (v1 · 42 files · 3 MB)`; `shown flow.mmd (v1 · mermaid · 12 lines · 1 KB)`;
-/// `shown chart.html (v1 · 212 lines · 48 KB · 2 images inlined · height 600)` + the audience line.
+/// `shown chart.html (v2 · 212 lines · 48 KB · 2 images inlined · height 600 · 2 edits applied)
+/// · checked on desktop: height 612 · file <draft>` + the audience line.
 pub fn receipt(a: &Artifact, x: &Receipt) -> String {
     let mut parts = vec![format!("v{}", a.version)];
     if a.kind == Kind::Mermaid {
@@ -158,6 +183,9 @@ pub fn receipt(a: &Artifact, x: &Receipt) -> String {
         Some((_, used)) => parts.push(format!("height {used}")),
         None => {}
     }
+    if let Some(n) = x.edits.filter(|n| *n > 0) {
+        parts.push(format!("{n} edit{} applied", if n == 1 { "" } else { "s" }));
+    }
     let mut out = format!("shown {} ({})", a.name, parts.join(" · "));
     if let Some(name) = a.source.as_deref().and_then(Path::file_name) {
         out.push_str(&format!(" · source {}", name.to_string_lossy()));
@@ -168,10 +196,34 @@ pub fn receipt(a: &Artifact, x: &Receipt) -> String {
             x.warnings.len()
         ));
     }
+    match &x.check {
+        Some(Check::Ok {
+            client,
+            height,
+            warnings,
+        }) => {
+            match height {
+                Some(h) => out.push_str(&format!(" · checked on {client}: height {h}")),
+                None => out.push_str(&format!(" · checked on {client} (not measured)")),
+            }
+            if *warnings > 0 {
+                out.push_str(&format!(" · {warnings} warning(s)"));
+            }
+        }
+        Some(Check::Skipped(why)) => out.push_str(&format!(" · not checked: {why}")),
+        None => {}
+    }
+    if let Some(f) = &x.file {
+        out.push_str(&format!(" · file {}", f.display()));
+    }
+    if x.base_inlined {
+        out.push_str(" · edited the published page (images already inlined)");
+    }
     if a.kind == Kind::Html {
         out.push_str(
             "\nlive page in the theuth app (desktop, web, phone); Slack/Telegram/Signal get the \
-             file; TUI the source. Check it with page_preview when it has scripts.",
+             file; TUI the source. To change it: show{name, edits} or edit() the file above and \
+             show{path} — never resend the page.",
         );
     }
     out
@@ -272,23 +324,49 @@ mod tests {
             lines: Some(212),
             images: Some(2),
             height: Some((600, 600)),
+            edits: Some(2),
+            check: Some(Check::Ok {
+                client: "desktop",
+                height: Some(612),
+                warnings: 1,
+            }),
+            file: Some(PathBuf::from("/d/drafts/s/chart.html")),
             ..Receipt::default()
         };
         assert_eq!(
             receipt(&record("chart.html", Kind::Html, 48 * 1024), &x),
-            "shown chart.html (v1 · 212 lines · 48 KB · 2 images inlined · height 600)\n\
+            "shown chart.html (v1 · 212 lines · 48 KB · 2 images inlined · height 600 · 2 edits \
+             applied) · checked on desktop: height 612 · 1 warning(s) · file \
+             /d/drafts/s/chart.html\n\
              live page in the theuth app (desktop, web, phone); Slack/Telegram/Signal get the \
-             file; TUI the source. Check it with page_preview when it has scripts."
+             file; TUI the source. To change it: show{name, edits} or edit() the file above and \
+             show{path} — never resend the page."
         );
         let x = Receipt {
             lines: Some(1),
             images: Some(1),
             height: Some((3000, 2000)),
+            edits: Some(0),
+            check: Some(Check::Skipped("no renderer".into())),
+            base_inlined: true,
             ..Receipt::default()
         };
         assert!(receipt(&record("p.html", Kind::Html, 10), &x).starts_with(
-            "shown p.html (v1 · 1 lines · 10 B · 1 image inlined · height 3000 → 2000)\n"
+            "shown p.html (v1 · 1 lines · 10 B · 1 image inlined · height 3000 → 2000) · not \
+             checked: no renderer · edited the published page (images already inlined)\n"
         ));
+        let x = Receipt {
+            check: Some(Check::Ok {
+                client: "web",
+                height: None,
+                warnings: 0,
+            }),
+            ..Receipt::default()
+        };
+        assert!(
+            receipt(&record("p.html", Kind::Html, 10), &x)
+                .starts_with("shown p.html (v1 · 10 B) · checked on web (not measured)\n")
+        );
     }
 
     #[test]

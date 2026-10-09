@@ -258,7 +258,7 @@ Three fenced blocks render inline, merged into your reply with the same margins 
 const BLOCK_TAIL: &str = "\n\
 - ```openui: richer static components with local interaction, rendered inline exactly like json-render (not as an app card; the reader can open one as an app if they want): Steps/StepsItem, Tabs/TabItem, Callout, Card/CardHeader, Table/Col, BarChart/LineChart/Series, MetricIndicatorInline, ListBlock/ListItem, Tag, Accordion/AccordionItem, CodeBlock, Chips/ChipItem, OptionCards/OptionCard, Buttons/Button with @Set/@OpenUrl. No Query/Mutation/@ToAssistant in a fence — a live screen is the `app` tool.\n\
 - ```mermaid: sequenceDiagram (un-anchored sketches), mindmap (flowchart only when you need mermaid syntax; boxes and arrows are otherwise a Graph; state, class and ER pictures are StateMachine / Entities).\n\
-- A **page** (`show{content, name: \"x.html\"}`): one self-contained HTML document with its own `<style>`/`<script>`, CDN libraries allowed, rendered live inline in the theuth app in a sandboxed frame themed like the chat. Only for what no catalog component draws: a chart library's chart (Chart.js, ECharts, Plotly, D3), a map, 3D, a mockup, an image collage, an animation, a layout you must control pixel by pixel. Interfaces are the standing case: when the work is designing or changing a screen, dialog, form, dashboard or component — in theuth or in any product — mock it as a page (`show{content, name: \"mock.html\"}`) before or while you build it, so the reader sees the proposed screen in the chat and reacts to a picture, not a description: fake data, real layout, the theme variables, states or variants side by side. A clickable flow with live data is an `app`; the faithful look of a screen is a page. Nothing comes back from a page — a button that should reach you is an `app`, not a page. Rules: fluid width, no horizontal padding on the outermost element, no outer card, border or banner title (the page is part of your reply); charts at fixed pixel heights; let content set the height, never `100vh` or `height:100%` on `html`/`body`; use the theme variables (`--background --foreground --muted --card --border --primary --accent --chart-1..6 --radius --font-sans --font-mono`, the same names as T3 Code) with fallbacks, e.g. `var(--foreground, #1a1612)`; local images by absolute path are inlined for you; pass `height` only to cap a long page. Check a scripted page with `page_preview` before you show it. The reader sees the page where the card is — do not announce or restate it; add only what it does not say.\n\
+- A **page** (`show{content, name: \"x.html\"}`): one self-contained HTML document with its own `<style>`/`<script>`, CDN libraries allowed, rendered live inline in the theuth app in a sandboxed frame themed like the chat. Only for what no catalog component draws: a chart library's chart (Chart.js, ECharts, Plotly, D3), a map, 3D, a mockup, an image collage, an animation, a layout you must control pixel by pixel. Interfaces are the standing case: when the work is designing or changing a screen, dialog, form, dashboard or component — in theuth or in any product — mock it as a page (`show{content, name: \"mock.html\"}`) before or while you build it, so the reader sees the proposed screen in the chat and reacts to a picture, not a description: fake data, real layout, the theme variables, states or variants side by side. A clickable flow with live data is an `app`; the faithful look of a screen is a page. Nothing comes back from a page — a button that should reach you is an `app`, not a page. Rules: fluid width, no horizontal padding on the outermost element, no outer card, border or banner title (the page is part of your reply); charts at fixed pixel heights; let content set the height, never `100vh` or `height:100%` on `html`/`body`; use the theme variables (`--background --foreground --muted --card --border --primary --accent --chart-1..6 --radius --font-sans --font-mono`, the same names as T3 Code) with fallbacks, e.g. `var(--foreground, #1a1612)`; local images by absolute path are inlined for you; pass `height` only to cap a long page. Write the page once: `show` checks it in the connected app before publishing and refuses one that logs errors; fix it with `show{name, edits: [{old, new}]}` (or `edit()` the file the result names, then `show{path}`) — never resend the whole page. `page_preview` is optional, for checking a page without publishing it. The reader sees the page where the card is — do not announce or restate it; add only what it does not say.\n\
 \n\
 Pick by the shape of the answer:\n\
 | The answer is… | Draw |\n\
@@ -292,7 +292,7 @@ Pick by the shape of the answer:\n\
 | references, further reading | json-render LinkList |\n\
 | a picture you have a URL for | json-render Image |\n\
 | an interface you are designing or changing — a screen, dialog, form, dashboard, component | an HTML mock as a page: `show{content, name: \"mock.html\"}` — fake data, real layout, variants side by side; a clickable flow with live data is an `app` |\n\
-| a chart from a chart library, a map, 3D, a mockup, a collage, an animation | a page: `show{content, name: \"x.html\"}` (check with `page_preview`) — never for what a component above draws |\n\
+| a chart from a chart library, a map, 3D, a mockup, a collage, an animation | a page: `show{content, name: \"x.html\"}` (`show` checks it; fix with `edits`) — never for what a component above draws |\n\
 | who: an owner, a contact, a reviewer | json-render Person |\n\
 | something someone said, verbatim | json-render Quote |\n\
 \n\
@@ -499,12 +499,13 @@ mod tests {
         assert!(block.contains("a button that should reach you is an `app`, not a page"));
         assert!(block.contains("Interfaces are the standing case"));
         assert!(block.contains("| an interface you are designing or changing — a screen, dialog, form, dashboard, component |"));
-        assert!(block.contains("Check a scripted page with `page_preview` before you show it."));
+        assert!(block.contains("Write the page once: `show` checks it in the connected app before publishing and refuses one that logs errors; fix it with `show{name, edits: [{old, new}]}`"));
+        assert!(!block.contains("Check a scripted page with `page_preview`"));
         let image = block
             .find("| a picture you have a URL for | json-render Image |")
             .unwrap();
         let row = block
-            .find("| a chart from a chart library, a map, 3D, a mockup, a collage, an animation | a page: `show{content, name: \"x.html\"}` (check with `page_preview`) — never for what a component above draws |")
+            .find("| a chart from a chart library, a map, 3D, a mockup, a collage, an animation | a page: `show{content, name: \"x.html\"}` (`show` checks it; fix with `edits`) — never for what a component above draws |")
             .unwrap();
         let person = block
             .find("| who: an owner, a contact, a reviewer |")
@@ -512,7 +513,8 @@ mod tests {
         assert!(image < row && row < person);
         let skill = visualize_skill();
         assert!(skill.contains("\n## Pages\n"));
-        assert!(skill.contains("| a chart library's chart, a map, 3D, a mockup, a collage, an animation | a page — show{content, name: \"x.html\"} after page_preview | a Code block of HTML, or an app that calls nothing back |\n| an explanation with three or more parts"));
+        assert!(skill.contains("| a chart library's chart, a map, 3D, a mockup, a collage, an animation | a page — show{content, name: \"x.html\"} once; fix it with show{name, edits} | a Code block of HTML, or an app that calls nothing back |\n| an explanation with three or more parts"));
+        assert!(skill.contains("never resend the whole page"));
         assert!(skill.contains("```html\n<!doctype html>"));
     }
 

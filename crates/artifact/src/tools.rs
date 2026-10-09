@@ -11,13 +11,15 @@ use crate::pdf::Source;
 use crate::store::Stores;
 use crate::{Artifact, ExportDoc, ExportFormat, Kind, kind};
 
-/// Arguments of `show`. Exactly one of `path` / `content`; `content` requires `name`.
+/// Arguments of `show`. Exactly one of `path` / `content` / `edits`; `content` and `edits` require `name`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ShowArgs {
-    /// Absolute path of an existing file to show (a file you wrote, a screenshot, a document).
+    /// Absolute path of an existing file to show (a file you wrote, a screenshot, a document, the
+    /// `file` a previous result named). A `.md`/`.typ` path with a `.pdf` `name` is compiled.
     pub path: Option<PathBuf>,
-    /// Text to write and show instead of `path`. Requires `name`. For `.pdf` names this is the
-    /// document source (markdown by default; `source: typst` for Typst).
+    /// Text to write and show instead of `path`, ONCE per file. Requires `name`. For `.pdf` names
+    /// this is the document source (markdown by default; `source: typst` for Typst). To change a
+    /// file you already sent, use `edits` or `path` — never resend the text.
     pub content: Option<String>,
     /// File name with extension; the extension picks the rendering (`report.md`, `chart.svg`,
     /// `summary.pdf`, `data.csv`, `notes.txt`, `page.html`). Showing the same name again in this
@@ -29,12 +31,32 @@ pub struct ShowArgs {
     pub source: Option<Source>,
     /// Cap on the inline frame of an `.html` page, CSS px, 80–2000; content taller scrolls inside.
     pub height: Option<u32>,
+    /// Fix the text last sent under `name` (its draft, else its latest version) instead of
+    /// resending it: replacements applied in order, all or nothing, then shown as a new version.
+    /// Requires `name`; excludes `path` and `content`. `[]` republishes the draft unchanged.
+    pub edits: Option<Vec<ShowEdit>>,
+    /// `.html` only, default true: render the page hidden in the connected app first and refuse
+    /// to publish it when its console logs an error. `false` publishes without the check.
+    pub check: Option<bool>,
+}
+
+/// One replacement in [`ShowArgs::edits`]: the shape of the `edit` tool's entries.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ShowEdit {
+    /// Exact text to replace; must occur once unless `all`.
+    pub old: String,
+    /// Replacement text.
+    pub new: String,
+    /// Replace every occurrence.
+    #[serde(default)]
+    pub all: Option<bool>,
 }
 
 /// Prompt block registered as `RegisterPrompt { plugin: "artifact" }` (35 §5).
 pub const PROMPT: &str = "## Hand over files, don't paste them\n\
 `show` puts a file in front of the user as a card in this chat — rendered, openable, savable. Use it whenever the deliverable is a file: a report, a summary longer than a screen, a table over ~8 rows, a document you were asked to write, an image or screenshot they should look at, a PDF. `show{path}` shows a file that exists (never read a file and then repeat its content in your reply — show it). `show{content, name}` writes and shows a new one; a `.pdf` name turns markdown into a real PDF (front matter `title`, `author`, `toc: true` for a title block and contents) and the result includes a picture of page 1 — look at it; `.zip`/`.tar.gz` shows the archive with a browsable listing (build it with `tar`/`zip` in `shell()` first). A diagram the user should keep or open on its own: `show{content, name: 'x.mmd'}`; a diagram that explains this reply: a ```mermaid fence in your text. Same name again = a new version. One sentence of takeaway in your reply, then the card carries the content. `message_user` is still how you reach the user *outside* this chat.\n\
-`show{content, name: \"x.html\", height?}` renders a live sandboxed page inline in the theuth app (desktop, web, phone; Slack/Telegram/Signal get the file). One self-contained document; absolute local image paths are inlined; `height` caps the frame (80–2000) and the rest scrolls inside. Preview a scripted page with `page_preview` first. Designing or changing an interface — a screen, dialog, form, dashboard, component? Mock it as a page (`mock.html`, fake data, real layout) so the user sees the screen in the chat before you build it.";
+Write a page or document ONCE. Every `show` of text saves it as a file the result names (`· file <path>`, also on failure: `saved at <path>`). To fix or change it, send only the change: `show{name, edits: [{old, new}]}` (or `edit()` that file, then `show{path}`); never resend the whole text — not after an error, not for a one-line fix.\n\
+`show{content, name: \"x.html\", height?}` renders a live sandboxed page inline in the theuth app (desktop, web, phone; Slack/Telegram/Signal get the file). One self-contained document; absolute local image paths are inlined; `height` caps the frame (80–2000) and the rest scrolls inside. `show` checks the page itself before publishing — it renders it hidden in the connected app and refuses one whose console logs an error (fix with `edits`, or `check: false` to publish anyway); with no app connected it publishes unchecked. `page_preview{path|html}` is optional: it checks a page without publishing it. Designing or changing an interface — a screen, dialog, form, dashboard, component? Mock it as a page (`mock.html`, fake data, real layout) so the user sees the screen in the chat before you build it.";
 
 /// `show`: snapshot a file (or write `content`) under the harness and show it
 /// as a card. Calls [`crate::store::State::show`] directly — the tool already
@@ -57,11 +79,14 @@ impl Tool for ShowTool {
         "Show a file to the user in the chat, as a card they can read, open and save: markdown, \
          text and code render inline; images and SVGs show as pictures; CSV as a table; `.pdf` \
          names compile the markdown (or Typst) in `content` into a real PDF; `.html` names \
-         render as live pages (scripts, CDN libraries) inline, and the optional `height` caps \
-         the inline frame. Pass `path` for a file that exists, or `content` + `name` to write \
-         one under the harness first. The result tells you the version and, for PDFs and SVGs, \
-         includes a picture of the result. Use this instead of pasting a file's content into \
-         your reply."
+         render as live pages (scripts, CDN libraries) inline, checked in the connected app \
+         first (a page whose console logs an error is not published), and the optional `height` \
+         caps the inline frame. Pass `path` for a file that exists, or `content` + `name` to \
+         write one under the harness first — once: every text you send is saved as a file the \
+         result names, so a fix is `edits: [{old, new}]` with the same `name` (or `edit()` that \
+         file and `path`), never the whole text again. The result tells you the version and, \
+         for PDFs and SVGs, includes a picture of the result. Use this instead of pasting a \
+         file's content into your reply."
             .into()
     }
 
@@ -90,8 +115,14 @@ impl Tool for ShowTool {
                     .unwrap_or("unknown kind; shown as a downloadable file"),
             );
         }
+        let mut structured = serde_json::to_value(&shown.artifact).ok();
+        if let (Some(serde_json::Value::Object(m)), Some(f)) =
+            (structured.as_mut(), &shown.receipt.file)
+        {
+            m.insert("file".into(), f.display().to_string().into());
+        }
         Ok(ToolOutput {
-            structured: serde_json::to_value(&shown.artifact).ok(),
+            structured,
             files: shown.artifact.preview.into_iter().collect(),
             ..ToolOutput::ok(content)
         })

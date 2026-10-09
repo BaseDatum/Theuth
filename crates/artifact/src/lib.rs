@@ -813,11 +813,14 @@ impl runtime::Plugin for ArtifactPlugin {
                     })))
                     .await;
                 let _ = reg
-                    .ask(::tools::RegisterTool(Arc::new(tools::ShowTool { stores })))
+                    .ask(::tools::RegisterTool(Arc::new(tools::ShowTool {
+                        stores: stores.clone(),
+                    })))
                     .await;
                 let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(preview::PagePreviewTool {
                         rt: rt.clone(),
+                        stores,
                     })))
                     .await;
                 let _ = reg
