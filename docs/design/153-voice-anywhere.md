@@ -159,3 +159,83 @@ the buffer when the onset is confirmed, and `feed_full` feeds the first window o
 Structural floor ≈ 160 + 80 = 240 ms after speech start, plus one encoder step and the RPC hop; the first window "often" emits nothing
 (`VOICE/stt.rs:255`), so the first *word* commonly waits for the second window (+560 ms). Both numbers are [INFERENCE]; §8.6's metric replaces
 them with press → first partial → final per surface, as R5 asks.
+
+## 3. The target experience
+
+Four modes, one engine stream. "Dictate here" is what exists today plus shaping and end commands; "dictate anywhere" (D1) and "command"
+(D10) are new modes of the companion; "ask" is the voice key and the Ask bar with the new answer card (D12). Every mode shows words as they
+close (partials muted, finals solid — 54 §0.3, unchanged), shows the *shaped* text (§4), and never leaves a state without copy (D13).
+
+### 3.1 Dictate here — Composer, TUI, companion field
+Unchanged entry points: Ctrl+D / the Mic button in the Composer (`UI/components/chat/Composer.tsx:418-438`), Ctrl+D in the TUI, the mic inside
+every desktop `Input`/`Textarea` (`UI/components/ui/dictation.tsx:56-66`), V / the row mic / the Ask bar hold in the companion
+(`COMP/Companion/Voice/HoldToTalk.swift:5-8`). What changes: the field shows `shaped` instead of `text`; "send it" sends (Composer `submit()`,
+`Composer.tsx:706`; the companion's `commitAsk` after its hold, `COMP/Companion/AskBar/Store+Ask.swift:51-57`); "scratch that" drops the last
+closed utterance; a correction suggestion may appear after the send (§6).
+
+| State | What is shown | Copy | What ends it |
+|---|---|---|---|
+| starting | mic button → level slot, caret hidden (54 §0.7) | tooltip "Stop dictation (Ctrl+D)" | `DictationStarted` → dictating; a refusal → idle with its toast ("already dictating", "talking", model missing) |
+| dictating | muted partial, solid finals, wave; a detected end command is underlined in the partial | — | Ctrl+D / Mic → stopping; Esc → discarding; "send it" armed → settling; `dictation_max_secs` → finished (Stopped) |
+| settling ("send it") | the phrase struck through, a 1.5 s ring on the stop glyph | "sending in 1.2 s · ⎋ keep editing · ⏎ send now" | silence ≥ 0.35 s after 1.5 s → stop + send; any key/typing → dictating with the phrase removed; Esc → dictating |
+| stopping | last partial muted | "finishing…" | `DictationFinished` → the spliced value lands as one undo step (`Composer.tsx:493-505`) |
+| discarding | — | — | `DictationFinished` → `before + after` restored (`UI/lib/dictation.ts:225`) |
+| suggesting | the `DictionarySuggestion` card under the field (§6.4) | "You changed ‹heard› → ‹typed› after dictating…" | Add / Not now / Never; auto-dismiss 20 s |
+
+### 3.2 Dictate ANYWHERE — any app, from the companion (D1)
+Entry: the dictate-anywhere key (§15: ⌃⌥D / Ctrl+Alt+D), hold or lock exactly as the voice key (`PointMachine`, hold 200 / double-tap 300 /
+min note 800, `COMP/CompanionCore/PointMachine.swift:10-22`), or the Automatic option (§12.6). The pill shows on the pointer's display
+(mock frame A). Words are *delivered as utterances close*: each final utterance is shaped and inserted (direct AX or lease, §13) so the text
+appears in the target "in the same second"; partials stay in the pill only. Release → the open utterance is flushed and delivered; "send it"
+presses Return in the target when §7.4 allows it.
+
+| State | What is shown | Copy | What ends it |
+|---|---|---|---|
+| assessing (≤ 150 ms, before the mic is live) | pill with the target app's icon and name | "Dictating into Mail" · "Terminal · unknown field — paste" · refusal "Nothing to type into — ‹role›" | editable/unknown → listening; certainly-not → hint 2.5 s → idle (nothing recorded) |
+| listening | rec dot, level bars, muted partial, chord caption | "⌃⌥D held · shape on" · "⎋ cancel · double-tap lock · say “send it”" | release ≥ 200 ms / tap while locked → finishing; Esc → cancelled; another mode's key → §3.5 switch; focus leaves the target app → paused ("Come back to Mail to continue · ⎋") |
+| delivering (per closed utterance, concurrent with listening) | the utterance turns solid in the pill as it lands | — | landed → next; not landed → the failure card (§13.5) after the gesture, the words kept |
+| finishing | last partial muted | "finishing…" | `DictationFinished` + last delivery verified → done |
+| settling ("send it") | as 3.1 | "sending in 1.2 s · ⎋ keep editing" | silence → deliver + Return (if allowed) → done; secure field → done without Return, caption "not sent — secure field" |
+| done | pill collapses | "✓ 3 lines into Mail" (1.2 s) | timer → idle |
+| failed | failure card at the pointer with the transcript | "Couldn't type into Terminal · paste not landed · Copy · Try again · Open in theuth" | Copy/Try again/Open/⎋; stays until acted on (D13) |
+| rewriting | the Rewrite panel: the spoken instruction, the selection excerpt, the proposal | "Replace · Refine (hold) · ⎋" | Replace → focus restored → paste → done; ⎋ → idle |
+
+### 3.3 Ask — the Ask bar and the voice key with the screen
+Unchanged triggers (`COMP/CompanionCore/KeyBindings.swift:194-195`, `:218`): ⌃⇧Space held talks into the Ask bar, ⌃S points and says. What
+changes: both end in the one AnswerCard (§12) instead of a two-line receipt (`COMP/CompanionCore/AskRouter.swift:118-127`) or the plain-text
+card (`COMP/Companion/PointAndSay/AnswerCard.swift:40`).
+
+| State | What is shown | Copy | What ends it |
+|---|---|---|---|
+| listening | island voice view / Ask field with live words (`VoiceModeView.swift:5-21`) | "· ⌃S held · theuth's desk" | release/lock-tap → finishing; Esc → cancelled |
+| finishing | words muted; overlays concealed; screenshot taken | "finishing…" | final text + `screen_context` → thinking; empty → hint "Nothing recognized" |
+| thinking | card collapsed: shimmer on "thinking", tool names as they start | "thinking · code_refs · 4 s" | `TurnFinished` → answer; error/cancel → failed |
+| answer | collapsed = two lines + "⏎ expand · O open · ⎋"; expanded = markdown, tool list, follow-up field, session dots | — | 6 s `doneMs` only when nothing is speaking and the card is collapsed; expanded cards stay |
+| speaking | the accent glyph (149s S4) | "click to stop" | speech ends → answer timer; Esc stops |
+| failed | status in the failed colour | "couldn't reply — ‹error›" | Esc; never auto-hides |
+
+### 3.4 Command — the third key (D10)
+Entry: the command key (§15: ⌃⌥C / Ctrl+Alt+C), hold/lock as the voice key. The same desk answers under the command profile (§10); the card
+is step-typed and ends in one ✓/✗ line; a pending approval appears in the card and is answered by voice ("yes"/"go"/"no") or ⏎/⎋.
+
+| State | What is shown | Copy | What ends it |
+|---|---|---|---|
+| listening | pill "Command · theuth desk", live words | "⌃⌥C held" | release → heard |
+| heard | the request in quotes, first step row pending | "heard → working" | `TurnStarted` → working |
+| working | step rows `checked · executed · verifying · next` with the tool's purpose, tool names as they start; shimmer on the running row | "⎋ stop · hold ⌃⌥C to add" | `ApprovalRequested` → needs your ok; `TurnFinished` → done; cap (W-e) → stopped |
+| needs your ok | the pending tool call in an amber box with the risk class and policy | "Run `rm -rf …`? destructive · policy: ask · Yes ⏎ No ⎋ or say “yes” / “no”" | voice/keys → `resolve_approval` → working; approval timeout (`tools.approval_timeout_secs`) → denied row |
+| done | one line "✓ …" or "✗ …", the step count, "4 steps ls · mkdir/mv · ls · applescript" | "O open session · ⎋ dismiss · hold ⌃⌥C follow up" | 6 s when collapsed; a follow-up hold reuses the card |
+| stopped | last rows frozen, "stopped after 12 steps" | "hold ⌃⌥C to continue" | hold → working on the same thread; ⎋ |
+
+### 3.5 The key gestures (both platforms; §15 has the chords)
+- **Hold ≥ 200 ms** = talk, release = act; **tap then press within 300 ms** = lock hands-free, next tap = act; **Esc** cancels between press and
+  send; notes < 800 ms are discarded with the hint — the 96/149 machine, untouched (`crates/desktop/src/point/machine.rs:5-18`, the Swift port
+  `COMP/CompanionCore/PointMachine.swift:10-22`, the C# port `WIN/Theuth.Companion.Core/PointMachine.cs`).
+- **Mode switch while holding (R2).** Pressing another mode's key while a gesture is live switches the mode of *that* gesture (dictate ↔ ask ↔
+  command) — the recording continues, the pill relabels, the destination changes at release. Implemented as a `PointMachine.Event.switchMode`
+  carried by the controller (§14.4); technique A:L173.
+- **Automatic (opt-in, W-i).** Tap < 0.4 s toggles (press again to stop), a longer press is push-to-talk; replaces double-tap lock while chosen
+  (§12.6; technique A:L170).
+- **Chord protection.** A modifier-only chord whose hold saw another key is not a release (A:L172); repeats never toggle (the 149f `VoiceKeyGate`
+  already filters auto-repeat, `docs/design/149-as-built-voice-key-fix.md:82-88`).
+- **Composer and TUI** keep Ctrl+D / Esc; **"send it"** is the only spoken way out (§7).
