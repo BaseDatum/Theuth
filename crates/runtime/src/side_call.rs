@@ -112,7 +112,8 @@ pub enum ModelRole {
 /// no-tools, no-history request on a role model, run detached from the session's
 /// turn and cost-attributed to `session` under `kind`. Fails with the provider's
 /// error, `timed out` after `budget`, or `cancelled` when the session closes.
-/// Consumers: the title turn, `decision::escalate`, the 57 §11 training composer.
+/// Consumers: the title turn, `decision::escalate`, the 57 §11 training composer,
+/// 153 §9 polish/rewrite (`CallKind::Polish` on `ModelRole::Polish`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SideCall {
     /// Session the call belongs to (cost row owner; also the `Session` role's model).
@@ -125,7 +126,7 @@ pub struct SideCall {
     pub user: String,
     /// Wall-clock budget for the whole call.
     pub budget: Duration,
-    /// Cost tag (`model_calls.kind`): `Escalate` for the oracle, `Title` for titles.
+    /// Cost tag (`model_calls.kind`): `Escalate` for the oracle, `Title` for titles, `Polish` for dictation polish.
     pub kind: CallKind,
 }
 

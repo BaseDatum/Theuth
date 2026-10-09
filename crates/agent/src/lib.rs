@@ -48,6 +48,7 @@ pub mod notebooks;
 pub mod overview_audio;
 pub mod overviews;
 pub mod peers;
+pub mod polish;
 pub mod project;
 pub mod providers;
 pub mod repl;
