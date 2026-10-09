@@ -32,7 +32,7 @@ pub struct EntryId(pub String);
 
 /// What kind of thing an entry's canonical is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "EntryKind"))]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// A technical term or product name.
@@ -53,7 +53,7 @@ pub enum Kind {
 
 /// Which layer an entry came from (§5); the matcher's tie-break order is User > Learned > Packaged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "EntrySource"))]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     /// Shipped dataset (§5.1).
