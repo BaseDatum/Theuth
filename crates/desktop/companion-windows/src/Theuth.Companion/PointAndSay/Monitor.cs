@@ -1,5 +1,3 @@
-using Microsoft.UI;
-using Microsoft.UI.Windowing;
 using Theuth.Companion.Core;
 
 namespace Theuth.Companion.PointAndSay;
@@ -20,17 +18,23 @@ internal sealed record ScreenMonitor(string Device, PxRect Bounds, PxRect WorkAr
         var list = new List<ScreenMonitor>();
         try
         {
-            var primary = DisplayArea.Primary;
-            foreach (var area in DisplayArea.FindAll())
+            // EnumDisplayMonitors + GetMonitorInfoW: physical pixels under PerMonitorV2, the device name as the memory key.
+            // (DisplayArea.FindAll() threw InvalidCastException on build-B's WinAppSDK 2.5.1 — kept out.)
+            Gdi.MonitorEnumProc cb = (nint h, nint _, ref Gdi.Rect r, nint _) =>
             {
-                nint h = Win32Interop.GetMonitorFromDisplayId(area.DisplayId);
-                var info = Gdi.MonitorInfo(h);
-                var ob = area.OuterBounds;
-                var wa = area.WorkArea;
-                string device = info?.Device is { Length: > 0 } d ? d : $"display-{area.DisplayId.Value}";
-                bool isPrimary = primary is not null && primary.DisplayId.Value == area.DisplayId.Value;
-                list.Add(new ScreenMonitor(device, new PxRect(ob.X, ob.Y, ob.Width, ob.Height), new PxRect(wa.X, wa.Y, wa.Width, wa.Height), Gdi.ScaleOf(h), isPrimary, h));
-            }
+                if (Gdi.MonitorInfo(h) is { } info)
+                {
+                    var mi = new Gdi.MonitorInfoEx { Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<Gdi.MonitorInfoEx>() };
+                    bool primary = Gdi.GetMonitorInfoW(h, ref mi) && (mi.Flags & Gdi.MonitorInfoFPrimary) != 0;
+                    list.Add(new ScreenMonitor(info.Device.Length > 0 ? info.Device : $"monitor-{h}",
+                        new PxRect(info.Monitor.Left, info.Monitor.Top, info.Monitor.Right - info.Monitor.Left, info.Monitor.Bottom - info.Monitor.Top),
+                        new PxRect(info.Work.Left, info.Work.Top, info.Work.Right - info.Work.Left, info.Work.Bottom - info.Work.Top),
+                        Gdi.ScaleOf(h), primary, h));
+                }
+                return true;
+            };
+            Gdi.EnumDisplayMonitors(0, 0, cb, 0);
+            GC.KeepAlive(cb);
         }
         catch (Exception e)
         {

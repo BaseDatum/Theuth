@@ -81,6 +81,13 @@ internal static unsafe class Gdi
     [DllImport("user32.dll")]
     public static extern nint MonitorFromPoint(Point pt, uint flags);
 
+    public delegate bool MonitorEnumProc(nint hMonitor, nint hdc, ref Rect rect, nint data);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumDisplayMonitors(nint hdc, nint clip, MonitorEnumProc proc, nint data);
+
+    public const uint MonitorInfoFPrimary = 1;
+
     [DllImport("user32.dll")]
     public static extern nint MonitorFromWindow(nint hwnd, uint flags);
 

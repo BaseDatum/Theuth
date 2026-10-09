@@ -13,16 +13,19 @@ namespace Theuth.Companion.PointAndSay;
 /// </summary>
 internal static class PointProbe
 {
+    // Dispatcher timers are not kept alive by the queue: hold them here until they fire.
+    private static DispatcherQueueTimer? arm, hold;
+
     public static void Run(DispatcherQueue dispatcher, PointController point, IslandController island)
     {
-        var t = dispatcher.CreateTimer();
+        var t = arm = dispatcher.CreateTimer();
         t.Interval = TimeSpan.FromSeconds(3);
         t.IsRepeating = false;
         t.Tick += (_, _) =>
         {
             Log.Write("point-probe: press");
             point.Simulate(new PointEvent.Pressed());
-            var hold = dispatcher.CreateTimer();
+            hold = dispatcher.CreateTimer();
             hold.Interval = TimeSpan.FromMilliseconds(1500);
             hold.IsRepeating = false;
             hold.Tick += (_, _) =>

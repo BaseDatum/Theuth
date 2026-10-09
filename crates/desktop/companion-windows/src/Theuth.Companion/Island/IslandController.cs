@@ -83,6 +83,7 @@ internal sealed class IslandController : IDisposable
 
     private void Hydrate()
     {
+        if (fixture) return; // the probe's meeting is not the engine's
         var m = store.Meeting;
         if (m is null)
         {
@@ -109,7 +110,7 @@ internal sealed class IslandController : IDisposable
         if (change is MeetingChange.Deleted || next.Meeting is null) { lastTopicOrBrief = next.Meeting is null && !model.AlwaysShow ? null : lastTopicOrBrief; }
         Window.Update(next);
         var cursor = next.Current?.Id;
-        if (cursor != cursorSent && (change is MeetingChange.Brief || prev.Cursor != next.Cursor))
+        if (!fixture && cursor != cursorSent && (change is MeetingChange.Brief || prev.Cursor != next.Cursor))
         {
             cursorSent = cursor;
             _ = store.MeetingCursorAsync(cursor).ContinueWith(t => { if (t.IsFaulted) Log.Write($"island: meeting_cursor failed: {t.Exception?.GetBaseException().Message}"); }, TaskScheduler.Default);
