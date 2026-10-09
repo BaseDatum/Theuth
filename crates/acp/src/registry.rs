@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::agents::{DIR, Entry};
+use crate::agents::{DIR, Entry, Reports};
 
 /// Where the registry lives.
 pub const URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
@@ -169,6 +169,7 @@ pub fn entry_from_distribution(
         skills: None,
         skills_dir: None,
         mcp: None,
+        reports: None,
     }))
 }
 
@@ -178,7 +179,8 @@ pub fn entry_from_distribution(
 /// `sha256`, extracts it, and points `command` at the extracted `cmd`.
 pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<Entry> {
     let description = description(agent);
-    if let Some(entry) = entry_from_distribution(&agent.distribution, description.clone())? {
+    if let Some(mut entry) = entry_from_distribution(&agent.distribution, description.clone())? {
+        entry.reports = Some(Reports::for_registry(&agent.id));
         return Ok(entry);
     }
     let dist: Distribution =
@@ -206,6 +208,7 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
             skills: None,
             skills_dir: None,
             mcp: None,
+            reports: Some(Reports::for_registry(&agent.id)),
         });
     }
 
@@ -276,6 +279,7 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
         skills: None,
         skills_dir: None,
         mcp: None,
+        reports: Some(Reports::for_registry(&agent.id)),
     })
 }
 

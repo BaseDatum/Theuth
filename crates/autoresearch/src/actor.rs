@@ -5197,6 +5197,7 @@ impl roster::attention::Source for AttentionSource {
             context: None,
             priority: None,
             rank: 5,
+            alert: None,
         };
         let mut out = Vec::new();
         let Ok(studies) = self.0.list_studies().await else {

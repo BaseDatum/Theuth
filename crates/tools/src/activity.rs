@@ -770,6 +770,7 @@ mod tests {
             nudge: 1,
             user_typed_secs: None,
             output: ">>> ".into(),
+            why: String::new(),
         };
 
         Activity::untracked(owner, Kind::Pty(JobId("j".into()))).notify(idle());

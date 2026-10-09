@@ -47,6 +47,25 @@ struct FixtureTests {
         #expect(!(item.kind.needsYou))
     }
 
+    /// 155 §7.1: `alert` decodes with its snake_case class; a 155 engine's `null` is "decided, nothing"; an older
+    /// engine's missing key is "not decided"; an unknown class word is no alert, not a failed list.
+    @Test func alertDecodesAndMarksTheEngineDecision() throws {
+        let item = try decode(AttentionItem.self, "attention_item_155_alert")
+        #expect(item.engineDecides)
+        let a = try #require(item.alert)
+        #expect(a.id == "\(item.id)@1791448440000" && a.cls == .finished && a.atMs == 1_791_448_440_000)
+        #expect(a.why == "turn ended: Signed tokens replace the session cookie.")
+        let older = try decode(AttentionItem.self, "attention_item_finished")
+        #expect(!older.engineDecides && older.alert == nil)
+        var json = try JSONSerialization.jsonObject(with: fixture("attention_item_155_alert")) as! [String: Any]
+        json["alert"] = NSNull()
+        let blanked = try TheuthJSON.decoder.decode(AttentionItem.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(blanked.engineDecides && blanked.alert == nil)
+        json["alert"] = ["id": "x@1", "class": "shouting", "why": "", "at_ms": 1]
+        let unknown = try TheuthJSON.decoder.decode(AttentionItem.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(unknown.engineDecides && unknown.alert == nil)
+    }
+
     @Test func agentsList() throws {
         let agents = try decode([AgentSummary].self, "agents_list")
         #expect(agents.map(\.status) == [.working, .paused, .invalid])

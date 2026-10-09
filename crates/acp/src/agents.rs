@@ -51,6 +51,71 @@ pub struct Entry {
     /// without it (`Harness::connect`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<bool>,
+    /// 155 §8: which states this harness reports reliably. Unset = the
+    /// built-in table by command ([`Reports::for_command`]); read via
+    /// [`Entry::reports`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reports: Option<Reports>,
+}
+
+/// 155 §8.1 (D7): the capability entry of a harness, as data. All false
+/// when unknown; a false gates, never a true (§8.2).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(default)]
+pub struct Reports {
+    /// Sends `session/request_permission` for gated tools.
+    pub permission: bool,
+    /// `session/prompt` returns when the turn is over (continuation work
+    /// theuth already folds into a continuation turn counts as reported).
+    pub turn_end: bool,
+    /// Advertises `loadSession` and resumes a session id.
+    pub session_load: bool,
+}
+
+impl Reports {
+    /// The §8.1 table by command basename / npx package. Unknown → default.
+    #[must_use]
+    pub fn for_command(command: &str, args: &[String]) -> Self {
+        let base = std::path::Path::new(command)
+            .file_name()
+            .and_then(|b| b.to_str())
+            .unwrap_or(command);
+        let base = base.strip_suffix(".exe").unwrap_or(base);
+        let name = if matches!(base, "npx" | "bunx" | "pnpx") {
+            // The package: the first non-flag argument, its `@version` cut.
+            args.iter()
+                .find(|a| !a.starts_with('-'))
+                .map_or("", |pkg| match pkg.rfind('@') {
+                    Some(i) if i > 0 => &pkg[..i],
+                    _ => pkg,
+                })
+        } else {
+            base
+        };
+        Self::for_registry(name)
+    }
+
+    /// The same table by public-registry id (`crates/acp/src/registry.rs`).
+    #[must_use]
+    pub fn for_registry(id: &str) -> Self {
+        let known = |session_load| Self {
+            permission: true,
+            turn_end: true,
+            session_load,
+        };
+        match id {
+            // omp returns from `session/prompt` and may keep working; theuth
+            // folds that into a continuation turn (§13 item 1).
+            "omp" => known(true),
+            "opencode" | "opencode2" => known(false),
+            "claude-agent-acp" | "@agentclientprotocol/claude-agent-acp" => known(false),
+            "codex-acp" | "@agentclientprotocol/codex-acp" => known(false),
+            _ => Self::default(),
+        }
+    }
 }
 
 impl Entry {
@@ -73,6 +138,13 @@ impl Entry {
     pub fn mcp_enabled(&self) -> bool {
         self.mcp.unwrap_or(true)
     }
+
+    /// 155 §8.1: the explicit `reports:` block, else the built-in table.
+    #[must_use]
+    pub fn reports(&self) -> Reports {
+        self.reports
+            .unwrap_or_else(|| Reports::for_command(&self.command, &self.args))
+    }
 }
 
 /// [`Entry::skills_dir`] when unset: what omp, opencode, Codex and Gemini read.
@@ -92,6 +164,9 @@ pub struct EntryInfo {
     pub description: Option<String>,
     /// `initialize` probe: `None` = not probed, `Some("ok" | "login required: <cmd>" | "spawn failed: <why>")`.
     pub status: Option<String>,
+    /// 155 §8.1: [`Entry::reports`].
+    #[serde(default)]
+    pub reports: Reports,
 }
 
 /// `<data_dir>/acp/agents.yaml`.
@@ -197,6 +272,7 @@ mod tests {
                 skills: None,
                 skills_dir: None,
                 mcp: None,
+                reports: None,
             },
         );
         entries.insert(
@@ -210,6 +286,11 @@ mod tests {
                 skills: Some(false),
                 skills_dir: Some(".claude/skills".into()),
                 mcp: None,
+                reports: Some(Reports {
+                    permission: true,
+                    turn_end: true,
+                    session_load: false,
+                }),
             },
         );
         save(&dir, &entries).unwrap();
@@ -233,6 +314,74 @@ mod tests {
         assert!(entries["omp"].mcp_enabled());
         assert!(!entries["quiet"].mcp_enabled());
         assert!(entries["loud"].mcp_enabled());
+    }
+
+    /// 155 §8.1: the built-in table by command basename / npx package;
+    /// unknown is all false; an explicit block wins; an entry without one
+    /// serialises without the key and reads back as `None`.
+    #[test]
+    fn reports_table_and_optional_block() {
+        let all = Reports {
+            permission: true,
+            turn_end: true,
+            session_load: true,
+        };
+        let no_load = Reports {
+            session_load: false,
+            ..all
+        };
+        let args = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(Reports::for_command("omp", &args(&["acp"])), all);
+        assert_eq!(Reports::for_command("/opt/bin/omp", &[]), all);
+        assert_eq!(
+            Reports::for_command("/usr/local/bin/opencode", &args(&["acp"])),
+            no_load
+        );
+        assert_eq!(Reports::for_command("opencode2", &[]), no_load);
+        assert_eq!(
+            Reports::for_command(
+                "npx",
+                &args(&["-y", "@agentclientprotocol/claude-agent-acp"])
+            ),
+            no_load
+        );
+        assert_eq!(
+            Reports::for_command(
+                "npx",
+                &args(&["-y", "@agentclientprotocol/codex-acp@1.11.0"])
+            ),
+            no_load
+        );
+        assert_eq!(Reports::for_command("codex-acp", &[]), no_load);
+        assert_eq!(
+            Reports::for_command("gemini", &args(&["--acp"])),
+            Reports::default()
+        );
+        assert_eq!(
+            Reports::for_command("npx", &args(&["-y", "some-acp"])),
+            Reports::default()
+        );
+        assert_eq!(Reports::for_registry("codex-acp"), no_load);
+        assert_eq!(Reports::for_registry("py"), Reports::default());
+
+        let entries: BTreeMap<String, Entry> = serde_yaml::from_str(
+            "omp:\n  command: omp\nquiet:\n  command: omp\n  reports:\n    permission: false\n",
+        )
+        .unwrap();
+        assert_eq!(entries["omp"].reports, None);
+        assert_eq!(
+            entries["omp"].reports(),
+            all,
+            "table when the block is absent"
+        );
+        assert_eq!(
+            entries["quiet"].reports(),
+            Reports::default(),
+            "an explicit block is taken whole, unset keys false"
+        );
+        let yaml = serde_yaml::to_string(&entries).unwrap();
+        assert_eq!(yaml.matches("reports:").count(), 1, "{yaml}");
+        assert!(yaml.contains("permission: false"), "{yaml}");
     }
 
     #[test]
