@@ -226,7 +226,7 @@ struct AskDictationHoldTests {
         #expect(d.rpc == ["start#1", "stop a (late)"])
         #expect(!d.dictation.isActive, "never adopted")
         let took = d.dictation.handle(.started(id: "a"))
-        #expect(!took && !d.dictation.isActive, "the wire's DictationStarted for it is ignored too")
+        #expect(!took && !d.dictation.isActive, "a .started reaching a reset session is ignored")
     }
 
     @Test func releaseBeforeTheStartRepliesAdoptsThenStops() {

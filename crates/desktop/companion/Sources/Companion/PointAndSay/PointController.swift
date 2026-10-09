@@ -134,6 +134,7 @@ final class PointController {
 
     /// Both ⎋ registrations live exactly as long as a gesture (press → send/discard); logged as the voice key's are.
     private func escapeHotkeys(_ on: Bool) {
+        guard !AskFlags.automated else { return } // a probe registers nothing, ⎋ included
         let names: [KeyboardShortcuts.Name] = [.pointEscape, .pointEscapeHeld]
         for name in names { on ? KeyboardShortcuts.enable(name) : KeyboardShortcuts.disable(name) }
         PointLog.write("hotkey pointEscape \(on ? "registered" : "unregistered") \(names.compactMap(KeyboardShortcuts.getShortcut).map { "\($0)" }.joined(separator: " "))")
@@ -458,7 +459,9 @@ final class PointController {
     func observe(_ data: Data) {
         guard let w = try? TheuthJSON.decoder.decode(Wire.self, from: data) else { return }
         switch w.type {
-        case "DictationStarted": if let id = w.id { _ = dictation.handle(.started(id: id)) }
+        // `DictationStarted` is broadcast for EVERY dictation (the Ask bar's, Tauri's, a probe's): adopting it while `.starting`
+        // took a foreign id as ours (149g: the REFUSED HOLD probe then stopped the probe's dictation). Our id is the
+        // `dictation_start` reply's, nothing else.
         case "DictationText":
             guard let id = w.id else { return }
             if dictation.handle(.text(id: id, utterance: w.utterance ?? 0, text: w.text ?? "", final: w.isFinal ?? false)) {
