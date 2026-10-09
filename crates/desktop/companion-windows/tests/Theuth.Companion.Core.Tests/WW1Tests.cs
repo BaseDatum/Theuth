@@ -18,7 +18,7 @@ public sealed class KeyTable149Tests
         Assert.Equal("P", t.ChordFor(KeyAction.AskPoint)!.Symbol);
         Assert.Equal(new[] { "J", "K", "Enter", "Ctrl+O", "V", "X", "Esc" },
             t.BindingsIn(KeyScope.Agents).Select(b => b.Chord!.Symbol));
-        Assert.Equal(new[] { "M", "Ctrl+M", "E", "D", "Enter", "Esc" },
+        Assert.Equal(new[] { "M", "Ctrl+M", "E", "D", "J", "K", "Enter", "Esc" }, // island fix §N: J/K walk the briefs
             t.BindingsIn(KeyScope.Island).Select(b => b.Chord!.Symbol));
         Assert.Equal(new[] { "Esc" }, t.BindingsIn(KeyScope.PointAndSay).Select(b => b.Chord!.Symbol));
         Assert.True(t.IsUniquePerScope);
