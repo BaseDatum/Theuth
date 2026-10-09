@@ -50,6 +50,18 @@ pub(super) struct Boot {
     inflight: HashMap<SessionId, (Option<SessionId>, String)>,
 }
 
+#[cfg(test)]
+impl Boot {
+    pub(super) fn for_tests() -> Self {
+        Self {
+            at: Utc::now(),
+            pass: BootPass::default(),
+            pending: VecDeque::new(),
+            inflight: HashMap::new(),
+        }
+    }
+}
+
 /// `ask` → `Option<BootPass>`: the latest counts this engine published (D4).
 /// The Attention actor starts after the agent plugin, so a pass that settled
 /// inside `ActivityRegistered` was published before anyone listened; it asks
@@ -315,7 +327,7 @@ impl Agents {
     /// nothing). The parent's `child_result` wait on it is cleared and its
     /// journal turn closed `lost`: no row re-raises it, so a lost child is
     /// reported once, not on every boot.
-    async fn lose(
+    pub(super) async fn lose(
         &mut self,
         boot: &mut Boot,
         parent: Option<SessionId>,
@@ -346,6 +358,9 @@ impl Agents {
                 self.inject(parent, &format!("session:{child}"), body, wrapped, None)
                     .await;
             }
+            // 155 H1: a `peer_state` wait on a lost child settles at once
+            // (`not_running`) instead of waiting for a transition that never comes.
+            self.check_peer_waits(child).await;
         }
         boot.pass.lost.push((child, name));
     }

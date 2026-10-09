@@ -35,6 +35,7 @@ pub mod images;
 pub mod jobs;
 pub mod journal;
 pub mod mcp;
+pub mod proctree;
 pub mod pty;
 pub mod registry;
 pub mod reminder;
@@ -70,6 +71,7 @@ pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpLogin, McpLogout, McpProgress, McpServer,
     McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate, SyncMcp,
 };
+pub use proctree::{PtyThresholds, TreeQuiet};
 pub use pty::{
     Cell, Color, Key, ListTerminals, PtyAttach, PtyAttached, PtyChunk, PtyInput, PtyOut, PtyPage,
     PtyResize, PtyScreen, PtyScreenReply, PtyViewport, Style, StyledRun, TerminalSummary,
@@ -512,6 +514,13 @@ pub struct ToolsConfig {
     /// Program for `start`'s PTY jobs instead of the platform default
     /// (`$SHELL`; `pwsh.exe` else `powershell.exe` on Windows — 58 §0.3).
     pub pty_shell: Option<std::path::PathBuf>,
+    /// 155 §6.4: after a model `send()`, seconds with neither a screen change
+    /// nor process-tree movement before `<job_idle why="no reaction to
+    /// input">`; `0` = off.
+    pub pty_reaction_secs: u64,
+    /// 155 §6.2: a PTY job's process tree using more than this percent of one
+    /// core over a one-second sample counts as busy (no `<job_idle>`).
+    pub pty_tree_cpu_pct: u8,
 }
 
 impl Default for ToolsConfig {
@@ -528,6 +537,8 @@ impl Default for ToolsConfig {
             reminder_max_secs: 86_400,
             login_path: true,
             pty_shell: None,
+            pty_reaction_secs: 10,
+            pty_tree_cpu_pct: 2,
         }
     }
 }

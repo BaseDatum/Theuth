@@ -183,9 +183,10 @@ pub(crate) async fn turn_finished_in(
 /// `waits` by the removed calls' ids. The caller's transaction.
 pub(crate) async fn cut_journal_in(conn: &mut SqliteConnection, sid: &str) -> anyhow::Result<()> {
     // 139 Q8: a `child_result` wait outlives its turn (the spawn returned
-    // long before the child finishes), so a compaction cut leaves it.
+    // long before the child finishes), so a compaction cut leaves it; 155
+    // §5.4: a `peer_state` wait likewise.
     sqlx::query(
-        "DELETE FROM waits WHERE session_id = ?1 AND kind != 'child_result' AND tool_call_id IN \
+        "DELETE FROM waits WHERE session_id = ?1 AND kind NOT IN ('child_result', 'peer_state') AND tool_call_id IN \
          (SELECT call_id FROM tool_calls WHERE session_id = ?1 \
           AND at_seq >= (SELECT cut_at FROM sessions WHERE id = ?1))",
     )
@@ -1394,6 +1395,22 @@ impl Store {
             "SELECT w.session_id, w.tool_call_id, w.kind, w.target, w.deadline, w.payload \
              FROM waits w JOIN sessions s ON s.id = w.session_id \
              WHERE w.kind = 'child_result' AND {} ORDER BY w.rowid",
+            scope.sql()
+        )))
+        .bind(&*self.me)
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter().map(wait_of).collect()
+    }
+
+    /// 155 §5.4: every `peer_state` wait (`wait_peer`), scoped by the
+    /// **caller's** owner: the boot re-arm reads them outside `open_turns`,
+    /// the way `child_waits` does.
+    pub async fn peer_state_waits(&self, scope: Scope) -> anyhow::Result<Vec<WaitRow>> {
+        let rows: Vec<WaitTuple> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT w.session_id, w.tool_call_id, w.kind, w.target, w.deadline, w.payload \
+             FROM waits w JOIN sessions s ON s.id = w.session_id \
+             WHERE w.kind = 'peer_state' AND {} ORDER BY w.rowid",
             scope.sql()
         )))
         .bind(&*self.me)
