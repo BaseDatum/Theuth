@@ -1147,7 +1147,8 @@ internal sealed partial class IslandWindow : ToolWindow
         if (!readable)
         {
             var other = theme == ElementTheme.Dark ? ElementTheme.Light : ElementTheme.Dark;
-            t.Foreground = Theme.Brush(NativeLook.OnAccent, other);
+            // A fresh brush with the other theme's colour: the theme-dictionary brush instance follows the element's theme.
+            t.Foreground = new SolidColorBrush(Theme.ColorOf(NativeLook.OnAccent, other));
         }
         string probe = $"{theme} fill=#{fill.R:X2}{fill.G:X2}{fill.B:X2} on=#{on.R:X2}{on.G:X2}{on.B:X2} readable={readable}";
         if (probe != onAccentLogged) { onAccentLogged = probe; Log.Write($"island: text on accent fill — {probe}{(readable ? "" : " → the other theme's on-accent colour")}"); }
