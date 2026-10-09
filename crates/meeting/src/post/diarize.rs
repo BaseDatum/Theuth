@@ -15,6 +15,7 @@ use std::f32::consts::PI;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use models::onnx::Guarded;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
@@ -164,8 +165,13 @@ fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
 }
 
 /// `intra_threads`: ORT's default (the physical cores) when `None`; the live diariser
-/// caps it so the STT tasks and capture threads keep theirs (07 §2).
-fn session(path: &Path, data_dir: &Path, intra_threads: Option<usize>) -> anyhow::Result<Session> {
+/// caps it so the STT tasks and capture threads keep theirs (07 §2). The session comes
+/// back [`Guarded`]: on WebGPU every run and the drop take `models::onnx`'s run lock.
+fn session(
+    path: &Path,
+    data_dir: &Path,
+    intra_threads: Option<usize>,
+) -> anyhow::Result<Guarded<Session>> {
     models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
     let mut builder = Session::builder()
         .map_err(ort_err)?
@@ -174,9 +180,11 @@ fn session(path: &Path, data_dir: &Path, intra_threads: Option<usize>) -> anyhow
     if let Some(n) = intra_threads {
         builder = builder.with_intra_threads(n).map_err(ort_err)?;
     }
-    models::onnx::configure(builder)
+    let (mut builder, on_gpu) = models::onnx::configure(builder);
+    let sess = builder
         .commit_from_file(path)
-        .map_err(|e| anyhow::anyhow!("load {}: {e}", path.display()))
+        .map_err(|e| anyhow::anyhow!("load {}: {e}", path.display()))?;
+    Ok(Guarded::new(sess, on_gpu))
 }
 
 /// `f32` PCM in `[-1, 1]` → `i16`, the embedding model's input.
@@ -481,7 +489,7 @@ pub const LIVE_INTRA_THREADS: usize = 4;
 /// [`Geometry`]. [`Streamer::step`] scores one chunk; the offline pass
 /// ([`probabilities`]) and the live diariser (`meeting::diar`) both drive it.
 pub struct Streamer {
-    sess: Session,
+    sess: Guarded<Session>,
     mel: Mel,
     cache: SpeakerCache,
     geometry: Geometry,
@@ -531,11 +539,13 @@ impl Streamer {
         let cached = self.cache.cached();
         let n_cached = cached.len() / HIDDEN;
         let n_in = n_cached + n_fresh;
+        let guard = self.sess.guard();
         let outputs = self.sess.run(ort::inputs![
             "input_features" => Tensor::from_array((vec![1i64, (m_stop - m0) as i64, MELS as i64], std::mem::take(&mut self.feats)))?,
             "cached_embeds" => Tensor::from_array((vec![1i64, n_cached as i64, HIDDEN as i64], cached))?,
             "attention_mask" => Tensor::from_array((vec![1i64, n_in as i64], vec![1i64; n_in]))?,
         ])?;
+        drop(guard);
         let get = |name: &str| -> anyhow::Result<&[f32]> {
             let (_, data) = outputs
                 .get(name)
@@ -654,7 +664,7 @@ pub fn fbank(pcm: &[i16]) -> anyhow::Result<(usize, usize, Vec<f32>)> {
 }
 
 /// The wespeaker session: kaldi fbank (`knf-rs`) → `embs`.
-pub struct Embedder(Session);
+pub struct Embedder(Guarded<Session>);
 
 impl Embedder {
     /// Open the embedding model.
@@ -693,7 +703,9 @@ impl Embedder {
     ) -> anyhow::Result<Vec<f32>> {
         data.truncate(t * bins);
         let input = Tensor::from_array((vec![1i64, t as i64, bins as i64], data))?;
+        let guard = self.0.guard();
         let outputs = self.0.run(ort::inputs!["feats" => input])?;
+        drop(guard);
         let out = outputs
             .get("embs")
             .ok_or_else(|| anyhow::anyhow!("embedding: no `embs` output"))?;
