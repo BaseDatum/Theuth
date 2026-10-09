@@ -86,7 +86,8 @@ export function Frame({
           <SearchTrigger className="md:hidden" />
         </header>
       ) : embedded ? (
-        <SectionRow>
+        // A pane can be narrow: the actions wrap under the title instead of squeezing it to nothing.
+        <SectionRow className="h-auto min-h-11 flex-wrap py-1">
           {title}
           {actions}
         </SectionRow>

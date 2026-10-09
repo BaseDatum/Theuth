@@ -193,7 +193,7 @@ export function ControlCenter({ id }: { id: string }) {
                 </div>
               )
             )}
-            <div className={cn('flex min-w-0 flex-col', mobile ? 'flex-none' : 'min-h-0 flex-1')}>
+            <div className={cn('flex min-w-0 flex-col', mobile ? 'flex-none' : 'min-h-0')} style={mobile ? undefined : { flex: '5 1 0%' }}>
               <div className={cn('flex min-w-0 flex-col', block)} style={mobile ? undefined : { flex: `${ratio} 1 0%` }}>
                 {isLive ? (
                   <LiveLog id={id} />
@@ -240,7 +240,7 @@ export function ControlCenter({ id }: { id: string }) {
                 </>
               )}
             </div>
-            {note && <MeetingNote doc={note} meeting={id} className={cn(block, !mobile && 'w-[42%] flex-none')} />}
+            {note && <MeetingNote doc={note} meeting={id} className={cn(block, !mobile && 'min-w-0')} style={mobile ? undefined : { flex: '4 1 0%' }} />}
           </div>
         </div>
       )}
@@ -316,7 +316,7 @@ function LiveLog({ id }: { id: string }) {
   }, [rows])
   const request = useAction((t: string) => api.meeting_request(t), { onSuccess: () => setText('') })
   return (
-    <div className="flex min-w-0 flex-1 flex-col rounded-xl border border-border-subtle">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-border-subtle">
       <div className="min-h-0 flex-1 overflow-y-auto p-3 font-mono text-[13px] leading-5">
         {rows.length === 0 && <span className="text-fg-tertiary">Waiting for speech…</span>}
         {rows.map((r, i) => (

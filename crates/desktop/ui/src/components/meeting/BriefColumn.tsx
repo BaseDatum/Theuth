@@ -49,7 +49,7 @@ export function BriefColumn({ briefs, cursor, live, className, style }: { briefs
       {briefs.length === 0 && <Empty>No briefs yet.</Empty>}
       {briefs.map((b) => (
         <div key={b.id} className={cn('rounded-xl border border-border-subtle p-3 text-[13px]', b.id === cursor && 'border-fg-accent')}>
-          <div className="flex items-baseline justify-between gap-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-2">
             <span className="font-semibold">{b.title}</span>
             <span className="shrink-0 text-[11px] text-fg-tertiary">
               {b.cached !== null ? (

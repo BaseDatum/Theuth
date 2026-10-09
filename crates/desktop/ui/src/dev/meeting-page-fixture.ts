@@ -257,7 +257,7 @@ export function install(connection: ConnectionApi, mode: Mode): () => void {
         if (!next) return
         n += 1
         const id = s.briefs.length + 1
-        const at = 80_000 + n * TOPIC_EVERY_MS
+        const at = 165_000 + n * TOPIC_EVERY_MS
         const [label, title, bullets] = next
         s.briefs.push({ ...brief(id, `${title}${n > LATER.length ? ` (${Math.ceil(n / LATER.length)})` : ''}`, bullets, at), topic: `t${id}` })
         state({ type: 'TopicAdded', meeting: FIXTURE_ID, topic: { id: `t${id}`, label, at_ms: BigInt(at), brief: `b${id}`, cached: null, source: 'Auto' } })

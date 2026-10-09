@@ -23,6 +23,7 @@ import { EMPTY, useNoteChat } from '@/lib/note-chat'
 import { canPopout, closePopout, isPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { on } from '@/store/sessions'
+import { cn } from '@/lib/utils'
 
 const route = getRouteApi('/notes_/$id')
 
@@ -155,7 +156,8 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
       back={wayBack.back}
       embedded={embedded}
       title={
-        <>
+        // Embedded in a narrow pane the title keeps at least 180 px and the actions wrap under it (`Frame`).
+        <span className={cn('flex min-w-0 flex-1 items-center gap-1', embedded && 'min-w-[180px]')}>
           <TitleInput
             ref={titleInput}
             value={title}
@@ -164,7 +166,7 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
           />
           {!deleted && <DictationButton field={titleInput} />}
           {wayBack.chip}
-        </>
+        </span>
       }
       actions={
         <>

@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import type { CSSProperties } from 'react'
 import { NoteView } from '@/components/notes/NotePage'
 import { Empty, errorText } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -11,9 +12,9 @@ import { cn } from '@/lib/utils'
  * typed during the call is what the agent regrouped — hover attribution tells the two apart. `meeting` hides
  * Delete (the meeting owns the note) and routes the note's chat to the meeting's own session (D2).
  */
-export function MeetingNote({ doc, meeting, className }: { doc: string; meeting: string; className?: string }) {
+export function MeetingNote({ doc, meeting, className, style }: { doc: string; meeting: string; className?: string; style?: CSSProperties }) {
   return (
-    <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border-subtle', className)}>
+    <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border-subtle', className)} style={style}>
       <NoteView id={doc} embedded meeting={meeting} />
     </div>
   )
