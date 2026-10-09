@@ -247,6 +247,12 @@ the roster's `ListModels`-based check.
   default, `SetTheuthModel("nope/none")` is refused, a stored theuth
   `nope/none` leaves the desk on the default and reads back as itself.
 - Branch `fix/148-r4-resolve` from `origin/main`.
+- R5 (test isolation): `CreateSession`'s private path treats a non-handler
+  `SendError` from `ParticipantsReady` as "no registry" under `cfg(test)` —
+  another test's registry on the shared global name can stop between
+  `registry()`'s `is_alive()` and the ask (the pre-existing
+  `read_session_applies_the_private_tree_rule` flake). Production unchanged;
+  the other `lookup(REGISTRY_ACTOR)` sites are `tell`s or already tolerant.
 
 ## Follow-ups
 

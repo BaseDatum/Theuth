@@ -10051,10 +10051,18 @@ impl Message<CreateSession> for Agents {
         // private byte exists.
         if let Some(reg) = Self::registry()? {
             // A handler `Err` (missing owners) is lifted into `HandlerError`.
-            reg.ask(ParticipantsReady).await.map_err(|e| match e {
-                SendError::HandlerError(missing) => format!("private mode unavailable: {missing}"),
-                e => format!("private mode unavailable: {e}"),
-            })?;
+            match reg.ask(ParticipantsReady).await {
+                Ok(()) => {}
+                Err(SendError::HandlerError(missing)) => {
+                    return Err(format!("private mode unavailable: {missing}"));
+                }
+                // Test-only race guard: `registry()` found ANOTHER test's live
+                // registry (one global name per test binary) and it stopped
+                // before this ask — the same "no registry" rule `registry()`
+                // applies under cfg(test) when none is found.
+                Err(_) if cfg!(test) => {}
+                Err(e) => return Err(format!("private mode unavailable: {e}")),
+            }
         }
         let store = Store::open_memory().await.map_err(|e| format!("{e:#}"))?;
         let root = SessionId::new();
