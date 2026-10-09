@@ -653,3 +653,139 @@ then arrives as a history row with "use polished" — never a second paste). Exp
 ### 9.6 Fail closed, undo
 No model, no credential, provider error, budget passed, refused output → shaped text, the row's `polished` stays NULL, the debug row says why.
 Undo: §6.7 (history row "use the raw text"; the companion's 3 s "⎋ undo polish" hold after a polished delivery).
+
+## 10. Command mode
+
+### 10.1 Key and mode switch while holding (R2, D10)
+A third `anywhere` row `commandKey` (§15: ⌃⌥C / Ctrl+Alt+C) drives the same `PointMachine` as the voice key through a `PointController`
+instance per mode (`COMP/Companion/PointAndSay/PointController.swift:46` becomes `PointController(mode:)` with `Mode = ask | dictate |
+command`). While one controller's gesture is live, a key-down on another mode's chord is routed to the live controller as
+`PointMachine.Event.switchMode(Mode)` (new): the state is unchanged, the recording continues, the pill relabels ("Command · theuth desk"),
+`VoiceKeyGate` treats the new chord as held too (release of either ends the hold). The §14.4 Swift/C# machines get the event and one test
+each. The Tauri shell (no companion) does not get command mode (96 §0.1's ⌃S path stays as it is; `crates/desktop/src/point/machine.rs`
+untouched).
+
+### 10.2 The desk session and the command prompt profile (W-l)
+The request goes to theuth's desk exactly as the voice key does (`PointController.swift:287-297`: `resolveDesk`, `send_input` or `steer`),
+with the user line
+```
+[command, 4 s] move today's screenshots into Desktop/Shots and make a reminder to review them at six
+[screen 1/2 …]            ← only when "Include the screen" is on, as the voice key
+```
+and the prompt block registered by the `computer` plugin (`crates/computer/src/lib.rs:297-302` gains a third paragraph) tells the model what
+the marker means:
+> "## Command mode — A user message that starts with `[command, N s]` was spoken to the command key: the user wants an action on this
+> computer, not a conversation. Act, then verify, then answer with ONE line that starts with ✓ or ✗ and states the outcome (what changed,
+> where). No greetings, no plan prose, no questions unless you cannot proceed. Before a destructive or irreversible step, show the exact
+> target in your tool call's `purpose`. Every tool call carries a `purpose` string of the form `checking: …`, `executing: …` or
+> `verifying: …` (the card shows it). Prefer the native-app tools (`applescript`, `shortcuts`, `powershell`) for Reminders, Notes, Calendar,
+> Messages, Mail and Music; prefer `shell` for files. Stop after the ✓/✗ line."
+`purpose` is an optional string every tool call may carry — `ToolCx`/the registry already pass arguments through; the `purpose` key is read
+by the card from `ToolCallStarted`'s arguments (the companion decodes the tool name today, `WIN/Theuth.Companion/PointAndSay/PointController.cs:607-610`;
+Swift `:495`). No engine change is needed for it beyond the prompt; if a provider strips unknown keys, the card falls back to the tool name.
+
+### 10.3 Step-typed card anatomy (collapsed at the notch / pill; expanded = §12 panel)
+```
+┌ Command · theuth desk                                ⌃⌥C  ⎋ ┐
+│ “move today's screenshots into Desktop/Shots and make a      │
+│  reminder to review them at six”                              │
+│  checked    ls ~/Desktop/*.png · 14 files                     │  ← purpose "checking: …" (green when its call finished)
+│  executed   mkdir -p ~/Desktop/Shots && mv …                  │  ← "executing: …"
+│  verifying  ls ~/Desktop/Shots | wc -l            ▒▒▒▒ shimmer│  ← the running row
+│  next       applescript · Reminders “Review shots” 18:00      │  ← a call started, not yet returned
+│ ⎋ stop · hold ⌃⌥C to add                                      │
+└──────────────────────────────────────────────────────────────┘
+```
+Rows come from `ToolCallStarted` (type from the `purpose` prefix, else "ran"), turn green/red on `ToolCallFinished` (ok / error output), the
+text is `purpose` after the colon (≤ 60 chars, tool name as fallback). Thinking text is not shown (the shimmer is); the final assistant text
+is the ✓/✗ line. Done:
+```
+┌ Command · theuth desk · done · 6 s                      O  ⎋ ┐
+│ ✓ 14 screenshots moved to ~/Desktop/Shots; reminder          │
+│   “Review shots” set for 18:00.                               │
+│ 4 steps  ls · mkdir/mv · ls · applescript                     │
+│ O open session · ⎋ dismiss · hold ⌃⌥C follow up               │
+└──────────────────────────────────────────────────────────────┘
+```
+A reply that does not start with ✓/✗ is shown as is with the status "replied" (the model ignored the profile; nothing breaks).
+
+### 10.4 Turn cap (W-e) and failure
+`COMMAND_MAX_STEPS = 12` tool rounds per request, counted by the card from `ToolCallStarted`; at 12 the companion sends `cancel(desk,
+"root")` (`api.rs:254-255`; `CancelScope::Root`, `crates/agent/src/lib.rs:392-398`) and the card freezes with "stopped after 12 steps — hold ⌃⌥C to continue" (a hold continues the thread: the next `[command]` line
+says "continue"). `TurnFinished { stop_reason: "error" | "cancelled" }` → "✗ couldn't finish — ‹message›" in the failed colour; an approval
+denied by timeout → the row says "denied (no answer in N s)" and the model's own ✗ line follows. The card never auto-hides in a failed state
+(D13).
+
+### 10.5 Follow-ups
+Hold the command key while the card is up → the new words go to the same desk (`steer` if the turn runs) with `[command, N s]`; the card
+appends a new request block under the previous ✓ line (session dots in the header show the thread position, §12). Typing into the card's
+follow-up field (expanded) sends through `send_input` with the same marker.
+
+### 10.6 Approvals in the card + spoken approval grammar
+An `ApprovalRequested` for the desk session (the stream the companion already subscribes to for cards) renders inside the command card:
+```
+│ ⚠ Run `rm -rf ~/Develop/theuth/build` ?   destructive · policy: ask │
+│   checked  build/ exists · 1.2 GB · 3 days old                       │
+│   [ Yes ⏎ ]  [ No ⎋ ]      or say “yes” / “no”                       │
+```
+Keys: ⏎ → `resolve_approval(id, Allow)`, ⎋ → `Deny` (`api.rs:640-641`); the Attention panel's own approval card keeps working (same id;
+`true` only for the first answer). **Voice:** while the box is up the companion opens a short dictation (`dictation_start` with
+`Surface::Companion`, `end_commands` off) and matches the first final utterance against the grammar `yes | yeah | go | go ahead | do it |
+approve` → Allow, `no | nope | stop | cancel | deny` → Deny, anything else → the words are ignored and the box stays ("didn't catch that —
+⏎ or ⎋"); 8 s with no match closes the listen (the keys still work). Near-miss tolerance as §7.1 for phrases ≥ 5 chars. Talk (145 D6,
+`docs/design/145-talk-presence.md:46`) keeps announcing approvals without answering them — only the command card listens, and only while
+its box is shown (§18 Q4). The risk policy itself is unchanged (`tools.policy`, `crates/tools/src/lib.rs:487-495`).
+
+### 10.7 Windows twin
+`PointController.cs` gains the mode and the `SwitchMode` event; the step rows render in the island's voice view (`island.SetVoice(View(...))`,
+`WIN/Theuth.Companion/PointAndSay/PointController.cs:419`) and in the §12 panel; the approval box uses the existing `Decision = Allow | Deny`
+path of the Attention panel (134 D5); the spoken-approval dictation is the same `dictation_start` call; chords in §15.
+
+## 11. Native-app tools
+
+### 11.1 Tool signatures (`crates/computer/src/native.rs`, registered beside `tools::all`, `crates/computer/src/tools.rs:394-407`)
+```rust
+/// macOS: run AppleScript source (`osascript -l AppleScript`), 30 s default timeout.
+pub struct AppleScriptArgs { pub script: String, #[serde(default)] pub timeout_secs: Option<u64> }
+computer_tool!(AppleScriptTool, "applescript", Risk::Mutating, AppleScriptArgs,
+  "Run an AppleScript on this Mac (Reminders, Notes, Calendar, Messages, Mail, Music, Finder, System Events). Return value and errors come back as text. Mutating: it can send messages and change data — state the target in `purpose`.", …);
+/// macOS: run a named Shortcut (`shortcuts run <name> [--input-path f]`), text input, text/file output.
+pub struct ShortcutsArgs { pub name: String, #[serde(default)] pub input: Option<String>, #[serde(default)] pub timeout_secs: Option<u64> }
+computer_tool!(ShortcutsTool, "shortcuts", Risk::Mutating, ShortcutsArgs, "Run a Shortcut by name; `shortcuts list` is read-only through `applescript`-free `name: \"__list__\"`. …", …);
+/// Windows: PowerShell 7 (`pwsh -NoProfile -NonInteractive -Command`), else Windows PowerShell; 30 s default.
+pub struct PowerShellArgs { pub script: String, #[serde(default)] pub timeout_secs: Option<u64> }
+computer_tool!(PowerShellTool, "powershell", Risk::Mutating, PowerShellArgs, "Run PowerShell on this PC (Outlook/Calendar via COM, Notepad, Explorer, Windows Settings). …", …);
+```
+Registered per platform (`cfg(target_os)`): macOS gets `applescript` + `shortcuts`, Windows `powershell`, Linux none. `timeout_secs` capped
+at 120; output = stdout + stderr, truncated at 16 KiB with "…(N more bytes)"; exit code ≠ 0 → `ToolOutput::err`. The process runs detached from
+the engine's stdin, inherits the user's environment, no shell wrapper (`osascript`/`shortcuts`/`pwsh` are exec'd directly with argument
+vectors — no string interpolation into a shell).
+
+### 11.2 Risk class and policy
+`Risk::Mutating` for all three (`crates/tools/src/lib.rs:118-125`): they change state in apps but are scoped to what the script names; the
+default policy row for `mutating` applies (`PolicyAction::Ask` by default, `:444-453`) — so the first run asks, in the command card (§10.6).
+A script containing `do shell script`, `rm `, `Remove-Item -Recurse`, `Format-`, `Stop-Process`, `shutdown`, `osascript -e 'tell application
+"System Events" to keystroke'` is re-classed **Destructive** before the policy check (a small, visible list in `native.rs` — a *reclassifier*,
+not a deny-list; the policy still decides). `tools.gate`-style per-tool override is the existing `mcp/config.yaml` mechanism's sibling:
+`computer.native: off | mutating | destructive` in the `computer:` section turns them off or raises them.
+
+### 11.3 Output shape
+`ToolOutput::ok(text)` with `text` = the script's return value (AppleScript's result line; Shortcuts' output; PowerShell's stdout), followed
+by a trailer line `exit 0 · 1.2 s` the model can quote; errors `ToolOutput::err("osascript: ‹stderr line›")`. Nothing structured: the recipe
+skill tells the model to make scripts return one line.
+
+### 11.4 The recipe skill (`skills/native-apps/SKILL.md`, loaded by the desk; techniques only — the recipes are written from Apple's and
+Microsoft's documented dictionaries, not from A:L143's prompt)
+Sections: Reminders (create in a list, due date, list today's), Notes (new note with body, append to a note by name, search), Calendar
+(create event with alarm, list today's), Messages (send iMessage to a contact — Destructive by the reclassifier because it sends), Mail
+(compose draft, send, search subject), Music (play/pause, play a playlist, now playing), Finder/System (reveal path, open folder, set
+clipboard), Shortcuts (run by name, pass text), Windows: Outlook COM (`New-Object -ComObject Outlook.Application` — mail draft, appointment,
+task), Windows Settings (`Start-Process ms-settings:`), Explorer, Notepad. Each recipe: the one-line goal, the script, what it returns, the
+verify step (read back), the pitfalls (Reminders' list indexing, Calendar's time zone, Mail's draft vs send).
+
+### 11.5 Tests
+`native::registers_per_platform` (macOS 2, Windows 1, Linux 0); `native::reclassifier_marks_destructive_patterns`;
+`native::timeout_kills_the_child` (a `delay 10` script with `timeout_secs: 1` → err "timed out after 1 s"); `native::output_truncated_at_16k`;
+`native::exec_without_shell` (an argument containing `; echo pwned` is passed verbatim to `osascript` and comes back as a syntax error, not
+executed); a macOS-only `#[ignore]` live test `applescript_returns_result_line` (`return "ok"`); Windows `powershell_returns_stdout`. Policy
+integration: `tools::policy_asks_for_mutating_native_tool` over the registry test harness.
