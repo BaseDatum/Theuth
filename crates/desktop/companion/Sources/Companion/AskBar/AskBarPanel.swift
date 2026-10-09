@@ -31,7 +31,7 @@ final class AskBarController: NSObject {
     init(store: Store, attention: PanelController) {
         self.store = store
         self.attention = attention
-        let (panel, container) = GlassPanel.make(width: Self.width, height: 120, radius: Type.askBarRadius) // 149 W1 (§3.5)
+        let (panel, container) = GlassPanel.make(width: Self.width, height: 120, radius: Type.cardRadius) // 149 W1 (§3.5)
         self.panel = panel
         hosting = NSHostingView(rootView: AskBarView(store: store, state: state))
         hosting.frame = container.bounds
@@ -362,7 +362,7 @@ final class AskBarController: NSObject {
 
 /// The Attention panel's glass, for a second panel (W1's `PanelController.init` builds the same by hand).
 enum GlassPanel {
-    /// 149 W1: `radius` (§3.9: cards 24, the Ask bar 28) and `.darkAqua` forced on every companion panel.
+    /// 149 W1: `radius` per surface (`Type.cardRadius` default); appearance follows the system.
     @MainActor
     static func make(width: CGFloat, height: CGFloat, radius: CGFloat = 12) -> (KeyPanel, NSView) {
         let panel = KeyPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
@@ -377,7 +377,6 @@ enum GlassPanel {
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .utilityWindow
-        panel.appearance = Type.dark
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         container.wantsLayer = true
@@ -385,7 +384,7 @@ enum GlassPanel {
         container.layer?.cornerCurve = .continuous
         container.layer?.masksToBounds = true
         container.layer?.borderWidth = 0.5
-        container.layer?.borderColor = Palette.border.cgColor
+        container.layer?.borderColor = NSColor.separatorColor.cgColor
 
         let backdrop: NSView
         if #available(macOS 26, *) {

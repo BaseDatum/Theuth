@@ -55,7 +55,7 @@ extension PanelController {
             let m = NSEvent.mouseLocation
             let top = NSScreen.screens.first?.frame.maxY ?? 0 // CG: top-left origin
             let req = ScreenContextReq(samples: [PointerSample(tMs: 0, x: Float(m.x), y: Float(top - m.y), pen: true)],
-                                       color: Type.malachiteHex, sinceMs: UInt64(Date().timeIntervalSince1970 * 1000),
+                                       color: PointController.accentHex, sinceMs: UInt64(Date().timeIntervalSince1970 * 1000),
                                        accessibility: true)
             Task { @MainActor [self] in
                 do {

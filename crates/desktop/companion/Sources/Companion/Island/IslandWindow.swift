@@ -4,7 +4,7 @@ import SwiftUI
 
 /// 149 W3 — the D9 window stack (recon A §A5; notchprompt `OverlayWindowController.swift:12-27, 51-53, 71-90`, MIT):
 /// borderless non-activating panel at `.statusBar + 1` (26, re-asserted on every show), the four collection flags,
-/// never `isFloatingPanel`, `sharingType = .none` kept but best-effort (§9), darkAqua forced. Oversized while attached:
+/// never `isFloatingPanel`, `sharingType = .none` kept but best-effort (§9). Oversized while attached:
 /// the pill/pane animate inside SwiftUI; `IslandHostingView.hitTest` passes clicks through outside the drawn shape.
 final class IslandWindow: NSPanel {
     static let level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
@@ -26,7 +26,6 @@ final class IslandWindow: NSPanel {
         isReleasedWhenClosed = false
         isMovableByWindowBackground = false
         animationBehavior = .none
-        appearance = NSAppearance(named: .darkAqua)
         sharingType = Flags.shareable ? .readOnly : .none
     }
 

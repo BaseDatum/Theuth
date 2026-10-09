@@ -54,28 +54,28 @@ struct PanelView: View {
                 let card = store.card(for: item)
                 let anatomy = store.anatomy(for: card)
                 CardHeader(anatomy: anatomy, store: store)
-                Divider().overlay(Color.rule.opacity(0.6))
+                Divider()
                 CardView(card: card, anatomy: anatomy, store: store, w1: w1)
                 // ≤ 560 pt tall: the first lines around the focus; J/K still walk the whole list.
                 let others = store.panel.others
                 let shown = Array(others.prefix(Self.maxLines))
                 ForEach(shown) { other in
-                    Divider().overlay(Color.rule.opacity(0.4))
+                    Divider()
                     LineView(item: other, now: store.now).onTapGesture { store.focus(id: other.id) }
                 }
                 if others.count > shown.count {
-                    Divider().overlay(Color.rule.opacity(0.4))
+                    Divider()
                     Text("+\(others.count - shown.count) more · J to walk them")
-                        .font(Type.caps).foregroundColor(.sand).padding(.horizontal, 14).padding(.vertical, 6)
+                        .font(Type.caps).foregroundColor(.tertiary).padding(.horizontal, 14).padding(.vertical, 6)
                 }
             } else {
                 HStack {
-                    Text("Inbox").font(Type.body).fontWeight(.semibold)
+                    Text("Inbox").font(Type.body).fontWeight(.semibold).lineLimit(1).truncationMode(.tail).layoutPriority(0)
                     Spacer()
-                    HeaderButton(glyph: "✕", key: "esc", hint: "Close") { store.perform(.escape) }
+                    HeaderButton(symbol: "xmark", key: "esc", hint: "Close") { store.perform(.escape) }
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
-                Divider().overlay(Color.rule.opacity(0.6))
+                Divider()
                 if store.panel.receiptFocus != nil {
                     AskItemLines(store: store) // W3: the focus is in the Done zone; the items stay as lines
                 } else {
@@ -83,12 +83,11 @@ struct PanelView: View {
                 }
             }
             DoneZone(store: store) // W3: the last 24 h of receipts, after the items
-            Divider().overlay(Color.rule.opacity(0.6))
+            Divider()
             footer
             if let r = store.receipt { ReceiptView(receipt: r, remaining: store.holdRemaining, delay: store.undo.delay) }
         }
         .frame(width: PanelController.width)
-        .foregroundColor(.ink)
         .accessibilityElement(children: .contain)
     }
 
@@ -96,13 +95,13 @@ struct PanelView: View {
         HStack(spacing: 10) {
             Hint("⎋", store.undo.held == nil ? "back to work" : "undo")
             Spacer()
-            Text("answers wait \(Int(store.undo.delay)) s · ⎋ undoes").font(Type.caps).foregroundColor(.sand)
+            Text("answers wait \(Int(store.undo.delay)) s · ⎋ undoes").font(Type.caps).foregroundColor(.tertiary)
         }
         .padding(.horizontal, 14).padding(.vertical, 7)
     }
 }
 
-/// §3.4 (Revision 1 row 8): the wordmark, the 24 pt headline, the sub-line.
+/// §3.4 (Revision 1 row 8): the wordmark, the headline, the sub-line.
 struct EmptyState: View {
     let connected: Bool
     var body: some View {
@@ -110,7 +109,7 @@ struct EmptyState: View {
             Wordmark().scaleEffect(2).frame(width: 24, height: 24)
             Text(connected ? "Nothing needs you." : "Connecting to the engine…").font(Type.headline)
             Text("Suspiciously quiet — questions and finished work land here.")
-                .font(Type.meta).foregroundColor(.ink2).multilineTextAlignment(.center)
+                .font(Type.meta).foregroundColor(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 28).padding(.horizontal, 20)
     }
@@ -124,18 +123,19 @@ struct CardHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 10) {
-                Text(anatomy.header.name).font(Type.body).fontWeight(.semibold).lineLimit(1)
+                Text(anatomy.header.name).font(Type.body).fontWeight(.semibold).lineLimit(1).truncationMode(.tail).layoutPriority(0)
                 PositionDots(position: anatomy.header.position, count: anatomy.header.count)
                 Spacer(minLength: 4)
                 HStack(spacing: 8) {
-                    HeaderButton(glyph: "‹", key: "J", hint: "Previous card") { store.perform(.previous) }
-                    HeaderButton(glyph: "›", key: "K", hint: "Next card", keyFirst: true) { store.perform(.next) }
-                    HeaderButton(glyph: nil, key: "?", hint: "Keyboard shortcuts") { store.perform(.legend) }
-                    HeaderButton(glyph: "✕", key: "esc", hint: "Close") { store.perform(.escape) }
+                    HeaderButton(symbol: "chevron.left", key: "J", hint: "Previous card") { store.perform(.previous) }
+                    HeaderButton(symbol: "chevron.right", key: "K", hint: "Next card", keyFirst: true) { store.perform(.next) }
+                    HeaderButton(symbol: nil, key: "?", hint: "Keyboard shortcuts") { store.perform(.legend) }
+                    HeaderButton(symbol: "xmark", key: "esc", hint: "Close") { store.perform(.escape) }
                 }
+                .fixedSize().layoutPriority(1)
             }
             if !store.panel.items.isEmpty {
-                Text(anatomy.header.glance).font(Type.caps).foregroundColor(.ink2)
+                Text(anatomy.header.glance).font(Type.caps).foregroundColor(.secondary)
             }
         }
         .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 8)
@@ -150,11 +150,11 @@ struct PositionDots: View {
         // ponytail: past 9 items the dots outgrow a 372 pt header; the text form takes over.
         Group {
             if count > 9 {
-                Text("\(position) of \(count)").font(Type.mono).foregroundColor(.sand)
+                Text("\(position) of \(count)").font(Type.mono).foregroundColor(.tertiary)
             } else {
                 HStack(spacing: 4) {
                     ForEach(0..<max(count, 0), id: \.self) { i in
-                        Capsule().fill(i == position - 1 ? Color.ink : Color.ink.opacity(0.3))
+                        Capsule().fill(i == position - 1 ? Color.primary : Color.primary.opacity(0.3))
                             .frame(width: i == position - 1 ? 14 : 5, height: 5)
                     }
                 }
@@ -165,9 +165,9 @@ struct PositionDots: View {
     }
 }
 
-/// A glyph with its key cap, acting without activating the companion.
+/// An SF Symbol with its key cap, acting without activating the companion.
 struct HeaderButton: View {
-    let glyph: String?
+    let symbol: String?
     let key: String
     let hint: String
     var keyFirst = false
@@ -176,27 +176,30 @@ struct HeaderButton: View {
         Button(action: action) {
             HStack(spacing: 3) {
                 if keyFirst { KeyCap(key) }
-                if let glyph { Text(glyph).font(Type.meta) }
+                if let symbol { Image(systemName: symbol).font(Type.meta) }
                 if !keyFirst { KeyCap(key) }
             }
-            .foregroundColor(.ink2)
+            .foregroundColor(.secondary)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .fixedSize().layoutPriority(1)
+        .buttonStyle(.borderless)
+        .help(hint)
         .accessibilityLabel(hint)
     }
 }
 
-/// A key cap at `Type.capRadius`; gold when it is the recommended answer.
+/// A key cap at `Type.capRadius`; accent when it is the recommended answer. Never wraps: the title beside it gives way.
 struct KeyCap: View {
     let key: String
     var gold = false
     init(_ key: String, gold: Bool = false) { self.key = key; self.gold = gold }
     var body: some View {
-        Text(key).font(Type.mono)
+        Text(key).font(Type.mono).lineLimit(1)
             .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 18)
-            .background(RoundedRectangle(cornerRadius: Type.capRadius).fill(gold ? Color.gold : Color.ink.opacity(0.1)))
-            .foregroundColor(gold ? .surface : .ink)
+            .background(RoundedRectangle(cornerRadius: Type.capRadius).fill(gold ? Color.accentColor : Color.primary.opacity(0.1)))
+            .foregroundColor(gold ? .white : .primary)
+            .fixedSize().layoutPriority(1)
     }
 }
 
@@ -206,10 +209,10 @@ struct Hint: View {
     init(_ key: String, _ label: String) { self.key = key; self.label = label }
     var body: some View {
         HStack(spacing: 4) {
-            Text(key).font(.system(size: 10, design: .monospaced)).padding(.horizontal, 4).padding(.vertical, 1)
-                .background(RoundedRectangle(cornerRadius: 3).stroke(Color.rule, lineWidth: 1))
-            Text(label).font(.system(size: 10.5))
-        }.foregroundColor(.sand)
+            Text(key).font(Type.mono).lineLimit(1).padding(.horizontal, 4).padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: Type.capRadius).stroke(Color.separator, lineWidth: 1))
+            Text(label).font(.caption).lineLimit(1)
+        }.foregroundColor(.tertiary).fixedSize().layoutPriority(1)
     }
 }
 
@@ -224,12 +227,12 @@ struct HarnessIcon: View {
     var body: some View {
         if let img = Self.image(key, size: size) {
             Image(nsImage: img).renderingMode(.template).resizable().scaledToFit()
-                .frame(width: size, height: size).foregroundColor(.ink)
+                .frame(width: size, height: size).foregroundColor(.primary)
                 .accessibilityLabel(key)
         } else {
-            RoundedRectangle(cornerRadius: size * 0.25).fill(Color.ink.opacity(0.12))
+            RoundedRectangle(cornerRadius: size * 0.25).fill(Color.primary.opacity(0.12))
                 .frame(width: size, height: size)
-                .overlay(Text(String(key.prefix(1)).uppercased()).font(.system(size: size * 0.55, weight: .semibold)).foregroundColor(.ink))
+                .overlay(Text(String(key.prefix(1)).uppercased()).font(.system(size: size * 0.55, weight: .semibold)).foregroundColor(.primary)) // native: letter scaled to the icon's geometry
                 .accessibilityLabel(key)
         }
     }
@@ -258,18 +261,18 @@ struct CardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
-                HarnessIcon(key: anatomy.status.harness, size: 16)
+                HarnessIcon(key: anatomy.status.harness, size: 16) // native: icon geometry, not a font size
                 MarkView(state: card.item.markState).frame(width: 10, height: 10)
                 Text("\(anatomy.status.state) · \(anatomy.status.age)" + (anatomy.status.project.map { " · \($0)" } ?? ""))
-                    .font(Type.meta).foregroundColor(.ink2).lineLimit(1)
+                    .font(Type.meta).foregroundColor(.secondary).lineLimit(1)
             }
             ForEach(anatomy.bubbles.indices, id: \.self) { i in BubbleView(bubble: anatomy.bubbles[i]) }
             Text(card.question).font(Type.question).lineLimit(3).fixedSize(horizontal: false, vertical: true)
             if let why = card.why, !why.isEmpty {
-                Text(why).font(Type.body).foregroundColor(.ink2).lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                Text(why).font(Type.body).foregroundColor(.secondary).lineLimit(4).fixedSize(horizontal: false, vertical: true)
             }
             if let s = anatomy.ifWrong {
-                Text("If wrong: \(s)").font(Type.meta).italic().foregroundColor(.sand).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Text("If wrong: \(s)").font(Type.meta).italic().foregroundColor(.tertiary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             if !card.chips.isEmpty {
                 HStack(spacing: 6) {
@@ -280,11 +283,11 @@ struct CardView: View {
                 NoteField(note: $note, task: task, store: store)
             } else {
                 if card.item.kind == .finished, !card.options.isEmpty {
-                    Text("Next steps").font(Type.caps).foregroundColor(.ink2).padding(.top, 2)
+                    Text("Next steps").font(Type.caps).foregroundColor(.secondary).padding(.top, 2)
                 }
                 ForEach(card.options, id: \.key) { o in OptionRow(option: o) { store.pick(o, card: card) } }
                 if card.moreOptions > 0 {
-                    Text("+\(card.moreOptions) more — O opens the full list in theuth").font(Type.caps).foregroundColor(.sand)
+                    Text("+\(card.moreOptions) more — O opens the full list in theuth").font(Type.caps).foregroundColor(.tertiary)
                 }
                 if card.options.isEmpty && !card.clearable {
                     OptionRow(option: CardOption(key: 0, label: "Open in theuth", detail: nil, recommended: false,
@@ -299,24 +302,24 @@ struct CardView: View {
             HStack(spacing: 8) {
                 Spacer()
                 if anatomy.footer.contains(.stop) {
-                    FooterPill(label: "Stop agent", key: "X", tint: .carnelian) { w1.onStop?() }
+                    FooterPill(label: "Stop agent", key: "X", tint: .failed) { w1.onStop?() }
                 }
                 if anatomy.footer.contains(.clear) {
-                    FooterPill(label: "Clear", key: "E", tint: .ink2) { store.perform(.clear) }
+                    FooterPill(label: "Clear", key: "E", tint: .secondary) { store.perform(.clear) }
                 }
                 if anatomy.footer.contains(.snooze) {
-                    FooterPill(label: "Snooze", key: "S", tint: .ink2) { store.perform(.snooze) }
+                    FooterPill(label: "Snooze", key: "S", tint: .secondary) { store.perform(.snooze) }
                 }
             }
         }
         .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 10)
-        .background(Color.ink.opacity(0.045))
-        .overlay(alignment: .leading) { Rectangle().fill(Color.gold).frame(width: 3).opacity(card.item.kind.needsYou ? 1 : 0) }
+        .background(Color.primary.opacity(0.045))
+        .overlay(alignment: .leading) { Rectangle().fill(Color.accentColor).frame(width: 3).opacity(card.item.kind.needsYou ? 1 : 0) }
         .onChange(of: card.item.id) { _, _ in w1.replyText = ""; w1.attached = nil } // the draft belongs to one card
     }
 }
 
-/// E6's pair: the user's request right-aligned in faience, the agent's last message left in ink.
+/// E6's pair: the user's request right-aligned in accent, the agent's last message left in primary.
 struct BubbleView: View {
     let bubble: CardAnatomy.Bubble
     var body: some View {
@@ -328,7 +331,7 @@ struct BubbleView: View {
                 .background(
                     UnevenRoundedRectangle(topLeadingRadius: 12, bottomLeadingRadius: user ? 12 : 4,
                                            bottomTrailingRadius: user ? 4 : 12, topTrailingRadius: 12)
-                        .fill(user ? Color.faience.opacity(0.25) : Color.ink.opacity(0.08)))
+                        .fill(user ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.08)))
                 .frame(maxWidth: 300, alignment: user ? .trailing : .leading)
             if !user { Spacer(minLength: 44) }
         }
@@ -347,14 +350,14 @@ struct OptionRow: View {
             HStack(spacing: 9) {
                 KeyCap(keyLabel ?? "\(option.key)", gold: option.recommended)
                 Text(option.label).font(Type.body).lineLimit(2)
-                if option.recommended { Text("(Recommended)").font(Type.caps).foregroundColor(.gold) }
-                if let d = option.detail { Text("— \(d)").font(Type.meta).foregroundColor(.sand).lineLimit(1) }
+                if option.recommended { Text("(Recommended)").font(Type.caps).foregroundColor(.accentColor) }
+                if let d = option.detail { Text("— \(d)").font(Type.meta).foregroundColor(.tertiary).lineLimit(1) }
                 Spacer()
-                Text("→").font(Type.body).foregroundColor(.ink2)
+                Image(systemName: "arrow.right").font(Type.body).foregroundColor(.secondary)
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: Type.optionRadius).fill(option.recommended ? Color.gold.opacity(0.12) : Color.ink.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: Type.optionRadius).stroke(option.recommended ? Color.gold : Color.rule.opacity(0.6), lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: Type.optionRadius).fill(option.recommended ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: Type.optionRadius).stroke(option.recommended ? Color.accentColor : Color.separator, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -363,7 +366,7 @@ struct OptionRow: View {
     }
 }
 
-/// §3.3 reply row: [▣ P] [field · R] [🎙 V] [↑ ⏎]; always visible. The field's focus mirrors `store.ask.replyFor`.
+/// §3.3 reply row: [scope P] [field · R] [mic V] [arrow.up ⏎]; always visible. The field's focus mirrors `store.ask.replyFor`.
 struct ReplyRow: View {
     let card: Card
     @ObservedObject var store: Store
@@ -374,14 +377,14 @@ struct ReplyRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                ReplyButton(glyph: "▣", key: "P", hint: "Point at the screen and attach it") { w1.onPoint?() }
+                ReplyButton(symbol: "scope", key: "P", hint: "Point at the screen and attach it") { w1.onPoint?() }
                 HStack(spacing: 6) {
                     if voice.recording || voice.finishing {
-                        // Finals in ink, the open partial muted (the Ask bar's rule).
+                        // Finals in primary, the open partial muted (the Ask bar's rule).
                         (Text(voice.liveText.isEmpty && voice.partial.isEmpty ? "Listening…" : voice.liveText)
-                            .foregroundColor(voice.liveText.isEmpty ? .sand : .ink)
+                            .foregroundColor(voice.liveText.isEmpty ? .tertiary : .primary)
                             + Text(voice.liveText.isEmpty || voice.partial.isEmpty ? "" : " ")
-                            + Text(voice.partial).foregroundColor(.sand))
+                            + Text(voice.partial).foregroundColor(.tertiary))
                             .font(Type.body).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                     } else {
                         TextField(card.item.kind == .ask ? "Type your answer…" : "Reply to \(card.who)", text: $w1.replyText)
@@ -392,25 +395,25 @@ struct ReplyRow: View {
                     KeyCap("R") // Revision 1 row 18: space is the alias
                 }
                 .padding(.horizontal, 8).padding(.vertical, 5)
-                .background(RoundedRectangle(cornerRadius: Type.optionRadius).fill(Color.ink.opacity(0.06)))
-                .overlay(RoundedRectangle(cornerRadius: Type.optionRadius).stroke(replyFocused ? Color.faience : Color.rule.opacity(0.6), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: Type.optionRadius).fill(Color.primary.opacity(0.06)))
+                .overlay(RoundedRectangle(cornerRadius: Type.optionRadius).stroke(replyFocused ? Color.accentColor : Color.separator, lineWidth: 1))
                 Group {
-                    if voice.recording { LevelBars(levels: voice.levels) } else { HStack(spacing: 3) { Text("🎙").font(Type.meta); KeyCap("V") } }
+                    if voice.recording { LevelBars(levels: voice.levels) } else { HStack(spacing: 3) { Image(systemName: "mic.fill").font(Type.meta); KeyCap("V") } }
                 }
                 .frame(minWidth: 40, minHeight: 28)
-                .background(RoundedRectangle(cornerRadius: Type.optionRadius).fill(Color.ink.opacity(0.06)))
+                .background(RoundedRectangle(cornerRadius: Type.optionRadius).fill(Color.primary.opacity(0.06)))
                 .contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 0)
                     .onChanged { _ in voice.press(target: card.item.id) } // `press` is a no-op while busy
                     .onEnded { _ in voice.release() })
                 .accessibilityLabel("Hold to talk")
-                ReplyButton(glyph: "↑", key: "⏎", hint: "Send", action: submit)
+                ReplyButton(symbol: "arrow.up", key: "⏎", hint: "Send", action: submit)
             }
             if let a = w1.attached {
-                ChipView(text: "screen attached · \(a.files.count)", color: .malachite)
+                ChipView(text: "screen attached · \(a.files.count)", color: .done)
             }
             if let s = voice.status {
-                Text(s).font(Type.caps).foregroundColor(voice.recording ? .carnelian : .sand)
+                Text(s).font(Type.caps).foregroundColor(voice.recording ? .accentColor : .tertiary)
             }
         }
         .onAppear { replyFocused = store.ask.replyFor == card.item.id }
@@ -428,23 +431,24 @@ struct ReplyRow: View {
 }
 
 struct ReplyButton: View {
-    let glyph: String
+    let symbol: String
     let key: String
     let hint: String
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 3) { Text(glyph).font(Type.meta); KeyCap(key) }
+            HStack(spacing: 3) { Image(systemName: symbol).font(Type.meta); KeyCap(key) }
                 .padding(.horizontal, 6).frame(minHeight: 28)
-                .background(RoundedRectangle(cornerRadius: Type.optionRadius).fill(Color.ink.opacity(0.06)))
+                .background(RoundedRectangle(cornerRadius: Type.optionRadius).fill(Color.primary.opacity(0.06)))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(hint)
         .accessibilityLabel(hint)
     }
 }
 
-/// The footer pills: "Stop agent X" (carnelian) · "Clear E" · "Snooze S".
+/// The footer pills: "Stop agent X" (red) · "Clear E" · "Snooze S".
 struct FooterPill: View {
     let label: String
     let key: String
@@ -469,7 +473,7 @@ struct ChipView: View {
     init(text: String, color: Color) { self.text = text; self.color = color }
     init(chip: Chip) {
         text = chip.text
-        color = chip.ok == true ? .malachite : (chip.ok == false ? .carnelian : .ink2)
+        color = chip.ok == true ? .done : (chip.ok == false ? .failed : .secondary)
     }
     var body: some View {
         Text(text).font(Type.caps).foregroundColor(color).lineLimit(1)
@@ -492,7 +496,7 @@ struct NoteField: View {
                 .focused($focused)
                 .onSubmit { store.submitNote(note); note = "" }
                 .onAppear { focused = true }
-            Text("⏎ send back · ⎋ cancel").font(Type.caps).foregroundColor(.sand)
+            Text("⏎ send back · ⎋ cancel").font(Type.caps).foregroundColor(.tertiary)
         }
     }
 }
@@ -504,10 +508,10 @@ struct LineView: View {
     var body: some View {
         HStack(spacing: 8) {
             MarkView(state: item.markState).frame(width: 10, height: 10)
-            Text(item.agent ?? item.kind.rawValue).font(.system(size: 12, weight: .medium))
-            Text(item.title).font(.system(size: 12)).foregroundColor(.ink2).lineLimit(1)
+            Text(item.agent ?? item.kind.rawValue).font(Type.meta.weight(.medium))
+            Text(item.title).font(Type.meta).foregroundColor(.secondary).lineLimit(1)
             Spacer()
-            Text(RailModel.ago(item.waitingSince, now)).font(.system(size: 12, design: .monospaced)).foregroundColor(.sand)
+            Text(RailModel.ago(item.waitingSince, now)).font(Type.meta.monospaced()).foregroundColor(.tertiary)
         }
         .padding(.horizontal, 14).padding(.vertical, 7)
         .contentShape(Rectangle())
@@ -515,7 +519,7 @@ struct LineView: View {
     }
 }
 
-/// "w2 · Three tiers — sending · ⎋ undo · 2" with the countdown bar; a held Stop reads "Stopping w3 and 2 children" in carnelian.
+/// "w2 · Three tiers — sending · ⎋ undo · 2" with the countdown bar; a held Stop reads "Stopping w3 and 2 children" in red.
 struct ReceiptView: View {
     let receipt: Store.Receipt
     let remaining: TimeInterval
@@ -529,31 +533,31 @@ struct ReceiptView: View {
     }
 
     var body: some View {
-        let tint: Color = stopping == nil ? .malachite : .carnelian
+        let tint: Color = stopping == nil ? .done : .failed
         VStack(alignment: .leading, spacing: 0) {
-            Divider().overlay(Color.rule.opacity(0.6))
+            Divider()
             HStack(spacing: 8) {
                 switch receipt {
                 case .holding(let h):
                     if let n = stopping {
-                        Text("Stopping \(h.who)" + (n == 0 ? "" : n == 1 ? " and 1 child" : " and \(n) children")).font(.system(size: 12)).foregroundColor(.carnelian)
+                        Text("Stopping \(h.who)" + (n == 0 ? "" : n == 1 ? " and 1 child" : " and \(n) children")).font(Type.meta).foregroundColor(.failed)
                     } else {
-                        Text("\(h.who) · \(h.label) — sending").font(.system(size: 12))
+                        Text("\(h.who) · \(h.label) — sending").font(Type.meta)
                     }
                     Spacer()
-                    Text("⎋ undo · \(Int(remaining.rounded(.up)))").font(.system(size: 12, design: .monospaced)).foregroundColor(.ink2)
+                    Text("⎋ undo · \(Int(remaining.rounded(.up)))").font(Type.meta.monospaced()).foregroundColor(.secondary)
                 case .sent(let s):
-                    Text("Sent · \(s)").font(.system(size: 12)).foregroundColor(.malachite)
+                    Text("Sent · \(s)").font(Type.meta).foregroundColor(.done)
                 case .undone:
-                    Text("Taken back").font(.system(size: 12))
+                    Text("Taken back").font(Type.meta)
                 case .stale:
-                    Text("Already answered elsewhere").font(.system(size: 12)).foregroundColor(.sand)
+                    Text("Already answered elsewhere").font(Type.meta).foregroundColor(.tertiary)
                 case .failed(let e):
-                    Text("Failed · \(e)").font(.system(size: 12)).foregroundColor(.carnelian).lineLimit(1)
+                    Text("Failed · \(e)").font(Type.meta).foregroundColor(.failed).lineLimit(1)
                 case .reply(let who, let text, let session): // W3: the desk's streamed answer
-                    (Text("\(who) · ").fontWeight(.semibold) + Text(text)).font(.system(size: 12)).lineLimit(2)
+                    (Text("\(who) · ").fontWeight(.semibold) + Text(text)).font(Type.meta).lineLimit(2)
                     Spacer()
-                    if session != nil { Text("Open ⌘O").font(.system(size: 11)).foregroundColor(.ink2) }
+                    if session != nil { Text("Open ⌘O").font(.subheadline).foregroundColor(.secondary) }
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)

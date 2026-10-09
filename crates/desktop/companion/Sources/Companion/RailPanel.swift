@@ -49,7 +49,6 @@ final class RailController {
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        panel.appearance = Type.dark // 149 W1 §3.9: dark-first glass
         hosting = NSHostingView(rootView: AnyView(EmptyView()))
         panel.contentView = hosting
         panel.setAccessibilityLabel("Theuth rail")
@@ -206,33 +205,33 @@ struct RailView: View {
 
     var body: some View {
         if collapsed {
-            Capsule().fill(Color.sand.opacity(0.35)).frame(width: RailController.sliver, height: 120)
+            Capsule().fill(Color.tertiary.opacity(0.35)).frame(width: RailController.sliver, height: 120)
                 .accessibilityLabel("Theuth rail, quiet")
         } else {
             VStack(spacing: 6) {
                 Wordmark()
                 if store.rail.needsYouCount > 0 {
                     Text("\(store.rail.needsYouCount)")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.gold)
+                        .font(.caption2.monospaced().weight(.semibold))
+                        .foregroundColor(.accentColor)
                         .accessibilityLabel("\(store.rail.needsYouCount) need you")
                 }
                 ForEach(store.rail.needsYou) { mark in marker(mark) }
-                Rectangle().fill(Color.ink.opacity(0.18)).frame(width: 12, height: 1).padding(.vertical, 2)
+                Rectangle().fill(Color.primary.opacity(0.18)).frame(width: 12, height: 1).padding(.vertical, 2)
                 ForEach(store.rail.agents) { mark in marker(mark) }
                 if store.rail.overflow > 0 {
-                    Text("+\(store.rail.overflow)").font(.system(size: 9, design: .monospaced)).foregroundColor(.ink2)
+                    Text("+\(store.rail.overflow)").font(.caption2.monospaced()).foregroundColor(.secondary)
                 }
                 if store.connection != .open {
-                    Circle().fill(Color.carnelian).frame(width: 4, height: 4).help("engine: \(store.connection)")
+                    Circle().fill(Color.failed).frame(width: 4, height: 4).help("engine: \(store.connection)")
                 }
             }
             .padding(.vertical, 10)
             .frame(width: RailController.width)
             .background(
-                UnevenRoundedRectangle(topLeadingRadius: side == "left" ? 0 : 10, bottomLeadingRadius: side == "left" ? 0 : 10,
-                                       bottomTrailingRadius: side == "left" ? 10 : 0, topTrailingRadius: side == "left" ? 10 : 0)
-                    .fill(Color.surface.opacity(0.82))
+                .regularMaterial,
+                in: UnevenRoundedRectangle(topLeadingRadius: side == "left" ? 0 : 10, bottomLeadingRadius: side == "left" ? 0 : 10,
+                                           bottomTrailingRadius: side == "left" ? 10 : 0, topTrailingRadius: side == "left" ? 10 : 0)
             )
         }
     }
@@ -249,11 +248,11 @@ struct RailView: View {
     }
 }
 
-/// The wordmark glyph: the only gold chrome besides the count and the needs-you marks.
+/// The wordmark glyph: the only accent chrome besides the count and the needs-you marks.
 struct Wordmark: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 3).fill(Color.gold).frame(width: 12, height: 12)
-            .overlay(RoundedRectangle(cornerRadius: 1).fill(Color.surface).padding(3))
+        RoundedRectangle(cornerRadius: 3).fill(Color.accentColor).frame(width: 12, height: 12)
+            .overlay(RoundedRectangle(cornerRadius: 1).fill(Color.white).padding(3))
             .accessibilityLabel("theuth")
     }
 }
@@ -269,27 +268,26 @@ struct MarkView: View {
         case .needsYou(let kind):
             // A filled ring with a notch at the kind's clock position: question 12 · approval 3 · review 6 · other 9.
             Circle().trim(from: 0.06, to: 0.94)
-                .stroke(Color.gold, style: StrokeStyle(lineWidth: 3, lineCap: .butt))
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .butt))
                 .rotationEffect(.degrees(clock(kind)))
                 .frame(width: 10, height: 10)
-                .shadow(color: Color.gold.opacity(0.35), radius: 1.5)
         case .working:
-            Circle().fill(Color.faience).frame(width: 10, height: 10)
+            Circle().fill(Color.secondary).frame(width: 10, height: 10) // running = no colour (Reduce Motion stand-in for ProgressView)
                 .opacity(beat ? 0.55 : 1)
                 .onAppear {
                     guard !reduceMotion else { return }
                     withAnimation(.easeInOut(duration: 0.38).repeatForever(autoreverses: true)) { beat = true }
                 }
         case .idle:
-            Circle().strokeBorder(Color.faience, lineWidth: 1.5).frame(width: 10, height: 10)
+            Circle().strokeBorder(Color.secondary, lineWidth: 1.5).frame(width: 10, height: 10)
         case .finished:
-            Circle().fill(Color.malachite).frame(width: 10, height: 10)
-                .overlay(Image(systemName: "checkmark").font(.system(size: 5, weight: .heavy)).foregroundColor(.surface))
+            Circle().fill(Color.done).frame(width: 10, height: 10)
+                .overlay(Image(systemName: "checkmark").font(.system(size: 5, weight: .heavy)).foregroundColor(.white)) // native: glyph inside a 10 pt dot
         case .error:
-            Circle().fill(Color.carnelian).frame(width: 10, height: 10)
-                .overlay(Rectangle().fill(Color.surface).frame(width: 5, height: 1.5))
+            Circle().fill(Color.failed).frame(width: 10, height: 10)
+                .overlay(Rectangle().fill(Color.white).frame(width: 5, height: 1.5))
         case .lapsed:
-            Circle().strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [2, 1.5])).foregroundColor(.sand)
+            Circle().strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [2, 1.5])).foregroundColor(.tertiary)
                 .frame(width: 10, height: 10)
         }
     }

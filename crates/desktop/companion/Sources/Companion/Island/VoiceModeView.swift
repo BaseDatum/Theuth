@@ -2,8 +2,8 @@ import AppKit
 import CompanionCore
 import SwiftUI
 
-/// 149 §3.7: what the island shows while a gesture is live (96 §0.3's reuse rule) — the rec dot, the live words (finals in
-/// ink, the open partial in sand), "· ⌃S held · theuth's desk", the lock, the hint. W3 owns the island window and hosts
+/// 149 §3.7: what the island shows while a gesture is live (96 §0.3's reuse rule) — the rec dot, the live words (finals
+/// primary, the open partial tertiary), "· ⌃S held · theuth's desk", the lock, the hint. W3 owns the island window and hosts
 /// this view there; until it merges `VoicePill` hosts it in a small capsule near the pointer (mock round 2, screen 7).
 @MainActor
 final class VoiceModeState: ObservableObject {
@@ -26,15 +26,15 @@ struct VoiceModeView: View {
     var body: some View {
         HStack(spacing: 10) {
             if state.phase == .hint {
-                Image(systemName: "info.circle").font(.system(size: 13)).foregroundColor(.sand)
-                Text(state.hint).font(.system(size: 14)).foregroundColor(.ink).lineLimit(2)
+                Image(systemName: "info.circle").font(.body).foregroundColor(.tertiary)
+                Text(state.hint).font(.body).foregroundColor(.primary).lineLimit(2)
             } else {
-                Circle().fill(Color.carnelian).frame(width: 10, height: 10)
+                Circle().fill(Color.accentColor).frame(width: 10, height: 10)
                     .scaleEffect(1 + CGFloat(min(1, state.level)) * 0.6)
                     .animation(.linear(duration: 0.1), value: state.level)
-                    .shadow(color: .carnelian.opacity(0.3), radius: 3)
+                    .shadow(color: .accentColor.opacity(0.3), radius: 3)
                 words
-                Text(trailer).font(.system(size: 13)).foregroundColor(.sand).lineLimit(1)
+                Text(trailer).font(.body).foregroundColor(.tertiary).lineLimit(1)
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
@@ -46,11 +46,11 @@ struct VoiceModeView: View {
 
     private var words: some View {
         let empty = state.text.isEmpty && state.partial.isEmpty
-        return (Text(empty ? "Listening…" : "“\(state.text)").foregroundColor(empty || state.text.isEmpty ? .sand : .ink)
+        return (Text(empty ? "Listening…" : "“\(state.text)").foregroundColor(empty || state.text.isEmpty ? .tertiary : .primary)
             + Text(state.text.isEmpty || state.partial.isEmpty ? "" : " ")
-            + Text(state.partial).foregroundColor(.sand)
-            + Text(empty ? "" : "”").foregroundColor(.ink))
-            .font(.system(size: 15)).lineLimit(2)
+            + Text(state.partial).foregroundColor(.tertiary)
+            + Text(empty ? "" : "”").foregroundColor(.primary))
+            .font(.body).lineLimit(2)
     }
 
     private var trailer: String {
@@ -64,7 +64,7 @@ struct VoiceModeView: View {
 }
 
 /// The capsule that hosts `VoiceModeView` near the pointer: borderless, non-activating, mouse-transparent, `.popUpMenu`
-/// (above the overlays), dark glass (§3.9). Follows the pointer while a gesture is live; a hint lingers `hintMs`.
+/// (above the overlays), HUD glass (§3.9). Follows the pointer while a gesture is live; a hint lingers `hintMs`.
 @MainActor
 final class VoicePill {
     /// 96's `HINT_MS`.
@@ -86,15 +86,16 @@ final class VoicePill {
         panel.isReleasedWhenClosed = false
         panel.ignoresMouseEvents = true
         panel.animationBehavior = .none
-        panel.appearance = NSAppearance(named: .darkAqua)
-        let container = NSView(frame: panel.contentRect(forFrameRect: panel.frame))
+        let container = NSVisualEffectView(frame: panel.contentRect(forFrameRect: panel.frame))
+        container.material = .hudWindow
+        container.blendingMode = .behindWindow
+        container.state = .active
         container.wantsLayer = true
-        container.layer?.cornerRadius = 20
+        container.layer?.cornerRadius = Type.cardRadius
         container.layer?.cornerCurve = .continuous
         container.layer?.masksToBounds = true
-        container.layer?.backgroundColor = NSColor(hex: 0x12100e, alpha: 0.91).cgColor
         container.layer?.borderWidth = 0.5
-        container.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        container.layer?.borderColor = NSColor.separatorColor.cgColor
         hosting = NSHostingView(rootView: VoiceModeView(state: state))
         hosting.frame = container.bounds
         hosting.autoresizingMask = [.width, .height]
