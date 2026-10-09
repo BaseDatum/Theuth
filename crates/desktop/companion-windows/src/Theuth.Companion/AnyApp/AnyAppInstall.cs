@@ -16,7 +16,7 @@ internal static class AnyAppInstall
     {
         try
         {
-            var settings = new AnyAppSettings(Settings.SettingsModel.Shared.Store);
+            var settings = new AnyAppPrefs(Settings.SettingsModel.Shared.Store);
             var controller = new AnyAppController(store, dispatcher, settings);
             AnyAppController.Current = controller;
             // PIN-C: the dictate-anywhere key is W153C's (RegisterHotKey + the one PointMachine in PointController); its gestures arrive here.
