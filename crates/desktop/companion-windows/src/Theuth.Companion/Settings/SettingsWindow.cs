@@ -172,6 +172,7 @@ internal sealed partial class SettingsWindow : Window
     private void OnStoreChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (CurrentPage == "engine" && e.PropertyName is nameof(Store.Connection)) foreach (var update in live) update();
+        if (CurrentPage == "dictation" && e.PropertyName is nameof(Store.Connection) && store.Connection == RpcClient.State.Open) ShowPage(CurrentPage); // 153 W153B: the engine's values load once connected
         if (CurrentPage == "keys" && e.PropertyName is nameof(Store.HotkeyNotice) or nameof(Store.Keys)) ShowPage(CurrentPage); // W2's resolution notice
     }
 

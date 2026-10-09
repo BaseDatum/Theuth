@@ -92,6 +92,7 @@ internal sealed partial class SettingsWindow
         change.Click += (_, _) => _ = Links.Open(new Uri("theuth://settings/voice"));
         page.Children.Add(change);
         Caption(page, "Agent prompts are never polished: the Ask bar, the panel and the row mics always send the shaped text. Polish applies only to text for people — documents and messages in theuth, and other apps you turn it on for.");
+        Caption(page, "Other apps: polish, terminal spacing and slash commands are set per app, with dictation into any app.");
         AnyAppSettings(page);
 
         // MARK: dictionary (§5.3, §5.6)
@@ -141,7 +142,11 @@ internal sealed partial class SettingsWindow
         AutomationProperties.SetAutomationId(forgetAll, "settings-dictation-history-forget-all");
         forgetAll.Click += (_, _) => _ = Forget(null, history, Current, Say);
         page.Children.Add(forgetAll);
-        Caption(page, "Kept on this computer only — the last 200 dictations and up to 64 MiB of their audio, so a correction can be learned and replayed. The agent never reads it, and no channel or other machine can reach it. Keep audio, learning and the whole history switch live in theuth's Settings › Voice.");
+        Caption(page, "Kept on this computer only — the last 200 dictations and up to 64 MiB of their audio, so a correction can be learned and replayed. The agent never reads it, and no channel or other machine can reach it. Learn from my corrections, Keep audio and the history switch itself are in theuth's Settings › Voice.");
+        var voice = new HyperlinkButton { Content = "Open theuth's Settings › Voice…", Padding = new Thickness(0, 2, 0, 2) };
+        AutomationProperties.SetAutomationId(voice, "settings-dictation-history-settings");
+        voice.Click += (_, _) => _ = Links.Open(new Uri("theuth://settings/voice"));
+        page.Children.Add(voice);
         _ = LoadHistory(history, Current, Say);
     }
 
