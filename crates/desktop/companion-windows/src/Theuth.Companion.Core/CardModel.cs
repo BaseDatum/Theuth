@@ -41,6 +41,20 @@ public abstract record CardAction
     /// <summary>134 W2 — Blocked → Unblock: <c>task_move(task, todo)</c> (the ledger allows blocked → todo).</summary>
     public sealed record Unblock(string Task) : CardAction;
 
+    // 149 WW2 (D3, §3.2–3.3): row and card verbs that carry no attention item — the hold is the confirmation.
+
+    /// <summary>149 WW2 — agents-panel ✕ / card X: <c>cancel(session, "tree")</c> after the hold; a cancel is final (no undo after).</summary>
+    public sealed record StopTree(string Session) : CardAction;
+
+    /// <summary>149 WW2 — a desk row's ✕: <c>agent_pause(name, true)</c>.</summary>
+    public sealed record PauseDesk(string Name) : CardAction;
+
+    /// <summary>149 WW2 (ruling 3) — the row mic's text: <c>send_input(session, text)</c> to THAT session; nothing is dismissed.</summary>
+    public sealed record SendInputTo(string Session, string Text) : CardAction;
+
+    /// <summary>149 WW2: no attention item behind it — the stale guard (E5) does not apply.</summary>
+    public bool ItemFree => this is StopTree or PauseDesk or SendInputTo or AskTheuth;
+
     /// <summary>Not sendable yet: the app must collect the note and hold <see cref="ReviewSendBackNote"/> instead.</summary>
     public bool NeedsNote => this is ReviewSendBack;
 }

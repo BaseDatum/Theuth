@@ -1462,3 +1462,4 @@ spike findings SA/SB/SC folded in (build/bundle verified, lifecycle via SMAppSer
 · R2 2026-10-07 evening — Sky's first-day rulings: no `Bundle.module` (own recorder), live dictation in the Ask bar, "Always
 a sliver" rail presence, one key table + legend + rebinding + the collision policy (wave W6). · R3 2026-10-07 21:00 — menu:
 "Quit theuth" quits the whole app in one go; "Open theuth" activates the last view instead of `theuth://new` (W7).
+· R4 2026-10-09 — §4.3 "Point at it stays in Tauri" superseded by design 149 (Sky 00:39): point-and-say and the island move into the companion.

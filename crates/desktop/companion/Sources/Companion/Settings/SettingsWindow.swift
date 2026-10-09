@@ -59,6 +59,8 @@ struct SettingsView: View {
             keys.tabItem { Label("Keys", systemImage: "keyboard") }.tag("keys")
             notifications.tabItem { Label("Notifications", systemImage: "bell") }.tag("notifications")
             engine.tabItem { Label("Engine", systemImage: "network") }.tag("engine")
+            IslandSettingsTab().tabItem { Label("Island", systemImage: "rectangle.topthird.inset.filled") }.tag("island") // 149 W3
+            VoiceKeyTab(model: model).tabItem { Label("Voice key", systemImage: "waveform") }.tag("voiceKey") // 149 W2
         }
         .padding(16)
         .frame(width: 500, height: 400)
@@ -84,6 +86,7 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Text("Side and display apply on the next layout; the rail never takes focus.")
                 .font(.caption).foregroundStyle(.secondary)
+            Toggle("Separate pills", isOn: $model.value.railPills) // 149 W1: off = 130's one strip (D1 escape hatch)
         }
     }
 

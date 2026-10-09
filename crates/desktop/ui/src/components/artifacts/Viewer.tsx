@@ -10,9 +10,10 @@ import { ArchiveView } from '@/components/artifacts/ArchiveView'
 import { sessionLabel, useArtifactList } from '@/components/artifacts/List'
 import { MermaidView } from '@/components/artifacts/MermaidView'
 import { ArtifactMenu, PopoutButton, RevealButton, TEXT_KINDS, metaLine, saveAs, useText } from '@/components/chat/ArtifactCard'
-import { Img, useDocumentUrl } from '@/components/chat/Attachments'
+import { Img, useDocumentUrl, useFileUrl } from '@/components/chat/Attachments'
 import { HtmlPage } from '@/components/chat/HtmlPage'
-import { fenced, plugins, shikiTheme } from '@/components/chat/MessageAssistant'
+import { CitationsProvider, References } from '@/components/chat/Citations'
+import { fenced, markdownComponents, plugins, rehypePlugins, shikiTheme } from '@/components/chat/MessageAssistant'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -44,19 +45,26 @@ const MD_CLASS =
 
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
 
-/** Committed markdown through streamdown; `http(s)` links open with the OS. */
+/**
+ * Committed markdown through streamdown; `http(s)` links open with the OS. 144 wave 2 (Z2): a notebook overview is a
+ * markdown artifact whose every claim carries a `theuth://` chip — rendered with the chat's citation components
+ * (`CitationLink` + References) instead of streamdown's `[blocked]`.
+ */
 function Markdown({ text }: { text: string }) {
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     const href = e.target instanceof Element ? e.target.closest('a')?.getAttribute('href') : null
-    if (!href || href.startsWith('#')) return
+    if (!href || href.startsWith('#') || href.startsWith('theuth://')) return
     e.preventDefault()
     if (/^https?:/.test(href)) openUrl(href).catch(fail)
   }
   return (
     <div onClickCapture={onClick} className="px-6 py-4">
-      <Streamdown mode="static" plugins={plugins} shikiTheme={shikiTheme} linkSafety={{ enabled: false }} className={MD_CLASS}>
-        {text}
-      </Streamdown>
+      <CitationsProvider text={text}>
+        <Streamdown mode="static" plugins={plugins} rehypePlugins={rehypePlugins} components={markdownComponents} shikiTheme={shikiTheme} linkSafety={{ enabled: false }} className={MD_CLASS}>
+          {text}
+        </Streamdown>
+        <References />
+      </CitationsProvider>
     </div>
   )
 }
@@ -298,6 +306,19 @@ const Fenced = ({ text, lang }: { text: string; lang: string }) => (
   </div>
 )
 
+/** 144 §10: `<audio controls>` over the bytes (`asset://` locally, else `get_attachment` → blob, 31 §9); the name and size under it. */
+function AudioBody({ a }: { a: Artifact }) {
+  const src = useFileUrl(a.path)
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-fg-secondary">
+      {src === null ? <div className="h-10 w-full max-w-xl animate-pulse rounded-full bg-layer-2" /> : src === '' ? <span className="text-sm text-danger">could not load {a.name}</span> : <audio controls preload="metadata" src={src} className="w-full max-w-xl" />}
+      <span className="text-sm">
+        {a.name} · {a.mime}
+      </span>
+    </div>
+  )
+}
+
 /** 120 §3: the live page at the pane's full size, uncapped, with the `Page | Source` toggle; Source is the pristine bytes fenced. */
 function HtmlBody({ a, text }: { a: Artifact; text: string | null }) {
   const [view, setView] = useState<'page' | 'source'>('page')
@@ -344,6 +365,8 @@ function Body({ a }: { a: Artifact }) {
   if (a.kind === 'pdf') return <Pdf a={a} />
   if (a.kind === 'html') return <HtmlBody a={a} text={text} />
   if (a.kind === 'archive') return <ArchiveView a={a} />
+  // 144 §10: an audio overview (`overview.mp3`, `audio/mpeg`) is a `file` with an audio mime — a player, not a download button.
+  if (a.kind === 'file' && a.mime.startsWith('audio/')) return <AudioBody a={a} />
   if (a.kind === 'file') {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-fg-secondary">

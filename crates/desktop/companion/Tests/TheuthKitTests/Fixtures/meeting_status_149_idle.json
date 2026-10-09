@@ -1,0 +1,10 @@
+{
+  "state": "Idle",
+  "meeting": null,
+  "session": null,
+  "elapsed_ms": 0,
+  "degraded": [],
+  "supported": {
+    "kind": "Full"
+  }
+}

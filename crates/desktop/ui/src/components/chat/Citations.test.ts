@@ -12,6 +12,13 @@ const citation: Citation = { href: HREF, kind: 'sources', id: 's1', locator: '#b
 
 vi.mock('@tanstack/react-router', () => ({ useRouter: () => undefined }))
 vi.mock('@/store/connection', () => ({ useConnection: (sel: (s: { client: unknown }) => unknown) => sel({ client: {} }) }))
+vi.mock('@/components/notebooks/NotebookContext', () => ({ useNotebookChat: () => null }))
+// Radix renders popover content only when open; plain elements show the dangling-ref card.
+vi.mock('@/components/ui/popover', () => ({
+  Popover: ({ children }: { children: ReactNode }) => createElement('div', { 'data-popover': true }, children),
+  PopoverTrigger: ({ children }: { children: ReactNode }) => children,
+  PopoverContent: ({ children, ...rest }: { children: ReactNode }) => createElement('div', rest, children),
+}))
 vi.mock('@/lib/notebooks-rpc', async (original) => ({
   ...(await original<typeof NotebooksRpc>()),
   notebooksApi: () => ({ cite_resolve: async () => [citation] }),
@@ -45,4 +52,23 @@ test('References lists nothing without citations, the resolved title and drift w
 
 test('citationCount counts distinct valid theuth links', () => {
   expect(citationCount(`[a](${HREF}) [b](${HREF}) [c](theuth://notes/n1) [d](https://x)`)).toBe(2)
+})
+
+test('§6.4 drift on the chip: a missing block renders the dangling-ref card instead of a dead pulse; unavailable says so; changed is in the tooltip', () => {
+  const link = createElement(CitationLink, { href: HREF, children: 'runbook' })
+  const missing = render(`see [runbook](${HREF})`, [{ ...citation, status: 'missing' }], link)
+  expect(missing).toContain('data-popover')
+  expect(missing).toContain('data-dead="true"')
+  expect(missing).toContain('This passage changed or was removed')
+  expect(missing).toContain('Open the source')
+  const gone = render(`see [runbook](${HREF})`, [{ ...citation, status: 'missing', available: false }], link)
+  expect(gone).toContain('This source is unavailable')
+  expect(gone).not.toContain('Open the source')
+  const changed = render(`see [runbook](${HREF})`, [{ ...citation, status: 'changed' }], link)
+  expect(changed).not.toContain('data-popover')
+  expect(changed).toContain('data-drift="changed"')
+  expect(changed).toContain('title="ICD portal DR runbook v7 · #b12 · source changed since this was cited"')
+  const same = render(`see [runbook](${HREF})`, [{ ...citation, status: 'same' }], link)
+  expect(same).not.toContain('data-drift')
+  expect(same).not.toContain('data-popover')
 })

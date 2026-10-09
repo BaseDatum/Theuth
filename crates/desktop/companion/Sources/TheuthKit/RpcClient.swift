@@ -257,8 +257,87 @@ public extension RpcClient {
         let _: JSONValue = try await call("agent_remove", [.init(name), .init(note)])
     }
 
-    /// `send_input(session, text, [], null, null)` → the session id.
-    func sendInput(session: String, text: String) async throws -> String {
-        try await call("send_input", [.init(session), .init(text), .init([String]()), .init(String?.none), .init(String?.none)])
+    /// `send_input(session, text, files, delivery, id)` (api.rs:194-203) → the session id. `files` are image paths
+    /// the engine attaches (`screen_context`'s PNGs); `session == nil` lets the engine pick.
+    func sendInput(session: String?, text: String, files: [String], delivery: Delivery?, id: String?) async throws -> String {
+        try await call("send_input", [.init(session), .init(text), .init(files), .init(delivery), .init(id)])
     }
+
+    /// The files-less form every pre-149 caller uses.
+    func sendInput(session: String, text: String) async throws -> String {
+        try await sendInput(session: session, text: text, files: [], delivery: nil, id: nil)
+    }
+}
+
+// MARK: 149 — the calls the agents panel, the island and point-and-say make (api.rs order; positional)
+
+public extension RpcClient {
+    // agents panel (§3.2)
+    func listSessions() async throws -> [SessionSummary] { try await call("list_sessions") }
+
+    func sessionsStatus() async throws -> SessionsStatus { try await call("sessions_status") }
+
+    /// `cancel(session, scope)` (api.rs:255-256): `.tree` stops the children too; `nil` = the engine's default (root).
+    func cancel(session: String, scope: CancelScope?) async throws {
+        let _: JSONValue = try await call("cancel", [.init(session), .init(scope)])
+    }
+
+    /// `agent_pause(name, paused)` (api.rs:2088-2089).
+    func agentPause(name: String, paused: Bool) async throws {
+        let _: JSONValue = try await call("agent_pause", [.init(name), .init(paused)])
+    }
+
+    /// `steer(session, text, id, files, delivery)` (api.rs:218-226) → the input id.
+    func steer(session: String, text: String, id: String?, files: [String], delivery: Delivery?) async throws -> String {
+        try await call("steer", [.init(session), .init(text), .init(id), .init(files), .init(delivery)])
+    }
+
+    // point-and-say (§3.7)
+    /// `screen_context(req)` (api.rs:335-339): AX lines + the PNGs under the trail.
+    func screenContext(_ req: ScreenContextReq) async throws -> ScreenContextReply {
+        try await call("screen_context", [.init(req)])
+    }
+
+    /// `speak(session, text)` (api.rs:1467-1468) → the speech id; the sink is the engine host (Revision 1 row 10).
+    func speak(session: String, text: String) async throws -> String {
+        try await call("speak", [.init(session), .init(text)])
+    }
+
+    /// `stop_speaking(id)` (api.rs:1470-1471); `nil` stops whatever is speaking.
+    func stopSpeaking(id: String?) async throws {
+        let _: JSONValue = try await call("stop_speaking", [.init(id)])
+    }
+
+    /// `decision_mode(prefix)` (api.rs:1655-1656).
+    func decisionMode(prefix: String) async throws -> ModeInfo { try await call("decision_mode", [.init(prefix)]) }
+
+    // meeting (§3.6; api.rs:1558-1611)
+    func meetingPause() async throws { let _: JSONValue = try await call("meeting_pause") }
+
+    func meetingResume() async throws { let _: JSONValue = try await call("meeting_resume") }
+
+    func meetingStop() async throws { let _: JSONValue = try await call("meeting_stop") }
+
+    func meetingStatus() async throws -> MeetingStatus { try await call("meeting_status") }
+
+    func meetingPermissions() async throws -> MeetingPermissions { try await call("meeting_permissions") }
+
+    func meetingTap(topic: String) async throws { let _: JSONValue = try await call("meeting_tap", [.init(topic)]) }
+
+    func meetingDismiss(topic: String) async throws { let _: JSONValue = try await call("meeting_dismiss", [.init(topic)]) }
+
+    func meetingDeeper(brief: String) async throws { let _: JSONValue = try await call("meeting_deeper", [.init(brief)]) }
+
+    func meetingRequest(text: String) async throws { let _: JSONValue = try await call("meeting_request", [.init(text)]) }
+
+    func meetingPtt(held: Bool) async throws { let _: JSONValue = try await call("meeting_ptt", [.init(held)]) }
+
+    /// `meeting_cursor(brief)`: where the island says the user is reading; `nil` = none.
+    func meetingCursor(brief: String?) async throws { let _: JSONValue = try await call("meeting_cursor", [.init(brief)]) }
+
+    func meetingBriefs(id: String) async throws -> [Brief] { try await call("meeting_briefs", [.init(id)]) }
+
+    func meetingTopics() async throws -> [Topic] { try await call("meeting_topics") }
+
+    func meetingLive(id: String) async throws -> [Utterance] { try await call("meeting_live", [.init(id)]) }
 }

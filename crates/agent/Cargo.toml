@@ -59,6 +59,8 @@ a2a-types = { workspace = true }
 # registry, no approval); `url` parses the POST host rule.
 web = { workspace = true }
 url = { workspace = true }
+# 144 §10: the audio overview asks the `voice` actor for a two-voice dialogue clip (`SynthesizeDialogue`).
+voice = { workspace = true }
 
 [dev-dependencies]
 figment = { workspace = true }

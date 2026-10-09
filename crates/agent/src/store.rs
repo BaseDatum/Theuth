@@ -1161,6 +1161,19 @@ impl Store {
         Ok(())
     }
 
+    /// Set `sessions.kind` of an existing row (144 §9: a root created as a chat
+    /// becomes the `ask` session the moment the ask run claims it).
+    pub async fn set_kind(&self, id: SessionId, kind: SessionKind) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET kind = ? WHERE id = ?")
+            .bind(advisor::kind_str(kind))
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Pin (or unpin) a session: pinned rows sort first in `list_sessions`.
     pub async fn set_pinned(&self, id: SessionId, pinned: bool) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
@@ -2901,6 +2914,11 @@ impl Store {
                 .bind(&sid)
                 .execute(&mut *tx)
                 .await?;
+            // 144 §5.1 (E1 hand-off): the dial rows of a deleted thread go with it (no FK on the table).
+            sqlx::query("DELETE FROM session_context WHERE session = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
             durability::delete_journal_in(&mut tx, &sid).await?;
             endless::delete_endless_in(&mut tx, &sid).await?;
             sqlx::query("DELETE FROM sessions WHERE id = ?")
@@ -2988,19 +3006,40 @@ impl Store {
     /// "final answer" of the most recent turn. Vision notes are not user
     /// messages here: a maintenance note after a reply does not erase it.
     pub async fn last_turn_text(&self, id: SessionId) -> anyhow::Result<String> {
+        Ok(self.last_exchange(id).await?.1)
+    }
+
+    /// 149 E6: the session's last exchange — what the user last typed (the
+    /// clock stamp and attachment markers stripped; a markers-only input
+    /// names its first attachment) and the assistant text after it as
+    /// [`Self::last_turn_text`]. `(None, "")` for an empty session.
+    pub async fn last_exchange(&self, id: SessionId) -> anyhow::Result<(Option<String>, String)> {
         let mut conn = self.read.acquire().await?;
         let rows = rows_in(&mut conn, id, 0).await?;
-        let start = rows
+        let last_user = rows
             .iter()
-            .rposition(|r| r.message.role == ChatRole::User && !r.is_note())
-            .map_or(0, |i| i + 1);
-        Ok(rows[start..]
+            .rposition(|r| r.message.role == ChatRole::User && !r.is_note());
+        let request = last_user.and_then(|i| {
+            let text = text_of(&rows[i].message.content);
+            let p = crate::attach::parse(crate::clock::strip(&text));
+            let body = p.body.trim();
+            if body.is_empty() {
+                p.refs
+                    .into_iter()
+                    .map(|r| r.title)
+                    .find(|t| !t.trim().is_empty())
+            } else {
+                Some(body.to_owned())
+            }
+        });
+        let reply = rows[last_user.map_or(0, |i| i + 1)..]
             .iter()
             .filter(|r| r.message.role == ChatRole::Assistant)
             .map(|r| text_of(&r.message.content))
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
-            .join("\n"))
+            .join("\n");
+        Ok((request, reply))
     }
 
     /// Set the project label on the root above `session` (51 §3: a child call
@@ -3111,6 +3150,56 @@ impl Store {
             .into_iter()
             .map(|(n, c)| (n, u32::try_from(c).unwrap_or(u32::MAX)))
             .collect())
+    }
+
+    /// 144 §5.1 (E1): pin `item`'s dial level for `session` (`session_context`, owner-only, never captured).
+    pub async fn context_set(
+        &self,
+        session: SessionId,
+        item: &str,
+        kind: &str,
+        level: &str,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT INTO session_context (session, item, kind, level, hlc) VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(session, item) DO UPDATE SET kind = excluded.kind, level = excluded.level, \
+             hlc = excluded.hlc",
+        )
+        .bind(session.to_string())
+        .bind(item)
+        .bind(kind)
+        .bind(level)
+        .bind(chrono::Utc::now().timestamp_millis())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 144 §5.1 (E1): forget the pin — the item goes back to the default rule.
+    pub async fn context_clear(&self, session: SessionId, item: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM session_context WHERE session = ? AND item = ?")
+            .bind(session.to_string())
+            .bind(item)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 144 §5.1 (E1): every pinned `(item, kind, level)` of `session`.
+    pub async fn context_get(
+        &self,
+        session: SessionId,
+    ) -> anyhow::Result<Vec<(String, String, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT item, kind, level FROM session_context WHERE session = ? ORDER BY hlc, item",
+        )
+        .bind(session.to_string())
+        .fetch_all(&self.read)
+        .await?)
     }
 
     /// The style row of project `name`, if any (51 §3 as-built).
@@ -3929,6 +4018,33 @@ mod tests {
         assert!(!ObservedState::Unknown.is_terminal());
     }
 
+    /// 144 §9: `ask` is a stored kind; `set_kind` flips a chat root into it and the row reads back as such.
+    #[tokio::test]
+    async fn ask_kind_round_trips_through_the_row() {
+        assert_eq!(advisor::kind_str(SessionKind::Ask), "ask");
+        assert_eq!(advisor::kind_of("ask"), SessionKind::Ask);
+        assert_eq!(serde_json::to_string(&SessionKind::Ask).unwrap(), "\"ask\"");
+        let (store, id, _dir) = fresh().await;
+        assert_eq!(
+            store.session(id).await.unwrap().unwrap().kind,
+            SessionKind::Chat
+        );
+        store.set_kind(id, SessionKind::Ask).await.unwrap();
+        assert_eq!(
+            store.session(id).await.unwrap().unwrap().kind,
+            SessionKind::Ask
+        );
+        // Listed like a chat (only advisors are hidden).
+        assert!(
+            store
+                .list_sessions()
+                .await
+                .unwrap()
+                .iter()
+                .any(|s| s.id == id)
+        );
+    }
+
     #[tokio::test]
     async fn mark_observed_lost_touches_non_terminal_rows_only() {
         let (owned, root, _dir) = fresh().await;
@@ -4228,7 +4344,9 @@ mod tests {
         for m in [
             ChatMessage::user("earlier"),
             ChatMessage::assistant(MessageContent::from_text("stale")),
-            ChatMessage::user("task"),
+            ChatMessage::user(
+                "<time now=\"2026-01-01 00:00 +00:00\"/>\n[attached note n1 \"Groceries\"]\ntask",
+            ),
             ChatMessage::assistant(MessageContent::from_text("first")),
             ChatMessage::from(vec![ToolCall {
                 call_id: "c1".into(),
@@ -4242,6 +4360,11 @@ mod tests {
             store.append(id, &m).await.unwrap();
         }
         assert_eq!(store.last_turn_text(id).await.unwrap(), "first\nsecond");
+        let (request, reply) = store.last_exchange(id).await.unwrap();
+        assert_eq!(
+            (request.as_deref(), reply.as_str()),
+            (Some("task"), "first\nsecond")
+        );
         drop(store);
     }
 

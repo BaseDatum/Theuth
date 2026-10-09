@@ -78,3 +78,64 @@ async fn binding_is_root_metadata_and_chats_list_newest_first() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// 144 §5.1 (E1): migration 0045 applies; `session_context` rows set / overwrite / clear per session,
+/// the pins map clamps sessions and artifacts to `mention` and drops unreadable levels.
+#[tokio::test]
+async fn session_context_rows_round_trip_per_session() {
+    let (store, dir) = fresh().await;
+    let a = SessionId::new();
+    let b = SessionId::new();
+    assert!(store.context_get(a).await.unwrap().is_empty());
+    store
+        .context_set(a, "S1", "source", "summary")
+        .await
+        .unwrap();
+    store.context_set(a, "N1", "note", "off").await.unwrap();
+    store.context_set(b, "S1", "source", "full").await.unwrap();
+    // Two rows written in the same millisecond order by item; compare sorted.
+    let mut rows = store.context_get(a).await.unwrap();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            ("N1".to_owned(), "note".to_owned(), "off".to_owned()),
+            ("S1".to_owned(), "source".to_owned(), "summary".to_owned()),
+        ]
+    );
+    // Overwrite keeps one row per (session, item); the other session is untouched.
+    store.context_set(a, "S1", "source", "full").await.unwrap();
+    let rows = store.context_get(a).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.contains(&("S1".to_owned(), "source".to_owned(), "full".to_owned())));
+    assert_eq!(
+        store.context_get(b).await.unwrap(),
+        vec![("S1".to_owned(), "source".to_owned(), "full".to_owned())]
+    );
+    // Clear → back to the default rule for that item only.
+    store.context_clear(a, "S1").await.unwrap();
+    assert_eq!(
+        store.context_get(a).await.unwrap(),
+        vec![("N1".to_owned(), "note".to_owned(), "off".to_owned())]
+    );
+    // Deleting a session takes its dial rows with it; the other session keeps its own.
+    store
+        .create_session(a, "m", None, None, None)
+        .await
+        .unwrap();
+    store.delete_session(a).await.unwrap();
+    assert!(store.context_get(a).await.unwrap().is_empty());
+    assert_eq!(store.context_get(b).await.unwrap().len(), 1);
+    let pins = agent::notebook_context::pins_of(vec![
+        ("N1".into(), "note".into(), "off".into()),
+        ("C1".into(), "session".into(), "full".into()),
+        ("X".into(), "artifact".into(), "nope".into()),
+    ]);
+    assert_eq!(pins.get("N1"), Some(&agent::notebook_context::Level::Off));
+    assert_eq!(
+        pins.get("C1"),
+        Some(&agent::notebook_context::Level::Mention)
+    );
+    assert!(!pins.contains_key("X"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

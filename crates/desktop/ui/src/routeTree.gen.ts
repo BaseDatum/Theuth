@@ -26,6 +26,7 @@ import { Route as ToolsRouteImport } from './routes/tools'
 import { Route as AgentsIndexRouteImport } from './routes/agents.index'
 import { Route as AgentsNewRouteImport } from './routes/agents.new'
 import { Route as ArtifactsCallIdRouteImport } from './routes/artifacts.$callId'
+import { Route as AskSessionRouteImport } from './routes/ask_.$session'
 import { Route as AttentionIndexRouteImport } from './routes/attention.index'
 import { Route as AttentionIdRouteImport } from './routes/attention.$id'
 import { Route as AutoresearchSlugRouteImport } from './routes/autoresearch.$slug'
@@ -138,6 +139,11 @@ const ArtifactsCallIdRoute = ArtifactsCallIdRouteImport.update({
   id: '/$callId',
   path: '/$callId',
   getParentRoute: () => ArtifactsRoute,
+} as any)
+const AskSessionRoute = AskSessionRouteImport.update({
+  id: '/ask_/$session',
+  path: '/ask/$session',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const AttentionIndexRoute = AttentionIndexRouteImport.update({
   id: '/',
@@ -292,6 +298,7 @@ export interface FileRoutesByFullPath {
   '/tools': typeof ToolsRoute
   '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
+  '/ask/$session': typeof AskSessionRoute
   '/attention/$id': typeof AttentionIdRoute
   '/autoresearch/$slug': typeof AutoresearchSlugRoute
   '/c/$session': typeof CSessionRoute
@@ -337,6 +344,7 @@ export interface FileRoutesByTo {
   '/tools': typeof ToolsRoute
   '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
+  '/ask/$session': typeof AskSessionRoute
   '/attention/$id': typeof AttentionIdRoute
   '/autoresearch/$slug': typeof AutoresearchSlugRoute
   '/c/$session': typeof CSessionRoute
@@ -384,6 +392,7 @@ export interface FileRoutesById {
   '/tools': typeof ToolsRoute
   '/agents/new': typeof AgentsNewRoute
   '/artifacts/$callId': typeof ArtifactsCallIdRoute
+  '/ask_/$session': typeof AskSessionRoute
   '/attention/$id': typeof AttentionIdRoute
   '/autoresearch/$slug': typeof AutoresearchSlugRoute
   '/c/$session': typeof CSessionRoute
@@ -432,6 +441,7 @@ export interface FileRouteTypes {
     | '/tools'
     | '/agents/new'
     | '/artifacts/$callId'
+    | '/ask/$session'
     | '/attention/$id'
     | '/autoresearch/$slug'
     | '/c/$session'
@@ -477,6 +487,7 @@ export interface FileRouteTypes {
     | '/tools'
     | '/agents/new'
     | '/artifacts/$callId'
+    | '/ask/$session'
     | '/attention/$id'
     | '/autoresearch/$slug'
     | '/c/$session'
@@ -523,6 +534,7 @@ export interface FileRouteTypes {
     | '/tools'
     | '/agents/new'
     | '/artifacts/$callId'
+    | '/ask_/$session'
     | '/attention/$id'
     | '/autoresearch/$slug'
     | '/c/$session'
@@ -569,6 +581,7 @@ export interface RootRouteChildren {
   SecretsRoute: typeof SecretsRoute
   ToolsRoute: typeof ToolsRoute
   AgentsNewRoute: typeof AgentsNewRoute
+  AskSessionRoute: typeof AskSessionRoute
   CSessionRoute: typeof CSessionRoute
   MeetingsIdRoute: typeof MeetingsIdRoute
   MeetingsBriefsRoute: typeof MeetingsBriefsRoute
@@ -715,6 +728,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/artifacts/$callId'
       preLoaderRoute: typeof ArtifactsCallIdRouteImport
       parentRoute: typeof ArtifactsRoute
+    }
+    '/ask_/$session': {
+      id: '/ask_/$session'
+      path: '/ask/$session'
+      fullPath: '/ask/$session'
+      preLoaderRoute: typeof AskSessionRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/attention/': {
       id: '/attention/'
@@ -974,6 +994,7 @@ const rootRouteChildren: RootRouteChildren = {
   SecretsRoute: SecretsRoute,
   ToolsRoute: ToolsRoute,
   AgentsNewRoute: AgentsNewRoute,
+  AskSessionRoute: AskSessionRoute,
   CSessionRoute: CSessionRoute,
   MeetingsIdRoute: MeetingsIdRoute,
   MeetingsBriefsRoute: MeetingsBriefsRoute,

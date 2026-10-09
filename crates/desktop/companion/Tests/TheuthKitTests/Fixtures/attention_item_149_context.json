@@ -1,0 +1,24 @@
+{
+  "id": "ask:s-7:3",
+  "kind": "ask",
+  "title": "w3 asks",
+  "detail": null,
+  "at_ms": 1791448700000,
+  "task": "task-7",
+  "agent": "w3",
+  "session": "s-7",
+  "approval": null,
+  "decision": null,
+  "packet": null,
+  "ask": null,
+  "turn": 3,
+  "waiting_since_ms": 1791448700000,
+  "summary": null,
+  "next_steps": [],
+  "context": {
+    "request": "Rename the pricing helper and keep the tests green",
+    "last_reply": "Two call sites disagree on the rounding; which one is right?"
+  },
+  "priority": "high",
+  "rank": 17
+}

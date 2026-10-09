@@ -1,0 +1,197 @@
+<!doctype html><html><head><meta charset='utf-8'>
+<style>
+:root{--font-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;--font-mono:"SF Mono",ui-monospace,Menlo,monospace;
+--g:#12100eE8;--g2:#1c1915;--g3:#2a241c;--fg:#f1e9dc;--fg2:#c9b89a;--fg3:#9a8b72;--gold:#d08a3a;--gold2:#c47a2c;--ok:#4a8a6e;--info:#5b8f8a;--err:#c45a48;--blue:#3a7bd5;}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--font-sans);color:var(--foreground,#1a1612);font-size:14px;line-height:1.45}
+h2{font-size:15px;font-weight:600;margin:26px 0 4px;letter-spacing:.01em}
+h2 small{font-weight:400;color:var(--muted-foreground,#6b5e4f);margin-left:8px}
+p.lede{margin:0 0 10px;color:var(--muted-foreground,#6b5e4f);max-width:80ch}
+.screen{position:relative;width:1180px;height:640px;border-radius:14px;overflow:hidden;background:linear-gradient(180deg,#f4f2ee 0%,#e9e6e0 60%,#d9d5cd 100%);box-shadow:0 1px 0 #0001 inset;font-size:15px;color:var(--fg)}
+.screen.dark{background:linear-gradient(180deg,#2b2a28 0%,#1e1d1b 100%)}
+.menubar{position:absolute;left:0;right:0;top:0;height:28px;background:#ffffffb8;backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:flex-end;gap:14px;padding:0 14px;font-size:13px;color:#1a1612}
+.menubar .mb{display:flex;align-items:center;gap:6px;font-weight:600}
+.menubar .mb .cnt{color:var(--gold2)}
+.glass{position:absolute;background:var(--g);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-radius:28px;color:var(--fg);box-shadow:0 20px 50px #0006,0 0 0 1px #ffffff14 inset}
+/* rail pills */
+.rail{position:absolute;right:16px;top:70px;display:flex;flex-direction:column;gap:12px;align-items:center}
+.pill{background:var(--g);backdrop-filter:blur(20px);border-radius:999px;box-shadow:0 10px 30px #0005,0 0 0 1px #ffffff12 inset;display:flex;flex-direction:column;align-items:center;gap:12px;padding:12px 10px;color:var(--fg2)}
+.pill.ib{position:relative;width:52px;height:52px;justify-content:center;padding:0}
+.pill.ib .badge{position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;border-radius:10px;background:var(--gold);color:#12100e;font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center;padding:0 5px;box-shadow:0 0 0 2px #e9e6e0}
+.pill.ag{width:40px;padding:14px 0}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--ok);transition:transform .15s}
+.dot.big{transform:scale(1.7);box-shadow:0 0 0 4px #4a8a6e33}
+.dot.gold{background:var(--gold)}
+.spin{width:12px;height:12px;border-radius:50%;border:2.5px solid var(--info);border-right-color:transparent}
+.pill.act{width:52px;padding:14px 0}
+.glyph{width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:17px}
+.lvl{display:flex;gap:2px;align-items:center;height:18px}
+.lvl i{display:block;width:3px;border-radius:2px;background:var(--err)}
+.pill.more{width:52px;height:44px;justify-content:center;padding:0;letter-spacing:2px}
+/* panel chrome */
+.hd{display:flex;align-items:center;gap:10px;padding:22px 26px 0}
+.hd .name{font-size:22px;font-weight:700;letter-spacing:-.01em}
+.pos{display:flex;gap:5px;align-items:center;margin-left:8px}
+.pos i{display:block;width:7px;height:7px;border-radius:4px;background:#ffffff40}
+.pos i.cur{width:22px;background:var(--gold)}
+.sp{flex:1}
+.kb{display:inline-flex;align-items:center;gap:6px;background:#ffffff14;border-radius:999px;padding:5px 10px;font-size:13px;color:var(--fg2)}
+.kb k{font-family:var(--font-mono);font-size:11.5px;background:#ffffff1a;border-radius:6px;padding:1px 6px;color:var(--fg)}
+.st{display:flex;align-items:center;gap:8px;padding:12px 26px 0;color:var(--fg2);font-size:15px}
+.hi{width:20px;height:20px;border-radius:5px;background:#ffffff22;position:relative;display:inline-block}
+.hi:after{content:"";position:absolute;right:-4px;bottom:-4px;width:10px;height:10px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 2px #12100e}
+.hi.gold:after{background:var(--gold)}
+.bub{margin:14px 26px 0;background:#ffffff12;border-radius:20px;padding:16px 20px;font-size:17px;line-height:1.4}
+.bub.me{background:var(--blue);color:#fff;margin-left:180px;border-bottom-right-radius:8px}
+.q{margin:16px 26px 0;font-size:20px;font-weight:700}
+.opt{margin:10px 26px 0;background:#ffffff0f;border-radius:16px;padding:14px 16px;display:flex;align-items:center;gap:14px;font-size:17px}
+.opt .n{width:30px;height:30px;border-radius:9px;background:#ffffff18;display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:13px;color:var(--fg2)}
+.opt .arr{margin-left:auto;color:var(--fg3)}
+.opt .rec{color:var(--fg3);font-weight:400;margin-left:6px}
+.reply{margin:16px 26px 0;display:flex;gap:10px;align-items:center}
+.rb{background:#ffffff12;border-radius:16px;height:52px;display:flex;align-items:center;gap:10px;padding:0 14px;color:var(--fg2);font-size:16px}
+.rb.field{flex:1;color:var(--fg3)}
+.rb k,.cap k{font-family:var(--font-mono);font-size:11.5px;background:#ffffff1a;border-radius:6px;padding:2px 7px;color:var(--fg)}
+.div{height:1px;background:#ffffff14;margin:18px 26px 0}
+.nx{display:flex;align-items:center;gap:10px;padding:16px 26px 0;color:var(--fg2);font-size:16px}
+.nx .pl{display:inline-flex;align-items:center;gap:8px;border-radius:999px;padding:7px 12px;background:#ffffff12;color:var(--fg)}
+.nx .pl.kill{color:#e8836f}
+.nx .pl.disc{background:var(--fg);color:#12100e}
+.nx .pl k{font-family:var(--font-mono);font-size:11px;background:#ffffff22;border-radius:6px;padding:1px 6px}
+.nx .pl.disc k{background:#0000001a}
+/* agents panel */
+.grp{padding:18px 26px 0;color:var(--fg3);font-size:16px;display:flex;align-items:center;gap:8px}
+.ar{display:flex;align-items:center;gap:14px;margin:6px 14px 0;padding:10px 12px;border-radius:16px;font-size:18px}
+.ar.hov{background:#4a8a6e2e}
+.ar .nm{flex:1}
+.ar .ch{color:var(--fg3);font-size:14px;margin-left:-6px}
+.ar .ic{color:var(--fg3);font-size:16px;width:28px;text-align:center}
+.ar .hi{margin:0}
+/* empty */
+.emp{display:flex;gap:26px;align-items:flex-start;padding:28px 30px 34px}
+.emp .ib{font-size:48px;line-height:1;color:var(--fg)}
+.emp h3{margin:2px 0 8px;font-size:30px;font-weight:700;letter-spacing:-.01em}
+.emp p{margin:0;font-size:22px;color:var(--fg3);line-height:1.35}
+/* ask bar */
+.askbar{position:absolute;left:300px;top:250px;width:620px;height:84px;border-radius:30px;display:flex;align-items:center;gap:16px;padding:0 28px;font-size:24px}
+.askbar .mut{color:var(--fg3)}
+.askbar .micw{margin-left:auto;display:flex;gap:3px;align-items:center;height:28px}
+.askbar .micw i{display:block;width:4px;border-radius:2px;background:var(--err)}
+/* island */
+.notch{position:absolute;left:50%;top:0;transform:translateX(-50%);width:200px;height:34px;background:#000;border-radius:0 0 18px 18px}
+.isl{position:absolute;left:50%;transform:translateX(-50%);top:0;background:#000000F0;color:var(--fg);border-radius:0 0 26px 26px;box-shadow:0 14px 40px #0007;font-size:15px}
+.isl.closed{width:360px;height:40px;display:flex;align-items:center;gap:12px;padding:0 18px}
+.isl.open{width:560px;padding:44px 20px 18px}
+.isl .rec{width:10px;height:10px;border-radius:50%;background:var(--err);box-shadow:0 0 0 3px #c45a4833}
+.isl .t{font-variant-numeric:tabular-nums;color:var(--fg2)}
+.topic{background:#ffffff12;border-radius:14px;padding:10px 14px;margin-top:8px;display:flex;align-items:center;gap:10px}
+.topic .lb{font-weight:600}
+.topic .sm{color:var(--fg3);font-size:13px}
+.brief{background:#ffffff0c;border-radius:16px;padding:12px 14px;margin-top:10px;font-size:14px;color:var(--fg2)}
+.brief b{color:var(--fg)}
+.brief li{margin:4px 0}
+.free{position:absolute;left:40px;top:380px;width:420px;background:#000000F0;color:var(--fg);border-radius:22px;padding:14px 18px;box-shadow:0 14px 40px #0007;font-size:14px}
+.free .grab{height:4px;width:36px;border-radius:2px;background:#ffffff33;margin:0 auto 10px}
+.ptr{position:absolute;left:520px;top:300px;width:260px;height:150px}
+.say{position:absolute;left:600px;top:470px;background:var(--g);color:var(--fg);border-radius:999px;padding:10px 16px;display:flex;align-items:center;gap:10px;box-shadow:0 10px 30px #0005;font-size:15px}
+.wall{position:absolute;inset:28px 0 0 0;background:repeating-linear-gradient(0deg,#0000 0 29px,#0000000a 29px 30px),repeating-linear-gradient(90deg,#0000 0 29px,#0000000a 29px 30px)}
+.win{position:absolute;left:60px;top:60px;width:640px;height:420px;background:#fff;border-radius:12px;box-shadow:0 10px 30px #0003;overflow:hidden}
+.win .tb{height:30px;background:#ececea;display:flex;align-items:center;gap:6px;padding:0 10px}
+.win .tb i{width:11px;height:11px;border-radius:50%;background:#ddd}
+.win .body{padding:18px 22px;color:#333;font-size:14px;line-height:1.5}
+.win .body .hl{background:#fff3cd;padding:0 2px}
+</style>
+</head><body><h2>1 · Rail as separate pills + the empty Inbox <small>F1 — inbox pill with the gold count · agents pill · actions pill · more</small></h2><div class="screen"><div class="menubar"><span class="mb">⌸ <span class="cnt">●24</span></span><span>Wi-Fi</span><span>00:41</span></div>
+ <div class="glass" style="left:160px;top:200px;width:820px">
+  <div class="hd"><div class="name">Inbox</div><span class="sp"></span><span class="kb"><k>esc</k></span></div>
+  <div class="emp"><div class="ib">⌸</div><div><h3>Nothing needs you.</h3><p>Suspiciously quiet. Questions and finished work land here.</p></div></div>
+ </div><div class="rail">
+      <div class="pill ib"><span class="glyph">⌸</span><span class="badge">0</span></div>
+      <div class="pill ag"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="spin"></span><span class="dot"></span></div>
+      <div class="pill act"><span class="glyph">✎</span><span class="glyph">🎙</span><span class="glyph">▣</span></div>
+      <div class="pill more">···</div>
+    </div>
+</div><h2>2 · Agents panel grouped by host <small>F2 — local vs mesh engines; hovered row grows its dot in the rail too; per-row mic (talk to this agent) and ✕ (stop)</small></h2><div class="screen"><div class="menubar"><span class="mb">⌸ <span class="cnt">●24</span></span><span>Wi-Fi</span><span>00:41</span></div>
+ <div class="glass" style="left:470px;top:70px;width:560px;padding-bottom:16px">
+  <div class="hd"><div class="name">Agents</div><span class="sp"></span><span class="kb"><k>J</k><k>K</k></span><span class="kb">✕ <k>esc</k></span></div>
+  <div class="grp">this Mac</div>
+  <div class="ar"><span class="dot"></span><span class="ic">omp</span><span class="nm">w1-149-parity</span><span class="ic">🎙</span><span class="ic">✕</span></div>
+  <div class="ar hov"><span class="dot big"></span><span class="ic">omp</span><span class="nm">w3-149-island</span><span class="ch">⑂2</span><span class="ic">🎙</span><span class="ic">✕</span></div>
+  <div class="ar"><span class="spin"></span><span class="ic">oc</span><span class="nm">docs-149 writer</span><span class="ic">🎙</span><span class="ic">✕</span></div>
+  <div class="ar"><span class="dot gold"></span><span class="ic">th</span><span class="nm">theuth · desk</span><span class="ch">needs you</span><span class="ic">🎙</span><span class="ic">✕</span></div>
+  <div class="grp">build-B · on <span>🌐</span> windows</div>
+  <div class="ar"><span class="spin"></span><span class="ic">oc</span><span class="nm">134-W7 WinUI rail</span><span class="ic">🎙</span><span class="ic">✕</span></div>
+  <div class="ar"><span class="dot"></span><span class="ic">omp</span><span class="nm">134 verifier</span><span class="ic">🎙</span><span class="ic">✕</span></div>
+ </div><div class="rail">
+      <div class="pill ib"><span class="glyph">⌸</span><span class="badge">24</span></div>
+      <div class="pill ag"><span class="dot"></span><span class="dot big"></span><span class="dot"></span><span class="spin"></span><span class="dot"></span></div>
+      <div class="pill act"><span class="glyph">✎</span><span class="glyph">🎙</span><span class="glyph">▣</span></div>
+      <div class="pill more">···</div>
+    </div>
+</div><h2>3 · Finished card <small>F4 — header with position dots · J/K · ? · esc; status line; message; reply row P/R/V/⏎; Next steps with Stop agent X · Clear E</small></h2><div class="screen"><div class="menubar"><span class="mb">⌸ <span class="cnt">●24</span></span><span>Wi-Fi</span><span>00:41</span></div>
+ <div class="glass" style="left:300px;top:60px;width:720px;padding-bottom:22px">
+  <div class="hd"><div class="name">w3-149-island</div><span class="pos"><i></i><i></i><i class="cur"></i></span><span class="sp"></span><span class="kb">‹ <k>J</k></span><span class="kb"><k>K</k> ›</span><span class="kb"><k>?</k></span><span class="kb">✕ <k>esc</k></span></div>
+  <div class="st"><span class="hi"></span>Finished just now · omp</div>
+  <div class="bub">Island panel is in. Drag, snap-back and per-display position memory; 14 tests green.</div>
+  <div class="reply"><span class="rb">▣ <k>P</k></span><span class="rb field">Reply to w3-149-island <k>R</k></span><span class="rb">🎙 <k>V</k></span><span class="rb">↑ <k>⏎</k></span></div>
+  <div class="div"></div>
+  <div class="nx">Next steps<span class="sp"></span><span class="pl kill">Stop agent <k>X</k></span><span class="pl disc">Clear <k>E</k></span></div>
+  <div class="opt"><span class="n">1</span>Looks good — merge it<span class="arr">→</span></div>
+  <div class="opt"><span class="n">2</span>Show me the island on a screen without a notch<span class="arr">→</span></div>
+ </div><div class="rail">
+      <div class="pill ib"><span class="glyph">⌸</span><span class="badge">24</span></div>
+      <div class="pill ag"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="spin"></span><span class="dot"></span></div>
+      <div class="pill act"><span class="glyph">✎</span><span class="glyph">🎙</span><span class="glyph">▣</span></div>
+      <div class="pill more">···</div>
+    </div>
+</div><h2>4 · Ask card <small>F5 — the user's request and the agent's reply as context; the question; numbered options with (Recommended)</small></h2><div class="screen" style="height:720px"><div class="menubar"><span class="mb">⌸ <span class="cnt">●24</span></span><span>Wi-Fi</span><span>00:41</span></div>
+ <div class="glass" style="left:300px;top:40px;width:720px;padding-bottom:22px">
+  <div class="hd"><div class="name">w1-149-parity</div><span class="pos"><i class="cur"></i><i></i><i></i></span><span class="sp"></span><span class="kb">‹ <k>J</k></span><span class="kb"><k>K</k> ›</span><span class="kb"><k>?</k></span><span class="kb">✕ <k>esc</k></span></div>
+  <div class="st"><span class="hi gold"></span>Waiting for your answer · 2 min · omp</div>
+  <div class="bub me">Bring the rail to One's pill layout</div>
+  <div class="bub">Three layouts are drafted. One question before I build.</div>
+  <div class="q">Which spacing between the rail pills?</div>
+  <div class="opt"><span class="n">1</span>12 pt gaps, 52 pt pills<span class="rec">(Recommended)</span><span class="arr">→</span></div>
+  <div class="opt"><span class="n">2</span>8 pt gaps, 44 pt pills<span class="arr">→</span></div>
+  <div class="opt"><span class="n">3</span>One continuous capsule as today<span class="arr">→</span></div>
+  <div class="reply"><span class="rb">▣ <k>P</k></span><span class="rb field">Type your answer… <k>R</k></span><span class="rb">🎙 <k>V</k></span><span class="rb">↑ <k>⏎</k></span></div>
+  <div class="nx"><span class="sp"></span><span class="pl disc">Clear <k>E</k></span></div>
+ </div><div class="rail">
+      <div class="pill ib"><span class="glyph">⌸</span><span class="badge">24</span></div>
+      <div class="pill ag"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="spin"></span><span class="dot"></span></div>
+      <div class="pill act"><span class="glyph">✎</span><span class="glyph">🎙</span><span class="glyph">▣</span></div>
+      <div class="pill more">···</div>
+    </div>
+</div><h2>5 · Ask bar with live dictation <small>F3 — the open partial muted; level bars in the bar and in the rail's mic</small></h2><div class="screen"><div class="menubar"><span class="mb">⌸ <span class="cnt">●24</span></span><span>Wi-Fi</span><span>00:41</span></div>
+ <div class="glass askbar">Make the orders page <span class="mut">faster and ca</span><span class="micw"><i style="height:8px"></i><i style="height:22px"></i><i style="height:14px"></i><i style="height:26px"></i><i style="height:10px"></i></span></div>
+ <div style="position:absolute;left:300px;top:346px;color:#6b5e4f;font-size:14px">hold ⌃⇧Space to talk · release → sends to theuth in 3 s · ⎋ keeps editing · theuth routes it</div>
+ <div class="rail">
+      <div class="pill ib"><span class="glyph">⌸</span><span class="badge">24</span></div>
+      <div class="pill ag"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="spin"></span><span class="dot"></span></div>
+      <div class="pill act"><span class="glyph">✎</span><span class="lvl"><i style="height:6px"></i><i style="height:14px"></i><i style="height:18px"></i><i style="height:10px"></i></span><span class="glyph">▣</span></div>
+      <div class="pill more">···</div>
+    </div>
+</div><h2>6 · Native island <small>closed pill hugging the notch · open with topics + brief · dragged free with position memory (double-click snaps back)</small></h2><div class="screen dark" style="height:560px">
+ <div class="notch"></div>
+ <div class="isl closed"><span class="rec"></span><span>Standup · Speaker 2</span><span class="sp"></span><span class="t">12:31</span><span style="color:var(--fg3)">2 topics</span></div>
+ <div class="isl open" style="left:50%;top:0;transform:translateX(-50%) translateX(0);margin-top:0;display:none"></div>
+ <div class="glass" style="left:310px;top:60px;width:560px;border-radius:0 0 26px 26px;padding:14px 20px 18px;background:#000000F0">
+   <div style="display:flex;align-items:center;gap:12px"><span class="rec"></span><b>Standup</b><span class="t" style="color:var(--fg2)">12:31</span><span class="sp"></span><span class="kb">mute <k>M</k></span><span class="kb">stop <k>⌃⇧M</k></span></div>
+   <div class="topic"><span class="lb">SRE-3268 hold at zero</span><span class="sm">· tap for the brief</span><span class="sp"></span><span class="sm">dismiss <k style="font-family:var(--font-mono);font-size:11px;background:#ffffff1a;border-radius:6px;padding:1px 6px">E</k></span></div>
+   <div class="brief"><b>DR task E.4 — hold every west workload at zero</b><ul style="margin:6px 0 0 16px;padding:0"><li>38 repo branches sre-3268-dr-hold-at-zero + 7 patch files on MJ-26xx PRs</li><li>kustomize half of done_when met; in Sky's review</li><li>deeper <k style="font-family:var(--font-mono);font-size:11px;background:#ffffff1a;border-radius:6px;padding:1px 6px">D</k></li></ul></div>
+   <div class="topic"><span class="lb">Flipt DR</span><span class="sm">· prepared, not deployed</span></div>
+ </div>
+ <div class="free"><div class="grab"></div><div style="display:flex;align-items:center;gap:10px"><span class="rec"></span><b>Standup</b><span class="t" style="color:var(--fg2)">12:31</span><span class="sp"></span><span style="color:var(--fg3)">dragged to a corner · position remembered per display · double-click snaps back to the notch</span></div></div>
+</div><h2>7 · Native point-and-say <small>⌃S held: pointer path + ring drawn by the companion, the spoken question goes to theuth's desk with the screen context</small></h2><div class="screen">
+ <div class="menubar"><span class="mb">⌸ <span class="cnt">●3</span></span><span>00:41</span></div>
+ <div class="wall"></div>
+ <div class="win"><div class="tb"><i></i><i></i><i></i></div><div class="body"><p><b>release-s3.sh</b></p><p>gate 5: objects are immutable — <span class="hl">add-arch mode (THEUTH_RELEASE_ADD=auto)</span> publishes a platform after the version went live…</p><p>…</p></div></div>
+ <svg class="ptr" viewBox="0 0 260 150"><path d="M10 120 C 60 40, 120 30, 170 60" fill="none" stroke="#4a8a6e" stroke-width="4" stroke-linecap="round"/><circle cx="185" cy="66" r="22" fill="none" stroke="#4a8a6e" stroke-width="4"/></svg>
+ <div class="say"><span class="rec"></span>“what does this gate actually check?” <span style="color:var(--fg3)">· ⌃S held · theuth’s desk</span></div>
+ <div class="rail">
+      <div class="pill ib"><span class="glyph">⌸</span><span class="badge">3</span></div>
+      <div class="pill ag"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="spin"></span><span class="dot"></span></div>
+      <div class="pill act"><span class="glyph">✎</span><span class="lvl"><i style="height:6px"></i><i style="height:14px"></i><i style="height:18px"></i><i style="height:10px"></i></span><span class="glyph">▣</span></div>
+      <div class="pill more">···</div>
+    </div>
+</div></body></html>

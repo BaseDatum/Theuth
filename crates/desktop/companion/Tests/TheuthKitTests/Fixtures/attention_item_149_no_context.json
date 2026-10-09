@@ -1,0 +1,11 @@
+{
+  "id": "decision:dec-9",
+  "kind": "decision",
+  "title": "Pick a rounding rule",
+  "at_ms": 1791448600000,
+  "task": "task-9",
+  "packet": "decision:dec-9",
+  "context": null,
+  "priority": null,
+  "rank": 5
+}

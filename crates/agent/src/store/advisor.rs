@@ -20,6 +20,7 @@ pub(super) fn kind_str(kind: SessionKind) -> &'static str {
         SessionKind::Chat => "chat",
         SessionKind::Advisor => "advisor",
         SessionKind::Observed => "observed",
+        SessionKind::Ask => "ask",
     }
 }
 
@@ -28,6 +29,7 @@ pub(super) fn kind_of(raw: &str) -> SessionKind {
     match raw {
         "advisor" => SessionKind::Advisor,
         "observed" => SessionKind::Observed,
+        "ask" => SessionKind::Ask,
         _ => SessionKind::Chat,
     }
 }

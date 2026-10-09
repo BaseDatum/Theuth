@@ -124,6 +124,15 @@ public sealed record AttentionItem
     [JsonConverter(typeof(NullAsEmptyListConverter<string>))]
     public ValueList<string> NextSteps { get; init; } = new();
 
+    /// <summary>149 E6: the item's conversation (<c>request</c> / <c>last_reply</c>); null on engines before W0 — see Core <c>AttentionContext</c>.</summary>
+    public ItemContext? Context { get; init; }
+
+    /// <summary>149 C: the item's priority word (<c>low</c> · <c>normal</c> · <c>high</c> · …; kept verbatim) — null when the engine has none.</summary>
+    public string? Priority { get; init; }
+
+    /// <summary>149 C: the engine's rank; 5 when absent (the value for an item without a priority).</summary>
+    public uint Rank { get; init; } = 5;
+
     /// <summary>When the wait began: E2's <c>waiting_since_ms</c>, else <c>at_ms</c>.</summary>
     [JsonIgnore]
     public DateTimeOffset WaitingSince => DateTimeOffset.FromUnixTimeMilliseconds((long)(WaitingSinceMs ?? AtMs));
@@ -462,6 +471,9 @@ public sealed record Packet
     public Recommendation? Recommendation { get; init; }
     public string? To { get; init; }
 
+    /// <summary>149 C: what goes wrong if the recommendation is wrong (<c>if_wrong</c>); the card's last line.</summary>
+    public string? IfWrong { get; init; }
+
     /// <summary>The pre-pick: the forwarding manager's <c>recommendation.option</c> wins over <c>recommended</c> (103 F2).</summary>
     [JsonIgnore]
     public int? PreferredOption => Recommendation?.Option is uint o ? (int)o : Recommended is uint r ? (int)r : null;
@@ -512,6 +524,28 @@ public sealed record WireEvent(string Type, object? Payload)
         ["TurnFinished"] = typeof(TurnFinished),
         ["AttentionChanged"] = typeof(AttentionChanged),
         ["Lagged"] = typeof(Lagged),
+        // 149 WW1: the agents panel, the island and the voice key read these (every field optional: never throws).
+        ["SubagentSpawned"] = typeof(SubagentSpawned),
+        ["ActivityAppended"] = typeof(ActivityAppended),
+        ["DictationStarted"] = typeof(DictationEvent),
+        ["DictationLevel"] = typeof(DictationEvent),
+        ["DictationText"] = typeof(DictationEvent),
+        ["DictationFinished"] = typeof(DictationEvent),
+        ["Started"] = typeof(MeetingEvent),
+        ["State"] = typeof(MeetingEvent),
+        ["Level"] = typeof(MeetingEvent),
+        ["Utterance"] = typeof(MeetingEvent),
+        ["TopicAdded"] = typeof(MeetingEvent),
+        ["TopicRemoved"] = typeof(MeetingEvent),
+        ["Brief"] = typeof(MeetingEvent),
+        ["Listening"] = typeof(MeetingEvent),
+        ["ApprovalWaiting"] = typeof(MeetingEvent),
+        ["PostProgress"] = typeof(MeetingEvent),
+        ["ReviewReady"] = typeof(MeetingEvent),
+        ["Summarized"] = typeof(MeetingEvent),
+        ["Deleted"] = typeof(MeetingEvent),
+        ["OracleDeciding"] = typeof(MeetingEvent),
+        ["OracleDecision"] = typeof(MeetingEvent),
     };
 
     /// <summary>Decodes one stream item; throws when it has no string <c>type</c> or a typed kind does not decode.</summary>

@@ -111,7 +111,8 @@ public struct AskDictation: Equatable, Sendable {
     public private(set) var utterances: [Utterance] = []
     /// The last `DictationLevel` packet, 0–1, oldest first.
     public private(set) var levels: [Float] = []
-    /// `already dictating` → "dictating elsewhere"; a model error; a finish with `Error`.
+    /// `already dictating` → "dictating elsewhere"; `talking` (a meeting holds the mic, 149 §3.5) → "Meeting running — use the
+    /// island to ask"; a model error; a finish with `Error`.
     public private(set) var error: String?
     private var typedWins = false
 
@@ -141,7 +142,8 @@ public struct AskDictation: Equatable, Sendable {
             return false
         case .startFailed(let why):
             phase = .idle
-            error = why.contains("already dictating") ? "dictating elsewhere" : why
+            error = why.contains("already dictating") ? "dictating elsewhere"
+                : why.contains("talking") ? "Meeting running — use the island to ask" : why
             return false
         case .text(let id, let i, let text, let final):
             guard id == self.id else { return false }

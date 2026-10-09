@@ -94,3 +94,78 @@ enum Settings {
     /// `"right"` (default) or `"left"`.
     static var railSide: String { UserDefaults.standard.string(forKey: "railSide") ?? "right" }
 }
+
+// MARK: 149 W1 — the visual language (§3.9)
+
+/// The type scale (§3.9): headline 24 · question 17 · body 15 · meta 12.5 · caps 10.5.
+enum Type {
+    static let headline = Font.system(size: 24, weight: .semibold)
+    static let question = Font.system(size: 17, weight: .semibold)
+    static let body = Font.system(size: 15)
+    static let meta = Font.system(size: 12.5)
+    static let caps = Font.system(size: 10.5, weight: .medium)
+    /// Key caps and counts.
+    static let mono = Font.system(size: 10.5, design: .monospaced)
+    /// Radii: pill capsules 26, the Ask bar 28, cards 24, option rows 10, key caps 4.
+    static let pillRadius: CGFloat = 26
+    static let askBarRadius: CGFloat = 28
+    static let cardRadius: CGFloat = 24
+    static let optionRadius: CGFloat = 10
+    static let capRadius: CGFloat = 4
+    /// Dark-first glass: the rail, the panels and the Ask bar force `.darkAqua`; Settings and the legend follow the system.
+    static let dark = NSAppearance(named: .darkAqua)
+    /// `#4a8a6e` — the trail/ring colour `screen_context` is told about (D13).
+    static let malachiteHex = "#4a8a6e"
+}
+
+/// Carnelian level bars from `DictationLevel.levels` (D8): one bar per band, newest right, 20 ms per frame as 54 §8's
+/// meter. Replaces the mic glyph in the Ask bar and the rail's actions pill while a dictation records.
+struct LevelBars: View {
+    var levels: [Float]
+    var height: CGFloat = 14
+    var barWidth: CGFloat = 2
+    var spacing: CGFloat = 1.5
+
+    var body: some View {
+        HStack(alignment: .center, spacing: spacing) {
+            ForEach(levels.indices, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 1).fill(Color.carnelian)
+                    .frame(width: barWidth, height: max(2, CGFloat(min(1, max(0, levels[i]))) * height))
+            }
+        }
+        .frame(height: height)
+        .animation(.linear(duration: 0.02), value: levels)
+        .accessibilityLabel("Listening")
+    }
+}
+
+/// 149 W1 probes (§10): `--probe-rail N` · `--probe-agents N` · `--probe-panel <finished|ask|approval|review|empty>`;
+/// every one `--shareable`, seeded fixtures in place of the engine, never acting; log `/tmp/149-W1-<probe>.log`.
+extension Flags {
+    static let probeRail: TimeInterval? = {
+        guard let i = args.firstIndex(of: "--probe-rail"), i + 1 < args.count else { return nil }
+        return TimeInterval(args[i + 1])
+    }()
+    static let probeAgents: TimeInterval? = {
+        guard let i = args.firstIndex(of: "--probe-agents"), i + 1 < args.count else { return nil }
+        return TimeInterval(args[i + 1])
+    }()
+    static let probePanel: String? = {
+        guard let i = args.firstIndex(of: "--probe-panel"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }()
+    static var w1Probe: Bool { probeRail != nil || probeAgents != nil || probePanel != nil }
+    static var w1ProbeName: String? { probeRail != nil ? "rail" : probeAgents != nil ? "agents" : probePanel != nil ? "panel" : nil }
+}
+
+/// stderr plus `/tmp/149-W1-<probe>.log` during a W1 probe.
+enum W1Log {
+    static func write(_ s: String) {
+        Log.write(s)
+        guard let name = Flags.w1ProbeName else { return }
+        let file = URL(fileURLWithPath: "/tmp/149-W1-\(name).log")
+        let line = "[companion \(Date()) pid \(getpid())] \(s)\n"
+        if let h = try? FileHandle(forWritingTo: file) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+        else { try? Data(line.utf8).write(to: file) }
+    }
+}

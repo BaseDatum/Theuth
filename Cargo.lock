@@ -322,6 +322,7 @@ dependencies = [
  "ts-rs",
  "url",
  "uuid",
+ "voice",
  "web",
  "wiremock",
 ]
@@ -3609,6 +3610,7 @@ dependencies = [
  "tools",
  "tracing",
  "ts-rs",
+ "windows 0.62.2",
  "xcap",
 ]
 
@@ -5095,6 +5097,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "codeindex",
  "decision",
  "figment",

@@ -143,4 +143,119 @@ struct FixtureTests {
         #expect(try EngineLocation.discover(dataDir: dir).url == URL(string: "ws://127.0.0.1:49431/")!)
         #expect(EngineLocation.dataDir(env: ["THEUTH_DATA_DIR": "/tmp/x"]).path == "/tmp/x")
     }
+
+    // MARK: 149 (design 149 §5.1 row 1; fixtures derived from the ts-rs bindings / the Rust structs)
+
+    @Test func attentionItemContextPriorityRank() throws {
+        let with = try decode(AttentionItem.self, "attention_item_149_context")
+        #expect(with.context == ItemContext(request: "Rename the pricing helper and keep the tests green",
+                                            lastReply: "Two call sites disagree on the rounding; which one is right?"))
+        #expect(with.priority == .high)
+        #expect(with.rank == 17)
+        let without = try decode(AttentionItem.self, "attention_item_149_no_context")
+        #expect(without.context == nil)
+        #expect(without.priority == nil)
+        #expect(without.rank == 5)
+        // Pre-149 fixture: absent `rank` takes the engine's no-priority value.
+        #expect(try decode([AttentionItem].self, "attention_list")[0].rank == 5)
+    }
+
+    @Test func packetIfWrong() throws {
+        let p = try decode(Packet.self, "packet_149_if_wrong")
+        #expect(p.ifWrong?.hasPrefix("Invoices and the ledger drift") == true)
+        #expect(try decode(Packet.self, "packet_decision").ifWrong == nil)
+    }
+
+    @Test func sessionsAndStatus() throws {
+        let rows = try decode([SessionSummary].self, "list_sessions_149")
+        #expect(rows.map(\.running) == [true, false, false])
+        #expect(rows.map(\.owner) == ["", "engine-studio", ""])
+        #expect(rows[0].cwd == "/Users/sky/Develop/theuth")
+        #expect(rows[0].project == "theuth")
+        #expect(rows[0].name == "w3")
+        #expect(rows[1].title == "")
+        #expect(rows[1].parent == "s-7")
+        #expect(rows[1].desk == "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e02")
+        #expect(rows[2].archived, "pre-149 row shape: the defaults fill in")
+        let status = try decode(SessionsStatus.self, "sessions_status_149")
+        #expect(status.here == 2 && status.elsewhere == 1 && status.engine == "engine-mbp")
+    }
+
+    @Test func meetingStatusInEveryShape() throws {
+        let live = try decode(MeetingStatus.self, "meeting_status_149")
+        #expect(live.state == .recording && live.state.isLive)
+        #expect(live.degraded == [.micNoAec, .sttDown(.system)])
+        #expect(live.topics.map(\.label) == ["quarterly numbers", "launch date"])
+        #expect(live.topics[0].source == .cache && live.topics[1].source == nil)
+        #expect(live.cursor == "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e31")
+        #expect(live.supported == .partial("no process tap on this host"))
+        let idle = try decode(MeetingStatus.self, "meeting_status_149_idle")
+        #expect(idle.state == .idle && !idle.state.isLive && idle.meeting == nil && idle.supported == .full)
+        let post = try decode(MeetingStatus.self, "meeting_status_149_post")
+        #expect(post.state == .post(.diarizing))
+        #expect(post.degraded == [.permissionDenied("AudioCapture")])
+        #expect(post.supported == nil)
+        // The externally tagged state round-trips.
+        let enc = TheuthJSON.encoder
+        #expect(String(decoding: try enc.encode(MeetingState.post(.aligning)), as: UTF8.self) == #"{"Post":"Aligning"}"#)
+        #expect(String(decoding: try enc.encode(MeetingState.paused), as: UTF8.self) == #""Paused""#)
+    }
+
+    @Test func meetingLists() throws {
+        let briefs = try decode([Brief].self, "meeting_briefs_149")
+        #expect(briefs[0].bullets.count == 2 && briefs[0].source == .cache && briefs[0].cached == briefs[0].id)
+        #expect(briefs[1].parent == briefs[0].id && briefs[1].topic == nil && briefs[1].source == .request)
+        let lines = try decode([Utterance].self, "meeting_live_149")
+        #expect(lines.map(\.track) == [.mic, .system, .mic])
+        #expect(lines[1].speaker == "s2" && lines[0].speaker == nil)
+        #expect(lines[2].request)
+        #expect(try decode([Topic].self, "meeting_topics_149").count == 2)
+        let perms = try decode(MeetingPermissions.self, "meeting_permissions_149")
+        #expect(perms.microphone == .granted && perms.audioCapture == .notDetermined)
+    }
+
+    @Test func meetingEventsEveryVariant() throws {
+        let items = try JSONSerialization.jsonObject(with: fixture("meeting_events_149")) as! [Any]
+        let events = try items.map { try MeetingEvent.decode(try JSONSerialization.data(withJSONObject: $0)) }
+        #expect(events.count == 16 && events.allSatisfy { $0 != nil })
+        let m = "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10"
+        guard case .started(m, "s-meeting-1", let process, "2026-10-09T00:45:00Z") = events[0] else { Issue.record("Started"); return }
+        #expect(process.name == "zoom.us" && process.bundleId == "us.zoom.xos")
+        #expect(events[1] == .state(meeting: m, state: .recording, degraded: [.micNoAec]))
+        #expect(events[2] == .level(Level(meeting: m, micRms: 0.12, systemRms: 0.4)))
+        guard case .utterance(m, let partial, false) = events[3] else { Issue.record("partial"); return }
+        #expect(partial.text == "Revenue is up" && partial.speaker == nil)
+        guard case .utterance(m, let closed, true) = events[4] else { Issue.record("final"); return }
+        #expect(closed.speaker == "s2" && closed.t0Ms == 2500)
+        guard case .topicAdded(m, let topic) = events[5] else { Issue.record("TopicAdded"); return }
+        #expect(topic.label == "quarterly numbers" && topic.source == .cache)
+        #expect(events[6] == .topicRemoved(meeting: m, topic: topic.id, why: .viewed))
+        guard case .brief(m, let brief) = events[7] else { Issue.record("Brief"); return }
+        #expect(brief.title == "Launch plan" && brief.source == .request)
+        #expect(events[8] == .listening(meeting: m, held: true))
+        #expect(events[9] == .approvalWaiting(meeting: m, waiting: true))
+        #expect(events[10] == .postProgress(meeting: m, stage: .transcribing, pct: 40))
+        #expect(events[11] == .reviewReady(meeting: m))
+        #expect(events[12] == .summarized(meeting: m, title: "Q3 review"))
+        #expect(events[13] == .deleted(meeting: m))
+        #expect(events[14] == .oracleDeciding(meeting: m, batchId: "00:12:31"))
+        #expect(events[15] == .oracleDecision(meeting: m, decision: OracleDecision(batchId: "00:12:31", family: "numbers")))
+        // Not a meeting item: nil, so `WireEvent.decode` keeps owning it.
+        #expect(try MeetingEvent.decode(fixture("turn_finished")) == nil)
+        // A meeting item missing a field is an error, not a guess.
+        #expect(throws: (any Error).self) { try MeetingEvent.decode(Data(#"{"type":"Listening","meeting":"m"}"#.utf8)) }
+    }
+
+    @Test func pointAndDecisionShapes() throws {
+        let reply = try decode(ScreenContextReply.self, "screen_context_reply_149")
+        #expect(reply.lines.count == 2 && reply.files.count == 1)
+        let mode = try decode(ModeInfo.self, "decision_mode_149")
+        #expect(mode.mode == .shadow && mode.effective == .off && !mode.installed && mode.budgetMs == 1500)
+        // The request encodes with the engine's snake_case keys and the pointer's `pen`.
+        let req = ScreenContextReq(samples: [PointerSample(tMs: 0, x: 10, y: 20)], color: "malachite", sinceMs: 1_791_448_800_000, accessibility: true)
+        #expect(String(decoding: try TheuthJSON.encoder.encode(req), as: UTF8.self)
+                == #"{"accessibility":true,"color":"malachite","samples":[{"pen":true,"t_ms":0,"x":10,"y":20}],"since_ms":1791448800000}"#)
+        #expect(String(decoding: try TheuthJSON.encoder.encode([AnyEncodable("s"), AnyEncodable(CancelScope.tree)]), as: UTF8.self) == #"["s","tree"]"#)
+        #expect(String(decoding: try TheuthJSON.encoder.encode([AnyEncodable(Delivery.nextTurn), AnyEncodable(Delivery?.none)]), as: UTF8.self) == #"["next_turn",null]"#)
+    }
 }
