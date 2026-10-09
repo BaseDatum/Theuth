@@ -1118,3 +1118,99 @@ Rows marked ★ are new in 153; 149 §8's rows are repeated so the table is whol
   voice key's chord for the new rows and vice versa (`KeyBindings.swift:318-335`).
 - The Tauri shell's Settings › Shortcuts (`UI/lib/shortcuts.ts:50-54`) gains no new rows: dictate-anywhere and command exist only with a
   companion (D1 lives there); the `voice-key` row's "read-only while a companion is alive" rule (149 §8) is unchanged.
+
+## 16. Waves, ownership, proof list, must-not-regress
+
+Branch `integrate/153` off main once this design lands; each wave a worktree off it; machine rules as 149 §11 (one build at a time under the
+shared lock, separate target dirs, no model-loading test while Sky is at the keyboard, `docs/design/149-companion-native.md:1019-1024`).
+**PIN rule** per wave: the first commit is *types + a no-op handler* (every new field `serde(default)`, every new RPC answering `Ok(empty)`,
+bindings exported, fixtures pinned) and is PINned to the integration branch the same hour so sibling waves compile against it; behaviour
+follows in later commits; a wave lands on main only feature-complete (149 D24).
+
+| Wave | Scope | Owner crate set / files (§14.6) | Windows twin |
+|---|---|---|---|
+| **A engine** | §4 shape, §5 dictionary + packaging, §7 end commands, §8.1–8.4 + 8.7 capture/timings, §6.5 history store + §6.1–6.3 learn (engine side), §9.2–9.3 polish model/chain/RPC, §14 types | `crates/voice`, `crates/runtime` (`CallKind`), `crates/agent` (role + setter), `crates/rpc`, bindings | none (engine is one `t.exe`) |
+| **B surfaces** | shaped text + "send it" + suggestion card + history/Voice settings tab in the Composer, TUI, companion fields, phone; polish opt-in per destination; `dictation_correction` at send | `crates/desktop/ui`, `crates/tui`, `COMP/Companion/{AskBar,Voice,Settings}`, `COMP/CompanionCore/AskVoice.swift` | `WIN/…/AskBar`, `Voice/RowTalk.cs`, `AskVoice.cs`, Settings |
+| **C companion** | §10 command mode (+ §11 tools + skill), §12 one AnswerCard + state honesty + pointer screen + Automatic + modifier-only keys, §8.5 mic at key-down, §15 keys | `COMP/Companion/PointAndSay/*`, `COMP/CompanionCore/{PointMachine,KeyBindings,SpokenApproval,CommandCard}.swift`, `crates/computer/src/native.rs`, `skills/native-apps` | `PointController.cs`, `PointMachine.cs`, `KeyBindings.cs`, `Hotkeys.cs`, `AnswerCardWindow.cs` |
+| **D any-app** | §13 assessment, lease, verification, failure card, rewrite, app profiles, §8.6 duck/pause; §6.6 stays optional after D | `COMP/Companion/AnyApp/*`, `COMP/CompanionCore/{DeliveryAssessment,ClipboardLease,PasteVerifier}.swift` | `WIN/…/AnyApp/*.cs`, Core twins |
+A → B and A → C may run in parallel after A's PIN; C waits for `fix/149-island` (§2.3); D after C's card lands (its failure card and
+rewrite panel reuse it).
+
+### 16.1 Proof list — P probe · A assertion · T test (each row is a gate for its wave)
+| # | Wave | Kind | What proves it |
+|---|---|---|---|
+| 1 | A | T | `shape::examples_table_rows_1_to_35` green (§4.3) |
+| 2 | A | T | `shape::shape_is_total_over_fuzzed_utf8` 10 k cases, no panic |
+| 3 | A | T | `dictionary::packaged_loads_and_hashes` — the data file's sha256 equals `dictionary.json`'s record (§5.2) |
+| 4 | A | T | `dictionary::match_thresholds` — known 0.70 / new 0.85 / negative veto / self-expansion guard (§5.4) |
+| 5 | A | T | `end::*` six tests + `dictation::send_it_settle_then_silence_stops` (§7.5) |
+| 6 | A | T | `dictation::device_lost_rearms_within_5s` — synthetic mic feed sends `Err("device lost")`, a second feed opens, `DictationDevice { Changed }` published, no `Finished` |
+| 7 | A | T | `dictation::silent_device_rejected_in_480ms` and `readiness_gate_2s` |
+| 8 | A | T | `dictation::timings_recorded_with_synthetic_feed` (§8.7) |
+| 9 | A | T | `history::budget_evicts_audio_first_then_rows`; `learn::candidates_single_word_non_inflection`; `learn::due_after_2_in_7_days` |
+| 10 | A | A | `cargo test -p voice -p agent -p rpc`, `cargo clippy -p voice`, bindings diff shows only the §14.5 files |
+| 11 | A | P | `t --headless` + the existing RPC harness: `dictation_start(16000, {surface: "tui"})` with a synthetic tone → events carry `shaped`; `dictation_start(16000, null)` unchanged |
+| 12 | B | T | `lib/dictation.test.ts`: `applyEvent` stores `shaped`; `splice` uses it; "send it" → `submit` once (`Composer.test.ts`) |
+| 13 | B | T | `crates/tui` splice tests over `shaped`; Swift `AskVoiceMachineTests.sendItSkipsTheHold`; C# twin |
+| 14 | B | P | Composer live: say "ship it send it" → message sent with "ship it"; say "foo scratch that bar" → "bar"; Settings › Voice debug row shows four numbers |
+| 15 | B | P | correction loop live: dictate "parakeet tee dee tee", edit to "Parakeet TDT", send, twice → the card; Add → next dictation shows "Parakeet TDT" |
+| 16 | C | T | `PointMachineTests`: 17 ported + `switchModeKeepsRecording`, `automaticTapTogglesHoldTalks`, `automaticNoDoubleTapLock` (Swift and C#) |
+| 17 | C | T | `SpokenApprovalTests`: yes/go/no/near-miss/unknown; `CommandCardTests`: rows from `ToolCallStarted` with and without `purpose`, cap at 12, ✓/✗ parse |
+| 18 | C | T | `AnswerCardStateTests`: hide ignored when generation stale; `doneMs` arms only collapsed ∧ not speaking ∧ finished |
+| 19 | C | T | `native::*` (§11.5) incl. `exec_without_shell`; `policy_asks_for_mutating_native_tool` |
+| 20 | C | P | `--probe-command` (new, `--shareable`, never acting): a recorded desk sequence with `purpose` strings → PNGs of heard/working/approval/done at `/tmp/153-command-*.png`; `--probe-card <collapsed|expanded|failed>` → PNGs |
+| 21 | C | P | live: ⌃⌥C "create a reminder to test at six" → steps, approval in the card answered by voice "yes", one ✓ line; ⌃S → the same card anatomy; mode switch ⌃S → ⌃⌥C mid-hold relabels and the desk gets `[command]` |
+| 22 | C | A | `KeyTableTests.persistedTableUnique` over the two new rows; Windows `RegisterHotKey` for Ctrl+Alt+D/C logs `registered` on a US layout and `AltGr … Ctrl+Shift+Alt+D` on a US-International layout (the builder's live round) |
+| 23 | D | T | `DeliveryAssessmentTests` (every role in §13.1), `ClipboardLeaseTests` (settle only if still ours; stale generation no-op), `PasteVerifierTests` (focus moved → unknown; user acted; all unchanged → notLanded) — Swift and C# |
+| 24 | D | P | `--probe-anyapp` (TextEdit scripted open, never a real user app): dictate a synthetic tone → text appears, clipboard restored within 600 ms, verification `landed`; then a `NSButton` focused → "Nothing to type into — button"; a secure field → no Return |
+| 25 | D | P | live: Mail compose, Terminal (lease), Chrome address bar, a password field; "send it" in Mail presses Return, in the password field does not; failure card on a target that swallows ⌘V (an app with paste disabled) |
+| 26 | D | A | the debug row's delivery counters after 20 gestures: `pasteNotLanded ≤ 1`, `clipboard restored = 20` |
+| 27 | all | A | every as-built names the probe PNGs and the live check lines, as 149 §10's gates (`docs/design/149-companion-native.md:1012-1015`) |
+
+### 16.2 Must-not-regress
+- The 149 gesture tests (17 `PointMachine` cases, `VoiceKeyGateTests` 5, `AskVoiceMachine`, `DictationLease`) stay green, unmodified.
+- Dictation into our own fields is **unchanged by default**: `dictation_start(rate, null)` → `Surface::Composer`, `Full` preset — the shaped
+  text equals the raw text for plain prose (table rows 1/3/6/10/20/24 pin it); Ctrl+D / Esc / the undo step (`Composer.tsx:493-505`) unchanged.
+- The meeting island: no change to `IslandPanel.swift` placement/visibility; a live meeting still refuses dictation with "Meeting running —
+  use the island to ask" (`VOICE/dictation.rs:235-237` "talking"); the island's voice view is still hosted by the island on its own screen.
+- Esc semantics: Composer Esc discards (`Composer.tsx:448-457`); companion ⎋ cancels between press and send and undoes the hold
+  (`KeyBindings.swift:211`, `:244`); the new "Esc freezes the card" applies only to a card in `thinking`.
+- One dictation per daemon (`"already dictating"`), relay-peer mic refusal (`api.rs:6279-6283`), `dictation_stop` idempotent, the 149f
+  lifecycle (a start landing after its gesture is stopped at once).
+- Spoken replies stay opt-in (149s S1); the card's speaking glyph and Esc-stops rule unchanged.
+- No new TCC prompt in any automated run; Accessibility and Input Monitoring prompts appear only from Settings buttons.
+
+## 17. Rejected
+
+| Rejected | Why | What would reopen it |
+|---|---|---|
+| Project/computer dictionary seeding (D18) | R4: the algorithm's source · rate · trigger · veto are undecided; a bad seed pollutes every surface | a one-page algorithm answering the four questions (§5.7) that Sky approves |
+| LLM polish before agent prompts (D18) | the agent reads raw transcripts fine (`VOICE/lib.rs:170-179`); A:L55 shows the 5 s+ cost | never |
+| A one-tool command loop (D18) | the desk already has eight `computer_*` tools, shell, browser, MCP and a risk policy (`crates/computer/src/tools.rs:394-407`) | never |
+| WebRTC APM on dictation (D18) | FluidVoice itself uses it only for meetings (A:L24); VPIO exists in-crate for talk | a measured echo problem in dictation |
+| CTC keyword boosting (D18) | parakeet-rs exposes no vocabulary input (`VOICE/stt.rs:255-259`) | a parakeet-rs API for it — then as an *addition* to the dictionary, not a replacement |
+| A closed local LLM at the centre (D18) | theuth has models and the agent | never |
+| A new STT model path (R5, D18) | first partials are structurally fast (§2.4); measure first | §8.7's numbers showing press → first partial > 600 ms median on the Composer |
+| Shaping only on finals | partials would show "send it" and symbol words that then jump; clients already replace per utterance | — (W-a) |
+| Direct CGEvent/AX typing as the primary any-app path | AX writes are ignored by many apps; the lease + verification is what their users' complaints taught (A:L120, A:L128) | — (W-m) |
+| A separate command session | the desk's context (projects, memory) is the point; a marker + prompt block suffices (W-l) | the ✓/✗ discipline failing in practice → a per-turn system-prompt profile RPC |
+| Keeping dictation audio out of history (54 §12, `docs/design/54-dictation.md:573-575`) | D9 needs it for grounding and playback; budgeted, local, switchable | — (amends 54 §12 and `dictation.rs:7`) |
+| Spoken approvals in talk | 145 D6 announces only (`docs/design/145-talk-presence.md:46`); the command card is a visible box with an explicit listen window | Sky asking for it in talk |
+
+## 18. Open questions and amendments
+
+| # | Question for Sky | Recommended default |
+|---|---|---|
+| Q1 | Modifier-only keys incl. fn need a global key monitor and, most likely, the Input Monitoring grant for the companion [INFERENCE]. Accept the extra permission (opt-in row, disabled until granted)? | yes, opt-in; ship without it if the grant proves not to cover `flagsChanged` |
+| Q2 | Chords ⌃⌥D / ⌃⌥C (Ctrl+Alt+D / Ctrl+Alt+C with the AltGr fallback) — fine, or do you want ⌃⇧-family chords? | keep W-d |
+| Q3 | D8 lists "voice notes" as polishable, but 45's `[voice note]` is an agent prompt in the tree (`VOICE/lib.rs:157-162`). Read "voice notes" as notes/documents? | yes — agent prompts are never polished |
+| Q4 | Spoken "yes"/"no" answers approvals in the command card (D10) while talk only announces them (145 D6). Keep the split? | yes; the card is a visible box with an 8 s listen window |
+| Q5 | History keeps audio (54 §12 rejected it): 200 rows / 64 MiB / 120 s grounding, switchable. OK? | yes, default on, "Keep audio" switch in Settings › Voice |
+| Q6 | "Automatic" gesture default off (hold / double-tap lock stays)? | yes (W-i) |
+| Q7 | The command turn cap 12; the approval listen window 8 s; polish budget 4 s — constants to tune after the first week? | yes; they are `pub const`s with one home each |
+| Q8 | Polish and rewrite are charged to theuth's desk session when the destination has none (W-h). OK, or a dedicated "voice" session row? | the desk |
+
+### Amendment log
+- 2026-10-09 v0 — written. Amends: 54 §0.10/§12 (audio may be kept under D9's budget; `dictation.rs:7`'s header changes with wave A);
+  96 §0.6 (modifier-only chords become an opt-in companion option, §12.6); 149 §8 (two new anywhere rows, §15); 149 §3.7/D14 (the
+  AnswerCard grows into §12's card); the study's §2.4 latency inference (0.7 s → ≈0.24 s structural floor, both [INFERENCE] until §8.7 measures).
