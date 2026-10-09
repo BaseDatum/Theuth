@@ -149,7 +149,7 @@ internal sealed class AnyAppController
         var capture = await reader.CaptureAsync();
         if (gen != generation || live is not null) return false;
         var profile = settings.ProfileFor(capture.Facts.Exe, capture.Facts.App);
-        bool terminal = AppMatch.IsTerminal(capture.Facts.Exe, settings.Find(capture.Facts.Exe)?.Terminal);
+        bool terminal = settings.ProfileFor(capture.Facts.Exe, capture.Facts.App).Terminal; // terminal ||= heuristics (H3-D1)
         var a = DeliveryAssessment.Assess(capture.Facts, lockGate.Locked, terminal);
         LastAssessment = a;
         LastCapture = capture;
@@ -538,9 +538,30 @@ internal sealed class AnyAppController
     /// <summary>§13.3: the lease's effects, run in order; the settle and the verification run side by side; returns the verdict.</summary>
     private async Task<PasteVerdict> LeaseAsync(Gesture g, string text)
     {
+        // One clipboard, one lease at a time across gestures: a late second gesture waits for the first one's settle, so it never
+        // snapshots our transient text as the user's clipboard (H3-D1's rule, kept here by serialising).
+        await LeaseSlot.WaitAsync();
+        try
+        {
+            return await LeaseLockedAsync(g, text);
+        }
+        finally
+        {
+            LeaseSlot.Release();
+        }
+    }
+
+    private static readonly SemaphoreSlim LeaseSlot = new(1, 1);
+
+    /// <summary>The user's snapshot whose restore failed: our text may still be on the clipboard, so it is the one to keep (H3-D1).</summary>
+    private static ClipSnapshot? unrestored;
+
+    private async Task<PasteVerdict> LeaseLockedAsync(Gesture g, string text)
+    {
         if (!g.Lease.Begin(text, out var fx)) { Log.Write("anyapp: lease slot busy (unexpected) — utterance kept for the card"); Fail(g, DeliveryFailure.ClipboardWriteFailed, text, "", canRetry: true); return PasteVerdict.NotLanded; }
         var run = new LeaseRun();
         int gen = g.Lease.Generation;
+        if (fx.Count > 0 && fx[0] is LeaseEffect.Write) run.Snapshot = unrestored; // the lease kept its previous snapshot
         await RunEffectsAsync(g, gen, run, fx);
         if (run.Settle is { } s) await s;
         var verdict = run.Verify is { } v ? await v : (run.Failed ? PasteVerdict.NotLanded : PasteVerdict.Unknown);
@@ -566,11 +587,17 @@ internal sealed class AnyAppController
             switch (e)
             {
                 case LeaseEffect.TakeSnapshot:
-                    run.Snapshot = await clipboard.SnapshotAsync();
+                    if (unrestored is { } keep && await clipboard.MarkerAsync() is { Length: > 0 })
+                    {
+                        run.Snapshot = keep; // our own item is still on the clipboard (a restore failed): keep the user's previous snapshot
+                        Log.Write("anyapp: the clipboard still holds our text — keeping the previous snapshot");
+                    }
+                    else run.Snapshot = await clipboard.SnapshotAsync();
                     next = g.Lease.Snapshotted(gen, run.Snapshot is not null);
                     break;
                 case LeaseEffect.Write w:
-                    next = g.Lease.Written(gen, await clipboard.WriteAsync(w.Text, w.Marker));
+                    bool wrote = await clipboard.WriteAsync(w.Text, w.Marker);
+                    next = g.Lease.Written(gen, wrote, wrote ? AnyAppNative.GetClipboardSequenceNumber() : 0);
                     break;
                 case LeaseEffect.Paste:
                     run.Before = settings.CheckPasteLanded ? await reader.ReadAsync(g.Capture) : FieldRead.Unreadable;
@@ -587,10 +614,12 @@ internal sealed class AnyAppController
                     break;
                 case LeaseEffect.Restore:
                     run.Restored = run.Snapshot is { } snap && await clipboard.RestoreAsync(snap);
+                    unrestored = run.Restored == true ? null : run.Snapshot;
                     next = g.Lease.Restored(gen, run.Restored == true);
                     break;
                 case LeaseEffect.DropSnapshot:
                     run.Restored ??= false;
+                    unrestored = null; // the user copied something newer, or our text stays on purpose
                     break;
                 case LeaseEffect.Failed f:
                     run.Failed = true;
@@ -609,7 +638,7 @@ internal sealed class AnyAppController
     {
         if (ms > 0) await Task.Delay(ms);
         var marker = await clipboard.MarkerAsync();
-        bool ours = marker == g.Lease.MarkerFor(gen);
+        bool ours = g.Lease.StillOurs(gen, AnyAppNative.GetClipboardSequenceNumber(), marker); // sequence number AND marker (H3-D1)
         var fx = g.Lease.SettleDue(gen, ours);
         if (fx.Count == 0) return; // a stale generation: the gesture settled already
         if (!ours) Log.Write($"anyapp: settle {g.Id}:{gen} — the clipboard is not ours any more (the user copied): left alone");
@@ -622,7 +651,7 @@ internal sealed class AnyAppController
         if (g.Lease.Phase != LeasePhase.Holding) return;
         int gen = g.Lease.Generation;
         var marker = await clipboard.MarkerAsync();
-        var fx = g.Lease.SettleNow(marker == g.Lease.MarkerFor(gen));
+        var fx = g.Lease.SettleNow(g.Lease.StillOurs(gen, AnyAppNative.GetClipboardSequenceNumber(), marker));
         await RunEffectsAsync(g, gen, new LeaseRun(), fx);
     }
 

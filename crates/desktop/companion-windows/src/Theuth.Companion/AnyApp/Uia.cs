@@ -262,6 +262,7 @@ internal sealed class FocusReader
         if (c.Facts.HasTextPattern && Text(el) is { } tp)
         {
             value = TryRef(() => tp.GetDocumentRange().GetText(PasteVerifier.MaxValueChars));
+            if (value is { Length: >= PasteVerifier.MaxValueChars }) value = null; // past the cap: the caret window decides (a cut value would hide the paste)
             if (FirstSelection(tp) is { } sel)
             {
                 selection = TryRef(() => sel.GetText(4096));
@@ -274,11 +275,13 @@ internal sealed class FocusReader
                 });
             }
         }
+        int? count = null;
         if (value is null && c.Facts.HasValuePattern && !c.Facts.IsPassword && Str(el, UiaIds.ValueValue) is { } v)
         {
-            value = v.Length > PasteVerifier.MaxValueChars ? v[..PasteVerifier.MaxValueChars] : v;
+            count = v.Length; // H3-D1 count-only: past the cap the character count still says whether something was added
+            value = v.Length > PasteVerifier.MaxValueChars ? null : v;
         }
-        return new FieldRead(true, value, before, selection);
+        return new FieldRead(true, value, before, selection, count);
     }
 
     /// <summary>Is focus still the captured element (and its window still the foreground one)?</summary>

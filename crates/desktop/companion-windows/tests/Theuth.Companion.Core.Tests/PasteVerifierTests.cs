@@ -82,11 +82,39 @@ public sealed class PasteVerifierTests
     [Fact]
     public void AnInsertionPastTheValueCapIsSeenAtTheCaret()
     {
-        // A 100 000-char document: the 60 000-char value read cannot see an insertion at the end, the caret window can.
-        var capped = new string('x', PasteVerifier.MaxValueChars);
-        var before = new FieldRead(true, capped, "end of the document. ", "");
-        var after = new FieldRead(true, capped, "end of the document. " + Text, "");
+        // A 100 000-char document: past the 60 000-char cap the value is not read (a cut value would hide the paste); the caret window can.
+        var before = new FieldRead(true, null, "end of the document. ", "");
+        var after = new FieldRead(true, null, "end of the document. " + Text, "");
         Assert.Equal(PasteVerdict.Landed, PasteVerifier.Verdict(before, new[] { after }, Text, null, VerifyMode.Lease));
+    }
+
+    [Fact]
+    public void ACaretOnlyMoveIsTheUserActing()
+    {
+        // H3-D1: the value did not change, only the caret moved → unknown · userActed (never landed, even next to an older copy).
+        var before = new FieldRead(true, "x " + Text + " y", "x ", "");
+        var after = new FieldRead(true, "x " + Text + " y", "x " + Text, "");
+        var reads = new[] { after, after, after };
+        Assert.Equal(PasteVerdict.UserActed, PasteVerifier.Verdict(before, reads, Text, null, VerifyMode.Lease));
+    }
+
+    [Fact]
+    public void LandedNeedsOneMoreOccurrence()
+    {
+        var before = new FieldRead(true, Text, null, null);
+        var same = new FieldRead(true, Text + "!", null, null); // changed, but no extra copy of our words
+        Assert.Equal(PasteVerdict.UserActed, PasteVerifier.Verdict(before, new[] { same, same, same }, Text, null, VerifyMode.Lease));
+        var more = new FieldRead(true, Text + " " + Text, null, null);
+        Assert.Equal(PasteVerdict.Landed, PasteVerifier.Verdict(before, new[] { more }, Text, null, VerifyMode.Lease));
+    }
+
+    [Fact]
+    public void CountOnlyElementsLandWhenTheCountGrows()
+    {
+        var before = new FieldRead(true, null, null, null, Count: 70_000);
+        Assert.Equal(PasteVerdict.Landed, PasteVerifier.Verdict(before, new[] { new FieldRead(true, null, null, null, Count: 70_000 + Text.Length) }, Text, null, VerifyMode.Lease));
+        var still = new FieldRead(true, null, null, null, Count: 70_000);
+        Assert.Equal(PasteVerdict.NotLanded, PasteVerifier.Verdict(before, new[] { still, still, still }, Text, null, VerifyMode.Lease));
     }
 
     [Fact]

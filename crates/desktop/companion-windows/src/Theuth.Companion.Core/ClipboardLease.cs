@@ -48,7 +48,18 @@ public abstract record LeaseEffect(int Generation)
     public sealed record Failed(int Generation, DeliveryFailure Kind, string Text) : LeaseEffect(Generation);
 
     /// <summary>The slot is free again; <paramref name="Restored"/>: the user's clipboard was put back.</summary>
-    public sealed record Done(int Generation, bool Restored) : LeaseEffect(Generation);
+    public sealed record Done(int Generation, bool Restored, SettleOutcome Outcome = SettleOutcome.Nothing) : LeaseEffect(Generation);
+}
+
+/// <summary>How a lease ended (H3-D1 names): the user's clipboard put back; the user's newer copy kept; our text left on purpose
+/// ("leave on clipboard"); a stale generation (no effects at all); nothing to do (a failed snapshot, write or restore).</summary>
+public enum SettleOutcome
+{
+    Restored,
+    KeptUsers,
+    LeftText,
+    Stale,
+    Nothing,
 }
 
 /// <summary>
@@ -114,6 +125,17 @@ public sealed class ClipboardLease
     /// <summary>Begin a lease for <paramref name="utterance"/>: false (nothing to do) while the slot is busy; else step 1.</summary>
     public bool Begin(string utterance, out IReadOnlyList<LeaseEffect> effects)
     {
+        if (Phase == LeasePhase.Holding && HoldsSnapshot)
+        {
+            // H3-D1: a Begin over our own unsettled item keeps the PREVIOUS snapshot — the pending settle turns stale and our transient
+            // text is never taken for the user's clipboard.
+            Generation++;
+            text = utterance;
+            WriteSequence = 0;
+            Phase = LeasePhase.Writing;
+            effects = new LeaseEffect[] { new LeaseEffect.Write(Generation, text, MarkerFor(Generation)) };
+            return true;
+        }
         if (Phase != LeasePhase.Idle)
         {
             effects = Array.Empty<LeaseEffect>();
@@ -121,7 +143,14 @@ public sealed class ClipboardLease
         }
         Generation++;
         text = utterance;
-        HoldsSnapshot = false;
+        WriteSequence = 0;
+        if (HoldsSnapshot)
+        {
+            // A restore that failed kept the snapshot: the clipboard may still hold our text, so the user's snapshot is the one to keep.
+            Phase = LeasePhase.Writing;
+            effects = new LeaseEffect[] { new LeaseEffect.Write(Generation, text, MarkerFor(Generation)) };
+            return true;
+        }
         Phase = LeasePhase.Snapshotting;
         effects = new LeaseEffect[] { new LeaseEffect.TakeSnapshot(Generation) };
         return true;
@@ -142,9 +171,10 @@ public sealed class ClipboardLease
     }
 
     /// <summary>Step 2 finished. A failed write restores the snapshot (EmptyClipboard may have run) and reports the failure.</summary>
-    public IReadOnlyList<LeaseEffect> Written(int generation, bool ok)
+    public IReadOnlyList<LeaseEffect> Written(int generation, bool ok, uint sequence = 0)
     {
         if (Stale(generation, LeasePhase.Writing)) return Array.Empty<LeaseEffect>();
+        WriteSequence = ok ? sequence : 0;
         if (!ok)
         {
             Phase = LeasePhase.Restoring;
@@ -175,7 +205,7 @@ public sealed class ClipboardLease
         {
             Phase = LeasePhase.Idle;
             HoldsSnapshot = false;
-            return new LeaseEffect[] { new LeaseEffect.DropSnapshot(generation), new LeaseEffect.Done(generation, false) };
+            return new LeaseEffect[] { new LeaseEffect.DropSnapshot(generation), new LeaseEffect.Done(generation, false, LeaveOnClipboard && stillOurs ? SettleOutcome.LeftText : SettleOutcome.KeptUsers) };
         }
         Phase = LeasePhase.Restoring;
         return new LeaseEffect[] { new LeaseEffect.Restore(generation) };
@@ -186,10 +216,11 @@ public sealed class ClipboardLease
     {
         if (Stale(generation, LeasePhase.Restoring)) return Array.Empty<LeaseEffect>();
         Phase = LeasePhase.Idle;
-        HoldsSnapshot = false;
+        // A failed restore keeps the snapshot: the next Begin writes over our own item without snapshotting it as the user's clipboard.
+        HoldsSnapshot = !ok;
         if (!ok) return new LeaseEffect[] { new LeaseEffect.Failed(generation, DeliveryFailure.RestoreFailed, text), new LeaseEffect.Done(generation, false) };
         RestoredCount++;
-        return new LeaseEffect[] { new LeaseEffect.Done(generation, true) };
+        return new LeaseEffect[] { new LeaseEffect.Done(generation, true, SettleOutcome.Restored) };
     }
 
     /// <summary>
@@ -198,6 +229,19 @@ public sealed class ClipboardLease
     /// </summary>
     public IReadOnlyList<LeaseEffect> SettleNow(bool stillOurs) =>
         Phase == LeasePhase.Holding ? SettleDue(Generation, stillOurs) : Array.Empty<LeaseEffect>();
+
+    /// <summary>The clipboard sequence number right after our write (0 = unknown: the marker alone decides).</summary>
+    public uint WriteSequence { get; private set; }
+
+    /// <summary>
+    /// H3-D1 "still ours": the clipboard sequence number is the one our write produced (nobody wrote since) AND the clipboard carries this
+    /// lease's session marker for <paramref name="generation"/>. A sequence of 0 on either side (no window-station access) leaves the marker.
+    /// </summary>
+    public bool StillOurs(int generation, uint sequenceNow, string? markerNow)
+    {
+        if (!string.Equals(markerNow, MarkerFor(generation), StringComparison.Ordinal)) return false;
+        return WriteSequence == 0 || sequenceNow == 0 || sequenceNow == WriteSequence;
+    }
 
     private bool Stale(int generation, LeasePhase expected) => generation != Generation || Phase != expected;
 }

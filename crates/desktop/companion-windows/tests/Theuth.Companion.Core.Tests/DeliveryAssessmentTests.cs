@@ -41,12 +41,17 @@ public sealed class DeliveryAssessmentTests
         Assert.Equal(TargetVerdict.Editable, DeliveryAssessment.Assess(F(UiaControlType.ComboBox, value: true, valueRo: false)).Verdict);
 
     [Fact]
-    public void AWritableValueIsEditableOnAnyRole()
+    public void AWritableValueIsEditableOutsideTheCertainlyNotRows()
     {
-        // The macOS "kAXValue settable" row: an editable grid cell (DataItem) with a settable value takes text.
+        // The macOS "value settable" row: an editable grid cell (DataItem, e.g. a spreadsheet cell) with a settable value takes text…
         var a = DeliveryAssessment.Assess(F(UiaControlType.DataItem, value: true, valueRo: false));
         Assert.Equal(TargetVerdict.Editable, a.Verdict);
         Assert.Equal("cell", a.Role);
+        // …but a settable value never un-refuses a certainly-not row (H3-D1: a slider stays refused).
+        var s = DeliveryAssessment.Assess(F(UiaControlType.Slider, value: true, valueRo: false));
+        Assert.Equal(RefusalReason.NotATextTarget, s.Refusal);
+        Assert.Equal("Nothing to type into — slider", AnyAppCopy.Pill(s));
+        Assert.Equal(RefusalReason.NotATextTarget, DeliveryAssessment.Assess(F(UiaControlType.CheckBox, value: true, valueRo: false)).Refusal);
     }
 
     [Fact]
@@ -75,10 +80,17 @@ public sealed class DeliveryAssessmentTests
     }
 
     [Fact]
-    public void AReadOnlyPasswordFieldIsRefused() =>
-        Assert.Equal(RefusalReason.ReadOnly, DeliveryAssessment.Assess(F(UiaControlType.Edit, value: true, valueRo: true) with { IsPassword = true }).Refusal);
+    public void AReadOnlyPasswordFieldIsUnknownAndSecure()
+    {
+        // H3-D1: a text role that is not editable is not certain → unknown; secure stays secure (the lease, never Return).
+        var a = DeliveryAssessment.Assess(F(UiaControlType.Edit, value: true, valueRo: true) with { IsPassword = true });
+        Assert.Equal(TargetVerdict.Unknown, a.Verdict);
+        Assert.True(a.Secure);
+        Assert.Equal(DeliveryMethod.Lease, DeliveryAssessment.Method(a, "hunter2", false));
+        Assert.Equal("not sent — secure field", DeliveryAssessment.ReturnWithheld(a, true, false));
+    }
 
-    // MARK: unknown (§13.1 row 2: Pane, Custom, Document without patterns, elevated windows; refuse only when certain)
+        // MARK: unknown (§13.1 row 2: Pane, Custom, Document without patterns, elevated windows; refuse only when certain)
 
     [Theory]
     [InlineData(UiaControlType.Pane, "pane")]
@@ -89,6 +101,7 @@ public sealed class DeliveryAssessmentTests
     [InlineData(UiaControlType.Tree, "tree")]
     [InlineData(UiaControlType.DataGrid, "table")]
     [InlineData(UiaControlType.Spinner, "spinner")]
+    [InlineData(UiaControlType.DataItem, "cell")]
     [InlineData(0, "element")]
     public void UncertainRolesAreUnknownAndLeased(int ct, string role)
     {
@@ -159,7 +172,6 @@ public sealed class DeliveryAssessmentTests
     [InlineData(UiaControlType.Menu, "menu")]
     [InlineData(UiaControlType.MenuBar, "menubar")]
     [InlineData(UiaControlType.ToolBar, "toolbar")]
-    [InlineData(UiaControlType.DataItem, "cell")]
     [InlineData(UiaControlType.SplitButton, "button")]
     [InlineData(UiaControlType.Hyperlink, "link")]
     [InlineData(UiaControlType.TreeItem, "treeitem")]
@@ -179,21 +191,32 @@ public sealed class DeliveryAssessmentTests
     }
 
     [Fact]
-    public void AReadOnlyEditIsRefused()
+    public void AReadOnlyEditIsUnknownAndLeased()
     {
         var a = DeliveryAssessment.Assess(F(UiaControlType.Edit, value: true, valueRo: true));
-        Assert.Equal(TargetVerdict.CertainlyNot, a.Verdict);
-        Assert.Equal(RefusalReason.ReadOnly, a.Refusal);
-        Assert.Equal("Nothing to type into — read-only field", AnyAppCopy.Pill(a));
+        Assert.Equal(TargetVerdict.Unknown, a.Verdict); // H3-D1: a text role that is not editable → unknown, the verification decides
+        Assert.Equal(RefusalReason.None, a.Refusal);
+        Assert.Equal(DeliveryMethod.Lease, DeliveryAssessment.Method(a, "words", false));
+        Assert.Equal("Notepad · unknown field — paste", AnyAppCopy.Pill(a));
     }
 
     [Fact]
-    public void AReadOnlyDocumentIsRefused()
+    public void AReadOnlyDocumentIsUnknown()
     {
-        // A browser page with no field focused: Document, ValuePattern read-only (the URL), text read-only.
+        // A browser page with no field focused: Document, ValuePattern read-only (the URL), text read-only — not certain, so unknown.
         var a = DeliveryAssessment.Assess(F(UiaControlType.Document, value: true, valueRo: true, text: true, textRo: true));
-        Assert.Equal(RefusalReason.ReadOnly, a.Refusal);
-        Assert.Equal("Nothing to type into — read-only document", AnyAppCopy.Pill(a));
+        Assert.Equal(TargetVerdict.Unknown, a.Verdict);
+        Assert.False(a.CanDirect);
+    }
+
+    [Fact]
+    public void ATerminalDowngradesEditableToUnknownAndNeverUnRefuses()
+    {
+        var a = DeliveryAssessment.Assess(F(UiaControlType.Edit, value: true, valueRo: false, text: true), terminal: true);
+        Assert.Equal(TargetVerdict.Unknown, a.Verdict);
+        Assert.False(a.CanDirect);
+        Assert.Equal(DeliveryMethod.Lease, DeliveryAssessment.Method(a, "ls", false));
+        Assert.Equal(RefusalReason.NotATextTarget, DeliveryAssessment.Assess(F(UiaControlType.Button), terminal: true).Refusal);
     }
 
     [Fact]
@@ -205,12 +228,13 @@ public sealed class DeliveryAssessmentTests
     }
 
     [Fact]
-    public void ADisabledFieldIsRefused()
+    public void ADisabledTextFieldIsUnknownButADisabledButtonIsRefused()
     {
         var a = DeliveryAssessment.Assess(F(UiaControlType.Edit, value: true, valueRo: false) with { IsEnabled = false });
-        Assert.Equal(RefusalReason.Disabled, a.Refusal);
-        Assert.Equal("Nothing to type into — disabled field", AnyAppCopy.Pill(a));
-        // A "disabled" pane is not certain (custom surfaces misreport): still unknown.
+        Assert.Equal(TargetVerdict.Unknown, a.Verdict); // H3-D1: refuse only when certain — the lease and the verification decide
+        Assert.Equal("Notepad · unknown field — paste", AnyAppCopy.Pill(a));
+        var b = DeliveryAssessment.Assess(F(UiaControlType.Button) with { IsEnabled = false });
+        Assert.Equal(RefusalReason.NotATextTarget, b.Refusal);
         Assert.Equal(TargetVerdict.Unknown, DeliveryAssessment.Assess(F(UiaControlType.Pane) with { IsEnabled = false }).Verdict);
     }
 
@@ -318,8 +342,16 @@ public sealed class DeliveryAssessmentTests
         Assert.True(AppMatch.IsTerminal("WindowsTerminal.exe", profileTerminal: null));
         Assert.True(AppMatch.IsTerminal("pwsh.exe", null));
         Assert.False(AppMatch.IsTerminal("notepad.exe", null));
-        Assert.False(AppMatch.IsTerminal("WindowsTerminal.exe", profileTerminal: false)); // the user's profile wins
+        Assert.True(AppMatch.IsTerminal("WindowsTerminal.exe", profileTerminal: false)); // terminal ||= heuristics (H3-D1)
         Assert.True(AppMatch.IsTerminal("myshell.exe", profileTerminal: true));
+        Assert.True(AppMatch.IsTerminal("Code.exe", null)); // Monaco-style editors take the lease too
+        Assert.True(AppMatch.IsTerminal("Cursor.exe", null));
+        Assert.True(AppMatch.IsTerminal("Zed.exe", null));
+        Assert.True(AppMatch.IsTerminal("conhost.exe", null));
+        Assert.True(AppMatch.IsTerminal("cmd.exe", null));
+        Assert.True(AppMatch.IsTerminal("alacritty.exe", null));
+        Assert.True(AppMatch.IsTerminal("wezterm-gui.exe", null));
+        Assert.Equal("any_app", AppMatch.DefaultRowId);
     }
 
     // MARK: names (the ax.rs uia_role vocabulary) and copy

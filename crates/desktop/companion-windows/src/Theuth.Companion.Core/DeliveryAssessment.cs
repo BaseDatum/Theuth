@@ -196,7 +196,7 @@ public static class DeliveryAssessment
     {
         UiaControlType.Button, UiaControlType.SplitButton, UiaControlType.MenuItem, UiaControlType.Menu, UiaControlType.MenuBar,
         UiaControlType.Text, UiaControlType.Slider, UiaControlType.CheckBox, UiaControlType.RadioButton, UiaControlType.Image,
-        UiaControlType.ListItem, UiaControlType.TreeItem, UiaControlType.TabItem, UiaControlType.DataItem, UiaControlType.Hyperlink,
+        UiaControlType.ListItem, UiaControlType.TreeItem, UiaControlType.TabItem, UiaControlType.Hyperlink,
         UiaControlType.ToolBar, UiaControlType.AppBar, UiaControlType.ScrollBar, UiaControlType.Thumb, UiaControlType.ProgressBar,
         UiaControlType.StatusBar, UiaControlType.TitleBar, UiaControlType.Separator, UiaControlType.ToolTip, UiaControlType.Header,
         UiaControlType.HeaderItem,
@@ -221,42 +221,37 @@ public static class DeliveryAssessment
         if (locked) return Refuse(RefusalReason.Locked, "locked screen");
         if (!f.Readable) return Unknown(f.Elevated ? "elevated window" : "unknown field");
         if (f.Ours) return Refuse(RefusalReason.OwnWindow, f.Role);
-        if (f.Elevated) return Unknown("elevated window", f.IsPassword);
-        if (terminal) return Unknown("unknown field", f.IsPassword); // terminals: the lease (§13.2); the pill says "Terminal · unknown field — paste"
-
         int ct = f.ControlType;
         bool writable = (f.HasValuePattern && f.ValueReadOnly == false) || (f.HasTextPattern && f.TextReadOnly == false);
         bool readOnly = (f.HasValuePattern && f.ValueReadOnly == true) || (f.HasTextPattern && f.TextReadOnly == true);
         bool textRole = TextRoles.Contains(ct);
         string role = f.Role;
 
-        if (!f.IsEnabled && (textRole || CertainlyNotRoles.Contains(ct))) return Refuse(RefusalReason.Disabled, role);
-        if (f.IsPassword)
-        {
-            // §13.1: secure → editable, delivered by the lease, never Return. Read-only and nothing writable is still a refusal.
-            if (readOnly && !writable) return Refuse(RefusalReason.ReadOnly, role);
-            return new(TargetVerdict.Editable, true, role, RefusalReason.None, false, false, app);
-        }
+        // The certainly-not rows come first: a settable value never un-refuses them (a slider stays refused — H3-D1). Windows Terminal's
+        // control reports Text WITH a TextPattern: not certain, so it falls through to unknown.
+        bool textWithPattern = ct == UiaControlType.Text && f.HasTextPattern;
+        if (!textWithPattern && CertainlyNotRoles.Contains(ct)) return Refuse(RefusalReason.NotATextTarget, role);
+        if (f.Elevated) return Unknown("elevated window", f.IsPassword);
 
         TargetVerdict verdict;
-        if (writable) verdict = TargetVerdict.Editable; // a settable value is editable on any role (the macOS "kAXValue settable" row)
-        else if (textRole)
+        if (textRole)
         {
-            if (readOnly) return Refuse(RefusalReason.ReadOnly, role);
-            verdict = f.HasTextPattern ? TargetVerdict.Editable : TargetVerdict.Unknown; // §13.1: "Document without patterns" → unknown
+            // A text role that is not editable (read-only, disabled) is not certain → unknown: the lease and the verification decide (H3-D1).
+            verdict = !f.IsEnabled || (readOnly && !writable) ? TargetVerdict.Unknown
+                : writable || f.HasTextPattern ? TargetVerdict.Editable : TargetVerdict.Unknown; // §13.1: "Document without patterns" → unknown
         }
-        else if (ct == UiaControlType.Text && f.HasTextPattern)
-        {
-            // Windows Terminal's control reports Text with a TextPattern: not certain → the lease and the verification decide.
-            verdict = TargetVerdict.Unknown;
-        }
-        else if (CertainlyNotRoles.Contains(ct)) return Refuse(RefusalReason.NotATextTarget, role);
-        else verdict = TargetVerdict.Unknown; // Pane, Custom, Window, Group, lists, unread (0): refuse only when certain
+        else if (writable && f.IsEnabled && !textWithPattern) verdict = TargetVerdict.Editable; // the macOS "value settable" row, outside the certainly-not rows
+        else verdict = TargetVerdict.Unknown; // Pane, Custom, Window, Group, lists, Text+TextPattern, unread (0): refuse only when certain
 
+        // Terminals and Monaco-style editors: editable → unknown (the clipboard lease, never direct insertion); it never un-refuses.
+        if (terminal && verdict == TargetVerdict.Editable) verdict = TargetVerdict.Unknown;
+
+        // §13.1: secure → text allowed (the lease, no read-back), Return refused (§7.4).
+        bool secure = f.IsPassword;
         bool editable = verdict == TargetVerdict.Editable;
-        bool rewrite = editable && f.SelectionLength is > 0;
-        bool canDirect = editable && f.CanReadBack;
-        return new(verdict, false, role, RefusalReason.None, rewrite, canDirect, app);
+        bool rewrite = editable && !secure && f.SelectionLength is > 0;
+        bool canDirect = editable && !secure && f.CanReadBack;
+        return new(verdict, secure, role, RefusalReason.None, rewrite, canDirect, app);
     }
 
     /// <summary>
@@ -320,11 +315,15 @@ public sealed class SessionLockGate
 /// Built-in terminal defaults (a writer's call, as-built): their text surfaces take the lease.</summary>
 public static class AppMatch
 {
-    /// <summary>Terminals known to report Text/Pane surfaces; a user profile with the same id overrides the default.</summary>
+    /// <summary>The user's default row (the any_app row): an app with no row of its own gets it, re-labelled with the app's id and name.</summary>
+    public const string DefaultRowId = "any_app";
+
+    /// <summary>Terminals and Monaco-style editors (H3-D1: the Mac list is Terminal, iTerm2, Ghostty, Warp, kitty, Alacritty, WezTerm, VS Code,
+    /// Cursor, Zed): their surfaces take the clipboard lease, never direct insertion. <c>terminal ||= heuristics</c> — a profile cannot clear it.</summary>
     public static readonly IReadOnlyList<string> DefaultTerminals = new[]
     {
-        "WindowsTerminal", "OpenConsole", "conhost", "cmd", "powershell", "pwsh", "wezterm-gui", "alacritty", "mintty", "putty",
-        "ConEmu", "ConEmu64", "Hyper", "Tabby", "WindowsTerminalPreview",
+        "WindowsTerminal", "WindowsTerminalPreview", "OpenConsole", "conhost", "cmd", "powershell", "pwsh", "wezterm-gui", "wezterm", "alacritty",
+        "mintty", "putty", "ConEmu", "ConEmu64", "Hyper", "Tabby", "Code", "Code - Insiders", "VSCodium", "Cursor", "Zed",
     };
 
     public static string Normalize(string exe)
@@ -338,9 +337,9 @@ public static class AppMatch
 
     public static bool Same(string profileId, string exe) => Normalize(profileId).Length > 0 && Normalize(profileId) == Normalize(exe);
 
-    /// <summary>Is <paramref name="exe"/> a terminal? A user profile's flag wins (<paramref name="profileTerminal"/>); else the defaults.</summary>
+    /// <summary>Is <paramref name="exe"/> a terminal? <c>terminal ||= heuristics</c>: the profile's flag OR the defaults.</summary>
     public static bool IsTerminal(string exe, bool? profileTerminal) =>
-        profileTerminal ?? DefaultTerminals.Any(t => Same(t, exe));
+        profileTerminal == true || DefaultTerminals.Any(t => Same(t, exe));
 }
 
 /// <summary>The copy of the any-app states (§3.2 table, §13.5 card), one place so both the pill and the card say the same thing.</summary>

@@ -32,9 +32,9 @@ public enum VerifyMode
 /// <c>TextPattern.DocumentRange.GetText(60000)</c> (or <c>ValuePattern.Value</c>), the text just before the caret (≤ 256 chars, so an
 /// insertion beyond the 60 000-char cap is still seen) and the selected text. A null field = that read did not answer.
 /// </summary>
-public sealed record FieldRead(bool FocusSame, string? Value, string? BeforeCaret, string? Selection)
+public sealed record FieldRead(bool FocusSame, string? Value, string? BeforeCaret, string? Selection, int? Count = null)
 {
-    public bool Readable => Value is not null || BeforeCaret is not null;
+    public bool Readable => Value is not null || BeforeCaret is not null || Count is not null;
 
     public static FieldRead FocusMoved { get; } = new(false, null, null, null);
 
@@ -77,6 +77,14 @@ public static class PasteVerifier
         var r = reads[^1];
         bool last = reads.Count >= Schedule(mode).Count;
         if (!r.FocusSame || !r.Readable) return PasteVerdict.Unknown;
+        if (before.Value is not null && r.Value is not null && string.Equals(before.Value, r.Value, StringComparison.Ordinal))
+        {
+            // H3-D1: landed needs one MORE occurrence of our text; with the value unchanged it is not in (yet). A caret-only or
+            // selection-only move is the user acting (unknown · userActed); nothing moved at all is notLanded.
+            bool moved = !string.Equals(before.BeforeCaret, r.BeforeCaret, StringComparison.Ordinal)
+                || !string.Equals(before.Selection, r.Selection, StringComparison.Ordinal);
+            return last ? (moved ? PasteVerdict.UserActed : PasteVerdict.NotLanded) : null;
+        }
         if (Changed(before, r))
         {
             if (Inserted(before, r, text)) return PasteVerdict.Landed;
@@ -101,7 +109,8 @@ public static class PasteVerifier
     public static bool Changed(FieldRead before, FieldRead after) =>
         !string.Equals(before.Value, after.Value, StringComparison.Ordinal)
         || !string.Equals(before.BeforeCaret, after.BeforeCaret, StringComparison.Ordinal)
-        || !string.Equals(before.Selection, after.Selection, StringComparison.Ordinal);
+        || !string.Equals(before.Selection, after.Selection, StringComparison.Ordinal)
+        || before.Count != after.Count;
 
     /// <summary>
     /// Does <paramref name="after"/> show <paramref name="text"/> newly inserted? Either the text before the caret now ends with it (the
@@ -112,14 +121,18 @@ public static class PasteVerifier
     {
         var t = Normalize(text).Trim();
         if (t.Length == 0) return false;
+        if (after.Value is { } av && before.Value is { } bv)
+        {
+            // Both values readable: one MORE occurrence of our text than before (H3-D1), nothing else counts.
+            return !string.Equals(av, bv, StringComparison.Ordinal) && Count(Normalize(av), t) > Count(Normalize(bv), t);
+        }
+        // Count-only elements (H3-D1): the count grew.
+        if (after.Value is null && before.Value is null && before.Count is int bc && after.Count is int ac2 && after.BeforeCaret is null) return ac2 > bc;
+        // Past the value cap (Windows): the 256 characters before the caret end with our text, after a caret move.
         if (after.BeforeCaret is { } ac && !string.Equals(after.BeforeCaret, before.BeforeCaret, StringComparison.Ordinal))
         {
             var tail = t.Length > CaretWindowChars - 56 ? t[^(CaretWindowChars - 56)..] : t;
             if (Normalize(ac).TrimEnd().EndsWith(tail, StringComparison.Ordinal)) return true;
-        }
-        if (after.Value is { } av && before.Value is { } bv && !string.Equals(av, bv, StringComparison.Ordinal))
-        {
-            if (Count(Normalize(av), t) > Count(Normalize(bv), t)) return true;
         }
         return false;
     }

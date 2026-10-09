@@ -27,7 +27,7 @@ public sealed class ClipboardLeaseTests
         Assert.True(l.HoldsSnapshot);
         Assert.Equal(new LeaseEffect[] { new LeaseEffect.Restore(g) }, l.SettleDue(g, stillOurs: true));
         Assert.Equal(LeasePhase.Restoring, l.Phase);
-        Assert.Equal(new LeaseEffect[] { new LeaseEffect.Done(g, true) }, l.Restored(g, ok: true));
+        Assert.Equal(new LeaseEffect[] { new LeaseEffect.Done(g, true, SettleOutcome.Restored) }, l.Restored(g, ok: true));
         Assert.True(l.Ready);
         Assert.False(l.HoldsSnapshot);
         Assert.Equal(1, l.RestoredCount);
@@ -40,7 +40,7 @@ public sealed class ClipboardLeaseTests
         // The user pressed Ctrl+C between the paste and the settle: their clipboard is not ours any more — never overwrite it.
         var l = new ClipboardLease("g1");
         int g = Paste(l, "hello");
-        Assert.Equal(new LeaseEffect[] { new LeaseEffect.DropSnapshot(g), new LeaseEffect.Done(g, false) }, l.SettleDue(g, stillOurs: false));
+        Assert.Equal(new LeaseEffect[] { new LeaseEffect.DropSnapshot(g), new LeaseEffect.Done(g, false, SettleOutcome.KeptUsers) }, l.SettleDue(g, stillOurs: false));
         Assert.True(l.Ready);
         Assert.Equal(0, l.RestoredCount);
     }
@@ -68,23 +68,54 @@ public sealed class ClipboardLeaseTests
     }
 
     [Fact]
-    public void DeliveriesAreSerialisedThroughOneSlot()
+    public void ABeginOverOurUnsettledItemKeepsThePreviousSnapshot()
     {
         var l = new ClipboardLease("g1");
         Assert.True(l.Begin("first", out _));
-        Assert.False(l.Begin("second", out var none)); // busy: the caller queues it
+        Assert.False(l.Begin("second", out var none)); // snapshotting: busy, the caller queues it
         Assert.Empty(none);
-        Assert.Equal(1, l.Generation);
         int g = l.Generation;
         l.Snapshotted(g, true);
-        l.Written(g, true);
+        l.Written(g, true, sequence: 41);
         l.Pasted(g, true);
-        Assert.False(l.Begin("second", out _)); // still holding until the settle
-        l.SettleDue(g, true);
-        Assert.False(l.Begin("second", out _)); // restoring
-        l.Restored(g, true);
+        // H3-D1: a late second Begin over our own unsettled item keeps the PREVIOUS snapshot — no TakeSnapshot, the old settle turns stale.
         Assert.True(l.Begin("second", out var fx));
-        Assert.Equal(new LeaseEffect[] { new LeaseEffect.TakeSnapshot(2) }, fx);
+        Assert.Equal(new LeaseEffect[] { new LeaseEffect.Write(2, "second", "g1:2") }, fx);
+        Assert.Empty(l.SettleDue(g, stillOurs: true));
+        l.Written(2, true, sequence: 42);
+        l.Pasted(2, true);
+        Assert.Equal(new LeaseEffect[] { new LeaseEffect.Restore(2) }, l.SettleDue(2, stillOurs: true));
+        Assert.False(l.Begin("third", out _)); // restoring: busy
+        l.Restored(2, true);
+        Assert.True(l.Begin("third", out var fx3));
+        Assert.Equal(new LeaseEffect[] { new LeaseEffect.TakeSnapshot(3) }, fx3);
+    }
+
+    [Fact]
+    public void StillOursNeedsTheSequenceNumberAndTheMarker()
+    {
+        var l = new ClipboardLease("g1");
+        l.Begin("words", out _);
+        l.Snapshotted(1, true);
+        l.Written(1, true, sequence: 7);
+        Assert.Equal(7u, l.WriteSequence);
+        Assert.True(l.StillOurs(1, 7, "g1:1"));
+        Assert.False(l.StillOurs(1, 8, "g1:1"));   // somebody wrote since (even the same text)
+        Assert.False(l.StillOurs(1, 7, "g1:0"));   // another generation's marker
+        Assert.False(l.StillOurs(1, 7, null));     // no session item
+        Assert.True(l.StillOurs(1, 0, "g1:1"));    // no window-station access: the marker alone decides
+    }
+
+    [Fact]
+    public void AFailedRestoreKeepsTheSnapshotForTheNextBegin()
+    {
+        var l = new ClipboardLease("g1");
+        int g = Paste(l, "first");
+        l.SettleDue(g, stillOurs: true);
+        Assert.Equal(new LeaseEffect[] { new LeaseEffect.Failed(g, DeliveryFailure.RestoreFailed, "first"), new LeaseEffect.Done(g, false) }, l.Restored(g, ok: false));
+        Assert.True(l.HoldsSnapshot); // our text may still be on the clipboard: the user's snapshot is the one to keep
+        Assert.True(l.Begin("second", out var fx));
+        Assert.Equal(new LeaseEffect[] { new LeaseEffect.Write(g + 1, "second", $"g1:{g + 1}") }, fx);
     }
 
     [Fact]
@@ -92,7 +123,7 @@ public sealed class ClipboardLeaseTests
     {
         var l = new ClipboardLease("g1", leaveOnClipboard: true);
         int g = Paste(l, "keep me");
-        Assert.Equal(new LeaseEffect[] { new LeaseEffect.DropSnapshot(g), new LeaseEffect.Done(g, false) }, l.SettleDue(g, stillOurs: true));
+        Assert.Equal(new LeaseEffect[] { new LeaseEffect.DropSnapshot(g), new LeaseEffect.Done(g, false, SettleOutcome.LeftText) }, l.SettleDue(g, stillOurs: true));
     }
 
     [Fact]
@@ -113,7 +144,7 @@ public sealed class ClipboardLeaseTests
         l.Begin("words", out _);
         l.Snapshotted(1, true);
         Assert.Equal(new LeaseEffect[] { new LeaseEffect.Failed(1, DeliveryFailure.ClipboardWriteFailed, "words"), new LeaseEffect.Restore(1) }, l.Written(1, ok: false));
-        Assert.Equal(new LeaseEffect[] { new LeaseEffect.Done(1, true) }, l.Restored(1, true));
+        Assert.Equal(new LeaseEffect[] { new LeaseEffect.Done(1, true, SettleOutcome.Restored) }, l.Restored(1, true));
     }
 
     [Fact]

@@ -54,11 +54,18 @@ internal sealed class AnyAppSettings
     /// <summary>The user's row for <paramref name="exe"/> (id = the exe name, with or without ".exe"), or null.</summary>
     public AppProfile? Find(string exe) => Profiles.FirstOrDefault(p => AppMatch.Same(p.Id, exe));
 
-    /// <summary>The row sent with <c>dictation_start</c> / <c>rewrite</c>: the user's, else one made from the defaults (terminals known).</summary>
+    /// <summary>
+    /// The row sent with <c>dictation_start</c> / <c>rewrite</c> (H3-D1): the app's own row; else the any_app default row re-labelled with
+    /// the app's id and name; else (no rows) a synthesized row with polish and learn off. <c>terminal ||= heuristics</c> in every case.
+    /// </summary>
     public AppProfile ProfileFor(string exe, string app)
     {
-        if (Find(exe) is { } p) return p;
-        return new AppProfile { Id = exe, Name = app, Terminal = AppMatch.IsTerminal(exe, null) };
+        bool heuristic = AppMatch.IsTerminal(exe, null);
+        var rows = Profiles;
+        if (rows.FirstOrDefault(p => AppMatch.Same(p.Id, exe)) is { } own) return own with { Terminal = own.Terminal || heuristic };
+        if (rows.FirstOrDefault(p => string.Equals(p.Id, AppMatch.DefaultRowId, StringComparison.OrdinalIgnoreCase)) is { } d)
+            return d with { Id = exe, Name = app, Terminal = d.Terminal || heuristic };
+        return new AppProfile { Id = exe, Name = app, Terminal = heuristic, Polish = false, Learn = false };
     }
 
     public string Describe() =>
