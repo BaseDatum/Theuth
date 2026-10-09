@@ -1,0 +1,62 @@
+# 153 — as built: W153D, the Windows twin of wave D (dictate into any app)
+
+*Worker W153D, 2026-10-09 19:15 → (see the DONE line), worktree `~/Develop/theuth-153w-d`, branch `feat/153w-d` (pushed to basedatum only),
+cut from `integrate/153w` = main 6aadda9a; merged PIN-B 4fcbcf1e (W153B records), PIN-C 1e9f40b9 (W153C keys + AnswerCardWindow) and H-A
+5afea171 (wave A on main). Design: `docs/design/153-voice-anywhere.md` §3.2, §7.4, §13 (13.1–13.9), §14, §16.1 proof 23–26.*
+
+## 1. What was built
+
+### Core (pure, net10, tested on the Mac) — proof 23
+| File | What |
+|---|---|
+| `Theuth.Companion.Core/DeliveryAssessment.cs` | `UiaControlType` (UIA ids + the `ax.rs uia_role` vocabulary), `FocusFacts`, `Assessment`, `TargetVerdict` (editable · unknown · certainly-not), `DeliveryMethod` (direct · lease · refuse), `RefusalReason`, `DeliveryFailure` (the 8 kinds of §13.5); `DeliveryAssessment.Assess` (§13.1, refuse only when certain), `.Method` (§13.2: direct ≤ 200 single-line chars on an editable, readable, non-secure target until a read-back fails; held keys → lease), `.FitsGesture` (§13.8, 20 000 chars), `.ReturnWithheld` (§7.4 "send it"); `SessionLockGate` (WTS_SESSION_LOCK/UNLOCK → no delivery, §13.8/§13.9); `AppMatch` (AppProfile.id = exe, built-in terminal defaults); `AnyAppCopy` (pill, done, paused, card title/kind/footer copy); `AnyAppSpacing` (the Composer splice's separator as a lead space) |
+| `Theuth.Companion.Core/ClipboardLease.cs` | §13.3 machine: snapshot → write → paste → settle, ONE slot, generation-counted (`Begin/Snapshotted/Written/Pasted/SettleDue/Restored/SettleNow`, effects `TakeSnapshot/Write/Paste/ArmSettle/Verify/Restore/DropSnapshot/Failed/Done`); settle restores only if the clipboard still holds this lease's marker; a stale generation is a no-op; "leave on clipboard" skips the restore; `ClipboardSnapshotPolicy.Plan` (HGLOBAL formats only, never GDI/private/our own formats, any representation over 32 MiB → text formats only) |
+| `Theuth.Companion.Core/PasteVerifier.cs` | §13.4: `FieldRead` (focus same · value ≤ 60 000 · 256 chars before the caret · selection), `Step/Verdict` over the reads at 150/350/1000 ms (lease) or 150/350/1000 ms with an early exit (direct): focus moved → unknown; unreadable → unknown; changed with our words → landed; changed with the restored clipboard → notLanded; changed otherwise → userActed; unchanged at every read → notLanded; comparisons normalised (CRLF/CR, smart quotes, dashes, NBSP) |
+| `tests/…/DeliveryAssessmentTests.cs` · `ClipboardLeaseTests.cs` · `PasteVerifierTests.cs` | every §13.1 role (Windows column + the Windows forms of the macOS column), secure, read-only, disabled, own window, lock, rewrite entry, delivery choice, cap, Return rule, profiles, role words, copy, spacing; lease settle-only-if-ours, stale generation, one slot, leave-on-clipboard, every failure path, marker, snapshot policy; verifier focus moved / unreadable / userActed / notLanded / landed / late restored paste / normalisation / past-the-cap caret window / repeated phrase / direct schedule / autocomplete suffix |
+
+### App (`Theuth.Companion/AnyApp/*.cs`, WinUI 3, builds on build-B)
+| File | What |
+|---|---|
+| `AnyAppController.cs` | The gesture: press → `FocusReader.CaptureAsync` → `DeliveryAssessment.Assess` → hint (refused) or listen: the companion's PCM into `dictation_start(16000, {surface: any_app, destination: any_app(exe), app: AppProfile, commands, press_ago_ms})`; each final `DictationText` (`shaped`) is queued and delivered serially (quiet read → lead space → direct or lease → verification); release flushes; "send it" (`command.send`) → Return only if §7.4 allows; "✓ N lines into ‹app›" or the failure card; focus leaving the target pauses ("Come back to ‹app› to continue · Esc"); a closed target / the lock / > 20 000 chars put the words on the card; per-app polish (`AppProfile.polish` → `polish`, 4 s budget, fail closed); rewrite on a selection (§13.6: `rewrite(instruction, selection, app, thread)`, refine by holding again while the panel is up, Replace restores focus first); PIN-C: `Hotkeys.DictateAnywhere` (Started/Locked/Stopped/Discarded/Switched/Refused) drives it, `Hotkeys.TakeDictateWords` hands the heard words back on a switch out of dictation; the failure card and the rewrite panel are W153C's `AnswerCardWindow` (generation-checked `Begin/Present/Hide`, `ActionInvoked/KeyIntent/Dismissed`); counters for §16.1 #26 (`AnyAppController.Current.Counters`) |
+| `Uia.cs` | Hand-declared `IUIAutomation` / `IUIAutomationElement` / `TextPattern` / `TextRange(Array)` vtables (only the slots up to the last one called), CUIAutomation8 → CUIAutomation, ONE dedicated MTA thread with a wall-clock budget per call (an overrun answers the fallback and retires the thread, the 149 WE1 rule); `FocusReader`: focused element facts (ControlType, IsPassword, IsEnabled, ValuePattern + IsReadOnly, TextPattern + `UIA_IsReadOnlyAttributeId`, selection length, process, elevation, ours), field reads for verification, the selection text, the focus restore (SetForegroundWindow + `SetFocus`) |
+| `Typist.cs` | SendInput: direct insertion one character (surrogate pair) per call, paced 8 ms; Ctrl+V / Return / Ctrl+Z as ONE atomic burst that releases the physically held modifiers, works, presses them again and masks a held Alt/Win (no menu on release); events tagged `dwExtraInfo = "theu"` |
+| `ClipboardIo.cs` | Win32 clipboard on its own worker (a hung delay-rendering owner cannot hang the UI): snapshot per the policy, our one write (CF_UNICODETEXT + `ExcludeClipboardContentFromMonitorProcessing` + `CanIncludeInClipboardHistory`=0 + `CanUploadToCloudClipboard`=0 + registered `theuth.dictation-session` = marker), marker read, restore, the card's plain Copy; `SessionWindow`: the hidden top-level window = clipboard owner + `WTSRegisterSessionNotification` target; `Synthesize` posts a WM_WTSSESSION_CHANGE to it |
+| `AnyAppSettings.cs` | companion-local keys (H3-CC names): `dictateAnywhereEnabled` (on), `leaveTextOnClipboard` (off), `checkPasteLanded` (on), `appProfiles` (JSON `[AppProfile]`) |
+| `AnyAppProbe.cs` | `--probe-anyapp <text|short|long|multi|mail|secret>` (+ `-delay`, `-lease`, `-send`, `-lock`, `-card`, `-rewrite <instr>`, `-history`) and `--probe-anyapp-watch` (re-runs on every write of `%LOCALAPPDATA%\theuth\companion\anyapp-probe.txt`); `png=<name>` renders the card to `%TEMP%\153-anyapp-<name>.png` |
+| `AnyAppInstall.cs`, `AnyAppNative.cs` | install + the PIN-C subscription; the Win32 surface (own DllImports, not the shared NativeMethods.txt) |
+| `App.xaml.cs` | **one hookup line** after the WW3 install: `AnyApp.AnyAppInstall.Install(Store, dispatcher);` |
+| `w153d-gate.ps1` (new, companion-windows root) | build-B helper: `notepad`, `edge-fields` (text, textarea, password, read-only, button), `focus`, `esc`, `probe k=v…`, `clip-set/get`, `history on|off|show`, `open <uri>`, `windows`, `close-mine` |
+
+## 2. Verification
+
+- **Mac**: `dotnet test tests/Theuth.Companion.Core.Tests` — **451/451** after PIN-C and H-A (baseline 310; my three suites add 84; W153C's merge adds the rest).
+- **build-B**: `Theuth.Companion.slnx` Debug x64 — **0 errors, 0 warnings**, 25–35 s, at every pushed head (bd76e6be, 847e44b6, 43056f0a, 0fed68f9, 8363bce3, d6727560).
+- **Live rounds** (desk lock, the Debug companion `--shareable --probe-anyapp-watch`, the installed engine without a model; evidence in `~/.theuth/briefs/2026-10-09/153-windows/evidence/W153D/`):
+  ROUND-RESULTS-PLACEHOLDER
+
+## 3. Deviations (each the closest faithful variant; none silent)
+1. **Secure fields follow the design, not the brief.** The brief said "IsPassword → refuse"; §13.1/§7.4/§16.1 #24–25 say secure → editable, delivered by the lease, never Return (Mac parity, R6). Built as the design: lease, no verification (bullets only), "send it" → "not sent — secure field". Read-only (and disabled) controls are refused as the brief asked.
+2. **Direct read-back looks three times** (150/350/1000 ms, early exit on landed) instead of once at 150 ms: SendInput and the target's UIA tree are asynchronous; a late read must never re-deliver words that landed.
+3. **Direct typing is paced, one character per SendInput (8 ms).** Measured on build-B: a batch of KEYEVENTF_UNICODE events into Win11 Notepad (XAML/TSF) kept the first characters and turned every later one into the batch's last character; a Ctrl+V queued behind that backlog arrived as "v". Deliveries also wait for a quiet field (two equal reads 60 ms apart, ≤ 900 ms).
+4. **Held keys take the lease** (`Method(keysHeld)`): during a hold of Ctrl+Alt+D paced typing cannot stay atomic against the chord's auto-repeat; the lease's single burst can.
+5. **Role table, Windows form**: the certainly-not set adds the Windows forms of the macOS column (radio, menu, menubar, toolbar, table row/cell) and their kin (split button, tree/tab items, hyperlink, scrollbar, progress, status/title bar, separator, tooltip, header); `Text` WITH a TextPattern is unknown, not refused (Windows Terminal's control reports Text); a writable ValuePattern is editable on any role (the macOS "kAXValue settable" row); ComboBox is a text role (AXComboBox twin); elevated targets are unknown and their paste is reported `pasteCommandFailed — elevated window` (UIPI drops SendInput silently).
+6. **A refusal with words already in hand** (the probe's fixture, or the lock mid-gesture) shows the failure card (kind `noEditableTarget` / `targetUnavailable`) so no words are lost; a refusal at a real key press shows the hint only (nothing was said yet).
+7. **The failure card and the rewrite panel sit where the one AnswerCard sits** (top-centre of the pointer's display, W153C's placement) rather than "at the pointer" (§3.2), because D12 makes them that card.
+8. **Switch out of dictation** hands back every word heard in the gesture (words already typed stay in the target) — §3.5's "the destination changes at release" cannot un-type delivered utterances.
+9. **Leases are serialised until their settle** (no chaining of writes under one snapshot): a next write before the previous Ctrl+V was consumed could paste the wrong words.
+10. **Terminal defaults**: Windows Terminal, conhost/OpenConsole, cmd, PowerShell/pwsh, WezTerm, Alacritty, mintty, PuTTY, ConEmu, Hyper, Tabby are terminals unless a user profile says otherwise (their surfaces take the lease, `AppProfile.terminal` goes to the engine's stage 9).
+11. **The pill is the island's voice view** (`IslandController.SetVoice`, 149 §P placement), no second pill window.
+
+## 5. H-BC alignment (`docs/design/153-as-built-BC.md`, rows naming Windows / the companion / wave D)
+| Row | Followed? | How |
+|---|---|---|
+| §4.4 field text = `shaped ?? text`; "send it"/"scratch that" alone shape to `""` on purpose | yes | deliveries take `DictationEvent.DisplayText` (`shaped ?? text`); an empty final is never delivered |
+| §14.3 `appProfiles` = one JSON blob, "Apps" placeholder in Dictation settings, "wave D fills" | partly | AnyApp reads the blob (`[AppProfile]` wire shape) live at each press; the Apps editor is Settings › Dictation, W153B's file — not built here (open item) |
+| §15 `dictateAnywhere` registers nothing yet (Mac) — wave D | yes (Windows form) | on Windows W153C registers Ctrl+Alt+D (PIN-C) and this controller subscribes to `Hotkeys.DictateAnywhere` |
+| §12.6 modifier-only chords — wave D on the Mac | n/a here | the Windows twin is W153C's `WH_KEYBOARD_LL` option in Hotkeys.cs |
+| §6.1 companion `HoldToTalk` callers should send `dictation_correction` at commit | no (not W153D's files) | the Windows twins are RowTalk / AskBar (W153B); any-app learning is §6.6, optional after D |
+| Hand-offs (Windows twin): constants holdThreshold 250, tapToggleMs 400, doneMs 6000, `dictation_start` params | yes where they touch D | the gesture timing is W153C's one PointMachine; any-app sends `[16000, {surface: any_app, destination: {kind: any_app, app: <exe>}, app: AppProfile, commands, press_ago_ms}]`; the done pill uses §3.2's 1.2 s |
+| Card pixel parity (`/tmp/153-zb/153-card-*.png`) | yes | the failure card IS the AnswerCard (title · red subtitle in the Failed tone, Esc cap); the Mac any-app card does not exist yet (Mac wave D not built) |
+
+## 4. Open items
+- OPEN-ITEMS-PLACEHOLDER
