@@ -58,26 +58,27 @@ extension Store {
     func meetingResume() { meetingAct("meeting_resume") { try await $0.meetingResume() } }
     func meetingStop() { meetingAct("meeting_stop") { try await $0.meetingStop() } }
 
-    /// Step the brief cursor (the island controller mirrors every cursor change with `meeting_cursor`).
-    func meetingMove(_ delta: Int) {
+    /// Step the brief cursor — the pane's chevrons clamp, the J/K/↑/↓ keys `wrap` (149i §N); one path, the island controller
+    /// mirrors every cursor change with `meeting_cursor` and moves the focused topic to the shown brief's.
+    func meetingMove(_ delta: Int, wrap: Bool = false) {
         guard let s = meeting else { return }
-        let n = MeetingReducer.move(s, delta)
+        let n = MeetingReducer.move(s, delta, wrap: wrap)
         if n != s { meeting = n }
     }
 
     func meetingCursor(_ brief: String?) { meetingAct("meeting_cursor(\(brief ?? "null"))") { try await $0.meetingCursor(brief: brief) } }
 
     private func meetingAct(_ label: String, _ op: @escaping (RpcClient) async throws -> Void) {
-        guard !AskFlags.automated else { return IslandLog.write("probe: \(label) suppressed") }
+        guard !AskFlags.automated else { meetingActs.append(label); return IslandLog.write("probe: \(label) suppressed") }
         Task { [client] in
             do { try await op(client!) } catch { IslandLog.write("\(label) failed: \(error)") }
         }
     }
 }
 
-/// stderr plus `/tmp/149-W3-island.log` during an island/eye probe.
+/// stderr plus `/tmp/149-W3-island.log` (or `--probe-log <path>`) during an island/eye probe.
 enum IslandLog {
-    static let file = URL(fileURLWithPath: "/tmp/149-W3-island.log")
+    static let file = URL(fileURLWithPath: Flags.probeLog ?? "/tmp/149-W3-island.log")
 
     static func write(_ s: String) {
         Log.write(s)
@@ -93,8 +94,9 @@ enum IslandLog {
 
 /// `--probe-island <closed|open|detached|nonotch>`: a fixture meeting (two topics + a brief), the island shown in that
 /// state for N s (`--probe-seconds`, default 6) without key, a saved frame restored from this display's UUID and an
-/// off-screen one rejected; quit 0. `--probe-eye`: the island up with `sharingType = .none` for the shell's capture
-/// test (§9/§10). Both `--shareable`-aware, both log to `/tmp/149-W3-island.log`.
+/// off-screen one rejected; quit 0. `--probe-island <clicks|stop|open-no-hover>[-nonotch]` (149i, `IslandProbe.swift`): synthetic
+/// input against the probe's own island. `--probe-eye`: the island up with `sharingType = .none` for the shell's capture
+/// test (§9/§10). All `--shareable`-aware, all log to `/tmp/149-W3-island.log` or `--probe-log <path>`.
 extension Flags {
     static let probeIsland: String? = {
         guard let i = args.firstIndex(of: "--probe-island"), i + 1 < args.count else { return nil }
@@ -104,6 +106,10 @@ extension Flags {
     static let probeSeconds: TimeInterval = {
         guard let i = args.firstIndex(of: "--probe-seconds"), i + 1 < args.count else { return 6 }
         return TimeInterval(args[i + 1]) ?? 6
+    }()
+    static let probeLog: String? = {
+        guard let i = args.firstIndex(of: "--probe-log"), i + 1 < args.count else { return nil }
+        return args[i + 1]
     }()
     static var islandProbe: Bool { probeIsland != nil || probeEye }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CompanionCore
 import SwiftUI
 
@@ -63,8 +64,10 @@ struct VoiceModeView: View {
     }
 }
 
-/// The capsule that hosts `VoiceModeView` near the pointer: borderless, non-activating, mouse-transparent, `.popUpMenu`
-/// (above the overlays), HUD glass (§3.9). Follows the pointer while a gesture is live; a hint lingers `hintMs`.
+/// The capsule that hosts `VoiceModeView`: borderless, non-activating, mouse-transparent, `.popUpMenu` (above the overlays),
+/// HUD glass (§3.9). 149i §P: it sits in the island area of the display under the pointer — under the notch, or the fallback
+/// slot under the menu bar, below a live island — fixed for the whole gesture; only the trail follows the pointer. A hint
+/// lingers `hintMs`.
 @MainActor
 final class VoicePill {
     /// 96's `HINT_MS`.
@@ -73,6 +76,10 @@ final class VoicePill {
     let panel: NSPanel
     private let hosting: NSHostingView<VoiceModeView>
     private var hintTimer: Timer?
+    private var sub: AnyCancellable?
+    /// The display the gesture started on (the pointer at `show`); the frame is recomputed there as the text grows, never
+    /// at the pointer's current position.
+    private var displayPoint = NSPoint.zero
 
     init() {
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 40), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -101,18 +108,20 @@ final class VoicePill {
         hosting.autoresizingMask = [.width, .height]
         container.addSubview(hosting)
         panel.contentView = container
+        sub = state.objectWillChange.receive(on: RunLoop.main).sink { [weak self] _ in
+            DispatchQueue.main.async { guard let self, self.panel.isVisible else { return }; self.place() }
+        }
     }
 
     var isVisible: Bool { panel.isVisible }
 
-    /// Below-right of `mouse` (AppKit coordinates), kept inside that screen's visible frame.
+    /// In the island area of the display under `mouse` (AppKit coordinates); the pointer never moves it afterwards.
     func show(near mouse: NSPoint) {
         hintTimer?.invalidate(); hintTimer = nil
-        place(near: mouse)
+        displayPoint = mouse
+        place()
         panel.orderFrontRegardless()
     }
-
-    func follow(_ mouse: NSPoint) { if panel.isVisible { place(near: mouse) } }
 
     /// A refusal or a hint in the pill's slot for `hintMs`, then hidden.
     func showHint(_ text: String, near mouse: NSPoint) {
@@ -129,15 +138,10 @@ final class VoicePill {
         panel.orderOut(nil)
     }
 
-    private func place(near mouse: NSPoint) {
+    private func place() {
         hosting.layoutSubtreeIfNeeded()
-        let size = hosting.fittingSize
-        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-        let v = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        var p = NSPoint(x: mouse.x + 18, y: mouse.y - 26 - size.height)
-        p.x = min(max(v.minX + 8, p.x), v.maxX - size.width - 8)
-        p.y = min(max(v.minY + 8, p.y), v.maxY - size.height - 8)
-        panel.setFrame(NSRect(origin: p, size: size), display: true)
+        let frame = IslandArea.frame(size: hosting.fittingSize, on: displayPoint)
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
         hosting.frame = panel.contentView?.bounds ?? .zero
     }
 }

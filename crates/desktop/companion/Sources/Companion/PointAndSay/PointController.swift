@@ -249,9 +249,9 @@ final class PointController {
         return reason
     }
 
+    /// Every pointer sample redraws the trail; the pill stays in the island area (149i §P).
     private func tick(_ s: PointerSample?) {
         if s != nil { overlays.draw(samples: sampler.samples, displays: displays) }
-        pill.follow(NSEvent.mouseLocation)
     }
 
     /// Everything a discarded gesture leaves behind: the sampler, the overlays, the mic, the dictation session.

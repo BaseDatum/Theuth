@@ -46,6 +46,8 @@ final class Store: ObservableObject {
     @Published var meeting: MeetingSlice?
     /// 149 W2: point-and-say's live state; nil while idle.
     @Published var point: PointSlice?
+    /// 149i: under a probe (`AskFlags.automated`) every suppressed meeting RPC's label lands here, so a click can be asserted.
+    var meetingActs: [String] = []
     /// 149s S3: one "currently speaking" for the voice key and the Ask bar (`Store+Ask.swift` speaks the Ask reply,
     /// `PointController` the voice key's); the player is the engine's `Speech*` sink.
     let speech = SpeechPlayer()

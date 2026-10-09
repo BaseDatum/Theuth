@@ -149,13 +149,16 @@ public enum MeetingReducer {
         return n
     }
 
-    /// Step the cursor (`+1` newer, `-1` older); stepping up eats the badge one by one, down leaves it.
-    public static func move(_ s: MeetingSlice, _ delta: Int) -> MeetingSlice {
-        let cursor = min(s.briefs.count - 1, max(0, s.cursor + delta))
+    /// Step the cursor (`+1` newer, `-1` older); stepping up eats the badge one by one, down leaves it. `wrap` (the J/K/↑/↓
+    /// keys, 149i §N) goes round at either end; the pane's chevrons clamp.
+    public static func move(_ s: MeetingSlice, _ delta: Int, wrap: Bool = false) -> MeetingSlice {
+        guard !s.briefs.isEmpty else { return s }
+        let n = s.briefs.count
+        let cursor = wrap ? ((s.cursor + delta) % n + n) % n : min(n - 1, max(0, s.cursor + delta))
         guard cursor != s.cursor else { return s }
-        var n = s
-        n.cursor = cursor; n.unseen = min(s.unseen, s.briefs.count - 1 - cursor)
-        return n
+        var r = s
+        r.cursor = cursor; r.unseen = min(s.unseen, n - 1 - cursor)
+        return r
     }
 
     /// Tapped, brief not arrived yet: greyed.

@@ -129,11 +129,36 @@ enum PointProbe {
         c.keyDown()
         try? await Task.sleep(for: .milliseconds(400))
         PointLog.write("gesture: after 400 ms state=\(c.state) overlays=\(c.overlays.revealed) pill=\(c.pill.isVisible) samples=\(c.sampler.samples.count) point.slice=\(store.point.map { "\($0.state)" } ?? "nil")")
+        // 149i §P: the pill sits in the island area of the pointer's display — the island anchor's centre line, under the
+        // notch or in the fallback slot under the menu bar — and stays put while the pointer moves.
+        let mouse0 = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(mouse0) } ?? NSScreen.main!
+        let anchor = IslandGeometry.anchor(on: screen, forceNoNotch: false, fakeNotch: false)
+        let pill0 = c.pill.panel.frame
+        let wantTop = anchor.notch ? anchor.rect.minY - 6 : anchor.rect.maxY
+        PointLog.write("PILL AREA: pointer=\(mouse0) island anchor=\(anchor.rect) notch=\(anchor.notch) pill=\(pill0) (want midX=\(anchor.rect.midX) maxY=\(wantTop))")
+        let trusted = AXIsProcessTrusted()
+        var pillFrames: [NSRect] = []
         for i in 0..<20 {
             let start = i * VoiceRecorder.chunk
             c.feed((0..<VoiceRecorder.chunk).map { j in Int16(sin(2 * .pi * 440 * Double(start + j) / VoiceRecorder.sampleRate) * 0.3 * 32767) })
+            if trusted, i % 4 == 0 {
+                // Walk the synthetic pointer around this display (far from the pill) while the gesture is live.
+                let v = screen.visibleFrame
+                let p = NSPoint(x: v.minX + 120 + CGFloat(i) * 80, y: v.minY + 120 + CGFloat(i) * 40)
+                if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: p.x, y: NSScreen.screens[0].frame.maxY - p.y), mouseButton: .left) { e.post(tap: .cghidEventTap) }
+            }
+            if i == 8 {
+                let shot = Process(); shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                shot.arguments = ["-x", "-o", "-l", "\(c.pill.panel.windowNumber)", "/tmp/149i-pill-notch-area.png"]; try? shot.run()
+            }
             try? await Task.sleep(for: .milliseconds(100))
+            pillFrames.append(c.pill.panel.frame)
         }
+        let moved = pillFrames.contains { abs($0.midX - pill0.midX) > 0.5 || abs($0.maxY - pill0.maxY) > 0.5 }
+        let inArea = abs(pill0.midX - anchor.rect.midX) <= 0.5 && abs(pill0.maxY - wantTop) <= 0.5
+        PointLog.write("PILL AREA: pointer now \(NSEvent.mouseLocation) (moved \(trusted ? "synthetically" : "not — AX untrusted")); pill frames over the gesture: \(Set(pillFrames.map { "\($0)" }).sorted()) → \(inArea && !moved ? "PASS" : "FAIL") (inArea=\(inArea) moved=\(moved)); PNG /tmp/149i-pill-notch-area.png")
+        if trusted, let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: mouse0.x, y: NSScreen.screens[0].frame.maxY - mouse0.y), mouseButton: .left) { e.post(tap: .cghidEventTap) }
         let sampled = c.sampler.samples.count
         c.keyUp()
         try? await Task.sleep(for: .seconds(3))

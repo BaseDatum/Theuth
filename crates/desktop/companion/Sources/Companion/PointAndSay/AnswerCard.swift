@@ -114,7 +114,8 @@ final class AnswerCard {
 
     var isVisible: Bool { panel.isVisible }
 
-    /// Near the pointer (AppKit coordinates); key unless `key` is false (probes).
+    /// In the island area of the display under `mouse` (AppKit coordinates; 149i §P — never at the pointer); key unless `key`
+    /// is false (probes).
     func show(near mouse: NSPoint, key: Bool) {
         anchor = mouse
         place()
@@ -159,12 +160,7 @@ final class AnswerCard {
     private func place() {
         hosting.layoutSubtreeIfNeeded()
         let size = NSSize(width: Self.width, height: max(84, hosting.fittingSize.height))
-        let screen = NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main
-        let v = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        var p = NSPoint(x: anchor.x + 18, y: anchor.y - 26 - size.height)
-        p.x = min(max(v.minX + 8, p.x), v.maxX - size.width - 8)
-        p.y = min(max(v.minY + 8, p.y), v.maxY - size.height - 8)
-        panel.setFrame(NSRect(origin: p, size: size), display: true)
+        panel.setFrame(IslandArea.frame(size: size, on: anchor), display: true)
         hosting.frame = panel.contentView?.bounds ?? .zero
     }
 }

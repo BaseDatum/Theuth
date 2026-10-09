@@ -9,9 +9,8 @@ import SwiftUI
 final class IslandWindow: NSPanel {
     static let level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
 
-    /// The strip under the pointer wants to act on the first click; the request box wants key (`sendEvent`).
+    /// Where a click makes the panel key before it is dispatched (the request box); buttons act on the first click without it.
     var wantsKeyOnClick: ((NSPoint) -> Bool)?
-    var onDoubleClick: ((NSPoint) -> Void)?
 
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: IslandLayout.windowWidth, height: IslandLayout.windowHeight),
@@ -38,21 +37,18 @@ final class IslandWindow: NSPanel {
         orderFrontRegardless()
     }
 
-    /// notchprompt's trick: a non-activating panel becomes key before the mouse-down is dispatched, so SwiftUI
-    /// gestures and the text field run in a key-window context — but only where the content asks (the request box).
+    /// notchprompt's trick: a non-activating panel becomes key before the mouse-down is dispatched, so the text field runs
+    /// in a key-window context — only where the content asks (the request box). Never swallows the event (149i D3).
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown {
-            let p = event.locationInWindow
-            if event.clickCount == 2 { onDoubleClick?(p) }
-            if !isKeyWindow, wantsKeyOnClick?(p) == true { makeKey() }
-        }
+        if event.type == .leftMouseDown, !isKeyWindow, wantsKeyOnClick?(event.locationInWindow) == true { makeKey() }
         super.sendEvent(event)
     }
 }
 
 /// `acceptsFirstMouse` (notchprompt `:51-53`) + click-through outside `drawn` (recon A §A5 point 6).
 final class IslandHostingView<Content: View>: NSHostingView<Content> {
-    /// The island's drawn shape in this view's (AppKit, bottom-left) coordinates; nil = everything.
+    /// The island's drawn shape in this view's OWN coordinates — it is flipped (top-left), i.e. SwiftUI's `.global` frame as
+    /// reported, never the AppKit bottom-left flip (149i: that mismatch made every control click-through). nil = everything.
     var drawn: NSRect?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -127,4 +123,19 @@ enum IslandGeometry {
     /// Screen-relative ↔ global (recon A risk e: the arrangement may change while the UUID set does not).
     static func relative(_ r: NSRect, to s: NSScreen) -> NSRect { r.offsetBy(dx: -s.frame.minX, dy: -s.frame.minY) }
     static func global(_ r: NSRect, from s: NSScreen) -> NSRect { r.offsetBy(dx: s.frame.minX, dy: s.frame.minY) }
+}
+
+/// 149i §P: the island area on the display under `point`, for a `size` panel — the point-and-say pill and answer card are placed
+/// here once per gesture and never follow the pointer. Reuses the island's own anchor; a live attached island on that display
+/// pushes the frame below itself.
+enum IslandArea {
+    @MainActor static func frame(size: NSSize, on point: NSPoint) -> NSRect {
+        guard let s = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main ?? NSScreen.screens.first else {
+            return NSRect(origin: point, size: size)
+        }
+        let a = IslandGeometry.anchor(on: s, forceNoNotch: false, fakeNotch: false)
+        var island: NSRect?
+        if let c = (NSApp.delegate as? AppDelegate)?.island, c.shown, !c.ui.isDetached, c.window.screen === s { island = c.drawnGlobal }
+        return IslandModel.pillFrame(size: size, anchor: a.rect, notch: a.notch, island: island, visible: s.visibleFrame)
+    }
 }

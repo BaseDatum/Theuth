@@ -122,6 +122,19 @@ struct MeetingReducerTests {
         #expect(MeetingReducer.move(s, 10).cursor == 3 && MeetingReducer.move(s, -10).cursor == 0)
     }
 
+    @Test func keyCycleWrapsAtBothEnds() {
+        // 149i §N: J/↓ (−1, older) and K/↑ (+1, newer) go round; the chevrons' clamp is untouched; nothing to cycle = no change.
+        var s = live()
+        #expect(MeetingReducer.move(s, -1, wrap: true) == s)
+        for id in ["b1", "b2", "b3"] { s = MeetingReducer.reduce(s, .brief(meeting: "m1", brief: brief(id)), now: t0) }
+        #expect(s.cursor == 2)
+        s = MeetingReducer.move(s, 1, wrap: true)
+        #expect(s.cursor == 0, "newer past the newest wraps to the oldest")
+        s = MeetingReducer.move(s, -1, wrap: true)
+        #expect(s.cursor == 2, "older past the oldest wraps to the newest")
+        #expect(MeetingReducer.move(s, -1, wrap: true).cursor == 1 && MeetingReducer.move(s, 1).cursor == 2)
+    }
+
     @Test func briefTapOrRequestJumps() {
         var s = MeetingReducer.reduce(live(), .brief(meeting: "m1", brief: brief("b1")), now: t0)
         s = MeetingReducer.reduce(s, .brief(meeting: "m1", brief: brief("b2")), now: t0)
