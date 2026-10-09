@@ -131,6 +131,8 @@ pub use lifecycle::{
     CleanupStatus, CloseAck, CloseResult, CloseTree, CreateSessionOptions, PrivateOwner,
     SessionOpen,
 };
+#[cfg(feature = "test-support")]
+pub use supervisor::spawn_test_agents;
 pub use supervisor::{
     ActivityOf, Agents, Broadcast, Identity, IdentitySource, InstallIdentitySource, ListActivity,
     RegisterNode, UnregisterNode,
@@ -699,7 +701,7 @@ pub struct SetSubagentModel {
     pub model: Option<String>,
 }
 
-/// `ask` → `Option<ModelInfo>`: the live preferred subagent model, if set.
+/// `ask` → `Option<ModelInfo>`: the live subagent default model, if set.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetSubagentModel;
 
@@ -814,7 +816,8 @@ pub struct MarkDesk {
 /// when the agent has none. Kept in memory: a native child of the desk whose
 /// spawn names no `model` starts on it before `agent.subagents.model` and
 /// `agent.model`. The roster sends it whenever it opens a desk or the agent's
-/// model changes.
+/// model changes; the entry goes with a put-away (`MarkDesk { agent: None }`)
+/// or deleted desk.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetDeskModel {
     /// The desk session.
@@ -822,6 +825,12 @@ pub struct SetDeskModel {
     /// Configured model id, or `None` to follow the defaults.
     pub model: Option<String>,
 }
+
+/// `ask` → `Option<String>`: the model id stored on `session`'s row (148 R1
+/// F4: the roster compares it with a desk's effective model before switching);
+/// `None` for an unknown session.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SessionModel(pub SessionId);
 
 /// `ask` → `Option<SessionId>`: the session marked as the bare-named agent's
 /// desk on this engine (STALE-WAKE-DESKS: one desk per agent, reused across
