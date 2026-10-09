@@ -19,15 +19,18 @@ internal static class Theme
 {
     private static readonly Dictionary<(string, ElementTheme), Brush> cache = new();
     private static readonly HashSet<string> missing = new();
+    private static readonly HashSet<(string, ElementTheme)> logged = new();
     private static global::Windows.UI.ViewManagement.UISettings? ui;
 
     /// <summary>A brush for a theme-resource key under <paramref name="theme"/> (Default → the system theme).</summary>
     public static Brush Brush(string key, ElementTheme theme)
     {
+        LogAccentOnce();
         var t = Resolve(theme);
         if (cache.TryGetValue((key, t), out var hit)) return hit;
         var b = Lookup(key, t) ?? Fallback(key, t);
         cache[(key, t)] = b;
+        if (logged.Add((key, t)) && b is SolidColorBrush sc) Log.Write($"theme: {key} [{t}] = #{sc.Color.A:X2}{sc.Color.R:X2}{sc.Color.G:X2}{sc.Color.B:X2}");
         return b;
     }
 
@@ -39,6 +42,7 @@ internal static class Theme
     /// <summary>The system accent colour itself (<c>SystemAccentColor</c>) — e.g. for the point-and-say trail raster.</summary>
     public static Color Accent()
     {
+        LogAccentOnce();
         try
         {
             if (Application.Current?.Resources.TryGetValue("SystemAccentColor", out var v) == true && v is Color c) return c;
@@ -46,6 +50,21 @@ internal static class Theme
         catch (Exception) { }
         try { return (ui ??= new global::Windows.UI.ViewManagement.UISettings()).GetColorValue(global::Windows.UI.ViewManagement.UIColorType.Accent); }
         catch (Exception) { return Color.FromArgb(255, 0, 120, 212); } // Windows' default accent, only when every API fails
+    }
+
+    private static bool accentLogged;
+
+    private static void LogAccentOnce()
+    {
+        if (accentLogged) return;
+        accentLogged = true;
+        try
+        {
+            var u = ui ??= new global::Windows.UI.ViewManagement.UISettings();
+            string Hex(global::Windows.UI.ViewManagement.UIColorType k) { var c = u.GetColorValue(k); return $"#{c.R:X2}{c.G:X2}{c.B:X2}"; }
+            Log.Write($"theme: system accent {Hex(global::Windows.UI.ViewManagement.UIColorType.Accent)} light2 {Hex(global::Windows.UI.ViewManagement.UIColorType.AccentLight2)} dark1 {Hex(global::Windows.UI.ViewManagement.UIColorType.AccentDark1)} background {Hex(global::Windows.UI.ViewManagement.UIColorType.Background)}");
+        }
+        catch (Exception e) { Log.Write($"theme: accent read failed: {e.Message}"); }
     }
 
     public static SolidColorBrush Transparent { get; } = new(Microsoft.UI.Colors.Transparent);
