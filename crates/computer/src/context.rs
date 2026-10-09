@@ -51,6 +51,32 @@ const MAX_PNG: usize = 5 * 1024 * 1024;
 struct Visit<'a> {
     display: &'a Display,
     gestures: Vec<(Gesture, Vec<AxElement>)>,
+    /// Accessibility lookups on this display: answered (a hit or nothing there)
+    /// and refused (`AxHit::refused`, 149 §9).
+    lookups: Lookups,
+}
+
+/// How a display's accessibility lookups went.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Lookups {
+    /// Lookups the tree answered — with an element, a window, or nothing.
+    pub answered: usize,
+    /// Lookups the tree refused (UIPI, element gone, provider over budget).
+    pub refused: usize,
+}
+
+impl Lookups {
+    fn add(&mut self, other: Self) {
+        self.answered += other.answered;
+        self.refused += other.refused;
+    }
+}
+
+/// The `accessibility:` suffix of one display's line (149 §9): `off` when the
+/// tree is off, or when every lookup on that display was refused; a display
+/// with at least one answered lookup — or none at all — stays `on`.
+pub(crate) fn display_ax_on(ax_on: bool, lookups: Lookups) -> bool {
+    ax_on && !(lookups.refused > 0 && lookups.answered == 0)
 }
 
 /// The header's app/window: the End hit's, else the first other hit's — never
@@ -91,20 +117,22 @@ pub fn compose(
         .map(|d| Visit {
             display: d,
             gestures: Vec::new(),
+            lookups: Lookups::default(),
         })
         .collect();
     // One app/window per gesture, in gesture order (End last).
     let mut fronts: Vec<Option<AxFront>> = Vec::new();
     for g in &gestures {
         let home = display_at(&displays, pointer::anchor(g)).unwrap_or(end_display);
-        let (elements, front) = if ax_on {
+        let (elements, front, lookups) = if ax_on {
             elements_for(g, cfg, &mut reader)
         } else {
-            (Vec::new(), None)
+            (Vec::new(), None, Lookups::default())
         };
         fronts.push(front);
         if let Some(v) = visits.iter_mut().find(|v| v.display.index == home.index) {
             v.gestures.push((*g, elements));
+            v.lookups.add(lookups);
         }
     }
     let front = if ax_on { header(&fronts) } else { None };
@@ -159,7 +187,14 @@ pub fn compose(
         }
         encode_ms += t.elapsed().as_millis() as u64;
 
-        lines.push(line(i + 1, n, front.as_ref(), d, &v.gestures, ax_on));
+        lines.push(line(
+            i + 1,
+            n,
+            front.as_ref(),
+            d,
+            &v.gestures,
+            display_ax_on(ax_on, v.lookups),
+        ));
     }
     tracing::info!(
         capture_ms,
@@ -448,21 +483,34 @@ fn anchors(g: &Gesture) -> Vec<Pt> {
 
 /// Elements under a gesture's anchors, deduped by `(role, label, url)`, values
 /// cut to `value_chars`, at most `max_elements`; window-level hits add no
-/// element. Also the app/window of the first anchor that resolved one.
+/// element. Also the app/window of the first anchor that resolved one, and
+/// how many lookups the tree answered or refused.
 fn elements_for(
     g: &Gesture,
     cfg: &ScreenContextConfig,
     reader: &mut ax::Reader,
-) -> (Vec<AxElement>, Option<AxFront>) {
+) -> (Vec<AxElement>, Option<AxFront>, Lookups) {
     let mut out: Vec<AxElement> = Vec::new();
     let mut front = None;
+    let mut lookups = Lookups::default();
     for p in anchors(g) {
         if out.len() >= cfg.max_elements {
             break;
         }
-        let Some(AxHit { element, front: f }) = reader.hit_at(p) else {
+        let Some(AxHit {
+            element,
+            front: f,
+            refused,
+        }) = reader.hit_at(p)
+        else {
+            lookups.answered += 1;
             continue;
         };
+        if refused {
+            lookups.refused += 1;
+            continue;
+        }
+        lookups.answered += 1;
         if front.is_none() {
             front = f;
         }
@@ -476,7 +524,7 @@ fn elements_for(
             out.push(e);
         }
     }
-    (out, front)
+    (out, front, lookups)
 }
 
 fn element_text(e: &AxElement) -> String {
@@ -606,6 +654,44 @@ mod tests {
             value: None,
             url: Some(url.into()),
         }
+    }
+
+    #[test]
+    fn suffix_is_off_only_when_every_lookup_was_refused() {
+        let l = |answered, refused| Lookups { answered, refused };
+        // Tree off: off regardless.
+        assert!(!display_ax_on(false, l(3, 0)));
+        assert!(!display_ax_on(false, l(0, 0)));
+        // Tree on, nothing refused: on — including a display with no lookups at all.
+        assert!(display_ax_on(true, l(0, 0)));
+        assert!(display_ax_on(true, l(4, 0)));
+        // Every lookup refused (an elevated window fills the display): off.
+        assert!(!display_ax_on(true, l(0, 1)));
+        assert!(!display_ax_on(true, l(0, 7)));
+        // Mixed: on; the refused anchors fell back to coordinates.
+        assert!(display_ax_on(true, l(1, 6)));
+    }
+
+    #[test]
+    fn refused_lookups_are_counted_and_add_nothing() {
+        let mut a = Lookups::default();
+        a.add(Lookups {
+            answered: 2,
+            refused: 1,
+        });
+        a.add(Lookups {
+            answered: 0,
+            refused: 3,
+        });
+        assert_eq!(
+            a,
+            Lookups {
+                answered: 2,
+                refused: 4
+            }
+        );
+        let refused = AxHit::refused();
+        assert!(refused.element.is_none() && refused.front.is_none());
     }
 
     #[test]

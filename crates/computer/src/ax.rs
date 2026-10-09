@@ -53,6 +53,23 @@ pub struct AxHit {
     pub element: Option<AxElement>,
     /// The app and window that own it.
     pub front: Option<AxFront>,
+    /// The tree REFUSED this point (Windows: UIPI/access denied on an elevated
+    /// window, the element gone, a provider that did not answer within the
+    /// budget), as opposed to nothing useful being there. `element` and `front`
+    /// are `None`. The macOS reader never sets it (149 §9, as-built WE1 R1).
+    pub refused: bool,
+}
+
+impl AxHit {
+    /// A refused lookup: no element, no app, `refused` set.
+    #[must_use]
+    pub const fn refused() -> Self {
+        Self {
+            element: None,
+            front: None,
+            refused: true,
+        }
+    }
 }
 
 /// Hit-tester with per-call memory of which apps already had
@@ -259,7 +276,7 @@ mod windows_uia {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
     };
-    use windows::core::{Interface, PWSTR};
+    use windows::core::{HRESULT, Interface, PWSTR};
 
     use super::{
         AxElement, AxFront, AxHit, Reader, WINDOWS_CAPTURE_RATIO, is_browser, looks_like_url,
@@ -287,6 +304,25 @@ mod windows_uia {
     enum Job {
         Hit((i32, i32), SyncSender<Option<AxHit>>),
         Front(SyncSender<Option<AxFront>>),
+    }
+
+    /// The worker could not answer at all (see [`Worker::call`]).
+    struct Unavailable;
+
+    /// `E_ACCESSDENIED`: UIPI, an elevated window read from this integrity level.
+    const E_ACCESSDENIED: HRESULT = HRESULT(0x8007_0005_u32 as i32);
+    /// `UIA_E_ELEMENTNOTAVAILABLE`: the element went away under the pointer.
+    const UIA_E_ELEMENTNOTAVAILABLE: HRESULT = HRESULT(0x8004_0201_u32 as i32);
+    /// `UIA_E_TIMEOUT`: the provider did not answer within the transaction timeout.
+    const UIA_E_TIMEOUT: HRESULT = HRESULT(0x8013_1505_u32 as i32);
+
+    /// Whether a UIA error means the tree refused the point rather than that
+    /// nothing is there.
+    fn is_refusal(e: &windows::core::Error) -> bool {
+        matches!(
+            e.code(),
+            E_ACCESSDENIED | UIA_E_ELEMENTNOTAVAILABLE | UIA_E_TIMEOUT
+        )
     }
 
     /// The MTA thread holding the `IUIAutomation` instance: spawned on the first
@@ -319,15 +355,23 @@ mod windows_uia {
             self.tx.as_ref()
         }
 
-        fn call<T>(&mut self, job: impl FnOnce(SyncSender<Option<T>>) -> Job) -> Option<T> {
+        /// `Ok(answer)` from the worker; `Err(Unavailable)` when it is dead, did
+        /// not start (COM or `CUIAutomation` missing) or overran [`HIT_BUDGET`].
+        fn call<T>(
+            &mut self,
+            job: impl FnOnce(SyncSender<Option<T>>) -> Job,
+        ) -> Result<Option<T>, Unavailable> {
             let (reply, rx) = mpsc::sync_channel(1);
-            if self.sender()?.send(job(reply)).is_err() {
+            let Some(tx) = self.sender() else {
+                return Err(Unavailable);
+            };
+            if tx.send(job(reply)).is_err() {
                 self.dead = true;
                 self.tx = None;
-                return None;
+                return Err(Unavailable);
             }
             match rx.recv_timeout(HIT_BUDGET) {
-                Ok(v) => v,
+                Ok(v) => Ok(v),
                 Err(RecvTimeoutError::Timeout) => {
                     tracing::warn!(
                         budget_ms = HIT_BUDGET.as_millis() as u64,
@@ -335,24 +379,28 @@ mod windows_uia {
                     );
                     self.dead = true;
                     self.tx = None;
-                    None
+                    Err(Unavailable)
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     self.dead = true;
                     self.tx = None;
-                    None
+                    Err(Unavailable)
                 }
             }
         }
 
-        /// The hit under a physical screen pixel.
+        /// The hit under a physical screen pixel; a worker that cannot answer
+        /// (dead, not started, over budget) is a refused lookup.
         pub(super) fn hit(&mut self, p: (i32, i32)) -> Option<AxHit> {
-            self.call(|reply| Job::Hit(p, reply))
+            match self.call(|reply| Job::Hit(p, reply)) {
+                Ok(hit) => hit,
+                Err(Unavailable) => Some(AxHit::refused()),
+            }
         }
 
         /// The foreground window's app and title.
         pub(super) fn front(&mut self) -> Option<AxFront> {
-            self.call(Job::Front)
+            self.call(Job::Front).ok().flatten()
         }
     }
 
@@ -430,9 +478,24 @@ mod windows_uia {
         /// retried up to [`CHROMIUM_RETRIES`] times, once per process per reader.
         fn hit(&self, (x, y): (i32, i32)) -> Option<AxHit> {
             // SAFETY: live interface; `POINT` by value.
-            let mut el = unsafe { self.auto.ElementFromPoint(POINT { x, y }) }.ok()?;
-            // SAFETY: live element.
-            let pid = unsafe { el.CurrentProcessId() }.ok().filter(|p| *p > 0);
+            let mut el = match unsafe { self.auto.ElementFromPoint(POINT { x, y }) } {
+                Ok(el) => el,
+                Err(e) if is_refusal(&e) => {
+                    tracing::debug!(%e, x, y, "uia refused the point");
+                    return Some(AxHit::refused());
+                }
+                Err(_) => return None,
+            };
+            // SAFETY: live element. Every live element has a pid; a read that fails
+            // here is a window this integrity level may not inspect (UIPI).
+            let pid = match unsafe { el.CurrentProcessId() } {
+                Ok(p) if p > 0 => Some(p),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::debug!(%e, x, y, "uia element refused its process id");
+                    return Some(AxHit::refused());
+                }
+            };
             let mut ct = control_type(&el);
             if let Some(pid) = pid
                 && bare_chromium(&el, ct)
@@ -468,7 +531,11 @@ mod windows_uia {
                 .or(pid);
             let front = owner.map(|pid| self.front_of(pid, top.as_ref()));
             let element = (!window_level).then(|| element_of(&el, ct));
-            Some(AxHit { element, front })
+            Some(AxHit {
+                element,
+                front,
+                refused: false,
+            })
         }
 
         /// The foreground window as `AxFront` — the last resort when no hit resolved an app.
@@ -777,8 +844,10 @@ mod windows_uia {
                 y: -100_000.0,
             });
             assert!(started.elapsed() <= HIT_BUDGET + Duration::from_millis(500));
-            // Off-screen points answer the root (no window → no element) or nothing.
+            // Off-screen points answer the root (no window → no element) or nothing;
+            // a refusal here would mean COM or CUIAutomation is missing on this box.
             if let Some(h) = hit {
+                assert!(!h.refused, "the automation object did not come up: {h:?}");
                 assert!(h.element.is_none() || h.front.is_some(), "{h:?}");
             }
         }
@@ -972,7 +1041,11 @@ mod macos {
             }
             let front = pid.map(|pid| front_of(&el, pid));
             let element = (r != "AXWindow").then(|| element_of(&el, &r));
-            Some(AxHit { element, front })
+            Some(AxHit {
+                element,
+                front,
+                refused: false,
+            })
         }
     }
 
@@ -1078,6 +1151,13 @@ mod tests {
             }),
             cfg!(target_os = "windows")
         );
+    }
+
+    #[test]
+    fn a_refused_hit_carries_nothing_else() {
+        let r = AxHit::refused();
+        assert!(r.refused && r.element.is_none() && r.front.is_none());
+        assert!(!AxHit::default().refused);
     }
 
     #[test]
