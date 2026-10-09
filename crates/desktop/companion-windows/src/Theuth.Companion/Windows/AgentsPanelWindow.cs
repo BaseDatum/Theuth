@@ -1,6 +1,5 @@
 using System.ComponentModel;
 using System.Text;
-using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
@@ -12,8 +11,11 @@ using Theuth.Companion.Interop;
 using Theuth.Companion.Rpc;
 using Theuth.Companion.Voice;
 using Windows.Graphics;
-using Windows.System;
 using Windows.Win32;
+using DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue;
+using DispatcherQueuePriority = Microsoft.UI.Dispatching.DispatcherQueuePriority;
+using DispatcherQueueTimer = Microsoft.UI.Dispatching.DispatcherQueueTimer;
+using VirtualKey = Windows.System.VirtualKey;
 using Windows.Win32.Foundation;
 
 namespace Theuth.Companion.Ui;
