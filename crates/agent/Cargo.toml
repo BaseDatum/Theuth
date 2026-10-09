@@ -67,6 +67,8 @@ wiremock = { workspace = true }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts", "tools/ts", "knowledge/ts", "secrets/ts", "search/ts", "acp/ts"]
+# 148 R1: `spawn_test_agents` — a model-less engine for dependent crates' tests.
+test-support = []
 
 [lints]
 workspace = true

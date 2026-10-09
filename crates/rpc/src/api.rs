@@ -474,13 +474,21 @@ pub trait Api {
     /// entry; a failed config write is an error and changes nothing.
     #[method(name = "set_escalate_model")]
     async fn set_escalate_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
-    /// The live preferred subagent model (`agent.subagents.model`), if set.
+    /// The live subagent default model (`agent.subagents.model`), if set.
     #[method(name = "subagent_model")]
     async fn subagent_model(&self) -> RpcResult<Option<ModelInfo>>;
-    /// Persist `agent.subagents.model`; `None` clears it (children use `agent.model`).
-    /// Children spawned without `model` use it and the system prompt names it.
+    /// Persist `agent.subagents.model`; `None` clears it (children use `agent.model`). Native
+    /// children spawned without `model` start on it and the system prompt names it (148 R2).
     #[method(name = "set_subagent_model")]
     async fn set_subagent_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// The built-in theuth agent's model (`roster.theuth_model`), if set (148 E3 / R3):
+    /// its desk and the work sessions the desk starts run on it. `None` = same as new sessions.
+    #[method(name = "theuth_agent_model")]
+    async fn theuth_agent_model(&self) -> RpcResult<Option<ModelInfo>>;
+    /// Persist `roster.theuth_model`; `None` clears it. An unknown or un-keyed id is refused
+    /// like `set_subagent_model`. An open theuth desk switches at once.
+    #[method(name = "set_theuth_agent_model")]
+    async fn set_theuth_agent_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
     /// Every session, newest first.
     #[method(name = "list_sessions")]
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>>;
@@ -653,9 +661,10 @@ pub trait Api {
     /// Select the harness-wide Bedrock inference profile; `None` restores the AWS default chain.
     #[method(name = "set_aws_profile")]
     async fn set_aws_profile(&self, profile: Option<String>) -> RpcResult<AwsProfiles>;
-    /// Switch `session` to `model`. `manual` (default `true`): a person picked it in a model
-    /// picker, so it also becomes the default for new sessions (82 §2) and `DefaultModelChanged`
-    /// follows on the stream; `false` switches the session only.
+    /// With `session`: switch that session to `model` — that session only, whatever `manual`
+    /// says (148 R1). With no session and `manual` (default `true`): set the default for new
+    /// sessions (`agent.model`); `DefaultModelChanged` follows on the stream. With no session
+    /// and `manual: false`: resolve `model` and report it, nothing else.
     #[method(name = "set_model", with_extensions)]
     async fn set_model(
         &self,
@@ -668,11 +677,12 @@ pub trait Api {
     /// list in starring order; `FavoriteModelsChanged` follows on the stream when it changed.
     #[method(name = "set_model_favorite")]
     async fn set_model_favorite(&self, model: String, favorite: bool) -> RpcResult<Vec<String>>;
-    /// Set (or clear with `None`) the reasoning effort for `session` from its next turn. Values
-    /// come from the model's catalog entry (`ModelInfo.efforts`, or an integer token budget within
-    /// `budget_min..budget_max`); `EffortChanged` follows on the stream. `manual` (default `true`):
-    /// a person picked it in an effort picker, so it also becomes the default for new sessions
-    /// (`agent.effort`, 83 §2) and `DefaultEffortChanged` follows; `false` changes the session only.
+    /// Set (or clear with `None`) the reasoning effort. Values come from the model's catalog
+    /// entry (`ModelInfo.efforts`, or an integer token budget within `budget_min..budget_max`).
+    /// With `session`: that session from its next turn, that session only, whatever `manual`
+    /// says (148 R1); `EffortChanged` follows on the stream. With no session and `manual`
+    /// (default `true`): the default for new sessions (`agent.effort`); `DefaultEffortChanged`
+    /// follows.
     #[method(name = "set_effort", with_extensions)]
     async fn set_effort(
         &self,
@@ -3759,6 +3769,14 @@ impl ApiServer for Server {
 
     async fn set_subagent_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetSubagentModel { model }).await
+    }
+
+    async fn theuth_agent_model(&self) -> RpcResult<Option<ModelInfo>> {
+        send(&roster_actor()?, roster::TheuthModel).await
+    }
+
+    async fn set_theuth_agent_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
+        send(&roster_actor()?, roster::SetTheuthModel { model }).await
     }
 
     async fn list_sessions(&self) -> RpcResult<Vec<SessionSummary>> {

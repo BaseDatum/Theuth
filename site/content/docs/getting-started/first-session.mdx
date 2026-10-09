@@ -34,7 +34,7 @@ The desktop app talks to a `t --headless` daemon it starts for you (through your
 
 ## Which model, and where that is shown
 
-Every session runs on one model. The first session uses the default, `agent.model` in `~/.theuth/config.yaml` (`anthropic/claude-sonnet-4-5` out of the box). The default follows your last manual pick: choosing a model in a chat's picker switches that session **and** becomes the default for the next new chat, and the `model:` line in `config.yaml` is rewritten in place.
+Every session runs on one model. New sessions start on the default, `agent.model` in `~/.theuth/config.yaml` (`anthropic/claude-sonnet-4-5` out of the box; on the desktop, Settings › Chat › **Models › New sessions**). Choosing a model in a chat's picker — or on the new-chat screen before the first send — switches that chat only; the default stays where it is.
 
 - Terminal: `/model` opens a picker listing only the models whose providers are configured — one row per model, `provider/model  name  200k`, with `· vision` on models that accept images; type to filter, ⏎ picks. `/model <provider/model>` switches directly. If the chosen model takes a reasoning effort, the effort picker opens next; `/effort [level|clear]` changes it later. The header reads, for example, `anthropic/claude-sonnet-4-5  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`.
 - Desktop: the model name in the chat header is the picker (a *Search models* box, the current model pinned first, an **Effort** group with a `clear` row under the models). Next to it a pill shows `used/limit · pct%` of the context window and the last turn's prefix-cache hit rate; the narrow layout keeps the percentage only. `/model` or `/effort` typed into the composer opens the same picker.

@@ -3,7 +3,8 @@
 // text with the held chips (the composer renders it straight from the store, so no local copy can be lost on a
 // remount); `useDrafts.edits` is an in-progress edit of a sent message (`MessageUser`'s bubble), kept apart from the
 // composer draft so entering/cancelling an edit never touches it and a virtualised row scrolling out keeps the edit.
-// Both persist to `localStorage` like `note-chat.ts`. `useSkillDraft` is a skill parked for the next send
+// `useDrafts.pick` is the new-chat draft's model/effort (148 R1), kept with its text for the same reasons.
+// All persist to `localStorage` like `note-chat.ts`. `useSkillDraft` is a skill parked for the next send
 // (`/skill:<name>` or Use in the Skills panel), shown as a `◇ name` chip and sent as `use_skill(session, name, words)`.
 //
 // A send never clears the draft before the engine acks it (70 SEND-NEVER-LOSES): `sending` marks the draft with the
@@ -14,6 +15,9 @@
 import { create } from 'zustand'
 import type { AttachRef } from '@/lib/attach'
 import type { Paste, Pastes } from '@/lib/pastes'
+import type { Api } from '@/rpc/api'
+import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
+import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
 
 const KEY = 'composer-drafts'
 
@@ -24,15 +28,27 @@ export type Edit = { turn: number; text: string; refs: AttachRef[] }
 
 export const EMPTY: Draft = { text: '', pastes: new Map() }
 
+/** The new-chat draft's model/effort; `null` = the engine's default (a draft cannot ask for the provider default). */
+export type DraftPick = { model: string | null; effort: string | null }
+export const NO_PICK: DraftPick = { model: null, effort: null }
+
 /** `Pastes` is a `Map`: stored as its entries. */
 type Saved = {
   drafts: Record<string, { text: string; pastes: [number, Paste][]; unsent?: string }>
   edits: Record<string, Edit>
+  pick?: DraftPick
 }
 
 type Store = {
   by: Record<string, Draft>
   edits: Record<string, Edit>
+  /**
+   * 148 R1/R2: the `''` draft's model/effort pick. It lives exactly as long as the draft text — remounts, route
+   * round-trips and a relaunch keep it — and never touches the engine default: `openDraftSession` creates the session
+   * with it, then `resetPick` spends it (the only path that consumes the draft).
+   * ponytail: one pick for every draft pane; per-pane picks if split drafts ever need to differ.
+   */
+  pick: DraftPick
   set(key: string, draft: Draft): void
   setText(key: string, text: string): void
   setPastes(key: string, pastes: Pastes | ((held: Pastes) => Pastes)): void
@@ -45,26 +61,30 @@ type Store = {
   updateEdit(session: string, patch: Partial<Omit<Edit, 'turn'>>): void
   /** Cancel or send: the edit goes, the composer draft was never touched. */
   endEdit(session: string): void
+  setPick(patch: Partial<DraftPick>): void
+  resetPick(): void
 }
 
-export function load(): Pick<Store, 'by' | 'edits'> {
+type Persisted = Pick<Store, 'by' | 'edits' | 'pick'>
+
+export function load(): Persisted {
   try {
     const s = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Saved>
     const by: Record<string, Draft> = {}
     for (const [k, d] of Object.entries(s.drafts ?? {}))
       by[k] = { text: d.text, pastes: new Map(d.pastes), ...(d.unsent ? { unsent: d.unsent } : {}) }
-    return { by, edits: s.edits ?? {} }
+    return { by, edits: s.edits ?? {}, pick: { ...NO_PICK, ...s.pick } }
   } catch {
-    return { by: {}, edits: {} }
+    return { by: {}, edits: {}, pick: NO_PICK }
   }
 }
 
-function save(by: Record<string, Draft>, edits: Record<string, Edit>): void {
+function save({ by, edits, pick }: Persisted): void {
   const drafts: Saved['drafts'] = {}
   for (const [k, d] of Object.entries(by))
     if (d.text || d.pastes.size) drafts[k] = { text: d.text, pastes: [...d.pastes], ...(d.unsent ? { unsent: d.unsent } : {}) }
   try {
-    localStorage.setItem(KEY, JSON.stringify({ drafts, edits } satisfies Saved))
+    localStorage.setItem(KEY, JSON.stringify({ drafts, edits, pick } satisfies Saved))
   } catch {
     // Storage full or disabled: the draft still lives in the store for this run.
   }
@@ -76,7 +96,7 @@ export const useDrafts = create<Store>()((set, get) => ({
     // An emptied box has nothing left to retry.
     const { unsent, ...rest } = draft
     const by = { ...get().by, [key]: unsent && (draft.text || draft.pastes.size) ? draft : rest }
-    save(by, get().edits)
+    save({ ...get(), by })
     set({ by })
   },
   setText(key, text) {
@@ -100,7 +120,7 @@ export const useDrafts = create<Store>()((set, get) => ({
   },
   beginEdit(session, edit) {
     const edits = { ...get().edits, [session]: edit }
-    save(get().by, edits)
+    save({ ...get(), edits })
     set({ edits })
   },
   updateEdit(session, patch) {
@@ -110,8 +130,16 @@ export const useDrafts = create<Store>()((set, get) => ({
   },
   endEdit(session) {
     const { [session]: _, ...edits } = get().edits
-    save(get().by, edits)
+    save({ ...get(), edits })
     set({ edits })
+  },
+  setPick(patch) {
+    const pick = { ...get().pick, ...patch }
+    save({ ...get(), pick })
+    set({ pick })
+  },
+  resetPick() {
+    get().setPick(NO_PICK)
   },
 }))
 
@@ -135,3 +163,35 @@ export const useSkillDraft = create<SkillStore>()((set) => ({
       return { by: name === null ? rest : { ...rest, [session]: name } }
     }),
 }))
+
+/** `create_session` options that give exactly what `new_session()` gives: every switch off, the engine's defaults. */
+export const PLAIN_OPTIONS: CreateSessionOptions = {
+  retention: 'durable',
+  project: null,
+  notebook: null,
+  view: null,
+  cwd: null,
+  model: null,
+  effort: null,
+  parent_session: null,
+  parent_engine: null,
+  harness: null,
+}
+
+/**
+ * 148 R1: open the session a draft's first action creates (a send, Talk, `/<skill>`, a parked skill). `options`
+ * (a New Chat switch on, built by the composer with the pick in it) or a bare model/effort pick goes through
+ * `create_session`; otherwise `new_session()`. The pick is spent either way. `open` is the `create_session` reply
+ * when it ran (a private session needs it); `pick` is what was spent, for seeding the transcript header.
+ */
+export async function openDraftSession(
+  api: Api,
+  options: CreateSessionOptions | null = null,
+): Promise<{ id: string; open: SessionOpen | null; pick: DraftPick }> {
+  const { pick, resetPick } = useDrafts.getState()
+  const wanted = options ?? (pick.model || pick.effort ? { ...PLAIN_OPTIONS, ...pick } : null)
+  const open = wanted ? await api.create_session(wanted) : null
+  const id = open ? open.session : await api.new_session()
+  resetPick()
+  return { id, open, pick }
+}

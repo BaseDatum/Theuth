@@ -368,7 +368,7 @@ mod tests {
         );
         shared.set_files(
             BTreeMap::from([("cto".to_owned(), Ok(cto))]),
-            file::default_agent(std::path::Path::new("/nonexistent")),
+            file::default_agent(std::path::Path::new("/nonexistent"), None),
         );
         assert_eq!(
             file_of(args("ops", Some(" cto ")), AgentName::DEFAULT, &shared)
@@ -427,7 +427,7 @@ mod tests {
                     && p.contains("Never tell the user to write or edit a file")
             );
         }
-        let manual = crate::desk::manual(&file::default_agent(&dir), 3);
+        let manual = crate::desk::manual(&file::default_agent(&dir, None), 3);
         assert!(manual.contains("`agent_propose()`") && !manual.contains("agent_put"));
     }
 }
