@@ -1,3 +1,5 @@
+Superseded in part by 148 MODEL-DEFAULTS (2026-10-08): in-session and draft picks no longer set the default.
+
 # 82 — as built: DEFAULT-MODEL
 
 The default model for a new chat = the model last picked manually in a

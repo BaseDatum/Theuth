@@ -7,6 +7,7 @@ import { Command, CommandDialog, CommandEmpty, type CommandFilter, CommandGroup,
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { defaultFilter } from 'cmdk'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { useDrafts } from '@/lib/drafts'
 import { usePanes } from '@/lib/panes'
 import { touch } from '@/lib/platform'
 import { cn } from '@/lib/utils'
@@ -136,9 +137,10 @@ function useModel({ session }: Props, done: () => void): Model {
   const running = useSessionField(session ?? '', 'running')
   // 141 §9.2(d): a watch-only child is the harness's — its model is shown, never picked; no `harness_options`/`resume_child` calls.
   const watching = useSessionField(session ?? '', 'kind') === 'observed'
-  const model = sessionModel ?? info?.default_model
-  // 83 §3: the draft shows the engine's live default effort (`DefaultEffortChanged` keeps it current).
-  const effort = session ? sessionEffort : info?.default_effort
+  // 148 R1: the draft shows its own pick, else the engine's live defaults (`DefaultModelChanged` / `DefaultEffortChanged` keep them current).
+  const pick = useDrafts((s) => s.pick)
+  const model = (session ? sessionModel : pick.model) ?? info?.default_model
+  const effort = session ? sessionEffort : (pick.effort ?? info?.default_effort)
   const { data: models = [] } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models(), enabled: !agent && !watching })
   const current = models.find((m) => m.id === model)
   const acp = !!agent && !!session && !watching
@@ -158,10 +160,15 @@ function useModel({ session }: Props, done: () => void): Model {
     const offs = [on('HarnessModelChanged', refresh), on('TurnFinished', (e) => (refresh(e), setPending({})))]
     return () => offs.forEach((off) => off())
   }, [acp, session, qc])
-  // 82 §2: a pick here is manual — the engine makes it the default too and `DefaultModelChanged`
-  // updates the draft (`dispatch`), on every device attached to this engine.
+  // 148 R1: a pick applies to this chat only. In a session the engine switches that session (`set_model` with a
+  // session never touches the default); in the draft it is kept locally until the first send creates the session.
   const setModel = async (id: string) => {
     done()
+    if (!session) {
+      // An effort the new model does not offer would reject the create: fall back to the default.
+      const effort = pick.effort && models.find((m) => m.id === id)?.efforts.includes(pick.effort) ? pick.effort : null
+      return useDrafts.getState().setPick({ model: id, effort })
+    }
     try {
       await api.set_model(session, id, true)
       void qc.invalidateQueries({ queryKey: queryKeys.sessions })
@@ -169,9 +176,9 @@ function useModel({ session }: Props, done: () => void): Model {
       toast.error(e instanceof Error ? e.message : String(e))
     }
   }
-  // 83 §2: a pick here is manual — it becomes the default for new chats too; in the draft that is all it sets.
   const setEffort = async (level: string | null) => {
     done()
+    if (!session) return useDrafts.getState().setPick({ effort: level })
     try {
       await api.set_effort(session, level, true)
     } catch (e) {
@@ -374,8 +381,8 @@ function ModelCommand({ m, session, advisor, className, listClassName, footerCla
 
 /**
  * ChatGPT's header slot: the model name with a cmdk-filtered list from
- * `list_models`, then the selected model's effort levels. A fresh chat keeps
- * effort in the UI until submit creates the session; model changes update the default.
+ * `list_models`, then the selected model's effort levels. A fresh chat keeps its
+ * model and effort pick in the UI until submit creates the session (148 R1: never the default).
  * An ACP child (75 §8) gets the same picker over its harness's own options —
  * a Model group and, when the harness offers one, an Effort group; with the
  * process gone it shows `omp · <model>` as plain text.
