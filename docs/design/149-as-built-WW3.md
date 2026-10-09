@@ -166,8 +166,29 @@ about. The TS gates (C: `App.tsx:386-400`, `Island.tsx:70-72`, `routes/island.ts
 - DPI note for WE1: `app.manifest` declares `dpiAwareness PerMonitorV2`, so `PointerSampler`'s `GetCursorPos` values are physical
   virtual-screen pixels — the engine's pointer space; no conversion.
 
-### R1 gates
-(filled in after the desk round)
+### R1 gates (desk held by ww3 03:19 → 03:28, released; installed companion restarted; Run key = installed exe)
+- build-B Debug 0/0 at ffe8f121 (and cb6429e3 minus the dropped edits); Mac Core **236 passed / 0 failed**.
+- **Meters + oracle chip**: `--island-fixture --shareable` → the open strip shows the two meters, `● 12:46`, the `SHADOW` oracle chip
+  (`r1-island-open-meters-oracle.png`); the closed pill `▌▌ me · ● 13:04 · 2 topics` (`r1-island-pill-meters.png`). `decision_mode`
+  is not called in fixture mode (no engine mode on build-B); the poll path logs `island: decision_mode failed: …` on an engine that
+  refuses it.
+- **Answer card**: `--point-replay --shareable` → log `point-replay: 7 events for replay-desk` → `point: desk turn finished (end_turn) —
+  128 chars` → `sending --PanelDone--> replying` → 6 s later `replying --PanelDone--> idle fx=Conceal`. Screenshot mid-stream:
+  `● theuth is working… / what is this at the top of my screen / [That's the theuth island — the meeting pill showing a 12-minute
+  recording with two topics. Click it to see the brief on PROJ-12.] working… · Open Ctrl+O · Esc hides` (`r1-answer-card-working.png`).
+  The finished frame ("done · Open Ctrl+O") lived 03:23:37.8–03:23:43.8 per the log; my three capture attempts landed outside that
+  6 s window — the state transitions are in the log, the text in the working frame is already the complete reply.
+- **Settings pages**: `--settings` → Island (`r1-settings-island.png`: Always show, Hidden from capture, PTT/eye chords line, per-monitor
+  Reset position, Reset all) and Voice key (`r1-settings-voice.png`: chord line, on/off, Send the screen, Read what the pointer touched
+  = "Auto — the engine's UI Automation reader", Draw the trail, Speak the answer, the disclosure below the fold). The nav items are
+  reached through UIA (`settings-island`, `settings-voice`); synthetic mouse clicks on the NavigationView did not select (same for W3's
+  pages — WinUI needs the activation click first).
+- **Round-trip**: toggling `settings-island-always` → `settings.json` carries `"islandAlwaysShow": true, "islandHiddenFromCapture": true`
+  (read back with `ww3-gate settings-json`); the next launch showed the idle pill `● no meeting · 0 topics` (Always show on).
+- **Hover-open recheck**: with windows-mcp `mouse_control move` (SendInput → real `WM_MOUSEMOVE`) the pill opened after 0.3 s and closed
+  0.1 s after the pointer left — the earlier miss was `SetCursorPos`, which moves the cursor without a mouse message to the window.
+- DPI (WE1's note): `app.manifest` is PerMonitorV2 → `GetCursorPos` is physical; the samples the engine stamped (`circled (480,381)–
+  (1120,660)` on the 1920 × 1080 display) confirm it.
 
 ## Revision history
 - v1 — 02:50: WW1 DONE 0b3de92e merged (Hotkeys.Gate replaces WW3's meeting-row gating; MeetingEvent is one tolerant record, enums string-backed — the island reads the raw stream through MeetingWire, unaffected).
