@@ -403,4 +403,11 @@ public sealed class DeliveryAssessmentTests
         Assert.Equal("next", AnyAppSpacing.Lead("next", beforeCaret: null, previous: "line one\n"));
         Assert.Equal(" more", AnyAppSpacing.Lead("more", beforeCaret: "/compact", previous: "/compact")); // the space comes with the next words
     }
+
+    [Fact]
+    public void TheAnyAppPillSaysTheChordWithoutTheShapeSegment()
+    {
+        Assert.Equal("Ctrl+Alt+D held", AnyAppCopy.Chord("Ctrl+Alt+D", false));
+        Assert.Equal("Ctrl+Alt+D locked", AnyAppCopy.Chord("Ctrl+Alt+D", true));
+    }
 }

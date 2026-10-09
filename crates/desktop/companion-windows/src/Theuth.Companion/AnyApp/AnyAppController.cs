@@ -132,8 +132,10 @@ internal sealed class AnyAppController
         /// <summary>What went in, in order (H3-D2 "scratch that": only the last delivery of ours can go).</summary>
         public readonly List<(int Utterance, string Text, DeliveryMethod Method, bool Verified)> History = new();
         public DeliveryMethod LastMethod;
-        /// <summary>§8.6: this gesture pressed Play/Pause at its press and owes the second press at its end.</summary>
-        public bool MediaToggled;
+        /// <summary>§8.6 (W153D-R2): the media session this gesture paused, through the session API (one gate per gesture).</summary>
+        public readonly MediaPauseGate Media = new();
+        public Windows.Media.Control.GlobalSystemMediaTransportControlsSession? MediaSession;
+        public Task? MediaPress;
     }
 
     private sealed record RewriteState(FocusCapture Capture, Assessment Assessment, AppProfile Profile, string Selection, List<(string Instruction, string Result)> Thread)
@@ -192,12 +194,8 @@ internal sealed class AnyAppController
         }
         live = g;
         RenderListening(g);
-        if (g.Source == GestureSource.Key && !g.RewriteMode && settings.PauseMedia)
-        {
-            // §8.6 (H3-D2): one Play/Pause at a non-refused press, the second at the finish or the abandon; opt-in, may un-pause.
-            g.MediaToggled = Typist.MediaPlayPause();
-            Log.Write($"anyapp: media Play/Pause at the press → {(g.MediaToggled ? "sent" : "failed")}");
-        }
+        // §8.6 (W153D-R2): pause the current media session if it plays, at a non-refused press; opt-in, default off.
+        if (g.Source == GestureSource.Key && !g.RewriteMode && settings.PauseMedia) g.MediaPress = MediaAtPressAsync(g);
         if (g.Source == GestureSource.Key) starting = StartDictationAsync(g);
         return true;
     }
@@ -291,12 +289,51 @@ internal sealed class AnyAppController
         else Pill(null);
     }
 
-    /// <summary>§8.6: the second Play/Pause of a gesture that pressed one at its press (finish or abandon, once).</summary>
+    private static async Task MediaAtPressAsync(Gesture g)
+    {
+        var cur = await MediaSessions.CurrentAsync();
+        switch (g.Media.AtPress(true, false, cur.Available, cur.Id, cur.Status))
+        {
+            case MediaPressAction.Pause:
+                g.MediaSession = cur.Session;
+                bool ok = cur.Session is { } s && await MediaSessions.PauseAsync(s);
+                if (!ok) g.Media.PauseFailed();
+                Log.Write($"anyapp: media — {cur.Id} was playing → pause {(ok ? "done" : "failed")}");
+                break;
+            case MediaPressAction.SendKey:
+                Log.Write($"anyapp: media — the session API is unavailable: Play/Pause key at the press ({(Typist.MediaPlayPause() ? "sent" : "failed")}); the resume is not guaranteed");
+                break;
+            default:
+                Log.Write($"anyapp: media — nothing to pause ({(cur.Id is null ? "no session" : $"{cur.Id} is {cur.Status}")})");
+                break;
+        }
+    }
+
+    /// <summary>§8.6: at the finish or the abandon, resume only the session this gesture paused, only if it is still paused (once).</summary>
     private static void MediaBack(Gesture g)
     {
-        if (!g.MediaToggled) return;
-        g.MediaToggled = false;
-        Log.Write($"anyapp: media Play/Pause at the end → {(Typist.MediaPlayPause() ? "sent" : "failed")}");
+        if (g.MediaPress is { } press) _ = MediaAtEndAsync(g, press);
+    }
+
+    private static async Task MediaAtEndAsync(Gesture g, Task press)
+    {
+        await Task.WhenAny(press, Task.Delay(3000));
+        string? id = null;
+        var status = MediaStatus.Unknown;
+        if (g.MediaSession is { } s) (id, status) = await MediaSessions.NowAsync(s);
+        switch (g.Media.AtEnd(id, status))
+        {
+            case MediaEndAction.Resume:
+                bool played = g.MediaSession is { } ms && await MediaSessions.PlayAsync(ms);
+                Log.Write($"anyapp: media — resume {id} → {(played ? "done" : "failed")}");
+                break;
+            case MediaEndAction.SendKey:
+                Log.Write($"anyapp: media — Play/Pause key at the end ({(Typist.MediaPlayPause() ? "sent" : "failed")}); not guaranteed to resume");
+                break;
+            default:
+                if (g.Media.PausedSession is { } ours) Log.Write($"anyapp: media — {ours} left alone at the end ({(id is null ? "gone" : status.ToString())})");
+                break;
+        }
     }
 
     private void Finish(Gesture g, string? caption)
@@ -1119,7 +1156,7 @@ internal sealed class AnyAppController
         if (g.Paused) return;
         string head = g.RewriteMode ? AnyAppCopy.RewritePill(g.Selection.Length) : AnyAppCopy.Pill(g.Assessment);
         string chord = g.Source == GestureSource.Fixture ? "probe" : Chord;
-        string status = $"{AnyAppCopy.Held(chord, g.LockedHold, shape: true)} · {head}"; // H3-D2: "Ctrl+Alt+D held · Dictating into ‹App›"
+        string status = $"{AnyAppCopy.Chord(chord, g.LockedHold)} · {head}"; // H3-D2: "Ctrl+Alt+D held · Dictating into ‹App›"
         string words = (g.Live + (g.Partial.Length > 0 ? " " + g.Partial : "")).Trim();
         Pill(new VoiceView("listening", words, status, null, words.Length == 0 ? AnyAppCopy.Hints : null, g.LockedHold, false));
     }
