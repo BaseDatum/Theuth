@@ -263,3 +263,60 @@ struct SettingsPersistenceTests {
         #expect(CompanionSettings.load(from: d).railPresence == .alwaysSliver, "the new key wins")
     }
 }
+
+// 155 §7.6 / §11: the engine decides whether (`alert`), the policy decides how.
+private func alerted(_ id: String, _ kind: AttentionKind, _ cls: AlertClass, episode: UInt64 = 1, blanked: Bool = false, session: String = "s1") -> AttentionItem {
+    AttentionItem(id: id, kind: kind, title: "title \(id)", atMs: 1_791_448_000_000, agent: "w2", session: session,
+                  alert: blanked ? nil : Alert(id: "\(id)@\(episode)", cls: cls, why: "why \(id)", atMs: episode), engineDecides: true)
+}
+
+struct PolicyAlertTests {
+    @Test func oneBannerPerAlertIdWithWhyAsBody() throws {
+        var p = primed()
+        let first = p.update(items: [alerted("ask:1", .ask, .needsYou), alerted("show:1", .show, .needsYou, blanked: true)], now: t0)
+        let b = try #require(first.post.first)
+        #expect(first.post.count == 1 && b.id == "ask:1@1" && b.body == "why ask:1" && b.category == .question && b.level == .active && b.itemIds == ["ask:1"])
+        let again = p.update(items: [alerted("ask:1", .ask, .needsYou)], now: at(5))
+        #expect(again.isEmpty, "the same episode never posts twice")
+        // Blanked by the engine (the session is in view there) → nothing; back with the same id → still nothing.
+        let blanked = p.update(items: [alerted("ask:1", .ask, .needsYou, blanked: true)], now: at(6))
+        let back = p.update(items: [alerted("ask:1", .ask, .needsYou)], now: at(7))
+        #expect(blanked.isEmpty && back.isEmpty)
+        // A new episode (the item left and returned) is a new id.
+        let gone = p.update(items: [], now: at(8))
+        #expect(gone.withdraw == ["ask:1@1"])
+        let episode2 = p.update(items: [alerted("ask:1", .ask, .needsYou, episode: 9)], now: at(9))
+        #expect(episode2.post.map(\.id) == ["ask:1@9"])
+    }
+
+    @Test func engineClassRulesWhenItDecided() {
+        var p = primed()
+        // A finished alert is deferrable: held, not posted; a needs-you one on a kind the table calls deferrable is blocking.
+        let out = p.update(items: [alerted("finished:s1:t", .finished, .finished), alerted("review:1", .review, .needsYou)], now: t0)
+        #expect(out.post.map(\.id) == ["review:1@1"] && p.heldCount == 1)
+        // An item the engine decided against (alert absent on the wire = blanked) never falls back to the table.
+        let quiet = p.update(items: [alerted("approval:9", .approval, .needsYou, blanked: true)], now: at(1))
+        #expect(quiet.post.isEmpty)
+    }
+
+    @Test func pausedPostsNothing() {
+        var p = primed()
+        p.pause(until: at(3600))
+        let during = p.update(items: [alerted("ask:1", .ask, .needsYou)], now: at(10))
+        #expect(during.isEmpty && p.isPaused(now: at(10)))
+        _ = p.tick(now: at(3601))
+        #expect(!p.isPaused(now: at(3601)))
+        let after = p.update(items: [alerted("ask:1", .ask, .needsYou), alerted("ask:2", .ask, .needsYou)], now: at(3602))
+        #expect(after.post.map(\.id) == ["ask:2@1"], "what arrived during the pause stays quiet; what arrives after posts")
+    }
+
+    @Test func olderEngineFallsBackToClassify() throws {
+        var p = primed()
+        let out = p.update(items: [it("ask:1", .ask), it("review:1", .review)], now: t0)
+        let b = try #require(out.post.first)
+        #expect(out.post.count == 1 && b.id == "ask:1" && b.body == "title ask:1" && p.heldCount == 1)
+        #expect(NotificationPolicy.classOf(it("review:1", .review)) == .deferrable)
+        #expect(NotificationPolicy.classOf(alerted("review:1", .review, .needsYou)) == .blocking)
+        #expect(NotificationPolicy.classOf(alerted("ask:1", .ask, .finished)) == .deferrable)
+    }
+}
