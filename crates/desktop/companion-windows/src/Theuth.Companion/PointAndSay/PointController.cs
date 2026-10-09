@@ -22,6 +22,8 @@ namespace Theuth.Companion.PointAndSay;
 internal sealed class PointController : IDisposable
 {
     private const int EscHotkeyId = 0x0149;
+    /// <summary>R3: Esc with the voice key's modifiers (Ctrl+Alt+Esc for the default) — the Esc a person can press while still holding the chord.</summary>
+    private const int EscHeldHotkeyId = 0x014A;
     private const int VkEscape = 0x1B;
 
     private readonly Store store;
@@ -41,6 +43,10 @@ internal sealed class PointController : IDisposable
     private readonly DispatcherQueueTimer doneTimer;
     private PointState state = new PointState.Idle();
     private string? dictationId;
+    /// <summary>149 voice-key fix (b): the one engine dictation this gesture owns, from the start call to the stop (<see cref="DictationLease"/>).</summary>
+    private readonly DictationLease lease = new();
+    /// <summary>The in-flight <c>dictation_start</c> (+ mic open) of the current gesture, so the send path can wait for it (bounded) before stopping.</summary>
+    private Task? starting;
     private string? desk;
     private string? deskEngine;
     private string? deskSession; // the session whose turn the card follows
@@ -52,6 +58,7 @@ internal sealed class PointController : IDisposable
     private bool replaying;
     private bool locked;
     private bool escRegistered;
+    private bool escHeldRegistered;
     private int gesture;
     private TaskCompletionSource<string>? finalText;
     private bool disposed;
@@ -76,14 +83,21 @@ internal sealed class PointController : IDisposable
         sampler.Sampled += OnSample;
         recorder = new VoiceRecorder(dispatcher);
         recorder.OnChunk = OnChunk;
-        recorder.OnFailed = why => dispatcher.TryEnqueue(() => { Log.Write($"point: mic failed: {why}"); ShowHint(why); });
+        recorder.OnFailed = why => dispatcher.TryEnqueue(() =>
+        {
+            Log.Write($"point: mic failed: {why}");
+            ShowHint(why);
+            // (b): a dead microphone mid-hold ends the gesture, which stops the engine dictation it started.
+            if (state is PointState.Armed or PointState.Holding or PointState.Locked) Step(new PointEvent.Cancel());
+        });
         tick = Timer(() => Step(new PointEvent.Tick(Now)));
         hintTimer = Timer(() => { hint = null; if (state is PointState.Idle) island.SetVoice(null); else RenderVoice(); });
         doneTimer = Timer(() => Step(new PointEvent.PanelDone()));
         hotkeys.Pressed += OnHotkeyPressed;
         hotkeys.Released += OnHotkeyReleased;
-        island.Window.Hotkey += id => { if (id == EscHotkeyId) Step(new PointEvent.Esc()); };
+        island.Window.Hotkey += id => { if (id is EscHotkeyId or EscHeldHotkeyId) Step(new PointEvent.Esc()); }; // plain Esc, or Esc while the chord is still held (R3)
         store.DictationWire += OnDictationWire;
+        store.PropertyChanged += OnStoreChanged;
         speech = new SpeechPlayer(() => deskSession) { Dump = Environment.GetCommandLineArgs().Contains("--speech-dump") };
         store.EventReceived += OnEvent; // WW1's raw stream hook (Store.WW1.cs)
         Log.Write($"point-and-say: installed (voice key {VoiceKeyChord}; annotate={settings().Annotate}; screen={(settings().IncludeScreen ? "on" : "off")}; speak={(settings().Speak ? "on" : "off")})");
@@ -202,6 +216,7 @@ internal sealed class PointController : IDisposable
         if (next != state) Log.Write($"point: {state.Json} --{e.GetType().Name}--> {next.Json}{(effects.Count > 0 ? " fx=" + string.Join(",", effects.Select(f => f.GetType().Name)) : "")}");
         state = next;
         foreach (var fx in effects) Run(fx);
+        if (state is PointState.Idle) UnregisterEsc(); // (Sending, Cancel) has no effect of its own: Esc must not stay registered system-wide while idle
         // The machine's timers: Armed → a tick at HOLD_MS; Tap1 → a tick just past DOUBLE_TAP_MS.
         switch (state)
         {
@@ -248,8 +263,8 @@ internal sealed class PointController : IDisposable
         dictationId = null;
         finalText = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         island.SetVoice(View("listening"));
-        int g = gesture;
-        _ = StartDictation(g);
+        int g = lease.Begin();
+        starting = StartDictation(g);
         Log.Write($"point: start — overlays={overlays.Windows.Count} annotate={s.Annotate}");
     }
 
@@ -264,9 +279,10 @@ internal sealed class PointController : IDisposable
         {
             var why = Why(e);
             Log.Write($"point: dictation_start failed: {why}");
-            dispatcher.TryEnqueue(() =>
+            await OnDispatcher(() =>
             {
-                if (g != gesture) return;
+                // (a)/(b): a refusal ends the gesture for the rest of this hold; a stale refusal (older press) is ignored.
+                if (!lease.StartFailed(g)) return;
                 dictation.Handle(new AskDictation.Event.StartFailed(why));
                 ShowHint(why.Contains("already", StringComparison.OrdinalIgnoreCase) ? PointFlow.RefusalHint("already dictating") : why);
                 Step(new PointEvent.Cancel());
@@ -274,19 +290,45 @@ internal sealed class PointController : IDisposable
             return;
         }
         var mic = await recorder.StartAsync();
-        dispatcher.TryEnqueue(() =>
+        await OnDispatcher(() =>
         {
-            if (g != gesture)
+            if (lease.Started(g, id) == LeaseVerdict.Stop)
             {
-                _ = store.Dictation.StopAsync(id);
+                // The gesture ended (sent, cancelled, Esc, disconnected) while the start was in flight: this dictation has no owner — stop it now.
+                Log.Write($"point: dictation {id} started after the gesture ended — stopping it");
+                _ = store.Dictation.StopAsync(id).ContinueWith(t => { if (t.IsFaulted) Log.Write($"point: late dictation_stop failed: {t.Exception?.GetBaseException().Message}"); }, TaskScheduler.Default);
                 recorder.Cancel();
                 return;
             }
             dictationId = id;
             dictation.Handle(new AskDictation.Event.Started(id));
-            if (mic is { } err) { Log.Write($"point: mic: {err}"); ShowHint(err); }
+            if (mic is { } err)
+            {
+                // (b): no microphone → nothing to dictate; end the gesture, which stops the dictation just started.
+                Log.Write($"point: mic: {err}");
+                ShowHint(err);
+                Step(new PointEvent.Cancel());
+            }
             else Log.Write($"point: dictation {id} live, mic {recorder.Description}");
         });
+    }
+
+    /// <summary>Runs <paramref name="a"/> on the UI thread and completes when it ran (so <see cref="starting"/> covers the lease update).</summary>
+    private Task OnDispatcher(Action a)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!dispatcher.TryEnqueue(() => { try { a(); } finally { tcs.TrySetResult(); } })) tcs.TrySetResult();
+        return tcs.Task;
+    }
+
+    /// <summary>149 voice-key fix: the engine went away mid-gesture — end it (the stop is best effort; the engine's side died with the connection).</summary>
+    private void OnStoreChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(Store.Connection) || store.Connection == RpcClient.State.Open) return;
+        if (state is PointState.Idle) return;
+        Log.Write($"point: engine {store.Connection.ToString().ToLowerInvariant()} mid-gesture — cancelling");
+        ShowHint(PointFlow.RefusalHint("disconnected"));
+        Step(new PointEvent.Cancel());
     }
 
     private void OnChunk(short[] pcm)
@@ -336,6 +378,7 @@ internal sealed class PointController : IDisposable
         {
             ShowHint("Nothing recognized");
             Step(new PointEvent.Cancel());
+            AuditDictation("stop (nothing recognized)");
             return;
         }
         string target;
@@ -348,6 +391,7 @@ internal sealed class PointController : IDisposable
             Log.Write($"point: desk_open failed: {Why(e)}");
             ShowHint(PointFlow.RefusalHint("hub"));
             Step(new PointEvent.Cancel());
+            AuditDictation("stop (desk_open failed)");
             return;
         }
         if (g != gesture) return;
@@ -364,6 +408,7 @@ internal sealed class PointController : IDisposable
             Log.Write($"point: send_input failed: {why}");
             ShowHint(why);
             Step(new PointEvent.Cancel());
+            AuditDictation("stop (send_input failed)");
             return;
         }
         if (g != gesture) return;
@@ -373,6 +418,7 @@ internal sealed class PointController : IDisposable
         live = text;
         Log.Write($"point: sent to desk {target} ({body.Length} chars, {files.Count} files) id={clientId}");
         island.SetVoice(View("working"));
+        AuditDictation("send");
     }
 
     private Task Yield()
@@ -384,17 +430,28 @@ internal sealed class PointController : IDisposable
 
     private async Task<string> FinalText()
     {
-        if (dictationId is { } id)
+        // (b) on the send path: a release before dictation_start returned — wait for the start (bounded) so the stop below owns the id;
+        // if it is still in flight after the bound, Close() marks the lease and the late Started answer stops the id itself.
+        if (lease.Starting && starting is { } s)
         {
-            dictation.Handle(AskDictation.Event.Stop.Instance);
-            try { await store.Dictation.StopAsync(id); }
-            catch (Exception e) { Log.Write($"point: dictation_stop failed: {Why(e)}"); return dictation.LiveText; }
-            var done = finalText?.Task ?? Task.FromResult(dictation.LiveText);
-            var winner = await Task.WhenAny(done, Task.Delay(PointFlow.FinalTextMs));
-            if (winner != done) Log.Write($"point: final text not flushed within {PointFlow.FinalTextMs} ms — sending the live text");
-            return done.IsCompletedSuccessfully ? done.Result : dictation.LiveText;
+            var first = await Task.WhenAny(s, Task.Delay(PointFlow.StartWaitMs));
+            if (first != s) Log.Write($"point: dictation_start still in flight after {PointFlow.StartWaitMs} ms — the late start will stop itself");
         }
-        return dictation.LiveText;
+        var id = lease.Close();
+        if (id is null)
+        {
+            dictationId = null;
+            return dictation.LiveText;
+        }
+        // dictationId stays set until the final text is in: OnDictationWire filters DictationFinished by it.
+        dictation.Handle(AskDictation.Event.Stop.Instance);
+        try { await store.Dictation.StopAsync(id); }
+        catch (Exception e) { Log.Write($"point: dictation_stop failed: {Why(e)}"); dictationId = null; return dictation.LiveText; }
+        var done = finalText?.Task ?? Task.FromResult(dictation.LiveText);
+        var winner = await Task.WhenAny(done, Task.Delay(PointFlow.FinalTextMs));
+        if (winner != done) Log.Write($"point: final text not flushed within {PointFlow.FinalTextMs} ms — sending the live text");
+        dictationId = null;
+        return done.IsCompletedSuccessfully ? done.Result : dictation.LiveText;
     }
 
     private async Task<(IReadOnlyList<string> Lines, IReadOnlyList<string> Files)> ScreenContext(PointSample[] samples, long durationMs, bool accessibility, string? color = null)
@@ -447,9 +504,10 @@ internal sealed class PointController : IDisposable
         overlays.Hide();
         UnregisterEsc();
         recorder.Cancel();
-        if (dictationId is { } id)
+        // (b): stop the dictation this gesture owns; a start still in flight is stopped by its own answer (lease Closed).
+        if (lease.Close() is { } id)
         {
-            _ = store.Dictation.StopAsync(id).ContinueWith(_ => { }, TaskScheduler.Default);
+            _ = store.Dictation.StopAsync(id).ContinueWith(t => { if (t.IsFaulted) Log.Write($"point: dictation_stop failed: {t.Exception?.GetBaseException().Message}"); }, TaskScheduler.Default);
         }
         dictationId = null;
         gesture++;
@@ -470,6 +528,34 @@ internal sealed class PointController : IDisposable
             island.SetVoice(null);
         }
         Log.Write($"point: discard ({reason})");
+        AuditDictation($"discard ({reason})");
+    }
+
+    /// <summary>
+    /// 149 voice-key fix, the permanent proof line (d): ~1.2 s after a gesture ends, ask the engine what is running —
+    /// <c>point: dictation_status after … → active=none</c> is the invariant holding; an id there is a leak to chase.
+    /// </summary>
+    private void AuditDictation(string after)
+    {
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(1200);
+            string verdict;
+            try
+            {
+                var raw = await store.Client.CallRawAsync("dictation_status");
+                string? active = null;
+                try
+                {
+                    using var doc = JsonDocument.Parse(raw);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("active", out var a) && a.ValueKind == JsonValueKind.String) active = a.GetString();
+                }
+                catch (JsonException) { }
+                verdict = active is null ? "active=none" : $"active={active} (LEAK: a dictation is still running)";
+            }
+            catch (Exception e) { verdict = $"unavailable ({Why(e)})"; }
+            Log.Write($"point: dictation_status after {after} → {verdict}");
+        });
     }
 
     private void Conceal()
@@ -649,16 +735,42 @@ internal sealed class PointController : IDisposable
 
     private void RegisterEsc()
     {
-        if (escRegistered) return;
-        escRegistered = PInvoke.RegisterHotKey(island.Window.Hwnd, EscHotkeyId, HOT_KEY_MODIFIERS.MOD_NOREPEAT, VkEscape);
-        if (!escRegistered) Log.Write("point: RegisterHotKey(Esc) failed — Esc cancels only with the island focused");
+        if (!escRegistered)
+        {
+            escRegistered = PInvoke.RegisterHotKey(island.Window.Hwnd, EscHotkeyId, HOT_KEY_MODIFIERS.MOD_NOREPEAT, VkEscape);
+            if (!escRegistered) Log.Write("point: RegisterHotKey(Esc) failed — Esc cancels only with the island focused");
+        }
+        if (!escHeldRegistered)
+        {
+            // R3: while the chord is held, Esc arrives as <modifiers>+Esc; register that too (never Ctrl+Shift+Esc — Task Manager).
+            var voice = VoiceKeyAction is { } a ? store.Keys.ChordFor(a) : null;
+            if (EscDuringHold.Modifiers(voice) is { } mods)
+            {
+                escHeldRegistered = PInvoke.RegisterHotKey(island.Window.Hwnd, EscHeldHotkeyId, (HOT_KEY_MODIFIERS)((uint)mods) | HOT_KEY_MODIFIERS.MOD_NOREPEAT, VkEscape);
+                if (!escHeldRegistered) Log.Write($"point: RegisterHotKey({new Chord("\u001b", VirtualKeys.Escape, mods).Symbol}) failed {Interop.Win32.LastError()} — Esc cancels once the modifiers are released");
+            }
+            else if (EscDuringHold.SkipReason(voice) is { } why && !escHeldSkipLogged)
+            {
+                escHeldSkipLogged = true;
+                Log.Write($"point: Esc during the hold: {why}");
+            }
+        }
     }
+
+    private bool escHeldSkipLogged;
 
     private void UnregisterEsc()
     {
-        if (!escRegistered) return;
-        PInvoke.UnregisterHotKey(island.Window.Hwnd, EscHotkeyId);
-        escRegistered = false;
+        if (escRegistered)
+        {
+            PInvoke.UnregisterHotKey(island.Window.Hwnd, EscHotkeyId);
+            escRegistered = false;
+        }
+        if (escHeldRegistered)
+        {
+            PInvoke.UnregisterHotKey(island.Window.Hwnd, EscHeldHotkeyId);
+            escHeldRegistered = false;
+        }
     }
 
     // MARK: 149 R3 — capture assertion (the Mac W2 probe's twin)
@@ -766,7 +878,10 @@ internal sealed class PointController : IDisposable
         hotkeys.Pressed -= OnHotkeyPressed;
         hotkeys.Released -= OnHotkeyReleased;
         store.DictationWire -= OnDictationWire;
+        store.PropertyChanged -= OnStoreChanged;
         store.EventReceived -= OnEvent;
+        if (lease.Close() is { } id) _ = store.Dictation.StopAsync(id).ContinueWith(_ => { }, TaskScheduler.Default);
+        dictationId = null;
         speech.Dispose();
         UnregisterEsc();
         sampler.Dispose();
