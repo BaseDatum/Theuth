@@ -74,6 +74,27 @@ Ctrl+D; its window is hidden on build-B); covered by `ARefusedStartCancelsOnlyTh
 Round closed: kill-mine → start-installed (pid 17532) → `Run\TheuthCompanion = "…\companion\Theuth.Companion.exe" --background` → desk released.
 
 ## Deviations / notes
-- Esc while the chord is held is not a plain Esc on Windows (modifiers down) — if "Esc mid-hold" must work during the hold, register
-  Ctrl+Alt+Esc (the chord's modifiers + Esc) alongside; not done here, flagged for the design.
+- Esc while the chord is held is not a plain Esc on Windows (modifiers down) — fixed in §R3 below.
 - `StartWaitMs` 1.5 s is only reached when the engine is slow; the normal start returns in < 300 ms and the send path stops the id directly.
+
+## §R3 — "Esc cancels" during the hold (orchestrator R3, 10:19)
+
+While the voice key is held the user's Esc reaches Windows as *the chord's modifiers*+Esc (Ctrl+Alt+Esc for the default), which the
+plain-Esc hotkey never matched. Now:
+- Core `EscDuringHold` (`src/Theuth.Companion.Core/EscDuringHold.cs`, new): `Modifiers(voiceKey)` derives the modifiers to register Esc
+  with from the bound chord (a rebound key works), drops Win (the OS's), and answers null for a bare chord and for exactly **Ctrl+Shift**
+  — Ctrl+Shift+Esc is Task Manager and is never registered; `SkipReason` gives the log line. Tests `EscDuringHoldTests` (4): default →
+  Ctrl+Alt, Ctrl+Shift skipped / Ctrl+Shift+Alt registered, bare/null → nothing, Win dropped.
+- `PointController.RegisterEsc` registers a second hotkey `EscHeldHotkeyId = 0x014A` with those modifiers (MOD_NOREPEAT) wherever plain Esc
+  is registered (Start, StopAndSend's Sending re-register); `UnregisterEsc` drops both wherever plain Esc went (Discard, Conceal, Dispose and
+  the Idle-landing in `Step`). `WM_HOTKEY` for either id → the same `PointEvent.Esc`. A skipped combination is logged once.
+- Gates: Mac Core **293/293**, Rpc 68/68; build-B Debug x64 @ 902ca850 **0/0** (46 s, job 20261009T092108-369).
+- Live on build-B (Debug 902ca850, hold Ctrl+Alt+Space → Esc key_down/key_up while still holding → release):
+  ```
+  10:22:41.161 point: idle --Pressed--> armed fx=Start · 10:22:41.660 dictation 01a11ff8-cbe4-… live, mic "Microphone Array …"
+  10:22:43.117 point: holding --Esc--> idle fx=Discard
+  10:22:43.147 point: discard (esc)
+  10:22:44.353 point: dictation_status after discard (esc) → active=none
+  ```
+  A plain Esc pressed afterwards while idle produced no `point:` line (both Esc hotkeys unregistered on the Idle landing).
+- Restored: kill-mine → start-installed (pid 11168) → Run value = the installed exe `--background` → desk released; theuth-pkg and the release clone untouched.
