@@ -572,7 +572,8 @@ mod tests {
         use kameo::actor::Spawn as _;
         use kameo::error::SendError;
 
-        let agents = Agents::spawn(agents_with(false).await);
+        let (_scratch, a) = agents_with(false).await;
+        let agents = Agents::spawn(a);
         let durable = agents.ask(NewSession::default()).await.unwrap();
         let other = agents.ask(NewSession::default()).await.unwrap();
         let opened = agents

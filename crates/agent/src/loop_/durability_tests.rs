@@ -1301,8 +1301,10 @@ fn crash_child() {
         .unwrap();
     let hits = PathBuf::from(std::env::var_os("THEUTH_109_HITS").unwrap());
     crate::with_test_registry(async move {
-        let reg_dir = std::env::temp_dir().join(format!("theuth-109-child-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&reg_dir).unwrap();
+        // 141 R4: this life ends in `process::abort` at the crash point, so no
+        // guard of its own would run — the registry dir lives under the
+        // parent-owned harness dir instead (`Harness::new` removes it).
+        let reg_dir = PathBuf::from(&dir).join("109-child-reg");
         let (registry, _) = registry(&reg_dir, &hits, true).await;
         let h = Harness::attach(PathBuf::from(dir), &endpoint, session).await;
         journal(&registry, &h.store).await;
@@ -1311,7 +1313,6 @@ fn crash_child() {
             .durability
             .partial_checkpoint_ms = 0;
         turn.run(tid, vec![h.input("go", false)]).await;
-        let _ = std::fs::remove_dir_all(&reg_dir);
     });
 }
 

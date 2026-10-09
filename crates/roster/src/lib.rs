@@ -254,28 +254,21 @@ fn now_ms() -> u64 {
 }
 
 /// 148 E3/F7: the agent's configured model as the canonical catalog id, or
-/// `None` when it has none — or when the id no longer resolves: warned, and
-/// the desk follows the default instead of staying shut.
+/// `None` when it has none — or when the id does not resolve or its provider
+/// has no credentials (`agent::ResolveModel`, 148 R4): warned, and the desk
+/// follows the default instead of opening on a model that cannot answer.
 async fn resolve_configured(
     agents: &ActorRef<agent::Agents>,
     name: &str,
     configured: Option<String>,
 ) -> Option<String> {
     let m = configured?;
-    // Resolve only: no session, not manual (148 E1).
-    match agents
-        .ask(agent::SetModel {
-            session: None,
-            model: m.clone(),
-            manual: false,
-        })
-        .await
-    {
+    match agents.ask(agent::ResolveModel { model: m.clone() }).await {
         Ok(info) => Some(info.id),
         Err(e) => {
             tracing::warn!(
                 agent = %name, model = %m,
-                "configured model not resolved, the default stands in: {e}"
+                "configured model not usable, the default stands in: {e}"
             );
             None
         }
@@ -349,37 +342,18 @@ async fn switch_session(
 }
 
 /// 148 E3: validate a model id for [`SetTheuthModel`] the way
-/// `agent::SetSubagentModel` does: resolve it through the catalog (no
-/// session, not manual: no side effects), then refuse a provider without
-/// credentials. The catalog's own errors (an ambiguous bare id) pass through.
-// ponytail: the credential check reads `ListModels` (catalog providers with
-// keys), which is exactly what the picker offers; a keyed provider outside the
-// catalog is refused here but not by SetSubagentModel — give Agents a
-// `ResolveModel` ask with its `configured` check if that ever matters.
+/// `agent::SetSubagentModel` does — `agent::ResolveModel` resolves it through
+/// the catalog and refuses a provider without credentials; no side effects.
 async fn resolve_keyed(
     agents: &ActorRef<agent::Agents>,
     id: &str,
 ) -> Result<agent::ModelInfo, String> {
-    let info = agents
-        .ask(agent::SetModel {
-            session: None,
+    agents
+        .ask(agent::ResolveModel {
             model: id.to_owned(),
-            manual: false,
         })
         .await
-        .map_err(|e| e.to_string())?;
-    if !info.provider.is_empty() {
-        let keyed = agents
-            .ask(agent::ListModels)
-            .await
-            .map_err(|e| e.to_string())?
-            .iter()
-            .any(|m| m.provider == info.provider);
-        if !keyed {
-            return Err(format!("provider `{}` has no credentials", info.provider));
-        }
-    }
-    Ok(info)
+        .map_err(|e| e.to_string())
 }
 
 impl Roster {
@@ -3032,7 +3006,10 @@ mod tests {
             .unwrap();
             std::fs::write(dir.join("free.md"), "Free.\n").unwrap();
             let rt = Runtime::new(figment::Figment::new(), data.clone());
-            let agents = agent::spawn_test_agents(rt.clone()).await.unwrap();
+            // `nope` is not a keyed provider (148 R4 Z2-C); everything else is.
+            let agents = agent::spawn_test_agents(rt.clone(), |ns: &str| ns != "nope")
+                .await
+                .unwrap();
             set_default(&agents, "testvis/blind").await;
             let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
             let sink = Sink::spawn(Sink { tx });
@@ -3086,13 +3063,19 @@ mod tests {
             );
 
             // (v) A stored theuth model that no longer resolves (set directly:
-            // SetTheuthModel would refuse it) leaves the desk on the default
-            // and answers TheuthModel as itself.
+            // SetTheuthModel would refuse it) leaves the desk on the default;
+            // so does one whose provider has no credentials (148 R4 Z2-C),
+            // and TheuthModel still answers the raw id.
             r.set_theuth_model(Some("eyes".into())).await;
+            assert_eq!(stored(&agents, theuth).await, "othervis/eyes");
+            r.set_theuth_model(Some("nope/none".into())).await;
             assert_eq!(stored(&agents, theuth).await, "othervis/eyes");
             let actor = Roster::spawn(r);
             let info = actor.ask(TheuthModel).await.unwrap().unwrap();
-            assert_eq!((info.id.as_str(), info.provider.as_str()), ("eyes", ""));
+            assert_eq!(
+                (info.id.as_str(), info.provider.as_str()),
+                ("nope/none", "nope")
+            );
             actor.ask(SetTheuthModel { model: None }).await.unwrap();
 
             // (ii) DefaultModelChanged: desks without a model follow; `fixed` keeps its own.
@@ -3135,6 +3118,31 @@ mod tests {
             .await;
             let stale = desk_of(&agents, "stale").await.unwrap();
             assert_eq!(stored(&agents, stale).await, "testvis/eyes");
+
+            // (vi) 148 R4 Z2-C: a provider without credentials resolves in the
+            // catalog but cannot answer — the desk opens on the default (the
+            // warn path), SetTheuthModel refuses the id, and a stored theuth
+            // id still reads back as itself.
+            let unkeyed = file::parse("unkeyed", "---\nmodel: nope/none\n---\nUnkeyed.\n").unwrap();
+            actor.ask(PutAgent(unkeyed)).await.unwrap();
+            eventually("unkeyed desk opens", async || {
+                desk_of(&agents, "unkeyed").await.is_some()
+            })
+            .await;
+            let unkeyed = desk_of(&agents, "unkeyed").await.unwrap();
+            assert_eq!(stored(&agents, unkeyed).await, "testvis/eyes");
+            // SetTheuthModel refuses it with the engine's words.
+            let refused = actor
+                .ask(SetTheuthModel {
+                    model: Some("nope/none".into()),
+                })
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                refused.contains("provider `nope` has no credentials"),
+                "{refused}"
+            );
 
             actor.kill();
             sink.kill();
