@@ -1663,6 +1663,10 @@ pub trait Api {
     /// 153 §7.2: persist `voice.end_commands`.
     #[method(name = "set_end_phrases")]
     async fn set_end_phrases(&self, phrases: voice::EndPhrases) -> RpcResult<()>;
+    /// 153 F1: the live user-facing `voice.*` settings — what `set_shape`, `set_end_phrases`,
+    /// `set_input_devices` and `set_polish_model` left behind, plus the config-only keys.
+    #[method(name = "voice_settings")]
+    async fn voice_settings(&self) -> RpcResult<voice::VoiceSettings>;
     /// 153 §9: polish `text` for a human reader at `destination`; `AgentPrompt` is refused.
     /// Fails closed: `text: None` + `refused` means deliver the shaped text.
     #[method(name = "polish")]
@@ -6630,6 +6634,15 @@ impl ApiServer for Server {
             &json(phrases.literal.clone().into()),
         )?;
         send(&dictation()?, voice::Setting::EndPhrases(phrases)).await
+    }
+
+    async fn voice_settings(&self) -> RpcResult<voice::VoiceSettings> {
+        let mut settings = send(&dictation()?, voice::CurrentSettings).await?;
+        // The live slot (`set_polish_model`), not the one read at startup.
+        settings.polish_model = ask::<Agents, _>(agent::AGENT_ACTOR, GetPolishModel)
+            .await?
+            .map(|m| m.id);
+        Ok(settings)
     }
 
     // ---- 153 polish / rewrite (A5 fills the bodies) ------------------------------------------

@@ -594,6 +594,8 @@ async fn export_bindings() {
         voice::EndPhrases,
         voice::Preset,
         voice::ShapePresets,
+        voice::HistoryConfig,
+        voice::VoiceSettings,
         voice::Entry,
         voice::EntryId,
         voice::Kind,
