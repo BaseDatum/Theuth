@@ -119,6 +119,14 @@ clean; `check -p theuth` clean; fmt 0 diffs in touched crates (218
 pre-existing elsewhere); no ts-rs type changed (bindings untouched);
 tsc 0; vitest 156 files / 1185 tests.
 
+**Final (R3, folded on `d5cb3e05` = verify/main: 140 AUTORESEARCH + 146
+RESTART-CLARITY):** agent 566 + 1 + 5 passed, 2 ignored (no flakes this run);
+roster 74; rpc 56 + 1; tui 157 + 1; clippy agent/roster/rpc/tui clean;
+`check -p theuth` clean; `cargo fmt --all -- --check` 0 diffs repo-wide;
+bindings export 8 passed, 796 files; tsc 0; FULL vitest 219 files / 1490
+tests (one 5 s timeout flake in `src/link/pairing.test.ts`, relay round
+trips under load, green on rerun; unrelated to 148); `bun run build` OK.
+
 ## Deviations
 
 - E2 plumbing: a separate `agent::SetDeskModel` message instead of extending
@@ -198,6 +206,20 @@ Two UI tickets:
   `pickerSurface` coarse → dialog, fine → popover.
 - Deviation: no "draft discarded" reset site exists (the `''` draft has no
   discard UI); the consumer path is the only reset.
+
+## R3 — phone polish and the verified fold (2026-10-09)
+
+- Settings `Row` gains `stack`: below `md` the label + description come
+  first and the control stretches underneath (`max-md:flex-col
+  max-md:items-stretch max-md:gap-3`; combobox `max-md:w-full
+  max-md:max-w-none`). Used on every ModelCombobox row (Chat ×3, Agent loop
+  helper models ×3, Memory, Dreaming, Autoresearch); the two hand-rolled
+  `WideRow` copies in Dreaming/Autoresearch are gone. Test: `shared.test.ts`.
+- Fold of `d5cb3e05` (verify/main): one conflict, the agent test rig —
+  kept `bare_agents` and added 146's `boot`/`last_boot` fields. `cargo fmt`
+  on agent/roster/rpc/tui. Full gates above.
+- Smoke binary: `mbx build -p theuth` → copied to
+  `~/.theuth/briefs/2026-10-08/148/smoke/t2`, `INTEGRATED2` = `sha=<HEAD>`.
 
 ## Follow-ups
 
