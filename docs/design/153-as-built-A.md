@@ -171,3 +171,35 @@ Branch `fix/153-f1` off main `f4834cf3`; three commits `153-F1: …`.
 - **Deviations.** First bare test run hit `rpc engine::tests::second_acquire_in_one_process_is_running` ("engine.lock is held but engine.json is
   missing") — untouched file, passed on rerun; flaky under the shared machine. `standby_secs` is `bigint` in TS (u64). Radix `Select` renders no
   value text under `renderToStaticMarkup`, so the preset itself is proven by the Rust tests, the UI test by the enabled trigger + phrase inputs.
+
+## F2 (2026-10-10 00:25) — tail flush: words spoken just before `dictation_stop` were dropped
+Branch `fix/153-f2` off main `bfafefeb`; commits `153-F2: …`. Finding: Windows live round (engine 2.14.0+f4834cf3) lost "send it" with no
+tail, kept "Send" with 1.2 s, all with 2.5 s. Two causes, both in `crates/voice`.
+- **Cause 1 — queued audio dropped at stop** (`dictation.rs`). `Task::run` broke on `cancel.is_cancelled()` before reading `feed.rx`, so the
+  20 ms chunks already delivered (and the sub-chunk remainder in `Remote.pending`) never reached the model; `live.close()` flushed only what
+  had been fed. Now: `StopDictation` pushes `Remote.pending` zero-padded to a full chunk ahead of the cancel; `PushAudio` after a stop
+  answers "not dictating" (`cancel.is_cancelled()`, no new field); on `Ok(Done)` (cancel or the §7.3 settle — not deadline, not error) the
+  task runs `Task::drain`: `feed.rx.try_recv()` until empty through `self.chunk(_, false)`, bounded to `DRAIN_MAX` = 5 s of audio at the
+  source rate (a mic keeps delivering). `stop_at` stays the instant the stop was seen, so `stop_to_final_ms` carries the drain's cost.
+  Mic path uses the same loop → same drain. `StopDictation` doc now says what it does.
+- **Cause 2 — one zero window flushed the decoder** (`live.rs`). `Utterer::finish` fed the padded partial window then exactly one zero
+  window. Now `keep_flushing(fed, new_text)`: zero windows until one yields no new text, floor `FLUSH_MIN` = 2, ceiling `FLUSH_MAX` = 6
+  (1.1–3.4 s of synthetic right context); depth in `tracing::debug!("voice: utterance N closed after D zero windows")`. `Text`/`Done`/
+  `DictationTimings` unchanged (no field fits). `piece()`'s stray-lead-in handling kept. VAD `Edge::Close` goes through the same `finish`.
+- **Tests.** `dictation::tests::stop_drains_queued_audio_before_close` (deterministic: `Fake` gained `delay` per chunk = a model slower than
+  real time; one `PushAudio` of 60 chunks + half a chunk, `StopDictation` at once, final scripted on the padded 61st chunk; asserts final
+  text, `command: Send`, `Done`, audio after the stop refused). Unfixed tree: `panicked … "the final before the stop"` (finished in 0.01 s, no
+  text at all). Fixed: ok. `live::tests::flush_floor_then_until_silent_then_ceiling` (bookkeeping). Model-backed, `#[ignore]` like the existing
+  one: `close_right_after_the_last_word_keeps_send_it` (no tail) and `close_after_a_short_tail_keeps_send_it` (1.2 s); both print
+  `close()` cost and one zero-window step cost (`tail Xs: close() …, one zero window …`).
+- **Model-backed tests NOT run** — `vm_stat` free + speculative 2.60 GB at start, 2.61 GB at gate end (needs ≥ 4 GB; shared machine). So the
+  cause-2 before/after and the per-step encoder cost are unmeasured here. Exact commands (worktree `~/Develop/theuth-153-f2`, PATH line
+  from WORKING-RULES-BC, test binary already built):
+  `MBX_SCHEDULER_TESTS=0 mbx test -p voice -- --ignored --nocapture live::tests::close_` (before: `git stash`/checkout `92f02ea8` for the
+  unfixed `finish`, expect the no-tail test to fail). If one zero window prints > 150 ms, the ceiling of 6 costs > 0.9 s per close — then
+  lower `FLUSH_MAX`.
+- **Gates** (`/tmp/153-f2/`): `mbx check -p voice --tests` 0 err/warn (check.log) · `mbx clippy -p voice --tests` 0 warn (clippy.log) ·
+  `mbx test -p voice --no-run` + bare `MBX_SCHEDULER_TESTS=0 mbx test -p voice` → 75 passed, 0 failed, 3 ignored (test.log) ·
+  `cargo fmt -p voice -- --check` clean.
+- **Deviations.** The brief's test 0 named model-backed harness tests in `dictation.rs`; that module is fake-engine only, so the reproduction
+  uses the fake with a per-chunk delay (the slow-model condition the finding describes) and a scripted final, not a synthesized clip.
