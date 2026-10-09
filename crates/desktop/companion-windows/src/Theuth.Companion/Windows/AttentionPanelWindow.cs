@@ -532,17 +532,27 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var anatomy = store.FocusedAnatomy;
         var titleStack = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
-        var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
+        // 149 NATIVE (Sky's Mac review): a long title gives way — it sits in the star column, NoWrap + CharacterEllipsis — while the
+        // position dots and the key caps (Auto columns) never wrap.
+        var nameRow = new Grid { ColumnSpacing = 10, VerticalAlignment = VerticalAlignment.Center };
+        nameRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        nameRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var name = new TextBlock
         {
             Text = anatomy?.Header.Name ?? CardAnatomyModel.InboxTitle, FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = Theme.Brush(NativeLook.TextPrimary, theme), TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center,
+            Foreground = Theme.Brush(NativeLook.TextPrimary, theme), TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap,
+            VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Left,
         };
         nameRow.Children.Add(name);
-        if (anatomy is { } an && an.Header.Count > 1) nameRow.Children.Add(CardChrome.PositionDots(theme, an.Header.Position, an.Header.Count));
+        if (anatomy is { } an && an.Header.Count > 1)
+        {
+            var dots = CardChrome.PositionDots(theme, an.Header.Position, an.Header.Count);
+            Grid.SetColumn(dots, 1);
+            nameRow.Children.Add(dots);
+        }
         titleStack.Children.Add(nameRow);
         bool gold = store.Rail.NeedsYouCount > 0;
-        var glance = new TextBlock { Text = store.Panel.Headline, FontSize = 12, Foreground = Theme.Brush(gold ? NativeLook.Accent : NativeLook.TextSecondary, theme), TextTrimming = TextTrimming.CharacterEllipsis };
+        var glance = new TextBlock { Text = store.Panel.Headline, FontSize = 12, Foreground = Theme.Brush(gold ? NativeLook.Accent : NativeLook.TextSecondary, theme), TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap };
         titleStack.Children.Add(glance);
         AutomationProperties.SetAutomationId(titleStack, "panel-headline");
         AutomationProperties.SetName(titleStack, store.Panel.Position.Length == 0 ? store.Panel.Headline : $"{anatomy?.Header.Spoken ?? store.Panel.Headline}, {store.Panel.Headline}");

@@ -114,6 +114,6 @@ internal static class MarkGlyph
         };
     }
 
-    /// <summary>The wordmark (the brand mark, not an icon stand-in): its shape stays, painted in the theme's primary text colour.</summary>
+    /// <summary>The wordmark (the brand mark, not an icon stand-in): its shape stays, painted in the system accent (PillGlyphs.Wordmark).</summary>
     public static FrameworkElement Wordmark(ElementTheme theme) => PillGlyphs.Wordmark(theme);
 }

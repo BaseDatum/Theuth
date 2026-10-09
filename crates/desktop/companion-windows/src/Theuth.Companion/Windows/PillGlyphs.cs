@@ -152,12 +152,12 @@ internal static class PillGlyphs
         }
     }
 
-    /// <summary>The wordmark (the brand mark, not an icon stand-in): its shape stays; painted in the theme's primary text colour.</summary>
+    /// <summary>The wordmark (the brand mark, not an icon stand-in): its shape stays; painted in the system accent with the inner square in text-on-accent — the shared table (the Mac paints it <c>Color.accentColor</c>).</summary>
     public static FrameworkElement Wordmark(ElementTheme theme)
     {
         var g = new Grid { Width = 12, Height = 12 };
-        g.Children.Add(new Border { CornerRadius = new CornerRadius(3), Background = Theme.Brush(NativeLook.TextPrimary, theme) });
-        g.Children.Add(new Border { CornerRadius = new CornerRadius(1), Background = Theme.Brush(NativeLook.SolidBackgroundBase, theme), Margin = new Thickness(3) });
+        g.Children.Add(new Border { CornerRadius = new CornerRadius(3), Background = Theme.Brush(NativeLook.Accent, theme) });
+        g.Children.Add(new Border { CornerRadius = new CornerRadius(1), Background = Theme.Brush(NativeLook.OnAccent, theme), Margin = new Thickness(3) });
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(g, "theuth");
         return g;
     }

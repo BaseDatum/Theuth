@@ -37,7 +37,7 @@ internal static class CardChrome
     {
         CornerRadius = ControlRadius, Padding = new Thickness(5, 0, 5, 1), VerticalAlignment = VerticalAlignment.Center,
         Background = Theme.Brush(NativeLook.ControlFill, theme), BorderBrush = Theme.Brush(NativeLook.ControlStroke, theme), BorderThickness = new Thickness(1),
-        Child = new TextBlock { Text = NativeLook.KeyCapText(cap), FontSize = Caps, Foreground = Theme.Brush(strong ? NativeLook.TextPrimary : NativeLook.TextSecondary, theme) },
+        Child = new TextBlock { Text = NativeLook.KeyCapText(cap), FontSize = Caps, TextWrapping = TextWrapping.NoWrap, Foreground = Theme.Brush(strong ? NativeLook.TextPrimary : NativeLook.TextSecondary, theme) },
     };
 
     /// <summary>A button "‹label› ‹cap›" (or the cap alone) that acts without activating the companion (D6: real buttons). A lone "Esc" cap is the close button: a Cancel glyph beside the Esc cap.</summary>
@@ -47,7 +47,7 @@ internal static class CardChrome
         if (close) label = null;
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
         if (close) row.Children.Add(Theme.Icon(NativeLook.Glyph.Cancel, theme, NativeLook.TextSecondary, 12));
-        if (label is { Length: > 0 }) row.Children.Add(new TextBlock { Text = label, FontSize = Meta, Foreground = Theme.Brush(NativeLook.TextSecondary, theme), VerticalAlignment = VerticalAlignment.Center });
+        if (label is { Length: > 0 }) row.Children.Add(new TextBlock { Text = label, FontSize = Meta, TextWrapping = TextWrapping.NoWrap, Foreground = Theme.Brush(NativeLook.TextSecondary, theme), VerticalAlignment = VerticalAlignment.Center });
         row.Children.Add(KeyCap(theme, close ? "Esc" : cap));
         var b = new Button
         {

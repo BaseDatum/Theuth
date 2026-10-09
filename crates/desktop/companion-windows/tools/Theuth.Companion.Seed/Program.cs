@@ -5,7 +5,7 @@ using Theuth.Companion.Rpc;
 namespace Theuth.Companion.Seed;
 
 /// <summary>
-/// <c>seed decision|blocked|hire|all [--count N] [--title TEXT]</c> · <c>seed list</c> · <c>seed clear</c> — real
+/// <c>seed decision|blocked|hire|all [--count N] [--title TEXT] [--name AGENT]</c> · <c>seed list</c> · <c>seed clear</c> — real
 /// attention items on the local engine (engine.json + token, as the companion finds it) through the engine's own RPCs,
 /// for UI tests on a scratch engine that has no model provider. Seeded tasks carry project <c>companion-seed</c> and are
 /// owned and reviewed by the user (no desk is woken); seeded hires are agent files named <c>seed-…</c>.
@@ -33,7 +33,7 @@ public static class Program
     {
         if (args.Length == 0 || args[0] is "help" or "--help" or "-h")
         {
-            Console.WriteLine("usage: seed decision|blocked|hire|all [--count N] [--title TEXT] | list | clear");
+            Console.WriteLine("usage: seed decision|blocked|hire|all [--count N] [--title TEXT] [--name AGENT] | list | clear");
             Console.WriteLine("  decision  a user task blocked on a decision:<id> (no packet: only an agent's escalate tool writes the options)");
             Console.WriteLine("  blocked   a user task blocked on a non-decision blocker");
             Console.WriteLine("  hire      a proposed agent seed-<n> (agent_put with proposed_by)");
@@ -42,6 +42,7 @@ public static class Program
         }
         int count = 1;
         string? title = null;
+        string? agentName = null; // 149 NATIVE proof: `hire --name <a-z0-9-, ≤32>` seeds a hire whose card header name is long
         var kinds = new List<string>();
         for (int i = 0; i < args.Length; i++)
         {
@@ -49,6 +50,7 @@ public static class Program
             {
                 case "--count" when i + 1 < args.Length: count = int.Parse(args[++i], CultureInfo.InvariantCulture); break;
                 case "--title" when i + 1 < args.Length: title = args[++i]; break;
+                case "--name" when i + 1 < args.Length: agentName = args[++i]; break;
                 default: kinds.Add(args[i]); break;
             }
         }
@@ -111,7 +113,7 @@ public static class Program
             }
             case "hire":
             {
-                var name = $"seed-{stamp}-{n}";
+                var name = agentName ?? $"seed-{stamp}-{n}";
                 await c.CallRawAsync("agent_put", new
                 {
                     name,

@@ -605,7 +605,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         Grid.SetColumn(icon, 1);
         grid.Children.Add(icon);
         var text = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
-        var name = new TextBlock { Text = r.Name, FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(r.Remote ? NativeLook.TextSecondary : NativeLook.TextPrimary, theme), TextTrimming = TextTrimming.CharacterEllipsis };
+        var name = new TextBlock { Text = r.Name, FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(r.Remote ? NativeLook.TextSecondary : NativeLook.TextPrimary, theme), TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap };
         text.Children.Add(name);
         if (r.Last.Length > 0)
         {
