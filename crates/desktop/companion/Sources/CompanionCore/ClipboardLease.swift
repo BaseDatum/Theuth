@@ -72,15 +72,17 @@ public struct ClipboardLease {
         self.pasteboard = pasteboard; self.leaveTextOnClipboard = leaveTextOnClipboard
     }
 
-    /// Step 1: snapshot every item (oversized representations → text types only). Answers the new generation.
+    /// Step 1: snapshot every item (oversized representations → text types only). Answers the new generation. When the
+    /// pasteboard still holds a dictation item of ours (the previous gesture's settle has not run yet), the previous
+    /// snapshot — the user's real clipboard — is kept instead of snapshotting our own text.
     @discardableResult
     public mutating func begin() throws -> Int {
         generation += 1
-        writeChangeCount = nil; session = nil; text = nil; snapshot = []
+        writeChangeCount = nil; session = nil; text = nil
         phase = .idle
         let items: [PasteboardItem]
         do { items = try pasteboard.snapshot() } catch { throw Failure.clipboardSnapshotFailed(error) }
-        snapshot = Self.capped(items)
+        if !items.contains(where: { $0[Self.sessionType] != nil }) { snapshot = Self.capped(items) }
         phase = .held
         return generation
     }
