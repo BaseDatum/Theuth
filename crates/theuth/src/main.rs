@@ -14,6 +14,7 @@ use clap::Parser;
 use figment::Figment;
 use figment::providers::{Env, Format, Yaml};
 use runtime::{Plugin, Runtime, SessionId};
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 /// The worker's memory limits are enforced by the allocator, so the process
 /// that runs `t subprocess` must own it. Unarmed (every other mode) it is
@@ -1706,11 +1707,18 @@ async fn run() -> anyhow::Result<()> {
         Err(e) => return Err(e.into()),
     };
 
-    // The TUI owns the terminal; logs go to a file.
+    // The TUI owns the terminal; logs go to a file. INFO and below through the non-blocking
+    // appender; WARN and above synchronously on a second appender to the same file, so the
+    // last warnings before a native crash (the WebGPU EP, 149) are on disk when the process
+    // dies without draining the non-blocking worker. Both open the file O_APPEND and write
+    // one line per call, so lines never interleave.
     let logs = data_dir.join("logs");
     std::fs::create_dir_all(&logs)?;
     let (writer, _guard) =
         tracing_appender::non_blocking(tracing_appender::rolling::daily(&logs, "theuth.log"));
+    let writer = tracing_appender::rolling::daily(&logs, "theuth.log")
+        .with_max_level(tracing::Level::WARN)
+        .and(writer.with_min_level(tracing::Level::INFO));
     // iroh's pkarr publisher warns "Failed to publish to pkarr" every 1–13 s while the DNS relay is
     // unreachable (69 Z); the endpoint keeps working, so that target only speaks at error.
     tracing_subscriber::fmt()

@@ -11,9 +11,11 @@
 //! cannot share a process with the protobuf-lite 3.14 inside `sentencepiece` (ptts): the TTS
 //! load aborts. As a dylib its symbols stay private to it.
 
+use std::mem::ManuallyDrop;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use ort::AsPointer;
 use ort::memory::DeviceType;
@@ -59,6 +61,104 @@ static WEBGPU_PLUGIN: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// `models.webgpu_adapter`: a substring of the adapter's vendor or description that wins the
 /// device choice ([`pick_adapter`]); `None` = discrete over integrated over first.
 static WEBGPU_ADAPTER: Mutex<Option<String>> = Mutex::new(None);
+
+/// Serialises every `Session::run` on, and every drop of, a session [`configure`] put on
+/// WebGPU. The plugin EP we ship (0.4.0) shares ONE `WebGpuContext` with ONE unlocked command
+/// encoder between all sessions: a run ending on one thread `Finish()`es the encoder another
+/// thread is still recording into ("WebGPU validation failed. [CommandEncoder] is already
+/// finished"), then a native fault in `onnxruntime_providers_webgpu.dll` takes the engine
+/// down. Upstream fixed it in microsoft/onnxruntime #32587 ("Support concurrent use with
+/// explicit Session streams") and #32874 ("Each Session owns its command recording"), neither
+/// in a released plugin. Remove when the WebGPU plugin ships #32587; it may also need
+/// explicit per-session streams (`OrtEp CreateSyncStreamForDevice`). CPU sessions never take it.
+static WEBGPU_RUN: Mutex<()> = Mutex::new(());
+
+/// Time spent waiting for [`WEBGPU_RUN`]: (acquisitions, total ns, max ns). The queueing
+/// is the lock's whole latency cost; the GPU concurrency test reports it.
+static WEBGPU_WAIT: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+
+/// [`WEBGPU_RUN`] waits so far: `(acquisitions, total, max)`.
+pub fn gpu_wait_stats() -> (u64, std::time::Duration, std::time::Duration) {
+    let [n, total, max] = &WEBGPU_WAIT;
+    (
+        n.load(Ordering::Relaxed),
+        std::time::Duration::from_nanos(total.load(Ordering::Relaxed)),
+        std::time::Duration::from_nanos(max.load(Ordering::Relaxed)),
+    )
+}
+
+/// The [`WEBGPU_RUN`] guard when `on_gpu`, `None` otherwise. A poisoned lock (a panic inside a
+/// run) is recovered: the lock protects no data of ours.
+pub fn gpu_guard(on_gpu: bool) -> Option<MutexGuard<'static, ()>> {
+    on_gpu.then(|| {
+        let t = std::time::Instant::now();
+        let guard = WEBGPU_RUN.lock().unwrap_or_else(PoisonError::into_inner);
+        let waited = t.elapsed().as_nanos() as u64;
+        let [n, total, max] = &WEBGPU_WAIT;
+        n.fetch_add(1, Ordering::Relaxed);
+        total.fetch_add(waited, Ordering::Relaxed);
+        max.fetch_max(waited, Ordering::Relaxed);
+        guard
+    })
+}
+
+/// Run `f` under [`WEBGPU_RUN`] when `on_gpu` (the flag [`configure`] returned for the
+/// session `f` drives); plain call otherwise.
+pub fn gpu_serial<T>(on_gpu: bool, f: impl FnOnce() -> T) -> T {
+    let _guard = gpu_guard(on_gpu);
+    f()
+}
+
+/// A model (an `ort::Session` or a parakeet-rs model owning several) with the flag
+/// [`configure`] returned for it. Derefs to the model; callers hold [`Guarded::guard`] (or use
+/// [`gpu_serial`] with [`Guarded::on_gpu`]) around each run, and the drop — which releases GPU
+/// resources on the shared context — happens under the lock here.
+pub struct Guarded<T> {
+    inner: ManuallyDrop<T>,
+    on_gpu: bool,
+}
+
+impl<T> Guarded<T> {
+    /// Wrap `inner`, built on WebGPU when `on_gpu`.
+    pub fn new(inner: T, on_gpu: bool) -> Self {
+        Self {
+            inner: ManuallyDrop::new(inner),
+            on_gpu,
+        }
+    }
+
+    /// Whether this model's sessions run on WebGPU.
+    pub fn on_gpu(&self) -> bool {
+        self.on_gpu
+    }
+
+    /// [`gpu_guard`] for this model: hold it across one run, drop it before reading outputs.
+    pub fn guard(&self) -> Option<MutexGuard<'static, ()>> {
+        gpu_guard(self.on_gpu)
+    }
+}
+
+impl<T> Deref for Guarded<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.inner
+    }
+}
+
+impl<T> DerefMut for Guarded<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
+}
+
+impl<T> Drop for Guarded<T> {
+    fn drop(&mut self) {
+        // SAFETY: `inner` is dropped exactly once, here, and never touched again.
+        gpu_serial(self.on_gpu, || unsafe {
+            ManuallyDrop::drop(&mut self.inner)
+        });
+    }
+}
 
 /// The WebGPU device [`configure`] appends once [`WEBGPU_STATE`] is 1: its position in
 /// `Environment::devices()` (stable for the process; the list only grows at registration) and
@@ -555,8 +655,9 @@ pub fn devices() -> Vec<String> {
 /// Register the execution provider [`accelerator::get`] resolves to on `builder`. CPU is
 /// ORT's default and needs nothing; WebGPU or DirectML that fails to register logs one WARN
 /// and leaves this and every later session on the CPU. Never fails: the builder comes back
-/// untouched in the worst case.
-pub fn configure(builder: SessionBuilder) -> SessionBuilder {
+/// untouched in the worst case. The flag is `true` when WebGPU was appended: the session's
+/// runs and drop must then go through [`WEBGPU_RUN`] ([`Guarded`]).
+pub fn configure(builder: SessionBuilder) -> (SessionBuilder, bool) {
     if !ort_ready() {
         // A builder exists, so `ort` found a runtime by itself (`$ORT_DYLIB_PATH`, a library on
         // the loader path) — never the one `ort_lib` would have chosen. Name that.
@@ -573,13 +674,13 @@ pub fn configure(builder: SessionBuilder) -> SessionBuilder {
         return match ort::environment::Environment::current() {
             // One device, the chosen adapter: several would be several factories' devices, which ORT refuses to mix.
             Ok(env) => match builder.with_devices(env.devices().skip(index).take(1), None) {
-                Ok(b) => b,
+                Ok(b) => (b, true),
                 Err(e) => {
                     WEBGPU_STATE.store(2, Ordering::Relaxed);
                     tracing::warn!(
                         "onnxruntime: appending {WEBGPU_EP} failed ({e}); ONNX models run on the CPU"
                     );
-                    e.recover()
+                    (e.recover(), false)
                 }
             },
             Err(e) => {
@@ -587,12 +688,12 @@ pub fn configure(builder: SessionBuilder) -> SessionBuilder {
                 tracing::warn!(
                     "onnxruntime: no environment for {WEBGPU_EP} ({e}); ONNX models run on the CPU"
                 );
-                builder
+                (builder, false)
             }
         };
     }
     if !directml_wanted() {
-        return builder;
+        return (builder, false);
     }
     #[cfg(windows)]
     {
@@ -601,19 +702,19 @@ pub fn configure(builder: SessionBuilder) -> SessionBuilder {
         {
             Ok(b) => {
                 tracing::debug!("onnxruntime: {DML_EP} registered");
-                b
+                (b, false)
             }
             Err(e) => {
                 DML_FAILED.store(true, Ordering::Relaxed);
                 tracing::warn!(
                     "onnxruntime: DirectML unavailable ({e}); ONNX models run on the CPU"
                 );
-                e.recover()
+                (e.recover(), false)
             }
         }
     }
     #[cfg(not(windows))]
-    builder
+    (builder, false)
 }
 
 /// `<data_dir>/models/onnxruntime/plugins/<WEBGPU_LIB>`, where `auto` looks for the plugin.
@@ -839,5 +940,55 @@ mod tests {
         );
         assert_eq!(choose_adapter(Accelerator::Webgpu, &mac, None), Ok(0));
         assert_eq!(choose_adapter(Accelerator::Webgpu, &lxc, None), Ok(0));
+    }
+
+    #[test]
+    fn cpu_sessions_never_take_the_run_lock() {
+        // Hold the lock on this thread: a CPU run must still go straight through.
+        let _held = gpu_guard(true).expect("guard");
+        assert!(gpu_guard(false).is_none());
+        assert_eq!(gpu_serial(false, || 7), 7);
+    }
+
+    #[test]
+    fn gpu_runs_never_overlap_and_a_drop_waits_its_turn() {
+        use std::sync::atomic::AtomicUsize;
+        static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+        static OVERLAPS: AtomicUsize = AtomicUsize::new(0);
+        struct Spins;
+        impl Drop for Spins {
+            fn drop(&mut self) {
+                if IN_FLIGHT.fetch_add(1, Ordering::SeqCst) != 0 {
+                    OVERLAPS.fetch_add(1, Ordering::SeqCst);
+                }
+                std::thread::sleep(std::time::Duration::from_micros(200));
+                IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let threads: Vec<_> = (0..4)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        if i == 0 {
+                            drop(Guarded::new(Spins, true));
+                        } else {
+                            gpu_serial(true, || drop(Spins));
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(OVERLAPS.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_panic_under_the_lock_does_not_poison_later_runs() {
+        let r = std::thread::spawn(|| gpu_serial(true, || panic!("inside a run"))).join();
+        assert!(r.is_err());
+        assert_eq!(gpu_serial(true, || 1), 1);
+        assert!(gpu_guard(true).is_some());
     }
 }
