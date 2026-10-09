@@ -427,6 +427,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         if (store.FocusedCard is { } c)
         {
             sb.Append(c.Item.Id).Append('|').Append(c.Question).Append('|').Append(c.Why).Append('|').Append(c.Model).Append('|').Append(c.MoreOptions).Append(c.Clearable);
+            sb.Append('|').Append(store.ReplyAttachmentsFor(c.Item.Session).Count); // 149 WW3 R2: the parked P screenshots
             foreach (var o in c.Options) sb.Append('|').Append(o.Key).Append(o.Label).Append(o.Detail).Append(o.Recommended);
             foreach (var ch in c.Chips) sb.Append('|').Append(ch.Text).Append(ch.Ok);
         }
@@ -664,6 +665,16 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             fieldWrap.Children.Add(cap);
             Grid.SetColumn(fieldWrap, 1);
             row.Children.Add(fieldWrap);
+            // 149 WW3 R2: the P screenshots parked for this reply (Store.AttachToReply) — "N screenshots attached".
+            if (StoreModel.AttachedText(store.ReplyAttachmentsFor(card.Item.Session).Count) is { } attachedText)
+            {
+                var attached = new TextBlock { Text = attachedText, FontSize = 11.5, Foreground = Palette.Brush(Palette.Malachite, theme), Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+                AutomationProperties.SetAutomationId(attached, "reply-attached");
+                fieldWrap.Children.Add(attached);
+                attached.HorizontalAlignment = HorizontalAlignment.Right;
+                attached.Margin = new Thickness(0, 0, 36, 0);
+                attached.IsHitTestVisible = false;
+            }
             var mic = CardChrome.IconCap(theme, "\uE720", "V", talkBusy ? "Listening" : "Hold to talk", anatomy.Reply.Talk, () => { }, "reply-mic");
             if (anatomy.Reply.Talk)
             {

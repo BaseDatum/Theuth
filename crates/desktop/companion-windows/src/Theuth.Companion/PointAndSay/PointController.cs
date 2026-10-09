@@ -144,6 +144,45 @@ internal sealed class PointController : IDisposable
     /// <summary>Simulated press/release for the probe (<c>--point-probe</c>) and tests on build-B.</summary>
     public void Simulate(PointEvent e) => Step(e);
 
+    /// <summary>
+    /// 149 R2 — <c>Surfaces.PointRequested(card)</c>: P on a card's reply row (card != null) captures the screen NOW without a
+    /// gesture — one sample at the pointer, overlays hidden, <c>screen_context</c>, the PNGs parked on the card's session
+    /// (<c>Store.AttachToReply</c>) so the reply row says "N screenshots attached" and the send carries them; the rail's point
+    /// glyph (card == null) starts a point-and-say gesture LOCKED, as if the voice key had been double-tapped — Esc cancels, a tap
+    /// of the voice key or the glyph again ends it and sends.
+    /// </summary>
+    public void OnPointRequested(string? cardSession)
+    {
+        if (cardSession is not null) { _ = AttachScreenAsync(cardSession); return; }
+        if (state.IsGesture || state is PointState.Sending)
+        {
+            // The glyph again while locked/holding: the tap that sends (Locked → Pressed = send).
+            if (state is PointState.Locked) Step(new PointEvent.Pressed());
+            return;
+        }
+        // Idle/Replying → Armed (Start) → a tap (Released < HOLD) → Tap1 → a second press inside the window → Locked.
+        var t = Now;
+        Step(new PointEvent.Pressed());
+        if (state is not PointState.Armed) return; // refused
+        var (s1, _) = PointMachine.Step(state, new PointEvent.Released(), t, null);
+        var (s2, fx2) = PointMachine.Step(s1, new PointEvent.Pressed(), t + 1, null);
+        state = s2;
+        tick.Stop();
+        foreach (var fx in fx2) Run(fx);
+        Log.Write($"point: glyph → {state.Json} (locked gesture; Esc cancels, the voice key or the glyph again sends)");
+    }
+
+    private async Task AttachScreenAsync(string session)
+    {
+        if (!PInvoke.GetCursorPos(out var p)) return;
+        var sample = new PointSample(0, p.X, p.Y, true);
+        overlays.Hide();
+        await Yield();
+        var (lines, files) = await ScreenContext(new[] { sample }, 0, settings().AccessibilityOn);
+        store.AttachToReply(session, files);
+        Log.Write($"point: P on card session {session} → {files.Count} file(s) parked for the reply{(lines.Count > 0 ? "; " + lines[0] : "")}");
+    }
+
     private void Step(PointEvent e)
     {
         if (disposed) return;

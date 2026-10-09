@@ -39,6 +39,9 @@ internal sealed class WW3Install : IDisposable
         var island = new IslandController(store, dispatcher, settings);
         var point = new PointController(store, dispatcher, island, surfaces.Hotkeys, () => island.PointSettings);
         island.EyeChanged += hidden => point.SetHiddenFromCapture(hidden);
+        // 149 R2: WW2's seam — P on a card (attach the screen to its reply) and the rail's point glyph (a locked gesture).
+        store.InstallWw3();
+        surfaces.PointRequested += card => point.OnPointRequested(card?.Item.Session);
         var install = new WW3Install(island, point);
         Current = install;
         if (Environment.GetCommandLineArgs().Contains("--point-probe")) PointProbe.Run(dispatcher, point, island);
