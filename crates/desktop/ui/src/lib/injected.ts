@@ -24,8 +24,8 @@ export type Injected =
   | { kind: 'peer'; from: string; text: string }
   | { kind: 'subagent'; name: string; text: string }
   | { kind: 'job'; id: string; command: string; exit: string; secs: string; pty: boolean; text: string }
-  /** A quiet PTY job (61 §2.3): `text` is the screen. `name` is the job's label, if any. */
-  | { kind: 'job_idle'; id: string; command: string; name?: string; quiet: string; secs: string; nudge: string; userTyped?: string; text: string }
+  /** A quiet PTY job (61 §2.3): `text` is the screen. `name` is the job's label, if any. 155 §6.5: `why` it fired. */
+  | { kind: 'job_idle'; id: string; command: string; name?: string; quiet: string; secs: string; nudge: string; userTyped?: string; why?: string; text: string }
   | { kind: 'schedule'; name: string; at: string; quiet: boolean; text: string }
   /** A fired `remind_me_in` timer (14 as-built): `after` is the requested seconds, `late` when re-armed past due after a restart. */
   | { kind: 'reminder'; id: string; after: string; late: boolean; text: string }
@@ -284,6 +284,7 @@ export function classify(text: string): Injected[] | null {
       } else if (name === 'job_idle') {
         const jobName = attr(open, 'name="')
         const userTyped = attr(open, 'user_typed="')
+        const why = attr(open, 'why="')
         out.push({
           kind: 'job_idle',
           id: from,
@@ -293,6 +294,7 @@ export function classify(text: string): Injected[] | null {
           secs: attr(open, 'secs="') ?? '',
           nudge: attr(open, 'nudge="') ?? '',
           ...(userTyped === undefined ? {} : { userTyped }),
+          ...(why === undefined || why === '' ? {} : { why: unescape(why) }),
           text: body,
         })
       } else if (name === 'schedule') {

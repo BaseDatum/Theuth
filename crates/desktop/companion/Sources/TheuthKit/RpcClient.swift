@@ -223,6 +223,12 @@ public extension RpcClient {
         let _: JSONValue = try await call("attention_dismiss", [.init(id)])
     }
 
+    /// `set_event_focus(sessions)` (129 §3.4; 155 §13.5): the sessions this connection has in view — the engine
+    /// blanks their alerts in `attention_list` and marks a focused finish seen; `[]` = none. Per connection.
+    func setEventFocus(sessions: [String]) async throws {
+        let _: JSONValue = try await call("set_event_focus", [.init(sessions)])
+    }
+
     func agentsList() async throws -> [AgentSummary] { try await call("agents_list") }
 
     func listActivity() async throws -> [AgentInfo] { try await call("list_activity") }

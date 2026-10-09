@@ -34,6 +34,8 @@ final class PanelController {
     private var previousApp: NSRunningApplication?
     private var anchor: Anchor = .mouse
     private(set) var isOpen = false
+    /// 155 §13.5: the focus set last sent to the engine; `nil` = never on this connection.
+    private var sentFocus: [String]?
 
     init(store: Store) {
         self.store = store
@@ -102,6 +104,22 @@ final class PanelController {
             .store(in: &subs)
         w1.onPoint = { [weak self] in self?.pointAndAttach() }
         w1.onStop = { [weak self] in self?.stopAgent() }
+        // 155 §13.5: the card's session is "in view" while the panel shows it; a reconnect starts a fresh connection.
+        store.$panel.receive(on: RunLoop.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.syncFocus() } }
+            .store(in: &subs)
+        store.$connection.receive(on: RunLoop.main)
+            .sink { [weak self] s in MainActor.assumeIsolated { if s == .open { self?.sentFocus = nil; self?.syncFocus() } } }
+            .store(in: &subs)
+    }
+
+    /// 155 §13.5 (D6 "never for the session in view"): `set_event_focus([session])` for the card on screen, `[]` when
+    /// the panel is closed — the engine blanks that session's alerts for this connection and marks its finish seen.
+    private func syncFocus() {
+        let want = isOpen ? (store.focusedCard?.item.session).map { [$0] } ?? [] : []
+        guard want != sentFocus else { return }
+        sentFocus = want
+        Task { try? await store.client.setEventFocus(sessions: want) } // -32601 on an engine before 129: ignored
     }
 
     /// Summon: remember the frontmost app, place, take key. Never activates this app.
@@ -109,6 +127,7 @@ final class PanelController {
         self.anchor = anchor
         previousApp = NSWorkspace.shared.frontmostApplication
         isOpen = true
+        syncFocus()
         relayout(now: true)
         panel.ignoresMouseEvents = false
         panel.makeKeyAndOrderFront(nil)
@@ -139,6 +158,7 @@ final class PanelController {
     func close(returnKey: Bool) {
         guard isOpen else { return }
         isOpen = false
+        syncFocus()
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         store.noteFor = nil
         store.ask.replyFor = nil // W3

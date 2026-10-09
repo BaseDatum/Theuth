@@ -1,0 +1,27 @@
+{
+  "id": "finished:0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e04:turn-12",
+  "kind": "finished",
+  "title": "w1 finished",
+  "detail": null,
+  "at_ms": 1791448440000,
+  "task": null,
+  "agent": "w1",
+  "session": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e04",
+  "approval": null,
+  "decision": null,
+  "packet": null,
+  "ask": null,
+  "turn": null,
+  "waiting_since_ms": null,
+  "summary": "Signed tokens replace the session cookie.",
+  "next_steps": [],
+  "context": null,
+  "priority": null,
+  "rank": 5,
+  "alert": {
+    "id": "finished:0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e04:turn-12@1791448440000",
+    "class": "finished",
+    "why": "turn ended: Signed tokens replace the session cookie.",
+    "at_ms": 1791448440000
+  }
+}

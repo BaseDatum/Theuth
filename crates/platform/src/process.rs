@@ -61,7 +61,28 @@ impl ProcessTree {
     pub fn alive(&self) -> bool {
         imp::alive(&self.0)
     }
+
+    /// 155 §6.2: the tree's size and summed CPU time now — Windows from the
+    /// Job Object accounting, Unix by walking the leader's descendants
+    /// (bounded at [`TREE_MAX`] members). `None` when it cannot be read: the
+    /// leader is gone, the list call fails or the tree is over the bound; a
+    /// descendant that vanishes mid-walk is just not counted.
+    pub fn sample(&self) -> Option<TreeSample> {
+        imp::sample(&self.0)
+    }
 }
+
+/// One reading of a [`ProcessTree`] (155 §6.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreeSample {
+    /// Live members, the leader included.
+    pub processes: u32,
+    /// User + system CPU time of every member since it started.
+    pub cpu: std::time::Duration,
+}
+
+/// The most members `ProcessTree::sample` walks before giving up (155 §6.2).
+pub const TREE_MAX: usize = 256;
 
 /// Whether the process `pid` still exists (signal 0 / a live exit code).
 pub fn pid_alive(pid: u32) -> bool {
@@ -112,8 +133,9 @@ pub fn hostname() -> &'static str {
 #[cfg(unix)]
 mod imp {
     use std::io;
+    use std::time::Duration;
 
-    use super::Signal;
+    use super::{Signal, TREE_MAX, TreeSample};
 
     #[derive(Clone, Copy, Debug)]
     pub struct Tree(i32);
@@ -181,6 +203,159 @@ mod imp {
     }
 
     pub fn hide_console(_: &mut std::process::Command) {}
+
+    /// Unix walk: the leader plus every descendant reachable through live
+    /// parent links (an orphan reparented to init is no longer ours).
+    pub fn sample(t: &Tree) -> Option<TreeSample> {
+        let mut pids = vec![t.0];
+        let mut cpu = Duration::ZERO;
+        let mut processes = 0u32;
+        let mut i = 0;
+        while let Some(&pid) = pids.get(i) {
+            match os::cpu_of(pid) {
+                Some(c) => {
+                    cpu += c;
+                    processes += 1;
+                }
+                // The leader unreadable is the tree gone; a child that
+                // exited between the listing and the read is just over.
+                None if i == 0 => return None,
+                None => {
+                    i += 1;
+                    continue;
+                }
+            }
+            os::children(pid, &mut pids)?;
+            if pids.len() > TREE_MAX {
+                return None;
+            }
+            i += 1;
+        }
+        Some(TreeSample { processes, cpu })
+    }
+
+    #[cfg(target_os = "macos")]
+    mod os {
+        use std::time::Duration;
+
+        use super::TREE_MAX;
+
+        /// `pti_total_user + pti_total_system`: `task_absolutetime_info`, so
+        /// mach absolute time units (24 MHz on Apple silicon, not nanoseconds).
+        pub fn cpu_of(pid: i32) -> Option<Duration> {
+            let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::uninit();
+            let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+            // SAFETY: `info` is a `proc_taskinfo` the flavour names, with its exact size.
+            let n = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTASKINFO,
+                    0,
+                    info.as_mut_ptr().cast(),
+                    size,
+                )
+            };
+            if n != size {
+                return None;
+            }
+            // SAFETY: the kernel filled all `size` bytes.
+            let info = unsafe { info.assume_init() };
+            let ticks = u128::from(info.pti_total_user + info.pti_total_system);
+            let (numer, denom) = *TIMEBASE;
+            Some(Duration::from_nanos(
+                (ticks * numer / denom).try_into().ok()?,
+            ))
+        }
+
+        /// `<mach/mach_time.h>`; libc deprecates its copy in favour of the
+        /// `mach2` crate, which nothing here depends on.
+        #[repr(C)]
+        struct MachTimebase {
+            numer: u32,
+            denom: u32,
+        }
+        unsafe extern "C" {
+            fn mach_timebase_info(info: *mut MachTimebase) -> libc::c_int;
+        }
+
+        /// The timebase as `(numer, denom)`, read once.
+        static TIMEBASE: std::sync::LazyLock<(u128, u128)> = std::sync::LazyLock::new(|| {
+            let mut tb = MachTimebase { numer: 0, denom: 0 };
+            // SAFETY: a plain out-pointer to the struct the call fills.
+            if unsafe { mach_timebase_info(&raw mut tb) } != libc::KERN_SUCCESS || tb.denom == 0 {
+                return (1, 1);
+            }
+            (u128::from(tb.numer), u128::from(tb.denom))
+        });
+
+        /// Append `pid`'s children; `None` when the call fails or there are
+        /// more than the bound (the buffer would have been truncated).
+        pub fn children(pid: i32, out: &mut Vec<i32>) -> Option<()> {
+            let mut buf = [0 as libc::pid_t; TREE_MAX + 1];
+            let size = std::mem::size_of_val(&buf) as libc::c_int;
+            // SAFETY: `buf` is `size` bytes of writable pids.
+            // Unlike `proc_listpids`, this returns the number of pids (observed
+            // on macOS 26: 2 for two children where `proc_listpids` says 8).
+            let n = unsafe { libc::proc_listchildpids(pid, buf.as_mut_ptr().cast(), size) };
+            let n = usize::try_from(n).ok()?;
+            if n > TREE_MAX {
+                return None;
+            }
+            out.extend_from_slice(&buf[..n]);
+            Some(())
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    mod os {
+        //! Linux (and other procfs unices): `/proc/<pid>/stat` fields 4
+        //! (ppid), 14 and 15 (utime, stime in clock ticks).
+        use std::time::Duration;
+
+        /// `(ppid, utime + stime)` of `pid`; `None` for a zombie or a gone pid.
+        fn stat(pid: i32) -> Option<(i32, Duration)> {
+            let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            // The command name may contain spaces; fields resume after its ')'.
+            let rest = s.get(s.rfind(')')? + 2..)?;
+            let mut f = rest.split_ascii_whitespace();
+            let state = f.next()?;
+            if state == "Z" {
+                return None;
+            }
+            let ppid: i32 = f.next()?.parse().ok()?;
+            let utime: u64 = f.nth(9)?.parse().ok()?;
+            let stime: u64 = f.next()?.parse().ok()?;
+            // SAFETY: a plain query with no memory effects.
+            let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+            let hz = u64::try_from(hz).ok().filter(|h| *h > 0)?;
+            Some((
+                ppid,
+                Duration::from_nanos((utime + stime) * 1_000_000_000 / hz),
+            ))
+        }
+
+        pub fn cpu_of(pid: i32) -> Option<Duration> {
+            stat(pid).map(|(_, cpu)| cpu)
+        }
+
+        /// One pass over `/proc` for the pids whose parent is `pid`.
+        pub fn children(pid: i32, out: &mut Vec<i32>) -> Option<()> {
+            for entry in std::fs::read_dir("/proc").ok()? {
+                let Ok(entry) = entry else { continue };
+                let Some(child) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|n| n.parse::<i32>().ok())
+                else {
+                    continue;
+                };
+                if stat(child).is_some_and(|(ppid, _)| ppid == pid) {
+                    out.push(child);
+                }
+            }
+            Some(())
+        }
+    }
 }
 
 // ponytail: unverified on Windows — step 2's check: `shell("timeout 30")`
@@ -205,7 +380,7 @@ mod imp {
         PROCESS_SET_QUOTA, PROCESS_TERMINATE,
     };
 
-    use super::Signal;
+    use super::{Signal, TreeSample};
 
     /// An owned kernel handle, closed on drop.
     #[derive(Debug)]
@@ -287,7 +462,8 @@ mod imp {
         }
     }
 
-    pub fn alive(t: &Tree) -> bool {
+    /// The job's accounting, `None` when the query fails.
+    fn accounting(t: &Tree) -> Option<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION> {
         let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
         // SAFETY: `info` is the struct the class names, with its exact size.
         let ok = unsafe {
@@ -299,7 +475,23 @@ mod imp {
                 std::ptr::null_mut(),
             )
         };
-        ok != 0 && info.ActiveProcesses > 0
+        (ok != 0).then_some(info)
+    }
+
+    pub fn alive(t: &Tree) -> bool {
+        accounting(t).is_some_and(|info| info.ActiveProcesses > 0)
+    }
+
+    /// `ActiveProcesses` and the job's user + kernel time (100 ns units,
+    /// terminated members included, so it never decreases).
+    pub fn sample(t: &Tree) -> Option<TreeSample> {
+        let info = accounting(t)?;
+        let ticks =
+            u64::try_from(info.TotalUserTime).ok()? + u64::try_from(info.TotalKernelTime).ok()?;
+        Some(TreeSample {
+            processes: info.ActiveProcesses,
+            cpu: std::time::Duration::from_nanos(ticks * 100),
+        })
     }
 
     pub fn pid_alive(pid: u32) -> bool {
@@ -334,6 +526,8 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -359,6 +553,76 @@ mod tests {
         child.wait().unwrap();
         assert!(!tree.alive());
         assert!(!pid_alive(child.id()));
+    }
+
+    /// 155 §6.2: `sample` counts the leader's descendants and sums a CPU
+    /// that only grows; a tree whose leader is reaped reads `None`.
+    #[cfg(unix)]
+    #[test]
+    fn sample_counts_descendants_and_cpu_grows() {
+        use std::os::unix::process::CommandExt as _;
+        /// Kills the tree however the test ends (a panic must not leak `yes`).
+        struct Reap(ProcessTree);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                self.0.kill();
+            }
+        }
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30 & sleep 30 & yes > /dev/null & wait"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let reap = Reap(ProcessTree::adopt(child.id()).unwrap());
+        let tree = &reap.0;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        // sh + two sleeps + yes.
+        let first = loop {
+            let s = tree.sample().unwrap();
+            if s.processes >= 4 {
+                break s;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "tree never filled: {s:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // `yes` burns a core: within 2 s the summed CPU grows by ≥ 100 ms.
+        let grown = loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let s = tree.sample().unwrap();
+            assert!(s.cpu >= first.cpu, "cpu went backwards: {first:?} → {s:?}");
+            if s.cpu - first.cpu >= Duration::from_millis(100) {
+                break s;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no cpu growth: {first:?} → {s:?}"
+            );
+        };
+        assert!(grown.processes >= 4, "{grown:?}");
+        tree.kill();
+        child.wait().unwrap();
+        assert_eq!(tree.sample(), None);
+    }
+
+    /// 155 §6.2 on Windows: the Job Object accounting behind `sample`.
+    #[cfg(windows)]
+    #[test]
+    fn sample_reads_the_job_accounting() {
+        let mut child = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Start-Sleep 30"])
+            .spawn()
+            .unwrap();
+        let tree = ProcessTree::adopt(child.id()).unwrap();
+        let first = tree.sample().unwrap();
+        assert!(first.processes >= 1, "{first:?}");
+        std::thread::sleep(Duration::from_millis(200));
+        let second = tree.sample().unwrap();
+        assert!(second.cpu >= first.cpu, "{first:?} → {second:?}");
+        tree.kill();
+        child.wait().unwrap();
     }
 
     #[test]

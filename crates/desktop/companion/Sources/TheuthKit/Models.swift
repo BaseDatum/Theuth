@@ -65,17 +65,24 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
     public var priority: Priority?
     /// 132 D4: higher first; the engine's value for an item without a priority (`Priority::Medium.weight()`) when absent.
     public var rank: UInt32
+    /// 155 §7.1: the engine's alert decision; `nil` when none, blanked for the focused session or a seen finish.
+    public var alert: Alert?
+    /// 155 §7.6: the `alert` key was on the wire — a 155 engine decides *whether*; `false` on an older engine,
+    /// where the policy's own `classify` table still rules.
+    public var engineDecides: Bool
 
     public init(id: String, kind: AttentionKind, title: String, detail: String? = nil, atMs: UInt64,
                 task: String? = nil, agent: String? = nil, session: String? = nil, approval: String? = nil,
                 decision: String? = nil, packet: String? = nil, ask: AskRequested? = nil, turn: UInt32? = nil,
                 waitingSinceMs: UInt64? = nil, summary: String? = nil, nextSteps: [String] = [],
-                context: ItemContext? = nil, priority: Priority? = nil, rank: UInt32 = 5) {
+                context: ItemContext? = nil, priority: Priority? = nil, rank: UInt32 = 5,
+                alert: Alert? = nil, engineDecides: Bool = false) {
         self.id = id; self.kind = kind; self.title = title; self.detail = detail; self.atMs = atMs
         self.task = task; self.agent = agent; self.session = session; self.approval = approval
         self.decision = decision; self.packet = packet; self.ask = ask; self.turn = turn
         self.waitingSinceMs = waitingSinceMs; self.summary = summary; self.nextSteps = nextSteps
         self.context = context; self.priority = priority; self.rank = rank
+        self.alert = alert; self.engineDecides = engineDecides
     }
 
     public init(from decoder: Decoder) throws {
@@ -99,6 +106,14 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
         rank = try c.decodeIfPresent(UInt32.self, forKey: .rank) ?? 5
         summary = try c.decodeIfPresent(String.self, forKey: .summary)
         nextSteps = try c.decodeIfPresent([String].self, forKey: .nextSteps) ?? []
+        engineDecides = c.contains(.alert)
+        // An unknown future `class` word is no alert rather than a failed list.
+        alert = (try? c.decodeIfPresent(Alert.self, forKey: .alert)) ?? nil
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, title, detail, atMs, task, agent, session, approval, decision, packet, ask, turn
+        case waitingSinceMs, summary, nextSteps, context, priority, rank, alert
     }
 
     /// When the wait began: E2's `waiting_since_ms`, else `at_ms`.
@@ -110,6 +125,26 @@ public struct ItemContext: Codable, Equatable, Sendable {
     public var request: String?
     public var lastReply: String?
     public init(request: String? = nil, lastReply: String? = nil) { self.request = request; self.lastReply = lastReply }
+}
+
+/// 155 §7.2: why a client should notify — `roster::alert::AlertClass`, snake_case.
+public enum AlertClass: String, Codable, Equatable, Sendable {
+    case needsYou = "needs_you"
+    case finished
+}
+
+/// 155 §7.1: the alert on one item. `id` (`<item id>@<episode start ms>`) is stable for one episode; one banner per id.
+public struct Alert: Codable, Equatable, Sendable {
+    public var id: String
+    public var cls: AlertClass
+    public var why: String
+    public var atMs: UInt64
+
+    public init(id: String, cls: AlertClass, why: String, atMs: UInt64) {
+        self.id = id; self.cls = cls; self.why = why; self.atMs = atMs
+    }
+
+    enum CodingKeys: String, CodingKey { case id, cls = "class", why, atMs }
 }
 
 /// `tasks::Priority`, snake_case (132 D4).

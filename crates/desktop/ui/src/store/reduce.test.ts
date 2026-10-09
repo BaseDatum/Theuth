@@ -529,7 +529,7 @@ test('live PTY set follows screen changes: idle or exit drops a job, a new scree
   expect(s.ptys.size).toBe(0)
   s = apply(s, { type: 'JobStarted', session: S, id: 'j1', command: 'top', kind: 'pty', call_id: 'c1', log: '/l', name: null, pty: true }, ctx())
   expect([...s.ptys]).toEqual(['j1'])
-  const idle = { type: 'JobIdle', session: S, id: 'j1', command: 'top', name: null, quiet_secs: 60n, secs: 90n, nudge: 1, user_typed_secs: null, output: '' } as const
+  const idle = { type: 'JobIdle', session: S, id: 'j1', command: 'top', name: null, quiet_secs: 60n, secs: 90n, nudge: 1, user_typed_secs: null, output: '', why: '' } as const
   s = apply(s, idle, ctx())
   expect(s.ptys.size).toBe(0)
   expect(apply(s, idle, ctx())).toBe(s)

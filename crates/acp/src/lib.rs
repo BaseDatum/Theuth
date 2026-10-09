@@ -15,7 +15,8 @@ pub mod registry;
 pub mod render;
 
 pub use agents::{
-    AGENTS_FILE, DEFAULT_SKILLS_DIR, DIR, Entry, EntryInfo, describe, load, path, save, unknown,
+    AGENTS_FILE, DEFAULT_SKILLS_DIR, DIR, Entry, EntryInfo, Reports, describe, load, path, save,
+    unknown,
 };
 pub use harness::{
     ChildAnnounce, ChildSource, ChildState, ConfigOption, ConfigValue, Connect, CostRule, Dialer,
