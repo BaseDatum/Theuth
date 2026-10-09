@@ -8,9 +8,11 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use kameo::message::{Context, Message};
+use models::onnx::{Guarded, gpu_serial};
 use parakeet_rs::{ExecutionConfig, Nemotron, ParakeetTDT, TimestampMode, Transcriber as _};
 use parking_lot::Mutex;
 use symphonia::core::audio::SampleBuffer;
@@ -159,15 +161,30 @@ pub struct Piece {
 }
 
 /// parakeet-rs's defaults (4 intra threads, CPU) plus the execution provider
-/// `models.accelerator` resolves to (`models::onnx::configure`: DirectML on Windows).
-fn exec_config() -> ExecutionConfig {
-    ExecutionConfig::default().with_custom_configure(|b| Ok(models::onnx::configure(b)))
+/// `models.accelerator` resolves to (`models::onnx::configure`). parakeet-rs builds two
+/// sessions (encoder, decoder-joint) per model; `on_gpu` is set once any of them lands on
+/// WebGPU, so the model's runs and drop take `models::onnx`'s run lock.
+fn exec_config(on_gpu: Arc<AtomicBool>) -> ExecutionConfig {
+    ExecutionConfig::default().with_custom_configure(move |b| {
+        let (b, gpu) = models::onnx::configure(b);
+        on_gpu.fetch_or(gpu, Ordering::Relaxed);
+        Ok(b)
+    })
+}
+
+/// Load a parakeet-rs model with [`exec_config`] and wrap it with its WebGPU flag.
+fn guarded<M>(
+    load: impl FnOnce(ExecutionConfig) -> Result<M, parakeet_rs::Error>,
+) -> Result<Guarded<M>, parakeet_rs::Error> {
+    let on_gpu = Arc::new(AtomicBool::new(false));
+    let m = load(exec_config(on_gpu.clone()))?;
+    Ok(Guarded::new(m, on_gpu.load(Ordering::Relaxed)))
 }
 
 /// The offline TDT model (`meetings/02-live.md` §0.1): loaded once from a
 /// checkpoint directory, transcribes 16 kHz mono pieces. Inference takes the
 /// inner lock, so one `Engine` serialises its callers; `Send + Sync`.
-pub struct Engine(Mutex<ParakeetTDT>);
+pub struct Engine(Mutex<Guarded<ParakeetTDT>>);
 
 impl Engine {
     /// Load the TDT checkpoint in `dir` (`encoder-model.onnx`, `decoder_joint-model.onnx`,
@@ -176,7 +193,7 @@ impl Engine {
     pub fn load(dir: &Path, data_dir: &Path) -> anyhow::Result<Engine> {
         let t = Instant::now();
         models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
-        let m = ParakeetTDT::from_pretrained(dir, Some(exec_config()))
+        let m = guarded(|cfg| ParakeetTDT::from_pretrained(dir, Some(cfg)))
             .map_err(|e| anyhow::anyhow!("no STT model in {}: {e}", dir.display()))?;
         tracing::info!("voice: STT model loaded in {:?}", t.elapsed());
         Ok(Engine(Mutex::new(m)))
@@ -190,11 +207,12 @@ impl Engine {
         } else {
             TimestampMode::Sentences
         };
-        let r = self
-            .0
-            .lock()
-            .transcribe_samples(pcm16k.to_vec(), MODEL_RATE, 1, Some(mode))
-            .map_err(|e| anyhow::anyhow!("transcribe: {e}"))?;
+        let mut m = self.0.lock();
+        let r = gpu_serial(m.on_gpu(), || {
+            m.transcribe_samples(pcm16k.to_vec(), MODEL_RATE, 1, Some(mode))
+        })
+        .map_err(|e| anyhow::anyhow!("transcribe: {e}"))?;
+        drop(m);
         let mut out: Vec<Word> = Vec::new();
         if words {
             out.reserve(r.tokens.len());
@@ -234,7 +252,7 @@ impl Engine {
 /// call returns only the *new* punctuated text — encoder cache and decoder state
 /// persist across windows, so the output is append-only. `reset` at a real turn
 /// boundary, never per window. `Send` but not `Sync`: one owner task per stream.
-pub struct Stream(Nemotron);
+pub struct Stream(Guarded<Nemotron>);
 
 impl Stream {
     /// Load the session from `dir` (`encoder.onnx`, `decoder_joint.onnx`,
@@ -246,7 +264,7 @@ impl Stream {
         }
         models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
         let t = Instant::now();
-        let m = Nemotron::from_pretrained(dir, Some(exec_config()))
+        let m = guarded(|cfg| Nemotron::from_pretrained(dir, Some(cfg)))
             .map_err(|e| anyhow::anyhow!("no streaming STT model in {}: {e}", dir.display()))?;
         tracing::info!("voice: streaming STT model loaded in {:?}", t.elapsed());
         Ok(Stream(m))
@@ -254,8 +272,8 @@ impl Stream {
 
     /// One encoder step over `window`; the text emitted by it (often empty).
     pub fn feed(&mut self, window: &[f32; WINDOW]) -> anyhow::Result<String> {
-        self.0
-            .transcribe_chunk(window)
+        let Stream(m) = self;
+        gpu_serial(m.on_gpu(), || m.transcribe_chunk(window))
             .map_err(|e| anyhow::anyhow!("transcribe_chunk: {e}"))
     }
 

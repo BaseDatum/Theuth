@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use meeting::post::diarize::{DIAR_DIR, DIAR_MODEL, Mel, RATE, SPEECH, turns};
 use meeting::post::transcribe::pcm16k;
+use models::onnx::Guarded;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
@@ -265,7 +266,11 @@ fn ort_err<R>(e: ort::Error<R>) -> anyhow::Error {
 }
 
 /// As `post::diarize::session`, plus the optional intra-op thread count.
-fn session(path: &Path, data_dir: &Path, threads: Option<usize>) -> anyhow::Result<Session> {
+fn session(
+    path: &Path,
+    data_dir: &Path,
+    threads: Option<usize>,
+) -> anyhow::Result<Guarded<Session>> {
     models::onnx::ort_lib(data_dir).map_err(anyhow::Error::msg)?;
     let mut builder = Session::builder()
         .map_err(ort_err)?
@@ -274,9 +279,11 @@ fn session(path: &Path, data_dir: &Path, threads: Option<usize>) -> anyhow::Resu
     if let Some(t) = threads {
         builder = builder.with_intra_threads(t).map_err(ort_err)?;
     }
-    models::onnx::configure(builder)
+    let (mut builder, on_gpu) = models::onnx::configure(builder);
+    let sess = builder
         .commit_from_file(path)
-        .map_err(|e| anyhow::anyhow!("load {}: {e}", path.display()))
+        .map_err(|e| anyhow::anyhow!("load {}: {e}", path.display()))?;
+    Ok(Guarded::new(sess, on_gpu))
 }
 
 /// One pass over the recording in one geometry.
@@ -293,7 +300,7 @@ struct Run {
 }
 
 /// `post::diarize::probabilities` with the geometry as a parameter and per-step timing.
-fn stream(pcm: &[f32], sess: &mut Session, g: &Geometry) -> Run {
+fn stream(pcm: &[f32], sess: &mut Guarded<Session>, g: &Geometry) -> Run {
     let frames = pcm.len() / HOP;
     let encoder_frames = frames.div_ceil(SUBSAMPLING);
     let mut out = Vec::with_capacity(frames * SPEAKERS);
@@ -314,6 +321,7 @@ fn stream(pcm: &[f32], sess: &mut Session, g: &Geometry) -> Run {
         let cached = cache.cached();
         let n_cached = cached.len() / HIDDEN;
         let n_in = n_cached + stop - start;
+        let guard = sess.guard();
         let outputs = sess
             .run(ort::inputs![
                 "input_features" => Tensor::from_array((vec![1i64, (m1 - m0) as i64, MELS as i64], std::mem::take(&mut feats))).expect("shape"),
@@ -321,6 +329,7 @@ fn stream(pcm: &[f32], sess: &mut Session, g: &Geometry) -> Run {
                 "attention_mask" => Tensor::from_array((vec![1i64, n_in as i64], vec![1i64; n_in])).expect("shape"),
             ])
             .expect("run");
+        drop(guard);
         let get =
             |name: &str| -> &[f32] { outputs[name].try_extract_tensor::<f32>().expect("f32").1 };
         let logits = get("logits");
