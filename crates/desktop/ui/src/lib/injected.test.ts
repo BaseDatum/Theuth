@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { classify, parseBroadcast, parseSpoken } from './injected'
+import { classify, parseBroadcast, parseSpoken, splitParentView } from './injected'
 
 test('human text is plain', () => {
   expect(classify('hello <b>there</b>')).toBeNull()
@@ -185,4 +185,135 @@ test('task attributes are taken verbatim and the record body may hold tags and q
 test('a human line starting with Wake: stays a user message', () => {
   expect(classify('Wake: me up at seven')).toBeNull()
   expect(classify(`${DESK}\n\nWake: me up`)).toBeNull()
+})
+
+// 152: the real rows (sessions.sqlite, 2026-10-09) and `handoff::render`'s shape.
+const RESTORED = `<resume_handoff>
+The theuth engine restarted at 14:54:32 while you were working on: "Your full brief is the file /Users/Sky.Moore/.theuth/briefs/2026-10-09/151/ENG.md — read it completely first and follow it exactly. Summary: you build the engine half of theuth design 151 AUTORESEARCH-SETUP in the worktree /Users/Sky.Moore/Develop/theuth-151-eng (branch feat/151-eng, cut from feat/151-c which holds the design doc docs/design/151-autoresearch-setup.md and a compiling contract skel…". Your session with this harness has been restored with its context; the files and the git state are as you left them. Continue exactly where you left off — do not start over and do not redo finished steps; if you have uncommitted work, checkpoint-commit it first. Report the result when you are done.
+</resume_handoff>`
+const FRESH_HEAD =
+  'The theuth engine restarted at 09:12:03 and your previous harness session s-old could not be loaded, so its context could not be restored. You are a fresh process in the same working directory; the worktree is as you left it — read git log and git status first. Keep the uncommitted diff: do not revert, stash or discard it.\n'
+const FRESH_FOOT =
+  'The full earlier transcript is available with session_read("11111111-1111-1111-1111-111111111111"); read it if you need the exact brief. Continue from the uncommitted state — do not start over and do not redo finished steps; checkpoint-commit first if you have uncommitted work.\n'
+const FRESH = `<resume_handoff>\n${FRESH_HEAD}Your original brief: "Fix foo.rs and run the tests."
+The prompt you were interrupted in: "also fix bar"
+What you had reported last: "Edited foo.rs; tests next."
+Uncommitted work in /tmp/x (git status --porcelain, 2 lines):
+ M foo.rs
+?? bar.rs
+Diff since the last commit (git diff --stat, 2 lines):
+ foo.rs | 3 ++-
+ 1 file changed
+Messages queued for you while you were away (1):
+- from session:p: also fix bar
+Open todos (2):
+- [in_progress] tests
+- [pending] docs
+${FRESH_FOOT}</resume_handoff>`
+const FRESH_CUT = `<resume_handoff>\n${FRESH_HEAD}What you had reported last: "${'r'.repeat(300)}"
+Uncommitted work in /tmp/x (git status --porcelain, 100 lines):
+ M f0.rs
+ M f1.rs
+… [1234 chars cut]
+(omitted for the handoff budget: git diff, queued messages, open todos)
+${FRESH_FOOT}</resume_handoff>`
+const LOST = `<child_lost name="omp-98-commands" session="01a10ca4-60c3-7142-bdba-05cc62f673d0" at="09:37" why="its parent is archived">
+omp-98-commands was mid-prompt when the engine restarted at 09:37 and was not respawned: its parent is archived. Resume it with send_message or spawn a fresh child with a RESUME brief.
+</child_lost>`
+
+test('resume_handoff restored: the time and the interrupted excerpt, the whole note kept', () => {
+  const [card] = classify(RESTORED) ?? []
+  expect(card).toMatchObject({ kind: 'resume', restored: true, clock: '14:54:32', sections: [] })
+  if (card?.kind !== 'resume') throw new Error('not a resume card')
+  expect(card.working?.startsWith('Your full brief is the file')).toBe(true)
+  expect(card.working?.endsWith('contract skel…')).toBe(true)
+  expect(card.text.startsWith('The theuth engine restarted')).toBe(true)
+  expect(card.text.endsWith('you are done.')).toBe(true)
+  expect(classify('<resume_handoff>\nThe theuth engine restarted at 01:02:03. Your session with this harness has been restored with its context.\n</resume_handoff>')).toMatchObject([{ kind: 'resume', restored: true, clock: '01:02:03' }])
+  expect(classify('<resume_handoff>\nThe theuth engine restarted at 01:02:03. Your session with this harness has been restored with its context.\n</resume_handoff>')?.[0]).not.toHaveProperty('working')
+})
+
+test('resume_handoff fresh: header, sections in order with counts, the quotes stripped, footer in the note', () => {
+  const [card] = classify(FRESH) ?? []
+  expect(card).toMatchObject({ kind: 'resume', restored: false, clock: '09:12:03', previous: 's-old' })
+  if (card?.kind !== 'resume') throw new Error('not a resume card')
+  expect(card.omitted).toBeUndefined()
+  expect(card.sections).toEqual([
+    { title: 'Original brief', text: 'Fix foo.rs and run the tests.' },
+    { title: 'Interrupted prompt', text: 'also fix bar' },
+    { title: 'Last report', text: 'Edited foo.rs; tests next.' },
+    { title: 'Uncommitted work', text: ' M foo.rs\n?? bar.rs', count: 2 },
+    { title: 'Diff', text: ' foo.rs | 3 ++-\n 1 file changed', count: 2 },
+    { title: 'Queued messages', text: '- from session:p: also fix bar', count: 1 },
+    { title: 'Open todos', text: '- [in_progress] tests\n- [pending] docs', count: 2 },
+    { title: 'Note', text: `${FRESH_HEAD.trim()}\n\n${FRESH_FOOT.trim()}` },
+  ])
+})
+
+test('resume_handoff fresh with a cut section and omitted names', () => {
+  const [card] = classify(FRESH_CUT) ?? []
+  if (card?.kind !== 'resume') throw new Error('not a resume card')
+  expect(card.omitted).toEqual(['git diff', 'queued messages', 'open todos'])
+  expect(card.sections.map((s) => s.title)).toEqual(['Last report', 'Uncommitted work', 'Note'])
+  expect(card.sections[0]?.text).toBe('r'.repeat(300))
+  expect(card.sections[1]).toEqual({ title: 'Uncommitted work', text: ' M f0.rs\n M f1.rs\n… [1234 chars cut]', count: 100 })
+})
+
+test('a malformed resume_handoff is still a card: the text becomes its Note', () => {
+  const [card] = classify('<resume_handoff>\nsomething else entirely\n</resume_handoff>') ?? []
+  expect(card).toEqual({ kind: 'resume', restored: false, clock: '', sections: [{ title: 'Note', text: 'something else entirely' }], text: 'something else entirely' })
+  // Followed by another wrapper: one card per block, as for every wrapper.
+  expect(classify(`${RESTORED}\n<subagent_result name="k">\ndone\n</subagent_result>`)?.map((c) => c.kind)).toEqual(['resume', 'subagent'])
+})
+
+test('child_lost: attributes and body, one card per block, mixable with other wrappers', () => {
+  expect(classify(LOST)).toEqual([
+    {
+      kind: 'lost',
+      name: 'omp-98-commands',
+      session: '01a10ca4-60c3-7142-bdba-05cc62f673d0',
+      clock: '09:37',
+      why: 'its parent is archived',
+      text: 'omp-98-commands was mid-prompt when the engine restarted at 09:37 and was not respawned: its parent is archived. Resume it with send_message or spawn a fresh child with a RESUME brief.',
+    },
+  ])
+  expect(classify(`${LOST}\n${LOST.replace('omp-98-commands', 'omp-99')}`)?.map((c) => c.kind === 'lost' && c.name)).toEqual(['omp-98-commands', 'omp-99'])
+  expect(classify(`${LOST}\n<subagent_result name="k">\ndone\n</subagent_result>`)?.map((c) => c.kind)).toEqual(['lost', 'subagent'])
+  expect(classify('<child_lost session="s" at="1">\nx\n</child_lost>')).toBeNull()
+})
+
+const VIEW_BLOCKS = [
+  '<chat>\n0+40|(earlier history, not summarized; recall searches it)\n40+16|Early weeks: the project was set up.\n',
+  '56+8|Sky asked for cards; the worker shipped them.\n64+4|A restart lost one child.\n',
+  '68+2|Review found a typo.\n',
+  '70+1|Now: hand the 152 task to a child.\n</chat>',
+]
+const VIEW = VIEW_BLOCKS.join('')
+
+test('splitParentView: the four joined blocks, with and without the stamp after </chat>', () => {
+  const brief = '\nYour full brief is …'
+  const plain = splitParentView(`${VIEW}${brief}`)
+  expect(plain?.lines).toEqual([
+    { id: 0, n: 40, text: '(earlier history, not summarized; recall searches it)', earlier: true },
+    { id: 40, n: 16, text: 'Early weeks: the project was set up.', earlier: false },
+    { id: 56, n: 8, text: 'Sky asked for cards; the worker shipped them.', earlier: false },
+    { id: 64, n: 4, text: 'A restart lost one child.', earlier: false },
+    { id: 68, n: 2, text: 'Review found a typo.', earlier: false },
+    { id: 70, n: 1, text: 'Now: hand the 152 task to a child.', earlier: false },
+  ])
+  expect(plain?.rest).toBe(brief)
+  expect(plain?.bytes).toBe(new TextEncoder().encode(VIEW.slice('<chat>\n'.length, -'</chat>'.length)).length)
+  const stamped = splitParentView(`${VIEW}<time now="2026-10-09 15:02 -07:00 (Thu)"/>${brief}`)
+  expect(stamped?.lines).toHaveLength(6)
+  expect(stamped?.rest).toBe(`<time now="2026-10-09 15:02 -07:00 (Thu)"/>${brief}`)
+  // A line's text keeps `|` and everything after the first one.
+  expect(splitParentView('<chat>\n3+1|a|b|c\n</chat>')?.lines[0]?.text).toBe('a|b|c')
+})
+
+test('splitParentView rejects anything but the exact shape', () => {
+  expect(splitParentView('<chat>\nhello there\n</chat>\nbrief')).toBeNull()
+  expect(splitParentView('<chat>\n3+1|x\n')).toBeNull()
+  expect(splitParentView('<chat>3+1|x</chat>')).toBeNull()
+  expect(splitParentView('say <chat>\n3+1|x\n</chat>')).toBeNull()
+  expect(splitParentView('plain words')).toBeNull()
 })

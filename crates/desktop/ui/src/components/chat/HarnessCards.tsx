@@ -1,27 +1,37 @@
 // Roster 67: a desk's inputs are harness text, not the user's words. The opening block (charter, journal, manual)
 // is one collapsed card with a section per part; a wake is a card headed by its reason and task chips with the
 // task record as its body. Nothing is hidden: every part stays readable, just folded.
+// 152: the same for a restart's `<resume_handoff>`, a parent's `<child_lost>` and the endless parent's view.
 
 import { Link } from '@tanstack/react-router'
-import { Bot, ChevronRight, Radio, Zap } from 'lucide-react'
+import { Bot, ChevronRight, Infinity as InfinityIcon, Radio, RotateCcw, Unplug, Zap } from 'lucide-react'
+import { useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { shortId } from '@/components/tasks/helpers'
 import { Badge } from '@/components/ui/badge'
+import { fmtBytes } from '@/lib/files'
+import type { ResumeSection } from '@/lib/injected'
 import type { Entry } from '@/store/sessions'
 
 const SHELL = 'my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm'
 const SUMMARY = 'flex cursor-pointer list-none items-center gap-2 rounded-sm focus-visible:outline-2 [&::-webkit-details-marker]:hidden'
+const CODE = 'mt-2 overflow-x-auto rounded-md bg-layer-2 px-3 py-2 font-mono text-xs leading-5 whitespace-pre text-fg-secondary'
 
-function Section({ title, text }: { title: string; text: string }) {
+/** `code`: the body is machine output (git status / diff), shown verbatim instead of as markdown. */
+function Section({ title, text, code }: { title: string; text: string; code?: boolean }) {
   return (
     <details className="group/section mt-2 border-t border-border-subtle pt-2">
       <summary className={`${SUMMARY} text-xs font-medium text-fg-secondary`}>
         <ChevronRight className="size-3.5 shrink-0 transition-transform group-open/section:rotate-90" aria-hidden="true" />
         {title}
       </summary>
-      <Streamdown mode="static" className="mt-2 text-sm">
-        {text}
-      </Streamdown>
+      {code ? (
+        <pre className={CODE}>{text}</pre>
+      ) : (
+        <Streamdown mode="static" className="mt-2 text-sm">
+          {text}
+        </Streamdown>
+      )}
     </details>
   )
 }
@@ -89,5 +99,106 @@ export function BroadcastCard({ id, count, text }: { id: string; count: number; 
         {text}
       </Streamdown>
     </div>
+  )
+}
+
+/** The fresh handoff's section title with its count: `Uncommitted work · 12 lines`, `Queued messages · 2`. */
+function sectionTitle(s: ResumeSection): string {
+  if (s.count === undefined) return s.title
+  return s.title === 'Uncommitted work' || s.title === 'Diff' ? `${s.title} · ${s.count} lines` : `${s.title} · ${s.count}`
+}
+
+/** 152 D4: `<resume_handoff>` — restored (the harness kept its context) or fresh (a new process got the handoff's sections). */
+export function ResumeCard({ restored, clock, working, previous, sections, omitted, text }: Extract<Entry, { kind: 'resume' }>) {
+  return (
+    <details className={`group/resume ${SHELL}`}>
+      <summary className={`${SUMMARY} flex-wrap text-xs text-fg-secondary`}>
+        <RotateCcw className={`size-3.5 shrink-0 ${restored ? '' : 'text-warning'}`} aria-hidden="true" />
+        <span className="font-medium">{restored ? 'resumed after restart' : 'restarted fresh'}</span>
+        {clock !== '' && <Badge variant="outline">{clock}</Badge>}
+        <ChevronRight className="ml-auto size-4 shrink-0 transition-transform group-open/resume:rotate-90" aria-hidden="true" />
+        {restored
+          ? working !== undefined && (
+              <span className="line-clamp-1 w-full text-fg-tertiary md:line-clamp-2">Working on: {working}</span>
+            )
+          : (
+              <span className="line-clamp-1 w-full text-fg-tertiary md:line-clamp-2">
+                previous harness session{previous === undefined ? '' : ` ${shortId(previous)}`} could not be loaded — context not restored
+              </span>
+            )}
+      </summary>
+      {restored ? (
+        <Streamdown mode="static" className="mt-2 border-t border-border-subtle pt-2 text-sm">
+          {text}
+        </Streamdown>
+      ) : (
+        <>
+          {sections.map((s) => (
+            <Section key={s.title} title={sectionTitle(s)} text={s.text} code={s.title === 'Uncommitted work' || s.title === 'Diff'} />
+          ))}
+          {omitted !== undefined && <p className="mt-2 text-xs text-fg-tertiary">omitted for the handoff budget: {omitted.join(', ')}</p>}
+        </>
+      )}
+    </details>
+  )
+}
+
+/** 152 D4: `<child_lost>` in a parent — a subagent the restart could not respawn; the chip opens the child's session. */
+export function ChildLostCard({ name, session, clock, why, text }: Extract<Entry, { kind: 'lost' }>) {
+  return (
+    <details className={`group/lost ${SHELL}`}>
+      <summary className={`${SUMMARY} flex-wrap text-xs text-fg-secondary`}>
+        <Unplug className="size-3.5 shrink-0 text-danger" aria-hidden="true" />
+        <span className="font-medium">subagent lost</span>
+        <Badge variant="secondary" className="max-w-full gap-1">
+          {session === '' ? (
+            <span className="truncate">{name}</span>
+          ) : (
+            <>
+              <Link to="/c/$session" params={{ session }} className="truncate hover:underline">
+                {name}
+              </Link>
+              <span className="text-fg-tertiary">{shortId(session)}</span>
+            </>
+          )}
+        </Badge>
+        {clock !== '' && <Badge variant="outline">{clock}</Badge>}
+        <ChevronRight className="ml-auto size-4 shrink-0 transition-transform group-open/lost:rotate-90" aria-hidden="true" />
+        {why !== '' && <span className="w-full truncate text-fg-tertiary">{why}</span>}
+      </summary>
+      <Streamdown mode="static" className="mt-2 border-t border-border-subtle pt-2 text-sm">
+        {text}
+      </Streamdown>
+    </details>
+  )
+}
+
+/** 152 D4: the view an endless parent handed a native child (137 R1-D1). The lines mount only while open, inside their
+ * own scroll box, so a 128 KB view costs nothing folded and never shifts the transcript (135 STEADY-SCROLL). */
+export function ParentViewCard({ lines, bytes }: Extract<Entry, { kind: 'parentView' }>) {
+  const [open, setOpen] = useState(false)
+  return (
+    <details className={`group/view ${SHELL}`} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className={`${SUMMARY} flex-wrap text-xs text-fg-secondary`}>
+        <InfinityIcon className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="font-medium">parent's memory</span>
+        <Badge variant="outline">{lines.length} lines</Badge>
+        <Badge variant="outline">≈ {fmtBytes(bytes)}</Badge>
+        <ChevronRight className="ml-auto size-4 shrink-0 transition-transform group-open/view:rotate-90" aria-hidden="true" />
+        <span className="w-full truncate text-fg-tertiary">What the parent knew when it handed this task over.</span>
+      </summary>
+      {open && (
+        <div className="mt-2 max-h-80 overflow-y-auto border-t border-border-subtle pt-2">
+          {lines.map((l) => (
+            <div key={`${l.id}+${l.n}`} className={`flex gap-2 px-2 py-1 text-sm leading-5 ${l.earlier ? 'text-xs text-fg-tertiary italic' : ''}`} role={l.earlier ? 'note' : undefined}>
+              <span className="w-16 shrink-0 text-right font-mono text-[11px] leading-5 text-fg-tertiary not-italic tabular-nums">
+                {l.id}+{l.n}
+              </span>
+              <span className="min-w-0 flex-1 wrap-anywhere">{l.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </details>
   )
 }
