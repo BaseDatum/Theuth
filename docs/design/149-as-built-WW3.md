@@ -227,3 +227,33 @@ were logged and dropped until now.
   `keyboard_control`): registration is fine (`openPanel … registered id=0x134`, re-applied once by WW1's gate), but no `WM_HOTKEY` line
   followed the presses — the inbox pill opened the panel instead. Not my seam; not investigated (the voice key's Ctrl+Alt+Space from the
   same SendInput path worked in R1).
+
+## R3 — speech on Windows · constants · capture assertion (orchestrator's R3 / Mac W2 hand-off, 03:56–04:38)
+
+| Layer | File | What |
+|---|---|---|
+| Core | `SpeechDecoder.cs` (new) | Concentus (pure managed Opus, MIT, `Concentus` 2.2.2 via `ConcentusVersion` in `Directory.Build.props`) decoder for the engine's client-sink speech: `SpeechStarted {id, session, sample_rate 24000, chars}` · `SpeechAudio {id, session, seq, opus}` (one 80 ms mono packet, base64) · `SpeechFinished` (voice/lib.rs:325–359; `speak` = `Sink::Client`, api.rs). `Decode(base64, seq)` → PCM16 with PLC for gaps; `Rms()`; `SpeechWire` reads the three events off the raw stream |
+| Core | — | **Finding:** Concentus 2.2.2's 24 kHz decoder path returns near-silence (max \|s\| ≈ 9) for packets its own 24 kHz encoder produced, while the same packets decoded at 48 kHz give max 7 944 — so the companion decodes at Opus's native **48 kHz** (`OutputRate`, 3840 samples per 80 ms packet) and feeds NAudio 48 kHz PCM; pinned by `ConcentusTwentyFourKilohertzPathIsWhyWeDecodeAtFortyEight` |
+| App | `PointAndSay/SpeechPlayer.cs` (new) | follows `deskSession`: `SpeechStarted` → `WasapiOut(default render endpoint, shared, 60 ms)` over a `BufferedWaveProvider(48 kHz/16/1, 60 s)`; each packet decoded + appended; `SpeechFinished` drains then closes; `Stop()` cuts at once; `--speech-dump` writes the packets to `%LOCALAPPDATA%\theuth\companion\speech-dump.json` |
+| App | `PointAndSay/PointController.cs` | `OnEvent` hands speech events to the player first; `Start()` (a new gesture) and `Discard()` (Esc) call `speech.Stop()` + `stop_speaking`; `Conceal()` keeps `deskSession` while an utterance is live so the rest of the packets still arrive; `ProbeSpeakAsync` (`--speech-probe`); `CaptureProbeAsync` (`--capture-probe`); `ScreenContext(…, color)` |
+| App | `WW3Install.cs` | `--speech-probe` and `--capture-probe` timers (held in `probeTimers` — dispatcher timers are not kept alive by the queue, the first capture-probe launch never fired for that reason) |
+| Tests | `SpeechDecoderTests.cs` + `Fixtures/speech-packets-build-b.json` | encoder round-trip (20 ms packets — Concentus's encoder refuses 80 ms frames with OPUS_BAD_ARG; the engine's 80 ms packets are code-3 multi-frame packets every decoder takes), PLC on gaps, the 24-vs-48 kHz finding, `SpeechWire`, and **65 real packets recorded from build-B's engine** (`speak(desk, "Testing the Windows speaker…")`, 19 391 bytes): 3840 samples each, 0 gaps, mean rms > 0.03, ≥ 20 loud frames |
+| Gate | `ww3-gate.ps1 speech-dump` | reads the dump back through the build service |
+
+### R3 gates (desk held 04:17 → 04:38, released; installed companion restarted; `Run\TheuthCompanion` = installed exe `--background`)
+- Mac Core **265 / 0**; build-B Debug **0 / 0** at 46ea98da (the intermediate 7d73d291 … c6fe193c iterated NAudio 3.1's API: `WasapiOut`
+  is `[Obsolete]` → `#pragma warning disable CS0618` (TreatWarningsAsErrors), `BufferedWaveProvider(format, TimeSpan)`).
+- **1. Speech** (`--speech-probe --speech-dump`): `speech-probe: speak(01a11896-…, 70 chars) → 01a11eaa-…` → `speech: … started
+  (engine rate 24000 Hz, decoding at 48000 Hz) → device opened "Speaker/HP (Realtek High Definition Audio)" state=Playing` →
+  `1 packets, 3840 samples each … buffered=80 ms` → `25 packets … buffered=1870 ms` → `50 packets … 3350 ms` → `finished (?) — 65 packets
+  decoded, mean rms 0.079 (not silent), device=Speaker/HP (Realtek High Definition Audio), gaps=0` → `dumped 65 packets`. **The device
+  opened and reported Playing with 3.3 s buffered; nobody could listen** — the decode is proven by rms, the playback by WASAPI's state.
+  `SpeechFinished.reason` decoded as `?` (the field is an enum object, not a string — cosmetic, left).
+- **2. Constants**: `PointMachine.HoldMs = 200`, `DoubleTapMs = 300`, `MinNoteMs = 800` = `machine.rs` `HOLD_MS/DOUBLE_TAP_MS/MIN_NOTE_MS`. No change.
+- **3. Capture assertion** (`--capture-probe`, 68 samples over ~2.1 s, a 140 px loop): **overlays UP (WDA_NONE) → 1 351 malachite px**
+  (1 205 in the 1568×882 display overview + 146 in the crop); **real Stop sequence (WDA_EXCLUDEFROMCAPTURE + Hide + one dispatcher turn,
+  then `screen_context`) → 51 px** (51 in the overview = the desktop's noise floor within ±24/channel of malachite-over-dark; 0 in the crop).
+  Two earlier runs are why the probe looks the way it does: the engine PAINTS the pointer path it is given into every PNG
+  (`computer/context.rs` `stamp()`, `TRAIL_ALPHA` 0.85, the request's `color`), so with the true samples both captures counted ~3 900
+  "trail" pixels (run 1), and with magenta asked of the engine its stroke covered the overlay's exactly (run 2: 69 vs 55). The final probe
+  hands the engine the samples shifted 300 px right (its stroke and crop land beside the real loop) and counts the overlay's malachite.

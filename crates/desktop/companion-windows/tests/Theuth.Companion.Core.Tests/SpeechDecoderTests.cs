@@ -87,4 +87,30 @@ public sealed class SpeechDecoderTests
         Assert.Null(SpeechWire.Decode("TextDelta", System.Text.Encoding.UTF8.GetBytes("{}")));
         Assert.Null(SpeechWire.Decode("SpeechAudio", System.Text.Encoding.UTF8.GetBytes("not json")));
     }
+    /// <summary>
+    /// 65 real packets recorded on build-B (2026-10-09 04:17) from <c>speak(desk, "Testing the Windows speaker…")</c> — the engine's
+    /// 80 ms code-3 multi-frame packets, advertised at 24 kHz. Decoded at the companion's 48 kHz: 3840 samples each, clearly not silent.
+    /// </summary>
+    [Fact]
+    public void DecodesTheEnginesEightyMsPackets()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "speech-packets-build-b.json");
+        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+        var packets = doc.RootElement.GetProperty("packets").EnumerateArray().Select(p => p.GetString()!).ToList();
+        Assert.Equal(65, packets.Count);
+        using var dec = new SpeechDecoder();
+        double rmsSum = 0; int loud = 0;
+        for (int i = 0; i < packets.Count; i++)
+        {
+            var pcm = dec.Decode(packets[i], (uint)i);
+            Assert.Equal(SpeechDecoder.FrameSamples, pcm.Length); // 80 ms at 48 kHz
+            var rms = SpeechDecoder.Rms(pcm);
+            rmsSum += rms;
+            if (rms > 0.02) loud++;
+        }
+        Assert.Equal(0, dec.Gaps);
+        Assert.Equal(65L * SpeechDecoder.FrameSamples, dec.Samples);
+        Assert.True(rmsSum / packets.Count > 0.03, $"mean rms {rmsSum / packets.Count}"); // build-B logged 0.079
+        Assert.True(loud >= 20, $"only {loud} packets above 0.02 rms"); // speech with pauses: most frames carry voice
+    }
 }
