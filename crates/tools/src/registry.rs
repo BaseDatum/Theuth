@@ -467,7 +467,7 @@ pub struct SetPtyIdle {
 pub struct GetPtyIdle;
 
 /// `tell`: record that `session` is a subagent of `parent`, so it inherits
-/// the parent's approval switch.
+/// the parent's approval switch (and its [`crate::seat`]).
 #[derive(Clone, Copy, Debug)]
 pub struct SetParent {
     /// Child session.
@@ -481,6 +481,7 @@ impl Message<SetParent> for ToolRegistry {
 
     async fn handle(&mut self, m: SetParent, _: &mut Context<Self, Self::Reply>) {
         self.parents.insert(m.session, m.parent);
+        crate::seat::inherit(m.session, m.parent);
     }
 }
 
@@ -755,6 +756,7 @@ impl Message<Forget> for ToolRegistry {
             self.hidden.remove(s);
             self.bypass.remove(s);
             self.cap.remove(s);
+            crate::seat::forget(*s);
         }
     }
 }
