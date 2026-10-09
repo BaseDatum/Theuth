@@ -159,11 +159,14 @@ public sealed class KeyTableTests153
         var s = ModeKeySettings.Load(store);
         Assert.True(s.DictateAnywhereEnabled && s.CommandKeyEnabled);
         Assert.False(s.ModifierOnlyKeys);
+        Assert.False(s.CommandIncludeScreen); // H3-C1: Settings › Command "Include the screen" defaults off
         Assert.All(Enum.GetValues<PointMode>(), m => Assert.Equal(Gesture.HoldLock, s.GestureFor(m))); // W-i: Automatic is opt-in
         s.SetGesture(PointMode.Command, Gesture.Automatic);
         s.CommandKeyEnabled = false;
         s.ModifierOnlyKeys = true;
+        s.CommandIncludeScreen = true;
         s.Save(store);
+        Assert.True(store.Bool("commandIncludeScreen"));
         Assert.Equal("automatic", store.String("gesture.command"));
         Assert.Equal("holdLock", store.String("gesture.ask"));
         Assert.Equal("holdLock", store.String("gesture.dictate"));

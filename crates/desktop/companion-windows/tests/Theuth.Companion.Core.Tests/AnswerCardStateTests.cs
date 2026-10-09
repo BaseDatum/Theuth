@@ -54,6 +54,10 @@ public sealed class AnswerCardStateTests
         c.ToggleExpanded();
         Assert.True(c.DoneArmed);
         // Speaking → not armed; speech ended → armed again.
+        // An open approval box (H3-C1) → not armed.
+        c.ApprovalOpen = true;
+        Assert.False(c.DoneArmed);
+        c.ApprovalOpen = false;
         c.SpeechStarted(4500);
         Assert.False(c.DoneArmed);
         Assert.False(c.Hide(c.Generation, byTimer: true));
@@ -114,12 +118,15 @@ public sealed class AnswerCardStateTests
         Assert.True(c.DoneArmed);
         Assert.Equal("The failing test is `vad::gate_onset`.", c.CollapsedText);
         // speaking — enter on Speaker.surface == ours; glyph; copy "click to stop"; leaves on speech end / Esc / a new gesture.
+        // (A parallel flag over answer, as the Mac twin built it — H3-C1.)
         c.SpeechStarted(9100);
-        Assert.Equal(CardPhase.Speaking, c.Phase);
+        Assert.True(c.Speaking);
+        Assert.Equal(CardPhase.Answer, c.Phase);
         Assert.Equal("click to stop", c.Copy(Key, 9100));
         Assert.False(c.DoneArmed); // never vanishes while speaking
         c.SpeechEnded(12000);
-        Assert.Equal(CardPhase.Answer, c.Phase);
+        Assert.False(c.Speaking);
+        Assert.Equal("replied", c.Copy(Key, 12000));
         c.SpeechStarted(12100);
         c.Begin(CardSource.VoiceKey, 13000); // a new gesture ends the speaking state
         Assert.False(c.Speaking);

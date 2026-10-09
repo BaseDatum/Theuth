@@ -156,9 +156,9 @@ public abstract record CommandEffect
 /// <summary>
 /// 153 §10.3–§10.6 (D10): the command card's reducer — the desk's turn events → step rows, the approval box, the turn cap and the
 /// one ✓/✗ line. Rows come from <c>ToolCallStarted</c> (type from the <c>purpose</c> prefix, else "ran"), turn green/red on
-/// <c>ToolCallFinished</c>; the text is <c>purpose</c> after the colon (≤ 60 chars, the tool name as fallback). At the
-/// <see cref="MaxSteps"/>+1-th call the card asks the driver to <c>cancel(desk, "root")</c> and freezes with "stopped after 12
-/// steps" (writer's call: the 13th start cancels, so 12 steps ran). Pure — the driver feeds events and executes effects.
+/// <c>ToolCallFinished</c>; the text is <c>purpose</c> after the colon (≤ 60 chars; fallback the <c>reason</c> argument, then the tool
+/// name — H3-C1). At the <see cref="MaxSteps"/>-th start the card asks the driver to <c>cancel(desk, "root")</c> and freezes with
+/// "stopped after 12 steps" (the Mac twin's rule, H3-C1). Pure — the driver feeds events and executes effects.
 /// </summary>
 public static class CommandCard
 {
@@ -193,16 +193,17 @@ public static class CommandCard
             case CommandInput.ToolStarted t:
             {
                 if (cur is null || !Live(cur)) return (s, none);
-                if (cur.StepCount >= MaxSteps)
+                var p = ParsePurpose(t.Purpose, t.Tool);
+                var row = new CommandStep(t.CallId, t.Tool, p.Kind, p.Text, StepStatus.Running, t.Command);
+                var steps = Restatus(Append(cur.Steps, row));
+                if (cur.StepCount + 1 >= MaxSteps)
                 {
-                    var frozen = cur with { Phase = CommandPhase.Stopped, CapStopped = true, Steps = Freeze(cur.Steps) };
+                    // H3-C1: the 12th start is the cap — cancel(desk, root) and freeze ("stopped after 12 steps").
+                    var frozen = cur with { Steps = Freeze(steps), StepCount = cur.StepCount + 1, Phase = CommandPhase.Stopped, CapStopped = true };
                     var fx = new List<CommandEffect> { new CommandEffect.CancelTurn("cap") };
                     if (s.Approval is not null) fx.Add(new CommandEffect.CloseListen());
                     return (Set(s, frozen) with { Approval = null }, fx);
                 }
-                var p = ParsePurpose(t.Purpose, t.Tool);
-                var row = new CommandStep(t.CallId, t.Tool, p.Kind, p.Text, StepStatus.Running, t.Command);
-                var steps = Restatus(Append(cur.Steps, row));
                 var phase = cur.Phase == CommandPhase.NeedsOk ? CommandPhase.NeedsOk : CommandPhase.Working;
                 return (Set(s, cur with { Steps = steps, StepCount = cur.StepCount + 1, Phase = phase }), none);
             }
@@ -241,7 +242,7 @@ public static class CommandCard
                     if (target is not null)
                     {
                         ulong waited = r.AtMs >= box.AtMs ? (r.AtMs - box.AtMs + 500) / 1000 : 0;
-                        var note = r.TimedOut ? $"denied (no answer in {waited} s)" : "denied";
+                        var note = r.TimedOut ? $"✗ timed out — denied (no answer in {waited} s)" : "✗ denied";
                         steps = Restatus(cur.Steps.Select(x => ReferenceEquals(x, target) ? x with { Status = StepStatus.Denied, Note = note } : x).ToList());
                     }
                 }
@@ -349,7 +350,7 @@ public static class CommandCard
         var cur = s.Current;
         if (s.Approval is { } box)
         {
-            if (box.Answered is { } d) return d == Decision.Allow ? "approved — working…" : "denied — waiting for the desk…";
+            if (box.Answered is { } d) return d == Decision.Allow ? "✓ approved — working…" : "✗ denied — waiting for the desk…";
             return $"{box.Question}  {box.RiskLine} · Yes Enter · No Esc · or say “yes” / “no”";
         }
         return cur?.Phase switch
@@ -382,6 +383,16 @@ public static class CommandCard
         return Title;
     }
 
+    /// <summary>§10.2 / W-l: <c>[command, N s] ‹text›</c> — the user line the desk's command profile keys on (at least one second).</summary>
+    public static string CommandText(string text, long durationMs) => $"[command, {Math.Max(1, (long)Math.Ceiling(durationMs / 1000.0))} s] {text}";
+
+    /// <summary>The command line plus the engine's <c>[screen …]</c> lines when "Include the screen" is on (as the voice key's <c>composeBody</c>).</summary>
+    public static string ComposeBody(string text, long durationMs, IReadOnlyList<string> screenLines)
+    {
+        var line = CommandText(text.Trim(), durationMs);
+        return screenLines.Count == 0 ? line : line + "\n" + string.Join("\n", screenLines);
+    }
+
     /// <summary>The follow-up line after a cap stop says "continue" (§10.4: "the next [command] line says continue").</summary>
     public static string ContinueText(CommandCardState s, string words) =>
         s.Current is { CapStopped: true } ? (words.Trim().Length > 0 ? $"continue — {words.Trim()}" : "continue") : words;
@@ -408,7 +419,7 @@ public static class CommandCard
                 case "ToolCallStarted":
                 {
                     var args = root.TryGetProperty("args", out var a) ? a : default;
-                    return new CommandInput.ToolStarted(Str(root, "call_id") ?? "", Str(root, "name") ?? "tool", Str(args, "purpose"), Str(args, "command"));
+                    return new CommandInput.ToolStarted(Str(root, "call_id") ?? "", Str(root, "name") ?? "tool", Str(args, "purpose") ?? Str(args, "reason"), Str(args, "command"));
                 }
                 case "ToolCallFinished":
                     return new CommandInput.ToolFinished(Str(root, "call_id") ?? "", root.TryGetProperty("is_error", out var e) && e.ValueKind == JsonValueKind.True, Str(root, "output"));

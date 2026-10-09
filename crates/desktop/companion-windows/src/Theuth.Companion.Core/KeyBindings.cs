@@ -671,6 +671,9 @@ public sealed class ModeKeySettings : IEquatable<ModeKeySettings>
     /// <summary>Settings › Keys "Modifier-only keys": a family row may hold a lone modifier (Right Ctrl…), watched by a low-level hook.</summary>
     public bool ModifierOnlyKeys { get; set; }
 
+    /// <summary>H3-C1: Settings › Command "Include the screen" — a command carries <c>[screen …]</c> only when on (default off).</summary>
+    public bool CommandIncludeScreen { get; set; }
+
     private readonly Dictionary<PointMode, Gesture> gestures = new() { [PointMode.Ask] = Gesture.HoldLock, [PointMode.Dictate] = Gesture.HoldLock, [PointMode.Command] = Gesture.HoldLock };
 
     public Gesture GestureFor(PointMode mode) => gestures.TryGetValue(mode, out var g) ? g : Gesture.HoldLock;
@@ -688,7 +691,7 @@ public sealed class ModeKeySettings : IEquatable<ModeKeySettings>
     public static class Key
     {
         public const string DictateAnywhereEnabled = "dictateAnywhereEnabled", CommandKeyEnabled = "commandKeyEnabled";
-        public const string ModifierOnlyKeys = "modifierOnlyKeys";
+        public const string ModifierOnlyKeys = "modifierOnlyKeys", CommandIncludeScreen = "commandIncludeScreen";
 
         /// <summary><c>gesture.ask</c> · <c>gesture.dictate</c> · <c>gesture.command</c>.</summary>
         public static string Gesture(PointMode mode) => $"gesture.{mode.RawValue()}";
@@ -700,6 +703,7 @@ public sealed class ModeKeySettings : IEquatable<ModeKeySettings>
         if (d.Contains(Key.DictateAnywhereEnabled)) s.DictateAnywhereEnabled = d.Bool(Key.DictateAnywhereEnabled);
         if (d.Contains(Key.CommandKeyEnabled)) s.CommandKeyEnabled = d.Bool(Key.CommandKeyEnabled);
         s.ModifierOnlyKeys = d.Bool(Key.ModifierOnlyKeys);
+        s.CommandIncludeScreen = d.Bool(Key.CommandIncludeScreen);
         foreach (var m in Enum.GetValues<PointMode>()) s.SetGesture(m, PointModeText.GestureFromRaw(d.String(Key.Gesture(m))));
         return s;
     }
@@ -709,20 +713,21 @@ public sealed class ModeKeySettings : IEquatable<ModeKeySettings>
         d.Set(Key.DictateAnywhereEnabled, DictateAnywhereEnabled);
         d.Set(Key.CommandKeyEnabled, CommandKeyEnabled);
         d.Set(Key.ModifierOnlyKeys, ModifierOnlyKeys);
+        d.Set(Key.CommandIncludeScreen, CommandIncludeScreen);
         foreach (var m in Enum.GetValues<PointMode>()) d.Set(Key.Gesture(m), GestureFor(m).RawValue());
         d.Flush();
     }
 
     public ModeKeySettings Clone()
     {
-        var c = new ModeKeySettings { DictateAnywhereEnabled = DictateAnywhereEnabled, CommandKeyEnabled = CommandKeyEnabled, ModifierOnlyKeys = ModifierOnlyKeys };
+        var c = new ModeKeySettings { DictateAnywhereEnabled = DictateAnywhereEnabled, CommandKeyEnabled = CommandKeyEnabled, ModifierOnlyKeys = ModifierOnlyKeys, CommandIncludeScreen = CommandIncludeScreen };
         foreach (var m in Enum.GetValues<PointMode>()) c.SetGesture(m, GestureFor(m));
         return c;
     }
 
     public bool Equals(ModeKeySettings? o) =>
         o is not null && DictateAnywhereEnabled == o.DictateAnywhereEnabled && CommandKeyEnabled == o.CommandKeyEnabled
-        && ModifierOnlyKeys == o.ModifierOnlyKeys && Enum.GetValues<PointMode>().All(m => GestureFor(m) == o.GestureFor(m));
+        && ModifierOnlyKeys == o.ModifierOnlyKeys && CommandIncludeScreen == o.CommandIncludeScreen && Enum.GetValues<PointMode>().All(m => GestureFor(m) == o.GestureFor(m));
 
     public override bool Equals(object? obj) => Equals(obj as ModeKeySettings);
 

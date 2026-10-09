@@ -2,14 +2,16 @@ using System.Text;
 
 namespace Theuth.Companion.Core;
 
-/// <summary>153 §12.4 (D13): every state the one AnswerCard can be in, each with its copy.</summary>
+/// <summary>
+/// 153 §12.4 (D13): every state the one AnswerCard can be in, each with its copy. Speaking is a parallel flag
+/// (<see cref="AnswerCardState.Speaking"/>) over Answer, as the Mac twin built it (H3-C1): the copy is "click to stop" while it is set.
+/// </summary>
 public enum CardPhase
 {
     Listening,
     Finishing,
     Thinking,
     Answer,
-    Speaking,
     Failed,
 }
 
@@ -59,8 +61,11 @@ public sealed class AnswerCardState
 
     public bool Expanded { get; private set; }
 
-    /// <summary>Our answer is being read aloud (<c>Speaker.surface == ours</c>, 149s).</summary>
+    /// <summary>Our answer is being read aloud (<c>Speaker.surface == ours</c>, 149s) — §12.4's "speaking" row, a flag over Answer.</summary>
     public bool Speaking { get; private set; }
+
+    /// <summary>The command card's approval box is up (H3-C1: doneMs never arms while an approval is open).</summary>
+    public bool ApprovalOpen { get; set; }
 
     public CardSource Source { get; private set; } = CardSource.VoiceKey;
 
@@ -91,7 +96,10 @@ public sealed class AnswerCardState
     /// The 6 s timer may run: finished ∧ not speaking ∧ collapsed ∧ showing an answer (never failed, never expanded, never while the
     /// text is still coming) — §12.4 "nothing vanishes before the work is done".
     /// </summary>
-    public bool DoneArmed => Visible && Phase == CardPhase.Answer && Finished && !Speaking && !Expanded;
+    public bool DoneArmed => Visible && Phase == CardPhase.Answer && Finished && !Speaking && !Expanded && !ApprovalOpen;
+
+    /// <summary>§10.1: a mode switch mid-gesture relabels the card (ask ↔ command) without a new generation.</summary>
+    public void Relabel(CardSource source) => Source = source;
 
     /// <summary>A new gesture (or the Ask bar's send) opens the card: listening, a new generation, a new thread position.</summary>
     public int Begin(CardSource source, ulong nowMs, bool followUp = false)
@@ -176,7 +184,7 @@ public sealed class AnswerCardState
             return;
         }
         SetLatest(latest);
-        if (Phase != CardPhase.Failed && !Speaking) Enter(CardPhase.Answer, nowMs);
+        if (Phase != CardPhase.Failed) Enter(CardPhase.Answer, nowMs);
     }
 
     /// <summary>The desk's <c>Error</c> event or a failed send: failed, which never auto-hides (⎋ only).</summary>
@@ -203,15 +211,14 @@ public sealed class AnswerCardState
     {
         if (!Visible || Phase == CardPhase.Failed) return;
         Speaking = true;
-        Enter(CardPhase.Speaking, nowMs);
+        if (Phase is CardPhase.Thinking or CardPhase.Finishing) Enter(CardPhase.Answer, nowMs);
     }
 
-    /// <summary>Speech ended (or Esc stopped it): back to answer, where the 6 s rule applies again.</summary>
+    /// <summary>Speech ended (or Esc stopped it): the answer stays, where the 6 s rule applies again.</summary>
     public void SpeechEnded(ulong nowMs)
     {
         if (!Speaking) return;
         Speaking = false;
-        if (Phase == CardPhase.Speaking) Enter(CardPhase.Answer, nowMs);
     }
 
     public void SetExpanded(bool expanded) => Expanded = expanded && Visible;
@@ -253,8 +260,7 @@ public sealed class AnswerCardState
         CardPhase.Listening => $"· {keyText} held · theuth's desk",
         CardPhase.Finishing => Hint ?? "finishing…",
         CardPhase.Thinking => ThinkingCopy(nowMs),
-        CardPhase.Answer => Latest.Stopped ? "stopped" : Finished ? "replied" : "replying…",
-        CardPhase.Speaking => "click to stop",
+        CardPhase.Answer => Speaking ? "click to stop" : Latest.Stopped ? "stopped" : Finished ? "replied" : "replying…",
         CardPhase.Failed => FailedCopy(Latest.Error),
         _ => "",
     };

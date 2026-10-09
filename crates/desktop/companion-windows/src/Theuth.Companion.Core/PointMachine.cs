@@ -281,3 +281,34 @@ public static class PointModeText
     /// <summary>The Settings picker's words (§15 row "Gesture: Hold · double-tap locks / Automatic").</summary>
     public static string Title(this Gesture g) => g == Gesture.Automatic ? "Automatic — tap toggles, hold talks" : "Hold · double-tap locks";
 }
+
+/// <summary>
+/// 153 PIN-C: one gesture of a mode key as the hotkey layer reports it (<c>Hotkeys.DictateAnywhere</c> / <c>Hotkeys.CommandKey</c>),
+/// after the ONE <see cref="PointMachine"/> the companion runs for the voice key, Dictate anywhere and Command (hold ≥ 200 ms /
+/// double-tap lock or Automatic, Esc, the 800 ms short-note rule, the mode switch). <see cref="Id"/> numbers the gesture; every
+/// later record of the same gesture carries it.
+/// </summary>
+public abstract record ModeGesture(int Id, PointMode Mode)
+{
+    /// <summary>The press opened a gesture in <see cref="ModeGesture.Mode"/> (mic at press, §8.5): the subscriber starts its capture.</summary>
+    public sealed record Started(int Id, PointMode Mode, ulong AtMs) : ModeGesture(Id, Mode);
+
+    /// <summary>Hands-free: the double-tap lock or the Automatic toggle; the next press of the key stops the gesture.</summary>
+    public sealed record Locked(int Id, PointMode Mode) : ModeGesture(Id, Mode);
+
+    /// <summary>The release of a hold, or the tap that ends a locked/toggled gesture: act now. <see cref="Reason"/> = <c>release</c> | <c>tap</c>.</summary>
+    public sealed record Stopped(int Id, PointMode Mode, string Reason, ulong HeldMs) : ModeGesture(Id, Mode);
+
+    /// <summary>Esc, a note under 800 ms, a missed double-tap, a cancel or a chorded modifier-only hold: drop everything (show <see cref="Hint"/> when set).</summary>
+    public sealed record Discarded(int Id, PointMode Mode, string Reason, string? Hint) : ModeGesture(Id, Mode);
+
+    /// <summary>
+    /// §10.1: the live gesture changed mode. Into <see cref="PointMode.Dictate"/>, <see cref="Words"/> are what the companion heard so far
+    /// (prefix them); out of it, the subscriber stops its capture WITHOUT delivering and hands its words back through
+    /// <c>Hotkeys.TakeDictateWords</c>.
+    /// </summary>
+    public sealed record Switched(int Id, PointMode From, PointMode To, string Words) : ModeGesture(Id, To);
+
+    /// <summary>The press was refused (a meeting is talking, not connected, dictation busy): nothing started.</summary>
+    public sealed record Refused(int Id, PointMode Mode, string Reason) : ModeGesture(Id, Mode);
+}

@@ -81,7 +81,7 @@ public sealed class CommandCardTests
         Assert.Equal(12, CommandCard.MaxSteps);
         var s = Working();
         var fx = new List<CommandEffect>();
-        for (int i = 1; i <= CommandCard.MaxSteps; i++)
+        for (int i = 1; i < CommandCard.MaxSteps; i++)
         {
             List<CommandEffect> e;
             (s, e) = Run(s, Tool($"c{i}", $"checking: step {i}"), new CommandInput.ToolFinished($"c{i}", false, ""));
@@ -89,13 +89,15 @@ public sealed class CommandCardTests
         }
         Assert.Empty(fx);
         Assert.Equal(CommandPhase.Working, s.Phase);
-        Assert.Equal(12, s.Current!.StepCount);
-        // The 13th start: cancel(desk, "root") once, freeze, "stopped after 12 steps — hold … to continue".
-        (s, fx) = Run(s, Tool("c13", "checking: step 13"));
+        Assert.Equal(11, s.Current!.StepCount);
+        // The 12th start (H3-C1): cancel(desk, "root") once, freeze, "stopped after 12 steps — hold … to continue".
+        (s, fx) = Run(s, Tool("c12", "checking: step 12"));
         Assert.Equal(new CommandEffect[] { new CommandEffect.CancelTurn("cap") }, fx);
         Assert.Equal(CommandPhase.Stopped, s.Phase);
         Assert.True(s.Current!.CapStopped);
         Assert.Equal(12, s.Current.Steps.Count);
+        Assert.Equal(12, s.Current.StepCount);
+        Assert.Equal(StepStatus.Cancelled, s.Current.Steps[^1].Status);
         Assert.Equal("stopped after 12 steps — hold Ctrl+Alt+C to continue", CommandCard.StatusCopy(s, "Ctrl+Alt+C"));
         // The cancelled turn's TurnFinished keeps it stopped, not failed; later tool events change nothing.
         (s, fx) = Run(s, Tool("c14", "x"), new CommandInput.TurnFinished("cancelled", 60000));
@@ -166,7 +168,7 @@ public sealed class CommandCardTests
         Assert.Null(t.Approval);
         var denied = t.Current!.Steps.Single(r => r.CallId == "c2");
         Assert.Equal(StepStatus.Denied, denied.Status);
-        Assert.Equal("denied (no answer in 120 s)", denied.Note);
+        Assert.Equal("✗ timed out — denied (no answer in 120 s)", denied.Note);
         Assert.Equal("denied", denied.Verb);
         (t, _) = Run(t, new CommandInput.ToolFinished("c2", true, "denied"), new CommandInput.TextDelta("✗ not removed — no answer"), new CommandInput.TurnFinished("end_turn", 141000));
         Assert.Equal(StepStatus.Denied, t.Current!.Steps.Single(r => r.CallId == "c2").Status);
@@ -211,6 +213,15 @@ public sealed class CommandCardTests
     }
 
     [Fact]
+    public void CommandMarkerLine()
+    {
+        Assert.Equal("[command, 4 s] move today's screenshots", CommandCard.CommandText("move today's screenshots", 3200));
+        Assert.Equal("[command, 1 s] go", CommandCard.CommandText("go", 0));
+        Assert.Equal("[command, 2 s] open it\n[screen 1/2 …]", CommandCard.ComposeBody("  open it ", 1500, new[] { "[screen 1/2 …]" }));
+        Assert.Equal("[command, 2 s] x", CommandCard.ComposeBody("x", 2000, Array.Empty<string>()));
+    }
+
+    [Fact]
     public void FromEventDecodesTheDeskStreamOnly()
     {
         CommandInput? E(string type, string json) => CommandCard.FromEvent(type, Encoding.UTF8.GetBytes(json), "desk", 777);
@@ -218,6 +229,9 @@ public sealed class CommandCardTests
             E("ToolCallStarted", """{"type":"ToolCallStarted","session":"desk","turn":"t","call_id":"call_1","name":"shell","args":{"command":"ls -la","purpose":"checking: ls"}}"""));
         Assert.Equal(new CommandInput.ToolStarted("call_2", "read_file", null, null),
             E("ToolCallStarted", """{"type":"ToolCallStarted","session":"desk","turn":"t","call_id":"call_2","name":"read_file","args":{"path":"x"}}"""));
+        // H3-C1: no purpose → the `reason` argument, then the tool name.
+        Assert.Equal(new CommandInput.ToolStarted("call_3", "browser", "open the docs page", null),
+            E("ToolCallStarted", """{"type":"ToolCallStarted","session":"desk","turn":"t","call_id":"call_3","name":"browser","args":{"reason":"open the docs page"}}"""));
         Assert.Null(E("ToolCallStarted", """{"type":"ToolCallStarted","session":"other","call_id":"x","name":"shell","args":{}}"""));
         Assert.Equal(new CommandInput.ToolFinished("call_1", true, "boom"),
             E("ToolCallFinished", """{"type":"ToolCallFinished","session":"desk","turn":"t","call_id":"call_1","output":"boom","is_error":true,"files":[]}"""));
