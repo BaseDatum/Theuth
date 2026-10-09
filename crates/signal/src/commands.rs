@@ -294,7 +294,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
             text(out)
         }
         "/model" => {
-            // 82 §2: with a session the switch is that session's; only the
+            // 148 R1: with a session the switch is that session's only; the
             // session-less form has nothing but the default to set.
             let info = agent()?
                 .ask(agent::SetModel {
@@ -339,7 +339,7 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
         }
         "/effort" => {
             let effort = (arg != "clear").then(|| arg.to_owned());
-            // 83 §2: with a session the change is that session's; only the
+            // 148 R1: with a session the change is that session's only; the
             // session-less form has nothing but the default to set.
             agent()?
                 .ask(agent::SetEffort {

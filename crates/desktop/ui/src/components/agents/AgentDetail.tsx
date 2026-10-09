@@ -1,4 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
+import { ModelCombobox } from '@/components/chat/ModelCombobox'
+import { SAME_AS_NEW } from '@/components/settings/Chat'
+import { useAction } from '@/components/settings/shared'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ExternalLink, Trash2 } from 'lucide-react'
 import { useState } from 'react'
@@ -221,7 +224,7 @@ function Overview({ file: f, summary: s, agents }: { file: AgentFile; summary: A
       >
         <Rows
           rows={[
-            ['Model', f.model ?? dim('node default')],
+            ['Model', f.model ?? dim(SAME_AS_NEW.label)],
             ['Effort', f.effort ?? dim('default')],
             ['Tools ceiling', f.tools ?? dim('inherited')],
             ['MCP', f.mcp === null ? dim('every server') : f.mcp.length === 0 ? dim('none') : f.mcp.join(', ')],
@@ -362,16 +365,37 @@ function Charter({ file: f }: { file: AgentFile }) {
   )
 }
 
+/** 148 R3: theuth's model (`roster.theuth_model`) — the same picker, RPC and query as Settings › Chat; the roster refetches so the header's model updates. */
+function TheuthRuntime() {
+  const api = useApi()
+  const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
+  const model = useQuery({ queryKey: queryKeys.theuthAgentModel, queryFn: () => api.theuth_agent_model() })
+  const setModel = useAction((id: string | null) => api.set_theuth_agent_model(id), { keys: [queryKeys.theuthAgentModel, queryKeys.roster] })
+  return (
+    <div className="flex flex-col gap-4 p-4 text-sm text-fg-secondary">
+      <Field id="theuth-model" label="Model" hint="Its desk and the work it starts for tasks; subagents below those use the subagent default.">
+        <ModelCombobox
+          id="theuth-model"
+          className="max-w-64"
+          models={models.data ?? []}
+          value={model.data?.id}
+          none={SAME_AS_NEW}
+          disabled={model.isPending || setModel.isPending}
+          onChange={(v) => setModel.mutate(v)}
+        />
+      </Field>
+      <p>
+        The built-in root runs with tools <code>destructive</code>, every MCP server and no budget; only its model is configured here (or in Settings › Chat).
+      </p>
+    </div>
+  )
+}
+
 function Runtime({ file: f }: { file: AgentFile }) {
   const { put } = useAgentActions()
   const [d, setD] = useState(f)
   const dirty = JSON.stringify(d) !== JSON.stringify(f)
-  if (f.name === THEUTH)
-    return (
-      <p className="p-4 text-sm text-fg-secondary">
-        The built-in root runs with tools <code>destructive</code>, every MCP server and no budget; it is not configured from the roster.
-      </p>
-    )
+  if (f.name === THEUTH) return <TheuthRuntime />
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-col gap-8 p-4">

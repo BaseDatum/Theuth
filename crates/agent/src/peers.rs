@@ -44,7 +44,7 @@ pub struct SpawnSubagentArgs {
     /// Absolute working directory for an external harness; default: theuth's cwd.
     #[serde(default)]
     pub cwd: Option<PathBuf>,
-    /// Model as `provider/model` (see list_models); default: the user's preferred subagent model (named in your system prompt when set), else the session model. On a node it is resolved there; an external harness switches to it when it offers a model option.
+    /// Model as `provider/model` (see list_models); default: the user's subagent default (named in your system prompt when set), else the default model for new sessions; pass one only when the user asks for it. On a node it is resolved there; an external harness switches to it when it offers a model option.
     #[serde(default)]
     pub model: Option<String>,
     /// Reasoning effort: low|medium|high|off|default or a token budget; default: the configured one. On an external harness it is applied when the harness offers that effort value (e.g. omp: low|medium|high|xhigh|max; opencode: the model's variants), else the harness keeps its default.
@@ -202,7 +202,7 @@ impl Tool for SpawnSubagentTool {
             "Delegate a complete, self-contained task to a subagent running in its own session while you continue. \
              Returns immediately with its name and address; its final message arrives later as a <message from=\"session:<id>\"> input (when communication is on), so do not poll. \
              Several calls in one message run concurrently. Message it with send_message. \
-             For a theuth subagent, omit `model` to use the user's preferred subagent model; set `model`/`effort` only when the task clearly needs a different capability. \
+             For a theuth subagent, omit `model` and `effort`: the user's subagent defaults apply. Set them only when the user asks for a specific model or effort. \
              `tools: read_only` (or `mutating`) caps what the subagent and its descendants may run at that risk (`destructive` = no cap); an investigation that must not change anything gets `read_only`. \
              A child that will compile, run a large test suite or otherwise load the machine gets the resource rules you are under in its brief - lock or job cap, scope, target directory - because an external harness cannot discover peers (see Guidance: Share the machine).",
         );

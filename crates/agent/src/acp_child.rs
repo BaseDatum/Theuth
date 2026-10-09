@@ -1159,7 +1159,7 @@ impl AcpChild {
     async fn queue_respawn(&mut self, tokens: usize) {
         let restored = self.harness.as_ref().is_some_and(Harness::resumed);
         let text = if restored {
-            handoff::restored_note(chrono::Utc::now())
+            handoff::restored_note(&self.store, self.id, chrono::Utc::now()).await
         } else {
             handoff::compose_handoff(&self.store, self.id, tokens).await
         };

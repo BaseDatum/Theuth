@@ -219,11 +219,12 @@ async fn run(
         None => resolved,
     };
     let mut cmd = tokio::process::Command::new("/bin/bash");
-    cmd.arg("-lc")
-        .arg(&script)
-        .current_dir(req.worktree)
-        .process_group(0)
-        .stdin(std::process::Stdio::null())
+    cmd.arg("-lc").arg(&script).current_dir(req.worktree);
+    // Own process group on Unix (R-27); `process_group` is Unix-only in tokio, and on other
+    // targets `ProcessTree::adopt` below is what holds the child's tree.
+    #[cfg(unix)]
+    cmd.process_group(0);
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .env("AUTORESEARCH", "1")

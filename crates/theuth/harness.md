@@ -155,10 +155,11 @@ are rewritten on every start.
   `<message from="session:<id>" id="…">` input. Children see only `task`.
   `agent: <name>` runs an ACP harness from `acp/agents.yaml` in `cwd`,
   `agent: <node>` a theuth on that node, `agent: <harness>@<node>` that
-  node's own harness; without it a theuth subagent runs on `model`/`effort`
-  you choose (`list_models` shows the ids; unset =
-  `agent.subagents.model`/`effort`, then `agent.model`). `model` reaches a
-  node and a harness that offers a model option; `effort` only theuth.
+  node's own harness; without it a theuth subagent runs on the user's
+  subagent defaults (`agent.subagents.model`/`effort`, then `agent.model`).
+  Leave `model`/`effort` unset unless the user asks for a specific one
+  (`list_models` shows the ids). `model` reaches a node and a harness that
+  offers a model option; `effort` only theuth.
 - `discover_peers{query?, cursor?, limit?}` lists who you may message with
   their canonical address (`session:<uuid>`, `peer:<name>`);
   `send_message{to, message, await_reply?, reply_to?}` routes directly to one

@@ -47,6 +47,12 @@ pub struct Handoff {
     pub queued: Vec<String>,
     /// Todo items not done/dropped, as `[status] text`.
     pub todos: Vec<String>,
+    /// 146 D11: the child's original brief (its first user message), excerpted.
+    pub brief: String,
+    /// 146 D11: the prompt it was interrupted in (its last user message), excerpted.
+    pub interrupted: String,
+    /// 146 D11: the harness session id that could not be loaded, when known.
+    pub previous: Option<String>,
 }
 
 /// Local `HH:MM:SS`, as §4.3's examples read.
@@ -54,15 +60,31 @@ fn hhmmss(t: DateTime<Utc>) -> String {
     t.with_timezone(&Local).format("%H:%M:%S").to_string()
 }
 
+/// Chars of the brief / interrupted-prompt excerpts in a handoff (146 D10/D11).
+pub const EXCERPT_CHARS: usize = 400;
+
 /// The first input of a child whose `session/load` succeeded: no delta (the
-/// harness replayed its own context), only the restart and the ask to go on.
-pub fn restored_note(at: DateTime<Utc>) -> String {
+/// harness replayed its own context), only the restart, what it was working
+/// on (146 D10: the interrupted prompt's excerpt) and the ask to go on
+/// exactly where it stopped — never 75 §10's cancelled note.
+pub async fn restored_note(store: &Store, session: SessionId, at: DateTime<Utc>) -> String {
+    let (_, interrupted) = store.prompt_excerpts(session, EXCERPT_CHARS).await;
+    render_restored(at, &interrupted)
+}
+
+/// The pure half of [`restored_note`].
+pub fn render_restored(at: DateTime<Utc>, interrupted: &str) -> String {
+    let working_on = if interrupted.is_empty() {
+        String::new()
+    } else {
+        format!(" while you were working on: \"{interrupted}\"")
+    };
     format!(
         "<resume_handoff>\n\
-         Your previous session with this harness was interrupted by a restart of theuth at {} \
-         and has been restored with its context. The files and the git state are as you left \
-         them; keep the uncommitted diff. Continue the task you were working on from where it \
-         stopped; do not redo finished steps, and report the result when you are done.\n\
+         The theuth engine restarted at {}{working_on}. Your session with this harness has been \
+         restored with its context; the files and the git state are as you left them. Continue \
+         exactly where you left off — do not start over and do not redo finished steps; if you \
+         have uncommitted work, checkpoint-commit it first. Report the result when you are done.\n\
          </resume_handoff>",
         hhmmss(at)
     )
@@ -73,17 +95,22 @@ pub fn restored_note(at: DateTime<Utc>) -> String {
 /// does not fit keeps its head and says how much was cut, every section
 /// after it is named as omitted. Empty sections are left out.
 pub fn render(h: &Handoff, max_chars: usize) -> String {
+    let previous = h.previous.as_deref().map_or_else(
+        || "your previous harness session".to_owned(),
+        |p| format!("your previous harness session {p}"),
+    );
     let header = format!(
         "<resume_handoff>\n\
-         Your previous session with this harness was interrupted by a restart of theuth at {} \
-         and could not be restored. You are a fresh process in the same working directory; the \
-         files and the git state are as you left them. Keep the uncommitted diff: do not revert, \
-         stash or discard it.\n",
+         The theuth engine restarted at {} and {previous} could not be loaded, so its context \
+         could not be restored. You are a fresh process in the same working directory; the \
+         worktree is as you left it — read git log and git status first. Keep the uncommitted \
+         diff: do not revert, stash or discard it.\n",
         hhmmss(h.at)
     );
     let footer = format!(
         "The full earlier transcript is available with session_read(\"{}\"); read it if you need \
-         the exact brief. Continue from the uncommitted state; do not redo finished steps.\n\
+         the exact brief. Continue from the uncommitted state — do not start over and do not redo \
+         finished steps; checkpoint-commit first if you have uncommitted work.\n\
          </resume_handoff>",
         h.session
     );
@@ -92,7 +119,26 @@ pub fn render(h: &Handoff, max_chars: usize) -> String {
         .cwd
         .as_deref()
         .map_or(String::new(), |c| format!(" in {c}"));
-    let sections: [(&str, String); 5] = [
+    let sections: [(&str, String); 7] = [
+        (
+            "original brief",
+            if h.brief.is_empty() {
+                String::new()
+            } else {
+                format!("Your original brief: \"{}\"\n", h.brief)
+            },
+        ),
+        (
+            "interrupted prompt",
+            if h.interrupted.is_empty() || h.interrupted == h.brief {
+                String::new()
+            } else {
+                format!(
+                    "The prompt you were interrupted in: \"{}\"\n",
+                    h.interrupted
+                )
+            },
+        ),
         (
             "last report",
             if h.last_report.is_empty() {
@@ -211,10 +257,12 @@ pub async fn git(cwd: &Path, args: &[&str]) -> String {
     }
 }
 
-/// The §7.3 delta handoff for `session` within `max_tokens` (× 4 chars):
-/// its last report, `git status --porcelain` and `git diff --stat HEAD` in
-/// its stored `cwd`, the messages it never consumed, its open todos. Store
-/// failures leave the section empty; nothing here fails the respawn.
+/// The §7.3 delta handoff for `session` within `max_tokens` (× 4 chars) —
+/// 146 D11's RESUME brief for a fresh harness session on the same row: its
+/// original brief and the interrupted prompt (excerpts), its last report,
+/// `git status --porcelain` and `git diff --stat HEAD` in its stored `cwd`,
+/// the messages it never consumed, its open todos. Store failures leave the
+/// section empty; nothing here fails the respawn.
 pub async fn compose_handoff(store: &Store, session: SessionId, max_tokens: usize) -> String {
     let row = store.session(session).await.ok().flatten();
     let cwd = row.and_then(|r| r.cwd);
@@ -273,6 +321,13 @@ pub async fn compose_handoff(store: &Store, session: SessionId, max_tokens: usiz
         }
     };
     let last_report = store.last_turn_text(session).await.unwrap_or_default();
+    let (brief, interrupted) = store.prompt_excerpts(session, EXCERPT_CHARS).await;
+    // The id the fresh session replaced (set_acp_session moved it aside);
+    // a child that never connected again still names the one it had.
+    let previous = match store.acp_previous(session).await.ok().flatten() {
+        Some(p) => Some(p),
+        None => store.acp_session(session).await.ok().flatten(),
+    };
     render(
         &Handoff {
             session: session.to_string(),
@@ -283,6 +338,9 @@ pub async fn compose_handoff(store: &Store, session: SessionId, max_tokens: usiz
             diff,
             queued,
             todos,
+            brief,
+            interrupted,
+            previous,
         },
         max_tokens.saturating_mul(CHARS_PER_TOKEN),
     )
@@ -302,6 +360,9 @@ mod tests {
             diff: " foo.rs | 3 ++-\n 1 file changed\n".into(),
             queued: vec!["from session:p: also fix bar".into()],
             todos: vec!["[in_progress] tests".into(), "[pending] docs".into()],
+            brief: "Fix foo.rs and run the tests.".into(),
+            interrupted: "also fix bar".into(),
+            previous: Some("s-old".into()),
         }
     }
 
@@ -320,7 +381,7 @@ mod tests {
         ] {
             assert!(!bare.contains(banned), "{banned}: {bare}");
         }
-        assert!(bare.contains("could not be restored"), "{bare}");
+        assert!(bare.contains("could not be loaded"), "{bare}");
         assert!(bare.contains("Keep the uncommitted diff"), "{bare}");
 
         let all = render(&full(), 16_000);
@@ -378,12 +439,44 @@ mod tests {
         assert_eq!(whole, unbounded);
     }
 
+    /// 146 D10: the restored note names the interrupted prompt and asks to
+    /// continue exactly there (never 75 §10's cancelled note); 146 D11: the
+    /// fresh-session brief carries the original brief, the interrupted
+    /// prompt and the unloadable harness session id.
     #[test]
     fn restored_note_has_no_delta() {
-        let n = restored_note(Utc::now());
+        let n = render_restored(Utc::now(), "run the tests");
         assert!(n.starts_with("<resume_handoff>\n"), "{n}");
-        assert!(n.contains("has been restored"), "{n}");
+        assert!(
+            n.contains("while you were working on: \"run the tests\""),
+            "{n}"
+        );
+        assert!(n.contains("Continue exactly where you left off"), "{n}");
+        assert!(n.contains("checkpoint-commit"), "{n}");
         assert!(!n.contains("session_read"), "{n}");
+        assert!(!n.contains("cancelled"), "{n}");
+        assert!(!render_restored(Utc::now(), "").contains("working on"));
+        let fresh = render(&full(), 16_000);
+        assert!(
+            fresh.contains("your previous harness session s-old could not be loaded"),
+            "{fresh}"
+        );
+        assert!(
+            fresh.contains("Your original brief: \"Fix foo.rs and run the tests.\""),
+            "{fresh}"
+        );
+        assert!(
+            fresh.contains("The prompt you were interrupted in: \"also fix bar\""),
+            "{fresh}"
+        );
+        assert!(
+            fresh.contains("read git log and git status first"),
+            "{fresh}"
+        );
+        assert_eq!(
+            crate::store::durability::excerpt("<time now=\"x\"/>\n  a  b\n c ", 3),
+            "a…"
+        );
     }
 
     /// `git status --porcelain` / `git diff --stat HEAD` from a temp repo,

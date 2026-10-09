@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as Rpc from '@/lib/rpc'
-import { createOptions } from './Composer'
+import { PLAIN_DRAFT, createOptions } from './Composer'
 import { CreateOptions } from './NewChatPane'
 
 vi.mock('@/lib/rpc', async (original) => ({
@@ -59,4 +59,10 @@ test('createOptions: memory is endless only when the switch is on; private and p
   expect(createOptions({ private: false, project: null, endless: true })).toMatchObject({ retention: 'durable', project: null, view: null, memory: 'endless' })
   expect(createOptions({ private: true, project: 'lab', endless: false })).toMatchObject({ retention: 'private', project: 'lab', memory: undefined })
   expect(createOptions({ private: true, project: null, endless: false }).view).not.toBeNull()
+})
+
+test('148 R1: the draft pick rides into create_session as this session\'s model/effort; without one both stay null (the engine default)', () => {
+  expect(createOptions(PLAIN_DRAFT)).toMatchObject({ retention: 'durable', model: null, effort: null, memory: undefined })
+  expect(createOptions(PLAIN_DRAFT, { model: 'openai/gpt-5.4', effort: 'high' })).toMatchObject({ model: 'openai/gpt-5.4', effort: 'high' })
+  expect(createOptions({ private: true, project: 'lab', endless: false }, { model: null, effort: 'low' })).toMatchObject({ retention: 'private', project: 'lab', model: null, effort: 'low' })
 })

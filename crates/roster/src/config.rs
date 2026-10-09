@@ -18,6 +18,10 @@ pub struct RosterConfig {
     /// Follow-up rounds (child sessions) a desk may spend on one task per
     /// episode before it must write the deliverable and dispose (70 DESK-PROTOCOL 2).
     pub max_rounds: u32,
+    /// 148 E3: the model the built-in `theuth` agent's desk and its work run
+    /// on; `None` = the default for new sessions. Written back by
+    /// [`crate::SetTheuthModel`]; the roster keeps the live value.
+    pub theuth_model: Option<String>,
 }
 
 impl Default for RosterConfig {
@@ -28,6 +32,7 @@ impl Default for RosterConfig {
             episode_context_pct: 60,
             journal_max_bytes: 8192,
             max_rounds: 3,
+            theuth_model: None,
         }
     }
 }

@@ -16,6 +16,7 @@ use super::{Agents, LiveActor, transfer};
 use crate::durability::{ResumeCause, ResumeMode};
 use crate::loop_::Resume;
 use crate::store::Scope;
+use crate::store::durability::OpenTurnRow;
 
 /// `tell`: resume `turn` of `session` from its journal (§4.1). The actor is
 /// created as `Agents::session` does for a lazy load and handed
@@ -86,15 +87,22 @@ impl Message<OpenTurn> for Agents {
 }
 
 impl Agents {
+    /// 146 D5: the one `open_turns(Scope::Here)` the boot pass shares.
+    pub(super) async fn open_here(&self) -> Vec<OpenTurnRow> {
+        self.store
+            .open_turns(Scope::Here)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!("109: open_turns: {e:#}");
+                Vec::new()
+            })
+    }
+
     /// §4.6 step 10: every open turn, most recently active first, to its
     /// actor; `resume_parallel` run at a time, the rest wait on the shared
-    /// slot inside their turn task. Honours `durability.resume`.
-    pub(super) async fn resume_scan(&mut self) {
-        // 139 D1: a replica never reaches `resume_turn` for the owner's turn.
-        let open = match self.store.open_turns(Scope::Here).await {
-            Ok(open) => open,
-            Err(e) => return tracing::error!("109: open_turns: {e:#}"),
-        };
+    /// slot inside their turn task. Honours `durability.resume`. `open` is
+    /// the boot pass's one `open_turns(Scope::Here)` (146 D5).
+    pub(super) async fn resume_scan(&mut self, open: &[OpenTurnRow]) {
         if open.is_empty() {
             return;
         }
@@ -110,7 +118,7 @@ impl Agents {
             ResumeMode::Ask => {}
             ResumeMode::Auto => {
                 let slots = Arc::new(Semaphore::new(self.cfg.durability.resume_parallel.max(1)));
-                for (session, turn, _) in open {
+                for (session, turn, _) in open.iter().copied() {
                     self.resume_turn(session, turn, Some(slots.clone()), None, None)
                         .await;
                 }
@@ -143,8 +151,8 @@ impl Agents {
         if plan.last == crate::durability::LastStep::Finished {
             return;
         }
-        match self.store.session(session).await {
-            Ok(Some(row)) if row.here => {}
+        let row = match self.store.session(session).await {
+            Ok(Some(row)) if row.here => row,
             Ok(Some(row)) => {
                 return tracing::warn!(
                     session = %session, %turn, owner = %row.owner,
@@ -153,6 +161,24 @@ impl Agents {
             }
             Ok(None) => return tracing::warn!(session = %session, %turn, "109: no session row"),
             Err(e) => return tracing::warn!(session = %session, %turn, "109: session: {e:#}"),
+        };
+        // 146 D9: an ACP child's open turn is owed work; it comes back through
+        // the respawn (the boot pass routes these itself; this is the Resume
+        // button under `resume: ask`, a takeover, or the `resume_turn` RPC).
+        if row.agent.is_some() {
+            if self.live(session).is_some() {
+                return tracing::info!(session = %session, %turn, "146: ACP child already live; its harness continues");
+            }
+            match self
+                .relaunch_acp_child(session, super::acp_resume::Continue::Prompt)
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!(session = %session, %turn, "146: ACP child respawned for its open turn")
+                }
+                Err(e) => tracing::warn!(session = %session, %turn, "146: ACP respawn: {e}"),
+            }
+            return;
         }
         // 139 §6.3: a pending system takeover resumed by the user's press.
         let (cause, from) = match (cause, self.pending_takeovers.remove(&session)) {
@@ -168,10 +194,7 @@ impl Agents {
         let lost_jobs = transfer::on_resume_here(self, session, cause, from.as_deref()).await;
         let actor = match self.session(Some(session), None, None, (None, None)).await {
             Ok((_, LiveActor::Native(actor))) => actor,
-            // W4: an ACP child with an open turn respawns through `session/load`.
-            Ok((_, LiveActor::Acp(_))) => {
-                return tracing::info!(session = %session, %turn, "109: ACP session left to its harness");
-            }
+            Ok((_, LiveActor::Acp(_))) => return,
             Err(e) => {
                 return tracing::warn!(session = %session, %turn, "109: session: {e:#}");
             }
@@ -264,7 +287,8 @@ pub(crate) mod tests {
         let (mine, _) = own_turn(&b).await;
         std::sync::Arc::make_mut(&mut b.cfg).durability.resume = ResumeMode::Auto;
 
-        b.resume_scan().await;
+        let open = b.open_here().await;
+        b.resume_scan(&open).await;
         assert!(b.sessions.contains_key(&mine), "own turn resumed");
         assert!(!b.sessions.contains_key(&foreign), "a's turn untouched");
 

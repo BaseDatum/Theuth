@@ -46,7 +46,7 @@ A provider's environment variable (`ANTHROPIC_API_KEY`, …) also counts as conf
 /model
 ```
 
-The picker only shows providers that have a key, a login, or their env var set. If it says `no models: no provider is configured`, step 3 did not land. Choosing a model rewrites `agent.model` in `~/.theuth/config.yaml`; `/model <id>` sets one directly (ids are models.dev ids such as `anthropic/claude-sonnet-4-5`). `/effort` adjusts reasoning effort where the model supports it. More in [Models](/docs/getting-started/models).
+The picker only shows providers that have a key, a login, or their env var set. If it says `no models: no provider is configured`, step 3 did not land. Choosing a model here applies to the chat you are about to start; the default for new chats stays `agent.model` in `~/.theuth/config.yaml` (desktop: Settings › Chat › **Models › New sessions**). `/model <id>` sets one directly (ids are models.dev ids such as `anthropic/claude-sonnet-4-5`). `/effort` adjusts reasoning effort where the model supports it. More in [Models](/docs/getting-started/models).
 
 ## 5. Say something
 

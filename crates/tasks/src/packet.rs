@@ -577,7 +577,12 @@ pub fn thread_markdown(p: &Packet) -> String {
     if let Some(b) = p.board.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
         s.push_str(&format!("\n\nBoard: theuth://notes/{b}"));
     }
-    if let Some(w) = p.if_wrong.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+    if let Some(w) = p
+        .if_wrong
+        .as_deref()
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+    {
         s.push_str("\n\nIf wrong: ");
         s.push_str(w);
     }
@@ -722,7 +727,11 @@ pub fn head_sentence(text: &str, budget: usize) -> String {
         .rev()
         .find(|&i| chars[i] == ' ')
         .unwrap_or(budget - 1);
-    let mut s: String = chars[..cut].iter().collect::<String>().trim_end().to_owned();
+    let mut s: String = chars[..cut]
+        .iter()
+        .collect::<String>()
+        .trim_end()
+        .to_owned();
     s.push('…');
     s
 }
@@ -1079,7 +1088,11 @@ mod tests {
         let mut r = packet(PacketKind::Review);
         assert_eq!(require_for_user(&r), Err(NEEDS_BOARD_REVIEW.into()));
         r.board = Some("b2".into());
-        assert_eq!(require_for_user(&r), Ok(()), "pointers and if_wrong are optional");
+        assert_eq!(
+            require_for_user(&r),
+            Ok(()),
+            "pointers and if_wrong are optional"
+        );
         r.summary = String::new();
         assert_eq!(require_for_user(&r), Err(NEEDS_REVIEW_SUMMARY.into()));
         assert!(NEEDS_BOARD_DECISION.contains("`## What you're deciding`"));
@@ -1109,7 +1122,10 @@ mod tests {
 
     #[test]
     fn head_sentence_clips_on_a_sentence_then_a_word() {
-        assert_eq!(head_sentence("\n\n# Ship it?\nmore", ROW_BUDGET), "Ship it?");
+        assert_eq!(
+            head_sentence("\n\n# Ship it?\nmore", ROW_BUDGET),
+            "Ship it?"
+        );
         assert_eq!(head_sentence("", ROW_BUDGET), "");
         let short = "Keep the old cache or drop it before the release?";
         assert_eq!(head_sentence(short, ROW_BUDGET), short);
@@ -1123,7 +1139,10 @@ mod tests {
         let early = "Ship it? The deploy window is tonight and the migration adds a column that nothing reads yet, so the risk is the lock.";
         let h = head_sentence(early, ROW_BUDGET);
         assert!(h.ends_with('…') && h.chars().count() <= ROW_BUDGET, "{h}");
-        assert!(h.starts_with("Ship it? The deploy window is tonight"), "{h}");
+        assert!(
+            h.starts_with("Ship it? The deploy window is tonight"),
+            "{h}"
+        );
         assert!(!h.ends_with(" …"), "no space before the ellipsis: {h}");
         // No space at all: a hard cut at budget - 1 plus `…`.
         let solid = "x".repeat(300);
