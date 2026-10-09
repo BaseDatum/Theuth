@@ -222,6 +222,8 @@ pub enum WaitKind {
     PtyWait,
     /// A human-wait tool or the approval gate.
     Question,
+    /// `wait_peer` on a child's state (155 §5.4); outlives its turn like `ChildResult`.
+    PeerState,
 }
 
 impl WaitKind {
@@ -233,6 +235,7 @@ impl WaitKind {
             Self::Job => "job",
             Self::PtyWait => "pty_wait",
             Self::Question => "question",
+            Self::PeerState => "peer_state",
         }
     }
 
@@ -244,6 +247,7 @@ impl WaitKind {
             "job" => Self::Job,
             "pty_wait" => Self::PtyWait,
             "question" => Self::Question,
+            "peer_state" => Self::PeerState,
             _ => return None,
         })
     }
@@ -422,6 +426,7 @@ mod tests {
             WaitKind::Job,
             WaitKind::PtyWait,
             WaitKind::Question,
+            WaitKind::PeerState,
         ] {
             assert_eq!(WaitKind::parse(w.as_str()), Some(w));
         }

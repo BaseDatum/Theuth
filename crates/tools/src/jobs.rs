@@ -251,6 +251,10 @@ pub enum JobEvent {
         user_typed_secs: Option<u64>,
         /// The screen text with its `cursor:` line: the `<job_idle>` body.
         output: String,
+        /// 155 §6.5: why it fired — `screen unchanged for N s, process tree
+        /// quiet` or `no reaction to input`. Empty from older engines.
+        #[serde(default)]
+        why: String,
     },
     /// The job ended; the agent injects this as `<job_result>` unless `inline`.
     /// A [`CancelJob`] kill shapes it by [`CancelOrigin`] (14 §1.2 as-built):
@@ -750,6 +754,9 @@ pub struct Jobs {
     pub(crate) journal: Arc<dyn crate::Journal>,
     /// 109 §5.3: the PTY screen snapshot timer (`durability.pty_snapshot_secs`).
     pub(crate) pty_snapshot: Duration,
+    /// 155 §6.6: the static `tools.pty_reaction_secs` / `pty_tree_cpu_pct`
+    /// pair every PTY job task reads.
+    pub(crate) pty_thresholds: crate::PtyThresholds,
 }
 
 impl Jobs {
@@ -768,6 +775,7 @@ impl Jobs {
             reminders: HashMap::new(),
             journal: Arc::new(crate::NoopJournal),
             pty_snapshot: Duration::from_secs(5),
+            pty_thresholds: crate::PtyThresholds::from_config(&crate::ToolsConfig::default()),
         }
     }
 
@@ -836,6 +844,9 @@ pub fn start(rt: &Runtime, grace: Duration, timeout: Duration) -> anyhow::Result
         .extract_inner::<u64>("durability.pty_snapshot_secs")
     {
         actor.pty_snapshot = Duration::from_secs(secs.max(1));
+    }
+    if let Ok(cfg) = crate::registry::config(rt) {
+        actor.pty_thresholds = crate::PtyThresholds::from_config(&cfg);
     }
     let jobs = Jobs::spawn_with_mailbox(actor, runtime::subscriber_mailbox());
     jobs.register(JOBS_ACTOR)?;

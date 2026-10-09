@@ -809,6 +809,7 @@ impl Double {
             context: None,
             priority: None,
             rank: 5, // 132: Priority::Medium.weight(); no task behind a double card
+            alert: None,
         })
     }
 

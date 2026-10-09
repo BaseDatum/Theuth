@@ -54,6 +54,7 @@ async fn prompts_resolve_everywhere_and_replay_only_while_pending() {
         rt: rt.clone(),
         private: Default::default(),
         focus: Default::default(),
+        seen: Default::default(),
     }
     .into_rpc()
     .into();

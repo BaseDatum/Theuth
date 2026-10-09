@@ -10,6 +10,7 @@ import { ATTENTION_KEY } from '@/components/hud/queries'
 import { StartupScreen } from '@/components/launch/StartupScreen'
 import { PairScreen } from '@/components/link/PairScreen'
 import { Toaster } from '@/components/ui/sonner'
+import { AlertNotifier } from '@/lib/alerts'
 import { describe } from '@/lib/describe'
 import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
 import { companionAlive, onCompanionAlive, useCompanionAlive } from '@/lib/companion'
@@ -464,6 +465,8 @@ function useEventSideEffects(st: Stores): void {
       if (isDesktop()) badge(alive ? 0 : (qc.getQueryData<AttentionItem[]>(ATTENTION_KEY)?.length ?? 0))
     }
     void companionAlive().then(setCompanion)
+    // 155 §7.6: the engine decides whether (`item.alert`); this window posts one notification per `alert.id`.
+    const alerts = new AlertNotifier((title, body) => void notifyIfHidden(title, body), visible)
     const offs = [
       onCompanionAlive(setCompanion),
       on('Lagged', () => {
@@ -474,7 +477,7 @@ function useEventSideEffects(st: Stores): void {
         'ApprovalRequested',
         (e) => {
           if (companion) return
-          void notifyIfHidden(`Approval: ${e.tool}`, describe(e.tool, e.args).join('\n'))
+          alerts.legacy(`approval:${e.id}`, `Approval: ${e.tool}`, describe(e.tool, e.args).join('\n'))
         },
       ),
       on('TurnFinished', (e) => {
@@ -484,7 +487,7 @@ function useEventSideEffects(st: Stores): void {
           .getQueryData<SessionSummary[]>(queryKeys.sessions)
           ?.find((s) => s.id === e.session)
         if ((slice?.parent ?? summary?.parent) != null) return
-        void notifyIfHidden('Turn finished', slice?.title ?? summary?.title ?? '')
+        alerts.legacy(`finished:${e.session}:`, 'Turn finished', slice?.title ?? summary?.title ?? '')
       }),
       on('BrowserShowLive', (e) => {
         if (!visible(e.session)) router.history.push(`/c/${e.session}`)
@@ -495,12 +498,14 @@ function useEventSideEffects(st: Stores): void {
       }),
       // `enabled: false`: observe the cached list, never fetch it here (the sidebar's `useAttention` owns the fetch).
       new QueryObserver<AttentionItem[]>(qc, { queryKey: ATTENTION_KEY, enabled: false }).subscribe((r) => {
-        if (!isDesktop() || companion || !r.data) return
-        badge(r.data.length)
+        if (companion || !r.data) return
+        alerts.list(r.data)
+        if (isDesktop()) badge(r.data.length)
       }),
     ]
     return () => {
       resyncs.cancel()
+      alerts.dispose()
       for (const off of offs) off()
     }
   }, [st, qc])

@@ -347,6 +347,11 @@ pub struct PeerActivity {
     pub ptys: u16,
     /// Descendants with a live actor.
     pub children: u16,
+    /// 155 §5.5: seconds since the child's open stall episode began; `None`
+    /// when it is not stalled (or not an ACP child).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional, type = "number | null"))]
+    pub stalled_secs: Option<u64>,
 }
 
 impl PeerActivity {

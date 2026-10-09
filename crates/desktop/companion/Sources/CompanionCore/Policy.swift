@@ -90,6 +90,8 @@ public struct NotificationPolicy: Sendable {
     private var engineLost = false
     /// Posted banner id → item ids still waiting.
     private var live: [String: Set<String>] = [:]
+    /// 155 §7.6: item id → the `alert.id` already bannered (or held); a new episode is a new id.
+    private var alerted: [String: String] = [:]
 
     public init(prefs: NotificationPrefs = NotificationPrefs()) { self.prefs = prefs }
 
@@ -110,6 +112,13 @@ public struct NotificationPolicy: Sendable {
         }
     }
 
+    /// 155 §7.6 (D6): the engine's class when it decided (`alert`: needs_you → blocking, finished → deferrable),
+    /// else the §4.4 table.
+    public static func classOf(_ item: AttentionItem) -> NotificationClass {
+        guard let a = item.alert else { return classify(item) }
+        return a.cls == .needsYou ? .blocking : .deferrable
+    }
+
     public static func category(for item: AttentionItem) -> Banner.Category {
         switch item.kind {
         case .ask, .decision: return .question
@@ -126,6 +135,8 @@ public struct NotificationPolicy: Sendable {
 
     /// Items from `attention_list`; the first call seeds the known set without posting (those were
     /// waiting before the companion started) and only takes the flood reading.
+    /// 155 §7.6: an item from an engine that decides (`engineDecides`) is new when its `alert.id` is — one
+    /// banner per alert id, none while the engine blanks it; items from older engines are new by item id.
     public mutating func update(items: [AttentionItem], now: Date) -> PolicyOutput {
         var out = PolicyOutput()
         let ids = Set(items.map(\.id))
@@ -135,8 +146,16 @@ public struct NotificationPolicy: Sendable {
         }
         held.removeAll { !ids.contains($0.id) }
         if held.isEmpty { holdingSince = nil; breakpointPending = false }
-        let fresh = items.filter { !known.contains($0.id) }
+        let fresh = items.filter { item in
+            if item.engineDecides {
+                guard let a = item.alert else { return false }
+                return alerted[item.id] != a.id
+            }
+            return !known.contains(item.id)
+        }
         known = ids
+        alerted = alerted.filter { ids.contains($0.key) }
+        for item in items { if let a = item.alert { alerted[item.id] = a.id } }
         let waiting = items.filter { $0.kind.needsYou }.count
         waitingNow = waiting
 
@@ -161,7 +180,7 @@ public struct NotificationPolicy: Sendable {
         }
 
         for item in fresh {
-            let cls = Self.classify(item)
+            let cls = Self.classOf(item)
             // Flood: no per-item banners except errors.
             if flood && cls != .error { continue }
             switch prefs.mode(for: cls) {
@@ -230,7 +249,7 @@ public struct NotificationPolicy: Sendable {
         guard breakpointPending || now.timeIntervalSince(since) >= Self.cap else { return out }
         // §5.5 last-but-one row: hold even at a breakpoint until the rate window passes.
         if let last = lastDeferrableAt, now.timeIntervalSince(last) < Self.rate { return out }
-        let b = held.count == 1 ? banner(held[0], cls: Self.classify(held[0])) : batchBanner(held, now: now)
+        let b = held.count == 1 ? banner(held[0], cls: Self.classOf(held[0])) : batchBanner(held, now: now)
         out.post.append(b)
         held = []; holdingSince = nil; breakpointPending = false
         lastDeferrableAt = now
@@ -246,8 +265,9 @@ public struct NotificationPolicy: Sendable {
         case .deferrable: level = .passive; sound = false
         default: level = .active; sound = false
         }
-        let b = Banner(id: item.id, category: Self.category(for: item), title: "\(who) · \(Self.label(item))",
-                       body: item.title, thread: who, level: level, sound: sound, itemIds: [item.id])
+        // 155 §7.6: one banner per `alert.id`, the engine's `why` as the body.
+        let b = Banner(id: item.alert?.id ?? item.id, category: Self.category(for: item), title: "\(who) · \(Self.label(item))",
+                       body: item.alert?.why ?? item.title, thread: who, level: level, sound: sound, itemIds: [item.id])
         live[b.id] = [item.id]
         return b
     }
