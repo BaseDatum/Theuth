@@ -40,6 +40,12 @@ public static class VirtualKeys
 
     /// <summary>'0'…'9' and 'A'…'Z' are their ASCII codes.</summary>
     public static ushort Letter(char c) => char.ToUpperInvariant(c);
+
+    /// <summary>153 §12.6: the left/right modifier keys a modifier-only chord names (<c>VK_LSHIFT</c> … <c>VK_RMENU</c>, <c>VK_LWIN</c>/<c>VK_RWIN</c>).</summary>
+    public const ushort LShift = 0xA0, RShift = 0xA1, LControl = 0xA2, RControl = 0xA3, LMenu = 0xA4, RMenu = 0xA5, LWin = 0x5B, RWin = 0x5C;
+
+    /// <summary>A left/right modifier key (what a modifier-only chord is made of).</summary>
+    public static bool IsModifierKey(ushort vk) => vk is LShift or RShift or LControl or RControl or LMenu or RMenu or LWin or RWin;
 }
 
 /// <summary>
@@ -79,6 +85,12 @@ public sealed class Chord : IEquatable<Chord>
     }
 
     public bool IsFunctionKey => KeyNames.FunctionKeys.ContainsKey(KeyCode);
+
+    /// <summary>
+    /// 153 §12.6: a chord with no key — one left/right modifier pressed and released alone ("Right Ctrl"). <c>RegisterHotKey</c>
+    /// cannot bind it; the companion's opt-in <c>WH_KEYBOARD_LL</c> hook does (the macOS <c>flagsChanged</c> monitor's twin).
+    /// </summary>
+    public bool IsModifierOnly => VirtualKeys.IsModifierKey(KeyCode);
 
     /// <summary>Panel/Ask-bar chords: case and Shift do not distinguish keys (W1's <c>K</c> is <c>previous</c>).</summary>
     public Chord NormalizedLocal =>
@@ -138,6 +150,10 @@ public static class KeyNames
         // 149 NATIVE: arrow keys written the Windows way (words), not arrow characters.
         [VirtualKeys.Left] = "Left", [VirtualKeys.Right] = "Right", [VirtualKeys.Down] = "Down", [VirtualKeys.Up] = "Up",
         [VirtualKeys.Home] = "Home", [VirtualKeys.End] = "End", [VirtualKeys.PageUp] = "PgUp", [VirtualKeys.PageDown] = "PgDn",
+        // 153 §12.6: modifier-only chords name the physical key.
+        [VirtualKeys.LShift] = "Left Shift", [VirtualKeys.RShift] = "Right Shift", [VirtualKeys.LControl] = "Left Ctrl",
+        [VirtualKeys.RControl] = "Right Ctrl", [VirtualKeys.LMenu] = "Left Alt", [VirtualKeys.RMenu] = "Right Alt",
+        [VirtualKeys.LWin] = "Left Win", [VirtualKeys.RWin] = "Right Win",
     };
 
     public static string Name(ushort keyCode, string chars)
@@ -192,6 +208,9 @@ public enum KeyAction
     IslandNextBrief, IslandPreviousBrief,
     // pointAndSay:
     PointCancel,
+
+    // 153 §15 ★ anywhere: dictate anywhere (§13) and the command key (§10).
+    DictateAnywhere, Command,
 }
 
 public static class KeyText
@@ -275,6 +294,15 @@ public enum VerdictKind
 
     /// <summary>Same scope, another row: the recorder offers "Use here instead" (<see cref="KeyTable.Move"/>).</summary>
     UsedBy,
+
+    /// <summary>
+    /// 153 §15: the voice key, Dictate anywhere and Command are one gesture family (§10.1 — another mode's key switches a live
+    /// gesture), so a family row's chord never moves onto another family row: refused, no "Use here instead".
+    /// </summary>
+    ModeKeyClash,
+
+    /// <summary>153 §12.6: a modifier-only chord while Settings › Keys "Modifier-only keys" is off (the opt-in, Swift's <c>needsInputMonitoring</c> twin).</summary>
+    NeedsModifierOnly,
 }
 
 public readonly record struct Verdict(VerdictKind Kind, KeyAction? Owner = null)
@@ -283,6 +311,8 @@ public readonly record struct Verdict(VerdictKind Kind, KeyAction? Owner = null)
     public static Verdict Unchanged => new(VerdictKind.Unchanged);
     public static Verdict ReservedByWindows => new(VerdictKind.ReservedByWindows);
     public static Verdict UsedBy(KeyAction owner) => new(VerdictKind.UsedBy, owner);
+    public static Verdict ModeKeyClash(KeyAction owner) => new(VerdictKind.ModeKeyClash, owner);
+    public static Verdict NeedsModifierOnly => new(VerdictKind.NeedsModifierOnly);
 }
 
 /// <summary>At launch: the chord that registered (or none) and one line for Settings › Keys and the legend; never a dialog.</summary>
@@ -335,6 +365,9 @@ public sealed class KeyTable : IEquatable<KeyTable>
         // 149 §8 ★ rows, Windows defaults (⌃⇧A → Ctrl+Shift+A; the voice key ⌃S → Ctrl+Alt+Space, D16 / 7.4 #3; ⌥` → Alt+`; ⌥⇧E → Alt+Shift+E).
         Row(KeyAction.OpenAgents, KeyScope.Anywhere, "Open the agents panel", Key("a", 'A', ChordModifiers.Control | ChordModifiers.Shift)),
         Row(KeyAction.VoiceKey, KeyScope.Anywhere, "Voice key — point and say (hold; double-tap locks)", Key(" ", VirtualKeys.Space, ChordModifiers.Control | ChordModifiers.Alt)),
+        // 153 §15 ★ (W-d): ⌃⌥D / ⌃⌥C → Ctrl+Alt+D / Ctrl+Alt+C; registered as Ctrl+Shift+Alt+D / +C on an AltGr layout (AltGrRule).
+        Row(KeyAction.DictateAnywhere, KeyScope.Anywhere, "Dictate anywhere — type into any app (hold; double-tap locks)", Key("d", 'D', ChordModifiers.Control | ChordModifiers.Alt)),
+        Row(KeyAction.Command, KeyScope.Anywhere, "Command — act on this computer (hold; switches a live gesture)", Key("c", 'C', ChordModifiers.Control | ChordModifiers.Alt)),
         Row(KeyAction.MeetingPtt, KeyScope.Anywhere, "Meeting push-to-talk (while a meeting is live)", Key("`", VirtualKeys.Oem3Backtick, ChordModifiers.Alt)),
         Row(KeyAction.MeetingEye, KeyScope.Anywhere, "Meeting eye — hide from capture (while live)", Key("e", 'E', ChordModifiers.Alt | ChordModifiers.Shift)),
         Row(KeyAction.TalkReply, KeyScope.Panel, "Hold to talk into the reply", Key("v", 'V')),
@@ -404,19 +437,52 @@ public sealed class KeyTable : IEquatable<KeyTable>
 
     // MARK: the collision policy (130 W6 brief item 4d; 134 §4.6: Win-key chords refused)
 
-    /// <summary><paramref name="reserved"/>: system chords the app knows are taken (tests stub them).</summary>
-    public Verdict Check(Chord chord, KeyAction action, IReadOnlyCollection<Chord>? reserved = null)
+    /// <summary>
+    /// 153 §10.1 / §15: the gesture family — the voice key (ask), Dictate anywhere and Command drive one <see cref="PointMachine"/>
+    /// gesture; another member's key while a gesture is live switches its mode.
+    /// </summary>
+    public static readonly IReadOnlyList<KeyAction> ModeKeys = new[] { KeyAction.VoiceKey, KeyAction.DictateAnywhere, KeyAction.Command };
+
+    /// <summary>The mode a family row drives (null for every other row).</summary>
+    public static PointMode? ModeOf(KeyAction action) => action switch
+    {
+        KeyAction.VoiceKey => PointMode.Ask,
+        KeyAction.DictateAnywhere => PointMode.Dictate,
+        KeyAction.Command => PointMode.Command,
+        _ => null,
+    };
+
+    /// <summary>The family row of <paramref name="mode"/>.</summary>
+    public static KeyAction ActionOf(PointMode mode) => mode switch
+    {
+        PointMode.Dictate => KeyAction.DictateAnywhere,
+        PointMode.Command => KeyAction.Command,
+        _ => KeyAction.VoiceKey,
+    };
+
+    /// <summary>
+    /// <paramref name="reserved"/>: system chords the app knows are taken (tests stub them). <paramref name="modifierOnly"/>: Settings ›
+    /// Keys "Modifier-only keys" (153 §12.6) is on — only then may a family row take a modifier-only chord.
+    /// </summary>
+    public Verdict Check(Chord chord, KeyAction action, IReadOnlyCollection<Chord>? reserved = null, bool modifierOnly = false)
     {
         var scope = ScopeOf(action);
         var c = scope == KeyScope.Anywhere ? chord : chord.NormalizedLocal;
         if (ChordFor(action) == c) return Verdict.Unchanged;
         if (c.Modifiers.HasFlag(ChordModifiers.Win)) return Verdict.ReservedByWindows;
-        if (scope == KeyScope.Anywhere
+        if (c.IsModifierOnly)
+        {
+            // The Win keys open Start; only the family rows may be modifier-only, and only with the opt-in on.
+            if (c.KeyCode is VirtualKeys.LWin or VirtualKeys.RWin || ModeOf(action) is null) return Verdict.ReservedByWindows;
+            if (!modifierOnly) return Verdict.NeedsModifierOnly;
+        }
+        else if (scope == KeyScope.Anywhere
             && ((reserved?.Contains(c) ?? false) || ((c.Modifiers & ~ChordModifiers.Shift) == ChordModifiers.None && !c.IsFunctionKey)))
         {
             return Verdict.ReservedByWindows;
         }
         var other = BindingsIn(scope).FirstOrDefault(b => b.Chord == c && b.Action != action);
+        if (other is not null && ModeOf(action) is not null && ModeOf(other.Action) is not null) return Verdict.ModeKeyClash(other.Action);
         return other is not null ? Verdict.UsedBy(other.Action) : Verdict.Ok;
     }
 
@@ -431,7 +497,8 @@ public sealed class KeyTable : IEquatable<KeyTable>
     /// <summary>"Use here instead": the chord moves to <paramref name="action"/>; the row that had it goes unassigned.</summary>
     public void Move(Chord chord, KeyAction action)
     {
-        var v = Check(chord, action);
+        var v = Check(chord, action, modifierOnly: true);
+        if (v.Kind == VerdictKind.ModeKeyClash) return; // 153 §15: never across the gesture family
         if (v.Kind == VerdictKind.UsedBy && v.Owner is { } other) Set(null, other);
         Set(chord, action);
     }
@@ -541,4 +608,124 @@ public sealed class KeyTable : IEquatable<KeyTable>
     public static bool operator ==(KeyTable? a, KeyTable? b) => a is null ? b is null : a.Equals(b);
 
     public static bool operator !=(KeyTable? a, KeyTable? b) => !(a == b);
+}
+
+/// <summary>The chord a global row registers on the active layout, and the Settings › Keys line when it differs (153 §15, W-d).</summary>
+public sealed record AltGrDecision(Chord Register, string? Notice)
+{
+    /// <summary>The layout types a glyph for the chord, so <see cref="Register"/> is the Ctrl+Shift+Alt fallback.</summary>
+    public bool Substituted => Notice is not null;
+}
+
+/// <summary>
+/// 153 §15 (W-d): on layouts where right-Alt is AltGr, Ctrl+Alt+&lt;key&gt; IS AltGr+&lt;key&gt; — US-International types ð / ©
+/// for Ctrl+Alt+D / C, Polish ć for C, Czech/Slovak &amp; — so registering it would steal a character. At registration the
+/// companion probes the active layout with <c>ToUnicodeEx(vk, …, keystate Ctrl+Alt)</c>; the probe's answer decides here:
+/// a visible character → register Ctrl+Shift+Alt+&lt;key&gt; instead and say so in Settings › Keys; nothing (or only white
+/// space, as AltGr+Space types a space) → the chord as it is. Only exact Ctrl+Alt chords on a typing key are probed; the
+/// probe re-runs on <c>WM_INPUTLANGCHANGE</c> (the driver's).
+/// </summary>
+public static class AltGrRule
+{
+    /// <summary>Whether <paramref name="chord"/> can collide with AltGr: exactly Ctrl+Alt on a key that types (not Space, F-keys, arrows).</summary>
+    public static bool Applies(Chord? chord) =>
+        chord is not null && chord.Modifiers == (ChordModifiers.Control | ChordModifiers.Alt) && !chord.IsModifierOnly
+        && chord.KeyCode != VirtualKeys.Space && !chord.IsFunctionKey && (chord.IsCharKey || IsTypingVk(chord.KeyCode));
+
+    /// <summary>The probe's answer is a glyph: at least one character that is neither a control character nor white space.</summary>
+    public static bool Types(string? probe) =>
+        probe is { Length: > 0 } && probe.Any(ch => !char.IsControl(ch) && !char.IsWhiteSpace(ch));
+
+    /// <summary>
+    /// <paramref name="probe"/>: what <c>ToUnicodeEx</c> produced for the chord's key with Ctrl+Alt held on the active layout (null or
+    /// "" = nothing; a dead key counts as typing — the driver passes its character).
+    /// </summary>
+    public static AltGrDecision Decide(Chord chord, string? probe)
+    {
+        if (!Applies(chord) || !Types(probe)) return new AltGrDecision(chord, null);
+        var fallback = new Chord(chord.Chars, chord.KeyCode, chord.Modifiers | ChordModifiers.Shift);
+        return new AltGrDecision(fallback, Notice(chord));
+    }
+
+    /// <summary>"AltGr on this layout — using Ctrl+Shift+Alt+D" (the design's copy, §15).</summary>
+    public static string Notice(Chord chord) => $"AltGr on this layout — using {FallbackText(chord)}";
+
+    /// <summary>The fallback chord written the design's way: "Ctrl+Shift+Alt+D".</summary>
+    public static string FallbackText(Chord chord) => $"Ctrl+Shift+Alt+{KeyNames.Name(chord.KeyCode, chord.Chars)}";
+
+    private static bool IsTypingVk(ushort vk) => vk is >= 0x30 and <= 0x39 or >= 0x41 and <= 0x5A or >= 0xBA and <= 0xC0 or >= 0xDB and <= 0xDF or 0xE2;
+}
+
+/// <summary>
+/// 153 §14.3 (companion-local, the <see cref="PointSettings"/> pattern): whether the two new rows are registered at all, the gesture
+/// of each mode's key (§12.6 — Hold · double-tap locks by default, W-i; Automatic opt-in) and the opt-in modifier-only chords
+/// (<c>WH_KEYBOARD_LL</c>). Keys: <c>dictateAnywhereEnabled</c> · <c>commandKeyEnabled</c> · <c>gesture.ask</c> ·
+/// <c>gesture.dictate</c> · <c>gesture.command</c> (<c>holdLock</c> | <c>automatic</c>) · <c>modifierOnlyKeys</c>.
+/// </summary>
+public sealed class ModeKeySettings : IEquatable<ModeKeySettings>
+{
+    public bool DictateAnywhereEnabled { get; set; } = true;
+
+    public bool CommandKeyEnabled { get; set; } = true;
+
+    /// <summary>Settings › Keys "Modifier-only keys": a family row may hold a lone modifier (Right Ctrl…), watched by a low-level hook.</summary>
+    public bool ModifierOnlyKeys { get; set; }
+
+    private readonly Dictionary<PointMode, Gesture> gestures = new() { [PointMode.Ask] = Gesture.HoldLock, [PointMode.Dictate] = Gesture.HoldLock, [PointMode.Command] = Gesture.HoldLock };
+
+    public Gesture GestureFor(PointMode mode) => gestures.TryGetValue(mode, out var g) ? g : Gesture.HoldLock;
+
+    public void SetGesture(PointMode mode, Gesture gesture) => gestures[mode] = gesture;
+
+    /// <summary>A family row the user switched off is not registered (<c>Hotkeys.Gate</c>).</summary>
+    public bool Enabled(KeyAction action) => action switch
+    {
+        KeyAction.DictateAnywhere => DictateAnywhereEnabled,
+        KeyAction.Command => CommandKeyEnabled,
+        _ => true,
+    };
+
+    public static class Key
+    {
+        public const string DictateAnywhereEnabled = "dictateAnywhereEnabled", CommandKeyEnabled = "commandKeyEnabled";
+        public const string ModifierOnlyKeys = "modifierOnlyKeys";
+
+        /// <summary><c>gesture.ask</c> · <c>gesture.dictate</c> · <c>gesture.command</c>.</summary>
+        public static string Gesture(PointMode mode) => $"gesture.{mode.RawValue()}";
+    }
+
+    public static ModeKeySettings Load(SettingsStore d)
+    {
+        var s = new ModeKeySettings();
+        if (d.Contains(Key.DictateAnywhereEnabled)) s.DictateAnywhereEnabled = d.Bool(Key.DictateAnywhereEnabled);
+        if (d.Contains(Key.CommandKeyEnabled)) s.CommandKeyEnabled = d.Bool(Key.CommandKeyEnabled);
+        s.ModifierOnlyKeys = d.Bool(Key.ModifierOnlyKeys);
+        foreach (var m in Enum.GetValues<PointMode>()) s.SetGesture(m, PointModeText.GestureFromRaw(d.String(Key.Gesture(m))));
+        return s;
+    }
+
+    public void Save(SettingsStore d)
+    {
+        d.Set(Key.DictateAnywhereEnabled, DictateAnywhereEnabled);
+        d.Set(Key.CommandKeyEnabled, CommandKeyEnabled);
+        d.Set(Key.ModifierOnlyKeys, ModifierOnlyKeys);
+        foreach (var m in Enum.GetValues<PointMode>()) d.Set(Key.Gesture(m), GestureFor(m).RawValue());
+        d.Flush();
+    }
+
+    public ModeKeySettings Clone()
+    {
+        var c = new ModeKeySettings { DictateAnywhereEnabled = DictateAnywhereEnabled, CommandKeyEnabled = CommandKeyEnabled, ModifierOnlyKeys = ModifierOnlyKeys };
+        foreach (var m in Enum.GetValues<PointMode>()) c.SetGesture(m, GestureFor(m));
+        return c;
+    }
+
+    public bool Equals(ModeKeySettings? o) =>
+        o is not null && DictateAnywhereEnabled == o.DictateAnywhereEnabled && CommandKeyEnabled == o.CommandKeyEnabled
+        && ModifierOnlyKeys == o.ModifierOnlyKeys && Enum.GetValues<PointMode>().All(m => GestureFor(m) == o.GestureFor(m));
+
+    public override bool Equals(object? obj) => Equals(obj as ModeKeySettings);
+
+    public override int GetHashCode() =>
+        HashCode.Combine(DictateAnywhereEnabled, CommandKeyEnabled, ModifierOnlyKeys, GestureFor(PointMode.Ask), GestureFor(PointMode.Dictate), GestureFor(PointMode.Command));
 }
