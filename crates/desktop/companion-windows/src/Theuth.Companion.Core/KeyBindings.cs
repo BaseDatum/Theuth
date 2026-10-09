@@ -135,7 +135,8 @@ public static class KeyNames
         [VirtualKeys.Return] = "Enter", [VirtualKeys.NumpadEnter] = "Num Enter", [VirtualKeys.Escape] = "Esc",
         [VirtualKeys.Space] = "Space", [VirtualKeys.Tab] = "Tab", [VirtualKeys.Back] = "Backspace",
         [VirtualKeys.Delete] = "Delete", [VirtualKeys.Insert] = "Insert",
-        [VirtualKeys.Left] = "←", [VirtualKeys.Right] = "→", [VirtualKeys.Down] = "↓", [VirtualKeys.Up] = "↑",
+        // 149 NATIVE: arrow keys written the Windows way (words), not arrow characters.
+        [VirtualKeys.Left] = "Left", [VirtualKeys.Right] = "Right", [VirtualKeys.Down] = "Down", [VirtualKeys.Up] = "Up",
         [VirtualKeys.Home] = "Home", [VirtualKeys.End] = "End", [VirtualKeys.PageUp] = "PgUp", [VirtualKeys.PageDown] = "PgDn",
     };
 

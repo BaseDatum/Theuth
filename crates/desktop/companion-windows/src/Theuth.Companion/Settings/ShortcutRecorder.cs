@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Theuth.Companion.Breakpoints;
 using Theuth.Companion.Core;
+using Theuth.Companion.Ui;
 using Windows.System;
 using Windows.UI.Core;
 
@@ -47,7 +48,7 @@ internal sealed partial class ShortcutRecorder : Button
 {
     private readonly KeyAction action;
     private readonly SettingsModel model;
-    private readonly TextBlock text = new() { FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.Medium, TextAlignment = TextAlignment.Center };
+    private readonly TextBlock text = new() { FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextAlignment = TextAlignment.Center };
     private bool recording;
 
     public ShortcutRecorder(KeyAction action, SettingsModel model)
@@ -74,20 +75,20 @@ internal sealed partial class ShortcutRecorder : Button
         if (recording)
         {
             text.Text = "Type a shortcut…";
-            text.Foreground = Theme.Brush("TextFillColorSecondaryBrush");
+            text.Foreground = Theme.Brush(NativeLook.TextSecondary, ElementTheme.Default);
         }
         else if (chord is not null)
         {
             text.Text = chord.Symbol;
-            text.Foreground = Theme.Brush("TextFillColorPrimaryBrush", 0xE0);
+            text.Foreground = Theme.Brush(NativeLook.TextPrimary, ElementTheme.Default);
         }
         else
         {
             text.Text = "unassigned";
             // Lost to a move → the warning colour; unassigned by default → secondary.
             text.Foreground = model.Keys.Binding(action).DefaultChord is null
-                ? Theme.Brush("TextFillColorSecondaryBrush")
-                : Theme.Brush("SystemFillColorCautionBrush", 0xC0);
+                ? Theme.Brush(NativeLook.TextSecondary, ElementTheme.Default)
+                : Theme.Brush(NativeLook.Caution, ElementTheme.Default);
         }
     }
 
@@ -220,7 +221,7 @@ internal static class KeyRow
                 Width = 170,
                 TextAlignment = TextAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                Foreground = Theme.Brush("TextFillColorSecondaryBrush"),
+                Foreground = Theme.Brush(NativeLook.TextSecondary, ElementTheme.Default),
             };
             ToolTipService.SetToolTip(t, "Fixed: Esc cancels the recorder and closes every surface");
             AutomationProperties.SetAutomationId(t, $"settings-keys-{binding.Action.RawValue()}");
@@ -255,7 +256,7 @@ internal static class KeyRow
                 VerticalAlignment = VerticalAlignment.Center,
                 TextWrapping = TextWrapping.Wrap,
                 MaxWidth = 340,
-                Foreground = Theme.Brush("SystemFillColorCautionBrush", 0xC0),
+                Foreground = Theme.Brush(NativeLook.Caution, ElementTheme.Default),
             });
             AutomationProperties.SetAutomationId(line, $"settings-keys-notice-{binding.Action.RawValue()}");
             if (notice.MoveChord is { } chord)

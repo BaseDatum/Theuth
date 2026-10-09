@@ -78,10 +78,20 @@ public static class PointFlow
     /// <summary>The desk's error in the card (<c>ERROR_MS</c>).</summary>
     public const int ErrorMs = 4000;
 
-    /// <summary>The overlay trail colour (<c>Palette</c> malachite, dark), also sent to <c>screen_context</c>.</summary>
-    public const uint TrailRgb = 0x4a8a6e;
+    /// <summary>
+    /// 149 NATIVE: the overlay trail is the system accent (the trail while the key is held = recording = accent), also sent
+    /// to <c>screen_context</c> so the engine stamps the path in the same colour. The app sets it from <c>SystemAccentColor</c>
+    /// at start and on every accent change; until then it is Windows' own default accent (0078D4), not a theuth palette colour.
+    /// </summary>
+    public static uint TrailRgb { get; set; } = WindowsDefaultAccentRgb;
+
+    /// <summary>Windows' default accent colour, the value before the app reads the live one.</summary>
+    public const uint WindowsDefaultAccentRgb = 0x0078d4;
 
     public static string TrailHex => $"#{TrailRgb:x6}";
+
+    /// <summary>Pack an RGB triple the way the raster and <see cref="TrailHex"/> read it.</summary>
+    public static uint PackRgb(byte r, byte g, byte b) => ((uint)r << 16) | ((uint)g << 8) | b;
 
     /// <summary><c>[voice note, N s] ‹text›</c> (45 §4.4, <c>lib/voice-note.ts</c>): at least one second.</summary>
     public static string NoteText(string text, long durationMs) => $"[voice note, {Math.Max(1, (long)Math.Ceiling(durationMs / 1000.0))} s] {text}";

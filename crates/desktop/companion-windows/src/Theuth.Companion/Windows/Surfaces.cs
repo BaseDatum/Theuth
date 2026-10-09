@@ -43,7 +43,6 @@ internal sealed class Surfaces : IDisposable
         this.dispatcher = dispatcher;
         this.quit = quit;
         probe = Flags.Probe is not null;
-        Palette.Install();
         var settings = LoadSettings();
         store.Keys = settings.Keys;
         store.UndoDelay = settings.UndoDelay;

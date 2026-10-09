@@ -11,6 +11,7 @@ using Theuth.Companion.Breakpoints;
 using Theuth.Companion.Core;
 using Theuth.Companion.Notifications;
 using Theuth.Companion.Rpc;
+using Theuth.Companion.Ui;
 using Windows.Graphics;
 
 namespace Theuth.Companion.Settings;
@@ -105,6 +106,11 @@ internal sealed partial class SettingsWindow : Window
             if (e.SelectedItem is NavigationViewItem i && i.Tag is string key) ShowPage(key);
         };
         Content = nav;
+        // 149 NATIVE: Mica on the Settings window (the framework's own controller for a titled window; Desktop Acrylic where Mica
+        // is unsupported), the system theme followed live — pages re-render with the current theme's brushes.
+        if (Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported()) SystemBackdrop = new MicaBackdrop();
+        else if (Microsoft.UI.Composition.SystemBackdrops.DesktopAcrylicController.IsSupported()) SystemBackdrop = new DesktopAcrylicBackdrop();
+        Theme.Follow(nav, () => { if (CurrentPage is { } cp) ShowPage(cp); });
         Place(720, 520);
         nav.SelectedItem = nav.MenuItems[0];
         model.Changed += OnSettingsChanged;
@@ -221,13 +227,13 @@ internal sealed partial class SettingsWindow : Window
         if ((store.HotkeyNotice ?? model.HotkeyNotice) is { } n)
         {
             var notice = Caption(page, n);
-            notice.Foreground = Theme.Brush("SystemFillColorCautionBrush", 0xC0);
+            notice.Foreground = Theme.Brush(NativeLook.Caution, ElementTheme.Default);
             AutomationProperties.SetAutomationId(notice, "settings-keys-hotkey-notice");
         }
         foreach (var scope in Enum.GetValues<KeyScope>())
         {
             var header = new TextBlock { Text = scope.Title(), FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 0) };
-            header.Foreground = Theme.Brush("TextFillColorSecondaryBrush");
+            header.Foreground = Theme.Brush(NativeLook.TextSecondary, ElementTheme.Default);
             page.Children.Add(header);
             foreach (var b in model.Keys.BindingsIn(scope)) page.Children.Add(KeyRow.Make(b, model, () => ShowPage("keys")));
         }
@@ -241,7 +247,7 @@ internal sealed partial class SettingsWindow : Window
             ShowPage("keys");
         };
         page.Children.Add(resetAll);
-        page.Children.Add(new Border { Height = 1, Background = Theme.Brush("DividerStrokeColorDefaultBrush"), Margin = new Thickness(0, 6, 0, 6) });
+        page.Children.Add(new Border { Height = 1, Background = Theme.Brush(NativeLook.Divider, ElementTheme.Default), Margin = new Thickness(0, 6, 0, 6) });
         Toggle(page, "Double-tap Alt as well", "settings-keys-double-tap", model.Value.DoubleTapAlt, on =>
         {
             if (on)
@@ -278,7 +284,7 @@ internal sealed partial class SettingsWindow : Window
             if (on) notifier.RequestUrgentConsent(); // Windows asks once per app: "Important Notification Request"
         });
         Caption(page, "Off: under Do not disturb an error lands in the notification centre and on the rail, with a sound. On: errors are posted as important notifications; Windows asks once whether to allow them when Do not disturb is on.");
-        page.Children.Add(new Border { Height = 1, Background = Theme.Brush("DividerStrokeColorDefaultBrush"), Margin = new Thickness(0, 6, 0, 6) });
+        page.Children.Add(new Border { Height = 1, Background = Theme.Brush(NativeLook.Divider, ElementTheme.Default), Margin = new Thickness(0, 6, 0, 6) });
         var status = Caption(page, $"Windows notifications for this app: {notifier.SettingText}");
         AutomationProperties.SetAutomationId(status, "settings-notifications-status");
         var open = new Button { Content = "Open Windows notification settings" };
@@ -286,12 +292,12 @@ internal sealed partial class SettingsWindow : Window
         open.Click += async (_, _) => { try { await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:notifications")); } catch (Exception e) { Log.Write($"settings: ms-settings failed: {e.Message}"); } };
         page.Children.Add(open);
         Caption(page, "Banners carry the agent's own buttons — Allow · Deny, the question's options, Reply — so you answer without opening anything. Questions arrive at once; reviews and finished work wait for a pause in your typing or an app switch. Nothing is sent until you press a button.");
-        page.Children.Add(new Border { Height = 1, Background = Theme.Brush("DividerStrokeColorDefaultBrush"), Margin = new Thickness(0, 6, 0, 6) });
+        page.Children.Add(new Border { Height = 1, Background = Theme.Brush(NativeLook.Divider, ElementTheme.Default), Margin = new Thickness(0, 6, 0, 6) });
         var paused = Caption(page, notifier.PausedUntil is { } until
             ? $"Paused until {until.LocalDateTime:HH:mm} — nothing is posted, the rail stays live."
             : "Not paused.");
         AutomationProperties.SetAutomationId(paused, "settings-notifications-paused");
-        if (notifier.PausedUntil is not null) paused.Foreground = Theme.Brush("SystemFillColorCautionBrush", 0xC0);
+        if (notifier.PausedUntil is not null) paused.Foreground = Theme.Brush(NativeLook.Caution, ElementTheme.Default);
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var hour = new Button { Content = "Pause 1 hour" };
         AutomationProperties.SetAutomationId(hour, "settings-notifications-pause-hour");
@@ -354,7 +360,7 @@ internal sealed partial class SettingsWindow : Window
         {
             int r = grid.RowDefinitions.Count;
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var l = new TextBlock { Text = label, Foreground = Theme.Brush("TextFillColorSecondaryBrush") };
+            var l = new TextBlock { Text = label, Foreground = Theme.Brush(NativeLook.TextSecondary, ElementTheme.Default) };
             var t = new TextBlock { Text = text(), TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
             AutomationProperties.SetAutomationId(t, $"settings-engine-{id}");
             AutomationProperties.SetName(t, label);
@@ -382,7 +388,7 @@ internal sealed partial class SettingsWindow : Window
 
     private static TextBlock Caption(StackPanel page, string text)
     {
-        var t = new TextBlock { Text = text, FontSize = 12, TextWrapping = TextWrapping.Wrap, Foreground = Theme.Brush("TextFillColorSecondaryBrush") };
+        var t = new TextBlock { Text = text, FontSize = 12, TextWrapping = TextWrapping.Wrap, Foreground = Theme.Brush(NativeLook.TextSecondary, ElementTheme.Default) };
         page.Children.Add(t);
         return t;
     }
@@ -454,19 +460,5 @@ internal sealed partial class SettingsWindow : Window
         var wa = DisplayArea.Primary.WorkArea;
         int w = Math.Min((int)(width * scale), wa.Width), h = Math.Min((int)(height * scale), wa.Height);
         AppWindow.MoveAndResize(new RectInt32(wa.X + (wa.Width - w) / 2, wa.Y + (wa.Height - h) / 2, w, h));
-    }
-}
-
-/// <summary>Theme brushes by resource key, with a plain fallback instead of an exception when a key is missing.</summary>
-internal static class Theme
-{
-    public static Brush Brush(string key, byte fallbackGray = 0x80)
-    {
-        try
-        {
-            if (Application.Current.Resources.TryGetValue(key, out var v) && v is Brush b) return b;
-        }
-        catch (Exception) { }
-        return new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, fallbackGray, fallbackGray, fallbackGray));
     }
 }

@@ -92,7 +92,7 @@ public sealed partial class Store
         var mesh = Mesh;
         string selfId = SelfEngineId;
         string selfName = mesh?.SelfName is { Length: > 0 } n ? n : Environment.MachineName;
-        string? meshName = null; // mesh_status carries no mesh name in the Core DTO: the group says "on 🌐 mesh"
+        string? meshName = null; // mesh_status carries no mesh name in the Core DTO: the group says "on mesh"
         IReadOnlyList<HostPeer> peers = mesh?.Peers.Select(p => new HostPeer(p.Id, p.Name)).ToList() ?? new List<HostPeer>();
         AgentsPanel = AgentsModel.Derive(Activity, Agents, SessionRows, Items, selfId, selfName, peers, DateTimeOffset.Now, meshName);
         var remote = new HashSet<string>(StringComparer.Ordinal);

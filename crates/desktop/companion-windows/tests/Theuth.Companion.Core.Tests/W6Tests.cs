@@ -104,7 +104,7 @@ public sealed class KeyTableTests
         Assert.Equal("Esc", K("\u001b", VirtualKeys.Escape).Symbol);
         Assert.Equal("Win+F1", K("", VirtualKeys.F1, ChordModifiers.Win).Symbol); // the Mac case: fnF1
         Assert.Equal("Ctrl+Alt+/", K("/", VirtualKeys.Oem2Slash, ChordModifiers.Control | ChordModifiers.Alt).Symbol);
-        Assert.Equal("↑", K("", VirtualKeys.Up).Symbol);
+        Assert.Equal("Up", K("", VirtualKeys.Up).Symbol); // 149 NATIVE: arrow keys as words
     }
 
     [Fact]

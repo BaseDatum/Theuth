@@ -45,8 +45,8 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     private readonly Grid root;
     private readonly TextBox field;
     private readonly FontIcon mic;
-    private readonly Grid micSlot; // 149 WW2 (D8): the mic glyph, or the carnelian level bars while recording
-    private readonly TextBlock liveView; // 149 WW2 (§3.5): finals in ink, the open partial in sand, while the dictation owns the field
+    private readonly Grid micSlot; // 149 WW2 (D8): the mic glyph, or the accent level bars while recording
+    private readonly TextBlock liveView; // 149 WW2 (§3.5): finals in primary text, the open partial in tertiary, while the dictation owns the field
     private readonly ScaleTransform micScale = new() { CenterX = 8, CenterY = 8 };
     private readonly Run escWords;
     private readonly Run holdKey;
@@ -56,7 +56,15 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     private readonly TextBlock receiptText;
     private readonly TextBlock receiptTrailing;
     private readonly Rectangle holdBar;
-    private readonly Brush ink, ink2, sand, carnelian, malachite, rule;
+    // 149 NATIVE: the system's theme brushes, read live for the root's actual theme (no palette, no startup snapshot).
+    private Brush ink => Theme.Brush(NativeLook.TextPrimary, root.ActualTheme);
+    private Brush ink2 => Theme.Brush(NativeLook.TextSecondary, root.ActualTheme);
+    private Brush sand => Theme.Brush(NativeLook.TextTertiary, root.ActualTheme);
+    private Brush accent => Theme.Brush(NativeLook.Accent, root.ActualTheme);
+    private Brush accentText => Theme.Brush(NativeLook.AccentText, root.ActualTheme); // R1: accent-coloured text/glyphs
+    private Brush critical => Theme.Brush(NativeLook.Critical, root.ActualTheme);
+    private Brush success => Theme.Brush(NativeLook.Success, root.ActualTheme);
+    private Brush rule => Theme.Brush(NativeLook.Divider, root.ActualTheme);
     private AskBarModel? model;
     private HWND previousForeground;
     private bool settingText;
@@ -71,18 +79,11 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         this.dispatcher = dispatcher;
         recorder = new VoiceRecorder(dispatcher);
 
-        bool dark = Application.Current.RequestedTheme == ApplicationTheme.Dark;
-        ink = Solid(dark ? 0xe8dcc8u : 0x1a1612u);
-        ink2 = Solid(dark ? 0xc9b89au : 0x6b5e4fu);
-        sand = Solid(dark ? 0x9a8b72u : 0x8f7f6au);
-        carnelian = Solid(dark ? 0xc45a48u : 0x9b2d1fu);
-        malachite = Solid(dark ? 0x4a8a6eu : 0x2f5d4au);
-        rule = Solid(dark ? 0x3a3228u : 0xc9b48au);
-
-        // Glass like the Attention panel (D5): acrylic when supported, else the opaque surface colour.
+        // Desktop Acrylic (Window.SystemBackdrop, the framework's own controller) when supported — 149 NATIVE: nothing painted over
+        // it; without it the theme's SolidBackgroundFillColorBase.
         if (DesktopAcrylicController.IsSupported()) SystemBackdrop = new DesktopAcrylicBackdrop();
 
-        root = new Grid { Width = Width, Background = SystemBackdrop is null ? Solid(dark ? 0x1c1915u : 0xf3eadfu) : new SolidColorBrush(Colors.Transparent) };
+        root = new Grid { Width = Width, Background = Theme.Transparent };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -94,14 +95,14 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         fieldRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         fieldRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         fieldRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var cursorGlyph = new FontIcon { Glyph = "\uE8E9", FontSize = 13, Foreground = sand, VerticalAlignment = VerticalAlignment.Center };
+        var cursorGlyph = Theme.Icon("\uE8E9", ElementTheme.Default, NativeLook.TextTertiary, 12); // MDL2/Fluent "Edit"-style prompt glyph
         Grid.SetColumn(cursorGlyph, 0);
         field = new TextBox
         {
             PlaceholderText = "Ask theuth…",
-            FontSize = 15,
+            FontSize = 14,
             BorderThickness = new Thickness(0),
-            Background = new SolidColorBrush(Colors.Transparent),
+            Background = Theme.Transparent,
             Foreground = ink,
             AcceptsReturn = false,
             TextWrapping = TextWrapping.Wrap,
@@ -121,13 +122,14 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
             model.FieldEdited(field.Text);
         };
         Grid.SetColumn(field, 1);
-        mic = new FontIcon { Glyph = "\uE720", FontSize = 14, Foreground = ink2, VerticalAlignment = VerticalAlignment.Center, RenderTransform = micScale };
+        mic = Theme.Icon(NativeLook.Glyph.Microphone, ElementTheme.Default, NativeLook.TextSecondary, 14);
+        mic.RenderTransform = micScale;
         AutomationProperties.SetAutomationId(mic, "ask-mic");
         AutomationProperties.SetName(mic, "Hold the hotkey to dictate");
         micSlot = new Grid { Width = 44, Height = 24, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right };
         micSlot.Children.Add(mic);
         Grid.SetColumn(micSlot, 2);
-        liveView = new TextBlock { FontSize = 15, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed, Padding = new Thickness(0, 4, 0, 4) };
+        liveView = new TextBlock { FontSize = 14, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed, Padding = new Thickness(0, 4, 0, 4) };
         AutomationProperties.SetAutomationId(liveView, "ask-live");
         AutomationProperties.SetLiveSetting(liveView, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
         Grid.SetColumn(liveView, 1);
@@ -141,25 +143,25 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         var hints = new Grid { Padding = new Thickness(14, 0, 14, 9), ColumnSpacing = 12 };
         hints.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         hints.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var hintText = new TextBlock { FontSize = 10.5, Foreground = sand, TextWrapping = TextWrapping.Wrap, MaxLines = 2, VerticalAlignment = VerticalAlignment.Center };
+        var hintText = new TextBlock { FontSize = 12, Foreground = sand, TextWrapping = TextWrapping.Wrap, MaxLines = 2, VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetAutomationId(hintText, "ask-hints");
         // W6 (C12): no fixed Name — Narrator reads the hint text itself (a TextBlock's Name falls back to its Text).
         holdKey = Key("hold Ctrl+Shift+Space");
         escWords = Words(" keeps editing");
-        // 149 §3.5 hint row: "hold Ctrl+Shift+Space to talk · release → sends to theuth in 3 s · Esc keeps editing · theuth routes it"
+        // 149 §3.5 hint row: "hold Ctrl+Shift+Space to talk · release to send to theuth in 3 s · Esc keeps editing · theuth routes it · Enter sends"
         hintText.Inlines.Add(holdKey);
-        hintText.Inlines.Add(Words(" to talk · release → sends to theuth in 3 s · "));
+        hintText.Inlines.Add(Words(" to talk · release to send to theuth in 3 s · "));
         hintText.Inlines.Add(Key("Esc"));
         hintText.Inlines.Add(escWords);
         hintText.Inlines.Add(Words(" · theuth routes it · "));
-        hintText.Inlines.Add(Key("⏎"));
-        hintText.Inlines.Add(Words(" send"));
+        hintText.Inlines.Add(Key("Enter"));
+        hintText.Inlines.Add(Words(" sends"));
         Grid.SetColumn(hintText, 0);
         var statusPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        status = new TextBlock { FontSize = 10.5, Foreground = sand, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center };
+        status = new TextBlock { FontSize = 12, Foreground = sand, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetAutomationId(status, "ask-status");
         AutomationProperties.SetLiveSetting(status, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite); // W6 (C12): read as its text, announced when it changes
-        privacyLink = new HyperlinkButton { Content = "Settings › Privacy", FontSize = 10.5, Padding = new Thickness(2, 0, 2, 0), Visibility = Visibility.Collapsed, NavigateUri = new Uri(VoiceRecorder.PrivacySettingsUri) };
+        privacyLink = new HyperlinkButton { Content = "Settings › Privacy", FontSize = 12, Padding = new Thickness(2, 0, 2, 0), Visibility = Visibility.Collapsed, NavigateUri = new Uri(VoiceRecorder.PrivacySettingsUri) };
         AutomationProperties.SetAutomationId(privacyLink, "ask-privacy-link");
         statusPanel.Children.Add(status);
         statusPanel.Children.Add(privacyLink);
@@ -170,19 +172,19 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
 
         // Row 2: the receipt row (Swift ReceiptView, 480 wide)
         receiptRow = new Border { BorderBrush = rule, BorderThickness = new Thickness(0, 1, 0, 0), Visibility = Visibility.Collapsed };
-        var receiptGrid = new Grid { Padding = new Thickness(12, 8, 12, 8), ColumnSpacing = 8, Background = Translucent(dark ? 0x4a8a6eu : 0x2f5d4au, 0.12) };
+        var receiptGrid = new Grid { Padding = new Thickness(12, 8, 12, 8), ColumnSpacing = 8 };
         receiptGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         receiptGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         receiptText = new TextBlock { FontSize = 12, Foreground = ink, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis };
         AutomationProperties.SetAutomationId(receiptText, "receipt-row");
         AutomationProperties.SetName(receiptText, "Receipt");
         Grid.SetColumn(receiptText, 0);
-        receiptTrailing = new TextBlock { FontSize = 12, Foreground = ink2, FontFamily = new FontFamily("Consolas"), VerticalAlignment = VerticalAlignment.Top };
+        receiptTrailing = new TextBlock { FontSize = 12, Foreground = ink2, VerticalAlignment = VerticalAlignment.Top };
         AutomationProperties.SetAutomationId(receiptTrailing, "receipt-hint");
         Grid.SetColumn(receiptTrailing, 1);
         receiptGrid.Children.Add(receiptText);
         receiptGrid.Children.Add(receiptTrailing);
-        holdBar = new Rectangle { Height = 2, Fill = malachite, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom, Width = 0 };
+        holdBar = new Rectangle { Height = 2, Fill = accent, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom, Width = 0 };
         var receiptStack = new Grid();
         receiptStack.Children.Add(receiptGrid);
         receiptStack.Children.Add(holdBar);
@@ -200,6 +202,8 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
             Fit();
         };
         Content = root;
+        Theme.Follow(root, Retheme);
+        Retheme();
         Place(new RectInt32(0, 0, Physical(Width), Physical(96)));
         Capsule(Physical(96));
 
@@ -357,6 +361,20 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         if (e.PropertyName is nameof(StoreModel.Receipt) or nameof(StoreModel.Now) or nameof(StoreModel.Ask)) RenderReceipt();
     }
 
+    /// <summary>149 NATIVE: re-paint the elements built in the constructor with the live theme's brushes (the system switched light/dark).</summary>
+    private void Retheme()
+    {
+        root.Background = SystemBackdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, root.ActualTheme) : Theme.Transparent;
+        receiptRow.BorderBrush = rule;
+        receiptText.Foreground = ink;
+        receiptTrailing.Foreground = ink2;
+        holdBar.Fill = accent;
+        if (holdKey is not null) holdKey.Foreground = ink2;
+        if (escWords is not null) escWords.Foreground = sand;
+        Render();
+        RenderReceipt();
+    }
+
     private void Render()
     {
         if (model is null) return;
@@ -372,12 +390,12 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         field.IsReadOnly = model.Live;
         field.Foreground = model.Live && model.Text.Length == 0 ? sand : ink;
         AutomationProperties.SetName(field, model.Live ? $"Dictating: {model.FieldText}" : "Ask theuth");
-        mic.Foreground = model.Recording ? carnelian : ink2;
+        mic.Foreground = model.Recording ? accentText : ink2; // recording = needs you = accent (text resource)
         var scale = model.Recording ? 1 + Math.Min(1, model.Level) * 0.5 : 1;
         micScale.ScaleX = scale;
         micScale.ScaleY = scale;
         AutomationProperties.SetName(mic, model.Recording ? "Listening" : "Hold the hotkey to dictate");
-        // 149 WW2 (D8): N carnelian bars from DictationLevel.levels replace the mic glyph while recording (mirrored in the rail's actions pill).
+        // 149 WW2 (D8): N accent bars from DictationLevel.levels replace the mic glyph while recording (mirrored in the rail's actions pill).
         micSlot.Children.Clear();
         if (model.Recording)
         {
@@ -403,7 +421,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         }
         holdKey.Text = model.HoldHint;
         status.Text = model.Status ?? "";
-        status.Foreground = model.Recording ? carnelian : sand;
+        status.Foreground = model.Recording ? accentText : sand;
         privacyLink.Visibility = model.Status == VoiceRecorder.BlockedStatus ? Visibility.Visible : Visibility.Collapsed;
         RenderReceipt();
         Fit();
@@ -425,9 +443,9 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         receiptText.Text = l.Text;
         receiptText.Foreground = store.Receipt switch
         {
-            StoreModel.ReceiptRow.Sent => malachite,
+            StoreModel.ReceiptRow.Sent => success,
             StoreModel.ReceiptRow.Stale => sand,
-            StoreModel.ReceiptRow.Failed => carnelian,
+            StoreModel.ReceiptRow.Failed => critical,
             _ => ink,
         };
         receiptTrailing.Text = l.Trailing;
@@ -488,11 +506,9 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
 
     // MARK: brushes and small views
 
-    private static SolidColorBrush Solid(uint rgb) => new(ColorHelper.FromArgb(0xFF, (byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb));
 
-    private static SolidColorBrush Translucent(uint rgb, double opacity) => new(ColorHelper.FromArgb((byte)(opacity * 255), (byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb));
 
-    private Run Key(string text) => new() { Text = text, FontFamily = new FontFamily("Consolas"), Foreground = ink2 };
+    private Run Key(string text) => new() { Text = NativeLook.KeyCapText(text), Foreground = ink2 };
 
     private Run Words(string text) => new() { Text = text, Foreground = sand };
 }

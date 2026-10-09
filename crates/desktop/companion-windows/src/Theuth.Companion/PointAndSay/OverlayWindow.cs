@@ -168,7 +168,7 @@ internal sealed unsafe class OverlayWindow : IDisposable
 internal sealed class OverlayWindows : IDisposable
 {
     private readonly List<OverlayWindow> windows = new();
-    private readonly uint rgb;
+    private uint rgb;
     private bool excludeFromCapture;
     private int presentsThisGesture;
 
@@ -186,6 +186,13 @@ internal sealed class OverlayWindows : IDisposable
     }
 
     public IReadOnlyList<OverlayWindow> Windows => windows;
+
+    /// <summary>149 NATIVE: the trail colour follows the system accent; applied to every live raster and to windows made later.</summary>
+    public void SetColor(uint value)
+    {
+        rgb = value;
+        foreach (var w in windows) w.Raster.SetColor(value);
+    }
 
     public IReadOnlyList<ScreenMonitor> Monitors { get; private set; } = Array.Empty<ScreenMonitor>();
 
