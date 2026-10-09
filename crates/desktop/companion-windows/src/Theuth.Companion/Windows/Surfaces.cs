@@ -29,6 +29,7 @@ internal sealed class Surfaces : IDisposable
     private readonly HostWindow host;
     private readonly Tray tray;
     private readonly RailPillsWindow rail; // 149 WW2: the rail as separate pills
+    private readonly RailWindow strip; // 149 §3.8 escape hatch (recheck N4): the pre-149 single strip, shown while Settings › Rail › Separate pills is off
     private readonly AttentionPanelWindow panel;
     private readonly AgentsPanelWindow agents; // 149 WW2 §3.2
     private readonly LegendWindow legend;
@@ -51,7 +52,7 @@ internal sealed class Surfaces : IDisposable
         host.CloseRequested += () => quit(0);
         host.SystemChanged += msg =>
         {
-            if (msg == PInvoke.WM_DISPLAYCHANGE || msg == PInvoke.WM_SETTINGCHANGE) rail?.Layout();
+            if (msg == PInvoke.WM_DISPLAYCHANGE || msg == PInvoke.WM_SETTINGCHANGE) { rail?.Layout(); strip?.Layout(); }
         };
         // W6 item 3 (C13): the transparency / animation switches, live — the rail and the panel subscribe in their constructors.
         var effects = SystemEffects.Start(dispatcher, host);
@@ -64,12 +65,15 @@ internal sealed class Surfaces : IDisposable
         Hotkeys = new Hotkeys(host, dispatcher);
         Hotkeys.Apply(store.Keys);
         store.HotkeyNotice = Hotkeys.Notice;
+        Hotkeys.NoticeChanged += () => store.HotkeyNotice = Hotkeys.Notice; // 149 recheck D1: the startup retry registered a row (or gave up)
         Hotkeys.Pressed += OnHotkey;
         store.InstallHotkeys(Hotkeys); // 149 WW1: raw global keys → Store.GlobalKeyPressed/Released (Store.WW1.cs)
 
         // 149 WW2 (§3.1–3.3, D23): the pills rail replaces W2's strip and the peek card (an agent dot opens the agents panel).
         store.InstallWw2();
-        rail = new RailPillsWindow(store, settings.RailPresence, settings.RailSide);
+        rail = new RailPillsWindow(store, settings.RailPresence, settings.RailSide, visible: settings.RailPills);
+        strip = new RailWindow(store, settings.RailPresence, settings.RailSide, visible: !settings.RailPills);
+        strip.MarkClicked += OnStripMark;
         panel = new AttentionPanelWindow(store) { ProbeMode = probe };
         agents = new AgentsPanelWindow(store, dispatcher) { ProbeMode = probe };
         rail.InboxClicked += pillRect => OpenInbox(new PanelAnchor(PanelAnchorKind.Rail, pillRect, rail.Side == "left"));
@@ -131,7 +135,7 @@ internal sealed class Surfaces : IDisposable
         var prev = agents.IsOpen ? default : PreviousFor(PInvoke.GetForegroundWindow());
         legend.CloseLegend(returnFocus: false);
         panel.Close(returnFocus: false);
-        agents.Open(at, prev.IsNull ? rail.LastForeign : prev, session);
+        agents.Open(at, prev.IsNull ? LiveRail.LastForeign : prev, session);
     }
 
     private void OpenInbox(PanelAnchor at)
@@ -145,7 +149,7 @@ internal sealed class Surfaces : IDisposable
         legend.CloseLegend(returnFocus: false);
         agents.Close(returnFocus: false);
         store.FocusOldest();
-        panel.Open(at, rail.LastForeign);
+        panel.Open(at, LiveRail.LastForeign);
     }
 
     /// <summary>W6 (item 1): when the tray icon's first <c>NIM_ADD</c> succeeded — the pin tip checks promotion ≥ 60 s later; null = no icon.</summary>
@@ -199,6 +203,39 @@ internal sealed class Surfaces : IDisposable
         store.Keys = s.Keys;
         store.UndoDelay = s.UndoDelay;
         rail.Apply(s.RailPresence, s.RailSide);
+        strip.Apply(s.RailPresence, s.RailSide);
+        // 149 §3.8 escape hatch (recheck N4), live: one of the two rail windows is shown, the other suspended.
+        if (s.RailPills)
+        {
+            strip.Suspend();
+            rail.Resume();
+        }
+        else
+        {
+            rail.Suspend();
+            strip.Resume();
+        }
+    }
+
+    /// <summary>A mark on the strip rail (escape hatch): needs-you / finished marks open the Attention panel on their item; agent marks open the agents panel on their session.</summary>
+    private void OnStripMark(Mark m, RECT row)
+    {
+        if (probe) return;
+        var anchor = new PanelAnchor(PanelAnchorKind.Rail, row, strip.Side == "left");
+        if (RailWindow.OpensPanel(m))
+        {
+            legend.CloseLegend(returnFocus: false);
+            agents.Close(returnFocus: false);
+            store.FocusOn(m.ItemId!);
+            if (panel.IsOpen)
+            {
+                panel.ShowActive();
+                return;
+            }
+            panel.Open(anchor, strip.LastForeign);
+            return;
+        }
+        OpenAgents(anchor, m.Session);
     }
 
     /// <summary>
@@ -237,7 +274,10 @@ internal sealed class Surfaces : IDisposable
     }
 
     /// <summary>The window to give the foreground back to: <paramref name="fg"/> unless it is one of ours or the taskbar.</summary>
-    private HWND PreviousFor(HWND fg) => fg.IsNull || Win32.IsOurs(fg) || Win32.IsShellChrome(fg) ? rail.LastUserApp : fg;
+    private HWND PreviousFor(HWND fg) => fg.IsNull || Win32.IsOurs(fg) || Win32.IsShellChrome(fg) ? LiveRail.LastUserApp : fg;
+
+    /// <summary>The rail window that is shown now (pills, or the strip while the escape hatch is off): its foreground bookkeeping is the live one.</summary>
+    private (HWND LastUserApp, HWND LastForeign) LiveRail => strip.Suspended ? (rail.LastUserApp, rail.LastForeign) : (strip.LastUserApp, strip.LastForeign);
 
     private void OnHotkey(KeyAction action)
     {
@@ -287,7 +327,7 @@ internal sealed class Surfaces : IDisposable
         }
         agents.Close(returnFocus: false);
         var anchor = tray.IconRect() is { } r ? new PanelAnchor(PanelAnchorKind.Tray, r) : PanelAnchor.Mouse;
-        panel.Open(anchor, rail.LastUserApp);
+        panel.Open(anchor, LiveRail.LastUserApp);
     }
 
     private void OnTrayMenu(System.Drawing.Point at)
@@ -347,7 +387,7 @@ internal sealed class Surfaces : IDisposable
     private void ShowLegend(bool fromPanel)
     {
         if (probe) return;
-        var prev = fromPanel && panel.IsOpen ? panel.Previous : rail.LastUserApp;
+        var prev = fromPanel && panel.IsOpen ? panel.Previous : LiveRail.LastUserApp;
         panel.Close(returnFocus: false);
         legend.Toggle(tray.IconRect(), prev);
     }
@@ -433,12 +473,13 @@ internal sealed class Surfaces : IDisposable
         foreach (var t in timers) t.Stop();
         store.PropertyChanged -= OnStoreChanged;
         rail.Stop();
+        strip.Stop();
         panel.Stop();
         agents.Stop();
         Hotkeys.Dispose();
         tray.Dispose();
         SystemEffects.Current?.Dispose();
-        foreach (var w in new ToolWindow[] { legend, agents, panel, rail })
+        foreach (var w in new ToolWindow[] { legend, agents, panel, rail, strip })
         {
             try { w.CloseForGood(); }
             catch (Exception) { }

@@ -18,10 +18,10 @@ namespace Theuth.Companion.Ui;
 
 /// <summary>
 /// 149 WW2 — the rail as separate pills (design 149 §3.1, D1; Windows form §7.4 #2): one <see cref="ToolWindow"/> at the
-/// right (or left) edge of the primary work area, vertically centred, holding four opaque capsules — <b>inbox</b> (wordmark +
-/// the gold count badge) · <b>agents</b> (one 12 epx dot per live agent, ≤ 12 then +N; hover grows a dot 1.4×) · <b>actions</b>
+/// right (or left) edge of the primary work area, vertically centred, holding four opaque capsules — <b>inbox</b> (wordmark with
+/// the gold count beneath it, inside the capsule) · <b>agents</b> (one 12 epx dot per live agent, ≤ 12 then +N; hover grows a dot 1.4×) · <b>actions</b>
 /// (ask · mic with carnelian level bars while a dictation records · point) · <b>more</b> (···) — 52 epx wide with 12 epx gaps.
-/// The window is shaped with <c>SetWindowRgn</c> to the union of the capsules (+ the badge), so the gaps are not part of the
+/// The window is shaped with <c>SetWindowRgn</c> to the union of the capsules, so the gaps are not part of the
 /// window: nothing is painted there and clicks pass through. Each pill carries a 1 epx hairline instead of a DWM shadow
 /// (a regioned window has none — as-built WW2 §Deviations).
 /// <para>W6's mechanics are kept: <c>WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT</c>, the 40 ms cursor poll that
@@ -55,14 +55,15 @@ internal sealed partial class RailPillsWindow : ToolWindow
     private RailPills pills = RailPills.Empty;
     private Panel? micSlot;
     private Border? inboxPill;
-    private Border? badge;
+    private TextBlock? badge; // the gold count beneath the wordmark (N1)
     private bool lastRecording;
 
-    public RailPillsWindow(Store store, RailPresence presence, string side)
+    public RailPillsWindow(Store store, RailPresence presence, string side, bool visible = true)
         : base("theuth rail", WINDOW_EX_STYLE.WS_EX_NOACTIVATE | WINDOW_EX_STYLE.WS_EX_LAYERED | WINDOW_EX_STYLE.WS_EX_TRANSPARENT,
                excludeFromCapture: !Flags.Shareable)
     {
         this.store = store;
+        suspended = !visible;
         Presence = presence;
         Side = side == "left" ? "left" : "right";
         animate = SystemEffects.AnimationsOn;
@@ -88,6 +89,11 @@ internal sealed partial class RailPillsWindow : ToolWindow
         Render();
         Layout();
         ScheduleCollapse(afterHover: false);
+        if (suspended)
+        {
+            Log.Write("rail pills built (suspended: Settings › Rail › Separate pills is off — the strip is shown)");
+            return;
+        }
         ShowPassive();
         poll.Start();
         DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, Layout);
@@ -97,6 +103,35 @@ internal sealed partial class RailPillsWindow : ToolWindow
     public RailPresence Presence { get; private set; }
 
     public string Side { get; private set; }
+
+    private bool suspended;
+
+    /// <summary>149 §3.8 escape hatch (recheck N4): Settings › Rail › Separate pills turned off — hide the pills and stop their poll (the strip takes over).</summary>
+    public void Suspend()
+    {
+        if (suspended) return;
+        suspended = true;
+        poll.Stop();
+        quietTimer?.Stop();
+        quietTimer = null;
+        HideWindow();
+        Log.Write("rail pills suspended (strip on)");
+    }
+
+    /// <summary>Separate pills turned back on.</summary>
+    public void Resume()
+    {
+        if (!suspended) return;
+        suspended = false;
+        Refresh();
+        ScheduleCollapse(afterHover: false);
+        ShowPassive();
+        poll.Start();
+        DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, Layout);
+        Log.Write($"rail pills shown: rect={Win32.Text(ScreenRect)} presence={Presence.RawValue()} side={Side} dots={pills.Dots.Count}");
+    }
+
+    public bool Suspended => suspended;
 
     public bool Collapsed => collapsed;
 
@@ -244,16 +279,32 @@ internal sealed partial class RailPillsWindow : ToolWindow
     {
         var pill = Pill(theme, RailPillsModel.PillWidth, "pill-inbox", RailPillsModel.Describe(RailPillKind.Inbox, pills));
         var grid = new Grid();
+        // §3.1: "the wordmark with the gold count beneath" — both inside the capsule (149 recheck N1: a corner badge was cut by the
+        // screen edge). With a count the wordmark rises to make room; without, it sits centred.
+        var column = new StackPanel { Spacing = 1, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         var word = MarkGlyph.Wordmark(theme);
         word.Width = 16;
         word.Height = 16;
         word.HorizontalAlignment = HorizontalAlignment.Center;
-        word.VerticalAlignment = VerticalAlignment.Center;
         if (!pills.Connected) word.Opacity = 0.45;
-        grid.Children.Add(word);
+        column.Children.Add(word);
+        if (pills.InboxGold)
+        {
+            var n = pills.InboxCount;
+            var count = new TextBlock
+            {
+                Text = n > 99 ? "99+" : $"{n}", FontSize = 11, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Palette.Brush(Palette.Gold, theme),
+                HorizontalAlignment = HorizontalAlignment.Center, TextAlignment = TextAlignment.Center,
+            };
+            AutomationProperties.SetAutomationId(count, "needs-you-count");
+            AutomationProperties.SetName(count, n == 1 ? "1 needs you" : $"{n} need you");
+            column.Children.Add(count);
+            badge = count;
+        }
+        grid.Children.Add(column);
         if (!pills.Connected)
         {
-            var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 4, Height = 4, Fill = Palette.Brush(Palette.Carnelian, theme), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 7) };
+            var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 4, Height = 4, Fill = Palette.Brush(Palette.Carnelian, theme), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 5) };
             var state = store.Connection.ToString().ToLowerInvariant();
             AutomationProperties.SetName(dot, $"engine: {state}");
             grid.Children.Add(dot);
@@ -267,30 +318,6 @@ internal sealed partial class RailPillsWindow : ToolWindow
         pill.Child = button;
         hits.Add((pill, RailPillKind.Inbox));
         inboxPill = pill;
-        if (pills.InboxGold)
-        {
-            // The badge rides the pill's top-right corner (One's placement); it is part of the window region.
-            var n = pills.InboxCount;
-            badge = new Border
-            {
-                MinWidth = 20, Height = 20, CornerRadius = new CornerRadius(10), Background = Palette.Brush(Palette.Gold, theme), Padding = new Thickness(5, 0, 5, 0),
-                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, -4, -4, 0),
-                Child = new TextBlock
-                {
-                    Text = n > 99 ? "99+" : $"{n}", FontSize = 11, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Palette.Brush(Palette.Surface, theme),
-                    HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
-                },
-            };
-            AutomationProperties.SetAutomationId(badge, "needs-you-count");
-            AutomationProperties.SetName(badge, n == 1 ? "1 needs you" : $"{n} need you");
-            var holder = new Grid { Width = RailPillsModel.PillWidth, Height = RailPillsModel.PillWidth };
-            Canvas.SetZIndex(pill, 0);
-            Canvas.SetZIndex(badge, 10); // round 1 on build-B drew the pill over the badge: pin the order explicitly
-            holder.Children.Add(pill);
-            holder.Children.Add(badge);
-            var wrap = new Border { Child = holder };
-            return wrap;
-        }
         return pill;
     }
 
@@ -452,7 +479,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
         rectsDirty = true;
     }
 
-    /// <summary>The window region: every pill capsule plus the badge; the sliver when collapsed.</summary>
+    /// <summary>The window region: every pill capsule; the sliver when collapsed.</summary>
     private void ApplyShape(double scale)
     {
         var blobs = new List<Shape.Blob>();
@@ -467,13 +494,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
             foreach (var s in RailPillsModel.Layout(pills.Dots.Count, pills.Overflow))
             {
                 int top = P(Margin + s.Top), bottom = P(Margin + s.Top + s.Height);
-                blobs.Add(new Shape.Blob(left, top, right, bottom, P(RailPillsModel.Radius)));
-                if (s.Kind == RailPillKind.Inbox && pills.InboxGold)
-                {
-                    // The badge: 20 epx tall, ≥ 20 wide, 4 epx past the pill's top-right corner.
-                    int bw = P(Math.Max(20, 10 + 7 * Math.Max(1, pills.InboxCount.ToString().Length)));
-                    blobs.Add(new Shape.Blob(right + P(4) - bw, top - P(4), right + P(4), top - P(4) + P(20), P(10)));
-                }
+                blobs.Add(new Shape.Blob(left, top, right, bottom, P(RailPillsModel.Radius))); // the count sits inside the inbox capsule (N1)
             }
         }
         if (!Shape.Set(Hwnd, blobs)) Log.Write($"rail pills: SetWindowRgn failed {Win32.LastError()}");
