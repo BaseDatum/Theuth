@@ -167,10 +167,26 @@ switch ($Action) {
         $bw.Write($buf); $bw.Close()
         $html = Join-Path $env:TEMP 'w153d-tone.html'
         "<!doctype html><title>W153D tone</title><body style='font:20px Segoe UI;padding:20px'><p>W153D media toggle check</p><audio id='a' src='file:///$($wav -replace '\\','/')' controls loop></audio><p id='s'>state: paused</p><script>const a=document.getElementById('a'),s=document.getElementById('s');for(const e of ['play','pause'])a.addEventListener(e,()=>{s.textContent='state: '+(a.paused?'paused':'playing')+' at '+new Date().toLocaleTimeString()})</script></body>" | Set-Content $html -Encoding UTF8
+        if ($Rest.Count -gt 1 -and $Rest[1] -eq 'player') { Start-Process $wav; Say "tone: $secs s at $wav opened in the default player"; break }
         $edge = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
         $p = Start-Process $edge -ArgumentList "--new-window", "--autoplay-policy=no-user-gesture-required", "file:///$($html -replace '\\','/')" -PassThru
         Remember $p.Id
         Say "tone: $secs s at $wav, page $html opened in $edge"
+    }
+    'media' {
+        # media — the current media session and its playback status (Windows PowerShell 5.1 has the WinRT projection)
+        $ps = @'
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+[Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime] | Out-Null
+$op = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()
+$t = $asTask.MakeGenericMethod([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]).Invoke($null, @($op)); $t.Wait(3000) | Out-Null
+$m = $t.Result
+foreach ($s in $m.GetSessions()) { "session " + $s.SourceAppUserModelId + " " + $s.GetPlaybackInfo().PlaybackStatus }
+$c = $m.GetCurrentSession(); if ($c) { "current " + $c.SourceAppUserModelId + " " + $c.GetPlaybackInfo().PlaybackStatus } else { "current none" }
+'@
+        $out = & powershell.exe -NoProfile -NonInteractive -Command $ps 2>&1
+        foreach ($l in $out) { Say "media: $l" }
     }
     'clip-get' { $t = Get-Clipboard -Raw; Say "clip-get: '$t'" }
     'history' {
