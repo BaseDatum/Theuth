@@ -36,8 +36,14 @@ Worktree `~/Develop/theuth-153-a4`, branch `feat/153-a4`, cut from the PIN `cbaf
 `silent_device_rejected_in_480ms`, `readiness_gate_2s`, `timings_recorded_with_synthetic_feed`; the four PIN tests unchanged.
 The end-command tests arm through a `#[cfg(test)]` shim (exact phrase at the tail) until A1's parser lands — harmless after.
 
-## Gates
-(filled at the end — see DONE)
+## Gates (all through `BUILD_LABEL=153-A4 build-lock mbx …`, CARGO_BUILD_JOBS=4)
+- `mbx check -p voice -p rpc --tests` → exit 0, 0 warnings.
+- `mbx test -p voice -p rpc --no-run`, then bare `MBX_SCHEDULER_TESTS=0 mbx test -p voice -p rpc` →
+  voice `test result: ok. 34 passed; 0 failed` (11 `dictation::*`), rpc `test result: ok. 56 passed; 0 failed` (+ 1 doc-test crate `ok`).
+- `mbx clippy -p voice -p rpc --tests` → `Finished dev … in 1m 12s`, 0 warnings.
+- Bindings: `BUILD_SLOTS=1 … mbx test -p rpc --features ts --lib --quiet export_bindings` → `8 passed`; `cp -R bindings/. crates/desktop/ui/src/rpc/bindings/`
+  → empty diff (every §14.5 type was exported at the PIN; A4 adds no `ts(export)` type).
+- Not run: a model-loading test, the live probe (§16 row 11 — commands below).
 
 ## Probe (§16 row 11) — for the integrator
 No RPC harness calls `dictation_start` in `crates/rpc/tests` or `crates/app`. Manual: `t --headless`, then over the WS RPC
