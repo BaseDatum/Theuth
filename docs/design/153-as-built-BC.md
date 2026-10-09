@@ -77,7 +77,10 @@ signature is the one both sides use; C1 replaced the body (`pointShowCard`), B3 
   `Finished test profile in 4m 20s`, then bare `MBX_SCHEDULER_TESTS=0 mbx test -p computer -p tui` → computer `63 passed; 0 failed`,
   tui `166 passed; 0 failed` (+ `no_emoji` 1 passed); `BUILD_SLOTS=1 mbx check --workspace --exclude desktop` → `Finished dev profile in 1m 14s`,
   0 errors; `cargo fmt -p computer -p tools -p theuth -p tui -- --check` → exit 0, no diff.
-- Fold: FOLD_LINE
+- Fold: `git merge --no-ff origin/main` `5afea171` (wave A landed on main as `Merge integrate/153`; 5 files: `voice/dictation.rs`
+  `DictionaryLoaded`/`Loading`, `rpc/api.rs` the `Loading` arms, two A as-builts) → `c4b7b759`, clean. Re-gated: `mbx check -p computer -p
+  tools -p theuth -p tui --tests` → `Finished dev profile in 2m 10s`, 0 warnings; `swift build` → `Build complete!`; `tsc` → 0 errors.
+  No ts-exported type changed (actor-internal messages), bindings not regenerated.
 
 ## Hand-offs
 - **Wave D (any-app)**: `KeyAction.dictateAnywhere` (⌃⌥D) is in the table and settings but registers no hotkey; `ModeKeySettings.appProfiles`
