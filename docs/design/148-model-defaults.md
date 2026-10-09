@@ -85,12 +85,12 @@ Effort: in-chat / draft picks are session-only (R1); children use spawn
   (`theuth_agent_model` / `set_theuth_agent_model`, invalidates
   `queryKeys.theuthAgentModel` + roster). `settings/Loop.tsx` loses the
   Subagent model row. `agents/AgentDetail.tsx` theuth tab shows the same Model
-  row. Draft picks (`ModelMenu.tsx`, `slash.ts`) go to `useDraftPick`
-  (`lib/drafts.ts`); every draft-born session opens through
-  `openDraftSession` (`lib/drafts.ts`: `create_session` with the pick, else
-  `new_session()`, pick spent) — the composer's send, Talk, `/<skill>` and a
-  parked skill; `NewChatPane.tsx` resets the pick on mount. `rpc/api.ts` +
-  `lib/rpc.ts` add the RPCs and query key.
+  row. Draft picks (`ModelMenu.tsx`, `slash.ts`) live on the `''` draft in
+  `useDrafts` (`lib/drafts.ts`, same persisted blob as the text); every
+  draft-born session opens through `openDraftSession` (`create_session` with
+  the pick, else `new_session()`, pick spent) — the composer's send, Talk,
+  `/<skill>` and a parked skill. `rpc/api.ts` + `lib/rpc.ts` add the RPCs
+  and query key.
 
 ## Gates
 
@@ -139,8 +139,8 @@ tsc 0; vitest 156 files / 1185 tests.
   on the first send, not when typed; a draft model pick keeps a previously
   picked draft effort (the chained effort picker lets the user re-pick).
 - E6: draft `/effort clear` means "the engine default effort" (`create_session`
-  cannot express the provider default); one global draft pick shared by split
-  draft panes (`ponytail:` in `lib/drafts.ts`).
+  cannot express the provider default); one pick on the `''` draft, shared by
+  split draft panes like the text itself.
 - E6 tests: ModelCombobox effort passthrough and Settings Chat rows are
   asserted via static render (trigger label / read RPCs), the existing
   settings test pattern; setter wiring is one `useAction` per row.
@@ -177,6 +177,27 @@ tsc 0; vitest 156 files / 1185 tests.
   `draft_picks_ride_on_talk_mcp_and_skill_entries`; desktop: `lib/drafts.test.ts`.
 - F9/F10 nits: `harness.md`, "subagent default" wording, bot comments cite
   148 R1, AgentDetail "Same as new sessions", Chat.tsx effort-pending disable.
+
+## R2 live-proof round (2026-10-09)
+
+Z smoke on a scratch engine: 14/14 (R1/R2/R3 behaviours, restart
+persistence, TUI draft, desktop screenshots; `~/Develop/theuth-148-z-smoke.md`).
+Two UI tickets:
+
+- **T1** draft pick lost on a route round-trip (Settings remounts NewChat,
+  which reset `useDraftPick`). The pick now lives in `useDrafts` next to the
+  `''` draft text (`pick`, `setPick`, `resetPick`; same `composer-drafts`
+  persistence); `useDraftPick` and the reset-on-mount are gone; only
+  `openDraftSession` spends it. Tests: `drafts.test.ts` (pick survives
+  `load()` = remount/reload, legacy blob → no pick; `openDraftSession` spends
+  it in storage), `slash.test.ts` updated.
+- **T2** Settings pickers trigger-anchored on phones. `ModelCombobox` opens
+  `ModelPicker` in ModelMenu's top-of-band dialog (`dialogPlacement`,
+  `--visible-band`) when `touch()` is coarse (`pickerSurface(touch)`), the
+  popover otherwise — every ModelCombobox user. Test: `ModelCombobox.test.ts`
+  `pickerSurface` coarse → dialog, fine → popover.
+- Deviation: no "draft discarded" reset site exists (the `''` draft has no
+  discard UI); the consumer path is the only reset.
 
 ## Follow-ups
 

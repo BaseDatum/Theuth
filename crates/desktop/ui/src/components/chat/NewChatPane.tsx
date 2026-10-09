@@ -8,7 +8,6 @@ import { ProjectPicker } from '@/components/chat/ProjectPicker'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { useDraftPick } from '@/lib/drafts'
 import { draftProject, usePanes } from '@/lib/panes'
 import { useCompactorLabel } from '@/lib/endless'
 import { usePrivate } from '@/lib/private'
@@ -37,8 +36,6 @@ export function NewChat({
   const [project, setProject] = useState<string | null>(preset ?? null)
   // `/` stays mounted across `/` → `/?project=x`, so the preset must follow the URL, not just seed the state.
   useEffect(() => setProject(preset ?? null), [preset])
-  // 148 R1: a new draft starts on the Settings default; any earlier draft pick is gone.
-  useEffect(() => useDraftPick.getState().reset(), [])
   // 137 §11.3: the ∞ switch starts at `agent.endless.default_chat` and is remembered per draft only.
   const api = useApi()
   const endlessSettings = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })

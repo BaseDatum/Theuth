@@ -13,7 +13,7 @@ import type { LoadedPage } from '@/rpc/extra'
 import { useConnection } from '@/store/connection'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
-import { EMPTY, openDraftSession, useDraftPick, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { EMPTY, openDraftSession, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { openContextPicker, type ShakeCategory } from './ContextPicker'
 import { openBroadcastDialog } from './BroadcastDialog'
 
@@ -356,12 +356,12 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     // it until the first send creates the session (never `set_model(null, …)`, which would set the default).
     case '/model':
       if (!arg) return openSurface('model')
-      if (!session) return useDraftPick.getState().setModel(arg)
+      if (!session) return useDrafts.getState().setPick({ model: arg })
       await api.set_model(session, arg, true)
       return
     case '/effort':
       if (!arg) return openSurface('model')
-      if (!session) return useDraftPick.getState().setEffort(arg === 'clear' ? null : arg)
+      if (!session) return useDrafts.getState().setPick({ effort: arg === 'clear' ? null : arg })
       await api.set_effort(session, arg === 'clear' ? null : arg, true)
       return
     case '/title': {

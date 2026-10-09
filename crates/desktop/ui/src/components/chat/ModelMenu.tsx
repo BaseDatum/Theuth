@@ -7,7 +7,7 @@ import { Command, CommandDialog, CommandEmpty, type CommandFilter, CommandGroup,
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { defaultFilter } from 'cmdk'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { useDraftPick } from '@/lib/drafts'
+import { useDrafts } from '@/lib/drafts'
 import { usePanes } from '@/lib/panes'
 import { touch } from '@/lib/platform'
 import { cn } from '@/lib/utils'
@@ -138,7 +138,7 @@ function useModel({ session }: Props, done: () => void): Model {
   // 141 §9.2(d): a watch-only child is the harness's — its model is shown, never picked; no `harness_options`/`resume_child` calls.
   const watching = useSessionField(session ?? '', 'kind') === 'observed'
   // 148 R1: the draft shows its own pick, else the engine's live defaults (`DefaultModelChanged` / `DefaultEffortChanged` keep them current).
-  const pick = useDraftPick()
+  const pick = useDrafts((s) => s.pick)
   const model = (session ? sessionModel : pick.model) ?? info?.default_model
   const effort = session ? sessionEffort : (pick.effort ?? info?.default_effort)
   const { data: models = [] } = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models(), enabled: !agent && !watching })
@@ -165,10 +165,9 @@ function useModel({ session }: Props, done: () => void): Model {
   const setModel = async (id: string) => {
     done()
     if (!session) {
-      pick.setModel(id)
       // An effort the new model does not offer would reject the create: fall back to the default.
-      if (pick.effort && !models.find((m) => m.id === id)?.efforts.includes(pick.effort)) pick.setEffort(null)
-      return
+      const effort = pick.effort && models.find((m) => m.id === id)?.efforts.includes(pick.effort) ? pick.effort : null
+      return useDrafts.getState().setPick({ model: id, effort })
     }
     try {
       await api.set_model(session, id, true)
@@ -179,7 +178,7 @@ function useModel({ session }: Props, done: () => void): Model {
   }
   const setEffort = async (level: string | null) => {
     done()
-    if (!session) return pick.setEffort(level)
+    if (!session) return useDrafts.getState().setPick({ effort: level })
     try {
       await api.set_effort(session, level, true)
     } catch (e) {

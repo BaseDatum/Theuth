@@ -1,6 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import type { Api } from '@/rpc/api'
-import { EMPTY, PLAIN_OPTIONS, load, openDraftSession, useDraftPick, useDrafts } from './drafts'
+import { EMPTY, NO_PICK, PLAIN_OPTIONS, load, openDraftSession, useDrafts } from './drafts'
 import { attach, attachRef } from './pastes'
 
 // No DOM in the test runner: the smallest `Storage` the store needs (the module's own `load()` ran without one and
@@ -17,7 +17,7 @@ const held = attachRef(ref, attach('/tmp/a.png', 4, 4, EMPTY.pastes))
 
 beforeEach(() => {
   localStorage.clear()
-  useDrafts.setState({ by: {}, edits: {} })
+  useDrafts.setState({ by: {}, edits: {}, pick: NO_PICK })
 })
 
 test('draft → edit → cancel leaves the composer draft intact (text, pastes, attachments)', () => {
@@ -86,7 +86,7 @@ test('a failed send leaves the flagged draft through edits; emptying the box dro
 
 test('a corrupt store reads as empty', () => {
   localStorage.setItem('composer-drafts', '{not json')
-  expect(load()).toEqual({ by: {}, edits: {} })
+  expect(load()).toEqual({ by: {}, edits: {}, pick: NO_PICK })
 })
 
 // 148 R1: the one seam every draft-born session goes through (the composer's send, Talk, `/<skill>`, a parked skill).
@@ -97,31 +97,46 @@ const apiFor = () => {
   return { api: { create_session, new_session } as unknown as Api, create_session, new_session }
 }
 
+test('148 R2: the draft pick lives with the `\'\'` draft text — persisted in the same blob, back after a remount/reload', () => {
+  const s = useDrafts.getState()
+  s.setText('', 'half a thought')
+  s.setPick({ model: 'openai/gpt-5.4' })
+  s.setPick({ effort: 'high' })
+  expect(useDrafts.getState().pick).toEqual({ model: 'openai/gpt-5.4', effort: 'high' })
+  // A route round-trip remounts NewChat; a relaunch or another window's save re-reads the store: both keep the pick.
+  useDrafts.setState(load())
+  expect(useDrafts.getState().by['']).toEqual({ text: 'half a thought', pastes: EMPTY.pastes })
+  expect(useDrafts.getState().pick).toEqual({ model: 'openai/gpt-5.4', effort: 'high' })
+  // A blob saved before the pick existed reads as no pick.
+  localStorage.setItem('composer-drafts', JSON.stringify({ drafts: {}, edits: {} }))
+  expect(load().pick).toEqual(NO_PICK)
+})
+
 test('148 R1: a draft model/effort pick opens through create_session with it (never new_session) and is spent', async () => {
   const { api, create_session, new_session } = apiFor()
-  useDraftPick.getState().setModel('openai/gpt-5.4')
-  useDraftPick.getState().setEffort('high')
+  useDrafts.getState().setPick({ model: 'openai/gpt-5.4', effort: 'high' })
   const r = await openDraftSession(api)
   expect(create_session).toHaveBeenCalledWith({ ...PLAIN_OPTIONS, model: 'openai/gpt-5.4', effort: 'high' })
   expect(new_session).not.toHaveBeenCalled()
   expect(r).toEqual({ id: 's-new', open: opened, pick: { model: 'openai/gpt-5.4', effort: 'high' } })
-  expect(useDraftPick.getState()).toMatchObject({ model: null, effort: null })
+  // Spent in the store and in storage: the next draft starts on the engine default.
+  expect(useDrafts.getState().pick).toEqual(NO_PICK)
+  expect(load().pick).toEqual(NO_PICK)
   // Effort alone is enough: `new_session()` cannot carry it.
-  useDraftPick.getState().setEffort('low')
+  useDrafts.getState().setPick({ effort: 'low' })
   await openDraftSession(api)
   expect(create_session).toHaveBeenLastCalledWith({ ...PLAIN_OPTIONS, effort: 'low' })
-  expect(useDraftPick.getState().effort).toBeNull()
+  expect(useDrafts.getState().pick.effort).toBeNull()
 })
 
 test('148 R1: no pick and no switch → new_session(); a switch (the composer\'s options) → create_session with them', async () => {
   const { api, create_session, new_session } = apiFor()
-  useDraftPick.getState().reset()
-  expect(await openDraftSession(api)).toEqual({ id: 's-plain', open: null, pick: { model: null, effort: null } })
+  expect(await openDraftSession(api)).toEqual({ id: 's-plain', open: null, pick: NO_PICK })
   expect(create_session).not.toHaveBeenCalled()
   const options = { ...PLAIN_OPTIONS, project: 'lab', model: 'openai/gpt-5.4' }
-  useDraftPick.getState().setModel('openai/gpt-5.4')
+  useDrafts.getState().setPick({ model: 'openai/gpt-5.4' })
   expect((await openDraftSession(api, options)).id).toBe('s-new')
   expect(create_session).toHaveBeenCalledWith(options)
   expect(new_session).toHaveBeenCalledTimes(1)
-  expect(useDraftPick.getState().model).toBeNull()
+  expect(useDrafts.getState().pick.model).toBeNull()
 })

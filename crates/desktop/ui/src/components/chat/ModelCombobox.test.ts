@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import { ModelCombobox, triggerLabel } from './ModelCombobox'
+import { ModelCombobox, pickerSurface, triggerLabel } from './ModelCombobox'
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -26,4 +26,9 @@ test('148: the rendered trigger shows the effort passed through `effort.current`
   expect(html({ levels: sonnet.efforts, current: 'high', onSelect() {} })).toContain('Claude Sonnet 4.5 · high</span>')
   expect(html()).toContain('Claude Sonnet 4.5</span>')
   expect(html()).not.toContain(' · ')
+})
+
+test('148 R2: a coarse pointer opens the picker in the top-of-band dialog, a fine one in the trigger-anchored popover', () => {
+  expect(pickerSurface(true)).toBe('dialog')
+  expect(pickerSurface(false)).toBe('popover')
 })

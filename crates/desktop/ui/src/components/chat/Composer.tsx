@@ -43,7 +43,7 @@ import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
 import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
-import { EMPTY, PLAIN_OPTIONS, openDraftSession, useDraftPick, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { EMPTY, PLAIN_OPTIONS, openDraftSession, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { interrupt, phase, press } from '@/lib/composer-state'
@@ -506,7 +506,7 @@ export function Composer({
 
   const addFiles = (paths: string[], dims?: [number, number]) => {
     setPastes((h) => paths.reduce((held, path) => attach(path, dims?.[0] ?? 0, dims?.[1] ?? 0, held, floor()), h))
-    const id = model ?? (session ? defaultModel : (useDraftPick.getState().model ?? defaultModel))
+    const id = model ?? (session ? defaultModel : (useDrafts.getState().pick.model ?? defaultModel))
     const info = models?.find((m) => m.id === id)
     if (info && !info.image && paths.some((p) => IMAGE.test(p)))
       toast.warning(
@@ -782,7 +782,7 @@ export function Composer({
         // A switch on needs `create_session` with the pick in it; `openDraftSession` takes a bare pick there too, else `new_session()`.
         const { id, open, pick } = await openDraftSession(
           api,
-          draftCreate && (draftCreate.private || draftCreate.project || draftCreate.endless) ? createOptions(draftCreate, useDraftPick.getState()) : null,
+          draftCreate && (draftCreate.private || draftCreate.project || draftCreate.endless) ? createOptions(draftCreate, useDrafts.getState().pick) : null,
         )
         if (open?.retention === 'private') usePrivate.getState().open(open)
         target = id

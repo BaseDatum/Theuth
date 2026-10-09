@@ -1,7 +1,7 @@
 import { expect, test, vi } from 'vitest'
 import { toast } from 'sonner'
 import type { Api } from '@/rpc/api'
-import { useDraftPick } from '@/lib/drafts'
+import { NO_PICK, useDrafts } from '@/lib/drafts'
 import { useSessions } from '@/store/sessions'
 import { type Ctx, isCommand, run, sendRaw, slashMenu } from './slash'
 
@@ -148,7 +148,7 @@ test('slashMenu lists harness commands beside theuth’s with source labels; a s
 })
 
 test('148 R1: /model and /effort with no session set the draft pick only — never set_model/set_effort with a null session', async () => {
-  useDraftPick.getState().reset()
+  useDrafts.getState().resetPick()
   const set_model = vi.fn()
   const set_effort = vi.fn()
   const ctx: Ctx = { ...ctxFor({ set_model, set_effort }), session: null }
@@ -156,11 +156,11 @@ test('148 R1: /model and /effort with no session set the draft pick only — nev
   await run('/effort high', ctx)
   expect(set_model).not.toHaveBeenCalled()
   expect(set_effort).not.toHaveBeenCalled()
-  expect(useDraftPick.getState()).toMatchObject({ model: 'openai/gpt-5.4', effort: 'high' })
+  expect(useDrafts.getState().pick).toEqual({ model: 'openai/gpt-5.4', effort: 'high' })
   await run('/effort clear', ctx)
-  expect(useDraftPick.getState().effort).toBeNull()
-  useDraftPick.getState().reset()
-  expect(useDraftPick.getState()).toMatchObject({ model: null, effort: null })
+  expect(useDrafts.getState().pick.effort).toBeNull()
+  useDrafts.getState().resetPick()
+  expect(useDrafts.getState().pick).toEqual(NO_PICK)
 })
 
 test('148 R1: in a session /model and /effort switch that session (manual), leaving the draft pick alone', async () => {
@@ -170,5 +170,5 @@ test('148 R1: in a session /model and /effort switch that session (manual), leav
   await run('/effort clear', ctxFor({ set_model, set_effort }, 'abc'))
   expect(set_model).toHaveBeenCalledWith('abc', 'openai/gpt-5.4', true)
   expect(set_effort).toHaveBeenCalledWith('abc', null, true)
-  expect(useDraftPick.getState()).toMatchObject({ model: null, effort: null })
+  expect(useDrafts.getState().pick).toEqual(NO_PICK)
 })
