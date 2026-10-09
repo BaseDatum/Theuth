@@ -126,6 +126,11 @@ public struct AskDictation: Equatable, Sendable {
         }
     }
 
+    /// 149g: a `dictation_start` sent by gesture `g` belongs to the controller only while `g` is still the `current` gesture
+    /// and this session still waits for it (`.starting`; an exit reset it). Otherwise its id must be stopped at once — the
+    /// dictation is live on the engine with no owner — and its refusal ignored. The voice key and the Ask bar share it.
+    public func awaitsStart(from g: Int, current: Int) -> Bool { g == current && phase == .starting }
+
     public var finalText: String { utterances.filter(\.final).map(\.text).filter { !$0.isEmpty }.joined(separator: " ") }
     public var partialText: String { utterances.last.flatMap { $0.final ? nil : $0.text } ?? "" }
     public var liveText: String { [finalText, partialText].filter { !$0.isEmpty }.joined(separator: " ") }

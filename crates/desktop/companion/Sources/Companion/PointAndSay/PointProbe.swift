@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CompanionCore
+import KeyboardShortcuts
 import TheuthKit
 
 /// `--probe-point N --shareable` (§10): the overlays revealed with a synthetic 2 s spiral on every display and the voice
@@ -158,20 +159,30 @@ enum PointProbe {
     ///    (`active` nil within 1 s), not left on the engine until `dictation_max_secs`.
     /// 4. RELEASE BEFORE START: `dictation_start` held 1.5 s, a 1 s hold released into the Stop sequence: the late start must
     ///    adopt and stop itself; `active` nil afterwards.
+    /// 5. ESC DURING HOLD (149g F1): `.esc` through the hot key's entry while the key is still held (auto-repeats continue):
+    ///    idle at once with the hint, overlays down, the slot free, the rest of the hold and the key-up ignored. Then the
+    ///    modifier-carrying registration itself: ⌃⎋ (never ⌃S) registered here for ≤ 2 s and a synthetic ⌃⎋ posted at the
+    ///    HID tap — provable only when the process is trusted for Accessibility (`AXIsProcessTrusted`).
     /// Whatever leaks is stopped at the end: this runs against the owner's live engine.
     private static func holdScenarios(store: Store, controller c: PointController) async {
         func active() async -> String? {
             do { return try await store.client.dictationActive() } catch { PointLog.write("dictation_status failed: \(error)"); return "rpc-failed" }
         }
-        func hold(ms: Int, tone withTone: Bool, snapshot: Bool = false) async -> Int {
+        func hold(ms: Int, tone withTone: Bool, snapshot: Bool = false, escAtMs: Int? = nil) async -> Int {
             c.keyDown()
             let t0 = Date()
             var repeats = 0
             var shot: Task<ScreenContextReply?, Never>?
+            var escSent = false
             while Date().timeIntervalSince(t0) * 1000 < Double(ms) {
                 try? await Task.sleep(for: .milliseconds(30))
                 c.keyDown(); repeats += 1
                 if withTone, repeats % 3 == 0 { c.feed(tone(repeats / 3)) }
+                if let e = escAtMs, !escSent, Date().timeIntervalSince(t0) * 1000 >= Double(e) {
+                    escSent = true
+                    c.send(.esc)
+                    PointLog.write("ESC DURING HOLD: Esc at repeat \(repeats) → state=\(c.state) overlays=\(c.overlays.revealed) pill=\(c.pill.isVisible) hint=\"\(c.pill.state.hint)\"")
+                }
                 if snapshot, shot == nil, repeats == 25 {
                     let samples = c.sampler.samples
                     shot = Task { await c.screenContext(samples: samples, durationMs: 750) }
@@ -236,6 +247,49 @@ enum PointProbe {
             do { try await store.client.dictationStop(id: leaked); PointLog.write("cleanup: stopped the leaked dictation \(leaked)") }
             catch { PointLog.write("cleanup: dictation_stop \(leaked) failed: \(error)") }
         }
+
+        // 5. ESC DURING HOLD (149g F1): the key stays down for 300 ms after the Esc (more auto-repeats), then the key-up.
+        PointLog.write("ESC DURING HOLD: key-down, auto-repeat every 30 ms with the tone, Esc at 500 ms, held 300 ms more, key-up")
+        let g4 = c.gesture
+        let r4 = await hold(ms: 800, tone: true, escAtMs: 500)
+        let afterEsc = (state: c.state, overlays: c.overlays.revealed, hint: c.pill.state.hint)
+        await settle()
+        let a4 = await active()
+        PointLog.write("ESC DURING HOLD result: \(r4) repeats → gestures=\(c.gesture - g4) state=\(c.state) overlays=\(c.overlays.revealed) hint=\"\(c.pill.state.hint)\" dictation.phase=\(c.dictation.phase) dictation_status.active=\(a4 ?? "nil")")
+        let pass4 = c.gesture - g4 == 1 && afterEsc.state == .idle && !afterEsc.overlays && afterEsc.hint == PointMachine.hint && c.state == .idle && a4 == nil
+        PointLog.write("ASSERT ESC DURING HOLD one gesture, idle with the hint at the Esc, overlays down, slot free, key-up ignored: \(pass4 ? "PASS" : "FAIL")")
+        if let leaked = a4, leaked != "rpc-failed" {
+            do { try await store.client.dictationStop(id: leaked); PointLog.write("cleanup: stopped the leaked dictation \(leaked)") }
+            catch { PointLog.write("cleanup: dictation_stop \(leaked) failed: \(error)") }
+        }
+        await syntheticHeldEscape()
+    }
+
+    /// The Carbon side of F1: the ⎋ derived from the DEFAULT voice key (⌃⎋ — the probe never registers ⌃S, the owner's companion
+    /// holds it) is registered under a probe-only name for ≤ 2 s and a synthetic ⌃⎋ is posted at `.cghidEventTap`. Posting
+    /// keyboard events needs Accessibility; untrusted, the post is dropped silently and the step is reported as not provable.
+    private static func syntheticHeldEscape() async {
+        let name = KeyboardShortcuts.Name("probeHeldEscape")
+        guard let esc = KeyTable.escapeDuringHold(of: KeyTable.defaultChord(for: .voiceKey, on: .macOS)!, reserved: Hotkeys.reserved) else {
+            return PointLog.write("SYNTHETIC ⌃⎋ skipped: the default voice key derives no held ⎋")
+        }
+        let trusted = AXIsProcessTrusted()
+        var received = 0
+        KeyboardShortcuts.onKeyDown(for: name) { received += 1 }
+        KeyboardShortcuts.setShortcut(Hotkeys.shortcut(esc), for: name)
+        PointLog.write("SYNTHETIC ⌃⎋: registered \(esc.symbol) under \(name.rawValue) (not the voice key); AXIsProcessTrusted=\(trusted)")
+        if trusted, let down = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(esc.keyCode), keyDown: true),
+           let up = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(esc.keyCode), keyDown: false) {
+            down.flags = .maskControl; up.flags = .maskControl
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+            PointLog.write("SYNTHETIC ⌃⎋: posted key-down/key-up keyCode=\(esc.keyCode) flags=control at .cghidEventTap")
+        }
+        try? await Task.sleep(for: .seconds(1))
+        KeyboardShortcuts.setShortcut(nil, for: name)
+        let verdict = !trusted ? "NOT PROVABLE here (CGEventPost needs Accessibility, which this ad-hoc probe bundle lacks; argued from Carbon's modifier-matched hot keys and KeyboardShortcuts' Shortcut-keyed dispatch)"
+            : received > 0 ? "PASS" : "FAIL"
+        PointLog.write("SYNTHETIC ⌃⎋ result: received=\(received) within 1 s → \(verdict); \(esc.symbol) unregistered")
     }
 
     // MARK: the detector

@@ -129,6 +129,22 @@ struct KeyTableTests {
         #expect(KeyTable.defaultChord(for: .openAgents, on: .windows) == KeyTable().chord(for: .openAgents), "no per-platform row: the table's chord")
         #expect(KeyTable.defaultChord(for: .openAskBar, on: .windows) == nil)
     }
+
+    /// 149g F1: ⎋ while the voice key is held arrives with the chord's modifiers; the table derives that ⎋ from the chord.
+    @Test func escapeDuringHoldCarriesTheVoiceKeysModifiers() {
+        func esc(_ m: Chord.Modifiers) -> Chord { Chord(chars: "\u{1b}", keyCode: 53, modifiers: m) }
+        let held = KeyTable.escapeDuringHold(of: KeyTable().chord(for: .voiceKey)!)
+        #expect(held == esc(.control) && held?.symbol == "⌃⎋", "the default ⌃S → ⌃⎋")
+        #expect(KeyTable.escapeDuringHold(of: Chord(chars: " ", keyCode: 49, modifiers: [.control, .option])) == esc([.control, .option]), "a rebound ⌃⌥Space → ⌃⌥⎋")
+        #expect(KeyTable.escapeDuringHold(of: Chord(chars: "s", keyCode: 1, modifiers: [.command, .shift])) == esc([.command, .shift]), "⌘ only because the chord has it")
+        #expect(KeyTable.escapeDuringHold(of: Chord(chars: "\u{F704}", keyCode: 122)) == nil, "a bare F1: plain ⎋ already matches")
+        #expect(KeyTable.escapeDuringHold(of: Chord(chars: "s", keyCode: 1, modifiers: [.command, .option])) == nil, "⌘⌥⎋ is Force Quit")
+        #expect(KeyTable.escapeDuringHold(of: Chord(chars: "s", keyCode: 1, modifiers: [.command, .option, .shift])) == nil, "⌘⌥⇧⎋ force-quits the front app")
+        let cmdCtl = Chord(chars: "s", keyCode: 1, modifiers: [.control, .command])
+        #expect(KeyTable.escapeDuringHold(of: cmdCtl, reserved: [esc([.control, .command])]) == nil, "an enabled symbolic hot key is the system's")
+        #expect(KeyTable.escapeDuringHold(of: cmdCtl, reserved: [esc(.command), Chord(chars: " ", keyCode: 49, modifiers: [.control, .command])]) == esc([.control, .command]),
+                "reserved matches the whole chord, not its modifiers or key alone")
+    }
 }
 
 struct RailPresenceTests {

@@ -79,7 +79,68 @@ enum AskProbe {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 let d = store.ask.dictation
                 dlog("after stop: phase=\(d.phase) utterances=\(d.utterances) liveText=\"\(d.liveText)\" error=\(d.error ?? "nil")")
+                Task { await holdScenarios(store: store, askBar: askBar) }
             }
         }
+    }
+
+    /// 149g F2: the Ask bar's own hold machine (`voiceEvent`, what the hotkey calls) through its exit paths while
+    /// `dictation_start` is still in flight (`probeStartDelay` 1.5 s), each followed by `dictation_status`:
+    /// 1. CANCEL IN FLIGHT — ⎋/close (`close` → `.failed("cancelled")`) 400 ms into the hold: the late start stops its own id.
+    /// 2. RELEASE BEFORE START — key-up into the send path before the id exists: the start adopts, stops, nothing recognized.
+    /// 3. REFUSED — the probe holds the slot; the hold's start is refused: the hold ends with its hint, the probe's dictation untouched.
+    /// No microphone (`AskFlags.automated`), no send (`.setText` is suppressed). Whatever leaks is stopped.
+    private static func holdScenarios(store: Store, askBar: AskBarController) async {
+        func active() async -> String? {
+            do { return try await store.client.dictationActive() } catch { dlog("dictation_status failed: \(error)"); return "rpc-failed" }
+        }
+        func settle(_ s: Double = 1) async { try? await Task.sleep(for: .seconds(s)) }
+        func cleanup(_ a: String?) async {
+            guard let leaked = a, leaked != "rpc-failed" else { return }
+            do { try await store.client.dictationStop(id: leaked); dlog("cleanup: stopped the leaked dictation \(leaked)") }
+            catch { dlog("cleanup: dictation_stop \(leaked) failed: \(error)") }
+        }
+        /// Key-down; the 50 ms tick timer passes `holdThreshold` and `.startRecording` begins the (delayed) start.
+        func pressUntilRecording() async {
+            askBar.voiceEvent(.keyDown(Date()))
+            await settle(0.4)
+            dlog("hold: 400 ms in → voice=\(askBar.voiceState) phase=\(store.ask.dictation.phase)")
+        }
+
+        dlog("CANCEL IN FLIGHT: dictation_start held 1.5 s; key-down, close (⎋'s path) at 400 ms")
+        askBar.probeStartDelay = .milliseconds(1500)
+        await pressUntilRecording()
+        askBar.close(returnKey: false)
+        askBar.showWithoutKey(text: "probe — do not act")
+        await settle(2.5)
+        let a1 = await active()
+        dlog("CANCEL IN FLIGHT result: voice=\(askBar.voiceState) phase=\(store.ask.dictation.phase) status=\"\(askBar.probeStatus ?? "")\" dictation_status.active=\(a1 ?? "nil")")
+        dlog("ASSERT CANCEL IN FLIGHT idle, slot free: \((askBar.voiceState == .idle && !store.ask.dictation.isActive && a1 == nil) ? "PASS" : "FAIL")")
+        await cleanup(a1)
+
+        dlog("RELEASE BEFORE START: dictation_start held 1.5 s; key-down, key-up into the send path at 400 ms")
+        await pressUntilRecording()
+        askBar.voiceEvent(.keyUp(Date()))
+        dlog("RELEASE BEFORE START: released → voice=\(askBar.voiceState) phase=\(store.ask.dictation.phase)")
+        askBar.probeStartDelay = .zero
+        await settle(4)
+        let a2 = await active()
+        dlog("RELEASE BEFORE START result: voice=\(askBar.voiceState) phase=\(store.ask.dictation.phase) status=\"\(askBar.probeStatus ?? "")\" dictation_status.active=\(a2 ?? "nil")")
+        dlog("ASSERT RELEASE BEFORE START idle, slot free: \((askBar.voiceState == .idle && !store.ask.dictation.isActive && a2 == nil) ? "PASS" : "FAIL")")
+        await cleanup(a2)
+
+        let held: String
+        do { held = try await store.client.dictationStart() } catch { return dlog("REFUSED skipped: the probe could not take the slot: \(error)") }
+        dlog("REFUSED: the probe holds dictation \(held); key-down, 1 s hold, key-up")
+        await pressUntilRecording()
+        await settle(0.6)
+        askBar.voiceEvent(.keyUp(Date()))
+        await settle()
+        let a3 = await active()
+        dlog("REFUSED result: voice=\(askBar.voiceState) phase=\(store.ask.dictation.phase) status=\"\(askBar.probeStatus ?? "")\" dictation_status.active=\(a3 ?? "nil") (the probe's \(held))")
+        dlog("ASSERT REFUSED idle with the hint, the probe's dictation untouched: \((askBar.voiceState == .idle && askBar.probeStatus == "dictating elsewhere" && a3 == held) ? "PASS" : "FAIL")")
+        do { try await store.client.dictationStop(id: held) } catch { dlog("dictation_stop \(held) failed: \(error)") }
+        await settle()
+        dlog("REFUSED: probe's dictation stopped → active=\(await active() ?? "nil")")
     }
 }

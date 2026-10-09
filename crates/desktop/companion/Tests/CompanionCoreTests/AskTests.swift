@@ -154,3 +154,110 @@ struct AskVoiceTests {
         #expect(m.handle(.keyUp(t0.addingTimeInterval(70))) == [], "the release after an auto-stop does nothing")
     }
 }
+
+/// 149g F2: the Ask bar's dictation lifecycle as a pure driver — `AskVoiceMachine` + `AskDictation` + the hold generation,
+/// `AskBarController.apply/beginDictation/endDictation` without AppKit — over a fake clock and a fake RPC (`rpc` is the calls
+/// in order; a `dictation_start` reply is landed by hand, so it can land after its hold ended).
+struct AskDictationHoldTests {
+    struct Driver {
+        var voice = AskVoiceMachine()
+        var dictation = AskDictation()
+        var hold = 0
+        var stopWanted = false
+        var rpc: [String] = []
+        var status: String?
+
+        mutating func press(_ t: TimeInterval) { apply(voice.handle(.keyDown(t0.addingTimeInterval(t)))) }
+        mutating func tick(_ t: TimeInterval) { apply(voice.handle(.tick(t0.addingTimeInterval(t)))) }
+        mutating func release(_ t: TimeInterval) { apply(voice.handle(.keyUp(t0.addingTimeInterval(t)))) }
+        /// ⎋ in the bar and the panel closing are one path (`AskBarController.close`).
+        mutating func close() { if voice.isBusy { apply(voice.handle(.failed("cancelled"))) } }
+
+        mutating func apply(_ fx: [AskVoiceMachine.Effect]) {
+            for f in fx {
+                switch f {
+                case .startRecording:
+                    _ = dictation.handle(.start); stopWanted = false
+                    hold += 1; rpc.append("start#\(hold)")
+                case .stopDictation:
+                    end()
+                case .fail(let why):
+                    if let id = dictation.id { rpc.append("stop \(id)") }
+                    dictation = AskDictation(); stopWanted = false
+                    status = why
+                case .tap, .setText: break
+                }
+            }
+        }
+
+        /// The engine's `dictation_start` reply for hold `g` lands (`beginDictation`'s success path).
+        mutating func startLanded(_ g: Int, _ id: String) {
+            guard dictation.awaitsStart(from: g, current: hold) else { return rpc.append("stop \(id) (late)") }
+            _ = dictation.handle(.started(id: id))
+            if stopWanted { stopWanted = false; end() }
+        }
+
+        /// The engine refuses hold `g`'s start (`beginDictation`'s failure path).
+        mutating func startFailed(_ g: Int, _ why: String) {
+            guard dictation.awaitsStart(from: g, current: hold) else { return }
+            _ = dictation.handle(.startFailed(why))
+            apply(voice.handle(.failed(dictation.error ?? why)))
+        }
+
+        mutating func end() {
+            guard let id = dictation.id else { stopWanted = dictation.phase == .starting; return }
+            _ = dictation.handle(.stop); rpc.append("stop \(id)")
+        }
+    }
+
+    /// Past the hold threshold: the start is in flight.
+    func recording() -> Driver {
+        var d = Driver()
+        d.press(0); d.tick(0.3)
+        #expect(d.voice.isRecording && d.dictation.phase == .starting && d.rpc == ["start#1"])
+        return d
+    }
+
+    @Test func escBeforeTheStartRepliesStopsTheLateIdAtOnce() {
+        var d = recording()
+        d.close()
+        #expect(d.voice.state == .idle && !d.dictation.isActive && d.rpc == ["start#1"], "nothing to stop yet; the session is reset")
+        d.startLanded(1, "a")
+        #expect(d.rpc == ["start#1", "stop a (late)"])
+        #expect(!d.dictation.isActive, "never adopted")
+        let took = d.dictation.handle(.started(id: "a"))
+        #expect(!took && !d.dictation.isActive, "a .started reaching a reset session is ignored")
+    }
+
+    @Test func releaseBeforeTheStartRepliesAdoptsThenStops() {
+        var d = recording()
+        d.release(1)
+        #expect(d.voice.state == .stopping && d.stopWanted && d.rpc == ["start#1"])
+        d.startLanded(1, "a")
+        #expect(d.rpc == ["start#1", "stop a"] && d.dictation.phase == .stopping(id: "a"))
+    }
+
+    @Test func aLateStartNeverLandsInTheNextHold() {
+        var d = recording()
+        d.close()
+        d.press(2); d.tick(2.3)
+        #expect(d.rpc == ["start#1", "start#2"] && d.dictation.phase == .starting)
+        d.startLanded(1, "a")
+        #expect(d.rpc.last == "stop a (late)" && d.dictation.phase == .starting, "the second hold still waits for its own start")
+        d.startLanded(2, "b")
+        #expect(d.dictation.phase == .live(id: "b") && d.voice.isRecording)
+        d.release(4)
+        #expect(d.rpc.last == "stop b")
+    }
+
+    @Test func aStaleRefusalDoesNotEndTheNextHold() {
+        var d = recording()
+        d.close()
+        d.press(2); d.tick(2.3)
+        d.startFailed(1, "already dictating")
+        #expect(d.voice.isRecording && d.dictation.phase == .starting && d.status == "cancelled", "hold 1's refusal is not hold 2's")
+        d.startFailed(2, "already dictating")
+        #expect(d.voice.state == .idle && !d.dictation.isActive && d.status == "dictating elsewhere")
+        #expect(d.rpc == ["start#1", "start#2"], "a refused start has no id to stop")
+    }
+}

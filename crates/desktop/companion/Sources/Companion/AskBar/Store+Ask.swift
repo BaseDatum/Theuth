@@ -155,7 +155,9 @@ extension Store {
         guard let w = try? TheuthJSON.decoder.decode(DictationWire.self, from: data), let id = w.id else { return }
         let take: Bool
         switch w.type {
-        case "DictationStarted": take = ask.dictation.handle(.started(id: id))
+        // 149g: `DictationStarted` is broadcast for every dictation (the voice key's, Tauri's); a surface's own id is its
+        // `dictation_start` reply — adopting the wire's while `.starting` took a foreign dictation as ours.
+        case "DictationStarted": return
         case "DictationText": take = ask.dictation.handle(.text(id: id, utterance: w.utterance ?? 0, text: w.text ?? "", final: w.isFinal ?? false))
         case "DictationLevel": take = ask.dictation.handle(.level(id: id, levels: w.levels ?? []))
         case "DictationFinished": take = ask.dictation.handle(.finished(id: id, error: w.reason?.reason == "error" ? (w.reason?.message ?? "dictation failed") : nil))
