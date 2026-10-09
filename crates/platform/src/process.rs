@@ -316,7 +316,7 @@ mod imp {
         fn stat(pid: i32) -> Option<(i32, Duration)> {
             let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
             // The command name may contain spaces; fields resume after its ')'.
-            let rest = &s[s.rfind(')')? + 2..];
+            let rest = s.get(s.rfind(')')? + 2..)?;
             let mut f = rest.split_ascii_whitespace();
             let state = f.next()?;
             if state == "Z" {
