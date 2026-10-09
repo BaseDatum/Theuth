@@ -16,6 +16,7 @@ using Windows.Graphics;
 using Windows.UI.Text;
 using Windows.Win32;
 using Windows.Win32.Foundation;
+using Windows.Win32.UI.Shell;
 using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace Theuth.Companion.Island;
@@ -77,6 +78,8 @@ internal sealed partial class IslandWindow : ToolWindow
     private readonly DispatcherQueueTimer hoverTimer;
     private readonly DispatcherQueueTimer leaveTimer;
     private readonly DispatcherQueueTimer clockTimer;
+    private readonly SUBCLASSPROC subclass149; // referenced for the window's lifetime
+    private const nuint Subclass149Id = 0x149;
     private MeetingSnapshot snapshot = MeetingSnapshot.Empty;
     private VoiceView? voice;
     private TextBox? request;
@@ -128,7 +131,29 @@ internal sealed partial class IslandWindow : ToolWindow
         clockTimer = Timer(1000, () => clock?.SetValue(TextBlock.TextProperty, IslandModel.Clock(snapshot.Elapsed(DateTimeOffset.Now))));
         clockTimer.IsRepeating = true;
         hiddenFromCapture = ExcludedFromCapture;
+        subclass149 = Subclass149;
+        if (!PInvoke.SetWindowSubclass(Hwnd, subclass149, Subclass149Id, 0)) Log.Write($"island: SetWindowSubclass failed {Win32.LastError()}");
         Render();
+    }
+
+    /// <summary><c>WM_HOTKEY</c> on this window (point-and-say registers Esc here between press and send).</summary>
+    public event Action<int>? Hotkey;
+
+    /// <summary><c>WM_DISPLAYCHANGE</c> / <c>WM_DPICHANGED</c>: the controller re-places the island.</summary>
+    public event Action? DisplayChanged;
+
+    private LRESULT Subclass149(HWND h, uint msg, WPARAM w, LPARAM l, nuint id, nuint data)
+    {
+        try
+        {
+            if (msg == PInvoke.WM_HOTKEY) Hotkey?.Invoke((int)w.Value);
+            else if (msg == PInvoke.WM_DISPLAYCHANGE || msg == 0x02E0 /* WM_DPICHANGED */) DisplayChanged?.Invoke();
+        }
+        catch (Exception e)
+        {
+            Log.Write($"island: message 0x{msg:X4} handler failed: {e.GetType().Name}: {e.Message}");
+        }
+        return PInvoke.DefSubclassProc(h, msg, w, l);
     }
 
     /// <summary>The eye (Alt+Shift+E): toggles <c>WDA_EXCLUDEFROMCAPTURE</c> on this window; the controller mirrors it on the overlays.</summary>

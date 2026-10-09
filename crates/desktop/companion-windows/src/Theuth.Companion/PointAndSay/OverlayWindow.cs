@@ -78,6 +78,12 @@ internal sealed unsafe class OverlayWindow : IDisposable
 
     public bool IsShown => shown;
 
+    public void SetHiddenFromCapture(bool hidden)
+    {
+        if (Hwnd.IsNull) return;
+        PInvoke.SetWindowDisplayAffinity(Hwnd, hidden ? WINDOW_DISPLAY_AFFINITY.WDA_EXCLUDEFROMCAPTURE : WINDOW_DISPLAY_AFFINITY.WDA_NONE);
+    }
+
     private static void EnsureClass()
     {
         if (classRegistered) return;
@@ -163,8 +169,15 @@ internal sealed class OverlayWindows : IDisposable
 {
     private readonly List<OverlayWindow> windows = new();
     private readonly uint rgb;
-    private readonly bool excludeFromCapture;
+    private bool excludeFromCapture;
     private int presentsThisGesture;
+
+    /// <summary>The eye: applies to the live windows and to the ones created later.</summary>
+    public void SetHiddenFromCapture(bool hidden)
+    {
+        excludeFromCapture = hidden;
+        foreach (var w in windows) w.SetHiddenFromCapture(hidden);
+    }
 
     public OverlayWindows(uint rgb, bool excludeFromCapture)
     {

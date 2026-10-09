@@ -94,6 +94,11 @@ internal sealed class PointController : IDisposable
 
     private ulong Now => (ulong)Math.Max(0, (DateTimeOffset.Now - epoch).TotalMilliseconds);
 
+    private static string Why(Exception e) => e is RpcException r ? r.ToString() : e.Message;
+
+    /// <summary>The eye (Revision 1 #9): mirrors the island's capture exclusion onto the overlays.</summary>
+    public void SetHiddenFromCapture(bool hidden) => overlays.SetHiddenFromCapture(hidden);
+
     private DispatcherQueueTimer Timer(Action a)
     {
         var t = dispatcher.CreateTimer();
@@ -128,7 +133,7 @@ internal sealed class PointController : IDisposable
     {
         var s = settings();
         if (!s.Enabled) return "disabled";
-        if (store.Connection is not RpcClient.State.Connected) return "disconnected";
+        if (store.Connection != RpcClient.State.Open) return "disconnected";
         if (island.Snapshot.State == "Recording" && island.Snapshot.Listening) return "talking";
         if (store.Ask.Dictation.IsActive) return "already dictating";
         return null;
@@ -203,7 +208,7 @@ internal sealed class PointController : IDisposable
         }
         catch (Exception e)
         {
-            var why = StoreModel.Describe(e);
+            var why = Why(e);
             Log.Write($"point: dictation_start failed: {why}");
             dispatcher.TryEnqueue(() =>
             {
@@ -278,7 +283,7 @@ internal sealed class PointController : IDisposable
         }
         catch (Exception e)
         {
-            Log.Write($"point: desk_open failed: {StoreModel.Describe(e)}");
+            Log.Write($"point: desk_open failed: {Why(e)}");
             ShowHint(PointFlow.RefusalHint("hub"));
             Step(new PointEvent.Cancel());
             return;
@@ -293,7 +298,7 @@ internal sealed class PointController : IDisposable
         }
         catch (Exception e)
         {
-            var why = StoreModel.Describe(e);
+            var why = Why(e);
             Log.Write($"point: send_input failed: {why}");
             ShowHint(why);
             Step(new PointEvent.Cancel());
@@ -321,7 +326,7 @@ internal sealed class PointController : IDisposable
         {
             dictation.Handle(AskDictation.Event.Stop.Instance);
             try { await store.Dictation.StopAsync(id); }
-            catch (Exception e) { Log.Write($"point: dictation_stop failed: {StoreModel.Describe(e)}"); return dictation.LiveText; }
+            catch (Exception e) { Log.Write($"point: dictation_stop failed: {Why(e)}"); return dictation.LiveText; }
             var done = finalText?.Task ?? Task.FromResult(dictation.LiveText);
             var winner = await Task.WhenAny(done, Task.Delay(PointFlow.FinalTextMs));
             if (winner != done) Log.Write($"point: final text not flushed within {PointFlow.FinalTextMs} ms — sending the live text");
@@ -356,7 +361,7 @@ internal sealed class PointController : IDisposable
         }
         catch (Exception e)
         {
-            Log.Write($"point: screen_context failed: {StoreModel.Describe(e)}");
+            Log.Write($"point: screen_context failed: {Why(e)}");
             dispatcher.TryEnqueue(() => ShowHint(PointFlow.RefusalHint("screen")));
             return (Array.Empty<string>(), Array.Empty<string>());
         }
@@ -365,7 +370,7 @@ internal sealed class PointController : IDisposable
     /// <summary><c>desk_open("theuth")</c> once per engine (§0.12).</summary>
     private async Task<string> DeskAsync()
     {
-        var engine = store.Client.Location?.ToString() ?? "";
+        var engine = store.SelfEngineId;
         if (desk is { } d && deskEngine == engine) return d;
         var id = await store.Client.CallAsync<string>("desk_open", "theuth");
         desk = id;
