@@ -9048,13 +9048,24 @@ mod tests {
 
         struct Harness {
             rt: Runtime,
+            stores: Arc<artifact::Stores>,
             methods: jsonrpsee::Methods,
             events: mpsc::UnboundedReceiver<(bool, PreviewId)>,
+            _dir: tempfile::TempDir,
         }
 
         impl Harness {
             async fn new() -> Self {
-                let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+                let dir = tempfile::tempdir().unwrap();
+                let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+                // Paused time auto-advances while sqlx waits on its worker thread and
+                // trips the pool's acquire timeout: open the store on real time.
+                tokio::time::resume();
+                let state = artifact::State::open(dir.path(), rt.clone(), Vec::new())
+                    .await
+                    .unwrap();
+                tokio::time::pause();
+                let stores = Arc::new(artifact::Stores::new(Arc::new(state)));
                 let methods: jsonrpsee::Methods = Server::new(rt.clone()).into_rpc().into();
                 let (tx, events) = mpsc::unbounded_channel();
                 let cap = Capture::spawn(Capture(tx));
@@ -9062,8 +9073,10 @@ mod tests {
                 rt.subscribe::<Capture, PagePreviewResolved>(&cap).await;
                 Self {
                     rt,
+                    stores,
                     methods,
                     events,
+                    _dir: dir,
                 }
             }
 
@@ -9071,6 +9084,7 @@ mod tests {
             fn call(&self, session: SessionId) -> tokio::task::JoinHandle<ToolOutput> {
                 let tool = PagePreviewTool {
                     rt: self.rt.clone(),
+                    stores: self.stores.clone(),
                 };
                 let cx = ToolCx {
                     session,
@@ -9084,7 +9098,7 @@ mod tests {
                     Tool::call(
                         &tool,
                         PreviewArgs {
-                            html: "<p>x</p>".into(),
+                            html: Some("<p>x</p>".into()),
                             ..Default::default()
                         },
                         cx,
@@ -9204,22 +9218,18 @@ mod tests {
         }
 
         #[tokio::test(start_paused = true)]
-        async fn one_preview_per_session() {
+        async fn two_previews_in_one_session_run_in_parallel() {
             let mut h = Harness::new().await;
             let session = SessionId::new();
             let first = h.call(session);
             let id = h.requested().await;
-            let out = h.call(session).await.unwrap();
-            assert!(out.is_error);
-            assert_eq!(out.content, "page_preview: a preview is already running");
-            // Another session is not blocked.
-            let other = h.call(SessionId::new());
+            let second = h.call(session);
             let other_id = h.requested().await;
             assert_ne!(other_id, id);
             assert!(h.answer(id, &done(100)).await);
             assert!(h.answer(other_id, &done(200)).await);
             assert!(!first.await.unwrap().is_error);
-            assert!(!other.await.unwrap().is_error);
+            assert!(!second.await.unwrap().is_error);
         }
     }
 }

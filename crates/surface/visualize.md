@@ -49,7 +49,7 @@ in the reply, merged with the prose; an `openui` fence is not an app card.
 | something someone said, verbatim | `Quote` | quotation marks inside a paragraph |
 | a topic map, a brainstorm | mermaid `mindmap` | nested bullets |
 | an interface you are designing or changing — a screen, dialog, form, dashboard, component | an HTML mock as a page — show{content, name: "mock.html"}: fake data, real layout, variants side by side (a clickable flow with live data is an app) | a prose description of the screen, or building it unseen |
-| a chart library's chart, a map, 3D, a mockup, a collage, an animation | a page — show{content, name: "x.html"} after page_preview | a Code block of HTML, or an app that calls nothing back |
+| a chart library's chart, a map, 3D, a mockup, a collage, an animation | a page — show{content, name: "x.html"} once; fix it with show{name, edits} | a Code block of HTML, or an app that calls nothing back |
 | an explanation with three or more parts, or one the reader will return to | a board (board.md) | a long reply of fences and prose |
 
 Boxes and arrows — architecture, dependencies, data flow, a pipeline — are a `Graph` in a
@@ -391,9 +391,14 @@ Rules:
   each, ≤ 25 MiB per page; a missing or non-image file fails the `show`.
 - Use the theme variables with fallbacks (`var(--foreground, #1a1612)`) or set your own `:root`
   defaults: the stored file has no theme when opened outside theuth.
-- Check a scripted page with `page_preview` before you show it; it returns the content height
-  and the console. The reader sees the page where the card is — do not announce or restate it;
-  add only what it does not say.
+- Write the page once. `show` checks it in the connected app before publishing (it renders it
+  hidden and refuses a page whose console logs an error; with no app connected it publishes
+  unchecked). Every `show` saves your text as a file the result names (`· file <path>`, or
+  `saved at <path>` on failure): fix it with `show{name, edits: [{old, new}]}`, or `edit()` that
+  file and `show{path}` — never resend the whole page, not after an error and not for a one-line
+  change. `page_preview{path|html}` is optional: it checks a page without publishing it. The
+  reader sees the page where the card is — do not announce or restate it; add only what it does
+  not say.
 
 Theme variables (the same names as T3 Code; every value is a resolved colour):
 `--background --foreground --muted --muted-foreground --card --card-foreground --popover
