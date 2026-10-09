@@ -97,7 +97,7 @@ export function CitationLink({ node: _node, href, children, ...rest }: Component
   )
   if (!dead(c)) return chip
   // §6.4: a dangling target gets the card, not a dead pulse.
-  const unavailable = !c!.available
+  const unavailable = c !== undefined && !c.available
   return (
     <Popover>
       <PopoverTrigger asChild>{chip}</PopoverTrigger>

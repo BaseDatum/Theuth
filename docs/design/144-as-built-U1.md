@@ -7,44 +7,44 @@ Branch `feat/144-u1` off `feat/144-w2-base` 6ab1905f. UI only (`crates/desktop/u
 ## What landed (file:line)
 
 **Sky's ruling — the way back to the notebook (contract §4)**
-- `routes/notes_.$id.tsx` — `validateSearch` gains `nb?: string` beside `new?: true`.
-- `components/editor/DocumentPage.tsx` — `NotebookBack` type (`{ to: '/notebooks/$id', params, search: { tab }, label, always: true }`);
+- `routes/notes_.$id.tsx:9-12` — `validateSearch` gains `nb?: string` beside `new?: true`.
+- `components/editor/DocumentPage.tsx:28,40-96,104-132,216` — `NotebookBack` type (`{ to: '/notebooks/$id', params, search: { tab }, label, always: true }`);
   `Frame`/`DocumentPage` take `back?: NotebookBack`: when set, the `SectionRow` gets no list chevron and the row leads with
   chevron + "Back to <title>" at EVERY width (label `hidden md:inline` → the phone sees the standard chevron). The popout
   header ignores it (143's rule). `useNotebookBack(kind, item, nb)` → `{ back, chip }`: with `?nb` the back goes there
   ("Back to notebook" until `useNotebook` answers); without it, to the item's first notebook (`useItemNotebooks`), and
   `chip` = `in <N notebooks> ▾` (`DropdownMenu`, each item a `Link` to `/notebooks/$id?tab=`). Popout → neither.
-- `components/notes/NotePage.tsx` — `Note` takes `nb`; `back={wayBack.back}`, the chip after the title; the `?new` replace
+- `components/notes/NotePage.tsx:32-33,65,86-92,135,145` — `Note` takes `nb`; `back={wayBack.back}`, the chip after the title; the `?new` replace
   keeps `?nb`.
-- `components/sources/SourcePage.tsx` — `back` with `tab: 'sources'` replaces W4's `← notebook` text link; chip after the title.
+- `components/sources/SourcePage.tsx:55-67,227-229` — `back` with `tab: 'sources'` replaces W4's `← notebook` text link; chip after the title.
   `Details` uses `useItemNotebooks('source', id)` instead of its own `useNotebooks` + `useQueries` copy.
-- `components/notebooks/NotesColumn.tsx` — row `Link` and **+ New note** carry `search: { nb }`; `<OverviewsSection notebook={notebook} />`
+- `components/notebooks/NotesColumn.tsx:64,113,140` — row `Link` and **+ New note** carry `search: { nb }`; `<OverviewsSection notebook={notebook} />`
   replaces the wave-3 placeholder (U2's component).
-- `lib/citations.ts` `routeOf(cite, nb?)` — notes/sources routes carry `{ nb }`; `components/chat/Citations.tsx`
+- `lib/citations.ts:57-64` `routeOf(cite, nb?)` — notes/sources routes carry `{ nb }`; `components/chat/Citations.tsx:48-55`
   `useOpenCite` reads the notebook from `useNotebookChat()` so chips clicked in a notebook chat carry it.
-- `components/chat/MessageAssistant.tsx` `NotebookActions` — the Save toast gains **Open** → `/notes/$id?nb=` (`SavedAnswer.doc`).
-- `components/notebooks/useNotebook.ts` (added only) — `useNotebook(id, enabled = true)`, `useItemNotebooks(kind, item)`
+- `components/chat/MessageAssistant.tsx:213-221` `NotebookActions` — the Save toast gains **Open** → `/notes/$id?nb=` (`SavedAnswer.doc`).
+- `components/notebooks/useNotebook.ts:14,69-97` (added only) — `useNotebook(id, enabled = true)`, `useItemNotebooks(kind, item)`
   (`notebook_list` + one `notebook_items_list` per notebook, `undefined` while loading), `useContextEstimate(notebook, session)`
   (re-fetched on `SourceEvent::Changed`; callers invalidate `['notebooks','estimate',notebook]` after a dial write).
 
 **The dial (§5.1) and the context line (§5.2)**
-- `lib/notebooks-rpc.ts` — `ContextApi` (the seven contract-§1 methods, positional params in the contract's order),
+- `lib/notebooks-rpc.ts:43-71,88-89` — `ContextApi` (the seven contract-§1 methods, positional params in the contract's order),
   `contextApi(client)` over `RpcClient.call`, `useContextApi()`; `notebookKeys.estimate(notebook, session)`, `notebookKeys.insightSkills`.
-- `lib/notebook-context.ts` (new) — `useContextDefaults` (zustand + `localStorage['notebook-context']`, notebook → item →
+- `lib/notebook-context.ts` (new, 97 lines) — `useContextDefaults` (:59) (zustand + `localStorage['notebook-context']`, notebook → item →
   `{ kind, level }`; `set`/`clear`/`setAll`), pure `remembered(saved, notebook)`; the §5.2 words: `fmtTokens` (`12.4k`),
   `kindWords`, `contextLine(estimate)`; `EstimateItem = ContextEstimate['items'][number]`.
-- `components/notebooks/NotebookContext.ts` — `useOpenThread` moved here from `ChatColumn.tsx` (same key `notebook-chat`);
+- `components/notebooks/NotebookContext.ts:29,43-47` — `useOpenThread` moved here from `ChatColumn.tsx` (same key `notebook-chat`);
   `useNotebookSession(notebook)` = the remembered thread else the newest chat else `null` — the sources and notes columns are
   the chat column's siblings in `NotebookPage`, so they derive the session instead of receiving it.
-- `components/sources/SourceCard.tsx` — `useDial(notebook)` (`set`/`clear`/`setAll`: the device default always, the session's
+- `components/sources/SourceCard.tsx:38,100-126,128-174` — `useDial(notebook)` (`set`/`clear`/`setAll`: the device default always, the session's
   row when a thread exists, then the estimate invalidates); `Dial` (radiogroup `off · mention · summary · full`, selected =
   the estimate's effective level, dot + `×` when `pinned`; without a session the remembered default shows pinned; right-click
   → clear; phone → `O M S F`); cards carry `id="item-<id>"`, a `truncated`/`omitted` pill, a dashed border when omitted.
   `context?: EstimateItem` prop; the guest's read-only card renders no dial (unchanged).
-- `components/sources/SourcesColumn.tsx` — `BulkRow` (`all sources:` → `notebook_context_set_all(session, notebook, 'source', level)`
+- `components/sources/SourcesColumn.tsx:14-47,50-79` — `BulkRow` (`all sources:` → `notebook_context_set_all(session, notebook, 'source', level)`
   + `setAll` on the device; `~<tokens> tokens` = the kind's non-omitted tokens); cards get their estimate item.
 - `components/notebooks/NotesColumn.tsx` — `BulkRow` for notes under the header (`kind: 'note'`), a `Dial` per row, `id="item-<id>"`.
-- `components/notebooks/ChatColumn.tsx` — `ContextLine` (exported): `in context: …` from `contextLine()`, the `N omitted` chip
+- `components/notebooks/ChatColumn.tsx:66-78,138-192` — `ContextLine` (exported): `in context: …` from `contextLine()`, the `N omitted` chip
   (`document.getElementById('item-<first omitted>').scrollIntoView`), the budget bar (`role="progressbar"`, amber ≥ 80 %,
   red when any item is `truncated`), `empty` → the sentence in amber; wraps on the phone (`basis-full md:basis-auto`).
   `onCreated` (a new thread): `session_set_notebook`, then `notebook_context_set` for every remembered item, then the
@@ -52,13 +52,13 @@ Branch `feat/144-u1` off `feat/144-w2-base` 6ab1905f. UI only (`crates/desktop/u
 - `· 1 insight` in the origin line: already W4's `originLine` over `NotebookSource.insights` (no change).
 
 **Insights tab (§4.3) and chips into sources (§6.4)**
-- `components/sources/SourcePage.tsx` — `insightSections(blocks)` (pure, exported): the `###` sections under `## Insights`,
+- `components/sources/SourcePage.tsx:108-135,137-218` — `insightSections(blocks)` (pure, exported): the `###` sections under `## Insights`,
   `id` = the heading block (what `insight_promote` takes), name · model · date from the heading text. `Insights` reads the
   blocks the way the board reader does (`useBlocks(provider)` from `components/board/blocks`), **Run ▾** = `insight_skills()`
   (builtins labelled `Key insights · Table of contents · Open questions`, then a `Skills` group) → `insight_run(source,
   { builtin } | { skill })` with a `Running…` state (the section lands through the document stream); **Promote to note** →
   `insight_promote(source, headingBlock, nb ?? null)` → toast with **Open** → `/notes/$id?nb=`. Empty: "No insights yet — Run ▾ generates one."
-- `components/chat/Citations.tsx` — a chip whose target is `missing` (or `!available`) is `data-dead` and opens a `Popover`
+- `components/chat/Citations.tsx:57-115,135` — a chip whose target is `missing` (or `!available`) is `data-dead` and opens a `Popover`
   card ("This passage changed or was removed" + **Open the source** without the locator; "This <kind> is unavailable")
   instead of navigating to a block that pulses nothing; `changed` adds "source changed since this was cited" to the chip's
   tooltip and `data-drift`; `moved` opens the document without the hash. References rows follow the same rule.
@@ -85,7 +85,19 @@ Screenshots: the closer's run (no dev server from a worker).
 
 ## Gates
 
-(filled at the end)
+- `/tmp/144/w2/ready-ui` landed at 01:00 (the orchestrator's `bun install` ran in a directory without a `package.json`, rc=0
+  but nothing installed), so `BUILD_LABEL=144-U1 build-lock bun install --frozen-lockfile` was run here in `crates/desktop/ui`
+  (622 packages) and in `packages/apps` (484 — the `@openuidev/*` deps tsc needs, as W4 found). Binding stubs copied from
+  `/tmp/144/w2/u1-stubs/` over the wave-1 `ContextEstimate.ts`/`NotebookContextItem.ts`/`ContextStatus.ts` (gitignored).
+- `BUILD_LABEL=144-U1 build-lock bun run check` → rc=0, **0 errors** (`/tmp/144/w2/U1-tsc.log`).
+- `BUILD_LABEL=144-U1 build-lock bunx vitest run src/components/sources src/components/notebooks src/components/editor
+  src/components/notes src/components/chat/Citations.test.ts src/lib` → **93 files / 550 tests passed** (`/tmp/144/w2/U1-vitest.log`;
+  one attribute-order assertion in `DocumentPage.test.ts` loosened after the first run, re-run green: 3/3).
+  New: `DocumentPage.test.ts` (3), `ChatColumn.test.ts` (2), `SourcePage.test.ts` (3), `lib/notebook-context.test.ts` (2).
+  Changed wave-1 tests: `NotesColumn.test.ts` (the Overviews placeholder assertion dropped — U2's section renders null; `nb` and dial
+  tests added), `SourcesColumn.test.ts` (`title="wave 2"` → the live bulk row; two sources; dial/anchor/no-estimate tests),
+  `Citations.test.ts` (drift test added; existing assertions untouched), `lib/citations.test.ts` (`routeOf(cite, nb)` cases).
+- Prettier: the UI has no prettier config or `format:check` script (prettier is only a transitive dependency) — not run.
 
 ## Deviations
 
@@ -114,6 +126,10 @@ Screenshots: the closer's run (no dev server from a worker).
 - **Tests** use `renderToStaticMarkup` (the tree has no jsdom/Testing Library); Radix menus/popovers are mocked to plain elements
   where a test needs their content.
 - `MessageAssistant.tsx` was touched for the Save toast's **Open** only (the brief's `grep -rln "theuth://"` names it).
+- Long-press on the phone: the dial clears on `contextmenu` (what a long-press fires on Android; iOS fires it for links only), so
+  the `×` next to a pinned dial is the reliable phone path.
+- The 40-minute fallback for the bindings was not taken: the orchestrator's export was visibly compiling (mbx warnings in
+  `bindings.log`) when the timer passed; a second `export_bindings` build on the shared machine would only have slowed it.
 
 ## Hand-offs
 

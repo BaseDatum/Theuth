@@ -55,7 +55,7 @@ test('with ?nb the back control renders at desktop width with the notebook title
   expect(html).toContain('aria-label="Back to Vendor review"')
   expect(html).toContain('>Back to Vendor review</span>')
   expect(html).not.toContain('md:hidden')
-  expect(html).toMatch(/<a href="\/notebooks\/\$id" data-params="{&quot;id&quot;:&quot;nb2&quot;}" data-search="{&quot;tab&quot;:&quot;notes&quot;}"/)
+  expect(html).toMatch(/<a [^>]*href="\/notebooks\/\$id"[^>]*data-params="{&quot;id&quot;:&quot;nb2&quot;}"[^>]*data-search="{&quot;tab&quot;:&quot;notes&quot;}"/)
   expect(html).not.toContain('in 2 notebooks')
 })
 
