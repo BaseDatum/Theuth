@@ -111,9 +111,11 @@ final class IslandController {
         if want, !shown { show() } else if !want, shown { hide() }
     }
 
-    /// Attached, the layout follows the meeting: live → open unless collapsed, else the pill. Detached stays as it is.
+    /// Attached, the layout follows the meeting: live → open unless collapsed, else the pill. Detached stays as it is. Only
+    /// while shown: once `visible` turned false the layout is frozen and fades as it was (R1 — Done must never flash the
+    /// not-live pill); the pill layout appears only live-and-collapsed or as the idle wordmark with "Always show" on.
     private func applyLayout() {
-        guard !ui.isDetached, dragPoll == nil else { return }
+        guard shown, !ui.isDetached, dragPoll == nil else { return }
         let want = IslandModel.attached(live: IslandModel.live(seen), collapsed: model.collapsed)
         guard ui.state != want else { return }
         ui.state = want

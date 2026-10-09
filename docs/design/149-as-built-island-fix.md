@@ -25,6 +25,9 @@ therefore asserts that a synthetic click on the eye produces the very log line t
   live) or when the user clicks the strip/pill to collapse; collapsed is remembered for the current meeting only.
 - **D2** Visibility = the original's rule (`Island.tsx:73`): shown iff live, or "Always show". No `linger`. Done/Failed/Idle →
   close animation (≤ 300 ms) → `orderOut`; ⌃M closes it within ~1 s; the engine's post-meeting work never shows an island.
+  R1 (17:16): the layout the island shows at that moment (open pane / collapsed pill / detached) is FROZEN and fades as it is —
+  never re-laid out into the not-live pill on the way out (the first build flashed a "2 briefs" pill for 0.3 s). The pill
+  layout appears only live-and-collapsed or as the idle wordmark with "Always show" on.
 - **D3** Every control clickable in every state on every display; the hit-test covers everything visible; the window-level click
   handler never swallows or pre-empts; the panel takes key only for the request box; the grip drags/detaches anywhere, snaps back
   within `snapBack`, remembers per display UUID, double-click resets.
@@ -68,8 +71,9 @@ therefore asserts that a synthetic click on the eye produces the very log line t
   `meetingChanged` → `model.meetingChanged(to:)` → `refreshVisibility()` (D2) → `applyLayout()` (:97-120: attached →
   `IslandModel.attached(live:collapsed:)`; detached untouched). `toggleCollapsed()` (:123) from the live pill's tap and from a
   grip press-and-release with no movement (`dragEnded` :251, `dragStart` recorded in `beginDrag`). `hide()` (:142): 0.3 s alpha
-  fade via `NSAnimationContext`, then `orderOut` + alpha back to 1 (nothing stays on screen at alpha 0). `show()` resets the
-  alpha, restores/defaults the frame, applies the layout. The 1 s tick now only advances `ui.now` for the clock.
+  fade via `NSAnimationContext`, then `orderOut` + alpha back to 1 (nothing stays on screen at alpha 0); `applyLayout` is guarded
+  by `shown` (:118), so once `visible` turned false the layout is frozen through the fade (R1). `show()` resets the alpha,
+  restores/defaults the frame, applies the layout. The 1 s tick now only advances `ui.now` for the clock.
   `uiChanged` (:226): `hosting.drawn = ui.isDetached ? nil : ui.drawn` — the SwiftUI global frame **as reported**, since the
   hosting view is flipped. `wantsKeyOnClick` (:73): true only inside the request-box row (`ui.rects["box"]`). `ui.onGrip` (:70):
   click count 2 → `snapBack()`, else `beginDrag`. `snapBack` → `.closed` then `applyLayout()` (open again while live).
@@ -117,12 +121,14 @@ to have appeared: AFTER `eye click … setEye logged "eye hidden=true → sharin
 | grip drag (down, 10 × 20 px, up) | FAIL `moved=0.0 dragPoll=false` | PASS `moved=200.0 state=detached` frame remembered for the display UUID |
 | grip double-click | FAIL (no detached grip) | PASS `state=open frames=[:]` back at the screen top |
 | **total** | **1/14** | **16/16** (`clicks`, twice from the bundle), **16/16** (`clicks-nonotch`, 3 consecutive bundle runs; one earlier run 15/16 — the hover flake below, before the retrying sweep); with §N's eight key steps **24/24** (`clicks` and `clicks-nonotch`, final bundle) |
-| `stop`: Done through the decoder → hidden ≤ 1 s | decoded PASS, hidden FAIL `visible=true` | 3/3 PASS `visible=false shown=false` |
+| `stop`: Done through the decoder → hidden ≤ 1 s | decoded PASS, hidden FAIL `visible=true` | 4/4 PASS: `layout frozen through the fade: before=open atDone=open midFade=open end=open` (mid-fade `alpha=0.29`), `hidden within 1 s: visible=false shown=false onScreen(CGWindowList)=false` |
 
 PNGs (window captures of the probe's own window): `/tmp/149i-clicks-start.png` (open, pointer far away), `-menu.png`
 (⋮ open: pause · stop · ×), `-collapsed.png` (the pill after the strip click), `-detached.png` (200 px down, detached layout),
-`-snapped.png`; `/tmp/149i-clicks-nonotch-*.png` the same on the fallback anchor; `/tmp/149i-stop-start.png` /
-`-after.png` (the latter is `screencapture`'s empty result of a window that is no longer on screen); `/tmp/149i-open-no-hover-start.png`;
+`-snapped.png`; `/tmp/149i-clicks-nonotch-*.png` the same on the fallback anchor; `/tmp/149i-stop-start.png`, `-fading.png`
+(the OPEN pane mid-fade, 120 ms after Done — R1: no pill) and `-after.png` (a display-region capture of the island's former
+frame after `orderOut`: only what lies beneath, no island; `screencapture -l` would still render an ordered-out window's backing
+store, which is what the first `-after.png` showed); `/tmp/149i-open-no-hover-start.png`;
 the fixture probes `/tmp/149i-island-closed.png` (collapsed pill over the pretended notch), `-open.png` (the strip + pane at once),
 `-detached.png`, `-nonotch.png` (open under the menu bar on the notchless display); `/tmp/149i-eye-visible.png` /
 `/tmp/149i-eye-hidden.png` (§E, one open-state capture per eye state, taken around the eye click).

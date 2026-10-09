@@ -35,15 +35,32 @@ extension IslandController {
         await shot("\(which)-start")
 
         if which.hasPrefix("stop") {
-            // The wire's Done through the real decoder: `State{Done}` → close → `orderOut` within 1 s.
+            // The wire's Done through the real decoder: `State{Done}` → the layout as it was fades → `orderOut` within 1 s. The
+            // layout must not change on the way (R1: no flash of the not-live pill).
             let json = #"{"type":"State","meeting":"probe-meeting","state":"Done","degraded":[]}"#
+            let before = ui.state
             store.meetingObserve(Data(json.utf8))
             let st = (store.meeting?.state).map { "\($0)" } ?? "nil"
-            IslandLog.write("probe \(which): fed \(json) → slice.state=\(st)")
+            IslandLog.write("probe \(which): fed \(json) → slice.state=\(st) layout=\(ui.state) (was \(before))")
             check("decoded Done", store.meeting?.state == .done, "state=\(st)")
-            await sleep(1)
-            check("hidden within 1 s", !window.isVisible && !shown, "visible=\(window.isVisible) shown=\(shown) state=\(ui.state)")
-            await shot("\(which)-after")
+            let atDone = ui.state
+            try? await Task.sleep(for: .milliseconds(120))
+            let midFade = ui.state
+            IslandLog.write("probe \(which): mid-fade layout=\(midFade) alpha=\(window.alphaValue) visible=\(window.isVisible)")
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            p.arguments = ["-x", "-o", "-l", "\(window.windowNumber)", "/tmp/149i-stop-fading.png"]; try? p.run()
+            await sleep(0.9)
+            check("layout frozen through the fade", before == atDone && atDone == midFade && midFade == ui.state && before == .open,
+                  "before=\(before) atDone=\(atDone) midFade=\(midFade) end=\(ui.state)")
+            let onScreen = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? [])
+                .contains { ($0[kCGWindowNumber as String] as? Int) == window.windowNumber }
+            check("hidden within 1 s", !window.isVisible && !shown && !onScreen, "visible=\(window.isVisible) shown=\(shown) onScreen(CGWindowList)=\(onScreen) state=\(ui.state)")
+            // `screencapture -l` renders an ordered-out window's backing store; the honest "after" is the display region.
+            let f = window.frame, top = NSScreen.screens[0].frame.maxY
+            let region = Process(); region.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            region.arguments = ["-x", "-R", "\(Int(f.minX)),\(Int(top - f.maxY)),\(Int(f.width)),\(Int(f.height))", "/tmp/149i-\(which)-after.png"]; try? region.run()
+            IslandLog.write("probe shot: /tmp/149i-\(which)-after.png (display region \(f), the window is ordered out)")
+            await sleep(0.5)
         } else if which.hasPrefix("clicks") {
             if !ui.isOpen { IslandLog.write("probe \(which): the layout is not open — the clicks below have nothing to hit") }
             logRects()
