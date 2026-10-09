@@ -33,6 +33,9 @@ internal sealed record CardButton(string Id, string Label, string? Cap = null, b
 /// <summary>A command step row as the card draws it (§10.3): verb · text, green/red when returned, a ring on the running row.</summary>
 internal sealed record CardStepRow(string Verb, string Text, StepStatus Status, string? Note = null);
 
+/// <summary>R1: one row of the Ctrl+L list (who · one line of the answer · age).</summary>
+internal sealed record CardListRow(string Who, string Text, string Age);
+
 /// <summary>The amber approval box (§10.6).</summary>
 internal sealed record CardApprovalBox(string Question, string RiskLine, string? Context, string? Line, bool Answered);
 
@@ -94,6 +97,11 @@ internal sealed record AnswerCardContent
 
     /// <summary>"O open": the desk session (<c>theuth://c/&lt;desk&gt;</c>).</summary>
     public string? OpenUrl { get; init; }
+
+    /// <summary>R1 (the Mac's ⌘L): the last answers; null = the card, not the list.</summary>
+    public IReadOnlyList<CardListRow>? ListRows { get; init; }
+
+    public int ListSelected { get; init; }
 }
 
 /// <summary>
@@ -131,7 +139,10 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     private AnswerCardWindow()
         : base("theuth answer", WINDOW_EX_STYLE.WS_EX_NOACTIVATE, excludeFromCapture: !Flags.Shareable)
     {
-        content = new StackPanel { Spacing = 6 };
+        // Top-aligned so its height is the content's own, and re-placed whenever that changes after a layout pass: a glyph that loads a
+        // fallback font late (✓, “ ”) can grow a line after Place() measured, which clipped the footer (R1 desk round).
+        content = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Top };
+        content.SizeChanged += (_, e) => { if (Math.Abs(e.NewSize.Height - e.PreviousSize.Height) >= 1) Place(); };
         shell = new Border { Padding = new Thickness(14, 10, 14, 12), Child = content };
         host = new UserControl { Content = shell, IsTabStop = true, UseSystemFocusVisuals = false };
         AutomationProperties.SetAutomationId(host, "answer-card");
@@ -262,8 +273,12 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     public async Task<bool> CapturePng(string path)
     {
         if (!IsShown) return false;
+        var before = shell.Background;
         try
         {
+            // The window's Mica/Acrylic sits behind a transparent tree; paint the theme's solid base for the PNG only.
+            shell.Background = Theme.Brush(NativeLook.SolidBackgroundBase, host.ActualTheme);
+            await Task.Delay(50);
             await XamlPng.Write(shell, path);
             return true;
         }
@@ -272,7 +287,19 @@ internal sealed partial class AnswerCardWindow : ToolWindow
             Log.Write($"answer-card: capture {path} failed: {e.GetType().Name}: {e.Message}");
             return false;
         }
+        finally
+        {
+            shell.Background = before;
+        }
     }
+
+    /// <summary>
+    /// The island's rect while it shows its own (meeting) content on screen: the card sits directly below it instead of over it
+    /// (the Mac's <c>IslandArea.frame</c> passes the shown island to <c>IslandModel.pillFrame</c>). Null = nothing to avoid.
+    /// </summary>
+    public Func<RectInt32?>? AvoidRect { get; set; }
+
+    private int ncW, ncH; // learned: window px beyond the client (outer − ClientSize)
 
     /// <summary>Whether the follow-up field has focus (letters are text there).</summary>
     public bool FollowUpFocused => followUp is { } f && f.FocusState != FocusState.Unfocused;
@@ -282,7 +309,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     private void OnKey(object sender, KeyRoutedEventArgs e)
     {
         var press = KeyInput.From(e);
-        var ctx = new CardKeyContext(model.Approval is { Answered: false }, Expanded, model.Busy && model.Approval is null, model.Speaking, FollowUpFocused);
+        var ctx = new CardKeyContext(model.Approval is { Answered: false }, Expanded, model.Busy && model.Approval is null, model.Speaking, FollowUpFocused, model.ListRows is not null);
         var intent = CardKeys.IntentFor(press, ctx);
         if (intent == CardKeyIntent.None) return;
         if (intent == CardKeyIntent.SendFollowUp)
@@ -313,6 +340,16 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         followUp = null;
         var c = model;
         content.Children.Add(Header(c, theme));
+        if (c.ListRows is { } rows)
+        {
+            // R1: the Mac's `historyList` — "Last answers", one line per answer, Ctrl+L back · Esc collapse.
+            content.Children.Add(ListView(rows, c.ListSelected, theme));
+            if (c.Footer is { Length: > 0 } lf) content.Children.Add(Text(lf, 11.5, NativeLook.TextTertiary));
+            Place();
+            int gen = Generation; // and once more after the real layout pass (late font fallback can grow a line)
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => { if (gen == Generation && model.ListRows is not null) Place(); });
+            return;
+        }
         if (Expanded && c.Request is { Length: > 0 } req)
         {
             var q = Text($"“{req}”", 13, NativeLook.TextSecondary);
@@ -356,6 +393,38 @@ internal sealed partial class AnswerCardWindow : ToolWindow
             content.Children.Add(f);
         }
         Place();
+    }
+
+    private FrameworkElement ListView(IReadOnlyList<CardListRow> rows, int selected, ElementTheme theme)
+    {
+        var panel = new StackPanel { Spacing = 2 };
+        AutomationProperties.SetAutomationId(panel, "answer-card-list");
+        panel.Children.Add(Text(AnswerCardList.Title, 12, NativeLook.TextTertiary, FontWeights.SemiBold));
+        if (rows.Count == 0) panel.Children.Add(Text(AnswerCardList.EmptyLine, 13, NativeLook.TextTertiary));
+        for (int i = 0; i < rows.Count; i++)
+        {
+            int index = i;
+            var r = rows[i];
+            // A fixed row height keeps the window's measure exact even when a glyph (✓, “ ”) loads a fallback font after the first pass.
+            var grid = new Grid { ColumnSpacing = 8, Height = 26, Padding = new Thickness(4, 0, 4, 0), CornerRadius = CardChrome.ControlRadius };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            if (i == selected) grid.Background = Theme.Brush(NativeLook.SubtleFillSecondary, theme);
+            else grid.Background = Theme.Transparent;
+            grid.Children.Add(Text(r.Who, 12, NativeLook.TextSecondary, FontWeights.SemiBold));
+            var t = Text(r.Text, 13, NativeLook.TextPrimary);
+            Grid.SetColumn(t, 1);
+            grid.Children.Add(t);
+            var age = Text(r.Age, 11.5, NativeLook.TextTertiary);
+            Grid.SetColumn(age, 2);
+            grid.Children.Add(age);
+            grid.Tapped += (_, e) => { e.Handled = true; ActionInvoked?.Invoke(Generation, $"pick:{index}"); };
+            AutomationProperties.SetAutomationId(grid, $"answer-card-list-row-{i + 1}");
+            AutomationProperties.SetName(grid, $"{r.Who}: {r.Text}");
+            panel.Children.Add(grid);
+        }
+        return panel;
     }
 
     private FrameworkElement Header(AnswerCardContent c, ElementTheme theme)
@@ -630,9 +699,27 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         shell.Measure(new global::Windows.Foundation.Size(CardWidth, double.PositiveInfinity));
         double maxH = m.WorkArea.Height / scale * MaxScreenShare;
         double h = Math.Clamp(shell.DesiredSize.Height + 2, 60, Math.Max(60, maxH));
-        var size = ((int)Math.Round(CardWidth * scale), (int)Math.Round(h * scale));
-        var f = IslandModel.DefaultFrame(m.AsIslandDisplay(), size);
-        Place(new RectInt32(f.X, f.Y, f.Width, f.Height));
+        int cw = (int)Math.Round(CardWidth * scale), ch = (int)Math.Round(h * scale); // the client the content measured for
+        var f = IslandModel.DefaultFrame(m.AsIslandDisplay(), (cw + ncW, ch + ncH));
+        int y = f.Y;
+        if (AvoidRect?.Invoke() is { } isl && isl.X < f.X + f.Width && f.X < isl.X + isl.Width && isl.Y < y + f.Height && y < isl.Y + isl.Height)
+        {
+            y = isl.Y + isl.Height + (int)Math.Round(8 * scale); // below the shown island (the Mac's pillFrame rule)
+        }
+        Place(new RectInt32(f.X, y, f.Width, f.Height));
+        // The window rect is not all client: the DWM edge of the frameless window takes a few px (the R1 renders were 544 px wide for
+        // 550 asked, and the bottom caps clipped). Learn the deficit from ClientSize once and grow the window by it, centred.
+        var client = AppWindow.ClientSize;
+        int dw = cw - client.Width, dh = ch - client.Height;
+        if (client.Width > 0 && client.Height > 0 && (dw > 0 || dh > 0) && dw < 48 && dh < 48)
+        {
+            dw = Math.Max(0, dw);
+            dh = Math.Max(0, dh);
+            ncW += dw;
+            ncH += dh;
+            Log.Write($"answer-card: client deficit {dw}×{dh} px — the window now asks {ncW}×{ncH} px over the content");
+            Place(new RectInt32(f.X - dw / 2, y, f.Width + dw, f.Height + dh));
+        }
     }
 }
 

@@ -214,4 +214,27 @@ public sealed class KeyTableTests153
         Assert.Contains("Yes Enter", CardKeys.Footer(new CardKeyContext(ApprovalShown: true), false));
         Assert.Equal("Enter expand · O open · Esc", CardKeys.Footer(new CardKeyContext(), true));
     }
+
+    [Fact]
+    public void CardKeysListTakesKeysBeforeTheCard()
+    {
+        var esc = new KeyPress("\u001b", VirtualKeys.Escape, ChordModifiers.None);
+        var enter = new KeyPress("\r", VirtualKeys.Return, ChordModifiers.None);
+        var ctrlL = new KeyPress("l", 'L', ChordModifiers.Control);
+        var list = new CardKeyContext(Expanded: true, ListOpen: true);
+        Assert.Equal(CardKeyIntent.List, CardKeys.IntentFor(ctrlL, new CardKeyContext(Expanded: true)));
+        Assert.Equal(CardKeyIntent.List, CardKeys.IntentFor(ctrlL, new CardKeyContext())); // collapsed: opens (the window expands)
+        Assert.Equal(CardKeyIntent.CloseList, CardKeys.IntentFor(ctrlL, list));
+        Assert.Equal(CardKeyIntent.CloseList, CardKeys.IntentFor(esc, list)); // Mac order: deny → list → collapse → dismiss
+        Assert.Equal(CardKeyIntent.PickRow, CardKeys.IntentFor(enter, list));
+        Assert.Equal(CardKeyIntent.Next, CardKeys.IntentFor(new KeyPress("j", 'J', ChordModifiers.None), list));
+        Assert.Equal(CardKeyIntent.Previous, CardKeys.IntentFor(new KeyPress("", VirtualKeys.Up, ChordModifiers.None), list));
+        Assert.Equal(CardKeyIntent.None, CardKeys.IntentFor(new KeyPress("o", 'O', ChordModifiers.None), list));
+        // The approval box still wins.
+        Assert.Equal(CardKeyIntent.Deny, CardKeys.IntentFor(esc, new CardKeyContext(ApprovalShown: true, ListOpen: true)));
+        // The expanded caps row (AnswerCard.swift:145) and the list's caps.
+        Assert.Equal("Ctrl+Alt+C follow up · J K thread · Ctrl+L list · O open · Esc collapse", CardKeys.Footer(new CardKeyContext(Expanded: true), false, "Ctrl+Alt+C"));
+        Assert.Equal("Ctrl+Alt+Space follow up · J K thread · Ctrl+L list · O open · Esc collapse", CardKeys.Footer(new CardKeyContext(Expanded: true), false));
+        Assert.Equal("Ctrl+L back · Esc collapse", CardKeys.Footer(list, false, "Ctrl+Alt+C"));
+    }
 }

@@ -906,3 +906,345 @@ public enum MeetingEvent: Equatable, Sendable {
         }
     }
 }
+
+// MARK: 153 — voice (crates/voice/src/lib.rs:291-428, shape/mod.rs:57-124, dictionary/mod.rs:27-120, history/mod.rs:58-109;
+// crates/agent/src/lib.rs:743-752, 1981-2000). Field names are the Rust ones through `convertFromSnakeCase`; the ts-rs files
+// under `crates/desktop/ui/src/rpc/bindings/` are the cross-check. Fixtures: `Tests/TheuthKitTests/Fixtures/153-*.json`.
+
+/// `Surface`, snake_case; `nil` in `DictationOpts` = `composer`.
+public enum Surface: String, Codable, Sendable { case composer, tui, companion, phone, anyApp = "any_app" }
+
+/// `Destination`, `#[serde(tag = "kind", rename_all = "snake_case")]`; `anyApp` carries the bundle id / exe.
+public enum Destination: Codable, Equatable, Sendable {
+    case agentPrompt, document, messageReply
+    case anyApp(app: String)
+
+    private enum K: String, CodingKey { case kind, app }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        switch try c.decode(String.self, forKey: .kind) {
+        case "agent_prompt": self = .agentPrompt
+        case "document": self = .document
+        case "message_reply": self = .messageReply
+        case "any_app": self = .anyApp(app: try c.decode(String.self, forKey: .app))
+        case let s: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown destination \(s)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: K.self)
+        switch self {
+        case .agentPrompt: try c.encode("agent_prompt", forKey: .kind)
+        case .document: try c.encode("document", forKey: .kind)
+        case .messageReply: try c.encode("message_reply", forKey: .kind)
+        case .anyApp(let app): try c.encode("any_app", forKey: .kind); try c.encode(app, forKey: .app)
+        }
+    }
+}
+
+/// `AppProfile` (§13): the companion's per-app row, sent with `DictationOpts`; the engine never persists it.
+public struct AppProfile: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var name: String
+    public var terminal: Bool
+    public var polish: Bool
+    public var learn: Bool
+    public var polishPrompt: String?
+    public var rewritePrompt: String?
+    public var commands: [String]
+
+    public init(id: String, name: String, terminal: Bool = false, polish: Bool = false, learn: Bool = false,
+                polishPrompt: String? = nil, rewritePrompt: String? = nil, commands: [String] = []) {
+        self.id = id; self.name = name; self.terminal = terminal; self.polish = polish; self.learn = learn
+        self.polishPrompt = polishPrompt; self.rewritePrompt = rewritePrompt; self.commands = commands
+    }
+}
+
+/// `DictationOpts`, the trailing optional of `dictation_start` (§14.2); every field serde-defaulted, so encode only what is set.
+public struct DictationOpts: Codable, Equatable, Sendable {
+    public var surface: Surface?
+    public var destination: Destination?
+    public var app: AppProfile?
+    public var commands: [String]
+    /// §8.7: `now − press` on the caller's clock at the moment of the call.
+    public var pressAgoMs: UInt32?
+
+    public init(surface: Surface? = nil, destination: Destination? = nil, app: AppProfile? = nil, commands: [String] = [],
+                pressAgoMs: UInt32? = nil) {
+        self.surface = surface; self.destination = destination; self.app = app; self.commands = commands; self.pressAgoMs = pressAgoMs
+    }
+
+    private enum K: String, CodingKey { case surface, destination, app, commands, pressAgoMs }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        surface = try c.decodeIfPresent(Surface.self, forKey: .surface)
+        destination = try c.decodeIfPresent(Destination.self, forKey: .destination)
+        app = try c.decodeIfPresent(AppProfile.self, forKey: .app)
+        commands = try c.decodeIfPresent([String].self, forKey: .commands) ?? []
+        pressAgoMs = try c.decodeIfPresent(UInt32.self, forKey: .pressAgoMs)
+    }
+}
+
+/// `DictationTimings` (§8.7), `dictation_status.last`.
+public struct DictationTimings: Codable, Equatable, Sendable {
+    public var surface: Surface
+    public var pressToFirstPcmMs: UInt32?
+    public var pressToFirstPartialMs: UInt32?
+    public var pressToFirstFinalMs: UInt32?
+    public var stopToFinalMs: UInt32?
+    public var polishMs: UInt32?
+    public var device: String?
+}
+
+/// `EndCommand` (§7), `#[serde(tag = "command", rename_all = "snake_case")]`.
+public enum EndCommand: Codable, Equatable, Sendable {
+    /// "send it"; `nearMiss` when accepted by tolerance at the final.
+    case send(nearMiss: Bool)
+    /// "scratch that": drop the previous closed utterance.
+    case scratchThat
+
+    private enum K: String, CodingKey { case command, nearMiss }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        switch try c.decode(String.self, forKey: .command) {
+        case "send": self = .send(nearMiss: try c.decodeIfPresent(Bool.self, forKey: .nearMiss) ?? false)
+        case "scratch_that": self = .scratchThat
+        case let s: throw DecodingError.dataCorruptedError(forKey: .command, in: c, debugDescription: "unknown end command \(s)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: K.self)
+        switch self {
+        case .send(let n): try c.encode("send", forKey: .command); try c.encode(n, forKey: .nearMiss)
+        case .scratchThat: try c.encode("scratch_that", forKey: .command)
+        }
+    }
+}
+
+/// `Action` (W-j): what the surface performs after `shaped`.
+public enum Action: String, Codable, Sendable { case newLine = "new_line", newParagraph = "new_paragraph", tab }
+
+/// `Preset` for `set_shape` / `voice.shape.<surface>`.
+public enum ShapePreset: String, Codable, Sendable { case full, plain, off }
+
+/// `EndPhrases` (§7.2) for `set_end_phrases`.
+public struct EndPhrases: Codable, Equatable, Sendable {
+    public var send: [String]
+    public var scratch: [String]
+    public var literal: String
+
+    public init(send: [String] = ["send it"], scratch: [String] = ["scratch that"], literal: String = "literal") {
+        self.send = send; self.scratch = scratch; self.literal = literal
+    }
+}
+
+/// `EntryId`: a transparent `String` newtype on the wire.
+public typealias EntryId = String
+
+/// `dictionary::Kind`, snake_case.
+public enum EntryKind: String, Codable, Sendable { case term, symbol, formatter, abbrev, mention, command, path }
+
+/// `dictionary::Source`, snake_case.
+public enum EntrySource: String, Codable, Sendable { case packaged, user, learned }
+
+/// `Scope`, `#[serde(tag = "scope", rename_all = "snake_case")]` with named fields (as-built C).
+public enum Scope: Codable, Equatable, Sendable {
+    case global
+    case surface(Surface)
+    case app(String)
+
+    private enum K: String, CodingKey { case scope, surface, app }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        switch try c.decode(String.self, forKey: .scope) {
+        case "global": self = .global
+        case "surface": self = .surface(try c.decode(Surface.self, forKey: .surface))
+        case "app": self = .app(try c.decode(String.self, forKey: .app))
+        case let s: throw DecodingError.dataCorruptedError(forKey: .scope, in: c, debugDescription: "unknown scope \(s)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: K.self)
+        switch self {
+        case .global: try c.encode("global", forKey: .scope)
+        case .surface(let s): try c.encode("surface", forKey: .scope); try c.encode(s, forKey: .surface)
+        case .app(let a): try c.encode("app", forKey: .scope); try c.encode(a, forKey: .app)
+        }
+    }
+}
+
+/// `Variant`: one heard form; `metaphone` is Rust's `(String, String)` — a two-element JSON array.
+public struct Variant: Codable, Equatable, Sendable {
+    public var heard: String
+    public var metaphone: [String]
+    public var seen: UInt32
+    public var lastMs: UInt64
+
+    public init(heard: String, metaphone: [String] = ["", ""], seen: UInt32 = 0, lastMs: UInt64 = 0) {
+        self.heard = heard; self.metaphone = metaphone; self.seen = seen; self.lastMs = lastMs
+    }
+}
+
+/// `Entry` (§5.3): `dictionary_list` row and `dictionary_put` argument.
+public struct Entry: Codable, Equatable, Sendable, Identifiable {
+    public var id: EntryId
+    public var canonical: String
+    public var kind: EntryKind
+    public var spoken: [String]
+    public var variants: [Variant]
+    public var scope: Scope
+    public var source: EntrySource
+    public var tags: [String]
+
+    public init(id: EntryId, canonical: String, kind: EntryKind = .term, spoken: [String] = [], variants: [Variant] = [],
+                scope: Scope = .global, source: EntrySource = .user, tags: [String] = []) {
+        self.id = id; self.canonical = canonical; self.kind = kind; self.spoken = spoken; self.variants = variants
+        self.scope = scope; self.source = source; self.tags = tags
+    }
+}
+
+/// `HistoryRow` (§6.5), `dictation_history` row. `destination` is the flattened word (`any_app:<bundle>`).
+public struct HistoryRow: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var startedMs: UInt64
+    public var finishedMs: UInt64?
+    public var surface: Surface
+    public var destination: String
+    public var app: String?
+    public var raw: String
+    public var shaped: String
+    public var polished: String?
+    public var delivered: String?
+    public var pressMs: UInt32?
+    public var firstPartialMs: UInt32?
+    public var firstFinalMs: UInt32?
+    public var finalMs: UInt32?
+    /// `done | stopped | error:<message>`.
+    public var reason: String
+    public var audioBytes: UInt64
+    public var hasAudio: Bool
+}
+
+/// `PolishReply` (§9): `text == nil` → deliver the shaped text; `refused` says why.
+public struct PolishReply: Codable, Equatable, Sendable {
+    public var text: String?
+    public var model: String?
+    public var ms: UInt32
+    public var refused: String?
+}
+
+/// `SuggestionAnswer` (§6.4), snake_case.
+public enum SuggestionAnswer: String, Codable, Sendable { case add, notNow = "not_now", never }
+
+/// `DeviceState` (§8.2), snake_case.
+public enum DeviceState: String, Codable, Sendable { case changed, lost }
+
+/// `InputDevice`, the `list_input_devices` row.
+public struct InputDevice: Codable, Equatable, Sendable {
+    public var name: String
+    public var `default`: Bool
+}
+
+/// `ModelInfo` (`polish_model` reply); only what a picker shows.
+public struct ModelInfo: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var name: String
+    public var provider: String
+}
+
+/// `ModelState`, `#[serde(tag = "state", rename_all = "snake_case")]`; `failed` carries the message.
+public enum ModelState: Codable, Equatable, Sendable {
+    case missing, loading, ready
+    case failed(message: String)
+
+    private enum K: String, CodingKey { case state, message }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        switch try c.decode(String.self, forKey: .state) {
+        case "missing": self = .missing
+        case "loading": self = .loading
+        case "ready": self = .ready
+        case "failed": self = .failed(message: try c.decodeIfPresent(String.self, forKey: .message) ?? "")
+        case let s: throw DecodingError.dataCorruptedError(forKey: .state, in: c, debugDescription: "unknown model state \(s)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: K.self)
+        switch self {
+        case .missing: try c.encode("missing", forKey: .state)
+        case .loading: try c.encode("loading", forKey: .state)
+        case .ready: try c.encode("ready", forKey: .state)
+        case .failed(let m): try c.encode("failed", forKey: .state); try c.encode(m, forKey: .message)
+        }
+    }
+}
+
+/// `dictation_status` reply (`DictationState` + 153's `input_device`, `last`).
+public struct DictationState: Codable, Equatable, Sendable {
+    public var model: ModelState
+    /// The running dictation's id, if any.
+    public var active: String?
+    public var inputDevice: String?
+    public var last: DictationTimings?
+}
+
+/// `voice_status` reply; `inputDevices` is 153 §8.1's ordered mic preference.
+public struct VoiceStatus: Codable, Equatable, Sendable {
+    public var model: ModelState
+    public var accelerator: String?
+    public var voice: String
+    public var voices: [String]
+    public var speaking: String?
+    public var queued: [String]?
+    public var inputDevices: [String]?
+}
+
+/// Every `Dictation*` event in one decoder (the Ask bar's `dictationObserve` reads it): `type` picks the fields.
+/// 153: `shaped`, `command`, `actions` on `DictationText`; `device`/`state` on `DictationDevice`.
+public struct DictationWire: Decodable, Equatable, Sendable {
+    public struct Reason: Decodable, Equatable, Sendable { public let reason: String; public let message: String? }
+    public let type: String
+    public let id: String?
+    public let utterance: Int?
+    public let text: String?
+    public let isFinal: Bool?
+    public let levels: [Float]?
+    public let reason: Reason?
+    /// `text` after shaping (§4); absent on a pre-153 engine.
+    public let shaped: String?
+    public let command: EndCommand?
+    /// `Action` raw values (`new_line` …); strings so an unknown action never fails the whole event.
+    public let actions: [String]?
+    /// `DictationDevice`: the device now open (`nil` when lost) and what happened.
+    public let device: String?
+    public let state: DeviceState?
+
+    enum CodingKeys: String, CodingKey {
+        case type, id, utterance, text, isFinal = "final", levels, reason, shaped, command, actions, device, state
+    }
+}
+
+/// The `DictationDevice` event (§8.2).
+public struct DictationDevice: Codable, Equatable, Sendable {
+    public var id: String
+    public var device: String?
+    public var state: DeviceState
+}
+
+/// The `DictionarySuggestion` event payload (§6.3, `history::Suggestion`); answered with `dictionary_suggestion_answer`.
+public struct DictionarySuggestion: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var heard: String
+    public var typed: String
+    public var occurrences: UInt32
+    public var surface: Surface
+    public var hasAudio: Bool
+}

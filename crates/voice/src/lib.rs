@@ -11,7 +11,7 @@
 //! daemon's own speaker); the echo-cancelled mic lives in [`mic`]; the resident
 //! `Utterer` can be leased from [`Dictation`] ([`Lease`]/[`Return`]).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,19 +26,29 @@ use tools::{CloseAck, CloseTree, RegisterLifecycle};
 
 mod clip;
 mod dictation;
+pub mod dictionary;
+pub mod history;
 pub mod live;
 pub mod mic;
 pub mod model;
 pub mod out;
+pub mod shape;
 mod speak;
 mod stt;
 pub mod vad;
 
 pub use dictation::{
-    AudioSource, Dictation, DictationState, DictationStatus, Lease, Prewarm, PushAudio, Return,
-    StartDictation, StopDictation,
+    AnswerSuggestion, AudioSource, Correction as DictationCorrection, Dictation, DictationState,
+    DictationStatus, DictionaryOp, DictionaryReply, HistoryStore, InputDevicePrefs, Lease, Prewarm,
+    PushAudio, Return, Setting, StartDictation, StopDictation,
 };
+pub use dictionary::{Dictionary, Entry, EntryId, Kind, Match, Negative, Scope, Source, Variant};
+pub use history::{Correction, HistoryRow, Store, SuggestionAnswer, SuggestionId};
 use kameo::reply::ReplySender;
+pub use shape::{
+    Action, EndCommand, EndPhrases, Preset, Replaced, RuleId, ShapeConfig, ShapePresets, Shaped,
+    Shaper,
+};
 use speak::{Out, Progress, Report, Synthesizer};
 pub use stt::{
     Engine, PIECE, Piece, Stream, TranscribeWords, Transcriber, WINDOW, Word, WordTranscript,
@@ -294,6 +304,168 @@ pub struct VoiceStatus {
     /// Utterances waiting behind it, in order (76 §0.4).
     #[serde(default)]
     pub queued: Vec<SpeechId>,
+    /// `voice.input_devices` (153 §8.1): the ordered mic preference the companions read too.
+    #[serde(default)]
+    pub input_devices: Vec<String>,
+}
+
+/// Which client surface a dictation feeds (153 §4.5); `None` in [`DictationOpts`] = `Composer`.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Surface {
+    /// The desktop Composer and the per-field mics.
+    #[default]
+    Composer,
+    /// The terminal UI.
+    Tui,
+    /// The companion's own fields (Ask bar, panel, rows).
+    Companion,
+    /// The phone webview.
+    Phone,
+    /// Another application, through the companion's delivery (153 §13).
+    AnyApp,
+}
+
+/// Who reads the dictated text (153 §9.1); decides whether polish may run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Destination {
+    /// The agent reads it: never polished.
+    AgentPrompt,
+    /// A document a human reads.
+    Document,
+    /// A chat/mail reply a human reads.
+    MessageReply,
+    /// Another app, named by bundle id / exe.
+    AnyApp {
+        /// Bundle id (macOS) or exe name (Windows).
+        app: String,
+    },
+}
+
+/// Trailing optional argument of `dictation_start` (153 §14.1); `None` = today's behaviour.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(default)]
+pub struct DictationOpts {
+    /// Picks the shaping preset (`voice.shape.<surface>`); `None` = `Composer`.
+    pub surface: Option<Surface>,
+    /// Who reads the text; `None` = `AgentPrompt`.
+    pub destination: Option<Destination>,
+    /// §13's per-app row for shaping (terminal spacing, commands); the engine never persists it.
+    pub app: Option<AppProfile>,
+    /// Slash commands the surface accepts (stage 4); empty = none recognised.
+    pub commands: Vec<String>,
+    /// §8.7: `now − press` on the caller's clock at the moment of the call.
+    pub press_ago_ms: Option<u32>,
+}
+
+/// A companion-side per-app row (153 §13), sent with [`DictationOpts`] for any-app dictation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AppProfile {
+    /// Bundle id (macOS) or exe name (Windows).
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// A terminal: trailing-space / autocomplete spacing rules apply.
+    pub terminal: bool,
+    /// Polish may run for this app.
+    pub polish: bool,
+    /// Observe the target for corrections after a paste (§6.6).
+    pub learn: bool,
+    /// Per-app polish instruction, appended to the system prompt.
+    pub polish_prompt: Option<String>,
+    /// Per-app rewrite instruction, appended to the system prompt.
+    pub rewrite_prompt: Option<String>,
+    /// Slash commands this app accepts.
+    pub commands: Vec<String>,
+}
+
+/// Latency numbers of one dictation relative to the key press (153 §8.7).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct DictationTimings {
+    /// Which surface dictated.
+    pub surface: Surface,
+    /// Press → first PCM chunk from the mic.
+    pub press_to_first_pcm_ms: Option<u32>,
+    /// Press → first partial text.
+    pub press_to_first_partial_ms: Option<u32>,
+    /// Press → first closed utterance.
+    pub press_to_first_final_ms: Option<u32>,
+    /// Stop request → `DictationFinished`.
+    pub stop_to_final_ms: Option<u32>,
+    /// Polish round trip, when it ran (§9.5).
+    pub polish_ms: Option<u32>,
+    /// The input device that opened.
+    pub device: Option<String>,
+}
+
+/// What happened to the mic mid-dictation (153 §8.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceState {
+    /// Re-armed on `device`.
+    Changed,
+    /// No device could be opened; the dictation ends after this.
+    Lost,
+}
+
+/// One enumerated microphone (153 §8.1), the `list_input_devices` row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct InputDevice {
+    /// Host name of the device.
+    pub name: String,
+    /// The system default input.
+    pub default: bool,
+}
+
+/// `voice.duck_media` (153 §8.6): what the companion does to media while dictating.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum Duck {
+    /// Leave media alone.
+    #[default]
+    Off,
+    /// Output volume −50 % for the dictation.
+    Duck,
+    /// One media play/pause at start and end.
+    Pause,
+}
+
+/// `voice.history` (153 §6.5).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct HistoryConfig {
+    /// Write dictation rows and audio at all.
+    pub enabled: bool,
+    /// Rows kept; older rows are deleted.
+    pub rows: u32,
+    /// Audio budget in MiB; oldest files unlinked first.
+    pub audio_mib: u32,
+    /// Learn corrections (§6.3) from `dictation_correction`.
+    pub learn: bool,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rows: 200,
+            audio_mib: 64,
+            learn: true,
+        }
+    }
 }
 
 /// Model lifecycle.
@@ -411,6 +583,15 @@ pub enum VoiceEvent {
         /// The VAD closed this utterance; no more text for it.
         #[serde(rename = "final")]
         is_final: bool,
+        /// `text` after shaping (153 §4); what the surface shows and sends.
+        #[serde(default)]
+        shaped: String,
+        /// A spoken end command armed/fired on this piece (153 §7).
+        #[serde(default)]
+        command: Option<EndCommand>,
+        /// Shaping actions ("new line", "tab") the surface applies after `shaped`.
+        #[serde(default)]
+        actions: Vec<Action>,
     },
     /// Mic closed. `Done` after a stop, `Stopped` after the max-length stop, `Error` for mic/model failure.
     DictationFinished {
@@ -418,6 +599,30 @@ pub enum VoiceEvent {
         id: DictationId,
         /// How it ended.
         reason: FinishReason,
+    },
+    /// The input device changed mid-dictation (153 §8.2): re-armed on `device`, or lost.
+    DictationDevice {
+        /// Dictation.
+        id: DictationId,
+        /// The device now open; `None` when lost.
+        device: Option<String>,
+        /// What happened.
+        state: DeviceState,
+    },
+    /// A dictionary suggestion is due (153 §6.3): the surface shows the card.
+    DictionarySuggestion {
+        /// Suggestion; answered with `dictionary_suggestion_answer`.
+        id: SuggestionId,
+        /// What the model heard.
+        heard: String,
+        /// What the user typed instead.
+        typed: String,
+        /// How often the pair was seen.
+        occurrences: u32,
+        /// Where it was dictated.
+        surface: Surface,
+        /// Audio of the utterance is available (`dictation_audio_get`).
+        has_audio: bool,
     },
 }
 
@@ -445,6 +650,24 @@ pub struct VoiceConfig {
     pub player_buffer_ms: u32,
     /// Output device by name; `None` → the default output.
     pub player_device: Option<String>,
+    /// Shaping preset per surface (153 §4.5).
+    pub shape: ShapePresets,
+    /// Spoken end phrases (153 §7.2).
+    pub end_commands: EndPhrases,
+    /// Ordered input device names; `[]` = system default only (153 §8.1).
+    pub input_devices: Vec<String>,
+    /// Keep the mic open this long after a dictation ends; `0` = close at once (153 §8.4).
+    pub standby_secs: u64,
+    /// What the companion does to media while dictating (153 §8.6).
+    pub duck_media: Duck,
+    /// Polish model id; `None` = title model, then the session's model (153 §9.2).
+    pub polish_model: Option<String>,
+    /// Per-destination polish instruction overrides, keyed by destination kind (153 §9.1).
+    pub polish_profiles: BTreeMap<String, String>,
+    /// System-prompt template for rewrite-on-selection (153 §13.6); `None` = the built-in.
+    pub rewrite_template: Option<String>,
+    /// Dictation history store (153 §6.5).
+    pub history: HistoryConfig,
 }
 
 impl Default for VoiceConfig {
@@ -459,6 +682,15 @@ impl Default for VoiceConfig {
             dictation_max_secs: 300,
             player_buffer_ms: 200,
             player_device: None,
+            shape: ShapePresets::default(),
+            end_commands: EndPhrases::default(),
+            input_devices: Vec::new(),
+            standby_secs: 8,
+            duck_media: Duck::Off,
+            polish_model: None,
+            polish_profiles: BTreeMap::new(),
+            rewrite_template: None,
+            history: HistoryConfig::default(),
         }
     }
 }
@@ -851,6 +1083,7 @@ impl Message<Status> for Voice {
             voices: self.voices.clone(),
             speaking: self.current.as_ref().map(|c| c.id),
             queued: self.queue.iter().map(|q| q.id).collect(),
+            input_devices: self.cfg.input_devices.clone(),
         }
     }
 }

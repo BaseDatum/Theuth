@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TheuthKit
 @testable import CompanionCore
 
 // W6: the key table (item 4), the rail presences (item 3), the live dictation reducer (item 2).
@@ -144,6 +145,58 @@ struct KeyTableTests {
         #expect(KeyTable.escapeDuringHold(of: cmdCtl, reserved: [esc([.control, .command])]) == nil, "an enabled symbolic hot key is the system's")
         #expect(KeyTable.escapeDuringHold(of: cmdCtl, reserved: [esc(.command), Chord(chars: " ", keyCode: 49, modifiers: [.control, .command])]) == esc([.control, .command]),
                 "reserved matches the whole chord, not its modifiers or key alone")
+    }
+
+    /// 153 §15 ★: the two mode keys are `anywhere` rows (⌃⌥D / ⌃⌥C), unique with the voice key; `check` refuses one mode
+    /// key's chord for another (`usedBy`, the same-scope rule); the persisted table round-trips with them.
+    @Test func rows153ModeKeysUniqueWithTheVoiceKey() {
+        var t = KeyTable()
+        #expect(t.isUniquePerScope)
+        let d = Chord(chars: "d", keyCode: 2, modifiers: [.control, .option]), c = Chord(chars: "c", keyCode: 8, modifiers: [.control, .option])
+        #expect(t.chord(for: .dictateAnywhere) == d && d.symbol == "⌃⌥D")
+        #expect(t.chord(for: .command) == c && c.symbol == "⌃⌥C")
+        #expect(t.action(for: d, in: .anywhere) == .dictateAnywhere && t.action(for: c, in: .anywhere) == .command)
+        #expect(KeyTable.scope(of: .dictateAnywhere) == .anywhere && KeyTable.scope(of: .command) == .anywhere)
+        #expect(KeyAction.dictateAnywhere.intent == nil && KeyAction.command.intent == nil, "global rows: the app's handlers")
+        let voice = t.chord(for: .voiceKey)!
+        #expect(t.check(voice, for: .dictateAnywhere) == .usedBy(.voiceKey) && t.check(voice, for: .command) == .usedBy(.voiceKey))
+        #expect(t.check(d, for: .voiceKey) == .usedBy(.dictateAnywhere) && t.check(c, for: .voiceKey) == .usedBy(.command))
+        #expect(t.check(d, for: .command) == .usedBy(.dictateAnywhere), "and between the two new rows")
+        #expect(KeyTable.escapeDuringHold(of: d)?.symbol == "⌃⌥⎋" && KeyTable.escapeDuringHold(of: c)?.symbol == "⌃⌥⎋", "§15: the held-⎋ twin")
+        #expect(KeyTable.defaultChord(for: .dictateAnywhere, on: .windows) == d, "Ctrl+Alt+D: no per-platform row")
+        t.set(Chord(chars: "x", keyCode: 7, modifiers: [.control, .option]), for: .command)
+        #expect(KeyTable(json: t.json) == t && t.isUniquePerScope)
+    }
+
+    /// 153 §14.3: the companion-local keys and their defaults; `appProfiles` round-trips through the wire shape.
+    @Test func modeKeySettingsDefaultsAndAppProfiles() {
+        let suite = "test.153.modeKeys.\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: suite)!
+        defer { d.removePersistentDomain(forName: suite) }
+        #expect(ModeKeySettings.dictateAnywhereEnabled(d) && ModeKeySettings.commandKeyEnabled(d) && ModeKeySettings.micOnKeyDown(d))
+        #expect(!ModeKeySettings.modifierOnlyKeys(d) && !ModeKeySettings.leaveTextOnClipboard(d) && ModeKeySettings.checkPasteLanded(d))
+        #expect(ModeKeySettings.Mode.allCases.allSatisfy { ModeKeySettings.gesture($0, d) == .holdLock }, "Q6: Automatic is opt-in")
+        d.set("automatic", forKey: ModeKeySettings.gestureKey(.dictate))
+        d.set(false, forKey: ModeKeySettings.commandKeyEnabledKey)
+        #expect(ModeKeySettings.gesture(.dictate, d) == .automatic && ModeKeySettings.gesture(.command, d) == .holdLock)
+        #expect(!ModeKeySettings.commandKeyEnabled(d))
+        #expect(ModeKeySettings.appProfiles(d).isEmpty)
+        let rows = [AppProfile(id: "com.apple.Terminal", name: "Terminal", terminal: true, commands: ["/clear"])]
+        ModeKeySettings.setAppProfiles(rows, d)
+        #expect(ModeKeySettings.appProfiles(d) == rows)
+    }
+
+    /// 153 C1: the machine's modes and gestures are the table's (`ModeKeySettings`); the hints follow the gesture; the
+    /// persisted table stays unique when both mode keys are rebound at once.
+    @Test func rows153ModeKeysDriveTheMachine() {
+        #expect(PointMachine.Mode.allCases == ModeKeySettings.Mode.allCases && PointMachine.Gesture.allCases == ModeKeySettings.Gesture.allCases)
+        #expect(PointMachine.hint(for: .holdLock) == PointMachine.hint && PointMachine.hint(for: .automatic) == PointMachine.automaticHint)
+        #expect(PointMachine.tapToggleMs == 400 && CommandCard.maxSteps == 12 && SpokenApproval.listenSecs == 8, "Q7: one home each")
+        var t = KeyTable()
+        t.set(Chord(chars: "x", keyCode: 7, modifiers: [.control, .option]), for: .command)
+        t.set(Chord(chars: "y", keyCode: 16, modifiers: [.control, .option]), for: .dictateAnywhere)
+        #expect(t.isUniquePerScope && KeyTable(json: t.json) == t)
+        #expect(t.check(Chord(chars: "x", keyCode: 7, modifiers: [.control, .option]), for: .voiceKey) == .usedBy(.command))
     }
 }
 

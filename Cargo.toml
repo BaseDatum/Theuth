@@ -206,6 +206,10 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 # Static: the crate compiles sqlite-vec.c and exposes `sqlite3_vec_init`, registered once per process through
 # `libsqlite3_sys::sqlite3_auto_extension` (the vendored SQLCipher build above) before the index pool opens.
 sqlite-vec = "0.1"
+# 153 §5.4: the dictionary matcher — Double Metaphone (Apache-2.0), Levenshtein, and the packaged-set prefix index.
+rphonetic = "4"
+strsim = "0.11"
+fst = "0.4"
 jsonrpsee = { version = "0.26", features = ["server", "macros"] }
 iocraft = "0.9"
 gray_matter = "0.3"

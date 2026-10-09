@@ -116,7 +116,7 @@ public sealed class AnswerCardStateTests
         c.TurnFinished("end_turn", 9000);
         Assert.Equal("replied", c.Copy(Key, 9000));
         Assert.True(c.DoneArmed);
-        Assert.Equal("The failing test is `vad::gate_onset`.", c.CollapsedText);
+        Assert.Equal("The failing test is vad::gate_onset.", c.CollapsedText); // the receipt's two lines, marks removed
         // speaking — enter on Speaker.surface == ours; glyph; copy "click to stop"; leaves on speech end / Esc / a new gesture.
         // (A parallel flag over answer, as the Mac twin built it — H3-C1.)
         c.SpeechStarted(9100);
@@ -210,5 +210,39 @@ public sealed class AnswerCardStateTests
         Assert.Equal("partial", Assert.IsType<MdBlock.Code>(open[1]).Text);
         Assert.Empty(AnswerMarkdown.Parse(""));
         Assert.Equal(new MdInline[] { new MdInline.Text("2 * 3 = 6") }, AnswerMarkdown.Inline("2 * 3 = 6"));
+        // The collapsed card's plain text: marks removed.
+        Assert.Equal("The onset run is now 8 frames in vad.rs (design)", AnswerMarkdown.Plain("The onset run is now **8 frames** in `vad.rs` ([design](theuth://c/x))"));
+        Assert.Equal("", AnswerMarkdown.Plain(null));
+    }
+
+    [Fact]
+    public void HistoryListToggleEscapeMovePick()
+    {
+        var now = DateTimeOffset.Parse("2026-10-09T20:00:00Z");
+        Receipt R(int i) => new() { Id = $"r{i}", Kind = i % 2 == 0 ? ReceiptKind.Answer : ReceiptKind.Ask, At = now.AddMinutes(i), Who = i % 2 == 0 ? "theuth" : "you", Text = $"answer {i}", Session = "desk" };
+        var source = Enumerable.Range(0, 25).Select(R).ToList();
+        var list = new AnswerCardList();
+        Assert.False(list.Open);
+        Assert.False(list.Escape()); // closed: Esc is the card's
+        Assert.True(list.Toggle(source)); // Ctrl+L opens with the newest 20
+        Assert.Equal(AnswerCardList.Max, list.Rows!.Count);
+        Assert.Equal("answer 24", list.Rows[0].Text);
+        Assert.Equal("answer 5", list.Rows[^1].Text);
+        Assert.False(list.Move(-1)); // already at the top
+        Assert.True(list.Move(+2));
+        Assert.Equal(2, list.Selected);
+        var picked = list.Pick();
+        Assert.Equal("answer 22", picked!.Text); // Enter shows that answer; the list closes
+        Assert.False(list.Open);
+        Assert.True(list.Toggle(source));
+        Assert.False(list.Toggle(source)); // Ctrl+L again: back to the card
+        Assert.True(list.Toggle(source));
+        Assert.True(list.Escape()); // Esc closes the list first
+        Assert.False(list.Open);
+        Assert.True(list.Toggle(Array.Empty<Receipt>()));
+        Assert.Empty(list.Rows!);
+        Assert.Null(list.Pick());
+        Assert.Equal("nothing in the last 24 h", AnswerCardList.EmptyLine);
+        Assert.Equal("answer 3", new AnswerCardList() is var l2 && l2.Toggle(source.Take(4)) ? l2.Pick(0)!.Text : "");
     }
 }

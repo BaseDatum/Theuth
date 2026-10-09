@@ -247,11 +247,11 @@ internal sealed class Hotkeys : IDisposable
         altGr[action] = d;
         if (d.Substituted)
         {
-            Log.Write($"hotkey {action.RawValue()}: AltGr on this layout — using {AltGrRule.FallbackText(chord)} ({chord.Symbol} types '{probe}' on layout 0x{(long)layout:X8})");
+            Log.Write($"hotkey {action.RawValue()}: AltGr on this layout — using {AltGrRule.FallbackText(chord)} ({chord.Symbol} types '{probe}' on layout {Hkl(layout)})");
         }
         else
         {
-            Log.Write($"hotkey {action.RawValue()}: AltGr probe {chord.Symbol} on layout 0x{(long)layout:X8} → no glyph, registering as it is");
+            Log.Write($"hotkey {action.RawValue()}: AltGr probe {chord.Symbol} on layout {Hkl(layout)} → no glyph, registering as it is");
         }
         return d.Register;
     }
@@ -282,6 +282,9 @@ internal sealed class Hotkeys : IDisposable
             return null;
         }
     }
+
+    /// <summary>An HKL as Windows writes it: the low 32 bits ("0xF0010409" for US-International), not the sign-extended handle.</summary>
+    private static string Hkl(nint layout) => $"0x{(ulong)layout & 0xFFFFFFFF:X8}";
 
     /// <summary>The keyboard layout the user is typing with: the foreground window's thread's, else ours.</summary>
     public static nint ForegroundLayout()
@@ -314,10 +317,10 @@ internal sealed class Hotkeys : IDisposable
         }
         if (!differs)
         {
-            Log.Write($"hotkey: keyboard layout 0x{(long)old:X8} → 0x{(long)layout:X8} ({why}) — AltGr answers unchanged");
+            Log.Write($"hotkey: keyboard layout {Hkl(old)} → {Hkl(layout)} ({why}) — AltGr answers unchanged");
             return;
         }
-        Log.Write($"hotkey: keyboard layout 0x{(long)old:X8} → 0x{(long)layout:X8} ({why}) — re-probing AltGr and re-registering");
+        Log.Write($"hotkey: keyboard layout {Hkl(old)} → {Hkl(layout)} ({why}) — re-probing AltGr and re-registering");
         var before = Notice;
         Apply(table);
         if (Notice != before) NoticeChanged?.Invoke();

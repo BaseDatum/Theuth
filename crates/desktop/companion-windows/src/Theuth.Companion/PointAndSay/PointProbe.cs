@@ -231,6 +231,28 @@ internal static class PointProbe
         }
         if (which == "collapsed") p.ProbeDetachCollapsed();
         else p.ProbeExpand(true);
+        if (which == "list")
+        {
+            // R1: the Ctrl+L list over fixture receipts (the Ask bar's model shape), then a picked row shown in the card.
+            var now = DateTimeOffset.Now;
+            Receipt R(int min, string who, string text) => new() { Id = $"probe-{min}", Kind = who == "you" ? ReceiptKind.Ask : ReceiptKind.Answer, At = now.AddMinutes(-min), Who = who, Text = text, Session = "probe-desk" };
+            p.ProbeList(new[]
+            {
+                R(1, "theuth", "The failing test is `vad::gate_onset`; the 160 ms onset frame count changed in vad.rs:112"),
+                R(2, "you", "why does the onset test fail"),
+                R(9, "theuth", "✓ Reminder “test” set for 18:00; C:\\Develop\\theuth\\build removed (1.2 GB freed)."),
+                R(14, "you", "create a reminder to test at six and clean the old build folder"),
+                R(47, "theuth", "Three agents are working: 141 R4 is gating, 153-B2 waits for review, the SRE desk is idle."),
+                R(65, "theuth", "build-B is back online; the package of main 253f1ada is building (about an hour)."),
+                R(130, "you", "what is building on build-B"),
+            });
+            await Hold(p, "card-list");
+            await Task.Delay(8000); // a longer look for a desktop screenshot of the list
+            p.ProbePick(2);
+            await Hold(p, "card-list-picked");
+            p.EndProbe();
+            return;
+        }
         await Hold(p, $"card-{which}");
         await Task.Delay(4000);
         p.EndProbe();

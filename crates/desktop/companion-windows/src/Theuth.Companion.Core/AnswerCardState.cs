@@ -287,7 +287,7 @@ public sealed class AnswerCardState
         {
             var x = Current;
             var reply = new AskReply(Session ?? "") { Text = x.Answer, Finished = x.Finished, Error = Phase == CardPhase.Failed ? x.Error : null };
-            return reply.FirstTwoLines;
+            return AnswerMarkdown.Plain(reply.FirstTwoLines);
         }
     }
 
@@ -305,6 +305,76 @@ public sealed class AnswerCardState
     {
         if (thread.Count == 0) thread.Add(x);
         else thread[^1] = x;
+    }
+}
+
+/// <summary>
+/// 153 §12.2 (R1, the Mac's ⌘L): the card's history list — the last <see cref="Max"/> answers from the Ask receipts (24 h), null while
+/// closed. Ctrl+L toggles card ↔ list, Esc closes it first, J/K (↑/↓) move the selection, Enter or a click picks a row (the card then
+/// shows that answer). Pure; the window renders it.
+/// </summary>
+public sealed class AnswerCardList
+{
+    public const int Max = 20;
+
+    /// <summary>The empty list's line (the Mac's "nothing in the last 24 h").</summary>
+    public const string EmptyLine = "nothing in the last 24 h";
+
+    public const string Title = "Last answers";
+
+    /// <summary>The rows, newest first; null = the list is closed.</summary>
+    public IReadOnlyList<Receipt>? Rows { get; private set; }
+
+    public bool Open => Rows is not null;
+
+    public int Selected { get; private set; }
+
+    /// <summary>Ctrl+L: open with the newest <see cref="Max"/> receipts, or close; true when the list is now open.</summary>
+    public bool Toggle(IEnumerable<Receipt> source)
+    {
+        if (Open)
+        {
+            Close();
+            return false;
+        }
+        Rows = source.OrderByDescending(r => r.At).Take(Max).ToList();
+        Selected = 0;
+        return true;
+    }
+
+    public void Close()
+    {
+        Rows = null;
+        Selected = 0;
+    }
+
+    /// <summary>Esc: closes an open list (true = consumed); a closed list leaves Esc to the card.</summary>
+    public bool Escape()
+    {
+        if (!Open) return false;
+        Close();
+        return true;
+    }
+
+    /// <summary>J/K (↑/↓): move the selection within the rows; false at an end or with no rows.</summary>
+    public bool Move(int delta)
+    {
+        if (Rows is not { Count: > 0 } rows) return false;
+        int next = Math.Clamp(Selected + delta, 0, rows.Count - 1);
+        if (next == Selected) return false;
+        Selected = next;
+        return true;
+    }
+
+    /// <summary>Enter or a click: the picked receipt (the list closes), or null for no row.</summary>
+    public Receipt? Pick(int? index = null)
+    {
+        if (Rows is not { } rows) return null;
+        int i = index ?? Selected;
+        if (i < 0 || i >= rows.Count) return null;
+        var row = rows[i];
+        Close();
+        return row;
     }
 }
 
@@ -401,6 +471,17 @@ public static class AnswerMarkdown
         Flush();
         return blocks;
     }
+
+    /// <summary>The text without its marks (`code`, **bold**, *italic*, [text](url) → text) — the collapsed card's plain two lines.</summary>
+    public static string Plain(string? markdown) => string.Concat(Inline(markdown ?? "").Select(i => i switch
+    {
+        MdInline.Text t => t.Value,
+        MdInline.Bold b => b.Value,
+        MdInline.Italic it => it.Value,
+        MdInline.Code c => c.Value,
+        MdInline.Link l => l.Value,
+        _ => "",
+    }));
 
     public static IReadOnlyList<MdInline> Inline(string s)
     {
