@@ -18,7 +18,7 @@ public sealed class KeyTable149Tests
         Assert.Equal("P", t.ChordFor(KeyAction.AskPoint)!.Symbol);
         Assert.Equal(new[] { "J", "K", "Enter", "Ctrl+O", "V", "X", "Esc" },
             t.BindingsIn(KeyScope.Agents).Select(b => b.Chord!.Symbol));
-        Assert.Equal(new[] { "M", "Ctrl+Shift+M", "E", "D", "Enter", "Esc" },
+        Assert.Equal(new[] { "M", "Ctrl+M", "E", "D", "Enter", "Esc" },
             t.BindingsIn(KeyScope.Island).Select(b => b.Chord!.Symbol));
         Assert.Equal(new[] { "Esc" }, t.BindingsIn(KeyScope.PointAndSay).Select(b => b.Chord!.Symbol));
         Assert.True(t.IsUniquePerScope);
@@ -125,18 +125,44 @@ public sealed class AttentionContext149Tests
 public sealed class HarnessIcon149Tests
 {
     [Theory]
-    [InlineData(null, "theuth.png")]
-    [InlineData("", "theuth.png")]
-    [InlineData("omp", "omp.png")]
-    [InlineData("opencode", "opencode.png")]
-    [InlineData("opencode2", "opencode.png")]
-    [InlineData("Claude-Code", "claude.png")]
-    [InlineData("codex", "codex.png")]
-    [InlineData("gemini", "unknown.png")]
-    public void Lookup(string? kind, string file)
+    [InlineData(null, "theuth")]
+    [InlineData("", "theuth")]
+    [InlineData("omp", "omp")]
+    [InlineData("opencode", "opencode")]
+    [InlineData("opencode2", "opencode")]
+    [InlineData("Claude-Code", "claude")]
+    [InlineData("codex", "codex")]
+    [InlineData("gemini", "unknown")]
+    public void Lookup(string? kind, string family)
     {
-        Assert.Equal(file, HarnessIcon.For(kind));
-        Assert.Equal(file.Replace(".png", "-24.png"), HarnessIcon.For(kind, 24));
-        Assert.Equal(file.Replace(".png", "-24.png"), HarnessIcon.For(kind, 17));
+        Assert.Equal(family, HarnessIcon.Family(kind));
+        Assert.Equal(family + "-24.png", HarnessIcon.For(kind));
+        Assert.Equal(family + "-16.png", HarnessIcon.For(kind, 16));
+        Assert.Equal(family + "-24.png", HarnessIcon.For(kind, 17));
+    }
+
+    /// <summary>Every family × size the lookup can name exists in the shared asset set the csproj links (149 C).</summary>
+    [Fact]
+    public void EveryNamedFileShips()
+    {
+        var dir = FindAssets();
+        Assert.NotNull(dir);
+        foreach (var family in new[] { HarnessIcon.Omp, HarnessIcon.OpenCode, HarnessIcon.Claude, HarnessIcon.Codex, HarnessIcon.Theuth, HarnessIcon.Unknown })
+        {
+            foreach (var size in HarnessIcon.Sizes) Assert.True(File.Exists(Path.Combine(dir!, HarnessIcon.For(family, size))), HarnessIcon.For(family, size));
+        }
+    }
+
+    private static string? FindAssets()
+    {
+        // tests/…/bin/Debug/net10.0 → the repo's crates/desktop/companion-assets/harness
+        var d = new DirectoryInfo(AppContext.BaseDirectory);
+        while (d is not null)
+        {
+            var candidate = Path.Combine(d.FullName, "crates", "desktop", "companion-assets", "harness");
+            if (Directory.Exists(candidate)) return candidate;
+            d = d.Parent;
+        }
+        return null;
     }
 }
