@@ -59,7 +59,7 @@ struct SettingsView: View {
             keys.tabItem { Label("Keys", systemImage: "keyboard") }.tag("keys")
             notifications.tabItem { Label("Notifications", systemImage: "bell") }.tag("notifications")
             engine.tabItem { Label("Engine", systemImage: "network") }.tag("engine")
-            // 149 W3: island.tabItem { Label("Island", systemImage: "rectangle.topthird.inset.filled") }.tag("island")
+            IslandSettingsTab().tabItem { Label("Island", systemImage: "rectangle.topthird.inset.filled") }.tag("island") // 149 W3
             // 149 W2: voiceKey.tabItem { Label("Voice key", systemImage: "waveform") }.tag("voiceKey")
         }
         .padding(16)
