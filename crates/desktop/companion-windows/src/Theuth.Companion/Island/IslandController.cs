@@ -224,6 +224,28 @@ internal sealed class IslandController : IDisposable
         if (a == KeyAction.MeetingPtt && snapshot.Meeting is not null) Fire(store.MeetingPttAsync(false), "meeting_ptt(false)");
     }
 
+    /// <summary>
+    /// <c>--island-fixture</c> (149 §10 probes; build-B cannot run a meeting without audio): a recording meeting with two topics,
+    /// an Auto brief and two transcript lines fed through the reducer exactly as the stream would, so the island shows (D10),
+    /// opens, drags and snaps back for the gate. Nothing is sent to the engine; the actions log "fixture" and no-op.
+    /// </summary>
+    private void Fixture()
+    {
+        var now = DateTimeOffset.Now;
+        fixture = true;
+        var s = MeetingReducer.Reduce(MeetingSnapshot.Empty, new MeetingChange.Started("fixture-meeting", "fixture-session"), now - TimeSpan.FromSeconds(751));
+        s = MeetingReducer.Reduce(s, new MeetingChange.TopicAdded("fixture-meeting", new MeetingTopic("t1", "PROJ-12", 600_000)), now);
+        s = MeetingReducer.Reduce(s, new MeetingChange.TopicAdded("fixture-meeting", new MeetingTopic("t2", "Standup", 700_000)), now);
+        s = MeetingReducer.Reduce(s, new MeetingChange.Brief("fixture-meeting", new MeetingBrief("b1", "t1", "PROJ-12 — the ingest retry",
+            new[] { "Opened Tuesday by Sky; retries the ingest job three times before it files an incident", "Blocked on the schema change in PR #418", "Owner: ops desk" }, "Auto", 650_000)), now);
+        s = MeetingReducer.Reduce(s, new MeetingChange.Utterance("fixture-meeting", "System", 740_000, "so the ingest retry is still failing on the schema", false, true, "s2"), now);
+        s = MeetingReducer.Reduce(s, new MeetingChange.Utterance("fixture-meeting", "Mic", 745_000, "yes, PR 418 lands tomorrow", false, true, null), now);
+        Apply(s, new MeetingChange.TopicAdded("fixture-meeting", new MeetingTopic("t2", "Standup", 700_000)));
+        Log.Write("island: fixture meeting applied (recording 12:31, 2 topics, 1 brief, 2 lines)");
+    }
+
+    private bool fixture;
+
     public void Dispose()
     {
         if (disposed) return;
