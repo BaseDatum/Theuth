@@ -240,7 +240,7 @@ internal sealed partial class RailWindow : ToolWindow
             var count = new TextBlock
             {
                 Text = $"{rail.NeedsYouCount}", FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = Theme.Brush(NativeLook.Accent, theme),
+                Foreground = Theme.Brush(NativeLook.AccentText, theme), // R1: the count is text
                 HorizontalAlignment = HorizontalAlignment.Center,
             };
             AutomationProperties.SetAutomationId(count, "needs-you-count");

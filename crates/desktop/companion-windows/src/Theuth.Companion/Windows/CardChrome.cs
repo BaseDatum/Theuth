@@ -149,7 +149,7 @@ internal static class CardChrome
         grid.Children.Add(badge);
         var label = new TextBlock { FontSize = Body, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
         label.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = o.Label, Foreground = Theme.Brush(NativeLook.TextPrimary, theme) });
-        if (rec) label.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = " (Recommended)", Foreground = Theme.Brush(NativeLook.Accent, theme) });
+        if (rec) label.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = " (Recommended)", Foreground = Theme.Brush(NativeLook.AccentText, theme) });
         if (o.Detail is { } d) label.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = $" — {d}", FontSize = Meta, Foreground = Theme.Brush(NativeLook.TextSecondary, theme) });
         Grid.SetColumn(label, 1);
         grid.Children.Add(label);

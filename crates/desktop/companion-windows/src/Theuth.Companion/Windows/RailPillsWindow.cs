@@ -295,7 +295,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
             var n = pills.InboxCount;
             var count = new TextBlock
             {
-                Text = n > 99 ? "99+" : $"{n}", FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(NativeLook.Accent, theme),
+                Text = n > 99 ? "99+" : $"{n}", FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(NativeLook.AccentText, theme), // R1: the count is text
                 HorizontalAlignment = HorizontalAlignment.Center, TextAlignment = TextAlignment.Center,
             };
             AutomationProperties.SetAutomationId(count, "needs-you-count");

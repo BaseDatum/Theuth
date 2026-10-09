@@ -61,6 +61,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     private Brush ink2 => Theme.Brush(NativeLook.TextSecondary, root.ActualTheme);
     private Brush sand => Theme.Brush(NativeLook.TextTertiary, root.ActualTheme);
     private Brush accent => Theme.Brush(NativeLook.Accent, root.ActualTheme);
+    private Brush accentText => Theme.Brush(NativeLook.AccentText, root.ActualTheme); // R1: accent-coloured text/glyphs
     private Brush critical => Theme.Brush(NativeLook.Critical, root.ActualTheme);
     private Brush success => Theme.Brush(NativeLook.Success, root.ActualTheme);
     private Brush rule => Theme.Brush(NativeLook.Divider, root.ActualTheme);
@@ -389,7 +390,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         field.IsReadOnly = model.Live;
         field.Foreground = model.Live && model.Text.Length == 0 ? sand : ink;
         AutomationProperties.SetName(field, model.Live ? $"Dictating: {model.FieldText}" : "Ask theuth");
-        mic.Foreground = model.Recording ? accent : ink2; // recording = needs you = accent
+        mic.Foreground = model.Recording ? accentText : ink2; // recording = needs you = accent (text resource)
         var scale = model.Recording ? 1 + Math.Min(1, model.Level) * 0.5 : 1;
         micScale.ScaleX = scale;
         micScale.ScaleY = scale;
@@ -420,7 +421,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         }
         holdKey.Text = model.HoldHint;
         status.Text = model.Status ?? "";
-        status.Foreground = model.Recording ? accent : sand;
+        status.Foreground = model.Recording ? accentText : sand;
         privacyLink.Visibility = model.Status == VoiceRecorder.BlockedStatus ? Visibility.Visible : Visibility.Collapsed;
         RenderReceipt();
         Fit();

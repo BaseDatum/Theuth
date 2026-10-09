@@ -20,6 +20,10 @@ public static class NativeLook
     public const string AccentSecondary = "AccentFillColorSecondaryBrush";
     public const string AccentTertiary = "AccentFillColorTertiaryBrush";
     public const string OnAccent = "TextOnAccentFillColorPrimaryBrush";
+    /// <summary>Accent-coloured TEXT (not a fill): WinUI's text variants (Light3/Light2 in dark, Dark2/Dark1 in light) keep it readable.</summary>
+    public const string AccentText = "AccentTextFillColorPrimaryBrush";
+    public const string AccentTextSecondary = "AccentTextFillColorSecondaryBrush";
+    public const string AccentTextTertiary = "AccentTextFillColorTertiaryBrush";
     public const string Success = "SystemFillColorSuccessBrush";
     public const string Critical = "SystemFillColorCriticalBrush";
     public const string Caution = "SystemFillColorCautionBrush";

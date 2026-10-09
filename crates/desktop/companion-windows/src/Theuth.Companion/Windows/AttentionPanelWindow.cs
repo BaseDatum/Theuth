@@ -556,7 +556,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         };
         titleStack.Children.Add(nameRow);
         bool gold = store.Rail.NeedsYouCount > 0;
-        var glance = new TextBlock { Text = store.Panel.Headline, FontSize = 12, Foreground = Theme.Brush(gold ? NativeLook.Accent : NativeLook.TextSecondary, theme), TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap };
+        var glance = new TextBlock { Text = store.Panel.Headline, FontSize = 12, Foreground = Theme.Brush(gold ? NativeLook.AccentText : NativeLook.TextSecondary, theme), TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap }; // R1: accent TEXT resource
         titleStack.Children.Add(glance);
         AutomationProperties.SetAutomationId(titleStack, "panel-headline");
         AutomationProperties.SetName(titleStack, store.Panel.Position.Length == 0 ? store.Panel.Headline : $"{anatomy?.Header.Spoken ?? store.Panel.Headline}, {store.Panel.Headline}");
@@ -695,7 +695,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
                     EndCardTalk();
                 }), true);
                 mic.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) => EndCardTalk()), true);
-                if (talkBusy && mic.Content is StackPanel sp && sp.Children[0] is FontIcon fi) fi.Foreground = Theme.Brush(NativeLook.Accent, theme); // recording = accent
+                if (talkBusy && mic.Content is StackPanel sp && sp.Children[0] is FontIcon fi) fi.Foreground = Theme.Brush(NativeLook.AccentText, theme); // recording = accent (a glyph is text)
             }
             Grid.SetColumn(mic, 2);
             row.Children.Add(mic);
@@ -769,7 +769,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         grid.Children.Add(label);
         if (rec)
         {
-            var r = Small("recommended · Enter", NativeLook.Accent, theme, default, 12);
+            var r = Small("recommended · Enter", NativeLook.AccentText, theme, default, 12);
             r.VerticalAlignment = VerticalAlignment.Center;
             Grid.SetColumn(r, 2);
             grid.Children.Add(r);

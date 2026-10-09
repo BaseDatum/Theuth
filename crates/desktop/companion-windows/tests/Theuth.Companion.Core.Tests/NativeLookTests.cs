@@ -54,10 +54,21 @@ public sealed class NativeLookTests
     {
         // Every brush is a resource key the system resolves, never a colour literal.
         foreach (var t in Enum.GetValues<StatusTone>()) Assert.DoesNotContain("#", NativeLook.Brush(t));
-        foreach (var key in new[] { NativeLook.Accent, NativeLook.TextPrimary, NativeLook.TextSecondary, NativeLook.TextTertiary, NativeLook.CardBackground, NativeLook.CardStroke, NativeLook.Divider, NativeLook.ControlFill, NativeLook.SolidBackgroundBase, NativeLook.AcrylicInApp })
+        foreach (var key in new[] { NativeLook.Accent, NativeLook.AccentText, NativeLook.AccentTextSecondary, NativeLook.OnAccent, NativeLook.TextPrimary, NativeLook.TextSecondary, NativeLook.TextTertiary, NativeLook.CardBackground, NativeLook.CardStroke, NativeLook.Divider, NativeLook.ControlFill, NativeLook.SolidBackgroundBase, NativeLook.AcrylicInApp })
         {
             Assert.Matches("^[A-Za-z]+Brush$", key);
         }
+    }
+
+    [Fact]
+    public void AccentTextIsATextResourceNotAFill()
+    {
+        // R1: accent-coloured text uses the AccentText* resources (readable Light3/Light2 in dark); fills keep AccentFillColorDefault.
+        Assert.StartsWith("AccentTextFillColor", NativeLook.AccentText);
+        Assert.StartsWith("AccentTextFillColor", NativeLook.AccentTextSecondary);
+        Assert.StartsWith("AccentFillColor", NativeLook.Accent);
+        Assert.Equal("TextOnAccentFillColorPrimaryBrush", NativeLook.OnAccent);
+        Assert.NotEqual(NativeLook.AccentText, NativeLook.Accent);
     }
 
     [Fact]

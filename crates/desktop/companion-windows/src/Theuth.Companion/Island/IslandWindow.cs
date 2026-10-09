@@ -562,8 +562,8 @@ internal sealed partial class IslandWindow : ToolWindow
     private FrameworkElement Unseen(int n)
     {
         var row = Row(2);
-        row.Children.Add(Theme.Icon(NativeLook.Glyph.Up, root.ActualTheme, NativeLook.Accent, 12));
-        row.Children.Add(Text($"{n} new", 11.5, NativeLook.Accent));
+        row.Children.Add(Theme.Icon(NativeLook.Glyph.Up, root.ActualTheme, NativeLook.AccentText, 12));
+        row.Children.Add(Text($"{n} new", 11.5, NativeLook.AccentText));
         return row;
     }
 
@@ -597,7 +597,7 @@ internal sealed partial class IslandWindow : ToolWindow
             ? last.Disposition == "skip" ? "skip" : last.Disposition == "brief" ? "brief" : "to model" : null;
         var row = Row(4);
         if (effective != "off") row.Children.Add(Text(effective.ToUpperInvariant(), 10, NativeLook.TextTertiary));
-        if (verdict is not null) row.Children.Add(Text(verdict, 10.5, s.Deciding is not null ? NativeLook.Accent : NativeLook.TextSecondary));
+        if (verdict is not null) row.Children.Add(Text(verdict, 10.5, s.Deciding is not null ? NativeLook.AccentText : NativeLook.TextSecondary));
         var chip = new Border
         {
             Background = Theme.Brush(NativeLook.ControlFill, root.ActualTheme),
@@ -632,8 +632,8 @@ internal sealed partial class IslandWindow : ToolWindow
         row.Children.Add(clock);
         if (s.State is "Paused") row.Children.Add(Text("paused", 12, NativeLook.TextSecondary));
         else if (s.State is "Starting" or "Stopping") row.Children.Add(Text(s.State.ToLowerInvariant() + "…", 12, NativeLook.TextSecondary));
-        if (s.Listening) row.Children.Add(Text("listening…", 12, NativeLook.Accent));
-        else if (s.ApprovalWaiting) row.Children.Add(Text("approval waiting", 12, NativeLook.Accent));
+        if (s.Listening) row.Children.Add(Text("listening…", 12, NativeLook.AccentText));
+        else if (s.ApprovalWaiting) row.Children.Add(Text("approval waiting", 12, NativeLook.AccentText));
         else if (s.Activity is { } a) row.Children.Add(Text(a, 12, NativeLook.TextSecondary));
         var spacer = new Border { Width = 1 };
         row.Children.Add(spacer);
@@ -832,7 +832,7 @@ internal sealed partial class IslandWindow : ToolWindow
             card.Child = inner;
             pane.Children.Add(card);
         }
-        if (v.Hint is { } h) pane.Children.Add(Text(h, 12, NativeLook.Accent));
+        if (v.Hint is { } h) pane.Children.Add(Text(h, 12, NativeLook.AccentText));
         body.Children.Add(pane);
     }
 
@@ -843,7 +843,7 @@ internal sealed partial class IslandWindow : ToolWindow
         CornerRadius = new CornerRadius(4),
         Padding = new Thickness(6, 0, 6, 1),
         VerticalAlignment = VerticalAlignment.Center,
-        Child = Text(text, 11, key),
+        Child = Text(text, 11, key == NativeLook.Accent ? NativeLook.AccentText : key), // R1: accent TEXT resource inside an accent-outlined badge
     };
 
     /// <summary>The degradation badges of <c>Island.tsx:37-47</c>, by word.</summary>
