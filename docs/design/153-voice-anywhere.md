@@ -1303,3 +1303,13 @@ rewrite panel reuse it).
   make the island open while a meeting is live with no hover model. §12's "pointer-screen presentation" and §2.3's "card and pill already
   follow the pointer" must be read against that landing: wave C presents the card/pill in the island area of the display under the pointer
   **at press** (per-display island memory, 149 D3) and does not move it mid-gesture. Q9 below records the fork.
+- 2026-10-09 wave A as built — see `153-as-built-A.md`. Section-level amendments: §5.4 packaged entries match on the normalised form only
+  (fuzzy at `ACCEPT_NEW` over 40k names rewrote prose: and → wand, plan → Plane; fuzzy kept for user 0.70 / learned 0.85); §5.5 user layer
+  in `<data_dir>/voice/dictionary.json`, not `voice.db`; §6.5 `dictations.utterance_ends` (per-utterance byte offsets in the `.pcm16`
+  file); §6.3 `Store::correction` returns `Suggestion`s with ids (`occurrences`, `surface`, `has_audio`), `Store::answer` takes
+  `&mut Dictionary` and writes the learned entry / negative itself; §7.3 `SETTLE_MS` / `SILENCE_MS` live in `voice::shape`; §8.2 re-arm
+  every 500 ms for 5 s (not 300 ms × 3); §8.3 readiness / silent-device gate is mic-only; §8.4 resampler priming skipped; §8.6 duck/pause
+  deferred to the companion; §9 `polish(session: None)` is charged to theuth's desk, polish reply length rule 0.3×–2× + 8 chars; §14.1
+  actor message is `AnswerSuggestion`, `VoiceStatus` ships without a `dictionary` field, `Shaper` gained builders
+  `with_surface` / `with_commands` / `with_mentions` and `shape_with(&mut EndParser, …)` (the parser is the actor's, one per utterance);
+  §4.2 gates read TLD / extension lists from the packaged `Path` pairs on top of the built-in lists (the talon lists lack `dev`, `io`, `rs`).
