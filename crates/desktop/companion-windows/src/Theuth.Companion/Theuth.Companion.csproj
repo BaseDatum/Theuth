@@ -54,6 +54,14 @@
     <PackageReference Include="NAudio.Wasapi" Version="$(NAudioWasapiVersion)" />
   </ItemGroup>
 
+
+  <!-- 149 WW1 (D18, §9 Windows): the shared harness icon set (crates/desktop/companion-assets/harness, drawn by the 149 contract C)
+       linked in beside the exe under Assets\harness\ — Content, so `dotnet publish` (build.ps1) keeps it; the glob is empty until
+       the assets land, which is harmless. Core.HarnessIcon maps a harness kind to a file name. -->
+  <ItemGroup>
+    <Content Include="..\..\..\companion-assets\harness\*.png" Link="Assets\harness\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Theuth.Companion.Rpc\Theuth.Companion.Rpc.csproj" />
     <ProjectReference Include="..\Theuth.Companion.Core\Theuth.Companion.Core.csproj" />

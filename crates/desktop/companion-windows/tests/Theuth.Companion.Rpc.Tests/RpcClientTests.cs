@@ -151,6 +151,7 @@ internal sealed class Recorder
 
 /// <summary>The JSON-RPC client the Swift companion only verified live: upgrade headers, positional params, the
 /// subscription, errors, loss + redial + resubscribe, close.</summary>
+[Collection("loopback engine")] // 149 WW1: serialised with RpcClient149Tests (two Kestrel hosts in parallel hung the test host)
 public sealed class RpcClientTests
 {
     private static string Params(JsonElement request) => request.GetProperty("params").GetRawText();

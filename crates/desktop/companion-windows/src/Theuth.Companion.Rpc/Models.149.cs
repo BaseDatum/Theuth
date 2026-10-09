@@ -79,16 +79,20 @@ public sealed record PointerSample
 {
     public PointerSample() { }
 
-    public PointerSample(uint tMs, float x, float y)
+    public PointerSample(uint tMs, float x, float y, bool pen = true)
     {
         TMs = tMs;
         X = x;
         Y = y;
+        Pen = pen;
     }
 
     [JsonPropertyName("t_ms")] public uint TMs { get; init; }
     public float X { get; init; }
     public float Y { get; init; }
+
+    /// <summary>The pointer was drawing (left button held in pen mode); the engine defaults absent to true.</summary>
+    public bool Pen { get; init; } = true;
 }
 
 /// <summary><c>screen_context(req)</c>: the trail, the overlay colour, how far back the engine looks, and whether to read the accessibility tree.</summary>
@@ -197,13 +201,48 @@ public sealed class DegradationConverter : JsonConverter<Degradation>
     }
 }
 
-/// <summary><c>meeting::Support</c> (<c>#[serde(tag = "kind", content = "reason")]</c>): <c>Full</c> · <c>Partial(reason)</c> · <c>None(reason)</c>.</summary>
-public sealed record MeetingSupport
+/// <summary>
+/// <c>meeting::Support</c> (<c>#[serde(tag = "kind", content = "reason")]</c>): <c>{"kind":"Full"}</c> · <c>{"kind":"Partial","reason":…}</c> ·
+/// <c>{"kind":"None","reason":…}</c>. Also read as a bare word (the shared fixtures write <c>"Full"</c>) and as null/absent (<see cref="Kind"/> "",
+/// an engine that did not say — the Swift <c>MeetingSupport</c> tolerates the same shapes).
+/// </summary>
+[JsonConverter(typeof(MeetingSupportConverter))]
+public readonly record struct MeetingSupport(string Kind, string? Reason = null)
 {
-    public string Kind { get; init; } = "";
-    public string? Reason { get; init; }
+    public static MeetingSupport Full => new("Full");
+    public static MeetingSupport Unknown => new("");
 
     public bool IsFull => Kind == "Full";
+
+    /// <summary><c>None</c> — the host cannot record meetings at all; <see cref="Reason"/> says why.</summary>
+    public bool IsUnsupported => Kind == "None";
+}
+
+public sealed class MeetingSupportConverter : JsonConverter<MeetingSupport>
+{
+    public override MeetingSupport Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var doc = JsonDocument.ParseValue(ref reader);
+        var e = doc.RootElement;
+        if (e.ValueKind == JsonValueKind.String) return new MeetingSupport(e.GetString() ?? "");
+        if (e.ValueKind == JsonValueKind.Object)
+        {
+            string kind = e.TryGetProperty("kind", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() ?? "" : "";
+            string? reason = e.TryGetProperty("reason", out var r) && r.ValueKind == JsonValueKind.String ? r.GetString() : null;
+            return new MeetingSupport(kind, reason);
+        }
+        return MeetingSupport.Unknown;
+    }
+
+    public override void Write(Utf8JsonWriter writer, MeetingSupport value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("kind", value.Kind);
+        if (value.Reason is not null) writer.WriteString("reason", value.Reason);
+        writer.WriteEndObject();
+    }
+
+    public override bool HandleNull => true;
 }
 
 /// <summary>One auto-noticed subject (<c>meeting::Topic</c>). <c>Source</c> and the <c>cached</c> id are the oracle's (<c>Auto</c> · <c>Tap</c> · <c>Request</c> · <c>Deeper</c> · <c>Typed</c> · <c>Cache</c> · <c>Oracle</c>).</summary>
@@ -255,7 +294,7 @@ public sealed record MeetingStatus
     public string? Cursor { get; init; }
     public ValueList<Topic> Topics { get; init; } = new();
     public bool ApprovalWaiting { get; init; }
-    public MeetingSupport Supported { get; init; } = new();
+    public MeetingSupport Supported { get; init; } = MeetingSupport.Unknown;
     public string Accelerator { get; init; } = "";
 
     public bool IsLive => State.IsLive;
