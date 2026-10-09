@@ -38,7 +38,13 @@ appears), `native::timeout_kills` (`/bin/sleep 10` with 1 s), `native::stdin_is_
 `tools::all_registers_computer_tools_then_native_with_screenshot_read_only`, `tools::prompt_block_mentions_command_marker`.
 
 ## Gates
-(see DONE message)
+- `build-lock mbx clippy -p computer -p tools --tests` → `Finished dev profile … 18.02s`, 0 warnings.
+- `build-lock mbx test -p computer --no-run` → exit 0; bare `MBX_SCHEDULER_TESTS=0 mbx test -p computer --lib` →
+  `test result: ok. 63 passed; 0 failed; 0 ignored` (14 of them the native/tools tests above, incl. the live `osascript` smoke).
+- `build-lock mbx check -p computer -p tools -p theuth --tests` → **fails upstream** in `crates/voice/src/dictation.rs:943,988`
+  (`suggest` takes `Vec<Correction>`, `history::answer` wants `&mut Dictionary`; last touched by `18d8eeef 153-A4`, not by this branch).
+  `computer` and `tools` do not depend on `voice`; the `theuth` row in `first_run` is a one-tuple addition mirroring `decide.md`
+  and is unverified by compile until `voice` builds again.
 
 ## Hand-offs
 - **C1 (command card):** `purpose` is a top-level key in `ToolCallStarted.arguments` for every tool call the model makes under the profile —
