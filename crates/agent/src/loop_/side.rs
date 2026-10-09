@@ -151,7 +151,7 @@ impl Side {
             Ok(end) => (CallStatus::Settled, end.captured_usage.as_ref()),
             Err((status, _)) => (*status, None),
         };
-        reserved.settle(status, usage, &current.model).await;
+        let priced = reserved.settle(status, usage, &current.model).await;
         let end = outcome.map_err(|(_, e)| e)?;
         let tokens = |n: Option<i32>| n.and_then(|n| u32::try_from(n).ok());
         Ok(SideReply {
@@ -164,6 +164,8 @@ impl Side {
                     .and_then(|u| u.completion_tokens),
             ),
             latency,
+            cost_nanos: priced.filter(|m| m.currency == "USD").map(|m| m.nanos),
+            request_id: Some(request_id),
         })
     }
 }

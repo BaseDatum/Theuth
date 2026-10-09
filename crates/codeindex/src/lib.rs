@@ -225,16 +225,41 @@ impl Message<Locate> for CodeindexActor {
 
 /// The lens messages (73 §5.2) and the map messages (147 §10.3): store reads,
 /// no walk; `Touch` writes, `Generate`/`Cancel` drive the one job per root.
+/// The work runs on its own task so a panic in it is an `Err` reply, not a
+/// stopped actor (kameo's default `on_panic` would end every later `code_*`).
 macro_rules! lens_handler {
     ($($msg:ty => $reply:ty, $f:path;)*) => {$(
         impl Message<$msg> for CodeindexActor {
             type Reply = Result<$reply, String>;
 
             async fn handle(&mut self, m: $msg, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-                $f(&self.ix, m).await.map_err(|e| format!("{e:#}"))
+                let ix = self.ix.clone();
+                match tokio::spawn(async move { $f(&ix, m).await }).await {
+                    Ok(r) => r.map_err(|e| format!("{e:#}")),
+                    Err(join) => Err(panic_message(stringify!($msg), join)),
+                }
             }
         }
     )*};
+}
+
+/// The `Err` reply for a handler task that panicked (or was cancelled).
+fn panic_message(msg: &str, join: tokio::task::JoinError) -> String {
+    if !join.is_panic() {
+        return format!("{msg}: handler task cancelled");
+    }
+    format!(
+        "{msg}: handler panicked: {}",
+        panic_text(&*join.into_panic())
+    )
+}
+
+/// The message of a panic payload (`panic!("…")` is a `String` or a `&str`).
+pub(crate) fn panic_text(p: &(dyn std::any::Any + Send)) -> &str {
+    p.downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| p.downcast_ref::<&str>().copied())
+        .unwrap_or("non-string panic payload")
 }
 lens_handler! {
     Here => HereLens, lens::here;
@@ -337,5 +362,30 @@ mod tests {
             d.languages,
             ["rust", "typescript", "javascript", "python", "go"]
         );
+    }
+
+    #[derive(Clone, Debug)]
+    struct Boom;
+    async fn boom(_: &Codeindex, _: Boom) -> anyhow::Result<()> {
+        panic!("boom at {}", "skeleton.rs:310")
+    }
+    lens_handler! { Boom => (), boom; }
+
+    /// A panicking handler is an `Err` reply; the actor keeps serving.
+    #[tokio::test]
+    async fn handler_panic_does_not_stop_the_actor() {
+        let data = std::env::temp_dir().join(format!("theuth-actor-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&data).unwrap();
+        let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data).unwrap());
+        let actor = CodeindexActor::spawn(CodeindexActor::new(ix.clone()));
+        let err = actor.ask(Boom).await.unwrap_err();
+        let kameo::error::SendError::HandlerError(text) = err else {
+            panic!("expected the handler's Err, got {err:?}");
+        };
+        assert_eq!(text, "Boom: handler panicked: boom at skeleton.rs:310");
+        assert!(actor.is_alive());
+        let got = actor.ask(Handle).await.unwrap();
+        assert!(Arc::ptr_eq(&got, &ix));
+        let _ = std::fs::remove_dir_all(&data);
     }
 }
