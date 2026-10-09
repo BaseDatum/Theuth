@@ -10,7 +10,7 @@ struct VoiceKeyTab: View {
     @AppStorage(VoiceKeySettings.includeScreenKey, store: Settings.defaults) private var includeScreen = true
     @AppStorage(VoiceKeySettings.accessibilityKey, store: Settings.defaults) private var accessibility = true
     @AppStorage(VoiceKeySettings.annotateMouseKey, store: Settings.defaults) private var annotateMouse = false
-    @AppStorage(VoiceKeySettings.speakKey, store: Settings.defaults) private var speak = true
+    @AppStorage(SpokenReplies.voiceKeyKey, store: Settings.defaults) private var speak = false // 149s S1: opt-in
 
     var body: some View {
         Form {
@@ -29,7 +29,7 @@ struct VoiceKeyTab: View {
             .pickerStyle(.segmented).labelsHidden()
             Divider()
             Toggle("Speak the answer", isOn: $speak)
-            caption("The desk's reply is read aloud by the engine's voice and played here; ⎋ on the answer card stops it.")
+            caption("Off unless you turn it on. The desk's reply is read aloud by the engine's voice and played here; ⎋ on the answer card or a click on the speaker stops it. The same switch is in Rail › Spoken replies.")
         }
         .padding(.trailing, 8)
     }

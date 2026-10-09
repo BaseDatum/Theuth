@@ -35,8 +35,8 @@ internal sealed class PointController : IDisposable
     private readonly PointerSampler sampler;
     private readonly VoiceRecorder recorder;
     private readonly AskDictation dictation = new();
-    /// <summary>149 R3: plays the desk's client-sink speech (SpeechStarted/Audio/Finished for <see cref="deskSession"/>).</summary>
-    private readonly SpeechPlayer speech;
+    /// <summary>Spoken replies (2026-10-09): the ONE shared speaker — the voice key's answer and Ask replies go through it (<see cref="Voice.Speaker"/>).</summary>
+    private readonly Voice.Speaker speech;
     private readonly DateTimeOffset epoch = DateTimeOffset.Now;
     private readonly DispatcherQueueTimer tick;
     private readonly DispatcherQueueTimer hintTimer;
@@ -63,9 +63,10 @@ internal sealed class PointController : IDisposable
     private TaskCompletionSource<string>? finalText;
     private bool disposed;
 
-    public PointController(Store store, DispatcherQueue dispatcher, IslandController island, Hotkeys hotkeys, Func<PointSettings> settings)
+    public PointController(Store store, DispatcherQueue dispatcher, IslandController island, Hotkeys hotkeys, Func<PointSettings> settings, Voice.Speaker speaker)
     {
         this.store = store;
+        speech = speaker;
         this.dispatcher = dispatcher;
         this.island = island;
         this.hotkeys = hotkeys;
@@ -98,7 +99,6 @@ internal sealed class PointController : IDisposable
         island.Window.Hotkey += id => { if (id is EscHotkeyId or EscHeldHotkeyId) Step(new PointEvent.Esc()); }; // plain Esc, or Esc while the chord is still held (R3)
         store.DictationWire += OnDictationWire;
         store.PropertyChanged += OnStoreChanged;
-        speech = new SpeechPlayer(() => deskSession) { Dump = Environment.GetCommandLineArgs().Contains("--speech-dump") };
         store.EventReceived += OnEvent; // WW1's raw stream hook (Store.WW1.cs)
         Log.Write($"point-and-say: installed (voice key {VoiceKeyChord}; annotate={settings().Annotate}; screen={(settings().IncludeScreen ? "on" : "off")}; speak={(settings().Speak ? "on" : "off")})");
     }
@@ -253,8 +253,7 @@ internal sealed class PointController : IDisposable
         doneTimer.Stop();
         hintTimer.Stop();
         var s = settings();
-        _ = store.Client.CallRawAsync("stop_speaking", (object?)null).ContinueWith(_ => { }, TaskScheduler.Default);
-        speech.Stop();
+        speech.Stop(SpeechStop.NewGesture); // a new voice-key gesture cuts whatever is being read aloud (voice key or Ask)
         lastStatusSecond = uint.MaxValue;
         overlays.Reveal();
         sampler.Start(s.AnnotateMouse);
@@ -512,8 +511,7 @@ internal sealed class PointController : IDisposable
         dictationId = null;
         gesture++;
         working = false;
-        speech.Stop(); // 149 R3: Esc also cuts the spoken answer (stop_speaking goes with the next Start)
-        _ = store.Client.CallRawAsync("stop_speaking", (object?)null).ContinueWith(_ => { }, TaskScheduler.Default);
+        speech.Stop(SpeechStop.Esc); // 149 R3: Esc also cuts the spoken answer
         deskSession = null;
         if (hintText is { } h)
         {
@@ -565,7 +563,7 @@ internal sealed class PointController : IDisposable
         working = false;
         // 149 R3: the card is gone but the voice may still be mid-sentence — SpeechPlayer follows deskSession, so keep it set
         // until the utterance finishes (SpeechFinished) or the next gesture; a null here would drop the rest of the packets.
-        if (speech.Utterance is null) deskSession = null;
+        if (!speech.IsSpeaking) deskSession = null;
         island.SetVoice(null);
     }
 
@@ -576,8 +574,8 @@ internal sealed class PointController : IDisposable
         {
             var target = await DeskAsync();
             deskSession = target;
-            var id = await store.Client.CallAsync<string>("speak", target, text);
-            Log.Write($"speech-probe: speak({target}, {text.Length} chars) → {id}");
+            speech.Speak(target, text, SpeechSource.VoiceKey); // the shared speaker: SpeechStarted names the utterance, the player reports
+            Log.Write($"speech-probe: speak({target}, {text.Length} chars) through the shared speaker");
         }
         catch (Exception e) { Log.Write($"speech-probe: failed: {Why(e)}"); }
     }
@@ -594,7 +592,7 @@ internal sealed class PointController : IDisposable
     private void OnEvent(string type, byte[] json)
     {
         if (deskSession is null) return;
-        if (speech.Handle(type, json)) return; // 149 R3: the speech packets never reach the card
+        if (type.StartsWith("Speech", StringComparison.Ordinal)) return; // the shared Speaker plays these; they never reach the card
         StreamDelta d;
         try { d = StreamDelta.Decode(json); } catch (Exception) { return; }
         if (d.Session != deskSession) return;
@@ -627,13 +625,10 @@ internal sealed class PointController : IDisposable
                 break;
             case "TurnFinished":
                 working = false;
-                Log.Write($"point: desk turn finished ({d.StopReason}) — {answer.Length} chars{(settings().Speak ? ", speaking" : "")}");
+                bool speakIt = SpeakerModel.ShouldSpeak(SpeechSource.VoiceKey, settings().Speak, askSpeak: false, answer, replaying);
+                Log.Write($"point: desk turn finished ({d.StopReason}) — {answer.Length} chars{(speakIt ? ", speaking" : settings().Speak ? "" : " (Voice key › Speak the answer is off)")}");
                 toolName = null;
-                if (settings().Speak && answer.Trim().Length > 0 && !replaying)
-                {
-                    var spoken = answer;
-                    _ = store.Client.CallRawAsync("speak", deskSession, spoken).ContinueWith(t => { if (t.IsFaulted) Log.Write($"point: speak failed: {t.Exception?.GetBaseException().Message}"); }, TaskScheduler.Default);
-                }
+                if (speakIt) speech.Speak(deskSession, answer, SpeechSource.VoiceKey); // final text only, never a partial
                 RenderVoice();
                 Step(new PointEvent.PanelDone()); // Sending → Replying
                 After(doneTimer, (int)PointMachine.DoneMs); // Replying → Idle + Conceal
@@ -882,7 +877,6 @@ internal sealed class PointController : IDisposable
         store.EventReceived -= OnEvent;
         if (lease.Close() is { } id) _ = store.Dictation.StopAsync(id).ContinueWith(_ => { }, TaskScheduler.Default);
         dictationId = null;
-        speech.Dispose();
         UnregisterEsc();
         sampler.Dispose();
         recorder.Cancel();

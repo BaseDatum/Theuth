@@ -84,6 +84,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
         };
         store.PropertyChanged += OnStoreChanged;
         store.DictationChanged += OnDictation;
+        store.Speaker.Changed += Refresh; // the actions pill swaps mic ↔ speaker glyph
         poll = DispatcherQueue.CreateTimer();
         poll.Interval = TimeSpan.FromMilliseconds(40);
         poll.IsRepeating = true;
@@ -420,12 +421,19 @@ internal sealed partial class RailPillsWindow : ToolWindow
             AskClicked?.Invoke(ScreenRectOf(pill));
         };
         micSlot = new Grid { Width = 44, Height = 18 };
-        if (pills.Recording) micSlot.Children.Add(PillGlyphs.LevelBars(pills.Levels, 18, 3, theme));
+        bool speaking = store.Speaker.IsSpeaking; // spoken replies: the speaker glyph (Volume, E767) replaces the mic while a reply is read aloud
+        if (speaking) micSlot.Children.Add(Theme.Icon("\uE767", theme, NativeLook.AccentText, 12));
+        else if (pills.Recording) micSlot.Children.Add(PillGlyphs.LevelBars(pills.Levels, 18, 3, theme));
         else micSlot.Children.Add(Theme.Icon(NativeLook.Glyph.Microphone, theme, NativeLook.TextSecondary, 12));
-        var mic = Flat(micSlot, "act-mic", pills.Recording ? "Listening" : "Talk to theuth", 44, 18);
+        var mic = Flat(micSlot, speaking ? "act-speaking" : "act-mic", speaking ? "Speaking — click to stop" : pills.Recording ? "Listening" : "Talk to theuth", 44, 18);
         mic.Click += (_, _) =>
         {
             CancelDeferredHandBack();
+            if (store.Speaker.IsSpeaking)
+            {
+                store.Speaker.Stop(SpeechStop.Glyph);
+                return;
+            }
             AskClicked?.Invoke(ScreenRectOf(pill));
         };
         var point = Flat(Theme.Icon(NativeLook.Glyph.Camera, theme, NativeLook.TextSecondary, 12), "act-point", "Point and say", 44, 16);
@@ -714,5 +722,6 @@ internal sealed partial class RailPillsWindow : ToolWindow
         quietTimer?.Stop();
         store.PropertyChanged -= OnStoreChanged;
         store.DictationChanged -= OnDictation;
+        store.Speaker.Changed -= Refresh;
     }
 }

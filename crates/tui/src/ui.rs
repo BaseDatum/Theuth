@@ -1913,6 +1913,8 @@ fn entry(e: &Entry, spinner: &str, skip: usize, width: u16) -> AnyElement<'stati
                 CardKind::Artifact => TOOL,
                 CardKind::Removed => PROMPT,
                 CardKind::Vision => JOB,
+                // 152 D6: a restart note is harness bookkeeping, muted like the prompt.
+                CardKind::Restart | CardKind::Memory => PROMPT,
             };
             let v = text.view();
             let lines = v.lines().count();

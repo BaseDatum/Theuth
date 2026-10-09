@@ -39,7 +39,7 @@ internal sealed class WW3Install : IDisposable
         // The ONE settings store (SettingsModel.Shared's): a second instance's Flush would drop the other's keys.
         var settings = Settings.SettingsModel.Shared.Store;
         var island = new IslandController(store, dispatcher, settings);
-        var point = new PointController(store, dispatcher, island, surfaces.Hotkeys, () => island.PointSettings);
+        var point = new PointController(store, dispatcher, island, surfaces.Hotkeys, () => island.PointSettings, store.Speaker); // the ONE shared speaker (spoken replies)
         island.EyeChanged += hidden => point.SetHiddenFromCapture(hidden);
         // 149 R2: WW2's seam — P on a card (attach the screen to its reply) and the rail's point glyph (a locked gesture).
         store.InstallWw3();
