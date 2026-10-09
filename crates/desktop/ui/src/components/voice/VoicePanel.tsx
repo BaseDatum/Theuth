@@ -212,14 +212,14 @@ export function VoicePanel() {
 
 /** Live words: each open utterance muted, closed ones saturated (`Composer.tsx`'s `DictatedText` rule); the final text once stopped. */
 function Words({ utts, text, muted }: { utts: dictation.Utt[]; text: string; muted: boolean }) {
-  const spoken = utts.filter((u) => u.text !== '')
+  const spoken = utts.filter((u) => dictation.shown(u) !== '')
   return (
     <div className={cn('min-w-0 flex-1 truncate text-sm', muted && 'text-fg-tertiary')}>
       {spoken.length
         ? spoken.map((u, i) => (
             <Fragment key={i}>
               {i > 0 && ' '}
-              <span className={cn('transition-colors duration-150', !u.final && 'text-fg-tertiary')}>{u.text}</span>
+              <span className={cn('transition-colors duration-150', !u.final && 'text-fg-tertiary')}>{dictation.shown(u)}</span>
             </Fragment>
           ))
         : text || 'Sending…'}

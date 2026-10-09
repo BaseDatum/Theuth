@@ -15,9 +15,11 @@ final class VoiceModeState: ObservableObject {
     @Published var level: Float = 0
     @Published var hint = ""
     @Published var chord = "⌃S"
+    /// 153 §10.1: the mode's label after the chord — "theuth's desk" (ask) or "Command · theuth desk"; relabels on a mode switch.
+    @Published var label = "theuth's desk"
 
-    func reset(chord: String) {
-        phase = .listening; text = ""; partial = ""; level = 0; hint = ""; self.chord = chord
+    func reset(chord: String, label: String = "theuth's desk") {
+        phase = .listening; text = ""; partial = ""; level = 0; hint = ""; self.chord = chord; self.label = label
     }
 }
 
@@ -56,7 +58,7 @@ struct VoiceModeView: View {
 
     private var trailer: String {
         switch state.phase {
-        case .listening: return "· \(state.chord) held · theuth's desk"
+        case .listening: return "· \(state.chord) held · \(state.label)"
         case .locked: return "· locked · tap \(state.chord) to send"
         case .sending: return "· sending…"
         case .hint: return ""

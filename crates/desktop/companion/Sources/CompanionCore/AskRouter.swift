@@ -145,6 +145,8 @@ public struct AskModel: Equatable, Sendable {
     public var current: String?
     /// W6: the live dictation feeding the Ask bar's field.
     public var dictation = AskDictation()
+    /// 153 §6.3: the unanswered `DictionarySuggestion` the card shows; `nil` once answered or dismissed.
+    public var suggestion: DictionarySuggestion?
     public init() {}
 }
 
