@@ -167,7 +167,8 @@ internal static class AskFixtures
                 reader.ReadBytes(bytes);
             }
             var pcm = AskAudio.Pcm16Mono16k(bytes) ?? throw new InvalidOperationException("unreadable WAV");
-            AskLog.Write($"ask-live: voice \"{synth.Voice.DisplayName}\" says \"{text}\" → {pcm.Length / 16000.0:F2} s at 16 kHz");
+            if (AskFlags.LiveTailMs > 0) pcm = pcm.Concat(new short[16 * AskFlags.LiveTailMs]).ToArray(); // the press ends a moment after the last word
+            AskLog.Write($"ask-live: voice \"{synth.Voice.DisplayName}\" says \"{text}\" → {pcm.Length / 16000.0:F2} s at 16 kHz (tail {AskFlags.LiveTailMs} ms of silence)");
             install.Model.ProbeSpeechPress(pcm, released);
         }
         catch (Exception e)
