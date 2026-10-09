@@ -98,12 +98,14 @@ public sealed class PasteVerifierTests
     }
 
     [Fact]
-    public void ADirectInsertionReadsAt150And350ThenFallsThrough()
+    public void ADirectInsertionReadsBackAt150ThenLooksAgainBeforeFallingThrough()
     {
         var same = new FieldRead(true, "Hello ", "Hello ", "");
-        Assert.Equal(new[] { 150, 350 }, PasteVerifier.DirectReadsMs);
+        Assert.Equal(new[] { 150, 350, 1000 }, PasteVerifier.DirectReadsMs);
+        Assert.Equal(PasteVerdict.Landed, PasteVerifier.Step(Before, new[] { After("Hello " + Text) }, Text, null, VerifyMode.Direct)); // the usual case: at 150 ms
         Assert.Null(PasteVerifier.Step(Before, new[] { same }, Text, null, VerifyMode.Direct));
-        Assert.Equal(PasteVerdict.NotLanded, PasteVerifier.Step(Before, new[] { same, same }, Text, null, VerifyMode.Direct));
+        Assert.Null(PasteVerifier.Step(Before, new[] { same, same }, Text, null, VerifyMode.Direct)); // a slow target: not yet a fall-through
+        Assert.Equal(PasteVerdict.NotLanded, PasteVerifier.Step(Before, new[] { same, same, same }, Text, null, VerifyMode.Direct));
         Assert.Equal(PasteVerdict.Landed, PasteVerifier.Verdict(Before, new[] { same, After("Hello " + Text) }, Text, null, VerifyMode.Direct));
     }
 

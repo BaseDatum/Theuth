@@ -46,7 +46,7 @@ public sealed record FieldRead(bool FocusSame, string? Value, string? BeforeCare
 /// changed with our words → <see cref="PasteVerdict.Landed"/>; changed with the restored clipboard (a paste that landed after the
 /// 500 ms settle) → <see cref="PasteVerdict.NotLanded"/>; changed otherwise → <see cref="PasteVerdict.UserActed"/> (no card); unchanged
 /// at every read → <see cref="PasteVerdict.NotLanded"/>; unreadable → <see cref="PasteVerdict.Unknown"/>. A direct insertion verifies at
-/// 150 ms; on Windows an unchanged field gets one more look at 350 ms before the lease takes over (SendInput is asynchronous).
+/// 150 ms; on Windows an unchanged field gets more looks (350, 1000 ms) before the lease takes over (SendInput is asynchronous).
 /// </summary>
 public static class PasteVerifier
 {
@@ -59,8 +59,10 @@ public static class PasteVerifier
     /// <summary>§13.4: the lease's three reads, ms after the paste.</summary>
     public static IReadOnlyList<int> LeaseReadsMs { get; } = new[] { 150, 350, 1000 };
 
-    /// <summary>§13.2's read-back at 150 ms, plus one more look at 350 ms (Windows twin, as-built deviation).</summary>
-    public static IReadOnlyList<int> DirectReadsMs { get; } = new[] { 150, 350 };
+    /// <summary>§13.2's read-back at 150 ms; an unchanged field gets two more looks (350, 1000 ms) before the lease takes over, because
+    /// SendInput and the target's UIA tree are both asynchronous on Windows and a late read must never re-deliver words that did land
+    /// (Windows twin, as-built deviation). A field that shows the words returns at the first read.</summary>
+    public static IReadOnlyList<int> DirectReadsMs { get; } = new[] { 150, 350, 1000 };
 
     public static IReadOnlyList<int> Schedule(VerifyMode mode) => mode == VerifyMode.Lease ? LeaseReadsMs : DirectReadsMs;
 

@@ -602,6 +602,7 @@ internal sealed class AnyAppController
     private async Task<PasteVerdict> VerifyAsync(Gesture g, FieldRead before, string text, string? restored, VerifyMode mode, DateTimeOffset t0, List<int>? checkedAt = null)
     {
         if (mode == VerifyMode.Lease && !settings.CheckPasteLanded) return PasteVerdict.Unknown;
+        if (g.Assessment.Secure) return PasteVerdict.Unknown; // a secure field shows bullets, never our words: nothing to verify (§13.4 unknown)
         var reads = new List<FieldRead>();
         foreach (int at in PasteVerifier.Schedule(mode))
         {
