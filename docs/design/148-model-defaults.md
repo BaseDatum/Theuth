@@ -50,8 +50,10 @@ Effort: in-chat / draft picks are session-only (R1); children use spawn
 - **E2 desk children** — `agent::SetDeskModel { session, model }` (lib.rs),
   kept in `Agents::desk_models`; `session()` resolves a native child of a
   desk as spawn pick → desk model → subagent model → default. The roster
-  sends it from `open_desk`, on a hired agent's `model:` change (`reconcile`)
-  and on `SetTheuthModel`.
+  sends it from `open_desk`, on a hired agent's `model:` change (PutAgent
+  applies it right after the write; `reconcile`'s diff only catches on-disk
+  edits seen by the watcher) and on `SetTheuthModel`. The entry leaves with a
+  put-away or deleted desk.
 - **E3 theuth model** — `crates/roster/src/config.rs` `RosterConfig::theuth_model`
   (live copy in `Roster.cfg`; persisted via `write_config_value("roster",
   "theuth_model")`, cleared with an empty value that reads back `None`).
@@ -59,8 +61,10 @@ Effort: in-chat / draft picks are session-only (R1); children use spawn
   `TheuthModel` / `SetTheuthModel`; RPC `theuth_agent_model` /
   `set_theuth_agent_model` (`crates/rpc/src/api.rs`). On set/clear the open
   desk is switched session-only to the effective model. Desks without a
-  model follow `AgentEvent::DefaultModelChanged`; a reopened desk is switched
-  to its effective model in `open_desk`. `desk.rs manual()`: `None` renders
+  model follow `AgentEvent::DefaultModelChanged`. `switch_session` asks
+  `agent::SessionModel` first and skips `SetModel` when the row already stores
+  the effective (canonical) id, so a reopen at boot spawns no actor and
+  publishes nothing. `desk.rs manual()`: `None` renders
   "model: omit it (the user's subagent default applies)". PutAgent still
   refuses theuth.
 - **E4 prompts** — `crates/agent/src/frame.rs` GUIDANCE_HEAD and the header
@@ -82,9 +86,11 @@ Effort: in-chat / draft picks are session-only (R1); children use spawn
   `queryKeys.theuthAgentModel` + roster). `settings/Loop.tsx` loses the
   Subagent model row. `agents/AgentDetail.tsx` theuth tab shows the same Model
   row. Draft picks (`ModelMenu.tsx`, `slash.ts`) go to `useDraftPick`
-  (`lib/drafts.ts`) and ride on `create_session` in `Composer.tsx`;
-  `NewChatPane.tsx` resets them. `rpc/api.ts` + `lib/rpc.ts` add the RPCs and
-  query key.
+  (`lib/drafts.ts`); every draft-born session opens through
+  `openDraftSession` (`lib/drafts.ts`: `create_session` with the pick, else
+  `new_session()`, pick spent) — the composer's send, Talk, `/<skill>` and a
+  parked skill; `NewChatPane.tsx` resets the pick on mount. `rpc/api.ts` +
+  `lib/rpc.ts` add the RPCs and query key.
 
 ## Gates
 
@@ -107,6 +113,12 @@ fold (`1d1579aa`, 78 commits: 144 NOTEBOOKS, 147, 135b; additive in our seams).
   156 files / 1183 tests passed; `bun run build` OK.
 - No live-engine smoke (rule); the UI surface is proven by static-render tests only.
 
+R1 (no fold): agent 563 + 5 + 1 passed, 2 ignored (same two load-timing
+flakes, green on rerun); roster 73; tui 157 + 1; clippy agent/roster/tui
+clean; `check -p theuth` clean; fmt 0 diffs in touched crates (218
+pre-existing elsewhere); no ts-rs type changed (bindings untouched);
+tsc 0; vitest 156 files / 1185 tests.
+
 ## Deviations
 
 - E2 plumbing: a separate `agent::SetDeskModel` message instead of extending
@@ -115,9 +127,12 @@ fold (`1d1579aa`, 78 commits: 144 NOTEBOOKS, 147, 135b; additive in our seams).
   { session: None, manual: false }` then requires the provider among
   `agent::ListModels` (keyed catalog providers) — the agent exposes no
   resolve-with-credentials ask. Same error text as `set_subagent_model`.
-- E3 `open_desk`: a reopened desk is switched to its effective model
-  unconditionally rather than compared with the stored row (no cheap
-  per-session model query; result identical).
+- E3 F7: a stored model that no longer resolves — `TheuthModel` answers a
+  bare `ModelInfo` naming the id (provider = prefix before `/`) so the row
+  shows the stale value; `open_desk` / `apply_desk_model` warn (`agent`,
+  `model`) and let the live default stand in; a desk never stays unopened.
+  Such a desk is not in the `DefaultModelChanged` follow set until its file
+  is fixed (`f.model` is `Some`).
 - E3 config write failures are best-effort (warn, live value still changes),
   mirroring `SetSubagentModel`.
 - E5: a typed `/model <id>` in the TUI draft is validated at `create_session`
@@ -131,6 +146,37 @@ fold (`1d1579aa`, 78 commits: 144 NOTEBOOKS, 147, 135b; additive in our seams).
   settings test pattern; setter wiring is one `useAction` per row.
 - `crates/theuth/src/mcp.rs` picked up an unrelated rustfmt change during the
   roster slice; reverted.
+- F8 roster↔engine tests needed a live `Agents`: `agent` gained a
+  `test-support` feature exposing `spawn_test_agents(rt)` (the in-crate rig,
+  every provider configured, registered as `AGENT_ACTOR`); roster's dev-dep
+  enables it. The feature never reaches a production build.
+- F8 desktop: Composer's submit is not statically testable (no DOM runner);
+  its no-session branch is `openDraftSession`, whose tests are the
+  submit-decision tests. "NewChat mount resets a stale pick" is a `useEffect`
+  and has no test (effects do not run under `renderToStaticMarkup`).
+
+## R1 review round (2026-10-09)
+
+- F1 PutAgent reads the old model before writing; on change → `apply_desk_model`.
+- F2 site docs on R1: `getting-started/{models,first-session,index}.mdx`,
+  `reference/{cli,configuration}.mdx`, `workspace/desktop.mdx` (Chat › Models).
+- F3 `openDraftSession(api)` (`lib/drafts.ts`): pick → `create_session`, else
+  `new_session`, then `pick.reset()`; Composer, Talk, `draftSkill`, `/<skill>`.
+- F4 `switch_session` compares `agent::SessionModel` (new ask) with the
+  canonical effective id; `open_desk` resolves the configured id up front.
+- F5 `desk_models` dropped on `MarkDesk { agent: None }` / `DeleteSession`.
+- F6 `session()` drops an inherited default effort the chosen model rejects.
+- F7 stale theuth model: see Deviations.
+- F8 tests — agent: `desk_models_leave_with_the_desk`,
+  `an_inherited_default_effort_the_model_rejects_is_dropped`; roster:
+  `desks_follow_configured_and_default_models_on_a_live_engine` (one
+  `spawn_test_agents` rig test: reopen compare, SetTheuthModel on an open
+  desk, DefaultModelChanged follow/leave, PutAgent re-point, F7 fallback),
+  `theuth_model_unresolved_shows_as_itself`,
+  `put_agent_model_change_is_in_the_read_model_before_reconcile`; tui:
+  `draft_picks_ride_on_talk_mcp_and_skill_entries`; desktop: `lib/drafts.test.ts`.
+- F9/F10 nits: `harness.md`, "subagent default" wording, bot comments cite
+  148 R1, AgentDetail "Same as new sessions", Chat.tsx effort-pending disable.
 
 ## Follow-ups
 
@@ -139,5 +185,5 @@ fold (`1d1579aa`, 78 commits: 144 NOTEBOOKS, 147, 135b; additive in our seams).
   config.yaml-only today).
 - `agent::ResolveModel` ask with the credential check, so roster-side
   validation stops reading `ListModels`.
-- `Agents::desk_models` entries are never dropped when a desk session is
-  deleted (bounded by the roster size).
+- A desk whose configured model no longer resolves follows the default only
+  after a restart or a model change, not on `DefaultModelChanged` (F7 gap).

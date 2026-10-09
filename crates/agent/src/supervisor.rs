@@ -922,11 +922,11 @@ impl Agents {
                 // as `set_model` does for an in-session switch.
                 let effort = effort.filter(|e| {
                     pick.1.is_some()
-                        || !model
+                        || model
                             .0
                             .model
                             .as_ref()
-                            .is_some_and(|m| m.validate_effort(e).is_err())
+                            .is_none_or(|m| m.validate_effort(e).is_ok())
                 });
                 store
                     .create_session(
