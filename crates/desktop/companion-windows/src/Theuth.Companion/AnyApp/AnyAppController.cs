@@ -219,6 +219,14 @@ internal sealed class AnyAppController
     }
 
     /// <summary>The probe's stand-in for the engine's stream: one closed (final) utterance.</summary>
+    /// <summary>The probe's "scratch that": re-send the last delivered utterance empty, as the engine does (§4.6). False when nothing was delivered.</summary>
+    public bool ScratchLast()
+    {
+        if (live is not { } g || g.History.Count == 0) return false;
+        OnFinal(g, g.History[^1].Utterance, "");
+        return true;
+    }
+
     public void Feed(string text, bool sendIt = false)
     {
         if (live is not { } g) return;

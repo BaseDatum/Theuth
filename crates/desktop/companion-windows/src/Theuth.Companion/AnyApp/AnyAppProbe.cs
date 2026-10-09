@@ -14,7 +14,7 @@ namespace Theuth.Companion.AnyApp;
 /// <item><c>--probe-anyapp-card</c>: the failure card from a fixture; <c>--probe-anyapp-rewrite &lt;instruction&gt;</c>: the rewrite on the
 /// current selection;</item>
 /// <item><c>--probe-anyapp-watch</c>: re-run on every write of <c>%LOCALAPPDATA%\theuth\companion\anyapp-probe.txt</c> (one line of
-/// <c>key=value</c>: <c>text= lease= send= lock= card= rewrite= history=</c>), so one launch serves a whole live round.</item>
+/// <c>key=value</c>: <c>text= lease= send= lock= card= rewrite= history= scratch=</c>), so one launch serves a whole live round.</item>
 /// </list>
 /// </summary>
 internal static class AnyAppProbe
@@ -167,6 +167,13 @@ internal static class AnyAppProbe
                 {
                     c.Feed(pieces[i], sendIt: send && i == pieces.Count - 1);
                     await Task.Delay(450);
+                }
+                if (o.TryGetValue("scratch", out var sc) && sc == "1")
+                {
+                    // H3-D2 "scratch that": the engine re-sends the last delivered utterance empty.
+                    await Task.Delay(2500);
+                    Log.Write($"anyapp-probe: scratch that → {c.ScratchLast()}");
+                    await Task.Delay(1500);
                 }
                 await c.EndAsync("probe release");
             }
