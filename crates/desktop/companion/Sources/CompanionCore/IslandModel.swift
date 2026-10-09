@@ -19,10 +19,11 @@ public struct IslandModel: Equatable, Sendable {
     /// Display UUID → the detached frame the user left it at.
     public var frames: [String: CGRect]
     public var alwaysShow: Bool
+    /// 149i D1: the user clicked the strip/pill to collapse the open pane; remembered for that meeting only.
+    public private(set) var collapsed = false
+    private var collapsedMeeting: String?
 
     public static let snapBack: Double = 40
-    /// Visible for this long after the last topic/brief once the meeting ends (Revision 1 row 13).
-    public static let linger: TimeInterval = 10 * 60
     /// A screen without a notch: the pill's size under the menu bar.
     public static let fallbackPill = CGSize(width: 300, height: 24)
 
@@ -30,21 +31,35 @@ public struct IslandModel: Equatable, Sendable {
         self.state = state; self.frames = frames; self.alwaysShow = alwaysShow
     }
 
-    /// D10: live meeting, or ≤ `linger` after the last topic/brief, or "Always show". Starting/Stopping count as live
-    /// (`Island.tsx:70`): the strip is up from the first second.
-    public static func visible(_ slice: MeetingSlice, lastActivity: Date?, alwaysShow: Bool, now: Date) -> Bool {
-        if alwaysShow { return true }
+    /// Starting/Recording/Paused/Stopping — the strip is up from the first second to the last (`Island.tsx:73`).
+    public static func live(_ slice: MeetingSlice) -> Bool {
         switch slice.state {
         case .starting, .recording, .paused, .stopping: return true
-        default: break
+        default: return false
         }
-        guard let at = lastActivity else { return false }
-        return now.timeIntervalSince(at) <= linger
     }
 
-    /// A drag ended at `frame`: within `snapBack` of the notch → `.closed`, else `.detached` and remembered.
+    /// 149i D2 — the Tauri original's rule: shown iff live, or "Always show" (the idle wordmark). No linger: Done/Failed/
+    /// Idle and the post-meeting states hide it at once.
+    public static func visible(_ slice: MeetingSlice, alwaysShow: Bool) -> Bool { alwaysShow || live(slice) }
+
+    /// 149i D1 — the attached layout: live → the strip + pane, unless the user collapsed it; otherwise the pill.
+    public static func attached(live: Bool, collapsed: Bool) -> IslandState { live && !collapsed ? .open : .closed }
+
+    /// A click on the pill/strip: collapsed ↔ open, for `meeting`.
+    public mutating func toggleCollapsed(meeting: String?) { collapsed.toggle(); collapsedMeeting = meeting }
+
+    /// Another meeting (or none) forgets the collapse.
+    public mutating func meetingChanged(to meeting: String?) {
+        guard meeting != collapsedMeeting else { return }
+        collapsed = false; collapsedMeeting = meeting
+    }
+
+    /// A drag ended with the island's content at `frame`: its top-centre within `snapBack` of the anchor's top-centre (where
+    /// it hangs when attached, open or closed) → back to the notch, else `.detached` and remembered. The top-centre, not the
+    /// centre: the open pane's centre is already far below the notch's, which would detach on a mere grip click.
     public mutating func dragEnded(frame: CGRect, notch: CGRect, display: String) {
-        let d = hypot(frame.midX - notch.midX, frame.midY - notch.midY)
+        let d = hypot(frame.midX - notch.midX, frame.maxY - notch.maxY)
         if d <= Self.snapBack {
             state = .closed
             frames[display] = nil

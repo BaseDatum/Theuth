@@ -16,9 +16,11 @@ extension AppDelegate {
     var island: IslandController { IslandController.shared(store: store) }
 }
 
-/// 149 W3 — the native island (§3.6, D9–D11, §5.4 C): visibility from `IslandModel.visible`, the window placed on the
-/// notched screen (else the primary) at the notch or the fallback pill, hover-open 0.3 s / close 100 ms, a `performDrag`
-/// grip with snap-back within 40 pt and per-display-UUID frame memory, the meeting flows over the Store's slice.
+/// 149 W3 — the native island (§3.6, D9–D11, §5.4 C), 149i rulings D1–D4: visible iff the meeting is live or "Always
+/// show" (`IslandModel.visible`, the Tauri original's rule, no linger); live → the strip + brief pane at once, no hover
+/// (a click on the strip/pill collapses ↔ opens, per meeting); the window placed on the notched screen (else the primary)
+/// at the notch or the fallback pill; a `performDrag` grip with snap-back within 40 pt and per-display-UUID frame memory;
+/// the meeting flows over the Store's slice.
 @MainActor
 final class IslandController {
     private static var instance: IslandController?
@@ -34,15 +36,13 @@ final class IslandController {
     let hosting: IslandHostingView<IslandRoot>
     private var subs = Set<AnyCancellable>()
     private var tick: Timer?
-    private var hoverTimer: Timer?
-    private var hoverSince: Date?
-    private var hoverLeftAt: Date?
     private(set) var dragPoll: Timer?
     private var stopTimer: Timer?
     private var oracleTimer: Timer?
     private var keyMonitor: Any?
     private var previousApp: NSRunningApplication?
-    var lastActivity: Date?
+    /// The window's origin when the grip was pressed: unchanged at mouse-up = a click, which collapses ↔ opens (D1).
+    private var dragStart: NSPoint?
     private var cursorSent: String?
     private var cursorEverSent = false
     /// The slice as last seen, for growth detection (the publisher's timing is not relied on).
@@ -67,11 +67,12 @@ final class IslandController {
 
     /// Wire everything; called once from `applicationDidFinishLaunching`.
     func install() {
-        ui.onDragStart = { [weak self] e in self?.beginDrag(e) }
-        window.wantsKeyOnClick = { [weak self] p in self?.drawnAppKit.contains(p) ?? false }
-        window.onDoubleClick = { [weak self] p in
-            guard let self, self.drawnAppKit.contains(p), !self.ui.boxRect.contains(self.flip(p)) else { return }
-            self.snapBack()
+        ui.onGrip = { [weak self] e in e.clickCount == 2 ? self?.snapBack() : self?.beginDrag(e) }
+        ui.onCollapseToggle = { [weak self] in self?.toggleCollapsed() }
+        // Key only in the request box (KeyBindings `.island`): buttons fire on the first click without it.
+        window.wantsKeyOnClick = { [weak self] p in
+            guard let self, let box = self.ui.rects["box"] else { return false }
+            return self.flip(box).contains(p)
         }
         store.$meeting.receive(on: RunLoop.main).sink { [weak self] s in MainActor.assumeIsolated { self?.meetingChanged(s) } }.store(in: &subs)
         store.$connection.receive(on: RunLoop.main).sink { [weak self] c in
@@ -91,58 +92,73 @@ final class IslandController {
         if let p = Flags.probeIsland { runIslandProbe(p) } else if Flags.probeEye { runEyeProbe() }
     }
 
-    // MARK: visibility (D10)
+    // MARK: visibility (D2) · layout (D1)
 
     private func meetingChanged(_ s: MeetingSlice?) {
         let slice = s ?? .empty
-        if slice.topics.count > seen.topics.count || slice.briefs.count > seen.briefs.count { lastActivity = Date() }
         if slice.oracle.last != seen.oracle.last { fadeVerdict() }
         seen = slice
+        model.meetingChanged(to: slice.meeting)
         if !Flags.islandProbe { setLiveHotkeys(slice.isLive || slice.state == .starting) }
         refreshVisibility()
+        applyLayout()
         mirrorCursor()
     }
 
     private func refreshVisibility() {
-        let now = Date()
-        ui.now = now
-        let want = IslandModel.visible(seen, lastActivity: lastActivity, alwaysShow: model.alwaysShow, now: now)
+        let want = IslandModel.visible(seen, alwaysShow: model.alwaysShow)
         if want, !shown { show() } else if !want, shown { hide() }
+    }
+
+    /// Attached, the layout follows the meeting: live → open unless collapsed, else the pill. Detached stays as it is.
+    private func applyLayout() {
+        guard !ui.isDetached, dragPoll == nil else { return }
+        let want = IslandModel.attached(live: IslandModel.live(seen), collapsed: model.collapsed)
+        guard ui.state != want else { return }
+        ui.state = want
+        if want == .closed { ui.menuOpen = false }
+    }
+
+    /// A click on the strip's grip or the live pill: collapsed ↔ open for this meeting.
+    func toggleCollapsed() {
+        model.toggleCollapsed(meeting: seen.meeting)
+        applyLayout()
+        IslandLog.write("island collapsed=\(model.collapsed) state=\(ui.state)")
     }
 
     func show() {
         hidingWork?.cancel(); hidingWork = nil
         shown = true
+        NSAnimationContext.runAnimationGroup { $0.duration = 0; window.animator().alphaValue = 1 }
         restoreOrDefault()
+        applyLayout()
         place()
         window.show()
         startTick()
         IslandLog.write("island shown state=\(ui.state) anchor=\(ui.anchor.map { "\($0.rect) notch=\($0.notch)" } ?? "none") frame=\(window.frame) level=\(window.level.rawValue) sharing=\(window.sharingType.rawValue) number=\(window.windowNumber)")
     }
 
-    /// `State{Done|Failed}` → the pane's close animation, then `orderOut` (no alpha-0 hack: a native view is not throttled).
+    /// Done/Failed/Idle (or "Always show" off): a 0.3 s fade, then `orderOut` — nothing stays on screen at alpha 0.
     func hide() {
         shown = false
-        ui.pinned = false
-        if ui.isOpen, !ui.isDetached { ui.state = .closed }
+        ui.menuOpen = false
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.3; window.animator().alphaValue = 0 }
         let w = DispatchWorkItem { [weak self] in
             guard let self, !self.shown else { return }
             self.window.orderOut(nil)
+            self.window.alphaValue = 1
             self.tick?.invalidate(); self.tick = nil
-            self.hoverTimer?.invalidate(); self.hoverTimer = nil
             IslandLog.write("island hidden")
         }
         hidingWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: w)
     }
 
+    /// The clock (`ui.now`) once a second while shown; the oracle chip every 30 s.
     private func startTick() {
         guard tick == nil else { return }
         tick = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshVisibility() }
-        }
-        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pollHover() }
+            Task { @MainActor in self?.ui.now = Date() }
         }
         oracleTimer?.invalidate()
         oracleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -195,7 +211,7 @@ final class IslandController {
     private func screensChanged() {
         guard dragPoll == nil else { return }
         IslandLog.write("screens changed: \(NSScreen.screens.map { "\($0.localizedName) \($0.frame) notch=\(IslandGeometry.notch(of: $0) != nil)" })")
-        if shown { restoreOrDefault(); place() }
+        if shown { restoreOrDefault(); applyLayout(); place() }
     }
 
     /// SwiftUI's global (top-left) rect → the hosting view's AppKit (bottom-left) rect.
@@ -209,29 +225,11 @@ final class IslandController {
 
     private func uiChanged() {
         DispatchQueue.main.async { [self] in
-            hosting.drawn = ui.isDetached ? nil : drawnAppKit
+            // `IslandHostingView` is flipped: SwiftUI's global rect is already in its coordinates (no `flip` — that was the
+            // click-through bug, 149i). Detached, the window is the content: everything is hittable.
+            hosting.drawn = ui.isDetached ? nil : ui.drawn
             if shown, dragPoll == nil { place() }
         }
-    }
-
-    // MARK: hover (0.3 s open · 100 ms close unless pinned)
-
-    private func pollHover() {
-        guard shown, dragPoll == nil, !ui.isDetached else { return }
-        let inside = drawnGlobal.contains(NSEvent.mouseLocation)
-        let now = Date()
-        if inside {
-            hoverLeftAt = nil
-            if hoverSince == nil { hoverSince = now }
-            if !ui.isOpen, now.timeIntervalSince(hoverSince!) >= 0.3 { ui.state = .open }
-        } else {
-            hoverSince = nil
-            if ui.isOpen, !ui.pinned, !ui.boxFocused {
-                if hoverLeftAt == nil { hoverLeftAt = now }
-                if now.timeIntervalSince(hoverLeftAt!) >= 0.1 { ui.state = .closed; ui.menuOpen = false; hoverLeftAt = nil }
-            }
-        }
-        if ui.hover != inside { ui.hover = inside }
     }
 
     // MARK: drag · snap-back · memory (§3.6)
@@ -239,6 +237,7 @@ final class IslandController {
     private func beginDrag(_ e: NSEvent) {
         guard dragPoll == nil else { return }
         previousApp = previousApp ?? NSWorkspace.shared.frontmostApplication
+        dragStart = window.frame.origin
         window.performDrag(with: e)
         // `performDrag` may never deliver the mouse-up: poll the button until it is released.
         dragPoll = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] t in
@@ -252,14 +251,23 @@ final class IslandController {
     private func dragEnded() {
         guard let s = window.screen ?? screen else { return }
         let anchor = IslandGeometry.anchor(on: s, forceNoNotch: forceNoNotch, fakeNotch: fakeNotch)
-        let drawn = ui.isDetached ? window.frame : drawnGlobal
+        let wasDetached = ui.isDetached
+        let drawn = wasDetached ? window.frame : drawnGlobal
         let uuid = IslandGeometry.uuid(of: s)
+        let moved = dragStart.map { hypot(window.frame.minX - $0.x, window.frame.minY - $0.y) } ?? 0
+        dragStart = nil
         model.dragEnded(frame: IslandGeometry.relative(drawn, to: s), notch: IslandGeometry.relative(anchor.rect, to: s), display: uuid)
         IslandSettings.frames = model.frames
         switch model.state {
         case .closed:
-            IslandLog.write("drag ended at \(drawn): within \(IslandModel.snapBack) pt of \(anchor.rect) — snap back")
             ui.state = .closed
+            if moved < 2, !wasDetached {
+                // A press and release on the strip without a drag: the D1 click.
+                toggleCollapsed()
+            } else {
+                IslandLog.write("drag ended at \(drawn): within \(IslandModel.snapBack) pt of \(anchor.rect) — snap back")
+                applyLayout()
+            }
             place(animate: true)
         case .detached:
             IslandLog.write("drag ended at \(drawn): detached, remembered for \(uuid) as \(model.frames[uuid]!)")
@@ -274,6 +282,7 @@ final class IslandController {
         if all { model.frames = [:] } else if let s = screen { model.frames[IslandGeometry.uuid(of: s)] = nil }
         IslandSettings.frames = model.frames
         ui.state = .closed
+        applyLayout()
         if shown { place(animate: true) }
         IslandLog.write("snap back (all=\(all)) frames=\(model.frames.count)")
     }
@@ -355,13 +364,11 @@ final class IslandController {
         return true
     }
 
-    /// ⎋: leave the box → undo a stop hold → close the pane and hand key back (as `island_resign_key` did).
+    /// ⎋: leave the box → undo a stop hold → close the ⋮ menu and hand key back (the pane stays: D1 has no hover close).
     private func escape() {
         if ui.boxFocused { ui.blurTick += 1; resignKey(); return }
         if ui.stopHoldStarted != nil { ui.stopHoldStarted = nil; stopTimer?.invalidate(); return }
-        ui.pinned = false
         ui.menuOpen = false
-        if !ui.isDetached { ui.state = .closed }
         resignKey()
     }
 
@@ -417,9 +424,8 @@ final class IslandController {
             IslandSettings.frames = model.frames
         }
         store.meeting = IslandFixture.slice()
-        lastActivity = Date()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
-            if which == "open" { ui.pinned = true; ui.state = .open }
+            if which == "closed" { toggleCollapsed() } // live → open by default (D1); the pill is the user's collapse
             ui.transcriptOpen = which == "detached"
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in self.logProbeState(which) }
         }
@@ -432,11 +438,7 @@ final class IslandController {
 
     private func runEyeProbe() {
         store.meeting = IslandFixture.slice()
-        lastActivity = Date()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
-            ui.pinned = true; ui.state = .open
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in self.logProbeState("eye") }
-        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in self.logProbeState("eye") }
         DispatchQueue.main.asyncAfter(deadline: .now() + Flags.probeSeconds) {
             IslandLog.write("probe-eye done — quitting 0")
             NSApp.terminate(nil)
@@ -505,7 +507,7 @@ struct IslandSettingsTab: View {
         Form {
             Toggle("Always show the island", isOn: $alwaysShow)
                 .onChange(of: alwaysShow) { _, v in controller?.setAlwaysShow(v) ?? (IslandSettings.alwaysShow = v) }
-            Text("Off: the island appears while a meeting is live and for 10 minutes after its last topic or brief. On: the closed pill stays; a click opens Meetings.")
+            Text("Off: the island appears while a meeting is live and goes when it ends. On: the idle pill stays; a click opens Meetings.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Hide from screen sharing (best effort)", isOn: $eyeHidden)
                 .onChange(of: eyeHidden) { _, v in if let c = controller { c.ui.eyeHidden = v } else { IslandSettings.eyeHidden = v } }

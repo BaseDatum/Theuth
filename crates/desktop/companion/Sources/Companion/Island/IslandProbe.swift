@@ -28,7 +28,6 @@ extension IslandController {
         slice.briefs.append(Brief(id: "b2", topic: "t2", title: "Flipt DR — prepared, not deployed", bullets: ["flags mirrored to the DR cluster", "cut-over runbook in review"], source: .tap))
         slice.cursor = 1
         store.meeting = slice
-        lastActivity = Date()
         await sleep(2)
         let pane = drawnGlobal.height > IslandLayout.stripHeight + (ui.anchor?.rect.height ?? 0)
         check("open-no-hover", ui.isOpen && !ui.isDetached && pane, "state=\(ui.state) drawn=\(drawnGlobal) pointer=\(NSEvent.mouseLocation) park=\(park) visible=\(window.isVisible)")
@@ -46,7 +45,7 @@ extension IslandController {
             check("hidden within 1 s", !window.isVisible && !shown, "visible=\(window.isVisible) shown=\(shown) state=\(ui.state)")
             await shot("\(which)-after")
         } else if which.hasPrefix("clicks") {
-            if !ui.isOpen { IslandLog.write("probe \(which): the layout is not open — forcing it (pinned) so the clicks can be tried"); ui.pinned = true; ui.state = .open; await sleep(0.8) }
+            if !ui.isOpen { IslandLog.write("probe \(which): the layout is not open — the clicks below have nothing to hit") }
             logRects()
             guard trusted else {
                 check("synthetic input", false, "NOT PROVABLE: CGEventPost needs Accessibility, which this probe bundle lacks")
@@ -76,13 +75,25 @@ extension IslandController {
             check("newer click", store.meeting?.cursor == 1, "cursor=\(store.meeting?.cursor ?? -1) brief=\(store.meeting?.current?.title ?? "none")")
             await click("deeper")
             check("deeper click", store.meetingActs.contains("meeting_deeper(b2)"), "acts=\(store.meetingActs)")
-            // Hover topic 1 → its dismiss x appears → click it.
-            if let r = rect("topic:t1") { post(.mouseMoved, at: NSPoint(x: r.midX, y: r.midY)); await sleep(0.5) }
+            // Hover topic 1 → its dismiss x appears → click it. A real hover is a sweep of moves, not one jump: the tracking
+            // area wants an enter and movement inside before SwiftUI's `onHover` flips.
+            if let r = rect("topic:t1") {
+                for i in 0...8 { post(.mouseMoved, at: NSPoint(x: r.minX - 10 + CGFloat(i) * (r.width / 2 + 10) / 8, y: r.midY)); await sleep(0.04) }
+                await sleep(0.7)
+            }
             logRects(["dismiss:t1"])
             await click("dismiss:t1")
             check("dismiss click", store.meetingActs.contains("meeting_dismiss(t1)"), "acts=\(store.meetingActs)")
             await click("transcript")
             check("transcript click", ui.transcriptOpen, "transcriptOpen=\(ui.transcriptOpen)")
+            // A click on the strip's grip (no drag) collapses to the pill; a click on the live pill opens again (D1).
+            await click("grip")
+            let collapsed = ui.state == .closed && model.collapsed
+            check("strip click collapses", collapsed, "state=\(ui.state) collapsed=\(model.collapsed)")
+            await shot("\(which)-collapsed")
+            logRects(["pill"])
+            await click("pill")
+            check("pill click opens", collapsed && ui.state == .open && !model.collapsed, "state=\(ui.state) collapsed=\(model.collapsed)")
             // The request box takes key on click; ⎋ hands it back.
             await click("box")
             check("box takes key", window.isKeyWindow && ui.boxFocused, "key=\(window.isKeyWindow) boxFocused=\(ui.boxFocused) active=\(NSApp.isActive)")

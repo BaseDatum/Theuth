@@ -3,34 +3,64 @@ import Testing
 @testable import CompanionCore
 @testable import TheuthKit
 
-// 149 W3: visibility (D10, Revision 1 row 13), snap-back, frame memory + validation (§3.6).
+// 149 W3 / 149i: visibility (D2 — the Tauri original's rule, no linger), the attached layout + collapse (D1), snap-back,
+// frame memory + validation (§3.6).
 struct IslandModelTests {
-    let t0 = Date(timeIntervalSince1970: 1_000_000)
     let notch = CGRect(x: 1100, y: 1403, width: 200, height: 37)
 
     func slice(_ state: MeetingState) -> MeetingSlice { var s = MeetingSlice.empty; s.meeting = "m"; s.state = state; return s }
 
     @Test func visibleWhileLive() {
         for st in [MeetingState.starting, .recording, .paused, .stopping] {
-            #expect(IslandModel.visible(slice(st), lastActivity: nil, alwaysShow: false, now: t0))
+            #expect(IslandModel.live(slice(st)))
+            #expect(IslandModel.visible(slice(st), alwaysShow: false))
         }
-    }
-
-    @Test func visibleTenMinutesAfterTheLastTopicOrBrief() {
-        let s = slice(.done)
-        #expect(IslandModel.visible(s, lastActivity: t0 - 9 * 60, alwaysShow: false, now: t0))
-        #expect(IslandModel.visible(s, lastActivity: t0 - IslandModel.linger, alwaysShow: false, now: t0))
-        #expect(!IslandModel.visible(s, lastActivity: t0 - IslandModel.linger - 1, alwaysShow: false, now: t0))
     }
 
     @Test func visibleWhenAlwaysShow() {
-        #expect(IslandModel.visible(.empty, lastActivity: nil, alwaysShow: true, now: t0))
+        #expect(IslandModel.visible(.empty, alwaysShow: true))
+        #expect(IslandModel.visible(slice(.done), alwaysShow: true))
     }
 
-    @Test func hiddenOtherwise() {
+    @Test func hiddenTheMomentTheMeetingIsNotLive() {
+        // Done/Failed/Idle and every post-meeting state: no linger — ⌃M closes it, the engine's notes/summary never show it.
         for st in [MeetingState.idle, .review, .summarizing, .done, .failed, .post(.aligning), .other("New")] {
-            #expect(!IslandModel.visible(slice(st), lastActivity: nil, alwaysShow: false, now: t0))
+            #expect(!IslandModel.live(slice(st)))
+            #expect(!IslandModel.visible(slice(st), alwaysShow: false))
         }
+    }
+
+    @Test func attachedLayoutIsOpenWhileLiveUnlessCollapsed() {
+        #expect(IslandModel.attached(live: true, collapsed: false) == .open)
+        #expect(IslandModel.attached(live: true, collapsed: true) == .closed)
+        #expect(IslandModel.attached(live: false, collapsed: false) == .closed) // the idle wordmark ("Always show")
+    }
+
+    @Test func collapseIsRememberedForTheCurrentMeetingOnly() {
+        var m = IslandModel()
+        m.meetingChanged(to: "m1")
+        m.toggleCollapsed(meeting: "m1")
+        #expect(m.collapsed)
+        m.meetingChanged(to: "m1") // the same meeting's next slice: still collapsed
+        #expect(m.collapsed)
+        m.toggleCollapsed(meeting: "m1")
+        #expect(!m.collapsed) // a second click opens again
+        m.toggleCollapsed(meeting: "m1")
+        m.meetingChanged(to: "m2") // a new meeting forgets it
+        #expect(!m.collapsed)
+        m.toggleCollapsed(meeting: "m2")
+        m.meetingChanged(to: nil) // Deleted → no meeting: forgotten too
+        #expect(!m.collapsed)
+    }
+
+    @Test func aGripClickOnTheOpenPaneSnapsBackNotDetaches() {
+        // The open pane hangs 300 pt below the notch: its centre is far from the notch's, its top-centre is not.
+        var m = IslandModel()
+        let pane = CGRect(x: notch.midX - 280, y: notch.maxY - 300, width: 560, height: 300)
+        m.dragEnded(frame: pane, notch: notch, display: "D")
+        #expect(m.state == .closed && m.frames["D"] == nil)
+        m.dragEnded(frame: pane.offsetBy(dx: 0, dy: -41), notch: notch, display: "D")
+        #expect(m.state == .detached(frame: pane.offsetBy(dx: 0, dy: -41)))
     }
 
     @Test func dragWithinFortyPointsSnapsBackClosed() {

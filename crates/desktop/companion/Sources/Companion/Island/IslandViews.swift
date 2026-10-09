@@ -7,9 +7,6 @@ import TheuthKit
 final class IslandUI: ObservableObject {
     @Published var state: IslandState = .closed
     @Published var anchor: IslandGeometry.Anchor?
-    /// Kept open while the pointer is away (a click on the pill pins; Esc or a second click unpins).
-    @Published var pinned = false
-    @Published var hover = false
     @Published var boxFocused = false
     @Published var menuOpen = false
     @Published var transcriptOpen = false
@@ -22,15 +19,16 @@ final class IslandUI: ObservableObject {
     @Published var now = Date()
     @Published var requestText = ""
     @Published var blurTick = 0
-    /// Reported by the views, in SwiftUI's window-global (top-left) coordinates.
+    /// Reported by the views, in SwiftUI's window-global (top-left) coordinates — the hosting view's own, it is flipped.
     @Published var drawn: CGRect = .zero
-    @Published var boxRect: CGRect = .zero
-    /// Every control's frame by name (`islandRect`), same coordinates; read by the probes, never by the views.
+    /// Every control's frame by name (`islandRect`), same coordinates; the controller's key test (`box`) and the probes.
     var rects: [String: CGRect] = [:]
     /// The topic E dismisses (0 = the first; hover moves it).
     @Published var focusedTopic = 0
 
-    var onDragStart: ((NSEvent) -> Void)?
+    /// A grip `mouseDown` (click count 1 drags, 2 snaps back); a click on the live pill or the strip (collapsed ↔ open).
+    var onGrip: ((NSEvent) -> Void)?
+    var onCollapseToggle: (() -> Void)?
     var isOpen: Bool { if case .closed = state { return false } else { return true } }
     var isDetached: Bool { if case .detached = state { return true } else { return false } }
 }
@@ -43,7 +41,7 @@ extension View {
 }
 
 /// The island's root inside the (oversized when attached) window: the pill/pane sits top-centre and animates in
-/// place (D9); detached it fills the window. Reports its drawn frame for `hitTest` and the hover test.
+/// place (D9); detached it fills the window. Reports its drawn frame for `hitTest`.
 struct IslandRoot: View {
     @ObservedObject var ui: IslandUI
     @ObservedObject var store: Store
@@ -118,8 +116,9 @@ struct ClosedPill: View {
         }
         .environment(\.colorScheme, notch ? .dark : scheme)
         .contentShape(Rectangle())
+        .islandRect("pill", ui)
         .onTapGesture {
-            if s.isLive || s.state == .starting || s.state == .stopping { ui.pinned.toggle(); if ui.pinned { ui.state = .open } }
+            if s.isLive || s.state == .starting || s.state == .stopping { ui.onCollapseToggle?() }
             else { store.onOpenURL?(URL(string: "theuth://meetings")!) }
         }
         .accessibilityLabel(s.isLive ? "Meeting island, \(s.topics.count) topics; click to open" : "theuth; click opens Meetings")
@@ -163,7 +162,6 @@ struct OpenIsland: View {
         .frame(width: width)
         // Detached, `DetachedIsland` draws the one material behind the grip and the pane (two stacked would seam).
         .background { if attached { IslandShape(radius: Type.cardRadius, bottomOnly: true).fill(.regularMaterial) } }
-        .onHover { if $0 { ui.hover = true } }
     }
 }
 
@@ -172,9 +170,10 @@ struct DetachedIsland: View {
     @ObservedObject var store: Store
     var body: some View {
         VStack(spacing: 0) {
+            // The grip NSView is the overlay: a SwiftUI shape in front of it would take the hit (149i).
             Capsule().fill(Color.primary.opacity(0.2)).frame(width: 36, height: 4).padding(.top, 8).padding(.bottom, 2)
-                .frame(maxWidth: .infinity).contentShape(Rectangle())
-                .background(DragGrip(ui: ui))
+                .frame(maxWidth: .infinity)
+                .overlay(DragGrip(ui: ui))
                 .islandRect("grip-detached", ui)
                 .accessibilityLabel("Drag handle; double-click returns the island to the notch")
             OpenIsland(ui: ui, store: store, width: IslandLayout.detachedWidth, attached: false)
@@ -191,8 +190,8 @@ struct Strip: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // The left 24 pt is always the grip.
-            Color.clear.frame(width: 18, height: IslandLayout.stripHeight).contentShape(Rectangle()).background(DragGrip(ui: ui)).islandRect("grip", ui)
+            // The left 24 pt is always the grip — the NSView itself, nothing hit-testable in front of it.
+            DragGrip(ui: ui).frame(width: 18, height: IslandLayout.stripHeight).islandRect("grip", ui)
             Meters(level: slice.level, height: 16)
             RecClock(slice: slice, now: ui.now, font: .subheadline)
             OracleChip(ui: ui, slice: slice)
@@ -383,7 +382,7 @@ struct RequestBox: View {
                 .onSubmit(send)
                 .onChange(of: focused) { _, f in ui.boxFocused = f }
                 .onChange(of: ui.blurTick) { _, _ in focused = false }
-                .accessibilityLabel("Ask the meeting agent").islandRect("box", ui)
+                .accessibilityLabel("Ask the meeting agent")
             Button(action: send) { Image(systemName: "arrow.up").font(.subheadline.weight(.semibold)) }
                 .buttonStyle(.plain).foregroundColor(.secondary)
                 .disabled(ui.requestText.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -391,7 +390,7 @@ struct RequestBox: View {
                 .accessibilityLabel("Send request").islandRect("send", ui)
         }
         .padding(.horizontal, 14).padding(.vertical, 7)
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { ui.boxRect = $0 }
+        .islandRect("box", ui) // the row: a click anywhere in it makes the panel key (`wantsKeyOnClick`)
     }
 
     private func send() {
@@ -497,16 +496,16 @@ struct IslandShape: Shape {
     }
 }
 
-/// The grip: `mouseDown` → the controller's `performDrag(with:)` (recon A §A5 point 7). Sits behind the strip's
-/// buttons, so a press on nothing drags and a press on a button clicks.
+/// The grip: `mouseDown` → the controller (`performDrag(with:)`, or snap-back on a double-click; recon A §A5 point 7).
+/// Sits behind the strip's buttons, so a press on nothing drags and a press on a button clicks.
 struct DragGrip: NSViewRepresentable {
     @ObservedObject var ui: IslandUI
-    func makeNSView(context: Context) -> GripView { let v = GripView(); v.onDown = { ui.onDragStart?($0) }; return v }
-    func updateNSView(_ v: GripView, context: Context) { v.onDown = { ui.onDragStart?($0) } }
+    func makeNSView(context: Context) -> GripView { let v = GripView(); v.onDown = { ui.onGrip?($0) }; return v }
+    func updateNSView(_ v: GripView, context: Context) { v.onDown = { ui.onGrip?($0) } }
 
     final class GripView: NSView {
         var onDown: ((NSEvent) -> Void)?
-        override func mouseDown(with event: NSEvent) { if event.clickCount == 1 { onDown?(event) } }
+        override func mouseDown(with event: NSEvent) { onDown?(event) }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     }
 }
