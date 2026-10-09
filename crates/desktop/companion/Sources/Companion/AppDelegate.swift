@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, !AskFlags.automated else { return }
             self.askBar.toggle()
         }
-        // 149 W1: agentsPanel.installHotkeys()
+        installW1(rail: rail, attention: panel) // 149 W1: agents panel + hotkey, rail pills' clicks, the W1 probes (W1Install.swift)
         // 149 W2: pointAndSay.install()
         // 149 W3: island.install()
         store.onLegend = { [weak self] in self?.showLegend() }
@@ -126,23 +126,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard Flags.probe == nil else { return }
         let e = NSApp.currentEvent
         if e?.type == .rightMouseUp || e?.modifierFlags.contains(.option) == true {
-            let menu = NSMenu()
-            menu.addItem(withTitle: "Open theuth", action: #selector(openTheuth), keyEquivalent: "")
-            let shortcuts = menu.addItem(withTitle: "Keyboard shortcuts…", action: #selector(showLegend), keyEquivalent: "/") // W6
-            shortcuts.keyEquivalentModifierMask = .command
-            menu.addItem(.separator())
-            menu.addItem(withTitle: "Quit theuth", action: #selector(quitTheuth), keyEquivalent: "q") // W7: the whole app, one quit
-            menu.addItem(withTitle: "Quit theuth Companion", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
-            menu.items.forEach { $0.target = $0.action == #selector(openTheuth) || $0.action == #selector(showLegend) || $0.action == #selector(quitTheuth) ? self : nil }
-            askBar.addMenuItem(to: menu) // W3
-            NotificationsInstaller.shared?.appendMenu(menu) // W2: Pause notifications ▸ · Launch at login · Settings…
-            // 149 W1: agentsPanel.addMenuItem(to: menu)
-            statusItem.menu = menu
+            statusItem.menu = statusMenu()
             sender.performClick(nil)
             statusItem.menu = nil
             return
         }
         panel.toggle(anchor: .statusItem(sender.window?.frame ?? .zero))
+    }
+
+    /// The status item's menu; 149 W1 pops the same menu at the rail's "more" pill.
+    func statusMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Open theuth", action: #selector(openTheuth), keyEquivalent: "")
+        let shortcuts = menu.addItem(withTitle: "Keyboard shortcuts…", action: #selector(showLegend), keyEquivalent: "/") // W6
+        shortcuts.keyEquivalentModifierMask = .command
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit theuth", action: #selector(quitTheuth), keyEquivalent: "q") // W7: the whole app, one quit
+        menu.addItem(withTitle: "Quit theuth Companion", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        menu.items.forEach { $0.target = $0.action == #selector(openTheuth) || $0.action == #selector(showLegend) || $0.action == #selector(quitTheuth) ? self : nil }
+        askBar.addMenuItem(to: menu) // W3
+        NotificationsInstaller.shared?.appendMenu(menu) // W2: Pause notifications ▸ · Launch at login · Settings…
+        AgentsPanelController.shared?.addMenuItem(to: menu) // 149 W1
+        return menu
     }
 
     /// W7 (Sky, 2026-10-07 21:00): "Open theuth" shows the view the user had open last — activate the running

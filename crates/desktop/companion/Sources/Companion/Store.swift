@@ -299,4 +299,19 @@ final class Store: ObservableObject {
         guard let note, let session else { return }
         Task { _ = try? await client.sendInput(session: session, text: note) }
     }
+
+    // MARK: 149 W1 probes
+
+    /// `--probe-rail/--probe-agents/--probe-panel`: the engine's lists replaced by fixtures (re-applied after every
+    /// refetch so a reachable engine cannot overwrite them); `connection` reads open so the surfaces render the fixture.
+    func w1Seed(items: [AttentionItem], agents: [AgentSummary], activity: [AgentInfo], sessions: [SessionSummary],
+                mesh: MeshStatus?, status: SessionsStatus?, packets: [String: Packet] = [:]) {
+        self.items = items; self.agents = agents; self.activity = activity; self.sessions = sessions
+        meshStatus = mesh; sessionsStatus = status
+        for (k, v) in packets { self.packets[k] = v }
+        rail = RailModel.derive(items: items, agents: agents, activity: activity, now: Date())
+        panel.workingCount = rail.workingCount
+        panel.update(items: items)
+        connection = .open
+    }
 }

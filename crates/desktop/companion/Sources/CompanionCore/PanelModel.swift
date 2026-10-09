@@ -15,10 +15,11 @@ public struct PanelModel: Equatable, Sendable {
         self.workingCount = workingCount
     }
 
-    /// Needs-you oldest first, then finished oldest first; receipts (`show`, unknown kinds) last.
+    /// Needs-you first, then finished; receipts (`show`, unknown kinds) last. Within a group 149 (§3.3 Ordering, 132 D4):
+    /// `rank` desc (Urgent first) → `waiting_since` asc → id; items without a priority all carry the engine's default rank.
     public static func order(_ items: [AttentionItem]) -> [AttentionItem] {
         func group(_ i: AttentionItem) -> Int { i.kind.needsYou ? 0 : (i.kind == .finished ? 1 : 2) }
-        return items.sorted { (group($0), $0.waitingSince, $0.id) < (group($1), $1.waitingSince, $1.id) }
+        return items.sorted { (group($0), -Int($0.rank), $0.waitingSince, $0.id) < (group($1), -Int($1.rank), $1.waitingSince, $1.id) }
     }
 
     public var focused: AttentionItem? { items.indices.contains(focus) ? items[focus] : nil }

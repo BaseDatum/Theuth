@@ -31,19 +31,20 @@ struct AskBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "text.cursor").font(.system(size: 13)).foregroundColor(.sand)
+            // 149 W1 (§3.5, F3): the wide capsule's 24 pt line — finals in ink, the open partial in sand; while recording the
+            // mic glyph gives way to one carnelian bar per `DictationLevel` band (D8), mirrored in the rail's actions pill.
+            HStack(spacing: 12) {
+                Image(systemName: "text.cursor").font(.system(size: 15)).foregroundColor(.sand)
                 if state.live {
-                    // Finals normal, the open partial muted; the field comes back when the dictation lands.
                     (Text(state.text.isEmpty && state.partial.isEmpty ? "Listening…" : state.text).foregroundColor(state.text.isEmpty ? .sand : .ink)
                         + Text(state.text.isEmpty || state.partial.isEmpty ? "" : " ") + Text(state.partial).foregroundColor(.sand))
-                        .font(.system(size: 15)).lineLimit(3)
+                        .font(Type.headline.weight(.regular)).lineLimit(3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityLabel("Dictating: \(state.text) \(state.partial)")
                 } else {
                     TextField("Ask theuth…", text: $state.text)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 15))
+                        .font(Type.headline.weight(.regular))
                         .focused($focused)
                         .onChange(of: state.text) { _, new in state.onTyped?(new) }
                         .onChange(of: state.focusTick) { _, _ in focused = true }
@@ -51,24 +52,27 @@ struct AskBarView: View {
                         .accessibilityLabel("Ask theuth")
                         .accessibilityHint("Return sends to theuth's desk, which routes it")
                 }
-                Image(systemName: state.recording ? "mic.fill" : "mic")
-                    .font(.system(size: 14))
-                    .foregroundColor(state.recording ? .carnelian : .ink2)
-                    .scaleEffect(state.recording ? 1 + CGFloat(min(1, state.level)) * 0.5 : 1)
-                    .animation(.linear(duration: 0.1), value: state.level)
-                    .accessibilityLabel(state.recording ? "Listening" : "Hold the hotkey to dictate")
-            }
-            .padding(.horizontal, 14).padding(.top, 13).padding(.bottom, 10)
-            HStack(spacing: 12) {
-                Hint("⏎", "send to theuth · it routes")
-                if let hold = settings.keys.chord(for: .openPanel)?.symbol { Hint("hold \(hold)", "to talk · release to send in 3 s") }
-                Hint("⎋", store.undo.held == nil ? "cancel" : "undo")
-                Spacer()
-                if let s = state.status {
-                    Text(s).font(.system(size: 10.5)).foregroundColor(state.recording ? .carnelian : .sand).lineLimit(1)
+                if state.recording, !store.ask.dictation.levels.isEmpty {
+                    LevelBars(levels: store.ask.dictation.levels, height: 18, barWidth: 2.5, spacing: 2)
+                } else {
+                    Image(systemName: state.recording ? "mic.fill" : "mic")
+                        .font(.system(size: 16))
+                        .foregroundColor(state.recording ? .carnelian : .ink2)
+                        .accessibilityLabel(state.recording ? "Listening" : "Hold the hotkey to dictate")
                 }
             }
-            .padding(.horizontal, 14).padding(.bottom, 9)
+            .padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 8)
+            HStack(spacing: 12) {
+                if let hold = settings.keys.chord(for: .openPanel)?.symbol { Hint("hold \(hold)", "to talk") }
+                Text("release → sends to theuth in \(Int(store.undo.delay)) s").font(Type.caps).foregroundColor(.sand)
+                Hint("⎋", store.undo.held == nil ? "keeps editing" : "undo")
+                Text("theuth routes it").font(Type.caps).foregroundColor(.sand)
+                Spacer()
+                if let s = state.status {
+                    Text(s).font(Type.caps).foregroundColor(state.recording ? .carnelian : .sand).lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 22).padding(.bottom, 12)
             if let r = store.receipt {
                 ReceiptView(receipt: r, remaining: store.holdRemaining, delay: store.undo.delay, width: AskBarController.width)
             }

@@ -86,7 +86,7 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Text("Side and display apply on the next layout; the rail never takes focus.")
                 .font(.caption).foregroundStyle(.secondary)
-            // 149 W1: Toggle("Separate pills", isOn: $model.value.railPills) — off = today's strip (D1 escape hatch)
+            Toggle("Separate pills", isOn: $model.value.railPills) // 149 W1: off = 130's one strip (D1 escape hatch)
         }
     }
 
