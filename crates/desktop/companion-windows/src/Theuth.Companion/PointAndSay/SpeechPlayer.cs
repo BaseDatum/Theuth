@@ -1,3 +1,4 @@
+#pragma warning disable CS0618 // NAudio 3.1: WasapiOut is marked obsolete in favour of WasapiPlayerBuilder; the classic API is what W4's dictation path already pairs with.
 using System.Text;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
@@ -63,7 +64,7 @@ internal sealed class SpeechPlayer : IDisposable
         utterance = id;
         packets = 0; rmsSum = 0; finished = false; dump.Clear();
         decoder = new SpeechDecoder();
-        buffer = new BufferedWaveProvider(new WaveFormat(SpeechDecoder.OutputRate, 16, 1)) { BufferDuration = TimeSpan.FromSeconds(60), DiscardOnBufferOverflow = true };
+        buffer = new BufferedWaveProvider(new WaveFormat(SpeechDecoder.OutputRate, 16, 1)) { BufferLength = SpeechDecoder.OutputRate * 2 * 60, DiscardOnBufferOverflow = true };
         try
         {
             using var en = new MMDeviceEnumerator();
