@@ -154,8 +154,8 @@ mod tests {
         }
     }
 
-    fn temp() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("theuth-139-w3-{}", uuid::Uuid::now_v7()))
+    fn temp() -> crate::TestDir {
+        crate::TestDir::new("139-w3")
     }
 
     /// 139 §7.4 (1): `child_spawned` writes the `child_result` row with the
@@ -163,7 +163,8 @@ mod tests {
     /// that child's row. An empty call id writes nothing.
     #[tokio::test]
     async fn child_result_wait_written_and_cleared() {
-        let mut a = agents_on(temp(), Some("b"), true).await;
+        let scratch = temp();
+        let mut a = agents_on(scratch.0.clone(), Some("b"), true).await;
         let parent = SessionId::new();
         a.store
             .create_session(parent, "m", None, None, None)
@@ -206,8 +207,8 @@ mod tests {
     /// elsewhere, or `a` reachable, leaves everything in place.
     #[tokio::test]
     async fn settle_on_transfer_injects_the_lost_note() {
-        let dir = temp();
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = temp();
+        let dir = scratch.0.clone();
         let parent = SessionId::new();
         let (with_cwd, without_cwd, on_c) = (SessionId::new(), SessionId::new(), SessionId::new());
         let worktree = dir.join("wt");
@@ -304,6 +305,5 @@ mod tests {
                 "`kid` (session:{without_cwd}) was running on a, which is unreachable; its result is lost. "
             )
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

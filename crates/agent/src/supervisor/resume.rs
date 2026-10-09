@@ -220,8 +220,6 @@ impl Agents {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::path::PathBuf;
-
     use super::*;
     use crate::durability::{ResumeKind, StepKind};
     use crate::store::Store;
@@ -230,12 +228,12 @@ pub(crate) mod tests {
     /// 139 §11 W1's two-store shape: engine `a` writes a session with an
     /// open turn and closes the file; engine `b` opens the same file (a
     /// replica holding `a`'s rows) and gets an `Agents` over it. Returns
-    /// `b`, `a`'s session, its open turn and the dir.
+    /// the dir's guard, `b`, `a`'s session and its open turn.
     pub(crate) async fn b_holding_a_turn(
         communication: bool,
-    ) -> (Agents, SessionId, TurnId, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("theuth-139-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+    ) -> (crate::TestDir, Agents, SessionId, TurnId) {
+        let scratch = crate::TestDir::new("139");
+        let dir = scratch.0.clone();
         let a = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("a".into())),
@@ -256,8 +254,8 @@ pub(crate) mod tests {
         .await
         .unwrap();
         a.close().await;
-        let b = agents_on(dir.clone(), Some("b"), communication).await;
-        (b, foreign, turn, dir)
+        let b = agents_on(dir, Some("b"), communication).await;
+        (scratch, b, foreign, turn)
     }
 
     /// `b`'s own open turn in the shared file.
@@ -285,7 +283,7 @@ pub(crate) mod tests {
     /// spawns nothing either — the row is not `here`.
     #[tokio::test]
     async fn scan_and_resume_turn_skip_a_foreign_owners_turn() {
-        let (mut b, foreign, foreign_turn, _dir) = b_holding_a_turn(false).await;
+        let (_dir, mut b, foreign, foreign_turn) = b_holding_a_turn(false).await;
         let (mine, _) = own_turn(&b).await;
         std::sync::Arc::make_mut(&mut b.cfg).durability.resume = ResumeMode::Auto;
 

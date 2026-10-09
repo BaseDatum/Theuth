@@ -81,8 +81,8 @@ fn guessed_direct_calls_are_bridged_or_refused() {
 }
 
 async fn scenarios() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-bridge-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("bridge-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     let registry = tools::registry::start(&reg_rt).await.unwrap();
 
@@ -100,7 +100,6 @@ async fn scenarios() {
     assert_eq!(started(&events).len(), 1, "no inner call ran: {events:?}");
 
     let Some(pool) = worker_pool().await else {
-        let _ = std::fs::remove_dir_all(&reg_dir);
         return;
     };
 
@@ -183,6 +182,4 @@ async fn scenarios() {
         )]
     );
     assert_eq!(started(&events).len(), 1, "no inner call ran: {events:?}");
-
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }

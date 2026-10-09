@@ -338,14 +338,14 @@ pub(super) struct Harness {
     png2_b64: String,
     /// The python worker pool a turn gets (`None`: no runtime, every tool direct).
     pub(super) pool: Option<Arc<Pool>>,
-    /// Remove `dir` on drop (not for an attached harness).
-    owned: bool,
+    /// Removes `dir` on drop (`None` for an attached harness); last so it drops last.
+    _scratch: Option<crate::TestDir>,
 }
 
 impl Harness {
     pub(super) async fn new(fake: impl Respond + 'static) -> Self {
-        let dir = std::env::temp_dir().join(format!("theuth-vision-e2e-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("vision-e2e");
+        let dir = scratch.0.clone();
         let model = |id: &str, image: bool| {
             json!({
                 "id": id, "name": id,
@@ -423,7 +423,7 @@ impl Harness {
             png2,
             png2_b64,
             pool: None,
-            owned: true,
+            _scratch: Some(scratch),
         }
     }
 
@@ -453,7 +453,7 @@ impl Harness {
             png_b64: String::new(),
             png2_b64: String::new(),
             pool: None,
-            owned: false,
+            _scratch: None,
         }
     }
 
@@ -658,14 +658,6 @@ fn client_for(endpoint: &str) -> Client {
         .unwrap()
 }
 
-impl Drop for Harness {
-    fn drop(&mut self) {
-        if self.owned {
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-}
-
 fn stop_reason(events: &[AgentEvent]) -> &str {
     events
         .iter()
@@ -806,8 +798,8 @@ fn vision_fallback_contract_against_fake_provider() {
 
 /// One registry and one vault for the process; every scenario's turn finds them.
 async fn vision_scenarios() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-vision-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("vision-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
     tools::secrets::install(Arc::new(Vault));
@@ -823,8 +815,6 @@ async fn vision_scenarios() {
     leaked_secret_in_the_question_is_redacted_before_it_leaves().await;
     cut_compaction_budgets_the_tail_and_folds_tool_results().await;
     empty_reply_is_surfaced_as_an_error().await;
-
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }
 
 /// Gate "Main-authored question" / "Privacy and accounting" / "Stable prefix".

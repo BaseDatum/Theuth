@@ -171,8 +171,8 @@ fn count(events: &[AgentEvent], pick: impl Fn(&AgentEvent) -> bool) -> usize {
 #[test]
 fn hooks_fire_per_batch_and_at_turn_end() {
     crate::with_test_registry(async {
-        let reg_dir = std::env::temp_dir().join(format!("theuth-adv-reg-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&reg_dir).unwrap();
+        let scratch = crate::TestDir::new("adv-reg");
+        let reg_dir = scratch.0.clone();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -235,15 +235,14 @@ fn hooks_fire_per_batch_and_at_turn_end() {
         actor.tell(user_input("again")).await.unwrap();
         let events = h.drain().await;
         assert!(changes(&events, h.id).is_empty(), "{events:?}");
-        let _ = std::fs::remove_dir_all(&reg_dir);
     });
 }
 
 #[test]
 fn passive_cards_never_open_a_turn_and_land_at_the_boundary() {
     crate::with_test_registry(async {
-        let reg_dir = std::env::temp_dir().join(format!("theuth-adv-reg-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&reg_dir).unwrap();
+        let scratch = crate::TestDir::new("adv-reg");
+        let reg_dir = scratch.0.clone();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -346,15 +345,14 @@ fn passive_cards_never_open_a_turn_and_land_at_the_boundary() {
             texts(reqs.last().unwrap()).iter().any(|x| x == &t),
             "the card entered the next model call"
         );
-        let _ = std::fs::remove_dir_all(&reg_dir);
     });
 }
 
 #[test]
 fn stop_preserves_queued_steers_as_cards() {
     crate::with_test_registry(async {
-        let reg_dir = std::env::temp_dir().join(format!("theuth-adv-reg-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&reg_dir).unwrap();
+        let scratch = crate::TestDir::new("adv-reg");
+        let reg_dir = scratch.0.clone();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -393,15 +391,14 @@ fn stop_preserves_queued_steers_as_cards() {
         assert_eq!(kinds, ["cancelled", "advisory"], "{events:?}");
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(!actor.ask(IsRunning).await.unwrap());
-        let _ = std::fs::remove_dir_all(&reg_dir);
     });
 }
 
 #[test]
 fn advisor_kind_session_runs_advise_locally_with_the_bare_prompt() {
     crate::with_test_registry(async {
-        let reg_dir = std::env::temp_dir().join(format!("theuth-adv-reg-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&reg_dir).unwrap();
+        let scratch = crate::TestDir::new("adv-reg");
+        let reg_dir = scratch.0.clone();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -490,7 +487,6 @@ fn advisor_kind_session_runs_advise_locally_with_the_bare_prompt() {
             names.contains(&"advise") && !names.contains(&"todo") && !names.contains(&"consult"),
             "{names:?}"
         );
-        let _ = std::fs::remove_dir_all(&reg_dir);
     });
 }
 
@@ -500,8 +496,8 @@ fn advisor_kind_session_runs_advise_locally_with_the_bare_prompt() {
 #[test]
 fn masked_card_lands_at_once_and_stays_out_of_context() {
     crate::with_test_registry(async {
-        let reg_dir = std::env::temp_dir().join(format!("theuth-adv-reg-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&reg_dir).unwrap();
+        let scratch = crate::TestDir::new("adv-reg");
+        let reg_dir = scratch.0.clone();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -558,6 +554,5 @@ fn masked_card_lands_at_once_and_stays_out_of_context() {
             })
             .count();
         assert_eq!(masked, 1, "{rows:?}");
-        let _ = std::fs::remove_dir_all(&reg_dir);
     });
 }

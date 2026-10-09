@@ -125,18 +125,19 @@ async fn holding_openai() -> (String, Requests) {
 type Requests = Arc<std::sync::Mutex<Vec<String>>>;
 
 struct Harness {
-    dir: PathBuf,
     store: Store,
     id: SessionId,
     events: UnboundedReceiver<AgentEvent>,
     actor: ActorRef<Session>,
+    /// Dropped last: the scratch dir outlives the actor that uses it.
+    _dir: crate::TestDir,
 }
 
 impl Harness {
     /// A session actor on a fresh store whose model is the gateway at `base_url`.
     async fn new(base_url: String) -> Self {
-        let dir = std::env::temp_dir().join(format!("theuth-interrupt-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("interrupt");
+        let dir = scratch.0.clone();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -186,11 +187,11 @@ impl Harness {
             SessionResources::durable_arc(&dir),
         ));
         Self {
-            dir,
             store,
             id,
             events,
             actor,
+            _dir: scratch,
         }
     }
 
@@ -321,8 +322,8 @@ fn cancel_with_keep_persists_the_heard_prefix_then_a_plain_cancel_drops() {
 }
 
 async fn scenarios() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-interrupt-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("interrupt-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 
@@ -358,9 +359,6 @@ async fn scenarios() {
     let events = h.interrupted_turn("Once more.", Some(String::new())).await;
     assert_eq!(stop_reason(&events), "interrupted");
     assert_eq!(h.rows().await.len(), 4, "{:#?}", h.rows().await);
-
-    let _ = std::fs::remove_dir_all(&h.dir);
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }
 
 #[test]
@@ -370,8 +368,8 @@ fn trim_rewrites_the_finished_reply_to_the_heard_prefix() {
 
 /// 76 §7, the post-turn case: `TrimTurn` on a reply that finished streaming.
 async fn trim_scenarios() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-trim-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("trim-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 
@@ -473,7 +471,4 @@ async fn trim_scenarios() {
             .map_err(|e| e.to_string()),
         Err("no assistant row".to_owned())
     );
-
-    let _ = std::fs::remove_dir_all(&h.dir);
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }

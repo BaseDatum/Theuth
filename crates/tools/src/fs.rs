@@ -729,10 +729,11 @@ fn grep(root: &Path, pattern: &str, glob: Option<&str>, limit: usize) -> anyhow:
 mod tests {
     use super::*;
 
-    fn scratch(content: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("theuth-edit-{}.txt", uuid::Uuid::new_v4()));
+    fn scratch(content: &str) -> (crate::TestDir, PathBuf) {
+        let dir = crate::TestDir::new("edit");
+        let path = dir.0.join("f.txt");
         std::fs::write(&path, content).unwrap();
-        path
+        (dir, path)
     }
 
     fn cx() -> ToolCx {
@@ -772,7 +773,7 @@ mod tests {
     #[tokio::test]
     async fn read_numbers_lines_cat_n_style_under_an_exact_header() {
         let text: String = (1..=12).map(|i| format!("l{i}\n")).collect();
-        let p = scratch(&text);
+        let (_g, p) = scratch(&text);
         let out = read(args(&p, None, None)).await;
         let mut want = header(&p, 12, text.len(), "lines 1–12");
         for i in 1..=12 {
@@ -789,7 +790,7 @@ mod tests {
             )
         );
         // Empty lines keep their number; a limit past EOF clamps.
-        let p = scratch("a\n\nc");
+        let (_g, p) = scratch("a\n\nc");
         let out = read(args(&p, Some(2), Some(50))).await;
         assert_eq!(out, format!("{}\n2\t\n3\tc", header(&p, 3, 4, "lines 2–3")));
     }
@@ -883,7 +884,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_numbers_false_gives_raw_text_with_header() {
-        let p = scratch("a\n\nc\n");
+        let (_g, p) = scratch("a\n\nc\n");
         let mut a = args(&p, None, None);
         a.numbers = false;
         assert_eq!(
@@ -894,12 +895,12 @@ mod tests {
 
     #[tokio::test]
     async fn read_empty_file_and_offset_past_eof() {
-        let p = scratch("");
+        let (_g, p) = scratch("");
         assert_eq!(
             read(args(&p, None, None)).await,
             header(&p, 0, 0, "0 lines")
         );
-        let p = scratch("a\nb\n");
+        let (_g, p) = scratch("a\nb\n");
         let err = Tool::call(&ReadFile, args(&p, Some(3), None), cx())
             .await
             .unwrap_err()
@@ -915,7 +916,7 @@ mod tests {
         // 1000 lines × 70 bytes = 70 000 bytes; raw, the cap falls mid-line
         // 937 (65536 / 70 = 936.2); numbered (+5 bytes a line) mid-line 874.
         let line = format!("{}\n", "x".repeat(69));
-        let p = scratch(&line.repeat(1000));
+        let (_g, p) = scratch(&line.repeat(1000));
         let mut a = args(&p, None, None);
         a.numbers = false;
         let out = read(a).await;
@@ -955,7 +956,7 @@ mod tests {
     #[tokio::test]
     async fn read_defaults_to_2000_lines_with_a_footer() {
         let text: String = (1..=2500).map(|i| format!("{i}\n")).collect();
-        let p = scratch(&text);
+        let (_g, p) = scratch(&text);
         let out = read(args(&p, None, None)).await;
         let mut want = header(&p, 2500, text.len(), "lines 1–2000 of 2500");
         for i in 1..=2000 {
@@ -977,7 +978,7 @@ mod tests {
     async fn read_cuts_long_lines_at_a_char_boundary() {
         let long = format!("{}é{}", "a".repeat(1999), "b".repeat(10));
         let text = format!("short\n{long}\n{long}\n");
-        let p = scratch(&text);
+        let (_g, p) = scratch(&text);
         let out = read(args(&p, None, None)).await;
         assert_eq!(
             out,
@@ -987,14 +988,14 @@ mod tests {
                 cut = format!("{}é …[+10 chars]", "a".repeat(1999)),
             )
         );
-        let p = scratch(&"a".repeat(2000));
+        let (_g, p) = scratch(&"a".repeat(2000));
         assert!(!read(args(&p, None, None)).await.contains("…["));
     }
 
     #[tokio::test]
     async fn read_tail_shows_the_last_lines_with_real_numbers() {
         let text: String = (1..=120).map(|i| format!("l{i}\n")).collect();
-        let p = scratch(&text);
+        let (_g, p) = scratch(&text);
         let mut a = args(&p, None, None);
         a.tail = Some(3);
         assert_eq!(
@@ -1038,8 +1039,8 @@ mod tests {
     // this one test: the unregistered error first, then Some/None.
     #[tokio::test]
     async fn read_outline_uses_the_registered_hook() {
-        let dir = std::env::temp_dir().join(format!("theuth-outline-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let guard = crate::TestDir::new("outline");
+        let dir = guard.0.clone();
         let rs = dir.join("a.rs");
         std::fs::write(&rs, "fn a() {}\nfn b() {}\n").unwrap();
         let outline = |p: &Path| {
@@ -1100,7 +1101,7 @@ mod tests {
     #[tokio::test]
     async fn read_ranges_emit_separators_in_the_order_given() {
         let text: String = (1..=120).map(|i| format!("l{i}\n")).collect();
-        let p = scratch(&text);
+        let (_g, p) = scratch(&text);
         let mut a = args(&p, None, None);
         a.ranges = Some(vec![[100, 101], [5, 6], [100, 100]]);
         assert_eq!(
@@ -1162,7 +1163,7 @@ mod tests {
     #[tokio::test]
     async fn read_ranges_share_the_line_limit() {
         let text: String = (1..=120).map(|i| format!("l{i}\n")).collect();
-        let p = scratch(&text);
+        let (_g, p) = scratch(&text);
         let mut a = args(&p, None, Some(3));
         a.ranges = Some(vec![[10, 11], [50, 60], [70, 70]]);
         assert_eq!(
@@ -1174,7 +1175,7 @@ mod tests {
         );
         // The default window applies across ranges too.
         let text: String = (1..=2500).map(|i| format!("{i}\n")).collect();
-        let p = scratch(&text);
+        let (_g, p) = scratch(&text);
         let mut a = args(&p, None, None);
         a.ranges = Some(vec![[1, 1500], [2000, 2500]]);
         let out = read(a).await;
@@ -1188,7 +1189,7 @@ mod tests {
     #[tokio::test]
     async fn read_window_under_cap_has_no_markers() {
         let line = format!("{}\n", "x".repeat(69));
-        let p = scratch(&line.repeat(1000));
+        let (_g, p) = scratch(&line.repeat(1000));
         let mut a = args(&p, Some(2), Some(3));
         a.numbers = false;
         let out = read(a).await;
@@ -1206,7 +1207,7 @@ mod tests {
 
     #[tokio::test]
     async fn guard_refuses_pasted_header_but_not_tsv_numbers() {
-        let p = scratch("x");
+        let (_g, p) = scratch("x");
         let pasted = format!("{}\n1\tfoo\n2\tbar", header(&p, 2, 8, "lines 1–2"));
         let err = write(&p, &pasted).await.unwrap_err().to_string();
         assert_eq!(
@@ -1224,7 +1225,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_refuses_truncation_markers() {
-        let p = scratch("keep me");
+        let (_g, p) = scratch("keep me");
         for content in [
             format!("{TRUNCATED_HEAD_PREFIX}0–1 of 2]\nbody"),
             format!("body\n{TRUNCATED_TAIL}"),
@@ -1269,7 +1270,8 @@ mod tests {
 
     #[tokio::test]
     async fn write_creates_with_parents() {
-        let dir = std::env::temp_dir().join(format!("theuth-write-{}", uuid::Uuid::new_v4()));
+        let guard = crate::TestDir::new("write");
+        let dir = guard.0.clone();
         let p = dir.join("a/b/new.txt");
         let out = write(&p, "hello\n").await.unwrap();
         assert_eq!(out.content, format!("created {} (6 bytes)", p.display()));
@@ -1285,7 +1287,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_overwrite_reports_diff_and_identical_is_a_no_op() {
-        let p = scratch("one\ntwo\n");
+        let (_g, p) = scratch("one\ntwo\n");
         let out = write(&p, "one\n2\nthree\n").await.unwrap();
         let shown = p.display().to_string();
         assert_eq!(
@@ -1311,7 +1313,7 @@ mod tests {
     #[tokio::test]
     async fn write_preserves_permissions_and_leaves_no_tmp_on_error() {
         use std::os::unix::fs::PermissionsExt;
-        let p = scratch("#!/bin/sh\n");
+        let (_g, p) = scratch("#!/bin/sh\n");
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
         write(&p, "#!/bin/sh\necho\n").await.unwrap();
         assert_eq!(
@@ -1319,8 +1321,8 @@ mod tests {
             0o700
         );
 
-        let dir = std::env::temp_dir().join(format!("theuth-write-ro-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let guard = crate::TestDir::new("write-ro");
+        let dir = guard.0.clone();
         let p = dir.join("f.txt");
         std::fs::write(&p, "old").unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
@@ -1332,20 +1334,21 @@ mod tests {
     }
 
     /// Temp tree with a `.git` marker so `.gitignore` files are honoured.
-    fn grep_tree(files: &[(&str, &str)]) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("theuth-grep-{}", uuid::Uuid::new_v4()));
+    fn grep_tree(files: &[(&str, &str)]) -> (crate::TestDir, PathBuf) {
+        let guard = crate::TestDir::new("grep");
+        let root = guard.0.clone();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         for (f, content) in files {
             let p = root.join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, content).unwrap();
         }
-        root
+        (guard, root)
     }
 
     #[test]
     fn grep_sorts_by_path_then_line_and_marks_the_cap() {
-        let root = grep_tree(&[
+        let (_g, root) = grep_tree(&[
             ("b/z.rs", "hit\nmiss\nhit\n"),
             ("a.rs", "hit\n"),
             ("b/y.rs", "hit\n"),
@@ -1368,7 +1371,7 @@ mod tests {
 
     #[test]
     fn grep_bypasses_an_ancestor_gitignore_that_hides_the_root() {
-        let outer = grep_tree(&[(".gitignore", "*\n"), ("inner/a.rs", "needle\n")]);
+        let (_g, outer) = grep_tree(&[(".gitignore", "*\n"), ("inner/a.rs", "needle\n")]);
         let inner = outer.join("inner");
         let out = grep(&inner, "needle", None, 200).unwrap();
         assert_eq!(

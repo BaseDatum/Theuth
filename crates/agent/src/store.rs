@@ -3679,10 +3679,10 @@ mod tests {
 
     use super::*;
 
-    /// Fresh store in a temp dir with one session; caller removes `dir` at the end.
-    async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("theuth-store-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+    /// Fresh store in a temp dir with one session; the dir goes when the guard drops.
+    async fn fresh() -> (Store, SessionId, crate::TestDir) {
+        let scratch = crate::TestDir::new("store");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -3691,7 +3691,7 @@ mod tests {
             .create_session(id, "m", None, None, None)
             .await
             .unwrap();
-        (store, id, dir)
+        (store, id, scratch)
     }
 
     /// The writer commits with `synchronous=NORMAL` (1): WAL mode keeps a
@@ -3699,14 +3699,13 @@ mod tests {
     /// fsync per commit. The readers never fsync, so only the writer counts.
     #[tokio::test]
     async fn write_connection_is_synchronous_normal() {
-        let (store, _, dir) = fresh().await;
+        let (store, _, _dir) = fresh().await;
         let (sync,): (i64,) = sqlx::query_as("PRAGMA synchronous")
             .fetch_one(&store.write)
             .await
             .unwrap();
         assert_eq!(sync, 1, "PRAGMA synchronous on the write connection");
         drop(store);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     async fn append_all(store: &Store, id: SessionId, msgs: impl IntoIterator<Item = ChatMessage>) {
@@ -3719,7 +3718,7 @@ mod tests {
     /// stops after `ROOT_HOPS` with the id it reached instead of hanging.
     #[tokio::test]
     async fn root_of_tops_the_chain_and_survives_a_cycle() {
-        let (store, root, dir) = fresh().await;
+        let (store, root, _dir) = fresh().await;
         let kid = SessionId::new();
         let grandkid = SessionId::new();
         store
@@ -3752,7 +3751,6 @@ mod tests {
             .expect("bounded")
             .unwrap();
         assert!([root, kid, grandkid].contains(&reached));
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn texts(rows: &[(i64, ChatMessage)]) -> Vec<(i64, String)> {
@@ -3769,7 +3767,7 @@ mod tests {
     /// a row from before the column (simulated by clearing it) has none.
     #[tokio::test]
     async fn message_time_is_stored_and_exposed() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         let before = chrono::Utc::now();
         append_all(&store, id, [ChatMessage::user("hi"), asst("hello")]).await;
         sqlx::query("UPDATE messages SET at = NULL WHERE session_id = ? AND seq = 0")
@@ -3784,7 +3782,6 @@ mod tests {
             .with_timezone(&chrono::Utc);
         assert!(at >= before - chrono::Duration::seconds(1) && at <= chrono::Utc::now());
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 91: the migration adds `messages.thinking_ms`; `append_thinking` writes
@@ -3792,7 +3789,7 @@ mod tests {
     /// plain appends and `None` leave it NULL (absent from the map).
     #[tokio::test]
     async fn thinking_time_round_trips() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         let cols: Vec<(i64, String)> =
             sqlx::query_as("SELECT cid, name FROM pragma_table_info('messages')")
                 .fetch_all(&store.read)
@@ -3812,14 +3809,13 @@ mod tests {
         assert_eq!(h.thinking, BTreeMap::from([(1, 9_400)]));
         assert_eq!(h.messages.len(), 3);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ----- 141 §11.3: watch-only children -----
 
     #[tokio::test]
     async fn observed_upsert_is_idempotent_per_parent_source_external() {
-        let (store, root, dir) = fresh().await;
+        let (store, root, _dir) = fresh().await;
         let acp = SessionId::new();
         store
             .create_session(acp, "m", Some(root), Some("omp"), None)
@@ -3942,12 +3938,11 @@ mod tests {
                 .is_err()
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn observed_children_lists_under_the_acp_child_in_order() {
-        let (store, root, dir) = fresh().await;
+        let (store, root, _dir) = fresh().await;
         let acp = SessionId::new();
         store
             .create_session(acp, "m", Some(root), Some("omp"), None)
@@ -4005,7 +4000,6 @@ mod tests {
         assert_eq!(obs.parent, Some(a));
         assert!(obs.observed.is_some());
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -4053,7 +4047,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_observed_lost_touches_non_terminal_rows_only() {
-        let (owned, root, dir) = fresh().await;
+        let (owned, root, _dir) = fresh().await;
         let store = &owned;
         let live = SessionId::new();
         let gone = SessionId::new();
@@ -4103,12 +4097,11 @@ mod tests {
         let again = store.mark_observed_lost(&[live]).await.unwrap();
         assert!(again.is_empty());
         drop(owned);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn observed_cursor_round_trip() {
-        let (store, root, dir) = fresh().await;
+        let (store, root, _dir) = fresh().await;
         let acp = SessionId::new();
         store
             .create_session(acp, "m", Some(root), Some("omp"), None)
@@ -4125,7 +4118,6 @@ mod tests {
         assert_eq!(store.observed_cursor(child).await.unwrap(), Some(0));
         assert_eq!(store.observed_cursor(acp).await.unwrap(), None);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -4149,7 +4141,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_round_trip() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         for (i, m) in [
             ChatMessage::system("sys"),
             ChatMessage::user("hi"),
@@ -4250,12 +4242,11 @@ mod tests {
         assert!(store.session(SessionId::new()).await.unwrap().is_none());
 
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn descendants_is_preorder_with_depth() {
-        let (store, root, dir) = fresh().await;
+        let (store, root, _dir) = fresh().await;
         let a = SessionId::new();
         let b = SessionId::new();
         let a1 = SessionId::new();
@@ -4301,12 +4292,11 @@ mod tests {
         assert!(store.descendants(b).await.unwrap().is_empty());
 
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn acp_columns_round_trip() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         let row = store.session(id).await.unwrap().unwrap();
         assert_eq!((row.agent, row.cwd, row.harness_model), (None, None, None));
         assert_eq!(store.acp_session(id).await.unwrap(), None);
@@ -4346,12 +4336,11 @@ mod tests {
         );
 
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn last_turn_text_joins_assistant_text_after_last_user() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         for m in [
             ChatMessage::user("earlier"),
             ChatMessage::assistant(MessageContent::from_text("stale")),
@@ -4377,12 +4366,11 @@ mod tests {
             (Some("task"), "first\nsecond")
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn compact_frames_from_tail() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         for i in 0..6 {
             store
                 .append(id, &ChatMessage::user(format!("m{i}")))
@@ -4410,7 +4398,6 @@ mod tests {
             (1, 5, 4)
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 70 COMPACT-SIZE: a tool result that was in the kept tail at the cut
@@ -4418,7 +4405,7 @@ mod tests {
     /// appended after the cut is whole, and so is the raw row.
     #[tokio::test]
     async fn frame_folds_oversize_tool_results_in_the_compaction_tail() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         let big = "x".repeat(compact::FOLD_CHARS * 3);
         let tool = |c: &str| ChatMessage::from(vec![ToolResponse::new(c, big.clone())]);
         store.append(id, &ChatMessage::user("u0")).await.unwrap();
@@ -4451,7 +4438,6 @@ mod tests {
         let raw = store.messages(id).await.unwrap();
         assert_eq!(raw[2].1.content.tool_responses()[0].content, big);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 13 §6.5: a multi-part snap head (caption, PNG frames, closing tag)
@@ -4463,7 +4449,7 @@ mod tests {
 
         use crate::{compact, snap};
 
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         append_all(&store, id, [ChatMessage::user("m0"), asst("a0")]).await;
         let caption = "Archive of 2 folded messages as 2 image(s), most recent last.";
         let shape = snap::shape("anthropic");
@@ -4508,12 +4494,11 @@ mod tests {
             serde_json::to_string(&head).unwrap()
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn undo_redo_hides_whole_turns_including_steers() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         append_all(
             &store,
             id,
@@ -4564,12 +4549,11 @@ mod tests {
 
         assert_eq!(store.redo(id).await.unwrap(), None);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn undo_hides_epochs_inside_the_turn() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         append_all(
             &store,
             id,
@@ -4594,12 +4578,11 @@ mod tests {
         assert_eq!(store.epochs(id).await.unwrap().len(), 1);
         assert_eq!(store.frame(id).await.unwrap().0, 1);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn commit_cut_deletes_hidden_tail() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         append_all(
             &store,
             id,
@@ -4627,7 +4610,6 @@ mod tests {
         assert_eq!(store.redo(id).await.unwrap(), None);
         assert_eq!(store.hidden_turns(id).await.unwrap(), 0);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -4647,7 +4629,7 @@ mod tests {
             [(0, "u1".into()), (1, "a1".into()), (2, "u2".into())]
         );
         drop(store);
-        let store = Store::open(&dir.join("sessions.sqlite"), None)
+        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
             .await
             .unwrap();
         assert_eq!(store.errors(id).await.unwrap(), all);
@@ -4674,7 +4656,6 @@ mod tests {
             .unwrap();
         assert_eq!(left.0, 0);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 08 as-built: inner calls of a `python` cell round-trip by parent in `n`
@@ -4683,7 +4664,7 @@ mod tests {
     /// committed undo and by session deletion.
     #[tokio::test]
     async fn inner_calls_follow_their_turn() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         assert_eq!(inner_call_id("toolu_1.3"), Some(("toolu_1", 3)));
         assert_eq!(inner_call_id("toolu_1"), None);
         assert_eq!(inner_call_id("call.x"), None);
@@ -4759,12 +4740,11 @@ mod tests {
             .unwrap();
         assert_eq!(left.0, 0);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn cut_to_accepts_only_turn_starts() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         append_all(
             &store,
             id,
@@ -4806,12 +4786,11 @@ mod tests {
             "not a turn start"
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn fork_copies_turns_through_the_given_one() {
-        let (store, src, dir) = fresh().await;
+        let (store, src, _dir) = fresh().await;
         store.set_title(src, "topic").await.unwrap();
         append_all(
             &store,
@@ -4894,7 +4873,6 @@ mod tests {
             "nothing to fork"
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A fork at a reply inside a multi-round turn ends on that reply with its
@@ -4902,7 +4880,7 @@ mod tests {
     #[tokio::test]
     async fn fork_at_a_reply_stops_there_without_tool_calls() {
         use genai::chat::{ContentPart, MessageContent, ToolCall, ToolResponse};
-        let (store, src, dir) = fresh().await;
+        let (store, src, _dir) = fresh().await;
         let call = ToolCall {
             thought_signatures: None,
             call_id: "c1".into(),
@@ -4955,7 +4933,6 @@ mod tests {
                 .is_empty()
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- todo snapshots (47 §5.2) ----
@@ -4993,7 +4970,7 @@ mod tests {
 
     #[tokio::test]
     async fn todos_version_bumps_only_on_material_change() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         assert_eq!(store.todos(id).await.unwrap(), TodoSnapshot::default());
         assert!(
             store.todos(SessionId::new()).await.is_err(),
@@ -5057,12 +5034,11 @@ mod tests {
         assert_eq!(store.todos(id).await.unwrap(), before);
         assert_eq!(snapshot_rows(&store, id).await, 3);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn clear_at_compaction_orders_after_update_at_same_seq() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         let plan = [todo("a", Status::InProgress)];
         append_all(&store, id, [ChatMessage::user("u1"), todo_call("c1")]).await;
         let (at, _) = store
@@ -5092,12 +5068,11 @@ mod tests {
         assert_eq!(store.redo(id).await.unwrap().as_deref(), Some("u1"));
         assert_eq!(store.todos(id).await.unwrap(), cleared);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn undo_redo_select_plan_under_cut_with_monotonic_version() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         let p1 = [todo("a", Status::InProgress)];
         let p2 = [todo("a", Status::Done), todo("b", Status::InProgress)];
         append_all(&store, id, [ChatMessage::user("u1"), todo_call("c1")]).await;
@@ -5149,12 +5124,11 @@ mod tests {
         let snap = store.todos(id).await.unwrap();
         assert_eq!((snap.version, snap.items.is_empty()), (6, true));
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn fork_and_delete_carry_plan_through_boundary() {
-        let (store, src, dir) = fresh().await;
+        let (store, src, _dir) = fresh().await;
         let p1 = [todo("a", Status::InProgress)];
         let p2 = [todo("a", Status::Done)];
         append_all(&store, src, [ChatMessage::user("u1"), todo_call("c1")]).await;
@@ -5211,7 +5185,6 @@ mod tests {
         assert_eq!(snapshot_rows(&store, mid).await, 0);
         assert_eq!(snapshot_rows(&store, src).await, 2);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // region:    --- Context removal (48)
@@ -5260,7 +5233,7 @@ mod tests {
 
     /// 48 §7.1: user text + A/B (B shares a name with a tool image), tool
     /// text + C/D with a second image-only response, then a later reply.
-    async fn seeded() -> (Store, SessionId, std::path::PathBuf) {
+    async fn seeded() -> (Store, SessionId, crate::TestDir) {
         let (store, id, dir) = fresh().await;
         append_all(
             &store,
@@ -5290,7 +5263,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_context_drops_exact_occurrences_and_guards_by_revision() {
-        let (store, id, dir) = seeded().await;
+        let (store, id, _dir) = seeded().await;
         let rev = store.context_revision(id).await.unwrap();
         assert_eq!(rev, "4", "one bump per append");
         let snap = store.context_items(id).await.unwrap();
@@ -5400,12 +5373,11 @@ mod tests {
             1
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn remove_context_whole_group_keeps_later_rows_and_turns() {
-        let (store, id, dir) = seeded().await;
+        let (store, id, _dir) = seeded().await;
         let snap = store.context_items(id).await.unwrap();
         let asst_item = snap.items.iter().find(|i| i.target == msg(1)).unwrap();
         assert_eq!(asst_item.remove_with, [msg(2)]);
@@ -5465,12 +5437,11 @@ mod tests {
             [(0, false), (1, true), (3, false)]
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn remove_head_keeps_epoch_and_tail_from() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         append_all(
             &store,
             id,
@@ -5542,12 +5513,11 @@ mod tests {
         let (n, head, _) = store.frame(id).await.unwrap();
         assert_eq!((n, head.is_none()), (1, true));
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn revision_bumps_on_every_visibility_change_and_never_resets() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         assert_eq!(store.context_revision(id).await.unwrap(), "0");
         assert!(store.context_revision(SessionId::new()).await.is_err());
         append_all(
@@ -5605,7 +5575,6 @@ mod tests {
                 .is_err()
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 48 §4.4: a fork carries masks with its rows and heads; the stripped
@@ -5613,7 +5582,7 @@ mod tests {
     /// a shortened vector.
     #[tokio::test]
     async fn fork_copies_masks_and_remaps_the_stripped_reply() {
-        let (store, src, dir) = fresh().await;
+        let (store, src, _dir) = fresh().await;
         let reply = ChatMessage::assistant(MessageContent::from_parts(vec![
             ContentPart::Text("looking".into()),
             ContentPart::Binary(img("shot.png")),
@@ -5692,12 +5661,11 @@ mod tests {
             ["shot.png"]
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn context_history_reads_raw_rows_with_membership() {
-        let (store, id, dir) = seeded().await;
+        let (store, id, _dir) = seeded().await;
         let head = ChatMessage::user(compact::wrap_head(
             1,
             compact::CompactStyle::Summary,
@@ -5762,14 +5730,13 @@ mod tests {
         );
         assert!(store.context_history(SessionId::new()).await.is_err());
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A failure anywhere in the edit transaction (here: the revision bump,
     /// after every mask was written) leaves masks and revision untouched.
     #[tokio::test]
     async fn remove_context_failed_write_leaves_masks_and_revision() {
-        let (store, id, dir) = seeded().await;
+        let (store, id, _dir) = seeded().await;
         let before = serde_json::to_string(&store.frame(id).await.unwrap()).unwrap();
         sqlx::query(
             "CREATE TRIGGER fail_rev BEFORE UPDATE OF context_revision ON sessions \
@@ -5811,7 +5778,6 @@ mod tests {
             [(0, "look[image: same.png]".into()), (3, "done".into())]
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A committed removal survives a restart: the reopened store projects the
@@ -5828,7 +5794,7 @@ mod tests {
         store.close().await;
         drop(store);
 
-        let store = Store::open(&dir.join("sessions.sqlite"), None)
+        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
             .await
             .unwrap();
         assert_eq!(store.context_revision(id).await.unwrap(), "5");
@@ -5865,7 +5831,6 @@ mod tests {
             .unwrap();
         assert_eq!((removal.revision.as_str(), removal.images), ("6", 1));
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Two edits confirmed at the same revision: exactly one commits, the
@@ -5873,7 +5838,7 @@ mod tests {
     /// masks. The loser succeeds once it reconfirms at the new revision.
     #[tokio::test]
     async fn concurrent_remove_context_from_same_revision_admits_one() {
-        let (store, id, dir) = seeded().await;
+        let (store, id, _dir) = seeded().await;
         let (a, c) = (bin(0, 1, None), bin(2, 0, Some(0)));
         let (ta, tc) = ([a], [c]);
         let (ra, rc) = tokio::join!(
@@ -5902,7 +5867,6 @@ mod tests {
         assert_eq!(names(&tail[0].1), ["same.png"]);
         assert_eq!(names(&tail[2].1), ["same.png", "d.png"]);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // endregion: --- Context removal (48)
@@ -5911,7 +5875,7 @@ mod tests {
 
     #[tokio::test]
     async fn project_lives_on_the_root_and_shows_on_every_row() {
-        let (store, root, dir) = fresh().await;
+        let (store, root, _dir) = fresh().await;
         let child = SessionId::new();
         store
             .create_session(child, "m", Some(root), Some("kid"), Some("ignored"))
@@ -5966,12 +5930,11 @@ mod tests {
             "no such session"
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn project_style_round_trips_and_rejects_unknown_keys() {
-        let (store, _, dir) = fresh().await;
+        let (store, _, _dir) = fresh().await;
         let style = |icon: &str, color: Option<&str>| ProjectStyle {
             name: "Alpha".into(),
             icon: Some(icon.into()),
@@ -6033,14 +5996,13 @@ mod tests {
             })
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 14 as-built: rows round-trip, ids are per session (`r1` twice), and
     /// a fired/cancelled row goes by `(session, id)`.
     #[tokio::test]
     async fn reminders_round_trip_per_session() {
-        let (store, _, dir) = fresh().await;
+        let (store, _, _dir) = fresh().await;
         let row = |session: SessionId, fires_at: i64| ReminderRow {
             id: "r1".into(),
             session,
@@ -6060,7 +6022,6 @@ mod tests {
         store.delete_reminder(b, "r1").await.unwrap();
         assert_eq!(store.reminders().await.unwrap(), [row(a, 2_000_000_000)]);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // endregion: --- Project metadata (51 §3)
@@ -6103,7 +6064,7 @@ mod tests {
 
     #[tokio::test]
     async fn append_vision_is_atomic_typed_and_fails_closed_on_corruption() {
-        let (store, id, dir) = seeded().await;
+        let (store, id, _dir) = seeded().await;
         // Prose cannot forge a note: a plain user row quoting the marker is not typed.
         assert_eq!(
             store
@@ -6173,12 +6134,11 @@ mod tests {
             "the corrupt note is still no turn opener"
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn vision_frame_indexes_original_coordinates_under_masks_and_heads() {
-        let (store, id, dir) = seeded().await;
+        let (store, id, _dir) = seeded().await;
         let frame = store.vision_frame(id).await.unwrap();
         assert_eq!(
             (frame.epoch, frame.head.is_none(), frame.tail.len()),
@@ -6246,12 +6206,11 @@ mod tests {
         );
         assert_eq!(frame.revision, store.context_revision(id).await.unwrap());
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn vision_note_after_reply_opens_no_turn_and_next_user_stays_real() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         append_all(&store, id, [ChatMessage::user("u1"), asst("a1")]).await;
         let n = note(&[bin(0, 0, None)]);
         assert_eq!(
@@ -6306,7 +6265,6 @@ mod tests {
         );
         assert_eq!(store.vision_frame(fork).await.unwrap().notes.len(), 1);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -6338,7 +6296,7 @@ mod tests {
         // Resume: a fresh handle reloads the committed note, no inference implied.
         store.close().await;
         drop(store);
-        let store = Store::open(&dir.join("sessions.sqlite"), None)
+        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
             .await
             .unwrap();
         let frame = store.vision_frame(id).await.unwrap();
@@ -6380,7 +6338,6 @@ mod tests {
         .unwrap();
         assert_eq!(left.0, 0);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // endregion: --- Vision notes (52)
@@ -6396,8 +6353,8 @@ mod tests {
         use crate::cost::{CallKind, CallStatus, CostObservation, MeterUpdate, Money};
         use crate::todo::Status;
 
-        let dir = std::env::temp_dir().join(format!("theuth-capture-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("capture");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -6751,7 +6708,6 @@ mod tests {
         );
 
         store.close().await;
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 136 D6: only the owner's own attended root consolidates here — an
@@ -6814,8 +6770,8 @@ mod tests {
     /// backfilled on the next open that knows one, and decides `here`.
     #[tokio::test]
     async fn owner_is_set_at_creation_backfilled_at_open_and_decides_here() {
-        let dir = std::env::temp_dir().join(format!("theuth-owner-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("owner");
+        let dir = scratch.0.clone();
         let path = dir.join("sessions.sqlite");
         let store = Store::open(&path, None).await.unwrap();
         let id = SessionId::new();
@@ -6853,7 +6809,6 @@ mod tests {
         let s = store.session(forked).await.unwrap().unwrap();
         assert_eq!((s.owner.as_str(), s.here), ("engine-a", false));
         store.close().await;
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// STALE-WAKE-DESKS: one desk row per agent per engine. `desk_session`
@@ -6862,8 +6817,8 @@ mod tests {
     /// engine's desk is not ours.
     #[tokio::test]
     async fn one_desk_per_agent_is_found_and_enforced() {
-        let dir = std::env::temp_dir().join(format!("theuth-desk-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("desk");
+        let dir = scratch.0.clone();
         let path = dir.join("sessions.sqlite");
         let theirs = Store::open(&path, Some(mesh::EngineId("them".into())))
             .await
@@ -6913,7 +6868,6 @@ mod tests {
             "retired → the next one is the desk"
         );
         store.close().await;
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Migration 0025 on a store with the duplicates a pre-fix engine left:
@@ -6921,8 +6875,8 @@ mod tests {
     /// unmarked, unpinned, archived and titled `<agent> · desk (superseded …)`.
     #[tokio::test]
     async fn migration_dedupes_desks_by_last_update() {
-        let dir = std::env::temp_dir().join(format!("theuth-dedupe-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("dedupe");
+        let dir = scratch.0.clone();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("me".into())),
@@ -6994,14 +6948,13 @@ mod tests {
             "fixture ids are not uuids"
         );
         store.close().await;
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `errors.id` is text: fresh rows mint uuid v7, a fork's copies keep the
     /// source order behind one anchor and never collide with the originals.
     #[tokio::test]
     async fn error_ids_are_text_and_unique_across_fork() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         store.append(id, &ChatMessage::user("u")).await.unwrap();
         store.record_error(id, "first").await.unwrap();
         store.record_error(id, "second").await.unwrap();
@@ -7027,7 +6980,6 @@ mod tests {
             ["first", "second"]
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A session owned elsewhere refuses every local write with `NotOwner`
@@ -7035,8 +6987,8 @@ mod tests {
     /// that passes, and it is logged under the new epoch.
     #[tokio::test]
     async fn writes_on_a_foreign_session_are_refused_until_taken() {
-        let dir = std::env::temp_dir().join(format!("theuth-guard-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("guard");
+        let dir = scratch.0.clone();
         let path = dir.join("sessions.sqlite");
         let store = Store::open(&path, Some(mesh::EngineId("a".into())))
             .await
@@ -7089,7 +7041,6 @@ mod tests {
         assert_eq!(store.owner(id).await.unwrap(), Some(("b".into(), 2)));
         assert_eq!(store.fence(id).await.unwrap(), Some((2, "b".into())));
         store.close().await;
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The fence (`session_epochs` ∪ the session row) decides the guard:
@@ -7101,8 +7052,8 @@ mod tests {
         use crate::cost::{CallKind, CallStatus, CostObservation, MeterUpdate, Money};
         use crate::todo::Status;
 
-        let dir = std::env::temp_dir().join(format!("theuth-fence-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("fence");
+        let dir = scratch.0.clone();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("a".into())),
@@ -7304,7 +7255,6 @@ mod tests {
             3
         );
         store.close().await;
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Demote bookkeeping (68 §4.3): only rows above what the taker had
@@ -7312,8 +7262,8 @@ mod tests {
     /// `session_log_seq` follows the session's own rows; `flush` logs nothing.
     #[tokio::test]
     async fn orphans_above_the_shipped_cursor_and_local_notes_are_not_logged() {
-        let dir = std::env::temp_dir().join(format!("theuth-orphan-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("orphan");
+        let dir = scratch.0.clone();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("a".into())),
@@ -7357,7 +7307,6 @@ mod tests {
         let last = store.messages(id).await.unwrap().pop().unwrap();
         assert_eq!((last.0, last.1.role), (seq, ChatRole::System));
         store.close().await;
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Log rows split per session, seqs are contiguous per engine, orphans
@@ -7365,7 +7314,7 @@ mod tests {
     /// and an apply transaction leaves no echo.
     #[tokio::test]
     async fn log_api_round_trip() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         let first = store.log_seq();
         store.append(id, &ChatMessage::user("u")).await.unwrap();
         let other = store.fork(id, None, None).await.unwrap();
@@ -7443,7 +7392,6 @@ mod tests {
         store.set_title(id, "again").await.unwrap();
         assert_eq!(store.log_seq(), before + 1);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // endregion: --- Capture (68 §3)

@@ -382,7 +382,7 @@ mod tests {
     /// process is a no-op.
     #[tokio::test]
     async fn drain_suspends_own_open_turns_once() {
-        let (b, foreign, foreign_turn, _dir) = b_holding_a_turn(false).await;
+        let (_dir, b, foreign, foreign_turn) = b_holding_a_turn(false).await;
         let (store, rt) = (b.store.clone(), b.rt.clone());
         let (tx, mut events) = unbounded_channel();
         let sink = Sink::spawn_with_mailbox(Sink(tx), runtime::subscriber_mailbox());

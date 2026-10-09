@@ -323,8 +323,8 @@ mod tests {
     fn rearm_reminders_for_arms_one_sessions_rows_here_only() {
         crate::with_test_registry(async {
             use crate::store::{ReminderRow, Store};
-            let dir = std::env::temp_dir().join(format!("theuth-139r2-{}", uuid::Uuid::now_v7()));
-            std::fs::create_dir_all(&dir).unwrap();
+            let scratch = crate::TestDir::new("139r2");
+            let dir = scratch.0.clone();
             let far = chrono::Utc::now().timestamp() + 600;
             let row = |session, id: &str| ReminderRow {
                 id: id.into(),
@@ -426,7 +426,6 @@ mod tests {
                 4,
                 "the demote deletes no row"
             );
-            let _ = std::fs::remove_dir_all(&dir);
         });
     }
 }

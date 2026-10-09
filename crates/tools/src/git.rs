@@ -160,7 +160,8 @@ mod tests {
 
     #[tokio::test]
     async fn clone_pull_and_list_against_a_local_bare_repo() {
-        let root = std::env::temp_dir().join(format!("theuth-git-{}", uuid::Uuid::new_v4()));
+        let guard = crate::TestDir::new("git");
+        let root = guard.0.clone();
         let src = root.join("src");
         let bare = root.join("bare.git");
         let dir = root.join("skills");
@@ -228,6 +229,5 @@ mod tests {
                 .await
                 .is_err()
         );
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

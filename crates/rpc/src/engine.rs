@@ -283,17 +283,20 @@ pub fn alive(pid: u32) -> bool {
 mod tests {
     use super::*;
 
-    fn dir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("theuth-engine-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// `$TMPDIR/theuth-engine-<rand>`, removed when the guard drops (141 R4: leaked test scratch filled the disk).
+    fn dir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("theuth-engine-")
+            .tempdir()
+            .unwrap()
     }
 
     #[test]
     fn second_acquire_in_one_process_is_running() {
-        let d = dir();
-        let lease = acquire(&d, Host::Tui, Some("127.0.0.1:1".into())).unwrap();
-        match acquire(&d, Host::Headless, None) {
+        let td = dir();
+        let d = td.path();
+        let lease = acquire(d, Host::Tui, Some("127.0.0.1:1".into())).unwrap();
+        match acquire(d, Host::Headless, None) {
             Err(Error::Running(r)) => {
                 assert_eq!(r.record, lease.record);
                 assert!(r.to_string().starts_with(&format!(
@@ -309,12 +312,13 @@ mod tests {
         }
         drop(lease);
         assert!(!d.join("engine.json").exists());
-        acquire(&d, Host::Headless, None).unwrap();
+        acquire(d, Host::Headless, None).unwrap();
     }
 
     #[test]
     fn stale_record_is_not_running() {
-        let d = dir();
+        let td = dir();
+        let d = td.path();
         let stale = Record {
             pid: u32::MAX - 1,
             listen: Some("127.0.0.1:1".into()),
@@ -324,12 +328,12 @@ mod tests {
             id: Uuid::now_v7(),
         };
         std::fs::write(d.join("engine.json"), serde_json::to_vec(&stale).unwrap()).unwrap();
-        assert!(discover(&d).is_none());
-        let lease = acquire(&d, Host::Tui, None).unwrap();
-        assert_ne!(read(&d).unwrap(), stale);
+        assert!(discover(d).is_none());
+        let lease = acquire(d, Host::Tui, None).unwrap();
+        assert_ne!(read(d).unwrap(), stale);
         assert_eq!(lease.record.pid, std::process::id());
         // Alive pid, no socket: running, unattachable.
-        let found = discover(&d).unwrap();
+        let found = discover(d).unwrap();
         assert_eq!(found.record, lease.record);
         assert!(found.url.is_none());
         assert!(
@@ -343,12 +347,13 @@ mod tests {
     /// `set_listen` puts it in the parked record and the file.
     #[test]
     fn ephemeral_listen_is_recorded_after_bind() {
-        let d = dir();
-        let lease = acquire(&d, Host::Prompt, None).unwrap();
-        assert_eq!(read(&d).unwrap().listen, None);
+        let td = dir();
+        let d = td.path();
+        let lease = acquire(d, Host::Prompt, None).unwrap();
+        assert_eq!(read(d).unwrap().listen, None);
         hold(lease);
         set_listen("127.0.0.1:49731".into());
-        let r = read(&d).unwrap();
+        let r = read(d).unwrap();
         assert_eq!(r.listen.as_deref(), Some("127.0.0.1:49731"));
         assert_eq!(
             serde_json::from_slice::<Record>(&serde_json::to_vec(&r).unwrap()).unwrap(),

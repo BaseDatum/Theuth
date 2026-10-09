@@ -139,8 +139,8 @@ mod tests {
 
     #[test]
     fn ambient_profile_is_a_section_header_in_either_file() {
-        let dir = std::env::temp_dir().join(format!("theuth-aws-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("aws");
+        let dir = scratch.0.clone();
         let creds = dir.join("credentials");
         let config = dir.join("config");
         std::fs::write(&creds, "[work]\naws_access_key_id = x\n").unwrap();
@@ -156,6 +156,5 @@ mod tests {
         assert!(!has_profile(both().0, both().1, "missing"));
         // No files at all (a machine without ~/.aws): nothing is configured.
         assert!(!has_profile(Some(dir.join("nope")), None, "default"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

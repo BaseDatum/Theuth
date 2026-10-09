@@ -724,10 +724,11 @@ pub(crate) async fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()
 mod tests {
     use super::*;
 
-    fn scratch(content: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("theuth-edit-{}.txt", uuid::Uuid::new_v4()));
+    fn scratch(content: &str) -> (crate::TestDir, PathBuf) {
+        let dir = crate::TestDir::new("edit");
+        let path = dir.0.join("f.txt");
         std::fs::write(&path, content).unwrap();
-        path
+        (dir, path)
     }
 
     fn cx() -> ToolCx {
@@ -964,7 +965,7 @@ mod tests {
 
     #[tokio::test]
     async fn arg_validation() {
-        let p = scratch("abc");
+        let (_g, p) = scratch("abc");
         let mut a = single(&p, "a", "a", false);
         assert_eq!(
             run(a).await.unwrap_err().to_string(),
@@ -1018,7 +1019,7 @@ mod tests {
 
     #[tokio::test]
     async fn result_carries_diff_and_structured() {
-        let p = scratch("one\ntwo\nthree\n");
+        let (_g, p) = scratch("one\ntwo\nthree\n");
         let out = run(single(&p, "two", "2\n2b", false)).await.unwrap();
         let shown = p.display().to_string();
         assert!(
@@ -1045,7 +1046,7 @@ mod tests {
 
     #[tokio::test]
     async fn crlf_round_trips_byte_exact() {
-        let p = scratch("a\r\nfoo\r\nb\r\n");
+        let (_g, p) = scratch("a\r\nfoo\r\nb\r\n");
         run(single(&p, "foo\n", "bar\nbaz\n", false)).await.unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"a\r\nbar\r\nbaz\r\nb\r\n");
         // `old`/`new` given with CRLF match too.
@@ -1055,10 +1056,10 @@ mod tests {
 
     #[tokio::test]
     async fn no_trailing_newline_and_bom_are_preserved() {
-        let p = scratch("a\nb");
+        let (_g, p) = scratch("a\nb");
         run(single(&p, "b", "c", false)).await.unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "a\nc");
-        let p = scratch("\u{feff}a\nb\n");
+        let (_g, p) = scratch("\u{feff}a\nb\n");
         let out = run(single(&p, "a", "x", false)).await.unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "\u{feff}x\nb\n");
         assert!(out.content.contains("\n-a\n+x\n"), "{}", out.content);
@@ -1066,13 +1067,13 @@ mod tests {
 
     #[tokio::test]
     async fn multi_edit_is_sequential_and_all_or_nothing() {
-        let p = scratch("a\nb\nc\n");
+        let (_g, p) = scratch("a\nb\nc\n");
         let out = run(multi(&p, &[("a", "b"), ("b\nb", "B"), ("c", "d")]))
             .await
             .unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "B\nd\n");
         assert_eq!(out.structured.unwrap()["replacements"], 3);
-        let p = scratch("a\nb\nc\n");
+        let (_g, p) = scratch("a\nb\nc\n");
         let e = run(multi(&p, &[("a", "A"), ("b", "B"), ("zzz", "Z")]))
             .await
             .unwrap_err()
@@ -1089,7 +1090,7 @@ mod tests {
 
     #[tokio::test]
     async fn identical_result_skips_the_write() {
-        let p = scratch("a\nb\n");
+        let (_g, p) = scratch("a\nb\n");
         let before = std::fs::metadata(&p).unwrap().modified().unwrap();
         let out = run(multi(&p, &[("a", "x"), ("x", "a")])).await.unwrap();
         assert!(out.content.contains("no changes"), "{}", out.content);
@@ -1107,7 +1108,7 @@ mod tests {
         assert_eq!(d.text.lines().count(), DIFF_LINES + 1);
         let tail = format!("[diff truncated: {} more lines]\n", 603 - DIFF_LINES);
         assert!(d.text.ends_with(&tail), "{}", &d.text[d.text.len() - 60..]);
-        let p = scratch(&orig);
+        let (_g, p) = scratch(&orig);
         let out = run(single(&p, "l", "m", true)).await.unwrap();
         let s = out.structured.unwrap();
         assert_eq!(s["truncated"], true);
@@ -1123,7 +1124,7 @@ mod tests {
     #[tokio::test]
     async fn permissions_are_preserved() {
         use std::os::unix::fs::PermissionsExt;
-        let p = scratch("#!/bin/sh\necho hi\n");
+        let (_g, p) = scratch("#!/bin/sh\necho hi\n");
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         run(single(&p, "hi", "bye", false)).await.unwrap();
         assert_eq!(

@@ -774,14 +774,14 @@ mod tests {
         assert_ne!(payload_hash("a"), payload_hash("b"));
     }
 
-    /// A scratch data dir with a fresh runner; `pool` when a Monty test needs one.
-    fn runner(name: &str, pool: Option<Arc<Pool>>) -> SensorRunner {
-        let dir = std::env::temp_dir().join(format!("theuth-sensor-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    /// A scratch data dir (its guard) with a fresh runner; `pool` when a
+    /// Monty test needs one.
+    fn runner(name: &str, pool: Option<Arc<Pool>>) -> (crate::TestDir, SensorRunner) {
+        let scratch = crate::TestDir::new(&format!("sensor-{name}"));
+        let dir = scratch.0.clone();
         let r = SensorRunner::new(dir, pool, None, SensorProfile::default());
         r.install_builtins().unwrap();
-        r
+        (scratch, r)
     }
 
     fn put(r: &SensorRunner, name: &str, src: &str) -> SensorMeta {
@@ -839,7 +839,7 @@ mod tests {
 
     #[test]
     fn header_parse_and_resolve_errors() {
-        let r = runner("header", None);
+        let (_scratch, r) = runner("header", None);
         assert_eq!(r.slots().available_permits(), 4);
         for bad in ["nope.py", "", ".shim.py", "x.txt", "../x.py", "sub/x.py"] {
             assert_eq!(
@@ -911,7 +911,6 @@ mod tests {
             built.usage.as_deref(),
             Some("when: fs_exists.py path=<glob>")
         );
-        let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
     }
 
     /// 108 §9.1: `# arg:` lines in header order, required/optional, `-` =
@@ -919,7 +918,7 @@ mod tests {
     /// beside them still parse; the docstring gives description and usage.
     #[test]
     fn arg_header_lines() {
-        let r = runner("args", None);
+        let (_scratch, r) = runner("args", None);
         let m = put(
             &r,
             "x.py",
@@ -982,7 +981,6 @@ mod tests {
         )
         .unwrap();
         assert!(r.edited("pr_watch.py"));
-        let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
     }
 
     #[test]
@@ -1078,7 +1076,7 @@ mod tests {
 
     #[test]
     fn install_builtins_fresh_update_user_edited() {
-        let r = runner("install", None);
+        let (_scratch, r) = runner("install", None);
         let dir = r.sensors_dir();
         let _ = std::fs::remove_dir_all(&dir);
         // Fresh: everything written, manifest recorded.
@@ -1125,12 +1123,11 @@ mod tests {
         // The shim is harness-owned: any difference is rewritten.
         std::fs::write(dir.join(".shim.py"), "print('x')\n").unwrap();
         assert_eq!(r.install_builtins().unwrap(), [".shim.py"]);
-        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     #[tokio::test]
     async fn semaphore_defers_when_full() {
-        let r = runner("slots", None);
+        let (_scratch, r) = runner("slots", None);
         let meta = put(
             &r,
             "x.py",
@@ -1165,7 +1162,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(e, SensorError::Unavailable(m) if m.contains("no worker pool")));
-        let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
     }
 
     /// 40 §9 step 2's runnable check: the built-in through a real pool.
@@ -1174,7 +1170,7 @@ mod tests {
         let Some(pool) = worker_pool().await else {
             return;
         };
-        let r = runner("fs-exists", Some(pool));
+        let (_scratch, r) = runner("fs-exists", Some(pool));
         let meta = r.resolve("fs_exists.py").unwrap();
         let cwd = r.sensors_dir().parent().unwrap().join("cwd");
         std::fs::create_dir_all(cwd.join("sub")).unwrap();
@@ -1247,7 +1243,6 @@ mod tests {
                 .unwrap(),
             None
         );
-        let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
     }
 
     #[tokio::test]
@@ -1255,7 +1250,7 @@ mod tests {
         let Some(pool) = worker_pool().await else {
             return;
         };
-        let r = runner("monty", Some(pool));
+        let (_scratch, r) = runner("monty", Some(pool));
         let cwd = r.sensors_dir().parent().unwrap().join("cwd");
         std::fs::create_dir_all(cwd.join("inner")).unwrap();
         std::fs::write(cwd.join("note.txt"), "line one\n").unwrap();
@@ -1429,7 +1424,6 @@ mod tests {
             let res = r.check(&meta, &a, &Value::Null, Some(&cwd), t).await;
             assert_eq!(res.is_ok(), ok, "{n} calls: {res:?}");
         }
-        let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
     }
 
     /// The shipped `pr_watch.py` must load under the sensor profile: a
@@ -1440,7 +1434,7 @@ mod tests {
         let Some(pool) = worker_pool().await else {
             return;
         };
-        let r = runner("prwatch", Some(pool));
+        let (_scratch, r) = runner("prwatch", Some(pool));
         let meta = r.resolve("pr_watch.py").unwrap();
         assert_eq!(meta.hosts, ["api.github.com"]);
         let e = r
@@ -1458,7 +1452,6 @@ mod tests {
             matches!(&e, SensorError::Failed(m) if m.contains("ValueError")),
             "pr_watch.py rejected: {e}"
         );
-        let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
     }
 
     #[tokio::test]
@@ -1468,7 +1461,7 @@ mod tests {
             return;
         };
         println!("cpython: {}", py.display());
-        let r = runner("cpython", None);
+        let (_scratch, r) = runner("cpython", None);
         let cwd = r.sensors_dir().parent().unwrap().join("cwd");
         std::fs::create_dir_all(&cwd).unwrap();
         std::fs::write(cwd.join("a.md"), "x").unwrap();
@@ -1562,6 +1555,5 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        let _ = std::fs::remove_dir_all(r.sensors_dir().parent().unwrap());
     }
 }

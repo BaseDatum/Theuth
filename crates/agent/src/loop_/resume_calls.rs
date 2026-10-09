@@ -449,8 +449,8 @@ mod tests {
     /// and that the page was captured there.
     #[tokio::test]
     async fn job_note_names_the_engine_that_ran_it() {
-        let dir = std::env::temp_dir().join(format!("theuth-139-w3-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("139-w3");
+        let dir = scratch.0.clone();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("b".into())),
@@ -506,6 +506,5 @@ mod tests {
             "{}",
             wait.content
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

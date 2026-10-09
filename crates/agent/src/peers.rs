@@ -919,8 +919,8 @@ mod tests {
 
     #[test]
     fn spawn_description_lists_configured_harnesses() {
-        let dir = std::env::temp_dir().join(format!("theuth-peers-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("peers");
+        let dir = scratch.0.clone();
         let plain = SpawnSubagentTool {
             data_dir: dir.clone(),
             nodes: Nodes::default(),
@@ -951,15 +951,14 @@ mod tests {
         .description();
         assert!(with.contains("External harnesses: codex"));
         assert!(with.contains("ChatGPT's coding agent"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 32 §7: a registered node is offered after the harness line, sorted by
     /// name, and an unknown name's error lists it.
     #[test]
     fn spawn_description_and_unknown_list_nodes() {
-        let dir = std::env::temp_dir().join(format!("theuth-peers-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("peers");
+        let dir = scratch.0.clone();
         let nodes = Nodes::default();
         {
             let mut w = nodes.write().unwrap_or_else(|p| p.into_inner());
@@ -991,7 +990,6 @@ mod tests {
         let err = unknown("box", &harnesses(&dir), &node_lines(&nodes));
         assert!(err.starts_with("unknown agent `box`"), "{err}");
         assert!(err.ends_with("nodes: build-box, mac-mini"), "{err}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 67 §8: `agent` is `<name>` or `<harness>@<node>`; nothing else.

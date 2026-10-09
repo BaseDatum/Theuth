@@ -933,9 +933,8 @@ mod tests {
     /// the surface heading, the app heading and the root-only content.
     #[test]
     fn baseline_by_audience() {
-        let data_dir =
-            std::env::temp_dir().join(format!("theuth-audience-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&data_dir).unwrap();
+        let scratch = crate::TestDir::new("audience");
+        let data_dir = scratch.0.clone();
         std::fs::write(
             data_dir.join("prompt.md"),
             "Shared rule.\n<!-- root-only -->\nRoot rule.\n<!-- /root-only -->\n",
@@ -974,7 +973,6 @@ mod tests {
             false,
             false,
         );
-        std::fs::remove_dir_all(&data_dir).unwrap();
 
         assert!(attended.contains("## Show first, then tell\n"));
         assert!(attended.contains("## Interactive screens: `app`\n"));
@@ -997,9 +995,8 @@ mod tests {
     /// paragraph and before the approvals one.
     #[test]
     fn shared_hardware_guidance_in_every_audience() {
-        let data_dir =
-            std::env::temp_dir().join(format!("theuth-sharedhw-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&data_dir).unwrap();
+        let scratch = crate::TestDir::new("sharedhw");
+        let data_dir = scratch.0.clone();
         std::fs::write(data_dir.join("prompt.md"), "Shared rule.\n").unwrap();
         let attended = baseline(
             &data_dir,
@@ -1034,7 +1031,6 @@ mod tests {
             false,
             false,
         );
-        std::fs::remove_dir_all(&data_dir).unwrap();
         for p in [&attended, &unattended, &desk] {
             let guidance = p.find("## Guidance").expect("guidance section");
             let peers = p.find("Peers are addressed by").expect("peer paragraph");
@@ -1062,9 +1058,8 @@ mod tests {
     /// (cwd/date, plugin blocks, guidance) stay.
     #[test]
     fn identity_replaces_theuth_persona() {
-        let data_dir =
-            std::env::temp_dir().join(format!("theuth-identity-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&data_dir).unwrap();
+        let scratch = crate::TestDir::new("identity");
+        let data_dir = scratch.0.clone();
         std::fs::write(
             data_dir.join("prompt.md"),
             "Theuth — home automation, chat anywhere.\n",
@@ -1082,7 +1077,6 @@ mod tests {
             false,
             false,
         );
-        std::fs::remove_dir_all(&data_dir).unwrap();
         assert!(
             p.starts_with(&format!("{karol}\nWorking directory: ")),
             "{p}"
@@ -1099,9 +1093,8 @@ mod tests {
 
     #[test]
     fn advised_paragraph_sits_before_guidance_and_advisor_baseline_is_bare() {
-        let data_dir =
-            std::env::temp_dir().join(format!("theuth-frame-adv-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&data_dir).unwrap();
+        let scratch = crate::TestDir::new("frame-adv");
+        let data_dir = scratch.0.clone();
         let p = baseline(
             &data_dir,
             None,
@@ -1113,7 +1106,6 @@ mod tests {
             true,
             false,
         );
-        std::fs::remove_dir_all(&data_dir).unwrap();
         assert!(p.contains(&format!(
             "## Tools\nT\n\n{ADVISORY_PARAGRAPH}\n\n## Guidance"
         )));
@@ -1127,9 +1119,8 @@ mod tests {
     /// guidance, exactly while `consult` is in the turn's tool list.
     #[test]
     fn consult_paragraph_follows_the_advisory_one_when_the_tool_is_listed() {
-        let data_dir =
-            std::env::temp_dir().join(format!("theuth-frame-con-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&data_dir).unwrap();
+        let scratch = crate::TestDir::new("frame-con");
+        let data_dir = scratch.0.clone();
         let p = baseline(
             &data_dir,
             None,
@@ -1141,7 +1132,6 @@ mod tests {
             true,
             true,
         );
-        std::fs::remove_dir_all(&data_dir).unwrap();
         assert!(p.contains(&format!(
             "## Tools\nT\n\n{ADVISORY_PARAGRAPH}\n\n{CONSULT_PARAGRAPH}\n\n## Guidance"
         )));

@@ -1982,9 +1982,9 @@ pub(super) async fn delete_communication_in(
 mod tests {
     use super::*;
 
-    async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("theuth-comm-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+    async fn fresh() -> (Store, SessionId, crate::TestDir) {
+        let scratch = crate::TestDir::new("comm");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -1993,7 +1993,7 @@ mod tests {
             .create_session(id, "m", None, None, None)
             .await
             .unwrap();
-        (store, id, dir)
+        (store, id, scratch)
     }
 
     fn err_is(e: &anyhow::Error, want: &CommError) -> bool {
@@ -2056,7 +2056,7 @@ mod tests {
 
     #[tokio::test]
     async fn dedup_returns_existing_and_conflicts_on_change() {
-        let (store, a, dir) = fresh().await;
+        let (store, a, _dir) = fresh().await;
         let b = SessionId::new();
         store
             .create_session(b, "m", Some(a), Some("b"), None)
@@ -2095,12 +2095,11 @@ mod tests {
             ..req.clone()
         };
         assert_ne!(store.accept_exchange(&other).await.unwrap().id, first.id);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn consume_links_history_once_and_is_idempotent() {
-        let (store, a, dir) = fresh().await;
+        let (store, a, _dir) = fresh().await;
         let b = SessionId::new();
         store
             .create_session(b, "m", Some(a), Some("b"), None)
@@ -2157,12 +2156,11 @@ mod tests {
         // Consumed cannot be suppressed; it can still fail.
         let e = store.suppress_exchange(r.id, "off").await.unwrap_err();
         assert!(err_is(&e, &CommError::Terminal), "{e}");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn reply_requires_reversed_endpoints_and_live_original() {
-        let (store, a, dir) = fresh().await;
+        let (store, a, _dir) = fresh().await;
         let b = SessionId::new();
         let c = SessionId::new();
         store
@@ -2201,12 +2199,11 @@ mod tests {
         twice.request_id = Some("second");
         let e = store.accept_exchange(&twice).await.unwrap_err();
         assert!(err_is(&e, &CommError::Terminal), "{e}");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn suppression_follows_subtree_and_restart_fails_pending() {
-        let (store, root, dir) = fresh().await;
+        let (store, root, _dir) = fresh().await;
         let kid = SessionId::new();
         let other = SessionId::new();
         store
@@ -2313,12 +2310,11 @@ mod tests {
                 .is_none()
         );
         assert!(store.exchange_receipt(inbound.id).await.unwrap().is_some());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn lineage_and_root_scope() {
-        let (store, root, dir) = fresh().await;
+        let (store, root, _dir) = fresh().await;
         let kid = SessionId::new();
         let grandkid = SessionId::new();
         store
@@ -2373,12 +2369,11 @@ mod tests {
             matches!(e.downcast_ref::<CommError>(), Some(CommError::Topology(_))),
             "{e}"
         );
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn peer_bindings_are_stable_per_endpoint() {
-        let (store, _, dir) = fresh().await;
+        let (store, _, _dir) = fresh().await;
         let b1 = store
             .bind_peer("lab", "https://lab.example/a")
             .await
@@ -2408,12 +2403,11 @@ mod tests {
                 .id,
             b2.id
         );
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn answers_record_who_answered() {
-        let (store, a, dir) = fresh().await;
+        let (store, a, _dir) = fresh().await;
         let b = SessionId::new();
         store
             .create_session(b, "m", Some(a), Some("b"), None)
@@ -2464,12 +2458,11 @@ mod tests {
                 Some(format!("owner:{b}").as_str())
             )
         );
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn batched_binding_commit_is_all_or_nothing() {
-        let (store, _, dir) = fresh().await;
+        let (store, _, _dir) = fresh().await;
         let lab = store
             .bind_peer("lab", "https://lab.example/a")
             .await
@@ -2513,12 +2506,11 @@ mod tests {
             .unwrap();
         assert_ne!(rotated[0].id, lab.id);
         assert!(store.peer_binding_by_id(lab.id).await.unwrap().is_none());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn direct_consumption_and_history_provenance() {
-        let (store, a, dir) = fresh().await;
+        let (store, a, _dir) = fresh().await;
         let b = SessionId::new();
         store
             .create_session(b, "m", Some(a), Some("b"), None)
@@ -2600,7 +2592,6 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn snap(state: &str) -> serde_json::Value {
@@ -2609,7 +2600,7 @@ mod tests {
 
     #[tokio::test]
     async fn a2a_scope_isolation_and_terminal_races() {
-        let (store, session, dir) = fresh().await;
+        let (store, session, _dir) = fresh().await;
         let lab = A2aScope {
             principal: "peer:lab",
             export: "research",
@@ -2944,7 +2935,6 @@ mod tests {
         assert!(store.a2a_task(lab, "task-1").await.unwrap().is_none());
         assert!(store.a2a_context(lab, "ctx-1").await.unwrap().is_none());
         assert!(store.exchange_receipt(receipt.id).await.unwrap().is_none());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     async fn new_task(store: &Store, session: SessionId, scope: A2aScope<'_>, ctx: &str, id: &str) {
@@ -2971,7 +2961,7 @@ mod tests {
 
     #[tokio::test]
     async fn a2a_task_listing_orders_by_activity_and_scopes_cursor() {
-        let (store, session, dir) = fresh().await;
+        let (store, session, _dir) = fresh().await;
         let lab = A2aScope {
             principal: "peer:lab",
             export: "research",
@@ -3084,6 +3074,5 @@ mod tests {
                 "{bad}: {e}"
             );
         }
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

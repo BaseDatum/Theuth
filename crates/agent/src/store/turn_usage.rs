@@ -132,12 +132,12 @@ impl Store {
 mod tests {
     use super::*;
 
-    async fn fresh() -> Store {
-        let dir = std::env::temp_dir().join(format!("theuth-turns-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
-        Store::open(&dir.join("sessions.sqlite"), None)
+    async fn fresh() -> (Store, crate::TestDir) {
+        let scratch = crate::TestDir::new("turns");
+        let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
             .await
-            .unwrap()
+            .unwrap();
+        (store, scratch)
     }
 
     fn t(input: u64, output: u64, cache_read: u64, cache_write: u64) -> TokenTotals {
@@ -156,7 +156,7 @@ mod tests {
     /// and a root delete takes the rows with it.
     #[tokio::test]
     async fn remote_turns_sum_per_model_and_cascade() {
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let (root, child) = (SessionId::new(), SessionId::new());
         store.ensure_owner(root, None).await.unwrap();
         store.ensure_owner(child, Some(root)).await.unwrap();

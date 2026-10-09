@@ -60,8 +60,8 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_path_is_none() {
-        let dir =
-            std::env::temp_dir().join(format!("theuth-outline-hook-{}", uuid::Uuid::new_v4()));
+        let scratch = crate::TestDir::new("outline-hook");
+        let dir = scratch.0.clone();
         let ix = Arc::new(Codeindex::new(crate::CodeindexConfig::default(), &dir).unwrap());
         let hook = OutlineHook(ix);
         let missing = dir.join("nope/missing.rs");

@@ -27,8 +27,8 @@ fn hint_limit_and_title_pin() {
 }
 
 async fn diet_scenarios() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-diet-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("diet-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
     runtime::Plugin::start(Box::new(knowledge::KnowledgePlugin), &reg_rt)
@@ -154,6 +154,4 @@ async fn diet_scenarios() {
         "unpinned: the title call ran"
     );
     assert_eq!(titled(true).await, (false, 1, false), "pinned: skipped");
-
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }

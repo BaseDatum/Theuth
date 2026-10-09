@@ -35,8 +35,8 @@ fn harvest_runs_detached_from_the_turn() {
 }
 
 async fn harvest_scenarios() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-harvest-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("harvest-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
     // The knowledge bundle every turn's `rebase` finds (12 §9.2).
@@ -159,6 +159,4 @@ async fn harvest_scenarios() {
         .await;
     assert_eq!(harvesting(&events), 0, "no pre-compaction harvest");
     knowledge.clear_consolidating_session();
-
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }

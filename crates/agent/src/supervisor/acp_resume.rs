@@ -552,8 +552,8 @@ mod tests {
     /// `TurnStarted` moves it from waiting to respawned (D2).
     #[tokio::test]
     async fn respawn_decision_table() {
-        let dir = std::env::temp_dir().join(format!("theuth-139-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("139");
+        let dir = scratch.0.clone();
         // Engine `a`: a parent waiting on its own ACP child, and an ACP child
         // a parent on `b` will wait on.
         let a = crate::store::Store::open(

@@ -2343,7 +2343,8 @@ mod tests {
         let Some(pool) = monty_pool().await else {
             return;
         };
-        let dir = tempdir();
+        let scratch = tempdir();
+        let dir = scratch.0.clone();
         std::fs::write(dir.join("a.txt"), "hello mount").unwrap();
         let cx = run_cx(&dir).await;
         let session = cx.session;
@@ -2481,7 +2482,8 @@ mod tests {
         repl.close().await;
         // Same process-wide registry (`start` registers a global actor name),
         // fresh session and data dir.
-        let dir = tempdir();
+        let scratch = tempdir();
+        let dir = scratch.0.clone();
         inner_images_survive_overwrite_and_errors(
             &pool,
             &dir,
@@ -2658,7 +2660,8 @@ mod tests {
             let Some(pool) = monty_pool().await else {
                 return;
             };
-            let dir = tempdir();
+            let scratch = tempdir();
+            let dir = scratch.0.clone();
             let cx = run_cx(&dir).await;
             cx.registry
                 .ask(tools::registry::RegisterTool(Arc::new(Shot(dir.clone()))))
@@ -2724,10 +2727,8 @@ mod tests {
         });
     }
 
-    fn tempdir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("theuth-repl-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tempdir() -> crate::TestDir {
+        crate::TestDir::new("repl")
     }
 
     /// A module imported in one cell is known to the checker in the next
@@ -2738,7 +2739,8 @@ mod tests {
             let Some(pool) = monty_pool().await else {
                 return;
             };
-            let dir = tempdir();
+            let scratch = tempdir();
+            let dir = scratch.0.clone();
             let cx = run_cx(&dir).await;
             let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
             let out = repl.run("c1", "import re\nre.compile('a').pattern").await;
@@ -2775,7 +2777,8 @@ mod tests {
             let Some(pool) = monty_pool().await else {
                 return;
             };
-            let dir = tempdir();
+            let scratch = tempdir();
+            let dir = scratch.0.clone();
             let cx = run_cx(&dir).await;
             let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
             let out = repl.run("c1", "import re\nm = re.match('a', 'a')").await;
@@ -2820,7 +2823,8 @@ mod tests {
             let Some(pool) = monty_pool().await else {
                 return;
             };
-            let dir = tempdir();
+            let scratch = tempdir();
+            let dir = scratch.0.clone();
             let cx = run_cx(&dir).await;
             let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
             let start = std::time::Instant::now();
@@ -2847,7 +2851,8 @@ mod tests {
             let Some(pool) = monty_pool().await else {
                 return;
             };
-            let dir = tempdir();
+            let scratch = tempdir();
+            let dir = scratch.0.clone();
             let cx = run_cx(&dir).await;
             let session = cx.session;
             let runtime = dir.join("runtime");
@@ -2930,7 +2935,8 @@ mod tests {
             let Some(pool) = monty_pool().await else {
                 return;
             };
-            let dir = tempdir();
+            let scratch = tempdir();
+            let dir = scratch.0.clone();
             let cx = run_cx(&dir).await;
             let session = cx.session;
             let runtime = dir.join("runtime");
@@ -2973,7 +2979,8 @@ mod tests {
             let Some(pool) = monty_pool().await else {
                 return;
             };
-            let dir = tempdir();
+            let scratch = tempdir();
+            let dir = scratch.0.clone();
             let cx = run_cx(&dir).await;
             let mut repl =
                 Repl::open_with(&pool, cx.session, &dir, cx.clone(), MAX_MEMORY, 1).await;
@@ -2999,7 +3006,8 @@ mod tests {
     /// sidecar; `.stale`, other sessions and the spill dir survive.
     #[test]
     fn reset_session_removes_dump_names_and_sidecar() {
-        let dir = tempdir();
+        let scratch = tempdir();
+        let dir = scratch.0.clone();
         let runtime = dir.join("runtime");
         std::fs::create_dir_all(&runtime).unwrap();
         let (s1, s2) = (SessionId::new(), SessionId::new());
@@ -3036,7 +3044,8 @@ mod tests {
             let Some(pool) = monty_pool().await else {
                 return;
             };
-            let dir = tempdir();
+            let scratch = tempdir();
+            let dir = scratch.0.clone();
             let cx = run_cx(&dir).await;
             let runtime = dir.join("runtime");
             std::fs::create_dir_all(&runtime).unwrap();
@@ -3081,7 +3090,8 @@ mod tests {
             };
             let limit = env_mb("THEUTH_KNEE_LIMIT_MB", MAX_MEMORY);
             let chunk = env_mb("THEUTH_KNEE_CHUNK_MB", 8 << 20);
-            let dir = tempdir();
+            let scratch = tempdir();
+            let dir = scratch.0.clone();
             let cx = run_cx(&dir).await;
             let mut repl =
                 Repl::open_with(&pool, cx.session, &dir, cx.clone(), limit, u64::MAX).await;

@@ -831,10 +831,8 @@ impl Tool for SyncSkillsTool {
 mod tests {
     use super::*;
 
-    fn tmp() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("theuth-skills-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tmp() -> crate::TestDir {
+        crate::TestDir::new("skills")
     }
 
     fn names(skills: &[SkillMeta]) -> Vec<&str> {
@@ -843,7 +841,8 @@ mod tests {
 
     #[test]
     fn walk_rules_and_bodies() {
-        let dir = tmp();
+        let scratch = tmp();
+        let dir = scratch.0.clone();
         std::fs::create_dir_all(dir.join("a")).unwrap();
         std::fs::write(
             dir.join("a/one.md"),
@@ -888,7 +887,6 @@ mod tests {
         assert!(load(&dir, "three").is_err());
         assert!(skills.iter().all(|s| s.repo.is_none() && !s.always));
         assert_eq!(prompt_index(&index(&dir.join("missing"))), "");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -941,7 +939,8 @@ mod tests {
 
     #[test]
     fn always_skills_are_inlined_not_indexed() {
-        let dir = tmp();
+        let scratch = tmp();
+        let dir = scratch.0.clone();
         std::fs::write(
             dir.join("rules.md"),
             "---\nalways: true\n---\nAlways rule.\n",
@@ -954,14 +953,14 @@ mod tests {
         let idx = prompt_index(&skills);
         assert!(idx.contains("- later:"));
         assert!(!idx.contains("rules"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 136 §7.1: the sidecar rides every body read; `learned/` and
     /// `retired/` are not skills; `origin: dreaming` skills list last.
     #[test]
     fn learned_sidecar_rides_every_read_and_dreaming_dirs_are_not_skills() {
-        let dir = tmp();
+        let scratch = tmp();
+        let dir = scratch.0.clone();
         std::fs::write(dir.join("zeta.md"), "Zeta skill\nbody z\n").unwrap();
         std::fs::write(
             dir.join("rules.md"),
@@ -1002,7 +1001,8 @@ mod tests {
             "Always rule.\n\n## Learned (dreaming)\n- always lesson"
         );
         // ACP materialisation.
-        let cwd = tmp();
+        let scratch_cwd = tmp();
+        let cwd = scratch_cwd.0.clone();
         let m = materialise(
             &dir,
             &cwd,
@@ -1014,8 +1014,6 @@ mod tests {
         let written = std::fs::read_to_string(cwd.join(".agents/skills/zeta/SKILL.md")).unwrap();
         assert!(written.ends_with("## Learned (dreaming)\n- lesson one\n- lesson two\n"));
         m.remove();
-        std::fs::remove_dir_all(&cwd).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// R-24 (reader side): the sidecar path is built from front-matter text;
@@ -1023,7 +1021,8 @@ mod tests {
     /// reaches a file beside `learned/`, nor an absolute path.
     #[test]
     fn learned_sidecar_name_is_sanitised() {
-        let dir = tmp();
+        let scratch = tmp();
+        let dir = scratch.0.clone();
         assert_eq!(
             learned_path(Path::new("/s"), "pdf-2"),
             Some(PathBuf::from("/s/learned/pdf-2.md"))
@@ -1059,12 +1058,12 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains(LEARNED_HEADING), "{text}");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn add_remove_round_trip() {
-        let dir = tmp();
+        let scratch = tmp();
+        let dir = scratch.0.clone();
         let skills_dir = dir.join("skills"); // not yet created: add must create it
         let meta = add(
             &skills_dir,
@@ -1104,12 +1103,12 @@ mod tests {
         std::fs::write(skills_dir.join("pack/extra.txt"), "x").unwrap();
         remove(&skills_dir, "pack").unwrap();
         assert!(!skills_dir.join("pack").exists());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn repo_skills_from_a_local_bare_repo() {
-        let root = tmp();
+        let scratch = tmp();
+        let root = scratch.0.clone();
         let src = root.join("src");
         let bare = root.join("bare.git");
         let dir = root.join("skills");
@@ -1187,14 +1186,14 @@ mod tests {
         assert!(remove_repo(&dir, "nope").is_err());
         remove_repo(&dir, "bare").unwrap();
         assert!(index(&dir).is_empty());
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// 75 §4: written into a repo subdir, a worktree (`.git` is a file) and
     /// a plain dir; excluded from git exactly once; removed without a trace.
     #[test]
     fn materialise_writes_excludes_and_removes() {
-        let root = tmp();
+        let scratch = tmp();
+        let root = scratch.0.clone();
         let dir = root.join("skills");
         std::fs::create_dir_all(dir.join("pack")).unwrap();
         std::fs::write(
@@ -1333,6 +1332,5 @@ mod tests {
             .unwrap()
             .remove();
         assert!(!root.join("missing").exists());
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

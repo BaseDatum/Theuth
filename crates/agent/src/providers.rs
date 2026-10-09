@@ -318,8 +318,8 @@ mod tests {
     async fn save_roundtrip_and_remove() {
         use kameo::actor::Spawn;
         use std::sync::Arc;
-        let dir = std::env::temp_dir().join(format!("theuth-prov-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("prov");
+        let dir = scratch.0.clone();
         let vault = Arc::new(
             secrets::Vault::open(&dir, secrets::KeyStore::File)
                 .await
@@ -353,6 +353,5 @@ mod tests {
         assert!(vault.get("rwx", 0).is_none());
         assert!(load(&dir, Some(&vault)).is_empty());
         assert!(load(&dir, None).is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

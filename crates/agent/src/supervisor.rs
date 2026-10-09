@@ -10493,8 +10493,8 @@ pub(crate) mod tests {
     /// `open_router` adapter. Env fallbacks are not exercised (process-global).
     #[tokio::test]
     async fn builtin_keys_configure_opencode_and_openrouter_by_either_name() {
-        let dir = std::env::temp_dir().join(format!("theuth-builtin-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("builtin");
+        let dir = scratch.0.clone();
         let vault = Arc::new(
             secrets::Vault::open(&dir, secrets::KeyStore::File)
                 .await
@@ -10530,7 +10530,6 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(target.model.adapter_kind, AdapterKind::OpenRouter);
         assert_eq!(target.auth.single_key_value().unwrap(), "ork");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A keyless local provider (`omlx/...`) with no vault key and no env var
@@ -10831,7 +10830,8 @@ pub(crate) mod tests {
                 ),
             },
         ];
-        let dir = std::env::temp_dir().join(format!("theuth-preview-{}", uuid::Uuid::new_v4()));
+        let scratch = crate::TestDir::new("preview");
+        let dir = scratch.0.clone();
         materialize(&mut history, &messages, &epochs, &dir);
         let paths: Vec<Option<String>> = history
             .iter()
@@ -11177,8 +11177,8 @@ pub(crate) mod tests {
 
     #[test]
     fn check_files_rejects_what_a_provider_would() {
-        let dir = std::env::temp_dir().join(format!("theuth-attach-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("attach");
+        let dir = scratch.0.clone();
         let png = dir.join("shot.png");
         std::fs::write(&png, b"\x89PNG").unwrap();
         let txt = dir.join("notes.txt");
@@ -11282,8 +11282,8 @@ pub(crate) mod tests {
     /// bare ids are rejected; a unique bare id canonicalises.
     #[test]
     fn vision_candidate_requires_exact_image_capable_entry() {
-        let dir = std::env::temp_dir().join(format!("theuth-vision-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("vision");
+        let dir = scratch.0.clone();
         let catalog = vision_catalog(&dir);
         let only_test = |ns: &str| ns == "testvis";
         let both = |ns: &str| ns == "testvis" || ns == "othervis";
@@ -11315,7 +11315,6 @@ pub(crate) mod tests {
                 .unwrap_err()
                 .starts_with("ambiguous model `eyes`")
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 52 §3.1: the setter validates, writes `config.yaml`, then swaps the live
@@ -11932,15 +11931,14 @@ pub(crate) mod tests {
                 vec![],
             ]
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `ModelInfo.image` is effective input support (52 §3.2): a Cursor id
     /// with an image-capable catalog sibling reports `false`.
     #[test]
     fn model_info_image_is_effective_support() {
-        let dir = std::env::temp_dir().join(format!("theuth-vision-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("vision");
+        let dir = scratch.0.clone();
         let catalog = vision_catalog(&dir);
         let (p, m) = catalog.get("testvis/eyes").unwrap();
         assert!(ModelInfo::new(&p.id, m).image);
@@ -11949,7 +11947,6 @@ pub(crate) mod tests {
         assert!(ModelInfo::from(&r).image);
         r.genai = "cursor::eyes".into();
         assert!(!ModelInfo::from(&r).image);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 52 §3.1: a wrongly typed `agent.vision_model` is a startup error that
@@ -12483,8 +12480,8 @@ pub(crate) mod tests {
     /// write into an unwritable location changes nothing.
     #[test]
     fn global_switch_write_is_atomic_and_line_preserving() {
-        let dir = std::env::temp_dir().join(format!("theuth-cfg-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("cfg");
+        let dir = scratch.0.clone();
         let path = dir.join("config.yaml");
         std::fs::write(&path, "agent:\n  model: x # keep\n  communication: false\n").unwrap();
         write_config_atomic(&path, "agent", "communication", "true").unwrap();
@@ -12499,7 +12496,6 @@ pub(crate) mod tests {
         let bad = dir.join("missing").join("config.yaml");
         assert!(write_config_atomic(&bad, "agent", "communication", "true").is_err());
         assert!(!bad.exists());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Ticket id named by a `Ledger::activity` pending-input reason.
@@ -13524,6 +13520,7 @@ pub(crate) mod tests {
         a_root: SessionId,
         b_root: SessionId,
         net: Vec<Arc<peer_mesh::loopback::Loop>>,
+        _scratch: crate::TestDir,
     }
 
     async fn seed(dir: &Path, as_engine: &str, id: SessionId) {
@@ -13539,8 +13536,8 @@ pub(crate) mod tests {
     }
 
     async fn two_engines() -> TwoEngines {
-        let base = std::env::temp_dir().join(format!("theuth-69p-{}", Uuid::now_v7()));
-        let (dir_a, dir_b) = (base.join("a"), base.join("b"));
+        let scratch = crate::TestDir::new("69p");
+        let (dir_a, dir_b) = (scratch.0.join("a"), scratch.0.join("b"));
         std::fs::create_dir_all(&dir_a).unwrap();
         std::fs::create_dir_all(&dir_b).unwrap();
         let (a_root, b_root) = (SessionId::new(), SessionId::new());
@@ -13563,6 +13560,7 @@ pub(crate) mod tests {
             a_root,
             b_root,
             net,
+            _scratch: scratch,
         }
     }
 
@@ -13631,6 +13629,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn peer_messages_follow_the_owner_and_replies_round_trip() {
         let TwoEngines {
+            _scratch,
             a,
             b,
             a_root,
@@ -13711,6 +13710,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn an_unreachable_owner_is_a_failed_receipt_in_the_front_door_shape() {
         let TwoEngines {
+            _scratch,
             mut a,
             a_root,
             b_root,
@@ -13761,6 +13761,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn directory_marks_rows_owned_elsewhere_as_remote() {
         let TwoEngines {
+            _scratch,
             mut a,
             mut b,
             a_root,
