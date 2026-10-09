@@ -11757,7 +11757,7 @@ pub(crate) mod tests {
     /// unknown id under a keyed provider pass through, and moves nothing.
     #[tokio::test]
     async fn resolve_model_checks_credentials_without_side_effects() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testvis");
