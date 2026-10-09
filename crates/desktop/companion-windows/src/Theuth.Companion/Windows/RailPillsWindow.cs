@@ -67,13 +67,15 @@ internal sealed partial class RailPillsWindow : ToolWindow
         Presence = presence;
         Side = side == "left" ? "left" : "right";
         animate = SystemEffects.AnimationsOn;
-        root = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Top, Background = Palette.Transparent };
+        root = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Top, Background = Theme.Transparent };
         AutomationProperties.SetAutomationId(root, "rail");
         AutomationProperties.SetName(root, "theuth rail");
         FlatButtons.Apply(root.Resources);
         Content = root;
         SystemEffects.ApplyTransitions(Hwnd, animate);
-        root.ActualThemeChanged += (_, _) => Refresh();
+        // 149 NATIVE: follow Windows light/dark live. The pills are one SetWindowRgn-shaped window (capsules with transparent gaps):
+        // a regioned window cannot host Mica/Acrylic, so each pill is painted SolidBackgroundFillColorBase with a CardStroke hairline.
+        Theme.Follow(root, Refresh);
         if (SystemEffects.Current is { } fx) fx.Changed += () =>
         {
             animate = SystemEffects.AnimationsOn;
@@ -231,7 +233,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
             root.Margin = new Thickness(0);
             var sliver = new Border
             {
-                Width = SliverWidth, Height = SliverHeight, CornerRadius = new CornerRadius(2), Background = Palette.Tint(Palette.Sand, theme, 0.55),
+                Width = SliverWidth, Height = SliverHeight, CornerRadius = new CornerRadius(4), Background = Theme.Brush(NativeLook.TextTertiary, theme),
                 HorizontalAlignment = Side == "left" ? HorizontalAlignment.Left : HorizontalAlignment.Right,
             };
             AutomationProperties.SetAutomationId(sliver, "rail-sliver");
@@ -254,7 +256,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
         var b = new Border
         {
             Width = RailPillsModel.PillWidth, Height = height, CornerRadius = new CornerRadius(RailPillsModel.Radius),
-            Background = Palette.Brush(Palette.Surface, theme), BorderBrush = Palette.Tint(Palette.Ink, theme, 0.14), BorderThickness = new Thickness(1),
+            Background = Theme.Brush(NativeLook.SolidBackgroundBase, theme), BorderBrush = Theme.Brush(NativeLook.CardStroke, theme), BorderThickness = new Thickness(1),
         };
         AutomationProperties.SetAutomationId(b, id);
         AutomationProperties.SetName(b, name);
@@ -265,7 +267,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
     {
         var b = new Button
         {
-            Content = content, Width = w, Height = h, Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = Palette.Transparent,
+            Content = content, Width = w, Height = h, Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = Theme.Transparent,
             HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center,
             MinWidth = 0, MinHeight = 0, UseSystemFocusVisuals = false, IsTabStop = false, CornerRadius = new CornerRadius(h / 2),
         };
@@ -293,7 +295,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
             var n = pills.InboxCount;
             var count = new TextBlock
             {
-                Text = n > 99 ? "99+" : $"{n}", FontSize = 11, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Palette.Brush(Palette.Gold, theme),
+                Text = n > 99 ? "99+" : $"{n}", FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(NativeLook.Accent, theme),
                 HorizontalAlignment = HorizontalAlignment.Center, TextAlignment = TextAlignment.Center,
             };
             AutomationProperties.SetAutomationId(count, "needs-you-count");
@@ -304,7 +306,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
         grid.Children.Add(column);
         if (!pills.Connected)
         {
-            var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 4, Height = 4, Fill = Palette.Brush(Palette.Carnelian, theme), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 5) };
+            var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 4, Height = 4, Fill = Theme.Brush(NativeLook.Critical, theme), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 5) };
             var state = store.Connection.ToString().ToLowerInvariant();
             AutomationProperties.SetName(dot, $"engine: {state}");
             grid.Children.Add(dot);
@@ -328,7 +330,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
         if (n == 0)
         {
             // Keeps its shape with no agents (§3.1); a press still opens the (empty) agents panel.
-            var empty = Flat(new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 6, Height = 6, Stroke = Palette.Tint(Palette.Ink, theme, 0.25), StrokeThickness = 1 },
+            var empty = Flat(new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 6, Height = 6, Stroke = Theme.Brush(NativeLook.TextTertiary, theme), StrokeThickness = 1 },
                 "pill-agents-button", "Agents, none running", RailPillsModel.PillWidth, RailPillsModel.PillWidth);
             empty.Click += (_, _) =>
             {
@@ -373,7 +375,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
         {
             col.Children.Add(new TextBlock
             {
-                Text = $"+{pills.Overflow}", FontSize = 9, FontFamily = new FontFamily("Consolas"), Foreground = Palette.Brush(Palette.Ink2, theme),
+                Text = $"+{pills.Overflow}", FontSize = 12, Foreground = Theme.Brush(NativeLook.TextSecondary, theme),
                 HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, -6, 0, 0),
             });
         }
@@ -411,7 +413,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
         var pill = Pill(theme, RailPillsModel.PillWidth, "pill-actions", RailPillsModel.Describe(RailPillKind.Actions, pills));
         // ask · mic · point stacked in a 52 epx capsule: three 16 epx targets, the mic in the middle.
         var col = new StackPanel { Spacing = 0, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
-        var ask = Flat(new FontIcon { Glyph = "\uE70F", FontSize = 11, Foreground = Palette.Brush(Palette.Ink2, theme) }, "act-ask", "Ask theuth", 44, 16);
+        var ask = Flat(Theme.Icon("\uE70F", theme, NativeLook.TextSecondary, 12), "act-ask", "Ask theuth", 44, 16); // Edit (E70F): "ask"
         ask.Click += (_, _) =>
         {
             CancelDeferredHandBack();
@@ -419,14 +421,14 @@ internal sealed partial class RailPillsWindow : ToolWindow
         };
         micSlot = new Grid { Width = 44, Height = 18 };
         if (pills.Recording) micSlot.Children.Add(PillGlyphs.LevelBars(pills.Levels, 18, 3, theme));
-        else micSlot.Children.Add(new FontIcon { Glyph = "\uE720", FontSize = 12, Foreground = Palette.Brush(Palette.Ink2, theme) });
+        else micSlot.Children.Add(Theme.Icon(NativeLook.Glyph.Microphone, theme, NativeLook.TextSecondary, 12));
         var mic = Flat(micSlot, "act-mic", pills.Recording ? "Listening" : "Talk to theuth", 44, 18);
         mic.Click += (_, _) =>
         {
             CancelDeferredHandBack();
             AskClicked?.Invoke(ScreenRectOf(pill));
         };
-        var point = Flat(new FontIcon { Glyph = "\uE722", FontSize = 11, Foreground = Palette.Brush(Palette.Ink2, theme) }, "act-point", "Point and say", 44, 16);
+        var point = Flat(Theme.Icon(NativeLook.Glyph.Camera, theme, NativeLook.TextSecondary, 12), "act-point", "Point and say", 44, 16);
         point.Click += (_, _) => PointClicked?.Invoke();
         col.Children.Add(ask);
         col.Children.Add(mic);
@@ -442,7 +444,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
     private Border MorePill(ElementTheme theme)
     {
         var pill = Pill(theme, RailPillsModel.MoreHeight, "pill-more", "More");
-        var dots = new TextBlock { Text = "···", FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Palette.Brush(Palette.Ink2, theme), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        var dots = Theme.Icon(NativeLook.Glyph.More, theme, NativeLook.TextSecondary, 12); // More (E712), not a "···" character
         var b = Flat(dots, "pill-more-button", "More", RailPillsModel.PillWidth, RailPillsModel.MoreHeight);
         b.Click += (_, _) =>
         {

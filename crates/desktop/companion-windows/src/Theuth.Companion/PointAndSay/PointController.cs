@@ -63,7 +63,15 @@ internal sealed class PointController : IDisposable
         this.island = island;
         this.hotkeys = hotkeys;
         this.settings = settings;
+        // 149 NATIVE: the trail is the system accent (recording = accent), read live and re-read when Windows' accent/theme changes.
+        PointFlow.TrailRgb = AccentRgb();
         overlays = new OverlayWindows(PointFlow.TrailRgb, excludeFromCapture: !Flags.Shareable);
+        if (Ui.SystemEffects.Current is { } fx) fx.ThemeChanged += () =>
+        {
+            PointFlow.TrailRgb = AccentRgb();
+            overlays.SetColor(PointFlow.TrailRgb);
+            Log.Write($"point: trail colour → {PointFlow.TrailHex} (system accent)");
+        };
         sampler = new PointerSampler(dispatcher);
         sampler.Sampled += OnSample;
         recorder = new VoiceRecorder(dispatcher);
@@ -661,7 +669,7 @@ internal sealed class PointController : IDisposable
     /// (hide every overlay, WDA_EXCLUDEFROMCAPTURE, one dispatcher turn) before <c>screen_context</c> — it must be gone.
     /// The engine itself paints the pointer path into the PNG from the samples (<c>computer/context.rs</c>, <c>TRAIL_ALPHA</c>
     /// 0.85, in the request's <c>color</c>): the first run of this probe counted ~3 900 "trail" pixels in BOTH captures for that
-    /// reason. So the probe asks the engine to paint in MAGENTA (<c>#ff00ff</c>) and counts malachite (the overlay) and magenta
+    /// reason. So the probe asks the engine to paint in MAGENTA (<c>#ff00ff</c>) and counts the trail colour (the overlay) and magenta
     /// (the engine) separately — malachite must go to 0 after the Stop sequence while magenta stays (the engine drew it).
     /// </summary>
     public async Task<string> CaptureProbeAsync()
@@ -682,7 +690,7 @@ internal sealed class PointController : IDisposable
         long durationMs = samples.Length > 0 ? samples[^1].TMs : 0;
         // The engine paints the path it is given and crops around it: hand it the loop shifted 300 px right, so its magenta
         // stroke and its crop sit beside the overlay's real loop, which stays countable in the display overview (second run of
-        // this probe: with the true samples the engine's stroke covered the overlay's exactly — 69 vs 55 malachite px, no signal).
+        // this probe: with the true samples the engine's stroke covered the overlay's exactly — 69 vs 55 trail px, no signal).
         var shifted = samples.Select(s => new PointSample(s.TMs, s.X + 300, s.Y, s.Pen)).ToArray();
         // (A) overlays up and visible to capture
         overlays.SetHiddenFromCapture(false);
@@ -695,7 +703,7 @@ internal sealed class PointController : IDisposable
         await Yield();
         var (_, filesDown) = await ScreenContext(shifted, durationMs, false, ProbeColor);
         var down = await CountTrail(filesDown);
-        var line = $"capture-probe: {samples.Length} samples over {durationMs} ms; overlays UP → malachite px {up.Trail} (engine magenta {up.Green}) in {up.Files} file(s) {up.Size}; STOP sequence → malachite px {down.Trail} (engine magenta {down.Green}) in {down.Files} file(s) {down.Size}";
+        var line = $"capture-probe: {samples.Length} samples over {durationMs} ms; overlays UP → trail px {up.Trail} (engine magenta {up.Green}) in {up.Files} file(s) {up.Size}; STOP sequence → trail px {down.Trail} (engine magenta {down.Green}) in {down.Files} file(s) {down.Size}";
         Log.Write(line);
         overlays.SetHiddenFromCapture(!Flags.Shareable);
         Step(new PointEvent.Cancel());
@@ -706,6 +714,13 @@ internal sealed class PointController : IDisposable
     public const int TrailTolerance = 24;
     /// <summary>What the probe asks the engine to paint the path in, so the overlay's malachite is countable on its own.</summary>
     public const string ProbeColor = "#ff00ff";
+
+    /// <summary>The system accent packed for the raster (<c>SystemAccentColor</c> through <see cref="Ui.Theme.Accent"/>).</summary>
+    private static uint AccentRgb()
+    {
+        var c = Ui.Theme.Accent();
+        return PointFlow.PackRgb(c.R, c.G, c.B);
+    }
 
     private static async Task<(int Trail, int Green, int Files, string Size)> CountTrail(IReadOnlyList<string> files)
     {
@@ -729,7 +744,7 @@ internal sealed class PointController : IDisposable
                     if (Near(r, g, b, tr, tg, tb, 0x10) || Near(r, g, b, tr, tg, tb, 0xf0)) trail++;
                     if (Near(r, g, b, 0xff, 0x00, 0xff, 0x10) || Near(r, g, b, 0xff, 0x00, 0xff, 0xf0)) green++; // the engine's magenta
                 }
-                Log.Write($"capture-probe: {Path.GetFileName(path)} {decoder.PixelWidth}x{decoder.PixelHeight} malachite={trail - trailBefore}");
+                Log.Write($"capture-probe: {Path.GetFileName(path)} {decoder.PixelWidth}x{decoder.PixelHeight} trail={trail - trailBefore}");
             }
             catch (Exception e) { Log.Write($"capture-probe: {path}: {e.Message}"); }
         }

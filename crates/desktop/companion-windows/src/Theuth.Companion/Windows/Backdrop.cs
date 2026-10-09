@@ -57,6 +57,8 @@ internal sealed class Backdrop : IDisposable
     /// </summary>
     public static Backdrop? Attach(Window window, BackdropKind kind, global::Windows.UI.Color fallback, ElementTheme theme, string who)
     {
+        _ = fallback; // 149 NATIVE: the fallback is always the theme's SolidBackgroundFillColorBase, never a caller's colour
+        fallback = Theme.ColorOf(Theuth.Companion.Core.NativeLook.SolidBackgroundBase, theme);
         string pick = Pick(kind);
         if (pick == "none")
         {
@@ -69,14 +71,14 @@ internal sealed class Backdrop : IDisposable
             {
                 IsInputActive = true, // A7: the app decides; held constant so the rail never falls back for want of focus
                 IsHighContrast = false,
-                Theme = Palette.Resolve(theme) == ElementTheme.Light ? SystemBackdropTheme.Light : SystemBackdropTheme.Dark,
+                Theme = Theme.Resolve(theme) == ElementTheme.Light ? SystemBackdropTheme.Light : SystemBackdropTheme.Dark,
             };
             ISystemBackdropControllerWithTargets controller = pick switch
             {
                 "mica-base" => new MicaController { Kind = MicaKind.Base, FallbackColor = fallback },
                 "acrylic-base" => new DesktopAcrylicController { Kind = DesktopAcrylicKind.Base, FallbackColor = fallback },
-                // Thin acrylic tinted toward the surface so the marks keep their contrast over bright windows (C5).
-                _ => new DesktopAcrylicController { Kind = DesktopAcrylicKind.Thin, FallbackColor = fallback, TintColor = fallback, TintOpacity = 0.55f, LuminosityOpacity = 0.9f },
+                // 149 NATIVE: the system's own Thin acrylic — no custom tint toward a palette surface (the controller's defaults).
+                _ => new DesktopAcrylicController { Kind = DesktopAcrylicKind.Thin, FallbackColor = fallback },
             };
             var target = window.As<ICompositionSupportsSystemBackdrop>();
             controller.AddSystemBackdropTarget(target);
@@ -98,7 +100,7 @@ internal sealed class Backdrop : IDisposable
     public void SetTheme(ElementTheme theme)
     {
         if (disposed) return;
-        var want = Palette.Resolve(theme) == ElementTheme.Light ? SystemBackdropTheme.Light : SystemBackdropTheme.Dark;
+        var want = Theme.Resolve(theme) == ElementTheme.Light ? SystemBackdropTheme.Light : SystemBackdropTheme.Dark;
         if (configuration.Theme == want) return;
         Log.Write($"backdrop {Material}: theme {configuration.Theme} → {want}");
         configuration.Theme = want;

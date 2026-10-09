@@ -106,23 +106,33 @@ internal sealed partial class IslandWindow : ToolWindow
         this.model = model;
         this.act = act;
         this.save = save;
-        root = new Grid { RequestedTheme = ElementTheme.Dark, Background = Palette.Transparent };
+        // 149 NATIVE: the island follows Windows light/dark like every other surface (it was forced dark); the shell is the theme's
+        // SolidBackgroundFillColorBase with a CardStroke hairline — an un-regioned NOACTIVATE tool window whose shape is the Border's own
+        // rounded rectangle over a transparent root, so a system backdrop (which fills the whole HWND rectangle) cannot be used here.
+        root = new Grid { Background = Theme.Transparent };
         AutomationProperties.SetAutomationId(root, "island");
         AutomationProperties.SetName(root, "theuth island");
-        FlatButtons.Apply(root.Resources, Palette.Tint(Palette.Ink, ElementTheme.Dark, 0.12));
+        FlatButtons.Apply(root.Resources);
         body = new StackPanel { Orientation = Orientation.Vertical, Spacing = 6 };
         shell = new Border
         {
-            Background = new SolidColorBrush(ColorHelper.FromArgb(255, 0x14, 0x12, 0x10)),
-            BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(255, 0x3a, 0x32, 0x28)),
+            Background = Theme.Brush(NativeLook.SolidBackgroundBase, ElementTheme.Default),
+            BorderBrush = Theme.Brush(NativeLook.CardStroke, ElementTheme.Default),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(18),
+            CornerRadius = new CornerRadius(8),
             Padding = new Thickness(10, 4, 10, 4),
             Child = body,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Top,
         };
         root.Children.Add(shell);
+        Theme.Follow(root, () =>
+        {
+            FlatButtons.Apply(root.Resources, theme: root.ActualTheme);
+            shell.Background = Theme.Brush(NativeLook.SolidBackgroundBase, root.ActualTheme);
+            shell.BorderBrush = Theme.Brush(NativeLook.CardStroke, root.ActualTheme);
+            Render();
+        });
         Content = root;
         root.PointerEntered += (_, _) => OnEnter();
         root.PointerExited += (_, _) => OnLeave();
@@ -505,11 +515,11 @@ internal sealed partial class IslandWindow : ToolWindow
         if (IsShown) Resize();
     }
 
-    private static TextBlock Text(string s, double size, string key, FontWeight? weight = null) => new()
+    private TextBlock Text(string s, double size, string key, FontWeight? weight = null) => new()
     {
         Text = s,
-        FontSize = size,
-        Foreground = Palette.Brush(key, ElementTheme.Dark),
+        FontSize = size <= 12.5 ? 12 : size <= 16 ? 14 : 20, // the Fluent ramp: caption 12 · body 14 · subtitle 20
+        Foreground = Theme.Brush(key, root.ActualTheme),
         VerticalAlignment = VerticalAlignment.Center,
         TextTrimming = TextTrimming.CharacterEllipsis,
         FontWeight = weight ?? FontWeights.Normal,
@@ -519,10 +529,10 @@ internal sealed partial class IslandWindow : ToolWindow
     {
         var b = new Button
         {
-            Content = Text(label, 12.5, Palette.Ink),
+            Content = Text(label, 12.5, NativeLook.TextPrimary),
             Padding = new Thickness(8, 2, 8, 2),
             MinHeight = 24,
-            CornerRadius = new CornerRadius(10),
+            CornerRadius = new CornerRadius(4),
             VerticalAlignment = VerticalAlignment.Center,
         };
         ToolTipService.SetToolTip(b, tip);
@@ -532,9 +542,34 @@ internal sealed partial class IslandWindow : ToolWindow
         return b;
     }
 
+    /// <summary>149 NATIVE: a Fluent glyph button (eye, dismiss, chevrons), optionally with a word beside the glyph.</summary>
+    private Button IconBtn(string glyph, string tip, Action click, string? id = null, string? word = null, bool iconFirst = true)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var icon = Theme.Icon(glyph, root.ActualTheme, NativeLook.TextPrimary, 12);
+        if (iconFirst) row.Children.Add(icon);
+        if (word is not null) row.Children.Add(Text(word, 12.5, NativeLook.TextPrimary));
+        if (!iconFirst) row.Children.Add(icon);
+        var b = new Button { Content = row, Padding = new Thickness(8, 2, 8, 2), MinHeight = 24, CornerRadius = new CornerRadius(4), VerticalAlignment = VerticalAlignment.Center };
+        ToolTipService.SetToolTip(b, tip);
+        if (id is not null) AutomationProperties.SetAutomationId(b, id);
+        AutomationProperties.SetName(b, tip);
+        b.Click += (_, _) => { click(); if (!wantsKey) HandBack(); };
+        return b;
+    }
+
+    /// <summary>"N new" with an Up glyph (not an arrow character), in the accent: unseen briefs ask for attention.</summary>
+    private FrameworkElement Unseen(int n)
+    {
+        var row = Row(2);
+        row.Children.Add(Theme.Icon(NativeLook.Glyph.Up, root.ActualTheme, NativeLook.Accent, 12));
+        row.Children.Add(Text($"{n} new", 11.5, NativeLook.Accent));
+        return row;
+    }
+
     private Ellipse Dot(string key, double size = 8) => new()
     {
-        Width = size, Height = size, Fill = Palette.Brush(key, ElementTheme.Dark), VerticalAlignment = VerticalAlignment.Center,
+        Width = size, Height = size, Fill = Theme.Brush(key, root.ActualTheme), VerticalAlignment = VerticalAlignment.Center,
     };
 
     private StackPanel Row(double spacing = 8) => new() { Orientation = Orientation.Horizontal, Spacing = spacing, VerticalAlignment = VerticalAlignment.Center };
@@ -544,8 +579,8 @@ internal sealed partial class IslandWindow : ToolWindow
     {
         var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center, Height = 14 };
         AutomationProperties.SetAutomationId(p, "island-meters");
-        micBar = new Rectangle { Width = 3, Height = MeterHeight(micLevel), RadiusX = 1.5, RadiusY = 1.5, Fill = Palette.Brush(Palette.Faience, ElementTheme.Dark), VerticalAlignment = VerticalAlignment.Bottom };
-        sysBar = new Rectangle { Width = 3, Height = MeterHeight(sysLevel), RadiusX = 1.5, RadiusY = 1.5, Fill = Palette.Brush(Palette.Sand, ElementTheme.Dark), VerticalAlignment = VerticalAlignment.Bottom };
+        micBar = new Rectangle { Width = 3, Height = MeterHeight(micLevel), RadiusX = 1.5, RadiusY = 1.5, Fill = Theme.Brush(NativeLook.Accent, root.ActualTheme), VerticalAlignment = VerticalAlignment.Bottom };
+        sysBar = new Rectangle { Width = 3, Height = MeterHeight(sysLevel), RadiusX = 1.5, RadiusY = 1.5, Fill = Theme.Brush(NativeLook.TextTertiary, root.ActualTheme), VerticalAlignment = VerticalAlignment.Bottom };
         p.Children.Add(micBar);
         p.Children.Add(sysBar);
         return p;
@@ -561,11 +596,11 @@ internal sealed partial class IslandWindow : ToolWindow
         string? verdict = s.Deciding is not null ? "deciding" : last is not null && DateTimeOffset.Now - verdictAt < TimeSpan.FromSeconds(6)
             ? last.Disposition == "skip" ? "skip" : last.Disposition == "brief" ? "brief" : "→ model" : null;
         var row = Row(4);
-        if (effective != "off") row.Children.Add(Text(effective.ToUpperInvariant(), 10, Palette.Sand));
-        if (verdict is not null) row.Children.Add(Text(verdict, 10.5, s.Deciding is not null ? Palette.Gold : Palette.Ink2));
+        if (effective != "off") row.Children.Add(Text(effective.ToUpperInvariant(), 10, NativeLook.TextTertiary));
+        if (verdict is not null) row.Children.Add(Text(verdict, 10.5, s.Deciding is not null ? NativeLook.Accent : NativeLook.TextSecondary));
         var chip = new Border
         {
-            Background = Palette.Tint(Palette.Ink, ElementTheme.Dark, 0.1),
+            Background = Theme.Brush(NativeLook.ControlFill, root.ActualTheme),
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(6, 0, 6, 1),
             VerticalAlignment = VerticalAlignment.Center,
@@ -581,62 +616,62 @@ internal sealed partial class IslandWindow : ToolWindow
 
     private void RenderPill()
     {
-        shell.CornerRadius = new CornerRadius(18);
+        shell.CornerRadius = new CornerRadius(8);
         shell.Padding = new Thickness(12, 0, 12, 0);
         var row = Row();
         row.Height = PillHeight - 2;
         AutomationProperties.SetAutomationId(row, "island-pill");
         var s = snapshot;
         if (s.Meeting is not null) row.Children.Add(Meters());
-        if (SpeakerWord(s) is { } who) row.Children.Add(Text(who, 12, Palette.Ink2));
-        if (s.State == "Recording") row.Children.Add(Dot(Palette.Carnelian));
-        else if (s.State == "Paused") row.Children.Add(Dot(Palette.Sand));
-        else row.Children.Add(Dot(Palette.Faience, 6));
-        clock = Text(s.Meeting is null ? "no meeting" : IslandModel.Clock(s.Elapsed(DateTimeOffset.Now)), 13, Palette.Ink, FontWeights.SemiBold);
+        if (SpeakerWord(s) is { } who) row.Children.Add(Text(who, 12, NativeLook.TextSecondary));
+        if (s.State == "Recording") row.Children.Add(Dot(NativeLook.Critical));
+        else if (s.State == "Paused") row.Children.Add(Dot(NativeLook.TextTertiary));
+        else row.Children.Add(Dot(NativeLook.Accent, 6));
+        clock = Text(s.Meeting is null ? "no meeting" : IslandModel.Clock(s.Elapsed(DateTimeOffset.Now)), 13, NativeLook.TextPrimary, FontWeights.SemiBold);
         AutomationProperties.SetAutomationId(clock, "island-clock");
         row.Children.Add(clock);
-        if (s.State is "Paused") row.Children.Add(Text("paused", 12, Palette.Ink2));
-        else if (s.State is "Starting" or "Stopping") row.Children.Add(Text(s.State.ToLowerInvariant() + "…", 12, Palette.Ink2));
-        if (s.Listening) row.Children.Add(Text("listening…", 12, Palette.Faience));
-        else if (s.ApprovalWaiting) row.Children.Add(Text("approval waiting", 12, Palette.Gold));
-        else if (s.Activity is { } a) row.Children.Add(Text(a, 12, Palette.Ink2));
+        if (s.State is "Paused") row.Children.Add(Text("paused", 12, NativeLook.TextSecondary));
+        else if (s.State is "Starting" or "Stopping") row.Children.Add(Text(s.State.ToLowerInvariant() + "…", 12, NativeLook.TextSecondary));
+        if (s.Listening) row.Children.Add(Text("listening…", 12, NativeLook.Accent));
+        else if (s.ApprovalWaiting) row.Children.Add(Text("approval waiting", 12, NativeLook.Accent));
+        else if (s.Activity is { } a) row.Children.Add(Text(a, 12, NativeLook.TextSecondary));
         var spacer = new Border { Width = 1 };
         row.Children.Add(spacer);
         int n = s.Topics.Count;
         var count = new Border
         {
-            Background = n > 0 ? Palette.Brush(Palette.Gold, ElementTheme.Dark) : Palette.Tint(Palette.Ink, ElementTheme.Dark, 0.12),
-            CornerRadius = new CornerRadius(9),
+            Background = n > 0 ? Theme.Brush(NativeLook.Accent, root.ActualTheme) : Theme.Brush(NativeLook.ControlFillSecondary, root.ActualTheme),
+            CornerRadius = new CornerRadius(8),
             Padding = new Thickness(7, 0, 7, 1),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = Text(n == 1 ? "1 topic" : $"{n} topics", 11.5, n > 0 ? Palette.Surface : Palette.Ink2, FontWeights.SemiBold),
+            Child = Text(n == 1 ? "1 topic" : $"{n} topics", 11.5, n > 0 ? NativeLook.OnAccent : NativeLook.TextSecondary, FontWeights.SemiBold),
         };
         AutomationProperties.SetAutomationId(count, "island-topics");
         row.Children.Add(count);
-        if (s.Unseen > 0) row.Children.Add(Text($"↑{s.Unseen} new", 11.5, Palette.Gold));
+        if (s.Unseen > 0) row.Children.Add(Unseen(s.Unseen));
         body.Children.Add(row);
     }
 
     private void RenderOpen()
     {
-        shell.CornerRadius = new CornerRadius(18);
+        shell.CornerRadius = new CornerRadius(8);
         shell.Padding = new Thickness(10, 6, 10, 8);
         var s = snapshot;
         // The strip: grip · rec · clock · topics · badges · mute · stop · eye.
         var strip = Row(6);
-        var grip = new Border { Width = GripWidth, Height = 20, Child = Text("⋮⋮", 12, Palette.Sand), VerticalAlignment = VerticalAlignment.Center };
+        var grip = new Border { Width = GripWidth, Height = 20, Child = Theme.Icon(NativeLook.Glyph.GripperBarVertical, root.ActualTheme, NativeLook.TextTertiary, 12), VerticalAlignment = VerticalAlignment.Center };
         ToolTipService.SetToolTip(grip, "Drag to move · double-click to snap back");
         strip.Children.Add(grip);
         if (s.Meeting is not null) strip.Children.Add(Meters());
-        strip.Children.Add(Dot(s.State == "Recording" ? Palette.Carnelian : Palette.Sand));
-        clock = Text(s.Meeting is null ? "no meeting" : IslandModel.Clock(s.Elapsed(DateTimeOffset.Now)), 13, Palette.Ink, FontWeights.SemiBold);
+        strip.Children.Add(Dot(s.State == "Recording" ? NativeLook.Critical : NativeLook.TextTertiary));
+        clock = Text(s.Meeting is null ? "no meeting" : IslandModel.Clock(s.Elapsed(DateTimeOffset.Now)), 13, NativeLook.TextPrimary, FontWeights.SemiBold);
         AutomationProperties.SetAutomationId(clock, "island-clock");
         strip.Children.Add(clock);
         if (OracleChip() is { } oracle) strip.Children.Add(oracle);
-        foreach (var d in s.Degraded.Take(2)) strip.Children.Add(Badge(Degraded(d), Palette.Gold));
-        if (s.Listening) strip.Children.Add(Badge("listening…", Palette.Faience));
-        else if (s.ApprovalWaiting) strip.Children.Add(Badge("approval waiting", Palette.Gold));
-        else if (s.Activity is { } a) strip.Children.Add(Text(a, 12, Palette.Ink2));
+        foreach (var d in s.Degraded.Take(2)) strip.Children.Add(Badge(Degraded(d), NativeLook.Accent));
+        if (s.Listening) strip.Children.Add(Badge("listening…", NativeLook.Accent));
+        else if (s.ApprovalWaiting) strip.Children.Add(Badge("approval waiting", NativeLook.Accent));
+        else if (s.Activity is { } a) strip.Children.Add(Text(a, 12, NativeLook.TextSecondary));
         var right = Row(2);
         right.HorizontalAlignment = HorizontalAlignment.Right;
         if (s.Meeting is not null && MeetingReducer.Live(s.State))
@@ -644,7 +679,7 @@ internal sealed partial class IslandWindow : ToolWindow
             right.Children.Add(Btn(s.State == "Paused" ? "resume" : "mute", s.State == "Paused" ? "Resume (M)" : "Mute — pause the recording (M)", () => act(new IslandAction.Mute()), "island-mute"));
             right.Children.Add(Btn("stop", "Stop the meeting (Ctrl+Shift+M)", () => act(new IslandAction.Stop()), "island-stop"));
         }
-        right.Children.Add(Btn(hiddenFromCapture ? "◉" : "○", hiddenFromCapture ? "Hidden from capture (best effort) — Alt+Shift+E" : "Visible in capture — Alt+Shift+E", () => act(new IslandAction.Eye()), "island-eye"));
+        right.Children.Add(IconBtn(hiddenFromCapture ? NativeLook.Glyph.Hide : NativeLook.Glyph.View, hiddenFromCapture ? "Hidden from capture (best effort) — Alt+Shift+E" : "Visible in capture — Alt+Shift+E", () => act(new IslandAction.Eye()), "island-eye"));
         var stripGrid = new Grid();
         stripGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         stripGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -665,8 +700,8 @@ internal sealed partial class IslandWindow : ToolWindow
                 var row = Row(0);
                 var tap = Btn(t.Label, $"Brief me on \"{t.Label}\"", () => act(new IslandAction.Tap(t.Id)), $"island-topic-{i}");
                 tap.Opacity = tapped ? 0.5 : 1;
-                tap.Background = Palette.Tint(Palette.Gold, ElementTheme.Dark, 0.18);
-                var x = Btn("✕", $"Dismiss \"{t.Label}\" (E)", () => act(new IslandAction.Dismiss(t.Id)), $"island-topic-{i}-dismiss");
+                tap.Background = Theme.Brush(NativeLook.CardBackgroundSecondary, root.ActualTheme);
+                var x = IconBtn(NativeLook.Glyph.Cancel, $"Dismiss \"{t.Label}\" (E)", () => act(new IslandAction.Dismiss(t.Id)), $"island-topic-{i}-dismiss");
                 x.Padding = new Thickness(4, 2, 4, 2);
                 row.Children.Add(tap);
                 row.Children.Add(x);
@@ -681,30 +716,40 @@ internal sealed partial class IslandWindow : ToolWindow
         {
             var pane = new StackPanel { Spacing = 3 };
             var head = Row(6);
-            var title = Text(b.Title, 14, Palette.Ink, FontWeights.SemiBold);
+            var title = Text(b.Title, 14, NativeLook.TextPrimary, FontWeights.SemiBold);
             AutomationProperties.SetAutomationId(title, "island-brief-title");
             head.Children.Add(title);
-            head.Children.Add(Text($"{s.Cursor + 1}/{s.Briefs.Count}", 11.5, Palette.Sand));
-            if (s.Unseen > 0) head.Children.Add(Text($"↑{s.Unseen} new", 11.5, Palette.Gold));
+            head.Children.Add(Text($"{s.Cursor + 1}/{s.Briefs.Count}", 11.5, NativeLook.TextTertiary));
+            if (s.Unseen > 0) head.Children.Add(Unseen(s.Unseen));
             pane.Children.Add(head);
             foreach (var bullet in b.Bullets.Take(3))
             {
-                var t = Text("• " + bullet, 12.5, Palette.Ink2);
+                // 149 NATIVE: a drawn 4 epx bullet before the text, not a "•" character.
+                var t = Text(bullet, 12.5, NativeLook.TextSecondary);
                 t.TextWrapping = TextWrapping.Wrap;
                 t.TextTrimming = TextTrimming.None;
-                pane.Children.Add(t);
+                var li = new Grid { ColumnSpacing = 6 };
+                li.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                li.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                var dotEl = Dot(NativeLook.TextSecondary, 4);
+                dotEl.VerticalAlignment = VerticalAlignment.Top;
+                dotEl.Margin = new Thickness(0, 7, 0, 0);
+                li.Children.Add(dotEl);
+                Grid.SetColumn(t, 1);
+                li.Children.Add(t);
+                pane.Children.Add(li);
             }
             var nav = Row(4);
             nav.Children.Add(Btn("deeper", "Go deeper on this brief (D)", () => act(new IslandAction.Deeper(b.Id)), "island-deeper"));
-            if (s.Cursor > 0) nav.Children.Add(Btn("‹ older", "Older brief", () => act(new IslandAction.Move(-1)), "island-older"));
-            if (s.Cursor < s.Briefs.Count - 1) nav.Children.Add(Btn("newer ›", "Newer brief", () => act(new IslandAction.Move(+1)), "island-newer"));
-            nav.Children.Add(Text(b.Source.ToLowerInvariant(), 11, Palette.Sand));
+            if (s.Cursor > 0) nav.Children.Add(IconBtn(NativeLook.Glyph.ChevronLeft, "Older brief", () => act(new IslandAction.Move(-1)), "island-older", "older"));
+            if (s.Cursor < s.Briefs.Count - 1) nav.Children.Add(IconBtn(NativeLook.Glyph.ChevronRight, "Newer brief", () => act(new IslandAction.Move(+1)), "island-newer", "newer", iconFirst: false));
+            nav.Children.Add(Text(b.Source.ToLowerInvariant(), 11, NativeLook.TextTertiary));
             pane.Children.Add(nav);
             body.Children.Add(pane);
         }
         else if (s.Meeting is not null)
         {
-            body.Children.Add(Text(s.Topics.Count > 0 ? "Tap a topic for a brief." : "Listening for topics…", 12.5, Palette.Sand));
+            body.Children.Add(Text(s.Topics.Count > 0 ? "Tap a topic for a brief." : "Listening for topics…", 12.5, NativeLook.TextTertiary));
         }
         else
         {
@@ -716,7 +761,7 @@ internal sealed partial class IslandWindow : ToolWindow
         if (s.Lines.Count > 0)
         {
             var l = s.Lines[^1];
-            var line = Text($"{l.Who} {l.Text}", 11.5, l.Open ? Palette.Sand : Palette.Ink2);
+            var line = Text($"{l.Who} {l.Text}", 11.5, l.Open ? NativeLook.TextTertiary : NativeLook.TextSecondary);
             AutomationProperties.SetAutomationId(line, "island-transcript");
             body.Children.Add(line);
         }
@@ -726,10 +771,10 @@ internal sealed partial class IslandWindow : ToolWindow
         {
             request = new TextBox
             {
-                PlaceholderText = "Ask about the meeting… (⏎ sends, ⎋ leaves)",
-                FontSize = 12.5,
+                PlaceholderText = "Ask about the meeting… (Enter sends, Esc leaves)",
+                FontSize = 12,
                 MinHeight = 28,
-                CornerRadius = new CornerRadius(10),
+                CornerRadius = new CornerRadius(8),
             };
             AutomationProperties.SetAutomationId(request, "island-request");
             request.GotFocus += (_, _) => { wantsKey = true; leaveTimer.Stop(); };
@@ -740,18 +785,18 @@ internal sealed partial class IslandWindow : ToolWindow
 
     private void RenderVoice(VoiceView v)
     {
-        shell.CornerRadius = new CornerRadius(18);
+        shell.CornerRadius = new CornerRadius(8);
         shell.Padding = new Thickness(14, 8, 14, 10);
         var pane = new StackPanel { Spacing = 4 };
         AutomationProperties.SetAutomationId(pane, "island-voice");
         var head = Row(8);
-        head.Children.Add(Dot(v.Phase == "listening" ? Palette.Carnelian : v.Working ? Palette.Faience : Palette.Malachite));
-        head.Children.Add(Text(v.Status, 12.5, Palette.Ink2));
-        if (v.Locked) head.Children.Add(Badge("locked", Palette.Gold));
+        head.Children.Add(Dot(v.Phase == "listening" ? NativeLook.Critical : v.Working ? NativeLook.Accent : NativeLook.Success));
+        head.Children.Add(Text(v.Status, 12.5, NativeLook.TextSecondary));
+        if (v.Locked) head.Children.Add(Badge("locked", NativeLook.Accent));
         pane.Children.Add(head);
         if (v.Live.Length > 0)
         {
-            var live = Text(v.Live, 15, Palette.Ink);
+            var live = Text(v.Live, 15, NativeLook.TextPrimary);
             live.TextWrapping = TextWrapping.Wrap;
             live.TextTrimming = TextTrimming.None;
             live.MaxLines = 4;
@@ -762,19 +807,19 @@ internal sealed partial class IslandWindow : ToolWindow
         {
             var card = new Border
             {
-                Background = Palette.Tint(Palette.Ink, ElementTheme.Dark, 0.08),
-                CornerRadius = new CornerRadius(12),
+                Background = Theme.Brush(NativeLook.ControlFill, root.ActualTheme),
+                CornerRadius = new CornerRadius(8),
                 Padding = new Thickness(10, 6, 10, 6),
             };
             var inner = new StackPanel { Spacing = 2 };
-            var a = Text(ans.Length == 0 ? "…" : ans, 13, Palette.Ink);
+            var a = Text(ans.Length == 0 ? "…" : ans, 13, NativeLook.TextPrimary);
             a.TextWrapping = TextWrapping.Wrap;
             a.TextTrimming = TextTrimming.None;
             a.MaxLines = 6;
             AutomationProperties.SetAutomationId(a, "island-voice-answer");
             inner.Children.Add(a);
             var foot = Row(6);
-            foot.Children.Add(Text(v.Working ? "working…" : "done", 11, Palette.Sand));
+            foot.Children.Add(Text(v.Working ? "working…" : "done", 11, NativeLook.TextTertiary));
             if (v.OpenUrl is { } url)
             {
                 var open = Btn("Open Ctrl+O", "Open the desk's session in theuth", () => _ = Links.Open(new Uri(url)), "island-voice-open");
@@ -782,19 +827,20 @@ internal sealed partial class IslandWindow : ToolWindow
                 open.MinHeight = 20;
                 foot.Children.Add(open);
             }
-            foot.Children.Add(Text("Esc hides", 11, Palette.Sand));
+            foot.Children.Add(Text("Esc hides", 11, NativeLook.TextTertiary));
             inner.Children.Add(foot);
             card.Child = inner;
             pane.Children.Add(card);
         }
-        if (v.Hint is { } h) pane.Children.Add(Text(h, 12, Palette.Gold));
+        if (v.Hint is { } h) pane.Children.Add(Text(h, 12, NativeLook.Accent));
         body.Children.Add(pane);
     }
 
     private Border Badge(string text, string key) => new()
     {
-        Background = Palette.Tint(key, ElementTheme.Dark, 0.18),
-        CornerRadius = new CornerRadius(8),
+        Background = Theme.Brush(NativeLook.ControlFill, root.ActualTheme),
+        BorderBrush = Theme.Brush(key, root.ActualTheme), BorderThickness = new Thickness(1),
+        CornerRadius = new CornerRadius(4),
         Padding = new Thickness(6, 0, 6, 1),
         VerticalAlignment = VerticalAlignment.Center,
         Child = Text(text, 11, key),

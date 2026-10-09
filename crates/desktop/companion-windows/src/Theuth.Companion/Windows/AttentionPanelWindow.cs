@@ -81,7 +81,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         content = new StackPanel();
         scroll = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Disabled };
         receiptText = new TextBlock { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 2, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
-        receiptRight = new TextBlock { FontSize = 12, FontFamily = new FontFamily("Consolas"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+        receiptRight = new TextBlock { FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
         receiptBar = new Border { Height = 2, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom, Width = 0 };
         var receiptGrid = new Grid { Padding = new Thickness(12, 8, 12, 8) };
         receiptGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -106,11 +106,12 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         AutomationProperties.SetAutomationId(host, "panel");
         AutomationProperties.SetName(host, "Attention panel");
         host.PreviewKeyDown += OnPreviewKeyDown;
-        host.ActualThemeChanged += (_, _) =>
+        // 149 NATIVE: follow Windows light/dark live (system switch → RequestedTheme mirrors it, the material and the content re-render).
+        Theme.Follow(host, () =>
         {
             backdrop?.SetTheme(host.ActualTheme);
             if (IsOpen) Render(force: true);
-        };
+        });
         Content = host;
         // 149 WW2 (§7.4 #2): opaque with DWM rounded corners (the system shadow stays); the W6 backdrop path is kept as-is below.
         if (!Shape.RoundCorners(Hwnd)) Log.Write("panel: DWM rounded corners unavailable (rectangular)");
@@ -118,7 +119,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         ApplyEffects(initial: true);
         if (SystemEffects.Current is { } fx) fx.Changed += () => ApplyEffects(initial: false);
 
-        noteBox = new TextBox { PlaceholderText = "Why it goes back (required)", FontSize = 12.5 };
+        noteBox = new TextBox { PlaceholderText = "Why it goes back (required)", FontSize = 12 };
         AutomationProperties.SetAutomationId(noteBox, "note-field");
         AutomationProperties.SetName(noteBox, "Why it goes back (required)");
         noteBox.KeyDown += (_, e) =>
@@ -130,7 +131,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             noteBox.Text = "";
             store.SubmitNote(text);
         };
-        replyBox = new TextBox { FontSize = 12.5 };
+        replyBox = new TextBox { FontSize = 12 };
         AutomationProperties.SetAutomationId(replyBox, "reply-field");
         replyBox.KeyDown += (_, e) =>
         {
@@ -189,21 +190,20 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
     /// <summary>C13 live (W6 item 3): the transparency switch attaches/detaches the material; the animation switch pins the window transitions.</summary>
     private void ApplyEffects(bool initial)
     {
-        // W6 (as-built §2): on build-B the MicaController painted Mica LIGHT (#F3F3F3, its light tint) under Theme=Dark with
-        // host.ActualTheme=Dark and app=Dark, and the host's 82 % dark surface tint did not show over it (rounds 2–3, 04:55–05:13;
-        // round 1's first open at 04:40 was dark) — dark-palette text on a light ground. Until that is understood the panel is
-        // W2's opaque surface; `--panel-mica` attaches the controller for a retest.
-        bool wantBackdrop = Environment.GetCommandLineArgs().Contains("--panel-mica");
+        // 149 NATIVE: Mica Base is the panel's backdrop by default (Acrylic Base where Mica is unsupported), with NO painted fill
+        // over it; the W6 light-Mica-under-dark-text finding is covered by Theme.Follow (RequestedTheme mirrors the system, and the
+        // configuration's Theme is set from the same value). `--panel-opaque` keeps the solid SolidBackgroundFillColorBase surface.
+        bool wantBackdrop = !Environment.GetCommandLineArgs().Contains("--panel-opaque");
         bool transparency = SystemEffects.TransparencyOn;
         if (wantBackdrop && transparency && backdrop is null)
         {
-            backdrop = Backdrop.Attach(this, BackdropKind.MicaBase, Palette.ColorOf(Palette.Surface, host.ActualTheme), host.ActualTheme, "panel");
+            backdrop = Backdrop.Attach(this, BackdropKind.MicaBase, Theme.ColorOf(NativeLook.SolidBackgroundBase, host.ActualTheme), host.ActualTheme, "panel");
         }
         else if ((!transparency || !wantBackdrop) && backdrop is not null)
         {
             backdrop.Dispose();
             backdrop = null;
-            Log.Write("panel: backdrop detached — opaque surface (transparency effects off)");
+            Log.Write("panel: backdrop detached — solid SolidBackgroundFillColorBase surface (transparency effects off)");
         }
         SystemEffects.ApplyTransitions(Hwnd, SystemEffects.AnimationsOn);
         if (initial) return;
@@ -455,12 +455,11 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         content.Children.Clear();
         var theme = host.ActualTheme;
         backdrop?.SetTheme(theme);
-        // With a material attached the surface is painted at 82 % over it (the material shows through the rest): on build-B the
-        // MicaController painted a LIGHT material under Theme=Dark (rounds 2–3, as-built W6 §2), which left dark-palette text
-        // on a cream ground — legibility never depends on what the controller paints.
-        host.Background = backdrop is null ? Palette.Brush(Palette.Surface, theme) : Palette.Tint(Palette.Surface, theme, 0.82);
-        host.Foreground = Palette.Brush(Palette.Ink, theme);
-        receiptRow.BorderBrush = Palette.Tint(Palette.Rule, theme, 0.6);
+        // 149 NATIVE: nothing is painted over the material (the 82 % tint of 134 W6 is gone); without a backdrop the surface is the
+        // theme's SolidBackgroundFillColorBase.
+        host.Background = backdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, theme) : Theme.Transparent;
+        host.Foreground = Theme.Brush(NativeLook.TextPrimary, theme);
+        receiptRow.BorderBrush = Theme.Brush(NativeLook.Divider, theme);
 
         content.Children.Add(Header(theme));
         content.Children.Add(Divider(theme, 0.6));
@@ -478,7 +477,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             if (others.Count > MaxLines)
             {
                 content.Children.Add(Divider(theme, 0.4));
-                content.Children.Add(Small($"+{others.Count - MaxLines} more · J to walk them", Palette.Sand, theme, new Thickness(12, 6, 12, 6)));
+                content.Children.Add(Small($"+{others.Count - MaxLines} more · J to walk them", NativeLook.TextTertiary, theme, new Thickness(12, 6, 12, 6)));
             }
         }
         else if (p.ReceiptFocus is not null)
@@ -489,7 +488,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
                 content.Children.Add(Line(item, ++n, theme));
                 content.Children.Add(Divider(theme, 0.4));
             }
-            if (p.Others.Count > MaxLines) content.Children.Add(Small($"+{p.Others.Count - MaxLines} more · K to walk them", Palette.Sand, theme, new Thickness(12, 6, 12, 6)));
+            if (p.Others.Count > MaxLines) content.Children.Add(Small($"+{p.Others.Count - MaxLines} more · K to walk them", NativeLook.TextTertiary, theme, new Thickness(12, 6, 12, 6)));
         }
         else
         {
@@ -505,10 +504,10 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             if (!open) mark.Opacity = 0.45;
             empty.Children.Add(mark);
             var words = new StackPanel { Spacing = 6 };
-            var title = new TextBlock { Text = open ? CardAnatomyModel.EmptyTitle : CardAnatomyModel.Connecting, FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Palette.Brush(Palette.Ink, theme), TextWrapping = TextWrapping.Wrap };
+            var title = new TextBlock { Text = open ? CardAnatomyModel.EmptyTitle : CardAnatomyModel.Connecting, FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(NativeLook.TextPrimary, theme), TextWrapping = TextWrapping.Wrap };
             AutomationProperties.SetAutomationId(title, "panel-empty");
             words.Children.Add(title);
-            if (open) words.Children.Add(new TextBlock { Text = CardAnatomyModel.EmptyBody, FontSize = 15, Foreground = Palette.Brush(Palette.Sand, theme), TextWrapping = TextWrapping.Wrap });
+            if (open) words.Children.Add(new TextBlock { Text = CardAnatomyModel.EmptyBody, FontSize = 14, Foreground = Theme.Brush(NativeLook.TextTertiary, theme), TextWrapping = TextWrapping.Wrap });
             Grid.SetColumn(words, 1);
             empty.Children.Add(words);
             content.Children.Add(empty);
@@ -544,14 +543,14 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
         var name = new TextBlock
         {
-            Text = anatomy?.Header.Name ?? CardAnatomyModel.InboxTitle, FontSize = 19, FontWeight = Microsoft.UI.Text.FontWeights.Bold,
-            Foreground = Palette.Brush(Palette.Ink, theme), TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center,
+            Text = anatomy?.Header.Name ?? CardAnatomyModel.InboxTitle, FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = Theme.Brush(NativeLook.TextPrimary, theme), TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center,
         };
         nameRow.Children.Add(name);
         if (anatomy is { } an && an.Header.Count > 1) nameRow.Children.Add(CardChrome.PositionDots(theme, an.Header.Position, an.Header.Count));
         titleStack.Children.Add(nameRow);
         bool gold = store.Rail.NeedsYouCount > 0;
-        var glance = new TextBlock { Text = store.Panel.Headline, FontSize = 11.5, Foreground = Palette.Brush(gold ? Palette.Gold : Palette.Ink2, theme), TextTrimming = TextTrimming.CharacterEllipsis };
+        var glance = new TextBlock { Text = store.Panel.Headline, FontSize = 12, Foreground = Theme.Brush(gold ? NativeLook.Accent : NativeLook.TextSecondary, theme), TextTrimming = TextTrimming.CharacterEllipsis };
         titleStack.Children.Add(glance);
         AutomationProperties.SetAutomationId(titleStack, "panel-headline");
         AutomationProperties.SetName(titleStack, store.Panel.Position.Length == 0 ? store.Panel.Headline : $"{anatomy?.Header.Spoken ?? store.Panel.Headline}, {store.Panel.Headline}");
@@ -567,7 +566,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         var legend = CardChrome.KeyCapButton(theme, null, "?", () => store.Perform(Intent.Legend), "card-legend");
         Grid.SetColumn(legend, 2);
         grid.Children.Add(legend);
-        var close = CardChrome.KeyCapButton(theme, "✕", "esc", () => store.Perform(Intent.Escape), "card-close");
+        var close = CardChrome.KeyCapButton(theme, null, "Esc", () => store.Perform(Intent.Escape), "card-close");
         Grid.SetColumn(close, 3);
         grid.Children.Add(close);
         return grid;
@@ -592,12 +591,12 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             stack.Children.Add(bubbles);
         }
 
-        var question = new TextBlock { Text = anatomy.Question, FontSize = CardChrome.Question, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, MaxLines = 3, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = Palette.Brush(Palette.Ink, theme) };
+        var question = new TextBlock { Text = anatomy.Question, FontSize = CardChrome.Question, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, MaxLines = 3, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = Theme.Brush(NativeLook.TextPrimary, theme) };
         AutomationProperties.SetAutomationId(question, "card-question");
         stack.Children.Add(question);
         if (anatomy.Why is { } why && why != anatomy.Bubbles.LastReply)
         {
-            var w = new TextBlock { Text = why, FontSize = 13, Foreground = Palette.Brush(Palette.Ink2, theme), TextWrapping = TextWrapping.Wrap, MaxLines = 4, TextTrimming = TextTrimming.CharacterEllipsis };
+            var w = new TextBlock { Text = why, FontSize = 14, Foreground = Theme.Brush(NativeLook.TextSecondary, theme), TextWrapping = TextWrapping.Wrap, MaxLines = 4, TextTrimming = TextTrimming.CharacterEllipsis };
             AutomationProperties.SetAutomationId(w, "card-why");
             stack.Children.Add(w);
         }
@@ -606,11 +605,11 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             var chips = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
             foreach (var chip in card.Chips)
             {
-                var key = chip.Ok == true ? Palette.Malachite : chip.Ok == false ? Palette.Carnelian : Palette.Ink2;
+                var key = chip.Ok == true ? NativeLook.Success : chip.Ok == false ? NativeLook.Critical : NativeLook.TextSecondary;
                 chips.Children.Add(new Border
                 {
-                    CornerRadius = new CornerRadius(9), BorderThickness = new Thickness(1), BorderBrush = Palette.Brush(key, theme), Padding = new Thickness(7, 2, 7, 2),
-                    Child = new TextBlock { Text = chip.Text, FontSize = 10.5, Foreground = Palette.Brush(key, theme), TextTrimming = TextTrimming.CharacterEllipsis },
+                    CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1), BorderBrush = Theme.Brush(key, theme), Padding = new Thickness(7, 2, 7, 2),
+                    Child = new TextBlock { Text = chip.Text, FontSize = 12, Foreground = Theme.Brush(key, theme), TextTrimming = TextTrimming.CharacterEllipsis },
                 });
             }
             stack.Children.Add(chips);
@@ -619,11 +618,11 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         if (store.NoteFor is not null)
         {
             stack.Children.Add(noteBox);
-            stack.Children.Add(Small("Enter send back · Esc cancel", Palette.Sand, theme, default));
+            stack.Children.Add(Small("Enter send back · Esc cancel", NativeLook.TextTertiary, theme, default));
         }
         else
         {
-            if (anatomy.NextStepsHeader) stack.Children.Add(Small("Next steps", Palette.Sand, theme, new Thickness(0, 2, 0, -3), 11.5));
+            if (anatomy.NextStepsHeader) stack.Children.Add(Small("Next steps", NativeLook.TextTertiary, theme, new Thickness(0, 2, 0, -3), 12));
             var options = new StackPanel { Spacing = 6 };
             foreach (var line in anatomy.Options)
             {
@@ -631,7 +630,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
                 options.Children.Add(CardChrome.OptionRow(theme, line, () => store.Pick(o, card)));
             }
             if (options.Children.Count > 0) stack.Children.Add(options);
-            if (anatomy.MoreOptions > 0) stack.Children.Add(Small($"+{anatomy.MoreOptions} more — O opens the full list in theuth", Palette.Sand, theme, default));
+            if (anatomy.MoreOptions > 0) stack.Children.Add(Small($"+{anatomy.MoreOptions} more — O opens the full list in theuth", NativeLook.TextTertiary, theme, default));
             if (card.Options.Count == 0 && !card.Clearable && !anatomy.Reply.Send)
             {
                 var open = OptionButton(new CardOption(0, "Open in theuth", null, false, new CardAction.Dismiss(card.Item.Id)), card, theme, keyLabel: "O");
@@ -641,18 +640,18 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
 
         if (anatomy.Reply.Send && store.NoteFor is null)
         {
-            // The reply row is always visible (§3.3): [▣ P] [field "Reply to ‹name›" R] [🎙 V] [↑ ⏎].
+            // The reply row is always visible (§3.3): [camera P] [field "Reply to ‹name›" R] [microphone V] [send Enter] — Fluent glyphs, no characters (149 NATIVE).
             var row = new Grid { ColumnSpacing = 6 };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var point = CardChrome.IconCap(theme, "\uE722", "P", "Point — attach the screen", anatomy.Reply.Point, () => PointRequested?.Invoke(card), "reply-point");
+            var point = CardChrome.IconCap(theme, NativeLook.Glyph.Camera, "P", "Point — attach the screen", anatomy.Reply.Point, () => PointRequested?.Invoke(card), "reply-point");
             row.Children.Add(point);
             replyBox.PlaceholderText = anatomy.Reply.Placeholder;
             replyBox.Height = 36;
             replyBox.VerticalAlignment = VerticalAlignment.Center;
-            replyBox.CornerRadius = new CornerRadius(12);
+            replyBox.CornerRadius = new CornerRadius(8);
             AutomationProperties.SetName(replyBox, anatomy.Reply.Placeholder);
             var fieldWrap = new Grid();
             fieldWrap.Children.Add(replyBox);
@@ -667,16 +666,16 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             row.Children.Add(fieldWrap);
             // 149 WW3 R2: the P screenshots parked for this reply (Store.AttachToReply) — "N screenshots attached".
             // The caption rides in the placeholder ("1 screenshot attached · Type your answer…") so it never overlaps the typed text;
-            // the P cap turns malachite while something is parked.
+            // the P cap gets a Success outline while something is parked.
             if (StoreModel.AttachedText(store.ReplyAttachmentsFor(card.Item.Session).Count) is { } attachedText)
             {
                 replyBox.PlaceholderText = attachedText + " · " + anatomy.Reply.Placeholder;
                 AutomationProperties.SetName(replyBox, replyBox.PlaceholderText);
                 AutomationProperties.SetAutomationId(point, "reply-point-attached");
-                point.BorderBrush = Palette.Brush(Palette.Malachite, theme);
+                point.BorderBrush = Theme.Brush(NativeLook.Success, theme);
                 point.BorderThickness = new Thickness(1);
             }
-            var mic = CardChrome.IconCap(theme, "\uE720", "V", talkBusy ? "Listening" : "Hold to talk", anatomy.Reply.Talk, () => { }, "reply-mic");
+            var mic = CardChrome.IconCap(theme, NativeLook.Glyph.Microphone, "V", talkBusy ? "Listening" : "Hold to talk", anatomy.Reply.Talk, () => { }, "reply-mic");
             if (anatomy.Reply.Talk)
             {
                 mic.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((s, e) =>
@@ -690,11 +689,11 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
                     EndCardTalk();
                 }), true);
                 mic.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) => EndCardTalk()), true);
-                if (talkBusy && mic.Content is StackPanel sp && sp.Children[0] is FontIcon fi) fi.Foreground = Palette.Brush(Palette.Carnelian, theme);
+                if (talkBusy && mic.Content is StackPanel sp && sp.Children[0] is FontIcon fi) fi.Foreground = Theme.Brush(NativeLook.Accent, theme); // recording = accent
             }
             Grid.SetColumn(mic, 2);
             row.Children.Add(mic);
-            var send = CardChrome.IconCap(theme, "\uE74A", "⏎", "Send", true, () =>
+            var send = CardChrome.IconCap(theme, NativeLook.Glyph.Up, "Enter", "Send", true, () =>
             {
                 var text = replyBox.Text;
                 if (text.Trim().Length == 0) return;
@@ -707,7 +706,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             stack.Children.Add(row);
             if (talkBusy || talkError is not null)
             {
-                stack.Children.Add(Small(talkError ?? "Listening… release → the words land in the field", talkError is null ? Palette.Sand : Palette.Carnelian, theme, default));
+                stack.Children.Add(Small(talkError ?? "Listening… release and the words land in the field", talkError is null ? NativeLook.TextTertiary : NativeLook.Critical, theme, default));
             }
         }
 
@@ -727,11 +726,11 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         foreach (var k in anatomy.Keys.Where(k => k.Cap is "D" or "O" or "Ctrl+O" or "?" or "Esc")) hints.Children.Add(Hint(k.Cap, k.Label, theme));
         stack.Children.Add(hints);
 
-        var frame = new Grid { Background = Palette.Tint(Palette.Ink, theme, 0.035) };
+        var frame = new Grid { Background = Theme.Brush(NativeLook.CardBackground, theme) };
         frame.Children.Add(stack);
         if (card.Item.Kind.NeedsYou)
         {
-            frame.Children.Add(new Border { Width = 3, HorizontalAlignment = HorizontalAlignment.Left, Background = Palette.Brush(Palette.Gold, theme) });
+            frame.Children.Add(new Border { Width = 3, HorizontalAlignment = HorizontalAlignment.Left, Background = Theme.Brush(NativeLook.Accent, theme) });
         }
         AutomationProperties.SetAutomationId(frame, "card");
         AutomationProperties.SetName(frame, $"{card.Who}, {card.Item.Kind.RawValue}: {card.Question}");
@@ -748,37 +747,37 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         var badge = new Border
         {
             MinWidth = 18, MinHeight = 18, CornerRadius = new CornerRadius(4), Padding = new Thickness(4, 0, 4, 0),
-            Background = rec ? Palette.Brush(Palette.Gold, theme) : Palette.Tint(Palette.Ink, theme, 0.08), VerticalAlignment = VerticalAlignment.Center,
+            Background = rec ? Theme.Brush(NativeLook.Accent, theme) : Theme.Brush(NativeLook.ControlFill, theme), VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
             {
-                Text = keyLabel ?? $"{o.Key}", FontSize = 10.5, FontFamily = new FontFamily("Consolas"),
-                Foreground = rec ? Palette.Brush(Palette.Surface, theme) : Palette.Brush(Palette.Ink, theme),
+                Text = keyLabel ?? $"{o.Key}", FontSize = 12,
+                Foreground = rec ? Theme.Brush(NativeLook.OnAccent, theme) : Theme.Brush(NativeLook.TextPrimary, theme),
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             },
         };
         grid.Children.Add(badge);
-        var label = new TextBlock { FontSize = 12.5, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
-        label.Inlines.Add(new Run { Text = o.Label, Foreground = Palette.Brush(Palette.Ink, theme) });
-        if (o.Detail is { } d) label.Inlines.Add(new Run { Text = $" — {d}", FontSize = 11, Foreground = Palette.Brush(Palette.Sand, theme) });
+        var label = new TextBlock { FontSize = 14, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+        label.Inlines.Add(new Run { Text = o.Label, Foreground = Theme.Brush(NativeLook.TextPrimary, theme) });
+        if (o.Detail is { } d) label.Inlines.Add(new Run { Text = $" — {d}", FontSize = 12, Foreground = Theme.Brush(NativeLook.TextTertiary, theme) });
         Grid.SetColumn(label, 1);
         grid.Children.Add(label);
         if (rec)
         {
-            var r = Small("recommended · Enter", Palette.Gold, theme, default, 10);
+            var r = Small("recommended · Enter", NativeLook.Accent, theme, default, 12);
             r.VerticalAlignment = VerticalAlignment.Center;
             Grid.SetColumn(r, 2);
             grid.Children.Add(r);
         }
-        var fill = rec ? Palette.Tint(Palette.Gold, theme, 0.12) : Palette.Tint(Palette.Ink, theme, 0.06);
-        var border = rec ? Palette.Brush(Palette.Gold, theme) : Palette.Tint(Palette.Rule, theme, 0.6);
+        var fill = rec ? Theme.Brush(NativeLook.CardBackgroundSecondary, theme) : Theme.Brush(NativeLook.ControlFill, theme);
+        var border = rec ? Theme.Brush(NativeLook.Accent, theme) : Theme.Brush(NativeLook.Divider, theme);
         var b = new Button
         {
             Content = grid, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Padding = new Thickness(8, 6, 8, 6), CornerRadius = new CornerRadius(9), BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 6, 8, 6), CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1),
             Background = fill, BorderBrush = border,
         };
-        b.Resources["ButtonBackgroundPointerOver"] = rec ? Palette.Tint(Palette.Gold, theme, 0.2) : Palette.Tint(Palette.Ink, theme, 0.1);
-        b.Resources["ButtonBackgroundPressed"] = rec ? Palette.Tint(Palette.Gold, theme, 0.28) : Palette.Tint(Palette.Ink, theme, 0.14);
+        b.Resources["ButtonBackgroundPointerOver"] = rec ? Theme.Brush(NativeLook.AccentTertiary, theme) : Theme.Brush(NativeLook.ControlFill, theme);
+        b.Resources["ButtonBackgroundPressed"] = rec ? Theme.Brush(NativeLook.AccentTertiary, theme) : Theme.Brush(NativeLook.ControlFillSecondary, theme);
         b.Resources["ButtonBorderBrushPointerOver"] = border;
         b.Resources["ButtonBorderBrushPressed"] = border;
         var key = keyLabel ?? $"{o.Key}";
@@ -800,16 +799,15 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         var glyph = MarkGlyph.ForItem(item, theme);
         glyph.VerticalAlignment = VerticalAlignment.Center;
         grid.Children.Add(glyph);
-        var who = new TextBlock { Text = item.Agent ?? item.Kind.RawValue, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center, Foreground = Palette.Brush(Palette.Ink, theme) };
+        var who = new TextBlock { Text = item.Agent ?? item.Kind.RawValue, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Foreground = Theme.Brush(NativeLook.TextPrimary, theme) };
         Grid.SetColumn(who, 1);
         grid.Children.Add(who);
-        var title = Small(item.Title, Palette.Ink2, theme, default, 12);
+        var title = Small(item.Title, NativeLook.TextSecondary, theme, default, 12);
         title.TextTrimming = TextTrimming.CharacterEllipsis;
         title.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(title, 2);
         grid.Children.Add(title);
-        var ago = Small("", Palette.Sand, theme, default, 12);
-        ago.FontFamily = new FontFamily("Consolas");
+        var ago = Small("", NativeLook.TextTertiary, theme, default, 12);
         ago.VerticalAlignment = VerticalAlignment.Center;
         Ago(ago, item.WaitingSince, "", "");
         Grid.SetColumn(ago, 3);
@@ -817,9 +815,9 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         var b = new Button
         {
             Content = grid, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Padding = new Thickness(12, 7, 12, 7), BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(0), Background = Palette.Transparent,
+            Padding = new Thickness(12, 7, 12, 7), BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(4), Background = Theme.Transparent,
         };
-        FlatButtons.Apply(b.Resources, Palette.Tint(Palette.Ink, theme, 0.06));
+        FlatButtons.Apply(b.Resources, Theme.Brush(NativeLook.ControlFill, theme));
         AutomationProperties.SetAutomationId(b, $"line-{n}");
         AutomationProperties.SetName(b, $"{item.Agent ?? item.Kind.RawValue}, {item.Title}, {RailModel.Ago(item.WaitingSince, DateTimeOffset.Now)}");
         b.Click += (_, _) => store.FocusOn(item.Id);
@@ -838,13 +836,13 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         var head = new Grid { Padding = new Thickness(12, 7, 12, 3) };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var title = new TextBlock { FontSize = 11 };
-        title.Inlines.Add(new Run { Text = "Done", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Palette.Brush(Palette.Malachite, theme) });
-        title.Inlines.Add(new Run { Text = " · last 24 h", Foreground = Palette.Brush(Palette.Sand, theme) });
+        var title = new TextBlock { FontSize = 12 };
+        title.Inlines.Add(new Run { Text = "Done", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(NativeLook.Success, theme) });
+        title.Inlines.Add(new Run { Text = " · last 24 h", Foreground = Theme.Brush(NativeLook.TextTertiary, theme) });
         head.Children.Add(title);
         if (all.Count > rows.Count)
         {
-            var more = Small($"{all.Count} · J to walk them", Palette.Sand, theme, default, 10.5);
+            var more = Small($"{all.Count} · J to walk them", NativeLook.TextTertiary, theme, default, 12);
             Grid.SetColumn(more, 1);
             head.Children.Add(more);
         }
@@ -856,25 +854,24 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            if (focus == i) grid.Background = Palette.Tint(Palette.Ink, theme, 0.045);
+            if (focus == i) grid.Background = Theme.Brush(NativeLook.ControlFill, theme);
             var glyph = MarkGlyph.Create(MarkState.Finished, theme, false);
             glyph.VerticalAlignment = VerticalAlignment.Center;
             grid.Children.Add(glyph);
-            var who = new TextBlock { Text = r.Who, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.Medium, MaxWidth = 140, TextTrimming = TextTrimming.CharacterEllipsis };
+            var who = new TextBlock { Text = r.Who, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, MaxWidth = 140, TextTrimming = TextTrimming.CharacterEllipsis };
             Grid.SetColumn(who, 1);
             grid.Children.Add(who);
-            var text = Small(r.Text, Palette.Ink2, theme, default, 12);
+            var text = Small(r.Text, NativeLook.TextSecondary, theme, default, 12);
             text.TextTrimming = TextTrimming.CharacterEllipsis;
             Grid.SetColumn(text, 2);
             grid.Children.Add(text);
-            var ago = Small("", Palette.Sand, theme, default, 12);
-            ago.FontFamily = new FontFamily("Consolas");
+            var ago = Small("", NativeLook.TextTertiary, theme, default, 12);
             Ago(ago, r.At, "", "");
             Grid.SetColumn(ago, 3);
             grid.Children.Add(ago);
             var row = new Grid();
             row.Children.Add(grid);
-            if (focus == i) row.Children.Add(new Border { Width = 3, HorizontalAlignment = HorizontalAlignment.Left, Background = Palette.Brush(Palette.Malachite, theme) });
+            if (focus == i) row.Children.Add(new Border { Width = 3, HorizontalAlignment = HorizontalAlignment.Left, Background = Theme.Brush(NativeLook.Success, theme) });
             AutomationProperties.SetAutomationId(row, $"done-{i + 1}");
             AutomationProperties.SetName(row, $"{r.Who}, {r.Text}, {RailModel.Ago(r.At, DateTimeOffset.Now)}");
             AutomationProperties.SetAccessibilityView(row, AccessibilityView.Content); // W6 (C12): a row Narrator lands on, not a layout pane
@@ -898,7 +895,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         hints.Children.Add(Hint("E", "clear", theme));
         hints.Children.Add(Hint("Esc", store.HeldNow is null ? "back to work" : "undo", theme));
         stack.Children.Add(hints);
-        var wait = Small($"answers wait {(int)store.UndoDelay} s · Esc undoes", Palette.Sand, theme, default, 10.5);
+        var wait = Small($"answers wait {(int)store.UndoDelay} s · Esc undoes", NativeLook.TextTertiary, theme, default, 12);
         AutomationProperties.SetAutomationId(wait, "panel-hold-hint");
         stack.Children.Add(wait);
         return stack;
@@ -909,18 +906,18 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         var s = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
         s.Children.Add(new Border
         {
-            CornerRadius = new CornerRadius(3), BorderThickness = new Thickness(1), BorderBrush = Palette.Brush(Palette.Rule, theme),
+            CornerRadius = new CornerRadius(4), BorderThickness = new Thickness(1), BorderBrush = Theme.Brush(NativeLook.Divider, theme),
             Padding = new Thickness(4, 0, 4, 1),
-            Child = new TextBlock { Text = key, FontSize = 10, FontFamily = new FontFamily("Consolas"), Foreground = Palette.Brush(Palette.Sand, theme) },
+            Child = new TextBlock { Text = key, FontSize = 12, Foreground = Theme.Brush(NativeLook.TextTertiary, theme) },
         });
-        s.Children.Add(new TextBlock { Text = label, FontSize = 10.5, Foreground = Palette.Brush(Palette.Sand, theme), VerticalAlignment = VerticalAlignment.Center });
+        s.Children.Add(new TextBlock { Text = label, FontSize = 12, Foreground = Theme.Brush(NativeLook.TextTertiary, theme), VerticalAlignment = VerticalAlignment.Center });
         return s;
     }
 
-    private static TextBlock Small(string text, string color, ElementTheme theme, Thickness margin, double size = 10.5) =>
-        new() { Text = text, FontSize = size, Foreground = Palette.Brush(color, theme), Margin = margin };
+    private static TextBlock Small(string text, string color, ElementTheme theme, Thickness margin, double size = 12) =>
+        new() { Text = text, FontSize = size, Foreground = Theme.Brush(color, theme), Margin = margin };
 
-    private static Border Divider(ElementTheme theme, double opacity) => new() { Height = 1, Background = Palette.Tint(Palette.Rule, theme, opacity) };
+    private static Border Divider(ElementTheme theme, double opacity) { _ = opacity; return new() { Height = 1, Background = Theme.Brush(NativeLook.Divider, theme) }; }
 
     private void Ago(TextBlock block, DateTimeOffset since, string prefix, string suffix)
     {
@@ -947,42 +944,42 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         }
         bool wasHidden = receiptRow.Visibility == Visibility.Collapsed;
         receiptRow.Visibility = Visibility.Visible;
-        receiptRow.Background = Palette.Tint(Palette.Malachite, theme, 0.12);
+        receiptRow.Background = Theme.Brush(NativeLook.CardBackgroundSecondary, theme);
         string right = "";
         double fraction = 0;
         switch (r)
         {
             case StoreModel.ReceiptRow.Holding h:
                 receiptText.Text = $"{h.Held.Who} · {h.Held.Label} — sending";
-                receiptText.Foreground = Palette.Brush(Palette.Ink, theme);
+                receiptText.Foreground = Theme.Brush(NativeLook.TextPrimary, theme);
                 right = $"Esc undo · {(int)Math.Ceiling(store.HoldRemaining)}";
                 fraction = store.UndoDelay > 0 ? store.HoldRemaining / store.UndoDelay : 0;
                 break;
             case StoreModel.ReceiptRow.Sent s:
                 receiptText.Text = $"Sent · {s.Text}";
-                receiptText.Foreground = Palette.Brush(Palette.Malachite, theme);
+                receiptText.Foreground = Theme.Brush(NativeLook.Success, theme);
                 break;
             case StoreModel.ReceiptRow.Undone:
                 receiptText.Text = "Taken back";
-                receiptText.Foreground = Palette.Brush(Palette.Ink, theme);
+                receiptText.Foreground = Theme.Brush(NativeLook.TextPrimary, theme);
                 break;
             case StoreModel.ReceiptRow.Stale:
                 receiptText.Text = "Already answered elsewhere";
-                receiptText.Foreground = Palette.Brush(Palette.Sand, theme);
+                receiptText.Foreground = Theme.Brush(NativeLook.TextTertiary, theme);
                 break;
             case StoreModel.ReceiptRow.Failed f:
                 receiptText.Text = $"Failed · {f.Error}";
-                receiptText.Foreground = Palette.Brush(Palette.Carnelian, theme);
+                receiptText.Foreground = Theme.Brush(NativeLook.Critical, theme);
                 break;
             case StoreModel.ReceiptRow.Reply rp:
                 receiptText.Text = $"{rp.Who} · {rp.Text}";
-                receiptText.Foreground = Palette.Brush(Palette.Ink, theme);
+                receiptText.Foreground = Theme.Brush(NativeLook.TextPrimary, theme);
                 if (rp.Session is not null) right = "Open Ctrl+O";
                 break;
         }
         receiptRight.Text = right;
-        receiptRight.Foreground = Palette.Brush(Palette.Ink2, theme);
-        receiptBar.Background = Palette.Brush(Palette.Malachite, theme);
+        receiptRight.Foreground = Theme.Brush(NativeLook.TextSecondary, theme);
+        receiptBar.Background = Theme.Brush(NativeLook.Accent, theme); // the undo countdown: a progress fill, accent like ProgressBar
         receiptBar.Width = Math.Max(0, PanelWidth * Math.Clamp(fraction, 0, 1));
         AutomationProperties.SetName(receiptRow, right.Length == 0 ? receiptText.Text : $"{receiptText.Text} · {right}");
         if (wasHidden && IsOpen) Relayout();

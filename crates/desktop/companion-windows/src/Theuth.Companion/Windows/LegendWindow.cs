@@ -39,10 +39,27 @@ internal sealed partial class LegendWindow : ToolWindow
         AutomationProperties.SetName(host, "Keyboard shortcuts");
         host.PreviewKeyDown += OnKey;
         Content = host;
+        // 149 NATIVE: a transient over the desktop — Mica Base (Acrylic Base where unsupported) like the panels, DWM round corners,
+        // nothing painted over the material; follows Windows light/dark live.
+        if (!Shape.RoundCorners(Hwnd)) Log.Write("legend: DWM rounded corners unavailable (rectangular)");
+        ApplyEffects();
+        if (SystemEffects.Current is { } fx) fx.Changed += () => { ApplyEffects(); if (IsOpen) Render(); };
+        Theme.Follow(host, () => { backdrop?.SetTheme(host.ActualTheme); if (IsOpen) Render(); });
         Activated += (_, e) =>
         {
             if (e.WindowActivationState != WindowActivationState.Deactivated && IsOpen) host.Focus(FocusState.Programmatic);
         };
+    }
+
+    private Backdrop? backdrop;
+
+    public string BackdropText => backdrop?.Material ?? "solid";
+
+    private void ApplyEffects()
+    {
+        bool transparency = SystemEffects.TransparencyOn;
+        if (transparency && backdrop is null) backdrop = Backdrop.Attach(this, BackdropKind.MicaBase, Theme.ColorOf(NativeLook.SolidBackgroundBase, host.ActualTheme), host.ActualTheme, "legend");
+        else if (!transparency && backdrop is not null) { backdrop.Dispose(); backdrop = null; }
     }
 
     public bool IsOpen { get; private set; }
@@ -102,14 +119,15 @@ internal sealed partial class LegendWindow : ToolWindow
     private void Render()
     {
         var theme = host.ActualTheme;
-        host.Background = Palette.Brush(Palette.Surface, theme);
-        host.Foreground = Palette.Brush(Palette.Ink, theme);
+        backdrop?.SetTheme(theme);
+        host.Background = backdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, theme) : Theme.Transparent;
+        host.Foreground = Theme.Brush(NativeLook.TextPrimary, theme);
         content.Children.Clear();
         var head = new Grid { Padding = new Thickness(14, 12, 14, 8) };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        head.Children.Add(new TextBlock { Text = "Keyboard shortcuts", FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        var esc = new TextBlock { Text = "Esc close", FontSize = 10.5, Foreground = Palette.Brush(Palette.Sand, theme), VerticalAlignment = VerticalAlignment.Center };
+        head.Children.Add(new TextBlock { Text = "Keyboard shortcuts", FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        var esc = new TextBlock { Text = "Esc close", FontSize = 12, Foreground = Theme.Brush(NativeLook.TextTertiary, theme), VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(esc, 1);
         head.Children.Add(esc);
         content.Children.Add(head);
@@ -118,8 +136,8 @@ internal sealed partial class LegendWindow : ToolWindow
         {
             content.Children.Add(new TextBlock
             {
-                Text = scope.Title().ToUpperInvariant(), FontSize = 10, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = Palette.Brush(Palette.Sand, theme), CharacterSpacing = 60, Margin = new Thickness(14, 7, 14, 2),
+                Text = scope.Title().ToUpperInvariant(), FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = Theme.Brush(NativeLook.TextTertiary, theme), CharacterSpacing = 60, Margin = new Thickness(14, 7, 14, 2),
             });
             foreach (var b in table.BindingsIn(scope)) content.Children.Add(Row(b.Label, ChordText(b), b.Chord is null && b.DefaultChord is not null, $"legend-{b.Action.RawValue()}", theme));
             if (scope == KeyScope.AskBar && table.ChordFor(KeyAction.OpenPanel) is { } hold)
@@ -127,20 +145,20 @@ internal sealed partial class LegendWindow : ToolWindow
                 content.Children.Add(Row("Hold to talk · release to send in 3 s", $"hold {hold.Symbol}", false, "legend-holdToTalk", theme));
             }
         }
-        content.Children.Add(new Border { Height = 1, Margin = new Thickness(14, 8, 14, 0), Background = Palette.Tint(Palette.Rule, theme, 0.6) });
+        content.Children.Add(new Border { Height = 1, Margin = new Thickness(14, 8, 14, 0), Background = Theme.Brush(NativeLook.Divider, theme) });
         var foot = new StackPanel { Spacing = 4, Padding = new Thickness(14, 10, 14, 12) };
         if (store.HotkeyNotice is { } n)
         {
-            var notice = new TextBlock { Text = n, FontSize = 10.5, Foreground = Palette.Brush(Palette.Carnelian, theme), TextWrapping = TextWrapping.Wrap };
+            var notice = new TextBlock { Text = n, FontSize = 12, Foreground = Theme.Brush(NativeLook.Critical, theme), TextWrapping = TextWrapping.Wrap };
             AutomationProperties.SetAutomationId(notice, "legend-notice");
             foot.Children.Add(notice);
         }
         foot.Children.Add(new TextBlock
         {
             Text = "Panel and Ask bar keys fire only while that surface is active, so they never collide with other apps — which is why the global set stays tiny.",
-            FontSize = 10.5, Foreground = Palette.Brush(Palette.Sand, theme), TextWrapping = TextWrapping.Wrap,
+            FontSize = 12, Foreground = Theme.Brush(NativeLook.TextTertiary, theme), TextWrapping = TextWrapping.Wrap,
         });
-        var settings = new HyperlinkButton { Content = "Change in Settings…  Ctrl+,", FontSize = 11.5, Padding = new Thickness(0, 2, 0, 0) };
+        var settings = new HyperlinkButton { Content = "Change in Settings…  Ctrl+,", FontSize = 12, Padding = new Thickness(0, 2, 0, 0) };
         AutomationProperties.SetAutomationId(settings, "legend-settings");
         settings.Click += (_, _) =>
         {
@@ -164,9 +182,9 @@ internal sealed partial class LegendWindow : ToolWindow
         var g = new Grid { Padding = new Thickness(14, 1.5, 14, 1.5) };
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        g.Children.Add(new TextBlock { Text = label, FontSize = 11.5, TextTrimming = TextTrimming.CharacterEllipsis });
-        var key = lost ? Palette.Carnelian : chord == "unassigned" ? Palette.Sand : Palette.Ink2;
-        var c = new TextBlock { Text = chord, FontSize = 11.5, FontWeight = Microsoft.UI.Text.FontWeights.Medium, Foreground = Palette.Brush(key, theme), Margin = new Thickness(8, 0, 0, 0) };
+        g.Children.Add(new TextBlock { Text = label, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis });
+        var key = lost ? NativeLook.Caution : chord == "unassigned" ? NativeLook.TextTertiary : NativeLook.TextSecondary;
+        var c = new TextBlock { Text = chord, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(key, theme), Margin = new Thickness(8, 0, 0, 0) };
         Grid.SetColumn(c, 1);
         g.Children.Add(c);
         AutomationProperties.SetAutomationId(g, id);
