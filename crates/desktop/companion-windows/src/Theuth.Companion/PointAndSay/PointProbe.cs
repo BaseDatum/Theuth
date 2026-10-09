@@ -247,6 +247,7 @@ internal static class PointProbe
                 R(130, "you", "what is building on build-B"),
             });
             await Hold(p, "card-list");
+            await Task.Delay(8000); // a longer look for a desktop screenshot of the list
             p.ProbePick(2);
             await Hold(p, "card-list-picked");
             p.EndProbe();

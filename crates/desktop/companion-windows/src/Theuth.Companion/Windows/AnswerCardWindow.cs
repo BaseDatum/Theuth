@@ -341,6 +341,8 @@ internal sealed partial class AnswerCardWindow : ToolWindow
             content.Children.Add(ListView(rows, c.ListSelected, theme));
             if (c.Footer is { Length: > 0 } lf) content.Children.Add(Text(lf, 11.5, NativeLook.TextTertiary));
             Place();
+            int gen = Generation; // and once more after the real layout pass (late font fallback can grow a line)
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => { if (gen == Generation && model.ListRows is not null) Place(); });
             return;
         }
         if (Expanded && c.Request is { Length: > 0 } req)
@@ -398,7 +400,8 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         {
             int index = i;
             var r = rows[i];
-            var grid = new Grid { ColumnSpacing = 8, Padding = new Thickness(4, 2, 4, 3), CornerRadius = CardChrome.ControlRadius };
+            // A fixed row height keeps the window's measure exact even when a glyph (✓, “ ”) loads a fallback font after the first pass.
+            var grid = new Grid { ColumnSpacing = 8, Height = 26, Padding = new Thickness(4, 0, 4, 0), CornerRadius = CardChrome.ControlRadius };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
