@@ -2536,7 +2536,7 @@ pub(crate) mod tests {
     /// authoritative empty list, not a missing one.
     #[tokio::test]
     async fn stored_acp_plan_keeps_source_status_and_reopens() {
-        let scratch = Scratch::new("acp-plan");
+        let scratch = TestDir::new("acp-plan");
         let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
@@ -2828,49 +2828,10 @@ pub(crate) mod tests {
     ];
     const FAST_QUIET: Duration = Duration::from_millis(300);
 
+    pub(crate) use crate::TestDir;
+
     /// One spawned `AcpChild` on a fresh runtime and store, connected to a
     /// [`Fake`] whose handshake is done.
-    /// A test scratch directory under `$TMPDIR`, removed on drop — on a
-    /// passing test and on a panic alike (141 R3 T15: 1 529 leaked
-    /// `theuth-acp-rig-*` dirs filled the shared machine's disk).
-    pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
-
-    impl Scratch {
-        pub(crate) fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("theuth-{tag}-{}", Uuid::now_v7()));
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    /// 141 R3 T15: the guard deletes its dir on drop — also mid-panic, since
-    /// unwinding drops the test's locals.
-    #[test]
-    fn scratch_is_removed_on_drop() {
-        let path = {
-            let s = Scratch::new("acp-scratch-check");
-            std::fs::write(s.0.join("x"), b"x").unwrap();
-            assert!(s.0.is_dir());
-            s.0.clone()
-        };
-        assert!(!path.exists(), "{path:?}");
-        let path = std::panic::catch_unwind(|| {
-            let s = Scratch::new("acp-scratch-panic");
-            let p = s.0.clone();
-            std::panic::panic_any(p);
-        })
-        .unwrap_err()
-        .downcast::<std::path::PathBuf>()
-        .unwrap();
-        assert!(!path.exists(), "{path:?}");
-    }
-
     struct Rig {
         actor: ActorRef<AcpChild>,
         fake: Fake,
@@ -2880,7 +2841,7 @@ pub(crate) mod tests {
         events: UnboundedReceiver<AgentEvent>,
         approvals: UnboundedReceiver<ApprovalRequested>,
         /// The runtime's data dir; deleted with the rig.
-        _dir: Scratch,
+        _dir: TestDir,
     }
 
     impl Rig {
@@ -2919,7 +2880,7 @@ pub(crate) mod tests {
             tune: impl FnOnce(&mut AcpChild),
             handshake: bool,
         ) -> Self {
-            let scratch = Scratch::new("acp-rig");
+            let scratch = TestDir::new("acp-rig");
             let dir = scratch.0.clone();
             let rt = Runtime::new(figment::Figment::new(), dir.clone());
             let (etx, events) = unbounded_channel();
@@ -5266,8 +5227,8 @@ pub(crate) mod tests {
 
     /// A throwaway omp home for the `Fake`'s session `s1` (141 §6.4 feed 2
     /// layout): `(home, artifacts dir)`; the parent transcript is empty.
-    fn omp_home() -> (Scratch, std::path::PathBuf) {
-        let home = Scratch::new("acp-omp");
+    fn omp_home() -> (TestDir, std::path::PathBuf) {
+        let home = TestDir::new("acp-omp");
         let cwd = home.0.join(".omp/agent/sessions/--tmp-x--");
         let art = cwd.join("2026-10-08T16-00-00-000Z_s1");
         std::fs::create_dir_all(&art).unwrap();

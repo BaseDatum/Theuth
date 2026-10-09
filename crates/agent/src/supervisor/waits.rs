@@ -581,7 +581,7 @@ mod tests {
     /// publishing a card; rows of `started` calls and other kinds are left.
     #[tokio::test]
     async fn superseded_on_reask_and_answered_row_honoured() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (s, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let t = open_batch(
             &a.store,
@@ -704,7 +704,7 @@ mod tests {
     /// reply resolves it with the `replied` receipt.
     #[tokio::test]
     async fn wait_rearmed_with_remaining_deadline() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, child, t, receipt) = awaiting(&mut a, chrono::Duration::minutes(10)).await;
         assert!(a.waits.is_empty());
 
@@ -753,7 +753,7 @@ mod tests {
     /// call's result on resume — nothing is re-armed for a `replied` exchange.
     #[tokio::test]
     async fn replied_exchange_delivered_on_resume() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, child, t, receipt) = awaiting(&mut a, chrono::Duration::minutes(10)).await;
         a.store
             .owner_answer(receipt.id, child, "while you were out")
@@ -779,7 +779,7 @@ mod tests {
     /// consumes it.
     #[tokio::test]
     async fn spared_child_results_delivered_once() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (p, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((p, "kid")), None, (None, None))
