@@ -126,6 +126,41 @@ public sealed class DictationSettings : IEquatable<DictationSettings>
         ShapePreset.Off => "Off — the model's words as heard",
         _ => "Full — plus dictionary and end commands",
     };
+
+    // MARK: 153 F1 — what Settings › Dictation says once voice_settings() answered (or not)
+
+    /// <summary>The caption under the shape pickers: the engine's values (F1), or the last choice made here when the engine predates F1
+    /// (<paramref name="older"/>: it answered -32601) or could not answer; <paramref name="unknown"/> names presets this build does not know.</summary>
+    public static string ShapeCaption(bool fromEngine, bool older, IReadOnlyList<string>? unknown = null)
+    {
+        var line = fromEngine
+            ? "Shown: the engine's presets, shared with the desktop, the terminal UI and the phone."
+            : older
+                ? "Shown: the last choice made here — this engine is older and cannot report its presets; \"Full\" is its default."
+                : "Shown: the last choice made here — the engine did not answer; \"Full\" is its default.";
+        return unknown is { Count: > 0 } ? $"{line} Not known to this companion: {string.Join(", ", unknown)}." : line;
+    }
+
+    /// <summary>The polish model line from <c>voice_settings().polish_model</c> (an id, or null = the chain).</summary>
+    public static string PolishModelLine(string? id) =>
+        string.IsNullOrWhiteSpace(id) ? "Polish model: Chain (title model, then session)" : $"Polish model: {id}";
+
+    /// <summary>The history caption from <c>voice.history</c>; null (an engine before F1) keeps the engine's documented defaults.</summary>
+    public static string HistoryCaption(HistoryConfig? h)
+    {
+        const string tail = " The agent never reads it, and no channel or other machine can reach it. The switches are in theuth's Settings › Voice.";
+        if (h is null)
+            return "Kept on this computer only — by default the last 200 dictations and up to 64 MiB of their audio, so a correction can be learned and replayed." + tail;
+        if (!h.Enabled)
+            return "History is off: no dictation or audio is kept, and corrections are not learned." + tail;
+        var learn = h.Learn ? "Corrections are learned." : "Learning from corrections is off.";
+        return $"Kept on this computer only — the last {h.Rows} dictations and up to {h.AudioMib} MiB of their audio, so a correction can be replayed. {learn}" + tail;
+    }
+
+    /// <summary>The microphone preference list from <c>voice_settings().input_devices</c> when the engine has F1, else from
+    /// <c>voice_status().input_devices</c> (wave A) — the same <c>voice.input_devices</c> key either way.</summary>
+    public static IReadOnlyList<string> MicPreferences(VoiceSettings? settings, IReadOnlyList<string>? fromStatus) =>
+        settings is not null ? settings.InputDevices : fromStatus ?? Array.Empty<string>();
 }
 
 /// <summary>
