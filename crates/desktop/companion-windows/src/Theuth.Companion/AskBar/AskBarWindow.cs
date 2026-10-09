@@ -442,9 +442,9 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         receiptText.Text = l.Text;
         receiptText.Foreground = store.Receipt switch
         {
-            StoreModel.ReceiptRow.Sent => malachite,
+            StoreModel.ReceiptRow.Sent => success,
             StoreModel.ReceiptRow.Stale => sand,
-            StoreModel.ReceiptRow.Failed => carnelian,
+            StoreModel.ReceiptRow.Failed => critical,
             _ => ink,
         };
         receiptTrailing.Text = l.Trailing;

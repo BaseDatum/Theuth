@@ -296,7 +296,7 @@ public static class AgentsModel
                     Project = s.Project ?? LastComponent(s.Cwd),
                 })
                 .ToValueList();
-            groups.Add(new HostGroup(g.Key, $"{node} · on 🌐 {meshName ?? "mesh"}", false, rows));
+            groups.Add(new HostGroup(g.Key, $"{node} · on {meshName ?? "mesh"}", false, rows)); // 149 NATIVE: the globe is a Fluent glyph the panel draws, not a character in the title
         }
         return new AgentsPanel { Groups = groups.ToValueList() };
     }

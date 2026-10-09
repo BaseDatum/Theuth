@@ -151,4 +151,14 @@ internal static class PillGlyphs
             return found;
         }
     }
+
+    /// <summary>The wordmark (the brand mark, not an icon stand-in): its shape stays; painted in the theme's primary text colour.</summary>
+    public static FrameworkElement Wordmark(ElementTheme theme)
+    {
+        var g = new Grid { Width = 12, Height = 12 };
+        g.Children.Add(new Border { CornerRadius = new CornerRadius(3), Background = Theme.Brush(NativeLook.TextPrimary, theme) });
+        g.Children.Add(new Border { CornerRadius = new CornerRadius(1), Background = Theme.Brush(NativeLook.SolidBackgroundBase, theme), Margin = new Thickness(3) });
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(g, "theuth");
+        return g;
+    }
 }

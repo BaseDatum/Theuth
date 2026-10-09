@@ -26,7 +26,7 @@ internal enum AgentsVerb { None, Next, Previous, Open, Talk, Stop, Escape, Legen
 /// <summary>
 /// 149 WW2 — the agents panel grouped by host (design 149 §3.2, D2/D3/D23; Windows form §7.4 #2): a <see cref="ToolWindow"/>
 /// 420 × ≤ 560 epx, opaque with DWM rounded corners, header "Agents" · J K · ✕ esc, then one group per host — "this PC" first,
-/// then every other engine "‹name› · on 🌐 ‹mesh›" — rows dot/spinner · harness icon · name · ⑂N · what it is doing · mic · ✕.
+/// then every other engine "‹name› · on ‹mesh›" with a globe glyph — rows dot/spinner · harness icon · name · children · what it is doing · mic · stop.
 /// Roots first, live children indented. Remote rows are hollow with "on ‹node›", mic and ✕ disabled ("open it on ‹node›").
 /// <para>Mic: hold (pointer or V) → <see cref="RowTalk"/> dictates into the row's session → release → the text in a field under
 /// the row for the 3 s hold (Esc keeps editing) → <c>send_input(session, text)</c>. ✕ / X: the 3 s hold "Stopping ‹name› and N
@@ -538,8 +538,13 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
             gi++;
             if (g.Rows.Count == 0 && !g.Local) continue;
             if (g.Rows.Count == 0 && p.IsEmpty) continue;
-            var head = new TextBlock { Text = g.Title, FontSize = 12, Foreground = Theme.Brush(NativeLook.TextTertiary, theme), Margin = new Thickness(26, gi == 1 ? 6 : 14, 26, 2) };
+            // 149 NATIVE: host-group header in caption text; a remote (mesh) group carries the Globe glyph (E774) before its title.
+            var headText = new TextBlock { Text = g.Title, FontSize = 12, Foreground = Theme.Brush(NativeLook.TextTertiary, theme), VerticalAlignment = VerticalAlignment.Center };
+            var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, Margin = new Thickness(26, gi == 1 ? 6 : 14, 26, 2) };
+            if (!g.Local) head.Children.Add(Theme.Icon(NativeLook.Glyph.Globe, theme, NativeLook.TextTertiary, 12));
+            head.Children.Add(headText);
             AutomationProperties.SetAutomationId(head, $"group-{gi}");
+            AutomationProperties.SetName(head, g.Title);
             content.Children.Add(head);
             foreach (var r in g.Rows)
             {
