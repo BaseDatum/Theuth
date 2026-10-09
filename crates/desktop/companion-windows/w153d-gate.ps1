@@ -135,6 +135,12 @@ switch ($Action) {
         Set-Clipboard -Value $t
         Say "clip-set: '$t'"
     }
+    'open' {
+        # open <uri> — e.g. ms-settings:clipboard (the Clipboard history toggle lives there)
+        $u = $Rest -join ' '
+        Start-Process $u
+        Say "open: $u"
+    }
     'clip-get' { $t = Get-Clipboard -Raw; Say "clip-get: '$t'" }
     'history' {
         $k = 'HKCU:\Software\Microsoft\Clipboard'
