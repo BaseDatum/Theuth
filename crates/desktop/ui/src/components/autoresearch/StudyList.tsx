@@ -1,8 +1,9 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useRouterState } from '@tanstack/react-router'
 import { Trash2 } from 'lucide-react'
 import { memo, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { DraftSummary } from '@/rpc/bindings/DraftSummary'
 import type { StopReason } from '@/rpc/bindings/StopReason'
@@ -10,6 +11,7 @@ import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
 import type { StudyState } from '@/rpc/bindings/StudyState'
 import { STATE_CLASS, delta, experimentsText, matches, sortStudies, stateLabel } from './model'
 import { useDiscardDraft, useDrafts, useStudies } from './queries'
+import { discardMessage } from './setup'
 
 /**
  * The rail body: the setting-up drafts first (151 D6), then every study as a row — slug, state pill, headline delta,
@@ -20,6 +22,8 @@ export function StudyList({ q, active }: { q: string; active: string | undefined
   const drafts = useDrafts()
   const rows = useMemo(() => sortStudies((list.data ?? []).filter((s) => matches(s, q))), [list.data, q])
   const setting = useMemo(() => (drafts.data ?? []).filter((d) => matches({ slug: d.draft_id, goal: d.goal }, q)), [drafts.data, q])
+  // The open setup chat (`/autoresearch/new?chat=<origin>`) marks its draft's row.
+  const chat = useRouterState({ select: (s): string | null => (typeof s.location.search.chat === 'string' ? s.location.search.chat : null) })
   if (list.isPending) {
     return (
       <div className="space-y-2 p-3">
@@ -41,7 +45,7 @@ export function StudyList({ q, active }: { q: string; active: string | undefined
   return (
     <nav className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1" aria-label="Studies">
       {setting.map((d) => (
-        <DraftRow key={d.draft_id} draft={d} active={active === 'new'} />
+        <DraftRow key={d.draft_id} draft={d} active={active === 'new' && chat === d.origin} />
       ))}
       {rows.map((s) => (
         <Row key={s.slug} info={s} active={active === s.slug} />
@@ -52,7 +56,11 @@ export function StudyList({ q, active }: { q: string; active: string | undefined
 
 /** D6: a draft without a study — dashed amber dot, `Setting up · n of m settled`, Discard on hover (the label says the consequence; no second confirmation). */
 function DraftRow({ draft: d, active }: { draft: DraftSummary; active: boolean }) {
-  const discard = useDiscardDraft()
+  const api = useApi()
+  // §4.6: the chat hears about the discard too, so the agent stops drafting.
+  const discard = useDiscardDraft(() => {
+    if (d.origin) void api.send_input(d.origin, discardMessage(d.draft_id), [], null)
+  })
   return (
     <div className={cn('group relative rounded-[10px] text-sm hover:bg-layer-2', active && 'bg-layer-3 hover:bg-layer-3')} data-draft={d.draft_id}>
       <Link to="/autoresearch/new" search={d.origin ? { chat: d.origin } : {}} className="flex flex-col gap-0.5 px-2.5 py-2">

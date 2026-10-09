@@ -40,7 +40,6 @@ export function SetupPane({ chat }: { chat: string | undefined }) {
   const info = study.data?.info
   const repo = draft.data?.spec.repo
 
-  const setChat = (c: string | undefined) => void navigate({ to: '/autoresearch/new', search: c ? { chat: c } : {}, replace: c === undefined })
   const panel = <DraftPanel draft={draft.data} session={session} onDiscarded={() => void navigate({ to: '/autoresearch', search: {} })} className="h-full" />
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -68,7 +67,7 @@ export function SetupPane({ chat }: { chat: string | undefined }) {
       </SectionRow>
       <div className="flex min-h-0 min-w-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-col" style={!mobile && session ? { flex: `${ratio} 1 0%` } : { flex: '1 1 0%' }}>
-          <SetupChat session={session} repos={repos} onSession={setChat} />
+          <SetupChat session={session} repos={repos} onSession={(chat) => void navigate({ to: '/autoresearch/new', search: { chat } })} />
           {mobile && session && (
             <div className="flex shrink-0 justify-center border-t border-border-subtle py-1">
               <Button variant="outline" size="xs" className="rounded-full" onClick={() => setPanelOpen(true)}>
