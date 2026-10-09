@@ -1,6 +1,6 @@
 //! Validation of every generator reply (147 §6.6, in order): JSON → stage
-//! struct (`deny_unknown_fields`), Mermaid → `Graph` via
-//! `surface::graph::from_mermaid`, caps, anchors, edge evidence, perspective
+//! struct (unknown keys ignored, stray top-level prose folded into `fields`),
+//! Mermaid → `Graph` via `surface::graph::from_mermaid`, caps, anchors, edge evidence, perspective
 //! choice, edge labels that say *why* and never *how many*. Errors are
 //! located lines (`path · what · expected`, the `<surface_error>` shape of
 //! 30 §5) for one repair message; a second failure keeps the structure view.
@@ -219,12 +219,19 @@ pub fn check_diagram(g: &GraphProps, issued: &[String]) -> anyhow::Result<Vec<Lo
     Ok(out)
 }
 
-/// The repair user message: the previous output then one line per error.
-pub fn repair_message(previous: &str, errors: &[Located]) -> anyhow::Result<String> {
+/// The repair user message: the original facts message (schema and example
+/// included — the model must not answer from the previous text alone), the
+/// previous output, then one line per error.
+pub fn repair_message(facts: &str, previous: &str, errors: &[Located]) -> anyhow::Result<String> {
     anyhow::ensure!(!errors.is_empty(), "repair_message without errors");
-    let mut out = String::with_capacity(previous.len() + 256);
-    out.push_str("Your previous reply did not validate. Return the corrected JSON object and nothing else; keep every handle the facts issued.\n\n");
-    out.push_str("<previous>\n");
+    let mut out = String::with_capacity(facts.len() + previous.len() + 320);
+    out.push_str(
+        "Your previous reply to the request below did not validate. Answer the request again: \
+         return the corrected JSON object and nothing else — same schema, same handles, \
+         every error fixed.\n\n<request>\n",
+    );
+    out.push_str(facts.trim());
+    out.push_str("\n</request>\n\n<previous>\n");
     out.push_str(previous.trim());
     out.push_str("\n</previous>\n\n<errors>\n");
     for e in errors {
@@ -334,7 +341,8 @@ mod tests {
         let errs = check_diagram(&g, &issued).unwrap();
         assert_eq!(errs[0].what, "5 edges for 2 nodes");
 
-        let msg = repair_message("{}", &errs).unwrap();
+        let msg = repair_message("{\"stage\":\"top\"}", "{}", &errs).unwrap();
+        assert!(msg.contains("<request>\n{\"stage\":\"top\"}\n</request>"));
         assert!(msg.contains("<previous>\n{}\n</previous>"));
         assert!(msg.contains("/mermaid · 5 edges for 2 nodes · "));
     }

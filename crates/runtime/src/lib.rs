@@ -17,7 +17,7 @@ pub use kameo;
 pub use kameo_actors;
 
 pub mod side_call;
-pub use side_call::{CallKind, ModelRole, SideCall, SideReply};
+pub use side_call::{CallKind, ModelRole, SideCall, SideCallable, SideReply};
 
 /// Shared handles handed to every plugin at start.
 #[derive(Clone)]
