@@ -82,7 +82,7 @@ internal static class AskFixtures
     {
         store.HandleEvent(System.Text.Encoding.UTF8.GetBytes(Suggestion));
         var card = install.Suggestions;
-        AskLog.Write($"ask-fixture suggestion: card shown={(card?.IsShown == true ? "true" : "false")} current={card?.Current?.Id ?? "none"} backdrop={card?.BackdropText ?? "-"} text=\"{(card?.Current is { } c ? SuggestionCopy.Sentence(c) + " " + SuggestionCopy.Detail(c) : "")}\"");
+        AskLog.Write($"ask-fixture suggestion: card shown={(card?.IsShown == true ? "true" : "false")} current={card?.Showing?.Id ?? "none"} backdrop={card?.BackdropText ?? "-"} text=\"{(card?.Showing is { } c ? SuggestionCopy.Sentence(c) + " " + SuggestionCopy.Detail(c) : "")}\"");
     }
 
     private static string Describe(StoreModel.ReceiptRow? r) =>

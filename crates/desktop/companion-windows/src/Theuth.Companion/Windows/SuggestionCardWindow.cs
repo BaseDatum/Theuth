@@ -57,8 +57,8 @@ internal sealed partial class SuggestionCardWindow : ToolWindow
         FrameworkBackdrop.ImmersiveDark(Hwnd, host.ActualTheme);
     }
 
-    /// <summary>The card on screen now, or null.</summary>
-    public DictionarySuggestion? Current => current;
+    /// <summary>The suggestion on screen now, or null.</summary>
+    public DictionarySuggestion? Showing => current;
 
     /// <summary>The last answer sent ("add" / "not_now" / "never" / "dismissed"), for the probe log.</summary>
     public string? LastOutcome { get; private set; }
