@@ -22,6 +22,8 @@ namespace Theuth.Companion.PointAndSay;
 internal sealed class PointController : IDisposable
 {
     private const int EscHotkeyId = 0x0149;
+    /// <summary>R3: Esc with the voice key's modifiers (Ctrl+Alt+Esc for the default) — the Esc a person can press while still holding the chord.</summary>
+    private const int EscHeldHotkeyId = 0x014A;
     private const int VkEscape = 0x1B;
 
     private readonly Store store;
@@ -56,6 +58,7 @@ internal sealed class PointController : IDisposable
     private bool replaying;
     private bool locked;
     private bool escRegistered;
+    private bool escHeldRegistered;
     private int gesture;
     private TaskCompletionSource<string>? finalText;
     private bool disposed;
@@ -92,7 +95,7 @@ internal sealed class PointController : IDisposable
         doneTimer = Timer(() => Step(new PointEvent.PanelDone()));
         hotkeys.Pressed += OnHotkeyPressed;
         hotkeys.Released += OnHotkeyReleased;
-        island.Window.Hotkey += id => { if (id == EscHotkeyId) Step(new PointEvent.Esc()); };
+        island.Window.Hotkey += id => { if (id is EscHotkeyId or EscHeldHotkeyId) Step(new PointEvent.Esc()); }; // plain Esc, or Esc while the chord is still held (R3)
         store.DictationWire += OnDictationWire;
         store.PropertyChanged += OnStoreChanged;
         speech = new SpeechPlayer(() => deskSession) { Dump = Environment.GetCommandLineArgs().Contains("--speech-dump") };
@@ -732,16 +735,42 @@ internal sealed class PointController : IDisposable
 
     private void RegisterEsc()
     {
-        if (escRegistered) return;
-        escRegistered = PInvoke.RegisterHotKey(island.Window.Hwnd, EscHotkeyId, HOT_KEY_MODIFIERS.MOD_NOREPEAT, VkEscape);
-        if (!escRegistered) Log.Write("point: RegisterHotKey(Esc) failed — Esc cancels only with the island focused");
+        if (!escRegistered)
+        {
+            escRegistered = PInvoke.RegisterHotKey(island.Window.Hwnd, EscHotkeyId, HOT_KEY_MODIFIERS.MOD_NOREPEAT, VkEscape);
+            if (!escRegistered) Log.Write("point: RegisterHotKey(Esc) failed — Esc cancels only with the island focused");
+        }
+        if (!escHeldRegistered)
+        {
+            // R3: while the chord is held, Esc arrives as <modifiers>+Esc; register that too (never Ctrl+Shift+Esc — Task Manager).
+            var voice = VoiceKeyAction is { } a ? store.Keys.ChordFor(a) : null;
+            if (EscDuringHold.Modifiers(voice) is { } mods)
+            {
+                escHeldRegistered = PInvoke.RegisterHotKey(island.Window.Hwnd, EscHeldHotkeyId, (HOT_KEY_MODIFIERS)((uint)mods) | HOT_KEY_MODIFIERS.MOD_NOREPEAT, VkEscape);
+                if (!escHeldRegistered) Log.Write($"point: RegisterHotKey({new Chord("\u001b", VirtualKeys.Escape, mods).Symbol}) failed {Interop.Win32.LastError()} — Esc cancels once the modifiers are released");
+            }
+            else if (EscDuringHold.SkipReason(voice) is { } why && !escHeldSkipLogged)
+            {
+                escHeldSkipLogged = true;
+                Log.Write($"point: Esc during the hold: {why}");
+            }
+        }
     }
+
+    private bool escHeldSkipLogged;
 
     private void UnregisterEsc()
     {
-        if (!escRegistered) return;
-        PInvoke.UnregisterHotKey(island.Window.Hwnd, EscHotkeyId);
-        escRegistered = false;
+        if (escRegistered)
+        {
+            PInvoke.UnregisterHotKey(island.Window.Hwnd, EscHotkeyId);
+            escRegistered = false;
+        }
+        if (escHeldRegistered)
+        {
+            PInvoke.UnregisterHotKey(island.Window.Hwnd, EscHeldHotkeyId);
+            escHeldRegistered = false;
+        }
     }
 
     // MARK: 149 R3 — capture assertion (the Mac W2 probe's twin)
