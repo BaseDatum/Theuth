@@ -122,6 +122,10 @@ public static class NativeLook
     /// </summary>
     public static bool OnAccentReadable((byte R, byte G, byte B) fill, (byte R, byte G, byte B) onAccent) => Contrast(fill, onAccent) >= MinTextContrast;
 
+    /// <summary>White or black, whichever reads better on <paramref name="fill"/> (the fallback when the system on-accent colour fails).</summary>
+    public static (byte R, byte G, byte B) BestTextOn((byte R, byte G, byte B) fill) =>
+        Contrast(fill, (255, 255, 255)) >= Contrast(fill, (0, 0, 0)) ? ((byte)255, (byte)255, (byte)255) : ((byte)0, (byte)0, (byte)0);
+
     /// <summary>Old character → glyph (the icon table of the as-built).</summary>
     public static class Glyph
     {

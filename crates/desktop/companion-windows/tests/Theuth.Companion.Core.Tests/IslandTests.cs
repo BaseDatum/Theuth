@@ -124,6 +124,8 @@ public sealed class IslandModelTests
         Assert.True(NativeLook.OnAccentReadable((0x00, 0x5F, 0xB8), (255, 255, 255)));
         Assert.Equal(21, NativeLook.Contrast((0, 0, 0), (255, 255, 255)), 3);
         Assert.Equal(1, NativeLook.Contrast((10, 20, 30), (10, 20, 30)), 3);
+        Assert.Equal(((byte)255, (byte)255, (byte)255), NativeLook.BestTextOn((0x2C, 0x06, 0xAB)));
+        Assert.Equal(((byte)0, (byte)0, (byte)0), NativeLook.BestTextOn((0x60, 0xCD, 0xFF)));
     }
 
     [Fact]

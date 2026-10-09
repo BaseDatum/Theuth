@@ -1146,13 +1146,14 @@ internal sealed partial class IslandWindow : ToolWindow
         bool readable = NativeLook.OnAccentReadable((fill.R, fill.G, fill.B), (on.R, on.G, on.B));
         if (!readable)
         {
-            var other = theme == ElementTheme.Dark ? ElementTheme.Light : ElementTheme.Dark;
-            // A fresh brush with the other theme's colour: the theme-dictionary brush instance follows the element's theme.
-            t.Foreground = new SolidColorBrush(Theme.ColorOf(NativeLook.OnAccent, other));
+            // White or black by contrast. (Asking the other theme's dictionary for TextOnAccent returns the CURRENT theme's colour
+            // in a running app — measured: #000000 in dark — so the fallback is computed, not looked up.)
+            var best = NativeLook.BestTextOn((fill.R, fill.G, fill.B));
+            t.Foreground = new SolidColorBrush(global::Windows.UI.Color.FromArgb(255, best.R, best.G, best.B));
         }
         var fg = t.Foreground is SolidColorBrush sb ? sb.Color : default;
         string probe = $"{theme} fg=#{fg.A:X2}{fg.R:X2}{fg.G:X2}{fg.B:X2} fill=#{fill.R:X2}{fill.G:X2}{fill.B:X2} on=#{on.R:X2}{on.G:X2}{on.B:X2} readable={readable}";
-        if (probe != onAccentLogged) { onAccentLogged = probe; Log.Write($"island: text on accent fill — {probe}{(readable ? "" : " → the other theme's on-accent colour")}"); }
+        if (probe != onAccentLogged) { onAccentLogged = probe; Log.Write($"island: text on accent fill — {probe}{(readable ? "" : " → the better of white/black")}"); }
         return t;
     }
 
