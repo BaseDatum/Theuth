@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>153 — voice-anywhere mocks</title>
+<style>
+:root{--bg:var(--background,#111214);--fg:var(--foreground,#ececef);--mut:var(--muted,#9a9aa3);--card:var(--card,#1b1c20);--bd:var(--border,#2c2d33);--acc:var(--primary,#4f8cff);--ok:#3fb950;--warn:#d29922;--bad:#f85149;--r:var(--radius,12px);--mono:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);--sans:var(--font-sans,-apple-system,"SF Pro Text",Inter,system-ui,sans-serif)}
+*{box-sizing:border-box}body{margin:0;background:transparent;color:var(--fg);font:14px/1.45 var(--sans)}
+h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:28px 0 10px;font-weight:600}
+h2:first-of-type{margin-top:4px}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.col{display:flex;flex-direction:column;gap:10px;min-width:260px;flex:1}
+.lab{font-size:11px;color:var(--mut);margin:0 0 -4px 2px}
+.notch{width:380px;background:#0a0a0c;border:1px solid #26272c;border-radius:0 0 22px 22px;padding:10px 16px 12px;color:#fff;box-shadow:0 12px 30px rgba(0,0,0,.45)}
+.notch .top{display:flex;align-items:center;gap:10px;font-size:12px;color:#b9b9c2}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--bad);box-shadow:0 0 0 3px rgba(248,81,73,.25)}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.25)}.dot.think{background:var(--acc);box-shadow:0 0 0 3px rgba(79,140,255,.25)}
+.bars{display:inline-flex;gap:2px;align-items:flex-end;height:14px}.bars i{width:3px;background:var(--bad);border-radius:1px;display:block}
+.words{font-size:15px;margin-top:8px;line-height:1.4}.words .p{color:#8a8a94}.words .f{color:#fff}
+.kbd{font:11px var(--mono);color:#cfcfd6;background:#1f2026;border:1px solid #33343b;border-radius:5px;padding:1px 5px}
+.hint{font-size:11px;color:#8a8a94;margin-top:8px;display:flex;gap:10px;align-items:center}
+.pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid #33343b;color:#cfcfd6}
+.pill.warn{border-color:rgba(210,153,34,.5);color:#f0c454}.pill.ok{border-color:rgba(63,185,80,.5);color:#6fd47f}.pill.bad{border-color:rgba(248,81,73,.5);color:#ff8a80}
+.steps{margin:8px 0 0;padding:0;list-style:none;font-size:12.5px}.steps li{display:flex;gap:8px;padding:3px 0;color:#d8d8de}.steps li .t{color:#8a8a94;width:72px;flex:none}.steps li .m{font-family:var(--mono);font-size:12px;color:#cfcfd6}
+.steps li.done .t{color:var(--ok)}.steps li.run .t{color:var(--acc)}.steps li.wait .t{color:var(--warn)}
+.appr{margin-top:8px;border:1px solid rgba(210,153,34,.5);background:rgba(210,153,34,.08);border-radius:10px;padding:8px 10px;font-size:12.5px}
+.appr code{font-family:var(--mono);font-size:12px;background:#1f2026;padding:1px 5px;border-radius:4px}
+.btns{display:flex;gap:6px;margin-top:8px}.btn{font-size:12px;padding:4px 10px;border-radius:7px;border:1px solid #33343b;background:#1a1b20;color:#e8e8ee}.btn.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.card{width:380px;background:var(--card);border:1px solid var(--bd);border-radius:var(--r);padding:12px 14px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.card .hd{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mut)}.card .hd .sp{flex:1}
+.card .md{font-size:13.5px;margin-top:8px}.card .md code{font-family:var(--mono);font-size:12px;background:#15161a;padding:1px 5px;border-radius:4px}
+.card .md ul{margin:6px 0 0 18px;padding:0}.tools{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.tools span{font:11px var(--mono);color:#9a9aa3;border:1px solid var(--bd);border-radius:6px;padding:1px 6px}
+.follow{display:flex;gap:8px;margin-top:10px;align-items:center}.follow .in{flex:1;border:1px solid var(--bd);border-radius:8px;padding:6px 10px;font-size:12.5px;color:var(--mut);background:#15161a}
+.dots{display:flex;gap:4px}.dots b{width:6px;height:6px;border-radius:50%;background:#3a3b42;display:block}.dots b.on{background:var(--fg)}
+.shim{background:linear-gradient(90deg,#55565e 0%,#c9c9d1 50%,#55565e 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.fail{border-color:rgba(248,81,73,.45)}
+.sm{font-size:12px;color:var(--mut)}
+.chk{color:var(--ok)}.x{color:var(--bad)}
+.eye{font-size:12px}
+.legend{font-size:12px;color:var(--mut);margin:6px 0 0}
+</style></head><body>
+
+<h2>A · Dictate anywhere — notch pill while another app is frontmost</h2>
+<div class="row">
+ <div class="col"><p class="lab">listening · words land in Mail as they close</p>
+  <div class="notch"><div class="top"><span class="dot"></span><span class="bars"><i style="height:4px"></i><i style="height:9px"></i><i style="height:14px"></i><i style="height:7px"></i><i style="height:11px"></i></span><span>Dictating into <b>Mail</b> · ⌃⌥D held</span><span style="margin-left:auto" class="pill">shape on</span></div>
+   <div class="words"><span class="f">Hi Dana, the deploy to us-east-1 is done.</span> <span class="p">next step is the dash dash dry run flag on</span></div>
+   <div class="hint"><span class="kbd">⎋</span> cancel · double-tap <span class="kbd">⌃⌥D</span> lock · say “send it”</div></div></div>
+ <div class="col"><p class="lab">“send it” detected · settle 1.5 s + silence</p>
+  <div class="notch"><div class="top"><span class="dot think"></span><span>Dictating into <b>Mail</b></span><span style="margin-left:auto" class="pill warn">sending in 1.2 s</span></div>
+   <div class="words"><span class="f">Hi Dana, the deploy to us-east-1 is done. Next step is the <code style="font-family:var(--mono);font-size:13px">--dry-run</code> flag on <code style="font-family:var(--mono);font-size:13px">deploy.sh</code>.</span></div>
+   <div class="hint"><span class="kbd">⎋</span> keep editing · <span class="kbd">⏎</span> send now</div></div></div>
+ <div class="col"><p class="lab">paste did not land · the words are not lost</p>
+  <div class="notch"><div class="top"><span class="dot"></span><span>Couldn't type into <b>Terminal</b></span><span style="margin-left:auto" class="pill bad">paste not landed</span></div>
+   <div class="words" style="font-size:13.5px"><span class="f">git rebase -i HEAD~3 then force push with lease</span></div>
+   <div class="btns"><button class="btn pri">Copy</button><button class="btn">Try again</button><button class="btn">Open in theuth</button></div>
+   <div class="hint">checked at 150 · 350 · 1000 ms — field unchanged · clipboard restored</div></div></div>
+</div>
+<p class="legend">Partials muted, finals solid (today's rule). Shaping wrote <code>--dry-run</code> and <code>deploy.sh</code> from “dash dash dry run” / “deploy dot S H”. The pill is on the display under the pointer.</p>
+
+<h2>B · Command mode — a third key, the same desk, a step-typed card</h2>
+<div class="row">
+ <div class="col"><p class="lab">heard → working (steps stream; never looks frozen)</p>
+  <div class="notch"><div class="top"><span class="dot think"></span><span>Command · <b>theuth desk</b></span><span style="margin-left:auto" class="pill">⌃⌥C</span></div>
+   <div class="words" style="font-size:13.5px"><span class="f">“move today's screenshots into Desktop slash Shots and make a reminder to review them at six”</span></div>
+   <ul class="steps"><li class="done"><span class="t">checked</span><span class="m">ls ~/Desktop/*.png · 14 files</span></li><li class="done"><span class="t">executed</span><span class="m">mkdir -p ~/Desktop/Shots &amp;&amp; mv …</span></li><li class="run"><span class="t">verifying</span><span class="m">ls ~/Desktop/Shots | wc -l</span></li><li class="wait"><span class="t">next</span><span class="m">applescript · Reminders “Review shots” 18:00</span></li></ul>
+   <div class="hint"><span class="kbd">⎋</span> stop · hold <span class="kbd">⌃⌥C</span> to add</div></div></div>
+ <div class="col"><p class="lab">approval IN the card · answer by voice or key</p>
+  <div class="notch"><div class="top"><span class="dot think"></span><span>Command · <b>theuth desk</b></span><span style="margin-left:auto" class="pill warn">needs your ok</span></div>
+   <ul class="steps"><li class="done"><span class="t">checked</span><span class="m">build/ exists · 1.2 GB · 3 days old</span></li></ul>
+   <div class="appr">Run <code>rm -rf ~/Develop/theuth/build</code>? <span class="sm">destructive · policy: ask</span>
+    <div class="btns"><button class="btn pri">Yes <span class="kbd" style="margin-left:6px">⏎</span></button><button class="btn">No <span class="kbd" style="margin-left:6px">⎋</span></button><span class="sm" style="align-self:center">or say “yes” / “no”</span></div></div></div></div>
+ <div class="col"><p class="lab">done · one line, ✓ or ✗ · stays until dismissed</p>
+  <div class="notch"><div class="top"><span class="dot ok"></span><span>Command · <b>theuth desk</b></span><span style="margin-left:auto" class="pill ok">done · 6 s</span></div>
+   <div class="words" style="font-size:13.5px"><span class="chk">✓</span> <span class="f">14 screenshots moved to ~/Desktop/Shots; reminder “Review shots” set for 18:00.</span></div>
+   <ul class="steps"><li class="done"><span class="t">4 steps</span><span class="m">ls · mkdir/mv · ls · applescript</span></li></ul>
+   <div class="hint"><span class="kbd">O</span> open session · <span class="kbd">⎋</span> dismiss · hold <span class="kbd">⌃⌥C</span> follow up</div></div></div>
+</div>
+<p class="legend">The desk answers with a command prompt profile: act → verify → one ✓/✗ line. Approvals use today's risk policy; the pending one is shown here, never behind the overlay. ⌃⌥C is a placeholder chord — §15 of the design fixes the table.</p>
+
+<h2>C · One answer card for Ask · voice key · command</h2>
+<div class="row">
+ <div class="col"><p class="lab">collapsed = today's receipt (2 lines)</p>
+  <div class="card"><div class="hd"><span class="dot ok" style="width:7px;height:7px"></span><span>theuth desk · replied just now</span><span class="sp"></span><span class="eye">🔈</span></div>
+   <div class="md">The failing test is <code>vad::gate_onset</code>; the 160 ms onset frame count changed in <code>vad.rs:112</code>…</div>
+   <div class="hint" style="margin-top:8px"><span class="kbd">⏎</span> expand · <span class="kbd">O</span> open · <span class="kbd">⎋</span></div></div></div>
+ <div class="col"><p class="lab">expanded = markdown · tools as they ran · follow-up in place</p>
+  <div class="card"><div class="hd"><span class="dot ok" style="width:7px;height:7px"></span><span>theuth desk · 2 of 3</span><span class="sp"></span><div class="dots"><b></b><b class="on"></b><b></b></div></div>
+   <div class="md">The failing test is <code>vad::gate_onset</code>. The onset run is now <b>8 frames</b> (160 ms) but the fixture feeds 7.<ul><li>fix the fixture → <code>vad.rs:112</code></li><li>or keep 7 and lower <code>ONSET_MS</code> to 140</li></ul>Recommend the first; it matches design 54 §0.3.</div>
+   <div class="tools"><span>read_file</span><span>code_symbol</span><span>cargo test -p voice</span></div>
+   <div class="follow"><div class="in">hold ⌃⇧Space to follow up · or type</div><span class="kbd">⏎</span></div></div></div>
+ <div class="col"><p class="lab">state honesty — nothing vanishes early</p>
+  <div class="card"><div class="hd"><span class="dot think" style="width:7px;height:7px"></span><span class="shim">thinking · code_refs · 4 s</span><span class="sp"></span></div>
+   <div class="md sm">“why does the onset test fail”</div>
+   <div class="sm" style="margin-top:10px">listening → finishing → <b style="color:var(--fg)">thinking</b> → answer → speaking → failed<br>stop freezes · hide is generation-checked</div></div></div>
+</div>
+
+<h2>D · Learning from your own corrections — the suggestion card</h2>
+<div class="row">
+ <div class="col"><div class="card" style="width:420px"><div class="hd"><span>Dictionary</span><span class="sp"></span><span class="sm">2 times this week</span></div>
+  <div class="md">You changed <s style="color:var(--mut)">parakeet tee dee tee</s> → <code>Parakeet TDT</code> after dictating.<br><span class="sm">Heard the same way twice (Composer, 7 days). Add it as a replacement?</span></div>
+  <div class="btns"><button class="btn pri">Add</button><button class="btn">Not now</button><button class="btn">Never for this</button><span class="sm" style="align-self:center;margin-left:auto">▶ play what you said</span></div></div>
+  <p class="legend">Packaged technical dictionary + your entries + learned ones. Negatives veto, never accept. No seeding from the project or the computer.</p></div>
+</div>
+</body></html>
