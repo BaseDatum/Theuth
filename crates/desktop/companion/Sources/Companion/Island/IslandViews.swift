@@ -136,8 +136,9 @@ struct OpenIsland: View {
         let s = store.meeting ?? .empty
         VStack(alignment: .leading, spacing: 0) {
             if attached, let a = ui.anchor, a.notch {
-                // The real notch's silhouette: the pane hangs below it, nothing is drawn behind the camera housing.
-                Color.clear.frame(height: a.rect.height)
+                // The real notch's silhouette: the pane hangs below it. The strip at notch height stays black (the
+                // notch is black; its wings sit in the menu bar beside it) — the pane below is material like every surface.
+                Color.black.frame(height: a.rect.height) // native: the hardware notch is black
             }
             Strip(ui: ui, store: store, slice: s)
                 .background(DragGrip(ui: ui))

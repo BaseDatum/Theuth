@@ -193,7 +193,7 @@ struct KeyCap: View {
     var gold = false
     init(_ key: String, gold: Bool = false) { self.key = key; self.gold = gold }
     var body: some View {
-        Text(key).font(Type.mono)
+        Text(key).font(Type.mono).lineLimit(1).fixedSize()
             .padding(.horizontal, 5).frame(minWidth: 18, minHeight: 18)
             .background(RoundedRectangle(cornerRadius: Type.capRadius).fill(gold ? Color.accentColor : Color.primary.opacity(0.1)))
             .foregroundColor(gold ? .white : .primary)

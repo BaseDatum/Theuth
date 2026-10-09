@@ -504,11 +504,20 @@ enum VoiceKeySettings {
 }
 
 extension PointController {
-    /// The trail colour the engine stamps on its capture (`screen_context.color`): the system accent colour, resolved
-    /// at request time, as `#rrggbb` — the same colour the ring and trail are drawn in (`OverlayView.show`).
+    /// The accent colour as drawn (`OverlayView.show` uses `controlAccentColor.cgColor`, which resolves under the app's
+    /// effective appearance — the dark-mode accent is a lighter blue than the light-mode one), as sRGB components.
+    nonisolated static var accentSRGB: NSColor {
+        var c = NSColor.controlAccentColor
+        NSApp.effectiveAppearance.performAsCurrentDrawingAppearance {
+            // nil only for pattern colours, never for a system colour (the fallback must be RGB: `redComponent` throws on gray).
+            c = c.usingColorSpace(.sRGB) ?? NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+        }
+        return c
+    }
+
+    /// The trail colour the engine stamps on its capture (`screen_context.color`) as `#rrggbb`, resolved at request time.
     nonisolated static var accentHex: String {
-        // nil only for pattern colours, never for a system colour (the fallback must be an RGB colour: `redComponent` throws on gray).
-        let c = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+        let c = accentSRGB
         return OverlayModel.hex(red: c.redComponent, green: c.greenComponent, blue: c.blueComponent)
     }
 }

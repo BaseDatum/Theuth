@@ -136,29 +136,30 @@ enum PointProbe {
 
     struct Count { var hit = 0; var total = 0 }
 
-    /// The accent colour's sRGB components (the trail's colour, `OverlayView.show`).
+    /// The trail's colour as drawn (`PointController.accentSRGB`), as components.
     static var accentRGB: (r: Double, g: Double, b: Double) {
-        let c = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .black
+        let c = PointController.accentSRGB
         return (c.redComponent, c.greenComponent, c.blueComponent)
     }
 
     /// Per visited display (the overviews come first, in visit order): the spiral's points mapped into the PNG, classified
-    /// as accent-ish: within 0.3 (RGB Euclidean, 0...1) of the accent — the trail is 0.85 accent over whatever is under it,
-    /// so a trail pixel is at most 0.15 × √3 ≈ 0.26 away.
+    /// as accent-ish: within 0.4 (RGB Euclidean, 0...1) of the accent expressed in the capture's own colour space — the trail
+    /// is 0.85 accent over whatever is under it, and the capture's P3 → sRGB round trip desaturates the blue a little more
+    /// (measured 0.29 from the nominal accent over the dark desk). `colorAt` is compared raw: a second conversion only adds error.
     static func count(reply: ScreenContextReply?, spirals: [[CGPoint]], displays: [OverlayDisplay]) -> [Count] {
         guard let reply else { return [] }
-        let accent = accentRGB
         return displays.indices.compactMap { i -> Count? in
             guard i < reply.files.count, let img = NSBitmapImageRep(data: (try? Data(contentsOf: URL(fileURLWithPath: reply.files[i]))) ?? Data()) else { return nil }
             let d = displays[i]
             let sx = Double(img.pixelsWide) / d.frame.width, sy = Double(img.pixelsHigh) / d.frame.height
+            let accent = PointController.accentSRGB.usingColorSpace(img.colorSpace) ?? PointController.accentSRGB
             var c = Count()
             for p in spirals[i] {
                 let x = Int((p.x - d.frame.minX) * sx), y = Int((p.y - d.frame.minY) * sy)
-                guard x >= 0, y >= 0, x < img.pixelsWide, y < img.pixelsHigh, let col = img.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                guard x >= 0, y >= 0, x < img.pixelsWide, y < img.pixelsHigh, let col = img.colorAt(x: x, y: y) else { continue }
                 c.total += 1
-                let dr = col.redComponent - accent.r, dg = col.greenComponent - accent.g, db = col.blueComponent - accent.b
-                if (dr * dr + dg * dg + db * db).squareRoot() <= 0.3 { c.hit += 1 }
+                let dr = col.redComponent - accent.redComponent, dg = col.greenComponent - accent.greenComponent, db = col.blueComponent - accent.blueComponent
+                if (dr * dr + dg * dg + db * db).squareRoot() <= 0.4 { c.hit += 1 }
             }
             return c
         }
