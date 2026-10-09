@@ -849,6 +849,35 @@ mod tests {
         assert!(rig.a.activity.waits.is_empty());
     }
 
+    /// H1: the boot pass losing a child (`<child_lost>`) settles a wait on it
+    /// as `not_running` in the same step; no transition is needed.
+    #[tokio::test]
+    async fn lost_child_settles_its_wait_at_once() {
+        let mut rig = Rig::new().await;
+        let (child, actor) = rig.child("w1").await;
+        rig.a.running.insert(child);
+        rig.wait("w1", &[Done], None).await.unwrap();
+        actor.kill();
+        actor.wait_for_shutdown().await;
+
+        let mut boot = crate::supervisor::acp_resume::Boot::for_tests();
+        rig.a
+            .lose(
+                &mut boot,
+                Some(rig.parent),
+                child,
+                "w1".into(),
+                "its cwd is gone".into(),
+            )
+            .await;
+        let wakes = rig.wakes(child).await;
+        assert_eq!(wakes.len(), 2, "{wakes:?}");
+        assert!(wakes[0].contains("was not respawned"), "{}", wakes[0]);
+        assert!(wakes[1].starts_with("w1 is gone:"), "{}", wakes[1]);
+        assert!(rig.rows().await.is_empty());
+        assert!(rig.a.activity.waits.is_empty());
+    }
+
     /// §5.3: the deadline settles `timeout` and clears the row; a due tell
     /// for a wait already gone does nothing.
     #[tokio::test]
