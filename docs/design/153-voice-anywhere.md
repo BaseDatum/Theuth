@@ -1324,3 +1324,7 @@ rewrite panel reuse it).
   button only; §4.1 `Shaped.replaced` is not on the wire (fields show `shaped`, fallback `text` only when no end command rode the piece);
   §14.3 no getter for the shape preset / end phrases (surfaces remember the last written value); §14.4 `DictationWire` is the public
   `TheuthKit` mirror; §6.4 auto-dismiss sends no RPC and ▶ plays `dictation_audio_get(id, null)`.
+- 2026-10-09 F1 — see `153-as-built-A.md` "F1". §14.3 `voice_settings()` getter added (`VoiceSettings`: shape, end_commands,
+  input_devices, standby_secs, duck_media, polish_model, polish_profiles, history), so surfaces read the presets / end phrases back
+  instead of remembering the last written value; §14.5 the voice dictionary's `Kind` / `Source` export to TS as `EntryKind` /
+  `EntrySource` (the bare names collided with the artifact `Kind` and knowledge `Source` bindings).
