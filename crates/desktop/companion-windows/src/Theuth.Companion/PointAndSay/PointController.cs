@@ -956,7 +956,7 @@ internal sealed class PointController : IDisposable
                 {
                     Log.Write($"point: approval in the command card — {command.Approval?.Question} {command.Approval?.RiskLine}");
                     if (!detached) Expand("approval");
-                    else window?.Activate();
+                    else window?.TakeKey();
                     RenderVoice();
                 }
                 break;
@@ -1348,7 +1348,7 @@ internal sealed class PointController : IDisposable
             ArmDone();
             RenderCard();
         };
-        w.Closed += gen => { if (gen == windowGen) Dismiss("the close cap"); };
+        w.Dismissed += gen => { if (gen == windowGen) Dismiss("the close cap"); };
         w.SpeakerClicked += gen => { if (gen == windowGen) speech.Stop(SpeechStop.Glyph); };
         return w;
     }
@@ -1367,7 +1367,7 @@ internal sealed class PointController : IDisposable
         bool expand = via != "approval" || card.Expanded;
         card.SetExpanded(expand);
         w.Present(windowGen, Content(), expanded: expand);
-        if (via is "click" or "approval") w.Activate();
+        if (via is "click" or "approval") w.TakeKey();
         Log.Write($"point: card {(expand ? "expanded" : "detached")} into the answer card window ({via}) — {card.Phase.ToString().ToLowerInvariant()}, thread {card.Index + 1}/{card.Thread.Count}");
         ArmDone();
     }

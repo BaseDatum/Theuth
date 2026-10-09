@@ -102,12 +102,12 @@ internal sealed record AnswerCardContent
 /// the request, the markdown answer, command steps, tool chips, the follow-up field). It sits in the island area of the display under
 /// the pointer when <see cref="Begin"/> ran (149 island fix P / §18 Q9 — it never moves mid-gesture) and resizes in place. Hides are
 /// generation-checked: <see cref="Hide"/> ignores a generation older than the latest <see cref="Begin"/>. Shown without activation;
-/// <see cref="Activate"/> (a click, an expand, an approval box) makes it key so ⏎ / O / J / K / Ctrl+L / ⎋ arrive as
+/// <see cref="TakeKey"/> (a click, an expand, an approval box) makes it key so ⏎ / O / J / K / Ctrl+L / ⎋ arrive as
 /// <see cref="KeyIntent"/> (<see cref="CardKeys"/>). The markdown renders through <see cref="AnswerMarkdown"/> into TextBlocks (the
 /// §12.2 RichTextBlock fallback: the Community Toolkit's MarkdownTextBlock is not referenced by the 134 build).
 /// <para>PIN-C API: <see cref="Shared"/>, <see cref="Begin"/>, <see cref="Present"/>, <see cref="Hide"/>, <see cref="Expanded"/> /
-/// <see cref="SetExpanded"/>, <see cref="Activate"/>, events <see cref="KeyIntent"/>, <see cref="ActionInvoked"/>,
-/// <see cref="FollowUpSubmitted"/>, <see cref="ExpandedChanged"/>, <see cref="Closed"/>, <see cref="SpeakerClicked"/>.</para>
+/// <see cref="SetExpanded"/>, <see cref="TakeKey"/>, events <see cref="KeyIntent"/>, <see cref="ActionInvoked"/>,
+/// <see cref="FollowUpSubmitted"/>, <see cref="ExpandedChanged"/>, <see cref="Dismissed"/>, <see cref="SpeakerClicked"/>.</para>
 /// UIA: <c>answer-card</c>, <c>answer-card-title</c>, <c>answer-card-status</c>, <c>answer-card-body</c>, <c>answer-card-step-&lt;n&gt;</c>,
 /// <c>answer-card-approval</c>, <c>answer-card-approve</c>, <c>answer-card-deny</c>, <c>answer-card-chip-&lt;n&gt;</c>,
 /// <c>answer-card-followup</c>, <c>answer-card-action-&lt;id&gt;</c>, <c>answer-card-close</c>.
@@ -145,7 +145,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         host.Tapped += (_, e) =>
         {
             if (e.OriginalSource is TextBox) return;
-            Activate();
+            TakeKey();
         };
         Content = host;
         if (!Shape.RoundCorners(Hwnd)) Log.Write("answer-card: DWM rounded corners unavailable (rectangular)");
@@ -158,7 +158,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     public static AnswerCardWindow Shared() => shared ??= new AnswerCardWindow();
 
     /// <summary>The instance if one was created.</summary>
-    public static AnswerCardWindow? Current => shared;
+    public static AnswerCardWindow? Instance => shared;
 
     /// <summary>The latest <see cref="Begin"/>'s number; a hide or present for an older one is ignored.</summary>
     public int Generation { get; private set; }
@@ -183,7 +183,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     public event Action<int, bool>? ExpandedChanged;
 
     /// <summary>The ✕ / Esc cap was clicked: (generation).</summary>
-    public event Action<int>? Closed;
+    public event Action<int>? Dismissed;
 
     /// <summary>The speaker glyph was clicked ("click to stop").</summary>
     public event Action<int>? SpeakerClicked;
@@ -243,13 +243,13 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         if (generation != Generation || Expanded == expanded) return;
         Expanded = expanded;
         Render();
-        if (expanded) Activate();
+        if (expanded) TakeKey();
         Log.Write($"answer-card: {(expanded ? "expanded" : "collapsed")} owner={Owner} gen={generation}");
         ExpandedChanged?.Invoke(generation, expanded);
     }
 
     /// <summary>Make the card key (keys arrive here); false when Windows refused the foreground (clicks and voice still work).</summary>
-    public bool Activate()
+    public bool TakeKey()
     {
         if (!IsShown) return false;
         bool ok = ShowActive();
@@ -277,7 +277,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     /// <summary>Whether the follow-up field has focus (letters are text there).</summary>
     public bool FollowUpFocused => followUp is { } f && f.FocusState != FocusState.Unfocused;
 
-    protected override void OnCloseRequested() => Closed?.Invoke(Generation);
+    protected override void OnCloseRequested() => Dismissed?.Invoke(Generation);
 
     private void OnKey(object sender, KeyRoutedEventArgs e)
     {
@@ -380,7 +380,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
             speaker.Click += (_, _) => SpeakerClicked?.Invoke(Generation);
             right.Children.Add(speaker);
         }
-        right.Children.Add(CardChrome.KeyCapButton(theme, null, "Esc", () => Closed?.Invoke(Generation), "answer-card-close"));
+        right.Children.Add(CardChrome.KeyCapButton(theme, null, "Esc", () => Dismissed?.Invoke(Generation), "answer-card-close"));
         Grid.SetColumn(right, 1);
         row.Children.Add(right);
         return row;
