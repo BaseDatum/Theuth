@@ -1,7 +1,7 @@
 // 153 §6.4: the dictionary suggestion card (mock frame D) under the Composer. The engine publishes
 // `DictionarySuggestion` after a `dictation_correction` found the same single-word edit twice; Add / Not now / Never
 // answer through `dictionary_suggestion_answer`, 20 s without an answer dismisses the card (the engine counts it as
-// ignored at the next correction — no RPC). ▶ plays the dictation's audio (`dictation_audio_get`, base64 i16 16 kHz).
+// ignored at the next correction — no RPC). Play plays the dictation's audio (`dictation_audio_get`, base64 i16 16 kHz).
 
 import { Play } from 'lucide-react'
 import { useEffect, useState } from 'react'

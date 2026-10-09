@@ -127,7 +127,7 @@ export function finish(a: Active, discard: boolean): Finish {
 
 /**
  * 153 §6.3: a dictionary suggestion the engine published. `reporter` is the token the sending surface gave `correction`
- * (its card shows it); `dictationId` the dictation that report named — the event carries none, and ▶ plays its audio.
+ * (its card shows it); `dictationId` the dictation that report named — the event carries none, and Play plays its audio.
  */
 export type Suggestion = {
   id: string

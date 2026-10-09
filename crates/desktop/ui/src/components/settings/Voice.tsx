@@ -269,7 +269,7 @@ function PhraseRow({ label, description, value, commit }: { label: string; descr
   )
 }
 
-/** when · surface · raw → shaped (+ polished) · ▶ · Forget */
+/** when · surface · raw → shaped (+ polished) · play · Forget */
 function HistoryLine({ row, onPlay, onForget }: { row: HistoryRow; onPlay: () => void; onForget: () => void }) {
   const surface = SURFACES.find(([s]) => s === row.surface)?.[1] ?? row.surface
   return (
