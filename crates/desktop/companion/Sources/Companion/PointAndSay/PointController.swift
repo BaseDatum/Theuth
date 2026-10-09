@@ -7,27 +7,36 @@ import TheuthKit
 extension KeyboardShortcuts.Name {
     /// The voice key (`KeyAction.voiceKey`, ⌃S on macOS): the chord comes from the table, never a library default.
     static let voiceKey = Self("voiceKey")
+    /// 153 §15: the command key (`KeyAction.command`, ⌃⌥C) — the same gesture with `mode = .command`.
+    static let commandKey = Self("commandKey")
     /// ⎋ between press and send only (§8's pointAndSay row; `DESK/point/mod.rs:38-42`'s rule) — enabled/disabled per gesture.
     static let pointEscape = Self("pointEscape", default: .init(.escape))
     /// 149g: the same ⎋ carrying the voice key's modifiers (⌃⎋ for ⌃S) — what ⎋ is while the chord is physically held, which
     /// plain ⎋ never matches. Set from the table (`KeyTable.escapeDuringHold`), enabled/disabled with `pointEscape`.
     static let pointEscapeHeld = Self("pointEscapeHeld")
+    /// 153 §15: the held-⎋ twin for the command chord (⌃⌥⎋).
+    static let commandEscapeHeld = Self("commandEscapeHeld")
 }
 
 @MainActor private var pointAndSay: PointController?
 
 extension AppDelegate {
     /// 149 W2: the voice key, overlays, dictation, screen context, the answer card, the spoken reply; `--probe-point`.
+    /// 153 C1: the command key, `--probe-command`, `--probe-card`.
     func installPointAndSay() {
         let c = PointController(store: store)
         pointAndSay = c
         if let seconds = Flags.probePoint { PointProbe.run(seconds: seconds, store: store, controller: c) }
+        if let kind = Flags.probeCommand { CommandProbe.run(kind: kind, card: false, store: store, controller: c) }
+        if let kind = Flags.probeCard { CommandProbe.run(kind: kind, card: true, store: store, controller: c) }
     }
 }
 
 extension Store {
     /// Every raw event (after `askObserve`): `Dictation*` for the voice key's own session, the desk's reply, `Speech*`.
     func pointObserve(_ data: Data) { pointAndSay?.observe(data) }
+    /// 153 §12.1: the Ask bar hands its reply state to the one card (`Store.showAnswerCard`).
+    func pointShowCard(_ state: AnswerCardState) { pointAndSay?.showExternal(state) }
 }
 
 extension Flags {
@@ -37,11 +46,22 @@ extension Flags {
         guard let i = args.firstIndex(of: "--probe-point"), i + 1 < args.count else { return nil }
         return TimeInterval(args[i + 1])
     }()
+    /// 153 §16 row 20: `--probe-command <heard|working|approval|done>` / `--probe-card <collapsed|expanded|failed>` → PNGs.
+    static let probeCommand: String? = {
+        guard let i = args.firstIndex(of: "--probe-command"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }()
+    static let probeCard: String? = {
+        guard let i = args.firstIndex(of: "--probe-card"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }()
 }
 
 /// 149 §3.7 / §5.4 D: the driver around `PointMachine` — the hotkey's key-down/key-up and ⎋ in, the effects out. Owns the
 /// timers (`after`), the sampler, the overlays, the voice pill, its own dictation session (`AskDictation`, the Ask bar's
 /// reducer with the companion's PCM — D17/Revision 1 row 11), the Stop sequence and the answer card.
+/// 153 §10: one controller for both mode keys — `mode` is chosen by the key that pressed and relabelled by the other key
+/// while the gesture is live; `.command` sends `[command, N s]` and reads the desk's turn into the step-typed card.
 @MainActor
 final class PointController {
     /// 96's `FINAL_TEXT_MS`: how long the final flush may take after `dictation_stop` before what we have is sent.
@@ -52,6 +72,12 @@ final class PointController {
     private var pressAt: UInt64 = 0
     /// Bumped on every `Start`: a Stop sequence that outlives its gesture drops its result. The probe counts gestures by it.
     private(set) var gesture = 0
+    /// 153 §10.1: the live gesture's mode (chosen at press, switched by the other key); the card's thread follows it.
+    private(set) var mode = PointMachine.Mode.ask
+    /// §12.6: the gesture table chosen at press (per mode).
+    private var gestureKind = PointMachine.Gesture.holdLock
+    /// The press landed while the card was up in the same mode: the send is a follow-up in the thread (§10.5 / §12.2).
+    private var followUp = false
     let sampler = PointerSampler()
     let overlays = OverlayWindows()
     let pill = VoicePill()
@@ -73,6 +99,8 @@ final class PointController {
     /// The last `meeting_status` seen: a live meeting leases the mic, so a press is refused with the "Meeting running" hint.
     private var meetingLive = false
     private var prewarmed = false
+    /// §10.6: the spoken-approval listen is live (`dictation` is its session); the timer closes it after `listenSecs`.
+    private var approvalListen: Timer?
     /// `--probe-point`'s gesture phase: the Stop sequence runs to the point of `desk_open` and stops there.
     var dryRun = false
     /// `--probe-point` only: `dictation_start` is held this long before it is sent, so a release-into-send that beats the
@@ -89,19 +117,29 @@ final class PointController {
             SettingsModel.shared.$value.removeDuplicates().dropFirst().receive(on: RunLoop.main)
                 .sink { [weak self] v in MainActor.assumeIsolated { self?.applyHotkey(v) } }
                 .store(in: &subs)
-            KeyboardShortcuts.onKeyDown(for: .voiceKey) { [weak self] in self?.keyDown() }
-            KeyboardShortcuts.onKeyUp(for: .voiceKey) { [weak self] in self?.keyUp() }
-            KeyboardShortcuts.onKeyDown(for: .pointEscape) { [weak self] in self?.send(.esc) }
-            KeyboardShortcuts.onKeyDown(for: .pointEscapeHeld) { [weak self] in self?.send(.esc) }
+            KeyboardShortcuts.onKeyDown(for: .voiceKey) { [weak self] in self?.keyDown(.ask) }
+            KeyboardShortcuts.onKeyUp(for: .voiceKey) { [weak self] in self?.keyUp(.ask) }
+            KeyboardShortcuts.onKeyDown(for: .commandKey) { [weak self] in self?.keyDown(.command) }
+            KeyboardShortcuts.onKeyUp(for: .commandKey) { [weak self] in self?.keyUp(.command) }
+            for name in [KeyboardShortcuts.Name.pointEscape, .pointEscapeHeld, .commandEscapeHeld] {
+                KeyboardShortcuts.onKeyDown(for: name) { [weak self] in self?.send(.esc) }
+            }
             escapeHotkeys(false)
         }
         recorder.onChunk = { [weak self] c in self?.feed(c) }
-        card.onEscape = { [weak self] in self?.send(.esc) }
+        card.onEscape = { [weak self] in self?.cardEscape() }
         card.onOpen = { [weak self] in
-            guard let self, let d = self.desk else { return }
+            guard let self, let d = self.card.state.session ?? self.desk else { return }
             self.store.onOpenURL?(DeepLink.session(d))
         }
         card.onStop = { [weak self] in self?.speaker.stop() }
+        card.model.onApprove = { [weak self] d in self?.resolveApproval(d, spoken: false) }
+        card.model.onFollowUp = { [weak self] t in self?.typedFollowUp(t) }
+        card.model.onExpandChanged = { [weak self] expanded in
+            guard let self else { return }
+            if expanded { self.doneTimer?.invalidate(); self.doneTimer = nil } else { self.armDoneIfReady() }
+        }
+        card.historySource = { [weak self] in self?.store.ask.receipts.entries ?? [] }
         speaker.$surface.removeDuplicates().receive(on: RunLoop.main)
             .sink { [weak self] s in MainActor.assumeIsolated { self?.speakingChanged(s == .voiceKey) } }
             .store(in: &subs)
@@ -111,38 +149,52 @@ final class PointController {
             .store(in: &subs)
     }
 
-    /// The table's `voiceKey` chord into KeyboardShortcuts; off = unregistered. NOT in `Hotkeys.names`: that launch probe
-    /// would see Tauri's ⌃S (still bound until `companion-alive` lands, D22) and persist the row as unassigned.
+    /// The table's `voiceKey` / `command` chords into KeyboardShortcuts; off = unregistered. NOT in `Hotkeys.names`: that
+    /// launch probe would see Tauri's ⌃S (still bound until `companion-alive` lands, D22) and persist the row as unassigned.
     private func applyHotkey(_ v: CompanionSettings) {
-        let chord = VoiceKeySettings.enabled ? v.keys.chord(for: .voiceKey) : nil
-        let want = chord.map(Hotkeys.shortcut)
-        if KeyboardShortcuts.getShortcut(for: .voiceKey) != want {
-            KeyboardShortcuts.setShortcut(want, for: .voiceKey)
-            PointLog.write("hotkey voiceKey \(want.map { "registered \($0)" } ?? "unregistered")")
+        let rows: [(KeyAction, Bool, KeyboardShortcuts.Name, KeyboardShortcuts.Name)] = [
+            (.voiceKey, VoiceKeySettings.enabled, .voiceKey, .pointEscapeHeld),
+            (.command, ModeKeySettings.commandKeyEnabled(Settings.defaults), .commandKey, .commandEscapeHeld),
+        ]
+        for (action, enabled, name, heldName) in rows {
+            let chord = enabled ? v.keys.chord(for: action) : nil
+            let want = chord.map(Hotkeys.shortcut)
+            if KeyboardShortcuts.getShortcut(for: name) != want {
+                KeyboardShortcuts.setShortcut(want, for: name)
+                PointLog.write("hotkey \(name.rawValue) \(want.map { "registered \($0)" } ?? "unregistered")")
+            }
+            // 149g: ⎋ as the held chord makes it; `setShortcut` registers at once, so it goes off again unless a gesture is live.
+            let held = chord.flatMap { KeyTable.escapeDuringHold(of: $0, reserved: Hotkeys.reserved) }.map(Hotkeys.shortcut)
+            guard KeyboardShortcuts.getShortcut(for: heldName) != held else { continue }
+            KeyboardShortcuts.setShortcut(held, for: heldName)
+            switch state {
+            case .idle, .replying: KeyboardShortcuts.disable(heldName)
+            default: break
+            }
+            PointLog.write("hotkey \(heldName.rawValue) \(held.map { "set \($0)" } ?? "cleared — \(chord?.symbol ?? "no chord"): ⎋ with its modifiers is bare or the system's")")
         }
-        // 149g: ⎋ as the held chord makes it; `setShortcut` registers at once, so it goes off again unless a gesture is live.
-        let held = chord.flatMap { KeyTable.escapeDuringHold(of: $0, reserved: Hotkeys.reserved) }.map(Hotkeys.shortcut)
-        guard KeyboardShortcuts.getShortcut(for: .pointEscapeHeld) != held else { return }
-        KeyboardShortcuts.setShortcut(held, for: .pointEscapeHeld)
-        switch state {
-        case .idle, .replying: KeyboardShortcuts.disable(.pointEscapeHeld)
-        default: break
-        }
-        PointLog.write("hotkey pointEscapeHeld \(held.map { "set \($0)" } ?? "cleared — \(chord?.symbol ?? "no chord"): ⎋ with its modifiers is bare or the system's")")
     }
 
-    /// Both ⎋ registrations live exactly as long as a gesture (press → send/discard); logged as the voice key's are.
+    /// The ⎋ registrations live exactly as long as a gesture (press → send/discard); logged as the voice key's are.
     private func escapeHotkeys(_ on: Bool) {
         guard !AskFlags.automated else { return } // a probe registers nothing, ⎋ included
-        let names: [KeyboardShortcuts.Name] = [.pointEscape, .pointEscapeHeld]
+        let names: [KeyboardShortcuts.Name] = [.pointEscape, .pointEscapeHeld, .commandEscapeHeld]
         for name in names { on ? KeyboardShortcuts.enable(name) : KeyboardShortcuts.disable(name) }
         PointLog.write("hotkey pointEscape \(on ? "registered" : "unregistered") \(names.compactMap(KeyboardShortcuts.getShortcut).map { "\($0)" }.joined(separator: " "))")
     }
 
-    /// Settings › Voice key flipped "enabled".
+    /// Settings › Voice key / › Command flipped "enabled".
     static func hotkeyChanged() { pointAndSay?.applyHotkey(SettingsModel.shared.value) }
 
-    private var chordSymbol: String { SettingsModel.shared.value.keys.chord(for: .voiceKey)?.symbol ?? "⌃S" }
+    private func chordSymbol(_ m: PointMachine.Mode) -> String {
+        let keys = SettingsModel.shared.value.keys
+        switch m {
+        case .command: return keys.chord(for: .command)?.symbol ?? "⌃⌥C"
+        case .ask, .dictate: return keys.chord(for: .voiceKey)?.symbol ?? "⌃S"
+        }
+    }
+
+    private static func pillLabel(_ m: PointMachine.Mode) -> String { m == .command ? "Command · theuth desk" : "theuth's desk" }
 
     private func refreshMeeting() {
         Task { [weak self] in
@@ -155,21 +207,36 @@ final class PointController {
 
     /// The hot key's `kEventHotKeyPressed` — Carbon re-posts it for every keyboard auto-repeat while the chord is held, and
     /// KeyboardShortcuts forwards each one — filtered by `VoiceKeyGate` to the real key-down; the probe's synthetic presses
-    /// come in here too. A gesture a refusal ended stays ended until the key is released.
-    func keyDown() {
+    /// come in here too. A gesture a refusal ended stays ended until the key is released. 153 §10.1: the other mode's key
+    /// while a gesture is live switches the mode (its auto-repeats are filtered by the same gate: the mode already matches).
+    func keyDown(_ m: PointMachine.Mode = .ask) {
+        if isLive, m != mode { send(.switchMode(m)); return }
         guard gate.press(now: PointClock.now()) else { return }
+        if !isLive {
+            mode = m
+            gestureKind = ModeKeySettings.gesture(m, Settings.defaults)
+        }
         send(.pressed)
     }
 
-    func keyUp() {
+    /// Either chord's release ends the hold (§10.1); the second chord's key-up finds the gate already up and is ignored.
+    func keyUp(_ m: PointMachine.Mode = .ask) {
         guard gate.release() else { return PointLog.write("hotkey key-up without a key-down (ignored)") }
         send(.released)
+    }
+
+    /// Press → send/discard: the states in which the other mode's key switches the mode.
+    private var isLive: Bool {
+        switch state {
+        case .idle, .sending, .replying: return false
+        default: return true
+        }
     }
 
     func send(_ e: PointMachine.Event) {
         let now = PointClock.now()
         let refused: String? = (meetingLive || store.meeting?.isLive == true) ? "talking" : nil
-        let (next, effects) = PointMachine.step(state, e, now: now, refused: refused)
+        let (next, effects) = PointMachine.step(state, e, now: now, refused: refused, gesture: gestureKind)
         let prev = state
         state = next
         if prev != next || !effects.isEmpty { PointLog.write("point \(e) \(prev) → \(next) \(effects)") }
@@ -182,27 +249,37 @@ final class PointController {
         store.point = state == .idle ? nil : PointSlice(state: state, samples: sampler.samples, text: dictation.liveText)
     }
 
+    private var cardKind: AnswerCardState.Kind { mode == .command ? .command : .voiceNote }
+
     private func run(_ fx: PointMachine.Effect, now: UInt64) {
         switch fx {
         case .start:
             gesture += 1
             pressAt = now
+            endApprovalListen()
             displays = PointerSampler.displays()
             let mouse = VoiceKeySettings.annotateMouse
             overlays.reveal(catchMouse: mouse)
             sampler.onTick = { [weak self] s, _ in self?.tick(s) }
             sampler.start(t0: now, penAlways: !mouse, displays: displays)
-            card.hide(returnKey: false) // a question from `.replying`: the old reply is over
+            // §10.5 / §12.2: a hold while the card is up in the same mode is a follow-up in its thread; else the old reply is over.
+            followUp = card.isVisible && card.state.kind == cardKind && card.state.session != nil
+            if !followUp { card.hide(returnKey: false) }
             doneTimer?.invalidate(); doneTimer = nil
             speaker.stop() // S3: a new gesture silences whatever is speaking, the Ask bar's reply included
             router = AskRouter()
-            pill.state.reset(chord: chordSymbol)
+            pill.state.reset(chord: chordSymbol(mode), label: Self.pillLabel(mode))
             pill.show(near: NSEvent.mouseLocation)
             escapeHotkeys(true)
             prewarm()
             beginDictation()
         case .showLock:
             pill.state.phase = .locked
+        case .relabel(let m):
+            mode = m
+            pill.state.chord = chordSymbol(m); pill.state.label = Self.pillLabel(m)
+            followUp = card.isVisible && card.state.kind == cardKind && card.state.session != nil
+            PointLog.write("point mode → \(m)")
         case .stop(let reason):
             let g = gesture
             Task { await self.stopSequence(gesture: g, reason: reason) }
@@ -214,6 +291,7 @@ final class PointController {
             card.hide(returnKey: true)
             pill.hide()
             doneTimer?.invalidate(); doneTimer = nil
+            endApprovalListen()
             stopSpeaking()
             router = AskRouter()
         case .refuse(let reason):
@@ -225,7 +303,7 @@ final class PointController {
     /// Timers and the ⎋ lifetime follow the state, not the effects (`DESK/point/mod.rs:342-353`).
     private func after(_ prev: PointMachine.State, _ next: PointMachine.State) {
         switch next {
-        case .armed(let t0): armTick(at: t0 + PointMachine.holdMs)
+        case .armed(let t0): armTick(at: t0 + (gestureKind == .automatic ? PointMachine.tapToggleMs : PointMachine.holdMs))
         case .tap1(_, let released): armTick(at: released + PointMachine.doubleTapMs + 1)
         case .idle, .replying:
             switch prev {
@@ -277,8 +355,9 @@ final class PointController {
         recorder.stop() // the tail chunk goes out through `feed`
         endDictation()
         pill.state.phase = .sending
+        let mode = self.mode
         async let text = finalText()
-        async let context = screenContext(samples: samples, durationMs: durationMs)
+        async let context = Self.wantsScreen(mode) ? screenContext(samples: samples, durationMs: durationMs) : nil
         let (t, ctx) = await (text, context)
         guard g == gesture, case .sending = state else { return }
         let note = t.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -288,28 +367,53 @@ final class PointController {
         do { desk = try await store.resolveDesk() } catch { return finish(hint: "\(error)") } // off the hub: names the hub
         guard g == gesture, case .sending = state else { return }
         self.desk = desk
-        let body = ([Self.noteLine(note, durationMs: durationMs)] + (ctx?.lines ?? [])).joined(separator: "\n")
-        let files = ctx?.files ?? []
-        let running = store.sessions.first { $0.id == desk }?.running ?? false
-        let clientId = UUID().uuidString
-        do {
-            if running { _ = try await store.client.steer(session: desk, text: body, id: clientId, files: files, delivery: nil) }
-            else { _ = try await store.client.sendInput(session: desk, text: body, files: files, delivery: nil, id: clientId) }
-        } catch {
-            return finish(hint: "\(error)")
-        }
+        let kind = mode == .command ? AnswerCardState.Kind.command : .voiceNote
+        let body = ([AnswerCardState.marker(kind, durationMs: durationMs) + note] + (ctx?.lines ?? [])).joined(separator: "\n")
+        do { try await deliver(body, files: ctx?.files ?? [], to: desk) } catch { return finish(hint: "\(error)") }
         guard g == gesture, case .sending = state else { return }
-        router.sent(on: desk)
-        PointLog.write("point sent to desk \(desk) via \(running ? "steer" : "send_input") (\(note.count) chars, \(files.count) files, reason \(reason))")
-        card.state.begin(question: note)
+        PointLog.write("point sent to desk \(desk) (\(note.count) chars, \(ctx?.files.count ?? 0) files, reason \(reason), mode \(mode), follow-up \(followUp))")
+        if followUp, card.state.kind == kind { card.state.followUp(question: note) }
+        else { card.state.begin(question: note, kind: kind) }
+        card.state.session = desk
+        card.state.status = mode == .command ? "heard → working" : "working…"
         pill.hide()
         card.show(near: NSEvent.mouseLocation, key: !AskFlags.automated)
         send(.panelDone)
     }
 
+    /// §10.1 / Q (writer's default): the voice key sends the screen when its setting says so; command mode only when
+    /// "Include the screen" is on in Settings › Command (default off).
+    static func wantsScreen(_ m: PointMachine.Mode) -> Bool {
+        m == .command ? CommandSettings.includeScreen : VoiceKeySettings.includeScreen
+    }
+
+    /// The desk's path: `steer` into a running turn, else `send_input` (`PointController.swift:287-297` of 149).
+    private func deliver(_ body: String, files: [String], to desk: String) async throws {
+        let running = store.sessions.first { $0.id == desk }?.running ?? false
+        let clientId = UUID().uuidString
+        if running { _ = try await store.client.steer(session: desk, text: body, id: clientId, files: files, delivery: nil) }
+        else { _ = try await store.client.sendInput(session: desk, text: body, files: files, delivery: nil, id: clientId) }
+        router.sent(on: desk)
+        PointLog.write("delivered via \(running ? "steer" : "send_input")")
+    }
+
     /// 45 §4.4's marker, as `voice-note.ts:5-6`.
     static func noteLine(_ text: String, durationMs: UInt64) -> String {
-        "[voice note, \(max(1, (durationMs + 999) / 1000)) s] \(text)"
+        AnswerCardState.marker(.voiceNote, durationMs: durationMs) + text
+    }
+
+    /// §12.2: the expanded card's field — the same marker family, the same desk; the card appends a block.
+    private func typedFollowUp(_ text: String) {
+        guard let desk = card.state.session else { return }
+        let kind = card.state.kind
+        let body = AnswerCardState.marker(kind, durationMs: 0) + text
+        doneTimer?.invalidate(); doneTimer = nil
+        Task {
+            do { try await deliver(body, files: [], to: desk) } catch { card.state.status = "couldn't send — \(error)"; return }
+            self.desk = desk
+            card.state.followUp(question: text)
+            card.state.status = kind == .command ? "heard → working" : "working…"
+        }
     }
 
     /// The pill shows why for `hintMs`; the machine leaves `sending` without a send.
@@ -324,7 +428,6 @@ final class PointController {
     }
 
     func screenContext(samples: [PointerSample], durationMs: UInt64, color: String = PointController.accentHex) async -> ScreenContextReply? {
-        guard VoiceKeySettings.includeScreen else { return nil }
         let req = ScreenContextReq(samples: samples, color: color, sinceMs: durationMs, accessibility: VoiceKeySettings.accessibility)
         do {
             let r = try await store.client.screenContext(req)
@@ -356,7 +459,8 @@ final class PointController {
         }
     }
 
-    func beginDictation() {
+    /// `opts` only for the §10.6 approval listen (`Surface.companion`); the gesture's own dictation is today's call.
+    func beginDictation(opts: DictationOpts? = nil) {
         _ = dictation.handle(.start)
         pendingChunks = []; stopWanted = false
         let g = gesture
@@ -369,7 +473,7 @@ final class PointController {
         enqueue { [weak self, store] in
             do {
                 if let d = self?.probeStartDelay, d > .zero { try? await Task.sleep(for: d) }
-                let id = try await store.client.dictationStart()
+                let id = try await store.client.dictationStart(opts: opts)
                 guard let self else { return }
                 // The gesture ended (cancel/Esc/short) before the reply: the dictation is live on the engine with no owner —
                 // stop it now, or it holds the one slot until `dictation_max_secs` ("dictating elsewhere" everywhere).
@@ -397,8 +501,8 @@ final class PointController {
         PointLog.write("dictation refused: \(why)")
         resumeFinal() // a Stop already waiting for the final text gets what there is
         switch state {
-        case .armed, .holding, .tap1, .locked: send(.cancel)
-        default: return
+        case .armed, .holding, .tap1, .locked, .toggled: send(.cancel)
+        default: endApprovalListen(); return
         }
         pill.showHint(Self.hint(for: why), near: NSEvent.mouseLocation)
     }
@@ -436,7 +540,7 @@ final class PointController {
 
     // MARK: events
 
-    private struct Wire: Decodable {
+    struct Wire: Decodable {
         struct Reason: Decodable { let reason: String; let message: String? }
         let type: String
         let id: String?
@@ -449,10 +553,16 @@ final class PointController {
         let levels: [Float]?
         let reason: Reason?
         let name: String?
-        let seq: UInt32?
-        let opus: String?
-        let sink: String?
-        enum CodingKeys: String, CodingKey { case type, id, session, text, stopReason, message, utterance, isFinal = "final", levels, reason, name, seq, opus, sink }
+        let callId: String?
+        let args: JSONValue?
+        let isError: Bool?
+        let tool: String?
+        let risk: String?
+        let decision: String?
+        let timedOut: Bool?
+        enum CodingKeys: String, CodingKey {
+            case type, id, session, text, stopReason, message, utterance, isFinal = "final", levels, reason, name, callId, args, isError, tool, risk, decision, timedOut
+        }
     }
 
     func observe(_ data: Data) {
@@ -464,6 +574,7 @@ final class PointController {
         case "DictationText":
             guard let id = w.id else { return }
             if dictation.handle(.text(id: id, utterance: w.utterance ?? 0, text: w.text ?? "", final: w.isFinal ?? false)) {
+                if approvalListen != nil { if w.isFinal == true { spokenApproval(w.text ?? "") }; return }
                 pill.state.text = dictation.finalText
                 pill.state.partial = dictation.partialText
                 publish()
@@ -474,40 +585,183 @@ final class PointController {
         case "DictationFinished":
             guard let id = w.id, id == dictation.id else { return }
             _ = dictation.handle(.finished(id: id, error: w.reason?.reason == "error" ? (w.reason?.message ?? "dictation failed") : nil))
+            if approvalListen != nil { return endApprovalListen() }
             pill.state.text = dictation.liveText; pill.state.partial = ""
             resumeFinal()
         case "SpeechStarted", "SpeechAudio", "SpeechFinished": break // 149s: the Store's SpeechPlayer takes them
-        case "TextDelta", "TurnFinished", "Error", "ToolCallPending", "ToolCallStarted":
+        case "TextDelta", "TurnFinished", "Error", "ToolCallPending", "ToolCallStarted", "ToolCallFinished":
             replyEvent(w)
+        case "ApprovalRequested", "ApprovalResolved":
+            approvalEvent(w, data: data)
         default:
             if ((try? MeetingEvent.decode(data)) ?? nil) != nil { refreshMeeting() } // a meeting event: the mic lease may have moved
         }
     }
 
     /// The desk's turn drives the card: "working…", tool names, the final text; then the spoken reply and `doneMs`.
+    /// Command mode (§10.3): the same events feed the `CommandCard` reducer — rows from `ToolCallStarted` with `purpose`,
+    /// colours from `ToolCallFinished`, the ✓/✗ line at `TurnFinished`, the cap at 12.
     private func replyEvent(_ w: Wire) {
         guard let r = router.reply, !r.finished, let session = w.session, session == r.session else { return }
         switch w.type {
-        case "TextDelta": router.observe(.textDelta(session: session, text: w.text ?? ""))
-        case "TurnFinished": router.observe(.turnFinished(session: session, stopReason: w.stopReason ?? ""))
-        case "Error": router.observe(.error(session: session, message: w.message ?? ""))
+        case "TextDelta":
+            router.observe(.textDelta(session: session, text: w.text ?? ""))
+            card.state.command?.observe(.textDelta(w.text ?? ""))
+        case "TurnFinished":
+            router.observe(.turnFinished(session: session, stopReason: w.stopReason ?? ""))
+            card.state.command?.observe(.turnFinished(stopReason: w.stopReason ?? ""))
+        case "Error":
+            router.observe(.error(session: session, message: w.message ?? ""))
+            card.state.command?.observe(.turnFinished(stopReason: "error"))
+        case "ToolCallStarted":
+            guard let n = w.name else { return }
+            card.state.tools.append(n)
+            card.state.status = "working · \(n)"
+            let purpose = w.args?["purpose"]?.string ?? w.args?["reason"]?.string
+            if card.state.command?.observe(.toolCallStarted(id: w.callId ?? n, tool: n, purpose: purpose)) == true { capReached(session) }
+            return
+        case "ToolCallFinished":
+            card.state.command?.observe(.toolCallFinished(id: w.callId ?? "", ok: !(w.isError ?? false)))
+            return
         default:
             if let n = w.name { card.state.status = "working · \(n)" }
             return
         }
         guard let reply = router.reply else { return }
         card.state.text = reply.text
-        card.state.status = reply.finished ? (reply.failure.map { "couldn't reply — \($0)" } ?? "replied") : "working…"
-        card.state.failed = reply.failure != nil
+        if let c = card.state.command, c.finished {
+            card.state.status = c.verdict.map { v -> String in
+                switch v { case .ok: return "done"; case .failed: return "failed"; case .replied: return "replied" }
+            } ?? "stopped"
+        } else {
+            card.state.status = reply.finished ? (reply.failure.map { "couldn't reply — \($0)" } ?? "replied") : "working…"
+        }
+        let failed = reply.failure != nil || card.state.command?.verdict.map { if case .failed = $0 { return true } else { return false } } == true
+            || (card.state.command?.frozen?.hasPrefix("✗") ?? false)
+        card.state.phase = failed ? .failed : (reply.finished || !reply.text.isEmpty ? .answer : .thinking)
         guard reply.finished else { return }
-        if SpokenReplies.shouldSpeak(enabled: VoiceKeySettings.speak, reply: reply) { speaker.speak(reply.text, on: session, from: .voiceKey) } else { armDone() }
+        card.state.turnFinished = true
+        if SpokenReplies.shouldSpeak(enabled: VoiceKeySettings.speak, reply: reply) { speaker.speak(reply.text, on: session, from: .voiceKey) } else { armDoneIfReady() }
+    }
+
+    /// §10.4: the 12th `ToolCallStarted` → `cancel(desk, root)`; the card already froze with "stopped after 12 steps".
+    private func capReached(_ session: String) {
+        PointLog.write("command cap reached: cancel(\(session), root)")
+        card.state.status = "stopped"
+        card.state.phase = .failed
+        Task { try? await store.client.cancel(session: session, scope: .root) }
+    }
+
+    /// ⎋ on the card: during `thinking` it stops the turn and FREEZES the card (§12.4 — nothing vanishes); otherwise dismiss.
+    private func cardEscape() {
+        if card.state.phase == .thinking, let s = card.state.session, !card.state.turnFinished {
+            PointLog.write("card esc while thinking: cancel(\(s), root)")
+            Task { try? await store.client.cancel(session: s, scope: .root) }
+            card.state.status = "stopped"
+            card.state.phase = .failed
+            card.state.turnFinished = true
+            return
+        }
+        switch state {
+        case .replying: send(.esc)
+        default: card.hide(returnKey: true); doneTimer?.invalidate(); doneTimer = nil; stopSpeaking()
+        }
+    }
+
+    // MARK: approvals (§10.6)
+
+    private func approvalEvent(_ w: Wire, data: Data) {
+        guard card.isVisible, card.state.kind == .command, let s = card.state.session, w.session == s || w.type == "ApprovalResolved" else { return }
+        switch w.type {
+        case "ApprovalRequested":
+            guard let a = try? TheuthJSON.decoder.decode(ApprovalRequested.self, from: data), card.state.approval?.outcome != nil || card.state.approval == nil else { return }
+            card.state.approval = .init(id: a.id, tool: a.tool, target: Self.target(of: a), risk: a.risk.rawValue)
+            card.state.status = "needs your ok"
+            PointLog.write("approval \(a.id) in the card: \(a.tool) \(a.risk.rawValue)")
+            beginApprovalListen()
+        case "ApprovalResolved":
+            guard var a = card.state.approval, a.id == w.id, a.outcome == nil else { return }
+            a.outcome = w.timedOut == true ? .timedOut : (w.decision == "allow" ? .allowed : .denied)
+            a.listening = false
+            card.state.approval = a
+            card.state.status = "working…"
+            endApprovalListen()
+        default: break
+        }
+    }
+
+    /// The exact target of the call (§10.6 "show the exact target"): the shell command, the script's first line, the
+    /// shortcut's name, else the `purpose`, else the tool name.
+    static func target(of a: ApprovalRequested) -> String {
+        let args = a.args
+        let s = args["command"]?.string ?? args["cmd"]?.string ?? args["script"]?.string ?? args["name"]?.string
+            ?? args["purpose"]?.string ?? args["path"]?.string ?? a.tool
+        let line = s.split(whereSeparator: \.isNewline).first.map(String.init) ?? s
+        return line.count > 80 ? String(line.prefix(79)) + "…" : line
+    }
+
+    /// Open a short dictation (`Surface.companion`), read the first final utterance against the grammar; `listenSecs` closes it.
+    private func beginApprovalListen() {
+        guard !AskFlags.automated, !dictation.isActive, isLive == false else { return }
+        card.state.approval?.listening = true
+        beginDictation(opts: DictationOpts(surface: .companion, destination: .agentPrompt))
+        approvalListen?.invalidate()
+        approvalListen = Timer.scheduledTimer(withTimeInterval: TimeInterval(SpokenApproval.listenSecs), repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.endApprovalListen() }
+        }
+    }
+
+    private func spokenApproval(_ utterance: String) {
+        if let d = SpokenApproval.decide(utterance) {
+            PointLog.write("spoken approval “\(utterance)” → \(d)")
+            resolveApproval(d, spoken: true)
+        } else {
+            PointLog.write("spoken approval “\(utterance)” → no match")
+            card.state.approval?.missed = true
+        }
+    }
+
+    private func endApprovalListen() {
+        guard approvalListen != nil else { return }
+        approvalListen?.invalidate(); approvalListen = nil
+        card.state.approval?.listening = false
+        recorder.cancel()
+        if let id = dictation.id { enqueue { [store] in try await store.client.dictationStop(id: id) } }
+        dictation = AskDictation()
+        pendingChunks = []; stopWanted = false
+    }
+
+    /// ⏎/⎋ or the grammar → `resolve_approval`; the row shows ✓/✗ at once (the engine's `ApprovalResolved` confirms it).
+    private func resolveApproval(_ d: Decision, spoken: Bool) {
+        guard var a = card.state.approval, a.outcome == nil else { return }
+        endApprovalListen()
+        a.outcome = d == .allow ? .allowed : .denied
+        card.state.approval = a
+        card.state.status = "working…"
+        PointLog.write("resolve_approval(\(a.id), \(d)) \(spoken ? "spoken" : "key")")
+        guard !AskFlags.automated else { return }
+        Task { [store] in
+            do { _ = try await store.client.resolveApproval(id: a.id, decision: d) } catch { PointLog.write("resolve_approval failed: \(error)") }
+        }
+    }
+
+    // MARK: the one card for the Ask bar too (§12.1)
+
+    /// `Store.showAnswerCard`: the Ask bar's state replaces ours; the viewer's expansion survives a streaming update.
+    func showExternal(_ s: AnswerCardState) {
+        var next = s
+        if card.isVisible, card.state.generation == s.generation { next.expanded = card.state.expanded; next.current = card.state.current }
+        card.state = next
+        if !next.visible { card.hide(returnKey: true); return }
+        if !card.isVisible { card.show(near: NSEvent.mouseLocation, key: !AskFlags.automated) }
+        armDoneIfReady()
     }
 
     /// The shared speaker's utterance is ours → the glyph; ours ended (played out, stopped, or the ask bar took over) → `doneMs`.
     private func speakingChanged(_ ours: Bool) {
         card.state.speaking = ours
         defer { wasSpeaking = ours }
-        if wasSpeaking, !ours, router.reply?.finished == true { armDone() }
+        if wasSpeaking, !ours { armDoneIfReady() }
     }
 
     /// ⎋ / conceal ends the voice key's own utterance; the Ask bar's keeps playing.
@@ -515,11 +769,20 @@ final class PointController {
         if speaker.surface == .voiceKey { speaker.stop() }
     }
 
-    /// `doneMs` after the reply is over (text final, nothing speaking) → `Replying → Idle`, the card goes.
-    private func armDone() {
-        doneTimer?.invalidate()
-        doneTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(PointMachine.doneMs) / 1000, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.send(.panelDone) }
+    /// §12.4: `doneMs` only when the card says so (finished ∧ not speaking ∧ collapsed ∧ no open approval); the hide is
+    /// generation-checked, so a newer gesture's card never goes with an old timer.
+    private func armDoneIfReady() {
+        doneTimer?.invalidate(); doneTimer = nil
+        guard card.state.armsDone else { return }
+        let g = card.state.generation
+        doneTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(AnswerCardState.doneMs) / 1000, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.card.state.armsDone, self.card.state.hide(generation: g) else { return }
+                switch self.state {
+                case .replying: self.send(.panelDone)
+                default: self.card.hide(returnKey: true)
+                }
+            }
         }
     }
 }
@@ -537,9 +800,15 @@ enum VoiceKeySettings {
     /// 149s S1: off unless the user turned it on (was on as 96 shipped); the same key the Settings toggles bind.
     static var speak: Bool { SpokenReplies.voiceKey(Settings.defaults) }
 
-    private static func flag(_ key: String, _ def: Bool) -> Bool {
+    static func flag(_ key: String, _ def: Bool) -> Bool {
         Settings.defaults.object(forKey: key) == nil ? def : Settings.defaults.bool(forKey: key)
     }
+}
+
+/// 153 §10.1: Settings › Command's own switch — the screen is NOT sent with a command by default (the words name the target).
+enum CommandSettings {
+    static let includeScreenKey = "commandIncludeScreen"
+    static var includeScreen: Bool { VoiceKeySettings.flag(includeScreenKey, false) }
 }
 
 extension PointController {
@@ -561,15 +830,17 @@ extension PointController {
     }
 }
 
-/// stderr plus `/tmp/149-W2-probe.log` during `--probe-point`.
+/// stderr plus `/tmp/149-W2-probe.log` during `--probe-point` (and `/tmp/153-c1/probe.log` during the 153 probes).
 enum PointLog {
     static let file = URL(fileURLWithPath: "/tmp/149-W2-probe.log")
+    static let file153 = URL(fileURLWithPath: "/tmp/153-c1/probe.log")
 
     static func write(_ s: String) {
         Log.write(s)
-        guard Flags.probePoint != nil else { return }
+        let target: URL
+        if Flags.probePoint != nil { target = file } else if Flags.probeCommand != nil || Flags.probeCard != nil { target = file153 } else { return }
         let line = "[companion \(Date()) pid \(getpid())] \(s)\n"
-        if let h = try? FileHandle(forWritingTo: file) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
-        else { try? Data(line.utf8).write(to: file) }
+        if let h = try? FileHandle(forWritingTo: target) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+        else { try? Data(line.utf8).write(to: target) }
     }
 }
