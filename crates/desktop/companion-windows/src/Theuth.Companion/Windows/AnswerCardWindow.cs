@@ -33,6 +33,9 @@ internal sealed record CardButton(string Id, string Label, string? Cap = null, b
 /// <summary>A command step row as the card draws it (§10.3): verb · text, green/red when returned, a ring on the running row.</summary>
 internal sealed record CardStepRow(string Verb, string Text, StepStatus Status, string? Note = null);
 
+/// <summary>R1: one row of the Ctrl+L list (who · one line of the answer · age).</summary>
+internal sealed record CardListRow(string Who, string Text, string Age);
+
 /// <summary>The amber approval box (§10.6).</summary>
 internal sealed record CardApprovalBox(string Question, string RiskLine, string? Context, string? Line, bool Answered);
 
@@ -94,6 +97,11 @@ internal sealed record AnswerCardContent
 
     /// <summary>"O open": the desk session (<c>theuth://c/&lt;desk&gt;</c>).</summary>
     public string? OpenUrl { get; init; }
+
+    /// <summary>R1 (the Mac's ⌘L): the last answers; null = the card, not the list.</summary>
+    public IReadOnlyList<CardListRow>? ListRows { get; init; }
+
+    public int ListSelected { get; init; }
 }
 
 /// <summary>
@@ -282,6 +290,12 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         }
     }
 
+    /// <summary>
+    /// The island's rect while it shows its own (meeting) content on screen: the card sits directly below it instead of over it
+    /// (the Mac's <c>IslandArea.frame</c> passes the shown island to <c>IslandModel.pillFrame</c>). Null = nothing to avoid.
+    /// </summary>
+    public Func<RectInt32?>? AvoidRect { get; set; }
+
     /// <summary>Whether the follow-up field has focus (letters are text there).</summary>
     public bool FollowUpFocused => followUp is { } f && f.FocusState != FocusState.Unfocused;
 
@@ -290,7 +304,7 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     private void OnKey(object sender, KeyRoutedEventArgs e)
     {
         var press = KeyInput.From(e);
-        var ctx = new CardKeyContext(model.Approval is { Answered: false }, Expanded, model.Busy && model.Approval is null, model.Speaking, FollowUpFocused);
+        var ctx = new CardKeyContext(model.Approval is { Answered: false }, Expanded, model.Busy && model.Approval is null, model.Speaking, FollowUpFocused, model.ListRows is not null);
         var intent = CardKeys.IntentFor(press, ctx);
         if (intent == CardKeyIntent.None) return;
         if (intent == CardKeyIntent.SendFollowUp)
@@ -321,6 +335,14 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         followUp = null;
         var c = model;
         content.Children.Add(Header(c, theme));
+        if (c.ListRows is { } rows)
+        {
+            // R1: the Mac's `historyList` — "Last answers", one line per answer, Ctrl+L back · Esc collapse.
+            content.Children.Add(ListView(rows, c.ListSelected, theme));
+            if (c.Footer is { Length: > 0 } lf) content.Children.Add(Text(lf, 11.5, NativeLook.TextTertiary));
+            Place();
+            return;
+        }
         if (Expanded && c.Request is { Length: > 0 } req)
         {
             var q = Text($"“{req}”", 13, NativeLook.TextSecondary);
@@ -364,6 +386,37 @@ internal sealed partial class AnswerCardWindow : ToolWindow
             content.Children.Add(f);
         }
         Place();
+    }
+
+    private FrameworkElement ListView(IReadOnlyList<CardListRow> rows, int selected, ElementTheme theme)
+    {
+        var panel = new StackPanel { Spacing = 2 };
+        AutomationProperties.SetAutomationId(panel, "answer-card-list");
+        panel.Children.Add(Text(AnswerCardList.Title, 12, NativeLook.TextTertiary, FontWeights.SemiBold));
+        if (rows.Count == 0) panel.Children.Add(Text(AnswerCardList.EmptyLine, 13, NativeLook.TextTertiary));
+        for (int i = 0; i < rows.Count; i++)
+        {
+            int index = i;
+            var r = rows[i];
+            var grid = new Grid { ColumnSpacing = 8, Padding = new Thickness(4, 2, 4, 3), CornerRadius = CardChrome.ControlRadius };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            if (i == selected) grid.Background = Theme.Brush(NativeLook.SubtleFillSecondary, theme);
+            else grid.Background = Theme.Transparent;
+            grid.Children.Add(Text(r.Who, 12, NativeLook.TextSecondary, FontWeights.SemiBold));
+            var t = Text(r.Text, 13, NativeLook.TextPrimary);
+            Grid.SetColumn(t, 1);
+            grid.Children.Add(t);
+            var age = Text(r.Age, 11.5, NativeLook.TextTertiary);
+            Grid.SetColumn(age, 2);
+            grid.Children.Add(age);
+            grid.Tapped += (_, e) => { e.Handled = true; ActionInvoked?.Invoke(Generation, $"pick:{index}"); };
+            AutomationProperties.SetAutomationId(grid, $"answer-card-list-row-{i + 1}");
+            AutomationProperties.SetName(grid, $"{r.Who}: {r.Text}");
+            panel.Children.Add(grid);
+        }
+        return panel;
     }
 
     private FrameworkElement Header(AnswerCardContent c, ElementTheme theme)
@@ -640,7 +693,12 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         double h = Math.Clamp(shell.DesiredSize.Height + 2, 60, Math.Max(60, maxH));
         var size = ((int)Math.Round(CardWidth * scale), (int)Math.Round(h * scale));
         var f = IslandModel.DefaultFrame(m.AsIslandDisplay(), size);
-        Place(new RectInt32(f.X, f.Y, f.Width, f.Height));
+        int y = f.Y;
+        if (AvoidRect?.Invoke() is { } isl && isl.X < f.X + f.Width && f.X < isl.X + isl.Width && isl.Y < y + f.Height && y < isl.Y + isl.Height)
+        {
+            y = isl.Y + isl.Height + (int)Math.Round(8 * scale); // below the shown island (the Mac's pillFrame rule)
+        }
+        Place(new RectInt32(f.X, y, f.Width, f.Height));
     }
 }
 

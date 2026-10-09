@@ -98,6 +98,8 @@ internal sealed class PointController : IDisposable
     private string? listenDictation;
     private bool probing;                             // --probe-command / --probe-card / --probe-states: never acting
     private bool optsRefusedLogged;
+    private readonly AnswerCardList history = new(); // R1: the Ctrl+L list (the Mac's ⌘L)
+    private Receipt? picked;                          // a row picked from the list, shown in the card until Ctrl+L / Esc / a new gesture
 
     public PointController(Store store, DispatcherQueue dispatcher, IslandController island, Hotkeys hotkeys, Func<PointSettings> settings, Voice.Speaker speaker)
     {
@@ -1319,8 +1321,8 @@ internal sealed class PointController : IDisposable
             : CardTone.Normal;
         string body = cmd ? CommandReply() : failed ? AnswerCardState.FailedCopy(x.Error) + (x.Answer.Length > 0 ? "\n\n" + x.Answer : "") : x.Answer;
         string collapsed = cmd ? CommandReply() : failed ? AnswerCardState.FailedCopy(x.Error) : card.CollapsedText;
-        var ctx = new CardKeyContext(command.Approval is { Answered: null } && cmd, card.Expanded, thinking, card.Speaking, false);
-        return new AnswerCardContent
+        var ctx = new CardKeyContext(command.Approval is { Answered: null } && cmd, card.Expanded, thinking, card.Speaking, false, history.Open);
+        var content = new AnswerCardContent
         {
             Title = cmd ? CommandCard.Header(command) : "theuth desk",
             Subtitle = cmd ? null : card.Thread.Count > 1 ? $"{card.Index + 1} of {card.Thread.Count}" : card.Phase == CardPhase.Answer && card.Finished && !x.Stopped ? "replied just now" : null,
@@ -1336,13 +1338,44 @@ internal sealed class PointController : IDisposable
             Steps = cmd ? StepRows() : Array.Empty<CardStepRow>(),
             StepSummary = null,
             Approval = cmd ? Box() : null,
-            Footer = CardKeys.Footer(ctx, !cmd && !card.Expanded && card.Phase == CardPhase.Answer) + (cmd && command.Phase == CommandPhase.Done ? $" · hold {ModeKeyText} follow up" : ""),
+            Footer = CardKeys.Footer(ctx, !cmd && !card.Expanded && card.Phase == CardPhase.Answer, ModeKeyText), // R1: AnswerCard.swift:145's row when expanded
             FollowUp = deskSession is not null && !failed,
             FollowUpHint = cmd ? $"add to the command… (or hold {ModeKeyText})" : $"follow up… (or hold {ModeKeyText})",
             Speaking = card.Speaking,
             OpenUrl = deskSession is { } ds ? $"theuth://c/{ds}" : null,
         };
+        if (history.Open)
+        {
+            var now = DateTimeOffset.Now;
+            content = content with
+            {
+                ListRows = history.Rows!.Select(r => new CardListRow(r.Who, AnswerMarkdown.Plain(r.Text.Replace('\n', ' ')), Age(now - r.At))).ToList(),
+                ListSelected = history.Selected,
+            };
+        }
+        else if (picked is { } p)
+        {
+            content = content with
+            {
+                Subtitle = $"{p.Who} · {Age(DateTimeOffset.Now - p.At)} · from the list",
+                Request = null,
+                Body = p.Text,
+                Collapsed = AnswerMarkdown.Plain(new AskReply(p.Session ?? "") { Text = p.Text, Finished = true }.FirstTwoLines),
+                Status = "",
+                Tone = CardTone.Normal,
+                Busy = false,
+                Chips = Array.Empty<ToolChip>(),
+                Steps = Array.Empty<CardStepRow>(),
+                Approval = null,
+                OpenUrl = (p.Session ?? deskSession) is { } ps ? $"theuth://c/{ps}" : null,
+                Footer = "Ctrl+L list · O open · Esc back",
+            };
+        }
+        return content;
     }
+
+    /// <summary>"now", "4 min", "2 h" — the list's age column.</summary>
+    private static string Age(TimeSpan t) => t.TotalMinutes < 1 ? "now" : t.TotalHours < 1 ? $"{(int)t.TotalMinutes} min" : $"{(int)t.TotalHours} h";
 
     private AnswerCardWindow Window()
     {
@@ -1353,6 +1386,14 @@ internal sealed class PointController : IDisposable
         {
             if (gen != windowGen) return;
             if (id is "approve" or "deny") AnswerApproval(id == "approve" ? Decision.Allow : Decision.Deny, "click");
+            else if (id.StartsWith("pick:", StringComparison.Ordinal) && int.TryParse(id[5..], out int row)) ShowPicked(history.Pick(row));
+        };
+        w.AvoidRect = () =>
+        {
+            // The Mac keeps a shown island visible (IslandArea.frame → pillFrame): the card goes below the meeting strip.
+            if (!island.Window.IsShown || island.Window.InVoiceMode) return null;
+            var r = island.Window.ScreenRect;
+            return new Windows.Graphics.RectInt32(r.left, r.top, r.right - r.left, r.bottom - r.top);
         };
         w.FollowUpSubmitted += (gen, text) => { if (gen == windowGen) _ = SendTypedFollowUp(text); };
         w.ExpandedChanged += (gen, expanded) =>
@@ -1392,9 +1433,20 @@ internal sealed class PointController : IDisposable
         w.Present(windowGen, Content(), expanded: card.Expanded);
     }
 
+    /// <summary>R1: a row picked from the list — the card shows that answer (O opens its session) until Ctrl+L, Esc or a new gesture.</summary>
+    private void ShowPicked(Receipt? r)
+    {
+        if (r is null) return;
+        picked = r;
+        Log.Write($"point: card shows the answer picked from the list ({r.Who}, {r.At:HH:mm})");
+        RenderCard();
+    }
+
     /// <summary>The card goes away (generation-checked on the window) and returns to the island next time.</summary>
     private void HideCard(string why)
     {
+        history.Close();
+        picked = null;
         if (card.Visible) card.Hide(card.Generation);
         if (detached && window is { } w) w.Hide(windowGen, why);
         detached = false;
@@ -1421,12 +1473,27 @@ internal sealed class PointController : IDisposable
             case CardKeyIntent.StopSpeaking: speech.Stop(SpeechStop.Esc); break;
             case CardKeyIntent.Dismiss: Dismiss("Esc"); break;
             case CardKeyIntent.Open:
-            case CardKeyIntent.List: // writer's call: the history list view is the desk session in theuth (the Ask bar's receipts own activity_list)
-                if (deskSession is { } ds) _ = Links.Open(new Uri($"theuth://c/{ds}"));
+                if ((picked?.Session ?? deskSession) is { } ds) _ = Links.Open(new Uri($"theuth://c/{ds}"));
+                break;
+            case CardKeyIntent.List:
+                // R1 (AnswerCard.swift:451-453): Ctrl+L toggles card ↔ the last 20 answers from the Ask receipts; a collapsed card expands.
+                bool open = history.Toggle(store.Ask.Receipts.Entries);
+                picked = null;
+                if (open && !card.Expanded) card.SetExpanded(true);
+                Log.Write($"point: card list {(open ? $"open — {history.Rows!.Count} answers" : "closed")}");
+                RenderCard();
+                break;
+            case CardKeyIntent.CloseList:
+                history.Close();
+                RenderCard();
+                break;
+            case CardKeyIntent.PickRow:
+                ShowPicked(history.Pick());
                 break;
             case CardKeyIntent.Next:
             case CardKeyIntent.Previous:
-                if (card.Move(intent == CardKeyIntent.Next ? 1 : -1)) RenderCard();
+                if (history.Open) { if (history.Move(intent == CardKeyIntent.Next ? 1 : -1)) RenderCard(); }
+                else if (card.Move(intent == CardKeyIntent.Next ? 1 : -1)) { picked = null; RenderCard(); }
                 break;
         }
     }
@@ -1516,6 +1583,8 @@ internal sealed class PointController : IDisposable
         if (command.Approval is { Answered: null } && card.Source == CardSource.Command) { AnswerApproval(Decision.Deny, "esc"); return; }
         if (card.Speaking) { speech.Stop(SpeechStop.Esc); return; } // speaking leaves on Esc; the card stays (§12.4)
         if (state is PointState.Sending && working && deskSession is not null) { FreezeStop(); return; }
+        if (history.Open && detached) { history.Close(); RenderCard(); return; } // R1: the list closes first (deny → list → collapse → dismiss)
+        if (picked is not null && detached) { picked = null; RenderCard(); return; }
         if (detached && card.Visible && card.Expanded && !state.IsGesture && window is { } w)
         {
             // H3-C1 order (deny → list → collapse → dismiss): an expanded card folds back first.
@@ -1613,6 +1682,17 @@ internal sealed class PointController : IDisposable
         if (expanded) Expand("probe");
         else if (detached) { card.SetExpanded(false); RenderCard(); }
     }
+
+    /// <summary>R1 probe: the Ctrl+L list over fixture receipts (the card expanded first), and a picked row.</summary>
+    internal void ProbeList(IEnumerable<Receipt> rows)
+    {
+        Expand("probe");
+        if (!history.Open) history.Toggle(rows);
+        picked = null;
+        RenderCard();
+    }
+
+    internal void ProbePick(int index) => ShowPicked(history.Pick(index));
 
     internal void ProbeDetachCollapsed()
     {
