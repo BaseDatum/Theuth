@@ -421,6 +421,12 @@ internal sealed partial class IslandWindow : ToolWindow
             }
             return;
         }
+        if (key.Modifiers.HasFlag(ChordModifiers.Control) && !key.Modifiers.HasFlag(ChordModifiers.Alt) && key.KeyCode == 'M')
+        {
+            act(new IslandAction.Stop()); // Ctrl+Shift+M (C stores it as Ctrl+M locally)
+            e.Handled = true;
+            return;
+        }
         if (key.Modifiers != ChordModifiers.None && key.Modifiers != ChordModifiers.Shift) return;
         switch (key.Chars.ToLowerInvariant())
         {

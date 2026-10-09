@@ -119,7 +119,8 @@ internal sealed class IslandController : IDisposable
 
     private void OnStoreChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(StoreModel.Connection) && store.Connection is RpcClient.State.Connected) { /* RefetchMeetingAsync runs in WW1's connect path */ }
+        // The meeting state itself arrives through MeetingRefetched (WW1 refetches on connect and on meeting events).
+        if (e.PropertyName == nameof(StoreModel.Connection) && store.Connection == RpcClient.State.Open) Log.Write("island: engine connected");
     }
 
     // MARK: visibility (D10)
