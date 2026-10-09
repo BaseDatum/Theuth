@@ -139,7 +139,10 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     private AnswerCardWindow()
         : base("theuth answer", WINDOW_EX_STYLE.WS_EX_NOACTIVATE, excludeFromCapture: !Flags.Shareable)
     {
-        content = new StackPanel { Spacing = 6 };
+        // Top-aligned so its height is the content's own, and re-placed whenever that changes after a layout pass: a glyph that loads a
+        // fallback font late (✓, “ ”) can grow a line after Place() measured, which clipped the footer (R1 desk round).
+        content = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Top };
+        content.SizeChanged += (_, e) => { if (Math.Abs(e.NewSize.Height - e.PreviousSize.Height) >= 1) Place(); };
         shell = new Border { Padding = new Thickness(14, 10, 14, 12), Child = content };
         host = new UserControl { Content = shell, IsTabStop = true, UseSystemFocusVisuals = false };
         AutomationProperties.SetAutomationId(host, "answer-card");
