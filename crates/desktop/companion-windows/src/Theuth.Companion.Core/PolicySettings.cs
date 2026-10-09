@@ -132,6 +132,9 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
     /// <summary>W6 (R2-3): expanded · sliver when quiet (W1's default) · always a sliver.</summary>
     public RailPresence RailPresence { get; set; } = RailPresence.SliverWhenQuiet;
 
+    /// <summary>149 §3.8 escape hatch (recheck N4): <c>true</c> = the four separate pills (default); <c>false</c> = the pre-149 single strip.</summary>
+    public bool RailPills { get; set; } = true;
+
     /// <summary>OFF by default: turning it on installs the low-level keyboard hook the double-tap Alt gesture needs
     /// (design 134 §3, D6; Swift's <c>doubleTapOption</c>, which asks for Accessibility on the Mac).</summary>
     public bool DoubleTapAlt { get; set; }
@@ -155,6 +158,9 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
     {
         public const string RailSide = "railSide", RailDisplay = "railDisplay", RailCollapse = "railCollapse";
         public const string RailPresence = "railPresence", DoubleTapAlt = "doubleTapAlt", UndoDelay = "undoDelay";
+
+        /// <summary>Windows (149 §3.8, recheck N4): <see cref="CompanionSettings.RailPills"/>; absent = pills.</summary>
+        public const string RailPills = "railPills";
         public const string NotifyBlocking = "notifyBlocking", NotifyDeferrable = "notifyDeferrable", NotifyError = "notifyError";
         public const string SoundOnErrors = "soundOnErrors", LaunchAtLogin = "launchAtLogin", KeyOverrides = "keyOverrides";
 
@@ -166,7 +172,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
 
         public static readonly IReadOnlyList<string> All = new[]
         {
-            RailSide, RailDisplay, RailCollapse, RailPresence, DoubleTapAlt, UndoDelay,
+            RailSide, RailDisplay, RailCollapse, RailPresence, RailPills, DoubleTapAlt, UndoDelay,
             NotifyBlocking, NotifyDeferrable, NotifyError, SoundOnErrors, LaunchAtLogin, KeyOverrides, ErrorsBreakThroughDnd, PinTipShownFor,
         };
     }
@@ -179,6 +185,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         // W2's "collapse when quiet" toggle (`railCollapse`) migrates: off → expanded.
         if (RailPresenceText.FromRaw(d.String(Key.RailPresence)) is { } p) s.RailPresence = p;
         else if (d.Object(Key.RailCollapse) is not null && !d.Bool(Key.RailCollapse)) s.RailPresence = RailPresence.Expanded;
+        if (d.Object(Key.RailPills) is not null) s.RailPills = d.Bool(Key.RailPills);
         s.DoubleTapAlt = d.Bool(Key.DoubleTapAlt);
         if (d.Object(Key.UndoDelay) is double v) s.UndoDelay = Math.Min(5, Math.Max(0, v));
         var n = s.Notify;
@@ -200,6 +207,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         d.Set(Key.RailSide, RailSide);
         d.Set(Key.RailDisplay, RailDisplay);
         d.Set(Key.RailPresence, RailPresence.RawValue());
+        d.Set(Key.RailPills, RailPills);
         d.Set(Key.DoubleTapAlt, DoubleTapAlt);
         d.Set(Key.UndoDelay, Math.Min(5, Math.Max(0, UndoDelay)));
         d.Set(Key.NotifyBlocking, Notify.Blocking.RawValue());
@@ -226,14 +234,14 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
 
     public bool Equals(CompanionSettings? o) =>
         o is not null
-        && RailSide == o.RailSide && RailDisplay == o.RailDisplay && RailPresence == o.RailPresence
+        && RailSide == o.RailSide && RailDisplay == o.RailDisplay && RailPresence == o.RailPresence && RailPills == o.RailPills
         && DoubleTapAlt == o.DoubleTapAlt && UndoDelay.Equals(o.UndoDelay) && Notify == o.Notify
         && LaunchAtLogin == o.LaunchAtLogin && Keys == o.Keys && PinTipShownFor == o.PinTipShownFor;
 
     public override bool Equals(object? obj) => obj is CompanionSettings s && Equals(s);
 
     public override int GetHashCode() =>
-        HashCode.Combine(RailSide, RailDisplay, RailPresence, DoubleTapAlt, UndoDelay, Notify, LaunchAtLogin, HashCode.Combine(Keys, PinTipShownFor));
+        HashCode.Combine(RailSide, RailDisplay, RailPresence, RailPills, DoubleTapAlt, UndoDelay, Notify, HashCode.Combine(LaunchAtLogin, Keys, PinTipShownFor));
 }
 
 /// <summary>

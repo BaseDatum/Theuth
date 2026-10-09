@@ -604,7 +604,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
             Grid.SetColumn(kids, 3);
             grid.Children.Add(kids);
         }
-        var mic = IconButton(theme, "\uE720", r.CanTalk ? "Hold to talk to this agent" : (r.DisabledReason ?? "nothing to talk to"), r.CanTalk, $"agent-mic-{index + 1}");
+        var mic = IconButton(theme, "\uE720", r.CanTalk ? "Hold to talk to this agent" : (r.DisabledReason ?? "nothing to talk to"), r.CanTalk, $"agent-mic-{index + 1}", out var micView);
         if (r.CanTalk)
         {
             // A Button marks pointer presses handled: listen with handledEventsToo so the hold starts on the press, not the click.
@@ -622,9 +622,9 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
             mic.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) => EndTalk()), true);
         }
         if (talk.Busy && r.Id == talkRowId) mic.Foreground = Palette.Brush(Palette.Carnelian, theme);
-        Grid.SetColumn(mic, 4);
-        grid.Children.Add(mic);
-        var stop = IconButton(theme, "\uE711", r.CanStop ? (r.DeskName is null ? "Stop this agent and its children (hold)" : "Pause this desk (hold)") : (r.DisabledReason ?? "nothing is running"), r.CanStop, $"agent-stop-{index + 1}");
+        Grid.SetColumn(micView, 4);
+        grid.Children.Add(micView);
+        var stop = IconButton(theme, "\uE711", r.CanStop ? (r.DeskName is null ? "Stop this agent and its children (hold)" : "Pause this desk (hold)") : (r.DisabledReason ?? "nothing is running"), r.CanStop, $"agent-stop-{index + 1}", out var stopView);
         if (r.CanStop)
         {
             stop.Click += (_, _) =>
@@ -633,8 +633,8 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
                 store.StopRow(r);
             };
         }
-        Grid.SetColumn(stop, 5);
-        grid.Children.Add(stop);
+        Grid.SetColumn(stopView, 5);
+        grid.Children.Add(stopView);
 
         var frame = new Border
         {
@@ -669,21 +669,39 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         return stack;
     }
 
-    private Button IconButton(ElementTheme theme, string glyph, string tip, bool enabled, string id)
+    /// <summary>
+    /// A row's mic / ✕ button. Disabled rows (149 recheck N3) are really disabled — <c>IsEnabled = false</c>, so UI Automation
+    /// reports <c>enabled=False</c> — and keep their explanation: WinUI drops a disabled control's tooltip, so the tooltip and the
+    /// UIA name ride on a wrapper the pointer still reaches. <paramref name="view"/> is what goes into the grid.
+    /// </summary>
+    private Button IconButton(ElementTheme theme, string glyph, string tip, bool enabled, string id, out FrameworkElement view)
     {
         var b = new Button
         {
             Content = new FontIcon { Glyph = glyph, FontSize = 12 }, Width = 30, Height = 30, Padding = new Thickness(0), CornerRadius = new CornerRadius(15),
             BorderThickness = new Thickness(0), Background = Palette.Tint(Palette.Ink, theme, enabled ? 0.08 : 0.03),
             Foreground = Palette.Brush(enabled ? Palette.Ink2 : Palette.Sand, theme), Opacity = enabled ? 1 : 0.5, IsTabStop = false, UseSystemFocusVisuals = false,
+            IsEnabled = enabled,
         };
         b.Resources["ButtonBackgroundPointerOver"] = Palette.Tint(Palette.Ink, theme, enabled ? 0.14 : 0.03);
         b.Resources["ButtonBackgroundPressed"] = Palette.Tint(Palette.Ink, theme, enabled ? 0.2 : 0.03);
         b.Resources["ButtonForegroundPointerOver"] = Palette.Brush(Palette.Ink, theme);
         b.Resources["ButtonForegroundPressed"] = Palette.Brush(Palette.Ink, theme);
-        ToolTipService.SetToolTip(b, tip);
+        b.Resources["ButtonBackgroundDisabled"] = Palette.Tint(Palette.Ink, theme, 0.03);
+        b.Resources["ButtonForegroundDisabled"] = Palette.Brush(Palette.Sand, theme);
         AutomationProperties.SetAutomationId(b, id);
         AutomationProperties.SetName(b, tip);
+        if (enabled)
+        {
+            ToolTipService.SetToolTip(b, tip);
+            view = b;
+            return b;
+        }
+        var wrap = new Border { Child = b, Background = Palette.Transparent, Width = 30, Height = 30, CornerRadius = new CornerRadius(15) };
+        ToolTipService.SetToolTip(wrap, tip);
+        AutomationProperties.SetAutomationId(wrap, $"{id}-hint");
+        AutomationProperties.SetName(wrap, tip);
+        view = wrap;
         return b;
     }
 

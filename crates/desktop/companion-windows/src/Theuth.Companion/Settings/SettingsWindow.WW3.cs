@@ -73,7 +73,7 @@ internal sealed partial class SettingsWindow
         Toggle(page, "Send the screen", "settings-voice-screen", s.IncludeScreen, on => Edit(island, p => p.IncludeScreen = on));
         Caption(page, "The displays the pointer visits are captured by the engine with your trail drawn on them and sent with your words.");
         Combo(page, "Read what the pointer touched", "settings-voice-accessibility",
-            new[] { ("auto", "Auto — the engine's UI Automation reader"), ("off", "Off") }, s.Accessibility,
+            new[] { ("auto", "Auto — UI Automation reader"), ("off", "Off") }, s.Accessibility,
             v => Edit(island, p => p.Accessibility = v == "off" ? "off" : "auto"));
         Caption(page, "Names the links, buttons and text under the pointer from UI Automation (the engine's reader; `accessibility: off` in the [screen …] line until it runs).");
         Combo(page, "Draw the trail", "settings-voice-annotate",
