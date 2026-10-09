@@ -573,7 +573,8 @@ impl Tool for DiscoverPeersTool {
              other owner roots and configured remote agents. Each row has the canonical address for send_message, \
              a short name, kind, relationship, coarse state and capabilities, plus `activity` for local peers: \
              `state` (idle|running|approval|awaiting|error|cancelled|stored), `last_active` (the last input or stop, \
-             not a heartbeat), `turn_secs`, `jobs`, `ptys`, `children`; remote peers have none. `engine` names the \
+             not a heartbeat), `turn_secs`, `jobs`, `ptys`, `children`, `stalled_secs` (an ACP child whose \
+             harness has sent no session update for the configured time; wait on it with wait_peer); remote peers have none. `engine` names the \
              engine a session lives on; a session owned by another engine of the mesh has state `remote` (its \
              activity is unknown here; send_message still reaches it). `title` is filled only \
              for your own tree (parent, children, siblings, ancestors, descendants); `tags` (short keywords the title \
@@ -624,6 +625,9 @@ impl Tool for DiscoverPeersTool {
                         s.push_str(&format!(" {:?}", a.state).to_lowercase());
                         if let Some(t) = a.turn_secs {
                             s.push_str(&format!(" turn={t}s"));
+                        }
+                        if let Some(t) = a.stalled_secs {
+                            s.push_str(&format!(" stalled={t}s"));
                         }
                         if a.jobs + a.ptys > 0 {
                             s.push_str(&format!(" jobs={} ptys={}", a.jobs, a.ptys));

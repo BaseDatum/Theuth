@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 use tools::{Decision, ExternalApproval, REGISTRY_ACTOR, ToolRegistry};
 use uuid::Uuid;
 
-use crate::activity::{ActivityConfig, ChildActivity};
+use crate::activity::{ActivityConfig, ChildActivity, ChildStalled, ChildUpdate};
 use crate::communication::{PeerConsumed, PeerTurnFinished};
 use crate::continuation::{
     self, InputConsumed, InputDropped, InputTicket, SessionUnknown, TurnEntered, TurnReturned,
@@ -157,10 +157,8 @@ pub struct AcpChild {
     /// §6.4 feed 2): the engine's home; tests point it at a scratch dir.
     omp_home: std::path::PathBuf,
     /// 155 §3: the stall monitor, fed by `prompt`, the update arm and `finish`.
-    #[allow(dead_code)] // 155 C skeleton: W1 wires the hooks (§3.1, §3.3).
     activity: ChildActivity,
     /// 155 §3.3: the one armed `StallCheck` timer.
-    #[allow(dead_code)] // 155 C skeleton: W1 arms it from `activity.deadline`.
     stall: Option<AbortHandle>,
 }
 
@@ -362,7 +360,6 @@ struct Retry(TurnId);
 struct Quiet(TurnId);
 
 /// `tell` (internal, 155 §3.3): the stall deadline passed — `activity.fire`.
-#[allow(dead_code)] // 155 C skeleton: W1 arms and handles it.
 struct StallCheck;
 
 /// `ask` → `Result<acp::SetOptionResult, String>` (75 §8): set the harness's
@@ -502,6 +499,70 @@ impl AcpChild {
     pub fn with_activity(mut self, cfg: ActivityConfig) -> Self {
         self.activity = ChildActivity::new(cfg);
         self
+    }
+
+    /// 155 §3.3: (re)arm the one `StallCheck` timer at `activity.deadline`,
+    /// or disarm it when nothing can fire.
+    fn arm_stall(&mut self, me: &ActorRef<Self>) {
+        if let Some(h) = self.stall.take() {
+            h.abort();
+        }
+        let now = Instant::now();
+        if let Some(at) = self.activity.deadline(now) {
+            self.stall = Some(Self::timer(
+                me,
+                at.saturating_duration_since(now),
+                StallCheck,
+            ));
+        }
+    }
+
+    /// 155 §3.1: feed one `session/update` to the monitor; a tool call born
+    /// terminal starts and finishes in one step. The all-clear goes to the
+    /// supervisor when this update ends an open episode (§3.3).
+    async fn observe_update(&mut self, update: &SessionUpdate) {
+        let was_stalled = self.activity.stalled().is_some();
+        let now = Instant::now();
+        match update {
+            SessionUpdate::AgentMessageChunk(_) => self.activity.update(now, ChildUpdate::Message),
+            SessionUpdate::AgentThoughtChunk(_) => self.activity.update(now, ChildUpdate::Thinking),
+            SessionUpdate::ToolCall(tc) => {
+                self.activity
+                    .update(now, ChildUpdate::ToolStarted(&tc.title));
+                if finished(tc.status).is_some() {
+                    self.activity.update(now, ChildUpdate::ToolFinished);
+                }
+            }
+            SessionUpdate::ToolCallUpdate(u) if u.fields.status.and_then(finished).is_some() => {
+                self.activity.update(now, ChildUpdate::ToolFinished);
+            }
+            _ => self.activity.update(now, ChildUpdate::Other),
+        }
+        if was_stalled {
+            self.stall_cleared().await;
+        }
+    }
+
+    /// 155 §3.1: the turn closed; the monitor and its timer rest, and an
+    /// open episode is cleared at the supervisor.
+    async fn observe_turn_end(&mut self) {
+        let was_stalled = self.activity.stalled().is_some();
+        self.activity.turn_ended(Instant::now());
+        if let Some(h) = self.stall.take() {
+            h.abort();
+        }
+        if was_stalled {
+            self.stall_cleared().await;
+        }
+    }
+
+    /// 155 §4.2: `ChildStalled { stall: None }` — the supervisor drops the episode.
+    async fn stall_cleared(&self) {
+        continuation::notify(ChildStalled {
+            child: self.id,
+            stall: None,
+        })
+        .await;
     }
 
     async fn publish(&self, ev: AgentEvent) {
@@ -900,6 +961,9 @@ impl AcpChild {
         let Some(harness) = &self.harness else { return };
         let fut = harness.prompt(text.to_owned());
         self.worked = true;
+        // 155 §3.1: delivered = the `session/prompt` call (busy retries included).
+        self.activity.delivered(Instant::now());
+        self.arm_stall(me);
         let me = me.clone();
         tokio::spawn(async move {
             let _ = me.tell(PromptDone(fut.await)).await;
@@ -1017,6 +1081,7 @@ impl AcpChild {
         };
         turn.cancel.cancel();
         turn.disarm();
+        self.observe_turn_end().await;
         if let Some(e) = &error {
             self.publish(AgentEvent::Error {
                 session: self.id,
@@ -1594,6 +1659,9 @@ impl Actor for AcpChild {
         _: ActorStopReason,
     ) -> Result<(), Infallible> {
         self.close_harness();
+        if let Some(h) = self.stall.take() {
+            h.abort();
+        }
         // 141 D11: the harness that ran the watch-only children is gone.
         self.observed_lost().await;
         Ok(())
@@ -1884,6 +1952,8 @@ impl Message<Update> for AcpChild {
                     }
                     self.continue_turn().await;
                 }
+                // 155 §3.1: every update of our session feeds the monitor.
+                self.observe_update(&update).await;
                 let Some(turn) = &mut self.turn else { return };
                 if turn.continuation {
                     if let Some(q) = turn.quiet.take() {
@@ -1898,6 +1968,7 @@ impl Message<Update> for AcpChild {
                 for ev in events {
                     self.publish(ev).await;
                 }
+                self.arm_stall(&me);
             }
             // 141 §7.2 item 4: a child's ask is keyed to the child row.
             Update::Permission(p) => {
@@ -2064,6 +2135,26 @@ impl Message<Quiet> for AcpChild {
             let me = ctx.actor_ref().clone();
             self.next(&me).await;
         }
+    }
+}
+
+/// 155 §3.3: the stall deadline passed. `fire` opens the episode once and
+/// the parent is woken through the supervisor; otherwise the timer is
+/// re-armed at whatever `deadline` now says.
+impl Message<StallCheck> for AcpChild {
+    type Reply = ();
+
+    async fn handle(&mut self, _: StallCheck, ctx: &mut Context<Self, Self::Reply>) {
+        if let Some(stall) = self.activity.fire(Instant::now()) {
+            tracing::info!(session = %self.id, harness = %self.name, phase = stall.phase.as_str(), quiet_secs = stall.quiet_secs, "child stalled");
+            continuation::notify(ChildStalled {
+                child: self.id,
+                stall: Some(stall),
+            })
+            .await;
+        }
+        let me = ctx.actor_ref().clone();
+        self.arm_stall(&me);
     }
 }
 
