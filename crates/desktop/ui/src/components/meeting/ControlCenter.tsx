@@ -1,19 +1,23 @@
 // 53 §4.3 / 03 §3: `/meetings/$id` — while recording: state, elapsed, degradations, pause/resume/stop, the
 // live log (`me:`/`them:`; a `final: false` utterance replaces the open row of its track, `final: true`
-// commits it), a typed request box, the brief log with the island's cursor mirrored, the session link, and the
-// meeting's note beside them (59 §7.4; tabs under `md`). After the meeting (04 §7): one status strip at the top
-// — `Transcribing → Diarizing → Aligning → Review → Summarizing → Done`, the current step highlighted, a
+// commits it), a typed request box, the brief column with the island's cursor mirrored, the session link, and the
+// meeting's note beside them (59 §7.4; one scroll under `md`). After the meeting (04 §7): one status strip at the
+// top — `Transcribing → Diarizing → Aligning → Review → Summarizing → Done`, the current step highlighted, a
 // spinner on a running one, the failure and the action that fixes it (*Re-run post pipeline*, *Retry
 // summary*) inline — and the meeting underneath it whatever the step: the transcript once there is one
 // (editable in `Review`, read-only while `Summarizing` so edits never race the summary turn, and once `Done`),
-// the note beside it, the summary block once `Done`, the brief log, and the manifest (`Recording`) while the
-// pipeline runs or after it failed. `lifecycle` is the pure state → strip mapping.
+// the note beside it, `summary.md` once `Done` for a meeting without a note, and the manifest (`Recording`) while
+// the pipeline runs or after it failed. 156: the row under the tabs carries the state's controls (`MeetingActions`,
+// D5), the briefs are a full-height resizable column on the left in every state (`BriefColumn`, D3), and the note
+// is the full `NoteView` (D1). `lifecycle` is the pure state → strip mapping.
 
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ArrowUp, Check, LoaderCircle, Zap } from 'lucide-react'
+import { ArrowUp, Check, ChevronRight, LoaderCircle, PanelLeft, Zap } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Divider } from '@/components/chat/Panes'
+import { BriefColumn, hhmmss, useBriefs } from '@/components/meeting/BriefColumn'
+import { MeetingActions } from '@/components/meeting/MeetingActions'
 import { MeetingHeader, duration, stateLabel } from '@/components/meeting/MeetingList'
 import { MeetingNote } from '@/components/meeting/Note'
 import { Review } from '@/components/meeting/Review'
@@ -21,12 +25,13 @@ import { Summary } from '@/components/meeting/Summary'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { ResizeHandle } from '@/components/ui/resize-handle'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { useMeetingSettings } from '@/lib/meeting-settings'
+import { MAX_BRIEF_WIDTH, MIN_BRIEF_WIDTH, useMeetingSettings } from '@/lib/meeting-settings'
+import { PX_STEP } from '@/lib/resize-drag'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { LiveSession } from '@/routes/c.$session'
-import type { Brief } from '@/rpc/bindings/Brief'
 import type { Degradation } from '@/rpc/bindings/Degradation'
 import type { MeetingState } from '@/rpc/bindings/MeetingState'
 import type { PostStage } from '@/rpc/bindings/PostStage'
@@ -85,12 +90,6 @@ const degradationText = (d: Degradation): string =>
           ? `STT down (${d.SttDown})`
           : `${d.PermissionDenied} denied`
 
-const hhmmss = (ms: number): string => {
-  const s = Math.floor(ms / 1000)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`
-}
-
 export function ControlCenter({ id }: { id: string }) {
   const api = useApi()
   const store = useMeeting()
@@ -108,10 +107,21 @@ export function ControlCenter({ id }: { id: string }) {
   const note = manifest.data?.note ?? null
   const mobile = useIsMobile()
   const transcript = hasTranscript(cycle)
-  // 70 POPOUT-2 item 4: left column = the transcript area over the meeting's own chat, split by a remembered
-  // divider; the note on the right. Narrow (under `md`, a small popped window): the three stack in one scroll.
+  // 70 POPOUT-2 item 4: centre column = the transcript area over the meeting's own chat, split by a remembered
+  // divider; the note on the right. 156 D3: the brief column first, full height, its width dragged and remembered,
+  // collapsible from the row. Narrow (under `md`, a small popped window): everything stacks in one scroll (D6), the
+  // briefs as a block that is open while live and folded once the meeting ended.
   const ratio = useMeetingSettings((s) => s.split)
   const setSplit = useMeetingSettings((s) => s.setSplit)
+  const briefWidth = useMeetingSettings((s) => s.briefWidth)
+  const setBriefWidth = useMeetingSettings((s) => s.setBriefWidth)
+  const briefsOpen = useMeetingSettings((s) => s.briefsOpen)
+  const setBriefsOpen = useMeetingSettings((s) => s.setBriefsOpen)
+  const briefs = useBriefs(id).data ?? []
+  const cursor = isLive ? (current(store)?.id ?? null) : null
+  const dragStart = useRef({ x: 0, width: 0 })
+  const [phoneBriefs, setPhoneBriefs] = useState(isLive)
+  useEffect(() => setPhoneBriefs(isLive), [isLive])
   const block = mobile ? 'h-[70dvh] flex-none' : 'min-h-0'
   // The popped window's native title follows (`on_document_title_changed`); main hides its title bar.
   useEffect(() => {
@@ -121,20 +131,28 @@ export function ControlCenter({ id }: { id: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <MeetingHeader title={title}>
-        {state && !isLive && <span className="text-[12px] text-fg-tertiary">{stateLabel(state)}</span>}
+        {state && !isLive && <span className="shrink-0 text-[12px] text-fg-tertiary">{stateLabel(state)}</span>}
         {isLive && oracleSummary(store.oracle) && (
-          <span className="flex items-center gap-1 text-[12px] text-fg-tertiary" title="decision oracle this meeting (57 §3.4): skipped turns, briefs published, escalated, shadow agreement">
+          <span className="hidden items-center gap-1 text-[12px] text-fg-tertiary md:flex" title="decision oracle this meeting (57 §3.4): skipped turns, briefs published, escalated, shadow agreement">
             <Zap className="size-3" />
             {oracleSummary(store.oracle)}
           </span>
         )}
-        {session && (
-          <Button variant="outline" size="sm" asChild>
-            <Link to="/c/$session" params={{ session }}>
-              Session
-            </Link>
-          </Button>
-        )}
+        <MeetingActions id={id} state={state} cycle={cycle} compact={mobile}>
+          {!mobile && (
+            <Button variant="ghost" size="sm" aria-pressed={briefsOpen} aria-label={`${briefsOpen ? 'Hide' : 'Show'} briefs`} onClick={() => setBriefsOpen(!briefsOpen)}>
+              <PanelLeft className={cn(!briefsOpen && 'text-fg-tertiary')} />
+              Briefs · {briefs.length}
+            </Button>
+          )}
+          {session && (
+            <Button variant="outline" size={mobile ? 'xs' : 'sm'} asChild>
+              <Link to="/c/$session" params={{ session }}>
+                Session
+              </Link>
+            </Button>
+          )}
+        </MeetingActions>
       </MeetingHeader>
       {manifest.isError && <Empty>{errorText(manifest.error)}</Empty>}
       {degraded.length > 0 && (
@@ -151,13 +169,34 @@ export function ControlCenter({ id }: { id: string }) {
       {(isLive || manifest.data) && (
         <div className="flex min-h-0 flex-1 flex-col gap-3 px-6 pb-4">
           <div className={cn('flex min-h-0 flex-1 gap-4', mobile ? 'flex-col overflow-y-auto' : 'flex-row')}>
+            {mobile ? (
+              <div className="flex-none">
+                <button type="button" className="flex w-full items-center gap-1 py-1 text-[13px] font-semibold" aria-expanded={phoneBriefs} onClick={() => setPhoneBriefs((o) => !o)}>
+                  <ChevronRight className={cn('size-4 text-fg-tertiary transition-transform', phoneBriefs && 'rotate-90')} />
+                  Briefs · {briefs.length}
+                </button>
+                {phoneBriefs && <BriefColumn briefs={briefs} cursor={cursor} live={isLive} className="max-h-[50dvh]" />}
+              </div>
+            ) : (
+              briefsOpen && (
+                <div className="flex min-h-0 shrink-0">
+                  <BriefColumn briefs={briefs} cursor={cursor} live={isLive} style={{ width: briefWidth }} />
+                  <ResizeHandle
+                    orientation="vertical"
+                    aria-label="Resize brief column"
+                    className="ml-1 w-1"
+                    value={{ now: briefWidth, min: MIN_BRIEF_WIDTH, max: MAX_BRIEF_WIDTH }}
+                    onStart={(e) => (dragStart.current = { x: e.clientX, width: briefWidth })}
+                    onMove={(x) => setBriefWidth(dragStart.current.width + x - dragStart.current.x)}
+                    onNudge={(d) => setBriefWidth(briefWidth + d * PX_STEP)}
+                  />
+                </div>
+              )
+            )}
             <div className={cn('flex min-w-0 flex-col', mobile ? 'flex-none' : 'min-h-0 flex-1')}>
               <div className={cn('flex min-w-0 flex-col', block)} style={mobile ? undefined : { flex: `${ratio} 1 0%` }}>
                 {isLive ? (
-                  <div className="flex min-h-0 min-w-0 flex-1 gap-4">
-                    <LiveLog id={id} />
-                    <BriefLog id={id} cursor={current(store)?.id ?? null} />
-                  </div>
+                  <LiveLog id={id} />
                 ) : (
                   manifest.data && (
                     <div className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-4">
@@ -185,7 +224,6 @@ export function ControlCenter({ id }: { id: string }) {
                           {manifest.data.context && <Row label="Context">{manifest.data.context}</Row>}
                         </Section>
                       )}
-                      <BriefLog id={id} cursor={null} />
                     </div>
                   )
                 )}
@@ -202,7 +240,7 @@ export function ControlCenter({ id }: { id: string }) {
                 </>
               )}
             </div>
-            {note && <MeetingNote doc={note} meeting={id} className={cn(block, !mobile && 'w-[45%] flex-none')} />}
+            {note && <MeetingNote doc={note} meeting={id} className={cn(block, !mobile && 'w-[42%] flex-none')} />}
           </div>
         </div>
       )}
@@ -305,50 +343,6 @@ function LiveLog({ id }: { id: string }) {
           <ArrowUp />
         </Button>
       </form>
-    </div>
-  )
-}
-
-/** `meeting_briefs` plus `Brief` events, oldest first; `cursor` is where the island says the user is reading. */
-function BriefLog({ id, cursor }: { id: string; cursor: string | null }) {
-  const api = useApi()
-  const briefs = useQuery({ queryKey: queryKeys.meetingBriefs(id), queryFn: () => api.meeting_briefs(id) })
-  const [extra, setExtra] = useState<Brief[]>([])
-  useEffect(
-    () =>
-      on('Brief', (e) => {
-        if (e.meeting === id) setExtra((prev) => [...prev, e.brief])
-      }),
-    [id],
-  )
-  const seen = new Set(briefs.data?.map((b) => b.id))
-  const all = [...(briefs.data ?? []), ...extra.filter((b) => !seen.has(b.id))]
-  return (
-    <div className="flex w-80 shrink-0 flex-col gap-2 overflow-y-auto">
-      {all.length === 0 && <Empty>No briefs yet.</Empty>}
-      {all.map((b) => (
-        <div key={b.id} className={cn('rounded-xl border border-border-subtle p-3 text-[13px]', b.id === cursor && 'border-fg-accent')}>
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="font-semibold">{b.title}</span>
-            <span className="shrink-0 text-[11px] text-fg-tertiary">
-              {b.cached !== null ? (
-                // 05 §7: a cached instance links its row on the briefs tab (`?id=` outlines it).
-                <Link to="/meetings/briefs" search={{ id: b.cached }} className="hover:underline">
-                  {b.source === 'Cache' ? 'cached' : `${b.source} · cached`}
-                </Link>
-              ) : (
-                b.source
-              )}{' '}
-              · {hhmmss(Number(b.at_ms))}
-            </span>
-          </div>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-fg-secondary">
-            {b.bullets.map((x) => (
-              <li key={x}>{x}</li>
-            ))}
-          </ul>
-        </div>
-      ))}
     </div>
   )
 }

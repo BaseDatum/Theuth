@@ -5,7 +5,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { BoardReader } from '@/components/board/BoardReader'
 import { prefillDraft } from '@/components/chat/Composer'
-import { Action, DocumentPage, useNotebookBack } from '@/components/editor/DocumentPage'
+import { Action, DocumentPage, ownedByMeeting, useNotebookBack } from '@/components/editor/DocumentPage'
 import { useDocument } from '@/components/editor/useDocument'
 import { UndoAgentAction } from '@/components/knowledge/Document'
 import { ChatPicker } from '@/components/notes/ChatPicker'
@@ -30,7 +30,7 @@ const route = getRouteApi('/notes_/$id')
 export function NotePage() {
   const { id } = route.useParams()
   const { new: isNew, nb } = route.useSearch()
-  return <Note key={id} id={id} isNew={isNew === true} nb={nb} />
+  return <NoteView key={id} id={id} isNew={isNew === true} nb={nb} />
 }
 
 /**
@@ -62,7 +62,14 @@ function useTitle(provider: EngineProvider | null): [string, (t: string) => void
   ]
 }
 
-function Note({ id, isNew, nb }: { id: string; isNew: boolean; nb: string | undefined }) {
+/**
+ * One note, whole: title, action bar, editor, chat. The route's page, and (156 D1) the meeting page's right pane
+ * (`embedded`: no band, no back link, no window title) and the popped meeting note. With `meeting` the note is that
+ * meeting's (`manifest.note`): Delete is hidden — the meeting's own Delete owns it — "Open in new window" opens the
+ * meeting-note pop-out, and (D2) its chat is the meeting's own session: embedded, "Ask theuth…" prefills the
+ * `LiveSession` composer beside the note and focuses it; popped, the chat panel is pinned to that session.
+ */
+export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: { id: string; isNew?: boolean; nb?: string; embedded?: boolean; meeting?: string }) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -77,9 +84,16 @@ function Note({ id, isNew, nb }: { id: string; isNew: boolean; nb: string | unde
   // 66 §3.1: the note as a reference — the live title, the list row's facts for `meta` when the list has it.
   const summary = useNotes().data?.find((n) => n.id === id)
   const doc: AttachRef = { kind: 'note', id, title: title || 'Untitled', meta: summary ? subtitle({ kind: 'note', doc: summary }) : '' }
+  // 156 D2: the meeting's session, from the cache the meeting page already holds (no fetch of its own while embedded).
+  const manifest = useQuery({ queryKey: queryKeys.meeting(meeting ?? ''), queryFn: () => api.meeting_get(meeting ?? ''), enabled: meeting !== undefined })
+  const meetingSession = meeting !== undefined ? (manifest.data?.session ?? null) : null
   useEffect(() => {
-    document.title = title
-  }, [title])
+    if (!embedded) document.title = title
+  }, [title, embedded])
+  // Popped meeting note: the panel talks in the meeting's session, never a note-chat session of its own.
+  useEffect(() => {
+    if (meetingSession && !embedded && chat.session !== meetingSession) setChat(id, { session: meetingSession })
+  }, [meetingSession, embedded, chat.session, id, setChat])
   // A just-created note (`?new`, from New note): the title is selected for typing over once the document is live
   // (`meta`, and so the title, lands with `doc_open` just before); the flag is dropped from the URL, `?nb` stays.
   const ready = live.status.kind === 'live'
@@ -108,6 +122,12 @@ function Note({ id, isNew, nb }: { id: string; isNew: boolean; nb: string | unde
   })
   // 59 §9.3: the slash item "Ask theuth…" opens the panel with the block named in its composer.
   const ask = (block?: string) => {
+    if (embedded) {
+      // 156 D2: the meeting chat is beside the note — its composer renders the draft store, so the text lands at once.
+      if (meetingSession && block) prefillDraft(meetingSession, `about block ${block}: `)
+      window.dispatchEvent(new Event('theuth:focus-composer'))
+      return
+    }
     if (block) {
       // The draft is read on the composer's mount (panel closed) or on the re-seed the event asks for (panel open).
       prefillDraft(chat.session, `about block ${block}: `, [], true)
@@ -133,6 +153,7 @@ function Note({ id, isNew, nb }: { id: string; isNew: boolean; nb: string | unde
       backTo="/notes"
       backLabel="Back to notes"
       back={wayBack.back}
+      embedded={embedded}
       title={
         <>
           <TitleInput
@@ -154,15 +175,22 @@ function Note({ id, isNew, nb }: { id: string; isNew: boolean; nb: string | unde
           <Action label="Snapshots…" icon={HistoryIcon} onClick={() => setSnapshots(true)} disabled={deleted} />
           <ExportMenu id={id} title={title} disabled={deleted || !live.provider} />
           <UndoAgentAction provider={live.provider} />
-          {!popped && canPopout() && <Action label="Open in new window" icon={AppWindow} onClick={() => void openPopout({ kind: 'note', doc: id })} disabled={deleted} />}
-          <Action label="Delete" icon={Trash2} onClick={() => del.mutate()} disabled={del.isPending || deleted} />
-          <Action label="Chat" icon={MessageSquare} onClick={() => setChat(id, { open: !chat.open })} pressed={chat.open} />
+          {!popped && canPopout() && (
+            <Action
+              label="Open in new window"
+              icon={AppWindow}
+              onClick={() => void openPopout(meeting !== undefined ? { kind: 'meeting-note', meeting } : { kind: 'note', doc: id })}
+              disabled={deleted}
+            />
+          )}
+          {!ownedByMeeting(kind, meeting) && <Action label="Delete" icon={Trash2} onClick={() => del.mutate()} disabled={del.isPending || deleted} />}
+          {!embedded && <Action label="Chat" icon={MessageSquare} onClick={() => setChat(id, { open: !chat.open })} pressed={chat.open} />}
         </>
       }
       live={deleted ? { ...live, error: new Error('This note was deleted.') } : live}
       fallback={fallback}
       onAsk={ask}
-      below={chat.open && !deleted ? <NoteChat note={id} doc={doc} /> : null}
+      below={chat.open && !deleted && !embedded ? <NoteChat note={id} doc={doc} /> : null}
     >
       <ChatPicker open={attaching} onOpenChange={setAttaching} item={doc} />
       <Snapshots id={id} open={snapshots} onOpenChange={setSnapshots} />

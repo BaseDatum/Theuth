@@ -26,3 +26,23 @@ test('the meeting page split is remembered next to the other meeting settings; a
   const c = await import('./meeting-settings')
   expect(c.useMeetingSettings.getState().split).toBe(c.DEFAULT_SPLIT)
 })
+
+test('156 D3: the brief column width and collapse persist beside split; a saved width is clamped to the handle range, the default when absent', async () => {
+  vi.resetModules()
+  mem.set('meeting-settings', JSON.stringify({ split: 0.3, briefWidth: 2000, briefsOpen: false }))
+  const a = await import('./meeting-settings')
+  expect(a.useMeetingSettings.getState().briefWidth).toBe(a.MAX_BRIEF_WIDTH)
+  expect(a.useMeetingSettings.getState().briefsOpen).toBe(false)
+  a.useMeetingSettings.getState().setBriefWidth(120)
+  expect(a.useMeetingSettings.getState().briefWidth).toBe(a.MIN_BRIEF_WIDTH)
+  a.useMeetingSettings.getState().setBriefWidth(300.6)
+  a.useMeetingSettings.getState().setBriefsOpen(true)
+  expect(JSON.parse(mem.get('meeting-settings') ?? '')).toMatchObject({ split: 0.3, briefWidth: 301, briefsOpen: true })
+
+  vi.resetModules()
+  mem.set('meeting-settings', JSON.stringify({ briefWidth: 'wide' }))
+  const b = await import('./meeting-settings')
+  expect(b.useMeetingSettings.getState().briefWidth).toBe(b.DEFAULT_BRIEF_WIDTH)
+  expect(b.useMeetingSettings.getState().briefsOpen).toBe(true)
+  expect(b.clampBriefWidth(NaN)).toBe(b.DEFAULT_BRIEF_WIDTH)
+})
