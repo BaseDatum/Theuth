@@ -9,6 +9,10 @@ public sealed class RpcClient149Tests
 {
     private static string Params(JsonElement request) => request.GetProperty("params").GetRawText();
 
+    private static Task<T> B<T>(Task<T> t) => t.WaitAsync(FakeEngine.Bound);
+
+    private static Task B(Task t) => t.WaitAsync(FakeEngine.Bound);
+
     [Fact]
     public async Task EveryNewCallEncodesItsParamsAndDecodesItsResult()
     {
@@ -37,46 +41,46 @@ public sealed class RpcClient149Tests
         client.Start();
         await rec.WaitOpenCountAsync(1);
 
-        var sessions = await client.ListSessionsAsync();
+        var sessions = await B(client.ListSessionsAsync());
         Assert.Equal(("s1", true, "eng-b", false, "omp"), (sessions[0].Id, sessions[0].Running, sessions[0].Owner, sessions[0].Here, sessions[0].Agent));
-        var agents = await client.ListAgentsAsync("s1");
+        var agents = await B(client.ListAgentsAsync("s1"));
         Assert.Equal(AgentStateKind.Running, agents[0].State.Kind);
-        var status = await client.SessionsStatusAsync();
+        var status = await B(client.SessionsStatusAsync());
         Assert.Equal(("eng-a", 2u, 1u), (status.Engine, status.Here, status.Elsewhere));
-        await client.AgentPauseAsync("ops", true);
-        await client.CancelAsync("s1", CancelScope.Tree);
-        await client.CancelAsync("s1", null);
-        Assert.Equal("s-9", await client.SendInputAsync(null, "look here", new[] { "C:\\a.png" }, Delivery.NextTurn, "in-1"));
-        Assert.Equal("s-9", await client.SendInputAsync("s1", "plain", Array.Empty<string>()));
-        Assert.Equal("s-9", await client.SteerAsync("s1", "now", new[] { "C:\\b.png" }));
-        var shot = await client.ScreenContextAsync(new ScreenContextReq { Samples = new ValueList<PointerSample> { new(0, 10, 20), new(16, 11, 21) }, Color = "#ffb000", SinceMs = 2500, Accessibility = false });
+        await B(client.AgentPauseAsync("ops", true));
+        await B(client.CancelAsync("s1", CancelScope.Tree));
+        await B(client.CancelAsync("s1", null));
+        Assert.Equal("s-9", await B(client.SendInputAsync(null, "look here", new[] { "C:\\a.png" }, Delivery.NextTurn, "in-1")));
+        Assert.Equal("s-9", await B(client.SendInputAsync("s1", "plain", Array.Empty<string>())));
+        Assert.Equal("s-9", await B(client.SteerAsync("s1", "now", new[] { "C:\\b.png" })));
+        var shot = await B(client.ScreenContextAsync(new ScreenContextReq { Samples = new ValueList<PointerSample> { new(0, 10, 20), new(16, 11, 21) }, Color = "#ffb000", SinceMs = 2500, Accessibility = false }));
         Assert.Single(shot.Lines);
         Assert.EndsWith("shot.png", shot.Files[0]);
-        Assert.EndsWith("a.png", await client.PutAttachmentAsync("AAAA", "png"));
-        var meeting = await client.MeetingStatusAsync();
+        Assert.EndsWith("a.png", await B(client.PutAttachmentAsync("AAAA", "png")));
+        var meeting = await B(client.MeetingStatusAsync());
         Assert.True(meeting.IsLive);
         Assert.Equal(new Degradation("SttDown", "System"), meeting.Degraded[0]);
-        Assert.Equal("me", (await client.MeetingLiveAsync("m1"))[0].Who);
-        Assert.Equal("b1", (await client.MeetingBriefsAsync("m1"))[0].Id);
-        Assert.Equal("L", (await client.MeetingTopicsAsync())[0].Label);
-        await client.MeetingCursorAsync("b1");
-        await client.MeetingCursorAsync(null);
-        await client.MeetingPauseAsync();
-        await client.MeetingResumeAsync();
-        await client.MeetingStopAsync();
-        await client.MeetingTapAsync("t1");
-        await client.MeetingDismissAsync("t1");
-        await client.MeetingDeeperAsync("b1");
-        await client.MeetingRequestAsync("what is 149?");
-        await client.MeetingPttAsync(true);
-        Assert.False((await client.MeetingOracleModeAsync()).Enabled);
-        Assert.Equal("Denied", (await client.MeetingPermissionsAsync()).AudioCapture);
-        Assert.Equal("cb1", (await client.BriefGetAsync("cb1")).Id);
-        Assert.Empty(await client.BriefSearchAsync("pr", 5));
-        Assert.Empty(await client.BriefSearchAsync("pr"));
-        Assert.Equal("sp-1", await client.SpeakAsync("s1", "done"));
-        await client.StopSpeakingAsync("sp-1");
-        await client.StopSpeakingAsync();
+        Assert.Equal("me", (await B(client.MeetingLiveAsync("m1")))[0].Who);
+        Assert.Equal("b1", (await B(client.MeetingBriefsAsync("m1")))[0].Id);
+        Assert.Equal("L", (await B(client.MeetingTopicsAsync()))[0].Label);
+        await B(client.MeetingCursorAsync("b1"));
+        await B(client.MeetingCursorAsync(null));
+        await B(client.MeetingPauseAsync());
+        await B(client.MeetingResumeAsync());
+        await B(client.MeetingStopAsync());
+        await B(client.MeetingTapAsync("t1"));
+        await B(client.MeetingDismissAsync("t1"));
+        await B(client.MeetingDeeperAsync("b1"));
+        await B(client.MeetingRequestAsync("what is 149?"));
+        await B(client.MeetingPttAsync(true));
+        Assert.False((await B(client.MeetingOracleModeAsync())).Enabled);
+        Assert.Equal("Denied", (await B(client.MeetingPermissionsAsync())).AudioCapture);
+        Assert.Equal("cb1", (await B(client.BriefGetAsync("cb1"))).Id);
+        Assert.Empty(await B(client.BriefSearchAsync("pr", 5)));
+        Assert.Empty(await B(client.BriefSearchAsync("pr")));
+        Assert.Equal("sp-1", await B(client.SpeakAsync("s1", "done")));
+        await B(client.StopSpeakingAsync("sp-1"));
+        await B(client.StopSpeakingAsync());
 
         string P(string method, int nth = 0) => Params(engine.RequestsFor(method).ElementAt(nth));
         Assert.Equal("[]", P("list_sessions"));
@@ -125,12 +129,11 @@ public sealed class RpcClient149Tests
         await using var client = new RpcClient(new EngineLocation(engine.Url, "t"), rec.OnState, rec.OnEvent);
         client.Start();
         await rec.WaitOpenCountAsync(1);
-        var t = TimeSpan.FromSeconds(20);
-        Assert.Equal(-32601, (await Assert.ThrowsAsync<RpcException>(() => client.SessionsStatusAsync().WaitAsync(t))).Code);
-        Assert.Equal(-32601, (await Assert.ThrowsAsync<RpcException>(() => client.MeetingStatusAsync().WaitAsync(t))).Code);
+        Assert.Equal(-32601, (await Assert.ThrowsAsync<RpcException>(() => B(client.SessionsStatusAsync()))).Code);
+        Assert.Equal(-32601, (await Assert.ThrowsAsync<RpcException>(() => B(client.MeetingStatusAsync()))).Code);
         // A null result where a value is expected is a JsonException, not a crash of the receive loop: the next call still works.
-        await Assert.ThrowsAsync<JsonException>(() => client.ListSessionsAsync().WaitAsync(t));
-        Assert.Empty(await client.AttentionListAsync().WaitAsync(t));
+        await Assert.ThrowsAsync<JsonException>(() => B(client.ListSessionsAsync()));
+        Assert.Empty(await B(client.AttentionListAsync()));
     }
 
     [Fact]
