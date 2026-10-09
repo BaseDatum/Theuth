@@ -32,6 +32,8 @@ Worktree `~/Develop/theuth-153-a4`, branch `feat/153-a4`, cut from the PIN `cbaf
 | §14.1 message named `SuggestionAnswer` | Named `AnswerSuggestion` (the enum `history::SuggestionAnswer` already has the name). |
 | §14.1 `DictationOpts.commands` | Applied via A1's `Shaper::with_commands` + `with_surface` (post-merge). Per-utterance `EndParser` through `shape_with`. |
 | A1's `with_mentions(agent names)` | Not wired: the voice crate has no agent registry and the frozen `DictationOpts` carries no mention list; the dictionary's `mention`-tagged entries still apply. Integrator/wave B: add a `mentions` field or have the RPC layer resolve `agents_list` if wanted. |
+| A2's `Dictionary::load` (≈4 s debug index build) | Off the mailbox: `open_stores` spawns the load and the actor receives `DictionaryLoaded`; until then dictations shape with an empty snapshot and `dictionary_put/delete/suggestion_answer` answer `"dictionary loading"` (`DictionaryReply::Loading`). `voice_status.dictionary` not added (`VoiceStatus` frozen) — `packaged_version()`/`counts()` are one ask away when B/integrator adds the field. |
+| integrate/153 `3e2864ed` (153-Z) re-wired `dictation.rs` in parallel | Merge conflict (14 blocks) resolved to A4's version — the two were the same adaptation (shape_with + per-utterance parser, A3 `Suggestion`/`answer(&mut dict)`, `with_budget`, `recording_allowed`); the integrator's `recording()` helper and duplicate `parser` field dropped. |
 
 ## Tests (`crates/voice/src/dictation.rs`, fake engine + injected mic opener; no model, no device)
 `none_opts_is_today`, `send_it_settle_then_silence_stops`, `scratch_that_empties_previous_utterance`, `device_lost_rearms_within_5s`,

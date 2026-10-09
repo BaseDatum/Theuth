@@ -6528,6 +6528,7 @@ impl ApiServer for Server {
     async fn dictionary_list(&self, scope: Option<voice::Scope>) -> RpcResult<Vec<voice::Entry>> {
         match send(&dictation()?, voice::DictionaryOp::List(scope)).await? {
             voice::DictionaryReply::Entries(e) => Ok(e),
+            voice::DictionaryReply::Loading => Err(failed("dictionary loading")),
             other => Err(failed(format!("unexpected dictionary reply {other:?}"))),
         }
     }
@@ -6535,6 +6536,7 @@ impl ApiServer for Server {
     async fn dictionary_put(&self, entry: voice::Entry) -> RpcResult<voice::Entry> {
         match send(&dictation()?, voice::DictionaryOp::Put(entry)).await? {
             voice::DictionaryReply::Entry(e) => Ok(e),
+            voice::DictionaryReply::Loading => Err(failed("dictionary loading")),
             other => Err(failed(format!("unexpected dictionary reply {other:?}"))),
         }
     }
@@ -6542,6 +6544,7 @@ impl ApiServer for Server {
     async fn dictionary_delete(&self, id: voice::EntryId) -> RpcResult<bool> {
         match send(&dictation()?, voice::DictionaryOp::Delete(id)).await? {
             voice::DictionaryReply::Deleted(d) => Ok(d),
+            voice::DictionaryReply::Loading => Err(failed("dictionary loading")),
             other => Err(failed(format!("unexpected dictionary reply {other:?}"))),
         }
     }

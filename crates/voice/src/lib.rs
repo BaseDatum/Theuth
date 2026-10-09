@@ -40,7 +40,7 @@ pub mod vad;
 pub use dictation::{
     AnswerSuggestion, AudioSource, Correction as DictationCorrection, Dictation, DictationState,
     DictationStatus, DictionaryOp, DictionaryReply, HistoryStore, InputDevicePrefs, Lease, Prewarm,
-    PushAudio, Return, SETTLE, SILENCE, Setting, StartDictation, StopDictation,
+    PushAudio, Return, Setting, StartDictation, StopDictation,
 };
 pub use dictionary::{Dictionary, Entry, EntryId, Kind, Match, Negative, Scope, Source, Variant};
 pub use history::{Correction, HistoryRow, Store, SuggestionAnswer, SuggestionId};
