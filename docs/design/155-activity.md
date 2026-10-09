@@ -81,12 +81,125 @@ The waves of the last two weeks ran 5–8 omp children over ACP per orchestrator
 - macOS companion: `NotificationPolicy { prefs, pausedUntil, … }` with `classify` by kind (`crates/desktop/companion/Sources/CompanionCore/Policy.swift:70-110`), `pause(until:)` (`:199`); `Notifier` ticks at 1 Hz and posts banners (`crates/desktop/companion/Sources/Companion/Notifications/Notifier.swift:13-81`, `:147-154`); the Codable `AttentionItem` lives in `crates/desktop/companion/Sources/TheuthKit/Models.swift:45-106` and decodes unknown kinds as `.other` (`:10-13`).
 - Harness entries: `Entry` (`crates/acp/src/agents.rs:20-54`), built from the public registry by `entry_from_distribution` / `install` (`crates/acp/src/registry.rs:147-173`, `:179-210`, `:270`); Sky's `agents.yaml` entries are hand-written and have no capability data.
 
-
 ## 3 Activity monitor for ACP children
+
+### 3.1 What it records (per child, in memory, in the child actor)
+
+`ChildActivity` (new `crates/agent/src/activity.rs`, §9.1) is owned by `AcpChild` as `activity: ChildActivity` and fed from four places in `crates/agent/src/acp_child.rs`:
+
+| field | set by | where |
+|---|---|---|
+| `delivered: Option<Instant>` | `delivered(now)` when `prompt` hands the text to `harness.prompt` | `prompt` (`:879-887`), including busy retries (`:2015-2031`) |
+| `first_update`, `last_update: Option<Instant>` | `update(now, what)` on every `Update::Session` of our session that `translate` sees | the catch-all arm (`:1854-1881`), before `translate` |
+| `tools_in_progress: u32` | `+1` on `ToolCall` whose status is not terminal, `-1` on `ToolCallUpdate` with `Completed`/`Failed` (never below 0; a `ToolCall` already `Completed` counts 0) | `translate` (`:1435-1482`), `finished` (`:1514-1520`) |
+| `last: String` | tool title on `ToolCall`, `"message"` on `AgentMessageChunk`, `"thinking"` on `AgentThoughtChunk`; other updates leave it | same |
+| turn end | `turn_ended(now)` | `finish` (`:994`), `closed`, `CancelTurn` |
+
+A continuation turn (`:947-969`) is a turn for the monitor: `delivered` stays `None` (nothing was prompted), so only the `silent` rule applies to it.
+
+### 3.2 Phases (D3)
+
+- `no_first_update`: `delivered` is set, `first_update` is `None`, and `now - delivered ≥ first_update_secs`.
+- `silent`: a turn is open, `last_update` is set, `tools_in_progress == 0`, and `now - last_update ≥ silent_secs`.
+- A tool call in progress is never a stall: with `tools_in_progress > 0` the `silent` deadline is `None`. Rationale: a 20-minute `cargo build` inside the child is one `ToolCall` with no updates until it ends.
+- A stall **episode** starts at the first fire and ends at the next update, turn end or respawn; one wake per episode (`fire` returns `Some` once, then `None` until re-armed by `update`/`delivered`). The next episode after a re-arm fires again (that is the 61 §1.3 rule without the backoff; stalls are rarer than quiet screens).
+- `first_update_secs = 0` or `silent_secs = 0` disables that rule.
+
+### 3.3 Where the actor checks
+
+The actor keeps one `AbortHandle` (`stall: Option<AbortHandle>` on `AcpChild`) armed with `Self::timer(me, deadline - now, StallCheck)` (`timer` at `crates/agent/src/acp_child.rs:890-900`) whenever `activity.deadline(now)` changes; `StallCheck` calls `activity.fire(now)` and, on `Some(stall)`, tells the supervisor `ChildStalled { child, stall: Some(stall) }`; the next `update` tells `ChildStalled { child, stall: None }` so the supervisor's `stalled_secs` clears. No polling.
+
+### 3.4 Pure and testable (C-d)
+
+Every method takes `now: Instant`; nothing inside calls `Instant::now()`. The unit tests (§11) drive it with `base + Duration` values. `deadline` is a pure function of the fields; `fire(now)` is the only mutator that starts an episode.
+
+### 3.5 Config
+
+`agent.activity.*`, a nested `#[serde(default)]` struct on `AgentConfig` exactly like `broadcast`/`compaction` (`crates/agent/src/lib.rs:3275-3282`, `:3328-3340`):
+
+```yaml
+agent:
+  activity:
+    first_update_secs: 60   # D3; 0 = never
+    silent_secs: 180        # D3; 0 = never
+```
+
+Read once at `supervisor::start` through `agent_config` (`crates/agent/src/supervisor.rs:9083-9089`) and handed to each child at spawn with `AcpChild::with_activity(cfg)`. No Settings writer, no live knob (the 137 `SetEndlessSettings` writer at `:7395-7417` is the pattern if one is wanted later).
+
+### 3.6 Gating by the capability entry (D7)
+
+The monitor runs for every ACP child. The *interpretation* is gated (§8.2): `no_first_update`/`silent` wake the parent regardless (they are time facts), but the §5 words `idle`/`done` are never produced for a harness without `turn_end`, and nothing from the monitor ever becomes a needs-you alert (§7) — a harness without `permission` has no path from "quiet" to Sky.
 
 ## 4 The stalled wake
 
+### 4.1 Shape (D2)
+
+A new input to the **parent session only**, rendered by `child_stalled(...)` in `crates/agent/src/supervisor.rs` next to `job_idle` (`:3092-3111`) and delivered with the same `inject` (`:1481-1545`) under `from = "session:<child>"` — the `from` `<child_lost>` uses (`crates/agent/src/supervisor/acp_resume.rs:346`):
+
+```
+<child_stalled child="w2" session="0199…" phase="silent" quiet_secs="184" last="shell: cargo check" at="14:07">
+w2 has sent no session update for 184 s and no tool call is in progress. Ask it what it is doing with send_message, wait on it with wait_peer, or check its session with session_read; a child mid-build usually answers.
+</child_stalled>
+```
+
+`phase` is `no_first_update` | `silent`; `last` is `ChildActivity.last` (empty attribute omitted); `quiet_secs` is seconds since `delivered` (`no_first_update`) or since `last_update` (`silent`); `at` is `clock::hhmm` like every wrapper (74 §4). One sentence of guidance per phase: `no_first_update` says "its prompt was delivered N s ago and nothing came back; the harness may be loading or stuck at startup".
+
+### 4.2 Flow
+
+`AcpChild` → `ChildStalled { child, stall: Some(Stall { phase, quiet_secs, last }) }` → `Agents` handler: look up the child's row (`self.sessions[child].parent`), record `activity.stalls.insert(child, (phase, now))`, render, `inject(parent, …)`. A root ACP session (no parent) records the stall and injects nothing. No attention item, no new `AgentEvent` (C-m): `inject` already publishes `MessageDelivered { session: parent, from: "session:<child>", text }` (`crates/agent/src/supervisor.rs:1538-1544`) which UIs show as the parent's inbox line. `ChildStalled { stall: None }` removes the entry.
+
+### 4.3 Across an engine restart (109/146)
+
+Mid-prompt children are respawned at boot (`crates/agent/src/supervisor/acp_resume.rs:89-122`); the new actor's `ChildActivity` starts empty. The respawn's `session/load` + restored note or hand-off is queued (`crates/agent/src/acp_child.rs:1159-1168`) and prompted through the same `prompt`, which calls `delivered(now)`: the timers restart from the respawn. An episode in flight before the restart is forgotten (it lived in memory); if the child is still silent after the respawn, a new episode fires once more — accepted, the parent is told the truth twice at most. A child that is not respawned gets the existing `<child_lost>` (`acp_resume.rs:342-347`), never a `<child_stalled>`.
+
 ## 5 Wait on state
+
+### 5.1 The words (D4), defined against the existing state model (C-c)
+
+`peer_state_of(&PeerFacts) -> PeerStateWord` in `crates/agent/src/activity.rs` is pure; the supervisor builds `PeerFacts` for a child from what it already holds:
+
+| word | true when | facts from |
+|---|---|---|
+| `blocked` | an unanswered permission ask keyed to the child — `approvals` contains it, which is what `state_of` renders as `Approval` (`crates/agent/src/supervisor.rs:6019-6020`) — or an unanswered `ask_user` of the child, or `observed.state == RequiresAction` (`:6057`) | `approval`, `ask`, `requires_action` |
+| `stalled` | the supervisor's `activity.stalls` has the child (§4.2) | `stalled_secs` |
+| `idle` | the child is live, not `running` (`:6033`), has no turn in flight (`IsRunning` false, `crates/agent/src/acp_child.rs:2050-2053`) and can be prompted again (connection up, `dead` unset) | `live`, `running`, `connected` |
+| `done` | `idle` **and** its result was delivered — no `waits(child_result)` row targets it any more (`crates/agent/src/supervisor/child_waits.rs:49-57` clears it in `hand_off`) **and** nothing is queued for it (`ledger.activity(child).is_none()`, the predicate `idle_check` uses, `crates/agent/src/supervisor.rs:2963-2966`) | `result_delivered`, `queued` |
+| `running` | none of the above | — |
+| `not_running` | the child's session row is gone, or it has no live actor and is not a respawn candidate (closed, deleted, `<child_lost>`), or its harness connection ended for good (`dead` set) | `live`, `dead` |
+
+Precedence: `blocked` > `stalled` > `done` > `idle` > `running`; `not_running` is terminal and beats everything. §8.2 gating: without `turn_end`, `idle` and `done` are never returned (the word stays `running`).
+
+### 5.2 The call
+
+`wait_peer(to, until, timeout_secs=None)` — a runtime function (not `DIRECT`), registered next to `discover_peers`/`peer_message` (`crates/agent/src/supervisor.rs:9520-9521`), `RISK = ReadOnly`, `RETURNS = "dict"`, gated like `send_message` on the communication policy (`crates/agent/src/peers.rs:7-10`).
+
+- `to`: one of the caller's own children by name or `session:<uuid>`; anything else → error `wait_peer: <to> is not one of your children`. Resolution happens once; the result is a `SessionId` — the **pinned identity** (C-b).
+- `until`: a non-empty subset of `blocked | idle | done | stalled`; an empty list or another word → error.
+- `timeout_secs`: `None` = no deadline; `Some(0)` → error.
+- Returns at once: `{ child: "<name>", session: "<id>", state: "<word>", holds: bool, since_secs: N }`. `holds = true` when `state ∈ until` already — then nothing is registered and no wake follows (the caller has its answer).
+- Otherwise a `WaitRow { session: caller, tool_call_id: cx.call_id, kind: PeerState, target: child, deadline: now + timeout, payload: {until, name, since_ms} }` is written with `wait_put` (`crates/agent/src/store/durability.rs:1232-1249`) and an in-memory entry goes into `Agents.activity.waits`.
+- At most one `peer_state` wait per (caller, child): a second registration replaces the first (same `tool_call_id` semantics as `wait_put`'s upsert; the old entry is dropped silently).
+
+### 5.3 The wake
+
+On every state-relevant transition the supervisor already handles — `ApprovalRequested`/`ApprovalResolved` (`crates/agent/src/supervisor.rs:2563-2596`), `TurnStarted`/`TurnFinished` (`:2481-2482`, `:2309-2310`), `hand_off` (`:2080`), `ChildStalled` (§4.2), a child actor stopping, `<child_lost>` — `Agents::check_peer_waits(child)` recomputes `peer_state_of` for the waits targeting that child and settles those whose word is in `until`, plus every wait on a `not_running` child. Settling = `wait_clear`, remove the entry, `inject(caller, "session:<child>", body, wrapped, None)` with:
+
+```
+<peer_state child="w2" session="0199…" state="done" since_secs="3" at="14:09">
+w2 is done: its result was delivered to you and nothing is queued for it.
+</peer_state>
+```
+
+`since_secs` is seconds since that word became true (0 when unknown). Terminal outcomes use the same tag: `state="not_running"` ("w2 is gone: …why…") and `state="timeout"` ("w2 is still running after N s"). A timeout is one `tokio` sleep per wait armed at registration and at boot re-arm, checked against the row (a settled wait's timer finds nothing and does nothing).
+
+### 5.4 Durable (C-a)
+
+`WaitKind::PeerState` (`"peer_state"`) joins `crates/tools/src/journal.rs:214-249`. Like `child_result` the row outlives its turn: `cut_journal_in` must spare it (`crates/agent/src/store/durability.rs:187-191` — the `kind != 'child_result'` clause becomes `kind NOT IN ('child_result', 'peer_state')`). Boot, after `rearm_reminders_for(None)` and before `resume_scan` (`crates/agent/src/supervisor.rs:2602-2606`): `Store::peer_state_waits(Scope::Here)` (same shape as `child_waits`, `:1392`) → for each row: child row gone or not live and not a respawn candidate → settle `not_running`; deadline past → settle `timeout`; else rebuild the in-memory entry, re-arm the timer and run `check_peer_waits(child)` once (the condition may already hold). A caller that lives on another engine (139) gets its wake through `inject`'s `harness_enqueue` path (`:1489-1518`) like any input.
+
+### 5.5 `discover_peers` (D4, last bullet)
+
+`PeerActivity` gains `stalled_secs: Option<u64>` (`#[serde(default)]`), filled from `activity.stalls` in `peer_activity` (`crates/agent/src/supervisor.rs:5422-5445`) and printed as ` stalled=184s` in the text rendering (`crates/agent/src/peers.rs:622-636`). The description string (`:569-583`) gains the word.
+
 
 ## 6 Terminal jobs: busy or quiet
 
