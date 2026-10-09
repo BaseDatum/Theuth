@@ -46,7 +46,7 @@ internal abstract record IslandAction
 }
 
 /// <summary>The voice mode / answer card the island shows while a point-and-say gesture is live (149 §3.7, D14).</summary>
-internal sealed record VoiceView(string Phase, string Live, string Status, string? Answer, string? Hint, bool Locked, bool Working);
+internal sealed record VoiceView(string Phase, string Live, string Status, string? Answer, string? Hint, bool Locked, bool Working, string? OpenUrl = null);
 
 /// <summary>
 /// The native island (149 §3.6, §7.4 #1, D9–D11): a <see cref="ToolWindow"/> with the shell's Windows island styles
@@ -446,6 +446,12 @@ internal sealed partial class IslandWindow : ToolWindow
             e.Handled = true;
             return;
         }
+        if (voice is { OpenUrl: { } url } && key.Modifiers.HasFlag(ChordModifiers.Control) && key.KeyCode == 'O')
+        {
+            _ = Links.Open(new Uri(url)); // Ctrl+O: the desk's session
+            e.Handled = true;
+            return;
+        }
         if (inBox)
         {
             if (key.KeyCode == VirtualKeys.Return && request is not null)
@@ -767,7 +773,17 @@ internal sealed partial class IslandWindow : ToolWindow
             a.MaxLines = 6;
             AutomationProperties.SetAutomationId(a, "island-voice-answer");
             inner.Children.Add(a);
-            inner.Children.Add(Text(v.Working ? "working… · Esc hides" : "Open Ctrl+O · Esc hides", 11, Palette.Sand));
+            var foot = Row(6);
+            foot.Children.Add(Text(v.Working ? "working…" : "done", 11, Palette.Sand));
+            if (v.OpenUrl is { } url)
+            {
+                var open = Btn("Open Ctrl+O", "Open the desk's session in theuth", () => _ = Links.Open(new Uri(url)), "island-voice-open");
+                open.Padding = new Thickness(6, 0, 6, 0);
+                open.MinHeight = 20;
+                foot.Children.Add(open);
+            }
+            foot.Children.Add(Text("Esc hides", 11, Palette.Sand));
+            inner.Children.Add(foot);
             card.Child = inner;
             pane.Children.Add(card);
         }
