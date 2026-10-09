@@ -97,6 +97,7 @@ internal sealed class PointController : IDisposable
     private ApprovalListen? listen;
     private string? listenDictation;
     private bool probing;                             // --probe-command / --probe-card / --probe-states: never acting
+    private bool optsRefusedLogged;
 
     public PointController(Store store, DispatcherQueue dispatcher, IslandController island, Hotkeys hotkeys, Func<PointSettings> settings, Voice.Speaker speaker)
     {
@@ -537,7 +538,15 @@ internal sealed class PointController : IDisposable
         string id;
         try
         {
-            id = await store.Dictation.StartAsync();
+            // 153 BC hand-off (Windows twin): the companion's dictation_start opts — [16000, {surface: companion, destination:
+            // agent_prompt, commands: [], press_ago_ms}]; an engine before 153 refuses the trailing param → the one-argument call.
+            var opts = new DictationOpts { Surface = Surface.Companion, Destination = Destination.AgentPrompt, PressAgoMs = (uint)Math.Min(uint.MaxValue, Now > gestureStartMs ? Now - gestureStartMs : 0) };
+            try { id = await store.Client.DictationStartAsync(AskAudio.SampleRate, opts); }
+            catch (RpcException pe) when (pe.Code is -32602 or -32601)
+            {
+                if (!optsRefusedLogged) { optsRefusedLogged = true; Log.Write($"point: dictation_start with opts refused ({pe.Code}) — an engine before 153: the one-argument call"); }
+                id = await store.Dictation.StartAsync();
+            }
         }
         catch (Exception e)
         {
@@ -1100,7 +1109,8 @@ internal sealed class PointController : IDisposable
         switch (w.Type)
         {
             case "DictationText":
-                dictation.Handle(new AskDictation.Event.Text(id, w.Utterance ?? 0, w.Text ?? "", w.IsFinal ?? false));
+                // 153 §4.4 / BC row: the companion shows `shaped ?? text` (an end command alone shapes to "").
+                dictation.Handle(new AskDictation.Event.Text(id, w.Utterance ?? 0, w.DisplayText ?? "", w.IsFinal ?? false));
                 live = Join(prefixWords, dictation.LiveText);
                 RenderVoice();
                 break;
@@ -1143,7 +1153,7 @@ internal sealed class PointController : IDisposable
         string id;
         try
         {
-            try { id = await store.Client.DictationStartAsync(AskAudio.SampleRate, new DictationOpts { Surface = Surface.Companion }); }
+            try { id = await store.Client.DictationStartAsync(AskAudio.SampleRate, new DictationOpts { Surface = Surface.Companion, Destination = Destination.AgentPrompt }); }
             catch (RpcException e) when (e.Code is -32602 or -32601)
             {
                 Log.Write($"point: dictation_start with opts refused ({e.Code}) — an engine before 153: the one-argument call");

@@ -41,7 +41,7 @@ Tests: `PointMachineTests` (+3: `SwitchModeKeepsRecording`, `AutomaticTapToggles
   - **§12.4 every state** (`--probe-states`, fixtures through the real `AnswerCardState`, island view and window): listening, finishing, thinking (clock 0 s → 5 s), thinking expanded, answer (island), answer collapsed in the window, answer expanded, speaking (island + expanded), failed (island + expanded), stopped.
   - **Proof 20** (`--probe-command`, recorded desk events through `Store.HandleEvent` → the real reducer; never acting): listening ("Ctrl+Alt+Shift+C held" — the effective AltGr chord), heard ("heard → working"), working (rows checked/executed/checking/executing with purposes), approval in the card ("Run `rmdir /s /q …`? destructive · policy: ask · Yes Enter · No Esc · or say “yes” / “no”"), done ("✓ Reminder … removed", "O open session · Esc dismiss · hold … follow up"), done expanded.
   - Restored: installed companion running, HKCU Run → `%LOCALAPPDATA%\theuth\companion\Theuth.Companion.exe --background`.
-- Evidence: `~/.theuth/briefs/2026-10-09/153-windows/evidence/W153C/` — `live-*.log` (log extracts), `live-keys-tab-uia.txt`, `png/153-*.png` (XAML renders of both surfaces per state; `153-state-*`, `153-command-*`), `png/w153c-keys-altgr.png` (GDI desktop shot with Settings › Keys open on US-International).
+- Evidence: `~/.theuth/briefs/2026-10-09/153-windows/evidence/W153C/` — `live-*.log` (log extracts), `live-keys-tab-uia.txt`, `png/153-*.png` (XAML renders of both surfaces per state; `153-state-*`, `153-command-*`; the island renders are opaque, the card-window renders of round 1 carry the window's transparent tree — the Mica backdrop is not part of the XAML — so `png/on-dark/*-card.png` are the same renders composited over the dark theme's solid base #202020, which is what the opaque capture in `adfa20b8` paints), `png/w153c-keys-altgr.png` (GDI desktop shot with Settings › Keys open on US-International).
 
 ## Deviations (with reasons)
 1. **Markdown**: `MarkdownTextBlock` (Community Toolkit) is not referenced by the 134 build (adding it pulls more of the Windows App SDK than the trimmed set) → §12.2's fallback: a pure parser (`AnswerMarkdown`, tested) rendered into TextBlocks (selectable, monospace code blocks that scroll sideways).
@@ -52,13 +52,28 @@ Tests: `PointMachineTests` (+3: `SwitchModeKeepsRecording`, `AutomaticTapToggles
 6. **H3-C1 alignments**: the cap fires on the 12th start (design: "at 12"); purpose fallback `reason`, then the tool name; speaking is a flag, not a `CardPhase`; doneMs also waits for no open approval; Command's screen is its own setting (default off) — a checkbox under the Command row in Settings › Keys (there is no Settings › Command page on Windows); the pointer trail shows only when the screen goes with the request.
 7. **Family refusal** covers all three family rows mutually (the design names voice key ↔ new rows; Dictate ↔ Command sharing a chord would break the switch too).
 8. **AltGr** applies to every exact Ctrl+Alt+typing-key anywhere row (the voice key's Ctrl+Alt+Space is never affected: AltGr+Space types a space); the notice uses the design's words "Ctrl+Shift+Alt+D" while the registration line prints Windows' order "Ctrl+Alt+Shift+D". The hidden host window rarely gets `WM_INPUTLANGCHANGE`, so a 2 s look at the foreground thread's layout backs it.
-9. **Gesture dictation keeps the one-argument `dictation_start`** (no `DictationOpts`) until H-ENGINE: build-B's installed engine predates 153's trailing param. The approval listen tries `{surface: companion}` and falls back on `-32602/-32601`.
+9. **Gesture dictation sends the Mac's opts** `[16000, {surface: companion, destination: agent_prompt, commands: [], press_ago_ms}]` (BC hand-off) and falls back to the one-argument call on `-32602/-32601` (build-B's installed engine predated 153 until H-ENGINE); the approval listen sends `{surface: companion, destination: agent_prompt}` with the same fallback.
 10. **Spoken approval safety** (writer's call): decided only when every word belongs to one polarity (politeness fillers aside); "don't do it", "no, go ahead" → null.
 11. **Typed follow-ups** use the card's marker family with a 1 s floor: `[voice note, 1 s] …` for a voice-key card, `[command, 1 s] …` for command (H3-C1).
 12. **Modifier-only chords are bound on Windows** (recorder + hook + chord protection); the Mac deferred binding (H3-C1). Parity difference, opt-in, default off.
 13. **A failed send keeps the failed card until ⎋** (D13) instead of 149's 2 s hint.
 14. **Evidence form**: build-B's desktop captures came back black (the RDP session was not being composed), so states are proven by in-app XAML renders (RenderTargetBitmap of the island and the card window) plus UIA reads and one GDI desktop shot.
 15. **`Store.showAnswerCard`** twin is `AnswerCardWindow.Shared().Begin/Present` (no Store partial — ownership).
+
+## 153-as-built-BC.md deviations table — rows followed (H-BC 253f1ada)
+| Row | Windows twin |
+|---|---|
+| §4.4 `shaped ?? text` in companion fields | followed for the gesture's live words (`DictationEvent.DisplayText`) |
+| §10.3 top-level `purpose`, prefixes, ≤ 60 chars, fallback `reason` → tool name | followed (`CommandCard.FromEvent` / `ParsePurpose`) |
+| §10.4 the 12th `ToolCallStarted` freezes and cancels | followed |
+| §10.6 8 s listen, `surface: companion, destination: agentPrompt`, reads `text`, ignores `command` | followed |
+| §12.2 follow-up = hold the mode key; typed `[command, 1 s]` | followed (the voice-key card's typed follow-up uses `[voice note, 1 s]`) |
+| §12.4 no speaking phase, a parallel flag | followed |
+| §12.6 modifier-only: settings row only on the Mac | row + opt-in built; Windows also binds (no Input Monitoring analogue; `WH_KEYBOARD_LL`, default off) — parity difference |
+| §15 `dictateAnywhere` registers nothing yet (Mac) | Windows registers Ctrl+Alt+D (COMMON.md seam, proof 22) and reports the gesture on `Hotkeys.DictateAnywhere`; without W153D's controller the press says "Dictate anywhere isn't available in this build" |
+| Hand-off constants `tapToggleMs 400`, `maxSteps 12`, `textCap 60`, `listenSecs 8`, `doneMs 6000` | followed (`AutomaticTapMs`, `MaxSteps`, `PurposeMax`, `ListenSeconds`, `DoneMs`) |
+| Hand-off `dictation_start` params | followed (deviation 9) |
+Rows §4.1, §7.4, §3.1, §8.5, §6.1, §6.4, §8.1, §8.7, §14.3, §14.4, §9.2 belong to W153B / W153D; §11.2 is engine-side.
 
 ## Open items
 - A live command turn with a model (build-B has no credential): `send_input` with `[command, N s]`, a real `ApprovalRequested` in the card, a spoken "yes" in the 8 s listen, the cap's `cancel(desk, root)` — verified from recorded sequences only.
