@@ -147,3 +147,94 @@ So A and B are both real and feed each other:
   `voiceEvent(.failed)` path stops only a known id). Not changed here — the brief is the voice key; worth the same guard.
 - The first refusal on the owner's machine at 09:40 is not known (no log existed); every candidate (a leaked dictation from an
   earlier tap/Esc/short release, a microphone failure, a meeting lease) now ends the hold once with its hint.
+
+## Follow-ups F1/F2 (149g)
+Branch `fix/149-voice-key-followups` (worktree `~/Develop/theuth-149g`) off `origin/main` d7d6549e. Swift only:
+`crates/desktop/companion/**` and this section. Commits 7cc4cb14, f2f61757 (+ this file).
+
+### F1 — ⎋ while the voice key is held
+While ⌃S is physically down, ⎋ reaches Carbon as ⌃⎋; the plain-⎋ `pointEscape` registration never matched, so ⎋ cancelled
+only after the release (`.locked`/`.sending`/`.replying`). Now a gesture registers a second ⎋ carrying the chord's modifiers:
+- **Derivation** `KeyTable.escapeDuringHold(of:reserved:)` (`CompanionCore/KeyBindings.swift:270`): ⎋ (key code 53) with
+  exactly the voice key's modifiers — a rebound chord works; ⌘/⌥ only when the chord has them. `nil` (nothing extra) for a
+  bare chord (plain ⎋ already matches), for the system's `KeyTable.systemEscapes` ⌘⌥⎋ (Force Quit) and ⌘⌥⇧⎋ (held: force-quit
+  the front app — neither is in `CopySymbolicHotKeys`), and for any enabled symbolic hot key passed in `reserved`
+  (`Hotkeys.reserved` at runtime). Default ⌃S → ⌃⎋.
+- **Registration** `PointController` (`PointAndSay/PointController.swift`): `KeyboardShortcuts.Name.pointEscapeHeld` (:14);
+  `applyHotkey` (:117) sets it from the table whenever the voice key changes (`setShortcut` registers at once, so it is
+  disabled again unless a gesture is live) and logs `hotkey pointEscapeHeld set ⌃⎋` / `cleared — <chord>: …`;
+  `escapeHotkeys(on:)` (:136) enables/disables `pointEscape` + `pointEscapeHeld` together — on at `.start` (:202), off on
+  the transition into `.idle`/`.replying` (:234) — logging `hotkey pointEscape registered ⎋ ⌃⎋` / `unregistered ⎋ ⌃⎋` to
+  `~/.theuth/logs/companion.log`. Both names call `send(.esc)`: the same `PointMachine` path (`(.armed|.holding|.locked,
+  .esc)` → `.idle` + `discard("esc", hint)`), and `VoiceKeyGate` keeps the rest of the hold's auto-repeats and the key-up out.
+  Probes (`AskFlags.automated`) register neither ⎋ (`escapeHotkeys` returns; before 149g the probe did register plain ⎋
+  for the length of each synthetic gesture).
+- **Tests** (`test.sh` 183 → 190 in 30 suites): `KeyTableTests.escapeDuringHoldCarriesTheVoiceKeysModifiers` (W6Tests.swift:134:
+  ⌃S → ⌃⎋, ⌃⌥Space → ⌃⌥⎋, ⌘⇧S → ⌘⇧⎋, bare F1 → nil, ⌘⌥ / ⌘⌥⇧ → nil, a reserved ⌃⌘⎋ → nil, `reserved` matches the whole
+  chord); `VoiceKeyGateTests.escDuringTheHoldCancelsAndTheRestOfTheHoldIsIgnored` and `escCancelsAnArmedOrLockedHoldToo`
+  (PointMachineTests.swift:252, :266: ⎋ at 500 ms into a 1.5 s hold from `.holding`, from `.armed` after one repeat and from
+  `.locked` with the second tap still held → `.idle` with the hint, one `.discard("esc")`, the following repeats and the
+  key-up no-ops, the next physical press a new gesture).
+- **Probe** `--probe-point 52 --shareable` (`PointProbe.swift:251` ESC DURING HOLD; `:271` `syntheticHeldEscape`), log
+  `/tmp/149g-probe-point.log` (pid 13706), PNG `/tmp/149g-hold-probe.png`:
+  `ESC DURING HOLD: Esc at repeat 15 → state=idle overlays=false pill=true hint="Hold to talk · double-tap to lock"` →
+  `23 repeats → gestures=1 state=idle … dictation.phase=idle dictation_status.active=nil` → **PASS**. Then the Carbon side:
+  ⌃⎋ (derived from the default voice key — never ⌃S) registered under a probe-only name `probeHeldEscape` for 1 s,
+  `AXIsProcessTrusted=true` for this process, a synthetic ⌃⎋ key-down/key-up (`CGEvent`, key code 53, `.maskControl`) posted at
+  `.cghidEventTap` → `received=1 within 1 s → PASS; ⌃⎋ unregistered`. The modifier-carrying registration is **proven**, not
+  argued. The 149f scenarios still pass (HOLD, REFUSED HOLD, CANCEL IN FLIGHT, RELEASE BEFORE START; control/stop PASS).
+
+### F2 — the Ask bar's dictation gets the same in-flight guard
+`AskBarPanel.swift beginDictation` had the voice key's old shape: an async `dictation_start` whose reply could land after
+the hold ended (⎋/close → `.failed("cancelled")`, release-to-send, a refusal), and `.fail` stopped only a known id while
+leaving the reducer in `.starting` — so the late reply was adopted by nobody and the engine held the slot for 300 s.
+- **One rule, three callers** `AskDictation.awaitsStart(from:current:)` (`CompanionCore/AskVoice.swift:132`): a start's
+  reply or refusal belongs to the controller only while its gesture is still the current one AND the session still waits
+  (`.starting`). `PointController.beginDictation` (:377 success, :389 failure) now uses it too.
+- **Ask bar** (`AskBar/AskBarPanel.swift`): `hold` (:237) is bumped by every `beginDictation`; the reply landing outside its
+  hold is stopped at once (`dictation_start → <id> landed after the hold ended: dictation_stop`), a stale refusal is ignored
+  (:283); `.fail` (every exit: ⎋, close, a refusal, an Error finish) stops the known id, **resets** `store.ask.dictation`,
+  `pendingChunks`, `stopWanted` (:221); the mic-refusal task is guarded by the hold (`g == hold`) and never runs under a
+  probe; `.setText` never sends under a probe (:213). Release-to-send before the reply keeps `stopWanted` (adopt, then stop).
+  `VoiceRecorder` was already idempotent (149f). User-visible behaviour unchanged.
+- **The same shape in `Voice/HoldToTalk.swift`** (the panel's V / the agents rows' mic — shares `store.ask.dictation`) got the
+  identical guard (:35 `hold`, :109 reset, :138/:149 `awaitsStart`).
+- **Foreign `DictationStarted` no longer adopted** (`PointController.observe` :462, `Store+Ask.swift dictationObserve` :160).
+  The engine broadcasts `DictationStarted` for every dictation (the other surface's, Tauri's, a probe's); both reducers adopted
+  it whenever they were `.starting`. The stricter guard exposed it: the first 149g probe run's REFUSED HOLD adopted the probe's
+  own id, ignored its refusal and stopped the probe's dictation (FAIL, pid 12086). A surface's id is its `dictation_start`
+  reply, nothing else.
+- **Tests** `AskDictationHoldTests` (AskTests.swift:161; a pure driver over `AskVoiceMachine` + `AskDictation` + the hold
+  counter with a fake clock and a fake RPC call list): `escBeforeTheStartRepliesStopsTheLateIdAtOnce`,
+  `releaseBeforeTheStartRepliesAdoptsThenStops`, `aLateStartNeverLandsInTheNextHold`, `aStaleRefusalDoesNotEndTheNextHold`.
+- **Probe** `--ask-probe 25 --synthetic-dictation --shareable` (`AskBarInstall.swift:93 holdScenarios`, mirroring
+  `PointProbe`'s `probeStartDelay` knob as `AskBarController.probeStartDelay`), logs `/tmp/149g-probe-ask.log` (pid 14023) and
+  `/tmp/149g-probe-ask-asklog.log`, against the live engine, driving `voiceEvent` (what the hotkey calls), no mic, no send:
+  CANCEL IN FLIGHT (start held 1.5 s, `close` — ⎋'s path — at 400 ms) → `dictation_start → … landed after the hold ended:
+  dictation_stop`, `voice=idle phase=idle status="cancelled" dictation_status.active=nil` **PASS**; RELEASE BEFORE START
+  (key-up into the send path at 400 ms) → `dictation_stop(…) ok`, `voice: Nothing recognized`, `active=nil` **PASS**;
+  REFUSED (the probe holds the slot) → `voice=idle status="dictating elsewhere" active=<the probe's id>` **PASS**.
+
+### Gates (all under `env BUILD_LABEL=149g build-lock`)
+- `bash crates/desktop/companion/test.sh` ✔ **190 tests in 30 suites passed** (`/tmp/149g-test.log`).
+- `swift build -c release --package-path crates/desktop/companion` ✔ (inside `bundle-companion.sh`; pre-existing warnings only).
+- `bash scripts/bundle-companion.sh` + `codesign --verify --deep --strict` ✔ `valid on disk · satisfies its Designated
+  Requirement` (`/tmp/149g-bundle.log`).
+- Probes: `/tmp/149g-probe-point.log` 6/6 PASS + synthetic ⌃⎋ PASS; `/tmp/149g-probe-ask.log` 3/3 PASS; `/tmp/149g-hold-probe.png`.
+- Leftover greps: hex/palette grep → the same two history comments (`Palette.swift:4`, `PointProbe.swift:16`); emoji-glyph
+  `Text("…")` grep → empty.
+
+### Live check — one extra step (the owner)
+4. Hold ⌃S, and while still holding press ⎋. Expect the pill to show "Hold to talk · double-tap to lock", the trail gone at
+   once, nothing sent, and in `companion.log`: `hotkey pointEscape registered ⎋ ⌃⎋` at the press, `point esc holding(…) → idle
+   [discard(esc, …)]`, `hotkey pointEscape unregistered ⎋ ⌃⎋`, and either `dictation_stop` or `dictation_start → <id> landed
+   after the gesture ended: dictation_stop`; no further `point pressed` while the key stays down; release, hold again at once →
+   dictates normally, no "dictating elsewhere" anywhere. At launch the log shows `hotkey pointEscapeHeld set ⌃⎋` (first run)
+   and `hotkey pointEscape unregistered ⎋ ⌃⎋`.
+
+### Deviations
+- `HoldToTalk` (panel V / agents mic) was fixed alongside the Ask bar: identical code shape, same leaked-slot symptom, inside
+  `crates/desktop/companion/**`.
+- Foreign-`DictationStarted` adoption removed in both reducers (found by the probe, not in the brief).
+- Probes no longer register plain ⎋ during their synthetic gestures (they did before 149g).
+- No Rust, no TypeScript, nothing pushed or merged.
