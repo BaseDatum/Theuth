@@ -187,6 +187,7 @@ internal sealed class PointController : IDisposable
         hintTimer.Stop();
         var s = settings();
         _ = store.Client.CallRawAsync("stop_speaking", (object?)null).ContinueWith(_ => { }, TaskScheduler.Default);
+        lastStatusSecond = uint.MaxValue;
         overlays.Reveal();
         sampler.Start(s.AnnotateMouse);
         RegisterEsc();
@@ -241,11 +242,19 @@ internal sealed class PointController : IDisposable
         _ = store.Dictation.AudioAsync(id, pcm).ContinueWith(t => { if (t.IsFaulted) Log.Write($"point: dictation_audio failed: {t.Exception?.GetBaseException().Message}"); }, TaskScheduler.Default);
     }
 
+    private uint lastStatusSecond = uint.MaxValue;
+
     private void OnSample(PointSample s)
     {
         overlays.Append(s.X, s.Y, s.Pen);
         overlays.Present();
-        if (state is PointState.Armed or PointState.Holding or PointState.Locked or PointState.Tap1) RenderVoice();
+        // The voice mode's status clock changes once a second; re-render only then (not at 60 Hz).
+        uint second = s.TMs / 1000;
+        if (second != lastStatusSecond && state is PointState.Armed or PointState.Holding or PointState.Locked or PointState.Tap1)
+        {
+            lastStatusSecond = second;
+            RenderVoice();
+        }
     }
 
     private async Task StopAndSend(string reason)

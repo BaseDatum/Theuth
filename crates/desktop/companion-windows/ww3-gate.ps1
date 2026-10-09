@@ -91,6 +91,33 @@ switch ($Action) {
         Chord $false
         Say "hold-voice: up at $(Get-Date -Format 'HH:mm:ss.fff')"
     }
+    'hold-draw' {
+        # the voice key held while the pointer loops (≈ 1 s), a screenshot of the region mid-hold, then the release
+        $name = if ($Rest.Count -gt 0) { $Rest[0] } else { 'trail' }
+        Add-Type -AssemblyName System.Drawing
+        Add-Type -AssemblyName System.Windows.Forms
+        Say "hold-draw: Ctrl+Alt+Space down at $(Get-Date -Format 'HH:mm:ss.fff')"
+        Chord $true
+        Start-Sleep -Milliseconds 400
+        $cx = 960; $cy = 560
+        for ($i = 0; $i -le 70; $i++) {
+            $a = $i / 70.0 * 2 * [math]::PI
+            [void][G3Native]::SetCursorPos([int]($cx + 160 * [math]::Cos($a)), [int]($cy + 100 * [math]::Sin($a)))
+            Start-Sleep -Milliseconds 16
+        }
+        Start-Sleep -Milliseconds 300
+        $dir = Join-Path $pkg 'ww3'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $bmp = New-Object System.Drawing.Bitmap 1920, 760
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size, [System.Drawing.CopyPixelOperation]([System.Drawing.CopyPixelOperation]::SourceCopy -bor [System.Drawing.CopyPixelOperation]::CaptureBlt))
+        $file = Join-Path $dir "$name.png"
+        $bmp.Save($file, [System.Drawing.Imaging.ImageFormat]::Png)
+        $g.Dispose(); $bmp.Dispose()
+        Say "hold-draw: shot $file size=$((Get-Item $file).Length) at $(Get-Date -Format 'HH:mm:ss.fff')"
+        Chord $false
+        Say "hold-draw: up at $(Get-Date -Format 'HH:mm:ss.fff')"
+    }
     'tap-voice' {
         Say "tap-voice: tap, tap (120 ms), then a tap after 1.6 s at $(Get-Date -Format 'HH:mm:ss.fff')"
         Chord $true; Start-Sleep -Milliseconds 60; Chord $false

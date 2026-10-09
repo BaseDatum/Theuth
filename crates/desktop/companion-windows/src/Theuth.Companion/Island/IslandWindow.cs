@@ -67,6 +67,7 @@ internal sealed partial class IslandWindow : ToolWindow
     public const double PillHeight = 36;
     public const double OpenWidth = 440;
     public const double GripWidth = 24;
+    public const double VoiceMinHeight = 64;
 
     private readonly DispatcherQueue dispatcher;
     private readonly IslandModel model;
@@ -78,6 +79,7 @@ internal sealed partial class IslandWindow : ToolWindow
     private readonly DispatcherQueueTimer hoverTimer;
     private readonly DispatcherQueueTimer leaveTimer;
     private readonly DispatcherQueueTimer clockTimer;
+    private readonly DispatcherQueueTimer dragTimer;
     private readonly SUBCLASSPROC subclass149; // referenced for the window's lifetime
     private const nuint Subclass149Id = 0x149;
     private MeetingSnapshot snapshot = MeetingSnapshot.Empty;
@@ -89,7 +91,6 @@ internal sealed partial class IslandWindow : ToolWindow
     private bool dragging;
     private bool moved;
     private int dragDx, dragDy;
-    private uint pointerId;
     private DateTimeOffset lastGripPress;
     private bool wantsKey;
     private bool hiddenFromCapture;
@@ -124,12 +125,13 @@ internal sealed partial class IslandWindow : ToolWindow
         root.PointerPressed += OnPressed;
         root.PointerMoved += OnMoved;
         root.PointerReleased += OnReleased;
-        root.PointerCaptureLost += (_, _) => EndDrag(snap: false);
         root.KeyDown += OnKeyDown;
         hoverTimer = Timer(300, () => { if (!model.Pinned) OpenIsland(pin: false); });
         leaveTimer = Timer(100, () => { if (model.Close()) Render(); });
         clockTimer = Timer(1000, () => clock?.SetValue(TextBlock.TextProperty, IslandModel.Clock(snapshot.Elapsed(DateTimeOffset.Now))));
         clockTimer.IsRepeating = true;
+        dragTimer = Timer(16, DragTick);
+        dragTimer.IsRepeating = true;
         hiddenFromCapture = ExcludedFromCapture;
         subclass149 = Subclass149;
         if (!PInvoke.SetWindowSubclass(Hwnd, subclass149, Subclass149Id, 0)) Log.Write($"island: SetWindowSubclass failed {Win32.LastError()}");
@@ -191,6 +193,7 @@ internal sealed partial class IslandWindow : ToolWindow
         if (!IsShown)
         {
             ShowPassive();
+            dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () => { root.InvalidateMeasure(); root.UpdateLayout(); Render(); });
             Log.Write($"island shown: rect={Win32.Text(ScreenRect)} on {m.Device} mode={model.Mode} exstyle={Win32.ExStyleText(Win32.ExStyle(Hwnd))} affinity=0x{Win32.DisplayAffinity(Hwnd):X}");
         }
         if (snapshot.State == "Recording") clockTimer.Start();
@@ -227,8 +230,9 @@ internal sealed partial class IslandWindow : ToolWindow
         {
             return ((int)Math.Round(PillWidth * s), (int)Math.Round(PillHeight * s));
         }
+        root.InvalidateMeasure();
         root.Measure(new global::Windows.Foundation.Size(OpenWidth, double.PositiveInfinity));
-        double h = Math.Max(PillHeight, Math.Min(520, root.DesiredSize.Height));
+        double h = Math.Max(voice is null ? PillHeight : VoiceMinHeight, Math.Min(520, root.DesiredSize.Height + 2));
         return ((int)Math.Round(OpenWidth * s), (int)Math.Round(h * s));
     }
 
@@ -293,58 +297,64 @@ internal sealed partial class IslandWindow : ToolWindow
         var pt = e.GetCurrentPoint(root);
         if (!pt.Properties.IsLeftButtonPressed) return;
         bool grip = IsGrip(pt.Position, e.OriginalSource as DependencyObject);
-        if (grip)
+        if (!grip) return;
+        var now = DateTimeOffset.Now;
+        if (now - lastGripPress < TimeSpan.FromMilliseconds(400))
         {
-            var now = DateTimeOffset.Now;
-            if (now - lastGripPress < TimeSpan.FromMilliseconds(400))
-            {
-                lastGripPress = DateTimeOffset.MinValue;
-                SnapBack();
-                e.Handled = true;
-                return;
-            }
-            lastGripPress = now;
-            if (PInvoke.GetCursorPos(out var c))
-            {
-                var r = ScreenRect;
-                dragDx = c.X - r.left;
-                dragDy = c.Y - r.top;
-                dragging = true;
-                moved = false;
-                pointerId = e.Pointer.PointerId;
-                root.CapturePointer(e.Pointer);
-            }
+            lastGripPress = DateTimeOffset.MinValue;
+            SnapBack();
             e.Handled = true;
+            return;
         }
+        lastGripPress = now;
+        if (PInvoke.GetCursorPos(out var c))
+        {
+            var r = ScreenRect;
+            dragDx = c.X - r.left;
+            dragDy = c.Y - r.top;
+            dragging = true;
+            moved = false;
+            // The manual move: a 16 ms poll over GetCursorPos + the button state. XAML pointer capture is not relied on —
+            // the island activates on the press (S1) and a non-active WinUI window drops PointerMoved/capture (build-B).
+            dragTimer.Start();
+        }
+        e.Handled = true;
     }
 
     private void OnMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (!dragging || e.Pointer.PointerId != pointerId) return;
+        if (dragging) e.Handled = true;
+    }
+
+    private void DragTick()
+    {
+        if (!dragging) { dragTimer.Stop(); return; }
+        bool down = (PInvoke.GetAsyncKeyState(0x01) & 0x8000) != 0;
         if (!PInvoke.GetCursorPos(out var c)) return;
-        var r = ScreenRect;
-        int nx = c.X - dragDx, ny = c.Y - dragDy;
-        if (!moved && Math.Abs(nx - r.left) < 3 && Math.Abs(ny - r.top) < 3) return;
-        moved = true;
-        AppWindow.Move(new PointInt32(nx, ny));
-        e.Handled = true;
+        if (down)
+        {
+            var r = ScreenRect;
+            int nx = c.X - dragDx, ny = c.Y - dragDy;
+            if (!moved && Math.Abs(nx - r.left) < 3 && Math.Abs(ny - r.top) < 3) return;
+            moved = true;
+            AppWindow.Move(new PointInt32(nx, ny));
+            return;
+        }
+        dragTimer.Stop();
+        bool wasMoved = moved;
+        EndDrag(snap: true);
+        if (!wasMoved && voice is null)
+        {
+            // A click on the pill (not a drag) opens and pins.
+            if (model.Mode == IslandMode.Closed) OpenIsland(pin: true);
+            else model.Pinned = true;
+        }
+        if (!wantsKey) HandBack();
     }
 
     private void OnReleased(object sender, PointerRoutedEventArgs e)
     {
-        if (dragging && e.Pointer.PointerId == pointerId)
-        {
-            root.ReleasePointerCapture(e.Pointer);
-            bool wasMoved = moved;
-            EndDrag(snap: true);
-            if (!wasMoved && voice is null)
-            {
-                // A click on the pill (not a drag) opens and pins.
-                if (model.Mode == IslandMode.Closed) OpenIsland(pin: true);
-                else model.Pinned = true;
-            }
-            e.Handled = true;
-        }
+        if (dragging) { e.Handled = true; return; } // the drag poll ends it
         if (!wantsKey) HandBack();
     }
 
