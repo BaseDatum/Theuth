@@ -149,7 +149,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
     private void OnStoreChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName is not (nameof(Store.Rail) or nameof(Store.Connection) or nameof(Store.RemoteSessions))) return;
-        if (!store.Rail.Quiet && collapsed && RailCollapse.ExpandsOnActivity(Presence)) SetCollapsed(false);
+        if (!(store.FixtureRail ?? store.Rail).Quiet && collapsed && RailCollapse.ExpandsOnActivity(Presence)) SetCollapsed(false);
         ScheduleCollapse(afterHover: false);
         Refresh();
     }
@@ -177,7 +177,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
     }
 
     private RailPills DerivePills() => RailPillsModel.Derive(
-        store.Rail, store.Connection == RpcClient.State.Open, store.Ask.Dictation.IsActive, store.Ask.Dictation.Levels, hoveredDot, store.RemoteSessions);
+        store.FixtureRail ?? store.Rail, store.Connection == RpcClient.State.Open, store.Ask.Dictation.IsActive, store.Ask.Dictation.Levels, hoveredDot, store.RemoteSessions);
 
     private void Render()
     {
@@ -489,7 +489,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
     private void ScheduleCollapse(bool afterHover)
     {
         if (collapsed) return;
-        var delay = RailCollapse.CollapseDelay(Presence, store.Rail.Quiet, hovering, afterHover);
+        var delay = RailCollapse.CollapseDelay(Presence, (store.FixtureRail ?? store.Rail).Quiet, hovering, afterHover);
         if (delay is not { } d)
         {
             quietTimer?.Stop();

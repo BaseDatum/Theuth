@@ -67,8 +67,27 @@ public sealed partial class Store
     private static SessionRow Row(SessionSummary s) =>
         new(s.Id, s.Title, s.Owner, s.Running, s.Agent, s.Cwd, s.Project, s.Parent, s.Desk, s.Name, s.UpdatedAt, s.Archived);
 
+    /// <summary><c>--ww2-fixture</c>: the rail the pills draw (null = the Store's <see cref="StoreModel.Rail"/>).</summary>
+    public Rail? FixtureRail { get; private set; }
+
     private void DeriveAgents()
     {
+        if (Ww2Fixture.Enabled)
+        {
+            // Visual fixture: fixture items + the real seeded ones, fixture agent rows, fixture rail dots; re-applied after every refetch.
+            var items = Ww2Fixture.Items().Concat(Items.Where(i => !i.Id.StartsWith("ask:fx", StringComparison.Ordinal))).ToList();
+            Panel.Update(items);
+            var activity = Ww2Fixture.Activity();
+            var sessions = Ww2Fixture.Sessions();
+            SessionRows = sessions;
+            AgentsPanel = AgentsModel.Derive(activity, Agents, sessions, items, "fx-self", Environment.MachineName, Ww2Fixture.Peers(), DateTimeOffset.Now, "lab");
+            FixtureRail = RailModel.Derive(items, Agents, activity, DateTimeOffset.Now);
+            RemoteSessions = new HashSet<string>(AgentsPanel.Rows.Where(r => r.Remote && r.Session is not null).Select(r => r.Session!), StringComparer.Ordinal);
+            FixtureActivity = activity;
+            OnPropertyChanged(nameof(Panel));
+            OnPropertyChanged(nameof(Rail));
+            return;
+        }
         SessionRows = Sessions.Select(Row).ToList();
         var mesh = Mesh;
         string selfId = SelfEngineId;
@@ -86,7 +105,9 @@ public sealed partial class Store
 
     public SessionRow? SessionRowOf(string? id) => id is null ? null : SessionRows.FirstOrDefault(s => s.Id == id);
 
-    public AgentInfo? ActivityOf(string? session) => session is null ? null : Activity.FirstOrDefault(a => a.Id == session);
+    private IReadOnlyList<AgentInfo>? FixtureActivity;
+
+    public AgentInfo? ActivityOf(string? session) => session is null ? null : (FixtureActivity ?? Activity).FirstOrDefault(a => a.Id == session);
 
     /// <summary>E6 context (WW1 decodes <c>AttentionItem.context</c>) or the §6 interim join, through WW1's <see cref="StoreModel.ContextFor"/>.</summary>
     public ItemContextText? ContextText(AttentionItem item)
