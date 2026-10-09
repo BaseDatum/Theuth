@@ -1,9 +1,10 @@
 import { Link } from '@tanstack/react-router'
 import { type ReactNode, useMemo } from 'react'
+import { dotLabel } from '@/components/agents/sessions'
 import { useSessionDrag } from '@/components/chat/Panes'
-import { observedLabel, stripRows } from '@/lib/session-tree'
+import { stripRows } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
-import type { AgentInfo, AgentState } from '@/rpc/extra'
+import type { AgentInfo } from '@/rpc/extra'
 import { useSessionField } from '@/store/sessions'
 import { WatchDot } from './ObservedBar'
 
@@ -34,10 +35,6 @@ export function SubagentStrip({ session, trailing }: { session: string; trailing
   )
 }
 
-/** The sidebar tree's phrasing of a row's state (`AgentTree`). */
-const stateText = (s: AgentState): string =>
-  s.state === 'awaiting' ? `awaiting ${s.from}` : s.state === 'approval' ? `approval: ${s.tool}` : s.state
-
 /**
  * One subagent: the connected-state dot (green; amber when blocked on an approval) inside a 24 px link that opens
  * the subagent's chat or drags it into a pane. The circle is keyed on `beat`, so each beat remounts it and the
@@ -47,7 +44,7 @@ const stateText = (s: AgentState): string =>
 function SubagentDot({ row }: { row: AgentInfo }) {
   const drag = useSessionDrag(row.id, row.name)
   const observed = row.observed ?? undefined
-  const label = `${row.name} · ${observed ? `watching · ${observedLabel[observed.state]}` : stateText(row.state)}${row.model ? ` · ${row.model}` : ''}`
+  const label = dotLabel(row)
   return (
     <Link
       to="/c/$session"

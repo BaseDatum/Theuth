@@ -4,12 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ago } from '@/components/sidebar/AgentTree'
+import { WatchDot } from '@/components/chat/ObservedBar'
 import { THEUTH } from '@/components/tasks/helpers'
 import { cn } from '@/lib/utils'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
 import type { AgentInfo } from '@/rpc/extra'
 import { ActiveSwitch, ActivityChip, AgentAvatar, BudgetBar, statusDot } from './identity'
-import { CARD_STRIP_CAP, stateText } from './sessions'
+import { CARD_STRIP_CAP, dotLabel } from './sessions'
 import { CARD, type Node, layout } from './tree'
 import { useAgentSessions, useLingering } from './useAgentSessions'
 
@@ -153,10 +154,14 @@ function CardStrip({ desk }: { desk: string | null }) {
   )
 }
 
-/** `SubagentDot`'s shape as a button (the strip is outside the card's link): the circle re-keyed per beat restarts `subagent-blink`. */
-function StripDot({ row, leaving }: { row: AgentInfo; leaving: boolean }) {
+/**
+ * `SubagentDot`'s shape as a button (the strip is outside the card's link): the circle re-keyed per beat restarts
+ * `subagent-blink`; a watch-only child (141 §9.2c, R4) is the same `WatchDot` and `watching` title as the composer strip.
+ */
+export function StripDot({ row, leaving }: { row: AgentInfo; leaving: boolean }) {
   const navigate = useNavigate()
-  const label = `${row.name} · ${stateText(row.state)} · ${ago(row.activity?.last_active ?? row.started_at ?? row.finished_at)}`
+  const label = `${dotLabel(row)} · ${ago(row.activity?.last_active ?? row.started_at ?? row.finished_at)}`
+  const observed = row.observed ?? undefined
   return (
     <button
       type="button"
@@ -166,10 +171,14 @@ function StripDot({ row, leaving }: { row: AgentInfo; leaving: boolean }) {
       title={label}
       aria-label={label}
     >
-      <span
-        key={row.beat ?? 0}
-        className={cn('subagent-dot size-2 rounded-full', row.state.state === 'approval' ? 'bg-warning' : 'bg-success', row.beat !== undefined && 'subagent-blink')}
-      />
+      {observed ? (
+        <WatchDot state={observed.state} beat={row.beat} />
+      ) : (
+        <span
+          key={row.beat ?? 0}
+          className={cn('subagent-dot size-2 rounded-full', row.state.state === 'approval' ? 'bg-warning' : 'bg-success', row.beat !== undefined && 'subagent-blink')}
+        />
+      )}
     </button>
   )
 }
