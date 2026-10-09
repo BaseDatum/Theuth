@@ -1,5 +1,3 @@
-
-    private static readonly List<DispatcherQueueTimer> probeTimers = new();
 using Microsoft.UI.Dispatching;
 using Theuth.Companion.Core;
 using Theuth.Companion.Island;
@@ -16,6 +14,8 @@ namespace Theuth.Companion;
 /// </summary>
 internal sealed class WW3Install : IDisposable
 {
+    private static readonly List<DispatcherQueueTimer> probeTimers = new();
+
     /// <summary>The running install (the Settings pages edit through it); null in builds without W2's surfaces.</summary>
     public static WW3Install? Current { get; private set; }
 
