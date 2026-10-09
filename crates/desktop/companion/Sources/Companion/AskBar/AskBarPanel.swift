@@ -162,6 +162,7 @@ final class AskBarController: NSObject {
     }
 
     private func perform(_ a: SurfaceKey.Action) {
+        guard !AskFlags.automated else { return AskLog.write("probe: \(a) suppressed (no key, no toggle)") } // a probe's tap/hold acts on nothing
         switch a {
         case .togglePanel: attention.toggle(anchor: .mouse) // taking key closes an open Ask bar (`didResignKey`)
         case .toggleAskBar: toggle()
@@ -370,6 +371,11 @@ final class AskBarController: NSObject {
     var probeStartDelay: Duration = .zero
     var voiceState: AskVoiceMachine.State { voice.state }
     var probeStatus: String? { state.status }
+    /// 153 §8.5 probe: force "Open the mic on key-down" for the run (the owner's defaults untouched); `probeMicOpen` is the
+    /// controller's recorder flag (probes never open the real microphone — `startMic` returns before `recorder.start`).
+    var probeMicOnKeyDown: Bool { get { voice.micOnKeyDown } set { voice.micOnKeyDown = newValue } }
+    var probeMicOpen: Bool { micOpen }
+    var probePendingChunks: Int { pendingChunks.count }
 
     func probeDictation(seconds: TimeInterval, done: @escaping () -> Void) {
         prewarm()

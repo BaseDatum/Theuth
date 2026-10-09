@@ -91,6 +91,8 @@ enum AskProbe {
     /// 1. CANCEL IN FLIGHT — ⎋/close (`close` → `.failed("cancelled")`) 400 ms into the hold: the late start stops its own id.
     /// 2. RELEASE BEFORE START — key-up into the send path before the id exists: the start adopts, stops, nothing recognized.
     /// 3. REFUSED — the probe holds the slot; the hold's start is refused: the hold ends with its hint, the probe's dictation untouched.
+    /// 153-B3 adds: 4. MIC AT KEY-DOWN · TAP / HOLD (§8.5: the recorder flag + buffer, never the real mic; a tap never starts a
+    /// dictation); 5. SUGGESTION CARD (§6.4: a synthetic `DictionarySuggestion` shows the card; dismissed without an answer).
     /// No microphone (`AskFlags.automated`), no send (`.setText` is suppressed). Whatever leaks is stopped.
     private static func holdScenarios(store: Store, askBar: AskBarController) async {
         func active() async -> String? {
@@ -144,6 +146,49 @@ enum AskProbe {
         do { try await store.client.dictationStop(id: held) } catch { dlog("dictation_stop \(held) failed: \(error)") }
         await settle()
         dlog("REFUSED: probe's dictation stopped → active=\(await active() ?? "nil")")
+
+        // 153 §8.5: mic at key-down. The probe never opens the real microphone (`startMic` stops at `AskFlags.automated`); the
+        // controller's flag and the pending buffer are the evidence. A tap must leave the engine's slot untouched.
+        dlog("MIC AT KEY-DOWN · TAP: key-down (mic opens, chunks buffer), two synthetic chunks, key-up at 120 ms")
+        askBar.probeMicOnKeyDown = true
+        askBar.voiceEvent(.keyDown(Date()))
+        askBar.feed([Int16](repeating: 0, count: VoiceRecorder.chunk)); askBar.feed([Int16](repeating: 0, count: VoiceRecorder.chunk))
+        let tapOpen = askBar.probeMicOpen, tapBuffered = askBar.probePendingChunks, tapPhase = store.ask.dictation.phase
+        await settle(0.12)
+        askBar.voiceEvent(.keyUp(Date()))
+        await settle(0.5)
+        let a4 = await active()
+        dlog("MIC AT KEY-DOWN · TAP result: pressed mic=\(tapOpen) buffered=\(tapBuffered) phase=\(tapPhase) → after tap voice=\(askBar.voiceState) mic=\(askBar.probeMicOpen) buffered=\(askBar.probePendingChunks) phase=\(store.ask.dictation.phase) dictation_status.active=\(a4 ?? "nil")")
+        dlog("ASSERT TAP opened the mic, buffered, then discarded everything and never started a dictation: \((tapOpen && tapBuffered == 2 && tapPhase == .idle && askBar.voiceState == .idle && !askBar.probeMicOpen && askBar.probePendingChunks == 0 && a4 == nil) ? "PASS" : "FAIL")")
+        await cleanup(a4)
+
+        dlog("MIC AT KEY-DOWN · HOLD: key-down, one buffered chunk, 400 ms → dictation_start with press_ago_ms; release")
+        askBar.voiceEvent(.keyDown(Date()))
+        askBar.feed([Int16](repeating: 0, count: VoiceRecorder.chunk))
+        await settle(0.4)
+        let holdOpen = askBar.probeMicOpen, holdState = askBar.voiceState
+        await settle(0.6)
+        let holdPhase = store.ask.dictation.phase
+        askBar.voiceEvent(.keyUp(Date()))
+        await settle(3)
+        let a5 = await active()
+        let last = try? await store.client.dictationStatus().last
+        dlog("MIC AT KEY-DOWN · HOLD result: at 400 ms voice=\(holdState) mic=\(holdOpen); at 1 s phase=\(holdPhase); after release voice=\(askBar.voiceState) phase=\(store.ask.dictation.phase) status=\"\(askBar.probeStatus ?? "")\" active=\(a5 ?? "nil") last=\(last.map { "surface=\($0.surface) press→pcm=\($0.pressToFirstPcmMs.map(String.init) ?? "nil") ms" } ?? "nil")")
+        dlog("ASSERT HOLD opened the mic once at key-down, started our dictation, ended idle with the slot free: \((holdOpen && holdState != .idle && holdPhase != .idle && askBar.voiceState == .idle && a5 == nil) ? "PASS" : "FAIL")")
+        await cleanup(a5)
+        askBar.probeMicOnKeyDown = false
+
+        // 153 §6.4: the suggestion card, fed the event shape the engine publishes; dismissed without an answer (no RPC).
+        dlog("SUGGESTION CARD: synthetic DictionarySuggestion through askObserve")
+        store.askObserve(Data(#"{"type":"DictionarySuggestion","id":"probe-sg","heard":"parakeet tee dee tee","typed":"Parakeet TDT","occurrences":2,"surface":"companion","has_audio":false}"#.utf8))
+        await settle(0.5)
+        let shown = askBar.suggestionCard?.isVisible ?? false
+        dlog("SUGGESTION CARD result: suggestion=\(store.ask.suggestion.map(\.id) ?? "nil") visible=\(shown) anchor=\(askBar.anchorFrame)")
+        dlog("ASSERT SUGGESTION CARD shown under the Ask bar's anchor: \(shown && store.ask.suggestion?.id == "probe-sg" ? "PASS" : "FAIL")")
+        await settle(2)
+        store.answerSuggestion(nil)
+        await settle(0.3)
+        dlog("SUGGESTION CARD dismissed: visible=\(askBar.suggestionCard?.isVisible ?? false) suggestion=\(store.ask.suggestion.map(\.id) ?? "nil") (nothing sent)")
     }
 
     // MARK: --probe-speak (149s S3): the Ask reply spoken through the shared speaker, against the live engine
