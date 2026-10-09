@@ -287,7 +287,7 @@ public sealed class AnswerCardState
         {
             var x = Current;
             var reply = new AskReply(Session ?? "") { Text = x.Answer, Finished = x.Finished, Error = Phase == CardPhase.Failed ? x.Error : null };
-            return reply.FirstTwoLines;
+            return AnswerMarkdown.Plain(reply.FirstTwoLines);
         }
     }
 
@@ -401,6 +401,17 @@ public static class AnswerMarkdown
         Flush();
         return blocks;
     }
+
+    /// <summary>The text without its marks (`code`, **bold**, *italic*, [text](url) → text) — the collapsed card's plain two lines.</summary>
+    public static string Plain(string? markdown) => string.Concat(Inline(markdown ?? "").Select(i => i switch
+    {
+        MdInline.Text t => t.Value,
+        MdInline.Bold b => b.Value,
+        MdInline.Italic it => it.Value,
+        MdInline.Code c => c.Value,
+        MdInline.Link l => l.Value,
+        _ => "",
+    }));
 
     public static IReadOnlyList<MdInline> Inline(string s)
     {

@@ -116,7 +116,7 @@ public sealed class AnswerCardStateTests
         c.TurnFinished("end_turn", 9000);
         Assert.Equal("replied", c.Copy(Key, 9000));
         Assert.True(c.DoneArmed);
-        Assert.Equal("The failing test is `vad::gate_onset`.", c.CollapsedText);
+        Assert.Equal("The failing test is vad::gate_onset.", c.CollapsedText); // the receipt's two lines, marks removed
         // speaking — enter on Speaker.surface == ours; glyph; copy "click to stop"; leaves on speech end / Esc / a new gesture.
         // (A parallel flag over answer, as the Mac twin built it — H3-C1.)
         c.SpeechStarted(9100);
@@ -210,5 +210,8 @@ public sealed class AnswerCardStateTests
         Assert.Equal("partial", Assert.IsType<MdBlock.Code>(open[1]).Text);
         Assert.Empty(AnswerMarkdown.Parse(""));
         Assert.Equal(new MdInline[] { new MdInline.Text("2 * 3 = 6") }, AnswerMarkdown.Inline("2 * 3 = 6"));
+        // The collapsed card's plain text: marks removed.
+        Assert.Equal("The onset run is now 8 frames in vad.rs (design)", AnswerMarkdown.Plain("The onset run is now **8 frames** in `vad.rs` ([design](theuth://c/x))"));
+        Assert.Equal("", AnswerMarkdown.Plain(null));
     }
 }

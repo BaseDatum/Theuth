@@ -1263,7 +1263,7 @@ internal sealed class PointController : IDisposable
         string? cardText = null;
         if (phase is "working" or "done")
         {
-            cardText = cmd ? CommandReply() : failed ? AnswerCardState.FailedCopy(card.Latest.Error) : card.Latest.Answer;
+            cardText = cmd ? CommandReply() : failed ? AnswerCardState.FailedCopy(card.Latest.Error) : card.CollapsedText; // §12.2: the receipt's two lines
             if (cmd && cardText.Length == 0 && command.Phase is not (CommandPhase.Done or CommandPhase.Failed)) cardText = null;
         }
         var steps = cmd ? StepRows() : null;
@@ -1502,6 +1502,12 @@ internal sealed class PointController : IDisposable
         if (command.Approval is { Answered: null } && card.Source == CardSource.Command) { AnswerApproval(Decision.Deny, "esc"); return; }
         if (card.Speaking) { speech.Stop(SpeechStop.Esc); return; } // speaking leaves on Esc; the card stays (§12.4)
         if (state is PointState.Sending && working && deskSession is not null) { FreezeStop(); return; }
+        if (detached && card.Visible && card.Expanded && !state.IsGesture && window is { } w)
+        {
+            // H3-C1 order (deny → list → collapse → dismiss): an expanded card folds back first.
+            w.SetExpanded(windowGen, false);
+            return;
+        }
         if (!state.IsGesture && card.Visible && card.Phase == CardPhase.Failed && state is not PointState.Replying) { Dismiss("Esc"); return; }
         Step(new PointEvent.Esc());
     }

@@ -262,8 +262,12 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     public async Task<bool> CapturePng(string path)
     {
         if (!IsShown) return false;
+        var before = shell.Background;
         try
         {
+            // The window's Mica/Acrylic sits behind a transparent tree; paint the theme's solid base for the PNG only.
+            shell.Background = Theme.Brush(NativeLook.SolidBackgroundBase, host.ActualTheme);
+            await Task.Delay(50);
             await XamlPng.Write(shell, path);
             return true;
         }
@@ -271,6 +275,10 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         {
             Log.Write($"answer-card: capture {path} failed: {e.GetType().Name}: {e.Message}");
             return false;
+        }
+        finally
+        {
+            shell.Background = before;
         }
     }
 
