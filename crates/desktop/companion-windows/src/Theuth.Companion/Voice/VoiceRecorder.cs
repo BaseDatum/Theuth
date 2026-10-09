@@ -56,7 +56,8 @@ internal sealed class VoiceRecorder
         try
         {
             using var enumerator = new MMDeviceEnumerator();
-            if (!enumerator.TryGetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications, out device) || device is null)
+            device = Preferred(enumerator); // 153 §8.1: the engine's voice.input_devices order, then the default
+            if (device is null && (!enumerator.TryGetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications, out device) || device is null))
             {
                 return "no microphone";
             }
@@ -116,6 +117,24 @@ internal sealed class VoiceRecorder
         {
             Description = $"{e.GetType().Name} 0x{e.HResult:X8} on \"{device?.FriendlyName ?? "?"}\": {e.Message}";
             return $"microphone failed to start: {e.Message}";
+        }
+    }
+
+    /// <summary>153 §8.1: the first connected endpoint named in <see cref="MicPreference.Names"/>, or null (the default endpoint).</summary>
+    private static MMDevice? Preferred(MMDeviceEnumerator enumerator)
+    {
+        var names = MicPreference.Names;
+        if (names.Count == 0) return null;
+        try
+        {
+            var active = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active).ToList();
+            var pick = MicPreference.Choose(names, active.Select(d => d.FriendlyName).ToList());
+            return pick is { } i ? active[i] : null;
+        }
+        catch (Exception e)
+        {
+            Log.Write($"voice recorder: listing capture endpoints failed ({e.Message}) — using the default");
+            return null;
         }
     }
 

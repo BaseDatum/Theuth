@@ -49,7 +49,8 @@ internal abstract record IslandAction
 }
 
 /// <summary>The voice mode / answer card the island shows while a point-and-say gesture is live (149 §3.7, D14).</summary>
-internal sealed record VoiceView(string Phase, string Live, string Status, string? Answer, string? Hint, bool Locked, bool Working, string? OpenUrl = null);
+internal sealed record VoiceView(string Phase, string Live, string Status, string? Answer, string? Hint, bool Locked, bool Working, string? OpenUrl = null,
+    string? Title = null, IReadOnlyList<CardStepRow>? Steps = null, CardApprovalBox? Approval = null, bool Failed = false, string? Footer = null);
 
 /// <summary>
 /// The native island (149 §3.6, §7.4 #1, D9–D11): a <see cref="ToolWindow"/> with the shell's Windows island styles
@@ -1071,11 +1072,22 @@ internal sealed partial class IslandWindow : ToolWindow
         shell.CornerRadius = new CornerRadius(8);
         if (padShell) shell.Padding = new Thickness(14, 8, 14, 10);
         else shell.Padding = new Thickness(10, 6, 10, 10);
-        var pane = new StackPanel { Spacing = 4 };
+        var pane = new StackPanel { Spacing = 4, Background = Theme.Transparent };
         AutomationProperties.SetAutomationId(pane, "island-voice");
+        // 153 §12.2/§12.3: a click (or any scroll) on the collapsed card expands it into the answer card window.
+        pane.Tapped += (_, e) => { if (e.OriginalSource is not Button) VoiceTapped?.Invoke(); };
+        pane.PointerWheelChanged += (_, _) => VoiceTapped?.Invoke();
         var head = Row(8);
-        head.Children.Add(Dot(v.Phase == "listening" ? NativeLook.Critical : v.Working ? NativeLook.Accent : NativeLook.Success));
-        head.Children.Add(Text(v.Status, 12.5, NativeLook.TextSecondary));
+        head.Children.Add(Dot(v.Failed ? NativeLook.Critical : v.Phase == "listening" ? NativeLook.Critical : v.Working ? NativeLook.Accent : NativeLook.Success));
+        if (v.Title is { Length: > 0 } title)
+        {
+            var t = Text(title, 12.5, NativeLook.TextPrimary, FontWeights.SemiBold);
+            AutomationProperties.SetAutomationId(t, "island-voice-title");
+            head.Children.Add(t);
+        }
+        var status = Text(v.Status, 12.5, v.Failed ? NativeLook.Critical : NativeLook.TextSecondary);
+        AutomationProperties.SetAutomationId(status, "island-voice-status");
+        head.Children.Add(status);
         if (v.Locked) head.Children.Add(Badge("locked", NativeLook.Accent));
         pane.Children.Add(head);
         if (v.Live.Length > 0)
@@ -1087,6 +1099,70 @@ internal sealed partial class IslandWindow : ToolWindow
             AutomationProperties.SetAutomationId(live, "island-voice-live");
             pane.Children.Add(live);
         }
+        if (v.Steps is { Count: > 0 } steps)
+        {
+            // 153 §10.3 / §10.7: the command card's step rows in the island's voice view (the collapsed form); the last five.
+            var list = new StackPanel { Spacing = 1 };
+            AutomationProperties.SetAutomationId(list, "island-voice-steps");
+            int n = 0;
+            foreach (var s in steps.Skip(Math.Max(0, steps.Count - 5)))
+            {
+                var row = Row(8);
+                string key = s.Status switch
+                {
+                    StepStatus.Ok => NativeLook.Success,
+                    StepStatus.Failed or StepStatus.Denied => NativeLook.Critical,
+                    StepStatus.Running => NativeLook.AccentText,
+                    _ => NativeLook.TextTertiary,
+                };
+                var verb = Text(s.Verb, 11.5, key, FontWeights.SemiBold);
+                verb.Width = 64;
+                row.Children.Add(verb);
+                var text = Text(s.Note is { Length: > 0 } note ? $"{s.Text} — {note}" : s.Text, 12, NativeLook.TextPrimary);
+                text.MaxWidth = OpenWidth - 120;
+                row.Children.Add(text);
+                if (s.Status == StepStatus.Running) row.Children.Add(new ProgressRing { IsActive = true, Width = 10, Height = 10, MinWidth = 10, MinHeight = 10 });
+                AutomationProperties.SetAutomationId(row, $"island-voice-step-{++n}");
+                list.Children.Add(row);
+            }
+            pane.Children.Add(list);
+        }
+        if (v.Approval is { } box)
+        {
+            // 153 §10.6: the amber approval box; Yes/No are real buttons (the island is not key), Esc denies, the voice answers too.
+            var inner = new StackPanel { Spacing = 3 };
+            var q = Text(box.Question, 12.5, NativeLook.TextPrimary, FontWeights.SemiBold);
+            q.TextWrapping = TextWrapping.Wrap;
+            q.TextTrimming = TextTrimming.None;
+            q.FontFamily = new FontFamily("Cascadia Mono, Consolas");
+            inner.Children.Add(q);
+            inner.Children.Add(Text(box.RiskLine, 11.5, NativeLook.TextSecondary));
+            if (box.Context is { Length: > 0 } ctx) inner.Children.Add(Text(ctx, 11.5, NativeLook.TextSecondary));
+            var buttons = Row(8);
+            if (!box.Answered)
+            {
+                var yes = Btn("Yes Enter", "Allow this tool call", () => VoiceAction?.Invoke("approve"), "island-voice-approve");
+                var no = Btn("No Esc", "Deny this tool call", () => VoiceAction?.Invoke("deny"), "island-voice-deny");
+                foreach (var b in new[] { yes, no }) { b.Padding = new Thickness(8, 1, 8, 2); b.MinHeight = 22; }
+                buttons.Children.Add(yes);
+                buttons.Children.Add(no);
+                buttons.Children.Add(Text("or say “yes” / “no”", 11, NativeLook.TextTertiary));
+            }
+            else buttons.Children.Add(Text("answered — waiting for the desk…", 11, NativeLook.TextTertiary));
+            inner.Children.Add(buttons);
+            if (box.Line is { Length: > 0 } line) inner.Children.Add(Text(line, 11.5, NativeLook.AccentText));
+            var border = new Border
+            {
+                Child = inner,
+                Padding = new Thickness(8, 5, 8, 6),
+                CornerRadius = new CornerRadius(8),
+                BorderThickness = new Thickness(1),
+                BorderBrush = Theme.Brush(NativeLook.Caution, root.ActualTheme),
+                Background = Theme.Brush(NativeLook.ControlFill, root.ActualTheme),
+            };
+            AutomationProperties.SetAutomationId(border, "island-voice-approval");
+            pane.Children.Add(border);
+        }
         if (v.Answer is { } ans)
         {
             var card = new Border
@@ -1096,14 +1172,14 @@ internal sealed partial class IslandWindow : ToolWindow
                 Padding = new Thickness(10, 6, 10, 6),
             };
             var inner = new StackPanel { Spacing = 2 };
-            var a = Text(ans.Length == 0 ? "…" : ans, 13, NativeLook.TextPrimary);
+            var a = Text(ans.Length == 0 ? "…" : ans, 13, v.Failed ? NativeLook.Critical : NativeLook.TextPrimary);
             a.TextWrapping = TextWrapping.Wrap;
             a.TextTrimming = TextTrimming.None;
-            a.MaxLines = 6;
+            a.MaxLines = v.Steps is { Count: > 0 } ? 3 : 6;
             AutomationProperties.SetAutomationId(a, "island-voice-answer");
             inner.Children.Add(a);
             var foot = Row(6);
-            foot.Children.Add(Text(v.Working ? "working…" : "done", 11, NativeLook.TextTertiary));
+            foot.Children.Add(Text(v.Working ? "working…" : v.Failed ? "failed" : "done", 11, NativeLook.TextTertiary));
             if (v.OpenUrl is { } url)
             {
                 var open = Btn("Open Ctrl+O", "Open the desk's session in theuth", () => _ = Links.Open(new Uri(url)), "island-voice-open");
@@ -1111,7 +1187,7 @@ internal sealed partial class IslandWindow : ToolWindow
                 open.MinHeight = 20;
                 foot.Children.Add(open);
             }
-            foot.Children.Add(Text("Esc hides", 11, NativeLook.TextTertiary));
+            foot.Children.Add(Text(v.Footer ?? "Esc hides", 11, NativeLook.TextTertiary));
             inner.Children.Add(foot);
             card.Child = inner;
             pane.Children.Add(card);
@@ -1119,6 +1195,32 @@ internal sealed partial class IslandWindow : ToolWindow
         if (v.Hint is { } h) pane.Children.Add(Text(h, 12, NativeLook.AccentText));
         body.Children.Add(pane);
     }
+
+    /// <summary>153: a click or a scroll on the voice view (the collapsed card) — the controller expands the card.</summary>
+    public event Action? VoiceTapped;
+
+    /// <summary>153 §10.6: the approval box's Yes / No buttons in the voice view (<c>approve</c> · <c>deny</c>).</summary>
+    public event Action<string>? VoiceAction;
+
+    /// <summary>
+    /// 153 probes: the island's XAML rendered to a PNG (RenderTargetBitmap — the tree itself, so WDA_EXCLUDEFROMCAPTURE does not blank
+    /// it); false when the island is hidden or the render failed.
+    /// </summary>
+    public async Task<bool> CapturePng(string path)
+    {
+        if (!IsShown) return false;
+        try
+        {
+            await Theuth.Companion.Ui.XamlPng.Write(root, path);
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.Write($"island: capture {path} failed: {e.GetType().Name}: {e.Message}");
+            return false;
+        }
+    }
+
 
     private Border Badge(string text, string key)
     {

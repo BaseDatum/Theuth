@@ -124,7 +124,7 @@ public sealed class AskRouterTests
     }
 }
 
-public sealed class AskVoiceTests
+public sealed partial class AskVoiceTests // 153 W153B adds the wave-B cases in AskVoiceTests.153.cs
 {
     private static readonly DateTimeOffset T0 = AskFx.T0;
 

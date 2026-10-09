@@ -376,6 +376,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             replyBox.Text = text;
             replyBox.SelectionStart = text.Length;
             replyBox.Focus(FocusState.Programmatic);
+            if (talk.SendIt) store.SubmitReplyNow(text); // 153 W153B: a spoken "send it" sends the reply now, no hold
         }
         Render(force: true);
         if (error is not null)

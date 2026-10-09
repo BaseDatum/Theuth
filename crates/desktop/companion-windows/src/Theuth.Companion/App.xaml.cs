@@ -72,6 +72,7 @@ public partial class App : Application
         askBar = AskBar.AskBarInstall.Install(Store, dispatcher, Quit);
         // 149 WW3: the native island and point-and-say (Island/, PointAndSay/, WW3Install) — after W4, before Start.
         ww3 = WW3Install.Install(Store, dispatcher); // 149 WW3
+        AnyApp.AnyAppInstall.Install(Store, dispatcher); // 153 W153D: any-app dictation (§13) — the one hookup line
         Store.Start();
     }
 

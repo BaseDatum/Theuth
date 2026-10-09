@@ -189,4 +189,105 @@ public sealed class PointMachineTests
         Assert.True(Armed(1).IsGesture && Tap1(1, 2).IsGesture && Locked(1).IsGesture && Holding(1).IsGesture);
         Assert.False(Idle.IsGesture || Sending(1).IsGesture || Replying.IsGesture);
     }
+
+    // 153 wave C (proof 16): the mode switch while holding (§10.1, R2) and the Automatic gesture (§12.6), one test each as the Swift twin.
+
+    private static PointState Toggled(ulong t0) => new PointState.Toggled(t0);
+    private static PointEvent Switch(PointMode to) => new PointEvent.SwitchMode(to);
+    private static (PointState, IReadOnlyList<PointEffect>) A(PointState st, PointEvent e, ulong now) => Step(st, e, now, null, Gesture.Automatic);
+
+    private static void ExpectAuto(PointState st, PointEvent e, ulong now, PointState state, params PointEffect[] fx)
+    {
+        var (s, effects) = A(st, e, now);
+        Assert.Equal(state, s);
+        Assert.Equal(fx, effects);
+    }
+
+    [Fact]
+    public void SwitchModeKeepsRecording()
+    {
+        // Every live state keeps its state (the recording continues) and answers one SwitchMode effect, in both gestures.
+        foreach (var st in new[] { Armed(0), Holding(0), Tap1(0, 100), Locked(0), Toggled(0) })
+        {
+            foreach (var g in new[] { Gesture.HoldLock, Gesture.Automatic })
+            {
+                var (s, fx) = Step(st, Switch(PointMode.Command), 500, null, g);
+                Assert.Equal(st, s);
+                Assert.Equal(new PointEffect[] { new PointEffect.SwitchMode(PointMode.Command) }, fx);
+            }
+        }
+        // Outside a gesture the other key's press is its own gesture: the switch is ignored, no effect.
+        foreach (var st in new[] { Idle, Sending(0), Replying }) Expect(st, Switch(PointMode.Dictate), 500, st);
+        // A hold that switched mid-way still sends at release (the destination is the driver's, by the new mode).
+        var (h, _) = S(Idle, Pressed, 0);
+        (h, _) = S(h, Tick(HoldMs), HoldMs);
+        var (h2, fx2) = S(h, Switch(PointMode.Command), 600);
+        Assert.Equal(Holding(0), h2);
+        Assert.Equal(new PointEffect[] { new PointEffect.SwitchMode(PointMode.Command) }, fx2);
+        Expect(h2, Released, 1500, Sending(0), Stop("release"));
+        // A locked gesture switched twice still sends on the next press.
+        var (l, _) = S(Locked(0), Switch(PointMode.Ask), 900);
+        (l, _) = S(l, Switch(PointMode.Command), 1000);
+        Expect(l, Pressed, 2000, Sending(0), Stop("tap"));
+    }
+
+    [Fact]
+    public void AutomaticTapTogglesHoldTalks()
+    {
+        Assert.Equal(400UL, AutomaticTapMs);
+        Assert.Equal(AutomaticTapMs, HoldThreshold(Gesture.Automatic));
+        Assert.Equal(HoldMs, HoldThreshold(Gesture.HoldLock));
+        // Press starts as always.
+        ExpectAuto(Idle, Pressed, 0, Armed(0), Start);
+        // Tap < 400 ms → toggled on (hands-free); the next press stops and sends; a too-short toggle is the short note.
+        ExpectAuto(Armed(0), Released, AutomaticTapMs - 1, Toggled(0), ShowLock);
+        ExpectAuto(Toggled(0), Pressed, 2000, Sending(0), Stop("tap"));
+        ExpectAuto(Toggled(0), Pressed, MinNoteMs - 1, Idle, Discard("short", AutomaticHint));
+        // While toggled, key-ups and ticks change nothing; Esc discards with the Automatic hint; Cancel discards quietly.
+        foreach (var e in new[] { Released, Tick(5000), PanelDone }) ExpectAuto(Toggled(0), e, 5000, Toggled(0));
+        ExpectAuto(Toggled(0), Esc, 900, Idle, Discard("esc", AutomaticHint));
+        ExpectAuto(Toggled(0), Cancel, 900, Idle, Discard("cancel", null));
+        // Hold ≥ 400 ms = push-to-talk: the tick moves to Holding only at 400 ms, release sends (or discards a short note).
+        ExpectAuto(Armed(0), Tick(HoldMs), HoldMs, Armed(0));
+        ExpectAuto(Armed(0), Tick(AutomaticTapMs), AutomaticTapMs, Holding(0));
+        ExpectAuto(Holding(0), Released, 1200, Sending(0), Stop("release"));
+        ExpectAuto(Holding(0), Released, MinNoteMs - 1, Idle, Discard("short", AutomaticHint));
+        // A late tick: the release itself decides (≥ 400 ms is a hold).
+        ExpectAuto(Armed(0), Released, 1000, Sending(0), Stop("release"));
+        ExpectAuto(Armed(0), Released, AutomaticTapMs + 10, Idle, Discard("short", AutomaticHint));
+        Assert.True(Toggled(1).IsGesture);
+        Assert.Equal("""{"state":"toggled","t0":7}""", Toggled(7).Json);
+        // The rest of the machine is shared: Sending → PanelDone → Replying → Esc conceals.
+        ExpectAuto(Sending(0), PanelDone, 3000, Replying);
+        ExpectAuto(Replying, Esc, 3100, Idle, Conceal);
+    }
+
+    [Fact]
+    public void AutomaticNoDoubleTapLock()
+    {
+        // A tap never enters Tap1 in Automatic, so a quick second press cannot lock: it ends the toggled note.
+        var (st, fx) = A(Idle, Pressed, 0);
+        (st, fx) = A(st, Released, 100);
+        Assert.Equal(Toggled(0), st);
+        Assert.Equal(new[] { ShowLock }, fx);
+        (st, fx) = A(st, Pressed, 250);
+        Assert.Equal(Idle, st);
+        Assert.Equal(new[] { Discard("short", AutomaticHint) }, fx);
+        Assert.DoesNotContain(fx, f => f is PointEffect.ShowLock);
+        // The same taps under the default gesture still lock (the 149 grammar is untouched).
+        var (h, _) = S(Idle, Pressed, 0);
+        (h, _) = S(h, Released, 100);
+        Assert.Equal(Tap1(0, 100), h);
+        (h, fx) = S(h, Pressed, 250);
+        Assert.Equal(Locked(0), h);
+        Assert.Equal(new[] { ShowLock }, fx);
+        // Follow-up (§10.5): a press while the answer is being worked on opens a new gesture only when the driver asks for it.
+        Expect(Sending(0), Pressed, 50, Sending(0));
+        var (f1, ffx) = Step(Sending(0), Pressed, 5000, null, Gesture.HoldLock, followUp: true);
+        Assert.Equal(Armed(5000), f1);
+        Assert.Equal(new[] { Start }, ffx);
+        var (f2, ffx2) = Step(Sending(0), Pressed, 5000, "meeting", Gesture.Automatic, followUp: true);
+        Assert.Equal(Sending(0), f2);
+        Assert.Equal(new PointEffect[] { new PointEffect.Refuse("meeting") }, ffx2);
+    }
 }
