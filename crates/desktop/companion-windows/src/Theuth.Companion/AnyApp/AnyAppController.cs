@@ -155,7 +155,8 @@ internal sealed class AnyAppController
         LastCapture = capture;
         Log.Write($"anyapp: press ({source}) → {Describe(capture, a)} · read {capture.ReadMs} ms");
         Counters.Gestures++;
-        bool refine = cardKind == CardKind.Rewrite && rewrite is not null && CardShown;
+        // A press while the rewrite panel is up refines it (whatever is focused — often the card itself); a locked session refuses everything.
+        bool refine = cardKind == CardKind.Rewrite && rewrite is not null && CardShown && a.Refusal != RefusalReason.Locked;
         if (a.Refused && !refine)
         {
             Counters.Refused++;
@@ -804,6 +805,7 @@ internal sealed class AnyAppController
     {
         if (cardModel is not { } m || cardCapture is not { } c || cardAssessment is not { } a) return;
         if (live is not null) { SetCardStatus("Finish the dictation first"); return; }
+        if (!lockGate.MayDeliver) { SetCardStatus("The screen is locked — nothing is typed"); return; }
         SetCardStatus("Trying again…");
         if (!await reader.RestoreFocusAsync(c))
         {
@@ -908,6 +910,7 @@ internal sealed class AnyAppController
     private async Task ReplaceAsync()
     {
         if (rewrite is not { Proposal: { Length: > 0 } proposal } state || rewriteModel is not { } m) return;
+        if (!lockGate.MayDeliver) { ShowRewrite(m with { State = "The screen is locked — nothing is typed", Failed = true }); return; }
         AnswerCardWindow.Instance?.Hide(cardGen, "replace");
         if (!await reader.RestoreFocusAsync(state.Capture))
         {
