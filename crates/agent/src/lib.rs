@@ -690,7 +690,7 @@ pub struct EscalateModel {
 
 // 57 §2 side-call types live in `runtime` (00 §10: `decision` sits below `agent`); re-exported
 // so `agent::SideCall` etc. keep working.
-pub use runtime::side_call::{ModelRole, SideCall, SideReply};
+pub use runtime::side_call::{ModelRole, SideCall, SideCallable, SideReply};
 
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.subagents.model`
 /// and use it for every child spawned without an explicit `model`; the system

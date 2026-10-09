@@ -690,18 +690,29 @@ pub async fn stale_count(pool: &SqlitePool) -> anyhow::Result<i64> {
     )
 }
 
-/// `(generated perspectives, structure elements without prose inside generated perspectives, errored elements)`:
+/// SQL over alias `e`: the elements stage C describes (§6.2) — depth ≥ 1,
+/// not a bundle or a file, a depth-1 row or one that opens a diagram. The one
+/// predicate `generator_write::pending_prose` and [`state_counts`] share, so a
+/// finished run reads `ready`, never `partial` over a leaf nobody describes.
+pub const DESCRIBED_SQL: &str =
+    "e.depth >= 1 AND e.kind NOT IN ('bundle', 'file') AND (e.depth = 1 OR e.diagram IS NOT NULL)";
+/// SQL over alias `e`: no prose yet.
+pub const NO_PROSE_SQL: &str = "(e.description IS NULL OR e.description = '')";
+
+/// `(generated perspectives, described-kind elements without prose inside generated perspectives, errored elements)`:
 /// what `MapMeta.state` is decided from.
 pub async fn state_counts(pool: &SqlitePool) -> anyhow::Result<(i64, i64, i64)> {
-    Ok(sqlx::query_as(
+    // Composed from two `const` fragments, no caller input.
+    let sql = format!(
         "SELECT \
            (SELECT count(*) FROM perspectives WHERE origin = 'generated'), \
            (SELECT count(*) FROM elements e JOIN perspectives p ON p.id = e.perspective \
-              WHERE p.origin = 'generated' AND e.origin = 'structure' AND e.kind NOT IN ('bundle', 'file')), \
-           (SELECT count(*) FROM elements WHERE error IS NOT NULL)",
-    )
-    .fetch_one(pool)
-    .await?)
+              WHERE p.origin = 'generated' AND {DESCRIBED_SQL} AND {NO_PROSE_SQL}), \
+           (SELECT count(*) FROM elements WHERE error IS NOT NULL)"
+    );
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .fetch_one(pool)
+        .await?)
 }
 
 /// One `jobs` row as `running_job` reads it.

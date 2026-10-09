@@ -397,6 +397,8 @@ mod tests {
                 input_tokens: Some(10),
                 output_tokens: Some(5),
                 latency: Duration::from_millis(3),
+                cost_nanos: None,
+                request_id: None,
             });
             Box::pin(async move { reply.map_err(str::to_owned) })
         })

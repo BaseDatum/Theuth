@@ -13,7 +13,7 @@ use crate::config::{BriefConfig, GateConfig};
 use crate::error::Result;
 use crate::store::{ExperimentRecord, Store, StudyRecord};
 use crate::types::{
-    Brief, Direction, Effect, ExperimentState, IdeaSource, IdeaStatus, Sample, SampleRole,
+    Brief, By, Direction, Effect, ExperimentState, IdeaSource, IdeaStatus, Sample, SampleRole,
     StudySpec,
 };
 
@@ -83,7 +83,7 @@ pub async fn render(
         .count();
 
     let x_i = study.incumbent_mean;
-    let base = segment.as_ref().and_then(|s| s.baseline_mean);
+    let base = store.base_mean(slug).await?;
     let closed: Vec<&ExperimentRecord> =
         experiments.iter().filter(|e| is_closed(e.state)).collect();
     let kept: Vec<&ExperimentRecord> = closed
@@ -100,6 +100,14 @@ pub async fn render(
     out.push_str(&format!("Goal: {}\n", spec.goal.trim()));
     out.push_str(&metric_line(spec, x_i, base, kept.len(), closed.len()));
     out.push_str(&noise_line(spec, study.sigma, x_i, n_i, &cx.gate));
+    if let Some(seg) = segment.as_ref().filter(|s| s.segment > 0) {
+        out.push_str(&format!(
+            "Segment {}: opened {} — {}. Earlier experiments stay listed but left the statistics.\n",
+            seg.segment,
+            if seg.opened_by == By::Plugin { "automatically" } else { "by the user" },
+            one_line(seg.reason.as_deref().unwrap_or("no reason given"))
+        ));
+    }
     out.push_str(&format!(
         "Scope: {}. Never keep changes to: {}. Evaluator files (refused if changed): {}.\n",
         list_or_none(&spec.scope),
@@ -508,13 +516,12 @@ fn metric_line(
     let unit = &spec.metric.unit;
     let incumbent = match (x_i, base) {
         (Some(x), Some(b)) if b != 0.0 => {
-            // Direction-normalised like every row's `delta_pct`: + = better.
+            let raw = (x - b) / b.abs() * 100.0;
             format!(
-                "Incumbent {} {unit} = {} vs base",
+                "Incumbent {} {unit} = {} vs base{}",
                 num(x),
-                pct(Some(
-                    crate::gate::normalise(spec.metric.direction, x, b) / b.abs() * 100.0
-                ))
+                pct(Some(raw)),
+                direction_word(spec.metric.direction, raw)
             )
         }
         (Some(x), _) => format!("Incumbent {} {unit} (vs base unknown)", num(x)),
@@ -524,6 +531,17 @@ fn metric_line(
         "Metric: {} ({unit}, {dir} is better). {incumbent}, after {kept} keeps in {total} experiments.\n",
         spec.metric.name
     )
+}
+
+/// The one Δ convention (140 §5.2 Revision 2): Δ is the raw relative change, negative when
+/// the value went down; better/worse is a word from the metric's direction, never a sign flip.
+fn direction_word(direction: Direction, raw_pct: f64) -> &'static str {
+    match (direction, raw_pct) {
+        (_, p) if p == 0.0 || !p.is_finite() => "",
+        (Direction::Lower, p) if p < 0.0 => " (better)",
+        (Direction::Higher, p) if p > 0.0 => " (better)",
+        _ => " (worse)",
+    }
 }
 
 fn noise_line(
@@ -937,7 +955,7 @@ mod tests {
         for needle in [
             "<study slug=\"sort-speed\" experiment=\"39\" segment=\"0\">",
             "Goal: Make parse+render",
-            "Metric: time_ms (ms, lower is better). Incumbent 41.2 ms = +2.6 % vs base, after 4 keeps in 38 experiments.",
+            "Metric: time_ms (ms, lower is better). Incumbent 41.2 ms = −2.6 % vs base (better), after 4 keeps in 38 experiments.",
             "Noise: sigma 0.42 ms (1.02 %). A keep needs about",
             "or a confirmed 2-sigma gain.",
             "Scope: lib/liquid/**. Never keep changes to: fixtures/**, test/**. Evaluator files (refused if changed): fixtures/, test/, Rakefile.",
@@ -970,6 +988,42 @@ mod tests {
         }
         // The ★ marks only the user idea (plus the section header's legend).
         assert_eq!(b.text.matches('★').count(), 2);
+    }
+
+    /// 140-P2 live: on a regime segment the metric line read `+0 % vs base` — the Δ was taken
+    /// against the new segment's baseline (= the keep). "Base" is the study base (segment 0);
+    /// the segment line names the regime change.
+    #[tokio::test]
+    async fn vs_base_reads_the_study_base_on_a_later_segment() {
+        let (_d, store, mut study) = fixture(2, 0, 0, 0).await;
+        study.segment = 1;
+        store
+            .put_segment(&SegmentRecord {
+                slug: "sort-speed".into(),
+                segment: 1,
+                opened_at: "2026-10-08T01:00:00Z".into(),
+                opened_by: By::Plugin,
+                reason: Some("regime change at #1: Δ 1.1 ms ≥ 10σ (σ 0.10)".into()),
+                custody: Default::default(),
+                baseline_mean: Some(41.2),
+                baseline_n: 2,
+            })
+            .await
+            .unwrap();
+        let b = render(&store, &study, &BriefConfig::default(), &cx(3))
+            .await
+            .unwrap();
+        for needle in [
+            "segment=\"1\">",
+            "Incumbent 41.2 ms = −2.6 % vs base (better)",
+            "Segment 1: opened automatically — regime change at #1: Δ 1.1 ms ≥ 10σ (σ 0.10). Earlier experiments stay listed but left the statistics.",
+        ] {
+            assert!(
+                b.text.contains(needle),
+                "missing {needle:?} in:\n{}",
+                b.text
+            );
+        }
     }
 
     /// Dead ends collapse by similarity with ×N and group by category.
@@ -1266,5 +1320,29 @@ mod tests {
         assert_eq!(num(0.4211), "0.421");
         assert_eq!(num(1234.56), "1234.6");
         assert_eq!(trim_float(1.5, 2), "1.5");
+    }
+
+    /// Revision 2: one Δ convention — raw change, the direction decides the word.
+    #[test]
+    fn metric_line_reads_the_raw_change_with_the_direction_word() {
+        let mut spec = StudySpec {
+            metric: MetricSpec {
+                name: "time_ms".into(),
+                unit: "ms".into(),
+                direction: Direction::Lower,
+                min_effect: "0.5%".into(),
+            },
+            ..StudySpec::default()
+        };
+        let lower = metric_line(&spec, Some(39.0), Some(8996.0), 1, 2);
+        assert!(lower.contains("= −99.6 % vs base (better)"), "{lower}");
+        let worse = metric_line(&spec, Some(44.0), Some(40.0), 0, 2);
+        assert!(worse.contains("= +10 % vs base (worse)"), "{worse}");
+        spec.metric.direction = Direction::Higher;
+        spec.metric.name = "ops".into();
+        let higher = metric_line(&spec, Some(44.0), Some(40.0), 1, 2);
+        assert!(higher.contains("= +10 % vs base (better)"), "{higher}");
+        assert_eq!(direction_word(Direction::Higher, -1.0), " (worse)");
+        assert_eq!(direction_word(Direction::Lower, 0.0), "");
     }
 }

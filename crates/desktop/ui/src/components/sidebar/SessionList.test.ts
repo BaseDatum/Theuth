@@ -57,6 +57,14 @@ test('a desk session never appears in the chat list — pinned, archived, in a p
   expect(keys(buildRows([...sessions, child, grandchild], ['d1cc'], new Set(), true)).filter((k) => !k.startsWith('h:'))).toEqual(['p:beta', 'a'])
 })
 
+test('an autoresearch study session (`autoresearch-<slug>`) and its wave children never appear in the chat list, even when open (140 §13 Revision 2)', () => {
+  const study = { ...s('st', null, '2026-01-05T00:00:00Z'), title: 'autoresearch-sort-a3' }
+  const child = { ...s('stc', null, '2026-01-06T00:00:00Z'), parent: 'st' }
+  const sessions = [study, child, s('a', null, '2026-01-01T00:00:00Z'), { ...s('b', null, '2026-01-02T00:00:00Z'), title: 'autoresearch plans' }]
+  const rows = buildRows(sessions, ['stc'], new Set(), true)
+  expect(keys(rows).filter((k) => !k.startsWith('h:'))).toEqual(['b', 'a'])
+})
+
 test('archived roots leave the groups for one collapsed Archived header at the bottom; open, they list newest first with their open tree; no orphans', () => {
   const sessions = [
     s('a', null, '2026-01-03T00:00:00Z'),

@@ -414,12 +414,15 @@ pub fn baseline(
         advised,
         consult,
         true,
+        &std::env::current_dir().unwrap_or_default(),
     )
 }
 
 /// [`baseline`] with the `Date:` line optional: an endless session (137
 /// §7.3) keeps its system prompt byte-identical across days and carries the
-/// date in the turn's input block instead (the `<time …/>` stamp).
+/// date in the turn's input block instead (the `<time …/>` stamp). `cwd` is
+/// the session's working directory (140 F4E: a seated session names its
+/// own, not the process's).
 #[allow(clippy::too_many_arguments)]
 pub fn baseline_dated(
     data_dir: &Path,
@@ -432,10 +435,9 @@ pub fn baseline_dated(
     advised: bool,
     consult: bool,
     dated: bool,
+    cwd: &Path,
 ) -> String {
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
+    let cwd = cwd.display();
     let (persona, standing) = match identity {
         Some(id) => (id, String::new()),
         None => (

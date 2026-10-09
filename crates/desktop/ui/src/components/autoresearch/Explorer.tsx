@@ -14,7 +14,7 @@ import { KEY, useAutoresearchEvents, useStudies } from './queries'
 const route = getRouteApi('/autoresearch')
 
 /**
- * `/autoresearch` (140 R1-D4): the Library band over two panes, the Artifacts/Knowledge frame (97b) — a 300 px rail
+ * `/autoresearch` (140; Agents tab next to Routines since Sky's 2026-10-08 23:58 ruling): the Agents band over two panes, the Artifacts/Knowledge frame (97b) — a 300 px rail
  * (filter + Refresh, the studies) and the Study view outlet. Under `md` one pane at a time.
  */
 export function Explorer() {
@@ -26,7 +26,7 @@ export function Explorer() {
   useAutoresearchEvents()
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <SectionBand group="library" />
+      <SectionBand group="agents" />
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <aside className={cn('w-full shrink-0 flex-col border-r border-border-subtle md:flex md:w-[300px]', active ? 'hidden' : 'flex')}>
           <SectionRow>

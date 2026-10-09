@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
 import { studies } from './fixtures'
-import { budgetBars, chartOutcome, clock, filterRuns, fraction, holdoutSummary, keepNeedsPct, layout, matches, metric, outcome, outcomeLabel, pct, phaseChips, phaseText, reviewWord, rowDuration, sigmas, sortStudies, stateLabel, tally, ticks } from './model'
+import { budgetBars, chartOutcome, clock, delta, filterRuns, fraction, holdoutSummary, keepNeedsPct, layout, matches, metric, outcome, outcomeLabel, pct, phaseChips, phaseText, reviewWord, rowDuration, sigmas, sortStudies, stateLabel, tally, ticks } from './model'
 
 const row = (over: Partial<ExperimentRow>): ExperimentRow => ({
   slug: 's',
@@ -143,11 +143,22 @@ test('holdout summary means the samples of each checkpoint (R-89) and the keep t
   expect(d.series.holdout.filter((h) => h.n === 0)).toHaveLength(3)
   expect(holdoutSummary(d.series)).toEqual({ base: expect.closeTo(61, 5), latest: expect.closeTo(49.7, 5), delta_pct: expect.closeTo(-18.52, 1), n: 31 })
   expect(holdoutSummary({ holdout: [] })).toBeNull()
+  // 140 §13 Revision 2: the base's checkpoint alone is not a result — never "4,375 → 4,375 (0.0 %)".
+  expect(holdoutSummary({ holdout: d.series.holdout.filter((h) => h.n === 0) })).toBeNull()
   // 2σ√2 over the incumbent: 2·0.42·1.414 / 41.2 = 2.9 %; the relative min_effect 0.5 % is below it.
   expect(keepNeedsPct(0.42, 41.2, '0.5%')).toBeCloseTo(2.88, 1)
   // An absolute min_effect of 2 ms over 41.2 ms = 4.9 % wins over the noise term.
   expect(keepNeedsPct(0.42, 41.2, '2')).toBeCloseTo(4.85, 1)
   expect(keepNeedsPct(null, 41.2, '0.5%')).toBeNull()
+})
+
+test('one Δ convention (140 §5.2 Revision 2): the raw sign is shown; better/worse comes from the direction', () => {
+  expect(delta('lower', -99.6)).toEqual({ text: '−99.6 %', word: 'better', tone: 'success' })
+  expect(delta('lower', 4)).toEqual({ text: '+4.0 %', word: 'worse', tone: 'danger' })
+  expect(delta('higher', 4)).toEqual({ text: '+4.0 %', word: 'better', tone: 'success' })
+  expect(delta('higher', -2.63)).toEqual({ text: '−2.6 %', word: 'worse', tone: 'danger' })
+  expect(delta('lower', 0)).toEqual({ text: '0.0 %', word: '', tone: 'muted' })
+  expect(delta('lower', null)).toEqual({ text: '—', word: '', tone: 'muted' })
 })
 
 test('rail order and filter: live states first, newest within; slug or goal matches', () => {

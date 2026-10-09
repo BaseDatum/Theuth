@@ -732,16 +732,21 @@ async fn study_spend_or_closed(env: &Env, study: &StudyRecord) -> f64 {
         Ok(v) => v,
         Err(e) => {
             tracing::debug!(slug = %study.slug, "live spend unavailable: {e}");
-            env.store
-                .list_experiments(&study.slug, None, u32::MAX)
-                .await
-                .unwrap_or_default()
-                .iter()
-                .filter(|e| is_closed(e))
-                .map(|e| e.cost_nanos as f64 / 1e9)
-                .sum()
+            closed_spend(env, &study.slug).await
         }
     }
+}
+
+/// Σ `cost_nanos` of the closed experiments, in USD (no agent ask).
+async fn closed_spend(env: &Env, slug: &str) -> f64 {
+    env.store
+        .list_experiments(slug, None, u32::MAX)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| is_closed(e))
+        .map(|e| e.cost_nanos as f64 / 1e9)
+        .sum()
 }
 
 /// Review reverts the user already acted on (`restore` or `kept_reverted` events): no row, no needs-eyes line.
@@ -1003,11 +1008,9 @@ async fn check_overfit(
     let holdout_delta = gate::normalise(direction, mean(incumbent_holdout), mean(&base_holdout));
     let search_delta = match (
         study.incumbent_mean,
-        env.store.get_segment(&study.slug, study.segment).await?,
+        env.store.base_mean(&study.slug).await?,
     ) {
-        (Some(inc), Some(seg)) => seg
-            .baseline_mean
-            .map(|b| gate::normalise(direction, inc, b)),
+        (Some(inc), Some(b)) => Some(gate::normalise(direction, inc, b)),
         _ => None,
     };
     if holdout_delta < -2.0 * sigma && search_delta.is_some_and(|d| d > 0.0) {
@@ -1120,8 +1123,10 @@ fn info_from(
     spend: f64,
     hours: f64,
 ) -> StudyInfo {
+    // Revision 2: the raw relative change (negative = the value went down), like every
+    // other Δ; the UI words/colours it from the metric's direction.
     let delta_pct = match (study.incumbent_mean, base_mean) {
-        (Some(i), Some(b)) => pct(gate::normalise(study.spec.metric.direction, i, b), b),
+        (Some(i), Some(b)) => pct(i - b, b),
         _ => None,
     };
     let (current, phase) =
@@ -1170,13 +1175,11 @@ fn info_from(
 /// `StudyInfo` with counts, base and spend filled from the ledger.
 pub async fn info_full(env: &Env, study: &StudyRecord) -> Result<StudyInfo> {
     let (closed, kept) = counts(&env.store, &study.slug).await?;
-    let base_mean = env
-        .store
-        .get_segment(&study.slug, study.segment)
-        .await?
-        .and_then(|s| s.baseline_mean);
+    let base_mean = env.store.base_mean(&study.slug).await?;
+    // A finished study has no live tree to ask (R-115: no agent ask per `autoresearch.list`
+    // row), but its closed experiments' cost is a ledger sum — $0 was wrong (140-P live).
     let spend = if is_terminal(&study.state) {
-        0.0
+        closed_spend(env, &study.slug).await
     } else {
         study_spend_or_closed(env, study).await
     };
@@ -1221,6 +1224,12 @@ async fn set_state_if(
         return Ok(false);
     }
     p.apply_to(study);
+    // F4E: a study that is over releases its session's seat (write root, cwd).
+    if is_terminal(&state)
+        && let Some(s) = study.session
+    {
+        crate::binding::unseat(s);
+    }
     env.publish(StudyEvent::StudyChanged {
         slug: study.slug.clone(),
         state,
@@ -1637,6 +1646,12 @@ fn validate(spec: &StudySpec, cfg: &AutoresearchConfig) -> Result<()> {
 /// pipeline (worktree → warm → custody → baseline → σ → schedule file →
 /// running → start card) runs off the mailbox; failures end in `failed`.
 pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
+    // Windows (2026-10-09, found by the 134/149 session): every bench/check/holdout command
+    // runs under `/bin/bash -lc`, which a stock Windows box does not have — refuse honestly
+    // before anything is written. `cfg!` keeps the rest compiled (no Windows-only dead code).
+    if cfg!(windows) {
+        return Err(Error::refused(crate::WINDOWS_UNSUPPORTED));
+    }
     let env = a.env();
     validate(&m.spec, &env.cfg)?;
     // 140-P live: `spawn_subagent` is gated by `agent.communication` (50 §2.1); without it
@@ -1735,11 +1750,15 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     let head = env
         .backend
         .worktree_add(&repo, &spec, &worktree, &base_sha)?;
+    // The study's base is the worktree's HEAD after `worktree_add`: with `include_dirty`
+    // that is the `base snapshot` commit — the tree the baseline measures, the overfit
+    // check's base holdout and finalize's "base vs final" / cherry-pick target
+    // (140-P live: the resolved HEAD left the dirty changes out of all three).
     patch(
         env,
         study,
         StudyPatch {
-            base_sha: Some(base_sha.clone()),
+            base_sha: Some(head.clone()),
             branch: Some(format!("autoresearch/{slug}")),
             worktree: Some(worktree.display().to_string()),
             incumbent_sha: Some(head.clone()),
@@ -2300,10 +2319,15 @@ fn append_block(brief: &mut Brief, block: &str, max_bytes: usize) {
 }
 
 /// `Begin{slot}` from a wave child (140 §10 step 2): bind the child to its
-/// slot and return the study brief for the slot's experiment plus its `<slot>` block.
+/// slot, seat it in the slot worktree (F4E: its writes cannot reach the study
+/// tree or the user's checkout), and return the study brief for the slot's
+/// experiment plus its `<slot>` block.
 async fn begin_slot(env: &Env, session: SessionId, slot: u8) -> Result<Brief> {
     crate::wave::bind_slot(session, slot);
-    let (study, exp, _) = crate::wave::resolve_env(env, session, slot).await?;
+    let (study, exp, dir) = crate::wave::resolve_env(env, session, slot).await?;
+    if crate::wave::is_child(session) {
+        crate::binding::seat(session, &dir);
+    }
     let slug = study.slug.clone();
     let wave = exp.wave.unwrap_or(0);
     let slots = crate::wave::slots_of(env, &slug, wave).await?;
@@ -3345,6 +3369,11 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
             Err(e) => tracing::warn!(%slug, n, "holdout failed: {e}"),
         }
     }
+    // §5.3 Revision 2: a regime change restarts the segment at this keep (slot keeps
+    // are judged at promotion, `wave::promote_env`).
+    if exp.state == ExperimentState::Kept && m.slot.is_none() {
+        regime_segment(env, &study, &exp).await;
+    }
     let spend = study_spend_or_closed(env, &study).await;
     report.applied = exp.state;
     report.incumbent = Incumbent {
@@ -3384,15 +3413,11 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
 
 /// `Autoresearch-Metric: time_ms 42.3 -> 41.2 (-2.6%, 3.1 sigma, n=3)`.
 pub(crate) fn metric_line(study: &StudyRecord, exp: &ExperimentRecord) -> String {
-    // §6: `42.3 -> 41.2 (-2.6%)` — the raw relative change between the two numbers, so a
-    // lower-is-better win reads negative (the ledger's `delta_pct` is direction-normalised,
-    // positive = better; 140-P live wrote `8996 -> 39.0 (+99.6%)`).
+    // §6: `42.3 -> 41.2 (-2.6%)` — the raw relative change, the one Δ convention (Revision 2;
+    // 140-P live wrote `8996 -> 39.0 (+99.6%)` when the ledger was direction-normalised).
     let raw_pct = match (study.incumbent_mean, exp.metric) {
         (Some(a), Some(b)) if a != 0.0 => (b - a) / a.abs() * 100.0,
-        _ => match study.spec.metric.direction {
-            Direction::Lower => -exp.delta_pct.unwrap_or(0.0),
-            Direction::Higher => exp.delta_pct.unwrap_or(0.0),
-        },
+        _ => exp.delta_pct.unwrap_or(0.0),
     };
     format!(
         "{} {} -> {} ({raw_pct:+.1}%, {} sigma, n={})",
@@ -3917,6 +3942,9 @@ pub async fn finalize_task(env: Env, slug: String) {
             match env.store.patch_study(&slug, &p).await {
                 Ok(()) => {
                     p.apply_to(&mut study);
+                    if let Some(s) = study.session {
+                        crate::binding::unseat(s);
+                    }
                     env.publish(StudyEvent::StudyChanged {
                         slug: slug.clone(),
                         state: StudyState::Finished,
@@ -4029,18 +4057,15 @@ async fn report_turn(env: &Env, study: &StudyRecord, doc: &str) -> Result<()> {
     Ok(())
 }
 
-/// Finalize's changesets, as W2 records them (`events.kind = "changeset"`, payload = `Changeset`).
+/// Finalize's changesets as W2 records them: the `finalize` event whose `step` is
+/// `changesets` (`finalize::changesets`). 140-P live: this read `events.kind =
+/// "changeset"`, which nothing writes — the result card and `StudyDetail.changesets`
+/// were always empty ("No changeset cleared the gate") while the report had them.
 async fn changesets_of(env: &Env, slug: &str) -> Vec<Changeset> {
-    let mut out: Vec<Changeset> = env
-        .store
-        .list_events(slug, Some("changeset"), 200)
+    let mut out = crate::finalize::changesets(&env.store, slug)
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|e| serde_json::from_value(e.payload).ok())
-        .collect();
+        .unwrap_or_default();
     out.sort_by_key(|c: &Changeset| c.k);
-    out.dedup_by_key(|c| c.k);
     out
 }
 
@@ -4455,84 +4480,210 @@ pub async fn control_env(env: &Env, m: Control) -> Result<StudyInfo> {
     info_full(&env, &study).await
 }
 
+/// What a new segment's baseline is (140 §5.3): a user-opened segment measures the
+/// incumbent afresh; a regime change (Revision 2) reuses the keep's own samples.
+enum SegmentBaseline {
+    Measure,
+    /// The keep at experiment `n` whose |Δ| ≥ `regime_sigma` × σ; `sigma` and `delta`
+    /// are recorded on the `segment_auto` event.
+    Keep {
+        n: u32,
+        sigma: f64,
+        delta: f64,
+    },
+}
+
 /// `Segment`: new custody + baseline on the incumbent; σ restarts (140 §5.3).
-async fn segment_task(env: Env, mut study: StudyRecord, reason: String, by: By) {
+async fn segment_task(env: Env, study: StudyRecord, reason: String, by: By) {
     let slug = study.slug.clone();
-    let r: Result<()> = async {
-        let segment = study.segment + 1;
-        let evaluator = env.evaluator_dir(&slug, segment);
-        let worktree = worktree_of(&study)?;
-        // The worktree is what `custody::verify` hashes (R-7), never the user's moving checkout.
-        let custody = env
-            .backend
-            .custody_take(&study.spec, &worktree, &evaluator)?;
-        let mut seg = SegmentRecord {
-            slug: slug.clone(),
-            segment,
-            opened_at: now(),
-            opened_by: by,
-            reason: Some(reason),
-            custody,
-            baseline_mean: None,
-            baseline_n: 0,
-        };
-        env.store.put_segment(&seg).await?;
-        patch(
-            &env,
-            &mut study,
-            StudyPatch {
-                segment: Some(segment),
-                ..StudyPatch::default()
-            },
-        )
-        .await?;
-        let incumbent = incumbent_of(&study)?;
-        let values = baseline(
-            &env,
-            &study,
-            &incumbent,
-            0,
-            SampleRole::Baseline,
-            &cancel_token(&env.root, &slug),
-        )
-        .await?;
-        seg.baseline_mean = Some(mean(&values));
-        seg.baseline_n = values.len() as u32;
-        env.store.put_segment(&seg).await?;
-        let sigma = segment_sigma(&env, &study).await?;
-        patch(
-            &env,
-            &mut study,
-            StudyPatch {
-                incumbent_mean: Some(Some(mean(&values))),
-                sigma: Some(Some(sigma)),
-                ..StudyPatch::default()
-            },
-        )
-        .await?;
-        env.store
-            .append_event(&slug, "segment", &serde_json::json!({ "segment": segment }))
-            .await?;
-        env.publish(StudyEvent::StudyChanged {
-            slug: slug.clone(),
-            state: study.state.clone(),
-            reason: Some(format!("segment {segment} opened")),
-        })
-        .await;
-        Ok(())
-    }
-    .await;
+    let r = open_segment(&env, study, reason, by, SegmentBaseline::Measure).await;
+    segment_outcome(&env, &slug, r).await;
+}
+
+/// A segment that failed to open is an incident, never a failed call.
+async fn segment_outcome(env: &Env, slug: &str, r: Result<()>) {
     if let Err(e) = r {
         tracing::warn!(%slug, "segment not opened: {e}");
         let _ = env
             .store
             .append_event(
-                &slug,
+                slug,
                 "incident",
                 &serde_json::json!({ "what": format!("segment failed: {e}") }),
             )
             .await;
     }
+}
+
+/// §5.3 Revision 2: a keep whose |Δ| ≥ `gate.regime_sigma` × σ moved the metric to a
+/// scale where the old absolute σ is blind (140-P live: 8996 → 39 ms with σ ≈ 500 ms),
+/// so the segment restarts at the keep. σ comes from the keep's own samples plus later
+/// incumbent samples; while no tree has two samples, σ is 0 and the gate's cold-start
+/// path (one incumbent re-measure before any judgement, R-25) applies. A deterministic
+/// metric (σ = 0) has no regime.
+pub(crate) async fn regime_segment(env: &Env, study: &StudyRecord, exp: &ExperimentRecord) {
+    let k = env.cfg.gate.regime_sigma;
+    let (Some(sigma), Some(delta)) = (study.sigma, exp.delta) else {
+        return;
+    };
+    if k <= 0.0 || sigma <= 0.0 || delta.abs() < k * sigma {
+        return;
+    }
+    let reason = format!(
+        "regime change at #{}: Δ {} {} ≥ {k}σ (σ {})",
+        exp.n,
+        fmt_num(delta),
+        study.spec.metric.unit,
+        fmt_num(sigma)
+    );
+    let r = open_segment(
+        env,
+        study.clone(),
+        reason,
+        By::Plugin,
+        SegmentBaseline::Keep {
+            n: exp.n,
+            sigma,
+            delta,
+        },
+    )
+    .await;
+    segment_outcome(env, &study.slug, r).await;
+}
+
+async fn open_segment(
+    env: &Env,
+    mut study: StudyRecord,
+    reason: String,
+    by: By,
+    baseline_from: SegmentBaseline,
+) -> Result<()> {
+    let slug = study.slug.clone();
+    let segment = study.segment + 1;
+    let evaluator = env.evaluator_dir(&slug, segment);
+    let worktree = worktree_of(&study)?;
+    // The worktree is what `custody::verify` hashes (R-7), never the user's moving checkout.
+    let custody = env
+        .backend
+        .custody_take(&study.spec, &worktree, &evaluator)?;
+    let incumbent = incumbent_of(&study)?;
+    // A regime segment opens at the keep's first sample so `incumbent_samples` and
+    // `segment_sigma` (both cut at `opened_at`) see the keep's own samples.
+    let opened_at = match &baseline_from {
+        SegmentBaseline::Measure => now(),
+        SegmentBaseline::Keep { n, .. } => env
+            .store
+            .list_samples(&slug, Some(*n))
+            .await?
+            .into_iter()
+            .filter(|s| s.tree_sha == incumbent)
+            .map(|s| s.at)
+            .min()
+            .unwrap_or_else(now),
+    };
+    let mut seg = SegmentRecord {
+        slug: slug.clone(),
+        segment,
+        opened_at,
+        opened_by: by,
+        reason: Some(reason.clone()),
+        custody,
+        baseline_mean: None,
+        baseline_n: 0,
+    };
+    env.store.put_segment(&seg).await?;
+    patch(
+        env,
+        &mut study,
+        StudyPatch {
+            segment: Some(segment),
+            ..StudyPatch::default()
+        },
+    )
+    .await?;
+    let mut values = match &baseline_from {
+        SegmentBaseline::Measure => {
+            baseline(
+                env,
+                &study,
+                &incumbent,
+                0,
+                SampleRole::Baseline,
+                &cancel_token(&env.root, &slug),
+            )
+            .await?
+        }
+        SegmentBaseline::Keep { .. } => {
+            bench_values(&incumbent_samples(env, &study, &incumbent).await?)
+        }
+    };
+    if let SegmentBaseline::Keep { n, .. } = &baseline_from
+        && values.len() < 2
+    {
+        // A regime keep with one clean sample (possible only below `z_suspicious`, or
+        // when its confirm samples were noisy) leaves σ inestimable, and a σ of 0 would
+        // read as a deterministic metric; spend the R-25 re-measure now instead of at
+        // the next experiment's start.
+        let worktree = worktree_of(&study)?;
+        let runs = env.runs_dir(&slug, *n);
+        let s = scored_sample(
+            env,
+            &study.spec,
+            SampleRequest {
+                slug: &slug,
+                n: *n,
+                k: 150,
+                tree_sha: &incumbent,
+                role: SampleRole::Incumbent,
+                worktree: &worktree,
+                evaluator: &env.evaluator_dir(&slug, segment),
+                runs_dir: &runs,
+            },
+            &cancel_token(&env.root, &slug),
+            None,
+        )
+        .await?;
+        if let Some(v) = s.value
+            && !s.noisy
+            && !s.lost
+        {
+            values.push(v);
+        }
+    }
+    let baseline_mean = if values.is_empty() {
+        study.incumbent_mean
+    } else {
+        Some(mean(&values))
+    };
+    seg.baseline_mean = baseline_mean;
+    seg.baseline_n = values.len() as u32;
+    env.store.put_segment(&seg).await?;
+    let sigma = segment_sigma(env, &study).await?;
+    patch(
+        env,
+        &mut study,
+        StudyPatch {
+            incumbent_mean: Some(baseline_mean),
+            sigma: Some(Some(sigma)),
+            ..StudyPatch::default()
+        },
+    )
+    .await?;
+    let (kind, payload) = match baseline_from {
+        SegmentBaseline::Measure => ("segment", serde_json::json!({ "segment": segment })),
+        SegmentBaseline::Keep { n, sigma, delta } => (
+            "segment_auto",
+            serde_json::json!({ "segment": segment, "n": n, "sigma": sigma, "delta": delta, "reason": reason }),
+        ),
+    };
+    env.store.append_event(&slug, kind, &payload).await?;
+    env.publish(StudyEvent::StudyChanged {
+        slug: slug.clone(),
+        state: study.state.clone(),
+        reason: Some(format!("segment {segment} opened")),
+    })
+    .await;
+    Ok(())
 }
 
 // ───────────────────────────── reads ─────────────────────────────
@@ -4604,11 +4755,15 @@ async fn chart_series(env: &Env, study: &StudyRecord) -> Result<ChartSeries> {
         }
     }
     // Holdout: one point per run (the mean of its clean samples), not one per sample (R-89).
+    // Finalize writes its holdout samples at n = 0 too (§11.1); only the base tree's belong
+    // to the base point — the final tree's are the headline's (`StudyDetail.final_holdout`).
+    let base_sha = study.base_sha.as_deref().unwrap_or_default();
     let mut holdout: BTreeMap<u32, (Vec<f64>, String)> = BTreeMap::new();
     for s in env.store.list_samples(&study.slug, None).await? {
         if s.role == Some(SampleRole::Holdout)
             && !s.noisy
             && !s.lost
+            && (s.n > 0 || s.tree_sha == base_sha)
             && let Some(v) = s.value
         {
             let e = holdout
@@ -4692,12 +4847,23 @@ pub async fn detail_env(env: &Env, m: Detail) -> Result<StudyDetail> {
         }
     }
     for e in env.store.list_events(&study.slug, None, 500).await? {
+        let p = |k: &str| e.payload.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
         match e.kind.as_str() {
             "overfit" => needs_eyes.push(format!("holdout says overfit ({})", e.at)),
             "drift" => needs_eyes.push(format!(
                 "incumbent drift at experiment {} ({})",
-                e.payload.get("n").and_then(|v| v.as_u64()).unwrap_or(0),
+                p("n"),
                 e.at
+            )),
+            // §5.3 Revision 2: the Study view says the segment opened itself and why.
+            "segment_auto" => needs_eyes.push(format!(
+                "segment {} opened automatically at #{} — {}; σ restarted from the keep's samples",
+                p("segment"),
+                p("n"),
+                e.payload
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("regime change")
             )),
             _ => {}
         }
@@ -4713,6 +4879,17 @@ pub async fn detail_env(env: &Env, m: Detail) -> Result<StudyDetail> {
         let text = env.backend.tail(&newest.path());
         (!text.is_empty()).then_some(text)
     });
+    // §11.1: finalize's holdout line (`61.0 → 49.7 (−18.5 %)`) for the Study view's summary
+    // once the study is finished — its samples sit at n = 0 beside the base's (Revision 2).
+    let final_holdout = if is_terminal(&study.state) {
+        crate::finalize::report(&env.store, &study.slug)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| r.headline.holdout)
+    } else {
+        None
+    };
     Ok(StudyDetail {
         info,
         spec: study.spec.clone(),
@@ -4723,6 +4900,7 @@ pub async fn detail_env(env: &Env, m: Detail) -> Result<StudyDetail> {
         changesets,
         needs_eyes,
         tail,
+        final_holdout,
     })
 }
 
@@ -4866,6 +5044,9 @@ pub async fn recover(env: &Env) -> Result<()> {
                 if let Some(session) = study.session
                     && let Some(agents) = agents()
                 {
+                    if let Some(w) = study.worktree.as_deref() {
+                        crate::binding::seat(session, Path::new(w));
+                    }
                     let _ = agents
                         .ask(agent::SetToolset {
                             session,
@@ -4970,18 +5151,10 @@ impl roster::attention::Source for AttentionSource {
         for s in studies {
             match &s.state {
                 StudyState::Finished => {
-                    let delta = match (
-                        s.incumbent_mean,
-                        self.0
-                            .get_segment(&s.slug, 0)
-                            .await
-                            .ok()
-                            .flatten()
-                            .and_then(|g| g.baseline_mean),
-                    ) {
-                        (Some(i), Some(b)) => {
-                            fmt_pct(pct(gate::normalise(s.spec.metric.direction, i, b), b))
-                        }
+                    // Revision 2's one Δ convention: raw change, never direction-normalised
+                    // (140-P2 live: the row read `+100.0 %` for 7356 → 3.1 ms).
+                    let delta = match (s.incumbent_mean, self.0.base_mean(&s.slug).await) {
+                        (Some(i), Ok(Some(b))) => fmt_pct(pct(i - b, b)),
                         _ => "—".into(),
                     };
                     out.push(item(
