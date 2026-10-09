@@ -45,6 +45,13 @@ export function enrollBlock(segments: readonly Segment[], ids: ReadonlySet<numbe
   return null
 }
 
+/** `enrollBlock` for one segment alone (one track is given): under 1 s of its own word spans, or `null`. O(words). */
+export function rowBlock(seg: Segment): string | null {
+  let ms = 0
+  for (const w of seg.words) ms += Number(w.t1_ms) - Number(w.t0_ms)
+  return ms < MIN_SPEECH_MS ? 'pick at least 1 s of speech' : null
+}
+
 /** `23 s`, or `0.8 s` under ten seconds. */
 export const secondsText = (ms: number): string => `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`
 

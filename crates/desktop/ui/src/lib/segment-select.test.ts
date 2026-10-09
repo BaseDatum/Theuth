@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import type { Enrolled } from '@/rpc/bindings/Enrolled'
 import type { Segment } from '@/rpc/bindings/Segment'
-import { alreadyEnrolled, enrollBlock, enrolledToast, secondsText, selectClick, speechMs } from './segment-select'
+import { alreadyEnrolled, enrollBlock, enrolledToast, rowBlock, secondsText, selectClick, speechMs } from './segment-select'
 
 /** A segment of `n` words of 400 ms each, starting at `t0`. */
 const seg = (id: number, track: Segment['track'], t0: number, n: number): Segment => ({
@@ -45,6 +45,12 @@ test('enrollBlock refuses both tracks, then under 1 s of speech; otherwise null'
   expect(enrollBlock(segments, [2])).toBeNull()
   expect(enrollBlock(segments, [1, 4])).toBeNull()
   expect(enrollBlock(segments, [3, 5])).toBeNull()
+})
+
+test('rowBlock judges one segment by its own word spans and agrees with enrollBlock on that segment', () => {
+  for (const s of segments) expect(rowBlock(s)).toBe(enrollBlock(segments, [s.id]))
+  expect(rowBlock(seg(9, 'Mic', 0, 2))).toBe('pick at least 1 s of speech')
+  expect(rowBlock(seg(9, 'Mic', 0, 3))).toBeNull()
 })
 
 const enrolled = (speech_ms: number, available_ms: number, samples: number): Enrolled => ({

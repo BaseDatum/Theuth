@@ -17,7 +17,8 @@ Branch `feat/156-transcript` off b3a1988c. Scope: D8, D9, D11, D12, D13 and the 
 - 10: `MIN_SPEECH_MS = 1000`.
 - 16-27: `selectClick(selected, order, anchor, id, shift)`: plain click toggles; shift with an anchor adds the inclusive range in `order` (either direction, keeps earlier picks); shift without an anchor is a plain toggle.
 - 30-38: `speechMs(segments, ids)`: sum of word spans of the chosen ids — the engine's measure.
-- 41-47: `enrollBlock(segments, ids)` → `"pick segments from one track"` | `"pick at least 1 s of speech"` | `null`.
+- 41-47: `enrollBlock(segments, ids)` → `"pick segments from one track"` | `"pick at least 1 s of speech"` | `null` (selections).
+- 49-53: `rowBlock(seg)` (R1): the same rule for one segment from its own word spans, O(words); one track is given.
 - 50: `secondsText(ms)` → `23 s`, or one decimal under 10 s (`0.8 s`).
 - 53-57: `enrolledToast(r, target)`: `Enrolled Dana from 12 s of speech` / `Added 12 s to Dana (4 samples)`, plus ` (using 30 s of 74 s)` when `available_ms > speech_ms`.
 - 60: `alreadyEnrolled(message)` → the name in `a speaker named X is already enrolled`, else `null`.
@@ -26,7 +27,7 @@ Branch `feat/156-transcript` off b3a1988c. Scope: D8, D9, D11, D12, D13 and the 
 
 **`crates/desktop/ui/src/components/meeting/SegmentMenu.tsx`** (new, D11)
 - A `DropdownMenu` on a `Button size="icon-xs"` trigger with `aria-label="Segment options"` (`MoreHorizontal`), `align="end"`; keyboard-reachable through Radix.
-- Items (40-72): **Play segment**; **Split at a word…** / **Hide words** only when `onWords` is given (Review, multi-word rows); **Enroll as new speaker…**; **Add to enrolled speaker ▸** as a `DropdownMenuSub` listing profiles by name with their sample count. With no profiles the sub becomes one disabled item whose second line reads "No enrolled speakers yet" ("Loading speakers…" before the first `meeting_speakers` reply).
+- Items (40-72): **Play segment** / **Stop playback** while that row is the one playing (R1; same toggle, `playing: boolean` prop); **Split at a word…** / **Hide words** only when `onWords` is given (Review, multi-word rows); **Enroll as new speaker…**; **Add to enrolled speaker ▸** as a `DropdownMenuSub` listing profiles by name with their sample count. With no profiles the sub becomes one disabled item whose second line reads "No enrolled speakers yet" ("Loading speakers…" before the first `meeting_speakers` reply).
 - `count > 1` (row inside a multi-selection) relabels both enroll items: "Enroll 4 selected segments as new speaker…", "Add 4 selected segments to". `block` disables both and shows the reason as a second line.
 
 **`crates/desktop/ui/src/components/meeting/EnrollDialog.tsx`** (new, D13)
@@ -42,7 +43,7 @@ Branch `feat/156-transcript` off b3a1988c. Scope: D8, D9, D11, D12, D13 and the 
   - 146-156: selection (`selected`, `anchor`), `editing`, `words`, `enrolling` (the ids the dialog is for), `profiles = useQuery(meetingSpeakers)`, `order`/`ids`/`speech`/`block`.
   - 158-161 `play(seg)`: `player.toggle(seg.id, t0, t1, (a, b) => api.meeting_segment_audio(id, seg.track, a, b))`, failure → `toast.error(playError(e))`.
   - 162-171: `enrolled(r, target)` = `setQueryData(meetingTranscript(id), r.transcript)` → invalidate `meetingSpeakers` → `toast.success(enrolledToast(...))` → clear selection; `addTo` = `useAction` calling `meeting_speaker_enroll(id, segments, { kind: 'Existing', profile })` (errors toast as the engine wrote them).
-  - 173: `targets(seg)` = the selection when the row is inside a multi-selection, else `[seg.id]`.
+  - 173: `targets(seg)` = the selection when the row is inside a multi-selection, else `[seg.id]`. The row menu's `block` is O(1) per row (R1): the precomputed selection `block` when `own === ids`, else `rowBlock(seg)`; before R1 every row re-walked the transcript, O(N²) per render.
   - 190-241: the sticky bar, now in **every** ended state: "N selected · 23 s of speech" · [Enroll as new…] · [Add to ▸] (DropdownMenu of profiles; "No enrolled speakers yet" when empty) · the block reason in muted text · Relabel/Merge (Review only, as before) · Clear. Both enroll controls are disabled with `title=<reason>` when `block` is set.
   - 244-317: rows. Checkbox on every row in every state (`aria-label="Select segment at mm:ss"`, `onClick` with `e.shiftKey` → `selectClick`, anchor updated). Timestamp button titled Play/Stop with the `Volume2` marker while that row plays (also tinted). Text / words / edit as before, with the words view only when `onEdit`. `SegmentMenu` on every row.
   - 319-329: `EnrollDialog`, mounted only while `enrolling` is set so its fields start fresh each time.
@@ -80,7 +81,7 @@ Branch `feat/156-transcript` off b3a1988c. Scope: D8, D9, D11, D12, D13 and the 
 
 ## Gates
 - `BUILD_LABEL=156-TRANSCRIPT nice -n 10 ~/.theuth/bin/build-lock ./node_modules/.bin/tsc -b --noEmit` → **0 errors** (with the stubs present).
-- `… build-lock ./node_modules/.bin/vitest run src/lib/segment-audio.test.ts src/lib/segment-select.test.ts src/rpc/api.test.ts src/lib/no-emoji.test.ts` → **4 files, 14 tests passed** (6 + 5 + 2 + 1).
+- `… build-lock ./node_modules/.bin/vitest run src/lib/segment-audio.test.ts src/lib/segment-select.test.ts src/rpc/api.test.ts src/lib/no-emoji.test.ts` → **4 files, 15 tests passed** (6 + 6 + 2 + 1), re-run after R1.
 - `git status`: clean apart from ignored files; no stubs, `bindings/`, or proof files committed.
 
 ## Proofs (all under `/tmp/156/proof-transcript/`, throwaway)

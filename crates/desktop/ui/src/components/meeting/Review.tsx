@@ -19,7 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { getSharedAudioContext } from '@/hooks/use-audio-context'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { SegmentPlayer, playError } from '@/lib/segment-audio'
-import { enrollBlock, enrolledToast, secondsText, selectClick, speechMs } from '@/lib/segment-select'
+import { enrollBlock, enrolledToast, rowBlock, secondsText, selectClick, speechMs } from '@/lib/segment-select'
 import { cn } from '@/lib/utils'
 import type { EditOp } from '@/rpc/bindings/EditOp'
 import type { EnrollTarget } from '@/rpc/bindings/EnrollTarget'
@@ -304,7 +304,8 @@ export function SegmentList({ id, transcript, onEdit }: { id: string; transcript
               )}
               <SegmentMenu
                 count={own.length}
-                block={enrollBlock(transcript.segments, own)}
+                block={own === ids ? block : rowBlock(seg)}
+                playing={playing === seg.id}
                 profiles={profiles.data}
                 wordsOpen={onEdit ? words.has(seg.id) : undefined}
                 onPlay={() => void play(seg)}

@@ -23,13 +23,15 @@ export interface SegmentMenuProps {
   profiles: Profile[] | undefined
   /** Whether the words view is open on this row; `undefined` hides the item (read-only states). */
   wordsOpen?: boolean
+  /** This row is the one playing; the first item reads "Stop playback" (same toggle). */
+  playing: boolean
   onPlay: () => void
   onWords?: () => void
   onEnrollNew: () => void
   onAddTo: (profile: Profile) => void
 }
 
-export function SegmentMenu({ count, block, profiles, wordsOpen, onPlay, onWords, onEnrollNew, onAddTo }: SegmentMenuProps) {
+export function SegmentMenu({ count, block, profiles, wordsOpen, playing, onPlay, onWords, onEnrollNew, onAddTo }: SegmentMenuProps) {
   const many = count > 1 ? `${count} selected segments` : null
   return (
     <DropdownMenu>
@@ -39,7 +41,7 @@ export function SegmentMenu({ count, block, profiles, wordsOpen, onPlay, onWords
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={onPlay}>Play segment</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onPlay}>{playing ? 'Stop playback' : 'Play segment'}</DropdownMenuItem>
         {onWords && <DropdownMenuItem onSelect={onWords}>{wordsOpen ? 'Hide words' : 'Split at a word\u2026'}</DropdownMenuItem>}
         <DropdownMenuItem disabled={block !== null} onSelect={onEnrollNew}>
           <span className="flex flex-col">
