@@ -265,9 +265,13 @@ fn gt(args: &str, timeout: Duration) -> Cmd {
 /// reports a `0` host port, so theuth picks it).
 pub fn free_port(udp: bool) -> anyhow::Result<u16> {
     if udp {
-        Ok(std::net::UdpSocket::bind("127.0.0.1:0")?.local_addr()?.port())
+        Ok(std::net::UdpSocket::bind("127.0.0.1:0")?
+            .local_addr()?
+            .port())
     } else {
-        Ok(std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
+        Ok(std::net::TcpListener::bind("127.0.0.1:0")?
+            .local_addr()?
+            .port())
     }
 }
 
@@ -276,11 +280,24 @@ pub fn vm_spec(rec: &Computer, host: &HostSide, runtime_name: &str) -> anyhow::R
     let vm = rec.vm().map_err(anyhow::Error::msg)?;
     let mut ports = Vec::new();
     if vm.desktop.enabled {
-        let p = vm.desktop.host_port.ok_or_else(|| anyhow::anyhow!("desktop port not picked"))?;
-        ports.push(Port { host_ip: "127.0.0.1".into(), host: p, guest: VNC_GUEST_PORT, udp: false });
+        let p = vm
+            .desktop
+            .host_port
+            .ok_or_else(|| anyhow::anyhow!("desktop port not picked"))?;
+        ports.push(Port {
+            host_ip: "127.0.0.1".into(),
+            host: p,
+            guest: VNC_GUEST_PORT,
+            udp: false,
+        });
     }
     if let Some(p) = vm.mesh_port.host_port {
-        ports.push(Port { host_ip: "127.0.0.1".into(), host: p, guest: vm.mesh_port.guest, udp: true });
+        ports.push(Port {
+            host_ip: "127.0.0.1".into(),
+            host: p,
+            guest: vm.mesh_port.guest,
+            udp: true,
+        });
     }
     let mut labels = std::collections::BTreeMap::new();
     labels.insert("io.theuth.sandbox".to_owned(), rec.name.clone());
@@ -321,7 +338,10 @@ pub fn loopback_pairing(pairing: &str, port: u16) -> anyhow::Result<String> {
     let bytes = BASE32_NOPAD.decode(body.to_ascii_uppercase().as_bytes())?;
     let mut v: serde_json::Value = serde_json::from_slice(&bytes)?;
     v["addrs"] = serde_json::json!([{ "Ip": format!("127.0.0.1:{port}") }]);
-    Ok(format!("{version}.{}", BASE32_NOPAD.encode(&serde_json::to_vec(&v)?)))
+    Ok(format!(
+        "{version}.{}",
+        BASE32_NOPAD.encode(&serde_json::to_vec(&v)?)
+    ))
 }
 
 /// Everything a VM bring-up talks to.
@@ -354,8 +374,13 @@ impl VmCx<'_> {
                     error: error.clone(),
                 };
                 vm.state = match &error {
-                    None => SandboxState::Creating { step: step.to_owned() },
-                    Some(e) => SandboxState::Failed { step: step.to_owned(), error: e.clone() },
+                    None => SandboxState::Creating {
+                        step: step.to_owned(),
+                    },
+                    Some(e) => SandboxState::Failed {
+                        step: step.to_owned(),
+                        error: e.clone(),
+                    },
                 };
                 vm.updated_ms = vm.setup.at_ms;
                 Ok(())
@@ -381,7 +406,12 @@ pub async fn run_vm(cx: &VmCx<'_>, name: &str) -> anyhow::Result<()> {
         let rec = cx.mark(name, step, None)?;
         let r = tokio::time::timeout(cx.host.step_timeout, vm_step(cx, step, rec))
             .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out after {:?}", cx.host.step_timeout)));
+            .unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "timed out after {:?}",
+                    cx.host.step_timeout
+                ))
+            });
         if let Err(e) = r {
             let msg = format!("{e:#}");
             cx.mark(name, step, Some(msg.clone()))?;
@@ -422,11 +452,17 @@ async fn vm_step(cx: &VmCx<'_>, step: &str, mut rec: Computer) -> anyhow::Result
                 .map_err(anyhow::Error::msg)?;
             rec = r;
             let spec = vm_spec(&rec, cx.host, &h.name)?;
-            cx.out.say("create", format!("{} {}", cx.runtime.kind(), image_str(&spec.image)));
+            cx.out.say(
+                "create",
+                format!("{} {}", cx.runtime.kind(), image_str(&spec.image)),
+            );
             cx.runtime.create(&spec, cx.out).await?;
         }
         "detect" => {
-            let out = cx.runtime.exec(&h, Cmd::new("uname -sm").timeout(t_o)).await?;
+            let out = cx
+                .runtime
+                .exec(&h, Cmd::new("uname -sm").timeout(t_o))
+                .await?;
             let (os, arch) = crate::parse_uname(&out.stdout_str())
                 .ok_or_else(|| anyhow::anyhow!("unrecognised uname: {}", out.stdout_str()))?;
             if os != "linux" {
@@ -436,10 +472,9 @@ async fn vm_step(cx: &VmCx<'_>, step: &str, mut rec: Computer) -> anyhow::Result
         }
         "config" => {
             if vmr(&rec)?.desktop.enabled {
-                let pw = cx
-                    .vnc_password
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("vnc password missing from the vault (sandbox/{name}/vnc)"))?;
+                let pw = cx.vnc_password.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("vnc password missing from the vault (sandbox/{name}/vnc)")
+                })?;
                 // systemd is PID 1 within ~0.5 s of boot but its D-Bus socket comes later;
                 // `systemctl` fails with "Failed to connect to bus" until then, so retry.
                 let cmd = Cmd::new(
@@ -457,7 +492,10 @@ async fn vm_step(cx: &VmCx<'_>, step: &str, mut rec: Computer) -> anyhow::Result
             // The SDK's pre-boot file leaves `/data` root-owned (the image's chown is
             // shadowed), and `t` as `engine` then fails with EACCES at `first_run`.
             cx.runtime
-                .exec(&h, Cmd::new("mkdir -p /data && chown -R engine:engine /data").timeout(t_o))
+                .exec(
+                    &h,
+                    Cmd::new("mkdir -p /data && chown -R engine:engine /data").timeout(t_o),
+                )
                 .await?;
             let probe = cx
                 .runtime
@@ -465,7 +503,9 @@ async fn vm_step(cx: &VmCx<'_>, step: &str, mut rec: Computer) -> anyhow::Result
                 .await?;
             if !probe.ok() {
                 let text = guest_config(&name, cx.host, &vmr(&rec)?.shares);
-                cx.runtime.put(&h, GUEST_CONFIG, Bytes::from(text), 0o644).await?;
+                cx.runtime
+                    .put(&h, GUEST_CONFIG, Bytes::from(text), 0o644)
+                    .await?;
                 cx.out.say("config", format!("{GUEST_CONFIG} written"));
             } else {
                 cx.out.say("config", format!("{GUEST_CONFIG} present"));
@@ -476,15 +516,21 @@ async fn vm_step(cx: &VmCx<'_>, step: &str, mut rec: Computer) -> anyhow::Result
             let bytes: Option<Bytes> = match &vm.local_t {
                 Some(p) => {
                     cx.out.say("binary", format!("local {}", p.display()));
-                    Some(Bytes::from(std::fs::read(p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?))
+                    Some(Bytes::from(
+                        std::fs::read(p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?,
+                    ))
                 }
                 None => {
                     let have = cx.runtime.exec(&h, gt("--version", t_o)).await?;
                     if have.ok() {
-                        cx.out.say("binary", format!("present: {}", have.stdout_str()));
+                        cx.out
+                            .say("binary", format!("present: {}", have.stdout_str()));
                         None
                     } else {
-                        let arch = cx.runtime.exec(&h, Cmd::new("uname -m").timeout(t_o)).await?;
+                        let arch = cx
+                            .runtime
+                            .exec(&h, Cmd::new("uname -m").timeout(t_o))
+                            .await?;
                         let arch = crate::parse_arch(&arch.stdout_str())
                             .ok_or_else(|| anyhow::anyhow!("unrecognised arch"))?;
                         release::fetch("linux", &arch, cx.out)
@@ -529,7 +575,10 @@ async fn vm_step(cx: &VmCx<'_>, step: &str, mut rec: Computer) -> anyhow::Result
             loop {
                 let out = cx
                     .runtime
-                    .exec(&h, Cmd::new(format!("systemctl is-active {units}")).timeout(t_o))
+                    .exec(
+                        &h,
+                        Cmd::new(format!("systemctl is-active {units}")).timeout(t_o),
+                    )
                     .await?;
                 if out.ok() {
                     cx.out.say("daemon", format!("active: {units}"));
@@ -542,7 +591,10 @@ async fn vm_step(cx: &VmCx<'_>, step: &str, mut rec: Computer) -> anyhow::Result
                         .await
                         .map(|o| o.stdout_str())
                         .unwrap_or_default();
-                    anyhow::bail!("units not active ({}); journal:\n{j}", out.stdout_str().replace('\n', " "));
+                    anyhow::bail!(
+                        "units not active ({}); journal:\n{j}",
+                        out.stdout_str().replace('\n', " ")
+                    );
                 }
                 tokio::time::sleep(cx.host.verify_every.min(Duration::from_secs(5))).await;
             }
@@ -576,7 +628,10 @@ async fn vm_step(cx: &VmCx<'_>, step: &str, mut rec: Computer) -> anyhow::Result
             (cx.changed)(&r);
         }
         "verify" => {
-            let id = rec.engine.clone().ok_or_else(|| anyhow::anyhow!("not paired"))?;
+            let id = rec
+                .engine
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("not paired"))?;
             let mut reachable = false;
             for i in 0..cx.host.verify_tries {
                 let status = cx.join.status().await?;
@@ -937,7 +992,10 @@ mod vm_tests {
             "addrs": [{ "Ip": "172.16.0.2:7800" }, { "Relay": "https://r/" }],
             "token": "TOK", "vault_key": "KEY"
         });
-        let s = format!("1.{}", BASE32_NOPAD.encode(&serde_json::to_vec(&v).unwrap()));
+        let s = format!(
+            "1.{}",
+            BASE32_NOPAD.encode(&serde_json::to_vec(&v).unwrap())
+        );
         let out = loopback_pairing(&s, 61235).unwrap();
         let (ver, body) = out.split_once('.').unwrap();
         assert_eq!(ver, "1");

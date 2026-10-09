@@ -3,8 +3,8 @@ import type { Info } from '@/rpc/extra'
 import { scope } from './engine-scope'
 import { dispatch } from './sessions'
 
-// 82 §3: the new-chat draft reads `info.default_model`; `DefaultModelChanged` keeps it live
-// for the engine that published it, whether or not that engine is the active one.
+// 82 §3 / 148 R1: the new-chat draft (while nothing is picked) and Settings › Chat read `info.default_model`;
+// `DefaultModelChanged` keeps it live for the engine that published it, whether or not that engine is the active one.
 test('DefaultModelChanged updates the publishing engine Info only', () => {
   const a = scope('test-default-model-a')
   const b = scope('test-default-model-b')

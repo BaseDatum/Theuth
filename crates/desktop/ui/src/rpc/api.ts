@@ -1,5 +1,6 @@
 import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
 import type { SetOptionResult } from '@/rpc/bindings/SetOptionResult'
+import type { ChildResumed } from '@/rpc/bindings/ChildResumed'
 import type { EntryInfo } from '@/rpc/bindings/EntryInfo'
 import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
 import type { Answer } from '@/rpc/bindings/Answer'
@@ -897,7 +898,7 @@ export interface Api {
   /** Global switch (`session: null`, persisted) or one session's memory-only opt-out (50 §2.1); `enabled: true` on a session lifts its own opt-out only, never an ancestor's or the global ceiling. */
   set_communication(session: SessionId | null, enabled: boolean): Promise<CommunicationState>
   set_compact_style(style: CompactStyle): Promise<null>
-  /** Set or clear `session`'s effort; `manual` (a person picked it) also makes it the default for new chats (83 §2). */
+  /** Set or clear effort (148 R1): with a `session`, that session only, whatever `manual`; with `null` + `manual`, the default effort for new chats (Settings › Chat). */
   set_effort(session: SessionId | null, effort: string | null, manual: boolean): Promise<null>
   /** 125 §6.3: turn `session`'s advisor on with `model` (`provider/model`; creates the hidden advisor child or re-picks its model) or off with `null`; the pick is remembered as `advisor.model` / `advisor.effort`. `AdvisorChanged` follows on the stream. */
   set_advisor(session: SessionId, model: string | null, effort: string | null): Promise<AdvisorStatus>
@@ -915,8 +916,8 @@ export interface Api {
   set_model_favorite(model: string, favorite: boolean): Promise<string[]>
   /** Set one harness config option on an ACP child (75 §8): `configId` is the option id or `model` / `effort`; `value` one of its `options[].value`. Mid-turn → `pending: true`, applied at turn end. */
   set_harness_option(session: SessionId, configId: string, value: string): Promise<SetOptionResult>
-  /** Resume a stopped ACP child in its prior harness context (75 §10): new process, `session/load` on the stored id, no prompt; a live process is killed first. Rejects a native session, a remote node's session, or one with no stored harness session id. */
-  resume_child(session: SessionId): Promise<null>
+  /** Resume a stopped ACP child in its prior harness context (75 §10, 146 D8): new process, `session/load` on the stored id; a live process is killed first. `prompted` = it was mid-prompt and continues its task; `idle` = reconnected only. Rejects a native session, a remote node's session, or one with no stored harness session id. */
+  resume_child(session: SessionId): Promise<ChildResumed>
   /** Persist `agent.escalate_model` (57 §0.9): `null` = inherit the title model; an id that is not a catalog entry rejects and leaves the selection unchanged. */
   set_escalate_model(model: string | null): Promise<ModelInfo | null>
   /** Persist `agent.max_salvages`: interrupted-reply recoveries per turn; `0` turns recovery off. New sessions only. */
@@ -924,7 +925,7 @@ export interface Api {
   set_max_tool_rounds(rounds: number): Promise<null>
   set_mcp_gate(server: string, tool: string | null, gate: Gate | null): Promise<null>
   set_mcp_hidden(session: SessionId, tools: string[], hidden: boolean): Promise<null>
-  /** Switch `session` to `model`; `manual` (a person picked it) also makes it the default for new chats (82 §2). */
+  /** Switch to `model` (148 R1): with a `session`, that session only, whatever `manual`; with `null` + `manual`, the default model for new chats (Settings › Chat); `null` + `!manual` only resolves `model` to its `ModelInfo`. */
   set_model(session: SessionId | null, model: string, manual: boolean): Promise<ModelInfo>
   /** Set a root's scope and owner alias (50 §2.3); roots only, `alias: null` clears it. */
   set_peer_scope(root: SessionId, scope: PeerScope, alias: string | null): Promise<CommunicationState>
@@ -935,8 +936,10 @@ export interface Api {
   set_subagent_timeout(seconds: number): Promise<null>
   /** Persist `schedule.run_timeout_secs` (88); routine runs fired from then on use it. Below 30 rejects. */
   set_schedule_run_timeout(seconds: number): Promise<null>
-  /** Persist `agent.subagents.model`: the model children get when `spawn_subagent` omits `model`; `null` = the session's model. */
+  /** Persist `agent.subagents.model`: the model native children get when `spawn_subagent` omits `model` (148 R2); `null` = the default model for new sessions. */
   set_subagent_model(model: string | null): Promise<ModelInfo | null>
+  /** Persist `roster.theuth_model` (148 R3): the built-in theuth agent's desk and the desk's direct work children; `null` = same as new sessions. Unknown ids reject like `set_subagent_model`. */
+  set_theuth_agent_model(model: string | null): Promise<ModelInfo | null>
   set_title_model(model: string | null): Promise<ModelInfo | null>
   /** Persist `agent.vision_model` (52 §3.1): `null` turns the fallback off; an unavailable or text-only id rejects and leaves the selection unchanged. */
   set_vision_model(model: string | null): Promise<ModelInfo | null>
@@ -965,11 +968,13 @@ export interface Api {
   steer(session: SessionId, text: string, id: InputId | null, files: string[], delivery?: Delivery | null): Promise<InputId>
   /** Stop utterance `id`, or whatever is speaking when `null`; idempotent (43 §6). */
   stop_speaking(id: string | null): Promise<null>
-  /** The preferred subagent model, `null` when unset. */
+  /** The subagent default model, `null` when unset. */
   subagent_model(): Promise<ModelInfo | null>
   sync_mcp(): Promise<SyncResult[]>
   sync_skills(): Promise<SyncResult[]>
   title_model(): Promise<ModelInfo | null>
+  /** The theuth agent's model (`roster.theuth_model`, 148 R3), `null` = same as new sessions. */
+  theuth_agent_model(): Promise<ModelInfo | null>
   /** Start a talk on `session` (76 §5.1). Local peers pass `device`/`null`; a relay peer must pass `client` and its mic rate and streams PCM via `talk_audio`. One per daemon: rejects with `already talking`. */
   talk_start(session: SessionId, sink: Sink, sample_rate: number | null): Promise<TalkId>
   /** Stop talk `id`; `TalkFinished` follows. Idempotent. */
@@ -1386,6 +1391,7 @@ export const METHODS = [
   'set_stream_idle',
   'set_subagent_model',
   'set_subagent_timeout',
+  'set_theuth_agent_model',
   'set_title_model',
   'set_vision_model',
   'shutdown',
@@ -1431,6 +1437,7 @@ export const METHODS = [
   'telegram_status',
   'test_schedule',
   'test_schedule_file',
+  'theuth_agent_model',
   'title_model',
   'transcribe',
   'undo',

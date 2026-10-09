@@ -72,7 +72,10 @@ export const queryKeys = {
   notes: ['notes'] as const,
   info: ['info'] as const,
   titleModel: ['title-model'] as const,
+  /** `subagent_model()`; Settings › Chat sets it (148 R2: native subagents' default). */
   subagentModel: ['subagent-model'] as const,
+  /** `theuth_agent_model()` (148 R3); Settings › Chat and the Agents page's theuth tab set it. */
+  theuthAgentModel: ['theuth-agent-model'] as const,
   /** `vision_model()` (52 §3.2); slash setters and the General dropdown invalidate this same key. */
   visionModel: ['vision-model'] as const,
   /** `escalate_model()` (57 §0.9); the Agent loop dropdown and `/escalate` set it. */
@@ -170,6 +173,7 @@ export function useInvalidateOn(): void {
       void qc.invalidateQueries({ queryKey: queryKeys.models })
       void qc.invalidateQueries({ queryKey: queryKeys.titleModel })
       void qc.invalidateQueries({ queryKey: queryKeys.subagentModel })
+      void qc.invalidateQueries({ queryKey: queryKeys.theuthAgentModel })
       void qc.invalidateQueries({ queryKey: queryKeys.visionModel })
       void qc.invalidateQueries({ queryKey: queryKeys.escalateModel })
     }

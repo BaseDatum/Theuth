@@ -1,6 +1,5 @@
 import { Link } from '@tanstack/react-router'
 import { FlaskConical } from 'lucide-react'
-import type { ReactNode } from 'react'
 import { useModels } from '@/components/agents/queries'
 import { KEY, useAutoresearchApi, useAutoresearchSettings } from '@/components/autoresearch/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
@@ -84,7 +83,7 @@ export function Autoresearch() {
         {ROLES.map((role) => {
           const off = role === 'review' && s?.review.model === 'off'
           return (
-            <WideRow key={role} label={ROLE_LABEL[role]} description={ROLE_HELP[role]}>
+            <Row stack key={role} label={ROLE_LABEL[role]} description={ROLE_HELP[role]}>
               {role === 'review' && (
                 <ToggleGroup type="single" variant="outline" size="sm" value={off ? 'off' : 'on'} aria-label="Reviewer" disabled={busy} onValueChange={(v) => v && change((c) => withRoleModel(c, 'review', v === 'off' ? 'off' : null))}>
                   <ToggleGroupItem value="on">On</ToggleGroupItem>
@@ -96,7 +95,7 @@ export function Autoresearch() {
               {!off && (
                 <ModelCombobox
                   aria-label={`${ROLE_LABEL[role]} model`}
-                  className="w-full max-w-72"
+                  className="w-full max-w-72 max-md:max-w-none"
                   models={models.data ?? []}
                   value={s ? roleModel(s, role) : undefined}
                   none={{ label: ROLE_NONE[role] }}
@@ -104,7 +103,7 @@ export function Autoresearch() {
                   onChange={(v) => change((c) => withRoleModel(c, role, v))}
                 />
               )}
-            </WideRow>
+            </Row>
           )
         })}
       </Section>
@@ -116,7 +115,7 @@ export function Autoresearch() {
             <ToggleGroupItem value="flag">Flag only</ToggleGroupItem>
           </ToggleGroup>
         </Row>
-        <WideRow label="Bench lock" description="builtin takes a mkdir slot under /tmp/theuth-bench-slots; or a wrapper command (e.g. ~/.theuth/bin/build-lock) so builds and benchmarks exclude each other.">
+        <Row stack label="Bench lock" description="builtin takes a mkdir slot under /tmp/theuth-bench-slots; or a wrapper command (e.g. ~/.theuth/bin/build-lock) so builds and benchmarks exclude each other.">
           <Input
             key={s?.bench.lock}
             dictate={false}
@@ -132,7 +131,7 @@ export function Autoresearch() {
               if (e.key === 'Enter') e.currentTarget.blur()
             }}
           />
-        </WideRow>
+        </Row>
         <Row label="Load threshold" description="1-minute load average ÷ cores a scored sample waits for (up to bench.wait); past that it runs and is marked noisy.">
           <Input
             key={s?.bench.max_load}
@@ -162,19 +161,6 @@ export function Autoresearch() {
         </Row>
       </Section>
     </>
-  )
-}
-
-/** A `Row` whose controls need the width: they drop under the label below `md` (113). */
-function WideRow({ label, description, children }: { label: string; description: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-3 border-b border-border-subtle py-4 last:border-0 md:flex-row md:items-center md:justify-between md:gap-6">
-      <div className="min-w-0">
-        <div className="text-sm">{label}</div>
-        <div className="mt-0.5 text-[13px] text-fg-secondary">{description}</div>
-      </div>
-      <div className="flex w-full items-center gap-2 md:w-auto md:shrink-0">{children}</div>
-    </div>
   )
 }
 

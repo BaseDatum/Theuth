@@ -55,8 +55,8 @@ pub use types::{
 };
 pub use vm::{
     Blocker, HostFacts, ImageRef, LogLine, Mount, NetPolicy, Pending, Port, Preflight,
-    ResizeOutcome, ResizeStatus, ResourceChange, Resources, RuntimeState, SnapshotId, VmSnapshotInfo,
-    VirtState, VmMetrics, VmStatus,
+    ResizeOutcome, ResizeStatus, ResourceChange, Resources, RuntimeState, SnapshotId, VirtState,
+    VmMetrics, VmSnapshotInfo, VmStatus,
 };
 
 /// Registry name of the [`SandboxActor`].

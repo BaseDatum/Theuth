@@ -404,7 +404,7 @@ async fn run(cx: &CommandCx<'_>, name: &str, arg: &str) -> anyhow::Result<Outcom
                 (Some(m), None) => m.id.clone(),
                 _ => arg.to_owned(),
             };
-            // 82 §2: with a session the switch is that session's; only the
+            // 148 R1: with a session the switch is that session's only; the
             // session-less form has nothing but the default to set.
             let info = agent()?
                 .ask(agent::SetModel {

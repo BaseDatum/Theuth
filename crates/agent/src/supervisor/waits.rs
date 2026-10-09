@@ -35,7 +35,7 @@ use uuid::Uuid;
 use super::Agents;
 use crate::communication::{PeerAddress, PeerMessageState, PeerReceipt, PeerRecord};
 use crate::durability::CallState;
-use crate::store::Scope;
+use crate::store::durability::OpenTurnRow;
 
 /// Receivers of the waits re-armed at boot, by exchange id, until the
 /// resumed call takes them ([`ResumeWait`]). A reply that arrives in between
@@ -136,15 +136,12 @@ impl Counts {
 impl Agents {
     /// Boot (§4.6 step 10): rebuild the live waiters and settle the dead
     /// approvals of every open turn `here` from their rows; see the module doc.
-    pub(super) async fn rebuild_waits(&mut self) {
-        // 139 §5.1 item 7: owner-scoped — a replica never re-arms the owner's.
-        let open = match self.store.open_turns(Scope::Here).await {
-            Ok(o) => o,
-            Err(e) => return tracing::error!("109: open turns unreadable: {e:#}"),
-        };
+    /// `open` is the boot pass's one `open_turns(Scope::Here)` (146 D5).
+    pub(super) async fn rebuild_waits(&mut self, open: &[OpenTurnRow]) {
         let approval = approval_actor();
         let mut n = Counts::default();
         for (session, turn, _) in open {
+            let (session, turn) = (*session, *turn);
             n += self
                 .rebuild_waits_of(session, turn, approval.as_ref())
                 .await;
@@ -330,8 +327,8 @@ impl Agents {
 }
 
 impl Agents {
-    /// The §7.2 boot pass (module doc).
-    pub(super) async fn deliver_spared_results(&mut self) {
+    /// The §7.2 boot pass (module doc); `open` as [`Self::rebuild_waits`]'s.
+    pub(super) async fn deliver_spared_results(&mut self, open: &[OpenTurnRow]) {
         let spared = match self.store.spared_child_results().await {
             Ok(s) => s,
             Err(e) => return tracing::error!("109: spared child results unreadable: {e:#}"),
@@ -341,18 +338,20 @@ impl Agents {
         }
         // A parent whose open turn waits on this child takes the result as
         // that wait's answer ([`ResumeWait`]), not as a new input.
-        let mut awaited: Vec<(SessionId, String)> = Vec::new();
         // 139 §5.1 item 11: the "awaited" subtraction over sessions here.
-        if let Ok(open) = self.store.open_turns(Scope::Here).await {
-            for (session, turn, _) in open {
-                let waits = self.store.waits_of(session, turn).await.unwrap_or_default();
-                awaited.extend(
-                    waits
-                        .into_iter()
-                        .filter(|w| w.kind == WaitKind::ChildResult)
-                        .map(|w| (session, w.target)),
-                );
-            }
+        let mut awaited: Vec<(SessionId, String)> = Vec::new();
+        for (session, turn, _) in open {
+            let waits = self
+                .store
+                .waits_of(*session, *turn)
+                .await
+                .unwrap_or_default();
+            awaited.extend(
+                waits
+                    .into_iter()
+                    .filter(|w| w.kind == WaitKind::ChildResult)
+                    .map(|w| (*session, w.target)),
+            );
         }
         let n = spared.len();
         for record in spared {
@@ -708,7 +707,8 @@ mod tests {
         let (root, child, t, receipt) = awaiting(&mut a, chrono::Duration::minutes(10)).await;
         assert!(a.waits.is_empty());
 
-        a.rebuild_waits().await;
+        let open = a.open_here().await;
+        a.rebuild_waits(&open).await;
         assert!(a.waits.contains_key(&receipt.id), "the waiter is back");
         let (received, sent) = a.pending_requests(root);
         assert!(received.is_empty() && sent == [receipt.id]);
@@ -760,7 +760,8 @@ mod tests {
             .await
             .unwrap();
 
-        a.rebuild_waits().await;
+        let open = a.open_here().await;
+        a.rebuild_waits(&open).await;
         assert!(a.waits.is_empty(), "a replied exchange has no waiter");
         let w = a.resume_wait(root, t, "c1").await.unwrap();
         assert!(w.pending.is_empty());
@@ -811,7 +812,8 @@ mod tests {
         assert_eq!(a.store.spared_child_results().await.unwrap().len(), 1);
         assert_eq!(a.ledger.activity(p), None);
 
-        a.deliver_spared_results().await;
+        let open = a.open_here().await;
+        a.deliver_spared_results(&open).await;
         assert!(
             a.enqueued.contains(&receipt.id),
             "handed to the parent's intake"
@@ -821,7 +823,8 @@ mod tests {
             "the parent is admitted a ticket"
         );
         // Again: the dedup set refuses a second delivery.
-        a.deliver_spared_results().await;
+        let open = a.open_here().await;
+        a.deliver_spared_results(&open).await;
         assert_eq!(a.enqueued.len(), 1);
 
         // A parent whose open turn waits on this child: left for the resume.
@@ -860,7 +863,8 @@ mod tests {
             })
             .await
             .unwrap();
-        a.deliver_spared_results().await;
+        let open = a.open_here().await;
+        a.deliver_spared_results(&open).await;
         assert!(
             !a.enqueued.contains(&r2.id),
             "awaited by an open turn: not injected"
@@ -930,7 +934,8 @@ mod tests {
         assert_eq!(state(s2).await, QuestionState::Pending, "s2 untouched");
         assert_eq!(state(foreign).await, QuestionState::Pending);
 
-        b.rebuild_waits().await;
+        let open = b.open_here().await;
+        b.rebuild_waits(&open).await;
         assert_eq!(state(s2).await, QuestionState::Superseded);
         assert_eq!(
             state(foreign).await,
@@ -971,7 +976,8 @@ mod tests {
             .unwrap();
         assert_eq!(b.store.spared_child_results().await.unwrap().len(), 1);
 
-        b.deliver_spared_results().await;
+        let open = b.open_here().await;
+        b.deliver_spared_results(&open).await;
         assert!(b.sessions.is_empty(), "no actor for a's session");
         assert_eq!(b.ledger.activity(foreign), None, "no ticket admitted");
         assert!(!b.enqueued.contains(&receipt.id));

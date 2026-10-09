@@ -37,6 +37,12 @@ pub struct DurabilityConfig {
     pub journal_keep_days: u32,
     /// ACP delta handoff budget (§7.3).
     pub handoff_tokens: usize,
+    /// 146 D1: how far back the boot pass looks for mid-prompt ACP children
+    /// (`sessions.updated_at`), in days.
+    pub acp_respawn_window_days: u32,
+    /// 146 D2: ACP children respawning at once; the rest queue until one
+    /// comes back (its harness accepted the prompt) or fails.
+    pub acp_respawn_parallel: usize,
 }
 
 impl Default for DurabilityConfig {
@@ -49,8 +55,30 @@ impl Default for DurabilityConfig {
             pty_snapshot_secs: 5,
             journal_keep_days: 7,
             handoff_tokens: 4000,
+            acp_respawn_window_days: 7,
+            acp_respawn_parallel: 4,
         }
     }
+}
+
+/// 146 D4: the restart-recovery counts. Published on the bus by the boot
+/// pass (`respawn_acp_children`) and again whenever a respawn settles; the
+/// Attention actor renders one `resume:boot:<at_ms>` item from the latest.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BootPass {
+    /// When the pass ran (ms since epoch): the item's id and `at_ms`.
+    pub at_ms: u64,
+    /// Open turns `resume_scan` handed back to their actors.
+    pub resuming: u32,
+    /// ACP children whose harness accepted the respawn prompt.
+    pub respawned: u32,
+    /// Of those, the ones that came back on a fresh harness session because
+    /// `session/load` failed (D11: "restarted fresh").
+    pub fresh: u32,
+    /// ACP children queued or connecting; `0` = the pass is settled.
+    pub waiting: u32,
+    /// `(session, name)` of every child that was not respawned (D3).
+    pub lost: Vec<(SessionId, String)>,
 }
 
 /// `durability.resume` (§4.6).
@@ -414,9 +442,11 @@ mod tests {
                 d.partial_checkpoint_ms,
                 d.pty_snapshot_secs,
                 d.journal_keep_days,
-                d.handoff_tokens
+                d.handoff_tokens,
+                d.acp_respawn_window_days,
+                d.acp_respawn_parallel
             ),
-            (4, 10, 5000, 5, 7, 4000)
+            (4, 10, 5000, 5, 7, 4000, 7, 4)
         );
         // A partial section keeps the other defaults.
         let c: DurabilityConfig = serde_yaml::from_str("resume: ask\ndrain_secs: 3\n").unwrap();
