@@ -282,7 +282,11 @@ pub fn value(spec: &StudySpec, row: &str) -> String {
                 ("advisor", &m.advisor),
             ]
             .into_iter()
-            .filter_map(|(k, v)| v.as_deref().filter(|v| non_empty(v)).map(|v| format!("{k} {v}")))
+            .filter_map(|(k, v)| {
+                v.as_deref()
+                    .filter(|v| non_empty(v))
+                    .map(|v| format!("{k} {v}"))
+            })
             .collect();
             if parts.is_empty() {
                 "defaults".to_owned()
@@ -465,23 +469,26 @@ pub fn view_of(root: &Path, d: Draft, started: bool) -> DraftView {
                 (FieldState::Optional, None)
             };
         }
-        if row == "repo" {
-            if let Some(sha) = &base_sha {
-                let tree = if dirty == 0 {
-                    "clean tree".to_owned()
-                } else {
-                    format!("{dirty} uncommitted file{}", if dirty == 1 { "" } else { "s" })
-                };
-                return (
-                    FieldState::Verified,
-                    Some(format!("{} · {tree}", &sha[..sha.len().min(8)])),
-                );
-            }
+        if row == "repo"
+            && let Some(sha) = &base_sha
+        {
+            let tree = if dirty == 0 {
+                "clean tree".to_owned()
+            } else {
+                format!(
+                    "{dirty} uncommitted file{}",
+                    if dirty == 1 { "" } else { "s" }
+                )
+            };
+            return (
+                FieldState::Verified,
+                Some(format!("{} · {tree}", &sha[..sha.len().min(8)])),
+            );
         }
-        if let Some(kind) = kind_of_row(row) {
-            if let Some(r) = probes.iter().find(|r| r.kind == kind && r.ok) {
-                return (FieldState::Verified, Some(evidence(r)));
-            }
+        if let Some(kind) = kind_of_row(row)
+            && let Some(r) = probes.iter().find(|r| r.kind == kind && r.ok)
+        {
+            return (FieldState::Verified, Some(evidence(r)));
         }
         if settled_by_user(row) {
             return (FieldState::Confirmed, None);
@@ -884,7 +891,11 @@ pub async fn probe(
         if r.values.len() >= 2 {
             let m = r.values.iter().sum::<f64>() / r.values.len() as f64;
             let sigma = crate::gate::pooled_sigma(std::slice::from_ref(&r.values));
-            r.noise_pct = Some(if m != 0.0 { 100.0 * sigma / m.abs() } else { 0.0 });
+            r.noise_pct = Some(if m != 0.0 {
+                100.0 * sigma / m.abs()
+            } else {
+                0.0
+            });
         }
         if !r.values.is_empty() {
             let mut sorted = r.values.clone();
@@ -1001,7 +1012,10 @@ fn repo_scripts(command: &str, wt: &Path, drafts: &Path) -> String {
             Some(crate::custody::CommandPath::Repo(rel))
                 if !drafts.join(rel).is_file() && wt.join(rel).is_file() =>
             {
-                format!("'{}'", wt.join(rel).to_string_lossy().replace('\'', "'\\''"))
+                format!(
+                    "'{}'",
+                    wt.join(rel).to_string_lossy().replace('\'', "'\\''")
+                )
             }
             _ => tok.to_owned(),
         })
@@ -1051,9 +1065,16 @@ impl Tool for ProbeTool {
         crate::tools::refuse_study_sessions(cx.session, Self::NAME).await?;
         let cfg = crate::tools::live_cfg().await?;
         let root = cfg.root(&self.0.data_dir);
-        let r = probe(&root, &cfg, a.draft_id.trim(), a.what, a.repeats, &cx.cancel)
-            .await
-            .map_err(|e| anyhow::anyhow!("autoresearch_probe: {e}"))?;
+        let r = probe(
+            &root,
+            &cfg,
+            a.draft_id.trim(),
+            a.what,
+            a.repeats,
+            &cx.cancel,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("autoresearch_probe: {e}"))?;
         Ok(crate::tools::structured(render_probe(&r, cfg.gate.z), r))
     }
 }
@@ -1071,7 +1092,11 @@ mod tests {
             .current_dir(cwd)
             .output()
             .unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     /// A toy-sort repo with one commit on `main`.
@@ -1089,7 +1114,16 @@ mod tests {
         sh(&repo, &["add", "-A"]);
         sh(
             &repo,
-            &["-c", "user.name=u", "-c", "user.email=u@x", "commit", "-q", "-m", "base"],
+            &[
+                "-c",
+                "user.name=u",
+                "-c",
+                "user.email=u@x",
+                "commit",
+                "-q",
+                "-m",
+                "base",
+            ],
         );
         repo
     }
@@ -1141,7 +1175,13 @@ mod tests {
         assert_eq!(state(&v, "goal"), FieldState::Proposed);
         assert_eq!(state(&v, "repo"), FieldState::Verified, "{v:?}");
         let repo_row = v.fields.iter().find(|f| f.name == "repo").unwrap();
-        assert!(repo_row.evidence.as_deref().unwrap().ends_with("· clean tree"));
+        assert!(
+            repo_row
+                .evidence
+                .as_deref()
+                .unwrap()
+                .ends_with("· clean tree")
+        );
         assert_eq!(state(&v, "metric"), FieldState::Confirmed);
         assert_eq!(state(&v, "bench"), FieldState::Proposed);
         assert_eq!(state(&v, "checks"), FieldState::Proposed);
@@ -1163,7 +1203,10 @@ mod tests {
             ]
         );
         assert_eq!(v.fields[2].value, "time_ms · ms · lower · keep ≥ 0.5%");
-        assert_eq!(v.fields[7].value, "$20 · 120 experiments · 10 h · $1.5 per experiment");
+        assert_eq!(
+            v.fields[7].value,
+            "$20 · 120 experiments · 10 h · $1.5 per experiment"
+        );
         assert_eq!(v.fields.len(), 14);
         assert!(v.partial && v.version == 1);
 
@@ -1173,7 +1216,14 @@ mod tests {
         bare.checks = None;
         bare.budget.usd = 5.0;
         bare.window = Some("idle.py".into());
-        write_draft(&root, &bare, SessionId::new(), true, vec!["bench".into(), "scope".into()]).unwrap();
+        write_draft(
+            &root,
+            &bare,
+            SessionId::new(),
+            true,
+            vec!["bench".into(), "scope".into()],
+        )
+        .unwrap();
         std::fs::write(repo.join("scratch.txt"), "x").unwrap();
         let v = view(&root, "toy", false).unwrap();
         assert_eq!(state(&v, "goal"), FieldState::Missing);
@@ -1181,11 +1231,21 @@ mod tests {
         assert_eq!(state(&v, "budget"), FieldState::Proposed);
         assert_eq!(state(&v, "window"), FieldState::Proposed);
         assert!(v.dirty);
-        assert!(v.fields[1].evidence.as_deref().unwrap().ends_with("· 1 uncommitted file"));
+        assert!(
+            v.fields[1]
+                .evidence
+                .as_deref()
+                .unwrap()
+                .ends_with("· 1 uncommitted file")
+        );
         assert_eq!(v.blocking[0], "Goal is missing");
         assert!(v.blocking.contains(&"Check is missing".to_owned()));
         assert!(v.blocking.contains(&"When needs your OK".to_owned()));
-        assert!(v.blocking.last().unwrap().starts_with("goal is empty"), "{:?}", v.blocking);
+        assert!(
+            v.blocking.last().unwrap().starts_with("goal is empty"),
+            "{:?}",
+            v.blocking
+        );
         assert_eq!(v.version, 2);
 
         // Everything confirmed and valid → ready; a probe makes bench verified.
@@ -1244,7 +1304,10 @@ mod tests {
         // The user OKs it in the panel; the next unchanged re-draft keeps it.
         confirm(&root, "toy", "budget").unwrap();
         write_draft(&root, &again, SessionId::new(), true, vec![]).unwrap();
-        assert_eq!(read_draft(&root, "toy").unwrap().confirmed, vec!["scope", "budget"]);
+        assert_eq!(
+            read_draft(&root, "toy").unwrap().confirmed,
+            vec!["scope", "budget"]
+        );
         // Confirming a missing row is refused; an unknown row too.
         let mut missing = s.clone();
         missing.holdout = None;
@@ -1301,7 +1364,10 @@ mod tests {
         assert_eq!(s.bench.smoke.as_deref(), Some("make"));
         assert_eq!(s.checks.as_ref().unwrap().timeout, "10m");
         let h = s.holdout.as_ref().unwrap();
-        assert_eq!((h.command.as_str(), h.every, h.repeats), ("h.sh", 7, Some(4)));
+        assert_eq!(
+            (h.command.as_str(), h.every, h.repeats),
+            ("h.sh", 7, Some(4))
+        );
         assert_eq!(s.scope, vec!["a/**", "b/**", "c"]);
         assert_eq!(s.budget.usd, 3.5);
         assert_eq!(s.budget.experiments, 30);
@@ -1322,7 +1388,14 @@ mod tests {
         assert!(set_leaf(&mut s, "bench.repeats", "many").is_err());
         assert!(set_leaf(&mut s, "secondary_guards", "alloc").is_err());
         assert!(set_leaf(&mut s, "nope", "x").is_err());
-        assert_eq!((row_of("base"), row_of("off_limits"), row_of("bench.timeout")), ("repo", "scope", "bench"));
+        assert_eq!(
+            (
+                row_of("base"),
+                row_of("off_limits"),
+                row_of("bench.timeout")
+            ),
+            ("repo", "scope", "bench")
+        );
         // A fresh holdout from `holdout.command` alone gets `every: 5`.
         let mut t = StudySpec::default();
         set_leaf(&mut t, "holdout.command", "h.sh").unwrap();
@@ -1338,9 +1411,27 @@ mod tests {
         };
         validate_partial(&s).unwrap();
         assert!(validate_spec(&s).is_err());
-        assert!(validate_partial(&StudySpec { repo: "rel".into(), ..s.clone() }).is_err());
-        assert!(validate_partial(&StudySpec { slug: "new".into(), ..s.clone() }).is_err());
-        assert!(validate_partial(&StudySpec { slug: "Bad".into(), ..s }).is_err());
+        assert!(
+            validate_partial(&StudySpec {
+                repo: "rel".into(),
+                ..s.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_partial(&StudySpec {
+                slug: "new".into(),
+                ..s.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_partial(&StudySpec {
+                slug: "Bad".into(),
+                ..s
+            })
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1366,11 +1457,22 @@ mod tests {
         let probe_dir = drafts_dir(&root, "toy").join("probe");
         assert!(!probe_dir.exists(), "probe/ removed after ok");
         let text = render_probe(&r, 2.0);
-        assert!(text.starts_with("bench: 3 samples · median ") && text.contains("· noise ±") && text.contains("smallest detectable ≈"), "{text}");
+        assert!(
+            text.starts_with("bench: 3 samples · median ")
+                && text.contains("· noise ±")
+                && text.contains("smallest detectable ≈"),
+            "{text}"
+        );
         // The view now shows bench Verified with the result's evidence.
         let v = view(&root, "toy", false).unwrap();
         assert_eq!(state(&v, "bench"), FieldState::Verified, "{v:?}");
-        assert!(v.fields[3].evidence.as_deref().unwrap().starts_with("3 runs · "));
+        assert!(
+            v.fields[3]
+                .evidence
+                .as_deref()
+                .unwrap()
+                .starts_with("3 runs · ")
+        );
         assert_eq!(v.probes.len(), 1);
         // The check passes too.
         let r = probe(&root, &cfg(), "toy", ProbeKind::Check, None, &cancel)
@@ -1378,7 +1480,10 @@ mod tests {
             .unwrap();
         assert!(r.ok, "{}", r.log_tail);
         assert!(render_probe(&r, 2.0).starts_with("check: passed in "));
-        assert_eq!(state(&view(&root, "toy", false).unwrap(), "checks"), FieldState::Verified);
+        assert_eq!(
+            state(&view(&root, "toy", false).unwrap(), "checks"),
+            FieldState::Verified
+        );
         // A crashing command: ok false, exit, tail; probe/ gone as well.
         let mut crash = s.clone();
         crash.bench.command = "echo boom >&2; exit 3".into();
@@ -1409,7 +1514,12 @@ mod tests {
             .current_dir(&repo)
             .output()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&wts.stdout).lines().count(), 1, "{}", String::from_utf8_lossy(&wts.stdout));
+        assert_eq!(
+            String::from_utf8_lossy(&wts.stdout).lines().count(),
+            1,
+            "{}",
+            String::from_utf8_lossy(&wts.stdout)
+        );
         assert_eq!(git::branch(&repo).unwrap().as_deref(), Some("main"));
         // The fingerprint changes with the bench command.
         assert_ne!(
@@ -1455,7 +1565,10 @@ mod tests {
         file.write(&dir).unwrap();
         let v = view(&root, "toy", false).unwrap();
         assert_eq!(state(&v, "bench"), FieldState::Verified);
-        assert_eq!(v.fields[3].evidence.as_deref(), Some("3 runs · 1 ms · ±1.6%"));
+        assert_eq!(
+            v.fields[3].evidence.as_deref(),
+            Some("3 runs · 1 ms · ±1.6%")
+        );
         assert_eq!(state(&v, "checks"), FieldState::Verified);
         assert_eq!(v.fields[4].evidence.as_deref(), Some("passed in 1 m 50 s"));
         assert_eq!(v.probes.len(), 2);

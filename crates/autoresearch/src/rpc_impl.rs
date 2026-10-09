@@ -198,17 +198,29 @@ mod tests {
         // Half-written / pre-format directories: no spec.json, or one that does not parse.
         std::fs::create_dir_all(crate::drafts_dir(root, "empty")).unwrap();
         std::fs::create_dir_all(crate::drafts_dir(root, "broken")).unwrap();
-        std::fs::write(crate::drafts_dir(root, "broken").join("spec.json"), b"{not json").unwrap();
+        std::fs::write(
+            crate::drafts_dir(root, "broken").join("spec.json"),
+            b"{not json",
+        )
+        .unwrap();
         let list = crate::setup::drafts(root, &["started".to_owned()]);
         let ids: Vec<&str> = list.iter().map(|d| d.draft_id.as_str()).collect();
         assert_eq!(ids, ["newer", "older"]);
-        assert_eq!((list[0].goal.as_str(), list[0].total, list[0].ready), ("goal newer", 9, false));
+        assert_eq!(
+            (list[0].goal.as_str(), list[0].total, list[0].ready),
+            ("goal newer", 9, false)
+        );
         crate::setup::discard(root, "newer").unwrap();
         let e = read_draft(root, "newer").unwrap_err().to_string();
         assert!(e.starts_with("no draft `newer`"), "{e}");
-        let ids: Vec<String> = crate::setup::drafts(root, &[]).into_iter().map(|d| d.draft_id).collect();
+        let ids: Vec<String> = crate::setup::drafts(root, &[])
+            .into_iter()
+            .map(|d| d.draft_id)
+            .collect();
         assert_eq!(ids, ["started", "older"]);
-        let e = crate::setup::discard(root, "newer").unwrap_err().to_string();
+        let e = crate::setup::discard(root, "newer")
+            .unwrap_err()
+            .to_string();
         assert_eq!(e, "no draft `newer`");
     }
 }

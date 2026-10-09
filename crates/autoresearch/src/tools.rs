@@ -1607,7 +1607,13 @@ mod tests {
         let e = check_slug("new").unwrap_err();
         assert!(e.starts_with("slug `new` is reserved"), "{e}");
         check_slug("new-study").unwrap();
-        assert!(validate_spec(&StudySpec { slug: "new".into(), ..Default::default() }).is_err());
+        assert!(
+            validate_spec(&StudySpec {
+                slug: "new".into(),
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
 
     /// 151 addition A: the card's Discard press deletes the draft only with its token,
@@ -1621,7 +1627,9 @@ mod tests {
         };
         let (token, _) = write_draft(dir.path(), &spec, SessionId::new(), true, vec![]).unwrap();
         let draft_dir = crate::drafts_dir(dir.path(), "gone");
-        let e = discard_with_token(dir.path(), "gone", "wrong").unwrap_err().to_string();
+        let e = discard_with_token(dir.path(), "gone", "wrong")
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("token mismatch"), "{e}");
         assert!(draft_dir.is_dir(), "a wrong token removes nothing");
         discard_with_token(dir.path(), "gone", &token).unwrap();
@@ -1629,7 +1637,9 @@ mod tests {
         // The Start press (`autoresearch_start` reads the draft first) is refused.
         let e = read_draft(dir.path(), "gone").unwrap_err().to_string();
         assert!(e.starts_with("no draft `gone`"), "{e}");
-        let e = discard_with_token(dir.path(), "gone", &token).unwrap_err().to_string();
+        let e = discard_with_token(dir.path(), "gone", &token)
+            .unwrap_err()
+            .to_string();
         assert!(e.starts_with("no draft `gone`"), "{e}");
     }
 
@@ -1666,6 +1676,9 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert_eq!(e, "autoresearch_probe is not available inside a study session");
+        assert_eq!(
+            e,
+            "autoresearch_probe is not available inside a study session"
+        );
     }
 }
