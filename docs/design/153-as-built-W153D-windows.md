@@ -77,14 +77,26 @@ cut from `integrate/153w` = main 6aadda9a; merged PIN-B 4fcbcf1e (W153B records)
 | PasteVerifier 150/350/1000 ms; landed = one more occurrence; count-only: count grew; unknown(focusMoved · userActed = caret-only move); notLanded = all unchanged | same reads; landed = one more occurrence when both values are readable; count-only `FieldRead.Count` grew; caret/selection-only move → `UserActed`; focus moved/unreadable → `Unknown` | `UserActed` is its own verdict (= Mac unknown(userActed)); past the 60 000-char cap the value is not read and the 256 characters before the caret decide; a change equal to the restored clipboard is notLanded (a late paste) |
 | AppProfiles: the any_app row re-labelled; terminal ||= heuristics; no rows → synthesized, polish and learn off | `AnyAppSettings.ProfileFor`: own row · else the `any_app` row with the app's id/name · else synthesized (polish, learn off); `terminal ||= AppMatch.DefaultTerminals` | the Windows list: Windows Terminal (+Preview), OpenConsole, conhost, cmd, powershell, pwsh, WezTerm, Alacritty, mintty, PuTTY, ConEmu, Hyper, Tabby, VS Code (+Insiders, VSCodium), Cursor, Zed |
 
-## 6. Open items
-- **Re-prove eb688f25 on build-B** (≤ 60-char direct runs, 15 ms pacing, the mangled-run card) and clean up round 4's Debug companion there; H3-D1's read-only → unknown → lease → notLanded → card path is proven by the Core tests only.
+## 6. H3-D2 alignment (Mac wave D any-app, main f4834cf3)
+| Mac | Windows twin now | Remaining difference |
+|---|---|---|
+| per FINAL utterance: editable → direct + a 150 ms read-back; else the lease, the verifier awaited inline, the settle detached at 500 ms | finals queue and deliver serially; direct (≤ 60 chars, see deviation 3) read back at 150/350/1000 ms with an early exit; the lease's verifier and its 500 ms settle are BOTH awaited before the next utterance, and one lease runs at a time across gestures | Windows waits for the settle (≈ 0.5 s more between utterances) instead of detaching it — the Core's "Begin over our unsettled item keeps the previous snapshot" is built and tested, the app does not rely on it |
+| "send it" → Return only on editable / unknown, non-secure | `ReturnWithheld` now allows unknown targets (refused: secure, focus moved, a key held) | — |
+| "scratch that" → select back when editable; else Backspace × n only after a verified delivery of ours | an earlier utterance re-sent empty scratches it if it is the last delivery: direct → UIA select-back of exactly our words (refused unless the run before the caret reads back as them) then Backspace; a verified lease → Backspace × n (text elements); else "Nothing of ours to scratch" | Windows checks the selected run against our words before deleting (UIA can read it; the Mac sets the AX range); built, not yet run live |
+| polish(text, any_app(app), session: null), 4 s, refused → shaped | same | — |
+| rewrite(instruction, selection, app, thread [[instruction, result]]) → Replace / Refine (hold again) / discard | same; the panel also has Copy and Try again | — |
+| failure card + rewrite panel = their own AnyAppCard, same look/width/placement as the answer card | W153C's `AnswerCardWindow` used as a WINDOW only (`Begin(owner)` → generation, `Present(gen, AnswerCardContent)`, `Hide(gen)`); they are not states of the desk-turn answer-card machine — a desk turn's card and ours replace each other by generation | — |
+| `dictateAnywhereEnabled` unset → follows the platform permission (Windows: none → on); an explicit switch wins | unset → on; an explicit value wins | — |
+| media: Play/Pause at a non-refused press and again at finish/abandon, one flag per gesture, opt-in (default off) | `pauseMediaWhileDictating` (default off): VK_MEDIA_PLAY_PAUSE at a non-refused key press (not for rewrite presses or the probe), the second at Finish or Cancel, one `MediaToggled` flag per gesture | built, not yet run live |
+| pill "· Ctrl+Alt+D held · Dictating into ‹App›"; refusal "Nothing to type into — ‹role›" | the island status is now "‹chord› held · Dictating into ‹App›" (the hold/lock copy first); refusal copy unchanged | — |
+
+## 7. Open items
+- **Re-prove the H3-D1/H3-D2 head on build-B** (≤ 60-char direct runs, 15 ms pacing, the mangled-run card) and clean up round 4's Debug companion there; H3-D1's read-only → unknown → lease → notLanded → card path is proven by the Core tests only.
 - **Win+V proof of the history hints**: on build-B's session Windows' clipboard history stayed `ClipboardHistoryDisabled` even after the Settings toggle (`06-…png`, `07-…OPEN-ITEM.png`), so "excluded from history" is proven only as "the hints are written" (log + `WinRT Clipboard.GetHistoryItemsAsync` = 0). Needs a console session where history activates.
 - **Live rewrite and polish** need H-ENGINE (the build-B package of main): the panel, refine, Replace/Copy/Try again are proven against the RPC error path only.
 - **Real speech into any app**: the key path is proven to `dictation … live` and the finish; spoken words (shaped finals → delivery) need someone talking at build-B's mic or the engine's file source.
 - **Settings › Dictation "Apps" editor** (H-BC §14.3) — the blob is read; the editor is W153B's file.
-- **§8.6 media duck/pause while dictating** not built (Windows twin: `IAudioEndpointVolume` / VK_MEDIA_PLAY_PAUSE).
-- **"scratch that" after a delivery** is logged, not undone — the "undo last" affordance (§7.4) needs a card button that does not exist yet.
+- **Media toggle and "scratch that"** (H3-D2) are built (app code, no unit tests) — run them live once build-B and H-ENGINE are back.
 - **Counters UI** (§16.1 #26 debug row): `AnyAppController.Current.Counters` exists; no Settings row shows it.
 - **Multi-display**: built against the monitor of the focused window; verified on one display only.
 - **Mac wave D test names**: none existed when this landed; the C# suites follow proof 23's §13.1/§13.3/§13.4 tables, re-align names when the Swift suites land.

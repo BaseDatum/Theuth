@@ -281,7 +281,7 @@ public static class DeliveryAssessment
     {
         if (a.Secure) return "not sent — secure field";
         if (!focusSame) return "not sent — focus moved";
-        if (a.Verdict != TargetVerdict.Editable) return "not sent — unknown field";
+        if (a.Verdict == TargetVerdict.CertainlyNot) return "not sent — nothing to type into"; // H3-D2: editable and unknown may take Return
         if (modifierDown) return "not sent — a key is held";
         return null;
     }
@@ -345,6 +345,9 @@ public static class AppMatch
 /// <summary>The copy of the any-app states (§3.2 table, §13.5 card), one place so both the pill and the card say the same thing.</summary>
 public static class AnyAppCopy
 {
+    /// <summary>"scratch that" with nothing of ours to take back (H3-D2, the Mac's words).</summary>
+    public const string ScratchHint = "Nothing of ours to scratch";
+
     /// <summary>The pill at the press: "Dictating into Mail" · "Terminal · unknown field — paste" · "Nothing to type into — button".</summary>
     public static string Pill(Assessment a)
     {

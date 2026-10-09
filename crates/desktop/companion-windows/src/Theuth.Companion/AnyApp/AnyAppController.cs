@@ -129,6 +129,11 @@ internal sealed class AnyAppController
         public DateTimeOffset Pressed = DateTimeOffset.Now;
         public int KeyId = -1;
         public readonly List<string> Heard = new();
+        /// <summary>What went in, in order (H3-D2 "scratch that": only the last delivery of ours can go).</summary>
+        public readonly List<(int Utterance, string Text, DeliveryMethod Method, bool Verified)> History = new();
+        public DeliveryMethod LastMethod;
+        /// <summary>§8.6: this gesture pressed Play/Pause at its press and owes the second press at its end.</summary>
+        public bool MediaToggled;
     }
 
     private sealed record RewriteState(FocusCapture Capture, Assessment Assessment, AppProfile Profile, string Selection, List<(string Instruction, string Result)> Thread)
@@ -187,6 +192,12 @@ internal sealed class AnyAppController
         }
         live = g;
         RenderListening(g);
+        if (g.Source == GestureSource.Key && !g.RewriteMode && settings.PauseMedia)
+        {
+            // §8.6 (H3-D2): one Play/Pause at a non-refused press, the second at the finish or the abandon; opt-in, may un-pause.
+            g.MediaToggled = Typist.MediaPlayPause();
+            Log.Write($"anyapp: media Play/Pause at the press → {(g.MediaToggled ? "sent" : "failed")}");
+        }
         if (g.Source == GestureSource.Key) starting = StartDictationAsync(g);
         return true;
     }
@@ -267,13 +278,23 @@ internal sealed class AnyAppController
         _ = SettleNowAsync(g);
         live = null;
         g.Drained.TrySetResult();
+        MediaBack(g);
         if (hint is not null) Hint(hint);
         else Pill(null);
+    }
+
+    /// <summary>§8.6: the second Play/Pause of a gesture that pressed one at its press (finish or abandon, once).</summary>
+    private static void MediaBack(Gesture g)
+    {
+        if (!g.MediaToggled) return;
+        g.MediaToggled = false;
+        Log.Write($"anyapp: media Play/Pause at the end → {(Typist.MediaPlayPause() ? "sent" : "failed")}");
     }
 
     private void Finish(Gesture g, string? caption)
     {
         if (live == g) live = null;
+        MediaBack(g);
         Counters.Log();
         if (g.Failures.Count > 0)
         {
@@ -382,8 +403,9 @@ internal sealed class AnyAppController
         }
         if (g.Delivered.Contains(utterance))
         {
-            // "scratch that" re-sends a delivered utterance empty: not undoable by re-delivery after a paste (§7.4) — say so; Ctrl+Z is the user's.
-            if (text.Length == 0) Log.Write($"anyapp: \"scratch that\" for utterance {utterance}, already delivered — not re-typed (Ctrl+Z in {g.Assessment.App} undoes it)");
+            // "scratch that" re-sends a delivered utterance empty (§4.6, H3-D2): only the last delivery of ours goes — select-back after a
+            // direct delivery, Backspace × n after a VERIFIED lease; anything else is "Nothing of ours to scratch".
+            if (text.Length == 0) _ = ScratchAsync(g, utterance);
             return;
         }
         var kept = g.Pending.Where(p => p.Utterance != utterance).ToList(); // a re-decoded final replaces its queued text
@@ -393,6 +415,31 @@ internal sealed class AnyAppController
         g.Heard.Add(text.Trim());
         g.Pending.Enqueue((utterance, text));
         _ = PumpAsync(g);
+    }
+
+    private async Task ScratchAsync(Gesture g, int utterance)
+    {
+        while (g.Delivering && !g.Cancelled) await Task.WhenAny(g.Drained.Task, Task.Delay(200));
+        if (g.Cancelled) return;
+        if (g.History.Count == 0 || g.History[^1].Utterance != utterance) { ScratchRefused(g, $"utterance {utterance} is not the last delivery of ours"); return; }
+        var last = g.History[^1];
+        bool ok;
+        if (last.Method == DeliveryMethod.Direct) ok = await reader.SelectBackAsync(g.Capture, last.Text) && Typist.Backspace(1);
+        else if (last.Verified) ok = Typist.Backspace(new System.Globalization.StringInfo(last.Text).LengthInTextElements);
+        else { ScratchRefused(g, "the last delivery was a lease that was not verified"); return; }
+        Log.Write($"anyapp: \"scratch that\" → {(last.Method == DeliveryMethod.Direct ? "select-back" : "Backspace")} × {last.Text.Length} chars → {(ok ? "taken back" : "failed")}");
+        if (!ok) { ScratchRefused(g, "the words did not read back at the caret"); return; }
+        g.History.RemoveAt(g.History.Count - 1);
+        g.Lines = Math.Max(0, g.Lines - 1);
+        g.DeliveredChars = Math.Max(0, g.DeliveredChars - last.Text.Length);
+        g.Previous = g.History.Count > 0 ? g.History[^1].Text : null;
+        if (!g.Ended) RenderListening(g);
+    }
+
+    private void ScratchRefused(Gesture g, string why)
+    {
+        Log.Write($"anyapp: \"scratch that\" — {why}: {AnyAppCopy.ScratchHint}");
+        if (g.Ended && live is null) Hint(AnyAppCopy.ScratchHint);
     }
 
     private async Task PumpAsync(Gesture g)
@@ -430,6 +477,7 @@ internal sealed class AnyAppController
                 g.Delivered.Add(u);
                 if (verdict is PasteVerdict.Landed or PasteVerdict.Unknown or PasteVerdict.UserActed)
                 {
+                    g.History.Add((u, delivered, g.LastMethod, verdict == PasteVerdict.Landed));
                     g.Lines++;
                     g.DeliveredChars += delivered.Length;
                     g.Previous = delivered;
@@ -511,6 +559,7 @@ internal sealed class AnyAppController
     /// <summary>§13.2: SendInput typing, read back at 150 (and 350) ms; not landed → this utterance and every later one take the lease.</summary>
     private async Task<PasteVerdict> DirectAsync(Gesture g, string text, FieldRead before)
     {
+        g.LastMethod = DeliveryMethod.Direct;
         bool ok = await Typist.TypeAsync(text);
         var at = DateTimeOffset.Now;
         var verdict = ok ? await VerifyAsync(g, before, text, null, VerifyMode.Direct, at) : PasteVerdict.NotLanded;
@@ -525,7 +574,7 @@ internal sealed class AnyAppController
             Counters.Count(verdict);
             Log.Write("anyapp: the typed run did not read back as our words — the words go to the card, the lease takes the rest");
             Fail(g, DeliveryFailure.PasteNotLanded, text, "typed text did not read back — check the field", canRetry: true);
-            return verdict;
+            return PasteVerdict.NotLanded; // not counted as a line: the words are on the card
         }
         if (verdict != PasteVerdict.NotLanded) { Counters.Count(verdict); return verdict; }
         Log.Write("anyapp: the read-back did not see the words — the lease takes this and every later utterance (W-m)");
@@ -567,6 +616,7 @@ internal sealed class AnyAppController
 
     private async Task<PasteVerdict> LeaseLockedAsync(Gesture g, string text)
     {
+        g.LastMethod = DeliveryMethod.Lease;
         if (!g.Lease.Begin(text, out var fx)) { Log.Write("anyapp: lease slot busy (unexpected) — utterance kept for the card"); Fail(g, DeliveryFailure.ClipboardWriteFailed, text, "", canRetry: true); return PasteVerdict.NotLanded; }
         var run = new LeaseRun();
         int gen = g.Lease.Generation;
@@ -1060,7 +1110,7 @@ internal sealed class AnyAppController
         if (g.Paused) return;
         string head = g.RewriteMode ? AnyAppCopy.RewritePill(g.Selection.Length) : AnyAppCopy.Pill(g.Assessment);
         string chord = g.Source == GestureSource.Fixture ? "probe" : Chord;
-        string status = $"{head} · {AnyAppCopy.Held(chord, g.LockedHold, shape: true)}";
+        string status = $"{AnyAppCopy.Held(chord, g.LockedHold, shape: true)} · {head}"; // H3-D2: "Ctrl+Alt+D held · Dictating into ‹App›"
         string words = (g.Live + (g.Partial.Length > 0 ? " " + g.Partial : "")).Trim();
         Pill(new VoiceView("listening", words, status, null, words.Length == 0 ? AnyAppCopy.Hints : null, g.LockedHold, false));
     }

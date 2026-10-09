@@ -327,7 +327,8 @@ public sealed class DeliveryAssessmentTests
         Assert.Equal("not sent — focus moved", DeliveryAssessment.ReturnWithheld(editable, focusSame: false, modifierDown: false));
         Assert.Equal("not sent — a key is held", DeliveryAssessment.ReturnWithheld(editable, focusSame: true, modifierDown: true));
         var unknown = DeliveryAssessment.Assess(F(UiaControlType.Pane));
-        Assert.Equal("not sent — unknown field", DeliveryAssessment.ReturnWithheld(unknown, focusSame: true, modifierDown: false));
+        Assert.Null(DeliveryAssessment.ReturnWithheld(unknown, focusSame: true, modifierDown: false)); // H3-D2: unknown targets take Return too
+        Assert.Equal(AnyAppCopy.ScratchHint, "Nothing of ours to scratch");
     }
 
     // MARK: app profiles (AppProfile.id = the exe name on Windows)

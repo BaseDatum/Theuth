@@ -16,6 +16,8 @@ internal sealed class AnyAppSettings
     public const string LeaveTextOnClipboardKey = "leaveTextOnClipboard";
     public const string CheckPasteLandedKey = "checkPasteLanded";
     public const string AppProfilesKey = "appProfiles";
+    /// <summary>§8.6 (H3-D2, the Mac's key): toggle Play/Pause at a non-refused press and again at the finish; opt-in, default off.</summary>
+    public const string PauseMediaKey = "pauseMediaWhileDictating";
 
     private readonly SettingsStore store;
 
@@ -26,6 +28,7 @@ internal sealed class AnyAppSettings
     public bool LeaveTextOnClipboard => store.Contains(LeaveTextOnClipboardKey) && store.Bool(LeaveTextOnClipboardKey);
 
     public bool CheckPasteLanded => !store.Contains(CheckPasteLandedKey) || store.Bool(CheckPasteLandedKey);
+    public bool PauseMedia => store.Contains(PauseMediaKey) && store.Bool(PauseMediaKey);
 
     /// <summary>The user's per-app rows (an unreadable value is no rows, never an exception).</summary>
     public IReadOnlyList<AppProfile> Profiles
@@ -69,5 +72,5 @@ internal sealed class AnyAppSettings
     }
 
     public string Describe() =>
-        $"enabled={(Enabled ? "on" : "off")} leaveTextOnClipboard={(LeaveTextOnClipboard ? "on" : "off")} checkPasteLanded={(CheckPasteLanded ? "on" : "off")} profiles={Profiles.Count}";
+        $"enabled={(Enabled ? "on" : "off")} leaveTextOnClipboard={(LeaveTextOnClipboard ? "on" : "off")} checkPasteLanded={(CheckPasteLanded ? "on" : "off")} pauseMedia={(PauseMedia ? "on" : "off")} profiles={Profiles.Count}";
 }

@@ -72,6 +72,7 @@ internal interface IUIAutomationTextRange
     void _Move();
     int MoveEndpointByUnit(int endpoint, int unit, int count);
     void MoveEndpointByRange(int sourceEndpoint, IUIAutomationTextRange range, int targetEndpoint);
+    void Select();
 }
 
 /// <summary>The UIA ids this file reads (<c>UIAutomationClient.h</c>).</summary>
@@ -298,6 +299,23 @@ internal sealed class FocusReader
         }
         catch (COMException) { return false; }
     }
+
+    /// <summary>
+    /// "scratch that" after a direct delivery (H3-D2, the Mac's select-back): select the <paramref name="expected"/> run that ends at the
+    /// caret and keep it selected only if it reads back as our words (the caller then deletes the selection); false leaves the caret.
+    /// </summary>
+    public Task<bool> SelectBackAsync(FocusCapture c, string expected) => worker.Run(() =>
+    {
+        if (c.Element is not { } el || !Same(c) || Text(el) is not { } tp || FirstSelection(tp) is not { } sel) return false;
+        int n = new System.Globalization.StringInfo(expected).LengthInTextElements;
+        var r = sel.Clone();
+        r.MoveEndpointByRange(UiaIds.EndpointStart, r, UiaIds.EndpointEnd); // collapse to the caret
+        if (r.MoveEndpointByUnit(UiaIds.EndpointStart, UiaIds.UnitCharacter, -n) != -n) return false;
+        string got = TryRef(() => r.GetText(expected.Length + 8)) ?? "";
+        if (PasteVerifier.Normalize(got) != PasteVerifier.Normalize(expected)) return false;
+        r.Select();
+        return true;
+    }, ReadBudgetMs, false, "select-back");
 
     /// <summary>§13.6: the selected text (≤ 20 000 chars), or null.</summary>
     public Task<string?> SelectionAsync(FocusCapture c) => worker.Run(() =>

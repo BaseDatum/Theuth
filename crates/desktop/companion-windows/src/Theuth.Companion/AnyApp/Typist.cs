@@ -57,6 +57,23 @@ internal static class Typist
     /// <summary>§7.4 "send it": Return (the caller checked <see cref="ModifierDown"/> and the assessment first).</summary>
     public static bool Return() => Burst(new List<Input> { Key(VkReturn, 0, 0), Key(VkReturn, 0, KeyEventKeyUp) }, keepCtrl: false);
 
+    /// <summary>"scratch that" (H3-D2): Backspace × <paramref name="n"/> in one burst (n = 1 deletes a selection).</summary>
+    public static bool Backspace(int n)
+    {
+        var work = new List<Input>();
+        for (int i = 0; i < Math.Clamp(n, 1, 4096); i++) { work.Add(Key(VkBack, 0, 0)); work.Add(Key(VkBack, 0, KeyEventKeyUp)); }
+        return Burst(work, keepCtrl: false);
+    }
+
+    /// <summary>§8.6 media toggle (H3-D2, opt-in): one Play/Pause key press, like the keyboard's media key.</summary>
+    public static bool MediaPlayPause()
+    {
+        var events = new[] { Key(VkMediaPlayPause, 0, KeyEventExtendedKey), Key(VkMediaPlayPause, 0, KeyEventExtendedKey | KeyEventKeyUp) };
+        return SendInput((uint)events.Length, events, System.Runtime.InteropServices.Marshal.SizeOf<Input>()) == events.Length;
+    }
+
+    private const ushort VkMediaPlayPause = 0xB3;
+
     /// <summary>§7.4 "undo last": Ctrl+Z once into the target.</summary>
     public static bool Undo() => Burst(new List<Input> { Key(VkZ, 0, 0), Key(VkZ, 0, KeyEventKeyUp) }, keepCtrl: true);
 
