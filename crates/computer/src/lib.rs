@@ -2,16 +2,19 @@
 //! desktop through eight `computer_*` tools — one composite screenshot of
 //! every display as an image part ([`screen`], [`frame`]), enigo pointer and
 //! keyboard input on one thread ([`input`]), `Risk` as the only gate
-//! ([`tools`]). The [`Computer`] actor exists so RPC has a lookup target.
+//! ([`tools`]) — and the platform's native-app tools ([`native`], 153 §11).
+//! The [`Computer`] actor exists so RPC has a lookup target.
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`COMPUTER_ACTOR`] actor ([`Computer`]): [`Permissions`],
 //!   [`ScreenContext`] (96 §6)
+//! - [`NATIVE_APPS_SKILL`]: the binary-owned `skills/native-apps.md`
 
 pub mod ax;
 pub mod context;
 pub mod frame;
 pub mod input;
+pub mod native;
 pub mod pointer;
 pub mod screen;
 pub mod tools;
@@ -31,6 +34,10 @@ use serde::{Deserialize, Serialize};
 
 /// Registry name of the [`Computer`] actor (27 §3.5).
 pub const COMPUTER_ACTOR: &str = "computer";
+
+/// `skills/native-apps.md` (153 §11.4): AppleScript / Shortcuts / PowerShell
+/// recipes for the native-app tools, written by `theuth`'s first run.
+pub const NATIVE_APPS_SKILL: &str = include_str!("../native-apps.md");
 
 /// `computer:` config section (27 §5). Every field has a default; the section
 /// may be absent.

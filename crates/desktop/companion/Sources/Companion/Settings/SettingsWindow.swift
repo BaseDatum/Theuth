@@ -64,6 +64,8 @@ struct SettingsView: View {
             engine.tabItem { Label("Engine", systemImage: "network") }.tag("engine")
             IslandSettingsTab().tabItem { Label("Island", systemImage: "rectangle.topthird.inset.filled") }.tag("island") // 149 W3
             VoiceKeyTab(model: model).tabItem { Label("Voice key", systemImage: "waveform") }.tag("voiceKey") // 149 W2
+            DictationSettingsTab().tabItem { Label("Dictation", systemImage: "text.cursor") }.tag("dictation") // 153 (B3 fills)
+            CommandSettingsTab().tabItem { Label("Command", systemImage: "terminal") }.tag("command") // 153 (C1 fills)
         }
         .padding(16)
         .frame(width: 500, height: 400)

@@ -63,5 +63,5 @@ extension Flags {
         return TimeInterval(args[i + 1])
     }()
     /// Any probe: the surfaces must not take key, nothing may be answered.
-    static var anyProbe: Bool { probe != nil || probeNotify != nil || w6Probe || islandProbe || w1Probe || probePoint != nil } // 149 W3 + W1 + W2 probes
+    static var anyProbe: Bool { probe != nil || probeNotify != nil || w6Probe || islandProbe || w1Probe || probePoint != nil || probeCommand != nil || probeCard != nil } // 149 W3 + W1 + W2 probes, 153 C1
 }

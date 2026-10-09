@@ -203,7 +203,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 let now = now_ms();
                 let due = model.read().search_wake().is_some_and(|t| t <= now)
                     || model.read().terminal_wake().is_some_and(|t| t <= now)
-                    || model.read().path.wake().is_some_and(|t| t <= now);
+                    || model.read().path.wake().is_some_and(|t| t <= now)
+                    || model.read().suggestion_wake().is_some_and(|t| t <= now);
                 if pending.is_empty() && !model.read().animating() && !due {
                     continue;
                 }
@@ -230,11 +231,17 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         format!("{text}\n{typed}")
                     });
                 }
+                m.expire_suggestion(now);
                 // A dictation ended: the spliced value, then the caret in the
                 // same tick (an external value change alone sends it to the end).
                 if let Some((value, caret)) = m.pending_input.take() {
                     input.set(value);
                     handle.write().set_cursor_offset(caret);
+                }
+                // "send it" (153 §7.4): the spliced value takes the send key's path, once.
+                if let Some(text) = m.pending_send.take() {
+                    m.submit(&text, &commands);
+                    input.set(String::new());
                 }
                 if std::mem::take(&mut m.refresh_mcp) {
                     let _ = commands.send(Command::ListMcp(m.session));
@@ -417,13 +424,17 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 return;
             }
-            // Dictation (54 §6): the box is busy; Ctrl+D keeps, Esc discards,
-            // every other key is swallowed.
+            // Dictation (54 §6): the box is busy; Ctrl+D keeps, Esc discards, ⏎
+            // during the "send it" settle sends now (153 §3.1), every other key
+            // is swallowed — and drops an armed "send it" (keep editing).
             let ctrl_d = code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL);
-            if m.dictation.is_some() {
+            if let Some(d) = &m.dictation {
+                let armed = d.send;
                 let cmd = match code {
                     _ if ctrl_d => m.toggle_dictation(String::new(), String::new()),
                     KeyCode::Esc => m.discard_dictation(),
+                    KeyCode::Enter if armed => m.stop_dictation(true),
+                    KeyCode::Char(_) if armed => m.stop_dictation(false),
                     _ => None,
                 };
                 if let Some(cmd) = cmd {
@@ -475,6 +486,27 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         m.answer_secret(None, &commands);
                     }
                     _ => {}
+                }
+                return;
+            }
+            // The dictionary suggestion line (153 §6.4): `y` add · `n` not now ·
+            // `N` never · `p` is the desktop's; Esc = not now; the rest is swallowed.
+            if m.suggestion.is_some() {
+                use voice::SuggestionAnswer::*;
+                let cmd = match code {
+                    KeyCode::Char('y') => m.answer_suggestion(Add),
+                    KeyCode::Char('n') | KeyCode::Esc => m.answer_suggestion(NotNow),
+                    KeyCode::Char('N') => m.answer_suggestion(Never),
+                    KeyCode::Char('p') => {
+                        m.entries.push(Entry::Info(
+                            "play what you said: in the desktop's suggestion card".into(),
+                        ));
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(cmd) = cmd {
+                    let _ = commands.send(cmd);
                 }
                 return;
             }
@@ -820,6 +852,10 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                             // inserted run, or the point of deletion.
                             let caret = pathac::caret_after_edit(&input.read(), &v);
                             m.path.edit(&v, caret, now_ms());
+                            // An emptied editor no longer carries the dictation (153 §6.1).
+                            if v.is_empty() {
+                                m.dictated = None;
+                            }
                             drop(m);
                             input.set(v);
                         },
@@ -827,6 +863,12 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 }
                 #(m.dictation.as_ref().map(|d| element!(MixedText(contents: dictation_region(d), wrap: TextWrap::Wrap))))
             }
+            // The dictionary suggestion (153 §6.4): one line under the composer.
+            #(m.suggestion.as_ref().map(|s| {
+                element!(View(height: 1, padding_left: 1) {
+                    Text(content: s.line(), color: OCHRE, wrap: TextWrap::NoWrap)
+                })
+            }))
             #(path_box(&m, width))
             View(height: 1, padding_left: 1, padding_right: 1, justify_content: JustifyContent::SpaceBetween) {
                 View() {
@@ -879,7 +921,8 @@ fn talk_pane(t: &Talking, frame: usize, width: u16, height: usize) -> AnyElement
 }
 
 /// Header row while dictating (54 §6): a blinking `●`, the level meter in
-/// cyan, the elapsed clock and the keys in grey.
+/// cyan, the elapsed clock, the mic note (153 §8.2) and the keys in grey.
+/// An armed "send it" (153 §3.1) names the settle and its two keys.
 fn dictation_header(d: &Dictating, frame: usize) -> Vec<MixedTextContent> {
     let dot = if (frame / 30).is_multiple_of(2) {
         "● "
@@ -888,15 +931,25 @@ fn dictation_header(d: &Dictating, frame: usize) -> Vec<MixedTextContent> {
     };
     let state = match d.phase {
         Phase::Starting => "starting",
+        Phase::Dictating if d.send => "sending…",
         Phase::Dictating => "dictating",
         Phase::Stopping => "stopping",
     };
-    vec![
+    let keys = if d.send {
+        " (⏎ send now · any key keeps editing · Esc discard)"
+    } else {
+        " (Ctrl+D stop · Esc discard)"
+    };
+    let mut out = vec![
         MixedTextContent::new(format!("{dot}{state}  ")).color(FAIENCE),
         MixedTextContent::new(dictation::meter(&d.levels, dictation::METER_CELLS)).color(FAIENCE),
         MixedTextContent::new(format!("  {}", d.clock())),
-        MixedTextContent::new(" (Ctrl+D stop · Esc discard)").color(SAND),
-    ]
+    ];
+    if let Some(mic) = &d.mic {
+        out.push(MixedTextContent::new(format!("  {mic}")).color(OCHRE));
+    }
+    out.push(MixedTextContent::new(keys).color(SAND));
+    out
 }
 
 /// The composer while dictating (54 §5.1): `before`, `lead`, each utterance

@@ -5,11 +5,12 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-/// One utterance as the daemon reports it: `text` so far, `is_final` once
-/// the VAD closed it.
+/// One utterance as the daemon reports it: `text` so far (the engine's
+/// `shaped`, 153 §4; see [`shown`]), `is_final` once the VAD closed it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Utt {
-    /// Text so far (append-only per utterance).
+    /// Text so far (append-only per utterance). Empty = dropped from the
+    /// region ("scratch that" re-sends an earlier utterance empty, 153 §7.4).
     pub text: String,
     /// The utterance is closed: rendered in full colour.
     pub is_final: bool,
@@ -45,6 +46,10 @@ pub struct Dictating {
     pub phase: Phase,
     /// Esc was pressed: `Finished` must not splice (the editor is restored already).
     pub discard: bool,
+    /// "send it" is on the latest piece (153 §7.3): `Finished` splices and submits.
+    pub send: bool,
+    /// The mic's last `DictationDevice` (153 §8.2), for the header.
+    pub mic: Option<String>,
 }
 
 /// Meter width in the header.
@@ -62,6 +67,8 @@ impl Dictating {
             started: Instant::now(),
             phase: Phase::Starting,
             discard: false,
+            send: false,
+            mic: None,
         }
     }
 
@@ -91,6 +98,20 @@ impl Dictating {
         self.utts[n] = Utt { text, is_final };
     }
 
+    /// Fold a `DictationText` in: the shown text per [`shown`], and whether
+    /// "send it" is armed/fired on this piece.
+    pub fn text_event(
+        &mut self,
+        n: usize,
+        text: String,
+        shaped: String,
+        command: Option<voice::EndCommand>,
+        is_final: bool,
+    ) {
+        self.send = matches!(command, Some(voice::EndCommand::Send { .. }));
+        self.set_utt(n, shown(text, shaped, command.is_some()), is_final);
+    }
+
     /// The composer value and caret after a stop: every utterance rendered,
     /// final or not, caret at the end of the region.
     pub fn splice(&self) -> (String, usize) {
@@ -101,6 +122,52 @@ impl Dictating {
     pub fn clock(&self) -> String {
         let s = self.started.elapsed().as_secs();
         format!("{:02}:{:02}", s / 60, s % 60)
+    }
+}
+
+/// What the region shows for one piece: `shaped` (153 §4.4). An engine
+/// that sends no `shaped` (serde default `""`) falls back to `text` — but
+/// only when no end command explains the emptiness: "send it" / "scratch
+/// that" alone shape to `""` on purpose (§7.1), and so does the scratched
+/// utterance's empty re-send.
+pub fn shown(text: String, shaped: String, has_command: bool) -> String {
+    if shaped.is_empty() && !has_command {
+        text
+    } else {
+        shaped
+    }
+}
+
+/// A dictionary suggestion (153 §6.4) shown as one line under the composer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Suggestion {
+    /// Answered with `dictionary_suggestion_answer`.
+    pub id: voice::SuggestionId,
+    /// What the model heard.
+    pub heard: String,
+    /// What was typed instead.
+    pub typed: String,
+    /// How often the pair was seen.
+    pub occurrences: u32,
+    /// Unix ms when it was shown; [`SUGGESTION_MS`] later it dismisses as "not now".
+    pub shown_ms: u64,
+}
+
+/// Auto-dismiss (153 §6.4): counts as "not now" without the engine's cooldown.
+pub const SUGGESTION_MS: u64 = 20_000;
+
+impl Suggestion {
+    /// The prompt line.
+    pub fn line(&self) -> String {
+        format!(
+            "dictionary: you changed “{}” → “{}” after dictating ({}×). add it?  [y] add · [n] not now · [N] never · [p] play (desktop only)",
+            self.heard, self.typed, self.occurrences
+        )
+    }
+
+    /// Past its 20 s.
+    pub fn expired(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.shown_ms) >= SUGGESTION_MS
     }
 }
 
@@ -258,5 +325,145 @@ mod tests {
         assert_eq!(d.splice(), ("a two b".into(), 5));
         d.push_levels(&[0.5; 30]);
         assert_eq!(d.levels.len(), METER_CELLS);
+    }
+
+    /// 153 §4.4 / §7.4: the region renders `shaped`, falls back to `text`
+    /// only for an engine that sends none, empties a scratched utterance
+    /// and tracks "send it" per piece. Each row: events `(utt, text,
+    /// shaped, command, final)` on an editor `before | after`, then the
+    /// spliced value and whether "send it" is on the latest piece.
+    #[test]
+    fn splice_over_shaped_table() {
+        use voice::EndCommand::{ScratchThat, Send};
+        const SEND: Option<voice::EndCommand> = Some(Send { near_miss: false });
+        type Ev = (
+            usize,
+            &'static str,
+            &'static str,
+            Option<voice::EndCommand>,
+            bool,
+        );
+        type Row = (
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static [Ev],
+            &'static str,
+            bool,
+        );
+        let rows: &[Row] = &[
+            (
+                "shaped wins over text",
+                "",
+                "",
+                &[(0, "hello comma world", "hello, world", None, true)],
+                "hello, world",
+                false,
+            ),
+            (
+                "no shaped (older engine): text",
+                "",
+                "",
+                &[(0, "hi there", "", None, false)],
+                "hi there",
+                false,
+            ),
+            (
+                "a partial re-shapes at the final",
+                "",
+                "",
+                &[
+                    (0, "parakeet dot", "parakeet dot", None, false),
+                    (0, "parakeet dot rs", "parakeet.rs", None, true),
+                ],
+                "parakeet.rs",
+                false,
+            ),
+            (
+                "send it alone shapes to nothing: editor unchanged",
+                "hel",
+                "lo",
+                &[(0, "send it", "", SEND, true)],
+                "hello",
+                true,
+            ),
+            (
+                "phrase removed, send armed",
+                "",
+                "",
+                &[(0, "ship it send it", "ship it", SEND, false)],
+                "ship it",
+                true,
+            ),
+            (
+                "scratch that empties the earlier utterance; the scratch itself shows nothing",
+                "",
+                "",
+                &[
+                    (0, "one", "one", None, true),
+                    (1, "two", "two", None, true),
+                    (1, "", "", None, true),
+                    (2, "scratch that", "", Some(ScratchThat), true),
+                ],
+                "one",
+                false,
+            ),
+            (
+                "dictation continues after a scratch",
+                "a",
+                "b",
+                &[
+                    (0, "one", "one", None, true),
+                    (0, "", "", None, true),
+                    (1, "scratch that", "", Some(ScratchThat), true),
+                    (2, "three", "three", None, false),
+                ],
+                "a three b",
+                false,
+            ),
+            (
+                "scratching the only utterance restores the editor",
+                "x",
+                "",
+                &[
+                    (0, "oops", "oops", None, true),
+                    (0, "", "", None, true),
+                    (1, "scratch that", "", Some(ScratchThat), true),
+                ],
+                "x",
+                false,
+            ),
+            (
+                "a new utterance without the phrase disarms",
+                "",
+                "",
+                &[
+                    (0, "x send it", "x", SEND, true),
+                    (1, "and more", "and more", None, false),
+                ],
+                "x and more",
+                false,
+            ),
+            (
+                "newline inside shaped lands verbatim",
+                "",
+                ".",
+                &[(0, "done new line next", "done.\nnext", None, true)],
+                "done.\nnext.",
+                false,
+            ),
+        ];
+        for (name, before, after, events, value, send) in rows {
+            let mut d = Dictating::new(
+                voice::DictationId(uuid::Uuid::nil()),
+                (*before).to_owned(),
+                (*after).to_owned(),
+            );
+            for (n, text, shaped, command, is_final) in events.iter().copied() {
+                d.text_event(n, text.to_owned(), shaped.to_owned(), command, is_final);
+            }
+            assert_eq!(d.splice().0, *value, "{name}");
+            assert_eq!(d.send, *send, "{name}: send");
+        }
     }
 }
