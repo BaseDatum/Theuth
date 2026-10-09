@@ -252,6 +252,40 @@ public static class MeetingReducer
         return s with { Cursor = cursor, Unseen = Math.Min(s.Unseen, s.Briefs.Count - 1 - cursor) };
     }
 
+    /// <summary>
+    /// Island fix §N: show the brief at <paramref name="index"/> (clamped). The ONE path behind a topic pill whose brief exists,
+    /// the older/newer buttons and J/K/↑/↓.
+    /// </summary>
+    public static MeetingSnapshot ShowAt(MeetingSnapshot s, int index)
+    {
+        if (s.Briefs.Count == 0) return s;
+        int cursor = Math.Min(s.Briefs.Count - 1, Math.Max(0, index));
+        if (cursor == s.Cursor) return s;
+        return s with { Cursor = cursor, Unseen = Math.Min(s.Unseen, s.Briefs.Count - 1 - cursor) };
+    }
+
+    /// <summary>J/↓ (+1) and K/↑ (−1): the brief index <paramref name="delta"/> away from the cursor, wrapping at both ends; −1 when there are none.</summary>
+    public static int CycleIndex(MeetingSnapshot s, int delta)
+    {
+        int n = s.Briefs.Count;
+        if (n == 0) return -1;
+        int from = s.Cursor < 0 ? (delta > 0 ? -1 : 0) : s.Cursor;
+        return ((from + delta) % n + n) % n;
+    }
+
+    /// <summary>The newest brief of <paramref name="topic"/> (its own <c>brief</c> id first, else the latest brief naming it), or −1: a pill click walks to it.</summary>
+    public static int TopicBriefIndex(MeetingSnapshot s, string topic)
+    {
+        var t = s.Topics.FirstOrDefault(x => x.Id == topic);
+        if (t?.Brief is { } id)
+        {
+            int at = IndexOf(s.Briefs, b => b.Id == id);
+            if (at >= 0) return at;
+        }
+        for (int i = s.Briefs.Count - 1; i >= 0; i--) if (s.Briefs[i].Topic == topic) return i;
+        return -1;
+    }
+
     public static MeetingSnapshot MarkTapped(MeetingSnapshot s, string topic) =>
         s.Tapped.Contains(topic) ? s : s with { Tapped = s.Tapped.Append(topic).ToArray() };
 

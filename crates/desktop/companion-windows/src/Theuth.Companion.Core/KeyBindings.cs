@@ -188,6 +188,8 @@ public enum KeyAction
     AgentsNext, AgentsPrevious, AgentsOpen, AgentsOpenSession, AgentsTalk, AgentsStop, AgentsEscape,
     // island:
     IslandMute, IslandStop, IslandDismiss, IslandDeeper, IslandSend, IslandEscape,
+    // island fix §N (Sky 2026-10-09 16:12): walk the briefs (the arrows ↓/↑ do the same, fixed):
+    IslandNextBrief, IslandPreviousBrief,
     // pointAndSay:
     PointCancel,
 }
@@ -351,6 +353,8 @@ public sealed class KeyTable : IEquatable<KeyTable>
         Row(KeyAction.IslandStop, KeyScope.Island, "Stop the meeting (hold)", Key("m", 'M', ChordModifiers.Control)),
         Row(KeyAction.IslandDismiss, KeyScope.Island, "Dismiss the topic", Key("e", 'E')),
         Row(KeyAction.IslandDeeper, KeyScope.Island, "Deeper", Key("d", 'D')),
+        Row(KeyAction.IslandNextBrief, KeyScope.Island, "Next brief (also ↓)", Key("j", 'J')),
+        Row(KeyAction.IslandPreviousBrief, KeyScope.Island, "Previous brief (also ↑)", Key("k", 'K')),
         Row(KeyAction.IslandSend, KeyScope.Island, "Send the request", Chord.ReturnKey),
         Row(KeyAction.IslandEscape, KeyScope.Island, "Leave the request box", Chord.Escape, isFixed: true),
         Row(KeyAction.PointCancel, KeyScope.PointAndSay, "Cancel", Chord.Escape, isFixed: true),

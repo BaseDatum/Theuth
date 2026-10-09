@@ -21,12 +21,10 @@ internal sealed class IslandController : IDisposable
     private readonly DispatcherQueue dispatcher;
     private readonly SettingsStore settings;
     private readonly IslandModel model = new();
-    private readonly DispatcherQueueTimer hideTimer;
     private readonly DispatcherQueueTimer oracleTimer;
     private DispatcherQueueTimer? fixtureTimer;
     private PointSettings point;
     private MeetingSnapshot snapshot = MeetingSnapshot.Empty;
-    private DateTimeOffset? lastTopicOrBrief;
     private string? cursorSent;
     private bool disposed;
 
@@ -41,9 +39,6 @@ internal sealed class IslandController : IDisposable
         Window = new IslandWindow(dispatcher, model, Act, SaveModel);
         Window.DisplayChanged += () => dispatcher.TryEnqueue(() => { if (Window.IsShown) Window.Relayout(); });
         if (!Flags.Shareable && Window.HiddenFromCapture != model.HiddenFromCapture) Window.SetHiddenFromCapture(model.HiddenFromCapture);
-        hideTimer = dispatcher.CreateTimer();
-        hideTimer.IsRepeating = false;
-        hideTimer.Tick += (_, _) => Evaluate();
         // D11: the oracle chip queries decision_mode('meeting') every 30 s while a meeting is on the island.
         oracleTimer = dispatcher.CreateTimer();
         oracleTimer.Interval = TimeSpan.FromSeconds(30);
@@ -151,10 +146,11 @@ internal sealed class IslandController : IDisposable
             Window.SetLevels(lv.MicRms, lv.SystemRms); // ~6/s: the bars resize in place, no re-render
             return;
         }
-        if (change is MeetingChange.TopicAdded or MeetingChange.Brief) lastTopicOrBrief = DateTimeOffset.Now;
-        else if (change is null && next.LastTopicOrBriefMs is { } ms && next.Meeting is not null && lastTopicOrBrief is null)
-            lastTopicOrBrief = DateTimeOffset.Now; // a hydrate with pending topics counts as "just arrived" at most once
-        if (change is MeetingChange.Deleted || next.Meeting is null) { lastTopicOrBrief = next.Meeting is null && !model.AlwaysShow ? null : lastTopicOrBrief; }
+        // Island fix D1: present the state first (open while live unless collapsed for this meeting), then render at that shape.
+        var mode = model.Mode;
+        model.Present(next.Meeting, next.State);
+        if (prev.State != next.State || prev.Meeting != next.Meeting || mode != model.Mode)
+            Log.Write($"island: presented state={next.State} meeting={next.Meeting ?? "-"} mode={model.Mode}{(next.Meeting is not null && model.IsCollapsed(next.Meeting) ? " (collapsed for this meeting)" : "")}");
         Window.Update(next);
         var cursor = next.Current?.Id;
         if (!fixture && cursor != cursorSent && (change is MeetingChange.Brief || prev.Cursor != next.Cursor))
@@ -173,27 +169,24 @@ internal sealed class IslandController : IDisposable
 
     // MARK: visibility (D10)
 
+    /// <summary>
+    /// Island fix D2 — the original's rule: shown iff the meeting is live (Starting · Recording · Paused · Stopping) or "Always
+    /// show" (or point-and-say borrows the window). Done · Failed · anything else: the close animation, then gone. No linger timer.
+    /// </summary>
     private void Evaluate()
     {
         if (disposed) return;
-        var now = DateTimeOffset.Now;
-        bool show = Window.InVoiceMode || model.ShouldShow(snapshot.State, lastTopicOrBrief, now);
+        bool show = Window.InVoiceMode || model.ShouldShow(snapshot.State);
         if (show)
         {
-            if (!Window.IsShown) Window.ShowOn(ChosenMonitor());
+            if (!Window.IsShown || Window.IsHiding) Window.ShowOn(ChosenMonitor());
         }
         else if (Window.IsShown)
         {
             Window.HideIsland();
         }
-        if (snapshot.Meeting is not null && !fixture) { if (!oracleTimer.IsRunning) { oracleTimer.Start(); PollOracle(); } }
+        if (snapshot.Meeting is not null && MeetingReducer.Live(snapshot.State) && !fixture) { if (!oracleTimer.IsRunning) { oracleTimer.Start(); PollOracle(); } }
         else oracleTimer.Stop();
-        hideTimer.Stop();
-        if (IslandModel.HideDue(snapshot.State, lastTopicOrBrief) is { } due && due > now && !model.AlwaysShow)
-        {
-            hideTimer.Interval = due - now + TimeSpan.FromMilliseconds(50);
-            hideTimer.Start();
-        }
     }
 
     /// <summary><c>decision_mode('meeting')</c> → the chip's effective mode word (<c>ModeInfo.effective</c>: a word, or an object whose first key is the word).</summary>
@@ -237,7 +230,23 @@ internal sealed class IslandController : IDisposable
 
     private void Act(IslandAction a)
     {
-        if (fixture && a is not (IslandAction.Move or IslandAction.Eye))
+        // D3 / §N: one brief-walk path for a topic pill with a brief, the older/newer buttons and J/K/↑/↓.
+        if (a is IslandAction.Cycle cy)
+        {
+            ShowBrief(MeetingReducer.CycleIndex(snapshot, cy.Delta), cy.Via);
+            return;
+        }
+        if (a is IslandAction.Move mv0)
+        {
+            ShowBrief(snapshot.Cursor + mv0.Delta, mv0.Delta < 0 ? "older" : "newer");
+            return;
+        }
+        if (a is IslandAction.Tap tb && MeetingReducer.TopicBriefIndex(snapshot, tb.Topic) is var at && at >= 0)
+        {
+            ShowBrief(at, $"pill {tb.Topic}");
+            return;
+        }
+        if (fixture && a is not IslandAction.Eye)
         {
             Log.Write($"island: fixture — {a.GetType().Name} not sent");
             if (a is IslandAction.Tap t0) { snapshot = MeetingReducer.MarkTapped(snapshot, t0.Topic); Window.Update(snapshot); }
@@ -256,7 +265,6 @@ internal sealed class IslandController : IDisposable
             case IslandAction.Dismiss d: Fire(store.MeetingDismissAsync(d.Topic), "meeting_dismiss"); break;
             case IslandAction.Deeper dp: Fire(store.MeetingDeeperAsync(dp.Brief), "meeting_deeper"); break;
             case IslandAction.Request r: Fire(store.MeetingRequestAsync(r.Text), "meeting_request"); break;
-            case IslandAction.Move mv: Apply(MeetingReducer.Move(snapshot, mv.Delta), null); break;
             case IslandAction.Mute:
                 if (snapshot.State == "Paused") Fire(store.MeetingResumeAsync(), "meeting_resume");
                 else if (snapshot.State == "Recording") Fire(store.MeetingPauseAsync(), "meeting_pause");
@@ -265,6 +273,19 @@ internal sealed class IslandController : IDisposable
             case IslandAction.Eye: ToggleEye(); break;
             case IslandAction.OpenMeetings: _ = Links.Open(new Uri("theuth://meetings")); break;
         }
+    }
+
+    /// <summary>Show brief <paramref name="index"/> (the pill, older/newer and J/K all land here); the cursor goes to the engine in <see cref="Apply"/>.</summary>
+    private void ShowBrief(int index, string via)
+    {
+        if (index < 0 || snapshot.Briefs.Count == 0)
+        {
+            Log.Write($"island: brief walk via {via} — no briefs");
+            return;
+        }
+        var next = MeetingReducer.ShowAt(snapshot, index);
+        Log.Write($"island: brief {next.Cursor + 1}/{next.Briefs.Count} via {via} ({next.Current?.Title})");
+        Apply(next, null);
     }
 
     private static void Fire(Task t, string what) =>
@@ -309,6 +330,11 @@ internal sealed class IslandController : IDisposable
         s = MeetingReducer.Reduce(s, new MeetingChange.TopicAdded("fixture-meeting", new MeetingTopic("t2", "Standup", 700_000)), now);
         s = MeetingReducer.Reduce(s, new MeetingChange.Brief("fixture-meeting", new MeetingBrief("b1", "t1", "PROJ-12 — the ingest retry",
             new[] { "Opened Tuesday by Sky; retries the ingest job three times before it files an incident", "Blocked on the schema change in PR #418", "Owner: ops desk" }, "Auto", 650_000)), now);
+        // Island fix §N: three briefs so the walk (pills, older/newer, J/K/↑/↓) wraps visibly.
+        s = MeetingReducer.Reduce(s, new MeetingChange.Brief("fixture-meeting", new MeetingBrief("b2", "t2", "Standup — what moved since Tuesday",
+            new[] { "Ingest retry fix is in review", "Pricing page layout still open", "Demo moved to Friday" }, "Tap", 700_500)), now);
+        s = MeetingReducer.Reduce(s, new MeetingChange.Brief("fixture-meeting", new MeetingBrief("b3", "t1", "PROJ-12 — deeper: the schema change",
+            new[] { "PR #418 adds the nullable column the retry reads", "Lands tomorrow after review" }, "Deeper", 720_000, Parent: "b1")), now);
         s = MeetingReducer.Reduce(s, new MeetingChange.Utterance("fixture-meeting", "System", 740_000, "so the ingest retry is still failing on the schema", false, true, "s2"), now);
         s = MeetingReducer.Reduce(s, new MeetingChange.Utterance("fixture-meeting", "Mic", 745_000, "yes, PR 418 lands tomorrow", false, true, null), now);
         s = MeetingReducer.Reduce(s, new MeetingChange.OracleDecision("fixture-meeting", new MeetingOracleRow("batch-1", "brief", false, true)), now);
@@ -342,7 +368,7 @@ internal sealed class IslandController : IDisposable
             Apply(MeetingReducer.Reduce(snapshot, u, DateTimeOffset.Now), u);
         };
         fixtureTalk.Start();
-        Log.Write("island: fixture meeting applied (recording 12:31, 2 topics, 1 brief, 2 lines, oracle shadow·brief, level pulses)");
+        Log.Write($"island: fixture meeting applied (recording 12:31, 2 topics, {snapshot.Briefs.Count} briefs, 2 lines, oracle shadow·brief, level pulses, talking)");
     }
 
     private bool fixture;
@@ -370,7 +396,6 @@ internal sealed class IslandController : IDisposable
     {
         if (disposed) return;
         disposed = true;
-        hideTimer.Stop();
         oracleTimer.Stop();
         fixtureTimer?.Stop();
         fixtureTalk?.Stop();

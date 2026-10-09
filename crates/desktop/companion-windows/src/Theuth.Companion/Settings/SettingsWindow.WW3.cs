@@ -29,7 +29,20 @@ internal sealed partial class SettingsWindow
         var island = ww3.Island;
         Toggle(page, "Always show the closed pill", "settings-island-always", island.Model.AlwaysShow, on => island.SetAlwaysShow(on));
         Caption(page, "Off: the island appears while a meeting is live and for 10 minutes after the last topic or brief. On: the pill stays; a click opens Meetings.");
-        Toggle(page, "Hidden from screen capture (eye)", "settings-island-eye", island.Model.HiddenFromCapture, on => island.SetHiddenFromCapture(on));
+        // Sky 16:06: the eye's exposure state at a glance, in the island's tints (Caution = viewers can see it, Success = hidden).
+        var eyeState = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        AutomationProperties.SetAutomationId(eyeState, "settings-island-eye-state");
+        void ShowEye(bool hidden)
+        {
+            eyeState.Children.Clear();
+            eyeState.Children.Add(Theuth.Companion.Ui.Theme.Icon(Theuth.Companion.Island.IslandWindow.EyeGlyph(hidden), eyeState.ActualTheme, Theuth.Companion.Island.IslandWindow.EyeTint(hidden), 14));
+            eyeState.Children.Add(new TextBlock { Text = Theuth.Companion.Island.IslandWindow.EyeLabel(hidden), FontSize = 12, VerticalAlignment = VerticalAlignment.Center });
+            AutomationProperties.SetName(eyeState, Theuth.Companion.Island.IslandWindow.EyeLabel(hidden));
+        }
+        Toggle(page, "Hidden from screen capture (eye)", "settings-island-eye", island.Model.HiddenFromCapture, on => { island.SetHiddenFromCapture(on); ShowEye(on); });
+        ShowEye(island.Model.HiddenFromCapture);
+        Theuth.Companion.Ui.Theme.Follow(eyeState, () => ShowEye(island.Model.HiddenFromCapture));
+        page.Children.Add(eyeState);
         Caption(page, "Applies to the island and the point-and-say overlays (WDA_EXCLUDEFROMCAPTURE). Best effort: Windows honours it for screenshots and most capture apps.");
         Caption(page, $"Push-to-talk {ChordText(KeyAction.MeetingPtt)} · eye {ChordText(KeyAction.MeetingEye)} — while a meeting is live; change them in Keys.");
 

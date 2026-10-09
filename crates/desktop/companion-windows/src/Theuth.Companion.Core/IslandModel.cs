@@ -22,19 +22,19 @@ public readonly record struct PxRect(int X, int Y, int Width, int Height)
 /// <summary>One monitor as the island sees it: its device name (the memory key), its work area (a top taskbar respected) and its scale.</summary>
 public sealed record IslandDisplay(string Device, PxRect WorkArea, double Scale, bool Primary);
 
-/// <summary>The island's visual state (149 §3.6): the closed pill, the open strip + pane, or dragged away from the top centre.</summary>
+/// <summary>The island's shape (149 §3.6 + island fix D1): the closed pill or the open strip + pane. Where it sits is <see cref="IslandModel.Detached"/>.</summary>
 public enum IslandMode
 {
     Closed,
     Open,
-    Detached,
 }
 
 /// <summary>
 /// Design 149 §3.6 / §7.4 #1 / D9–D11, the pure half of the island window: where it sits (top-centre of a monitor's work
 /// area; a saved offset per display, keyed by monitor device name, validated before use; snap-back within
-/// <see cref="SnapPx"/> of the default; double-click = snap back), whether it is shown (D10: a live meeting, or a topic/brief
-/// in the last <see cref="PendingWindow"/>, or "Always show"), and its mode. Mirrors the Swift <c>IslandModel</c>; the
+/// <see cref="SnapPx"/> of the default; double-click = snap back), whether it is shown (island fix D2: a live meeting — Starting ·
+/// Recording · Paused · Stopping — or "Always show"; no linger), and its shape (D1: open while live unless explicitly collapsed
+/// for that meeting; no hover model). Mirrors the Swift <c>IslandModel</c>; the
 /// WinUI window executes what this decides. Offsets are stored relative to the work area's origin in physical pixels, so
 /// a monitor that moves in the virtual-screen layout keeps its island where the user put it.
 /// </summary>
@@ -45,9 +45,6 @@ public sealed class IslandModel
 
     /// <summary>The pill hugs the top edge of the work area by this gap (effective px); 0 would touch a top taskbar.</summary>
     public const int TopGapPx = 6;
-
-    /// <summary>D10 / Revision 1 #13: a topic or brief keeps the island shown this long after it arrived.</summary>
-    public static readonly TimeSpan PendingWindow = TimeSpan.FromMinutes(10);
 
     private readonly Dictionary<string, (int Dx, int Dy)> frames = new(StringComparer.OrdinalIgnoreCase);
 
@@ -62,8 +59,8 @@ public sealed class IslandModel
     /// <summary>Settings › Island eye default: the companion's own windows are excluded from capture (<c>WDA_EXCLUDEFROMCAPTURE</c>).</summary>
     public bool HiddenFromCapture { get; set; } = true;
 
-    /// <summary>Pinned by a click: hover-out does not close it.</summary>
-    public bool Pinned { get; set; }
+    /// <summary>Dragged away from the top-centre default on the current display (a saved offset is in use). Orthogonal to <see cref="Mode"/>.</summary>
+    public bool Detached { get; private set; }
 
     /// <summary>The saved offsets, device → (dx, dy) from the work area's origin; read-only view for tests and Settings' "reset".</summary>
     public IReadOnlyDictionary<string, (int Dx, int Dy)> Frames => frames;
@@ -82,17 +79,18 @@ public sealed class IslandModel
     /// <summary>
     /// Where to place a window of <paramref name="size"/> on <paramref name="d"/>: the saved offset when it still lands on the
     /// work area (validated: the frame must intersect it), else the default. The second value says whether the saved frame
-    /// was used (the window is <see cref="IslandMode.Detached"/> then).
+    /// was used (<see cref="Detached"/> then).
     /// </summary>
     public (PxRect Frame, bool Saved) Place(IslandDisplay d, (int Width, int Height) size)
     {
         if (frames.TryGetValue(d.Device, out var off))
         {
             var r = new PxRect(d.WorkArea.X + off.Dx, d.WorkArea.Y + off.Dy, size.Width, size.Height);
-            if (r.Intersects(d.WorkArea)) return (r, true);
+            if (r.Intersects(d.WorkArea)) { Detached = true; return (r, true); }
             frames.Remove(d.Device); // off-screen memory (a monitor shrank): forget it
             FrameRejected?.Invoke(d.Device, off);
         }
+        Detached = false;
         return (DefaultFrame(d, size), false);
     }
 
@@ -107,11 +105,11 @@ public sealed class IslandModel
         if (Distance(def, frame) <= SnapPx * d.Scale)
         {
             frames.Remove(d.Device);
-            if (Mode == IslandMode.Detached) Mode = IslandMode.Closed;
+            Detached = false;
             return def;
         }
         frames[d.Device] = (frame.X - d.WorkArea.X, frame.Y - d.WorkArea.Y);
-        Mode = IslandMode.Detached;
+        Detached = true;
         return frame;
     }
 
@@ -119,7 +117,7 @@ public sealed class IslandModel
     public PxRect SnapBack(IslandDisplay d, (int Width, int Height) size)
     {
         frames.Remove(d.Device);
-        if (Mode == IslandMode.Detached) Mode = IslandMode.Closed;
+        Detached = false;
         return DefaultFrame(d, size);
     }
 
@@ -127,7 +125,18 @@ public sealed class IslandModel
     public void ResetAll()
     {
         frames.Clear();
-        if (Mode == IslandMode.Detached) Mode = IslandMode.Closed;
+        Detached = false;
+    }
+
+    /// <summary>
+    /// A drag crossed into a monitor of another scale (<c>WM_DPICHANGED</c> mid-drag; the window is resized by the system): the
+    /// grab point's offset inside the window, in physical px, scales with it, so the window stays under the cursor.
+    /// </summary>
+    public static (int Dx, int Dy) ScaleGrab((int Dx, int Dy) grab, double oldScale, double newScale)
+    {
+        if (oldScale <= 0 || newScale <= 0 || oldScale == newScale) return grab;
+        double k = newScale / oldScale;
+        return ((int)Math.Round(grab.Dx * k), (int)Math.Round(grab.Dy * k));
     }
 
     /// <summary>Centre-to-centre distance of two frames.</summary>
@@ -143,39 +152,72 @@ public sealed class IslandModel
         return displays[0];
     }
 
-    // MARK: visibility (D10)
+    // MARK: lifecycle and visibility (149 island fix, Sky 2026-10-09 15:50 — D1 · D2)
 
-    /// <summary><c>meeting_status.state</c> words that mean a meeting is live (<c>Island.tsx:70</c>): Starting · Recording · Paused · Stopping.</summary>
+    /// <summary><c>meeting_status.state</c> words that mean a meeting is live (<c>Island.tsx:73</c>): Starting · Recording · Paused · Stopping.</summary>
     public static bool IsLive(string state) => state is "Starting" or "Recording" or "Paused" or "Stopping";
 
+    /// <summary>D2: the close animation when a meeting ends (Done · Failed · anything not live); ≤ 300 ms, then the window is gone.</summary>
+    public static readonly TimeSpan CloseAnimation = TimeSpan.FromMilliseconds(180);
+
+    private readonly HashSet<string> collapsed = new(StringComparer.Ordinal);
+
+    /// <summary>The meeting the island last presented (null when none is live).</summary>
+    public string? Meeting { get; private set; }
+
     /// <summary>
-    /// D10 / Revision 1 #13: shown while the meeting is live, or a topic/brief arrived within <see cref="PendingWindow"/>
-    /// of <paramref name="now"/>, or "Always show" keeps the closed pill.
+    /// D2 — the original's rule (<c>Island.tsx:73</c>): shown iff the meeting is Starting · Recording · Paused · Stopping, or
+    /// Settings › Island "Always show" keeps the idle wordmark. No linger after the last topic or brief: Done · Failed · Idle ·
+    /// Post hide the island at once (the window plays <see cref="CloseAnimation"/> first).
     /// </summary>
-    public bool ShouldShow(string state, DateTimeOffset? lastTopicOrBrief, DateTimeOffset now) =>
-        IsLive(state) || (lastTopicOrBrief is { } t && now - t <= PendingWindow && now >= t) || AlwaysShow;
+    public bool ShouldShow(string state) => IsLive(state) || AlwaysShow;
 
-    /// <summary>When the island must be re-evaluated after the last topic/brief (the hide timer's due time), or null.</summary>
-    public static DateTimeOffset? HideDue(string state, DateTimeOffset? lastTopicOrBrief) =>
-        !IsLive(state) && lastTopicOrBrief is { } t ? t + PendingWindow : null;
-
-    // MARK: open / close
-
-    /// <summary>Hover 0.3 s or a click opens; a click also pins.</summary>
-    public void Open(bool pin)
+    /// <summary>
+    /// D1: the meeting's state arrived. While live the island is OPEN (strip + brief pane) unless the user collapsed THIS meeting
+    /// with an explicit click (remembered per meeting id); a new meeting opens again. Not live: the closed pill — the idle
+    /// wordmark when "Always show" is on, else nothing (<see cref="ShouldShow"/> is false). Returns true when the mode changed.
+    /// </summary>
+    public bool Present(string? meeting, string state)
     {
-        if (Mode == IslandMode.Closed) Mode = IslandMode.Open;
-        if (pin) Pinned = true;
+        var before = Mode;
+        bool live = meeting is not null && IsLive(state);
+        Meeting = live ? meeting : null;
+        Mode = live && !collapsed.Contains(meeting!) ? IslandMode.Open : IslandMode.Closed;
+        return Mode != before;
     }
 
-    /// <summary>The pointer left (100 ms grace, the window's timer) or Esc: closes unless pinned, or when <paramref name="force"/>.</summary>
-    public bool Close(bool force = false)
+    /// <summary>Whether the user collapsed <paramref name="meeting"/> (the per-meeting memory).</summary>
+    public bool IsCollapsed(string meeting) => collapsed.Contains(meeting);
+
+    /// <summary>
+    /// D1: the explicit collapse (the strip's collapse button, or Esc on the island): the live meeting shows the closed pill
+    /// from now on, for this meeting only. False when nothing is live (the idle wordmark is already closed).
+    /// </summary>
+    public bool Collapse()
     {
-        if (!force && Pinned) return false;
-        Pinned = false;
-        if (Mode == IslandMode.Open) Mode = IslandMode.Closed;
+        if (Meeting is null || Mode == IslandMode.Closed) return false;
+        collapsed.Add(Meeting);
+        Mode = IslandMode.Closed;
         return true;
     }
+
+    /// <summary>
+    /// A click on the collapsed pill of a live meeting opens it again and forgets the collapse. False when nothing is live
+    /// (the idle wordmark's click opens <c>theuth://meetings</c> instead).
+    /// </summary>
+    public bool Expand()
+    {
+        if (Meeting is null) return false;
+        collapsed.Remove(Meeting);
+        Mode = IslandMode.Open;
+        return true;
+    }
+
+    /// <summary>
+    /// D1: the pointer left the island. Never collapses it (the hover-open/close model is gone; WinUI also drops pointer
+    /// events on the inactive NOACTIVATE window, which made hover-driven state unreliable). Returns the unchanged mode.
+    /// </summary>
+    public IslandMode PointerLeft() => Mode;
 
     // MARK: persistence (settings.json key `islandFrames`: {"\\\\.\\DISPLAY1": [dx, dy], …})
 

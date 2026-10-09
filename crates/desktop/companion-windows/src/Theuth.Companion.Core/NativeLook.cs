@@ -104,6 +104,7 @@ public static class NativeLook
         public const string Forward = "\uE72A";      // → (go / next)
         public const string ChevronLeft = "\uE76B";  // ‹
         public const string ChevronRight = "\uE76C"; // ›
+        public const string ChevronUp = "\uE70E";    // ˄ (collapse the island)
         public const string GripperBarVertical = "\uE784"; // ⠿ (drag grip)
         public const string People = "\uE716";
         public const string Flow = "\uE7C5";         // ⑂N children count
@@ -126,7 +127,7 @@ public static class NativeLook
     {
         (nameof(Glyph.Microphone), Glyph.Microphone), (nameof(Glyph.Camera), Glyph.Camera), (nameof(Glyph.Cancel), Glyph.Cancel),
         (nameof(Glyph.More), Glyph.More), (nameof(Glyph.Up), Glyph.Up), (nameof(Glyph.Forward), Glyph.Forward),
-        (nameof(Glyph.ChevronLeft), Glyph.ChevronLeft), (nameof(Glyph.ChevronRight), Glyph.ChevronRight),
+        (nameof(Glyph.ChevronLeft), Glyph.ChevronLeft), (nameof(Glyph.ChevronRight), Glyph.ChevronRight), (nameof(Glyph.ChevronUp), Glyph.ChevronUp),
         (nameof(Glyph.GripperBarVertical), Glyph.GripperBarVertical), (nameof(Glyph.People), Glyph.People), (nameof(Glyph.Flow), Glyph.Flow),
         (nameof(Glyph.Pause), Glyph.Pause), (nameof(Glyph.Stop), Glyph.Stop), (nameof(Glyph.View), Glyph.View), (nameof(Glyph.Hide), Glyph.Hide),
         (nameof(Glyph.Settings), Glyph.Settings), (nameof(Glyph.Accept), Glyph.Accept), (nameof(Glyph.Globe), Glyph.Globe),
