@@ -1,3 +1,5 @@
+
+    private static readonly List<DispatcherQueueTimer> probeTimers = new();
 using Microsoft.UI.Dispatching;
 using Theuth.Companion.Core;
 using Theuth.Companion.Island;
@@ -47,11 +49,19 @@ internal sealed class WW3Install : IDisposable
         if (Environment.GetCommandLineArgs().Contains("--point-probe")) PointProbe.Run(dispatcher, point, island);
         if (Environment.GetCommandLineArgs().Contains("--point-replay")) PointProbe.Replay(dispatcher, point);
         // 149 R3: --speech-probe → 4 s after start, speak a line through the desk and log decode + device (--speech-dump keeps the packets).
+        // Dispatcher timers are not kept alive by the queue (PointProbe's finding): `probeTimers` holds these until they fire.
         if (Environment.GetCommandLineArgs().Contains("--speech-probe"))
         {
             var t = dispatcher.CreateTimer(); t.Interval = TimeSpan.FromSeconds(4); t.IsRepeating = false;
             t.Tick += (_, _) => _ = point.ProbeSpeakAsync("Testing the Windows speaker. One, two, three. The island is listening.");
-            t.Start();
+            probeTimers.Add(t); t.Start();
+        }
+        // 149 R3: --capture-probe → the trail-pixel assertion (overlays up vs the Stop sequence), see PointController.CaptureProbeAsync.
+        if (Environment.GetCommandLineArgs().Contains("--capture-probe"))
+        {
+            var t = dispatcher.CreateTimer(); t.Interval = TimeSpan.FromSeconds(4); t.IsRepeating = false;
+            t.Tick += (_, _) => _ = point.CaptureProbeAsync();
+            probeTimers.Add(t); t.Start();
         }
         return install;
     }

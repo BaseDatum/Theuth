@@ -653,6 +653,87 @@ internal sealed class PointController : IDisposable
         escRegistered = false;
     }
 
+    // MARK: 149 R3 — capture assertion (the Mac W2 probe's twin)
+
+    /// <summary>
+    /// <c>--capture-probe</c>: start a gesture, draw a loop with the pointer, then (A) call <c>screen_context</c> with the overlays
+    /// UP and capture-visible (WDA_NONE) — the trail must be in the PNG — and (B) run the real Stop sequence (hide every overlay,
+    /// WDA_EXCLUDEFROMCAPTURE, one dispatcher turn) before <c>screen_context</c> — the trail must be gone. Both counts are logged:
+    /// pixels within ±<see cref="TrailTolerance"/> per channel of the trail colour composited at its 0.85 alpha over a dark or a
+    /// light ground, plus a looser "greenish" count (g well above r and b) as a cross-check.
+    /// </summary>
+    public async Task<string> CaptureProbeAsync()
+    {
+        if (!PInvoke.GetCursorPos(out var origin)) return "no cursor";
+        Step(new PointEvent.Pressed());
+        if (state is not PointState.Armed) { Log.Write($"capture-probe: refused ({state.Json})"); return "refused"; }
+        await Task.Delay(250);
+        // A loop ~140 px across, 48 steps 25 ms apart — the sampler (16 ms) records it, the overlay draws it.
+        for (int i = 0; i <= 48; i++)
+        {
+            double a = 2 * Math.PI * i / 48;
+            PInvoke.SetCursorPos(origin.X + (int)(70 * Math.Cos(a)), origin.Y + (int)(70 * Math.Sin(a)));
+            await Task.Delay(25);
+        }
+        await Task.Delay(200);
+        var samples = sampler.Samples.ToArray();
+        long durationMs = samples.Length > 0 ? samples[^1].TMs : 0;
+        // (A) overlays up and visible to capture
+        overlays.SetHiddenFromCapture(false);
+        await Yield();
+        var (_, filesUp) = await ScreenContext(samples, durationMs, false);
+        var up = await CountTrail(filesUp);
+        // (B) the real Stop sequence: WDA_EXCLUDEFROMCAPTURE + hidden + one dispatcher turn, then the engine captures
+        overlays.SetHiddenFromCapture(true);
+        overlays.Hide();
+        await Yield();
+        var (_, filesDown) = await ScreenContext(samples, durationMs, false);
+        var down = await CountTrail(filesDown);
+        var line = $"capture-probe: {samples.Length} samples over {durationMs} ms; overlays UP → trail px {up.Trail} (greenish {up.Green}) in {up.Files} file(s) {up.Size}; STOP sequence → trail px {down.Trail} (greenish {down.Green}) in {down.Files} file(s) {down.Size}";
+        Log.Write(line);
+        overlays.SetHiddenFromCapture(!Flags.Shareable);
+        Step(new PointEvent.Cancel());
+        return line;
+    }
+
+    /// <summary>±24 of 255 per channel: a 0.85-alpha stroke drifts from the pure colour by up to 0.15 × the ground.</summary>
+    public const int TrailTolerance = 24;
+
+    private static async Task<(int Trail, int Green, int Files, string Size)> CountTrail(IReadOnlyList<string> files)
+    {
+        int trail = 0, green = 0, n = 0; string size = "";
+        foreach (var path in files)
+        {
+            try
+            {
+                using var stream = File.OpenRead(path);
+                var decoder = await global::Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream.AsRandomAccessStream());
+                var data = await decoder.GetPixelDataAsync(global::Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8, global::Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
+                    new global::Windows.Graphics.Imaging.BitmapTransform(), global::Windows.Graphics.Imaging.ExifOrientationMode.IgnoreExifOrientation, global::Windows.Graphics.Imaging.ColorManagementMode.DoNotColorManage);
+                var px = data.DetachPixelData();
+                size = $"{decoder.PixelWidth}x{decoder.PixelHeight}";
+                n++;
+                int tr = (int)(PointFlow.TrailRgb >> 16 & 0xff), tg = (int)(PointFlow.TrailRgb >> 8 & 0xff), tb = (int)(PointFlow.TrailRgb & 0xff);
+                for (int i = 0; i + 3 < px.Length; i += 4)
+                {
+                    int b = px[i], g = px[i + 1], r = px[i + 2];
+                    if (Near(r, g, b, tr, tg, tb, 0x10) || Near(r, g, b, tr, tg, tb, 0xf0)) trail++;
+                    if (g > r + 24 && g > b + 16 && g > 90) green++;
+                }
+            }
+            catch (Exception e) { Log.Write($"capture-probe: {path}: {e.Message}"); }
+        }
+        return (trail, green, n, size);
+
+        static bool Near(int r, int g, int b, int tr, int tg, int tb, int ground)
+        {
+            int cr = (int)(tr * TrailRaster.TrailAlpha + ground * (1 - TrailRaster.TrailAlpha));
+            int cg = (int)(tg * TrailRaster.TrailAlpha + ground * (1 - TrailRaster.TrailAlpha));
+            int cb = (int)(tb * TrailRaster.TrailAlpha + ground * (1 - TrailRaster.TrailAlpha));
+            return Math.Abs(r - cr) <= TrailTolerance && Math.Abs(g - cg) <= TrailTolerance && Math.Abs(b - cb) <= TrailTolerance;
+        }
+    }
+
     public void Dispose()
     {
         if (disposed) return;
