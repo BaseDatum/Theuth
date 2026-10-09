@@ -125,6 +125,7 @@ mod drain;
 mod resume;
 pub mod transfer; // 139 W2
 mod waits;
+pub use acp_resume::LastBootPass; // 146 D4
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
 pub use resume::{OpenTurn, ResumeTurn, TakeoverPending};
 pub use transfer::{DrainSession, SessionDrainReport}; // 139 C
@@ -174,6 +175,10 @@ pub struct Agents {
     sessions: HashMap<SessionId, Live>,
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
     running: HashSet<SessionId>,
+    /// 146: the boot pass's ACP respawn queue and counts, until settled.
+    boot: Option<acp_resume::Boot>,
+    /// 146 D4: the last `BootPass` published, for a late `LastBootPass` ask.
+    last_boot: Option<crate::durability::BootPass>,
     /// 139 D16: sessions mid-release-drain → the drain's reason; `route`
     /// refuses their inputs (`transfer::draining_error`) until the demote
     /// lands or the hold expires (`transfer::ClearDraining`).
@@ -1323,6 +1328,12 @@ impl Agents {
         };
         let sent = match routed {
             Ok((_, actor)) => {
+                // 146 D9: the harness owes work from this hand-off on
+                // (journaled before the tell: a crash in between reads as
+                // an owed prompt, which the respawn re-prompts).
+                if let LiveActor::Acp(_) = &actor {
+                    self.acp_journal_open(sid, "input", &text, None).await;
+                }
                 actor
                     .tell_input(UserInput {
                         id,
@@ -1859,6 +1870,11 @@ impl Agents {
         if let Some(q) = self.queued.get_mut(&to) {
             q.held.push(Held::Peer(Box::new(input)));
             return Ok(());
+        }
+        // 146 D9: the harness owes work from this hand-off on.
+        if let LiveActor::Acp(_) = &actor {
+            self.acp_journal_open(to, "peer", &input.record.text, Some(&input.record.from))
+                .await;
         }
         self.offer_peer(actor, to, input);
         Ok(())
@@ -2432,6 +2448,10 @@ impl Message<AgentEvent> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, ev: AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
+        self.acp_journal_event(&ev).await; // 146 D9
+        if self.boot.is_some() {
+            self.boot_child_event(&ev).await; // 146 D2
+        }
         match ev {
             // 109 LIVE: a turn resumed after a restart (`Turn::resume`)
             // publishes `TurnResumed`, never `TurnStarted`; for liveness it is
@@ -2559,18 +2579,28 @@ impl Message<ActivityRegistered> for Agents {
     async fn handle(&mut self, _: ActivityRegistered, _: &mut Context<Self, Self::Reply>) {
         self.ledger.certify();
         self.rearm_reminders_for(None).await;
+        // 146 D5: one `open_turns(Here)` for the whole pass.
+        let open = self.open_here().await;
         // 109 §4.6 step 10, in this order: no `ResumeTurn` before the reaper.
-        let reaped = crate::durability::jobs::reap_jobs(&self.store).await;
+        let reaped = crate::durability::jobs::reap_jobs_in(&self.store, &open).await;
         if reaped != crate::durability::jobs::ReapReport::default() {
             tracing::info!("109: reaper: {reaped:?}");
         }
-        self.rebuild_waits().await;
-        self.resume_scan().await;
-        self.respawn_acp_children().await; // 109 W4 §7.3
+        self.rebuild_waits(&open).await;
+        // 146 D9: one list, one pass — an ACP child's open turn (it owed a
+        // prompt when the engine died) is the respawn's, a native one the
+        // resume's.
+        let (acp_open, native) = self.split_acp_turns(&open).await;
+        self.resume_scan(&native).await;
+        let resuming = match self.cfg.durability.resume {
+            crate::durability::ResumeMode::Auto => native.len() as u32,
+            _ => 0,
+        };
+        self.respawn_acp_children(resuming, acp_open).await; // 109 W4 §7.3, 146 D1–D4, D9
         // 141 §7.8: watch-only children of a harness that did not come back.
         self.mark_observed_lost().await;
         // 109 §7.2: the spared child results, after the open turns are queued.
-        self.deliver_spared_results().await;
+        self.deliver_spared_results(&open).await;
     }
 }
 
@@ -7974,22 +8004,41 @@ impl Message<SetHarnessOption> for Agents {
     }
 }
 
-/// `ask` → `Result<(), String>` (75 §10): put a stopped ACP child back in
-/// its harness context — a new harness process opened with `session/load`
-/// on the row's stored ACP session id, its skills written back into the cwd,
-/// no prompt. A live actor for the session is stopped first (its process
+/// `ask` → `Result<ChildResumed, String>` (75 §10, 146 D8): put a stopped
+/// ACP child back in its harness context — a new harness process opened with
+/// `session/load` on the row's stored ACP session id, its skills written
+/// back into the cwd — through the same [`Agents::relaunch_acp_child`] the
+/// boot pass uses. A child that was mid-prompt when it died (its last row a
+/// prompt / dangling `ToolCall`, `Store::midprompt`) gets the respawn prompt
+/// and continues its work (`Prompted`); a cancelled or idle one is only
+/// reconnected (`Idle`; the 75 §10 cancelled note when its last turn was
+/// cancelled). A live actor for the session is stopped first (its process
 /// group dies with the connection: the 06 §8.3 orphan), so the next
 /// `send_message` goes to the new process. Refused for a native session, a
 /// remote node's session (its ACP session belongs to another engine) and a
-/// row without a stored harness session id.
+/// row without a stored harness session id. Explicit user intent: the
+/// parent's state is not a gate here (unlike the boot pass).
 #[derive(Clone, Copy, Debug)]
 pub struct ResumeChild {
     /// An ACP child.
     pub session: SessionId,
 }
 
+/// What [`ResumeChild`] did (146 D8): the toast's two sentences.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ChildResumed {
+    /// The harness is back and was prompted to continue its interrupted task.
+    Prompted,
+    /// The harness is back in its context; it was idle, nothing to continue.
+    Idle,
+}
+
 impl Message<ResumeChild> for Agents {
-    type Reply = Result<(), String>;
+    type Reply = Result<ChildResumed, String>;
 
     async fn handle(&mut self, m: ResumeChild, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let row = self.stored(m.session).await?;
@@ -8036,19 +8085,28 @@ impl Message<ResumeChild> for Agents {
             let _ = a.tell(crate::acp_child::Shutdown).await;
             a.wait_for_shutdown().await;
         }
-        self.running.remove(&m.session);
-        let (_, actor) = self
-            .session(Some(m.session), None, None, (None, None))
-            .await
-            .map_err(|e| e.to_string())?;
-        if cancelled && let LiveActor::Acp(a) = &actor {
-            let _ = a
-                .tell(crate::acp_child::Note(
-                    crate::acp_child::CANCELLED_NOTE.to_owned(),
-                ))
-                .await;
-        }
-        Ok(())
+        // 146 D8: a child killed mid-prompt (an engine restart, a crashed
+        // harness) continues its task; the button must not "do nothing".
+        let midprompt = !cancelled
+            && self
+                .store
+                .midprompt(m.session)
+                .await
+                .map_err(|e| e.to_string())?;
+        let first = if cancelled {
+            acp_resume::Continue::Cancelled
+        } else if midprompt {
+            acp_resume::Continue::Prompt
+        } else {
+            acp_resume::Continue::Idle
+        };
+        self.relaunch_acp_child(m.session, first).await?;
+        tracing::info!(session = %m.session, ?first, "146: resume_child");
+        Ok(if midprompt {
+            ChildResumed::Prompted
+        } else {
+            ChildResumed::Idle
+        })
     }
 }
 
@@ -9194,6 +9252,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             endless: endless.clone(),
             sessions: HashMap::new(),
             running: HashSet::new(),
+            boot: None,
+            last_boot: None,
             draining_sessions: HashMap::new(),
             pending_takeovers: HashMap::new(),
             communication: communication.clone(),
@@ -11025,6 +11085,8 @@ pub(crate) mod tests {
             endless,
             sessions: HashMap::new(),
             running: HashSet::new(),
+            boot: None,
+            last_boot: None,
             draining_sessions: HashMap::new(),
             pending_takeovers: HashMap::new(),
             communication: SharedPolicy::new(Policy::new(communication, "config")),
@@ -13599,6 +13661,83 @@ pub(crate) mod tests {
             agents.ask(UnloadSession { session: child }).await.unwrap(),
             "exactly one new live entry for the session"
         );
+    }
+
+    /// 146 D8: `resume_child` on a child that died mid-prompt (last row a
+    /// prompt / dangling `ToolCall`) takes the boot respawn's path — the new
+    /// actor is told `Respawn`, so its first turn is the continue prompt (here
+    /// the harness binary is missing, so that turn is the `fail` turn whose
+    /// `TurnStarted` text is the respawn marker) — and answers `Prompted`; an
+    /// idle child (last row assistant text) is only reconnected (`Idle`, no
+    /// turn); a child whose last turn was cancelled is `Idle` too, whatever
+    /// its last row.
+    #[tokio::test]
+    async fn resume_child_prompts_a_midprompt_child() {
+        let mut a = agents().await;
+        let store = a.store.clone();
+        let dir = a.rt.data_dir.clone();
+        acp::save(
+            &dir,
+            &serde_yaml::from_str("omp:\n  command: /nonexistent/theuth-test-harness\n").unwrap(),
+        )
+        .unwrap();
+        let (mid, idle, cancelled) = (SessionId::new(), SessionId::new(), SessionId::new());
+        for id in [mid, idle, cancelled] {
+            store
+                .create_session(id, "omp", None, None, None)
+                .await
+                .unwrap();
+            store.set_acp(id, "omp", Some(&dir), &[]).await.unwrap();
+            store.set_acp_session(id, "s1").await.unwrap();
+            store
+                .append(id, &genai::chat::ChatMessage::user("go"))
+                .await
+                .unwrap();
+        }
+        store
+            .append(idle, &genai::chat::ChatMessage::assistant("done"))
+            .await
+            .unwrap();
+        a.last_stop
+            .insert(cancelled, ("cancelled".into(), chrono::Utc::now()));
+        let mut events = tap(&a.rt).await;
+        let agents = Agents::spawn(a);
+
+        assert_eq!(
+            agents.ask(ResumeChild { session: mid }).await.unwrap(),
+            ChildResumed::Prompted
+        );
+        let started = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(AgentEvent::TurnStarted { session, text, .. }) = events.recv().await
+                    && session == mid
+                {
+                    break text;
+                }
+            }
+        })
+        .await
+        .expect("the respawn prompt opens a turn on the child");
+        assert_eq!(started, "<runtime>respawn after a theuth restart</runtime>");
+
+        assert_eq!(
+            agents.ask(ResumeChild { session: idle }).await.unwrap(),
+            ChildResumed::Idle
+        );
+        assert_eq!(
+            agents
+                .ask(ResumeChild { session: cancelled })
+                .await
+                .unwrap(),
+            ChildResumed::Idle
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while let Ok(e) = events.try_recv() {
+            assert!(
+                !matches!(e, AgentEvent::TurnStarted { session, .. } if session == idle || session == cancelled),
+                "an idle or cancelled child is not prompted: {e:?}"
+            );
+        }
     }
 
     // ----- spawn permit queue (01 §2.6, spawnstall 2026-10-07) -----

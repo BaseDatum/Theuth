@@ -41,7 +41,11 @@ pub fn effective_home(home: &str, data_dir: &Path) -> String {
     match setup::resolve_runtime(&GlobalConfig::default()) {
         Err(MicrosandboxError::RuntimeNotInstalled(_)) => String::new(),
         Ok(rt) if version_of(&rt.msb_path) == embedded_version() => String::new(),
-        _ => data_dir.join("sandbox").join("msb-home").display().to_string(),
+        _ => data_dir
+            .join("sandbox")
+            .join("msb-home")
+            .display()
+            .to_string(),
     }
 }
 
@@ -95,7 +99,9 @@ pub fn resolve(cfg: &GlobalConfig) -> RuntimeState {
 
 /// The `msb` binary the SDK would run (`<home>/bin/msb` or `MSB_PATH`).
 pub fn msb_path(home: &str) -> Option<PathBuf> {
-    setup::resolve_runtime(&config(home)).ok().map(|rt| rt.msb_path)
+    setup::resolve_runtime(&config(home))
+        .ok()
+        .map(|rt| rt.msb_path)
 }
 
 /// Write the embedded pair into `cfg.home()` (seconds, no network). Idempotent: a present pair —
@@ -197,7 +203,10 @@ mod tests {
         assert_eq!(install(&cfg, &Progress::silent()).await.unwrap(), after);
         assert_eq!(std::fs::metadata(&msb).unwrap().modified().unwrap(), mtime);
         // An explicit home is honoured as is; so is a home the user filled with the same version.
-        assert_eq!(effective_home(home.to_str().unwrap(), Path::new("/d")), home.to_str().unwrap());
+        assert_eq!(
+            effective_home(home.to_str().unwrap(), Path::new("/d")),
+            home.to_str().unwrap()
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -211,9 +220,16 @@ mod tests {
         std::fs::create_dir_all(home.join("lib")).unwrap();
         std::fs::write(home.join("bin").join("msb"), b"not a real msb").unwrap();
         assert!(matches!(resolve(&cfg), RuntimeState::Incomplete { .. }));
-        let e = install(&cfg, &Progress::silent()).await.unwrap_err().to_string();
+        let e = install(&cfg, &Progress::silent())
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("half installed") && e.contains("bin/msb"), "{e}");
-        let lib = if cfg!(target_os = "macos") { "libkrunfw.5.dylib" } else { "libkrunfw.so.5.6.1" };
+        let lib = if cfg!(target_os = "macos") {
+            "libkrunfw.5.dylib"
+        } else {
+            "libkrunfw.so.5.6.1"
+        };
         std::fs::write(home.join("lib").join(lib), b"not a real lib").unwrap();
         match resolve(&cfg) {
             RuntimeState::Installed { version, .. } => assert_eq!(version, "unknown"),
@@ -223,7 +239,10 @@ mod tests {
             install(&cfg, &Progress::silent()).await.unwrap(),
             RuntimeState::Installed { .. }
         ));
-        assert_eq!(std::fs::read(home.join("bin").join("msb")).unwrap(), b"not a real msb");
+        assert_eq!(
+            std::fs::read(home.join("bin").join("msb")).unwrap(),
+            b"not a real msb"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 }

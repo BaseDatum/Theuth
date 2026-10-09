@@ -1319,15 +1319,32 @@ impl Store {
     }
 
     /// Record the harness's own session id, for `session/load` on resume.
+    /// 146 D11: an id that replaces a different one (a fresh session after a
+    /// failed load) keeps the replaced id in `acp_previous` for the RESUME brief.
     pub async fn set_acp_session(&self, id: SessionId, sid: &str) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
-        sqlx::query("UPDATE sessions SET acp_session = ? WHERE id = ?")
-            .bind(sid)
-            .bind(id.to_string())
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE sessions SET acp_previous = CASE \
+                 WHEN acp_session IS NOT NULL AND acp_session != ?1 THEN acp_session \
+                 ELSE acp_previous END, \
+             acp_session = ?1 WHERE id = ?2",
+        )
+        .bind(sid)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// 146 D11: the harness session id a fresh one replaced, if any.
+    pub async fn acp_previous(&self, id: SessionId) -> anyhow::Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT acp_previous FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        Ok(row.and_then(|(s,)| s))
     }
 
     /// The harness session id recorded by [`Store::set_acp_session`], if any.

@@ -744,10 +744,16 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
             UiEvent::HarnessOptionSet(config_id, value, r)
         }
         Command::ResumeChild(session) => {
-            msg(api.resume_child(session).await)?;
-            UiEvent::Info(
-                "harness resumed in its previous context; send a message to continue".into(),
-            )
+            // 146 D8: a child that died mid-prompt continues its task.
+            let text = match msg(api.resume_child(session).await)? {
+                agent::supervisor::ChildResumed::Prompted => {
+                    "harness resumed; resuming the interrupted task"
+                }
+                agent::supervisor::ChildResumed::Idle => {
+                    "harness reconnected in its previous context; it was idle, nothing to continue — send a message"
+                }
+            };
+            UiEvent::Info(text.into())
         }
         Command::ListMcp(session) => UiEvent::Mcp(msg(api.list_mcp(session).await)?),
         Command::McpStatus => UiEvent::McpProgress(msg(api.mcp_status().await)?),

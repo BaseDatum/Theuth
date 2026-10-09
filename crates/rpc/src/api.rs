@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use ::search::SearchCategory;
 use a2a::{A2A_ACTOR, A2aActor, A2aStatus};
-use agent::supervisor::{HarnessOptions, ResumeChild, SetHarnessOption};
+use agent::supervisor::{ChildResumed, HarnessOptions, ResumeChild, SetHarnessOption};
 use agent::todo::TodoSnapshot;
 use agent::{
     AddAcp, AddProvider, AddSkill, AddSkillRepo, AgentInfo, Agents, AnswerPeerRequest,
@@ -728,13 +728,15 @@ pub trait Api {
         config_id: String,
         value: String,
     ) -> RpcResult<acp::SetOptionResult>;
-    /// Resume a stopped ACP child in its prior harness context (75 §10): a
-    /// new harness process, `session/load` on the stored ACP session id, no
-    /// prompt; a still-live process for the session is killed first. Errors
-    /// when the session is native, belongs to a remote node, or has no
-    /// stored harness session id.
+    /// Resume a stopped ACP child in its prior harness context (75 §10, 146
+    /// D8): a new harness process, `session/load` on the stored ACP session
+    /// id; a still-live process for the session is killed first. A child that
+    /// was mid-prompt when it died is prompted to continue (`prompted`), an
+    /// idle or cancelled one is only reconnected (`idle`). Errors when the
+    /// session is native, belongs to a remote node, or has no stored harness
+    /// session id.
     #[method(name = "resume_child", with_extensions)]
-    async fn resume_child(&self, session: SessionId) -> RpcResult<()>;
+    async fn resume_child(&self, session: SessionId) -> RpcResult<ChildResumed>;
     /// MCP servers, their tools, and their `mcp/config.yaml` risk lines; with
     /// a session, which tools it hid (`set_mcp_hidden`).
     #[method(name = "list_mcp", with_extensions)]
@@ -4461,7 +4463,7 @@ impl ApiServer for Server {
         .await
     }
 
-    async fn resume_child(&self, ext: &Extensions, session: SessionId) -> RpcResult<()> {
+    async fn resume_child(&self, ext: &Extensions, session: SessionId) -> RpcResult<ChildResumed> {
         self.authorize(ext, session).await?;
         if let Some(r) = forward::route(ext, session, "resume_child", (session,)).await? {
             return Ok(r);

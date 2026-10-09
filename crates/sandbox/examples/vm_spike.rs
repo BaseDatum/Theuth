@@ -43,7 +43,9 @@ impl Table {
 fn make_spec(name: &str, share: &Path, ports: Vec<Port>) -> VmSpec {
     VmSpec {
         name: name.into(),
-        image: ImageRef::Oci { r#ref: IMAGE.into() },
+        image: ImageRef::Oci {
+            r#ref: IMAGE.into(),
+        },
         cpus: 2,
         max_cpus: 4,
         memory_mib: 2048,
@@ -195,8 +197,13 @@ async fn scenario(
     tbl.row("exec facts", t, facts.replace('\n', " · "));
 
     let t = Instant::now();
-    rt.put(&h, "/root/bin/hello.sh", Bytes::from_static(b"#!/bin/sh\necho put-ok\n"), 0o755)
-        .await?;
+    rt.put(
+        &h,
+        "/root/bin/hello.sh",
+        Bytes::from_static(b"#!/bin/sh\necho put-ok\n"),
+        0o755,
+    )
+    .await?;
     let ok = sh(rt, &h, "/root/bin/hello.sh; stat -c %a /root/bin/hello.sh").await?;
     tbl.row("put + exec", t, ok.replace('\n', " · "));
 
@@ -211,11 +218,21 @@ async fn scenario(
             },
         )
         .await?;
-    let g = sh(rt, &h, "nproc; awk '/MemTotal/{print int($2/1024)}' /proc/meminfo").await?;
+    let g = sh(
+        rt,
+        &h,
+        "nproc; awk '/MemTotal/{print int($2/1024)}' /proc/meminfo",
+    )
+    .await?;
     tbl.row(
         "resize live 2→4 cpu, 2→3 GiB",
         t,
-        format!("{:?} restart_required={} guest={}", r.status, r.restart_required, g.replace('\n', "/")),
+        format!(
+            "{:?} restart_required={} guest={}",
+            r.status,
+            r.restart_required,
+            g.replace('\n', "/")
+        ),
     );
 
     let t = Instant::now();
@@ -229,7 +246,11 @@ async fn scenario(
         )
         .await?;
     let g = sh(rt, &h, "df -m / | awk 'NR==2{print $2}'").await?;
-    tbl.row("disk grow 8→12 GiB", t, format!("{:?} df={g} MiB", r.status));
+    tbl.row(
+        "disk grow 8→12 GiB",
+        t,
+        format!("{:?} df={g} MiB", r.status),
+    );
 
     let t = Instant::now();
     let r = rt
@@ -244,7 +265,10 @@ async fn scenario(
     tbl.row(
         "resize max_memory 4→8 GiB",
         t,
-        format!("next_start={:?} restart_required={}", r.next_start, r.restart_required),
+        format!(
+            "next_start={:?} restart_required={}",
+            r.next_start, r.restart_required
+        ),
     );
 
     let t = Instant::now();
@@ -263,7 +287,15 @@ async fn scenario(
     );
     let t = Instant::now();
     let logs = rt.logs(&h, 5).await?;
-    tbl.row("logs tail 5", t, format!("{} lines, last source={:?}", logs.len(), logs.last().map(|l| &l.source)));
+    tbl.row(
+        "logs tail 5",
+        t,
+        format!(
+            "{} lines, last source={:?}",
+            logs.len(),
+            logs.last().map(|l| &l.source)
+        ),
+    );
 
     sh(rt, &h, "echo marker-1 > /root/marker").await?;
     let t = Instant::now();
@@ -305,7 +337,9 @@ async fn scenario(
             let _ = sh(rt, &h, "command -v python3 || (apt-get update -qq && apt-get install -y -qq python3) >/dev/null 2>&1").await;
             let _ = sh(rt, &h, "nohup python3 -c 'import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind((\"0.0.0.0\",7800))\nwhile 1:\n d,a=s.recvfrom(65535);s.sendto(d,a)' >/dev/null 2>&1 & sleep 0.5; echo started").await;
             match udp_echo(udp_port) {
-                Ok(ms) => format!("ok via python3, mean rtt {ms:.2} ms (host 127.0.0.1:{udp_port} → guest 7800)"),
+                Ok(ms) => format!(
+                    "ok via python3, mean rtt {ms:.2} ms (host 127.0.0.1:{udp_port} → guest 7800)"
+                ),
                 Err(e2) => format!("FAILED socat: {e}; python: {e2}"),
             }
         }
@@ -317,15 +351,30 @@ async fn scenario(
     tbl.row("snapshot disk (running)", t, snap.0.clone());
     let t = Instant::now();
     let full = rt.snapshot(&h, "full", true, out).await;
-    tbl.row("snapshot full (expected refusal)", t, match full {
-        Ok(id) => format!("UNEXPECTED ok {id:?}"),
-        Err(e) => format!("refused: {e}"),
-    });
+    tbl.row(
+        "snapshot full (expected refusal)",
+        t,
+        match full {
+            Ok(id) => format!("UNEXPECTED ok {id:?}"),
+            Err(e) => format!("refused: {e}"),
+        },
+    );
 
     let t = Instant::now();
-    let rspec = make_spec(RESTORED, share, vm::microsandbox::resolve_ports(&spec.ports)?);
-    let rh = rt.restore(&SnapshotId(snap.0.clone()), RESTORED, &rspec, out).await?;
-    let g = sh(rt, &rh, "cat /proc/1/comm; hostname; cat /root/marker; nproc; ls -d /shared/a").await?;
+    let rspec = make_spec(
+        RESTORED,
+        share,
+        vm::microsandbox::resolve_ports(&spec.ports)?,
+    );
+    let rh = rt
+        .restore(&SnapshotId(snap.0.clone()), RESTORED, &rspec, out)
+        .await?;
+    let g = sh(
+        rt,
+        &rh,
+        "cat /proc/1/comm; hostname; cat /root/marker; nproc; ls -d /shared/a",
+    )
+    .await?;
     tbl.row("restore as spike-s2-r", t, g.replace('\n', " · "));
 
     let t = Instant::now();
@@ -336,7 +385,10 @@ async fn scenario(
         t,
         format!(
             "snapshots={:?} list={:?}",
-            snaps.iter().map(|s| format!("{}{}", s.label, if s.auto { "(auto)" } else { "" })).collect::<Vec<_>>(),
+            snaps
+                .iter()
+                .map(|s| format!("{}{}", s.label, if s.auto { "(auto)" } else { "" }))
+                .collect::<Vec<_>>(),
             listed.iter().map(|h| &h.name).collect::<Vec<_>>()
         ),
     );
@@ -345,6 +397,10 @@ async fn scenario(
     rt.pause(&h).await?;
     let paused = rt.status(&h).await?;
     rt.resume(&h).await?;
-    tbl.row("pause/resume", t, format!("{paused:?} → {:?}", rt.status(&h).await?));
+    tbl.row(
+        "pause/resume",
+        t,
+        format!("{paused:?} → {:?}", rt.status(&h).await?),
+    );
     Ok(())
 }

@@ -39,7 +39,9 @@ pub async fn steer(rt: &Runtime, name: &str, engine: &str, on: bool) -> u32 {
     if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
         for (session, here) in running_sessions(engine).await {
             if !here {
-                tracing::warn!("sandbox takeover: session {session} is owned elsewhere; not steered");
+                tracing::warn!(
+                    "sandbox takeover: session {session} is owned elsewhere; not steered"
+                );
                 continue;
             }
             let r = agents

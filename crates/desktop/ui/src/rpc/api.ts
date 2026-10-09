@@ -1,5 +1,6 @@
 import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
 import type { SetOptionResult } from '@/rpc/bindings/SetOptionResult'
+import type { ChildResumed } from '@/rpc/bindings/ChildResumed'
 import type { EntryInfo } from '@/rpc/bindings/EntryInfo'
 import type { A2aStatus } from '@/rpc/bindings/A2aStatus'
 import type { Answer } from '@/rpc/bindings/Answer'
@@ -915,8 +916,8 @@ export interface Api {
   set_model_favorite(model: string, favorite: boolean): Promise<string[]>
   /** Set one harness config option on an ACP child (75 §8): `configId` is the option id or `model` / `effort`; `value` one of its `options[].value`. Mid-turn → `pending: true`, applied at turn end. */
   set_harness_option(session: SessionId, configId: string, value: string): Promise<SetOptionResult>
-  /** Resume a stopped ACP child in its prior harness context (75 §10): new process, `session/load` on the stored id, no prompt; a live process is killed first. Rejects a native session, a remote node's session, or one with no stored harness session id. */
-  resume_child(session: SessionId): Promise<null>
+  /** Resume a stopped ACP child in its prior harness context (75 §10, 146 D8): new process, `session/load` on the stored id; a live process is killed first. `prompted` = it was mid-prompt and continues its task; `idle` = reconnected only. Rejects a native session, a remote node's session, or one with no stored harness session id. */
+  resume_child(session: SessionId): Promise<ChildResumed>
   /** Persist `agent.escalate_model` (57 §0.9): `null` = inherit the title model; an id that is not a catalog entry rejects and leaves the selection unchanged. */
   set_escalate_model(model: string | null): Promise<ModelInfo | null>
   /** Persist `agent.max_salvages`: interrupted-reply recoveries per turn; `0` turns recovery off. New sessions only. */
