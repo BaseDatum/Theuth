@@ -698,6 +698,58 @@ pub struct SetTitleModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetTitleModel;
 
+/// `ask` → `Result<Option<ModelInfo>, String>`: persist `voice.polish_model` (153 §9.2)
+/// and use it for the next polish side call; `None` clears it (title model, then session).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetPolishModel {
+    /// `provider/model`, bare id, or `None`.
+    pub model: Option<String>,
+}
+
+/// `ask` → `Option<ModelInfo>`: the live polish model, if set.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetPolishModel;
+
+/// `ask` → `Result<PolishReply, String>`: polish a dictation transcript for a human reader
+/// (153 §9) on `ModelRole::Polish`, charged to `session` when given.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Polish {
+    /// The shaped transcript.
+    pub text: String,
+    /// Who reads it; `AgentPrompt` is refused (§9.1).
+    pub destination: voice::Destination,
+    /// The session to charge; `None` = the destination has none.
+    pub session: Option<SessionId>,
+}
+
+/// `ask` → `Result<PolishReply, String>`: rewrite `selection` per `instruction` (153 §13.6).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Rewrite {
+    /// The spoken instruction (the user message).
+    pub instruction: String,
+    /// The selected text (goes into the system prompt through `voice.rewrite_template`).
+    pub selection: String,
+    /// The app the selection lives in.
+    pub app: voice::AppProfile,
+    /// Earlier (instruction, result) pairs of the same selection.
+    pub thread: Option<Vec<(String, String)>>,
+}
+
+/// Reply to [`Polish`] / [`Rewrite`] (153 §14.2). `text: None` = deliver the shaped text;
+/// `refused` says why (no model, budget passed, `AgentPrompt`, provider error).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PolishReply {
+    /// The polished text, when the call succeeded.
+    pub text: Option<String>,
+    /// The model that answered.
+    pub model: Option<String>,
+    /// Round trip in ms.
+    pub ms: u32,
+    /// Why nothing was polished.
+    pub refused: Option<String>,
+}
+
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.vision_model`
 /// and use it for the next vision consultation (52 §3.1); `None` clears it
 /// (no fallback). `Some` must name an exact catalog entry that accepts images

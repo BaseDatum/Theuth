@@ -50,6 +50,8 @@ impl Shared {
                 .or_else(|| slot(&self.title_model))
                 .map_or_else(session, Ok),
             ModelRole::Title => slot(&self.title_model).map_or_else(session, Ok),
+            // 153-C stub — A5 fills: `polish_model → title_model → session` (153 §9.3).
+            ModelRole::Polish => slot(&self.title_model).map_or_else(session, Ok),
             ModelRole::Vision => {
                 slot(&self.vision_model).ok_or_else(|| "no vision fallback model is set".to_owned())
             }

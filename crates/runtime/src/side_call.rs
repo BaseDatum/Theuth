@@ -39,6 +39,8 @@ pub enum CallKind {
     CodeMap,
     /// 125 R1: a native subagent's one-shot consultation of its ancestor's advisor.
     Consult,
+    /// 153 §9: a dictation polish/rewrite side call.
+    Polish,
 }
 
 impl CallKind {
@@ -56,6 +58,7 @@ impl CallKind {
             Self::Autoresearch => "autoresearch",
             Self::CodeMap => "codemap",
             Self::Consult => "consult",
+            Self::Polish => "polish",
         }
     }
 }
@@ -81,6 +84,7 @@ impl FromStr for CallKind {
             "autoresearch" => Ok(Self::Autoresearch),
             "codemap" => Ok(Self::CodeMap),
             "consult" => Ok(Self::Consult),
+            "polish" => Ok(Self::Polish),
             _ => Err(format!("unknown CallKind: {s:?}")),
         }
     }
@@ -100,6 +104,8 @@ pub enum ModelRole {
     Session,
     /// An explicit `provider/model` or bare id.
     Named(String),
+    /// `voice.polish_model` → `agent.title_model` → the session's model (153 §9.3).
+    Polish,
 }
 
 /// `ask` on the `agent` actor → `Result<SideReply, String>`: one non-streaming,
@@ -173,6 +179,7 @@ mod tests {
             CallKind::Endless,
             CallKind::CodeMap,
             CallKind::Consult,
+            CallKind::Polish,
         ] {
             assert_eq!(k.as_str().parse::<CallKind>().unwrap(), k);
         }

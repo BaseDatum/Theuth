@@ -103,8 +103,9 @@ use crate::{
     Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{
-    AdvisorConfig, DurableStore, ObservedState, SessionCostQuery, SessionKind, SpendReportQuery,
-    SubagentsConfig, UnloadSession,
+    AdvisorConfig, DurableStore, GetPolishModel, ObservedState, Polish, PolishReply, Rewrite,
+    SessionCostQuery, SessionKind, SetPolishModel, SpendReportQuery, SubagentsConfig,
+    UnloadSession,
 };
 use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
@@ -148,6 +149,9 @@ pub struct Agents {
     compact_style: Arc<RwLock<CompactStyle>>,
     /// Live title model (07 §15); `None` = each session's own model. Shared with every session.
     title_model: Arc<RwLock<Option<Resolved>>>,
+    /// Live polish model (153 §9.2, `voice.polish_model`); `None` = the title model, then
+    /// each session's own model. Shared with every session once A5 wires `ModelRole::Polish`.
+    polish_model: Arc<RwLock<Option<Resolved>>>,
     /// Live subagent default model (`agent.subagents.model`); `None` = `agent.model`.
     /// Children spawned without `model` use it; the system prompt names it. Shared with every session.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
@@ -3910,6 +3914,92 @@ impl Message<GetTitleModel> for Agents {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(ModelInfo::from)
+    }
+}
+
+impl Message<SetPolishModel> for Agents {
+    type Reply = Result<Option<ModelInfo>, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetPolishModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<ModelInfo>, String> {
+        let resolved = match &m.model {
+            Some(id) => Some(self.catalog.resolve(id, &*self.configured)?),
+            None => None,
+        };
+        let info = resolved.as_ref().map(ModelInfo::from);
+        *self.polish_model.write().unwrap_or_else(|p| p.into_inner()) = resolved;
+        let path = self.rt.data_dir.join("config.yaml");
+        let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
+        if let Err(e) = runtime::write_config_value(&path, "voice", "polish_model", value) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(info)
+    }
+}
+
+impl Message<GetPolishModel> for Agents {
+    type Reply = Option<ModelInfo>;
+
+    async fn handle(
+        &mut self,
+        _: GetPolishModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<ModelInfo> {
+        self.polish_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(ModelInfo::from)
+    }
+}
+
+impl Message<Polish> for Agents {
+    type Reply = Result<PolishReply, String>;
+
+    async fn handle(
+        &mut self,
+        m: Polish,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<PolishReply, String> {
+        Ok(self.polish(m.text, m.destination, m.session))
+    }
+}
+
+impl Message<Rewrite> for Agents {
+    type Reply = Result<PolishReply, String>;
+
+    async fn handle(
+        &mut self,
+        m: Rewrite,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<PolishReply, String> {
+        // 153-C stub — A5 fills (§13.6: selection into the system prompt through `voice.rewrite_template`).
+        let _ = (m.instruction, m.selection, m.app, m.thread);
+        Ok(PolishReply {
+            refused: Some("not built".into()),
+            ..PolishReply::default()
+        })
+    }
+}
+
+impl Agents {
+    /// 153 §9: one `Side::call` on `ModelRole::Polish` with `POLISH_SYSTEM`, charged to
+    /// `session` (or the newest live session when `None`); fails closed to the shaped text.
+    fn polish(
+        &self,
+        text: String,
+        destination: voice::Destination,
+        session: Option<SessionId>,
+    ) -> PolishReply {
+        // 153-C stub — A5 fills.
+        let _ = (text, destination, session, &self.polish_model);
+        PolishReply {
+            refused: Some("not built".into()),
+            ..PolishReply::default()
+        }
     }
 }
 
@@ -9221,6 +9311,17 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .map_err(|e| tracing::warn!("agent.title_model: {e}"))
             .ok()
     });
+    // 153 §9.2: the polish slot lives under `voice.`, read the same way; unresolvable → warn, chain falls through.
+    let polish_model = rt
+        .section::<voice::VoiceConfig>("voice")
+        .ok()
+        .and_then(|v| v.polish_model)
+        .and_then(|id| {
+            catalog
+                .resolve(&id, &*configured)
+                .map_err(|e| tracing::warn!("voice.polish_model: {e}"))
+                .ok()
+        });
     let subagent_model = cfg.subagents.model.as_deref().and_then(|id| {
         catalog
             .resolve(id, &*configured)
@@ -9328,6 +9429,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             favorite_models: cfg.favorite_models.clone(),
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             title_model: Arc::new(RwLock::new(title_model)),
+            polish_model: Arc::new(RwLock::new(polish_model)),
             subagent_model: Arc::new(RwLock::new(subagent_model)),
             desk_models: HashMap::new(),
             vision_model: Arc::new(RwLock::new(vision_model)),
@@ -10382,6 +10484,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         cfg,
         compact_style: Arc::default(),
         title_model: Arc::default(),
+        polish_model: Arc::default(),
         subagent_model: Arc::default(),
         vision_model: Arc::default(),
         escalate_model: Arc::default(),
