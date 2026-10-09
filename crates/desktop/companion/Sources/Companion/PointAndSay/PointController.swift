@@ -56,7 +56,8 @@ final class PointController {
     let overlays = OverlayWindows()
     let pill = VoicePill()
     let card = AnswerCard()
-    let speech = SpeechPlayer()
+    /// 149s: the Store's shared `Speaker`; `card.state.speaking` mirrors its `surface == .voiceKey`.
+    private var speaker: Speaker { store.speaker }
     private let recorder = VoiceRecorder()
     private(set) var dictation = AskDictation()
     private var router = AskRouter()
@@ -67,7 +68,7 @@ final class PointController {
     private var stopWanted = false
     private var finalWaiter: CheckedContinuation<Void, Never>?
     private var doneTimer: Timer?
-    private var speakingId: String?
+    private var wasSpeaking = false
     private var desk: String?
     /// The last `meeting_status` seen: a live meeting leases the mic, so a press is refused with the "Meeting running" hint.
     private var meetingLive = false
@@ -100,12 +101,10 @@ final class PointController {
             guard let self, let d = self.desk else { return }
             self.store.onOpenURL?(DeepLink.session(d))
         }
-        speech.onEnded = { [weak self] _ in
-            guard let self else { return }
-            self.speakingId = nil
-            self.card.state.speaking = false
-            if self.router.reply?.finished == true { self.armDone() }
-        }
+        card.onStop = { [weak self] in self?.speaker.stop() }
+        speaker.$surface.removeDuplicates().receive(on: RunLoop.main)
+            .sink { [weak self] s in MainActor.assumeIsolated { self?.speakingChanged(s == .voiceKey) } }
+            .store(in: &subs)
         // Installed before `store.start` (the insertion point); the client exists once the connection opens.
         store.$connection.removeDuplicates().receive(on: RunLoop.main)
             .sink { [weak self] s in MainActor.assumeIsolated { if s == .open { self?.refreshMeeting() } } }
@@ -195,7 +194,7 @@ final class PointController {
             sampler.start(t0: now, penAlways: !mouse, displays: displays)
             card.hide(returnKey: false) // a question from `.replying`: the old reply is over
             doneTimer?.invalidate(); doneTimer = nil
-            stopSpeaking()
+            speaker.stop() // S3: a new gesture silences whatever is speaking, the Ask bar's reply included
             router = AskRouter()
             pill.state.reset(chord: chordSymbol)
             pill.show(near: NSEvent.mouseLocation)
@@ -477,9 +476,7 @@ final class PointController {
             _ = dictation.handle(.finished(id: id, error: w.reason?.reason == "error" ? (w.reason?.message ?? "dictation failed") : nil))
             pill.state.text = dictation.liveText; pill.state.partial = ""
             resumeFinal()
-        case "SpeechStarted": if let id = w.id, let s = w.session { speech.started(id: id, session: s, sink: w.sink) }
-        case "SpeechAudio": if let id = w.id, let o = w.opus { speech.audio(id: id, opusBase64: o) }
-        case "SpeechFinished": if let id = w.id { speech.finish(id: id, ok: w.reason?.reason == "done") }
+        case "SpeechStarted", "SpeechAudio", "SpeechFinished": break // 149s: the Store's SpeechPlayer takes them
         case "TextDelta", "TurnFinished", "Error", "ToolCallPending", "ToolCallStarted":
             replyEvent(w)
         default:
@@ -503,32 +500,19 @@ final class PointController {
         card.state.status = reply.finished ? (reply.failure.map { "couldn't reply — \($0)" } ?? "replied") : "working…"
         card.state.failed = reply.failure != nil
         guard reply.finished else { return }
-        if reply.failure == nil, VoiceKeySettings.speak, !reply.text.isEmpty { speak(reply.text, on: session) } else { armDone() }
+        if SpokenReplies.shouldSpeak(enabled: VoiceKeySettings.speak, reply: reply) { speaker.speak(reply.text, on: session, from: .voiceKey) } else { armDone() }
     }
 
-    /// Revision 1 row 10: `speak(desk, text)`; the packets come back as `SpeechAudio` and `SpeechPlayer` plays them.
-    private func speak(_ text: String, on session: String) {
-        speech.expect(session: session)
-        card.state.speaking = true
-        Task { [weak self] in
-            do {
-                let id = try await self?.store.client.speak(session: session, text: text)
-                self?.speakingId = id
-                PointLog.write("speak → \(id ?? "nil")")
-            } catch {
-                PointLog.write("speak failed: \(error)")
-                self?.card.state.speaking = false
-                self?.armDone()
-            }
-        }
+    /// The shared speaker's utterance is ours → the glyph; ours ended (played out, stopped, or the ask bar took over) → `doneMs`.
+    private func speakingChanged(_ ours: Bool) {
+        card.state.speaking = ours
+        defer { wasSpeaking = ours }
+        if wasSpeaking, !ours, router.reply?.finished == true { armDone() }
     }
 
+    /// ⎋ / conceal ends the voice key's own utterance; the Ask bar's keeps playing.
     private func stopSpeaking() {
-        speech.stop()
-        card.state.speaking = false
-        guard let id = speakingId else { return }
-        speakingId = nil
-        Task { [store] in try? await store.client.stopSpeaking(id: id) }
+        if speaker.surface == .voiceKey { speaker.stop() }
     }
 
     /// `doneMs` after the reply is over (text final, nothing speaking) → `Replying → Idle`, the card goes.
@@ -543,15 +527,15 @@ final class PointController {
 /// `voiceKey.*` of 96 (`voice-key.ts:37-47`) in `Settings.defaults` (D19); the Settings › Voice key tab binds the same keys.
 enum VoiceKeySettings {
     static let enabledKey = "voiceKeyEnabled", includeScreenKey = "voiceKeyIncludeScreen", accessibilityKey = "voiceKeyAccessibility",
-               annotateMouseKey = "voiceKeyAnnotateMouse", speakKey = "voiceKeySpeak"
+               annotateMouseKey = "voiceKeyAnnotateMouse"
     static var enabled: Bool { flag(enabledKey, true) }
     static var includeScreen: Bool { flag(includeScreenKey, true) }
     /// 96's `accessibility: 'auto' | 'off'` — `true` = auto (the engine's grant decides).
     static var accessibility: Bool { flag(accessibilityKey, true) }
     /// 96's `annotate: 'always' | 'mouse'`.
     static var annotateMouse: Bool { flag(annotateMouseKey, false) }
-    /// Revision 1 row 10: on, as 96 shipped (a voice send always entered voice mode, `voice-key.ts:358`).
-    static var speak: Bool { flag(speakKey, true) }
+    /// 149s S1: off unless the user turned it on (was on as 96 shipped); the same key the Settings toggles bind.
+    static var speak: Bool { SpokenReplies.voiceKey(Settings.defaults) }
 
     private static func flag(_ key: String, _ def: Bool) -> Bool {
         Settings.defaults.object(forKey: key) == nil ? def : Settings.defaults.bool(forKey: key)

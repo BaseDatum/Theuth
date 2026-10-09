@@ -144,16 +144,30 @@ public sealed class MeetingReducerMirrorTests
 public sealed class IslandModelMirrorTests
 {
     private static readonly IslandDisplay D1 = new(@"\\.\DISPLAY1", new PxRect(0, 0, 1920, 1032), 1.0, true);
-    private static readonly DateTimeOffset Now = new(2026, 10, 9, 2, 0, 0, TimeSpan.Zero);
     private static readonly (int, int) Size = (300, 36);
 
-    [Fact] public void VisibleWhileLive() => Assert.True(new IslandModel().ShouldShow("Recording", null, Now));
+    [Fact] public void VisibleWhileLive() => Assert.True(new IslandModel().ShouldShow("Recording"));
 
-    [Fact] public void VisibleTenMinutesAfterTheLastTopicOrBrief() => Assert.True(new IslandModel().ShouldShow("Done", Now - TimeSpan.FromMinutes(10), Now));
+    // Island fix D2 (Sky 2026-10-09 15:50): the 10-minute linger after the last topic/brief is gone.
+    [Fact] public void HiddenAtOnceWhenDone() => Assert.False(new IslandModel().ShouldShow("Done"));
 
-    [Fact] public void VisibleWhenAlwaysShow() => Assert.True(new IslandModel { AlwaysShow = true }.ShouldShow("Idle", null, Now));
+    [Fact] public void VisibleWhenAlwaysShow() => Assert.True(new IslandModel { AlwaysShow = true }.ShouldShow("Idle"));
 
-    [Fact] public void HiddenOtherwise() => Assert.False(new IslandModel().ShouldShow("Idle", Now - TimeSpan.FromMinutes(11), Now));
+    [Fact] public void HiddenOtherwise() => Assert.False(new IslandModel().ShouldShow("Idle"));
+
+    [Fact]
+    public void OpenWhileLiveCollapsedOnlyByAClick()
+    {
+        var m = new IslandModel();
+        m.Present("m1", "Recording");
+        Assert.Equal(IslandMode.Open, m.Mode);
+        Assert.Equal(IslandMode.Open, m.PointerLeft());
+        Assert.True(m.Collapse());
+        m.Present("m1", "Paused");
+        Assert.Equal(IslandMode.Closed, m.Mode);
+        m.Present("m2", "Starting");
+        Assert.Equal(IslandMode.Open, m.Mode);
+    }
 
     [Fact]
     public void DragWithinFortyPointsSnapsBackClosed()
@@ -172,7 +186,8 @@ public sealed class IslandModelMirrorTests
         var def = IslandModel.DefaultFrame(D1, Size);
         var far = def with { Y = def.Y + 41 };
         Assert.Equal(far, m.DragEnded(D1, far));
-        Assert.Equal(IslandMode.Detached, m.Mode);
+        Assert.True(m.Detached);
+        Assert.Equal(IslandMode.Closed, m.Mode);
         Assert.Equal((far.X, far.Y), m.Frames[D1.Device]);
     }
 

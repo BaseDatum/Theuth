@@ -25,15 +25,13 @@ final class AskBarController: NSObject {
     private var voice = AskVoiceMachine()
     private var voiceTimer: Timer?
     private let recorder = VoiceRecorder()
-    /// The press that opened a surface must not close it on release.
-    private var openedByPress = false
 
     init(store: Store, attention: PanelController) {
         self.store = store
         self.attention = attention
         let (panel, container) = GlassPanel.make(width: Self.width, height: 120, radius: Type.cardRadius) // 149 W1 (§3.5)
         self.panel = panel
-        hosting = NSHostingView(rootView: AskBarView(store: store, state: state))
+        hosting = NSHostingView(rootView: AskBarView(store: store, state: state, speaker: store.speaker))
         hosting.frame = container.bounds
         hosting.autoresizingMask = [.width, .height]
         container.addSubview(hosting)
@@ -113,6 +111,7 @@ final class AskBarController: NSObject {
             store.onLegend?()
             return true
         case .escape:
+            store.speaker.stop() // S3: ⎋ silences the spoken reply, whatever else it does
             if store.undo.held != nil { store.perform(.escape); return true } // undo: the text is still in the field
             close(returnKey: true)
             return true
@@ -139,27 +138,26 @@ final class AskBarController: NSObject {
         if store.undo.held != nil { store.perform(.escape) }
     }
 
-    // MARK: the hotkey (key-down + key-up from KeyboardShortcuts 1.10.0; W1's toggle lives in `hotkeyUp`)
+    // MARK: the panel key (key-down + key-up from KeyboardShortcuts 1.10.0)
 
+    /// 149s K1: every press goes through the hold machine. A tap (`.tap`) toggles the Attention panel — empty state
+    /// included, never the Ask bar; a hold (`.startRecording`) talks: the Ask bar opens if it is not up and dictates.
     func hotkeyDown() {
         guard !AskFlags.automated else { return }
-        openedByPress = false
-        if isOpen { return voiceEvent(.keyDown(Date())) }
-        if attention.isOpen { return } // key-up toggles it closed, as W1 did
-        openedByPress = true
-        if store.rail.needsYouCount > 0 {
-            attention.open(anchor: .mouse)
-        } else {
-            open()
-            voiceEvent(.keyDown(Date())) // a hold from cold dictates straight into the fresh bar
-        }
+        voiceEvent(.keyDown(Date()))
     }
 
     func hotkeyUp() {
         guard !AskFlags.automated else { return }
-        if voice.isBusy { return voiceEvent(.keyUp(Date())) }
-        if openedByPress { openedByPress = false; return }
-        if attention.isOpen { attention.close(returnKey: true) } else if isOpen { close(returnKey: true) }
+        voiceEvent(.keyUp(Date()))
+    }
+
+    private func perform(_ a: SurfaceKey.Action) {
+        switch a {
+        case .togglePanel: attention.toggle(anchor: .mouse) // taking key closes an open Ask bar (`didResignKey`)
+        case .toggleAskBar: toggle()
+        case .talk: if !isOpen { open() }
+        }
     }
 
     // MARK: voice (D7, W6 live): hold → AVAudioEngine → dictation_audio every 100 ms → release → dictation_stop
@@ -187,8 +185,9 @@ final class AskBarController: NSObject {
         for fx in effects {
             switch fx {
             case .tap:
-                if openedByPress { openedByPress = false } else { close(returnKey: true) }
+                perform(SurfaceKey.panel.action(held: false))
             case .startRecording:
+                perform(SurfaceKey.panel.action(held: true))
                 state.recording = true
                 state.status = "listening…"
                 beginDictation()

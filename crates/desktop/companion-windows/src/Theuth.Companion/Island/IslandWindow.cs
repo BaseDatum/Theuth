@@ -36,6 +36,9 @@ internal abstract record IslandAction
 
     public sealed record Move(int Delta) : IslandAction;
 
+    /// <summary>Island fix §N: J/↓ (+1) · K/↑ (−1), wrapping.</summary>
+    public sealed record Cycle(int Delta, string Via) : IslandAction;
+
     public sealed record Mute : IslandAction;
 
     public sealed record Stop : IslandAction;
@@ -52,8 +55,10 @@ internal sealed record VoiceView(string Phase, string Live, string Status, strin
 /// The native island (149 §3.6, §7.4 #1, D9–D11): a <see cref="ToolWindow"/> with the shell's Windows island styles
 /// (<c>WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST</c>, shown without activation, <c>WDA_EXCLUDEFROMCAPTURE</c>),
 /// opaque, rounded, dark-first. Closed: a pill at the top centre of the chosen monitor's work area — rec dot · <c>mm:ss</c> ·
-/// the topic count. Open (hover 0.3 s or click; closes 100 ms after the pointer leaves unless pinned by a click): the strip
-/// (topics with ✕, mute, stop, eye), the brief pane (title, ≤ 3 bullets, deeper, newer/older, <c>↑N new</c>), the collapsed
+/// the topic count. Open — island fix D1 (Sky 2026-10-09 15:50): OPEN whenever a meeting is live, like the Tauri original; no
+/// hover model; the closed pill is the idle wordmark ("Always show") or an explicit collapse (the strip's ˄ or Esc), remembered
+/// per meeting by <see cref="IslandModel"/>; a click on the collapsed pill opens it again. The strip
+/// (topics with ✕, mute, stop, eye, collapse), the brief pane (title, ≤ 3 bullets, deeper, newer/older, <c>↑N new</c>), the collapsed
 /// transcript row and the request box. Draggable anywhere by its grip (a manual move: pointer capture + <c>AppWindow.Move</c>);
 /// on release <see cref="IslandModel.DragEnded"/> snaps back within 40 pt or remembers the offset per monitor device name;
 /// double-click the grip snaps back. Keys (island scope, §8): M mute · E dismiss the first topic · D deeper · ⎋ leave the
@@ -74,18 +79,27 @@ internal sealed partial class IslandWindow : ToolWindow
     private readonly Action<IslandAction> act;
     private readonly Action save;
     private readonly Grid root;
+    private readonly ContentControl focusHost;
     private readonly Border shell;
     private readonly StackPanel body;
-    private readonly DispatcherQueueTimer hoverTimer;
-    private readonly DispatcherQueueTimer leaveTimer;
     private readonly DispatcherQueueTimer clockTimer;
     private readonly DispatcherQueueTimer dragTimer;
+    private readonly DispatcherQueueTimer renderRetry;
+    private readonly DispatcherQueueTimer fadeTimer;
     private readonly SUBCLASSPROC subclass149; // referenced for the window's lifetime
     private const nuint Subclass149Id = 0x149;
     private MeetingSnapshot snapshot = MeetingSnapshot.Empty;
     private VoiceView? voice;
     private TextBox? request;
     private TextBlock? clock;
+    private TextBlock? transcript;
+    private string? renderedKey;
+    private string requestDraft = "";
+    private bool requestFocused;
+    private DateTimeOffset fadeStart;
+    private bool hiding;
+    private double dragScale = 1;
+    private double dragStartScale = 1;
     private ScreenMonitor? monitor;
     private HWND previous;
     private bool dragging;
@@ -133,15 +147,33 @@ internal sealed partial class IslandWindow : ToolWindow
             shell.BorderBrush = Theme.Brush(NativeLook.CardStroke, root.ActualTheme);
             Render();
         });
-        Content = root;
-        root.PointerEntered += (_, _) => OnEnter();
-        root.PointerExited += (_, _) => OnLeave();
+        // Island fix §N: a focusable host around the content, so a click on the strip/pane can give the island keyboard focus (a Grid
+        // cannot take focus) without focusing the request box; its KeyDown sees every key the island's controls do not eat.
+        focusHost = new ContentControl
+        {
+            Content = root,
+            IsTabStop = true,
+            UseSystemFocusVisuals = false,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Stretch,
+        };
+        AutomationProperties.SetAutomationId(focusHost, "island-focus");
+        Content = focusHost;
+        // Island fix D1: no PointerEntered/PointerExited model. The pointer leaving never collapses the island (and the
+        // inactive NOACTIVATE window drops pointer events anyway, which is why hover-driven state was unreliable here).
+        root.PointerExited += (_, _) => model.PointerLeft();
         root.PointerPressed += OnPressed;
         root.PointerMoved += OnMoved;
         root.PointerReleased += OnReleased;
-        root.KeyDown += OnKeyDown;
-        hoverTimer = Timer(300, () => { if (!model.Pinned) OpenIsland(pin: false); });
-        leaveTimer = Timer(100, () => { if (model.Close()) Render(); });
+        focusHost.KeyDown += OnKeyDown;
+        // Every press, a control's included: take the foreground so the request box and the island keys get the keyboard. The
+        // NOACTIVATE window is not activated by a click on build-B (typed text went to the app behind it).
+        root.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => TakeForeground()), handledEventsToo: true);
+        // A re-render that lands while the left button is down over the island would replace the control under the press and
+        // the click would never fire (a live meeting re-renders on every partial utterance): it waits for the release.
+        renderRetry = Timer(40, () => Render());
+        fadeTimer = Timer(16, FadeTick);
+        fadeTimer.IsRepeating = true;
         clockTimer = Timer(1000, () => clock?.SetValue(TextBlock.TextProperty, IslandModel.Clock(snapshot.Elapsed(DateTimeOffset.Now))));
         clockTimer.IsRepeating = true;
         dragTimer = Timer(16, DragTick);
@@ -203,6 +235,15 @@ internal sealed partial class IslandWindow : ToolWindow
     public void ShowOn(ScreenMonitor m)
     {
         monitor = m;
+        if (hiding)
+        {
+            // A meeting went live again while the close animation ran: stay.
+            hiding = false;
+            fadeTimer.Stop();
+            root.Opacity = 1;
+            Log.Write("island: close animation cancelled (live again)");
+        }
+        Render();
         Relayout();
         if (!IsShown)
         {
@@ -210,17 +251,50 @@ internal sealed partial class IslandWindow : ToolWindow
             dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () => { root.InvalidateMeasure(); root.UpdateLayout(); Render(); });
             Log.Write($"island shown: rect={Win32.Text(ScreenRect)} on {m.Device} mode={model.Mode} exstyle={Win32.ExStyleText(Win32.ExStyle(Hwnd))} affinity=0x{Win32.DisplayAffinity(Hwnd):X}");
         }
-        if (snapshot.State == "Recording") clockTimer.Start();
+        if (snapshot.State == "Recording" && !clockTimer.IsRunning) clockTimer.Start();
     }
 
+    /// <summary>Whether the close animation is running (the window is still shown).</summary>
+    public bool IsHiding => hiding;
+
+    /// <summary>
+    /// Island fix D2: the meeting ended (Done · Failed · anything not live) — a <see cref="IslandModel.CloseAnimation"/> fade, then
+    /// the window is gone. With Windows' "Animation effects" off it goes at once.
+    /// </summary>
     public void HideIsland()
     {
-        if (!IsShown) return;
+        if (!IsShown || hiding) return;
         clockTimer.Stop();
-        hoverTimer.Stop();
-        leaveTimer.Stop();
-        model.Close(force: true);
+        EndDrag(snap: false);
+        if (!SystemEffects.AnimationsOn)
+        {
+            FinishHide();
+            return;
+        }
+        hiding = true;
+        fadeStart = DateTimeOffset.Now;
+        fadeTimer.Start();
+        Log.Write($"island: closing ({IslandModel.CloseAnimation.TotalMilliseconds:0} ms fade)");
+    }
+
+    private void FadeTick()
+    {
+        if (!hiding) { fadeTimer.Stop(); return; }
+        double t = (DateTimeOffset.Now - fadeStart) / IslandModel.CloseAnimation;
+        if (t >= 1)
+        {
+            FinishHide();
+            return;
+        }
+        root.Opacity = 1 - t * t; // ease-in
+    }
+
+    private void FinishHide()
+    {
+        hiding = false;
+        fadeTimer.Stop();
         HideWindow();
+        root.Opacity = 1;
         Log.Write("island hidden");
     }
 
@@ -228,11 +302,28 @@ internal sealed partial class IslandWindow : ToolWindow
     public void Relayout()
     {
         if (monitor is null) return;
+        if (dragging)
+        {
+            // Mid-drag WM_DISPLAYCHANGE / WM_DPICHANGED (crossing onto a monitor of another scale): never re-place to the old
+            // monitor's memory — that is what yanked a drag back off a second monitor. Keep the window under the cursor at the new
+            // scale; the release decides the monitor and its memory.
+            double s = Scale;
+            if (s != dragScale)
+            {
+                (dragDx, dragDy) = IslandModel.ScaleGrab((dragDx, dragDy), dragScale, s);
+                Log.Write($"island: drag crossed into scale {s:0.##} (was {dragScale:0.##}); grab offset now ({dragDx},{dragDy})");
+                dragScale = s;
+                var sz = CurrentSize();
+                if (PInvoke.GetCursorPos(out var c)) Place(new RectInt32(c.X - dragDx, c.Y - dragDy, sz.Width, sz.Height));
+            }
+            return;
+        }
         var all = ScreenMonitor.All();
         monitor = all.FirstOrDefault(x => x.Device == monitor.Device) ?? ScreenMonitor.At(all, 0, 0);
         var size = CurrentSize();
-        var (frame, saved) = model.Place(monitor.AsIslandDisplay(), size);
-        if (!saved && model.Mode == IslandMode.Detached) model.SnapBack(monitor.AsIslandDisplay(), size);
+        var (frame, _) = voiceAnchor is { } va && va.Device == monitor.Device
+            ? (IslandModel.DefaultFrame(va.AsIslandDisplay(), size), false) // §P: the voice pill is top-centre, never the saved offset
+            : model.Place(monitor.AsIslandDisplay(), size);
         Place(new RectInt32(frame.X, frame.Y, frame.Width, frame.Height));
     }
 
@@ -270,8 +361,31 @@ internal sealed partial class IslandWindow : ToolWindow
     {
         if ((s.Oracle.Count > 0 ? s.Oracle[^1] : null) != (snapshot.Oracle.Count > 0 ? snapshot.Oracle[^1] : null)) verdictAt = DateTimeOffset.Now;
         snapshot = s;
-        if (s.State == "Recording" && IsShown) clockTimer.Start(); else clockTimer.Stop();
+        // Start only when stopped: Start() on a running DispatcherQueueTimer restarts its interval, and a talking meeting updates
+        // several times a second — the clock would never tick.
+        if (s.State == "Recording" && IsShown) { if (!clockTimer.IsRunning) clockTimer.Start(); } else clockTimer.Stop();
+        // A partial utterance changes only the transcript row: update it in place instead of rebuilding every control (a
+        // rebuild under a press loses the click, and a rebuild under typing loses the request box's focus).
+        if (renderedKey is not null && renderedKey == RenderKey())
+        {
+            if (transcript is not null && s.Lines.Count > 0) { var l = s.Lines[^1]; transcript.Text = $"{l.Who} {l.Text}"; }
+            clock?.SetValue(TextBlock.TextProperty, IslandModel.Clock(s.Elapsed(DateTimeOffset.Now)));
+            return;
+        }
         Render();
+    }
+
+    /// <summary>Whatever changes the island's controls (not the clock, the meters or the transcript text): equal keys = no rebuild.</summary>
+    private string RenderKey()
+    {
+        var s = snapshot;
+        var last = s.Oracle.Count > 0 ? s.Oracle[^1] : null;
+        bool verdictFresh = last is not null && DateTimeOffset.Now - verdictAt < TimeSpan.FromSeconds(6);
+        return string.Join('\u001f',
+            model.Mode, hiddenFromCapture, root.ActualTheme, oracleMode, verdictFresh, last?.BatchId, last?.Disposition, s.Deciding,
+            s.Meeting, s.State, string.Join(',', s.Topics.Select(t => t.Id + "=" + t.Label)), string.Join(',', s.Tapped),
+            s.Cursor, s.Briefs.Count, s.Current?.Id, s.Unseen, string.Join(',', s.Degraded), s.Listening, s.ApprovalWaiting, s.Activity,
+            s.Lines.Count > 0, s.Lines.Count > 0 && s.Lines[^1].Open, SpeakerWord(s));
     }
 
     /// <summary>The meters (<c>MeetingEvent::Level</c>, ~6/s): the two bars resize in place, no re-render.</summary>
@@ -296,33 +410,63 @@ internal sealed partial class IslandWindow : ToolWindow
     /// <summary>Point-and-say's voice mode; null returns the island to its meeting content.</summary>
     public void SetVoice(VoiceView? v)
     {
-        bool was = voice is not null;
+        bool starting = v is not null && voice is null;
+        string? phase = voice?.Phase;
         voice = v;
-        if (v is null && was) model.Close(force: true);
+        bool wasAnchored = voiceAnchor is not null;
+        if (v is null) voiceAnchor = null;
+        if (starting && model.Meeting is null)
+        {
+            // §P (Sky 16:44): the live-dictation pill and the answer card sit in the island area — top centre of the display under the
+            // pointer when the gesture starts — and stay there for the whole gesture; only the trail/ring overlays follow the pointer.
+            var all = ScreenMonitor.All();
+            voiceAnchor = PInvoke.GetCursorPos(out var c) ? ScreenMonitor.At(all, c.X, c.Y) : ScreenMonitor.At(all, 0, 0);
+            monitor = voiceAnchor;
+        }
         Render();
+        if (v is null && wasAnchored && IsShown && !hiding) Relayout(); // back to the island's own place ("Always show")
+        if (voiceAnchor is { } anchor && IsShown && !hiding)
+        {
+            var size = CurrentSize();
+            var f = IslandModel.DefaultFrame(anchor.AsIslandDisplay(), size);
+            Place(new RectInt32(f.X, f.Y, f.Width, f.Height));
+        }
+        voiceLogDue = v is not null && (starting || v.Phase != phase);
     }
+
+    private bool voiceLogDue;
+
+    /// <summary>After the controller showed/placed the window: one line per voice phase with the pill's rect (the §P proof).</summary>
+    public void LogVoicePill()
+    {
+        if (!voiceLogDue || voice is not { } v) return;
+        voiceLogDue = false;
+        Log.Write($"island: voice pill phase={v.Phase} rect={Win32.Text(ScreenRect)} on {monitor?.Device} {(model.Meeting is null ? "(top centre, fixed for the gesture)" : "(below the meeting strip)")}");
+    }
+
+    /// <summary>§P: the display the voice gesture started on (no meeting live): the pill is placed top-centre there, ignoring the saved offset.</summary>
+    private ScreenMonitor? voiceAnchor;
 
     public bool InVoiceMode => voice is not null;
 
-    // MARK: hover / click
+    // MARK: click / collapse (island fix D1)
 
-    private void OnEnter()
+    /// <summary>The controller presented a new state (open ↔ closed for a live meeting): re-render at the new shape.</summary>
+    public void Refresh() => Render();
+
+    /// <summary>The explicit collapse (the strip's ˄, or Esc): the closed pill for this meeting only.</summary>
+    private void CollapseIsland(string how)
     {
-        leaveTimer.Stop();
-        if (voice is null && model.Mode == IslandMode.Closed) hoverTimer.Start();
+        if (!model.Collapse()) return;
+        Log.Write($"island: collapsed by {how} (meeting {model.Meeting}; remembered for this meeting)");
+        Render();
     }
 
-    private void OnLeave()
+    /// <summary>A click on the collapsed pill of a live meeting: open again (and forget this meeting's collapse).</summary>
+    private void ExpandIsland()
     {
-        hoverTimer.Stop();
-        if (dragging) return;
-        if (voice is null && model.Mode == IslandMode.Open && !wantsKey) leaveTimer.Start();
-    }
-
-    private void OpenIsland(bool pin)
-    {
-        if (voice is not null) return;
-        model.Open(pin);
+        if (voice is not null || !model.Expand()) return;
+        Log.Write($"island: expanded by click (meeting {model.Meeting})");
         Render();
     }
 
@@ -348,6 +492,7 @@ internal sealed partial class IslandWindow : ToolWindow
             dragDy = c.Y - r.top;
             dragging = true;
             moved = false;
+            dragScale = dragStartScale = Scale;
             // The manual move: a 16 ms poll over GetCursorPos + the button state. XAML pointer capture is not relied on —
             // the island activates on the press (S1) and a non-active WinUI window drops PointerMoved/capture (build-B).
             dragTimer.Start();
@@ -377,20 +522,22 @@ internal sealed partial class IslandWindow : ToolWindow
         dragTimer.Stop();
         bool wasMoved = moved;
         EndDrag(snap: true);
-        if (!wasMoved && voice is null)
+        if (!wasMoved && voice is null && model.Mode == IslandMode.Closed)
         {
-            // A click on the pill (not a drag) opens and pins; the idle pill ("Always show", no meeting) deep-links to theuth://meetings.
-            if (model.Mode == IslandMode.Closed && snapshot.Meeting is null) act(new IslandAction.OpenMeetings());
-            else if (model.Mode == IslandMode.Closed) OpenIsland(pin: true);
-            else model.Pinned = true;
+            // A click on the pill (not a drag): a live meeting's collapsed pill opens again; the idle wordmark ("Always show", nothing
+            // live) deep-links to theuth://meetings.
+            if (model.Meeting is not null) ExpandIsland();
+            else { Log.Write("island: click island-pill (idle) → theuth://meetings"); act(new IslandAction.OpenMeetings()); HandBack(); return; }
         }
-        if (!wantsKey) HandBack();
+        // §N: a click on the strip or the pane focuses the island (not the request box), so J/K/↑/↓ work; a drag hands back.
+        if (wasMoved) { if (!wantsKey) HandBack(); }
+        else if (!wantsKey) FocusIsland();
     }
 
     private void OnReleased(object sender, PointerRoutedEventArgs e)
     {
         if (dragging) { e.Handled = true; return; } // the drag poll ends it
-        if (!wantsKey) HandBack();
+        if (!wantsKey) FocusIsland();
     }
 
     private void EndDrag(bool snap)
@@ -406,7 +553,8 @@ internal sealed partial class IslandWindow : ToolWindow
         var target = model.DragEnded(m.AsIslandDisplay(), frame);
         if (target != frame) Place(new RectInt32(target.X, target.Y, target.Width, target.Height));
         save();
-        Log.Write($"island drag ended: {(target == frame ? "kept" : "snapped back")} at {target.X},{target.Y} on {m.Device} mode={model.Mode}");
+        Log.Write($"island drag ended: {(target == frame ? "kept" : "snapped back")} at {target.X},{target.Y} on {m.Device} mode={model.Mode} detached={model.Detached} frames={model.Frames.Count}");
+        if (Scale != dragStartScale) Render(); // landed on a monitor of another scale: re-measure at its scale
     }
 
     private void SnapBack()
@@ -452,7 +600,7 @@ internal sealed partial class IslandWindow : ToolWindow
         bool inBox = request is not null && request.FocusState != FocusState.Unfocused;
         if (key.KeyCode == VirtualKeys.Escape)
         {
-            if (inBox) LeaveBox(); else { model.Close(force: true); Render(); HandBack(); }
+            if (inBox) LeaveBox(); else { CollapseIsland("Esc"); HandBack(); }
             e.Handled = true;
             return;
         }
@@ -462,25 +610,42 @@ internal sealed partial class IslandWindow : ToolWindow
             e.Handled = true;
             return;
         }
+        if (key.Modifiers.HasFlag(ChordModifiers.Control) && !key.Modifiers.HasFlag(ChordModifiers.Alt) && key.KeyCode == 'M')
+        {
+            // Island fix: Ctrl+M stops the meeting from the request box too — the box is the only place the NOACTIVATE island
+            // keeps keyboard focus (every other press hands the foreground back), so the island-scope key was unreachable.
+            Log.Write($"island: key Ctrl+M → stop{(inBox ? " (from the request box)" : "")}");
+            act(new IslandAction.Stop());
+            e.Handled = true;
+            return;
+        }
+        bool plain = key.Modifiers == ChordModifiers.None;
         if (inBox)
         {
             if (key.KeyCode == VirtualKeys.Return && request is not null)
             {
-                var text = request.Text.Trim();
-                if (text.Length > 0) { act(new IslandAction.Request(text)); request.Text = ""; }
+                if (request.Text.Trim().Length > 0) { Log.Write("island: key Enter island-request"); SendRequest(); }
+                e.Handled = true;
+            }
+            // §N: J/K type letters here; ↓/↑ walk the briefs only while the box is empty (else they move the caret).
+            else if (plain && (key.KeyCode == VirtualKeys.Down || key.KeyCode == VirtualKeys.Up) && request is { Text.Length: 0 })
+            {
+                Walk(key.KeyCode == VirtualKeys.Down ? +1 : -1, key.KeyCode == VirtualKeys.Down ? "Down (empty box)" : "Up (empty box)");
                 e.Handled = true;
             }
             return;
         }
-        if (key.Modifiers.HasFlag(ChordModifiers.Control) && !key.Modifiers.HasFlag(ChordModifiers.Alt) && key.KeyCode == 'M')
+        if (voice is null && plain && (key.KeyCode == VirtualKeys.Down || key.KeyCode == VirtualKeys.Up))
         {
-            act(new IslandAction.Stop()); // Ctrl+Shift+M (C stores it as Ctrl+M locally)
+            Walk(key.KeyCode == VirtualKeys.Down ? +1 : -1, key.KeyCode == VirtualKeys.Down ? "Down" : "Up");
             e.Handled = true;
             return;
         }
         if (key.Modifiers != ChordModifiers.None && key.Modifiers != ChordModifiers.Shift) return;
         switch (key.Chars.ToLowerInvariant())
         {
+            case "j" when voice is null: Walk(+1, "J"); e.Handled = true; break;
+            case "k" when voice is null: Walk(-1, "K"); e.Handled = true; break;
             case "m": act(new IslandAction.Mute()); e.Handled = true; break;
             case "e":
                 if (snapshot.Topics.Count > 0) act(new IslandAction.Dismiss(snapshot.Topics[0].Id));
@@ -493,10 +658,13 @@ internal sealed partial class IslandWindow : ToolWindow
         }
     }
 
+    /// <summary>§N: J/↓ next, K/↑ previous brief, wrapping — the controller's one brief-walk path (the same as a pill click).</summary>
+    private void Walk(int delta, string via) => act(new IslandAction.Cycle(delta, via));
+
     private void LeaveBox()
     {
         wantsKey = false;
-        root.Focus(FocusState.Programmatic);
+        focusHost.Focus(FocusState.Programmatic);
         HandBack();
     }
 
@@ -504,15 +672,48 @@ internal sealed partial class IslandWindow : ToolWindow
 
     private void Render()
     {
+        renderRetry.Stop();
+        if (IsShown && !dragging && PressedOverIsland())
+        {
+            renderRetry.Start(); // after the release: the control under the press must survive until its Click
+            return;
+        }
+        // The request box survives a rebuild: its text, its focus.
+        if (request is not null)
+        {
+            requestDraft = request.Text;
+            requestFocused = request.FocusState != FocusState.Unfocused;
+        }
         body.Children.Clear();
         request = null;
         clock = null;
+        transcript = null;
         micBar = null;
         sysBar = null;
-        if (voice is { } v) RenderVoice(v);
+        if (voice is { } v)
+        {
+            // §P: during a voice gesture with a live meeting the pill sits directly below the meeting's strip.
+            if (model.Meeting is not null) { shell.CornerRadius = new CornerRadius(8); RenderStrip(); }
+            RenderVoice(v, padShell: model.Meeting is null);
+        }
         else if (model.Mode == IslandMode.Closed) RenderPill();
         else RenderOpen();
+        renderedKey = voice is null ? RenderKey() : null;
+        if (request is { } box)
+        {
+            box.Text = requestDraft;
+            box.SelectionStart = box.Text.Length;
+            if (requestFocused) box.Focus(FocusState.Programmatic);
+        }
         if (IsShown) Resize();
+    }
+
+    /// <summary>The left button is down and the cursor is over this window.</summary>
+    private bool PressedOverIsland()
+    {
+        if ((PInvoke.GetAsyncKeyState(0x01) & 0x8000) == 0 || !PInvoke.GetCursorPos(out var c)) return false;
+        var r = ScreenRect;
+        return c.X >= r.left && c.X < r.right && c.Y >= r.top && c.Y < r.bottom;
     }
 
     private TextBlock Text(string s, double size, string key, FontWeight? weight = null) => new()
@@ -538,15 +739,43 @@ internal sealed partial class IslandWindow : ToolWindow
         ToolTipService.SetToolTip(b, tip);
         if (id is not null) AutomationProperties.SetAutomationId(b, id);
         AutomationProperties.SetName(b, tip);
-        b.Click += (_, _) => { click(); if (!wantsKey) HandBack(); };
+        b.Click += (_, _) => Clicked(id, click);
         return b;
     }
 
+    /// <summary>
+    /// Every island control: one log line per click (the D3 proof), then the action. Island fix §N: a click on the island keeps the
+    /// keyboard focus on the island (not the request box) so J/K/↑/↓ walk the briefs; Esc hands the foreground back.
+    /// </summary>
+    private void Clicked(string? id, Action click)
+    {
+        Log.Write($"island: click {id ?? "button"} (state={snapshot.State} mode={model.Mode})");
+        click();
+        if (!wantsKey) FocusIsland();
+    }
+
+    private void FocusIsland()
+    {
+        if (voice is not null) { HandBack(); return; }
+        TakeForeground();
+        if (request is null || request.FocusState == FocusState.Unfocused) focusHost.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>The island becomes the foreground window (remembering the one it took it from, for Esc / a drag's hand-back).</summary>
+    private void TakeForeground()
+    {
+        if (IsForeground) return;
+        var fg = PInvoke.GetForegroundWindow();
+        if (!fg.IsNull && fg != Hwnd && !Win32.IsOurs(fg)) previous = fg;
+        bool ok = PInvoke.SetForegroundWindow(Hwnd);
+        Log.Write($"island: took the foreground for keys ({(ok || IsForeground ? "ok" : "refused")})");
+    }
+
     /// <summary>149 NATIVE: a Fluent glyph button (eye, dismiss, chevrons), optionally with a word beside the glyph.</summary>
-    private Button IconBtn(string glyph, string tip, Action click, string? id = null, string? word = null, bool iconFirst = true)
+    private Button IconBtn(string glyph, string tip, Action click, string? id = null, string? word = null, bool iconFirst = true, string? tint = null)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        var icon = Theme.Icon(glyph, root.ActualTheme, NativeLook.TextPrimary, 12);
+        var icon = Theme.Icon(glyph, root.ActualTheme, tint ?? NativeLook.TextPrimary, 12);
         if (iconFirst) row.Children.Add(icon);
         if (word is not null) row.Children.Add(Text(word, 12.5, NativeLook.TextPrimary));
         if (!iconFirst) row.Children.Add(icon);
@@ -554,9 +783,16 @@ internal sealed partial class IslandWindow : ToolWindow
         ToolTipService.SetToolTip(b, tip);
         if (id is not null) AutomationProperties.SetAutomationId(b, id);
         AutomationProperties.SetName(b, tip);
-        b.Click += (_, _) => { click(); if (!wantsKey) HandBack(); };
+        b.Click += (_, _) => Clicked(id, click);
         return b;
     }
+
+    /// <summary>The eye's exposure state (Sky 16:06), shared with Settings › Island: the glyph, its tint resource and its words.</summary>
+    internal static string EyeGlyph(bool hidden) => hidden ? NativeLook.Glyph.Hide : NativeLook.Glyph.View;
+
+    internal static string EyeTint(bool hidden) => hidden ? NativeLook.Success : NativeLook.Caution;
+
+    internal static string EyeLabel(bool hidden) => hidden ? "Hidden from screen sharing (best effort)" : "Visible in screen sharing — viewers can see the island";
 
     /// <summary>"N new" with an Up glyph (not an arrow character), in the accent: unseen briefs ask for attention.</summary>
     private FrameworkElement Unseen(int n)
@@ -644,7 +880,7 @@ internal sealed partial class IslandWindow : ToolWindow
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(7, 0, 7, 1),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = Text(n == 1 ? "1 topic" : $"{n} topics", 11.5, n > 0 ? NativeLook.OnAccent : NativeLook.TextSecondary, FontWeights.SemiBold),
+            Child = n > 0 ? OnAccentText(n == 1 ? "1 topic" : $"{n} topics", 11.5, FontWeights.SemiBold) : Text($"{n} topics", 11.5, NativeLook.TextSecondary, FontWeights.SemiBold),
         };
         AutomationProperties.SetAutomationId(count, "island-topics");
         row.Children.Add(count);
@@ -656,6 +892,14 @@ internal sealed partial class IslandWindow : ToolWindow
     {
         shell.CornerRadius = new CornerRadius(8);
         shell.Padding = new Thickness(10, 6, 10, 8);
+        RenderStrip();
+        var s = snapshot;
+        RenderPane(s);
+    }
+
+    /// <summary>The meeting strip (and its badge rows): the open island's head, and what the voice pill sits under while a meeting is live (§P).</summary>
+    private void RenderStrip()
+    {
         var s = snapshot;
         // The strip: grip · rec · clock · topics · badges · mute · stop · eye.
         var strip = Row(6);
@@ -668,10 +912,20 @@ internal sealed partial class IslandWindow : ToolWindow
         AutomationProperties.SetAutomationId(clock, "island-clock");
         strip.Children.Add(clock);
         if (OracleChip() is { } oracle) strip.Children.Add(oracle);
-        foreach (var d in s.Degraded.Take(2)) strip.Children.Add(Badge(Degraded(d), NativeLook.Accent));
+        // The degradation badges and the activity line sit on their own row under the strip: in the strip they ran under the
+        // mute/stop/eye buttons (build-B, "no echo cancel · model down") and covered them.
+        var badges = new StackPanel { Orientation = Orientation.Vertical, Spacing = 4 };
+        StackPanel? badgeRow = null;
+        void AddBadge(FrameworkElement b)
+        {
+            // Two per row: every label fits whole at the island's 440 epx (R1: "model do…" was a hard cut in the strip).
+            if (badgeRow is null || badgeRow.Children.Count == 2) { badgeRow = Row(4); badges.Children.Add(badgeRow); }
+            badgeRow.Children.Add(b);
+        }
+        foreach (var d in s.Degraded.Take(4)) AddBadge(Badge(Degraded(d), NativeLook.Accent));
         if (s.Listening) strip.Children.Add(Badge("listening…", NativeLook.Accent));
         else if (s.ApprovalWaiting) strip.Children.Add(Badge("approval waiting", NativeLook.Accent));
-        else if (s.Activity is { } a) strip.Children.Add(Text(a, 12, NativeLook.TextSecondary));
+        else if (s.Activity is { } a) { var act0 = Text(a, 12, NativeLook.TextSecondary); ToolTipService.SetToolTip(act0, a); badges.Children.Add(act0); }
         var right = Row(2);
         right.HorizontalAlignment = HorizontalAlignment.Right;
         if (s.Meeting is not null && MeetingReducer.Live(s.State))
@@ -679,7 +933,10 @@ internal sealed partial class IslandWindow : ToolWindow
             right.Children.Add(Btn(s.State == "Paused" ? "resume" : "mute", s.State == "Paused" ? "Resume (M)" : "Mute — pause the recording (M)", () => act(new IslandAction.Mute()), "island-mute"));
             right.Children.Add(Btn("stop", "Stop the meeting (Ctrl+Shift+M)", () => act(new IslandAction.Stop()), "island-stop"));
         }
-        right.Children.Add(IconBtn(hiddenFromCapture ? NativeLook.Glyph.Hide : NativeLook.Glyph.View, hiddenFromCapture ? "Hidden from capture (best effort) — Alt+Shift+E" : "Visible in capture — Alt+Shift+E", () => act(new IslandAction.Eye()), "island-eye"));
+        // Sky 16:06: exposure at a glance — visible to screen sharing = the eye in Caution, hidden = the eye-slash in Success.
+        right.Children.Add(IconBtn(EyeGlyph(hiddenFromCapture), EyeLabel(hiddenFromCapture) + " — Alt+Shift+E", () => act(new IslandAction.Eye()), "island-eye", tint: EyeTint(hiddenFromCapture)));
+        if (s.Meeting is not null && model.Meeting is not null)
+            right.Children.Add(IconBtn(NativeLook.Glyph.ChevronUp, "Collapse the island (Esc) — for this meeting", () => CollapseIsland("click"), "island-collapse"));
         var stripGrid = new Grid();
         stripGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         stripGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -687,6 +944,11 @@ internal sealed partial class IslandWindow : ToolWindow
         stripGrid.Children.Add(strip);
         stripGrid.Children.Add(right);
         body.Children.Add(stripGrid);
+        if (badges.Children.Count > 0) body.Children.Add(badges);
+    }
+
+    private void RenderPane(MeetingSnapshot s)
+    {
 
         // Topic buttons (tapped = greyed until the brief lands).
         if (s.Topics.Count > 0)
@@ -764,6 +1026,7 @@ internal sealed partial class IslandWindow : ToolWindow
             var line = Text($"{l.Who} {l.Text}", 11.5, l.Open ? NativeLook.TextTertiary : NativeLook.TextSecondary);
             AutomationProperties.SetAutomationId(line, "island-transcript");
             body.Children.Add(line);
+            transcript = line;
         }
 
         // The request box.
@@ -777,16 +1040,37 @@ internal sealed partial class IslandWindow : ToolWindow
                 CornerRadius = new CornerRadius(8),
             };
             AutomationProperties.SetAutomationId(request, "island-request");
-            request.GotFocus += (_, _) => { wantsKey = true; leaveTimer.Stop(); };
-            request.LostFocus += (_, _) => wantsKey = false;
-            body.Children.Add(request);
+            request.GotFocus += (_, _) => { wantsKey = true; requestFocused = true; };
+            request.LostFocus += (_, _) => { wantsKey = false; requestFocused = false; };
+            request.TextChanged += (_, _) => { if (request is { } rb) requestDraft = rb.Text; };
+            // D3: the send arrow beside the box (Enter does the same).
+            var send = IconBtn(NativeLook.Glyph.Up, "Send to the meeting (Enter)", SendRequest, "island-send");
+            send.VerticalAlignment = VerticalAlignment.Stretch;
+            var boxRow = new Grid { ColumnSpacing = 4 };
+            boxRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            boxRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(send, 1);
+            boxRow.Children.Add(request);
+            boxRow.Children.Add(send);
+            body.Children.Add(boxRow);
         }
     }
 
-    private void RenderVoice(VoiceView v)
+    /// <summary>The request box's text → <c>meeting_request</c> (the send arrow and Enter).</summary>
+    private void SendRequest()
+    {
+        var text = (request?.Text ?? requestDraft).Trim();
+        if (text.Length == 0) return;
+        act(new IslandAction.Request(text));
+        if (request is not null) request.Text = "";
+        requestDraft = "";
+    }
+
+    private void RenderVoice(VoiceView v, bool padShell = true)
     {
         shell.CornerRadius = new CornerRadius(8);
-        shell.Padding = new Thickness(14, 8, 14, 10);
+        if (padShell) shell.Padding = new Thickness(14, 8, 14, 10);
+        else shell.Padding = new Thickness(10, 6, 10, 10);
         var pane = new StackPanel { Spacing = 4 };
         AutomationProperties.SetAutomationId(pane, "island-voice");
         var head = Row(8);
@@ -836,15 +1120,51 @@ internal sealed partial class IslandWindow : ToolWindow
         body.Children.Add(pane);
     }
 
-    private Border Badge(string text, string key) => new()
+    private Border Badge(string text, string key)
     {
-        Background = Theme.Brush(NativeLook.ControlFill, root.ActualTheme),
-        BorderBrush = Theme.Brush(key, root.ActualTheme), BorderThickness = new Thickness(1),
-        CornerRadius = new CornerRadius(4),
-        Padding = new Thickness(6, 0, 6, 1),
-        VerticalAlignment = VerticalAlignment.Center,
-        Child = Text(text, 11, key == NativeLook.Accent ? NativeLook.AccentText : key), // R1: accent TEXT resource inside an accent-outlined badge
-    };
+        // R1: accent TEXT resource inside an accent-outlined badge. Island fix R1: the whole label always shows (badges have their
+        // own rows); a label longer than the cap ends in an ellipsis with the full text as the tooltip, never a hard cut.
+        var label = Text(text, 11, key == NativeLook.Accent ? NativeLook.AccentText : key);
+        label.MaxWidth = 196;
+        var b = new Border
+        {
+            Background = Theme.Brush(NativeLook.ControlFill, root.ActualTheme),
+            BorderBrush = Theme.Brush(key, root.ActualTheme), BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(6, 0, 6, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = label,
+        };
+        ToolTipService.SetToolTip(b, text);
+        AutomationProperties.SetName(b, text);
+        return b;
+    }
+
+    /// <summary>
+    /// Text on an accent FILL: <c>TextOnAccentFillColorPrimary</c> (the native-look table), unless the system accent is so dark (or
+    /// light) that Windows' derived on-accent colour is unreadable on it — then the other theme's on-accent colour (R1).
+    /// </summary>
+    private string? onAccentLogged;
+
+    private TextBlock OnAccentText(string s, double size, FontWeight? weight = null)
+    {
+        var t = Text(s, size, NativeLook.OnAccent, weight);
+        var theme = root.ActualTheme == ElementTheme.Dark ? ElementTheme.Dark : ElementTheme.Light;
+        var fill = Theme.ColorOf(NativeLook.Accent, theme);
+        var on = Theme.ColorOf(NativeLook.OnAccent, theme);
+        bool readable = NativeLook.OnAccentReadable((fill.R, fill.G, fill.B), (on.R, on.G, on.B));
+        if (!readable)
+        {
+            // White or black by contrast. (Asking the other theme's dictionary for TextOnAccent returns the CURRENT theme's colour
+            // in a running app — measured: #000000 in dark — so the fallback is computed, not looked up.)
+            var best = NativeLook.BestTextOn((fill.R, fill.G, fill.B));
+            t.Foreground = new SolidColorBrush(global::Windows.UI.Color.FromArgb(255, best.R, best.G, best.B));
+        }
+        var fg = t.Foreground is SolidColorBrush sb ? sb.Color : default;
+        string probe = $"{theme} fg=#{fg.A:X2}{fg.R:X2}{fg.G:X2}{fg.B:X2} fill=#{fill.R:X2}{fill.G:X2}{fill.B:X2} on=#{on.R:X2}{on.G:X2}{on.B:X2} readable={readable}";
+        if (probe != onAccentLogged) { onAccentLogged = probe; Log.Write($"island: text on accent fill — {probe}{(readable ? "" : " → the better of white/black")}"); }
+        return t;
+    }
 
     /// <summary>The degradation badges of <c>Island.tsx:37-47</c>, by word.</summary>
     private static string Degraded(string d) => d switch

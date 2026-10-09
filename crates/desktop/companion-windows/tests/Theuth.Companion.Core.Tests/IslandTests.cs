@@ -1,6 +1,7 @@
 namespace Theuth.Companion.Core.Tests;
 
-// 149 WW3: IslandModel (placement per display, snap-back distance, off-screen frame rejected, D10 visibility, persistence)
+// 149 WW3: IslandModel (placement per display, snap-back distance, off-screen frame rejected, persistence); island fix: D1 open
+// while live, no collapse on pointer leave, explicit collapse per meeting, D2 shown iff live, no linger; per-display drag memory
 // and MeetingReducer (one case per event, the brief-stack rule of meeting.ts:181-190, cursor moves, hydrate).
 
 public sealed class IslandModelTests
@@ -26,11 +27,12 @@ public sealed class IslandModelTests
         var (f0, saved0) = m.Place(Primary, Size);
         Assert.False(saved0);
         Assert.Equal(IslandModel.DefaultFrame(Primary, Size), f0);
-        Assert.Equal(IslandMode.Closed, m.Mode);
+        Assert.False(m.Detached);
 
         var dragged = new PxRect(600, 300, 300, 36);
         Assert.Equal(dragged, m.DragEnded(Primary, dragged));
-        Assert.Equal(IslandMode.Detached, m.Mode);
+        Assert.True(m.Detached);
+        Assert.Equal(IslandMode.Closed, m.Mode); // island fix: dragging the pill does not open it (the shape is not the place)
         var (f1, saved1) = m.Place(Primary, Size);
         Assert.True(saved1);
         Assert.Equal(dragged, f1);
@@ -49,7 +51,7 @@ public sealed class IslandModelTests
         var near = def with { X = def.X + 39 };
         Assert.Equal(def, m.DragEnded(Primary, near));
         Assert.Empty(m.Frames);
-        Assert.Equal(IslandMode.Closed, m.Mode);
+        Assert.False(m.Detached);
         // 41 px off → kept.
         var far = def with { X = def.X + 41 };
         Assert.Equal(far, m.DragEnded(Primary, far));
@@ -57,11 +59,11 @@ public sealed class IslandModelTests
         // On a 2× monitor the threshold is 80 physical px.
         var def2 = IslandModel.DefaultFrame(Second, Size);
         Assert.Equal(def2, m.DragEnded(Second, def2 with { Y = def2.Y + 79 }));
-        Assert.Equal(IslandMode.Closed, m.Mode); // the window snapped back; DISPLAY1's memory is per display, not the mode
+        Assert.False(m.Detached); // the window snapped back on DISPLAY2; DISPLAY1's memory is per display
         Assert.Single(m.Frames);
         Assert.Equal(def, m.SnapBack(Primary, Size)); // double-click
         Assert.Empty(m.Frames);
-        Assert.Equal(IslandMode.Closed, m.Mode);
+        Assert.False(m.Detached);
     }
 
     [Fact]
@@ -109,34 +111,148 @@ public sealed class IslandModelTests
         Assert.Equal(new[] { "z" }, bad.Frames.Keys.ToArray());
     }
 
+    // MARK: island fix (Sky 2026-10-09 15:50) — D1 open while live · D2 visibility, no linger · D3 per-display memory
+
     [Fact]
-    public void VisibilityFollowsD10()
+    public void TextOnAnAccentFillStaysReadable() // island fix R1
     {
-        var m = new IslandModel();
-        var now = new DateTimeOffset(2026, 10, 9, 2, 0, 0, TimeSpan.Zero);
-        foreach (var live in new[] { "Starting", "Recording", "Paused", "Stopping" }) Assert.True(m.ShouldShow(live, null, now), live);
-        foreach (var off in new[] { "Idle", "Post", "Review", "Summarizing", "Done", "Failed" }) Assert.False(m.ShouldShow(off, null, now), off);
-        Assert.True(m.ShouldShow("Done", now - TimeSpan.FromMinutes(9), now));
-        Assert.False(m.ShouldShow("Done", now - TimeSpan.FromMinutes(11), now));
-        Assert.Equal(now - TimeSpan.FromMinutes(9) + IslandModel.PendingWindow, IslandModel.HideDue("Done", now - TimeSpan.FromMinutes(9)));
-        Assert.Null(IslandModel.HideDue("Recording", now));
-        m.AlwaysShow = true;
-        Assert.True(m.ShouldShow("Idle", null, now));
+        // build-B's indigo accent in dark: fill #2C06AB, Windows' on-accent text black → 1.7:1 — flip to white (≈12:1).
+        Assert.False(NativeLook.OnAccentReadable((0x2C, 0x06, 0xAB), (0, 0, 0)));
+        Assert.True(NativeLook.OnAccentReadable((0x2C, 0x06, 0xAB), (255, 255, 255)));
+        // The default blue accent in dark (#60CDFF) with black text, and in light (#005FB8) with white text, stay as Windows made them.
+        Assert.True(NativeLook.OnAccentReadable((0x60, 0xCD, 0xFF), (0, 0, 0)));
+        Assert.True(NativeLook.OnAccentReadable((0x00, 0x5F, 0xB8), (255, 255, 255)));
+        Assert.Equal(21, NativeLook.Contrast((0, 0, 0), (255, 255, 255)), 3);
+        Assert.Equal(1, NativeLook.Contrast((10, 20, 30), (10, 20, 30)), 3);
+        Assert.Equal(((byte)255, (byte)255, (byte)255), NativeLook.BestTextOn((0x2C, 0x06, 0xAB)));
+        Assert.Equal(((byte)0, (byte)0, (byte)0), NativeLook.BestTextOn((0x60, 0xCD, 0xFF)));
     }
 
     [Fact]
-    public void OpenClosePinAndDisplayLookup()
+    public void ShownIffLiveOrAlwaysShow_NoLinger()
     {
         var m = new IslandModel();
-        m.Open(pin: false);
-        Assert.Equal(IslandMode.Open, m.Mode);
-        Assert.True(m.Close());
+        foreach (var live in new[] { "Starting", "Recording", "Paused", "Stopping" }) Assert.True(m.ShouldShow(live), live);
+        // Done / Failed (and every other non-live word) hide at once: there is no 10-minute linger after the last topic/brief.
+        foreach (var off in new[] { "Idle", "Post", "Review", "Summarizing", "Done", "Failed" }) Assert.False(m.ShouldShow(off), off);
+        Assert.True(IslandModel.CloseAnimation <= TimeSpan.FromMilliseconds(300)); // D2: the close animation, then gone
+        m.AlwaysShow = true;
+        Assert.True(m.ShouldShow("Idle")); // the idle wordmark
+        Assert.True(m.ShouldShow("Done"));
+    }
+
+    [Fact]
+    public void AnEngineGoneForTheGraceEndsTheLiveMeeting()
+    {
+        Assert.Equal("Recording", IslandModel.EffectiveState("Recording", null));
+        Assert.Equal("Stopping", IslandModel.EffectiveState("Stopping", TimeSpan.FromSeconds(2.9)));
+        Assert.Equal("Failed", IslandModel.EffectiveState("Stopping", IslandModel.EngineLostGrace));
+        Assert.Equal("Failed", IslandModel.EffectiveState("Paused", TimeSpan.FromMinutes(1)));
+        Assert.Equal("Idle", IslandModel.EffectiveState("Idle", TimeSpan.FromMinutes(1)));
+        Assert.False(new IslandModel().ShouldShow(IslandModel.EffectiveState("Stopping", TimeSpan.FromSeconds(5))));
+    }
+
+    [Fact]
+    public void OpenWhileLiveInEveryLiveState()
+    {
+        var m = new IslandModel();
         Assert.Equal(IslandMode.Closed, m.Mode);
-        m.Open(pin: true);
-        Assert.False(m.Close()); // pinned: hover-out does nothing
-        Assert.Equal(IslandMode.Open, m.Mode);
-        Assert.True(m.Close(force: true)); // Esc
+        foreach (var s in new[] { "Starting", "Recording", "Paused", "Stopping" })
+        {
+            m.Present("m1", s);
+            Assert.Equal(IslandMode.Open, m.Mode); // strip + brief pane, no hover needed
+            Assert.Equal("m1", m.Meeting);
+        }
+        m.Present("m1", "Done");
         Assert.Equal(IslandMode.Closed, m.Mode);
+        Assert.Null(m.Meeting);
+        m.Present(null, "Idle");
+        Assert.Equal(IslandMode.Closed, m.Mode); // nothing live: the closed pill is only the idle wordmark (with Always show)
+    }
+
+    [Fact]
+    public void PointerLeaveNeverCollapses()
+    {
+        var m = new IslandModel();
+        m.Present("m1", "Recording");
+        for (int i = 0; i < 5; i++) Assert.Equal(IslandMode.Open, m.PointerLeft());
+        Assert.Equal(IslandMode.Open, m.Mode);
+        m.Present("m1", "Paused"); // a state change while the pointer is away keeps it open too
+        Assert.Equal(IslandMode.Open, m.PointerLeft());
+    }
+
+    [Fact]
+    public void ExplicitCollapseIsRememberedPerMeeting()
+    {
+        var m = new IslandModel();
+        Assert.False(m.Collapse()); // nothing live: nothing to collapse
+        m.Present("m1", "Recording");
+        Assert.True(m.Collapse());
+        Assert.Equal(IslandMode.Closed, m.Mode);
+        Assert.True(m.IsCollapsed("m1"));
+        Assert.False(m.Collapse()); // already closed
+        // Every later state of the same meeting stays collapsed (pause, resume, stopping)…
+        foreach (var s in new[] { "Paused", "Recording", "Stopping" })
+        {
+            m.Present("m1", s);
+            Assert.Equal(IslandMode.Closed, m.Mode);
+        }
+        // …and a new meeting opens again: the memory is per meeting, not a global preference.
+        m.Present("m1", "Done");
+        m.Present("m2", "Starting");
+        Assert.Equal(IslandMode.Open, m.Mode);
+        Assert.False(m.IsCollapsed("m2"));
+        // A click on m2's collapsed pill opens it and forgets m2's collapse; m1's stays remembered.
+        Assert.True(m.Collapse());
+        Assert.True(m.Expand());
+        Assert.Equal(IslandMode.Open, m.Mode);
+        Assert.False(m.IsCollapsed("m2"));
+        Assert.True(m.IsCollapsed("m1"));
+        m.Present("m2", "Recording");
+        Assert.Equal(IslandMode.Open, m.Mode);
+        // The idle wordmark cannot be expanded (its click opens theuth://meetings).
+        m.Present(null, "Idle");
+        Assert.False(m.Expand());
+        Assert.Equal(IslandMode.Closed, m.Mode);
+    }
+
+    [Fact]
+    public void PlacementMemoryIsPerDisplayAcrossADragBetweenMonitors()
+    {
+        // build-B has one display: the second-monitor drag is proven here. A drag that ends on DISPLAY2 remembers DISPLAY2's
+        // offset (relative to its work area) and leaves DISPLAY1's alone; each display then places from its own memory.
+        var m = new IslandModel();
+        var on1 = new PxRect(100, 300, 440, 254);
+        Assert.Equal(on1, m.DragEnded(Primary, on1));
+        var on2 = new PxRect(1024 + 1800, -200 + 600, 880, 508); // the same window at 2×, far from DISPLAY2's default
+        Assert.Equal(Second, IslandModel.DisplayFor(new[] { Primary, Second }, on2));
+        Assert.Equal(on2, m.DragEnded(Second, on2));
+        Assert.Equal((100, 300), m.Frames[Primary.Device]);
+        Assert.Equal((1800, 600), m.Frames[Second.Device]);
+        Assert.Equal((new PxRect(100, 300, 440, 254), true), m.Place(Primary, (440, 254)));
+        Assert.Equal((new PxRect(2824, 400, 880, 508), true), m.Place(Second, (880, 508)));
+        // The second monitor moves in the virtual-screen layout: its island moves with it.
+        var moved = Second with { WorkArea = new PxRect(-2560, 0, 2560, 1400) };
+        Assert.Equal(new PxRect(-760, 600, 880, 508), m.Place(moved, (880, 508)).Frame);
+        // Double-click on DISPLAY2 resets DISPLAY2 only.
+        m.SnapBack(Second, (880, 508));
+        Assert.False(m.Frames.ContainsKey(Second.Device));
+        Assert.True(m.Frames.ContainsKey(Primary.Device));
+    }
+
+    [Fact]
+    public void GrabOffsetScalesWhenADragCrossesIntoADifferentDpi()
+    {
+        // The window is grabbed 30 px right of its left edge at 1×; on a 2× monitor the same spot is 60 px in.
+        Assert.Equal((60, 24), IslandModel.ScaleGrab((30, 12), 1.0, 2.0));
+        Assert.Equal((15, 6), IslandModel.ScaleGrab((30, 12), 2.0, 1.0));
+        Assert.Equal((30, 12), IslandModel.ScaleGrab((30, 12), 1.5, 1.5));
+        Assert.Equal((30, 12), IslandModel.ScaleGrab((30, 12), 0, 2.0)); // a bad scale changes nothing
+    }
+
+    [Fact]
+    public void DisplayLookupAndClock()
+    {
         var displays = new[] { Second, Primary };
         Assert.Equal(Primary, IslandModel.DisplayFor(displays, new PxRect(362, 6, 300, 36)));
         Assert.Equal(Second, IslandModel.DisplayFor(displays, new PxRect(2000, 0, 300, 36)));
@@ -155,6 +271,31 @@ public sealed class MeetingReducerTests
     private static MeetingSnapshot R(MeetingSnapshot s, MeetingChange e, DateTimeOffset? now = null) => MeetingReducer.Reduce(s, e, now ?? T0);
 
     private static MeetingSnapshot Recording() => R(MeetingSnapshot.Empty, new MeetingChange.Started("m1", "s1"));
+
+    [Fact]
+    public void BriefWalkWrapsAndPillsWalkToTheirBrief() // island fix §N + D3
+    {
+        var s = Recording() with
+        {
+            Topics = new[] { Topic("t1"), Topic("t2") with { Brief = "b2" }, Topic("t3") },
+            Briefs = new[] { Brief("b1", "Auto", "t1"), Brief("b2", "Tap", "t2"), Brief("b3", "Deeper", "t1") },
+            Cursor = 2,
+        };
+        // J/↓ from the newest wraps to the oldest; K/↑ from the oldest wraps to the newest.
+        Assert.Equal(0, MeetingReducer.CycleIndex(s, +1));
+        Assert.Equal(1, MeetingReducer.CycleIndex(s, -1));
+        var first = MeetingReducer.ShowAt(s, 0);
+        Assert.Equal("b1", first.Current?.Id);
+        Assert.Equal(2, MeetingReducer.CycleIndex(first, -1));
+        Assert.Equal(1, MeetingReducer.CycleIndex(first, +1));
+        // A pill walks to its topic's brief (its own brief id first, else the newest naming it); none → -1 (tap asks for one).
+        Assert.Equal(1, MeetingReducer.TopicBriefIndex(s, "t2"));
+        Assert.Equal(2, MeetingReducer.TopicBriefIndex(s, "t1"));
+        Assert.Equal(-1, MeetingReducer.TopicBriefIndex(s, "t3"));
+        Assert.Equal(-1, MeetingReducer.CycleIndex(Recording(), +1));
+        Assert.Same(s, MeetingReducer.ShowAt(s, 2)); // already there
+        Assert.Equal(0, MeetingReducer.ShowAt(s, -5).Cursor); // clamped
+    }
 
     [Fact]
     public void StartedResetsAndRecords()

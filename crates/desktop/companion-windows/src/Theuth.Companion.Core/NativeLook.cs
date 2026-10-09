@@ -93,6 +93,39 @@ public static class NativeLook
     public const string IconFont = "Segoe Fluent Icons";
     public const string IconFontFallback = "Segoe MDL2 Assets";
 
+    /// <summary>WCAG relative luminance of an sRGB colour (0 = black, 1 = white).</summary>
+    public static double Luminance(byte r, byte g, byte b)
+    {
+        static double Lin(byte c)
+        {
+            double s = c / 255.0;
+            return s <= 0.04045 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4);
+        }
+        return 0.2126 * Lin(r) + 0.7152 * Lin(g) + 0.0722 * Lin(b);
+    }
+
+    /// <summary>WCAG contrast ratio of two sRGB colours (1–21).</summary>
+    public static double Contrast((byte R, byte G, byte B) a, (byte R, byte G, byte B) b)
+    {
+        double la = Luminance(a.R, a.G, a.B), lb = Luminance(b.R, b.G, b.B);
+        return (Math.Max(la, lb) + 0.05) / (Math.Min(la, lb) + 0.05);
+    }
+
+    /// <summary>Text on an accent fill below this contrast is unreadable (WCAG AA for small text).</summary>
+    public const double MinTextContrast = 4.5;
+
+    /// <summary>
+    /// Island fix R1: text on an accent fill uses <see cref="OnAccent"/>; Windows derives it per theme (black in dark, white in
+    /// light), which fails on a very dark system accent in dark mode (build-B: fill #2C06AB, black text = 1.7:1). When the theme's
+    /// on-accent colour falls below <see cref="MinTextContrast"/> on the fill, the other theme's on-accent colour is used.
+    /// Returns true when the theme's own on-accent colour is fine.
+    /// </summary>
+    public static bool OnAccentReadable((byte R, byte G, byte B) fill, (byte R, byte G, byte B) onAccent) => Contrast(fill, onAccent) >= MinTextContrast;
+
+    /// <summary>White or black, whichever reads better on <paramref name="fill"/> (the fallback when the system on-accent colour fails).</summary>
+    public static (byte R, byte G, byte B) BestTextOn((byte R, byte G, byte B) fill) =>
+        Contrast(fill, (255, 255, 255)) >= Contrast(fill, (0, 0, 0)) ? ((byte)255, (byte)255, (byte)255) : ((byte)0, (byte)0, (byte)0);
+
     /// <summary>Old character → glyph (the icon table of the as-built).</summary>
     public static class Glyph
     {
@@ -104,6 +137,7 @@ public static class NativeLook
         public const string Forward = "\uE72A";      // → (go / next)
         public const string ChevronLeft = "\uE76B";  // ‹
         public const string ChevronRight = "\uE76C"; // ›
+        public const string ChevronUp = "\uE70E";    // ˄ (collapse the island)
         public const string GripperBarVertical = "\uE784"; // ⠿ (drag grip)
         public const string People = "\uE716";
         public const string Flow = "\uE7C5";         // ⑂N children count
@@ -126,7 +160,7 @@ public static class NativeLook
     {
         (nameof(Glyph.Microphone), Glyph.Microphone), (nameof(Glyph.Camera), Glyph.Camera), (nameof(Glyph.Cancel), Glyph.Cancel),
         (nameof(Glyph.More), Glyph.More), (nameof(Glyph.Up), Glyph.Up), (nameof(Glyph.Forward), Glyph.Forward),
-        (nameof(Glyph.ChevronLeft), Glyph.ChevronLeft), (nameof(Glyph.ChevronRight), Glyph.ChevronRight),
+        (nameof(Glyph.ChevronLeft), Glyph.ChevronLeft), (nameof(Glyph.ChevronRight), Glyph.ChevronRight), (nameof(Glyph.ChevronUp), Glyph.ChevronUp),
         (nameof(Glyph.GripperBarVertical), Glyph.GripperBarVertical), (nameof(Glyph.People), Glyph.People), (nameof(Glyph.Flow), Glyph.Flow),
         (nameof(Glyph.Pause), Glyph.Pause), (nameof(Glyph.Stop), Glyph.Stop), (nameof(Glyph.View), Glyph.View), (nameof(Glyph.Hide), Glyph.Hide),
         (nameof(Glyph.Settings), Glyph.Settings), (nameof(Glyph.Accept), Glyph.Accept), (nameof(Glyph.Globe), Glyph.Globe),

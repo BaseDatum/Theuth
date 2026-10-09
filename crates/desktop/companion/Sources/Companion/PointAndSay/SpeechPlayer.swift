@@ -1,12 +1,15 @@
 import AVFoundation
+import CompanionCore
 import Foundation
+import TheuthKit
 
 /// Revision 1 row 10: the spoken reply. `speak` (api.rs:5914-5932) is a CLIENT-sink utterance — one Opus packet per 80 ms
 /// as `SpeechAudio` events, nothing on the engine's speaker — so the companion plays them itself: AudioToolbox's Opus
 /// decoder (`kAudioFormatOpus`, through `AVAudioConverter`) → an `AVAudioPlayerNode`. The utterance is claimed by session
 /// on `SpeechStarted` (the webview's `talkSession` rule: the id reply may land after the first packet).
+/// 149s: one instance, the Store's `Speaker`'s sink, fed every `Speech*` event by `observe`.
 @MainActor
-final class SpeechPlayer {
+final class SpeechPlayer: SpeechSink {
     /// Opus decodes natively at 48 kHz, whatever rate it was encoded from.
     static let rate: Double = 48_000
     /// 80 ms per packet (`VoiceEvent::SpeechAudio`) at 48 kHz: the decode buffer's size.
@@ -20,9 +23,29 @@ final class SpeechPlayer {
     private(set) var current: String?
     private var pending = 0
     private var finished = false
+    /// Packets decoded for the current utterance (the probe's evidence that audio arrived and decoded).
+    private(set) var decoded = 0
+    /// `--probe-speak`: the engine's audio decodes and plays into a muted node, so a probe never speaks on the owner's desk.
+    var volume: Float = 1
     var onEnded: ((String) -> Void)?
 
     var isPlaying: Bool { current != nil }
+
+    private struct Wire: Decodable {
+        struct Reason: Decodable { let reason: String }
+        let type: String, id: String?, session: String?, opus: String?, sink: String?, reason: Reason?
+    }
+
+    /// Every raw event: `SpeechStarted` / `SpeechAudio` / `SpeechFinished` for the claimed utterance; the rest ignored.
+    func observe(_ data: Data) {
+        guard let w = try? TheuthJSON.decoder.decode(Wire.self, from: data), let id = w.id else { return }
+        switch w.type {
+        case "SpeechStarted": if let s = w.session { started(id: id, session: s, sink: w.sink) }
+        case "SpeechAudio": if let o = w.opus { audio(id: id, opusBase64: o) }
+        case "SpeechFinished": finish(id: id, ok: w.reason?.reason == "done")
+        default: break
+        }
+    }
 
     /// The next `SpeechStarted` on `session` with `sink == client` is ours.
     func expect(session: String) { expecting = session }
@@ -37,13 +60,14 @@ final class SpeechPlayer {
         e.attach(p)
         e.connect(p, to: e.mainMixerNode, format: pcm)
         do { try e.start() } catch { return Log.write("speech: engine start failed: \(error)") }
+        p.volume = volume
         p.play()
-        engine = e; player = p; converter = c; current = id; pending = 0; finished = false
+        engine = e; player = p; converter = c; current = id; pending = 0; finished = false; decoded = 0
     }
 
     func audio(id: String, opusBase64: String) {
         guard id == current, let data = Data(base64Encoded: opusBase64), let buf = decode(data), let p = player else { return }
-        pending += 1
+        pending += 1; decoded += 1
         p.scheduleBuffer(buf) { [weak self] in
             Task { @MainActor in
                 guard let self else { return }

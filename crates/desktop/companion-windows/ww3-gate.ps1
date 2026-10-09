@@ -13,6 +13,12 @@
     hold-voice [ms]      hold Ctrl+Alt+Space for ms (default 1500) with SendInput, then release (the voice key)
     tap-voice            tap Ctrl+Alt+Space twice 120 ms apart (the double-tap lock), then tap once 1.6 s later (the send)
     esc                  tap Esc
+    click <x> <y> [ms]   149 island fix: a human-paced left click at (x, y) — move, settle 120 ms, press, hold ms (default 120), release
+    key <name>           149 island fix: tap one key with SendInput (j k m e d up down esc enter); prints the time
+    ctrl-m               149 island fix: Ctrl down, M down/up, Ctrl up (the island's stop key; a RegisterHotKey-free SendInput chord)
+    type <text>          149 island fix: type letters/digits into the focused control with SendInput (A-Z 0-9 only)
+    hold-sweep [ms]      149 island fix §P: hold Ctrl+Alt+Space and sweep the mouse left → right across the screen and back down
+                         over ms (default 6000, 16 ms steps, SendInput moves), then release — the pill must stay put
     move <x> <y>         move the mouse to screen (x, y)
     draw                 move the mouse along a small loop (≈ 1 s) — the trail
     shot <name> [x y w h] screenshot (whole screen or a region) to C:\Users\user\tools\pkg\ww3\<name>.png
@@ -160,6 +166,53 @@ switch ($Action) {
         Say "dblclick: ($x,$y) at $(Get-Date -Format 'HH:mm:ss.fff')"
     }
     'esc' { [void][G3Native]::Key(0x1B, $false); Start-Sleep -Milliseconds 40; [void][G3Native]::Key(0x1B, $true); Say 'esc: sent' }
+    'click' {
+        $x = [int]$Rest[0]; $y = [int]$Rest[1]
+        $hold = if ($Rest.Count -gt 2) { [int]$Rest[2] } else { 120 }
+        [void][G3Native]::SetCursorPos($x, $y)
+        Start-Sleep -Milliseconds 120
+        [void][G3Native]::Mouse(0x0002); Start-Sleep -Milliseconds $hold; [void][G3Native]::Mouse(0x0004)
+        Say "click: ($x,$y) held $hold ms at $(Get-Date -Format 'HH:mm:ss.fff')"
+    }
+    'key' {
+        $map = @{ j = 0x4A; k = 0x4B; m = 0x4D; e = 0x45; d = 0x44; up = 0x26; down = 0x28; esc = 0x1B; enter = 0x0D }
+        $name = [string]$Rest[0]
+        if (-not $map.ContainsKey($name)) { Say "key: unknown $name"; break }
+        $vk = [ushort]$map[$name]
+        [void][G3Native]::Key($vk, $false); Start-Sleep -Milliseconds 40; [void][G3Native]::Key($vk, $true)
+        Say "key: $name at $(Get-Date -Format 'HH:mm:ss.fff')"
+    }
+    'hold-sweep' {
+        $ms = if ($Rest.Count -gt 0) { [int]$Rest[0] } else { 6000 }
+        [void][G3Native]::SetCursorPos(200, 500)
+        Start-Sleep -Milliseconds 100
+        Say "hold-sweep: chord down at $(Get-Date -Format 'HH:mm:ss.fff')"
+        Chord $true
+        $steps = [int]($ms / 16)
+        for ($i = 0; $i -le $steps; $i++) {
+            $t = $i / [double]$steps
+            $x = [int](200 + 1500 * [math]::Sin($t * [math]::PI))
+            $y = [int](500 + 350 * $t)
+            [void][G3Native]::SetCursorPos($x, $y)
+            [void][G3Native]::Mouse(0x0001) # MOUSEEVENTF_MOVE (0,0): a real WM_MOUSEMOVE at the new position
+            Start-Sleep -Milliseconds 16
+        }
+        Chord $false
+        Say "hold-sweep: chord up at $(Get-Date -Format 'HH:mm:ss.fff') after $ms ms"
+    }
+    'ctrl-m' {
+        [void][G3Native]::Key(0x11, $false); Start-Sleep -Milliseconds 30
+        [void][G3Native]::Key(0x4D, $false); Start-Sleep -Milliseconds 40; [void][G3Native]::Key(0x4D, $true)
+        Start-Sleep -Milliseconds 30; [void][G3Native]::Key(0x11, $true)
+        Say "ctrl-m: sent at $(Get-Date -Format 'HH:mm:ss.fff')"
+    }
+    'type' {
+        foreach ($ch in ([string]$Rest[0]).ToUpperInvariant().ToCharArray()) {
+            $vk = [ushort][int]$ch
+            [void][G3Native]::Key($vk, $false); Start-Sleep -Milliseconds 25; [void][G3Native]::Key($vk, $true); Start-Sleep -Milliseconds 25
+        }
+        Say "type: $($Rest[0]) at $(Get-Date -Format 'HH:mm:ss.fff')"
+    }
     'move' {
         $x = [int]$Rest[0]; $y = [int]$Rest[1]
         [void][G3Native]::SetCursorPos($x, $y)
