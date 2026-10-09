@@ -4,7 +4,8 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Shapes;
 using Theuth.Companion.Core;
-using Windows.Foundation;
+using Point = Windows.Foundation.Point;
+using Size = Windows.Foundation.Size;
 
 namespace Theuth.Companion.Ui;
 
@@ -157,18 +158,18 @@ internal static class PillGlyphs
             string? found = null;
             try
             {
-                var dir = Path.Combine(AppContext.BaseDirectory, "Assets", "harness");
+                var dir = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "harness");
                 foreach (var name in new[] { $"{key}-24.png", $"{key}@24.png", $"{key}_24.png", $"{key}.png" })
                 {
-                    var p = Path.Combine(dir, name);
-                    if (File.Exists(p)) { found = p; break; }
+                    var p = System.IO.Path.Combine(dir, name);
+                    if (System.IO.File.Exists(p)) { found = p; break; }
                 }
                 if (found is null && key != "unknown")
                 {
                     foreach (var name in new[] { "unknown-24.png", "unknown.png" })
                     {
-                        var p = Path.Combine(dir, name);
-                        if (File.Exists(p)) { found = p; break; }
+                        var p = System.IO.Path.Combine(dir, name);
+                        if (System.IO.File.Exists(p)) { found = p; break; }
                     }
                 }
             }

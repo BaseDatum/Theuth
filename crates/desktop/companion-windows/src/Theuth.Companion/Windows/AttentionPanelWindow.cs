@@ -68,6 +68,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
     private bool talkBusy;
     private string? talkError;
     private bool vDown;
+    private Border? replyCap;
 
     /// <summary>P on a card / the ▣ button (§3.3): the composition root closes the panel and runs <c>screen_context</c> (WW3's point-and-say seam).</summary>
     public event Action<Card>? PointRequested;
@@ -122,6 +123,8 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         };
         talk.Finished += OnCardTalkFinished;
         host.PreviewKeyUp += OnPreviewKeyUp;
+        replyBox.GotFocus += (_, _) => { if (replyCap is { } c) c.Visibility = Visibility.Collapsed; };
+        replyBox.LostFocus += (_, _) => { if (replyCap is { } c) c.Visibility = replyBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed; };
         // W6 item 2 (§4.2, A7): Mica Base, Acrylic Base where Mica is unsupported, the opaque surface when transparency effects are off.
         ApplyEffects(initial: true);
         if (SystemEffects.Current is { } fx) fx.Changed += () => ApplyEffects(initial: false);
@@ -301,7 +304,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             }
             return;
         }
-        if (textField && press.Chord == Chord.Escape && FocusManager.GetFocusedElement(host.XamlRoot) == replyBox && store.HeldNow is null && store.NoteFor is null)
+        if (textField && press.Chord == Chord.Escape && host.XamlRoot is { } xr2 && FocusManager.GetFocusedElement(xr2) == replyBox && store.HeldNow is null && store.NoteFor is null)
         {
             // Esc in the always-visible reply field: leave the field first (a second Esc closes the panel).
             e.Handled = true;
@@ -656,27 +659,24 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             cap.Margin = new Thickness(0, 0, 8, 0);
             cap.IsHitTestVisible = false;
             cap.Visibility = replyBox.FocusState == FocusState.Unfocused && replyBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-            replyBox.GotFocus += (_, _) => cap.Visibility = Visibility.Collapsed;
-            replyBox.LostFocus += (_, _) => cap.Visibility = replyBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            replyCap = cap;
             fieldWrap.Children.Add(cap);
             Grid.SetColumn(fieldWrap, 1);
             row.Children.Add(fieldWrap);
             var mic = CardChrome.IconCap(theme, "\uE720", "V", talkBusy ? "Listening" : "Hold to talk", anatomy.Reply.Talk, () => { }, "reply-mic");
             if (anatomy.Reply.Talk)
             {
-                mic.PointerPressed += (s, e) =>
+                mic.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((s, e) =>
                 {
                     ((UIElement)s).CapturePointer(e.Pointer);
                     BeginCardTalk(card);
-                    e.Handled = true;
-                };
-                mic.PointerReleased += (s, e) =>
+                }), true);
+                mic.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((s, e) =>
                 {
                     ((UIElement)s).ReleasePointerCapture(e.Pointer);
                     EndCardTalk();
-                    e.Handled = true;
-                };
-                mic.PointerCaptureLost += (_, _) => EndCardTalk();
+                }), true);
+                mic.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) => EndCardTalk()), true);
                 if (talkBusy && mic.Content is StackPanel sp && sp.Children[0] is FontIcon fi) fi.Foreground = Palette.Brush(Palette.Carnelian, theme);
             }
             Grid.SetColumn(mic, 2);
@@ -704,7 +704,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             foreach (var verb in anatomy.Footer)
             {
                 var v = verb;
-                footer.Children.Add(CardChrome.FooterPill(theme, v, () => store.FooterVerb(anatomy, v)));
+                footer.Children.Add(CardChrome.FooterPill(theme, v, () => store.RunFooterVerb(anatomy, v)));
             }
             AutomationProperties.SetAutomationId(footer, "card-footer");
             stack.Children.Add(footer);

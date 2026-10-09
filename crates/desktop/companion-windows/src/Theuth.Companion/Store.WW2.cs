@@ -84,7 +84,7 @@ public sealed partial class Store
         if (!remote.SetEquals(remoteSessions)) RemoteSessions = remote;
     }
 
-    public SessionRow? SessionRow(string? id) => id is null ? null : SessionRows.FirstOrDefault(s => s.Id == id);
+    public SessionRow? SessionRowOf(string? id) => id is null ? null : SessionRows.FirstOrDefault(s => s.Id == id);
 
     public AgentInfo? ActivityOf(string? session) => session is null ? null : Activity.FirstOrDefault(a => a.Id == session);
 
@@ -103,8 +103,8 @@ public sealed partial class Store
             if (FocusedCard is not { } card) return null;
             var item = card.Item;
             var agent = ActivityOf(item.Session);
-            bool gone = item.Session is not null && agent is null && Activity.Count > 0 && SessionRows.Count > 0 && SessionRow(item.Session) is null;
-            return CardAnatomyModel.Make(card, Panel.Focus + 1, Panel.Items.Count, agent, SessionRow(item.Session), ContextText(item), DateTimeOffset.Now, gone);
+            bool gone = item.Session is not null && agent is null && Activity.Count > 0 && SessionRows.Count > 0 && SessionRowOf(item.Session) is null;
+            return CardAnatomyModel.Make(card, Panel.Focus + 1, Panel.Items.Count, agent, SessionRowOf(item.Session), ContextText(item), DateTimeOffset.Now, gone);
         }
     }
 
@@ -140,7 +140,7 @@ public sealed partial class Store
     }
 
     /// <summary>The footer pill / key E · S on a card: E clears (finished / info only), S snoozes 30 m (never answers).</summary>
-    public void FooterVerb(CardAnatomy a, FooterVerb verb)
+    public void RunFooterVerb(CardAnatomy a, FooterVerb verb)
     {
         switch (verb)
         {

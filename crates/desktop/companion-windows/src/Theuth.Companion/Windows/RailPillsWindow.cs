@@ -316,7 +316,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
         {
             i++;
             var glyph = PillGlyphs.AgentDot(d, theme, animate);
-            glyph.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+            glyph.RenderTransformOrigin = new global::Windows.Foundation.Point(0.5, 0.5);
             var scale = new ScaleTransform();
             glyph.RenderTransform = scale;
             if (hoveredDot == d.Id)
@@ -528,7 +528,7 @@ internal sealed partial class RailPillsWindow : ToolWindow
         if (e.ActualHeight <= 0 || e.ActualWidth <= 0) return null;
         try
         {
-            var p = e.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point(0, 0));
+            var p = e.TransformToVisual(root).TransformPoint(new global::Windows.Foundation.Point(0, 0));
             double s = Scale;
             return new RECT
             {

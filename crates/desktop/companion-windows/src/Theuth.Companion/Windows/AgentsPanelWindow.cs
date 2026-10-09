@@ -343,7 +343,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
             if (i != focus) continue;
             try
             {
-                var p = v.TransformToVisual(content).TransformPoint(new Windows.Foundation.Point(0, 0));
+                var p = v.TransformToVisual(content).TransformPoint(new global::Windows.Foundation.Point(0, 0));
                 double top = p.Y, bottom = p.Y + v.ActualHeight;
                 if (top < scroll.VerticalOffset) scroll.ChangeView(null, top - 8, null);
                 else if (bottom > scroll.VerticalOffset + scroll.ViewportHeight) scroll.ChangeView(null, bottom - scroll.ViewportHeight + 8, null);
@@ -546,7 +546,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         AutomationProperties.SetAutomationId(title, "agents-headline");
         AutomationProperties.SetName(title, counts.Length == 0 ? "Agents" : $"Agents, {counts}");
         grid.Children.Add(title);
-        var jk = KeyCapRow(theme, ("J", () => Move(1)), ("K", () => Move(-1)));
+        var jk = KeyCapRow(theme, ("J", (Action)(() => Move(1))), ("K", (Action)(() => Move(-1))));
         Grid.SetColumn(jk, 1);
         grid.Children.Add(jk);
         var close = CardChrome.KeyCapButton(theme, "✕", "esc", () => Close(returnFocus: true));
@@ -605,20 +605,19 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         var mic = IconButton(theme, "\uE720", r.CanTalk ? "Hold to talk to this agent" : (r.DisabledReason ?? "nothing to talk to"), r.CanTalk, $"agent-mic-{index + 1}");
         if (r.CanTalk)
         {
-            mic.PointerPressed += (s, e) =>
+            // A Button marks pointer presses handled: listen with handledEventsToo so the hold starts on the press, not the click.
+            mic.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((s, e) =>
             {
                 focus = index;
                 ((UIElement)s).CapturePointer(e.Pointer);
                 BeginTalk(r);
-                e.Handled = true;
-            };
-            mic.PointerReleased += (s, e) =>
+            }), true);
+            mic.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((s, e) =>
             {
                 ((UIElement)s).ReleasePointerCapture(e.Pointer);
                 EndTalk();
-                e.Handled = true;
-            };
-            mic.PointerCaptureLost += (_, _) => EndTalk();
+            }), true);
+            mic.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) => EndTalk()), true);
         }
         if (talk.Busy && r.Id == talkRowId) mic.Foreground = Palette.Brush(Palette.Carnelian, theme);
         Grid.SetColumn(mic, 4);
@@ -728,8 +727,8 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
     private void Relayout()
     {
         double s = Scale;
-        content.Measure(new Windows.Foundation.Size(PanelWidth, double.PositiveInfinity));
-        receiptRow.Measure(new Windows.Foundation.Size(PanelWidth, double.PositiveInfinity));
+        content.Measure(new global::Windows.Foundation.Size(PanelWidth, double.PositiveInfinity));
+        receiptRow.Measure(new global::Windows.Foundation.Size(PanelWidth, double.PositiveInfinity));
         double hEpx = content.DesiredSize.Height + (receiptRow.Visibility == Visibility.Visible ? receiptRow.DesiredSize.Height : 0);
         if (hEpx <= 0) hEpx = 240;
         hEpx = Math.Clamp(hEpx, 120, MaxHeight);
