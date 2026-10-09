@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn splice_over_shaped_table() {
         use voice::EndCommand::{ScratchThat, Send};
-        let send = Some(Send { near_miss: false });
+        const SEND: Option<voice::EndCommand> = Some(Send { near_miss: false });
         type Ev = (
             usize,
             &'static str,
@@ -343,7 +343,15 @@ mod tests {
             Option<voice::EndCommand>,
             bool,
         );
-        let rows: &[(&str, &str, &str, &[Ev], &str, bool)] = &[
+        type Row = (
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static [Ev],
+            &'static str,
+            bool,
+        );
+        let rows: &[Row] = &[
             (
                 "shaped wins over text",
                 "",
@@ -375,7 +383,7 @@ mod tests {
                 "send it alone shapes to nothing: editor unchanged",
                 "hel",
                 "lo",
-                &[(0, "send it", "", send, true)],
+                &[(0, "send it", "", SEND, true)],
                 "hello",
                 true,
             ),
@@ -383,7 +391,7 @@ mod tests {
                 "phrase removed, send armed",
                 "",
                 "",
-                &[(0, "ship it send it", "ship it", send, false)],
+                &[(0, "ship it send it", "ship it", SEND, false)],
                 "ship it",
                 true,
             ),
@@ -430,7 +438,7 @@ mod tests {
                 "",
                 "",
                 &[
-                    (0, "x send it", "x", send, true),
+                    (0, "x send it", "x", SEND, true),
                     (1, "and more", "and more", None, false),
                 ],
                 "x and more",
