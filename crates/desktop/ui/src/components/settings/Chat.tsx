@@ -32,10 +32,10 @@ export function Chat() {
   return (
     <>
       <Section title="Models">
-        <Row label="New sessions" description="The model every new chat starts on. Picking a model inside a chat changes only that chat.">
+        <Row stack label="New sessions" description="The model every new chat starts on. Picking a model inside a chat changes only that chat.">
           <ModelCombobox
             aria-label="New sessions model"
-            className="max-w-64"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
             value={info?.default_model}
             effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: info?.default_effort, onSelect: (level) => setDefaultEffort.mutate(level) } : undefined}
@@ -44,12 +44,13 @@ export function Chat() {
           />
         </Row>
         <Row
+          stack
           label="Subagents"
           description="What theuth subagents start on unless you ask the agent for a specific model. External harnesses (omp, OpenCode) keep their own model."
         >
           <ModelCombobox
             aria-label="Subagent model"
-            className="max-w-64"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
             value={subagentModel.data?.id}
             none={SAME_AS_NEW}
@@ -57,10 +58,10 @@ export function Chat() {
             onChange={(v) => setSubagentModel.mutate(v)}
           />
         </Row>
-        <Row label="theuth agent" description="The built-in root on the Agents page: its desk and the work it starts for tasks.">
+        <Row stack label="theuth agent" description="The built-in root on the Agents page: its desk and the work it starts for tasks.">
           <ModelCombobox
             aria-label="theuth agent model"
-            className="max-w-64"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
             value={theuthModel.data?.id}
             none={SAME_AS_NEW}

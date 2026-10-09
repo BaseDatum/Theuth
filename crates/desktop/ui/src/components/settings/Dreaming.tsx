@@ -128,11 +128,11 @@ export function Dreaming() {
             onCheckedChange={(v) => enable.mutate(v)}
           />
         </Row>
-        <WideRow label="Window" description="Local hours in which a night may start; the sensor also waits for 20 idle minutes and power.">
+        <Row stack label="Window" description="Local hours in which a night may start; the sensor also waits for 20 idle minutes and power.">
           <Input type="time" dictate={false} aria-label="Window start" className="w-36 tabular-nums" disabled={busy} value={settings.data?.window[0] ?? ''} onChange={(e) => change({ kind: 'window', index: 0, time: e.target.value })} />
           <span className="text-fg-tertiary">–</span>
           <Input type="time" dictate={false} aria-label="Window end" className="w-36 tabular-nums" disabled={busy} value={settings.data?.window[1] ?? ''} onChange={(e) => change({ kind: 'window', index: 1, time: e.target.value })} />
-        </WideRow>
+        </Row>
         <Row
           label="Budget per night"
           description={
@@ -185,17 +185,17 @@ export function Dreaming() {
           })
           const name = model === null ? 'rules only' : (models.data?.find((m) => m.id === model)?.name ?? model) + (same ? ', same as Propose' : '')
           return (
-            <WideRow key={tier} label={TIER_LABEL[tier]} description={TIER_HELP[tier]}>
+            <Row stack key={tier} label={TIER_LABEL[tier]} description={TIER_HELP[tier]}>
               <ModelCombobox
                 aria-label={`${TIER_LABEL[tier]} model`}
-                className="w-full max-w-72"
+                className="w-full max-w-72 max-md:max-w-none"
                 models={models.data ?? []}
                 value={settings.data?.models[tier]}
                 none={{ label: `Default (${name})` }}
                 disabled={busy}
                 onChange={(v) => change({ kind: 'model', tier, model: v })}
               />
-            </WideRow>
+            </Row>
           )
         })}
       </Section>
@@ -204,7 +204,7 @@ export function Dreaming() {
         <Row label="Auto-promote preferences" description="A standing preference is added on its own when you said it explicitly at least twice; off, every one is proposed first.">
           <Switch checked={settings.data?.preferences_auto ?? false} disabled={busy} aria-label="Auto-promote preferences" onCheckedChange={(v) => change({ kind: 'preferences_auto', on: v })} />
         </Row>
-        <WideRow label="Weekly digest" description="One attention row a week with the nights' counts, undos and open proposals.">
+        <Row stack label="Weekly digest" description="One attention row a week with the nights' counts, undos and open proposals.">
           <Select value={digest?.day} disabled={busy} onValueChange={(v) => change({ kind: 'digest_day', day: v as Day })}>
             <SelectTrigger className="w-24" aria-label="Digest day">
               <SelectValue />
@@ -218,7 +218,7 @@ export function Dreaming() {
             </SelectContent>
           </Select>
           <Input type="time" dictate={false} aria-label="Digest time" className="w-36 tabular-nums" disabled={busy} value={digest?.time ?? ''} onChange={(e) => change({ kind: 'digest_time', time: e.target.value })} />
-        </WideRow>
+        </Row>
         <Row
           label="Pause"
           description={paused && settings.data?.paused_until ? `Paused until ${new Date(settings.data.paused_until).toLocaleString()}; the routine stays enabled and resumes on its own.` : `Skip every night for ${PAUSE_DAYS} days without turning the routine off.`}
@@ -265,19 +265,6 @@ const TIER_HELP: Record<Tier, string> = {
   tidy: 'Retitles, merges, archives, verifies — the cheap, high-volume calls.',
   propose: 'Writes skill edits and preference lines from the day\u2019s cases. v1: the proposer runs as the routine\u2019s own model (the Tidy tier); this pick is saved for when the proposer gets its own call.',
   judge: 'Scores replays behind the gate; another vendor than propose when one is configured.',
-}
-
-/** A `Row` whose controls need the width: they drop under the label below `md` (113). */
-function WideRow({ label, description, children }: { label: string; description: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-3 border-b border-border-subtle py-4 last:border-0 md:flex-row md:items-center md:justify-between md:gap-6">
-      <div className="min-w-0">
-        <div className="text-sm">{label}</div>
-        <div className="mt-0.5 text-[13px] text-fg-secondary">{description}</div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">{children}</div>
-    </div>
-  )
 }
 
 function Stat({ label, className, children }: { label: string; className?: string; children: ReactNode }) {

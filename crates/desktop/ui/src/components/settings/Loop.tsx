@@ -153,10 +153,10 @@ export function Loop() {
         </Row>
       </Section>
       <Section title="Helper models">
-        <Row label="Title model" description="Names new chats after the first exchange.">
+        <Row stack label="Title model" description="Names new chats after the first exchange.">
           <ModelCombobox
             aria-label="Title model"
-            className="max-w-64"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
             value={titleModel.data?.id}
             none={{ label: 'Off' }}
@@ -165,6 +165,7 @@ export function Loop() {
           />
         </Row>
         <Row
+          stack
           label="Vision fallback model"
           description={
             visionModel.isError
@@ -176,7 +177,7 @@ export function Loop() {
         >
           <ModelCombobox
             aria-label="Vision fallback model"
-            className="max-w-64"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
             models={visionModels}
             value={vision?.id}
             none={{ label: 'Off' }}
@@ -185,6 +186,7 @@ export function Loop() {
           />
         </Row>
         <Row
+          stack
           label="Escalation model"
           description={
             escalateModel.isError
@@ -198,7 +200,7 @@ export function Loop() {
         >
           <ModelCombobox
             aria-label="Escalation model"
-            className="max-w-64"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
             value={escalateModel.data?.model?.id}
             none={{ label: escalateModel.data?.effective ? `Off (inherits title model ${escalateModel.data.effective.id})` : 'Off (inherits title model)' }}
