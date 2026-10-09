@@ -1128,7 +1128,7 @@ async fn execute(api: &Engine, cmd: Command, tx: &UnboundedSender<UiEvent>) -> a
         Command::DictationPrewarm => UiEvent::Voice(voice::VoiceEvent::DictationModel {
             state: msg(api.dictation_prewarm().await)?,
         }),
-        Command::DictationStart => match api.dictation_start(None).await {
+        Command::DictationStart => match api.dictation_start(None, None).await {
             Ok(id) => UiEvent::DictationStarting(id),
             Err(e) => UiEvent::DictationFailed(reason(e)),
         },

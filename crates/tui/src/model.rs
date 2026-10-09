@@ -5806,6 +5806,7 @@ impl Model {
                 utterance,
                 text,
                 is_final,
+                ..
             } => {
                 if let Some(d) = self.dictation.as_mut().filter(|d| d.id == id) {
                     d.set_utt(utterance as usize, text, is_final);
@@ -5829,7 +5830,11 @@ impl Model {
                     t.speech_finished(id);
                 }
             }
-            VoiceModel { .. } | SpeechStarted { .. } | SpeechAudio { .. } => {}
+            VoiceModel { .. }
+            | SpeechStarted { .. }
+            | SpeechAudio { .. }
+            | DictationDevice { .. }
+            | DictionarySuggestion { .. } => {}
         }
     }
 
@@ -12879,18 +12884,27 @@ mod tests {
             utterance: 0,
             text: "not ours".into(),
             is_final: true,
+            shaped: "not ours".into(),
+            command: None,
+            actions: vec![],
         }));
         m.apply(UiEvent::Voice(VoiceEvent::DictationText {
             id,
             utterance: 0,
             text: "this is".into(),
             is_final: false,
+            shaped: "this is".into(),
+            command: None,
+            actions: vec![],
         }));
         m.apply(UiEvent::Voice(VoiceEvent::DictationText {
             id,
             utterance: 0,
             text: "this is a test.".into(),
             is_final: true,
+            shaped: "this is a test.".into(),
+            command: None,
+            actions: vec![],
         }));
         m.apply(UiEvent::Voice(VoiceEvent::DictationLevel {
             id,
@@ -12928,6 +12942,9 @@ mod tests {
             utterance: 0,
             text: "there".into(),
             is_final: false,
+            shaped: "there".into(),
+            command: None,
+            actions: vec![],
         }));
         assert!(matches!(m.discard_dictation(), Some(Command::DictationStop(i)) if i == id));
         assert_eq!(m.pending_input.take(), Some(("hello".into(), 3)));
