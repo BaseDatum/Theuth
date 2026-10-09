@@ -535,3 +535,121 @@ themselves) ends it. The event `DictationText { command: Send }` is what the sur
 remote feed: phrase in a partial, 1.5 s, 0.35 s of zeros → `DictationFinished { Done }` and the `Send` command on the last text event),
 `dictation::typing_cancels_settle` (a `StopDictation` mid-settle wins), Swift `AskVoiceMachineTests.sendItSkipsTheHold`, TS
 `Composer.test.ts: send it submits once`.
+
+## 8. Capture robustness and latency instrumentation
+
+### 8.1 Input device priority list + Settings (D6)
+Today `Capture::open()` opens the default input (`VOICE/mic.rs:54-61`) and config has only an *output* device (`VOICE/lib.rs:446-447`). New:
+```yaml
+voice:
+  input_devices: ["Shure MV7", "MacBook Pro Microphone"]   # ordered; [] = system default only (today's behaviour)
+```
+`Capture::open_on(prefs: &[String]) -> (Capture, Receiver<Chunk>, DeviceName)` walks the list in order, skipping names the host does not
+enumerate, then the system default, then the first input. Clamshell: the built-in microphone stays in the list but is not special-cased —
+a lid-closed MacBook mic opens and delivers near-silence, which §8.3's silent-device detector rejects within 480 ms and the walk moves on
+(technique A:L37 does it by display state; ours needs no display query). `voice_status`/`dictation_status` gain `input_device: Option<String>`
+(the name that opened). Settings › Voice (W-n) lists the devices (`list_input_devices()` RPC, §14.2) as a reorderable list with "System
+default" pinned; `set_input_devices(names)` writes the key. The companions keep their own capture (`VoiceRecorder`'s `AVAudioEngine` input;
+the Windows `AskAudio`) and read the same preference from the engine (`voice_status.input_devices`) to pick `AVCaptureDevice` /
+`MMDeviceEnumerator` endpoints by name, so one choice serves both paths.
+
+### 8.2 Re-arm on device change (state machine in `VOICE/dictation.rs`, replacing "device lost ends it")
+```
+Running ──(mic thread sends Err("device lost") — VOICE/mic.rs:160-170)──▶ ReArming{attempt: 1, since}
+ReArming ──(open_on(prefs) ok, first PCM within 2 s)──▶ Running   (the utterer keeps its state; the open utterance is closed first: live.rs:249-254)
+ReArming ──(open fails)──▶ wait 300 ms, attempt + 1 ──▶ ReArming        (≤ 3 attempts)
+ReArming ──(3 failures or 5 s)──▶ Finished{Error("microphone: device lost")}   (today's outcome, later)
+```
+Events: `DictationDevice { id, device: Option<String>, state: Changed | Lost }` so surfaces show "mic changed → ‹name›" in the level slot
+instead of ending; the Composer keeps its region. Several device-list notifications collapse into one re-setup (A:L34). Remote sources are
+untouched (their capture is the client's).
+
+### 8.3 Readiness gate + silent-device detection
+`Task::run` (`VOICE/dictation.rs:558-610`) reports `Started` only after the **first PCM chunk** arrives; a capture that yields nothing for
+`READY_TIMEOUT = 2 s` ends `Error("microphone: no audio from ‹device›")` and tries the next device in the list once (A:L35's gate). A device
+that delivers but is dead is detected by `SILENT_WINDOWS = 3` consecutive 160 ms level windows with RMS ≤ 1e-5 and peak ≤ 5e-5 at the start
+of a dictation (A:L27's thresholds, reused as constants) → the same next-device step, then `DictationDevice { Lost }` + the pill copy "No sound
+from ‹name› — check the input". After the first non-silent window the detector is off (silence mid-dictation is the user).
+
+### 8.4 Standby and prewarm
+The model is resident already (54 §0.5, `VOICE/dictation.rs:9-11`); what costs time is the mic open (tens of ms, 54 §0.5) and the first
+resampler block. New: after a dictation ends the `Capture` is kept open for `STANDBY = 8 s` (OS indicator stays lit for 8 s — Settings ›
+Voice "Keep the mic warm after dictating (8 s)" default on; off = today) so a quick re-press starts at 0 ms; `Prewarm` additionally primes the
+resampler for the last-used rate. The companion path is unchanged by this (its mic is its own).
+
+### 8.5 Mic at press in the companion — and how tap/hold still works
+The voice key already starts the recorder at the press (`COMP/Companion/PointAndSay/PointController.swift:188-204`, `:359-368`); the 250 ms
+wait is the **hold-to-talk** machine's (`AskVoiceMachine.holdThreshold = 0.25`, `COMP/CompanionCore/AskVoice.swift:36`): Ask bar, panel V, row
+mic. Change: `AskVoiceMachine` emits `.openMic` on `keyDown` and `.startRecording` (= `dictation_start`) at 250 ms as today; `HoldToTalk` /
+`AskBarController` buffer the recorder's chunks in `pending` (exists: `HoldToTalk.swift:32`, `:143`) and flush them after `started`; a `.tap`
+(release < 250 ms) → `recorder.cancel()` and the buffer is dropped — no `dictation_start` is ever sent for a tap, so the engine's one slot is
+untouched. The voice key's 800 ms discard (`PointMachine.minNoteMs`) is unchanged. Windows twin: `AskVoice.cs` the same two effects; `AskAudio`
+buffers. Cost: the OS mic indicator lights on every tap of the panel key; Settings › Dictation "Open the mic on key-down" default on.
+
+### 8.6 Media pause/duck (opt-in)
+`voice.duck_media: off | duck | pause` (default off). `duck`: on macOS the engine's own mic can open through VPIO with
+`kAUVoiceIOProperty_OtherAudioDuckingConfiguration` (`VOICE/mic.rs:233-239` already carries the constants) — but VPIO also enables AEC/NS/AGC
+(`:233`) which changes the dictation audio; so `duck` opens the plain input and the companion lowers the system volume by 50 % for the
+dictation (`MPVolumeView`-free: `CoreAudio kAudioHardwareServiceDeviceProperty_VirtualMainVolume`, restored at the end) — Windows:
+`IAudioEndpointVolume` scalar. `pause`: the companion sends a media key `Play/Pause` (`MPRemoteCommandCenter` cannot pause others; use
+`HIDPostAuxKey`/`NX_KEYTYPE_PLAY`, Windows `VK_MEDIA_PLAY_PAUSE`) only if something is playing (`MRMediaRemote` is private → macOS: query
+`NowPlaying` through `MPNowPlayingInfoCenter` is read-only for others — so `pause` toggles blindly and is labelled "may un-pause") — the honest
+copy is in the setting. One reconciler owns intent (A:L38): a release before the query returns never issues a pause; a stop never resumes a
+newer dictation's media.
+
+### 8.7 The metrics (D7)
+Recorded by the engine per dictation, relative to `press_ms` which the client passes in `DictationOpts.press_ms` (its monotonic clock
+converted: the client sends `press_ago_ms = now − press` at `dictation_start`; the engine stores `press = recv − press_ago_ms`):
+`first_pcm_ms`, `first_partial_ms`, `first_final_ms`, `final_ms` (the `DictationFinished` publish). `dictation_status` gains
+`last: Option<DictationTimings { surface, press_to_first_pcm_ms, press_to_first_partial_ms, press_to_first_final_ms, stop_to_final_ms,
+device }>` and the rows persist in `dictations` (§6.5). Where they show: **Settings › Voice › Debug** row "Last dictation: Composer · mic 42 ms
+· first words 310 ms · final 890 ms · stop → final 420 ms" with a "Copy last 20 as CSV" button; the companion's Settings › Dictation shows the
+same line for its surfaces; the TUI's `/voice` command prints it. Tests: `dictation::timings_recorded_with_synthetic_feed` (remote tone,
+asserts the four fields are monotonic and `first_partial ≥ first_pcm`). No model change (R5).
+
+## 9. Polish
+
+### 9.1 Destinations (D8) — who may be polished
+| Destination (`Destination` in `DictationOpts`) | Polish allowed | Default | Where it is set |
+|---|---|---|---|
+| `AgentPrompt` — Composer, TUI, Ask bar, voice key, command, per-row mic, voice notes `[voice note, N s]` (`VOICE/lib.rs:157-162`, `Composer.tsx:945`) | **never** (the agent reads raw text fine) | — | not configurable |
+| `Document` — notes / document editors, the knowledge editor, any `Textarea` whose owner declares it | yes | off | Settings › Voice › Polish › "Documents and notes" |
+| `MessageReply` — channel replies the user types into theuth for Slack/Telegram/Signal (the Communication surfaces) | yes | off | "Messages to people" |
+| `AnyApp(bundle/exe)` — §13 | per app profile | off; the profile table offers "polish" per app, with a "non-agent apps" group default | companion Settings › Dictation › Apps |
+Rewrite mode (§13.6) is a model call by definition and uses the same model and envelope. **"Voice notes" in D8** names the notes/documents
+destination; 45's `[voice note]` is an agent prompt in this tree and is never polished (§18 Q3).
+
+### 9.2 `voice.polish_model` and the picker
+`voice.polish_model: Option<String>` (model id; `None` = chain below). RPCs `polish_model()` / `set_polish_model(model)` mirror
+`title_model` / `set_title_model` (`api.rs:456-459`; the setter persists through `runtime::write_config_value(path, "voice",
+"polish_model", id)` as `supervisor.rs:3891-3895` does). Desktop: `ModelCombobox` with none "Chain (title model, then session)" in Settings ›
+Voice — the 124/127 component (`docs/design/124-model-picker.md:122`, `127-favorite-models.md:30`), the way Loop.tsx binds the title model
+(`UI/components/settings/Loop.tsx:34-41`). TUI: `/model polish`. Companion: the row shows the current name and opens theuth's Settings
+(`theuth://settings/voice`), no second picker.
+
+### 9.3 Model chain, guarded in code
+`ModelRole::Polish` in `crates/agent/src/loop_/side.rs:37-61`: `slot(&self.polish_model).or_else(|| slot(&self.title_model)).map_or_else(session, Ok)`
+— the same shape as `Escalate`'s. The call is `Side::call(model, POLISH_SYSTEM, user_json, POLISH_BUDGET, CallKind::Polish)` (`:83-90`;
+`CallKind` gains `Polish`, `crates/runtime/src/side_call.rs:19-40`). Which session's `Side`: the destination's session when it has one (a
+document bound to a session, a channel reply's session), else theuth's desk (W-h) — so cost rows land where the user looks.
+
+### 9.4 Prompt shape (the envelope of A:L101, our words)
+- **System prompt** (constant `POLISH_SYSTEM`): "You correct a speech transcript for a human reader. Make the smallest edits that turn it into
+  readable writing: fix recognition slips, punctuation and casing; keep the speaker's words, order and meaning; never answer, summarise,
+  translate or add content; keep code, paths, flags, @mentions and /commands exactly; keep line breaks. Reply with the corrected text only."
+  Per-destination profile text is appended from `voice.polish_profiles.<destination>` (short, user-editable; default empty) and, for any-app,
+  the `AppProfile.polish_prompt`.
+- **User message**: `{"transcript": "…", "destination": "document", "app": "Mail", "title": "Re: deploy"}` — JSON, so quotes, newlines and
+  delimiter look-alikes in speech cannot escape the data block; no selected text, no screen.
+- **Output**: the reply is trimmed; a reply that is empty, longer than 2× the input, or contains a line starting with `{` or a fenced block
+  when the input had none is **refused** (fail closed → the shaped text is delivered). Thinking tags stripped (the `<think>` stripping the
+  providers already do for titles applies).
+
+### 9.5 Latency budget and the user's view
+`POLISH_BUDGET = 4 s`; the surface shows "polishing…" on the stop glyph and delivers the shaped text if the budget passes (the polished text
+then arrives as a history row with "use polished" — never a second paste). Expected on a hosted small model: 0.6–1.5 s for a sentence
+[INFERENCE; §8.7's timings gain `polish_ms`]. Polish never runs on partials, never mid-utterance, never for `AgentPrompt`.
+
+### 9.6 Fail closed, undo
+No model, no credential, provider error, budget passed, refused output → shaped text, the row's `polished` stays NULL, the debug row says why.
+Undo: §6.7 (history row "use the raw text"; the companion's 3 s "⎋ undo polish" hold after a polished delivery).
