@@ -107,18 +107,12 @@ pub enum AudioSource {
 /// `sample_rate`, a model load failure, a mic open failure. Waits for a load in
 /// flight (or starts one) rather than failing. `opts` default = today's
 /// behaviour: `Surface::Composer`, `Destination::AgentPrompt`, the surface's preset.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct StartDictation {
     /// Where the audio comes from.
     pub source: AudioSource,
     /// Surface, destination, app row, press anchor (153 §14.1).
     pub opts: DictationOpts,
-}
-
-impl Default for AudioSource {
-    fn default() -> Self {
-        Self::Mic
-    }
 }
 
 /// Mono i16 PCM for a [`AudioSource::Remote`] dictation, at the `sample_rate`
@@ -231,6 +225,8 @@ pub struct InputDevicePrefs;
 pub struct HistoryStore;
 
 /// What the task drives: the live utterer, or a scripted stand-in under test.
+// The size gap only exists in test builds (the fake is small); one engine per actor.
+#[cfg_attr(test, allow(clippy::large_enum_variant))]
 enum Engine {
     Live(Utterer),
     #[cfg(test)]
