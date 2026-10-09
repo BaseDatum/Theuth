@@ -131,7 +131,7 @@ internal sealed partial class SuggestionCardWindow : ToolWindow
         Hide();
         try
         {
-            await store.Client.DictionarySuggestionAnswerAsync(s.Id, answer);
+            await DictionaryRetry.Run(() => store.Client.DictionarySuggestionAnswerAsync(s.Id, answer)); // H-A: "dictionary loading" is retried
             Log.Write($"suggestion card: dictionary_suggestion_answer({s.Id}, {answer.Word()}) ok");
         }
         catch (Exception e)

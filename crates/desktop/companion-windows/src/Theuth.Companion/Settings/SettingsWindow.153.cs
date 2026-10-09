@@ -263,7 +263,7 @@ internal sealed partial class SettingsWindow
     private async Task LoadDictionary(StackPanel list, Func<bool> current, Action<string> say)
     {
         ValueList<Entry> entries;
-        try { entries = await store.Client.DictionaryListAsync(); }
+        try { entries = await DictionaryRetry.Run(() => store.Client.DictionaryListAsync()); } // H-A: "dictionary loading" is retried
         catch (Exception e)
         {
             if (current()) { list.Children.Clear(); list.Children.Add(Muted($"The engine did not list the dictionary ({Describe(e)}).")); }
@@ -282,7 +282,7 @@ internal sealed partial class SettingsWindow
                 {
                     try
                     {
-                        bool removed = await store.Client.DictionaryDeleteAsync(entry.Id);
+                        bool removed = await DictionaryRetry.Run(() => store.Client.DictionaryDeleteAsync(entry.Id));
                         say(removed ? $"Removed {entry.Canonical}." : $"{entry.Canonical} was already gone.");
                     }
                     catch (Exception ex) { say($"Not removed ({Describe(ex)})."); }
@@ -296,7 +296,7 @@ internal sealed partial class SettingsWindow
     {
         try
         {
-            var stored = await store.Client.DictionaryPutAsync(entry);
+            var stored = await DictionaryRetry.Run(() => store.Client.DictionaryPutAsync(entry));
             say($"Added {stored.Canonical}.");
             Log.Write($"settings: dictionary_put({stored.Canonical}) → {stored.Id}");
         }

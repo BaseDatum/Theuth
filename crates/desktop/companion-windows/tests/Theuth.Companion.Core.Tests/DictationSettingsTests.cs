@@ -73,4 +73,21 @@ public sealed class DictationSettingsTests
         Assert.Null(MicPreference.Choose(new[] { "Shure MV7" }, endpoints));
         Assert.Null(MicPreference.Choose(Array.Empty<string>(), endpoints));
     }
+
+    [Fact]
+    public async Task DictionaryLoadingIsRetriedQuietlyAndOtherErrorsAreNot()
+    {
+        int calls = 0;
+        var waits = new List<TimeSpan>();
+        var value = await DictionaryRetry.Run(() =>
+        {
+            calls++;
+            return calls < 3 ? Task.FromException<int>(new RpcException(-32000, "dictionary loading")) : Task.FromResult(42);
+        }, t => { waits.Add(t); return Task.CompletedTask; });
+        Assert.Equal((42, 3, 2), (value, calls, waits.Count));
+        await Assert.ThrowsAsync<RpcException>(() => DictionaryRetry.Run(() => Task.FromException<int>(new RpcException(-32000, "unknown suggestion")), _ => Task.CompletedTask));
+        int tries = 0;
+        await Assert.ThrowsAsync<RpcException>(() => DictionaryRetry.Run(() => { tries++; return Task.FromException(new RpcException(-32000, "dictionary loading")); }, _ => Task.CompletedTask, attempts: 3));
+        Assert.Equal(3, tries);
+    }
 }

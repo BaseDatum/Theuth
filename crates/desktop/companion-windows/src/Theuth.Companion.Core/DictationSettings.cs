@@ -182,3 +182,28 @@ public static class MicPreference
         return null;
     }
 }
+
+/// <summary>
+/// H-A (153-as-built-A): <c>dictionary_list</c> / <c>dictionary_put</c> / <c>dictionary_delete</c> / <c>dictionary_suggestion_answer</c>
+/// answer the error "dictionary loading" for ~4 s after the engine starts — retried quietly, never shown as a failure.
+/// </summary>
+public static class DictionaryRetry
+{
+    public const string LoadingMessage = "dictionary loading";
+
+    public static bool IsLoading(Exception e) => e is RpcException r && r.Message.Contains(LoadingMessage, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Runs <paramref name="call"/>, retrying while the engine says the dictionary is loading (every <paramref name="every"/>, up to <paramref name="attempts"/>).</summary>
+    public static async Task<T> Run<T>(Func<Task<T>> call, Func<TimeSpan, Task>? delay = null, int attempts = 8, TimeSpan? every = null)
+    {
+        var wait = delay ?? (t => Task.Delay(t));
+        for (int i = 1; ; i++)
+        {
+            try { return await call(); }
+            catch (Exception e) when (IsLoading(e) && i < attempts) { await wait(every ?? TimeSpan.FromMilliseconds(750)); }
+        }
+    }
+
+    public static Task Run(Func<Task> call, Func<TimeSpan, Task>? delay = null, int attempts = 8, TimeSpan? every = null) =>
+        Run(async () => { await call(); return true; }, delay, attempts, every);
+}
