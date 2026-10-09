@@ -1,9 +1,14 @@
 // 144 §6.3–§6.4: `theuth://` links render as numbered chips (ordinal of first appearance in the message), a dashed
 // References footer lists them with their resolved title and drift status. One batched `cite_resolve` per message.
+// Wave 2 (U1): drift on the chip itself — a `missing`/unavailable target opens the dangling-ref card instead of a
+// dead pulse; `changed` says so in the tooltip; inside a notebook chat the route carries `?nb` (§4, the way back).
 import { useQuery } from '@tanstack/react-query'
 import { type AnyRouter, useRouter } from '@tanstack/react-router'
 import { BookOpen, FileText, type LucideIcon, MessageSquare, Mic, StickyNote } from 'lucide-react'
 import { type ComponentProps, type ReactNode, createContext, useContext, useEffect, useMemo } from 'react'
+import { useNotebookChat } from '@/components/notebooks/NotebookContext'
+import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { type Cite, collectCitations, locatorLabel, parseTheuthHref, routeOf } from '@/lib/citations'
 import { notebookKeys, notebooksApi } from '@/lib/notebooks-rpc'
 import type { Citation } from '@/rpc/bindings/Citation'
@@ -35,13 +40,27 @@ export function CitationsProvider({ text, children }: { text: string; children: 
   return <Context value={value}>{children}</Context>
 }
 
-/** Navigate to a citation's target; a no-op where there is no router (the `/d` guest container). */
-export function useOpenCite(): (cite: Cite) => void {
+/**
+ * Navigate to a citation's target; a no-op where there is no router (the `/d` guest container). In a notebook chat
+ * the route carries `?nb`. `moved` (the id is gone, the text was found elsewhere) opens the document itself: the
+ * resolver does not name the new block yet, and the old id would only pulse nothing.
+ */
+export function useOpenCite(): (cite: Cite, c?: Citation) => void {
   const router = useRouter({ warn: false }) as AnyRouter | undefined
-  return (cite) => void router?.navigate(routeOf(cite) as never)
+  const nb = useNotebookChat()?.notebook
+  return (cite, c) => {
+    const route = routeOf(cite, nb)
+    void router?.navigate((c?.status === 'moved' ? { ...route, hash: undefined } : route) as never)
+  }
 }
 
 const dead = (c: Citation | undefined) => c !== undefined && (c.status === 'missing' || !c.available)
+
+const KIND_WORD: Record<CiteKind, string> = { notes: 'note', sources: 'source', knowledge: 'knowledge page', meetings: 'meeting', sessions: 'chat' }
+
+/** The drift word for a tooltip: `changed` = the passage's text differs from when it was cited (§6.4). */
+const driftNote = (c: Citation | undefined): string | null =>
+  c?.status === 'changed' ? 'source changed since this was cited' : c?.status === 'moved' ? 'passage moved — opens the document' : null
 
 /** Markdown `a`: a `theuth://` href becomes a chip; anything else stays a plain anchor. */
 export function CitationLink({ node: _node, href, children, ...rest }: ComponentProps<'a'> & { node?: unknown }) {
@@ -57,22 +76,41 @@ export function CitationLink({ node: _node, href, children, ...rest }: Component
   }
   const n = ctx ? ctx.hrefs.indexOf(cite.href) + 1 : 0
   const c = ctx?.byHref.get(cite.href)
-  const label = [c?.title ?? cite.kind, locatorLabel(cite)].filter(Boolean).join(' · ')
-  return (
+  const drift = driftNote(c)
+  const label = [c?.title ?? cite.kind, locatorLabel(cite), drift].filter(Boolean).join(' · ')
+  const chip = (
     <a
       href={href}
       className="theuth-cite"
       data-kind={cite.kind}
       data-dead={dead(c) || undefined}
+      data-drift={c?.status === 'changed' || c?.status === 'moved' ? c.status : undefined}
       title={label}
       aria-label={`Citation ${n || '•'}: ${label}`}
       onClick={(e) => {
         e.preventDefault()
-        open(cite)
+        if (!dead(c)) open(cite, c)
       }}
     >
       {n || '•'}
     </a>
+  )
+  if (!dead(c)) return chip
+  // §6.4: a dangling target gets the card, not a dead pulse.
+  const unavailable = c !== undefined && !c.available
+  return (
+    <Popover>
+      <PopoverTrigger asChild>{chip}</PopoverTrigger>
+      <PopoverContent align="start" className="w-72 p-3 text-xs" data-testid="dangling-ref">
+        <p className="font-medium">{unavailable ? `This ${KIND_WORD[cite.kind]} is unavailable` : 'This passage changed or was removed'}</p>
+        <p className="mt-1 text-fg-tertiary">{unavailable ? 'It was deleted, or you may not read it.' : `The cited block is no longer in the ${KIND_WORD[cite.kind]}${c?.title ? ` “${c.title}”` : ''}.`}</p>
+        {!unavailable && (
+          <Button variant="outline" size="xs" className="mt-2" onClick={() => open({ ...cite, locator: null })}>
+            Open the {KIND_WORD[cite.kind]}
+          </Button>
+        )}
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -94,7 +132,7 @@ export function References() {
             type="button"
             key={href}
             className={cn('flex w-full items-baseline gap-1.5 py-px text-left hover:text-fg-secondary', gone && 'opacity-60')}
-            onClick={() => open(cite)}
+            onClick={() => (gone ? c?.available && open({ ...cite, locator: null }) : open(cite, c))}
           >
             <span className="theuth-cite" data-kind={cite.kind} data-dead={gone || undefined}>
               {i + 1}

@@ -206,13 +206,17 @@ function replyIndex(session: string, turn: number, id: string): number | undefin
   return n < 0 ? undefined : n
 }
 
-/** 144 §8: in a notebook's chat, an answer can be saved as a new note or promoted (appended) into one of the notebook's notes. */
+/**
+ * 144 §8: in a notebook's chat, an answer can be saved as a new note or promoted (appended) into one of the notebook's notes.
+ * §4 (Sky's ruling): the Save toast's **Open** carries `?nb`, so the note keeps the way back to this notebook.
+ */
 function NotebookActions({ session, turn, nbc }: { session: string; turn: number; nbc: NotebookChat }) {
   const nb = useNotebooksApi()
+  const navigate = useNavigate()
   const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
   const save = () =>
-    nb.save_answer_as_note(session, turn, nbc.notebook).then(() => {
-      toast('Saved as a note')
+    nb.save_answer_as_note(session, turn, nbc.notebook).then((saved) => {
+      toast('Saved as a note', { action: { label: 'Open', onClick: () => void navigate({ to: '/notes/$id', params: { id: saved.doc }, search: { nb: nbc.notebook } }) } })
       nbc.onChanged()
     }, fail)
   const promote = (note: DocSummary) =>
