@@ -84,9 +84,9 @@ streams one Opus packet per 80 ms as `SpeechAudio` events; **nothing plays on th
 `Sink::Device`, which no RPC exposes — `talk_start` refuses it for remote peers, `api.rs:6025`). The Tauri webview plays only the
 utterances it requested (`speech.ts:474-483`, `mine`). So the companion plays them itself: `SpeechPlayer` claims the next
 `SpeechStarted` on the desk with `sink == client` (the webview's `talkSession` rule — the id reply can land after the first packet),
-decodes each packet with AudioToolbox's Opus decoder (`kAudioFormatOpus` @ 48 kHz, 3840 frames/packet, `AVAudioConverter` over an
-`AVAudioCompressedBuffer`) and schedules the PCM on an `AVAudioPlayerNode`; `SpeechFinished` + the last buffer's callback end it;
-`stop()` on ⎋ / a new press. Verified by a round trip outside the app: see "Gates".
+decodes each packet with AudioToolbox's Opus decoder (`kAudioFormatOpus` @ 48 kHz mono, variable frames per packet,
+`AVAudioConverter` over a one-packet `AVAudioCompressedBuffer`) and schedules the PCM on an `AVAudioPlayerNode`; `SpeechFinished` +
+the last buffer's callback end it; `stop()` on ⎋ / a new press. The decode path is verified on real libopus packets: see "Gates".
 
 ## `--probe-point` (§10) — what it does and what it saw (`/tmp/149-W2-probe.log`, PNGs `/tmp/149-W2-probe-*.png`)
 Run as the in-bundle executable (`open -n` dedupes against Sky's running login-item companion of the same bundle id and starts
@@ -114,10 +114,14 @@ Settings › Voice key: `--probe-settings voiceKey --shareable` → `/tmp/149-W2
 - `BUILD_LABEL=149-W2 build-lock bash crates/desktop/companion/test.sh` ✔ 176 passed / 53 skipped (`/tmp/149-W2-test.log`).
 - `BUILD_LABEL=149-W2 build-lock swift build -c release --package-path crates/desktop/companion` ✔ (`/tmp/149-W2-release.log`, the
   pre-existing `NSEvent`/Sendable warnings only).
+- Opus round trip (`/tmp/149-W2-opus.swift`, the player's exact decode path on REAL libopus packets — `ffmpeg -c:a libopus
+  -frame_duration 80` from a 24 kHz 440 Hz tone, read back with `AudioFileReadPacketData`): with `mFramesPerPacket 0` ✔ 13 packets →
+  49 800 frames at 48 kHz, rms 0.347 (the tone's 0.354), 0 failures; with a fixed 3840 AudioToolbox answers NO converter — the player
+  uses 0. (AudioToolbox has no Opus *encoder* here: `AVAudioConverter(pcm → opus)` is nil and `afconvert -d opus` fails with `'pck?'`;
+  decoding is what the companion needs.)
 - `bash scripts/bundle-companion.sh` ✔ `valid on disk · satisfies its Designated Requirement` (`/tmp/149-W2-bundle.log`).
-- `--probe-point 22 --shareable` ✔ control 120/120 → stop 0/120, PASS (above). No permission dialog in any run.
-- Opus round trip (`/tmp/149-W2-opus.swift`, the player's decode path on packets encoded by the same codec): see the line below.
-- OPUS_RESULT_PLACEHOLDER
+- `--probe-point 22 --shareable` ✔ control 120/120 → stop 0/120, PASS (above); `--probe-settings voiceKey` ✔. No permission dialog
+  in any run; nothing sent; nothing took key.
 
 ## Live check 6 (the orchestrator's; `~/.theuth/engine.json`, Sky's engine)
 1. Quit the stock companion; run the bundle plainly (`open -n` works when no other instance runs, else the in-bundle executable).

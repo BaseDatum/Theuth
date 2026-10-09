@@ -9,7 +9,7 @@ import Foundation
 final class SpeechPlayer {
     /// Opus decodes natively at 48 kHz, whatever rate it was encoded from.
     static let rate: Double = 48_000
-    /// 80 ms per packet (`VoiceEvent::SpeechAudio`).
+    /// 80 ms per packet (`VoiceEvent::SpeechAudio`) at 48 kHz: the decode buffer's size.
     static let framesPerPacket: UInt32 = 3840
 
     private var engine: AVAudioEngine?
@@ -83,7 +83,8 @@ final class SpeechPlayer {
 
     /// One packet → PCM (`AVAudioCompressedBuffer` with its packet description).
     func decode(_ packet: Data) -> AVAudioPCMBuffer? {
-        guard let converter, let opus = converter.inputFormat as AVAudioFormat? else { return nil }
+        guard let converter else { return nil }
+        let opus = converter.inputFormat
         let inBuf = AVAudioCompressedBuffer(format: opus, packetCapacity: 1, maximumPacketSize: packet.count)
         inBuf.byteLength = UInt32(packet.count)
         inBuf.packetCount = 1
@@ -102,9 +103,11 @@ final class SpeechPlayer {
         return out
     }
 
+    /// Opus as AudioToolbox's decoder wants it: 48 kHz mono, `mFramesPerPacket` 0 (variable). A fixed 3840 answers NO converter
+    /// (checked with real libopus packets: 13 × 80 ms → 49 800 frames, rms 0.347 of a 0.354 tone, `/tmp/149-W2-opus.swift`).
     static func opusFormat() -> AVAudioFormat? {
         var asbd = AudioStreamBasicDescription(mSampleRate: rate, mFormatID: kAudioFormatOpus, mFormatFlags: 0, mBytesPerPacket: 0,
-                                               mFramesPerPacket: framesPerPacket, mBytesPerFrame: 0, mChannelsPerFrame: 1, mBitsPerChannel: 0, mReserved: 0)
+                                               mFramesPerPacket: 0, mBytesPerFrame: 0, mChannelsPerFrame: 1, mBitsPerChannel: 0, mReserved: 0)
         return AVAudioFormat(streamDescription: &asbd)
     }
 }
