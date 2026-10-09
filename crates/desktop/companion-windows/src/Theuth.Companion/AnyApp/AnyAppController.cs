@@ -22,7 +22,7 @@ internal sealed class AnyAppController
 {
     private readonly Store store;
     private readonly DispatcherQueue dispatcher;
-    private readonly AnyAppSettings settings;
+    private readonly AnyAppPrefs settings;
     private readonly FocusReader reader = new();
     private readonly SessionWindow window;
     private readonly ClipboardIo clipboard;
@@ -39,7 +39,7 @@ internal sealed class AnyAppController
     private string? pendingEnd;
     private bool pendingCancel;
 
-    public AnyAppController(Store store, DispatcherQueue dispatcher, AnyAppSettings settings)
+    public AnyAppController(Store store, DispatcherQueue dispatcher, AnyAppPrefs settings)
     {
         this.store = store;
         this.dispatcher = dispatcher;

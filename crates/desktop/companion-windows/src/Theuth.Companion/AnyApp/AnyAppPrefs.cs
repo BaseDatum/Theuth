@@ -7,10 +7,10 @@ namespace Theuth.Companion.AnyApp;
 /// <summary>
 /// 153 §14.3's companion-local keys that any-app delivery reads (H3-CC names): <c>dictateAnywhereEnabled</c> (default on),
 /// <c>leaveTextOnClipboard</c> (default off — §13.3 step 5 is skipped when on), <c>checkPasteLanded</c> (default on — §13.4's triple),
-/// <c>appProfiles</c> (JSON <c>[AppProfile]</c>, the wire shape). Settings › Dictation (W153B) writes them; this reads them live from the ONE
+/// <c>appProfiles</c> (JSON <c>[AppProfile]</c>, the wire shape). Settings › Dictation (W153B's page, W153D's rows in SettingsWindow.153D.cs) writes them; this reads them live from the ONE
 /// settings store (SettingsModel.Shared's), so a change applies at the next gesture.
 /// </summary>
-internal sealed class AnyAppSettings
+internal sealed class AnyAppPrefs
 {
     public const string DictateAnywhereEnabledKey = "dictateAnywhereEnabled";
     public const string LeaveTextOnClipboardKey = "leaveTextOnClipboard";
@@ -24,7 +24,7 @@ internal sealed class AnyAppSettings
 
     private readonly SettingsStore store;
 
-    public AnyAppSettings(SettingsStore store) => this.store = store;
+    public AnyAppPrefs(SettingsStore store) => this.store = store;
 
     public bool Enabled => !store.Contains(DictateAnywhereEnabledKey) || store.Bool(DictateAnywhereEnabledKey);
 
