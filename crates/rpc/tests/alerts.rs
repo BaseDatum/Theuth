@@ -73,7 +73,11 @@ fn alerts(items: &[AttentionItem]) -> (Option<String>, Option<String>) {
     (of(AttentionKind::Finished), of(AttentionKind::Approval))
 }
 
-async fn until(sub: &mut Subscription, ty: &str) -> serde_json::Value {
+/// The next `AttentionChanged` that `pred` accepts.
+async fn until(
+    sub: &mut Subscription,
+    pred: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
     loop {
         let v = tokio::time::timeout(Duration::from_secs(5), sub.next::<serde_json::Value>())
             .await
@@ -81,7 +85,7 @@ async fn until(sub: &mut Subscription, ty: &str) -> serde_json::Value {
             .expect("stream open")
             .expect("json")
             .0;
-        if v["type"] == ty {
+        if v["type"] == "AttentionChanged" && pred(&v) {
             return v;
         }
     }
@@ -144,7 +148,11 @@ async fn attention_list_masks_alerts_per_connection() {
     let first = a.list().await;
     assert_eq!(first.len(), 2, "{first:?}");
     assert_eq!(alerts(&first), (None, None), "inside alert_delay_ms");
-    until(&mut stream, "AttentionChanged").await;
+    // The first list raised an id-set change; the AlertDue nudge is the empty-diff one (§7.4).
+    until(&mut stream, |v| {
+        v["ids_added"].as_array().is_some_and(Vec::is_empty)
+    })
+    .await;
     let shown = a.list().await;
     let (fin, app) = alerts(&shown);
     let fin = fin.expect("finished alert after the delay");

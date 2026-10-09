@@ -7977,7 +7977,7 @@ impl ApiServer for Server {
         // 155 §7.5: looking at a session marks its finished alert seen here.
         if !set.is_empty()
             && let Ok(actor) = attention_actor()
-            && let Ok(Ok(mut items)) = actor.ask(roster::attention::ListAttention).await
+            && let Ok(mut items) = actor.ask(roster::attention::ListAttention).await
         {
             let mut seen = self.seen.write();
             let fresh = !seen.contains_key(&peer.id());
