@@ -33,6 +33,22 @@ objc2-core-foundation = { workspace = true, features = ["CFURL", "CFNumber", "CF
 objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "libc"] }
 objc2-foundation = { workspace = true }
 
+# 149 WE1: UI Automation reader (`ax.rs`, `windows_uia`). 0.62 is the `windows` the graph already
+# carries through xcap 0.9.8 (no workspace entry exists; `meeting` pins =0.54.0 for flexaudio),
+# so this adds a dependency edge, not a crate version. `Win32_System_Ole` + `Win32_System_Com`
+# gate the `VARIANT` struct; `Win32_UI_WindowsAndMessaging` is the foreground window and
+# `GetWindowTextW` fallback; `Win32_System_Threading` is `QueryFullProcessImageNameW`.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [dev-dependencies]
 figment = { workspace = true }
 

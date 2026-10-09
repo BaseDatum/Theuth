@@ -12,7 +12,7 @@ namespace Theuth.Companion.Core;
 /// <c>DispatcherQueue.TryEnqueue</c>). Async work resumes on the owner thread through its SynchronizationContext.
 /// Portable: engine, timers and clock are injected, so the debounce, hold/undo and answered-elsewhere paths run on the Mac.
 /// </summary>
-public class StoreModel : INotifyPropertyChanged
+public partial class StoreModel : INotifyPropertyChanged
 {
     /// <summary>What a committed keystroke does, with the words the receipt row shows.</summary>
     public sealed record Held(string ItemId, string Who, string Label, CardAction Action);
@@ -161,7 +161,12 @@ public class StoreModel : INotifyPropertyChanged
     {
         WireEvent e;
         try { e = WireEvent.Decode(data); }
-        catch (Exception) { return; }
+        catch (Exception)
+        {
+            // 149 WW1: a typed kind that failed to decode still reaches the raw hook (WW3 decodes meeting events itself).
+            if (WireEvent.TypeOf(data) is { } t) EventReceived?.Invoke(t, data);
+            return;
+        }
         switch (e.Payload)
         {
             case PendingPrompts p:
@@ -191,7 +196,9 @@ public class StoreModel : INotifyPropertyChanged
                 if (WireEvent.AttentionTriggers.Contains(e.Type) || e.Type == "TurnStarted" || e.Type == "SubagentSpawned") ScheduleRefetch();
                 break;
         }
+        Observe149(e); // 149 WW1: agents / meeting / dictation / global-key plumbing (StoreModel.WW1.cs)
         AskObserve(data);
+        EventReceived?.Invoke(e.Type, data); // 149 WW1: the raw hook, last, on the owner thread
     }
 
     /// <summary>Debounced 250 ms (130 §5.2); never on a timer of its own.</summary>
@@ -229,6 +236,7 @@ public class StoreModel : INotifyPropertyChanged
             Apply(a.Result, g.Result, l.Result);
             await LoadPackets();
             Refetched?.Invoke();
+            _ = Refetch149Async(); // 149 WW1: sessions · sessions_status · mesh_status (StoreModel.WW1.cs)
         }
         catch (Exception e)
         {
@@ -427,6 +435,11 @@ public class StoreModel : INotifyPropertyChanged
             await CommitAsk(ask.Text);
             return;
         }
+        if (h.Action.ItemFree)
+        {
+            await CommitItemFree(h); // 149 WW2
+            return;
+        }
         try
         {
             var latest = await engine.AttentionListAsync();
@@ -466,6 +479,38 @@ public class StoreModel : INotifyPropertyChanged
             }
             Receipt = ok ? new ReceiptRow.Sent($"{h.Who} · {h.Label}") : ReceiptRow.Stale.Instance;
             log($"committed {h.Action} ok={(ok ? "true" : "false")}");
+        }
+        catch (Exception e)
+        {
+            Receipt = new ReceiptRow.Failed(Describe(e));
+            log($"commit failed: {Describe(e)}");
+        }
+        _ = Refetch();
+        ExpireReceipt(3);
+    }
+
+    /// <summary>149 WW2 (D3): stop a tree · pause a desk · talk into a row — no item, so no E5 re-read; the hold was the confirmation.</summary>
+    private async Task CommitItemFree(Held h)
+    {
+        try
+        {
+            switch (h.Action)
+            {
+                case CardAction.StopTree st: await engine.CancelAsync(st.Session, CancelScope.Tree); break;
+                case CardAction.PauseDesk pd: await engine.AgentPauseAsync(pd.Name, true); break;
+                case CardAction.SendInputTo si: // 149 WW3: the parked P screenshots ride with the reply
+                    if (TakeReplyAttachments(si.Session) is { Count: > 0 } files) await engine.SendInputAsync(si.Session, si.Text, files);
+                    else await engine.SendInputAsync(si.Session, si.Text);
+                    break;
+                default: return;
+            }
+            Receipt = new ReceiptRow.Sent(h.Action switch
+            {
+                CardAction.StopTree => $"{h.Who} · stopped",
+                CardAction.PauseDesk => $"{h.Who} · paused",
+                _ => $"{h.Who} · sent",
+            });
+            log($"committed {h.Action}");
         }
         catch (Exception e)
         {

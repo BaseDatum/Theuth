@@ -27,5 +27,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\..\companion\Tests\TheuthKitTests\Fixtures\*.json" Link="Fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 149 WW1 R1: one loopback Kestrel host at a time (collections serial) and a long-running-test warning at 20 s. -->
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

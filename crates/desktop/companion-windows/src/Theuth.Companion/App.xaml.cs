@@ -19,6 +19,7 @@ public partial class App : Application
     private EngineProbe? probe;
     private Notifications.NotificationsInstaller? w3; // W3
     private AskBar.AskBarInstall? askBar; // W4
+    private WW3Install? ww3; // 149 WW3
 
     /// <summary>The engine state every surface renders (design 134 §5.4); created in <see cref="OnLaunched"/>, UI thread only.</summary>
     public Store? Store { get; private set; }
@@ -60,6 +61,7 @@ public partial class App : Application
         Store = Store.Create(dispatcher, EngineProbe.Locate);
         probe = new EngineProbe(Store, dispatcher, Flags.Probe, Quit);
         probe.Start();
+        if (Flags.Probe is not null) Probe149.Install(Store); // 149 WW1: the new read-only calls in the probe log
         // W2: the rail, panel, tray and hotkeys bind to Store here (before Start, to see the first refetch).
         Ui.Surfaces.Start(Store, dispatcher, Quit);
         // W3: notifier (policy on the Store's items), breakpoint sources, Settings window, Run key, --probe-notify — after the
@@ -68,6 +70,8 @@ public partial class App : Application
         // W4: the Ask bar (AskBar/AskBarInstall) binds to Store and to Ui.Surfaces.Current's hooks here (after W2 and W3, before Start);
         // --ask-probe N / --mic-probe N / --ask-replay / --ask run through it.
         askBar = AskBar.AskBarInstall.Install(Store, dispatcher, Quit);
+        // 149 WW3: the native island and point-and-say (Island/, PointAndSay/, WW3Install) — after W4, before Start.
+        ww3 = WW3Install.Install(Store, dispatcher); // 149 WW3
         Store.Start();
     }
 
@@ -78,6 +82,7 @@ public partial class App : Application
         quitting = true;
         ExitCode = code;
         probe?.Dispose();
+        ww3?.Dispose(); // 149 WW3: overlays destroyed, Esc/meeting keys released
         w3?.Dispose(); // W3: hooks off, AppNotificationManager.Unregister()
         Ui.Surfaces.Current?.Dispose(); // W2: tray icon removed, hotkeys released
         Store?.Close();

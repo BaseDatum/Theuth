@@ -11,7 +11,7 @@ namespace Theuth.Companion.Ui;
 
 /// <summary>
 /// W2's composition root (design 134 §4.1–4.5, §5.4–5.5): the hidden host window (class <c>TheuthCompanionRail</c>, the
-/// shell's WM_CLOSE target), the tray icon and its menu, the global hotkeys, the rail and its peek card, the Attention panel
+/// shell's WM_CLOSE target), the tray icon and its menu, the global hotkeys, the pills rail (149 WW2; the W2 strip and peek card are gone), the agents panel, the Attention panel
 /// and the legend — all on the UI thread, all bound to the one <see cref="Store"/>. Started at the W2 line of
 /// <c>App.OnLaunched</c>, before <c>Store.Start()</c> so the first refetch is seen; disposed by <c>App.Quit</c>.
 /// <para>Hooks for the sibling waves: <see cref="PauseRequested"/>, <see cref="LaunchAtLoginToggled"/> /
@@ -28,9 +28,9 @@ internal sealed class Surfaces : IDisposable
     private readonly bool probe;
     private readonly HostWindow host;
     private readonly Tray tray;
-    private readonly RailWindow rail;
+    private readonly RailPillsWindow rail; // 149 WW2: the rail as separate pills
     private readonly AttentionPanelWindow panel;
-    private readonly PeekCardWindow peek;
+    private readonly AgentsPanelWindow agents; // 149 WW2 §3.2
     private readonly LegendWindow legend;
     private readonly TrayMenu menu;
     private readonly List<DispatcherQueueTimer> timers = new();
@@ -65,21 +65,26 @@ internal sealed class Surfaces : IDisposable
         Hotkeys.Apply(store.Keys);
         store.HotkeyNotice = Hotkeys.Notice;
         Hotkeys.Pressed += OnHotkey;
+        store.InstallHotkeys(Hotkeys); // 149 WW1: raw global keys → Store.GlobalKeyPressed/Released (Store.WW1.cs)
 
-        rail = new RailWindow(store, settings.RailPresence, settings.RailSide);
-        peek = new PeekCardWindow(store, () => rail.LastForeign);
-        rail.MarkClicked += OnMark;
-        rail.Polled += () => peek.Poll(rail.ScreenRect);
+        // 149 WW2 (§3.1–3.3, D23): the pills rail replaces W2's strip and the peek card (an agent dot opens the agents panel).
+        store.InstallWw2();
+        rail = new RailPillsWindow(store, settings.RailPresence, settings.RailSide);
         panel = new AttentionPanelWindow(store) { ProbeMode = probe };
+        agents = new AgentsPanelWindow(store, dispatcher) { ProbeMode = probe };
+        rail.InboxClicked += pillRect => OpenInbox(new PanelAnchor(PanelAnchorKind.Rail, pillRect, rail.Side == "left"));
+        rail.DotClicked += (dot, pillRect) => OpenAgents(new PanelAnchor(PanelAnchorKind.Rail, pillRect, rail.Side == "left"), dot.Session);
+        rail.AgentsClicked += pillRect => OpenAgents(new PanelAnchor(PanelAnchorKind.Rail, pillRect, rail.Side == "left"), null);
+        rail.AskClicked += _ => { if (!probe) store.Perform(Intent.AskBar); };
+        rail.PointClicked += () => { Log.Write("rail: point pressed"); PointRequested?.Invoke(null); };
+        rail.DotHovered += session => store.HoveredSession = session;
+        agents.LegendRequested += () => ShowLegend(fromPanel: false);
+        panel.PointRequested += card => { Log.Write($"panel: point pressed on {card.Item.Id}"); panel.Close(returnFocus: false); PointRequested?.Invoke(card); };
         legend = new LegendWindow(store);
         menu = new TrayMenu(host);
+        rail.MoreClicked += at => { if (!probe) menu.Show(BuildMenu(), at); };
         SystemEffects.ApplyTransitions(legend.Hwnd, effects.AnimationsEnabled);
-        SystemEffects.ApplyTransitions(peek.Hwnd, effects.AnimationsEnabled);
-        effects.Changed += () =>
-        {
-            SystemEffects.ApplyTransitions(legend.Hwnd, effects.AnimationsEnabled);
-            SystemEffects.ApplyTransitions(peek.Hwnd, effects.AnimationsEnabled);
-        };
+        effects.Changed += () => SystemEffects.ApplyTransitions(legend.Hwnd, effects.AnimationsEnabled);
 
         store.PropertyChanged += OnStoreChanged;
         store.CloseRequested += () => panel.Close(returnFocus: true);
@@ -110,6 +115,38 @@ internal sealed class Surfaces : IDisposable
 
     /// <summary>The global hotkeys (W4: <c>Released</c> for hold-to-talk).</summary>
     public Hotkeys Hotkeys { get; }
+
+    /// <summary>149 WW2 → WW3 seam: P on a card (the card, so the reply gets the <c>files</c>) or the rail's point glyph (null) — point-and-say runs <c>screen_context</c>.</summary>
+    public event Action<Card?>? PointRequested;
+
+    /// <summary>149 §3.2: the agents panel, toggled by Ctrl+Shift+A, the agents pill or a dot (scrolled to <paramref name="session"/>).</summary>
+    public void OpenAgents(PanelAnchor at, string? session)
+    {
+        if (probe) return;
+        if (agents.IsOpen && session is null)
+        {
+            agents.Close(returnFocus: true);
+            return;
+        }
+        var prev = agents.IsOpen ? default : PreviousFor(PInvoke.GetForegroundWindow());
+        legend.CloseLegend(returnFocus: false);
+        panel.Close(returnFocus: false);
+        agents.Open(at, prev.IsNull ? rail.LastForeign : prev, session);
+    }
+
+    private void OpenInbox(PanelAnchor at)
+    {
+        if (probe) return;
+        if (panel.IsOpen)
+        {
+            panel.Close(returnFocus: true);
+            return;
+        }
+        legend.CloseLegend(returnFocus: false);
+        agents.Close(returnFocus: false);
+        store.FocusOldest();
+        panel.Open(at, rail.LastForeign);
+    }
 
     /// <summary>W6 (item 1): when the tray icon's first <c>NIM_ADD</c> succeeded — the pin tip checks promotion ≥ 60 s later; null = no icon.</summary>
     public DateTimeOffset? TrayAddedAt => tray.AddedAt;
@@ -172,7 +209,7 @@ internal sealed class Surfaces : IDisposable
     {
         if (probe) return;
         legend.CloseLegend(returnFocus: false);
-        peek.HideCard();
+        agents.Close(returnFocus: false);
         if (itemId is not null) store.FocusOn(itemId); else store.FocusOldest();
         if (panel.IsOpen)
         {
@@ -225,12 +262,15 @@ internal sealed class Surfaces : IDisposable
                 }
                 var prev = PreviousFor(PInvoke.GetForegroundWindow());
                 legend.CloseLegend(returnFocus: false);
-                peek.HideCard();
+                agents.Close(returnFocus: false);
                 store.FocusOldest();
                 panel.Open(PanelAnchor.Mouse, prev);
                 break;
             case KeyAction.OpenAskBar:
                 store.Perform(Intent.AskBar);
+                break;
+            case KeyAction.OpenAgents: // 149 WW2 (§8 ★): toggles; opens scrolled to the first working row
+                OpenAgents(PanelAnchor.Mouse, null);
                 break;
         }
     }
@@ -245,7 +285,7 @@ internal sealed class Surfaces : IDisposable
             panel.Close(returnFocus: true);
             return;
         }
-        peek.HideCard();
+        agents.Close(returnFocus: false);
         var anchor = tray.IconRect() is { } r ? new PanelAnchor(PanelAnchorKind.Tray, r) : PanelAnchor.Mouse;
         panel.Open(anchor, rail.LastUserApp);
     }
@@ -255,7 +295,7 @@ internal sealed class Surfaces : IDisposable
         if (probe) return;
         panel.Close(returnFocus: false);
         legend.CloseLegend(returnFocus: false);
-        peek.HideCard();
+        agents.Close(returnFocus: false);
         menu.Show(BuildMenu(), at);
     }
 
@@ -301,24 +341,6 @@ internal sealed class Surfaces : IDisposable
             return;
         }
         _ = Task.Delay(TimeSpan.FromSeconds(10)).ContinueWith(_ => dispatcher.TryEnqueue(() => quit(0)));
-    }
-
-    private void OnMark(Mark m, RECT row)
-    {
-        if (probe) return;
-        if (RailWindow.OpensPanel(m))
-        {
-            peek.HideCard();
-            store.FocusOn(m.ItemId!);
-            panel.Open(new PanelAnchor(PanelAnchorKind.Rail, row, rail.Side == "left"), rail.LastForeign);
-            return;
-        }
-        if (peek.Showing?.Id == m.Id)
-        {
-            peek.HideCard();
-            return;
-        }
-        peek.Show(m, row, rail.ScreenRect, rail.Side);
     }
 
     /// <summary>The legend under the tray icon; from the panel (Ctrl+/ · ?) it replaces the panel and returns to the panel's window.</summary>
@@ -372,7 +394,7 @@ internal sealed class Surfaces : IDisposable
         After(1.5, () =>
         {
             panel.Open(PanelAnchor.Mouse, default);
-            Log.Write($"probe rail rect={Win32.Text(rail.ScreenRect)} visible={B(rail.IsShown)} exstyle={Win32.ExStyleText(Win32.ExStyle(rail.Hwnd))} affinity=0x{Win32.DisplayAffinity(rail.Hwnd):X} collapsed={B(rail.Collapsed)} marks={rail.MarkCount}; " +
+            Log.Write($"probe rail rect={Win32.Text(rail.ScreenRect)} visible={B(rail.IsShown)} exstyle={Win32.ExStyleText(Win32.ExStyle(rail.Hwnd))} affinity=0x{Win32.DisplayAffinity(rail.Hwnd):X} collapsed={B(rail.Collapsed)} dots={rail.DotCount}; " +
                       $"panel rect={Win32.Text(panel.ScreenRect)} visible={B(panel.IsShown)} affinity=0x{Win32.DisplayAffinity(panel.Hwnd):X} foreground={Win32.Describe(PInvoke.GetForegroundWindow())}");
         });
         After(Math.Max(0.5, seconds - 0.25), () =>
@@ -382,7 +404,7 @@ internal sealed class Surfaces : IDisposable
             Log.Write($"probe windows: [{string.Join("; ", wins)}]");
             var fg = PInvoke.GetForegroundWindow();
             Log.Write($"probe surfaces: tray={(tray.Added ? "added" : "missing")} \"{tray.Tooltip}\" hotkeys=[{string.Join(", ", Hotkeys.Registered.Select(kv => $"{kv.Key.RawValue()}={kv.Value.Symbol}"))}] " +
-                      $"rail marks={rail.MarkCount} panel visible={B(panel.IsShown)} foreground={Win32.Describe(fg)} ours={B(Win32.IsOurs(fg))}");
+                      $"rail dots={rail.DotCount} panel visible={B(panel.IsShown)} agents visible={B(agents.IsShown)} foreground={Win32.Describe(fg)} ours={B(Win32.IsOurs(fg))}");
         });
     }
 
@@ -412,10 +434,11 @@ internal sealed class Surfaces : IDisposable
         store.PropertyChanged -= OnStoreChanged;
         rail.Stop();
         panel.Stop();
+        agents.Stop();
         Hotkeys.Dispose();
         tray.Dispose();
         SystemEffects.Current?.Dispose();
-        foreach (var w in new ToolWindow[] { legend, peek, panel, rail })
+        foreach (var w in new ToolWindow[] { legend, agents, panel, rail })
         {
             try { w.CloseForGood(); }
             catch (Exception) { }

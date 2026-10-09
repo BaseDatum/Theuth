@@ -12,4 +12,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Theuth.Companion.Core.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- 149 WW3 R3: pure managed Opus (MIT) for the engine's SpeechAudio packets; version in Directory.Build.props. -->
+    <PackageReference Include="Concentus" Version="$(ConcentusVersion)" />
+  </ItemGroup>
 </Project>

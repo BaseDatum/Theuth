@@ -12,6 +12,7 @@ GetClassName
 GetWindowText
 GetWindowRect
 GetCursorPos
+SetCursorPos
 EnumWindows
 // styles, layering, capture exclusion, DPI
 GetWindowLongPtr
