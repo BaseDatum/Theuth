@@ -299,6 +299,8 @@ internal sealed partial class AnswerCardWindow : ToolWindow
     /// </summary>
     public Func<RectInt32?>? AvoidRect { get; set; }
 
+    private int ncW, ncH; // learned: window px beyond the client (outer − ClientSize)
+
     /// <summary>Whether the follow-up field has focus (letters are text there).</summary>
     public bool FollowUpFocused => followUp is { } f && f.FocusState != FocusState.Unfocused;
 
@@ -697,14 +699,27 @@ internal sealed partial class AnswerCardWindow : ToolWindow
         shell.Measure(new global::Windows.Foundation.Size(CardWidth, double.PositiveInfinity));
         double maxH = m.WorkArea.Height / scale * MaxScreenShare;
         double h = Math.Clamp(shell.DesiredSize.Height + 2, 60, Math.Max(60, maxH));
-        var size = ((int)Math.Round(CardWidth * scale), (int)Math.Round(h * scale));
-        var f = IslandModel.DefaultFrame(m.AsIslandDisplay(), size);
+        int cw = (int)Math.Round(CardWidth * scale), ch = (int)Math.Round(h * scale); // the client the content measured for
+        var f = IslandModel.DefaultFrame(m.AsIslandDisplay(), (cw + ncW, ch + ncH));
         int y = f.Y;
         if (AvoidRect?.Invoke() is { } isl && isl.X < f.X + f.Width && f.X < isl.X + isl.Width && isl.Y < y + f.Height && y < isl.Y + isl.Height)
         {
             y = isl.Y + isl.Height + (int)Math.Round(8 * scale); // below the shown island (the Mac's pillFrame rule)
         }
         Place(new RectInt32(f.X, y, f.Width, f.Height));
+        // The window rect is not all client: the DWM edge of the frameless window takes a few px (the R1 renders were 544 px wide for
+        // 550 asked, and the bottom caps clipped). Learn the deficit from ClientSize once and grow the window by it, centred.
+        var client = AppWindow.ClientSize;
+        int dw = cw - client.Width, dh = ch - client.Height;
+        if (client.Width > 0 && client.Height > 0 && (dw > 0 || dh > 0) && dw < 48 && dh < 48)
+        {
+            dw = Math.Max(0, dw);
+            dh = Math.Max(0, dh);
+            ncW += dw;
+            ncH += dh;
+            Log.Write($"answer-card: client deficit {dw}×{dh} px — the window now asks {ncW}×{ncH} px over the content");
+            Place(new RectInt32(f.X - dw / 2, y, f.Width + dw, f.Height + dh));
+        }
     }
 }
 
