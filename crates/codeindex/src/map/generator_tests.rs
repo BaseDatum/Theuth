@@ -34,6 +34,8 @@ struct Script {
 static SCRIPT: LazyLock<Mutex<Script>> = LazyLock::new(Mutex::default);
 /// Pipeline tests share the process-wide caller and script: one at a time.
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
+/// USD nanos every fake reply reports as its cost.
+const FAKE_CALL_COST: u64 = 2_500_000;
 
 fn script() -> std::sync::MutexGuard<'static, Script> {
     SCRIPT.lock().unwrap_or_else(|e| e.into_inner())
@@ -74,6 +76,8 @@ fn install() {
                 input_tokens: Some(1000),
                 output_tokens: Some(100),
                 latency: Duration::from_millis(1),
+                cost_nanos: Some(FAKE_CALL_COST),
+                request_id: Some(format!("req-{}", script().calls.len())),
             })
         })
     }));
@@ -319,6 +323,30 @@ async fn generate_with_fake_side_caller_validates_and_repairs() {
     assert!(
         !backed.is_empty() && backed.iter().all(|e| e.2 == 1),
         "{backed:?}"
+    );
+    // F1: the job sums every reply's priced cost; provenance carries the
+    // agent's request ids and the element's own share.
+    let (job_cost, job_calls): (i64, i64) =
+        sqlx::query_as("SELECT cost_nanos, calls FROM jobs WHERE id = ?")
+            .bind(&job.id)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(job_cost, job_calls * i64::try_from(FAKE_CALL_COST).unwrap());
+    let (root_cost, root_calls): (i64, String) = sqlx::query_as(
+        "SELECT cost_nanos, call_ids FROM elements WHERE id = 'overall-architecture'",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    let ids: Vec<String> = serde_json::from_str(&root_calls).unwrap();
+    assert!(
+        ids.len() >= 2 && ids.iter().all(|id| id.starts_with("req-")),
+        "{ids:?}"
+    );
+    assert_eq!(
+        root_cost,
+        i64::try_from(FAKE_CALL_COST).unwrap() * i64::try_from(ids.len()).unwrap()
     );
     // Stage C named and described the units.
     let (n,): (i64,) = sqlx::query_as(

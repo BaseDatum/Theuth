@@ -1040,3 +1040,27 @@ across every wave: 73 §7's lens latencies (A16), availability flow (one `CodeTo
 Not built. Design v0 written 2026-10-08 on `docs/147-codemap-perspectives` from the four recon sheets, the spike assets and
 this tree at `5cddad8e` (every `path:lines` re-opened the same day). Contract wave C can start now; W1–W3 in parallel
 after it.
+
+## As built (2026-10-08)
+
+- **Landed on main as `b6acc670`** (merged through `dd19bf63`): contract (§4, §10), skeleton (§5), generator (§6),
+  validator, store, export/import (§13), the Map tab (§11), `code_overview` (§12), `codemap_*` RPC and events.
+- **Engine panic fixed (F1).** The live proof on an omm copy (top level holds the FILE unit `tsup.config.ts`) crashed a
+  tokio worker in `Skeleton::group` (`skeleton.rs`: `&path[prefix.len()+1..]` past the end). `group` now `strip_prefix`es
+  `prefix/` and skips any file not strictly under it, so a file unit has no children; `clip` saturates its arithmetic;
+  `import::humanize` uppercases the first *char*; `surface::graph::line_col` steps back to a char boundary. The codeindex
+  actor's lens/map handlers run on their own task: a panic is an `Err("<msg>: handler panicked: …")` reply, the actor keeps
+  serving (kameo's default `on_panic` would have stopped it and failed every later `code_*`). Tests: a synthetic repo with
+  a top-level file unit and a unicode-named file through overview/element/search/recompute; one per hardened slice; a
+  panicking handler leaves the actor alive.
+- **Real cost in side-call replies (F1).** `runtime::SideReply` gained `cost_nanos: Option<u64>` (USD nanos; the priced
+  amount the agent settles in `model_calls`, provider-reported else catalog-estimated) and `request_id: Option<String>`
+  (`model_calls.request_id`), both `serde(default)`. `Side::call` fills them from `Reserved::settle`. The generator sums
+  `cost_nanos` into `MapJob` (every `CodeMapProgress` and the `jobs` row) and into each element's `MapProvenance`, and
+  uses `request_id` as the provenance call id when present (own uuid otherwise). The panel's cost chip (§17 item 2) now
+  moves.
+- **Known pre-existing reds**: `crates/codeindex/tests/index.rs` `map_and_symbol` and `impact_on_this_repository` (tool
+  assertions against this repository's live index; unrelated to 147).
+- **Still open from §17**: human edits to prose (1), export overwrite rules (3), description model tier (5), mark semantics
+  (6), depth for flat repos (7), `code_overview` in subagent briefs (8). Item 2 (live cost) is answered by the cost wiring
+  above; item 4 was resolved by S5/S1.

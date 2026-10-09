@@ -136,6 +136,14 @@ pub struct SideReply {
     pub output_tokens: Option<u32>,
     /// Wall clock from dispatch to the final event.
     pub latency: Duration,
+    /// What the call cost, USD nanos — the priced amount `agent` settled in
+    /// `model_calls` (provider-reported, else estimated from the catalog);
+    /// `None` when unpriced or in another currency.
+    #[serde(default)]
+    pub cost_nanos: Option<u64>,
+    /// The `model_calls.request_id` of the call, for provenance.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 #[cfg(test)]

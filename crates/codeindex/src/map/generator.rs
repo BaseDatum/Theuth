@@ -210,11 +210,14 @@ enum Stop {
 /// One side call that came back.
 #[derive(Clone, Debug)]
 struct CallOut {
+    /// `model_calls.request_id` when the agent reported it, else our own.
     id: String,
     text: String,
     model: String,
     input: u32,
     output: u32,
+    /// USD nanos the agent priced the call at (0 when unpriced).
+    cost_nanos: u64,
 }
 
 /// What a validated call produced: the value, the calls it took, whether a
@@ -357,14 +360,20 @@ impl Job {
             kind: CallKind::CodeMap,
         })
         .await;
-        self.state().calls += 1;
+        let cost_nanos = r.as_ref().map_or(0, |reply| reply.cost_nanos.unwrap_or(0));
+        {
+            let mut s = self.state();
+            s.calls += 1;
+            s.cost_nanos = s.cost_nanos.saturating_add(cost_nanos);
+        }
         match r {
             Ok(reply) => Ok(CallOut {
-                id: new_id(),
+                id: reply.request_id.unwrap_or_else(new_id),
                 text: reply.text,
                 model: reply.model,
                 input: reply.input_tokens.unwrap_or(0),
                 output: reply.output_tokens.unwrap_or(0),
+                cost_nanos,
             }),
             Err(e) if e.contains("cancelled") => Err(Stop::Cancelled),
             Err(e) if e.to_ascii_lowercase().contains("budget") => Err(Stop::Failed(format!(
@@ -443,7 +452,9 @@ impl Job {
             index_state: facts.index_state.clone(),
             generated_ms: u64::try_from(w::now_ms()).unwrap_or(0),
             call_ids: calls.iter().map(|c| c.id.clone()).collect(),
-            cost_nanos: 0,
+            cost_nanos: calls
+                .iter()
+                .fold(0u64, |a, c| a.saturating_add(c.cost_nanos)),
             currency: CURRENCY.to_owned(),
             input_tokens: calls.iter().map(|c| c.input).sum(),
             output_tokens: calls.iter().map(|c| c.output).sum(),
