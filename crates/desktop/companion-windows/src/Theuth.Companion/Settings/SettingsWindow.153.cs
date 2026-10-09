@@ -36,6 +36,7 @@ internal sealed partial class SettingsWindow
         int gen = ++dictationPage;
         bool Current() => gen == dictationPage && CurrentPage == "dictation";
         var prefs = model.Dictation;
+        var live = ReadVoiceSettings(); // 153 F1: the engine's voice.* keys, once per open; -32601 → the remembered values below stay
         Heading(page, "Dictation");
         Caption(page, "How spoken words become text in the Ask bar, the panel's row mics and other apps. The engine keeps these settings for every client — the desktop, the terminal UI, the phone and this companion.");
         var status = Caption(page, "");
@@ -49,7 +50,7 @@ internal sealed partial class SettingsWindow
         mic.IsEnabled = false;
         var micNote = Caption(page, "Loading the engine's devices…");
         AutomationProperties.SetAutomationId(micNote, "settings-dictation-mic-note");
-        _ = LoadMicrophones(mic, micNote, Current, Say);
+        _ = LoadMicrophones(mic, micNote, Current, Say, live);
         Toggle(page, "Open the mic on key-down", "settings-dictation-mic-early", prefs.MicOnKeyDown, on => model.UpdateDictation(d => d.MicOnKeyDown = on));
         Caption(page, "The recorder starts at the press of the Ask-bar or panel key, so the first word is never cut; a tap still never starts a dictation. Windows shows the microphone in use for a moment on every tap.");
 
@@ -57,13 +58,23 @@ internal sealed partial class SettingsWindow
         SubHeading(page, "Shaping");
         Caption(page, "Full: spoken punctuation, numbers, literals, your dictionary and the spoken commands. Plain: punctuation, numbers and literals only. Off: the model's words as heard.");
         var presets = Enum.GetValues<ShapePreset>().Select(p => (p.Word(), DictationSettings.PresetLabel(p))).ToList();
+        var shapeCombos = new Dictionary<Surface, ComboBox>();
+        var engineWords = new Dictionary<Surface, string>();
+        bool applying = false;
         foreach (var surface in Enum.GetValues<Surface>())
         {
             var s = surface;
-            Combo(page, DictationSettings.SurfaceLabel(s), $"settings-dictation-shape-{s.Word()}", presets, prefs.PresetFor(s)?.Word() ?? ShapePreset.Full.Word(),
-                v => _ = SetShape(s, DictationSettings.ParsePreset(v) ?? ShapePreset.Full, Say));
+            shapeCombos[s] = Combo(page, DictationSettings.SurfaceLabel(s), $"settings-dictation-shape-{s.Word()}", presets, prefs.PresetFor(s)?.Word() ?? ShapePreset.Full.Word(),
+                v =>
+                {
+                    // Showing the engine's value is not a choice: no set_shape for it.
+                    if (applying || (engineWords.TryGetValue(s, out var w) && w == v)) return;
+                    engineWords[s] = v;
+                    _ = SetShape(s, DictationSettings.ParsePreset(v) ?? ShapePreset.Full, Say);
+                });
         }
-        Caption(page, "Shown: the last choice made here (theuth has no reader for these yet); \"Full\" is the engine's default.");
+        var shapeNote = Caption(page, "Reading the engine's presets…");
+        AutomationProperties.SetAutomationId(shapeNote, "settings-dictation-shape-note");
 
         // MARK: spoken commands (§7.2)
         SubHeading(page, "Spoken commands");
@@ -71,6 +82,7 @@ internal sealed partial class SettingsWindow
         var send = Field(page, "Send phrases", "settings-dictation-send", DictationSettings.JoinPhrases(phrases.Send));
         var scratch = Field(page, "Scratch phrases", "settings-dictation-scratch", DictationSettings.JoinPhrases(phrases.Scratch));
         var literal = Field(page, "Literal word", "settings-dictation-literal", phrases.Literal);
+        var (send0, scratch0, literal0) = (send.Text, scratch.Text, literal.Text);
         var save = new Button { Content = "Save spoken commands" };
         AutomationProperties.SetAutomationId(save, "settings-dictation-phrases-save");
         save.Click += (_, _) => _ = SetPhrases(new EndPhrases
@@ -86,7 +98,7 @@ internal sealed partial class SettingsWindow
         SubHeading(page, "Polish");
         var polish = Caption(page, "Polish model: …");
         AutomationProperties.SetAutomationId(polish, "settings-dictation-polish-model");
-        _ = LoadPolishModel(polish, Current);
+        _ = LoadPolishModel(polish, Current, live);
         var change = new HyperlinkButton { Content = "Change in theuth's Settings › Voice…", Padding = new Thickness(0, 2, 0, 2) };
         AutomationProperties.SetAutomationId(change, "settings-dictation-polish-change");
         change.Click += (_, _) => _ = Links.Open(new Uri("theuth://settings/voice"));
@@ -142,13 +154,67 @@ internal sealed partial class SettingsWindow
         AutomationProperties.SetAutomationId(forgetAll, "settings-dictation-history-forget-all");
         forgetAll.Click += (_, _) => _ = Forget(null, history, Current, Say);
         page.Children.Add(forgetAll);
-        Caption(page, "Kept on this computer only — the last 200 dictations and up to 64 MiB of their audio, so a correction can be learned and replayed. The agent never reads it, and no channel or other machine can reach it. Learn from my corrections, Keep audio and the history switch itself are in theuth's Settings › Voice.");
+        var historyNote = Caption(page, DictationSettings.HistoryCaption(null));
+        AutomationProperties.SetAutomationId(historyNote, "settings-dictation-history-note");
         var voice = new HyperlinkButton { Content = "Open theuth's Settings › Voice…", Padding = new Thickness(0, 2, 0, 2) };
         AutomationProperties.SetAutomationId(voice, "settings-dictation-history-settings");
         voice.Click += (_, _) => _ = Links.Open(new Uri("theuth://settings/voice"));
         page.Children.Add(voice);
         _ = LoadHistory(history, Current, Say);
+
+        // 153 F1: the engine's values replace the remembered ones once voice_settings() answers (a field already edited is left alone).
+        async Task ApplyLive()
+        {
+            var (settings, older) = await live;
+            if (!Current()) return;
+            if (settings is null)
+            {
+                shapeNote.Text = DictationSettings.ShapeCaption(fromEngine: false, older);
+                return;
+            }
+            var unknown = new List<string>();
+            applying = true;
+            try
+            {
+                foreach (var (surface, combo) in shapeCombos)
+                {
+                    var word = settings.Shape.Word(surface);
+                    engineWords[surface] = word;
+                    if (combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Tag as string == word) is { } item) combo.SelectedItem = item;
+                    else unknown.Add($"{DictationSettings.SurfaceLabel(surface)} = {word}");
+                }
+            }
+            finally { applying = false; }
+            shapeNote.Text = DictationSettings.ShapeCaption(fromEngine: true, older: false, unknown);
+            if (send.Text == send0) send.Text = DictationSettings.JoinPhrases(settings.EndCommands.Send);
+            if (scratch.Text == scratch0) scratch.Text = DictationSettings.JoinPhrases(settings.EndCommands.Scratch);
+            if (literal.Text == literal0) literal.Text = settings.EndCommands.Literal;
+            historyNote.Text = DictationSettings.HistoryCaption(settings.History);
+        }
+        _ = ApplyLive();
         if (global::Theuth.Companion.AskBar.AskFlags.DictationShot) _ = ShotAfterLoad(page, Current);
+    }
+
+    /// <summary>153 F1: <c>voice_settings()</c> once per page open — the settings, or null with <c>Older</c> = the engine answered -32601
+    /// (it predates F1: the page keeps the last values written here). Logged either way, so a round can read back what was shown.</summary>
+    private async Task<(VoiceSettings? Settings, bool Older)> ReadVoiceSettings()
+    {
+        try
+        {
+            var s = await store.Client.VoiceSettingsAsync();
+            Log.Write($"settings: voice_settings ok — shape companion={s.Shape.Companion} composer={s.Shape.Composer} tui={s.Shape.Tui} phone={s.Shape.Phone} any_app={s.Shape.AnyApp}; send=[{string.Join("|", s.EndCommands.Send)}] scratch=[{string.Join("|", s.EndCommands.Scratch)}] literal={s.EndCommands.Literal}; input_devices=[{string.Join("|", s.InputDevices)}]; polish_model={s.PolishModel ?? "chain"}; history enabled={s.History.Enabled} rows={s.History.Rows} audio_mib={s.History.AudioMib} learn={s.History.Learn}; standby={s.StandbySecs}s duck={s.DuckMedia}");
+            return (s, false);
+        }
+        catch (RpcException e) when (e.Code == -32601)
+        {
+            Log.Write("settings: voice_settings -32601 (engine before 153 F1) — the remembered values stay");
+            return (null, true);
+        }
+        catch (Exception e)
+        {
+            Log.Write($"settings: voice_settings failed ({Describe(e)}) — the remembered values stay");
+            return (null, false);
+        }
     }
 
     /// <summary><c>--dictation-shot</c>: the page rendered to a PNG once the engine's answers had time to land (RenderTargetBitmap).</summary>
@@ -170,14 +236,15 @@ internal sealed partial class SettingsWindow
 
     // MARK: loaders and actions (UI thread; every answer checks the page is still the one that asked)
 
-    private async Task LoadMicrophones(ComboBox mic, TextBlock note, Func<bool> current, Action<string> say)
+    private async Task LoadMicrophones(ComboBox mic, TextBlock note, Func<bool> current, Action<string> say, Task<(VoiceSettings? Settings, bool Older)> live)
     {
         ValueList<InputDevice> devices;
-        ValueList<string> prefs;
+        IReadOnlyList<string> prefs;
         try
         {
             devices = await store.Client.ListInputDevicesAsync();
-            prefs = (await store.Client.VoiceStatusAsync()).InputDevices;
+            var settings = (await live).Settings;
+            prefs = DictationSettings.MicPreferences(settings, settings is null ? (await store.Client.VoiceStatusAsync()).InputDevices : null);
         }
         catch (Exception e)
         {
@@ -252,9 +319,11 @@ internal sealed partial class SettingsWindow
         }
     }
 
-    private async Task LoadPolishModel(TextBlock line, Func<bool> current)
+    private async Task LoadPolishModel(TextBlock line, Func<bool> current, Task<(VoiceSettings? Settings, bool Older)> live)
     {
         string text;
+        // 153 F1: the live slot from voice_settings(); an engine before F1 still has polish_model() (wave A).
+        if ((await live).Settings is { } settings) { if (current()) line.Text = DictationSettings.PolishModelLine(settings.PolishModel); return; }
         try { text = await store.Client.PolishModelAsync() is { } m ? $"Polish model: {(m.Name.Length > 0 ? m.Name : m.Id)}{(m.Provider.Length > 0 ? $" · {m.Provider}" : "")}" : "Polish model: Chain (title model, then session)"; }
         catch (Exception e) { text = $"Polish model: unknown ({Describe(e)})"; }
         if (current()) line.Text = text;

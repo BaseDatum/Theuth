@@ -90,4 +90,30 @@ public sealed class DictationSettingsTests
         await Assert.ThrowsAsync<RpcException>(() => DictionaryRetry.Run(() => { tries++; return Task.FromException(new RpcException(-32000, "dictionary loading")); }, _ => Task.CompletedTask, attempts: 3));
         Assert.Equal(3, tries);
     }
+
+    /// <summary>153 F1: the three captions Settings › Dictation shows from <c>voice_settings()</c> — and the fallbacks for an older engine.</summary>
+    [Fact]
+    public void VoiceSettingsCaptionsFollowTheEngineAndFallBackWhenItIsOlder()
+    {
+        Assert.StartsWith("Shown: the engine's presets", DictationSettings.ShapeCaption(fromEngine: true, older: false));
+        Assert.Contains("this engine is older", DictationSettings.ShapeCaption(fromEngine: false, older: true));
+        Assert.Contains("did not answer", DictationSettings.ShapeCaption(fromEngine: false, older: false));
+        Assert.EndsWith("Not known to this companion: Other apps = loud.", DictationSettings.ShapeCaption(true, false, new[] { "Other apps = loud" }));
+
+        Assert.Equal("Polish model: openai/gpt-5.6-mini", DictationSettings.PolishModelLine("openai/gpt-5.6-mini"));
+        Assert.Equal("Polish model: Chain (title model, then session)", DictationSettings.PolishModelLine(null));
+        Assert.Equal("Polish model: Chain (title model, then session)", DictationSettings.PolishModelLine(" "));
+
+        Assert.Contains("by default the last 200 dictations and up to 64 MiB", DictationSettings.HistoryCaption(null));
+        Assert.Contains("the last 50 dictations and up to 16 MiB", DictationSettings.HistoryCaption(new HistoryConfig { Rows = 50, AudioMib = 16 }));
+        Assert.Contains("Corrections are learned.", DictationSettings.HistoryCaption(new HistoryConfig()));
+        Assert.Contains("Learning from corrections is off.", DictationSettings.HistoryCaption(new HistoryConfig { Learn = false }));
+        Assert.StartsWith("History is off", DictationSettings.HistoryCaption(new HistoryConfig { Enabled = false }));
+
+        var f1 = new VoiceSettings { InputDevices = ValueList.Of("Shure MV7") };
+        Assert.Equal(new[] { "Shure MV7" }, DictationSettings.MicPreferences(f1, new[] { "stale" }));
+        Assert.Empty(DictationSettings.MicPreferences(new VoiceSettings(), new[] { "stale" })); // F1 says "system default only": no stale fallback
+        Assert.Equal(new[] { "Headset" }, DictationSettings.MicPreferences(null, new[] { "Headset" }));
+        Assert.Empty(DictationSettings.MicPreferences(null, null));
+    }
 }

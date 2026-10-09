@@ -61,6 +61,9 @@ public static class WireWords153
     /// <summary>The surface a wire word names; null for an unknown word (a newer engine's surface) or null.</summary>
     public static Surface? ParseSurface(string? word) => TolerantWordConverter<Surface>.Parse(word);
 
+    /// <summary>The shaping preset a wire word names (<c>full</c> · <c>plain</c> · <c>off</c>); null for an unknown word or null.</summary>
+    public static ShapePreset? ParsePreset(string? word) => TolerantWordConverter<ShapePreset>.Parse(word);
+
     /// <summary>The shaping action a wire word names; null for an unknown word.</summary>
     public static ShapeAction? ParseAction(string? word) => TolerantWordConverter<ShapeAction>.Parse(word);
 }
@@ -502,4 +505,59 @@ public sealed record Entry
     /// <summary><c>tld</c>, <c>ext</c>, <c>mention</c>, <c>path</c>, <c>terminal</c>, <c>keep_case</c> …</summary>
     [JsonConverter(typeof(NullAsEmptyListConverter<string>))]
     public ValueList<string> Tags { get; init; } = new();
+}
+
+// MARK: settings (153 F1, main bfafefeb: voice_settings → voice/src/lib.rs VoiceSettings · shape/mod.rs ShapePresets · HistoryConfig · Duck)
+
+/// <summary><c>voice::shape::ShapePresets</c> (153 §4.5): <c>voice.shape</c>, one preset per surface, <c>#[serde(default)]</c> (every
+/// default <c>full</c>). Received, so each preset stays its wire word (a newer engine's word must not throw); <see cref="Preset"/> reads one.</summary>
+public sealed record ShapePresets
+{
+    public string Composer { get; init; } = "full";
+    public string Tui { get; init; } = "full";
+    public string Companion { get; init; } = "full";
+    public string Phone { get; init; } = "full";
+    public string AnyApp { get; init; } = "full";
+
+    /// <summary>The wire word stored for <paramref name="surface"/>.</summary>
+    public string Word(Surface surface) => surface switch
+    {
+        Surface.Composer => Composer,
+        Surface.Tui => Tui,
+        Surface.Companion => Companion,
+        Surface.Phone => Phone,
+        _ => AnyApp,
+    };
+
+    /// <summary>The preset for <paramref name="surface"/>; null for a word this build does not know.</summary>
+    public ShapePreset? Preset(Surface surface) => WireWords153.ParsePreset(Word(surface));
+}
+
+/// <summary><c>voice::HistoryConfig</c> (153 §6.5): <c>voice.history</c> — rows and audio kept, and whether corrections are learned.</summary>
+public sealed record HistoryConfig
+{
+    public bool Enabled { get; init; } = true;
+    public uint Rows { get; init; } = 200;
+    public uint AudioMib { get; init; } = 64;
+    public bool Learn { get; init; } = true;
+}
+
+/// <summary>
+/// <c>voice_settings()</c>'s reply (153 F1): the user-facing <c>voice.*</c> keys as the engine holds them now (what every <c>set_*</c> left behind,
+/// <c>polish_model</c> from the live slot). <c>standby_secs</c> is a u64 (bigint in TS); <c>duck_media</c> stays its word
+/// (<c>off</c> · <c>duck</c> · <c>pause</c>, §8.6). An engine without F1 answers -32601 — Settings then falls back to the last values written here.
+/// </summary>
+public sealed record VoiceSettings
+{
+    public ShapePresets Shape { get; init; } = new();
+    public EndPhrases EndCommands { get; init; } = new();
+
+    [JsonConverter(typeof(NullAsEmptyListConverter<string>))]
+    public ValueList<string> InputDevices { get; init; } = new();
+
+    public ulong StandbySecs { get; init; } = 8;
+    public string DuckMedia { get; init; } = "off";
+    public string? PolishModel { get; init; }
+    public Dictionary<string, string> PolishProfiles { get; init; } = new(StringComparer.Ordinal);
+    public HistoryConfig History { get; init; } = new();
 }

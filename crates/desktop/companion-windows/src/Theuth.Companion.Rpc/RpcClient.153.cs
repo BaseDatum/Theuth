@@ -72,6 +72,10 @@ public sealed partial class RpcClient
     /// <summary><c>set_shape(surface, preset)</c>: persist <c>voice.shape.&lt;surface&gt;</c> (153 §4.5).</summary>
     public Task SetShapeAsync(Surface surface, ShapePreset preset) => CallRawAsync("set_shape", surface.Word(), preset.Word());
 
+    /// <summary><c>voice_settings()</c> (153 F1, main bfafefeb): the live <c>voice.*</c> keys — shape presets, end phrases, input devices,
+    /// standby, ducking, polish model and profiles, history. -32601 on an engine without F1 (<see cref="RpcException.Code"/>).</summary>
+    public Task<VoiceSettings> VoiceSettingsAsync() => CallAsync<VoiceSettings>("voice_settings");
+
     /// <summary><c>set_end_phrases(phrases)</c>: persist <c>voice.end_commands</c> (153 §7.2).</summary>
     public Task SetEndPhrasesAsync(EndPhrases phrases) => CallRawAsync("set_end_phrases", phrases);
 
