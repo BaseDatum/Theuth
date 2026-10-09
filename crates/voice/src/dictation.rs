@@ -1616,15 +1616,18 @@ mod tests {
 
     /// The test stand-in for the utterer: `script` says which chunk index
     /// (1-based; `usize::MAX` = on `close`) yields which piece; the gate is
-    /// "open" while chunks carry signal.
+    /// "open" while chunks carry signal; `delay` per chunk fakes a model
+    /// slower than real time.
     pub(super) struct Fake {
         pub script: Vec<(usize, Text)>,
         pub fed: usize,
         pub open: bool,
+        pub delay: Duration,
     }
 
     impl Fake {
         pub fn chunk(&mut self, pcm: &[f32]) -> Vec<Text> {
+            std::thread::sleep(self.delay);
             self.fed += 1;
             self.open = pcm.iter().any(|s| s.abs() > 1e-3);
             let fed = self.fed;
@@ -1678,6 +1681,18 @@ mod tests {
         ActorRef<Dictation>,
         tokio::sync::mpsc::UnboundedReceiver<VoiceEvent>,
     ) {
+        ready_with(script, mics, Duration::ZERO).await
+    }
+
+    /// [`ready`] with a fake engine that takes `delay` per chunk.
+    async fn ready_with(
+        script: Vec<(usize, Text)>,
+        mics: Vec<(&'static str, Receiver<Chunk>)>,
+        delay: Duration,
+    ) -> (
+        ActorRef<Dictation>,
+        tokio::sync::mpsc::UnboundedReceiver<VoiceEvent>,
+    ) {
         let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let sink = Events::spawn_with_mailbox(Events(tx), runtime::subscriber_mailbox());
@@ -1692,6 +1707,7 @@ mod tests {
             script,
             fed: 0,
             open: false,
+            delay,
         }));
         d.cfg.standby = Duration::ZERO;
         // No history db / packaged dictionary (≈ 4 s debug) under the fake engine.
@@ -1848,6 +1864,57 @@ mod tests {
             actor.ask(DictationStatus).await.expect("status").active,
             None
         );
+    }
+
+    /// 153-F2 (the Windows live finding): the whole clip lands in ONE push and
+    /// the stop follows at once, so every chunk is still queued — and the
+    /// half-chunk remainder sits in `Remote.pending` — when the task sees the
+    /// cancel. The stop drains them through the (slower-than-real-time) model
+    /// before the close: the last words and the end command survive, and audio
+    /// pushed after the stop is refused.
+    #[tokio::test]
+    async fn stop_drains_queued_audio_before_close() {
+        // 60 full chunks + half a chunk: the final lands on the padded 61st.
+        let (actor, mut rx) = ready_with(
+            vec![
+                (30, text(0, "ship it tonight", false)),
+                (61, text(0, "ship it tonight send it", true)),
+            ],
+            vec![],
+            Duration::from_millis(5),
+        )
+        .await;
+        let id = actor.ask(remote_16k()).await.expect("start");
+        let pcm: Vec<i16> = tone(60 * 320 + 160)
+            .iter()
+            .map(|s| (s * 32767.0) as i16)
+            .collect();
+        actor.ask(PushAudio { id, pcm }).await.expect("push");
+        actor.ask(StopDictation { id }).await.expect("stop");
+        let after_stop = actor.ask(PushAudio { id, pcm: vec![0; 320] }).await;
+        let mut last_final = None;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let reason = loop {
+            match tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("finished in time")
+                .expect("events")
+            {
+                VoiceEvent::DictationText {
+                    text,
+                    command,
+                    is_final: true,
+                    ..
+                } => last_final = Some((text, command)),
+                VoiceEvent::DictationFinished { reason, .. } => break reason,
+                _ => {}
+            }
+        };
+        assert_eq!(reason, FinishReason::Done);
+        let (text, command) = last_final.expect("the final before the stop");
+        assert_eq!(text, "ship it tonight send it");
+        assert_eq!(command, Some(EndCommand::Send { near_miss: false }));
+        assert_eq!(handler_err(after_stop), "not dictating", "audio after the stop");
     }
 
     /// §7.4: "scratch that" at a final re-sends the previous closed utterance empty.
