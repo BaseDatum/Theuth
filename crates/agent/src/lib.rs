@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod acp_child;
 pub mod advisor;
+pub mod ask;
 pub mod attach;
 mod aws;
 mod backend;
@@ -42,7 +43,10 @@ pub mod endless;
 pub mod endless_ext;
 pub mod frame;
 pub mod loop_;
+pub mod notebook_context;
 pub mod notebooks;
+pub mod overview_audio;
+pub mod overviews;
 pub mod peers;
 pub mod project;
 pub mod providers;
@@ -2207,9 +2211,10 @@ pub struct SkillBody {
 }
 
 /// What a `sessions` row is (125 §6.2): an ordinary chat, the hidden
-/// `advisor` child that reviews its parent's transcript (ruling 1), or a
-/// watch-only `observed` subagent a harness runs inside itself (141 D2).
-/// Stored as `sessions.kind`; readers hide advisors unless asked.
+/// `advisor` child that reviews its parent's transcript (ruling 1), a
+/// watch-only `observed` subagent a harness runs inside itself (141 D2), or
+/// an `ask` run across notebooks (144 §9). Stored as `sessions.kind`;
+/// readers hide advisors unless asked.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -2225,6 +2230,11 @@ pub enum SessionKind {
     /// the ACP child (or an observed parent when nested), no `agent`,
     /// `acp_session` = the harness's own id. Never driven, never messaged.
     Observed,
+    /// An "ask across notebooks" session (144 §9): a normal durable root
+    /// without a notebook binding whose first turn is the planned,
+    /// branched answer the engine wrote; the user keeps asking in it.
+    /// Listed by `notebook_ask_list`, otherwise a chat.
+    Ask,
 }
 
 cost::str_enum! {
@@ -3516,6 +3526,8 @@ impl runtime::Plugin for AgentPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        // 144 §13.2 (E1): `notebook_context_set` / `notebook_context_estimate` ride the agent's store.
+        notebook_context::register(rt);
         supervisor::start(rt).await
     }
 }

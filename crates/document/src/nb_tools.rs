@@ -17,7 +17,8 @@ use crate::index::{self, NbSearchArgs};
 use crate::ingest::{self, SourceAddArgs};
 use crate::meta::{DocId, Principal};
 use crate::notebook::{
-    ItemKind, NotebookCreate, NotebookGet, NotebookItemAdd, NotebookItemRemove, NotebookList,
+    InsightInstruction, ItemKind, NotebookCreate, NotebookGet, NotebookItemAdd, NotebookItemRemove,
+    NotebookList,
 };
 
 /// What the tools hold.
@@ -26,7 +27,7 @@ pub struct Notebooks {
     actor: ActorRef<DocumentActor>,
 }
 
-/// Register the ten wave-1 tools on `reg`.
+/// Register the ten wave-1 tools and the two wave-2 insight tools on `reg`.
 pub async fn register(reg: &ActorRef<ToolRegistry>, actor: ActorRef<DocumentActor>) {
     let n = Notebooks { actor };
     let _ = reg
@@ -56,7 +57,13 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, actor: ActorRef<DocumentActo
     let _ = reg
         .ask(RegisterTool(Arc::new(SourceRefreshTool(n.clone()))))
         .await;
-    let _ = reg.ask(RegisterTool(Arc::new(NbSearchTool(n)))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(NbSearchTool(n.clone()))))
+        .await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(InsightRunTool(n.clone()))))
+        .await;
+    let _ = reg.ask(RegisterTool(Arc::new(InsightPromoteTool(n)))).await;
 }
 
 fn agent(cx: &ToolCx) -> Principal {
@@ -512,5 +519,94 @@ impl Tool for NbSearchTool {
             ));
         }
         Ok(structured(text, &hits))
+    }
+}
+
+/// Arguments for [`InsightRunTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InsightRunArgs {
+    /// The source id.
+    pub source: String,
+    /// Exactly one of `builtin` (`key_insights` | `toc` | `open_questions`) or `skill` (a skill whose front
+    /// matter has `notebook_insight: true`).
+    pub instruction: InsightInstruction,
+}
+
+/// `insight_run` (Mutating): one more `###` section under the source's `## Insights`.
+pub struct InsightRunTool(pub Notebooks);
+
+#[async_trait::async_trait]
+impl Tool for InsightRunTool {
+    const NAME: &'static str = "insight_run";
+    const RISK: Risk = Risk::Mutating;
+    const RETURNS: &'static str = "dict";
+    type Args = InsightRunArgs;
+
+    fn description(&self) -> String {
+        "Write one insight about a source (a model side call): a builtin — key_insights, toc, open_questions — \
+         or a `notebook_insight` skill by name. Appended as `### <name> · <model> · <date>` under `## Insights`; \
+         returns {block}: the heading's block id, citable as theuth://sources/<id>#<block>."
+            .into()
+    }
+
+    async fn call(&self, a: InsightRunArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let r = ingest::insights::insight_run(
+            &self.0.actor,
+            doc_id(&a.source)?,
+            a.instruction,
+            Some(cx.session),
+        )
+        .await?;
+        Ok(structured(
+            format!("insight written: block {}\n", r.block),
+            &r,
+        ))
+    }
+}
+
+/// Arguments for [`InsightPromoteTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InsightPromoteArgs {
+    /// The source id.
+    pub source: String,
+    /// The insight section's heading block (or any block inside it).
+    pub block: String,
+    /// The notebook to file the note in; omitted = every live notebook holding the source.
+    #[serde(default)]
+    pub notebook: Option<String>,
+}
+
+/// `insight_promote` (Mutating): an insight section becomes a note with a provenance line.
+pub struct InsightPromoteTool(pub Notebooks);
+
+#[async_trait::async_trait]
+impl Tool for InsightPromoteTool {
+    const NAME: &'static str = "insight_promote";
+    const RISK: Risk = Risk::Mutating;
+    const RETURNS: &'static str = "dict";
+    type Args = InsightPromoteArgs;
+
+    fn description(&self) -> String {
+        "Promote an insight section of a source to a new note titled \"<insight> — <source>\", ending with \
+         `*From [<source>](theuth://sources/<id>#<block>) · <model> · <date>*`, filed in `notebook` (default: every \
+         notebook holding the source). Returns {doc, url}."
+            .into()
+    }
+
+    async fn call(&self, a: InsightPromoteArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let notebook = a.notebook.as_deref().map(doc_id).transpose()?;
+        let doc = ingest::insights::insight_promote(
+            &self.0.actor,
+            doc_id(&a.source)?,
+            a.block,
+            notebook,
+            agent(&cx),
+        )
+        .await?;
+        let url = format!("theuth://notes/{doc}");
+        Ok(structured(
+            format!("note {doc} created ({url})\n"),
+            &serde_json::json!({ "doc": doc, "url": url }),
+        ))
     }
 }

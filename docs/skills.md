@@ -37,6 +37,7 @@ Optional YAML between `---` delimiters at the top of the file:
 | `name`        | file stem, or directory name for `SKILL.md` |                                                |
 | `description` | first non-empty line of the body         | shown in the index                                |
 | `always`      | `false`                                  | `true`: body inlined into the system prompt, not indexed |
+| `notebook_insight` | `false`                             | `true`: listed by `insight_skills()`; `insight_run(source, {skill})` uses the body as the instruction and the description as the section heading (design 144 §4.3) |
 
 Unknown keys (`license`, `allowed-tools`, `metadata`, …) are ignored, so
 third-party `SKILL.md` repos load as they are. The body is everything after

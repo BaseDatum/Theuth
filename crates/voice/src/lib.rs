@@ -110,13 +110,36 @@ pub struct Transcript {
     pub duration_ms: u64,
 }
 
-/// Render one prose block (markdown) into a [`Clip`] (45 §4.3). Waits for the
-/// model to load if it has not; `Ok(None)` when there is nothing to say.
+/// Render one prose block (markdown) into a [`Clip`] (45 §4.3) in the
+/// configured voice. Waits for the model to load if it has not; `Ok(None)`
+/// when there is nothing to say.
 #[derive(Clone, Debug)]
 pub struct Synthesize {
     /// Markdown; `markdown::spoken` turns it into sentences.
     pub text: String,
 }
+
+/// Render a dialogue into one [`Clip`] (144 §10): one synthesis per turn in
+/// the turn's voice (`None` = the configured voice), [`DIALOGUE_GAP_MS`] of
+/// silence between turns, encoded once. Turns with nothing to say are
+/// skipped; `Ok(None)` when none remains. Reply like [`Synthesize`].
+#[derive(Clone, Debug)]
+pub struct SynthesizeDialogue {
+    /// Speaker turns in order.
+    pub turns: Vec<DialogueTurn>,
+}
+
+/// One speaker turn of a [`SynthesizeDialogue`].
+#[derive(Clone, Debug)]
+pub struct DialogueTurn {
+    /// Voice name (`voice_status` lists them); `None` = the configured voice.
+    pub voice: Option<String>,
+    /// Markdown; `markdown::spoken` turns it into sentences.
+    pub text: String,
+}
+
+/// Silence between two speaker turns of a dialogue clip.
+pub const DIALOGUE_GAP_MS: u32 = clip::GAP_MS;
 
 /// One voice message: MP3, 24 kHz mono, 48 kbit/s.
 #[derive(Clone, Debug, kameo::Reply)]
@@ -477,8 +500,8 @@ pub struct Voice {
     /// The speaker; opened on the first `Sink::Device` utterance, closed by
     /// `Stop { id: None }` (a talk's last word) so the device is held only while one runs.
     player: Option<Arc<Player>>,
-    /// [`Synthesize`] requests that arrived before the model loaded (45 §4.3).
-    pending_clips: Vec<(String, ClipReply)>,
+    /// [`Synthesize`]/[`SynthesizeDialogue`] jobs (`(voice, spoken)` turns) that arrived before the model loaded (45 §4.3).
+    pending_clips: Vec<(Vec<(String, String)>, ClipReply)>,
     /// One clip renders at a time; two channels talking at once share the CPU in turn, not in halves.
     clip_gate: Arc<tokio::sync::Semaphore>,
 }
@@ -570,19 +593,36 @@ impl Voice {
         }
     }
 
-    /// Render `spoken` into a clip on the loaded model, off the actor, one at a time.
-    fn clip(&self, synth: Arc<dyn Synthesizer>, spoken: String, tx: ClipReply) {
-        let voice = self.cfg.voice.clone();
+    /// Render `turns` (`(voice, spoken)`) into a clip on the loaded model, off the actor, one at a time.
+    fn clip(&self, synth: Arc<dyn Synthesizer>, turns: Vec<(String, String)>, tx: ClipReply) {
         let gate = self.clip_gate.clone();
         tokio::spawn(async move {
             let Ok(_permit) = gate.acquire_owned().await else {
                 return;
             };
-            let r = tokio::task::spawn_blocking(move || clip::render(&*synth, &voice, &spoken))
+            let r = tokio::task::spawn_blocking(move || clip::render(&*synth, &turns))
                 .await
                 .unwrap_or_else(|e| Err(anyhow::anyhow!("clip task panicked: {e}")));
             tx.send(r.map(Some).map_err(|e| format!("{e:#}")));
         });
+    }
+
+    /// Queue a clip job: render now when the model is loaded, else park it and start the load.
+    async fn clip_or_pend(
+        &mut self,
+        turns: Vec<(String, String)>,
+        tx: ClipReply,
+        me: ActorRef<Voice>,
+    ) {
+        match self.model.clone() {
+            Some(synth) => self.clip(synth, turns, tx),
+            None => {
+                self.pending_clips.push((turns, tx));
+                if self.model_state != ModelState::Loading {
+                    self.load(me).await;
+                }
+            }
+        }
     }
 
     /// Start synthesizing `text` for the utterance `id` on the loaded model.
@@ -665,15 +705,35 @@ impl Message<Synthesize> for Voice {
             tx.send(Ok(None));
             return reply;
         }
-        match self.model.clone() {
-            Some(synth) => self.clip(synth, spoken, tx),
-            None => {
-                self.pending_clips.push((spoken, tx));
-                if self.model_state != ModelState::Loading {
-                    self.load(ctx.actor_ref().clone()).await;
-                }
-            }
+        let turns = vec![(self.cfg.voice.clone(), spoken)];
+        self.clip_or_pend(turns, tx, ctx.actor_ref().clone()).await;
+        reply
+    }
+}
+
+impl Message<SynthesizeDialogue> for Voice {
+    type Reply = kameo::reply::DelegatedReply<Result<Option<Clip>, String>>;
+    async fn handle(
+        &mut self,
+        m: SynthesizeDialogue,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let turns: Vec<(String, String)> = m
+            .turns
+            .into_iter()
+            .filter_map(|t| {
+                let spoken = markdown::spoken(&t.text);
+                (!spoken.is_empty())
+                    .then(|| (t.voice.unwrap_or_else(|| self.cfg.voice.clone()), spoken))
+            })
+            .collect();
+        if turns.is_empty() {
+            tx.send(Ok(None));
+            return reply;
         }
+        self.clip_or_pend(turns, tx, ctx.actor_ref().clone()).await;
         reply
     }
 }
@@ -824,8 +884,8 @@ impl Message<Loaded> for Voice {
                 }
                 // A speaker that failed to open left `current` empty: move on.
                 self.advance(ctx.actor_ref().clone()).await;
-                for (spoken, tx) in std::mem::take(&mut self.pending_clips) {
-                    self.clip(synth.clone(), spoken, tx);
+                for (turns, tx) in std::mem::take(&mut self.pending_clips) {
+                    self.clip(synth.clone(), turns, tx);
                 }
             }
             Err(e) => {
@@ -973,6 +1033,40 @@ mod tests {
         assert_eq!(note_text("", 0), "[voice note, 1 s] ");
         assert!(is_note("  [voice note, 3 s] x"));
         assert!(!is_note("[attachment: a.m4a]"));
+    }
+
+    /// 144 §10: a dialogue clip is one MP3 of every turn (5 frames each on the
+    /// fake model) joined with 350 ms gaps; an empty turn is skipped and an
+    /// all-empty dialogue is nothing to say.
+    #[tokio::test]
+    async fn dialogue_clip_joins_turns_with_gaps() {
+        let (actor, _rx) = fake_voice().await;
+        let turn = |voice: &str, text: &str| DialogueTurn {
+            voice: Some(voice.into()),
+            text: text.into(),
+        };
+        let clip = actor
+            .ask(SynthesizeDialogue {
+                turns: vec![
+                    turn("alba", "**Alba:** Hello."),
+                    turn("peter_yearsley", ""),
+                    turn("peter_yearsley", "Hi there."),
+                ],
+            })
+            .await
+            .unwrap()
+            .expect("a clip");
+        assert_eq!(clip.mime, "audio/mpeg");
+        assert_eq!(clip.bytes[0], 0xFF);
+        // Two spoken turns × 5 × 1920 samples + one 350 ms gap, at 24 kHz.
+        assert_eq!(clip.duration_ms, (2 * 5 * 1920 * 1000 / 24_000) + 350);
+        let none = actor
+            .ask(SynthesizeDialogue {
+                turns: vec![turn("alba", "")],
+            })
+            .await
+            .unwrap();
+        assert!(none.is_none());
     }
 
     /// A model that says nothing audible: `frames` Mimi frames of silence, one every `pace`.

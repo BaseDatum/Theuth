@@ -31,6 +31,15 @@ export type NotebooksApi = Pick<
 /** The notebook RPCs over one client (a guest's `/d` client); the server gates what a guest may call. */
 export const notebooksApi = (client: RpcClient): NotebooksApi => makeApi(client)
 
+/** Contract §1 (wave 2): the dial / estimate / insight methods; hub-only except `notebook_context_estimate`. */
+export type ContextApi = Pick<
+  Api,
+  'notebook_context_set' | 'notebook_context_clear' | 'notebook_context_set_all' | 'notebook_context_estimate' | 'insight_run' | 'insight_promote' | 'insight_skills'
+>
+
+/** The connected engine's wave-2 methods; like `useApi`, only rendered once connected. */
+export const useContextApi = (): ContextApi => useApi()
+
 /** The connected engine's notebook RPCs; like `useApi`, only rendered once connected. */
 export const useNotebooksApi = (): NotebooksApi => useApi()
 
@@ -45,4 +54,7 @@ export const notebookKeys = {
   /** The notebook document's markdown (the description, §3.2). */
   description: (id: string) => ['notebooks', 'description', id] as const,
   cite: (hrefs: readonly string[]) => ['cite', ...hrefs] as const,
+  /** `notebook_context_estimate(notebook, session)` (§5.2); `null` session = the default rule. */
+  estimate: (notebook: string, session: string | null) => ['notebooks', 'estimate', notebook, session] as const,
+  insightSkills: ['notebooks', 'insight-skills'] as const,
 }

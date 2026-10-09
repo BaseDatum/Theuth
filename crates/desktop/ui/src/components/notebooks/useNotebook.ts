@@ -1,17 +1,19 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
+import type { ItemKind } from '@/rpc/bindings/ItemKind'
+import type { Notebook } from '@/rpc/bindings/Notebook'
 import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
 import type { SourceEvent } from '@/rpc/bindings/SourceEvent'
 import type { SourceStatus } from '@/rpc/bindings/SourceStatus'
-import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
+import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { useApi } from '@/lib/rpc'
 import { on } from '@/store/sessions'
 import type { WireEvent } from '@/rpc/events'
 
-/** `notebook_get(id)` — the row with counts (the items come from `useNotebookItems`). */
-export function useNotebook(id: string) {
+/** `notebook_get(id)` — the row with counts (the items come from `useNotebookItems`). `enabled: false` = no id yet. */
+export function useNotebook(id: string, enabled = true) {
   const nb = useNotebooksApi()
-  return useQuery({ queryKey: notebookKeys.one(id), queryFn: async () => (await nb.notebook_get(id)).notebook })
+  return useQuery({ queryKey: notebookKeys.one(id), queryFn: async () => (await nb.notebook_get(id)).notebook, enabled })
 }
 
 /** `notebook_items_list(id)` — live rows only (removed_ms null). */
@@ -58,6 +60,40 @@ export function useNotebookChats(id: string) {
 export function useDescription(id: string) {
   const api = useApi()
   return useQuery({ queryKey: notebookKeys.description(id), queryFn: () => api.doc_markdown(id) })
+}
+
+/**
+ * 144 wave 2 §5.2: `notebook_context_estimate(notebook, session)`; re-fetched on every dial change (the callers
+ * invalidate `notebookKeys.estimate`) and on every `SourceEvent::Changed` (an ingest or insight run changes the tokens).
+ */
+export function useContextEstimate(notebook: string, session: string | null) {
+  const ctx = useContextApi()
+  const qc = useQueryClient()
+  useEffect(() => {
+    const apply = (raw: unknown) => {
+      if (sourceEventOf(raw)?.type === 'Changed') void qc.invalidateQueries({ queryKey: ['notebooks', 'estimate', notebook] })
+    }
+    return on('Changed' as unknown as WireEvent['type'], apply)
+  }, [qc, notebook])
+  return useQuery({ queryKey: notebookKeys.estimate(notebook, session), queryFn: () => ctx.notebook_context_estimate(notebook, session) })
+}
+
+/**
+ * 144 wave 2 §4 (Sky's ruling): the live notebooks an item belongs to, for the way back from a note or source
+ * opened without `?nb`. `notebook_list` + one `notebook_items_list` per notebook, as the source page's Details
+ * did (ponytail: O(notebooks); an item→notebooks RPC if it grows). `undefined` while any list is still loading.
+ */
+export function useItemNotebooks(kind: ItemKind, item: string): Notebook[] | undefined {
+  const nb = useNotebooksApi()
+  const notebooks = useQuery({ queryKey: notebookKeys.list(false), queryFn: () => nb.notebook_list(false) })
+  const lists = useQueries({
+    queries: (notebooks.data ?? []).map((n) => ({
+      queryKey: notebookKeys.items(n.doc.id),
+      queryFn: async () => (await nb.notebook_items_list(n.doc.id)).filter((i) => i.removed_ms === null),
+    })),
+  })
+  if (!notebooks.data || lists.some((l) => l.isPending)) return undefined
+  return notebooks.data.filter((_, i) => lists[i]?.data?.some((it) => it.kind === kind && it.item === item))
 }
 
 /** First non-empty line of a markdown body that is not a heading (the notebook document leads with `# <title>`), for the header and the Library row. */

@@ -17,6 +17,8 @@ const MIME: Record<string, string> = {
   bmp: 'image/bmp',
   svg: 'image/svg+xml',
   pdf: 'application/pdf',
+  // 144 §10: the audio overview's `overview.mp3` through `get_attachment` must be typed for `<audio>` to play it.
+  mp3: 'audio/mpeg',
 }
 
 /** Lower-case extension without the dot; `''` when none. */

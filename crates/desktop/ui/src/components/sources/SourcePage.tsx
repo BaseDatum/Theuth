@@ -1,13 +1,15 @@
 // 144 §12.2: `/sources/$id` — a read-only `DocumentPage` with Content · Insights · Details.
-import { useQueries, useQueryClient } from '@tanstack/react-query'
+// Wave 2 (U1): the way back to the notebook (§4, `useNotebookBack`) and the Insights tab (§4.3): the `## Insights`
+// sections of the document, **Run ▾** (`insight_skills` → `insight_run`), **Promote to note** (`insight_promote`).
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Loader2 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { toast } from 'sonner'
-import { DocumentPage } from '@/components/editor/DocumentPage'
+import { type DocBlock, plainText, useBlocks } from '@/components/board/blocks'
+import { DocumentPage, useNotebookBack } from '@/components/editor/DocumentPage'
 import { useDocument } from '@/components/editor/useDocument'
-import { useSource } from '@/components/notebooks/useNotebook'
-import { useNotebooks } from '@/components/notebooks/useNotebooks'
+import { useItemNotebooks, useSource } from '@/components/notebooks/useNotebook'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,9 +21,11 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import type { EngineProvider } from '@/lib/doc/provider'
 import { fmtBytes } from '@/lib/files'
-import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
+import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
 import type { NotebookSource } from '@/rpc/bindings/NotebookSource'
 import { useApi } from '@/lib/rpc'
 import { formatAt } from '@/lib/time'
@@ -47,20 +51,19 @@ export function SourcePage() {
   const readOnlyLive = { ...live, status: live.status.kind === 'live' || live.status.kind === 'offline' ? ({ kind: 'readonly' } as const) : live.status }
   const s = src.data
   const glyph = s && originGlyph(s.origin)
+  // 144 §4: back to the notebook this source was opened from (or belongs to), at every width; the Sources tab on the phone.
+  const wayBack = useNotebookBack('source', id, search.nb)
   return (
     <DocumentPage
       backTo="/notebooks"
       backLabel="Back to notebooks"
+      back={wayBack.back}
       live={readOnlyLive}
       title={
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {glyph && <span className={cn('flex size-[18px] shrink-0 items-center justify-center rounded text-[10px] font-bold text-white', glyph.className)}>{glyph.text}</span>}
           <h2 className="min-w-0 truncate text-sm font-semibold">{s ? sourceTitle(s) : src.isError ? err(src.error) : '…'}</h2>
-          {search.nb && (
-            <Link to="/notebooks/$id" params={{ id: search.nb }} search={{}} className="shrink-0 text-xs text-fg-tertiary hover:underline">
-              ← notebook
-            </Link>
-          )}
+          {wayBack.chip}
         </div>
       }
       above={
@@ -82,18 +85,133 @@ export function SourcePage() {
           )}
         </>
       }
-      fallback={tab === 'insights' ? <Insights /> : tab === 'details' ? s ? <Details source={s} nb={search.nb} /> : <p className="p-6 text-sm text-fg-tertiary">{src.isError ? err(src.error) : 'Loading…'}</p> : undefined}
+      fallback={
+        tab === 'insights' ? (
+          live.provider ? (
+            <Insights source={id} provider={live.provider} nb={search.nb} />
+          ) : (
+            <p className="p-6 text-sm text-fg-tertiary">{live.error ? live.error.message : 'Loading…'}</p>
+          )
+        ) : tab === 'details' ? (
+          s ? (
+            <Details source={s} nb={search.nb} />
+          ) : (
+            <p className="p-6 text-sm text-fg-tertiary">{src.isError ? err(src.error) : 'Loading…'}</p>
+          )
+        ) : undefined
+      }
     />
   )
 }
 
-function Insights() {
+export type InsightSection = { id: string; name: string; model: string | null; date: string | null; blocks: DocBlock[] }
+
+const BUILTINS: Record<string, string> = { key_insights: 'Key insights', toc: 'Table of contents', open_questions: 'Open questions' }
+
+/**
+ * Pure (§4.3): the `###` sections under `## Insights` — `id` is the heading block (the first block of the section,
+ * what `insight_promote` takes), the heading text is `<name> · <model> · <date>`. Nothing before the first `###`.
+ */
+export function insightSections(blocks: readonly DocBlock[]): InsightSection[] {
+  const out: InsightSection[] = []
+  let inside = false
+  let cur: InsightSection | null = null
+  for (const b of blocks) {
+    if (b.type === 'heading' && b.props.level <= 2) {
+      inside = b.props.level === 2 && plainText(b.content).trim().toLowerCase() === 'insights'
+      cur = null
+      continue
+    }
+    if (!inside) continue
+    if (b.type === 'heading' && b.props.level === 3) {
+      const [name = '', model = null, date = null] = plainText(b.content).split(' · ').map((p) => p.trim())
+      cur = { id: b.id, name, model, date, blocks: [] }
+      out.push(cur)
+      continue
+    }
+    cur?.blocks.push(b)
+  }
+  return out
+}
+
+function Insights({ source, provider, nb }: { source: string; provider: EngineProvider; nb: string | undefined }) {
+  const ctx = useContextApi()
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const sections = insightSections(useBlocks(provider))
+  const skills = useQuery({ queryKey: notebookKeys.insightSkills, queryFn: () => ctx.insight_skills() })
+  // The new section appears on the next `SourceEvent::Changed` through the document stream; `running` covers the gap.
+  const run = useMutation({
+    mutationFn: (name: string) => ctx.insight_run(source, name in BUILTINS ? { builtin: name, skill: null } : { builtin: null, skill: name }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: notebookKeys.source(source) }),
+    onError: (e) => toast.error(e.message),
+  })
+  const promote = useMutation({
+    mutationFn: (block: string) => ctx.insight_promote(source, block, nb ?? null),
+    onSuccess: (doc) =>
+      toast('Promoted to a note', { action: { label: 'Open', onClick: () => void navigate({ to: '/notes/$id', params: { id: doc }, search: nb ? { nb } : {} }) } }),
+    onError: (e) => toast.error(e.message),
+  })
+  // `insight_skills()`: the three builtins first, then skills (`notebook_insight: true`); the builtins alone until it answers.
+  const names = skills.data ?? Object.keys(BUILTINS)
+  const builtins = names.filter((n) => n in BUILTINS)
+  const custom = names.filter((n) => !(n in BUILTINS))
   return (
-    <div className="flex flex-col items-start gap-3 p-6 text-sm text-fg-secondary">
-      <p>Insights land in wave 2.</p>
-      <Button variant="outline" size="sm" disabled title="wave 2">
-        Run <ChevronDown />
-      </Button>
+    <div className="mx-auto w-full max-w-3xl overflow-y-auto px-6 py-4 text-sm">
+      <div className="flex items-center gap-2">
+        <h3 className="text-xs font-semibold text-fg-secondary">Insights · {sections.length}</h3>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="ml-auto" disabled={run.isPending}>
+              {run.isPending ? <Loader2 className="animate-spin" /> : null}
+              {run.isPending ? 'Running…' : 'Run'} <ChevronDown />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {skills.isError && <DropdownMenuItem disabled>{skills.error.message}</DropdownMenuItem>}
+            {builtins.map((name) => (
+              <DropdownMenuItem key={name} onSelect={() => run.mutate(name)}>
+                {BUILTINS[name]}
+              </DropdownMenuItem>
+            ))}
+            {custom.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Skills</DropdownMenuLabel>
+                {custom.map((name) => (
+                  <DropdownMenuItem key={name} onSelect={() => run.mutate(name)}>
+                    {name}
+                  </DropdownMenuItem>
+                ))}
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      {sections.length === 0 ? (
+        <p className="mt-3 text-fg-tertiary">No insights yet {'\u2014'} Run ▾ generates one.</p>
+      ) : (
+        <ul className="mt-3 flex flex-col gap-4">
+          {sections.map((sec) => (
+            <li key={sec.id} id={sec.id} className="rounded-lg border border-border-subtle p-3">
+              <div className="flex items-baseline gap-2">
+                <h4 className="min-w-0 flex-1 truncate font-semibold">{sec.name || 'Insight'}</h4>
+                {(sec.model || sec.date) && <span className="shrink-0 text-[11px] text-fg-tertiary">{[sec.model, sec.date].filter(Boolean).join(' · ')}</span>}
+                <Button variant="ghost" size="xs" className="shrink-0" disabled={promote.isPending} onClick={() => promote.mutate(sec.id)}>
+                  Promote to note
+                </Button>
+              </div>
+              <div className="mt-2 flex flex-col gap-1.5 text-fg-secondary">
+                {sec.blocks.map((b) => (
+                  <p key={b.id} className={cn(b.type === 'bulletListItem' || b.type === 'numberedListItem' ? 'pl-4 before:absolute before:-ml-3 before:content-["•"]' : undefined, 'relative')}>
+                    {plainText(b.content)}
+                  </p>
+                ))}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
@@ -106,15 +224,8 @@ function Details({ source, nb }: { source: NotebookSource; nb?: string }) {
   const id = source.doc.id
   const title = sourceTitle(source)
   const [confirming, setConfirming] = useState(false)
-  const notebooks = useNotebooks(false)
-  // ponytail: O(notebooks) item lists, fine under ~50 notebooks; a source→notebooks RPC if it grows
-  const lists = useQueries({
-    queries: (notebooks.data ?? []).map((n) => ({
-      queryKey: notebookKeys.items(n.doc.id),
-      queryFn: async () => (await nbApi.notebook_items_list(n.doc.id)).filter((i) => i.removed_ms === null),
-    })),
-  })
-  const inNotebooks = (notebooks.data ?? []).filter((_, i) => lists[i]?.data?.some((it) => it.kind === 'source' && it.item === id))
+  const member = useItemNotebooks('source', id)
+  const inNotebooks = member ?? []
   const others = inNotebooks.filter((n) => n.doc.id !== nb).length
   const status = statusWord(source)
 
@@ -186,7 +297,7 @@ function Details({ source, nb }: { source: NotebookSource; nb?: string }) {
       </div>
       <h3 className="mt-6 mb-1.5 text-xs font-semibold text-fg-secondary">In notebooks</h3>
       {inNotebooks.length === 0 ? (
-        <p className="text-xs text-fg-tertiary">{notebooks.isPending || lists.some((l) => l.isPending) ? 'Loading…' : 'None.'}</p>
+        <p className="text-xs text-fg-tertiary">{member === undefined ? 'Loading…' : 'None.'}</p>
       ) : (
         <ul className="flex flex-col gap-1">
           {inNotebooks.map((n) => (

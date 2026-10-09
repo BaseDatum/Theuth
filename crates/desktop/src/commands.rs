@@ -39,6 +39,8 @@ pub fn open_window(app: AppHandle, label: String, url: String) -> Result<(), Str
     let (w, h): (f64, f64) =
         if label.starts_with("popout-note-") || label.starts_with("popout-meeting-note-") {
             (880.0, 1000.0)
+        } else if label.starts_with("popout-notebook-") {
+            (1100.0, 720.0) // 144 wave 2: three columns, landscape; the OS clamps to the screen
         } else {
             (960.0, 720.0)
         };

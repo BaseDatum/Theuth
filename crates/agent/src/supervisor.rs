@@ -1439,8 +1439,8 @@ impl Agents {
     }
 
     /// The live (or resumed) actor for `session`, with the lookup error as the
-    /// caller's `Err` string.
-    async fn actor(&mut self, session: SessionId) -> Result<LiveActor, String> {
+    /// caller's `Err` string. `pub(crate)` for `notebook_context::WakeSession` (144 §4.3).
+    pub(crate) async fn actor(&mut self, session: SessionId) -> Result<LiveActor, String> {
         self.session(Some(session), None, None, (None, None))
             .await
             .map(|(_, actor)| actor)
@@ -9523,6 +9523,20 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         let _ = reg.ask(RegisterTool(Arc::new(ListModelsTool))).await;
         let _ = reg
             .ask(RegisterTool(Arc::new(crate::session_read::SessionReadTool)))
+            .await;
+        // 144 §13.2 (E2): ask across notebooks and the overviews.
+        let _ = reg
+            .ask(RegisterTool(Arc::new(crate::ask::NotebookAskTool)))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(
+                crate::overviews::NotebookOverviewRunTool,
+            )))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(
+                crate::overviews::NotebookOverviewsTool,
+            )))
             .await;
     });
     Ok(())

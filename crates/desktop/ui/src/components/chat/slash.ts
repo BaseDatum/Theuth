@@ -99,6 +99,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   },
   { name: '/take', hint: '', desc: 'continue this session on this node (68)' },
   { name: '/search', hint: '[query]', desc: 'search sessions, artifacts and knowledge (prefilled with query)' },
+  { name: '/ask', hint: '[question]', desc: 'ask across notebooks (144 §9; this notebook pre-checked on a notebook page)' },
   { name: '/sessions', hint: '', desc: 'switch session (search, sessions only)' },
   { name: '/resume', hint: '<id>', desc: 'open a session' },
   { name: '/new', hint: '', desc: 'start a new session' },
@@ -346,6 +347,14 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     case '/search':
       openSearch(arg ? { query: arg } : undefined)
       return
+    // 144 §9: the Ask dialog is `?ask` on the notebook page (the current notebook pre-checked) or on Library › Notebooks (all notebooks).
+    case '/ask': {
+      const nb = /^\/notebooks\/([^/?#]+)/.exec(location.pathname)
+      const ask = arg || true
+      if (nb?.[1]) await navigate({ to: '/notebooks/$id', params: { id: decodeURIComponent(nb[1]) }, search: { ask } })
+      else await navigate({ to: '/notebooks', search: { ask } })
+      return
+    }
     // A one-open Sessions-only override (49 §6): the remembered category selection stays put.
     case '/sessions':
       openSearch({ categories: ['sessions'] })
