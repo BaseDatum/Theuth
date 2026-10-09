@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -111,7 +112,17 @@ internal static class PillGlyphs
         var path = HarnessIconPath(family, px);
         if (path is not null)
         {
-            var img = new Image { Width = size, Height = size, Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(path)), Stretch = Stretch.Uniform };
+            // 149 NATIVE: the shared set is monochrome (white on transparent) — a template image. Tinted with the theme's primary
+            // text colour so it reads on light AND dark (the raw PNG shows until the first tint of that file+colour is cached).
+            var img = new Image { Width = size, Height = size, Stretch = Stretch.Uniform };
+            var color = Theme.ColorOf(NativeLook.TextPrimary, theme);
+            var ck = $"{path}|{color.A:X2}{color.R:X2}{color.G:X2}{color.B:X2}";
+            if (tinted.TryGetValue(ck, out var wb)) img.Source = wb;
+            else
+            {
+                img.Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(path));
+                _ = TintAsync(path, color, ck, img);
+            }
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(img, family);
             return img;
         }
@@ -125,6 +136,46 @@ internal static class PillGlyphs
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             },
         };
+    }
+
+    private static readonly Dictionary<string, Microsoft.UI.Xaml.Media.Imaging.WriteableBitmap> tinted = new(StringComparer.Ordinal);
+    private static readonly HashSet<string> tinting = new(StringComparer.Ordinal);
+
+    /// <summary>Recolours a monochrome PNG: every pixel takes <paramref name="color"/>, its alpha scaled by the source's luminance × alpha (anti-aliasing kept).</summary>
+    private static async Task TintAsync(string path, Windows.UI.Color color, string cacheKey, Image target)
+    {
+        if (!tinting.Add(cacheKey)) return;
+        try
+        {
+            var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(path);
+            using var stream = await file.OpenReadAsync();
+            var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+            var data = await decoder.GetPixelDataAsync(
+                Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8, Windows.Graphics.Imaging.BitmapAlphaMode.Straight,
+                new Windows.Graphics.Imaging.BitmapTransform(), Windows.Graphics.Imaging.ExifOrientationMode.IgnoreExifOrientation,
+                Windows.Graphics.Imaging.ColorManagementMode.DoNotColorManage);
+            var px = data.DetachPixelData();
+            for (int i = 0; i + 3 < px.Length; i += 4)
+            {
+                // luminance of the source (white glyph = 1) × its alpha → the tint's coverage
+                double lum = (0.2126 * px[i + 2] + 0.7152 * px[i + 1] + 0.0722 * px[i]) / 255.0;
+                double a = px[i + 3] / 255.0 * lum * (color.A / 255.0);
+                px[i] = (byte)Math.Round(color.B * a);     // premultiplied BGRA for WriteableBitmap
+                px[i + 1] = (byte)Math.Round(color.G * a);
+                px[i + 2] = (byte)Math.Round(color.R * a);
+                px[i + 3] = (byte)Math.Round(255 * a);
+            }
+            var wb = new Microsoft.UI.Xaml.Media.Imaging.WriteableBitmap((int)decoder.PixelWidth, (int)decoder.PixelHeight);
+            using (var buf = wb.PixelBuffer.AsStream()) { buf.Write(px, 0, px.Length); }
+            wb.Invalidate();
+            tinted[cacheKey] = wb;
+            target.Source = wb;
+        }
+        catch (Exception e)
+        {
+            Log.Write($"harness icon: tint of {System.IO.Path.GetFileName(path)} failed: {e.Message} — raw PNG kept");
+        }
+        finally { tinting.Remove(cacheKey); }
     }
 
     private static readonly Dictionary<string, string?> iconPaths = new(StringComparer.Ordinal);
