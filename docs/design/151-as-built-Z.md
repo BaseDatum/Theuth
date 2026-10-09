@@ -70,3 +70,7 @@ Spend: 205 model calls on the scratch engine (incl. the `toy-sort-2` study's 10 
 - Step 4's "agent writes bench.sh under the drafts dir": the agent first reused the repo's `bench.sh` (skill allows it); the drafts-dir script came after one user request, and that probe ran (3 samples, Verified). The brief's single success path for step 7 needed a second setup after F2.
 - Screenshots are the capture tool's 1024-px webp renders (original 1600×1125 / 488×1055), not separate 1600-px files.
 - Step 10 exercised through `app_call_tool` (the press path), as the brief allows; the card inside the collapsed `python` tool group was awkward to click.
+
+## 7. Second fold (orchestrator note 15:58)
+
+`origin/main` `6e395770` (152 INPUT-CARDS `4bd11af3`, 149 spoken-replies, a study doc) folded as `04c8c8e6`, clean; only `crates/desktop/ui`, `crates/tui`, Swift and docs changed — no agent/rpc/autoresearch/bindings. UI gate after the fold: `tsc -b --noEmit` 0 · FULL `vitest run --maxWorkers=2` **234 files / 1549 passed** · `vite build` ✓ (4.5 s).
