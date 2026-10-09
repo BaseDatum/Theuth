@@ -27,10 +27,10 @@ C's calls (where the rulings left a choice; each is marked "(C's call)" where it
 - **C-d** The stall monitor is a pure struct (`ChildActivity`) with explicit `now: Instant` arguments; the actor arms one `Stall` timer at the next deadline. Tests use a fake clock by passing instants (§3.4).
 - **C-e** `wait_peer until=idle|done` on a harness whose entry lacks `turn_end` is refused at registration (`harness does not report turn end`) instead of hanging forever (§8.2).
 - **C-f** The alert's *whether* splits in two layers: roster computes `alert` (class, why, episode id, delay) for every connection; rpc masks it per connection for focus and for the finished-seen set, because focus (129) and device identity exist only at the connection (§7.3–7.5).
-- **C-g** The seen set is keyed by the link device id when the connection carries one, else by the connection id; it lives in memory on the rpc `Server` and is lost at engine restart (a restart re-alerts unseen finishes once) (§7.5).
+- **C-g** The finished-seen set is keyed by the rpc connection id (`RpcPeer` carries no device id); it lives in memory on the rpc `Server` with `FocusMap` and dies with the connection or the engine — a reconnect re-shows unseen finishes once (§7.5).
 - **C-h** `alert_delay_ms` is a `roster:` key (`roster.alert_delay_ms`, default 2000), since the attention actor already reads `rt.section("roster")` (§7.4).
-- **C-i** PTY thresholds are two static `tools.pty_*` keys (`pty_reaction_secs` 10, `pty_tree_cpu_pct` 2), wired like `pty_shell`, not live knobs like `pty_idle_secs` (§6.5).
-- **C-j** `proctree.rs` is per-OS code over `libc`/`windows-sys` (no new crate); nothing in the workspace depends on `sysinfo`/`libproc`/`procfs`/`nix` (§6.2).
+- **C-i** PTY thresholds are two static `tools.pty_*` keys (`pty_reaction_secs` 10, `pty_tree_cpu_pct` 2), wired like `pty_shell` as one `PtyThresholds` value, not live knobs like `pty_idle_secs` (§6.6).
+- **C-j** The tree sampler is `platform::ProcessTree::sample` (the Windows Job Object accounting is already there; unix walks descendants with `libc`); `crates/tools/src/proctree.rs` holds only the quiet rule. No new crate: nothing in the workspace depends on `sysinfo`/`libproc`/`procfs`/`nix` (§6.2).
 - **C-k** `Reports` for an entry without a `reports:` block comes from a built-in table keyed by command basename (omp, opencode, claude-agent-acp, codex-acp); unknown → all false (§8.1).
 - **C-l** Attention kind → alert class: needs_you = Approval, Decision, Hire, Blocked, Review, Handoff, Secret, Ask, Resume, Budget-paused; finished = Finished; none = Budget-warning, Node, Show, Double (§7.2).
 - **C-m** The stall wake carries no attention item and no `AgentEvent`; the only observable outside the parent is the `MessageDelivered` event `inject` already publishes (§4.2).
@@ -200,12 +200,131 @@ w2 is done: its result was delivered to you and nothing is queued for it.
 
 `PeerActivity` gains `stalled_secs: Option<u64>` (`#[serde(default)]`), filled from `activity.stalls` in `peer_activity` (`crates/agent/src/supervisor.rs:5422-5445`) and printed as ` stalled=184s` in the text rendering (`crates/agent/src/peers.rs:622-636`). The description string (`:569-583`) gains the word.
 
-
 ## 6 Terminal jobs: busy or quiet
+
+### 6.1 Signals (D5)
+
+Four generic signals, no per-program rules: the rendered screen (already `Idle::saw`, `crates/tools/src/pty.rs:1997-2002`), the processes under the PTY, their CPU, and the reaction to input. The job task `run` (`:2044`) already owns the leader pid (`j.pty.pid`, `:483-484`) and the tree (`j.pty.tree`, `:486`).
+
+### 6.2 Process-tree sampler (C-j)
+
+- `platform::TreeSample { processes: u32, cpu: Duration }` and `ProcessTree::sample(&self) -> Option<TreeSample>` in `crates/platform/src/process.rs` (next to `alive`, `:59-63`), because the Windows tree is a Job Object whose `QueryInformationJobObject(JobObjectBasicAccountingInformation)` already returns `ActiveProcesses`, `TotalUserTime` and `TotalKernelTime` in the call `alive` makes (`:290-301`). Unix walks the descendants of the leader: macOS `libc::proc_listchildpids` recursively + `proc_pidinfo(PROC_PIDTASKINFO)` → `pti_total_user + pti_total_system` (libc 0.2.189 in `Cargo.lock` has all four symbols); Linux `/proc/<pid>/stat` fields 4 (ppid), 14 and 15 (utime, stime) over `/proc/*`; the walk is bounded (≤ 256 processes) and `None` on any error. No new crate: the workspace has `libc` and `windows-sys 0.61` with `Win32_System_JobObjects` already (`crates/platform/Cargo.toml:16`, `:25-33`).
+- `crates/tools/src/proctree.rs` (new) holds the rule, `TreeQuiet` (§9.3): it takes samples about once a second **only while the screen is unchanged** (a `tokio::time::interval(1 s)` arm in `run`, enabled when `idle.is_some()` and the last tick was not dirty), keeps the previous sample, and answers `quiet(now) -> bool`:
+  - `cpu` : `(sample.cpu - prev.cpu) / (sample.at - prev.at) ≤ pty_tree_cpu_pct %` of one core;
+  - `foreground`: unix — `libc::tcgetpgrp(master_fd) == pty.pid` (the program theuth started is in front; a `sleep 300` run by an interactive shell sits in its own foreground group, a persistent helper process of opencode does not); Windows — `processes ≤ baseline`, the count at the first sample after spawn. `MasterPty::as_raw_fd` gives the fd (portable-pty 0.9).
+  - `quiet = cpu && foreground`. A tree that cannot be sampled (`None`) counts as quiet so the 61 behaviour is unchanged where the sampler is unavailable.
+
+### 6.3 The job_idle rule
+
+`Idle::deadline` stays the clock (`:2006-2019`); at the deadline the fire arm (`:2124-2143`) asks `TreeQuiet::quiet(now)` first: busy → no fire, and the detector is re-armed by treating the busy sample as a touch (`last_change = now` is wrong — the screen did not change — so `Idle` gains `defer(now)` that moves the deadline by `base` without resetting `nudges`). Quiet → fire as today with `why = "screen unchanged for {quiet} s, process tree quiet"`. A `wait` in flight still suppresses (`:2027`).
+
+### 6.4 Reaction check
+
+`send` (`:2472-2493`) records `*lock(&pty.sent_at) = Some(Instant::now())` after the write (model sends only; a human's `PtyInput` already marks `user_input`, `:1797-1798`). In `run`: while `sent_at` is set and younger than `pty_reaction_secs`, every tick and every tree sample checks movement — a screen change (`Idle::saw` saw different rows) or a non-quiet tree clears `sent_at`. When `sent_at` ages past `pty_reaction_secs` with no movement: fire once `JobEvent::Idle { why: "no reaction to input", quiet_secs: since last change, nudge: idle.nudges + 1, … }` through the same `activity.notify` + bus path, clear `sent_at`, and leave `Idle`'s own deadline alone. Suppressed like any fire while `waiting > 0` (the model is in `wait(pattern)`; its timeout is the answer).
+
+### 6.5 What the model sees
+
+`JobEvent::Idle` gains `why: String` (`#[serde(default)]`, `crates/tools/src/jobs.rs:234-254`); `Notice::JobIdle` carries the event unchanged (`crates/tools/src/activity.rs:189-197`); `Agents::notice` destructures it (`crates/agent/src/supervisor.rs:2906-2920`) and `job_idle(...)` renders `why="…"` after `nudge` (`:3092-3111`):
+
+```
+<job_idle id="j3" command="bash" quiet="63" secs="412" nudge="1" why="screen unchanged for 63 s, process tree quiet" at="14:11">
+```
+
+Desktop: `reduce.ts` ignores the new field (`crates/desktop/ui/src/store/reduce.ts:784-785`); the fixture in `reduce.test.ts:532` gets `why: ''`.
+
+### 6.6 Config (C-i)
+
+Two static keys on `ToolsConfig` (`crates/tools/src/lib.rs:486-533`), wired like `pty_shell` through `StartTool::new` (`crates/tools/src/registry.rs:1883-1892`) as one `PtyThresholds` value:
+
+```yaml
+tools:
+  pty_reaction_secs: 10   # after send(): no screen or tree movement for this long → <job_idle why="no reaction to input">; 0 = off
+  pty_tree_cpu_pct: 2     # a process tree using more than this % of one core over a 1 s sample is busy
+```
+
+No live knob, no RPC, no Settings row: `pty_idle_secs` keeps its `SetPtyIdle` path untouched.
 
 ## 7 Alert rules
 
+### 7.1 Shape (D6)
+
+`AttentionItem` gains `alert: Option<Alert>` (`#[serde(default)]`, TS `alert?: Alert | null`), with
+
+```
+Alert { id: "<item id>@<episode start ms>", class: needs_you | finished, why: "<one short sentence>", at_ms: <episode start> }
+```
+
+`id` is stable for the life of one episode (one continuous presence of the item in the derived list) and changes when the item disappears and comes back; clients post one notification per `alert.id`.
+
+### 7.2 Class and why per kind (C-l)
+
+| `AttentionKind` (`crates/roster/src/attention.rs:39-73`) | class | why |
+|---|---|---|
+| Approval | needs_you | "waiting for allow / deny on `<tool>`" |
+| Decision | needs_you | "a task is blocked on your decision" |
+| Hire | needs_you | "a proposed agent waits for hire / decline" |
+| Blocked | needs_you | "a task is blocked on you" |
+| Review | needs_you | "a task waits for your review" |
+| Handoff | needs_you | "an agent in a VM needs you at its desktop" |
+| Secret | needs_you | "a session asked for a secret" |
+| Ask | needs_you | "a session asked you a question" |
+| Resume | needs_you | "an interrupted turn needs the Resume button" |
+| Budget | needs_you when `detail` starts with `paused`, else none | "an agent is paused at its budget cap" |
+| Finished | finished | "turn ended: <summary first line>" |
+| Node, Show, Double | none | — |
+
+`class_of`/`why_of` live in `crates/roster/src/alert.rs` (new) as pure functions; `derive` stays untouched and the actor decorates afterwards (§7.4). Items from external `Source`s (126) and `resume:boot:*` get `None`.
+
+### 7.3 Suppress while in view (C-f)
+
+Focus is per connection (129): `FocusMap` on the rpc `Server` (`crates/rpc/src/api.rs:2458`, `:7926-7941`). `attention_list` becomes `with_extensions` (`:2251-2252`, `:7405-7407`) and, per item with an `alert` and a `session`, blanks `alert` when `session ∈ focus[peer]`. The roster never learns about focus. `AttentionChanged` is unchanged (clients refetch).
+
+### 7.4 Delay that re-checks (C-h)
+
+`roster.alert_delay_ms` (default 2000) on `RosterConfig` (`crates/roster/src/config.rs:9-25`; the actor reads `rt.section("roster")` the way `recheck` reads `tasks`, `crates/roster/src/attention.rs:1289-1293`). `Episodes` on the `Attention` actor maps item id → episode start ms (first derive that contained it; `retain` drops ids that left the list). After `derive`, `alert` is set only when `now ≥ start + delay` — the item must still be there at the re-check, which is the herdr rule (the 300 ms permission ask that resolves itself never alerts). When some item is inside its delay window the actor arms one `AlertDue` tell at the earliest `start + delay` so the next `recheck` publishes `AttentionChanged` without a client having to poll.
+
+### 7.5 Done ≠ idle: seen per connection (C-g)
+
+`finished` alerts carry a seen bit **per connection**: the rpc `Server` keeps `SeenMap = Arc<RwLock<HashMap<u64 /* peer id */, HashSet<String /* alert id */>>>>`, dropped with the connection like `FocusMap`. A finished alert is marked seen for a connection when that connection focuses the item's session after the finish — eagerly in `set_event_focus` (which asks `ListAttention` and marks every `finished` alert whose session is in the new set) and lazily in `attention_list` (an item whose session is focused is marked before being blanked). `attention_list` blanks `alert` on `finished` items already seen by that connection. Each client therefore shows "done" until it has looked; another client's look changes nothing. A reconnect is a fresh set (`RpcPeer` carries no device id, `crates/link/src/types.rs:284-289`), so a restarted client sees unseen finishes again, once; a client that wants memory across its own restarts keeps its own list (the companion has settings storage, the desktop `localStorage`).
+
+### 7.6 Clients decide how (D6)
+
+- **Desktop UI** (`crates/desktop/ui/src/App.tsx:473-488`, `crates/desktop/ui/src/lib/notify.ts:7-12`): the two event-driven `notifyIfHidden` calls stay for items **without** `alert` (nothing changes for them); for items with `alert` the attention `QueryObserver` (`App.tsx:496-500`) posts one `notifyIfHidden(title, alert.why)` per unseen `alert.id` (a `Set<string>` in the store), skipping while `companion` is alive as today. Pause: none exists today and none is added.
+- **macOS companion** (`Notifier.swift:13-81`, `Policy.swift:70-110`): `AttentionItem` Codable gains `alert: Alert?` (`crates/desktop/companion/Sources/TheuthKit/Models.swift:45-106`); `NotificationPolicy.update` treats an item with `alert` as class `needs_you → .blocking`, `finished → .deferrable`, keyed by `alert.id` for dedupe (one banner per alert id), respects `pausedUntil` (`:199`) and the existing prefs; items without `alert` keep `classify(item)` exactly as today. The `why` is the banner body.
+- **Windows companion**: untouched (D6); its `Models.cs` ignores unknown JSON fields, so the new field is harmless.
+
 ## 8 Capability entries
+
+### 8.1 Data (D7, C-k)
+
+```yaml
+omp:
+  command: omp
+  args: [acp]
+  reports:            # optional; all false when absent and the command is unknown
+    permission: true  # sends session/request_permission for gated tools
+    turn_end: true    # session/prompt returns when the turn is over (no continuation work)
+    session_load: true # advertises loadSession and resumes a session id
+```
+
+`acp::agents::Reports { permission, turn_end, session_load }` (all `bool`, `Default` = all false) and `Entry.reports: Option<Reports>` (`#[serde(default, skip_serializing_if = "Option::is_none")]`, `crates/acp/src/agents.rs:20-54`). `Entry::reports(&self) -> Reports` returns the block when written, else `Reports::for_command(&self.command, &self.args)` — a table by command basename and the npx package name:
+
+| harness | permission | turn_end | session_load | why |
+|---|---|---|---|---|
+| `omp` | true | true | true | omp returns from `session/prompt` and may keep working afterwards; theuth already folds that work into a continuation turn that closes after `CONTINUATION_QUIET` 120 s (`crates/agent/src/acp_child.rs:76-78`, `:947-969`), so `idle` is late by up to 120 s, never wrong |
+| `opencode`, `opencode2` | true | true | false | 1.x/2.x return at turn end; `session/load` is version-dependent (conservative) |
+| `@agentclientprotocol/claude-agent-acp` | true | true | false | ACP adapter; resume unverified |
+| `codex-acp`, `@agentclientprotocol/codex-acp` | true | true | false | same |
+| anything else | false | false | false | unknown |
+
+`Reports::for_registry(id)` gives the registry installer the same rows by registry id (`crates/acp/src/registry.rs:163-173`, `:200-209`, `:270-279` set `reports: Reports::for_registry(&agent.id)` so an installed entry is explicit on disk). `EntryInfo` (`crates/acp/src/agents.rs:82-84`) gains `reports: Reports` for `/acp` and the UI.
+
+### 8.2 Gating
+
+- Without `turn_end`: silence after output is never `idle`/`done` (§5.1 returns `running`); `wait_peer until=idle|done` is refused at registration with `wait_peer: <name>'s harness does not report turn end; wait on blocked|stalled or use send_message{await_reply}` (C-e). Stalls are time facts and still wake the parent (§3.6).
+- Without `permission`: nothing derived from a child's quiet is ever a needs-you alert (§7.2 has no such row in v1; the invariant binds future rows).
+- `session_load` is informational in v1 (the respawn path already probes `loadSession` itself, `crates/acp/src/harness.rs:326-356` per the seam map); it is recorded so 146's RESUME brief can read it.
+
 
 ## 9 Frozen signatures
 
