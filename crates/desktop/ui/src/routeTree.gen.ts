@@ -30,6 +30,7 @@ import { Route as AskSessionRouteImport } from './routes/ask_.$session'
 import { Route as AttentionIndexRouteImport } from './routes/attention.index'
 import { Route as AttentionIdRouteImport } from './routes/attention.$id'
 import { Route as AutoresearchSlugRouteImport } from './routes/autoresearch.$slug'
+import { Route as AutoresearchNewRouteImport } from './routes/autoresearch.new'
 import { Route as CSessionRouteImport } from './routes/c.$session'
 import { Route as KnowledgeSplatRouteImport } from './routes/knowledge.$'
 import { Route as MeetingsIndexRouteImport } from './routes/meetings.index'
@@ -158,6 +159,11 @@ const AttentionIdRoute = AttentionIdRouteImport.update({
 const AutoresearchSlugRoute = AutoresearchSlugRouteImport.update({
   id: '/$slug',
   path: '/$slug',
+  getParentRoute: () => AutoresearchRoute,
+} as any)
+const AutoresearchNewRoute = AutoresearchNewRouteImport.update({
+  id: '/new',
+  path: '/new',
   getParentRoute: () => AutoresearchRoute,
 } as any)
 const CSessionRoute = CSessionRouteImport.update({
@@ -301,6 +307,7 @@ export interface FileRoutesByFullPath {
   '/ask/$session': typeof AskSessionRoute
   '/attention/$id': typeof AttentionIdRoute
   '/autoresearch/$slug': typeof AutoresearchSlugRoute
+  '/autoresearch/new': typeof AutoresearchNewRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/meetings/$id': typeof MeetingsIdRoute
@@ -347,6 +354,7 @@ export interface FileRoutesByTo {
   '/ask/$session': typeof AskSessionRoute
   '/attention/$id': typeof AttentionIdRoute
   '/autoresearch/$slug': typeof AutoresearchSlugRoute
+  '/autoresearch/new': typeof AutoresearchNewRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/meetings/$id': typeof MeetingsIdRoute
@@ -395,6 +403,7 @@ export interface FileRoutesById {
   '/ask_/$session': typeof AskSessionRoute
   '/attention/$id': typeof AttentionIdRoute
   '/autoresearch/$slug': typeof AutoresearchSlugRoute
+  '/autoresearch/new': typeof AutoresearchNewRoute
   '/c/$session': typeof CSessionRoute
   '/knowledge/$': typeof KnowledgeSplatRoute
   '/meetings/$id': typeof MeetingsIdRoute
@@ -444,6 +453,7 @@ export interface FileRouteTypes {
     | '/ask/$session'
     | '/attention/$id'
     | '/autoresearch/$slug'
+    | '/autoresearch/new'
     | '/c/$session'
     | '/knowledge/$'
     | '/meetings/$id'
@@ -490,6 +500,7 @@ export interface FileRouteTypes {
     | '/ask/$session'
     | '/attention/$id'
     | '/autoresearch/$slug'
+    | '/autoresearch/new'
     | '/c/$session'
     | '/knowledge/$'
     | '/meetings/$id'
@@ -537,6 +548,7 @@ export interface FileRouteTypes {
     | '/ask_/$session'
     | '/attention/$id'
     | '/autoresearch/$slug'
+    | '/autoresearch/new'
     | '/c/$session'
     | '/knowledge/$'
     | '/meetings/$id'
@@ -757,6 +769,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AutoresearchSlugRouteImport
       parentRoute: typeof AutoresearchRoute
     }
+    '/autoresearch/new': {
+      id: '/autoresearch/new'
+      path: '/new'
+      fullPath: '/autoresearch/new'
+      preLoaderRoute: typeof AutoresearchNewRouteImport
+      parentRoute: typeof AutoresearchRoute
+    }
     '/c/$session': {
       id: '/c/$session'
       path: '/c/$session'
@@ -956,10 +975,12 @@ const AttentionRouteWithChildren = AttentionRoute._addFileChildren(
 
 interface AutoresearchRouteChildren {
   AutoresearchSlugRoute: typeof AutoresearchSlugRoute
+  AutoresearchNewRoute: typeof AutoresearchNewRoute
 }
 
 const AutoresearchRouteChildren: AutoresearchRouteChildren = {
   AutoresearchSlugRoute: AutoresearchSlugRoute,
+  AutoresearchNewRoute: AutoresearchNewRoute,
 }
 
 const AutoresearchRouteWithChildren = AutoresearchRoute._addFileChildren(
