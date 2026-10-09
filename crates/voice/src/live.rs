@@ -303,6 +303,7 @@ mod tests {
     /// silence around it: one utterance, rolling pieces then a final one that is
     /// the sentence back, cased and punctuated; the start lands inside the leading silence.
     #[test]
+    #[ignore = "loads the Nemotron streaming model (~0.9 GB) and runs `say`; run with --ignored"]
     fn utterer_returns_the_spoken_sentence_punctuated() {
         let (Some((data_dir, dir)), Some(pcm)) = (
             model_dir(),
