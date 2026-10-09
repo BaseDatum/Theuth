@@ -71,6 +71,9 @@ final class PointController {
     private var prewarmed = false
     /// `--probe-point`'s gesture phase: the Stop sequence runs to the point of `desk_open` and stops there.
     var dryRun = false
+    /// `--probe-point` only: `dictation_start` is held this long before it is sent, so a release-into-send that beats the
+    /// reply (a slow engine) is reproducible against a live one.
+    var probeStartDelay: Duration = .zero
     /// 149f: one physical press = one gesture; auto-repeat key-downs never reach the machine.
     private var gate = VoiceKeyGate()
 
@@ -343,6 +346,7 @@ final class PointController {
         }
         enqueue { [weak self, store] in
             do {
+                if let d = self?.probeStartDelay, d > .zero { try? await Task.sleep(for: d) }
                 let id = try await store.client.dictationStart()
                 guard let self else { return }
                 // The gesture ended (cancel/Esc/short) before the reply: the dictation is live on the engine with no owner —

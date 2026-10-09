@@ -32,7 +32,12 @@ system posts a hot-key-pressed event per keyboard repeat. Design 96 already assu
 where a refusal puts the machine while the key is still physically down. (Not verified by registering ⌃S from a second process —
 forbidden while the owner's companion holds it — the probe feeds the same stream synthetically.)
 
-## Reproduction (`--probe-point 34 --shareable`, the in-worktree bundle's executable, against the owner's live engine)
+Is there a macOS equivalent of Windows' `MOD_NOREPEAT`? No. `RegisterEventHotKey`'s `inOptions` has exactly one bit,
+`kEventHotKeyExclusive` (`CarbonEvents.h:15395-15424`: `kEventHotKeyNoOptions = 0`, `kEventHotKeyExclusive = 1 << 0`); nothing
+suppresses repeats, and KeyboardShortcuts neither passes an option nor filters (`grep -i repeat` over its sources finds only an
+array initialiser). Key-down state tracking in the companion (`VoiceKeyGate`) is the only guard on macOS.
+
+## Reproduction (`--probe-point 44 --shareable`, the in-worktree bundle's executable, against the owner's live engine)
 Commit b19b2cf7 added three scenarios to `PointProbe.sequence` (after the existing control/stop/gesture phases), driven through
 the hot key's own entry points `PointController.keyDown()/keyUp()` with exactly what Carbon delivers for a held chord — one
 key-down, a key-down every 30 ms, the key-up — plus `dictation_status` (`RpcClient.dictationActive()`, `AskRpc.swift`) to read the
@@ -45,6 +50,7 @@ engine's one dictation slot. No ⌃S registration (`AskFlags.automated`), no mic
 | HOLD 1.5 s with the tone (47 repeats) | 1 gesture, Stop sequence, "Nothing recognized" (a tone), `active=nil` — PASS | same — PASS |
 | REFUSED HOLD: the probe takes the slot first, then the hold | **25 gestures in 1.5 s** (24 repeats): `pressed idle → armed [start]` → `dictation_start failed: rpc -32000: already dictating` → `dictation refused: dictating elsewhere` → `cancel armed → idle [discard]` → next repeat → `pressed idle → armed [start]` … — **FAIL** (the report's "flips back and forth", overlays revealed/concealed within one RPC round trip = "doesn't draw anything") | **1 gesture**, `state=idle hint="dictating elsewhere"`, 46 repeats ignored, the probe's dictation untouched — PASS |
 | CANCEL IN FLIGHT: key-down, Esc before `dictation_start` replies, key-up | `dictation_start → 01a11fe6-396b… adopted=false phase=idle`; 1 s later `dictation_status.active=01a11fe6-396b…` — **the dictation is live on the engine with no owner**, FAIL (the probe stopped it: `cleanup: stopped the leaked dictation`) | `dictation_start → … landed after the gesture ended: dictation_stop`; `active=nil` — PASS |
+| RELEASE BEFORE START (addendum, the Windows port's race): `dictation_start` held 1.5 s via `probeStartDelay`, a 1 s hold released into the Stop sequence before the id exists | not run pre-fix; from code: `endDictation` set `stopWanted`, `finalText` waited while `.starting`, the landing start adopted and stopped — covered by `stopWanted` already, but a start landing after a NEW gesture began adopted into the wrong gesture | `point released holding → sending [stop(release)]` → 1.5 s later `dictation_start → 01a11ff3-d86e…` → stopped; `state=idle hint="Nothing recognized" active=nil` — PASS |
 
 So A and B are both real and feed each other:
 
@@ -108,9 +114,10 @@ So A and B are both real and feed each other:
   `bundle-companion.sh`; pre-existing deprecation/Sendable warnings only).
 - `env BUILD_LABEL=149f build-lock bash scripts/bundle-companion.sh` ✔ `valid on disk · satisfies its Designated Requirement`
   (`/tmp/149f-bundle.log`; `codesign --verify --deep --strict` is the script's last step).
-- `--probe-point 34 --shareable` ✔ control 120/120 → stop 0/120 PASS; gesture phase PASS; HOLD PASS; REFUSED HOLD PASS;
-  CANCEL IN FLIGHT PASS (`/tmp/149f-probe-after.log`, `/tmp/149f-hold-probe.png`). Pre-fix run for the record:
-  `/tmp/149f-probe-before.log` (REFUSED HOLD FAIL 25 gestures; CANCEL IN FLIGHT FAIL, leak stopped by the probe's cleanup).
+- `--probe-point 44 --shareable` ✔ control 120/120 → stop 0/120 PASS; gesture phase PASS; HOLD PASS; REFUSED HOLD PASS;
+  CANCEL IN FLIGHT PASS; RELEASE BEFORE START PASS (`/tmp/149f-probe-after.log`, `/tmp/149f-hold-probe.png`). Pre-fix run for
+  the record: `/tmp/149f-probe-before.log` (REFUSED HOLD FAIL 25 gestures; CANCEL IN FLIGHT FAIL, leak stopped by the probe's
+  cleanup).
 - Rust (voice tracing), each through `env BUILD_LABEL=149f build-lock`: `mbx test -p voice --lib` ✔ 27 passed
   (`/tmp/149f-voice-test.log`); `mbx test -p desktop --no-run` ✔ (`/tmp/149f-desktop-build.log`); `mbx clippy -p voice -p
   desktop --all-targets -- -D warnings` ✔ (`/tmp/149f-clippy.log`; the pre-existing `block v0.1.6` future-incompat note only);

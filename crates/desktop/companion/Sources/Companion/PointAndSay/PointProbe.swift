@@ -156,6 +156,8 @@ enum PointProbe {
     ///    not start/refuse/cancel at the repeat rate — and the probe's own dictation must be untouched.
     /// 3. CANCEL IN FLIGHT: key-down, Esc before `dictation_start` replies, key-up: the dictation that lands must be stopped
     ///    (`active` nil within 1 s), not left on the engine until `dictation_max_secs`.
+    /// 4. RELEASE BEFORE START: `dictation_start` held 1.5 s, a 1 s hold released into the Stop sequence: the late start must
+    ///    adopt and stop itself; `active` nil afterwards.
     /// Whatever leaks is stopped at the end: this runs against the owner's live engine.
     private static func holdScenarios(store: Store, controller c: PointController) async {
         func active() async -> String? {
@@ -215,6 +217,22 @@ enum PointProbe {
         PointLog.write("CANCEL IN FLIGHT result: state=\(c.state) dictation.phase=\(c.dictation.phase) dictation_status.active=\(a2 ?? "nil")")
         PointLog.write("ASSERT CANCEL IN FLIGHT slot free within 1 s: \(a2 == nil ? "PASS" : "FAIL")")
         if let leaked = a2, leaked != "rpc-failed" {
+            do { try await store.client.dictationStop(id: leaked); PointLog.write("cleanup: stopped the leaked dictation \(leaked)") }
+            catch { PointLog.write("cleanup: dictation_stop \(leaked) failed: \(error)") }
+        }
+
+        // 4. RELEASE BEFORE START (the Windows port's race, 149f addendum): the start is held 1.5 s; a 1 s hold releases into
+        // the Stop sequence before the id exists. The late start must adopt and stop itself (`stopWanted`), the slot must be free.
+        PointLog.write("RELEASE BEFORE START: dictation_start held 1.5 s; key-down, 1 s hold with the tone, key-up into send")
+        c.probeStartDelay = .milliseconds(1500)
+        let g3 = c.gesture
+        _ = await hold(ms: 1000, tone: true)
+        c.probeStartDelay = .zero
+        await settle(4)
+        let a3 = await active()
+        PointLog.write("RELEASE BEFORE START result: gestures=\(c.gesture - g3) state=\(c.state) hint=\"\(c.pill.state.hint)\" dictation.phase=\(c.dictation.phase) dictation_status.active=\(a3 ?? "nil")")
+        PointLog.write("ASSERT RELEASE BEFORE START idle, slot free: \((c.gesture - g3 == 1 && c.state == .idle && a3 == nil) ? "PASS" : "FAIL")")
+        if let leaked = a3, leaked != "rpc-failed" {
             do { try await store.client.dictationStop(id: leaked); PointLog.write("cleanup: stopped the leaked dictation \(leaked)") }
             catch { PointLog.write("cleanup: dictation_stop \(leaked) failed: \(error)") }
         }
