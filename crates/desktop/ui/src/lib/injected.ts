@@ -14,6 +14,8 @@ export const ENGINE_NOTICES = {
   vision: { title: 'Images unseen', description: 'theuth told the model no vision model is configured, so the pending images were not looked at.' },
   nudge: { title: 'Nudge', description: 'theuth asked the desk to dispose of its task before the turn ends (70 DESK-PROTOCOL 3).' },
   journal: { title: 'Journal', description: 'theuth asked the desk to write its episode journal before the desk closes.' },
+  /** 152 D5: `loop_::budget_note` — `<budget spent cap currency>`, the only notice with attributes. */
+  budget: { title: 'Budget spent', description: "theuth told the model the session's money budget is spent and the turn ended." },
 }
 
 /** One card an engine-wrapped input renders as. */
@@ -242,7 +244,9 @@ export function classify(text: string): Injected[] | null {
     const open = rest.slice(1, gt)
     const name = open.split(' ', 1)[0] as string
     const key = CARD[name]
-    const notice = Object.hasOwn(ENGINE_NOTICES, open) ? open as keyof typeof ENGINE_NOTICES : undefined
+    // A notice is its bare tag (a human's `<rounds source="user">` stays text); `<budget spent cap currency>` is the one
+    // engine notice that carries attributes (152 D5).
+    const notice = Object.hasOwn(ENGINE_NOTICES, open) ? open as keyof typeof ENGINE_NOTICES : name === 'budget' ? name : undefined
     if (key === undefined && !HIDDEN[name] && notice === undefined && name !== 'resume_handoff') return null
     const close = `</${name}>`
     const end = rest.indexOf(close, gt)

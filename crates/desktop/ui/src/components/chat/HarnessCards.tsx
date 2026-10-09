@@ -16,6 +16,10 @@ import type { Entry } from '@/store/sessions'
 const SHELL = 'my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm'
 const SUMMARY = 'flex cursor-pointer list-none items-center gap-2 rounded-sm focus-visible:outline-2 [&::-webkit-details-marker]:hidden'
 const CODE = 'mt-2 overflow-x-auto rounded-md bg-layer-2 px-3 py-2 font-mono text-xs leading-5 whitespace-pre text-fg-secondary'
+/** 152: a card header — chips wrap on their own rows while the chevron stays at the right; the muted line sits below,
+ * one line on a phone and two on a desktop (`md` is `useIsMobile`'s 768 px). */
+const HEAD = 'flex flex-wrap items-center gap-1.5'
+const MUTED = 'mt-1 line-clamp-1 text-fg-tertiary md:line-clamp-2'
 
 /** `code`: the body is machine output (git status / diff), shown verbatim instead of as markdown. */
 function Section({ title, text, code }: { title: string; text: string; code?: boolean }) {
@@ -112,20 +116,20 @@ function sectionTitle(s: ResumeSection): string {
 export function ResumeCard({ restored, clock, working, previous, sections, omitted, text }: Extract<Entry, { kind: 'resume' }>) {
   return (
     <details className={`group/resume ${SHELL}`}>
-      <summary className={`${SUMMARY} flex-wrap text-xs text-fg-secondary`}>
-        <RotateCcw className={`size-3.5 shrink-0 ${restored ? '' : 'text-warning'}`} aria-hidden="true" />
-        <span className="font-medium">{restored ? 'resumed after restart' : 'restarted fresh'}</span>
-        {clock !== '' && <Badge variant="outline">{clock}</Badge>}
-        <ChevronRight className="ml-auto size-4 shrink-0 transition-transform group-open/resume:rotate-90" aria-hidden="true" />
-        {restored
-          ? working !== undefined && (
-              <span className="line-clamp-1 w-full text-fg-tertiary md:line-clamp-2">Working on: {working}</span>
-            )
-          : (
-              <span className="line-clamp-1 w-full text-fg-tertiary md:line-clamp-2">
-                previous harness session{previous === undefined ? '' : ` ${shortId(previous)}`} could not be loaded — context not restored
-              </span>
-            )}
+      <summary className={`${SUMMARY} text-xs text-fg-secondary`}>
+        <span className="min-w-0 flex-1">
+          <span className={HEAD}>
+            <RotateCcw className={`size-3.5 shrink-0 ${restored ? '' : 'text-warning'}`} aria-hidden="true" />
+            <span className="font-medium">{restored ? 'resumed after restart' : 'restarted fresh'}</span>
+            {clock !== '' && <Badge variant="outline">{clock}</Badge>}
+          </span>
+          {restored ? (
+            working !== undefined && <span className={MUTED}>Working on: {working}</span>
+          ) : (
+            <span className={MUTED}>previous harness session{previous === undefined ? '' : ` ${shortId(previous)}`} could not be loaded — context not restored</span>
+          )}
+        </span>
+        <ChevronRight className="size-4 shrink-0 transition-transform group-open/resume:rotate-90" aria-hidden="true" />
       </summary>
       {restored ? (
         <Streamdown mode="static" className="mt-2 border-t border-border-subtle pt-2 text-sm">
@@ -147,24 +151,28 @@ export function ResumeCard({ restored, clock, working, previous, sections, omitt
 export function ChildLostCard({ name, session, clock, why, text }: Extract<Entry, { kind: 'lost' }>) {
   return (
     <details className={`group/lost ${SHELL}`}>
-      <summary className={`${SUMMARY} flex-wrap text-xs text-fg-secondary`}>
-        <Unplug className="size-3.5 shrink-0 text-danger" aria-hidden="true" />
-        <span className="font-medium">subagent lost</span>
-        <Badge variant="secondary" className="max-w-full gap-1">
-          {session === '' ? (
-            <span className="truncate">{name}</span>
-          ) : (
-            <>
-              <Link to="/c/$session" params={{ session }} className="truncate hover:underline">
-                {name}
-              </Link>
-              <span className="text-fg-tertiary">{shortId(session)}</span>
-            </>
-          )}
-        </Badge>
-        {clock !== '' && <Badge variant="outline">{clock}</Badge>}
-        <ChevronRight className="ml-auto size-4 shrink-0 transition-transform group-open/lost:rotate-90" aria-hidden="true" />
-        {why !== '' && <span className="w-full truncate text-fg-tertiary">{why}</span>}
+      <summary className={`${SUMMARY} text-xs text-fg-secondary`}>
+        <span className="min-w-0 flex-1">
+          <span className={HEAD}>
+            <Unplug className="size-3.5 shrink-0 text-danger" aria-hidden="true" />
+            <span className="font-medium">subagent lost</span>
+            <Badge variant="secondary" className="max-w-full gap-1">
+              {session === '' ? (
+                <span className="truncate">{name}</span>
+              ) : (
+                <>
+                  <Link to="/c/$session" params={{ session }} className="truncate hover:underline">
+                    {name}
+                  </Link>
+                  <span className="text-fg-tertiary">{shortId(session)}</span>
+                </>
+              )}
+            </Badge>
+            {clock !== '' && <Badge variant="outline">{clock}</Badge>}
+          </span>
+          {why !== '' && <span className={MUTED}>{why}</span>}
+        </span>
+        <ChevronRight className="size-4 shrink-0 transition-transform group-open/lost:rotate-90" aria-hidden="true" />
       </summary>
       <Streamdown mode="static" className="mt-2 border-t border-border-subtle pt-2 text-sm">
         {text}
@@ -179,13 +187,17 @@ export function ParentViewCard({ lines, bytes }: Extract<Entry, { kind: 'parentV
   const [open, setOpen] = useState(false)
   return (
     <details className={`group/view ${SHELL}`} onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary className={`${SUMMARY} flex-wrap text-xs text-fg-secondary`}>
-        <InfinityIcon className="size-3.5 shrink-0" aria-hidden="true" />
-        <span className="font-medium">parent's memory</span>
-        <Badge variant="outline">{lines.length} lines</Badge>
-        <Badge variant="outline">≈ {fmtBytes(bytes)}</Badge>
-        <ChevronRight className="ml-auto size-4 shrink-0 transition-transform group-open/view:rotate-90" aria-hidden="true" />
-        <span className="w-full truncate text-fg-tertiary">What the parent knew when it handed this task over.</span>
+      <summary className={`${SUMMARY} text-xs text-fg-secondary`}>
+        <span className="min-w-0 flex-1">
+          <span className={HEAD}>
+            <InfinityIcon className="size-3.5 shrink-0" aria-hidden="true" />
+            <span className="font-medium">parent's memory</span>
+            <Badge variant="outline">{lines.length} lines</Badge>
+            <Badge variant="outline">≈ {fmtBytes(bytes)}</Badge>
+          </span>
+          <span className={MUTED}>What the parent knew when it handed this task over.</span>
+        </span>
+        <ChevronRight className="size-4 shrink-0 transition-transform group-open/view:rotate-90" aria-hidden="true" />
       </summary>
       {open && (
         <div className="mt-2 max-h-80 overflow-y-auto border-t border-border-subtle pt-2">

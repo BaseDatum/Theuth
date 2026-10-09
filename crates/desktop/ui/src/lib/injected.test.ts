@@ -317,3 +317,8 @@ test('splitParentView rejects anything but the exact shape', () => {
   expect(splitParentView('say <chat>\n3+1|x\n</chat>')).toBeNull()
   expect(splitParentView('plain words')).toBeNull()
 })
+
+test('152 D5: the budget notice carries attributes and is still an engine notice card', () => {
+  const body = "This session's money budget is spent: 0.25 USD of a 0.01 USD cap. The last model call was refused and the turn ended; further calls are refused until the budget is raised. Finish with what is already written."
+  expect(classify(`<budget spent="250000000" cap="10000000" currency="USD">\n${body}\n</budget>`)).toEqual([{ kind: 'engine', notice: 'budget', text: body }])
+})
