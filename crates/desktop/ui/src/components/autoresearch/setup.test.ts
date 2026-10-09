@@ -82,8 +82,9 @@ test('sparkPoints: one point per sample scaled into the box; null below two valu
 })
 
 test('autoOpens: the study-drafts card never slides the artifact sheet over the setup pane; elsewhere, and every other app, it does (live proof Z)', () => {
-  expect(autoOpens('study-drafts', '/autoresearch/new')).toBe(false)
-  expect(autoOpens('study-drafts', '/autoresearch/new?chat=s1')).toBe(false)
-  expect(autoOpens('study-drafts', '/c/s1')).toBe(true)
-  expect(autoOpens('sort-study-setup', '/autoresearch/new')).toBe(true)
+  // The engine names the artifact `<app>.openui` (seen live: `study-drafts.openui`).
+  expect(autoOpens('study-drafts.openui', '/autoresearch/new')).toBe(false)
+  expect(autoOpens('study-drafts.openui', '/autoresearch/new?chat=s1')).toBe(false)
+  expect(autoOpens('study-drafts.openui', '/c/s1')).toBe(true)
+  expect(autoOpens('sort-study-setup.openui', '/autoresearch/new')).toBe(true)
 })
