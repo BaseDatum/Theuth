@@ -1,0 +1,9 @@
+{
+  "mode": "shadow",
+  "effective": "off",
+  "reason": "model not installed",
+  "enabled": true,
+  "installed": false,
+  "budget_ms": 1500,
+  "escalate_budget_ms": 6000
+}
