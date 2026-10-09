@@ -55,11 +55,16 @@ extension IslandController {
             await click("topic:t2")
             check("topic click", store.meeting?.tapped.contains("t2") == true && ui.focusedTopic == 1 && store.meetingActs.contains("meeting_tap(t2)"),
                   "tapped=\(store.meeting?.tapped ?? []) focusedTopic=\(ui.focusedTopic) acts=\(store.meetingActs)")
-            // The eye.
+            // The eye: the click must land on the same path the ⌥⇧E hotkey takes (`ui.eyeHidden.toggle()` → `setEye` → its
+            // "eye hidden=… → sharingType=…" log line); the owner saw the hotkey work and the click not.
             let eye = ui.eyeHidden
+            let mark = (try? Data(contentsOf: IslandLog.file))?.count ?? 0
             await click("eye")
             let want: NSWindow.SharingType = (ui.eyeHidden && !Flags.shareable) ? .none : .readOnly
-            check("eye click", ui.eyeHidden != eye && window.sharingType == want, "eyeHidden \(eye) → \(ui.eyeHidden) sharingType=\(window.sharingType.rawValue) (want \(want.rawValue); --shareable keeps readOnly)")
+            let logged = String(decoding: ((try? Data(contentsOf: IslandLog.file)) ?? Data()).dropFirst(mark), as: UTF8.self)
+            let line = "eye hidden=\(!eye) → sharingType=\(want.rawValue)"
+            check("eye click", ui.eyeHidden != eye && window.sharingType == want && logged.contains(line),
+                  "eyeHidden \(eye) → \(ui.eyeHidden) sharingType=\(window.sharingType.rawValue) (want \(want.rawValue); --shareable keeps readOnly) setEye logged \"\(line)\"=\(logged.contains(line))")
             await click("eye") // back to where it was
             // ⋮ → the menu → stop (stubbed: the store logs it, sends nothing).
             await click("menu")

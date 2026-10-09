@@ -12,6 +12,13 @@ companion, desktop app and engine were never touched; synthetic input was posted
 
 Clamshell, one external display without a notch, macOS 26.6.2.
 
+Field evidence (owner, 16:08): "several minutes after the meeting ended the meeting window finally closed. after I set a keyboard
+shortcut to show/hide it from screenshare and then toggled it a couple times." Two mechanisms confirmed: (1) the island outlived
+the meeting by minutes — the `linger` path of `IslandModel.visible` (D2 stands: Done → gone within ~1 s); (2) the eye works
+through its hotkey (`meetingEye` → `ui.eyeHidden.toggle()` → `setEye` → `sharingType` flips) but not by clicking it — the
+handler is fine, the click never reached the control, which is the hit-test/`drawn` path (what was wrong, item 1). The probe
+therefore asserts that a synthetic click on the eye produces the very log line the hotkey does (`eye hidden=… → sharingType=…`).
+
 ## Rulings (decided in the brief)
 - **D1** Open while live, no hover gating: Starting/Recording/Paused/Stopping → the strip + brief pane at once, like the Tauri
   original. The hover-open/hover-close model is deleted. The closed pill exists only as the idle wordmark ("Always show", nothing
@@ -89,6 +96,9 @@ Probe: `--probe-island <clicks|clicks-nonotch|stop|open-no-hover> --shareable --
 pretended unless `-nonotch`). `AXIsProcessTrusted=true` for the probe (debug executable and the in-worktree bundle alike), so
 CGEvents were posted at `.cghidEventTap`; every target rect is logged (`probe rect <name>: swiftui=… global=… centre=… hitTest=…`)
 before the post; the eye default and the frame memory the probe flips are restored before it quits; the pointer is put back.
+
+The eye step reads the probe log before and after the click and requires `setEye`'s line — the same one the ⌥⇧E hotkey writes —
+to have appeared: AFTER `eye click … setEye logged "eye hidden=true → sharingType=1"=true` PASS (BEFORE: `false → false`, no line).
 
 | | BEFORE `/tmp/149i-probe-before.log` | AFTER `/tmp/149i-probe-after.log` |
 |---|---|---|
