@@ -1727,8 +1727,24 @@ async fn stop_now_interrupts_the_experiment_in_flight() {
     // §4.3: never measured → `abandoned`, not `interrupted` (R-66).
     assert_eq!(e1.state, ExperimentState::Abandoned);
     // F4E: the write root holds through the stop (Finalizing) and is gone once finished.
-    if i.state == StudyState::Finalizing {
-        assert!(tools::seat::seat_of(session).write_root.is_some());
+    // Race-free under load: read the seat BEFORE the state — the plugin unseats only after it
+    // wrote the terminal state, so a released root implies the study is already Finished (the
+    // background finalize may complete between `control` returning and this check).
+    let seat = tools::seat::seat_of(session);
+    let now = h
+        .studies
+        .store
+        .get_study("t1")
+        .await
+        .unwrap()
+        .unwrap()
+        .state;
+    if seat.write_root.is_none() {
+        assert_eq!(
+            now,
+            StudyState::Finished,
+            "write root released before the study finished"
+        );
     }
     let s = wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
     assert_eq!(s.stop_reason, Some(StopReason::UserNow));
