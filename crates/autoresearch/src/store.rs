@@ -1036,6 +1036,17 @@ impl Store {
         Ok(r.map(Into::into))
     }
 
+    /// The study base's measured mean: segment 0's baseline. Every "vs base" Δ (the brief's
+    /// metric line, `StudyInfo.delta_pct`, the overfit check, finalize's fallback) reads it;
+    /// a later segment's baseline is the gate's reference, not the study's (140-P2 live: a
+    /// regime segment opened at a 7356 → 3.1 ms keep made the headline read `+0 %`).
+    pub async fn base_mean(&self, slug: &str) -> Result<Option<f64>> {
+        Ok(self
+            .get_segment(slug, 0)
+            .await?
+            .and_then(|s| s.baseline_mean))
+    }
+
     // ── experiments ──
 
     /// The next free experiment number (1-based).

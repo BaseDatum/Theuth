@@ -122,7 +122,10 @@ pub async fn sample(
         noisy: !held,
         lost: false,
         log_path: Some(root_relative(&log)),
-        at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        // F4A's segment cut is by `at` string order at ms resolution (`store::now`); a
+        // whole-second stamp here would put a sub-second bench's neighbours on the cut
+        // (140-P2 live: `02:26:16Z` on every finished sample, the pending row had ms).
+        at: crate::store::now(),
         slot_holders: slot::build_slot_holders(),
         failure,
     })
@@ -472,6 +475,11 @@ mod tests {
             std::fs::canonicalize(&d.worktree).unwrap()
         );
         assert!(!out.noisy);
+        assert!(
+            out.at.len() == 24 && out.at.as_bytes()[19] == b'.' && out.at.ends_with('Z'),
+            "{}",
+            out.at
+        );
         assert_eq!(out.log_path.as_deref(), Some("toy/runs/3/sample-1.log"));
         let log = std::fs::read_to_string(d.runs.join("sample-1.log")).unwrap();
         assert!(log.contains("noise"), "{log}");
