@@ -5,7 +5,7 @@
 *{box-sizing:border-box}body{margin:0;background:transparent;color:var(--fg);font:14px/1.45 var(--sans)}
 h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:28px 0 10px;font-weight:600}
 h2:first-of-type{margin-top:4px}
-.row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;padding-bottom:6px}
 .col{display:flex;flex-direction:column;gap:10px;min-width:260px;flex:1}
 .lab{font-size:11px;color:var(--mut);margin:0 0 -4px 2px}
 .notch{width:380px;background:#0a0a0c;border:1px solid #26272c;border-radius:0 0 22px 22px;padding:10px 16px 12px;color:#fff;box-shadow:0 12px 30px rgba(0,0,0,.45)}
@@ -22,7 +22,7 @@ h2:first-of-type{margin-top:4px}
 .steps li.done .t{color:var(--ok)}.steps li.run .t{color:var(--acc)}.steps li.wait .t{color:var(--warn)}
 .appr{margin-top:8px;border:1px solid rgba(210,153,34,.5);background:rgba(210,153,34,.08);border-radius:10px;padding:8px 10px;font-size:12.5px}
 .appr code{font-family:var(--mono);font-size:12px;background:#1f2026;padding:1px 5px;border-radius:4px}
-.btns{display:flex;gap:6px;margin-top:8px}.btn{font-size:12px;padding:4px 10px;border-radius:7px;border:1px solid #33343b;background:#1a1b20;color:#e8e8ee}.btn.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.btns{display:flex;gap:6px;margin-top:8px}.btn{font-size:12px;padding:4px 10px;white-space:nowrap;border-radius:7px;border:1px solid #33343b;background:#1a1b20;color:#e8e8ee}.btn.pri{background:var(--acc);border-color:var(--acc);color:#fff}
 .card{width:380px;background:var(--card);border:1px solid var(--bd);border-radius:var(--r);padding:12px 14px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
 .card .hd{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mut)}.card .hd .sp{flex:1}
 .card .md{font-size:13.5px;margin-top:8px}.card .md code{font-family:var(--mono);font-size:12px;background:#15161a;padding:1px 5px;border-radius:4px}
@@ -34,7 +34,7 @@ h2:first-of-type{margin-top:4px}
 .sm{font-size:12px;color:var(--mut)}
 .chk{color:var(--ok)}.x{color:var(--bad)}
 .eye{font-size:12px}
-.legend{font-size:12px;color:var(--mut);margin:6px 0 0}
+.legend{font-size:12px;color:var(--mut);margin:22px 0 0;position:relative;z-index:1}
 </style></head><body>
 
 <h2>A · Dictate anywhere — notch pill while another app is frontmost</h2>
