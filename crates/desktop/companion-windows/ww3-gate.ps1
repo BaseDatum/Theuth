@@ -15,7 +15,8 @@
     esc                  tap Esc
     move <x> <y>         move the mouse to screen (x, y)
     draw                 move the mouse along a small loop (≈ 1 s) — the trail
-    shot <name>          screenshot to C:\Users\user\tools\pkg\ww3\<name>.png
+    shot <name> [x y w h] screenshot (whole screen or a region) to C:\Users\user\tools\pkg\ww3\<name>.png
+    b64 <name>           that PNG as base64 lines (read back through GET /log)
     engine-log [N]       the last N lines (default 40) of the installed engine's log mentioning screen_context / meeting / dictation
     settings-json        print settings.json
 #>
@@ -122,13 +123,25 @@ switch ($Action) {
         $dir = Join-Path $pkg 'ww3'
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+        $x = 0; $y = 0; $w = $b.Width; $h = $b.Height
+        if ($Rest.Count -ge 5) { $x = [int]$Rest[1]; $y = [int]$Rest[2]; $w = [int]$Rest[3]; $h = [int]$Rest[4] }
+        $bmp = New-Object System.Drawing.Bitmap $w, $h
         $g = [System.Drawing.Graphics]::FromImage($bmp)
-        $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
+        $g.CopyFromScreen($x, $y, 0, 0, $bmp.Size)
         $file = Join-Path $dir "$name.png"
         $bmp.Save($file, [System.Drawing.Imaging.ImageFormat]::Png)
         $g.Dispose(); $bmp.Dispose()
-        Say "shot: $file $($b.Width)x$($b.Height) $(Get-Date -Format 'HH:mm:ss.fff') size=$((Get-Item $file).Length)"
+        Say "shot: $file ${w}x${h} at ($x,$y) $(Get-Date -Format 'HH:mm:ss.fff') size=$((Get-Item $file).Length)"
+    }
+    'b64' {
+        # the PNG as base64, 2000 chars per line, so it can be read back through GET /log (no file endpoint on the service)
+        $name = if ($Rest.Count -gt 0) { $Rest[0] } else { 'shot' }
+        $file = Join-Path (Join-Path $pkg 'ww3') "$name.png"
+        if (-not (Test-Path $file)) { Say "b64: no $file"; break }
+        $s = [Convert]::ToBase64String([IO.File]::ReadAllBytes($file))
+        Say "b64: $name $($s.Length) chars"
+        for ($i = 0; $i -lt $s.Length; $i += 2000) { Say ('B64 ' + $s.Substring($i, [math]::Min(2000, $s.Length - $i))) }
+        Say "b64: end"
     }
     'engine-log' {
         $n = if ($Rest.Count -gt 0) { [int]$Rest[0] } else { 40 }
