@@ -389,14 +389,14 @@ internal sealed class PointController : IDisposable
         return dictation.LiveText;
     }
 
-    private async Task<(IReadOnlyList<string> Lines, IReadOnlyList<string> Files)> ScreenContext(PointSample[] samples, long durationMs, bool accessibility)
+    private async Task<(IReadOnlyList<string> Lines, IReadOnlyList<string> Files)> ScreenContext(PointSample[] samples, long durationMs, bool accessibility, string? color = null)
     {
         try
         {
             var req = new
             {
                 samples = samples.Select(p => new { t_ms = p.TMs, x = (float)p.X, y = (float)p.Y, pen = p.Pen }).ToArray(),
-                color = PointFlow.TrailHex,
+                color = color ?? PointFlow.TrailHex,
                 since_ms = durationMs,
                 accessibility,
             };
@@ -657,10 +657,12 @@ internal sealed class PointController : IDisposable
 
     /// <summary>
     /// <c>--capture-probe</c>: start a gesture, draw a loop with the pointer, then (A) call <c>screen_context</c> with the overlays
-    /// UP and capture-visible (WDA_NONE) — the trail must be in the PNG — and (B) run the real Stop sequence (hide every overlay,
-    /// WDA_EXCLUDEFROMCAPTURE, one dispatcher turn) before <c>screen_context</c> — the trail must be gone. Both counts are logged:
-    /// pixels within ±<see cref="TrailTolerance"/> per channel of the trail colour composited at its 0.85 alpha over a dark or a
-    /// light ground, plus a looser "greenish" count (g well above r and b) as a cross-check.
+    /// UP and capture-visible (WDA_NONE) — the overlay's malachite stroke must be in the PNG — and (B) run the real Stop sequence
+    /// (hide every overlay, WDA_EXCLUDEFROMCAPTURE, one dispatcher turn) before <c>screen_context</c> — it must be gone.
+    /// The engine itself paints the pointer path into the PNG from the samples (<c>computer/context.rs</c>, <c>TRAIL_ALPHA</c>
+    /// 0.85, in the request's <c>color</c>): the first run of this probe counted ~3 900 "trail" pixels in BOTH captures for that
+    /// reason. So the probe asks the engine to paint in MAGENTA (<c>#ff00ff</c>) and counts malachite (the overlay) and magenta
+    /// (the engine) separately — malachite must go to 0 after the Stop sequence while magenta stays (the engine drew it).
     /// </summary>
     public async Task<string> CaptureProbeAsync()
     {
@@ -681,15 +683,15 @@ internal sealed class PointController : IDisposable
         // (A) overlays up and visible to capture
         overlays.SetHiddenFromCapture(false);
         await Yield();
-        var (_, filesUp) = await ScreenContext(samples, durationMs, false);
+        var (_, filesUp) = await ScreenContext(samples, durationMs, false, ProbeColor);
         var up = await CountTrail(filesUp);
         // (B) the real Stop sequence: WDA_EXCLUDEFROMCAPTURE + hidden + one dispatcher turn, then the engine captures
         overlays.SetHiddenFromCapture(true);
         overlays.Hide();
         await Yield();
-        var (_, filesDown) = await ScreenContext(samples, durationMs, false);
+        var (_, filesDown) = await ScreenContext(samples, durationMs, false, ProbeColor);
         var down = await CountTrail(filesDown);
-        var line = $"capture-probe: {samples.Length} samples over {durationMs} ms; overlays UP → trail px {up.Trail} (greenish {up.Green}) in {up.Files} file(s) {up.Size}; STOP sequence → trail px {down.Trail} (greenish {down.Green}) in {down.Files} file(s) {down.Size}";
+        var line = $"capture-probe: {samples.Length} samples over {durationMs} ms; overlays UP → malachite px {up.Trail} (engine magenta {up.Green}) in {up.Files} file(s) {up.Size}; STOP sequence → malachite px {down.Trail} (engine magenta {down.Green}) in {down.Files} file(s) {down.Size}";
         Log.Write(line);
         overlays.SetHiddenFromCapture(!Flags.Shareable);
         Step(new PointEvent.Cancel());
@@ -698,6 +700,8 @@ internal sealed class PointController : IDisposable
 
     /// <summary>±24 of 255 per channel: a 0.85-alpha stroke drifts from the pure colour by up to 0.15 × the ground.</summary>
     public const int TrailTolerance = 24;
+    /// <summary>What the probe asks the engine to paint the path in, so the overlay's malachite is countable on its own.</summary>
+    public const string ProbeColor = "#ff00ff";
 
     private static async Task<(int Trail, int Green, int Files, string Size)> CountTrail(IReadOnlyList<string> files)
     {
@@ -718,7 +722,7 @@ internal sealed class PointController : IDisposable
                 {
                     int b = px[i], g = px[i + 1], r = px[i + 2];
                     if (Near(r, g, b, tr, tg, tb, 0x10) || Near(r, g, b, tr, tg, tb, 0xf0)) trail++;
-                    if (g > r + 24 && g > b + 16 && g > 90) green++;
+                    if (Near(r, g, b, 0xff, 0x00, 0xff, 0x10) || Near(r, g, b, 0xff, 0x00, 0xff, 0xf0)) green++; // the engine's magenta
                 }
             }
             catch (Exception e) { Log.Write($"capture-probe: {path}: {e.Message}"); }
