@@ -1,7 +1,7 @@
 # 149 — as-built WE1: the Windows UI Automation reader for `screen_context`
 
 Branch `feat/149w-we1` off `integrate/149` 77fa225f (= main dd19bf63 + the design); worktree `~/Develop/theuth-149w-we1`;
-worker WE1 (theuth subagent), 2026-10-09 01:38 → 03:20 BST. Verified on the Mac (fmt, check, tests, clippy) and on
+worker WE1 (theuth subagent), 2026-10-09 01:38 → 03:30 BST (R1 03:16 → 03:30). Verified on the Mac (fmt, check, tests, clippy) and on
 build-B (Windows 11 Pro, the build service's `cargo-check` / `cargo-test` in slot `we1`, interactive session, one display).
 
 ## 1. What was built
@@ -19,7 +19,8 @@ macOS `AXUIElement` reader and every other OS answered `granted() = false`, so t
 | Reader | same | **window**: `ControlViewWalker` parents up to the root's child (≤ 32 steps), its `Name`, else `GetWindowTextW` on its HWND → `window_title` |
 | Reader | same | **document URL** (browsers only — `is_browser`: chrome, msedge, firefox, brave, opera, vivaldi, arc, chromium): one `FindFirst(Descendants, ControlType == Document)` and its `Value` (Chromium and Firefox put the page URL there), else the first `Edit` (the address bar); accepted when `looks_like_url` |
 | Reader | same | **Chromium content**: a nameless `Chrome_RenderWidgetHostHWND` pane (the tree is not built until the first UIA query switches it on) is retried 3 × 120 ms, once per process per reader — the macOS `AXManualAccessibility` shape |
-| Shared | `ax.rs` | `is_self` on Windows also matches theuth's exe stems (`is_theuth_exe`: `t`, `theuth-desktop`, `Theuth.Companion`); pure helpers `physical_point`, `uia_role`, `is_browser`, `looks_like_url` compile and test on every OS; the no-reader fallback is now Linux-only |
+| Shared | `ax.rs` | `is_self` on Windows also matches theuth's exe stems (`is_theuth_exe`: `t`, `theuth-desktop`, `Theuth.Companion`); pure helpers `physical_point`, `uia_role`, `is_browser`, `looks_like_url` compile and test on every OS; the no-reader fallback is now Linux-only; **R1**: `AxHit.refused` + `AxHit::refused()` |
+| Line | `crates/computer/src/context.rs` | **R1**: `Lookups { answered, refused }` per visited display, `elements_for` returns them, `display_ax_on(ax_on, lookups)` picks the per-display suffix; two pure tests |
 | Deps | `crates/computer/Cargo.toml`, `Cargo.lock` | `windows = "0.62"` under `[target.'cfg(target_os = "windows")'.dependencies]` with `Win32_Foundation`, `Win32_System_Com`, `Win32_System_Ole`, `Win32_System_Threading`, `Win32_System_Variant`, `Win32_UI_Accessibility`, `Win32_UI_WindowsAndMessaging`. 0.62.2 is already in the graph through xcap 0.9.8, so the lock gains one dependency edge (`computer` → `windows 0.62.2`), no new crate version |
 
 ### What the `[screen …]` line contains on Windows now
@@ -39,10 +40,13 @@ macOS `AXUIElement` reader and every other OS answered `granted() = false`, so t
 - element roles use the macOS vocabulary where it exists (`link`, `text`, `field`, `button`, `image`, `document`, `pane`,
   `window` …) so the prompt block (`context::PROMPT`) needs no Windows variant; Custom/unknown control types fall back to
   the localized control type squashed and lowercased, then `element`.
-- `accessibility: on` whenever the request asks for it and `cfg.accessibility == auto`; a refused read (UIPI on an
-  elevated window, a provider that errors or times out) yields no element/front for that hit, and the line falls back to
-  coordinates for that gesture — exactly what a `None` hit does on macOS. The suffix stays `on` because the process does
-  have access; see Deviations.
+- `accessibility: on` whenever the request asks for it and `cfg.accessibility == auto`, **per display** (R1, 149 §9): a
+  lookup the tree REFUSES — `E_ACCESSDENIED` under UIPI on an elevated window, `UIA_E_ELEMENTNOTAVAILABLE`,
+  `UIA_E_TIMEOUT`, a pid read that fails on the element, or the reader's worker dead / not started / over its 2 s
+  budget — comes back as `AxHit::refused()` (no element, no app, `refused: true`). `context.rs` counts answered vs refused
+  lookups per display (`Lookups`); when **every** lookup on a display was refused its line says `accessibility: off`
+  (`display_ax_on`); a display with at least one answered lookup — or none at all — stays `on`, and the refused anchors
+  fall back to coordinates as a `None` hit does on macOS. The macOS reader never sets `refused`, so its lines are unchanged.
 
 ### Point mapping
 
@@ -114,14 +118,24 @@ is not UTF-8; the strings in the engine are UTF-8.
 Later commits (417f70c8, 298dead0) change only lines inside `cfg(target_os = "windows")`, so on the Mac only
 `cargo fmt -p computer --check` was re-run for them (clean); check/test/clippy on the Mac compile none of those lines.
 
+### 2.2 R1 (refused lookups → per-display `accessibility: off`), 532369c3
+
+- Mac: `cargo fmt -p computer` clean; `mbx check -p computer` rc 0; `mbx test -p computer` → **53 passed, 0 failed**
+  (+ `a_refused_hit_carries_nothing_else`, `suffix_is_off_only_when_every_lookup_was_refused`,
+  `refused_lookups_are_counted_and_add_nothing`); `mbx clippy -p computer --all-targets -- -D warnings` rc 0 (03:18:43 →
+  03:20:19, warm target).
+- build-B: `cargo-check -p computer --tests` → **0 errors, 0 warnings** (job 20261009T021851-95, 7 s warm); `cargo-test -p
+  computer --lib` → **50 passed, 0 failed, 1 ignored** (job 20261009T022523-115, 10.6 s build + 4.03 s).
+- A live elevated-window check was **not** run: an elevated window needs a UAC prompt that build-B cannot answer
+  unattended. The refusal path is exercised only by the unit tests (the rule) and by code reading (every UIA call checked;
+  the three HRESULTs and a failed pid read map to `refused`).
+
 ## 3. Deviations from the design
 
-1. **`accessibility: off` per display for UIPI (149 §9)** is not literally implemented: the suffix is one per line and
-   `context.rs` (not this wave's file) decides it from `granted()`. On Windows a refused read answers `None` per hit, which
-   makes that gesture fall back to coordinates and the header omit the app — the same behaviour a failed hit has on macOS —
-   while the suffix stays `on` because the process does have access. Flipping the suffix per display would need a
-   `context.rs` change (count hits vs refusals per display); recorded as an open item, not done tonight to keep the
-   change inside `ax.rs`.
+1. ~~**`accessibility: off` per display for UIPI (149 §9)** not implemented~~ — **resolved in R1** (532369c3): refused
+   lookups are distinguished from "nothing there" (`AxHit.refused`), and a display whose every lookup was refused says
+   `accessibility: off`; mixed displays stay `on`. The reading chosen for a budget overrun / a worker that never started is
+   also "refused" — the tree was not available for that point, so "only the picture is available" is the honest line.
 2. **`app` is an exe stem, not a display name.** Windows has no `localizedName`; `QueryFullProcessImageNameW` is what the
    brief asked for. The version-resource "FileDescription" ("Microsoft Edge") would be friendlier but costs a file read
    per hit; not done.
@@ -139,7 +153,8 @@ Later commits (417f70c8, 298dead0) change only lines inside `cfg(target_os = "wi
 
 - **Windows clippy** (`cargo clippy -p computer --all-targets -- -D warnings` on build-B) cannot run through the build
   service — owed; the Windows build shows 0 rustc warnings.
-- **Per-display `accessibility: off` on UIPI refusals** (Deviation 1) — a `context.rs` follow-up.
+- **Live UIPI check**: an elevated window under the pointer was not exercised (UAC prompt, unattended box); the refusal
+  mapping rests on the documented HRESULTs and the unit tests.
 - **Multi-display**: `physical_point` and the per-display logic are built for several monitors, verified on build-B's single
   display only.
 - **DPI awareness of `t.exe`**: the engine has no manifest, so xcap's `scale_factor` takes its `GetDeviceCaps` fallback;
