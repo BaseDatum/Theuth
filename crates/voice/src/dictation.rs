@@ -27,13 +27,11 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::dictionary::{Dictionary, Entry, EntryId, Negative, Scope};
-use crate::history::{HistoryRow, Store, Suggestion, SuggestionAnswer as Answer, SuggestionId};
+use crate::history::{HistoryRow, Store, SuggestionAnswer as Answer, SuggestionId};
 use crate::live::{MODEL_RATE, Text, Utterer};
 use crate::mic::{Capture, Chunk, RATE};
-use crate::shape::{
-    EndCommand, EndParser, EndPhrases, Preset, SETTLE_MS, SILENCE_MS, ShapeConfig, ShapePresets,
-    Shaped, Shaper,
-};
+use crate::shape::end::EndParser;
+use crate::shape::{EndCommand, EndPhrases, Preset, ShapeConfig, ShapePresets, Shaped, Shaper};
 use crate::{
     AppProfile, Destination, DeviceState, DictationId, DictationOpts, DictationTimings,
     FinishReason, HistoryConfig, ModelState, Surface, VoiceConfig, VoiceEvent,
@@ -44,9 +42,9 @@ const LEVELS: usize = 8;
 /// How long the task waits for an audio chunk before rechecking cancel and deadline.
 const POLL: Duration = Duration::from_millis(50);
 /// §7.3: after `Send` arms, no new speech for this long …
-const SETTLE: Duration = Duration::from_millis(SETTLE_MS);
+pub const SETTLE: Duration = Duration::from_millis(crate::shape::end::SETTLE_MS);
 /// §7.3: … then this much closed-gate silence stops the dictation.
-const SILENCE: Duration = Duration::from_millis(SILENCE_MS);
+pub const SILENCE: Duration = Duration::from_millis(crate::shape::end::SILENCE_MS);
 /// §8.3: a capture that yields no PCM for this long is not ready.
 const READY_TIMEOUT: Duration = Duration::from_secs(2);
 /// §8.3: consecutive 160 ms windows at or under the thresholds that mark a dead device.
@@ -166,9 +164,9 @@ pub struct Correction {
     pub sent_text: String,
 }
 
-/// `dictionary_suggestion_answer` (153 §6.3 step 4): forwarded to the history
-/// store, which writes the learned entry (`Add`) or the negative (`Never`) into
-/// the live dictionary and its own state. Errors: "unknown suggestion".
+/// `dictionary_suggestion_answer` (153 §6.3 step 4). `Add` writes a learned
+/// entry with the heard variant, `Never` a negative, `NotNow` only the store's
+/// cooldown. Errors: "unknown suggestion".
 #[derive(Clone, Copy, Debug)]
 pub struct AnswerSuggestion {
     /// The suggestion the card showed.
@@ -450,7 +448,7 @@ impl Dictation {
         }
         self.stores_opened = true;
         let data_dir = self.rt.data_dir.clone();
-        if self.cfg.history.enabled {
+        if Store::recording_allowed(&self.cfg.history, false) {
             let h = &self.cfg.history;
             match Store::open(&data_dir).await {
                 Ok(s) => self.store = Some(s.with_budget(h.rows, u64::from(h.audio_mib) << 20)),
@@ -617,6 +615,7 @@ impl Dictation {
                 has_audio: false,
             },
         });
+        let commands = opts.commands.clone();
         let press = opts
             .press_ago_ms
             .and_then(|ms| recv.checked_sub(Duration::from_millis(u64::from(ms))))
@@ -633,12 +632,12 @@ impl Dictation {
                 dict: self.snapshot.clone(),
                 app: opts.app,
                 surface,
-                commands: opts.commands,
+                commands,
             },
-            parser: EndParser::new(&self.cfg.phrases),
             prev: String::new(),
             finals: Vec::new(),
             utterance: None,
+            parser: EndParser::new(&self.cfg.phrases),
             send_at: None,
             quiet_since: None,
             press,
@@ -653,7 +652,7 @@ impl Dictation {
             heard: false,
             peak: 0.0,
             silent_windows: 0,
-            record_audio: self.recording().is_some(),
+            record_audio: self.store.is_some(),
             tail: VecDeque::new(),
             utt_audio: Vec::new(),
             was_open: false,
@@ -734,31 +733,6 @@ impl Dictation {
             tokio::time::sleep(standby).await;
             let _ = me.tell(StandbyExpired(generation)).await;
         });
-    }
-
-    /// §6.3 step 3: one card per due suggestion; the store keeps the id until answered.
-    async fn suggest(&mut self, due: Vec<Suggestion>) {
-        for s in due {
-            self.rt
-                .publish(VoiceEvent::DictionarySuggestion {
-                    id: s.id,
-                    heard: s.heard,
-                    typed: s.typed,
-                    occurrences: s.occurrences,
-                    surface: s.surface,
-                    has_audio: s.has_audio,
-                })
-                .await;
-        }
-    }
-
-    /// §6.5: the store, when rows and audio may be written. `DictationOpts` is
-    /// frozen without a session, so the private-session half of
-    /// [`Store::recording_allowed`] is always `false` here (wave B hand-off).
-    fn recording(&self) -> Option<Store> {
-        self.store
-            .clone()
-            .filter(|_| Store::recording_allowed(&self.cfg.history, false))
     }
 }
 
@@ -917,14 +891,25 @@ impl Message<Correction> for Dictation {
     type Reply = Result<(), String>;
     async fn handle(&mut self, m: Correction, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.open_stores().await;
-        let Some(store) = self.recording().filter(|_| self.cfg.history.learn) else {
+        let Some(store) = self.store.clone().filter(|_| self.cfg.history.learn) else {
             return Ok(());
         };
         let due = store
             .correction(m.id, &m.sent_text)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        self.suggest(due).await;
+        for s in due {
+            self.rt
+                .publish(VoiceEvent::DictionarySuggestion {
+                    id: s.id,
+                    heard: s.heard,
+                    typed: s.typed,
+                    occurrences: s.occurrences,
+                    surface: s.surface,
+                    has_audio: s.has_audio,
+                })
+                .await;
+        }
         Ok(())
     }
 }
@@ -943,7 +928,7 @@ impl Message<AnswerSuggestion> for Dictation {
             .answer(m.id, m.answer, &mut self.dictionary)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        if !matches!(m.answer, Answer::NotNow) {
+        if m.answer != Answer::NotNow {
             self.snapshot = self.dictionary.snapshot();
         }
         Ok(())
@@ -1112,7 +1097,7 @@ impl Message<Report> for Dictation {
                 if let Some(opened) = done.standby {
                     self.keep_warm(ctx.actor_ref().clone(), opened);
                 }
-                if let Some(store) = self.recording() {
+                if let Some(store) = self.store.clone() {
                     let mut row = run.row;
                     row.finished_ms = Some(unix_ms());
                     row.raw = done.raw;
@@ -1151,7 +1136,6 @@ fn ms(d: Duration) -> u32 {
 }
 
 /// §4.6's `ShaperOwned`: what one dictation shapes with, owned so the task can move.
-/// `with_mentions` stays empty: `DictationOpts` (frozen) carries no agent names.
 struct ShaperOwned {
     cfg: ShapeConfig,
     phrases: EndPhrases,
@@ -1162,8 +1146,6 @@ struct ShaperOwned {
 }
 
 impl ShaperOwned {
-    // ponytail: a `Shaper` per piece (it borrows phrases + dict, so it cannot live in the
-    // task); its setup scans the dictionary's path pairs — ≈ 40k cheap compares, sub-ms.
     fn shape(&self, parser: &mut EndParser, prev: &str, raw: &str, is_final: bool) -> Shaped {
         Shaper::new(self.cfg, &self.phrases, &self.dict, self.app.as_ref())
             .with_surface(self.surface)
@@ -1182,14 +1164,14 @@ struct Task {
     /// RMS per chunk, flushed every [`LEVELS`].
     levels: Vec<f32>,
     shaper: ShaperOwned,
-    /// §7.1: the end-command parser of the open utterance; reset after each final.
-    parser: EndParser,
     /// Finals so far, shaped and joined: the shaper's context (§4.6).
     prev: String,
     /// Closed utterances kept: `(utterance, raw, shaped)`; "scratch that" pops one.
     finals: Vec<(u32, String, String)>,
-    /// The utterance the last piece belonged to; a new one clears `armed`.
+    /// The utterance the last piece belonged to; a new one resets `parser`.
     utterance: Option<u32>,
+    /// §7.1: the end-command state machine of the open utterance.
+    parser: EndParser,
     /// §7.3: when the last piece carrying `Send` arrived; `None` once new speech followed.
     send_at: Option<Instant>,
     /// §7.3: since when the gate has been closed after the settle.
@@ -1515,9 +1497,8 @@ impl Task {
         }
     }
 
-    /// §4.6: every piece through the shaper with the utterance's end-command parser
-    /// (§7.1 stickiness lives there); "scratch that" re-sends the previous closed
-    /// utterance empty (§7.4).
+    /// §4.6: every piece through the shaper with the utterance's end parser
+    /// (§7.1 state); "scratch that" re-sends the previous closed utterance empty (§7.4).
     fn texts(&mut self, texts: Vec<Text>) {
         for t in texts {
             let now = Instant::now();
@@ -1528,9 +1509,6 @@ impl Task {
             let s = self
                 .shaper
                 .shape(&mut self.parser, &self.prev, &t.text, t.is_final);
-            if t.is_final {
-                self.parser.reset();
-            }
             self.send_at = matches!(s.command, Some(EndCommand::Send { .. })).then_some(now);
             self.first_partial.get_or_insert(now);
             if t.is_final {

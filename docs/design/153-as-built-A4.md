@@ -17,9 +17,9 @@ Worktree `~/Develop/theuth-153-a4`, branch `feat/153-a4`, cut from the PIN `cbaf
 ## Design vs built
 | Design | Built |
 |---|---|
-| §4.6 `Task.shaper: ShaperOwned`, `prev_text` = finals joined | Same. `prev` = shaped finals joined with a space. `Shaper::shape` is `&self` (stateless), so §7.1's stickiness is kept by the task: a command on any piece of an utterance stays on its later pieces until the final. |
+| §4.6 `Task.shaper: ShaperOwned`, `prev_text` = finals joined | Same. `prev` = shaped finals joined with a space. §7.1 state: one `EndParser` per utterance owned by the task, fed through `Shaper::shape_with`, reset on a new utterance. |
 | §4.6 "scratch that" re-sends the previous closed utterance empty | Same: `DictationText { utterance: prev, text: "", shaped: "", final: true }`; the scratch utterance itself is not kept as a final. |
-| §7.3 `SETTLE` 1.5 s then `SILENCE` 0.35 s | `SETTLE`/`SILENCE` constants live in `dictation.rs` (A1's `end.rs` had none at the PIN). Settle counts from the last piece carrying `Send`; silence = the utterer's gate closed (`is_open() == false`) for 0.35 s; new speech (gate open, or a piece without `Send`) resets. `Finished { Done }`. |
+| §7.3 `SETTLE` 1.5 s then `SILENCE` 0.35 s | `SETTLE`/`SILENCE` = `Duration`s of A1's `end::SETTLE_MS/SILENCE_MS`. Settle counts from the last piece carrying `Send`; silence = the utterer's gate closed (`is_open() == false`) for 0.35 s; new speech (gate open, or a piece without `Send`) resets. `Finished { Done }`. |
 | §8.1 `open_on(prefs)` walks the list, then default, then first input | Same; `flexaudio::devices()` (cpal names, `is_default`) enumerates and `StreamConfig.device_id = Some(name)` opens by name — no deviation needed. |
 | §8.2 retry 300 ms × 3 / 5 s | Brief's numbers: every 500 ms for 5 s. `DictationDevice { Lost }` then `{ Changed }`, the open utterance is closed first, no `Finished`; after 5 s `Error("microphone: device lost")`. Remote sources untouched. |
 | §8.3 `Started` after the first PCM; 2 s ready gate; 3 silent 160 ms windows | Mic only (a remote feed is the client's). The level window (8 × 20 ms) doubles as the detector window; after one non-silent window the detector is off. Rejection → next device once (the failed name dropped from the list), else `DictationDevice { Lost }` + `Error("microphone: no sound from ‹name›")` / `"no audio from ‹name›"`. |
@@ -27,14 +27,17 @@ Worktree `~/Develop/theuth-153-a4`, branch `feat/153-a4`, cut from the PIN `cbaf
 | §8.6 duck/pause | Not touched: companion-side per design; the setting is read into config by C. |
 | §8.7 timings | `press = recv − press_ago_ms`; `first_pcm`, `first_partial`, `first_final` on the task's clock; `stop_to_final_ms` from the stop observation (cancel/deadline/settle) to the `Finished` publish. In `DictationState.last` and the `dictations` row (`press_ms` column = press→first PCM). |
 | §5.6 `voice_status.dictionary { … }` | `VoiceStatus` (frozen, C's) has no such field; not added. `dictionary_list` reports user + learned as designed. |
-| §6.3 suggestion ids | `Store::correction` returns `Vec<Correction>` without an id or a count; the actor mints the `SuggestionId`, keeps the pair until answered, publishes `occurrences: 2` (the §6.2 due rule) and `has_audio: false`. `Add` writes a `Learned` entry (metaphone codes empty — A2's matcher may compute them on `put`), `Never` a negative, every answer is forwarded to `Store::answer`. |
+| §6.3 suggestions | Post-merge (integrate/153 `bebe75e5`): `Store::correction` returns `Vec<Suggestion>` with id/occurrences/surface/has_audio → published 1:1 as `DictionarySuggestion`, skipped when `!history.learn`; `Store::answer(id, answer, &mut dictionary)` does Add/Never/NotNow and the actor re-snapshots after Add/Never. |
+| §6.5 store setup | `Store::open(..).with_budget(rows, audio_mib << 20)`, gated on `Store::recording_allowed(&history, false)` — no private-session signal exists in the frozen `DictationOpts`, so `false`. Audio: `attach_audio` once per closed utterance (the task batches a 16 kHz i16 utterance incl. a 500 ms pre-roll), rows at `Finished`. |
 | §14.1 message named `SuggestionAnswer` | Named `AnswerSuggestion` (the enum `history::SuggestionAnswer` already has the name). |
-| §14.1 `DictationOpts.commands` | Carried, not applied: `Shaper::new` (frozen) has no slash-command input; A1/integrator seam. |
+| §14.1 `DictationOpts.commands` | Applied via A1's `Shaper::with_commands` + `with_surface` (post-merge). Per-utterance `EndParser` through `shape_with`. |
 
 ## Tests (`crates/voice/src/dictation.rs`, fake engine + injected mic opener; no model, no device)
 `none_opts_is_today`, `send_it_settle_then_silence_stops`, `scratch_that_empties_previous_utterance`, `device_lost_rearms_within_5s`,
 `silent_device_rejected_in_480ms`, `readiness_gate_2s`, `timings_recorded_with_synthetic_feed`; the four PIN tests unchanged.
-The end-command tests arm through a `#[cfg(test)]` shim (exact phrase at the tail) until A1's parser lands — harmless after.
+The end-command tests run through A1's real `EndParser` (post-merge; the PIN-era test shim is gone).
+Post-merge full run: `live::tests::utterer_returns_the_spoken_sentence_punctuated` (a pre-existing model-loading test in `live.rs`, not
+`#[ignore]`d, untouched by A4) failed once on the model dropping the trailing `.`; it passed in the pre-merge run — flaky model output, not A4's.
 
 ## Gates (all through `BUILD_LABEL=153-A4 build-lock mbx …`, CARGO_BUILD_JOBS=4)
 - `mbx check -p voice -p rpc --tests` → exit 0, 0 warnings.
