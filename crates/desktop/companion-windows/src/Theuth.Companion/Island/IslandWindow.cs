@@ -1150,7 +1150,8 @@ internal sealed partial class IslandWindow : ToolWindow
             // A fresh brush with the other theme's colour: the theme-dictionary brush instance follows the element's theme.
             t.Foreground = new SolidColorBrush(Theme.ColorOf(NativeLook.OnAccent, other));
         }
-        string probe = $"{theme} fill=#{fill.R:X2}{fill.G:X2}{fill.B:X2} on=#{on.R:X2}{on.G:X2}{on.B:X2} readable={readable}";
+        var fg = t.Foreground is SolidColorBrush sb ? sb.Color : default;
+        string probe = $"{theme} fg=#{fg.A:X2}{fg.R:X2}{fg.G:X2}{fg.B:X2} fill=#{fill.R:X2}{fill.G:X2}{fill.B:X2} on=#{on.R:X2}{on.G:X2}{on.B:X2} readable={readable}";
         if (probe != onAccentLogged) { onAccentLogged = probe; Log.Write($"island: text on accent fill — {probe}{(readable ? "" : " → the other theme's on-accent colour")}"); }
         return t;
     }
