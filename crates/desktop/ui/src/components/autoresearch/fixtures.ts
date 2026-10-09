@@ -358,6 +358,7 @@ function study(args: { slug: string; goal?: string; repo?: string; state: StudyS
     budget_used: { usd: args.usd ?? args.plan.count * 0.335, hours: Number(hoursUsed.toFixed(1)), experiments: args.plan.count },
     budget: s.budget,
     session: args.state.state === 'running' || args.state.state === 'paused' ? `ses-${args.slug}` : null,
+    origin: `setup-${args.slug}`,
     current: currentRow?.n ?? null,
     phase: currentRow ? 'sampling' : null,
     started_at: started,

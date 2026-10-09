@@ -1163,6 +1163,7 @@ fn info_from(
         },
         budget: study.spec.budget.clone(),
         session: study.session,
+        origin: study.origin,
         current,
         phase,
         started_at: study.started_at.clone(),

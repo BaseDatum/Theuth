@@ -83,6 +83,9 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, seams: Arc<Seams>) {
         .ask(RegisterTool(Arc::new(ControlTool(s.clone()))))
         .await;
     let _ = reg.ask(RegisterTool(Arc::new(StartTool(s.clone())))).await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(crate::setup::ProbeTool(s.clone()))))
+        .await;
 }
 
 /// Text for the transcript, the same data as a Python value for the runtime.
@@ -119,7 +122,10 @@ pub fn draft_spec_path(root: &Path, draft_id: &str) -> PathBuf {
 }
 
 /// The draft on disk: the spec, the chat it was drafted in (start and result
-/// cards go there) and the press token the card's Start buttons carry.
+/// cards go there), the press token the card's Start buttons carry, and the
+/// 151 living-draft fields (§4.2): `partial`, the rows the agent listed as
+/// `confirmed`, the rows the user set in the panel (`user_set`, sticky),
+/// `version` bumped per write and `updated_at`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Draft {
     /// The spec the card shows.
@@ -131,6 +137,21 @@ pub struct Draft {
     /// draft written before tokens existed (re-draft to start it).
     #[serde(default)]
     pub token: Option<String>,
+    /// The last `autoresearch_draft` was `partial: true` (151 D5).
+    #[serde(default)]
+    pub partial: bool,
+    /// Rows the agent listed as agreed with the user (151 §4.3 row names).
+    #[serde(default)]
+    pub confirmed: Vec<String>,
+    /// Rows the user set through `autoresearch.draft_edit`; kept across re-drafts.
+    #[serde(default)]
+    pub user_set: Vec<String>,
+    /// Bumped by every write of this file.
+    #[serde(default)]
+    pub version: u32,
+    /// RFC 3339 of the last write.
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 /// Write a draft beside its setup scripts (the draft id is the slug); returns
@@ -140,13 +161,33 @@ pub struct Draft {
 /// readable by a model with `read_file`/`shell`; it closes the ordinary path
 /// (a root tool the model calls), which is what §12.4 asks — a determined
 /// model is §8.3's acknowledged limit.
-pub fn write_draft(root: &Path, spec: &StudySpec, origin: SessionId) -> std::io::Result<String> {
+pub fn write_draft(
+    root: &Path,
+    spec: &StudySpec,
+    origin: SessionId,
+    partial: bool,
+    confirmed: Vec<String>,
+) -> std::io::Result<String> {
     let path = draft_spec_path(root, &spec.slug);
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
+    // 151 §4.2: `user_set` and `version` survive a re-draft; the token does not (R-10).
+    let previous = read_draft(root, &spec.slug).ok();
     let token = SessionId::new().0.simple().to_string();
-    let draft = serde_json::json!({ "spec": spec, "origin": origin, "token": token });
+    let draft = Draft {
+        spec: spec.clone(),
+        origin: Some(origin),
+        token: Some(token.clone()),
+        partial,
+        confirmed,
+        user_set: previous
+            .as_ref()
+            .map(|d| d.user_set.clone())
+            .unwrap_or_default(),
+        version: previous.as_ref().map_or(1, |d| d.version + 1),
+        updated_at: crate::store::now(),
+    };
     std::fs::write(&path, serde_json::to_vec_pretty(&draft)?)?;
     Ok(token)
 }
@@ -1368,7 +1409,7 @@ mod tests {
             ..Default::default()
         };
         let origin = SessionId::new();
-        let token = write_draft(dir.path(), &spec, origin).unwrap();
+        let token = write_draft(dir.path(), &spec, origin, false, Vec::new()).unwrap();
         assert_eq!(token.len(), 32, "{token}");
         assert_eq!(
             draft_spec_path(dir.path(), "sort-speed"),
@@ -1377,11 +1418,33 @@ mod tests {
         let d = read_draft(dir.path(), "sort-speed").unwrap();
         assert_eq!(d.token.as_deref(), Some(token.as_str()));
         assert_eq!((d.spec, d.origin), (spec.clone(), Some(origin)));
+        // 151 §4.2: a fresh draft is version 1, final, nothing confirmed or user-set.
+        assert_eq!(
+            (d.version, d.partial, d.confirmed.len(), d.user_set.len()),
+            (1, false, 0, 0)
+        );
+        assert!(!d.updated_at.is_empty());
         assert_ne!(
-            write_draft(dir.path(), &spec, origin).unwrap(),
+            write_draft(dir.path(), &spec, origin, true, vec!["goal".into()]).unwrap(),
             token,
             "a re-draft gets a new token"
         );
+        // 151 §4.2: a re-draft bumps the version, stores `partial` / `confirmed`, keeps `user_set`.
+        let d = read_draft(dir.path(), "sort-speed").unwrap();
+        assert_eq!(
+            (d.version, d.partial, d.confirmed.clone()),
+            (2, true, vec!["goal".to_owned()])
+        );
+        let mut kept = d;
+        kept.user_set = vec!["budget".into()];
+        std::fs::write(
+            draft_spec_path(dir.path(), "sort-speed"),
+            serde_json::to_vec(&kept).unwrap(),
+        )
+        .unwrap();
+        write_draft(dir.path(), &spec, origin, false, Vec::new()).unwrap();
+        let d = read_draft(dir.path(), "sort-speed").unwrap();
+        assert_eq!((d.version, d.user_set), (3, vec!["budget".to_owned()]));
         let e = read_draft(dir.path(), "nope").unwrap_err().to_string();
         assert!(e.starts_with("no draft `nope`"), "{e}");
         std::fs::create_dir_all(dir.path().join("drafts/old")).unwrap();
@@ -1392,7 +1455,7 @@ mod tests {
         .unwrap();
         assert_eq!(read_draft(dir.path(), "old").unwrap().token, None);
         // R-11: the third Start button flips `include_dirty` on the draft; the token survives.
-        let token = write_draft(dir.path(), &spec, origin).unwrap();
+        let token = write_draft(dir.path(), &spec, origin, false, Vec::new()).unwrap();
         let d = mark_include_dirty(dir.path(), "sort-speed").unwrap();
         assert!(d.spec.include_dirty);
         assert_eq!(d.token.as_deref(), Some(token.as_str()));

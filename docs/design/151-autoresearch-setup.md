@@ -182,6 +182,20 @@ Scratch engine with `autoresearch:` enabled; repo = a copy of `crates/autoresear
 9. The compact card's "Open in Autoresearch" is `@ToAssistant` + the root bridge (108 §6.5 pattern), since OpenUI has no in-app navigation action.
 10. `autoresearch.discard_draft` keeps the decisions' name (verb-first like `settings.set`); the other four are `draft*`.
 
-## 12. Contract as built (C, this branch)
+## 12. Contract as built (C, branch `feat/151-c`)
 
-Filled in by C at the end of the skeleton commit — see the bottom of this file.
+Committed so ENG and UI compile against it from minute one. Exact names:
+
+- `crates/autoresearch/src/types.rs` — new section "151 setup": `FieldState` (ts `DraftFieldState`, snake_case, default `Proposed`), `DraftField`, `DraftView`, `DraftSummary`, `ProbeKind` (snake_case, default `Bench`), `ProbeResult` (`duration_ms` ts `number`), `DraftArgs` (ts `StudyDraftArgs`; `#[serde(flatten)] spec: StudySpec` + `partial` + `confirmed`, all defaulted). `StudyInfo.origin: Option<SessionId>` added after `session`; `actor::info_from` copies `study.origin` (`StudyDetail` carries it as `info.origin`). Test `types::tests::draft_args_flatten_the_spec_with_default_flags`.
+- `crates/autoresearch/src/tools.rs` — `Draft` gains `partial, confirmed, user_set, version, updated_at` (all `#[serde(default)]`; old files read); `write_draft(root, spec, origin, partial, confirmed)` keeps `user_set`, bumps `version` (1 on first write), stamps `updated_at = store::now()`; `register` adds `setup::ProbeTool`. Test `draft_spec_round_trips_on_disk_with_a_press_token` extended (version 1 → 2 → 3, `partial`/`confirmed` stored, `user_set` kept).
+- `crates/autoresearch/src/setup.rs` (new, `pub mod setup`) — `NOT_BUILT = "151: not built yet"`, `ProbeArgs { draft_id, what: ProbeKind, repeats: Option<u8> }`, `ProbeTool` (`autoresearch_probe`, `Risk::Mutating`, `RETURNS "dict"`, the D4 description) whose `call` bails with `NOT_BUILT`. ENG fills this file (§5–§6).
+- `crates/autoresearch/src/rpc_impl.rs` — `METHODS` is 15; `draft`, `drafts` (returns `Ok(vec![])`), `draft_edit`, `draft_confirm`, `discard_draft` return `Err("… 151: not built yet")`.
+- `crates/rpc/src/api.rs` — trait methods `autoresearch.draft | drafts | draft_edit | draft_confirm | discard_draft` and bodies after `autoresearch_create`; `drafts` maps "is not running" to an empty list like `list`. `autoresearch_methods_are_registered` covers them. `crates/rpc/src/export.rs` exports the seven new types.
+- `crates/app/src/study_draft.rs` — `type Args = DraftArgs`; `partial` / `confirmed` are destructured and passed to `write_draft`; validation and the card are unchanged (ENG: §6.1, §6.4).
+- `crates/desktop/ui/src/rpc/api.ts` — the five methods on `Api` (types from `@/rpc/bindings/{DraftView,DraftSummary}`; `discard_draft` → `Promise<null>`) and in `METHODS` (sorted). `components/autoresearch/fixtures.ts` — the fixture `StudyInfo` gains `origin: \`setup-<slug>\``. Bindings regenerated (816 files; `bindings/methods.json` has 15 `autoresearch.*`).
+
+Deviations from decisions.md / the brief: (1) `origin` lives on `StudyInfo` only — `StudyDetail.info.origin` is the detail's copy; a second field would duplicate it. (2) `drafts()` answers `[]` from `rpc_impl` directly (no actor ask) until ENG scans the directory, so the rail works with the plugin off. (3) The probe tool's refusal text is an `anyhow` error (the tool-call failure path), not `ToolOutput::err`, so the agent sees it as a failed call rather than a result.
+
+Environment notes for the worktree (not code): `crates/desktop/ui/node_modules` had a stray `node_modules/node_modules -> ~/Develop/theuth/…/node_modules` symlink from the APFS clone that made Node resolve a second React for `@tanstack/react-query` (9 vitest failures); removed. `@types/d3-sankey` (package.json) was absent from the clone; `build-lock bun install` added it (lockfile unchanged).
+
+Gates (stable 1.96.1, `build-lock mbx`, `CARGO_BUILD_JOBS=4`, crate-level): `mbx test -p autoresearch` 161 passed · `mbx test -p app --lib` 46 passed · `mbx test -p rpc --lib` 55 passed, 1 failed = `engine::tests::second_acquire_in_one_process_is_running` (engine-lock file test, unrelated; passes alone 4/4 on rerun — parallel-load flake) · `mbx clippy -p autoresearch -p rpc -p app --all-targets -- -D warnings` clean · `mbx check -p theuth` green (1 m 13 s) · `export_bindings` 8 passed, 816 bindings copied · `bunx tsc -b --noEmit` 0 errors · `bunx vitest run src/components/autoresearch src/rpc` 4 files, 30 passed.

@@ -1898,6 +1898,30 @@ pub trait Api {
         &self,
         config: autoresearch::AutoresearchConfig,
     ) -> RpcResult<autoresearch::AutoresearchConfig>;
+    /// 151 §4.4: the live draft panel — rows with engine-computed states, `ready`, what blocks Start.
+    #[method(name = "autoresearch.draft")]
+    async fn autoresearch_draft(&self, draft_id: String) -> RpcResult<autoresearch::DraftView>;
+    /// 151 D6: drafts with no study yet (the rail's "Setting up" rows), newest first.
+    #[method(name = "autoresearch.drafts")]
+    async fn autoresearch_drafts(&self) -> RpcResult<Vec<autoresearch::DraftSummary>>;
+    /// 151 D3: a leaf set in the panel (`metric.name`, `scope`, …; text, parsed by the engine) — user-set and confirmed.
+    #[method(name = "autoresearch.draft_edit")]
+    async fn autoresearch_draft_edit(
+        &self,
+        draft_id: String,
+        field: String,
+        value: String,
+    ) -> RpcResult<autoresearch::DraftView>;
+    /// 151 D3: a row OK'd in the panel (`proposed` → `confirmed`).
+    #[method(name = "autoresearch.draft_confirm")]
+    async fn autoresearch_draft_confirm(
+        &self,
+        draft_id: String,
+        field: String,
+    ) -> RpcResult<autoresearch::DraftView>;
+    /// 151 D3: discard a draft — the drafts dir is removed, later Starts are refused.
+    #[method(name = "autoresearch.discard_draft")]
+    async fn autoresearch_discard_draft(&self, draft_id: String) -> RpcResult<()>;
     /// 137 §11.1 `agent.endless` as in force (Settings › Memory).
     #[method(name = "endless_settings_get")]
     async fn endless_settings_get(&self) -> RpcResult<EndlessConfig>;
@@ -6775,6 +6799,48 @@ impl ApiServer for Server {
         start: autoresearch::StartWhen,
     ) -> RpcResult<autoresearch::StudyInfo> {
         autoresearch::rpc_impl::create(draft_id, start)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    // 151 §4.4: the living draft (bodies in `autoresearch::rpc_impl`, built by ENG).
+
+    async fn autoresearch_draft(&self, draft_id: String) -> RpcResult<autoresearch::DraftView> {
+        autoresearch::rpc_impl::draft(draft_id)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_drafts(&self) -> RpcResult<Vec<autoresearch::DraftSummary>> {
+        match autoresearch::rpc_impl::drafts().await {
+            Err(e) if e.ends_with("is not running") => Ok(Vec::new()),
+            r => r.map_err(dreaming_err),
+        }
+    }
+
+    async fn autoresearch_draft_edit(
+        &self,
+        draft_id: String,
+        field: String,
+        value: String,
+    ) -> RpcResult<autoresearch::DraftView> {
+        autoresearch::rpc_impl::draft_edit(draft_id, field, value)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_draft_confirm(
+        &self,
+        draft_id: String,
+        field: String,
+    ) -> RpcResult<autoresearch::DraftView> {
+        autoresearch::rpc_impl::draft_confirm(draft_id, field)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_discard_draft(&self, draft_id: String) -> RpcResult<()> {
+        autoresearch::rpc_impl::discard_draft(draft_id)
             .await
             .map_err(dreaming_err)
     }

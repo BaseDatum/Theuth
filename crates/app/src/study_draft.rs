@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use autoresearch::tools::{IDLE_SENSOR, draft_spec_path, live_cfg, validate_spec, write_draft};
-use autoresearch::{AutoresearchConfig, Direction, StudySpec};
+use autoresearch::{AutoresearchConfig, Direction, DraftArgs, StudySpec};
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use crate::actor::Core;
@@ -326,7 +326,7 @@ impl Tool for StudyDraftTool {
     const NAME: &'static str = "autoresearch_draft";
     const RISK: Risk = Risk::ReadOnly;
     const RETURNS: &'static str = "dict";
-    type Args = StudySpec;
+    type Args = DraftArgs;
 
     fn description(&self) -> String {
         "Propose an autoresearch study for the user to approve: the goal, the metric and its direction, the \
@@ -336,7 +336,13 @@ impl Tool for StudyDraftTool {
             .into()
     }
 
-    async fn call(&self, spec: StudySpec, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: DraftArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        // 151 D5: `partial` / `confirmed` are stored with the spec (ENG builds the relaxed validation and the compact card).
+        let DraftArgs {
+            spec,
+            partial,
+            confirmed,
+        } = a;
         // Windows: no `/bin/bash` for the study's commands — refuse before a card is shown.
         if cfg!(windows) {
             return Ok(ToolOutput::err(format!(
@@ -354,7 +360,7 @@ impl Tool for StudyDraftTool {
             Err(e) => return Ok(ToolOutput::err(format!("autoresearch_draft: {e}"))),
         };
         let root = cfg.root(&self.core.rt.data_dir);
-        let token = match write_draft(&root, &spec, cx.session) {
+        let token = match write_draft(&root, &spec, cx.session, partial, confirmed) {
             Ok(t) => t,
             Err(e) => {
                 return Ok(ToolOutput::err(format!(

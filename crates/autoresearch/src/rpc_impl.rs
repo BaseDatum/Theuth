@@ -10,8 +10,8 @@ use crate::config::AutoresearchConfig;
 use crate::types::*;
 use crate::{AUTORESEARCH_ACTOR, Studies};
 
-/// The method names the `rpc` crate registers (140 §12.5).
-pub const METHODS: [&str; 10] = [
+/// The method names the `rpc` crate registers (140 §12.5, 151 §4.4).
+pub const METHODS: [&str; 15] = [
     "autoresearch.list",
     "autoresearch.get",
     "autoresearch.experiments",
@@ -22,6 +22,11 @@ pub const METHODS: [&str; 10] = [
     "autoresearch.create",
     "autoresearch.settings.get",
     "autoresearch.settings.set",
+    "autoresearch.draft",
+    "autoresearch.drafts",
+    "autoresearch.draft_edit",
+    "autoresearch.draft_confirm",
+    "autoresearch.discard_draft",
 ];
 
 fn actor() -> std::result::Result<ActorRef<Studies>, String> {
@@ -116,4 +121,51 @@ pub async fn set_settings(
     cfg: AutoresearchConfig,
 ) -> std::result::Result<AutoresearchConfig, String> {
     ask(SetSettings(cfg)).await
+}
+
+// ───────────────────────────── 151 §4.4 the living draft (ENG builds the bodies) ─────────────────────────────
+
+/// `autoresearch.draft {draft_id}` → the panel's `DraftView` (151 §5).
+pub async fn draft(draft_id: String) -> std::result::Result<DraftView, String> {
+    Err(format!(
+        "autoresearch.draft {draft_id}: {}",
+        crate::setup::NOT_BUILT
+    ))
+}
+
+/// `autoresearch.drafts` → setting-up rows (drafts with no study yet), newest first (151 D6).
+pub async fn drafts() -> std::result::Result<Vec<DraftSummary>, String> {
+    Ok(Vec::new())
+}
+
+/// `autoresearch.draft_edit {draft_id, field, value}` — a leaf set in the panel (151 §4.3 grammar).
+pub async fn draft_edit(
+    draft_id: String,
+    field: String,
+    value: String,
+) -> std::result::Result<DraftView, String> {
+    let _ = value;
+    Err(format!(
+        "autoresearch.draft_edit {draft_id} {field}: {}",
+        crate::setup::NOT_BUILT
+    ))
+}
+
+/// `autoresearch.draft_confirm {draft_id, field}` — a row OK'd in the panel.
+pub async fn draft_confirm(
+    draft_id: String,
+    field: String,
+) -> std::result::Result<DraftView, String> {
+    Err(format!(
+        "autoresearch.draft_confirm {draft_id} {field}: {}",
+        crate::setup::NOT_BUILT
+    ))
+}
+
+/// `autoresearch.discard_draft {draft_id}` — removes the drafts dir; later Starts are refused.
+pub async fn discard_draft(draft_id: String) -> std::result::Result<(), String> {
+    Err(format!(
+        "autoresearch.discard_draft {draft_id}: {}",
+        crate::setup::NOT_BUILT
+    ))
 }
