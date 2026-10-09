@@ -1,6 +1,8 @@
-// Design 134 W2 — renders the tray sprites (theuth's glyph from crates/desktop/icons/tray.svg + the gold ●N badge) into
+// Design 134 W2 — renders the tray sprites (theuth's glyph from crates/desktop/icons/tray.svg + the count badge) into
 // multi-size .ico files: tray-<dark|light>-<0…9|9plus>.ico, PNG entries at 16/20/24/32/40/48 px. "dark" = a dark taskbar
-// (white glyph), "light" = a light taskbar (ink glyph). Gold = the palette's gold pair (#c47a2c dark, #b4531e light).
+// (white glyph), "light" = a light taskbar (black glyph). 149 NATIVE: monochrome like Windows 11's own tray icons — the count
+// badge is the glyph colour's disc with the taskbar colour's digits (white disc · black digits on a dark taskbar, and the inverse);
+// no palette colour (a pre-rendered PNG cannot follow the system accent).
 // Run on the Mac (CoreGraphics + CoreText + ImageIO, Command Line Tools are enough):
 //   swift make-tray-sprites.swift <out dir>
 import CoreGraphics
@@ -42,7 +44,7 @@ func render(size s: Int, label: String?, lightTaskbar: Bool) -> Data {
     let k = S / 904
     ctx.scaleBy(x: k, y: k)
     ctx.translateBy(x: -60, y: -60)
-    ctx.setFillColor(lightTaskbar ? color(0x1a1612) : color(0xffffff))
+    ctx.setFillColor(lightTaskbar ? color(0x000000) : color(0xffffff))
     ctx.addPath(glyph())
     ctx.fillPath()
     ctx.setBlendMode(.clear)
@@ -57,13 +59,13 @@ func render(size s: Int, label: String?, lightTaskbar: Bool) -> Data {
         ctx.setBlendMode(.clear)
         ctx.fillEllipse(in: CGRect(x: c.x - d / 2 - ring, y: c.y - d / 2 - ring, width: d + 2 * ring, height: d + 2 * ring))
         ctx.setBlendMode(.normal)
-        ctx.setFillColor(lightTaskbar ? color(0xb4531e) : color(0xc47a2c))
+        ctx.setFillColor(lightTaskbar ? color(0x000000) : color(0xffffff))
         ctx.fillEllipse(in: CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d))
         let fontSize = d * (label.count > 1 ? 0.56 : 0.78)
         let font = CTFontCreateUIFontForLanguage(.emphasizedSystem, fontSize, nil)!
         let attrs: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): color(0xffffff),
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): lightTaskbar ? color(0xffffff) : color(0x000000),
         ]
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: label, attributes: attrs))
         let b = CTLineGetImageBounds(line, ctx)

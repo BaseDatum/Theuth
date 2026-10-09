@@ -16,7 +16,7 @@ internal sealed class TrailRaster
     public const double RingUpAlpha = 0.4;
 
     private readonly byte[] trail;
-    private readonly byte r, g, b;
+    private byte r, g, b;
     private readonly double scale;
     private (double X, double Y)? last;
     private bool down;
@@ -32,6 +32,15 @@ internal sealed class TrailRaster
         r = (byte)(rgb >> 16);
         g = (byte)(rgb >> 8);
         b = (byte)rgb;
+    }
+
+    /// <summary>149 NATIVE: the trail colour is the system accent — re-set when Windows' accent changes (takes effect from the next press).</summary>
+    public void SetColor(uint rgb)
+    {
+        r = (byte)(rgb >> 16);
+        g = (byte)(rgb >> 8);
+        b = (byte)rgb;
+        dirty = true;
     }
 
     public int Width { get; }

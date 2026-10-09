@@ -104,11 +104,12 @@ internal sealed partial class RailWindow : ToolWindow
         FlatButtons.Apply(root.Resources);
         Content = root;
         ApplyEffects(initial: true);
-        root.ActualThemeChanged += (_, _) =>
+        // 149 NATIVE: follow Windows light/dark live (the material's theme and the content together).
+        Theme.Follow(root, () =>
         {
             backdrop?.SetTheme(root.ActualTheme);
             Refresh();
-        };
+        });
         if (SystemEffects.Current is { } fx) fx.Changed += () => ApplyEffects(initial: false);
         store.PropertyChanged += OnStoreChanged;
         poll = DispatcherQueue.CreateTimer();
@@ -148,13 +149,13 @@ internal sealed partial class RailWindow : ToolWindow
         bool animations = SystemEffects.AnimationsOn;
         if (wantBackdrop && transparency && backdrop is null)
         {
-            backdrop = Backdrop.Attach(this, BackdropKind.AcrylicThin, Palette.ColorOf(Palette.Surface, root.ActualTheme), root.ActualTheme, "rail");
+            backdrop = Backdrop.Attach(this, BackdropKind.AcrylicThin, Theme.ColorOf(NativeLook.SolidBackgroundBase, root.ActualTheme), root.ActualTheme, "rail");
         }
         else if ((!transparency || !wantBackdrop) && backdrop is not null)
         {
             backdrop.Dispose();
             backdrop = null;
-            Log.Write("rail: backdrop detached — opaque surface (transparency effects off)");
+            Log.Write("rail: backdrop detached — solid SolidBackgroundFillColorBase surface (transparency effects off)");
         }
         SystemEffects.ApplyTransitions(Hwnd, animations);
         if (initial) { animate = animations; return; }
@@ -218,15 +219,16 @@ internal sealed partial class RailWindow : ToolWindow
         rectsDirty = true;
         if (collapsed)
         {
-            // The sliver's sand tint rides on the acrylic when there is one, on the opaque surface otherwise.
-            root.Background = backdrop is null ? Palette.Tint(Palette.Sand, theme, 0.55) : Palette.Tint(Palette.Sand, theme, 0.45);
-            var sliver = new Border { Height = SliverHeight, Background = Palette.Transparent };
+            // The sliver: a quiet tertiary-text mark (149 NATIVE), the same with or without the acrylic.
+            root.Background = Theme.Brush(NativeLook.TextTertiary, theme);
+            var sliver = new Border { Height = SliverHeight, Background = Theme.Transparent };
             AutomationProperties.SetAutomationId(sliver, "rail-sliver");
             AutomationProperties.SetName(sliver, "theuth rail, quiet");
             root.Children.Add(sliver);
             return;
         }
-        root.Background = backdrop is null ? Palette.Brush(Palette.Surface, theme) : Palette.Tint(Palette.Surface, theme, 0.82);
+        // 149 NATIVE: nothing painted over the Thin acrylic (134 W6's 82 % tint is gone); SolidBackgroundFillColorBase when there is none.
+        root.Background = backdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, theme) : Theme.Transparent;
         var rail = store.Rail;
         var stack = new StackPanel { Spacing = 6, Padding = new Thickness(0, 10, 0, 10), HorizontalAlignment = HorizontalAlignment.Stretch };
         var word = MarkGlyph.Wordmark(theme);
@@ -237,8 +239,8 @@ internal sealed partial class RailWindow : ToolWindow
         {
             var count = new TextBlock
             {
-                Text = $"{rail.NeedsYouCount}", FontSize = 9, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                FontFamily = new FontFamily("Consolas"), Foreground = Palette.Brush(Palette.Gold, theme),
+                Text = $"{rail.NeedsYouCount}", FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = Theme.Brush(NativeLook.AccentText, theme), // R1: the count is text
                 HorizontalAlignment = HorizontalAlignment.Center,
             };
             AutomationProperties.SetAutomationId(count, "needs-you-count");
@@ -250,22 +252,22 @@ internal sealed partial class RailWindow : ToolWindow
         stack.Children.Add(new Border
         {
             Width = 12, Height = 1, Margin = new Thickness(0, 2, 0, 2), HorizontalAlignment = HorizontalAlignment.Center,
-            Background = Palette.Tint(Palette.Ink, theme, 0.18),
+            Background = Theme.Brush(NativeLook.Divider, theme),
         });
         foreach (var m in rail.Agents) stack.Children.Add(MarkButton(m, ++n, theme));
         if (rail.Overflow > 0)
         {
             stack.Children.Add(new TextBlock
             {
-                Text = $"+{rail.Overflow}", FontSize = 9, FontFamily = new FontFamily("Consolas"),
-                Foreground = Palette.Brush(Palette.Ink2, theme), HorizontalAlignment = HorizontalAlignment.Center,
+                Text = $"+{rail.Overflow}", FontSize = 12,
+                Foreground = Theme.Brush(NativeLook.TextSecondary, theme), HorizontalAlignment = HorizontalAlignment.Center,
             });
         }
         if (store.Connection != RpcClient.State.Open)
         {
             var dot = new Microsoft.UI.Xaml.Shapes.Ellipse
             {
-                Width = 4, Height = 4, Fill = Palette.Brush(Palette.Carnelian, theme), HorizontalAlignment = HorizontalAlignment.Center,
+                Width = 4, Height = 4, Fill = Theme.Brush(NativeLook.Critical, theme), HorizontalAlignment = HorizontalAlignment.Center,
             };
             var state = store.Connection.ToString().ToLowerInvariant();
             ToolTipService.SetToolTip(dot, $"engine: {state}");
@@ -284,7 +286,7 @@ internal sealed partial class RailWindow : ToolWindow
         {
             Content = glyph, Height = MarkRowHeight, Padding = new Thickness(0), BorderThickness = new Thickness(0),
             HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center,
-            HorizontalContentAlignment = HorizontalAlignment.Center, Background = Palette.Transparent, MinWidth = 0, MinHeight = 0,
+            HorizontalContentAlignment = HorizontalAlignment.Center, Background = Theme.Transparent, MinWidth = 0, MinHeight = 0,
             UseSystemFocusVisuals = false, IsTabStop = false,
         };
         AutomationProperties.SetAutomationId(b, $"mark-{n}");

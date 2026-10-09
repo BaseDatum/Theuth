@@ -172,8 +172,8 @@ public sealed class AgentsModelTests
         Assert.Equal(3, p.Groups.Count);
         Assert.Equal(AgentsModel.LocalTitle, p.Groups[0].Title);
         Assert.True(p.Groups[0].Local);
-        Assert.Equal("alpha · on 🌐 lab", p.Groups[1].Title);
-        Assert.Equal("build-B · on 🌐 lab", p.Groups[2].Title);
+        Assert.Equal("alpha · on lab", p.Groups[1].Title); // 149 NATIVE: no emoji in the title; the panel draws a Globe glyph for remote groups
+        Assert.Equal("build-B · on lab", p.Groups[2].Title);
         var remote = p.Groups[2].Rows.Single();
         Assert.Equal(AgentRowState.Remote, remote.State);
         Assert.True(remote.Remote);

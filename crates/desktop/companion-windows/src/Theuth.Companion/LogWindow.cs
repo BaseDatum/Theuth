@@ -23,7 +23,7 @@ internal sealed partial class LogWindow : Window
             IsReadOnly = true,
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
-            FontFamily = new FontFamily("Consolas"),
+            FontFamily = new FontFamily("Cascadia Mono"), // 149 NATIVE: Windows' default monospace (font fallback covers older systems)
             FontSize = 12,
             IsSpellCheckEnabled = false,
             HorizontalAlignment = HorizontalAlignment.Stretch,

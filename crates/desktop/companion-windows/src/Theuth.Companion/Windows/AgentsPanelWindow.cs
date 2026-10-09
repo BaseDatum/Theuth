@@ -26,7 +26,7 @@ internal enum AgentsVerb { None, Next, Previous, Open, Talk, Stop, Escape, Legen
 /// <summary>
 /// 149 WW2 — the agents panel grouped by host (design 149 §3.2, D2/D3/D23; Windows form §7.4 #2): a <see cref="ToolWindow"/>
 /// 420 × ≤ 560 epx, opaque with DWM rounded corners, header "Agents" · J K · ✕ esc, then one group per host — "this PC" first,
-/// then every other engine "‹name› · on 🌐 ‹mesh›" — rows dot/spinner · harness icon · name · ⑂N · what it is doing · mic · ✕.
+/// then every other engine "‹name› · on ‹mesh›" with a globe glyph — rows dot/spinner · harness icon · name · children · what it is doing · mic · stop.
 /// Roots first, live children indented. Remote rows are hollow with "on ‹node›", mic and ✕ disabled ("open it on ‹node›").
 /// <para>Mic: hold (pointer or V) → <see cref="RowTalk"/> dictates into the row's session → release → the text in a field under
 /// the row for the 3 s hold (Esc keeps editing) → <c>send_input(session, text)</c>. ✕ / X: the 3 s hold "Stopping ‹name› and N
@@ -79,8 +79,8 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
 
         content = new StackPanel();
         scroll = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Disabled };
-        receiptText = new TextBlock { FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 2, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
-        receiptRight = new TextBlock { FontSize = 12, FontFamily = new FontFamily("Consolas"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+        receiptText = new TextBlock { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 2, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+        receiptRight = new TextBlock { FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
         receiptBar = new Border { Height = 2, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom, Width = 0 };
         var receiptGrid = new Grid { Padding = new Thickness(16, 8, 16, 8) };
         receiptGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -95,7 +95,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         AutomationProperties.SetAutomationId(receiptRow, "receipt-row");
         AutomationProperties.SetLiveSetting(receiptRow, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
 
-        talkBox = new TextBox { PlaceholderText = "Listening…", FontSize = 13, IsSpellCheckEnabled = false, TextWrapping = TextWrapping.Wrap, AcceptsReturn = false, MaxLength = 4000 };
+        talkBox = new TextBox { PlaceholderText = "Listening…", FontSize = 14, IsSpellCheckEnabled = false, TextWrapping = TextWrapping.Wrap, AcceptsReturn = false, MaxLength = 4000 };
         AutomationProperties.SetAutomationId(talkBox, "agent-talk-field");
         AutomationProperties.SetName(talkBox, "Say to this agent");
         var layout = new Grid();
@@ -138,11 +138,13 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
             }
         };
 
-        host.ActualThemeChanged += (_, _) => { if (IsOpen) Render(force: true); };
+        // 149 NATIVE: follow Windows light/dark live; Mica Base (Acrylic Base where unsupported) with nothing painted over it.
+        Theme.Follow(host, () => { FrameworkBackdrop.ImmersiveDark(Hwnd, host.ActualTheme); if (IsOpen) Render(force: true); });
+        FrameworkBackdrop.ImmersiveDark(Hwnd, host.ActualTheme);
         Content = host;
         if (!Shape.RoundCorners(Hwnd)) Log.Write("agents panel: DWM rounded corners unavailable (rectangular)");
-        SystemEffects.ApplyTransitions(Hwnd, SystemEffects.AnimationsOn);
-        if (SystemEffects.Current is { } fx) fx.Changed += () => SystemEffects.ApplyTransitions(Hwnd, SystemEffects.AnimationsOn);
+        ApplyEffects(initial: true);
+        if (SystemEffects.Current is { } fx) fx.Changed += () => ApplyEffects(initial: false);
 
         agoTimer = DispatcherQueue.CreateTimer();
         agoTimer.Interval = TimeSpan.FromSeconds(15);
@@ -445,6 +447,19 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         }
     }
 
+    private string? material;
+
+    public string BackdropText => material is null or "none" ? "solid" : material;
+
+    /// <summary>149 NATIVE: Mica Base through the framework's Window.SystemBackdrop (Acrylic Base where Mica is unsupported); the framework handles the theme and "Transparency effects" off.</summary>
+    private void ApplyEffects(bool initial)
+    {
+        if (material is null) material = FrameworkBackdrop.Apply(this, "agents panel");
+        SystemEffects.ApplyTransitions(Hwnd, SystemEffects.AnimationsOn);
+        if (initial) return;
+        if (IsOpen) Render(force: true);
+    }
+
     // MARK: store → render
 
     private void OnStoreChanged(object? sender, PropertyChangedEventArgs e)
@@ -487,9 +502,9 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         content.Children.Clear();
         rowViews.Clear();
         var theme = host.ActualTheme;
-        host.Background = Palette.Brush(Palette.Surface, theme);
-        host.Foreground = Palette.Brush(Palette.Ink, theme);
-        receiptRow.BorderBrush = Palette.Tint(Palette.Rule, theme, 0.6);
+        host.Background = SystemBackdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, theme) : Theme.Transparent;
+        host.Foreground = Theme.Brush(NativeLook.TextPrimary, theme);
+        receiptRow.BorderBrush = Theme.Brush(NativeLook.Divider, theme);
         var p = store.AgentsPanel;
         var rows = p.Rows;
         if (focus >= rows.Count) focus = Math.Max(0, rows.Count - 1);
@@ -497,13 +512,13 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         content.Children.Add(Header(theme, p));
         if (store.Connection != RpcClient.State.Open)
         {
-            content.Children.Add(Small(AgentsModel.Connecting, Palette.Sand, theme, new Thickness(16, 4, 16, 8), 12));
+            content.Children.Add(Small(AgentsModel.Connecting, NativeLook.TextTertiary, theme, new Thickness(16, 4, 16, 8), 12));
         }
         if (p.IsEmpty)
         {
             var empty = new StackPanel { Spacing = 6, Padding = new Thickness(26, 22, 26, 30) };
-            empty.Children.Add(new TextBlock { Text = AgentsModel.EmptyTitle, FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Palette.Brush(Palette.Ink, theme) });
-            empty.Children.Add(new TextBlock { Text = AgentsModel.EmptyBody, FontSize = 14, TextWrapping = TextWrapping.Wrap, Foreground = Palette.Brush(Palette.Sand, theme) });
+            empty.Children.Add(new TextBlock { Text = AgentsModel.EmptyTitle, FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(NativeLook.TextPrimary, theme) });
+            empty.Children.Add(new TextBlock { Text = AgentsModel.EmptyBody, FontSize = 14, TextWrapping = TextWrapping.Wrap, Foreground = Theme.Brush(NativeLook.TextTertiary, theme) });
             AutomationProperties.SetAutomationId(empty, "agents-empty");
             content.Children.Add(empty);
         }
@@ -513,8 +528,13 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
             gi++;
             if (g.Rows.Count == 0 && !g.Local) continue;
             if (g.Rows.Count == 0 && p.IsEmpty) continue;
-            var head = new TextBlock { Text = g.Title, FontSize = 12.5, Foreground = Palette.Brush(Palette.Sand, theme), Margin = new Thickness(26, gi == 1 ? 6 : 14, 26, 2) };
+            // 149 NATIVE: host-group header in caption text; a remote (mesh) group carries the Globe glyph (E774) before its title.
+            var headText = new TextBlock { Text = g.Title, FontSize = 12, Foreground = Theme.Brush(NativeLook.TextTertiary, theme), VerticalAlignment = VerticalAlignment.Center };
+            var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, Margin = new Thickness(26, gi == 1 ? 6 : 14, 26, 2) };
+            if (!g.Local) head.Children.Add(Theme.Icon(NativeLook.Glyph.Globe, theme, NativeLook.TextTertiary, 12));
+            head.Children.Add(headText);
             AutomationProperties.SetAutomationId(head, $"group-{gi}");
+            AutomationProperties.SetName(head, g.Title);
             content.Children.Add(head);
             foreach (var r in g.Rows)
             {
@@ -522,7 +542,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
                 if (r.Id == talkRowId) content.Children.Add(TalkField(theme));
                 if (r.Id == rowErrorId && rowError is { } err)
                 {
-                    content.Children.Add(Small(err, Palette.Carnelian, theme, new Thickness(44 + 16 * r.Depth, 0, 16, 6), 12));
+                    content.Children.Add(Small(err, NativeLook.Critical, theme, new Thickness(44 + 16 * r.Depth, 0, 16, 6), 12));
                 }
                 index++;
             }
@@ -541,17 +561,17 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var title = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
-        var name = new TextBlock { Text = "Agents", FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Palette.Brush(Palette.Ink, theme) };
+        var name = new TextBlock { Text = "Agents", FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(NativeLook.TextPrimary, theme) };
         title.Children.Add(name);
         var counts = AgentsModel.Counts(p);
-        if (counts.Length > 0) title.Children.Add(Small(counts, Palette.Ink2, theme, default, 12));
+        if (counts.Length > 0) title.Children.Add(Small(counts, NativeLook.TextSecondary, theme, default, 12));
         AutomationProperties.SetAutomationId(title, "agents-headline");
         AutomationProperties.SetName(title, counts.Length == 0 ? "Agents" : $"Agents, {counts}");
         grid.Children.Add(title);
         var jk = KeyCapRow(theme, ("J", (Action)(() => Move(1))), ("K", (Action)(() => Move(-1))));
         Grid.SetColumn(jk, 1);
         grid.Children.Add(jk);
-        var close = CardChrome.KeyCapButton(theme, "✕", "esc", () => Close(returnFocus: true));
+        var close = CardChrome.KeyCapButton(theme, null, "Esc", () => Close(returnFocus: true));
         AutomationProperties.SetAutomationId(close, "agents-close");
         Grid.SetColumn(close, 2);
         grid.Children.Add(close);
@@ -573,9 +593,9 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // dot
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // harness
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // name + last
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // ⑂N
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // children count
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // mic
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // ✕
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // stop
         var dot = PillGlyphs.RowDot(r.State, theme, SystemEffects.AnimationsOn);
         dot.VerticalAlignment = VerticalAlignment.Center;
         grid.Children.Add(dot);
@@ -585,11 +605,11 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         Grid.SetColumn(icon, 1);
         grid.Children.Add(icon);
         var text = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
-        var name = new TextBlock { Text = r.Name, FontSize = 14.5, FontWeight = Microsoft.UI.Text.FontWeights.Medium, Foreground = Palette.Brush(r.Remote ? Palette.Ink2 : Palette.Ink, theme), TextTrimming = TextTrimming.CharacterEllipsis };
+        var name = new TextBlock { Text = r.Name, FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Theme.Brush(r.Remote ? NativeLook.TextSecondary : NativeLook.TextPrimary, theme), TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap };
         text.Children.Add(name);
         if (r.Last.Length > 0)
         {
-            var last = Small(r.Last, Palette.Sand, theme, default, 12);
+            var last = Small(r.Last, NativeLook.TextTertiary, theme, default, 12);
             last.TextTrimming = TextTrimming.CharacterEllipsis;
             last.MaxLines = 1;
             text.Children.Add(last);
@@ -598,13 +618,15 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         grid.Children.Add(text);
         if (r.Children > 0)
         {
-            var kids = Small($"⑂{r.Children}", Palette.Sand, theme, default, 12.5);
-            kids.VerticalAlignment = VerticalAlignment.Center;
+            // 149 NATIVE: the children count is a Flow glyph (E7C5) beside the number, not the ⑂ character.
+            var kids = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+            kids.Children.Add(Theme.Icon(NativeLook.Glyph.Flow, theme, NativeLook.TextTertiary, 12));
+            kids.Children.Add(Small($"{r.Children}", NativeLook.TextTertiary, theme, default, 12));
             ToolTipService.SetToolTip(kids, $"{r.Children} live {(r.Children == 1 ? "child" : "children")}");
             Grid.SetColumn(kids, 3);
             grid.Children.Add(kids);
         }
-        var mic = IconButton(theme, "\uE720", r.CanTalk ? "Hold to talk to this agent" : (r.DisabledReason ?? "nothing to talk to"), r.CanTalk, $"agent-mic-{index + 1}", out var micView);
+        var mic = IconButton(theme, NativeLook.Glyph.Microphone, r.CanTalk ? "Hold to talk to this agent" : (r.DisabledReason ?? "nothing to talk to"), r.CanTalk, $"agent-mic-{index + 1}", out var micView);
         if (r.CanTalk)
         {
             // A Button marks pointer presses handled: listen with handledEventsToo so the hold starts on the press, not the click.
@@ -621,10 +643,10 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
             }), true);
             mic.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) => EndTalk()), true);
         }
-        if (talk.Busy && r.Id == talkRowId) mic.Foreground = Palette.Brush(Palette.Carnelian, theme);
+        if (talk.Busy && r.Id == talkRowId) mic.Foreground = Theme.Brush(NativeLook.Critical, theme);
         Grid.SetColumn(micView, 4);
         grid.Children.Add(micView);
-        var stop = IconButton(theme, "\uE711", r.CanStop ? (r.DeskName is null ? "Stop this agent and its children (hold)" : "Pause this desk (hold)") : (r.DisabledReason ?? "nothing is running"), r.CanStop, $"agent-stop-{index + 1}", out var stopView);
+        var stop = IconButton(theme, NativeLook.Glyph.Cancel, r.CanStop ? (r.DeskName is null ? "Stop this agent and its children (hold)" : "Pause this desk (hold)") : (r.DisabledReason ?? "nothing is running"), r.CanStop, $"agent-stop-{index + 1}", out var stopView);
         if (r.CanStop)
         {
             stop.Click += (_, _) =>
@@ -638,9 +660,18 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
 
         var frame = new Border
         {
-            Child = grid, Margin = new Thickness(14, 2, 14, 2), CornerRadius = new CornerRadius(14),
-            Background = focused ? Palette.Tint(Palette.Faience, theme, 0.18) : hovered ? Palette.Tint(Palette.Faience, theme, 0.10) : Palette.Transparent,
+            Child = grid, Margin = new Thickness(14, 2, 14, 2), CornerRadius = new CornerRadius(8),
+            // 149 NATIVE: the list-item idiom — a subtle fill for the focused / hovered row, the accent only as the selection pill at the left.
+            Background = focused ? Theme.Brush(NativeLook.SubtleFillSecondary, theme) : hovered ? Theme.Brush(NativeLook.SubtleFillTertiary, theme) : Theme.Transparent,
         };
+        if (focused)
+        {
+            var frameGrid = new Grid();
+            frameGrid.Children.Add(new Border { Width = 3, Height = 16, CornerRadius = new CornerRadius(1.5), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Background = Theme.Brush(NativeLook.Accent, theme) });
+            frame.Child = null;
+            frameGrid.Children.Add(grid);
+            frame.Child = frameGrid;
+        }
         frame.PointerPressed += (_, _) =>
         {
             if (focus != index)
@@ -664,8 +695,8 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
     {
         var stack = new StackPanel { Spacing = 3, Margin = new Thickness(44, 0, 24, 6) };
         stack.Children.Add(talkBox);
-        var hint = talk.Busy ? "release → sends in 3 s · Esc cancels" : "sends in 3 s · Esc keeps editing · ⏎ sends now";
-        stack.Children.Add(Small(hint, Palette.Sand, theme, default, 10.5));
+        var hint = talk.Busy ? "release to send in 3 s · Esc cancels" : "sends in 3 s · Esc keeps editing · Enter sends now";
+        stack.Children.Add(Small(hint, NativeLook.TextTertiary, theme, default, 10.5));
         return stack;
     }
 
@@ -678,17 +709,17 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
     {
         var b = new Button
         {
-            Content = new FontIcon { Glyph = glyph, FontSize = 12 }, Width = 30, Height = 30, Padding = new Thickness(0), CornerRadius = new CornerRadius(15),
-            BorderThickness = new Thickness(0), Background = Palette.Tint(Palette.Ink, theme, enabled ? 0.08 : 0.03),
-            Foreground = Palette.Brush(enabled ? Palette.Ink2 : Palette.Sand, theme), Opacity = enabled ? 1 : 0.5, IsTabStop = false, UseSystemFocusVisuals = false,
+            Content = new FontIcon { Glyph = glyph, FontSize = 12, FontFamily = Theme.IconFont }, Width = 30, Height = 30, Padding = new Thickness(0), CornerRadius = new CornerRadius(4),
+            BorderThickness = new Thickness(0), Background = Theme.Brush(enabled ? NativeLook.SubtleFill : NativeLook.SubtleFill, theme),
+            Foreground = Theme.Brush(enabled ? NativeLook.TextSecondary : NativeLook.TextDisabled, theme), IsTabStop = false, UseSystemFocusVisuals = false,
             IsEnabled = enabled,
         };
-        b.Resources["ButtonBackgroundPointerOver"] = Palette.Tint(Palette.Ink, theme, enabled ? 0.14 : 0.03);
-        b.Resources["ButtonBackgroundPressed"] = Palette.Tint(Palette.Ink, theme, enabled ? 0.2 : 0.03);
-        b.Resources["ButtonForegroundPointerOver"] = Palette.Brush(Palette.Ink, theme);
-        b.Resources["ButtonForegroundPressed"] = Palette.Brush(Palette.Ink, theme);
-        b.Resources["ButtonBackgroundDisabled"] = Palette.Tint(Palette.Ink, theme, 0.03);
-        b.Resources["ButtonForegroundDisabled"] = Palette.Brush(Palette.Sand, theme);
+        b.Resources["ButtonBackgroundPointerOver"] = Theme.Brush(NativeLook.SubtleFillSecondary, theme);
+        b.Resources["ButtonBackgroundPressed"] = Theme.Brush(NativeLook.SubtleFillTertiary, theme);
+        b.Resources["ButtonForegroundPointerOver"] = Theme.Brush(NativeLook.TextPrimary, theme);
+        b.Resources["ButtonForegroundPressed"] = Theme.Brush(NativeLook.TextPrimary, theme);
+        b.Resources["ButtonBackgroundDisabled"] = Theme.Transparent;
+        b.Resources["ButtonForegroundDisabled"] = Theme.Brush(NativeLook.TextDisabled, theme);
         AutomationProperties.SetAutomationId(b, id);
         AutomationProperties.SetName(b, tip);
         if (enabled)
@@ -697,7 +728,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
             view = b;
             return b;
         }
-        var wrap = new Border { Child = b, Background = Palette.Transparent, Width = 30, Height = 30, CornerRadius = new CornerRadius(15) };
+        var wrap = new Border { Child = b, Background = Theme.Transparent, Width = 30, Height = 30, CornerRadius = new CornerRadius(4) };
         ToolTipService.SetToolTip(wrap, tip);
         AutomationProperties.SetAutomationId(wrap, $"{id}-hint");
         AutomationProperties.SetName(wrap, tip);
@@ -706,7 +737,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
     }
 
     private static TextBlock Small(string text, string key, ElementTheme theme, Thickness margin, double size = 11.5) =>
-        new() { Text = text, FontSize = size, Foreground = Palette.Brush(key, theme), Margin = margin, TextWrapping = TextWrapping.Wrap };
+        new() { Text = text, FontSize = size, Foreground = Theme.Brush(key, theme), Margin = margin, TextWrapping = TextWrapping.Wrap };
 
     private void UpdateReceipt()
     {
@@ -724,17 +755,17 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         receiptText.Text = l.Text;
         receiptText.Foreground = store.Receipt switch
         {
-            StoreModel.ReceiptRow.Sent => Palette.Brush(Palette.Malachite, theme),
-            StoreModel.ReceiptRow.Failed => Palette.Brush(Palette.Carnelian, theme),
-            StoreModel.ReceiptRow.Stale => Palette.Brush(Palette.Sand, theme),
-            _ => Palette.Brush(Palette.Ink, theme),
+            StoreModel.ReceiptRow.Sent => Theme.Brush(NativeLook.Success, theme),
+            StoreModel.ReceiptRow.Failed => Theme.Brush(NativeLook.Critical, theme),
+            StoreModel.ReceiptRow.Stale => Theme.Brush(NativeLook.TextTertiary, theme),
+            _ => Theme.Brush(NativeLook.TextPrimary, theme),
         };
         receiptRight.Text = l.Trailing;
-        receiptRight.Foreground = Palette.Brush(Palette.Sand, theme);
+        receiptRight.Foreground = Theme.Brush(NativeLook.TextTertiary, theme);
         if (store.Receipt is StoreModel.ReceiptRow.Holding && store.UndoDelay > 0)
         {
             receiptBar.Width = Math.Max(0, PanelWidth * store.HoldRemaining / store.UndoDelay);
-            receiptBar.Background = Palette.Brush(Palette.Carnelian, theme);
+            receiptBar.Background = Theme.Brush(NativeLook.Accent, theme); // the undo countdown: a progress fill, accent like ProgressBar
             receiptBar.Visibility = Visibility.Visible;
         }
         else receiptBar.Visibility = Visibility.Collapsed;

@@ -20,7 +20,7 @@ internal sealed partial class ReplyField : StackPanel
     public ReplyField(Store store, Card card)
     {
         Spacing = 4;
-        box = new TextBox { PlaceholderText = card.ReplyLabel(), FontSize = 12.5, IsSpellCheckEnabled = true };
+        box = new TextBox { PlaceholderText = card.ReplyLabel(), FontSize = 14, IsSpellCheckEnabled = true };
         AutomationProperties.SetAutomationId(box, "reply-field");
         AutomationProperties.SetName(box, card.ReplyLabel());
         box.KeyDown += (_, e) =>
@@ -38,7 +38,8 @@ internal sealed partial class ReplyField : StackPanel
             }
         };
         Children.Add(box);
-        Children.Add(new TextBlock { Text = "⏎ send · Esc cancel · dictation stays the Ask bar's (hold Ctrl+Shift+Space there)", FontSize = 10.5, Opacity = 0.7 });
+        // 149 NATIVE: key names as words, caption size, the theme's secondary text (no opacity standing in for a colour).
+        Children.Add(new TextBlock { Text = "Enter sends · Esc cancels · dictation stays the Ask bar's (hold Ctrl+Shift+Space there)", FontSize = 12, Foreground = Ui.Theme.Brush(NativeLook.TextSecondary, ActualTheme) });
         Loaded += (_, _) => box.Focus(FocusState.Programmatic);
     }
 
