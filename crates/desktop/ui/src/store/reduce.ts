@@ -1,7 +1,7 @@
 import { jsonrepair } from "jsonrepair";
 import { resultLine } from "@/lib/describe";
 import { codeEdited, codeToolRan, emptyCodemap } from "@/lib/codemap/slice";
-import { classify, humanSecs, type Injected } from "@/lib/injected";
+import { classify, humanSecs, type Injected, splitParentView } from "@/lib/injected";
 import { pushChunk } from "@/lib/jobTail";
 import { splitTime } from "@/lib/time";
 import { live, observedState } from "@/lib/session-tree";
@@ -313,9 +313,19 @@ function userEntries(
       case "engine":
       case "desk":
       case "wake":
+      case "resume":
+      case "lost":
         return { id: nextId(), ...c, context };
     }
   }).concat(card);
+}
+
+/** 152 D3: a user text split into the parent's view card (an endless parent's handoff to a native child, 137 R1-D1,
+ * reload only) and the rest as every user text is read today: `splitTime`, then the classifier. */
+function userText(raw: string): { view?: Entry; text: string; at?: number } {
+  const pv = splitParentView(raw);
+  const { text, at } = splitTime(pv ? pv.rest.trimStart() : raw);
+  return pv ? { view: { id: nextId(), kind: "parentView", lines: pv.lines, bytes: pv.bytes }, text, at } : { text, at };
 }
 
 /** The stored row a context entry points at, when it is a message. */
@@ -391,7 +401,7 @@ function historyEntries(h: HistoryEntry): Entry[] {
     case "user": {
       // 74 §3: the engine's `<time …/>` line is for the model; the row's `at` — or the stamp's instant for a row
       // stored before `messages.at` existed — is what the human sees.
-      const { text, at } = splitTime(h.text);
+      const { view, text, at } = userText(h.text);
       // 52 §6: the typed metadata, never the `<vision_observation>` prose, makes a row a consultation note.
       const vision = h.vision ?? context?.vision;
       if (vision)
@@ -409,13 +419,14 @@ function historyEntries(h: HistoryEntry): Entry[] {
         ];
       if (h.peer)
         return [peerEntry(h.peer, peerBody(text), undefined, context)];
-      return userEntries(
+      const rows = userEntries(
         text,
         classify(text),
         undefined,
         h.turn ?? undefined,
         context,
-      ).map((e) => (at === undefined ? e : { ...e, at }));
+      );
+      return (view ? [{ ...view, context }, ...rows] : rows).map((e) => (at === undefined ? e : { ...e, at }));
     }
     case "assistant":
       return h.text.trim()
@@ -532,6 +543,12 @@ function signature(e: Entry): string {
       return `d${e.agent}\n${e.journal}`;
     case "wake":
       return `w${e.id ?? ""}\n${e.reason}\n${e.body ?? ""}`;
+    case "resume":
+      return `r${e.clock}\n${e.text}`;
+    case "lost":
+      return `l${e.session}\n${e.clock}`;
+    case "parentView":
+      return `pv${e.lines.length}\n${e.bytes}`;
     case "vision":
       return e.seq === undefined ? `v${e.model}\n${e.text}` : `v${e.seq}`;
     case "user":
@@ -880,16 +897,17 @@ function turn(
     // as a plain `you` row). Own sends and injected steers are already on
     // screen: stamp them with the turn instead.
     case "TurnStarted": {
-      const { text } = splitTime(e.text);
+      const { view, text } = userText(e.text);
       const cls = classify(text);
-      const wrapped = cls !== null && cls[0]?.kind !== "skill";
+      // 152 D1: a `<resume_handoff>` has no delivery event of its own, so its card is echoed here.
+      const wrapped = cls !== null && cls[0]?.kind !== "skill" && cls[0]?.kind !== "resume";
       const own =
         !wrapped && (s.lastInjected === e.turn || ctx.sent.delete(text));
       const entries = own
         ? stampUser(s.entries, e.turn_seq)
         : wrapped
           ? s.entries
-          : [...s.entries, ...userEntries(text, cls, undefined, e.turn_seq).map((x) => ({ ...x, at: Date.now() }))];
+          : [...s.entries, ...(view ? [view] : []), ...userEntries(text, cls, undefined, e.turn_seq).map((x) => ({ ...x, at: Date.now() }))];
       return {
         ...s,
         entries,
@@ -911,11 +929,11 @@ function turn(
       const at = s.queued.findIndex((q) => q.id === e.id);
       const q = s.queued[at];
       if (!q) return s;
-      const { text } = splitTime(q.text);
+      const { view, text } = userText(q.text);
       return {
         ...s,
         queued: s.queued.toSpliced(at, 1),
-        entries: [...s.entries, ...userEntries(text, classify(text), true).map((x) => ({ ...x, at: Date.now() }))],
+        entries: [...s.entries, ...(view ? [view] : []), ...userEntries(text, classify(text), true).map((x) => ({ ...x, at: Date.now() }))],
         lastInjected: e.turn,
       };
     }

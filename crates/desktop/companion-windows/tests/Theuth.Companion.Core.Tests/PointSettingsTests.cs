@@ -8,7 +8,7 @@ public sealed class PointSettingsTests
         var store = new SettingsStore();
         var s = PointSettings.Load(store);
         Assert.Equal(new PointSettings(), s);
-        Assert.True(s.Enabled && s.IncludeScreen && s.Speak && s.AccessibilityOn && !s.AnnotateMouse);
+        Assert.True(s.Enabled && s.IncludeScreen && !s.Speak && s.AccessibilityOn && !s.AnnotateMouse); // Speak is opt-in since 2026-10-09 (Sky): off by default
         s.Annotate = "mouse";
         s.Accessibility = "off";
         s.IncludeScreen = false;

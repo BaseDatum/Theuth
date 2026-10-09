@@ -7,12 +7,15 @@ namespace Theuth.Companion.AskBar;
 /// <summary>
 /// W4's start (the marked line in <c>App.OnLaunched</c>, after W2's <c>Ui.Surfaces.Start</c>; Swift <c>AppDelegate.installAskBar</c>):
 /// the Ask bar window and its model over the Store, the hooks W2 left on <see cref="Ui.Surfaces.Current"/> —
-/// <c>AskBarAvailable</c> (the hotkey opens the bar when nothing needs you), <c>Hotkeys.Pressed</c>/<c>Released</c> (the
-/// hold-to-talk half of Ctrl+Shift+Space) — then the probes <c>--ask-probe N</c>, <c>--mic-probe N</c>, <c>--ask-replay</c>, or
+/// <c>AskBarAvailable</c> (the Ask-bar key opens the bar), <c>Hotkeys.Pressed</c>/<c>Released</c> (the
+/// hold-to-talk half of the panel key, ruling 2) — then the probes <c>--ask-probe N</c>, <c>--mic-probe N</c>, <c>--ask-replay</c>, or
 /// <c>--ask</c> (open at launch). Ctrl+L in the panel and the tray's "Ask theuth…" arrive through <c>Store.AskBarRequested</c>.
 /// </summary>
 internal sealed class AskBarInstall
 {
+    /// <summary>A panel-key press held this long is a talk, not a tap (the Ask bar's own 0.25 s press rule starts from here).</summary>
+    public const int HoldToTalkMs = 250;
+
     public AskBarWindow Bar { get; }
 
     public AskBarModel Model { get; }
@@ -31,24 +34,48 @@ internal sealed class AskBarInstall
             keys: () => store.Keys, automated: AskFlags.Automated);
         bar.Bind(model);
         var install = new AskBarInstall(bar, model);
+        store.InstallSpokenReplies(() => Settings.SettingsModel.Shared.Value.AskSpeak); // spoken replies: an Ask reply is read aloud once final when the switch is on
         if (Ui.Surfaces.Current is { } surfaces)
         {
             surfaces.AskBarAvailable = () => true;
-            // W2's OnHotkey runs first: when nothing needs you it opens the bar through Store.AskBarRequested; the same press then
-            // becomes the voice press here (a hold past 250 ms dictates straight into the fresh bar, a tap just opens it).
-            var requested = DateTimeOffset.MinValue;
-            store.AskBarRequested += () => requested = DateTimeOffset.Now;
+            // Ruling 2 (Sky 2026-10-09 16:02): a TAP of the panel key opens the Attention panel (W2's OnHotkey, always); the Ask bar no longer
+            // rides on it. "The hold still talks": a press still held after HoldToTalkMs becomes the bar's voice press — the bar opens
+            // over the panel and dictates to theuth; the release sends. The Ask-bar key opens the bar outright (Store.AskBarRequested).
+            DispatcherQueueTimer? hold = null;
             surfaces.Hotkeys.Pressed += action =>
             {
-                if (action != KeyAction.OpenPanel || model.Automated) return;
-                if (DateTimeOffset.Now - requested > TimeSpan.FromMilliseconds(100)) return; // the press went to the panel
-                bar.HotkeyDown(store.Keys.ChordFor(KeyAction.OpenPanel)?.KeyCode ?? VirtualKeys.Space);
+                if (model.Automated) return;
+                if (action == KeyAction.OpenAskBar)
+                {
+                    // A press on the Ask-bar key: the bar is open now (OnHotkey ran first) — a hold dictates into it as before.
+                    bar.HotkeyDown(store.Keys.ChordFor(KeyAction.OpenAskBar)?.KeyCode ?? VirtualKeys.Space);
+                    return;
+                }
+                if (action != KeyAction.OpenPanel) return;
+                hold?.Stop();
+                var t = hold = dispatcher.CreateTimer();
+                t.Interval = TimeSpan.FromMilliseconds(HoldToTalkMs);
+                t.IsRepeating = false;
+                t.Tick += (_, _) =>
+                {
+                    t.Stop();
+                    if (hold != t) return;
+                    hold = null;
+                    Log.Write($"ask bar: the panel key is still held after {HoldToTalkMs} ms — talking");
+                    bar.HotkeyDown(store.Keys.ChordFor(KeyAction.OpenPanel)?.KeyCode ?? VirtualKeys.Space);
+                };
+                t.Start();
             };
             surfaces.Hotkeys.Released += (action, _) =>
             {
-                if (action == KeyAction.OpenPanel) bar.HotkeyUp();
+                if (action is KeyAction.OpenPanel or KeyAction.OpenAskBar)
+                {
+                    hold?.Stop();
+                    hold = null;
+                    bar.HotkeyUp();
+                }
             };
-            Log.Write("ask bar: installed (hotkey → bar when nothing needs you; Ctrl+L; tray menu)");
+            Log.Write("ask bar: installed (the Ask-bar key opens it; the panel key opens the panel, held ≥ 250 ms it talks; Ctrl+L; tray menu)");
         }
         else
         {

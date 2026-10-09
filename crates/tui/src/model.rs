@@ -1134,6 +1134,11 @@ pub enum CardKind {
     /// A vision consultation note (52 §6): the main model's question and
     /// the fallback's answer, shown only when expanded.
     Vision,
+    /// 152 D6: a `<resume_handoff>` after an engine restart (146 D10/D11) or a
+    /// `<child_lost>` note in a parent.
+    Restart,
+    /// 152 D6: the view an endless parent handed a native child (137 R1-D1).
+    Memory,
 }
 
 impl CardKind {
@@ -1149,6 +1154,8 @@ impl CardKind {
             CardKind::Artifact => "▣",
             CardKind::Removed => "⊘",
             CardKind::Vision => "◉",
+            CardKind::Restart => "↻",
+            CardKind::Memory => "∞",
         }
     }
 }
@@ -1469,9 +1476,34 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             "journal" => (None, "</journal>"),
             // 125 §7.4: an advisory steer's row is carded by `AdvisoryAdded`, never echoed.
             "advisory" => (None, "</advisory>"),
+            // 152 D5: `<budget spent cap currency>` is an in-turn notice like `<todo>`.
+            "budget" => (None, "</budget>"),
+            // 152 D6: no sender attribute; the title is parsed from the body below.
+            "resume_handoff" => (None, "</resume_handoff>"),
+            "child_lost" => (Some("name=\""), "</child_lost>"),
             _ => return None,
         };
         let (body, tail) = after.split_once(close)?;
+        if name == "resume_handoff" {
+            let body = body.trim();
+            let at = body
+                .strip_prefix("The theuth engine restarted at ")
+                .map_or("", |s| s.split(' ').next().unwrap_or(""))
+                .trim_end_matches('.');
+            let what = if body.contains("has been restored") {
+                "resumed after restart"
+            } else {
+                "restarted fresh"
+            };
+            let title = if at.is_empty() {
+                what.to_owned()
+            } else {
+                format!("{what} · {at}")
+            };
+            out.push((CardKind::Restart, title, body.to_owned()));
+            rest = tail.trim_start();
+            continue;
+        }
         if let Some(key) = key {
             let from = attr(open, key)?;
             let (kind, title) = if name == "job_result" {
@@ -1513,6 +1545,13 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
                     |t| t.with_timezone(&chrono::Local).format("%H:%M").to_string(),
                 );
                 (CardKind::Schedule, format!("{from} · {at}"))
+            } else if name == "child_lost" {
+                let at = attr(open, "at=\"").unwrap_or_default();
+                let why = unescape(attr(open, "why=\"").unwrap_or_default());
+                (
+                    CardKind::Restart,
+                    format!("lost · {} · {at} · {why}", unescape(from)),
+                )
             } else {
                 (CardKind::Peer, from.to_owned())
             };
@@ -10885,6 +10924,16 @@ pub fn mcp_entry(text: &str) -> Result<(String, serde_json::Value), String> {
 /// several peer messages becomes one card each; anything else is `you`,
 /// stamped with `turn` when the input opened one.
 fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
+    // 152 D6: an endless parent's view leads a native child's opener (137 R1-D1); the brief follows it.
+    if let Some((lines, body, rest)) = parent_view(&text) {
+        let mut out = vec![card(
+            CardKind::Memory,
+            format!("parent's memory · {lines} lines"),
+            &body,
+        )];
+        out.extend(user_entries(rest.trim_start().to_owned(), turn));
+        return out;
+    }
     // 74 §3: the model's `<time …/>` line is never a `you` row.
     let text = agent::clock::strip_owned(text);
     if let Some((name, body, rest)) = agent::skills::injected(&text) {
@@ -10904,6 +10953,30 @@ fn user_entries(text: String, turn: Option<i64>) -> Vec<Entry> {
             .map(|(kind, title, body)| card(kind, title, &body))
             .collect(),
     }
+}
+
+/// `<chat>\n{id}+{n}|{text}\n…</chat>{rest}` (endless/fold.rs `render`): the
+/// line count, the lines as a fenced block and what follows `</chat>`. Only
+/// the exact shape matches — a human typing `<chat>` keeps a `you` row.
+fn parent_view(text: &str) -> Option<(usize, String, &str)> {
+    let t = text.trim_start();
+    let inner = t.strip_prefix("<chat>\n")?;
+    let (body, rest) = inner.split_once("</chat>")?;
+    let shaped = |l: &str| {
+        let Some((id, after)) = l.split_once('+') else {
+            return false;
+        };
+        let Some((n, _)) = after.split_once('|') else {
+            return false;
+        };
+        !id.is_empty() && !n.is_empty() && id.bytes().chain(n.bytes()).all(|b| b.is_ascii_digit())
+    };
+    let mut lines = body.lines().filter(|l| !l.is_empty());
+    if !lines.all(shaped) {
+        return None;
+    }
+    let count = body.lines().filter(|l| !l.is_empty()).count();
+    Some((count, format!("```\n{}\n```", body.trim_end()), rest))
 }
 
 /// The fence hook every assistant entry renders through; one allocation for the process.
@@ -15001,6 +15074,77 @@ mod tests {
                 "hi".to_owned()
             )])
         );
+    }
+
+    /// 152 D6: a restart's handoff and a parent's lost-child note are
+    /// `Restart` cards, never a `you` row; `<budget>` is a quiet notice.
+    #[test]
+    fn injected_parses_restart_cards() {
+        let restored = "<resume_handoff>\nThe theuth engine restarted at 14:54:32 while you were working on: \"x. y\". Your session with this harness has been restored with its context.\n</resume_handoff>";
+        let body = restored
+            .trim_start_matches("<resume_handoff>\n")
+            .trim_end_matches("\n</resume_handoff>");
+        assert_eq!(
+            injected(restored),
+            Some(vec![(
+                CardKind::Restart,
+                "resumed after restart · 14:54:32".to_owned(),
+                body.to_owned()
+            )])
+        );
+        let fresh = "<resume_handoff>\nThe theuth engine restarted at 09:12:03 and your previous harness session s-old could not be loaded, so its context could not be restored.\nYour original brief: \"Fix foo.\"\n</resume_handoff>";
+        assert_eq!(injected(fresh).unwrap()[0].1, "restarted fresh · 09:12:03");
+        assert_eq!(
+            injected("<resume_handoff>\nodd\n</resume_handoff>").unwrap()[0],
+            (
+                CardKind::Restart,
+                "restarted fresh".to_owned(),
+                "odd".to_owned()
+            )
+        );
+        let lost = "<child_lost name=\"omp-98-commands\" session=\"01a10ca4-60c3-7142-bdba-05cc62f673d0\" at=\"09:37\" why=\"its parent is archived\">\nomp-98-commands was mid-prompt when the engine restarted at 09:37 and was not respawned: its parent is archived. Resume it with send_message or spawn a fresh child with a RESUME brief.\n</child_lost>";
+        assert_eq!(
+            injected(&format!("{lost}\n{lost}")),
+            Some(vec![
+                (
+                    CardKind::Restart,
+                    "lost · omp-98-commands · 09:37 · its parent is archived".to_owned(),
+                    "omp-98-commands was mid-prompt when the engine restarted at 09:37 and was not respawned: its parent is archived. Resume it with send_message or spawn a fresh child with a RESUME brief.".to_owned()
+                );
+                2
+            ])
+        );
+        assert_eq!(
+            injected("<budget spent=\"1\" cap=\"1\" currency=\"USD\">\nspent\n</budget>"),
+            Some(vec![])
+        );
+        assert_eq!(injected("<child_lost at=\"1\">\nx\n</child_lost>"), None);
+    }
+
+    /// 152 D6: the parent's view before a native child's brief is an `∞`
+    /// card, the brief keeps its `you` row; a human `<chat>` is plain text.
+    #[test]
+    fn injected_parent_view_leads_the_brief() {
+        let view = "<chat>\n0+40|(earlier history, not summarized; recall searches it)\n40+16|Early weeks.\n56+1|Now: hand over.\n</chat>";
+        let out = user_entries(
+            format!("{view}<time now=\"2026-10-09 15:02 -07:00 (Thu)\"/>\nthe brief"),
+            Some(3),
+        );
+        assert!(matches!(
+            &out[0],
+            Entry::Card { kind: CardKind::Memory, title, text, .. }
+                if title == "parent's memory · 3 lines" && text.raw().contains("56+1|Now: hand over.")
+        ));
+        assert!(matches!(
+            &out[1],
+            Entry::User { text, turn: Some(3) } if text == "the brief"
+        ));
+        assert_eq!(out.len(), 2);
+        assert!(matches!(
+            user_entries("<chat>\nhello\n</chat>".to_owned(), None).as_slice(),
+            [Entry::User { .. }]
+        ));
+        assert_eq!(parent_view("<chat>\n3+1|x\n"), None);
     }
 
     #[test]
