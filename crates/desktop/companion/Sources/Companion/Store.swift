@@ -46,6 +46,15 @@ final class Store: ObservableObject {
     @Published var meeting: MeetingSlice?
     /// 149 W2: point-and-say's live state; nil while idle.
     @Published var point: PointSlice?
+    /// 149s S3: one "currently speaking" for the voice key and the Ask bar (`Store+Ask.swift` speaks the Ask reply,
+    /// `PointController` the voice key's); the player is the engine's `Speech*` sink.
+    let speech = SpeechPlayer()
+    lazy var speaker: Speaker = {
+        let s = Speaker(sink: speech)
+        s.log = { Log.write("speech: \($0)") }
+        speech.onEnded = { [s] id in s.ended(id) }
+        return s
+    }()
 
     private(set) var undo = UndoQueue<Held>(delay: Settings.undoDelay)
     private(set) var client: RpcClient!
@@ -79,6 +88,7 @@ final class Store: ObservableObject {
             await client.start()
             await client.subscribeEvents()
         }
+        speaker.client = client
     }
 
     // MARK: events
@@ -105,7 +115,8 @@ final class Store: ObservableObject {
         }
         askObserve(data)
         meetingObserve(data) // 149 W3: MeetingEvent.decode(data) → MeetingReducer.reduce(meeting, …)
-        pointObserve(data) // 149 W2: the voice key's dictation, the desk's reply, Speech*
+        speech.observe(data) // 149s: SpeechStarted / SpeechAudio / SpeechFinished for the shared speaker's utterance
+        pointObserve(data) // 149 W2: the voice key's dictation and the desk's reply
     }
 
     /// Debounced 250 ms (130 §5.2); never on a timer.

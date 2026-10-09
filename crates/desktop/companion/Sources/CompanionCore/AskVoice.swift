@@ -74,6 +74,23 @@ public struct AskVoiceMachine: Equatable, Sendable {
     }
 }
 
+/// 149s K1: the two surface keys open two different things. "Open the panel · hold to talk" toggles the Attention
+/// panel on a tap — empty state included, never the Ask bar (130-W3's "else the Ask bar" fallback is gone) — and
+/// talks on a hold (the Ask bar is the dictation surface). "Open the Ask bar" toggles the Ask bar only.
+public enum SurfaceKey: Equatable, Sendable {
+    case panel, askBar
+
+    public enum Action: Equatable, Sendable { case togglePanel, toggleAskBar, talk }
+
+    /// `held`: the press reached `AskVoiceMachine.holdThreshold` (its `.startRecording`); a `.tap` is `false`.
+    public func action(held: Bool) -> Action {
+        switch self {
+        case .askBar: return .toggleAskBar
+        case .panel: return held ? .talk : .togglePanel
+        }
+    }
+}
+
 /// The engine's streamed dictation (design 54 §8) reduced for the Ask bar: `dictation_start` → `DictationStarted`
 /// → `DictationText` per utterance (append-only; `final` once) → `dictation_stop` → `DictationFinished`.
 /// `liveText` = the closed utterances joined + the open partial. Pure.

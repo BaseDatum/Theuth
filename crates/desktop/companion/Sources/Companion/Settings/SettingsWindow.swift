@@ -52,6 +52,9 @@ struct SettingsView: View {
     @State private var axDenied = false
     /// The probe opens on the tab it is about.
     @State private var tab = Flags.probeSettings ?? (Flags.probeNotify != nil ? "notifications" : "rail")
+    // 149s S1/S2: both opt-in, the same keys the Voice key tab and the Ask bar read (`SpokenReplies`).
+    @AppStorage(SpokenReplies.voiceKeyKey, store: Settings.defaults) private var voiceKeySpeak = false
+    @AppStorage(SpokenReplies.askKey, store: Settings.defaults) private var askSpeak = false
 
     var body: some View {
         TabView(selection: $tab) {
@@ -87,6 +90,12 @@ struct SettingsView: View {
             Text("Side and display apply on the next layout; the rail never takes focus.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Separate pills", isOn: $model.value.railPills) // 149 W1: off = 130's one strip (D1 escape hatch)
+            Section("Spoken replies") {
+                Toggle("Voice key — speak the answer aloud", isOn: $voiceKeySpeak)
+                Text("Read the desk's answer aloud after a voice-key gesture.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Ask theuth — speak the reply aloud", isOn: $askSpeak)
+                Text("Read the desk's reply aloud after an Ask.").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
