@@ -6,10 +6,9 @@ import SwiftUI
 extension Color {
     static let tertiary = Color(nsColor: .tertiaryLabelColor)
     static let separator = Color(nsColor: .separatorColor)
-    /// Status: red = failed / stopped, green = done / sent, orange = waiting. Accent = needs you / selection.
+    /// Status: red = failed / stopped, green = done / sent (Settings' notices use `.orange` for waiting). Accent = needs you / selection.
     static let failed = Color(nsColor: .systemRed)
     static let done = Color(nsColor: .systemGreen)
-    static let waiting = Color(nsColor: .systemOrange)
 }
 
 /// stderr plus `/tmp/130-w1-probe.log` during `--probe` and `/tmp/130-w6-probe.log` during a W6 probe (`open`
