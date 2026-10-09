@@ -17,28 +17,38 @@ the merged tree, the probe, and the hand-offs for waves B (surfaces) and C (comp
 | `crates/tui/src/{lib,model}.rs` | C | additive adapt only (`dictation_start(None, None)`, new event variants ignored) |
 
 ## What Z reconciled (commits `153-Z: …`)
+Order of events: Z first rewired items 1–2 in `dictation.rs` (`3e2864ed`); the orchestrator then superseded A4's DONE three times
+(`9080aae5` → `c3bd3f3e` → final `02cefd6f`), A4 having done the same two items itself and being the authority for `dictation.rs`,
+`mic.rs` and its `api.rs` regions. Z merged each (`4a7e1145`, `0c4997af`, `bef55869`), taking A4's `dictation.rs` wholesale (A4 dropped
+Z's `recording()` helper and duplicate `parser` field on its side). The behaviour below is A4's final file, verified by Z against the
+merged tree (clippy, tests, workspace check re-run after the last merge).
 1. **Shaper wiring (A1 ↔ A4).** `ShaperOwned` carries `surface` + `commands`; per piece `Shaper::new(cfg, &phrases, &dict, app)
    .with_surface(surface).with_commands(opts.commands).shape_with(&mut parser, &prev, &t.text, t.is_final)`. One `EndParser` per task,
-   `reset()` when the utterance index changes and after every final. A4's own `armed` stickiness and the `#[cfg(test)]` exact-phrase shim
-   are gone — the parser is sticky itself and strips `consumed()` words inside `Ctx::run`. `SETTLE`/`SILENCE` are now
-   `Duration::from_millis(voice::shape::{SETTLE_MS, SILENCE_MS})`, private; the `voice::{SETTLE, SILENCE}` re-exports went (no caller).
-   `with_mentions` stays empty: `DictationOpts` (frozen) carries no agent names.
+   `reset()` when the utterance index changes. A4's `armed` stickiness and the `#[cfg(test)]` exact-phrase shim are gone — the parser is
+   sticky itself and strips `consumed()` words inside `Ctx::run`. `SETTLE`/`SILENCE` = `Duration::from_millis(shape::end::{SETTLE_MS,
+   SILENCE_MS})` (the `voice::{SETTLE, SILENCE}` re-exports went — no caller). `with_mentions` stays empty: `DictationOpts` (frozen)
+   carries no agent names.
 2. **Suggestions (A3 ↔ A4).** `Correction` → `Store::correction(id, sent)` → each `Suggestion` published verbatim as
    `DictionarySuggestion { id, heard, typed, occurrences, surface, has_audio }`; A4's minted ids / `pending` map / `recent` ring /
    `occurrences: 2` / `has_audio: false` deleted. `AnswerSuggestion` → `Store::answer(id, answer, &mut self.dictionary)` (A3 writes the
-   learned entry or negative), then the dictation snapshot is rebuilt for `Add`/`Never`. Skipped when `!history.learn`; rows, audio and
-   corrections all gate on `Store::recording_allowed(&cfg.history, false)` through `Dictation::recording()`. `Store::open(..)
-   .with_budget(rows, audio_mib << 20)` applies `voice.history`.
-3. **Dictionary (A2 ↔ A4).** A4 already loads once (`spawn_blocking(Dictionary::load)` inside `open_stores`, awaited on `Prewarm` /
-   first start — ≈ 4 s debug, [INFERENCE] ≈ 0.2 s release, the actor mailbox waits that long once) and snapshots per dictation;
-   `dictionary_list/put/delete` → `DictionaryOp` → `list/put/delete`. `shape/mod.rs`: `Shaper::new` reads `dict.pairs(Kind::Path)`
+   learned entry or negative), then the dictation snapshot is rebuilt for `Add`/`Never`. Skipped when `!history.learn`. The store is
+   opened only when `Store::recording_allowed(&cfg.history, false)` (`open_stores`), so rows, audio and corrections are all off together;
+   `Store::open(..).with_budget(rows, audio_mib << 20)` applies `voice.history`.
+3. **Dictionary (A2 ↔ A4).** A4 loads once **off the mailbox**: `open_stores` spawns `spawn_blocking(Dictionary::load)` and the result
+   lands as `DictionaryLoaded` (≈ 4 s debug, [INFERENCE] ≈ 0.2 s release); until then `DictionaryOp` answers `DictionaryReply::Loading`,
+   which the RPC bodies map to the error "dictionary loading"; `snapshot()` per dictation; `dictionary_list/put/delete` → `DictionaryOp`
+   → `list/put/delete`. `shape/mod.rs`: `Shaper::new` reads `dict.pairs(Kind::Path)`
    tagged `tld`/`ext` (leading `.` trimmed) **on top of** the built-in lists — not fallback-only as the brief asked: the packaged `Path`
    pairs are the talon lists (6 TLDs: `.co.uk .com .edu .net .org .us`; 35 extensions, no `rs`/`ts`/`dev`/`io`), so fallback-only
    would break table rows 5 (`theuth.dev`) and 7 / `main.rs`. The built-ins stay as the floor; the test `Ctx` keeps `tlds: &[]`.
 4. **History row.** Confirmed in `Store::record`: `audio_bytes`/`audio_path`/`utterance_ends` come from the store's open `AudioFile`
    for that id, never from the row A4 passes (`audio_bytes: 0, has_audio: false` is ignored). Nothing to change.
 5. **Fold check.** `crates/voice/src/stt.rs` identical to main `6aadda9a`; `pub use stt::{Engine, PIECE, Piece, Stream, …, WINDOW, …}` present.
-6. Actor test harness: `stores_opened = true` under the fake engine (no `voice.db` in `$TMPDIR`, no 4 s packaged index per test).
+6. Actor test harness: `stores_opened = true` under the fake engine (no `voice.db` in `$TMPDIR`, no 4 s packaged index per test) — Z's
+   one line kept over A4's harness.
+7. **Pre-existing issue fixed (orchestrator item d):** `live::tests::utterer_returns_the_spoken_sentence_punctuated` loaded the Nemotron
+   streaming model whenever `~/.theuth/models/nemotron-streaming-en` and `say` were present; it is now
+   `#[ignore = "loads the Nemotron streaming model (~0.9 GB) and runs `say`; run with --ignored"]`.
 
 ## Deviations from §14 (frozen) across C / A1–A5, consolidated
 | Frozen shape | Shipped | Why |
@@ -82,6 +92,15 @@ the merged tree, the probe, and the hand-offs for waves B (surfaces) and C (comp
   lists 448 methods including all 17 new names + `voice_status`.
 - `BUILD_SLOTS=1 … mbx check --workspace --exclude desktop` → `Finished dev profile … in 3m 10s`, 0 errors, 0 warnings (workspace.log).
 - `cargo fmt -p voice -p rpc -p agent -p runtime -p tui -- --check` → clean (exit 0, empty output).
+- After the final A4 merge `02cefd6f` (`bef55869`), re-run on the final tree: `mbx clippy -p voice -p rpc -p agent -p runtime --tests`
+  → `Finished dev profile … in 2m 21s`, 0 warnings (clippy3.log); `mbx test … --no-run` → `Finished test profile … in 5m 49s`; bare
+  `MBX_SCHEDULER_TESTS=0 mbx test -p voice -p rpc -p agent -p runtime` (test-run3.log): agent `test result: ok. 592 passed; 0 failed;
+  2 ignored` (173 s; the two known load flakes passed first time in all three runs), `notebooks_binding` 2, `notebooks_block` 6; rpc `56
+  passed`, `prompts` 1; runtime `2 passed`; voice `test result: ok. 72 passed; 0 failed; 1 ignored` (7.84 s; the ignored one is the newly
+  gated `live::tests::utterer_returns_the_spoken_sentence_punctuated`); `BUILD_SLOTS=1 … mbx check --workspace --exclude desktop` →
+  `Finished dev profile … in 3m 21s`, 0 errors, 0 warnings (workspace3.log); `cargo fmt … -- --check` clean. Bindings not re-exported
+  after the merges: no `ts(export)` type changed (`DictionaryReply` is engine-internal). Intermediate runs after `9080aae5`
+  (clippy2/test-run2/workspace2) were equally clean.
 
 ## Live probe (§16 row 11)
 **Skipped** — the brief's condition failed at gate end (19:42): `uptime` 1-min load 23.57 (< 25 ok) but `vm_stat` free + speculative
@@ -117,7 +136,9 @@ text`, no command, `Finished { Done }`, `last.surface == Composer`), `timings_re
   `polish_model()` / `set_polish_model(id | null)` for Settings › Voice; `rewrite(instruction, selection, app, thread)` per §13.6.
 - Settings: `list_input_devices` / `set_input_devices` (`voice_status.input_devices` is live), `set_shape`, `set_end_phrases`,
   `dictionary_list/put/delete`; the dictionary header line reads `packaged_version()` + `counts()` through a future `VoiceStatus` field.
-- Agent names for `@mention` shaping: `Shaper::with_mentions` exists; `DictationOpts` has no field for them yet.
+- `@mention` shaping — **wave-B / design follow-up, not wired in wave A:** `Shaper::with_mentions` exists but `DictationOpts` (frozen
+  §14.1) carries no agent names and the engine has no other channel for them; the stage still applies the dictionary's `mention`-tagged
+  user/learned entries. Design decision needed: a `mentions: Vec<String>` on `DictationOpts`, or the actor asking `agents_list` itself.
 **Wave C (companion)**
 - `DictationDevice { lost | changed, device }` in the level slot; `dictation_status.input_device` / `.last` (§8.7 numbers) for the debug row.
 - Duck/pause (§8.6) is the companion's; `voice.duck_media` is already read into config.

@@ -27,13 +27,11 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::dictionary::{Dictionary, Entry, EntryId, Negative, Scope};
-use crate::history::{HistoryRow, Store, Suggestion, SuggestionAnswer as Answer, SuggestionId};
+use crate::history::{HistoryRow, Store, SuggestionAnswer as Answer, SuggestionId};
 use crate::live::{MODEL_RATE, Text, Utterer};
 use crate::mic::{Capture, Chunk, RATE};
-use crate::shape::{
-    EndCommand, EndParser, EndPhrases, Preset, SETTLE_MS, SILENCE_MS, ShapeConfig, ShapePresets,
-    Shaped, Shaper,
-};
+use crate::shape::end::EndParser;
+use crate::shape::{EndCommand, EndPhrases, Preset, ShapeConfig, ShapePresets, Shaped, Shaper};
 use crate::{
     AppProfile, Destination, DeviceState, DictationId, DictationOpts, DictationTimings,
     FinishReason, HistoryConfig, ModelState, Surface, VoiceConfig, VoiceEvent,
@@ -44,9 +42,9 @@ const LEVELS: usize = 8;
 /// How long the task waits for an audio chunk before rechecking cancel and deadline.
 const POLL: Duration = Duration::from_millis(50);
 /// §7.3: after `Send` arms, no new speech for this long …
-const SETTLE: Duration = Duration::from_millis(SETTLE_MS);
+pub const SETTLE: Duration = Duration::from_millis(crate::shape::end::SETTLE_MS);
 /// §7.3: … then this much closed-gate silence stops the dictation.
-const SILENCE: Duration = Duration::from_millis(SILENCE_MS);
+pub const SILENCE: Duration = Duration::from_millis(crate::shape::end::SILENCE_MS);
 /// §8.3: a capture that yields no PCM for this long is not ready.
 const READY_TIMEOUT: Duration = Duration::from_secs(2);
 /// §8.3: consecutive 160 ms windows at or under the thresholds that mark a dead device.
@@ -202,6 +200,8 @@ pub enum DictionaryReply {
     Deleted(bool),
     /// `Negative`.
     Done,
+    /// The packaged index is still building; retry.
+    Loading,
 }
 
 /// A `voice.*` key changed through its RPC; the next dictation uses it
@@ -328,6 +328,9 @@ struct Settings {
 /// `tell` from the load task.
 struct Loaded(Result<Engine, String>);
 
+/// `tell` from the dictionary load.
+struct DictionaryLoaded(Dictionary);
+
 /// `tell` from the standby timer; dropped if a newer standby took over.
 struct StandbyExpired(u64);
 
@@ -398,7 +401,8 @@ pub struct Dictation {
     /// The history store and the dictionary were opened (once, on first use).
     stores_opened: bool,
     store: Option<Store>,
-    dictionary: Dictionary,
+    /// `None` until [`DictionaryLoaded`] lands (the packaged index builds off the mailbox).
+    dictionary: Option<Dictionary>,
     /// Read-only copy handed to each dictation; rebuilt after every change.
     snapshot: Arc<Dictionary>,
     standby: Option<Standby>,
@@ -429,7 +433,7 @@ impl Dictation {
             opener: Arc::new(Capture::open_on),
             stores_opened: false,
             store: None,
-            dictionary: Dictionary::default(),
+            dictionary: None,
             snapshot: Arc::new(Dictionary::default()),
             standby: None,
             standby_generation: 0,
@@ -442,30 +446,33 @@ impl Dictation {
         self.rt.publish(VoiceEvent::DictationModel { state }).await;
     }
 
-    /// Open the history store and load the dictionary, once (153 §5/§6); a
-    /// failure logs and leaves that half off — dictation itself never waits on it.
-    async fn open_stores(&mut self) {
+    /// Open the history store and start the dictionary load, once (153 §5/§6);
+    /// the dictionary (a ≈4 s index build in debug) lands as [`DictionaryLoaded`]
+    /// so the mailbox never waits on it; a failure logs and leaves that half off.
+    async fn open_stores(&mut self, me: ActorRef<Self>) {
         if self.stores_opened {
             return;
         }
         self.stores_opened = true;
         let data_dir = self.rt.data_dir.clone();
-        if self.cfg.history.enabled {
+        if Store::recording_allowed(&self.cfg.history, false) {
             let h = &self.cfg.history;
             match Store::open(&data_dir).await {
                 Ok(s) => self.store = Some(s.with_budget(h.rows, u64::from(h.audio_mib) << 20)),
                 Err(e) => tracing::warn!("voice: history store: {e:#}"),
             }
         }
-        let dir = data_dir.clone();
-        match tokio::task::spawn_blocking(move || Dictionary::load(&dir)).await {
-            Ok(Ok(d)) => {
-                self.dictionary = d;
-                self.snapshot = self.dictionary.snapshot();
+        tokio::spawn(async move {
+            let t = Instant::now();
+            match tokio::task::spawn_blocking(move || Dictionary::load(&data_dir)).await {
+                Ok(Ok(d)) => {
+                    tracing::info!("voice: dictionary loaded in {:?}", t.elapsed());
+                    let _ = me.tell(DictionaryLoaded(d)).await;
+                }
+                Ok(Err(e)) => tracing::warn!("voice: dictionary: {e:#}"),
+                Err(e) => tracing::warn!("voice: dictionary load panicked: {e}"),
             }
-            Ok(Err(e)) => tracing::warn!("voice: dictionary: {e:#}"),
-            Err(e) => tracing::warn!("voice: dictionary load panicked: {e}"),
-        }
+        });
     }
 
     /// Load off the runtime unless loaded or loading; the result comes back as [`Loaded`].
@@ -617,6 +624,7 @@ impl Dictation {
                 has_audio: false,
             },
         });
+        let commands = opts.commands.clone();
         let press = opts
             .press_ago_ms
             .and_then(|ms| recv.checked_sub(Duration::from_millis(u64::from(ms))))
@@ -633,12 +641,12 @@ impl Dictation {
                 dict: self.snapshot.clone(),
                 app: opts.app,
                 surface,
-                commands: opts.commands,
+                commands,
             },
-            parser: EndParser::new(&self.cfg.phrases),
             prev: String::new(),
             finals: Vec::new(),
             utterance: None,
+            parser: EndParser::new(&self.cfg.phrases),
             send_at: None,
             quiet_since: None,
             press,
@@ -653,7 +661,7 @@ impl Dictation {
             heard: false,
             peak: 0.0,
             silent_windows: 0,
-            record_audio: self.recording().is_some(),
+            record_audio: self.store.is_some(),
             tail: VecDeque::new(),
             utt_audio: Vec::new(),
             was_open: false,
@@ -735,31 +743,6 @@ impl Dictation {
             let _ = me.tell(StandbyExpired(generation)).await;
         });
     }
-
-    /// §6.3 step 3: one card per due suggestion; the store keeps the id until answered.
-    async fn suggest(&mut self, due: Vec<Suggestion>) {
-        for s in due {
-            self.rt
-                .publish(VoiceEvent::DictionarySuggestion {
-                    id: s.id,
-                    heard: s.heard,
-                    typed: s.typed,
-                    occurrences: s.occurrences,
-                    surface: s.surface,
-                    has_audio: s.has_audio,
-                })
-                .await;
-        }
-    }
-
-    /// §6.5: the store, when rows and audio may be written. `DictationOpts` is
-    /// frozen without a session, so the private-session half of
-    /// [`Store::recording_allowed`] is always `false` here (wave B hand-off).
-    fn recording(&self) -> Option<Store> {
-        self.store
-            .clone()
-            .filter(|_| Store::recording_allowed(&self.cfg.history, false))
-    }
 }
 
 /// Now, Unix ms.
@@ -772,7 +755,7 @@ fn unix_ms() -> u64 {
 impl Message<Prewarm> for Dictation {
     type Reply = ModelState;
     async fn handle(&mut self, _: Prewarm, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.open_stores().await;
+        self.open_stores(ctx.actor_ref().clone()).await;
         self.load(ctx.actor_ref().clone()).await;
         self.model.clone()
     }
@@ -809,10 +792,10 @@ impl Message<StartDictation> for Dictation {
             );
             tx.send(Err("talking".into()));
         } else if self.model == ModelState::Ready {
-            self.open_stores().await;
+            self.open_stores(me.clone()).await;
             tx.send(self.start(me, m.source, m.opts));
         } else {
-            self.open_stores().await;
+            self.open_stores(me.clone()).await;
             self.load(me).await;
             self.waiters.push(Waiter::Start(m.source, m.opts, tx));
         }
@@ -915,16 +898,27 @@ impl Message<DictationStatus> for Dictation {
 
 impl Message<Correction> for Dictation {
     type Reply = Result<(), String>;
-    async fn handle(&mut self, m: Correction, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.open_stores().await;
-        let Some(store) = self.recording().filter(|_| self.cfg.history.learn) else {
+    async fn handle(&mut self, m: Correction, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.open_stores(ctx.actor_ref().clone()).await;
+        let Some(store) = self.store.clone().filter(|_| self.cfg.history.learn) else {
             return Ok(());
         };
         let due = store
             .correction(m.id, &m.sent_text)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        self.suggest(due).await;
+        for s in due {
+            self.rt
+                .publish(VoiceEvent::DictionarySuggestion {
+                    id: s.id,
+                    heard: s.heard,
+                    typed: s.typed,
+                    occurrences: s.occurrences,
+                    surface: s.surface,
+                    has_audio: s.has_audio,
+                })
+                .await;
+        }
         Ok(())
     }
 }
@@ -939,12 +933,15 @@ impl Message<AnswerSuggestion> for Dictation {
         let Some(store) = self.store.clone() else {
             return Err("unknown suggestion".into());
         };
+        let Some(dict) = self.dictionary.as_mut() else {
+            return Err("dictionary loading".into());
+        };
         store
-            .answer(m.id, m.answer, &mut self.dictionary)
+            .answer(m.id, m.answer, dict)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        if !matches!(m.answer, Answer::NotNow) {
-            self.snapshot = self.dictionary.snapshot();
+        if m.answer != Answer::NotNow {
+            self.snapshot = dict.snapshot();
         }
         Ok(())
     }
@@ -952,21 +949,36 @@ impl Message<AnswerSuggestion> for Dictation {
 
 impl Message<DictionaryOp> for Dictation {
     type Reply = DictionaryReply;
-    async fn handle(&mut self, m: DictionaryOp, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.open_stores().await;
+    async fn handle(
+        &mut self,
+        m: DictionaryOp,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.open_stores(ctx.actor_ref().clone()).await;
+        let Some(dict) = self.dictionary.as_mut() else {
+            return DictionaryReply::Loading;
+        };
         let reply = match m {
             DictionaryOp::List(scope) => {
-                return DictionaryReply::Entries(self.dictionary.list(scope.as_ref()));
+                return DictionaryReply::Entries(dict.list(scope.as_ref()));
             }
-            DictionaryOp::Put(entry) => DictionaryReply::Entry(self.dictionary.put(entry)),
-            DictionaryOp::Delete(id) => DictionaryReply::Deleted(self.dictionary.delete(&id)),
+            DictionaryOp::Put(entry) => DictionaryReply::Entry(dict.put(entry)),
+            DictionaryOp::Delete(id) => DictionaryReply::Deleted(dict.delete(&id)),
             DictionaryOp::Negative(n) => {
-                self.dictionary.negative(n);
+                dict.negative(n);
                 DictionaryReply::Done
             }
         };
-        self.snapshot = self.dictionary.snapshot();
+        self.snapshot = dict.snapshot();
         reply
+    }
+}
+
+impl Message<DictionaryLoaded> for Dictation {
+    type Reply = ();
+    async fn handle(&mut self, m: DictionaryLoaded, _: &mut Context<Self, Self::Reply>) {
+        self.snapshot = m.0.snapshot();
+        self.dictionary = Some(m.0);
     }
 }
 
@@ -1003,8 +1015,12 @@ impl Message<InputDevicePrefs> for Dictation {
 
 impl Message<HistoryStore> for Dictation {
     type Reply = Option<Store>;
-    async fn handle(&mut self, _: HistoryStore, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.open_stores().await;
+    async fn handle(
+        &mut self,
+        _: HistoryStore,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.open_stores(ctx.actor_ref().clone()).await;
         self.store.clone()
     }
 }
@@ -1112,7 +1128,7 @@ impl Message<Report> for Dictation {
                 if let Some(opened) = done.standby {
                     self.keep_warm(ctx.actor_ref().clone(), opened);
                 }
-                if let Some(store) = self.recording() {
+                if let Some(store) = self.store.clone() {
                     let mut row = run.row;
                     row.finished_ms = Some(unix_ms());
                     row.raw = done.raw;
@@ -1162,8 +1178,6 @@ struct ShaperOwned {
 }
 
 impl ShaperOwned {
-    // ponytail: a `Shaper` per piece (it borrows phrases + dict, so it cannot live in the
-    // task); its setup scans the dictionary's path pairs — ≈ 40k cheap compares, sub-ms.
     fn shape(&self, parser: &mut EndParser, prev: &str, raw: &str, is_final: bool) -> Shaped {
         Shaper::new(self.cfg, &self.phrases, &self.dict, self.app.as_ref())
             .with_surface(self.surface)
@@ -1182,14 +1196,14 @@ struct Task {
     /// RMS per chunk, flushed every [`LEVELS`].
     levels: Vec<f32>,
     shaper: ShaperOwned,
-    /// §7.1: the end-command parser of the open utterance; reset after each final.
-    parser: EndParser,
     /// Finals so far, shaped and joined: the shaper's context (§4.6).
     prev: String,
     /// Closed utterances kept: `(utterance, raw, shaped)`; "scratch that" pops one.
     finals: Vec<(u32, String, String)>,
-    /// The utterance the last piece belonged to; a new one clears `armed`.
+    /// The utterance the last piece belonged to; a new one resets `parser`.
     utterance: Option<u32>,
+    /// §7.1: the end-command state machine of the open utterance.
+    parser: EndParser,
     /// §7.3: when the last piece carrying `Send` arrived; `None` once new speech followed.
     send_at: Option<Instant>,
     /// §7.3: since when the gate has been closed after the settle.
@@ -1515,9 +1529,8 @@ impl Task {
         }
     }
 
-    /// §4.6: every piece through the shaper with the utterance's end-command parser
-    /// (§7.1 stickiness lives there); "scratch that" re-sends the previous closed
-    /// utterance empty (§7.4).
+    /// §4.6: every piece through the shaper with the utterance's end parser
+    /// (§7.1 state); "scratch that" re-sends the previous closed utterance empty (§7.4).
     fn texts(&mut self, texts: Vec<Text>) {
         for t in texts {
             let now = Instant::now();
@@ -1528,9 +1541,6 @@ impl Task {
             let s = self
                 .shaper
                 .shape(&mut self.parser, &self.prev, &t.text, t.is_final);
-            if t.is_final {
-                self.parser.reset();
-            }
             self.send_at = matches!(s.command, Some(EndCommand::Send { .. })).then_some(now);
             self.first_partial.get_or_insert(now);
             if t.is_final {
