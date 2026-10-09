@@ -758,6 +758,7 @@ mod tests {
                 skills: None,
                 skills_dir: None,
                 mcp: None,
+                reports: None,
             },
         );
         let e = precheck(&our(), &[], &agents, &key, None).unwrap_err();

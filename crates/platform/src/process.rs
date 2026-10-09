@@ -61,6 +61,24 @@ impl ProcessTree {
     pub fn alive(&self) -> bool {
         imp::alive(&self.0)
     }
+
+    /// 155 §6.2: the tree's size and summed CPU time now — Windows from the
+    /// Job Object accounting, Unix by walking the leader's descendants.
+    /// `None` when it cannot be read (the caller treats that as quiet).
+    pub fn sample(&self) -> Option<TreeSample> {
+        // ponytail: skeleton (155 C); W2 fills the per-OS read.
+        let _ = &self.0;
+        None
+    }
+}
+
+/// One reading of a [`ProcessTree`] (155 §6.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreeSample {
+    /// Live members, the leader included.
+    pub processes: u32,
+    /// User + system CPU time of every member since it started.
+    pub cpu: std::time::Duration,
 }
 
 /// Whether the process `pid` still exists (signal 0 / a live exit code).

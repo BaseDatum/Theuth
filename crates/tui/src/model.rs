@@ -14900,6 +14900,7 @@ mod tests {
             args: vec![],
             description: None,
             status: None,
+            reports: Default::default(),
         };
         let reg = RegistryAgent {
             id: "codex-acp".into(),

@@ -134,6 +134,12 @@ pub struct AttentionItem {
     /// weight); `Priority::Medium.weight()` (5) for items without one. Higher first.
     #[serde(default)]
     pub rank: u32,
+    /// 155 §7.1: the engine's alert decision for this item — set after
+    /// `roster.alert_delay_ms` for kinds that alert; rpc blanks it per
+    /// connection for the focused session and seen finishes (§7.3, §7.5).
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub alert: Option<crate::alert::Alert>,
 }
 
 /// 149 E6: the two bubbles behind an item — the user's last input to the
@@ -363,6 +369,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         context: None,
         priority: None,
         rank: tasks::Priority::Medium.weight(),
+        alert: None,
     };
     // 132 D4: a task's (priority, rank); session items borrow their checkout task's.
     let ranked = |t: &tasks::Task| {
@@ -1047,7 +1054,15 @@ pub struct Attention {
     texts: HashMap<runtime::SessionId, String>,
     /// 146 D4: the latest boot pass; `None` once cleared.
     boot: Option<agent::durability::BootPass>,
+    /// 155 §7.4: item id → episode start, for `alert` ids and the delay.
+    #[allow(dead_code)] // 155 C skeleton: W3 decorates items in `recheck` with it.
+    episodes: crate::alert::Episodes,
 }
+
+/// `tell` (internal, 155 §7.4): the earliest `alert_delay_ms` passed —
+/// recheck so the now-visible alert publishes `AttentionChanged`.
+#[derive(Clone, Copy, Debug)]
+pub struct AlertDue;
 
 impl Attention {
     /// Spawn, register, subscribe to approvals, shows and resume reports.
@@ -1068,6 +1083,7 @@ impl Attention {
                 ask_since: HashMap::new(),
                 texts: HashMap::new(),
                 boot: None,
+                episodes: crate::alert::Episodes::default(),
             },
             runtime::subscriber_mailbox(),
         );
@@ -1830,6 +1846,15 @@ impl Message<ListAttention> for Attention {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.recheck().await
+    }
+}
+
+impl Message<AlertDue> for Attention {
+    type Reply = ();
+
+    /// 155 §7.4: a delay window closed; derive again so the alert shows.
+    async fn handle(&mut self, _: AlertDue, _: &mut Context<Self, Self::Reply>) {
+        // ponytail: skeleton (155 C); W3 fills (`recheck_quietly` once wired).
     }
 }
 

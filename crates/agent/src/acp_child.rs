@@ -33,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 use tools::{Decision, ExternalApproval, REGISTRY_ACTOR, ToolRegistry};
 use uuid::Uuid;
 
+use crate::activity::{ActivityConfig, ChildActivity};
 use crate::communication::{PeerConsumed, PeerTurnFinished};
 use crate::continuation::{
     self, InputConsumed, InputDropped, InputTicket, SessionUnknown, TurnEntered, TurnReturned,
@@ -155,6 +156,12 @@ pub struct AcpChild {
     /// Where omp keeps its transcripts (`<home>/.omp/agent/sessions`, 141
     /// §6.4 feed 2): the engine's home; tests point it at a scratch dir.
     omp_home: std::path::PathBuf,
+    /// 155 §3: the stall monitor, fed by `prompt`, the update arm and `finish`.
+    #[allow(dead_code)] // 155 C skeleton: W1 wires the hooks (§3.1, §3.3).
+    activity: ChildActivity,
+    /// 155 §3.3: the one armed `StallCheck` timer.
+    #[allow(dead_code)] // 155 C skeleton: W1 arms it from `activity.deadline`.
+    stall: Option<AbortHandle>,
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
@@ -354,6 +361,10 @@ struct Retry(TurnId);
 /// `tell` (internal): continuation turn `.0` saw no update for [`CONTINUATION_QUIET`].
 struct Quiet(TurnId);
 
+/// `tell` (internal, 155 §3.3): the stall deadline passed — `activity.fire`.
+#[allow(dead_code)] // 155 C skeleton: W1 arms and handles it.
+struct StallCheck;
+
 /// `ask` → `Result<acp::SetOptionResult, String>` (75 §8): set the harness's
 /// config option `config_id` (an id, or the alias `model` / `effort`) to
 /// `value`. Idle → sent now; a turn in flight → queued and sent at its end
@@ -481,7 +492,16 @@ impl AcpChild {
             respawn: None,
             observed: Observed::default(),
             omp_home: std::env::home_dir().unwrap_or_default(),
+            activity: ChildActivity::new(ActivityConfig::default()),
+            stall: None,
         }
+    }
+
+    /// 155 §3.5: the `agent.activity` thresholds for this child's monitor.
+    #[must_use]
+    pub fn with_activity(mut self, cfg: ActivityConfig) -> Self {
+        self.activity = ChildActivity::new(cfg);
+        self
     }
 
     async fn publish(&self, ev: AgentEvent) {

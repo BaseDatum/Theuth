@@ -16,5 +16,5 @@ pub mod sha256;
 pub mod shell;
 pub mod target;
 
-pub use process::{ProcessTree, Signal};
+pub use process::{ProcessTree, Signal, TreeSample};
 pub use shell::{ShellKind, pty_command, shell};

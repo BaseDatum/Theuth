@@ -72,7 +72,7 @@ use crate::loop_::{
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
-    node_lines,
+    WaitPeerTool, node_lines,
 };
 use crate::private::Scratch;
 use crate::skills::{
@@ -120,6 +120,7 @@ use tools::{
 
 // 109: handler bodies in their own files so the waves do not collide.
 mod acp_resume; // 109 W4
+mod activity; // 155 W1
 pub(crate) mod advisor; // 125 W1
 pub mod child_waits; // 139 W3
 mod drain;
@@ -302,6 +303,9 @@ pub struct Agents {
     /// 137: the endless memory service (one per engine); every native
     /// session attaches to it and the loop, tools and RPC call through it.
     pub(crate) endless: Endless,
+    /// 155 §4.2 / §5.2: open stall episodes of ACP children and registered
+    /// `wait_peer`s.
+    pub(crate) activity: crate::activity::Monitor,
 }
 
 /// One pending `send_message{await_reply}` (50 §5.3).
@@ -2916,6 +2920,7 @@ impl Agents {
                     nudge,
                     user_typed_secs,
                     output,
+                    why,
                 },
         } = m
         else {
@@ -2940,6 +2945,7 @@ impl Agents {
             secs,
             nudge,
             user_typed_secs,
+            &why,
             &text,
             chrono::Local::now(),
         );
@@ -3086,8 +3092,9 @@ pub(crate) fn job_result(
 }
 
 /// The `<job_idle>` wrapper (61 §2.2): `command` cut and escaped as
-/// [`job_result`]; `name` and `user_typed` only when present; `at` the local
-/// clock (74 §4); `text` is the screen with its `cursor:` line.
+/// [`job_result`]; `name` and `user_typed` only when present; `why` (155
+/// §6.5) only when non-empty; `at` the local clock (74 §4); `text` is the
+/// screen with its `cursor:` line.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn job_idle(
     id: &JobId,
@@ -3097,15 +3104,66 @@ pub(crate) fn job_idle(
     secs: u64,
     nudge: u32,
     user_typed: Option<u64>,
+    why: &str,
     text: &str,
     now: chrono::DateTime<chrono::Local>,
 ) -> String {
     let cmd: String = command.chars().take(120).collect();
     let name = name.map_or_else(String::new, |n| format!(" name=\"{}\"", attr(n)));
     let typed = user_typed.map_or_else(String::new, |t| format!(" user_typed=\"{t}\""));
+    let why = if why.is_empty() {
+        String::new()
+    } else {
+        format!(" why=\"{}\"", attr(why))
+    };
     format!(
-        "<job_idle id=\"{id}\" command=\"{}\"{name} quiet=\"{quiet}\" secs=\"{secs}\" nudge=\"{nudge}\"{typed} at=\"{}\">\n{text}\n</job_idle>",
+        "<job_idle id=\"{id}\" command=\"{}\"{name} quiet=\"{quiet}\" secs=\"{secs}\" nudge=\"{nudge}\"{why}{typed} at=\"{}\">\n{text}\n</job_idle>",
         attr(&cmd),
+        clock::hhmm(now)
+    )
+}
+
+/// The `<child_stalled>` wrapper (155 §4.1): the parent's wake for a child
+/// whose activity monitor fired; `last` only when non-empty; `body` is the
+/// one sentence of guidance.
+#[allow(dead_code)] // 155 C skeleton: W1's `ChildStalled` handler renders with it.
+pub(crate) fn child_stalled(
+    name: &str,
+    session: SessionId,
+    phase: crate::activity::StallPhase,
+    quiet_secs: u64,
+    last: &str,
+    body: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    let last = if last.is_empty() {
+        String::new()
+    } else {
+        format!(" last=\"{}\"", attr(last))
+    };
+    format!(
+        "<child_stalled child=\"{}\" session=\"{session}\" phase=\"{}\" quiet_secs=\"{quiet_secs}\"{last} at=\"{}\">\n{body}\n</child_stalled>",
+        attr(name),
+        phase.as_str(),
+        clock::hhmm(now)
+    )
+}
+
+/// The `<peer_state>` wrapper (155 §5.3): a `wait_peer` settled — the word
+/// it reached (or `not_running` / `timeout`) and the one-line reason.
+#[allow(dead_code)] // 155 C skeleton: W1's wait settlement renders with it.
+pub(crate) fn peer_state(
+    name: &str,
+    session: SessionId,
+    state: crate::activity::PeerStateWord,
+    since_secs: u64,
+    body: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    format!(
+        "<peer_state child=\"{}\" session=\"{session}\" state=\"{}\" since_secs=\"{since_secs}\" at=\"{}\">\n{body}\n</peer_state>",
+        attr(name),
+        state.as_str(),
         clock::hhmm(now)
     )
 }
@@ -5441,6 +5499,8 @@ fn peer_activity(a: SessionActivity) -> PeerActivity {
         jobs: a.jobs,
         ptys: a.ptys,
         children: a.children,
+        // ponytail: skeleton (155 C); W1 fills it from `Agents.activity.stalls`.
+        stalled_secs: None,
     }
 }
 
@@ -8418,6 +8478,7 @@ fn acp_info(name: String, e: &acp::Entry) -> acp::EntryInfo {
         args: e.args.clone(),
         description: e.description.clone(),
         status: None,
+        reports: e.reports(),
     }
 }
 
@@ -9379,6 +9440,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             identity: None,
             advisors: HashSet::new(),
             advisor_cfg: cfg.advisor.clone(),
+            activity: crate::activity::Monitor::default(),
         },
         runtime::subscriber_mailbox(),
     );
@@ -9519,6 +9581,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .await;
         let _ = reg.ask(RegisterTool(Arc::new(DiscoverPeersTool))).await;
         let _ = reg.ask(RegisterTool(Arc::new(PeerMessageTool))).await;
+        // 155 §5.2: the state wait, beside the directory and the record.
+        let _ = reg.ask(RegisterTool(Arc::new(WaitPeerTool))).await;
         let _ = reg.ask(RegisterTool(Arc::new(MessageUserTool))).await;
         let _ = reg.ask(RegisterTool(Arc::new(ListModelsTool))).await;
         let _ = reg
@@ -10434,6 +10498,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         identity: None,
         advisors: HashSet::new(),
         advisor_cfg: AdvisorConfig::default(),
+        activity: crate::activity::Monitor::default(),
     }
 }
 
@@ -11146,6 +11211,7 @@ pub(crate) mod tests {
             912,
             1,
             None,
+            "",
             ">>> \ncursor: row 1 col 5",
             at(),
         );
@@ -11153,13 +11219,24 @@ pub(crate) mod tests {
             w,
             "<job_idle id=\"j4\" command=\"echo &quot;a&quot; &lt;b&gt;\" quiet=\"63\" secs=\"912\" nudge=\"1\" at=\"14:03\">\n>>> \ncursor: row 1 col 5\n</job_idle>"
         );
-        let w = job_idle(&id, "omp", Some("omp<1>"), 120, 30, 2, Some(12), "", at());
+        let w = job_idle(
+            &id,
+            "omp",
+            Some("omp<1>"),
+            120,
+            30,
+            2,
+            Some(12),
+            "no \"reaction\" to input",
+            "",
+            at(),
+        );
         assert_eq!(
             w,
-            "<job_idle id=\"j4\" command=\"omp\" name=\"omp&lt;1&gt;\" quiet=\"120\" secs=\"30\" nudge=\"2\" user_typed=\"12\" at=\"14:03\">\n\n</job_idle>"
+            "<job_idle id=\"j4\" command=\"omp\" name=\"omp&lt;1&gt;\" quiet=\"120\" secs=\"30\" nudge=\"2\" why=\"no &quot;reaction&quot; to input\" user_typed=\"12\" at=\"14:03\">\n\n</job_idle>"
         );
         let long = "a".repeat(200);
-        let w = job_idle(&id, &long, None, 0, 0, 1, None, "", at());
+        let w = job_idle(&id, &long, None, 0, 0, 1, None, "", "", at());
         assert!(w.contains(&format!(" command=\"{}\" ", "a".repeat(120))));
         assert!(!w.contains(&"a".repeat(121)));
     }
@@ -12158,6 +12235,7 @@ pub(crate) mod tests {
             jobs: 0,
             ptys,
             children: 0,
+            stalled_secs: None,
         };
         let mut rows = vec![
             row("peer:lab", None),
@@ -12643,6 +12721,7 @@ pub(crate) mod tests {
                 nudge: 1,
                 user_typed_secs: None,
                 output: ">>>\ncursor: row 1 col 5".into(),
+                why: String::new(),
             },
         };
 

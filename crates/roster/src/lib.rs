@@ -11,6 +11,7 @@
 //! - [`file::parse`]: `agents/<name>.md` → [`AgentFile`]
 //! - [`Desks`]: the shared read model handed to the tasks plugin
 
+pub mod alert;
 pub mod attention;
 pub mod budget;
 pub mod config;

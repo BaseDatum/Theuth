@@ -32,6 +32,7 @@ use crate::jobs::{
     admit_job, lock, sep,
 };
 use crate::journal::{JobKind, JobRow, JobState, Journal, PtyScreenRow, WaitKind, WaitRow};
+use crate::proctree::PtyThresholds;
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Screen height at `start` (22 §1.9); a viewer may resize it (`pty_resize`).
@@ -505,6 +506,10 @@ pub(crate) struct PtyHandle {
     /// The revision last written to `pty_screens` (109 §5.3); `u64::MAX`
     /// before the first write. Equal revisions skip the write.
     snapshotted: AtomicU64,
+    /// 155 §6.4: when the model last `send`-wrote, until the screen or the
+    /// process tree moved (then `None`); the reaction check's clock.
+    #[allow(dead_code)] // 155 C skeleton: W2's reaction check in `run` reads it.
+    sent_at: Mutex<Option<Instant>>,
 }
 
 /// One item of [`PtyHandle::stream`].
@@ -1413,6 +1418,7 @@ impl Message<Launch<StartPty>> for Jobs {
             interacted: AtomicBool::new(false),
             cursor: AtomicU64::new(0),
             snapshotted: AtomicU64::new(u64::MAX),
+            sent_at: Mutex::new(None),
         });
         let log = Arc::new(Mutex::new(Log::new(Some(s.file))));
         let cancel = Arc::new(Cancel::default());
@@ -2036,6 +2042,15 @@ impl Idle {
         self.backoff = (self.backoff * 2).min(IDLE_BACKOFF_MAX);
         Some((self.nudges, now.duration_since(self.last_change).as_secs()))
     }
+
+    /// 155 §6.3: the deadline passed but the process tree was busy — push
+    /// the next check out by `base` without firing, resetting `nudges` or
+    /// pretending the screen changed.
+    #[allow(dead_code)] // 155 C skeleton: W2's idle rule calls it.
+    fn defer(&mut self, now: Instant) {
+        // ponytail: skeleton (155 C); W2 decides the exact re-arm.
+        self.last_fire = Some(now);
+    }
 }
 
 /// The job task (22 §4.2): ingest chunks, coalesce `Screen` events, wake the
@@ -2136,6 +2151,7 @@ async fn run(mut j: Run) {
                         nudge,
                         user_typed_secs: attached_for(*lock(&j.pty.user_input)).map(|d| d.as_secs()),
                         output: screen_body(&rows, cursor),
+                        why: format!("screen unchanged for {quiet_secs} s"),
                     };
                     // The wake rides the guard (61 §1.8); the bus copy is for UIs.
                     j.activity.notify(event.clone());
@@ -2482,6 +2498,8 @@ async fn send(live: &Live, args: SendArgs) -> Result<ToolOutput, String> {
         false,
     )
     .await?;
+    // 155 §6.4: the reaction clock starts at the write (W2 reads it in `run`).
+    *lock(&live.pty.sent_at) = Some(Instant::now());
     if let Some(sig) = args.signal {
         live.pty
             .tree
@@ -2677,19 +2695,23 @@ pub struct StartTool {
     idle_default: Arc<AtomicU64>,
     /// `tools.pty_shell`: the PTY program instead of the platform default.
     pty_shell: Option<PathBuf>,
+    /// 155 §6.6: `tools.pty_reaction_secs` / `tools.pty_tree_cpu_pct`.
+    #[allow(dead_code)] // 155 C skeleton: W2 hands it to the job task.
+    thresholds: PtyThresholds,
 }
 
 impl StartTool {
     /// `shells` is [`crate::shell::ShellTool::shells`]: the default cwd is the
     /// session shell's (22 §1.5); `ready_timeout` is `tools.pty_ready_timeout_secs`;
     /// `idle_default` is the live `tools.pty_idle_secs` (61 §1.6), zero for never;
-    /// `pty_shell` is `tools.pty_shell` (58 §0.3).
+    /// `pty_shell` is `tools.pty_shell` (58 §0.3); `thresholds` are the 155 §6.6 keys.
     pub fn new(
         jobs: ActorRef<Jobs>,
         shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
         ready_timeout: Duration,
         idle_default: Arc<AtomicU64>,
         pty_shell: Option<PathBuf>,
+        thresholds: PtyThresholds,
     ) -> Self {
         Self {
             jobs,
@@ -2697,6 +2719,7 @@ impl StartTool {
             ready_timeout,
             idle_default,
             pty_shell,
+            thresholds,
         }
     }
 
@@ -3355,6 +3378,7 @@ mod tests {
             Duration::from_secs(30),
             Arc::new(AtomicU64::new(idle.as_secs())),
             None,
+            PtyThresholds::from_config(&crate::ToolsConfig::default()),
         )
     }
 
@@ -3838,6 +3862,7 @@ mod tests {
             Duration::from_secs(30),
             Arc::new(AtomicU64::new(0)),
             Some(PathBuf::from("/bin/sh")),
+            PtyThresholds::from_config(&crate::ToolsConfig::default()),
         );
         let out = Tool::call(
             &start,

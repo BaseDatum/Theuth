@@ -2248,7 +2248,10 @@ pub trait Api {
     ) -> RpcResult<Vec<tasks::activity::ActivityEntry>>;
     /// The attention inbox (70 HUD): approvals, decisions, hires, blocked / review tasks,
     /// budgets, unreachable nodes — undismissed and unsnoozed, newest first. Badge = length.
-    #[method(name = "attention_list")]
+    /// 155 §7.3 / §7.5: per connection — `alert` is blanked for items whose
+    /// session this connection focuses (`set_event_focus`) and for `finished`
+    /// alerts it has already seen.
+    #[method(name = "attention_list", with_extensions)]
     async fn attention_list(&self) -> RpcResult<Vec<roster::attention::AttentionItem>>;
     /// Hide an attention item until `until_ms` (ms since epoch).
     #[method(name = "attention_snooze")]
@@ -2457,6 +2460,12 @@ static PRIVATE: LazyLock<PrivateMap> = LazyLock::new(Default::default);
 /// everything; the entry is removed when the connection closes.
 pub type FocusMap = Arc<RwLock<HashMap<u64, Arc<HashSet<String>>>>>;
 
+/// 155 §7.5: `connection id → finished alert ids` this connection has seen
+/// (it focused the item's session after the finish). Dropped with the
+/// connection like [`FocusMap`]; `attention_list` blanks seen `finished`
+/// alerts for that connection only.
+pub type SeenMap = Arc<RwLock<HashMap<u64, HashSet<String>>>>;
+
 /// Server state: the event feed and the runtime (for `shutdown`).
 pub struct Server {
     /// Feed from [`crate::bridge`].
@@ -2467,6 +2476,8 @@ pub struct Server {
     pub private: PrivateMap,
     /// Per-connection delta focus; see [`FocusMap`].
     pub focus: FocusMap,
+    /// Per-connection finished-seen set; see [`SeenMap`].
+    pub seen: SeenMap,
 }
 
 impl Server {
@@ -2479,6 +2490,7 @@ impl Server {
             rt,
             private: PRIVATE.clone(),
             focus: Default::default(),
+            seen: Default::default(),
         }
     }
 
@@ -7402,7 +7414,13 @@ impl ApiServer for Server {
         send(&actor, tasks::activity::ListActivity(filter)).await
     }
 
-    async fn attention_list(&self) -> RpcResult<Vec<roster::attention::AttentionItem>> {
+    async fn attention_list(
+        &self,
+        ext: &Extensions,
+    ) -> RpcResult<Vec<roster::attention::AttentionItem>> {
+        // ponytail: skeleton (155 C); W3 masks `alert` per connection here
+        // (focus → blank + mark finished seen; seen finished → blank).
+        let _ = (ext, &self.seen, &self.focus);
         send(&attention_actor()?, roster::attention::ListAttention).await
     }
 

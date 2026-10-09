@@ -51,6 +51,46 @@ pub struct Entry {
     /// without it (`Harness::connect`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<bool>,
+    /// 155 §8: which states this harness reports reliably. Unset = the
+    /// built-in table by command ([`Reports::for_command`]); read via
+    /// [`Entry::reports`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reports: Option<Reports>,
+}
+
+/// 155 §8.1 (D7): the capability entry of a harness, as data. All false
+/// when unknown; a false gates, never a true (§8.2).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(default)]
+pub struct Reports {
+    /// Sends `session/request_permission` for gated tools.
+    pub permission: bool,
+    /// `session/prompt` returns when the turn is over (continuation work
+    /// theuth already folds into a continuation turn counts as reported).
+    pub turn_end: bool,
+    /// Advertises `loadSession` and resumes a session id.
+    pub session_load: bool,
+}
+
+impl Reports {
+    /// The §8.1 table by command basename / npx package. Unknown → default.
+    #[must_use]
+    pub fn for_command(command: &str, args: &[String]) -> Self {
+        // ponytail: skeleton (155 C); W1 fills the table.
+        let _ = (command, args);
+        Self::default()
+    }
+
+    /// The same table by public-registry id (`crates/acp/src/registry.rs`).
+    #[must_use]
+    pub fn for_registry(id: &str) -> Self {
+        // ponytail: skeleton (155 C); W1 fills the table.
+        let _ = id;
+        Self::default()
+    }
 }
 
 impl Entry {
@@ -73,6 +113,13 @@ impl Entry {
     pub fn mcp_enabled(&self) -> bool {
         self.mcp.unwrap_or(true)
     }
+
+    /// 155 §8.1: the explicit `reports:` block, else the built-in table.
+    #[must_use]
+    pub fn reports(&self) -> Reports {
+        self.reports
+            .unwrap_or_else(|| Reports::for_command(&self.command, &self.args))
+    }
 }
 
 /// [`Entry::skills_dir`] when unset: what omp, opencode, Codex and Gemini read.
@@ -92,6 +139,9 @@ pub struct EntryInfo {
     pub description: Option<String>,
     /// `initialize` probe: `None` = not probed, `Some("ok" | "login required: <cmd>" | "spawn failed: <why>")`.
     pub status: Option<String>,
+    /// 155 §8.1: [`Entry::reports`].
+    #[serde(default)]
+    pub reports: Reports,
 }
 
 /// `<data_dir>/acp/agents.yaml`.
@@ -197,6 +247,7 @@ mod tests {
                 skills: None,
                 skills_dir: None,
                 mcp: None,
+                reports: None,
             },
         );
         entries.insert(
@@ -210,6 +261,11 @@ mod tests {
                 skills: Some(false),
                 skills_dir: Some(".claude/skills".into()),
                 mcp: None,
+                reports: Some(Reports {
+                    permission: true,
+                    turn_end: true,
+                    session_load: false,
+                }),
             },
         );
         save(&dir, &entries).unwrap();

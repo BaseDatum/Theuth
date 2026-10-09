@@ -251,6 +251,10 @@ pub enum JobEvent {
         user_typed_secs: Option<u64>,
         /// The screen text with its `cursor:` line: the `<job_idle>` body.
         output: String,
+        /// 155 §6.5: why it fired — `screen unchanged for N s, process tree
+        /// quiet` or `no reaction to input`. Empty from older engines.
+        #[serde(default)]
+        why: String,
     },
     /// The job ended; the agent injects this as `<job_result>` unless `inline`.
     /// A [`CancelJob`] kill shapes it by [`CancelOrigin`] (14 §1.2 as-built):
