@@ -107,8 +107,8 @@ about. The TS gates (C: `App.tsx:386-400`, `Island.tsx:70-72`, `routes/island.ts
 5. **The 60 Hz voice-mode re-render is throttled to once a second** (the status clock's rate); the overlay still presents every sample.
 6. **Monitor enumeration is `EnumDisplayMonitors`, not `DisplayArea.FindAll()`** — the WinAppSDK call threw `InvalidCastException:
    ClassFactory cannot supply requested class` on build-B's 2.5.1 runtime.
-7. **The meeting global rows (PTT Alt+`, eye Alt+Shift+E) are gated on "live" by re-applying W2's `Hotkeys`** (the orchestrator's note);
-   WW1's unconditional registration is overridden at start and on every state change.
+7. **The meeting global rows (PTT Alt+`, eye Alt+Shift+E) are gated by WW1's `Hotkeys.Gate`** (its DONE 0b3de92e, merged): one
+   mechanism; WW3's own re-apply was removed so the two never fight. The island only consumes `GlobalKeyPressed/Released`.
 8. **`send_input` alone, no `steer` branch**: the engine's default delivery steers a busy desk (`api.rs:190-203`), so the companion does
    not track the desk's running state for this path (the Tauri shell did, from its own event slice).
 9. **Shadow** = the DWM frame Windows 11 gives a top-level window (1 px light border + rounded corners), not a drawn drop shadow.
@@ -133,5 +133,6 @@ about. The TS gates (C: `App.tsx:386-400`, `Island.tsx:70-72`, `routes/island.ts
 - WE1's UIA reader: once in the engine, the `[screen …]` line gains the element/app/window/URL; nothing changes in the companion.
 
 ## Revision history
+- v1 — 02:50: WW1 DONE 0b3de92e merged (Hotkeys.Gate replaces WW3's meeting-row gating; MeetingEvent is one tolerant record, enums string-backed — the island reads the raw stream through MeetingWire, unaffected).
 - v0 — 2026-10-09 01:40–02:40: Core + app written, WW1 skeleton (2c965119) and C (0280c0a7) merged, three build-B rounds, the UI round
   with evidence under `~/.theuth/briefs/2026-10-09/149-windows/evidence/ww3/`.

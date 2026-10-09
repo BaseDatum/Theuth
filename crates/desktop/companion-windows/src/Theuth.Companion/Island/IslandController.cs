@@ -12,8 +12,8 @@ namespace Theuth.Companion.Island;
 /// "Always show"), the <see cref="MeetingSnapshot"/> reduced from WW1's raw stream hook through <see cref="MeetingWire"/> and
 /// hydrated from the Store's <c>meeting_status</c> + briefs + live on every <c>MeetingRefetched</c>, the D10 visibility timer,
 /// the island-scope actions (<c>meeting_tap / dismiss / deeper / request / cursor / pause / resume / stop</c>), the meeting
-/// global keys (PTT Alt+` held → <c>meeting_ptt(true/false)</c>, eye Alt+Shift+E), and the gate that registers those two rows
-/// only while a meeting is live. Point-and-say borrows the window for its voice mode.
+/// global keys (PTT Alt+` held → <c>meeting_ptt(true/false)</c>, eye Alt+Shift+E; WW1's <c>Hotkeys.Gate</c> registers those two
+/// rows only while <c>Store.MeetingLive</c>). Point-and-say borrows the window for its voice mode.
 /// </summary>
 internal sealed class IslandController : IDisposable
 {
@@ -26,7 +26,6 @@ internal sealed class IslandController : IDisposable
     private MeetingSnapshot snapshot = MeetingSnapshot.Empty;
     private DateTimeOffset? lastTopicOrBrief;
     private string? cursorSent;
-    private bool meetingRowsLive;
     private bool disposed;
 
     public IslandController(Store store, DispatcherQueue dispatcher, SettingsStore settings)
@@ -49,7 +48,6 @@ internal sealed class IslandController : IDisposable
         store.PropertyChanged += OnStoreChanged;
         if (Environment.GetCommandLineArgs().Contains("--island-always")) model.AlwaysShow = true;
         Hydrate();
-        GateMeetingRows();
         if (Environment.GetCommandLineArgs().Contains("--island-fixture")) Fixture();
         Log.Write($"island: installed (frames={model.Frames.Count} always={(model.AlwaysShow ? "on" : "off")} window={Window.Hwnd})");
     }
@@ -116,7 +114,6 @@ internal sealed class IslandController : IDisposable
             cursorSent = cursor;
             _ = store.MeetingCursorAsync(cursor).ContinueWith(t => { if (t.IsFaulted) Log.Write($"island: meeting_cursor failed: {t.Exception?.GetBaseException().Message}"); }, TaskScheduler.Default);
         }
-        if (prev.State != next.State) GateMeetingRows();
         Evaluate();
     }
 
@@ -226,46 +223,6 @@ internal sealed class IslandController : IDisposable
     {
         if (a == KeyAction.MeetingPtt && snapshot.Meeting is not null) Fire(store.MeetingPttAsync(false), "meeting_ptt(false)");
     }
-
-    /// <summary>§8: the PTT and eye rows are global only while a meeting is live — re-applies the table with them unbound otherwise.</summary>
-    public void GateMeetingRows()
-    {
-        bool live = IslandModel.IsLive(snapshot.State);
-        if (live == meetingRowsLive && Surfaces.Current is not null) return;
-        meetingRowsLive = live;
-        if (Surfaces.Current is not { } surfaces) return;
-        var table = store.Keys;
-        if (!live)
-        {
-            table = store.Keys.Clone();
-            table.Set(null, KeyAction.MeetingPtt);
-            table.Set(null, KeyAction.MeetingEye);
-        }
-        surfaces.Hotkeys.Apply(table);
-        Log.Write($"island: meeting keys {(live ? "registered (meeting live)" : "unregistered (no meeting)")}: [{string.Join(", ", surfaces.Hotkeys.Registered.Select(kv => $"{kv.Key.RawValue()}={kv.Value.Symbol}"))}]");
-    }
-
-    /// <summary>
-    /// <c>--island-fixture</c> (149 §10 probes; build-B cannot run a meeting without audio): a recording meeting with two topics,
-    /// an Auto brief and two transcript lines fed through the reducer exactly as the stream would, so the island shows (D10),
-    /// opens, drags and snaps back for the gate. Nothing is sent to the engine; the actions log "fixture" and no-op.
-    /// </summary>
-    private void Fixture()
-    {
-        var now = DateTimeOffset.Now;
-        fixture = true;
-        var s = MeetingReducer.Reduce(MeetingSnapshot.Empty, new MeetingChange.Started("fixture-meeting", "fixture-session"), now - TimeSpan.FromSeconds(751));
-        s = MeetingReducer.Reduce(s, new MeetingChange.TopicAdded("fixture-meeting", new MeetingTopic("t1", "PROJ-12", 600_000)), now);
-        s = MeetingReducer.Reduce(s, new MeetingChange.TopicAdded("fixture-meeting", new MeetingTopic("t2", "Standup", 700_000)), now);
-        s = MeetingReducer.Reduce(s, new MeetingChange.Brief("fixture-meeting", new MeetingBrief("b1", "t1", "PROJ-12 — the ingest retry",
-            new[] { "Opened Tuesday by Sky; retries the ingest job three times before it files an incident", "Blocked on the schema change in PR #418", "Owner: ops desk" }, "Auto", 650_000)), now);
-        s = MeetingReducer.Reduce(s, new MeetingChange.Utterance("fixture-meeting", "System", 740_000, "so the ingest retry is still failing on the schema", false, true, "s2"), now);
-        s = MeetingReducer.Reduce(s, new MeetingChange.Utterance("fixture-meeting", "Mic", 745_000, "yes, PR 418 lands tomorrow", false, true, null), now);
-        Apply(s, new MeetingChange.TopicAdded("fixture-meeting", new MeetingTopic("t2", "Standup", 700_000)));
-        Log.Write("island: fixture meeting applied (recording 12:31, 2 topics, 1 brief, 2 lines)");
-    }
-
-    private bool fixture;
 
     public void Dispose()
     {
