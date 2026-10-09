@@ -11,7 +11,7 @@ namespace Theuth.Companion.Ui;
 
 /// <summary>
 /// W2's composition root (design 134 §4.1–4.5, §5.4–5.5): the hidden host window (class <c>TheuthCompanionRail</c>, the
-/// shell's WM_CLOSE target), the tray icon and its menu, the global hotkeys, the rail and its peek card, the Attention panel
+/// shell's WM_CLOSE target), the tray icon and its menu, the global hotkeys, the pills rail (149 WW2; the W2 strip and peek card are gone), the agents panel, the Attention panel
 /// and the legend — all on the UI thread, all bound to the one <see cref="Store"/>. Started at the W2 line of
 /// <c>App.OnLaunched</c>, before <c>Store.Start()</c> so the first refetch is seen; disposed by <c>App.Quit</c>.
 /// <para>Hooks for the sibling waves: <see cref="PauseRequested"/>, <see cref="LaunchAtLoginToggled"/> /
