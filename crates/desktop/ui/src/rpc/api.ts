@@ -34,6 +34,20 @@ import type { ContextTarget } from '@/rpc/bindings/ContextTarget'
 import type { DictationId } from '@/rpc/bindings/DictationId'
 import type { HelperStatus } from '@/rpc/bindings/HelperStatus'
 import type { DictationState } from '@/rpc/bindings/DictationState'
+import type { DictationOpts } from '@/rpc/bindings/DictationOpts'
+import type { Destination } from '@/rpc/bindings/Destination'
+import type { AppProfile } from '@/rpc/bindings/AppProfile'
+import type { HistoryRow } from '@/rpc/bindings/HistoryRow'
+import type { Entry } from '@/rpc/bindings/Entry'
+import type { EntryId } from '@/rpc/bindings/EntryId'
+import type { Scope } from '@/rpc/bindings/Scope'
+import type { SuggestionId } from '@/rpc/bindings/SuggestionId'
+import type { SuggestionAnswer } from '@/rpc/bindings/SuggestionAnswer'
+import type { InputDevice } from '@/rpc/bindings/InputDevice'
+import type { Surface } from '@/rpc/bindings/Surface'
+import type { Preset } from '@/rpc/bindings/Preset'
+import type { EndPhrases } from '@/rpc/bindings/EndPhrases'
+import type { PolishReply } from '@/rpc/bindings/PolishReply'
 import type { Delivery } from '@/rpc/bindings/Delivery'
 import type { Decision } from '@/rpc/bindings/Decision'
 import type { Gate } from '@/rpc/bindings/Gate'
@@ -247,8 +261,8 @@ import type {
   LoadedPage,
   LoginInfo,
   ProviderInfo,
-  VoiceStatus,
 } from '@/rpc/extra'
+import type { VoiceStatus } from '@/rpc/bindings/VoiceStatus'
 import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 import type { MemoryMode } from '@/rpc/bindings/MemoryMode'
 import type { SessionMemory } from '@/rpc/bindings/SessionMemory'
@@ -359,14 +373,44 @@ export interface Api {
   edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
   /** Load the dictation model if not loaded (54 §4.3); never opens the mic. Answers the current state; `-32001` when voice is disabled. */
   dictation_prewarm(): Promise<ModelState>
-  /** Start dictating (54 §4.3); `DictationStarted`/`DictationText`/`DictationFinished` events carry the id. `sample_rate === null` opens the engine mic (local peers only; a relay peer gets `microphone is on the engine host`); a rate streams this client's mic as mono i16 PCM via `dictation_audio`. Rejects with `already dictating` or model missing. */
-  dictation_start(sample_rate: number | null): Promise<DictationId>
+  /** Start dictating (54 §4.3); `DictationStarted`/`DictationText`/`DictationFinished` events carry the id. `sample_rate === null` opens the engine mic (local peers only; a relay peer gets `microphone is on the engine host`); a rate streams this client's mic as mono i16 PCM via `dictation_audio`. `opts` (153 §14.1) names the surface, destination and slash commands; `null` = Composer, agent prompt. Rejects with `already dictating` or model missing. */
+  dictation_start(sample_rate: number | null, opts: DictationOpts | null): Promise<DictationId>
   /** Push mono little-endian i16 PCM (base64) at the rate given to `dictation_start`; rejects with `not dictating` or `not a remote dictation`. */
   dictation_audio(id: DictationId, pcm: string): Promise<null>
   /** Stop dictation `id`, flushing the open utterance; idempotent. */
   dictation_stop(id: DictationId): Promise<null>
-  /** What is loaded and which dictation (if any) is running (54 §4.3). */
+  /** What is loaded and which dictation (if any) is running (54 §4.3); `input_device` and `last` timings (153 §8.7). */
   dictation_status(): Promise<DictationState>
+  /** 153 §6.1: the text actually sent after dictation `id`; the engine learns single-word corrections and may publish `DictionarySuggestion`. */
+  dictation_correction(id: DictationId, sent_text: string): Promise<null>
+  /** 153 §6.7: the newest `limit` dictations (raw / shaped / polished, timings, audio flag). Local peers only. */
+  dictation_history(limit: number | null): Promise<HistoryRow[]>
+  /** Forget one row and its audio, or everything when `null`. Local peers only. */
+  dictation_history_forget(id: DictationId | null): Promise<null>
+  /** The dictation's audio (one utterance, or all when `null`) as base64 i16 16 kHz; rejects `no audio` when evicted. Local peers only. */
+  dictation_audio_get(id: DictationId, utterance: number | null): Promise<string>
+  /** 153 §5.6: user + learned dictionary entries, optionally one scope. */
+  dictionary_list(scope: Scope | null): Promise<Entry[]>
+  /** Upsert by canonical + scope; answers the stored entry. */
+  dictionary_put(entry: Entry): Promise<Entry>
+  dictionary_delete(id: EntryId): Promise<boolean>
+  /** 153 §6.3 step 4: Add writes a learned entry, Not now a 7-day cooldown, Never a negative. */
+  dictionary_suggestion_answer(id: SuggestionId, answer: SuggestionAnswer): Promise<null>
+  /** 153 §8.1: every microphone the host enumerates, the system default flagged. */
+  list_input_devices(): Promise<InputDevice[]>
+  /** Persist `voice.input_devices` (ordered preference; `[]` = system default only). */
+  set_input_devices(names: string[]): Promise<null>
+  /** 153 §4.5: persist `voice.shape.<surface>`. */
+  set_shape(surface: Surface, preset: Preset): Promise<null>
+  /** 153 §7.2: persist `voice.end_commands`. */
+  set_end_phrases(phrases: EndPhrases): Promise<null>
+  /** 153 §9.2: `voice.polish_model`, `null` = the chain (title model, then the session's). */
+  polish_model(): Promise<ModelInfo | null>
+  set_polish_model(model: string | null): Promise<ModelInfo | null>
+  /** 153 §9: polish `text` for a human reader at `destination`; an agent prompt is refused. `text: null` + `refused` = deliver the shaped text. */
+  polish(text: string, destination: Destination, session: SessionId | null): Promise<PolishReply>
+  /** 153 §13.6: rewrite `selection` per `instruction`; `thread` = earlier (instruction, result) pairs of the same panel. */
+  rewrite(instruction: string, selection: string, app: AppProfile, thread: [string, string][] | null): Promise<PolishReply>
   /** Documents (59 §6.1). `doc_list`: metadata rows, newest first, optionally one kind. */
   doc_list(kind: DocKind | null, limit: number | null): Promise<DocSummary[]>
   /** The document bound to `binding`; a knowledge concept without one is created from its file, an agent's charter from its `agents/<name>.md` body, on demand (59 §7.1). `null` when nothing is bound and nothing can be created. */
@@ -1024,7 +1068,7 @@ export interface Api {
   use_skill(session: SessionId | null, name: string, args: string): Promise<SessionId>
   /** The vision fallback model (52 §3.1), `null` when off; may name a model that is no longer available. */
   vision_model(): Promise<ModelInfo | null>
-  /** Model state, voices and the utterance in flight (43 §6); `-32001` when the voice plugin is disabled. */
+  /** Model state, voices, the utterance in flight (43 §6) and `input_devices` (153 §8.1); `-32001` when the voice plugin is disabled. */
   voice_status(): Promise<VoiceStatus>
   withdraw(session: SessionId, id: InputId): Promise<string>
   // 136 §2.7: the dreaming plugin's nine methods, dotted on the wire (`api['dreaming.status']()`). The actor absent
@@ -1164,10 +1208,18 @@ export const METHODS = [
   'device_revoke',
   'devices_list',
   'dictation_audio',
+  'dictation_audio_get',
+  'dictation_correction',
+  'dictation_history',
+  'dictation_history_forget',
   'dictation_prewarm',
   'dictation_start',
   'dictation_status',
   'dictation_stop',
+  'dictionary_delete',
+  'dictionary_list',
+  'dictionary_put',
+  'dictionary_suggestion_answer',
   'doc_awareness',
   'doc_create',
   'doc_delete',
@@ -1265,6 +1317,7 @@ export const METHODS = [
   'list_agents',
   'list_artifacts',
   'list_aws_profiles',
+  'list_input_devices',
   'list_jobs',
   'list_live_counts',
   'list_logins',
@@ -1349,6 +1402,8 @@ export const METHODS = [
   'peer_deliver',
   'peer_message',
   'pin_session',
+  'polish',
+  'polish_model',
   'promote_answer',
   'pty_input',
   'pty_resize',
@@ -1374,6 +1429,7 @@ export const METHODS = [
   'resume_child',
   'resume_private',
   'resume_turn',
+  'rewrite',
   'sandbox_create',
   'sandbox_desktop_access',
   'sandbox_destroy',
@@ -1428,9 +1484,11 @@ export const METHODS = [
   'set_decision_share',
   'set_decision_training',
   'set_effort',
+  'set_end_phrases',
   'set_escalate_model',
   'set_event_focus',
   'set_harness_option',
+  'set_input_devices',
   'set_max_salvages',
   'set_max_tool_rounds',
   'set_mcp_gate',
@@ -1440,6 +1498,7 @@ export const METHODS = [
   'set_model',
   'set_model_favorite',
   'set_peer_scope',
+  'set_polish_model',
   'set_project_style',
   'set_pty_idle',
   'set_schedule_run_timeout',
@@ -1447,6 +1506,7 @@ export const METHODS = [
   'set_session_memory',
   'set_session_project',
   'set_session_view_bytes',
+  'set_shape',
   'set_stream_idle',
   'set_subagent_model',
   'set_subagent_timeout',
