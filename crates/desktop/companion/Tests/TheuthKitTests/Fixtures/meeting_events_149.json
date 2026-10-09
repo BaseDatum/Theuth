@@ -1,0 +1,132 @@
+[
+  {
+    "type": "Started",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "session": "s-meeting-1",
+    "process": {
+      "pid": 4242,
+      "name": "zoom.us",
+      "bundle_id": "us.zoom.xos",
+      "active": true
+    },
+    "at": "2026-10-09T00:45:00Z"
+  },
+  {
+    "type": "State",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "state": "Recording",
+    "degraded": [
+      "MicNoAec"
+    ]
+  },
+  {
+    "type": "Level",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "mic_rms": 0.12,
+    "system_rms": 0.4
+  },
+  {
+    "type": "Utterance",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "track": "System",
+    "t0_ms": 2500,
+    "t1_ms": 5200,
+    "text": "Revenue is up",
+    "request": false,
+    "final": false
+  },
+  {
+    "type": "Utterance",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "track": "System",
+    "t0_ms": 2500,
+    "t1_ms": 5200,
+    "text": "Revenue is up twelve percent.",
+    "request": false,
+    "final": true,
+    "speaker": "s2"
+  },
+  {
+    "type": "TopicAdded",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "topic": {
+      "id": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e21",
+      "label": "quarterly numbers",
+      "at_ms": 751000,
+      "brief": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e31",
+      "cached": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e31",
+      "source": "Cache"
+    }
+  },
+  {
+    "type": "TopicRemoved",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "topic": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e21",
+    "why": "Viewed"
+  },
+  {
+    "type": "Brief",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "brief": {
+      "id": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e32",
+      "topic": null,
+      "title": "Launch plan",
+      "bullets": [
+        "Nov 3 soft launch"
+      ],
+      "source": "Request",
+      "at_ms": 790000,
+      "parent": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e31"
+    }
+  },
+  {
+    "type": "Listening",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "held": true
+  },
+  {
+    "type": "ApprovalWaiting",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "waiting": true
+  },
+  {
+    "type": "PostProgress",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "stage": "Transcribing",
+    "pct": 40
+  },
+  {
+    "type": "ReviewReady",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10"
+  },
+  {
+    "type": "Summarized",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "title": "Q3 review"
+  },
+  {
+    "type": "Deleted",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10"
+  },
+  {
+    "type": "OracleDeciding",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "batch_id": "00:12:31"
+  },
+  {
+    "type": "OracleDecision",
+    "meeting": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e10",
+    "decision": {
+      "batch_id": "00:12:31",
+      "family": "numbers",
+      "mode": "active",
+      "disposition": "Skip",
+      "stages": [
+        [
+          "gate",
+          0.3
+        ]
+      ]
+    }
+  }
+]

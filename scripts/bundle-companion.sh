@@ -36,6 +36,8 @@ echo "== icons (theuth's own: the Tauri tray glyph and the main app's .icns)"
 ICONS="$ROOT/crates/desktop/icons"
 cp "$ICONS/tray.png" "$ICONS/tray@2x.png" "$APP/Contents/Resources/"
 cp "$ICONS/icon.icns" "$APP/Contents/Resources/AppIcon.icns"
+# 149: the harness glyph set (SVG + 16/20/24/32 PNGs from scripts/render-harness-icons.swift) → Contents/Resources/harness/.
+cp -R "$ROOT/crates/desktop/companion-assets/harness" "$APP/Contents/Resources/harness"
 ICON_KEY="<key>CFBundleIconFile</key><string>AppIcon</string>"
 
 cat > "$APP/Contents/Info.plist" <<EOF
