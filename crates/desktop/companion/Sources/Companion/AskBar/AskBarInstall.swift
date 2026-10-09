@@ -169,7 +169,7 @@ enum AskProbe {
             var o = extra; o["type"] = type; o["session"] = session
             return try! JSONSerialization.data(withJSONObject: o)
         }
-        guard let desk = store.ask.router.deskSession else { return slog("SPEAK skipped: no desk") }
+        guard let desk = try? await store.resolveDesk() else { return slog("SPEAK skipped: no desk (\(store.ask.router.desk))") }
         store.speech.volume = 0
         var speaks: [String] = [], stops: [String] = []
         store.speaker.log = { line in
