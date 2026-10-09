@@ -12,12 +12,12 @@ namespace Theuth.Companion.Rpc;
 //      and records written with the shared snake_case converter (or the spelled-out Word() for positional params);
 //   2. enum-valued fields the companion RECEIVES (events, replies): tolerant — an unknown word (a newer engine's variant)
 //      reads as null through TolerantWordConverter, never throws (149 §10's rule);
-//   3. shapes that round-trip (Entry, EntryScope, EntryVariant: dictionary_list → edit → dictionary_put): the wire word is
+//   3. shapes that round-trip (Entry, Scope, Variant: dictionary_list → edit → dictionary_put): the wire word is
 //      kept as a string, so a word this build does not know survives the round trip unchanged.
-// C# type names that differ from Rust (types only; the wire is unchanged): voice::shape::Action → ShapeAction (System.Action
-// would be ambiguous in every file), dictionary::Kind/Source/Scope/Variant → EntryKinds/EntrySources/EntryScope/
-// EntryVariant, voice::ModelState → VoiceModelState. EntryId, SuggestionId and DictationId are serde-transparent strings
-// (uuid text for the last two) and stay plain strings.
+// C# type names follow the Swift mirrors (H3-CC, TheuthKit/Models.swift `// MARK: 153 — voice`) except: voice::shape::Action →
+// ShapeAction (System.Action would be ambiguous in every file), voice::ModelState → VoiceModelState; EntryKind / EntrySource are
+// the wire words as string constants (Entry keeps them as strings so unknown words round-trip). EntryId, SuggestionId and
+// DictationId are serde-transparent strings (uuid text for the last two) and stay plain strings.
 
 // MARK: enums (voice::Surface · shape::Preset · history::SuggestionAnswer · DeviceState · shape::Action)
 
@@ -25,9 +25,9 @@ namespace Theuth.Companion.Rpc;
 /// Wire: <c>composer</c> · <c>tui</c> · <c>companion</c> · <c>phone</c> · <c>any_app</c>.</summary>
 public enum Surface { Composer, Tui, Companion, Phone, AnyApp }
 
-/// <summary><c>voice::shape::Preset</c> (153 §4.5), <c>voice.shape.&lt;surface&gt;</c>: <c>full</c> · <c>plain</c> (punctuation + literals + numbers, no
+/// <summary><c>voice::shape::Preset</c> (153 §4.5; Swift <c>ShapePreset</c>), <c>voice.shape.&lt;surface&gt;</c>: <c>full</c> · <c>plain</c> (punctuation + literals + numbers, no
 /// dictionary / end commands) · <c>off</c> (raw model text).</summary>
-public enum Preset { Full, Plain, Off }
+public enum ShapePreset { Full, Plain, Off }
 
 /// <summary><c>voice::history::SuggestionAnswer</c> (153 §6.3 step 4): <c>add</c> · <c>not_now</c> (7-day cooldown) · <c>never</c> (a negative).</summary>
 public enum SuggestionAnswer { Add, NotNow, Never }
@@ -53,7 +53,7 @@ public static class WireWords153
     };
 
     /// <summary><c>full</c> · <c>plain</c> · <c>off</c>.</summary>
-    public static string Word(this Preset p) => p switch { Preset.Plain => "plain", Preset.Off => "off", _ => "full" };
+    public static string Word(this ShapePreset p) => p switch { ShapePreset.Plain => "plain", ShapePreset.Off => "off", _ => "full" };
 
     /// <summary><c>add</c> · <c>not_now</c> · <c>never</c>.</summary>
     public static string Word(this SuggestionAnswer a) => a switch { SuggestionAnswer.NotNow => "not_now", SuggestionAnswer.Never => "never", _ => "add" };
@@ -401,7 +401,7 @@ public sealed record PolishReply
 }
 
 /// <summary><c>polish_model()</c> / <c>set_polish_model(model)</c> → <c>Option&lt;agent::ModelInfo&gt;</c> (as <c>title_model</c>): what the
-/// Settings row shows. Only the fields the companion reads.</summary>
+/// Settings row shows — id / name / provider only, as the Swift mirror (the rest of the catalog row is ignored).</summary>
 public sealed record ModelInfo
 {
     /// <summary><c>provider/model</c>.</summary>
@@ -409,15 +409,12 @@ public sealed record ModelInfo
 
     public string Name { get; init; } = "";
     public string Provider { get; init; } = "";
-    public uint Context { get; init; }
-    public bool Reasoning { get; init; }
-    public bool Image { get; init; }
 }
 
 // MARK: dictionary (voice/src/dictionary/mod.rs Entry, Scope, Variant; Kind and Source as their words)
 
 /// <summary><c>voice::dictionary::Kind</c> wire words (kept as strings on <see cref="Entry.Kind"/> so unknown words round-trip).</summary>
-public static class EntryKinds
+public static class EntryKind
 {
     public const string Term = "term";
     public const string Symbol = "symbol";
@@ -429,7 +426,7 @@ public static class EntryKinds
 }
 
 /// <summary><c>voice::dictionary::Source</c> wire words: <c>packaged</c> (shipped) · <c>user</c> (Settings / <c>dictionary_put</c>) · <c>learned</c> (§6.3 Add).</summary>
-public static class EntrySources
+public static class EntrySource
 {
     public const string Packaged = "packaged";
     public const string User = "user";
@@ -439,11 +436,13 @@ public static class EntrySources
 /// <summary>
 /// <c>voice::dictionary::Scope</c>, <c>#[serde(tag = "scope", rename_all = "snake_case")]</c> with named fields (153-C):
 /// <c>{"scope":"global"}</c> · <c>{"scope":"surface","surface":"companion"}</c> · <c>{"scope":"app","app":"Code.exe"}</c>. Also
-/// <c>dictionary_list</c>'s optional filter.
+/// <c>dictionary_list</c>'s optional filter. The tag is <see cref="Kind"/> here (a C# member cannot share its type's name).
 /// </summary>
-public sealed record EntryScope
+public sealed record Scope
 {
-    public string Scope { get; init; } = "global";
+    /// <summary>The tag word: <c>global</c> · <c>surface</c> · <c>app</c>.</summary>
+    [JsonPropertyName("scope")]
+    public string Kind { get; init; } = "global";
 
     /// <summary><c>surface</c> scope only: the surface word.</summary>
     [JsonPropertyName("surface")]
@@ -452,16 +451,16 @@ public sealed record EntryScope
     /// <summary><c>app</c> scope only: <c>AppProfile.id</c>.</summary>
     public string? App { get; init; }
 
-    public static EntryScope Global { get; } = new();
+    public static Scope Global { get; } = new();
 
-    public static EntryScope ForSurface(Surface surface) => new() { Scope = "surface", SurfaceWord = surface.Word() };
+    public static Scope ForSurface(Surface surface) => new() { Kind = "surface", SurfaceWord = surface.Word() };
 
-    public static EntryScope ForApp(string app) => new() { Scope = "app", App = app };
+    public static Scope ForApp(string app) => new() { Kind = "app", App = app };
 }
 
 /// <summary><c>voice::dictionary::Variant</c>: one heard form with its Double Metaphone pair (Rust <c>(String, String)</c>, a
 /// two-element array; send <c>["",""]</c> and the engine computes it) and usage counts.</summary>
-public sealed record EntryVariant
+public sealed record Variant
 {
     public string Heard { get; init; } = "";
 
@@ -485,20 +484,20 @@ public sealed record Entry
     /// <summary>The written form; its casing wins.</summary>
     public string Canonical { get; init; } = "";
 
-    /// <summary>A <see cref="EntryKinds"/> word.</summary>
-    public string Kind { get; init; } = EntryKinds.Term;
+    /// <summary>A <see cref="EntryKind"/> word.</summary>
+    public string Kind { get; init; } = EntryKind.Term;
 
     /// <summary>Spoken forms (exact lookups).</summary>
     [JsonConverter(typeof(NullAsEmptyListConverter<string>))]
     public ValueList<string> Spoken { get; init; } = new();
 
-    [JsonConverter(typeof(NullAsEmptyListConverter<EntryVariant>))]
-    public ValueList<EntryVariant> Variants { get; init; } = new();
+    [JsonConverter(typeof(NullAsEmptyListConverter<Variant>))]
+    public ValueList<Variant> Variants { get; init; } = new();
 
-    public EntryScope Scope { get; init; } = EntryScope.Global;
+    public Scope Scope { get; init; } = Scope.Global;
 
-    /// <summary>An <see cref="EntrySources"/> word.</summary>
-    public string Source { get; init; } = EntrySources.User;
+    /// <summary>An <see cref="EntrySource"/> word.</summary>
+    public string Source { get; init; } = EntrySource.User;
 
     /// <summary><c>tld</c>, <c>ext</c>, <c>mention</c>, <c>path</c>, <c>terminal</c>, <c>keep_case</c> …</summary>
     [JsonConverter(typeof(NullAsEmptyListConverter<string>))]

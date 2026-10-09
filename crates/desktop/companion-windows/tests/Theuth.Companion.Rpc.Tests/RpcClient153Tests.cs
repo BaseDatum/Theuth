@@ -58,8 +58,8 @@ public sealed class RpcClient153Tests
         Assert.Equal("AAAA", await B(client.DictationAudioGetAsync("d1", 0)));
         Assert.Equal("AAAA", await B(client.DictationAudioGetAsync("d1", null)));
         Assert.Equal("learned", (await B(client.DictionaryListAsync()))[0].Source);
-        Assert.Single(await B(client.DictionaryListAsync(EntryScope.ForSurface(Surface.Companion))));
-        var put = await B(client.DictionaryPutAsync(new Entry { Canonical = "Parakeet TDT", Variants = ValueList.Of(new EntryVariant { Heard = "parakeet tee dee tee" }) }));
+        Assert.Single(await B(client.DictionaryListAsync(Scope.ForSurface(Surface.Companion))));
+        var put = await B(client.DictionaryPutAsync(new Entry { Canonical = "Parakeet TDT", Variants = ValueList.Of(new Variant { Heard = "parakeet tee dee tee" }) }));
         Assert.Equal("e1", put.Id);
         Assert.True(await B(client.DictionaryDeleteAsync("e1")));
         await B(client.DictionarySuggestionAnswerAsync("s-1", SuggestionAnswer.NotNow));
@@ -67,7 +67,7 @@ public sealed class RpcClient153Tests
         Assert.True((await B(client.ListInputDevicesAsync()))[0].Default);
         await B(client.SetInputDevicesAsync(new[] { "Shure MV7", "Microphone Array (Realtek)" }));
         await B(client.SetInputDevicesAsync(Array.Empty<string>()));
-        await B(client.SetShapeAsync(Surface.Companion, Preset.Plain));
+        await B(client.SetShapeAsync(Surface.Companion, ShapePreset.Plain));
         await B(client.SetEndPhrasesAsync(new EndPhrases { Send = ValueList.Of("send it", "ship it") }));
         Assert.Null(await B(client.PolishModelAsync()));
         Assert.Equal("GPT-5.6 mini", (await B(client.SetPolishModelAsync("openai/gpt-5.6-mini")))!.Name);

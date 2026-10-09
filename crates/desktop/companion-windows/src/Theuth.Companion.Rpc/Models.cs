@@ -643,6 +643,13 @@ public sealed record DictationEvent
     /// into <see cref="Shaped"/>), raw so a newer word never throws — <see cref="WireWords153.ParseAction"/> types them.</summary>
     public ValueList<string>? Actions { get; init; }
 
+    /// <summary>153 §8.2 (<c>DictationDevice</c> through the same wire, as Swift's <c>DictationWire</c>): the device now open; null when lost.</summary>
+    public string? Device { get; init; }
+
+    /// <summary>153 §8.2: <c>changed</c> · <c>lost</c> on a <c>DictationDevice</c> item; null otherwise or for an unknown word.</summary>
+    [JsonConverter(typeof(TolerantWordConverter<DeviceState>))]
+    public DeviceState? State { get; init; }
+
     /// <summary>What a companion field shows for this piece: <see cref="Shaped"/> when the engine sent it (even empty), else <see cref="Text"/>.</summary>
     [JsonIgnore] public string? DisplayText => Shaped ?? Text;
 
