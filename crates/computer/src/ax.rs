@@ -459,7 +459,14 @@ mod windows_uia {
             let top = self.top_window(&el);
             let window_level =
                 ct == UIA_WindowControlTypeId.0 || top.as_ref().is_some_and(|w| self.same(w, &el));
-            let front = pid.map(|pid| self.front_of(pid, top.as_ref()));
+            // The app is the top-level window's process: web content belongs to a
+            // WebView2/Chromium child process (`msedgewebview2`), the window to the app.
+            let owner = top
+                .as_ref()
+                // SAFETY: live element.
+                .and_then(|w| unsafe { w.CurrentProcessId() }.ok().filter(|p| *p > 0))
+                .or(pid);
+            let front = owner.map(|pid| self.front_of(pid, top.as_ref()));
             let element = (!window_level).then(|| element_of(&el, ct));
             Some(AxHit { element, front })
         }
