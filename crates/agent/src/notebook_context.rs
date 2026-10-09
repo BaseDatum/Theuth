@@ -625,8 +625,7 @@ pub async fn estimate(
         Some(s) => pins(agents, s).await?,
         None => Pins::new(),
     };
-    let (_, _, mut items) =
-        notebooks::fetch(None, session.unwrap_or_else(SessionId::new), notebook).await?;
+    let (_, _, mut items) = notebooks::fetch(None, session.unwrap_or_default(), notebook).await?;
     let sessions: Vec<(usize, SessionId)> = items
         .iter()
         .enumerate()

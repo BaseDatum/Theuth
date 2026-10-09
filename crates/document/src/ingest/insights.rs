@@ -472,13 +472,17 @@ pub fn has_section(markdown: &str, heading: &str) -> bool {
     markdown.lines().any(|l| l.starts_with(&prefix))
 }
 
-/// The source's own text: everything before its `## Insights` heading.
+/// The source's own text: everything before its `## Insights` heading (and the heading's `<!-- id -->` line
+/// when the markdown is annotated).
 pub fn strip_insights(markdown: &str) -> &str {
     let mut at = 0;
+    let mut prev_comment: Option<usize> = None;
     for line in markdown.split_inclusive('\n') {
-        if line.trim_end() == "## Insights" {
-            return markdown[..at].trim_end();
+        let t = line.trim_end();
+        if t == "## Insights" {
+            return markdown[..prev_comment.unwrap_or(at)].trim_end();
         }
+        prev_comment = t.starts_with("<!-- ").then_some(at);
         at += line.len();
     }
     markdown

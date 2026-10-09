@@ -93,11 +93,14 @@ async fn session_context_rows_round_trip_per_session() {
         .unwrap();
     store.context_set(a, "N1", "note", "off").await.unwrap();
     store.context_set(b, "S1", "source", "full").await.unwrap();
+    // Two rows written in the same millisecond order by item; compare sorted.
+    let mut rows = store.context_get(a).await.unwrap();
+    rows.sort();
     assert_eq!(
-        store.context_get(a).await.unwrap(),
+        rows,
         vec![
-            ("S1".to_owned(), "source".to_owned(), "summary".to_owned()),
             ("N1".to_owned(), "note".to_owned(), "off".to_owned()),
+            ("S1".to_owned(), "source".to_owned(), "summary".to_owned()),
         ]
     );
     // Overwrite keeps one row per (session, item); the other session is untouched.

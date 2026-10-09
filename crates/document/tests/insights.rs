@@ -126,21 +126,27 @@ async fn start(data_dir: &Path, bin: &Path, cfg: NotebooksConfig) -> Rig {
     let collector = Collector::spawn(Collector(events.clone()));
     rt.subscribe::<Collector, SourceEvent>(&collector).await;
     IngestActor::start_with(&rt, store.clone(), docs.clone(), cfg).unwrap();
-    let notebook = DocId::new();
-    store
-        .notebook_upsert(&store::NotebookRow {
-            id: notebook.clone(),
-            project: None,
-            archived_ms: None,
-        })
-        .await
-        .unwrap();
+    let notebook = new_notebook(&docs, "DR").await;
     Rig {
         docs,
         store,
         notebook,
         events,
     }
+}
+
+/// A real `DocKind::Notebook` document + row (`notebooks_of` joins `docs`).
+async fn new_notebook(docs: &ActorRef<DocumentActor>, title: &str) -> DocId {
+    docs.ask(document::NotebookCreate {
+        title: title.into(),
+        description: String::new(),
+        project: None,
+        by: OWNER,
+    })
+    .await
+    .unwrap()
+    .doc
+    .id
 }
 
 const OWNER: Principal = Principal::Owner { device: None };
@@ -330,9 +336,10 @@ async fn insight_run_builtin_and_skill_then_promote_to_a_note() {
     );
     let (heading, body) = section_of(&annotated, &toc.block).unwrap();
     assert!(heading.starts_with("Table of contents · mock/model · 20"));
+    // The helper round-trips list bullets as `*`.
     assert_eq!(
         body,
-        "Summary of: Table of contents: the document's structure as a nested list with one line per section\n\n- point"
+        "Summary of: Table of contents: the document's structure as a nested list with one line per section\n\n* point"
     );
     let call = CALLS.lock().last().cloned().unwrap();
     assert_eq!(call.model.as_deref(), Some("cheap/model"));
@@ -407,13 +414,19 @@ async fn insight_run_builtin_and_skill_then_promote_to_a_note() {
         "{note_md}"
     );
     assert!(note_md.contains("Summary of: Table of contents"));
-    let trailer = format!(
-        "*From [Failover notes](theuth://sources/{id}#{})",
-        toc.block
-    );
-    assert!(note_md.contains(&trailer), "{note_md}");
+    // The trailer survives the import (BlockNote splits the emphasis around the link, as Z recorded for
+    // W3's provenance line): the href, the model and the date are on the last line.
+    let last = note_md.trim_end().lines().last().unwrap();
+    assert!(last.starts_with("*From"), "{note_md}");
     assert!(
-        note_md.trim_end().ends_with("· mock/model · 20") || note_md.contains("· mock/model · 20"),
+        last.contains(&format!(
+            "[Failover notes](theuth://sources/{id}#{})",
+            toc.block
+        )),
+        "{note_md}"
+    );
+    assert!(
+        last.contains("· mock/model · 20") && last.ends_with('*'),
         "{note_md}"
     );
     let items = rig.store.items(&rig.notebook).await.unwrap();
@@ -425,15 +438,7 @@ async fn insight_run_builtin_and_skill_then_promote_to_a_note() {
     );
 
     // An explicit notebook files it there (and only there); an unknown block is refused.
-    let other = DocId::new();
-    rig.store
-        .notebook_upsert(&store::NotebookRow {
-            id: other.clone(),
-            project: None,
-            archived_ms: None,
-        })
-        .await
-        .unwrap();
+    let other = new_notebook(&rig.docs, "Other").await;
     let note2 = insights::insight_promote(
         &rig.docs,
         id.clone(),
