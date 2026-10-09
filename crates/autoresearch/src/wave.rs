@@ -706,9 +706,20 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
             tracing::warn!(%slug, k, "candidate worktree not removed: {e}");
         }
     }
+    let sigma_before = study.sigma;
     study.sigma = Some(actor::segment_sigma(env, &study).await?);
     env.store.update_study(&study).await?;
     promotion.incumbent = study.incumbent_sha.clone();
+    // §5.3 Revision 2: the last promoted keep is judged against the σ the wave was measured under.
+    if let Some(n) = promotion.promoted.last()
+        && let Some(exp) = env.store.get_experiment(slug, *n).await?
+    {
+        let before = StudyRecord {
+            sigma: sigma_before,
+            ..study.clone()
+        };
+        actor::regime_segment(env, &before, &exp).await;
+    }
     env.store
         .append_event(
             slug,
