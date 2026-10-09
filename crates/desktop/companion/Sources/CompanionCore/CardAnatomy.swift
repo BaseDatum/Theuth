@@ -59,8 +59,76 @@ public struct CardAnatomy: Equatable, Sendable {
     /// "just now" under 45 s, then `RailModel.ago`.
     public static let justNow: TimeInterval = 45
 
+    /// Bubble texts are capped here too (E6 caps at 160; the interim pair is not).
+    public static let bubbleChars = 160
+
     public static func make(card: Card, position: Int, count: Int, glance: String, activity: AgentInfo?, session: SessionSummary?,
                             now: Date) -> CardAnatomy {
-        fatalError("149 W1")
+        let item = card.item
+        let age = now.timeIntervalSince(item.waitingSince) < justNow ? "just now" : RailModel.ago(item.waitingSince, now)
+        // Revision 1 row 6: project first (`AgentInfo.project`, then `cwd`'s last component), the harness as the icon,
+        // the harness key as text only when no project is known (§12.1 item 6).
+        let harnessRaw = activity?.agent ?? session?.agent
+        let cwdLeaf = session?.cwd.flatMap { c -> String? in
+            let leaf = c.split(separator: "/").last.map(String.init)
+            return leaf?.isEmpty == false ? leaf : nil
+        }
+        let project = activity?.project.flatMap { $0.isEmpty ? nil : $0 } ?? session?.project.flatMap { $0.isEmpty ? nil : $0 } ?? cwdLeaf ?? harnessRaw
+        let status = StatusLine(harness: AgentsModel.harnessKey(harnessRaw), state: state(item.kind, activity: activity), age: age, project: project)
+
+        // D4: E6's pair when present, else the interim `SessionSummary.title` + `AgentInfo.last`; never both halves missing.
+        var bubbles: [Bubble] = []
+        if let c = item.context {
+            if let r = clip(c.request) { bubbles.append(Bubble(side: .user, text: r)) }
+            if let l = clip(c.lastReply) { bubbles.append(Bubble(side: .agent, text: l)) }
+        } else {
+            if let t = clip(session?.title) { bubbles.append(Bubble(side: .user, text: t)) }
+            if let l = clip(activity?.last) { bubbles.append(Bubble(side: .agent, text: l)) }
+        }
+
+        var footer: [FooterVerb] = []
+        if card.replyAction("") != nil { footer += [.reply, .talk] }
+        if item.session != nil { footer.append(.point) }
+        // D5 / Revision 1 row 2: Stop only on a needs-you card whose agent runs or waits; a Finished item is a clean end_turn.
+        if item.session != nil, Self.stoppableKinds.contains(item.kind), let a = activity, isRunningOrWaiting(a.state) { footer.append(.stop) }
+        if card.clearable { footer.append(.clear) }
+        if item.kind.needsYou { footer.append(.snooze) }
+        footer.append(.legend)
+
+        return CardAnatomy(header: Header(name: card.who, position: position, count: count, glance: glance), status: status,
+                           bubbles: bubbles, options: card.options, footer: footer, ifWrong: card.ifWrong)
+    }
+
+    /// Revision 1 row 2: ask · approval · blocked · decision (· review in flight) — never finished.
+    public static let stoppableKinds: Set<AttentionKind> = [.ask, .approval, .blocked, .decision, .review]
+
+    static func isRunningOrWaiting(_ s: AgentState) -> Bool {
+        switch s {
+        case .running, .awaiting, .approval: return true
+        case .idle, .error, .cancelled: return false
+        }
+    }
+
+    private static func clip(_ s: String?) -> String? {
+        guard let s = s?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+        return s.count > bubbleChars ? String(s.prefix(bubbleChars - 1)) + "…" : s
+    }
+
+    /// `‹state›` (Revision 1 row 6): the kind's wait, "Stopped" after a cancel (§5.4 B).
+    private static func state(_ kind: AttentionKind, activity: AgentInfo?) -> String {
+        if activity?.state == .cancelled { return "Stopped" }
+        switch kind {
+        case .finished: return "Finished"
+        case .ask: return "Waiting for your answer"
+        case .approval: return "Waiting for approval"
+        case .decision: return "Waiting for a decision"
+        case .review: return "Waiting for review"
+        case .blocked: return "Blocked"
+        case .hire: return "Proposed"
+        case .budget: return "Over budget"
+        case .resume: return "Ready to resume"
+        case .show: return "Shown"
+        case .node, .handoff, .secret, .other: return "Needs you"
+        }
     }
 }
