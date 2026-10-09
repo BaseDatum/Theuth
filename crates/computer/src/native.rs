@@ -454,13 +454,53 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    /// Live `pwsh` (or Windows PowerShell), no app launched (153-C2 hand-off: the
+    /// Windows twin of `applescript_returns_result_line`).
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_returns_stdout() {
+        let out = PowerShellTool
+            .call(
+                PowerShellArgs {
+                    script: "Write-Output hello".into(),
+                    timeout_secs: Some(30),
+                    purpose: Some("checking: echo".into()),
+                },
+                cx(),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.starts_with("hello"), "{}", out.content);
+        assert!(out.content.contains("exit 0 · "), "{}", out.content);
+    }
+
+    /// A non-zero exit is an error result carrying the exit code.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_nonzero_exit_is_error() {
+        let out = PowerShellTool
+            .call(
+                PowerShellArgs {
+                    script: "exit 3".into(),
+                    timeout_secs: Some(30),
+                    purpose: None,
+                },
+                cx(),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("exit 3"), "{}", out.content);
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
     fn cx() -> ToolCx {
         ToolCx {
             session: runtime::SessionId::new(),
             call_id: "1".into(),
             quiet: false,
-            resources: tools::SessionResources::durable_arc(std::path::Path::new("/tmp")),
+            resources: tools::SessionResources::durable_arc(&std::env::temp_dir()),
             cancel: tools::CancellationToken::new(),
             promote_after: None,
         }
