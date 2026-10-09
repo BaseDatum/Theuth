@@ -209,6 +209,9 @@ internal sealed partial class SettingsWindow : Window
         Caption(page, model.Value.RailPresence == RailPresence.AlwaysSliver
             ? "The rail stays a 4 px sliver; the tray icon's count is the indicator. Hover the sliver to see it."
             : "Sliver when quiet: 4 px after 8 s with nothing needing you and nothing working; hover reveals it.");
+        // 149 §3.8 (recheck N4): the escape hatch — off = the pre-149 single strip, applied live.
+        Toggle(page, "Separate pills", "settings-rail-pills", model.Value.RailPills, on => model.Update(s => s.RailPills = on));
+        Caption(page, "On: four pills — inbox, agents, actions, more. Off: the one 26 px strip from before (marks only; the Ask bar and point-and-say stay on their keys).");
         Caption(page, "Side and display apply on the next layout; the rail never takes focus.");
     }
 
@@ -389,7 +392,7 @@ internal sealed partial class SettingsWindow : Window
         var row = new Grid { ColumnSpacing = 12 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var l = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center };
+        var l = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap }; // 149 recheck N4: a long label wraps, never clips
         Grid.SetColumn(l, 0);
         var combo = new ComboBox { MinWidth = 180 };
         AutomationProperties.SetAutomationId(combo, id);

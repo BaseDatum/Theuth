@@ -74,9 +74,11 @@ public static class RailPillsModel
     public static double WindowWidth => PillWidth + 2 * Margin;
 
     /// <summary>
-    /// Pills from the rail (<see cref="RailModel.Derive"/> unchanged): one dot per agent — gold when an item needs you for that
-    /// session (a needs-you mark and an agent mark of one session fold into one gold dot), spinner when working, hollow when
-    /// <paramref name="remoteSessions"/> owns it. Needs-you first, then the agent zone's order.
+    /// Pills from the rail (<see cref="RailModel.Derive"/> unchanged): one dot per agent / live session — gold when an item
+    /// needs you for that session (a needs-you mark and an agent mark of one session fold into one gold dot), spinner when
+    /// working, hollow when <paramref name="remoteSessions"/> owns it. Needs-you first, then the agent zone's order.
+    /// <para>149 recheck N2 (§3.1): a needs-you item with no session (a hire proposal, a seeded or engine-level item) is not an
+    /// agent — it counts in the inbox badge only, never as a dot; the Mac's <c>RailPills.derive</c> still carries every mark.</para>
     /// </summary>
     public static RailPills Derive(Rail rail, bool connected, bool recording, IReadOnlyList<float>? levels,
         string? hovered = null, IReadOnlySet<string>? remoteSessions = null)
@@ -85,7 +87,8 @@ public static class RailPillsModel
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var m in rail.NeedsYou)
         {
-            if (m.Session is { } s && !seen.Add(s)) continue;
+            if (m.Session is not { } s) continue; // inbox only (N2)
+            if (!seen.Add(s)) continue;
             dots.Add(new AgentDot(m.Id, m.State, m.Label, m.Detail, m.Session, false));
         }
         foreach (var m in rail.Agents)

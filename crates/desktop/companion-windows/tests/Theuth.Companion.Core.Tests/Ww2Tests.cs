@@ -79,6 +79,29 @@ public sealed class RailPillsModelTests
     }
 
     [Fact]
+    public void ANeedsYouItemWithoutASessionCountsInTheInboxOnly()
+    {
+        // 149 recheck N2 (§3.1): three seeded items with no session and one desk — the pill showed four marks, the agents panel one row.
+        var seeded = new[]
+        {
+            CoreFx.Item("seed:1", AttentionKind.Decision, agent: "seed", session: null),
+            CoreFx.Item("seed:2", AttentionKind.Blocked, agent: "seed", session: null),
+            CoreFx.Item("seed:3", AttentionKind.Hire, agent: "seed", session: null),
+        };
+        var rail = RailModel.Derive(seeded, Array.Empty<AgentSummary>(), new[] { Ww2Fx.Live("s-desk", AgentState.Idle) }, Ww2Fx.T0);
+        var p = RailPillsModel.Derive(rail, true, false, null);
+        Assert.Equal(3, p.InboxCount);
+        Assert.True(p.InboxGold);
+        Assert.Equal(new[] { "session:s-desk" }, p.Dots.Select(d => d.Id));
+        Assert.Equal(0, p.Overflow);
+        Assert.Equal("Agents, 1", RailPillsModel.Describe(RailPillKind.Agents, p));
+        // A needs-you item joined to a session is still a gold dot.
+        var joined = RailPillsModel.Derive(RailOf(CoreFx.Item("ask:1", AttentionKind.Ask, agent: "w1", session: "s-ask")), true, false, null);
+        Assert.Equal("ask:1", joined.Dots[0].Id);
+        Assert.True(joined.Dots[0].Gold);
+    }
+
+    [Fact]
     public void ANeedsYouItemAndItsRunningSessionFoldIntoOneGoldDot()
     {
         // The ask came from s-run: the rail has a needs-you mark AND an agent mark for it; the pill shows one gold dot.
