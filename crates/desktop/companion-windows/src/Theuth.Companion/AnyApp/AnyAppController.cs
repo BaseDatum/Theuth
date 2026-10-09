@@ -518,6 +518,15 @@ internal sealed class AnyAppController
         Counters.Direct++;
         if (verdict == PasteVerdict.Landed) { Counters.Landed++; return verdict; }
         g.FellBack = true;
+        if (verdict == PasteVerdict.UserActed)
+        {
+            // We typed into the field and it changed without our words: the typing was mangled (the XAML/TSF race), not the user —
+            // keep the words on the card instead of a ✓ over garbage; later utterances take the lease.
+            Counters.Count(verdict);
+            Log.Write("anyapp: the typed run did not read back as our words — the words go to the card, the lease takes the rest");
+            Fail(g, DeliveryFailure.PasteNotLanded, text, "typed text did not read back — check the field", canRetry: true);
+            return verdict;
+        }
         if (verdict != PasteVerdict.NotLanded) { Counters.Count(verdict); return verdict; }
         Log.Write("anyapp: the read-back did not see the words — the lease takes this and every later utterance (W-m)");
         return await LeaseAsync(g, text);

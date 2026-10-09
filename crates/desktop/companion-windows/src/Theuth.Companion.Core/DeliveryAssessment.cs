@@ -176,7 +176,7 @@ public enum DeliveryFailure
 public static class DeliveryAssessment
 {
     /// <summary>§13.2 (Windows): direct insertion is SendInput KEYEVENTF_UNICODE for at most this many characters per utterance.</summary>
-    public const int DirectMaxChars = 200;
+    public const int DirectMaxChars = 60; // Windows: §13.2 says 200; a paced 107-char run garbled in Win11 Notepad (live round 4) — longer text takes the lease
 
     /// <summary>§13.8: more than this many characters in one gesture go to the card instead.</summary>
     public const int MaxGestureChars = 20_000;

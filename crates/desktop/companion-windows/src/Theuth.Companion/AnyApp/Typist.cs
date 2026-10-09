@@ -23,7 +23,7 @@ internal static class Typist
     /// <summary>The pause between characters of a direct insertion. Measured on build-B: a batch of KEYEVENTF_UNICODE events into Win11
     /// Notepad (a XAML/TSF text surface) keeps the first few characters and turns every later one into the batch's LAST character, because
     /// the surface reads the packet character after the next one was injected — so characters go one per SendInput, paced.</summary>
-    public const int CharDelayMs = 8;
+    public const int CharDelayMs = 15; // 8 ms still garbled a 107-char run in Win11 Notepad (live round 4)
 
     /// <summary>
     /// §13.2: type <paramref name="text"/> with KEYEVENTF_UNICODE, one character (a surrogate pair stays together) per SendInput, paced by
