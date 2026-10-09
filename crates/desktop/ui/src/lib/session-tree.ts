@@ -15,6 +15,12 @@ export const live = (state: AgentState['state']): boolean => state === 'running'
 /** 125 §8.5: the hidden advisor child is never a tree row, a strip dot or a live session — the engine hides it; this is the belt. */
 export const notAdvisor = (r: { kind?: SessionKind }): boolean => r.kind !== 'advisor'
 
+/**
+ * 140 §13 Revision 2: an autoresearch study session (the schedule's session, titled with the schedule name
+ * `autoresearch-<slug>`) is reached from the Study view, never listed among the chats; its wave children hang under it.
+ */
+export const notStudy = (r: { title: string }): boolean => !r.title.startsWith('autoresearch-')
+
 /** 141 §3: the tag a watch-only child's row carries — which feed describes it. */
 export const sourceTag = (o: Pick<ObservedMeta, 'source'>): 'omp task' | 'opencode' | 'ACP' =>
   o.source === 'omp_task' ? 'omp task' : o.source === 'rfd' ? 'ACP' : 'opencode'

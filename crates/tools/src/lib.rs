@@ -40,6 +40,7 @@ pub mod registry;
 pub mod reminder;
 pub mod resources;
 mod schema;
+pub mod seat;
 pub mod secrets;
 pub mod shell;
 
@@ -90,6 +91,7 @@ pub use reminder::{
 };
 pub use resources::{CloseAck, CloseTree, TreeOpened};
 pub use resources::{Retention, SessionResources};
+pub use seat::Seat;
 /// 145 §0.5: the cancellation token every [`ToolCx`] carries, re-exported so
 /// crates that build a `ToolCx` need no `tokio-util` dependency of their own.
 pub use tokio_util::sync::CancellationToken;

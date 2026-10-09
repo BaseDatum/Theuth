@@ -527,9 +527,8 @@ impl Ctx<'_> {
                         .to_owned(),
                 );
                 self.store
-                    .get_segment(&self.study.slug, self.study.segment)
+                    .base_mean(&self.study.slug)
                     .await?
-                    .and_then(|s| s.baseline_mean)
                     .unwrap_or(f64::NAN)
             }
         };
@@ -641,21 +640,14 @@ impl Ctx<'_> {
             Effect::parse(&self.spec.metric.min_effect).unwrap_or(Effect::Absolute(0.0));
         let by_n: BTreeMap<u32, &ExperimentRecord> = kept.iter().map(|e| (e.n, e)).collect();
         let mut not_alone = Vec::new();
-        // Both changeset columns read like the headline: the raw relative change, negative
-        // for a lower-is-better win. The ledger's per-experiment `delta_pct` is
-        // direction-normalised (positive = better), so flip it for `lower` (140-P live:
-        // alone −99.6 % beside together +99.6 %).
-        let raw_sign = match self.spec.metric.direction {
-            Direction::Lower => -1.0,
-            Direction::Higher => 1.0,
-        };
+        // Both changeset columns read like the headline and the ledger's per-experiment
+        // `delta_pct`: the raw relative change, negative for a lower-is-better win (Revision 2).
         for c in &mut cs {
             c.delta_together_pct = Some(
-                raw_sign
-                    * c.experiments
-                        .iter()
-                        .filter_map(|n| by_n.get(n).and_then(|e| e.delta_pct))
-                        .sum::<f64>(),
+                c.experiments
+                    .iter()
+                    .filter_map(|n| by_n.get(n).and_then(|e| e.delta_pct))
+                    .sum::<f64>(),
             );
             c.review = c
                 .experiments

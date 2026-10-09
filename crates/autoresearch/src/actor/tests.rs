@@ -93,11 +93,13 @@ impl Fake {
         *f.values.lock() = v.iter().copied().collect();
         Arc::new(f)
     }
-    fn decide(&self, verdict: Verdict, delta_pct: f64, z: f64) {
+    /// `delta` is direction-normalised (the harness studies are lower-is-better), so the
+    /// raw `delta_pct` of a win reads negative (Revision 2).
+    fn decide(&self, verdict: Verdict, delta: f64, z: f64) {
         *self.decide.lock() = Some(GateStep::Decide {
             verdict,
-            delta: delta_pct,
-            delta_pct,
+            delta,
+            delta_pct: -delta,
             z: Some(z),
         });
     }
@@ -120,7 +122,12 @@ impl Backend for Fake {
         base_sha: &str,
     ) -> Result<String> {
         std::fs::create_dir_all(worktree)?;
-        Ok(base_sha.to_owned())
+        // `include_dirty`: the real one commits a `base snapshot` and returns its sha.
+        Ok(if *self.include_dirty.lock() == Some(true) {
+            "snapshot".to_owned()
+        } else {
+            base_sha.to_owned()
+        })
     }
     fn worktree_remove(&self, _: &Path, _: &Path) -> Result<()> {
         Ok(())
@@ -355,12 +362,30 @@ impl Backend for Fake {
             base_mean: 100.0,
             final_mean: study.incumbent_mean.unwrap_or(100.0),
             delta_pct: -10.0,
+            holdout: Some("5 → 4 (−20.0 %)".into()),
             ..Headline::default()
         };
-        // W2 records the report step; the actor's §11.3 turn reads it back.
+        // W2 records the changesets and the report steps; the actor's §11.3 turn, the
+        // result card and `StudyDetail.changesets` read them back (140-P).
         let rows = store.list_experiments(&study.slug, None, u32::MAX).await?;
-        let report =
-            crate::finalize::assemble(study, reason, headline.clone(), vec![], &rows, vec![]);
+        let cs = vec![Changeset {
+            k: 1,
+            name: "a".into(),
+            branch: format!("autoresearch/{}+1-a", study.slug),
+            files: vec!["a".into()],
+            experiments: vec![1],
+            delta_alone_pct: Some(-10.0),
+            delta_together_pct: Some(-10.0),
+            ..Changeset::default()
+        }];
+        store
+            .append_event(
+                &study.slug,
+                crate::finalize::EVENT,
+                &serde_json::json!({ "step": "changesets", "changesets": cs, "notes": [] }),
+            )
+            .await?;
+        let report = crate::finalize::assemble(study, reason, headline.clone(), cs, &rows, vec![]);
         let doc = self.doc.lock().clone();
         store
             .append_event(
@@ -455,7 +480,8 @@ async fn wait_state(store: &Store, slug: &str, pred: impl Fn(&StudyState) -> boo
     panic!("study `{slug}` never reached the state");
 }
 
-/// Create, wait for `running`, bind a session (§8.2) and return it.
+/// Create, wait for `running`, bind a session (§8.2) and return it, seated as
+/// the schedule's fire seats it (F4E: the worktree is the write root).
 async fn started(h: &mut Harness, slug: &str, experiments: u32) -> SessionId {
     let origin = SessionId::new();
     let sp = spec(h, slug, experiments);
@@ -475,6 +501,19 @@ async fn started(h: &mut Harness, slug: &str, experiments: u32) -> SessionId {
     binding::on_fired(&mut h.studies, &format!("autoresearch-{slug}"), session)
         .await
         .unwrap();
+    let c = binding::confinement(h.studies.store.clone())(&format!("autoresearch-{slug}"))
+        .await
+        .unwrap()
+        .unwrap();
+    let worktree = c
+        .write_root
+        .expect("a running study fires with its worktree as write root");
+    assert_eq!(
+        worktree,
+        h.studies.root.join(slug).join("worktree"),
+        "write root is the study worktree"
+    );
+    binding::seat(session, &worktree);
     session
 }
 
@@ -737,7 +776,7 @@ async fn one_experiment_kept_moves_the_incumbent() {
     .unwrap();
     assert_eq!(report.verdict, Verdict::Improved);
     assert_eq!(report.samples.len(), 1);
-    assert_eq!(report.delta_pct, Some(10.0));
+    assert_eq!(report.delta_pct, Some(-10.0), "raw Δ: 100 → 90 reads −10 %");
     let e = run(
         &mut h.studies,
         Run {
@@ -801,7 +840,7 @@ async fn one_experiment_kept_moves_the_incumbent() {
         .unwrap();
     assert_eq!(d.series.incumbent.len(), 2, "baseline step + the keep");
     assert_eq!(d.info.incumbent.kept, 1);
-    assert_eq!(d.info.delta_pct.map(|p| p.round()), Some(10.0));
+    assert_eq!(d.info.delta_pct.map(|p| p.round()), Some(-10.0));
     let x = experiment(
         &mut h.studies,
         Experiment {
@@ -1144,6 +1183,8 @@ async fn experiment_budget_stops_and_finalizes_with_the_result_card_data() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].id, "autoresearch:finished:t1");
     assert_eq!(items[0].kind, roster::attention::AttentionKind::Review);
+    // 140-P2 live: the row read `+100.0 %` for a lower-is-better win; Δ is the raw change.
+    assert_eq!(items[0].title, "Study t1 finished: -5.0 % · Review");
     // Discard after finish removes the worktree and ends in `discarded`.
     let info = control(
         &mut h.studies,
@@ -1687,8 +1728,29 @@ async fn stop_now_interrupts_the_experiment_in_flight() {
         .unwrap();
     // §4.3: never measured → `abandoned`, not `interrupted` (R-66).
     assert_eq!(e1.state, ExperimentState::Abandoned);
+    // F4E: the write root holds through the stop (Finalizing) and is gone once finished.
+    // Race-free under load: read the seat BEFORE the state — the plugin unseats only after it
+    // wrote the terminal state, so a released root implies the study is already Finished (the
+    // background finalize may complete between `control` returning and this check).
+    let seat = tools::seat::seat_of(session);
+    let now = h
+        .studies
+        .store
+        .get_study("t1")
+        .await
+        .unwrap()
+        .unwrap()
+        .state;
+    if seat.write_root.is_none() {
+        assert_eq!(
+            now,
+            StudyState::Finished,
+            "write root released before the study finished"
+        );
+    }
     let s = wait_state(&h.studies.store, "t1", |s| *s == StudyState::Finished).await;
     assert_eq!(s.stop_reason, Some(StopReason::UserNow));
+    assert_eq!(tools::seat::seat_of(session), tools::Seat::default());
 }
 
 /// A run blocked inside its benchmark, as another task (the model's tool call).
@@ -1845,7 +1907,7 @@ fn metric_line_reads_the_raw_change() {
     study.incumbent_mean = Some(8996.0);
     let mut exp = ExperimentRecord::open("s", 2, 0, "inc");
     exp.metric = Some(39.0);
-    exp.delta_pct = Some(99.6); // direction-normalised, positive = better
+    exp.delta_pct = Some(-99.6);
     exp.z = Some(15.3);
     exp.n_samples = 3;
     let line = super::metric_line(&study, &exp);
@@ -1853,6 +1915,94 @@ fn metric_line_reads_the_raw_change() {
         line.contains("8996 -> 39.0 (-99.6%, 15.3 sigma, n=3)"),
         "{line}"
     );
+}
+
+/// §5.3 Revision 2 (140-P live: 8996 → 39 ms left σ ≈ 500 ms): a keep with |Δ| ≥
+/// `gate.regime_sigma` × σ opens a segment at the keep; σ restarts from the keep's own
+/// samples (one re-measure tops a single sample up); `regime_sigma: 0` disables it.
+#[tokio::test]
+async fn a_regime_change_opens_a_segment_at_the_keep() {
+    // baseline 100/101/99 (σ 1), candidate 50, the segment's top-up re-measure 50.5.
+    let fake = Fake::with_values(&[100.0, 101.0, 99.0, 50.0, 50.5]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.decide(Verdict::Improved, 50.0, 12.0);
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert_eq!(s.segment, 1);
+    assert_eq!(s.incumbent_mean, Some(50.25));
+    assert!(
+        (s.sigma.unwrap() - 0.5f64 / 2f64.sqrt()).abs() < 1e-9,
+        "{:?}",
+        s.sigma
+    );
+    let seg = h.studies.store.get_segment("t1", 1).await.unwrap().unwrap();
+    assert_eq!(seg.opened_by, By::Plugin);
+    assert_eq!((seg.baseline_mean, seg.baseline_n), (Some(50.25), 2));
+    assert!(
+        seg.reason.as_deref() == Some("regime change at #1: Δ 50.0 ms ≥ 10σ (σ 1.00)"),
+        "{:?}",
+        seg.reason
+    );
+    let ev = h
+        .studies
+        .store
+        .list_events("t1", Some("segment_auto"), 5)
+        .await
+        .unwrap();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].payload["segment"], 1);
+    assert_eq!(ev[0].payload["n"], 1);
+    assert_eq!(ev[0].payload["sigma"], 1.0);
+    assert_eq!(ev[0].payload["delta"], 50.0);
+    // The keep's samples (retagged to the new incumbent) are the segment's; the old baseline is not.
+    let inc = incumbent_samples(&h.studies.env(), &s, "keep0001")
+        .await
+        .unwrap();
+    assert_eq!(inc.len(), 2);
+    assert_eq!(*fake.samples_taken.lock(), 5);
+    let d = detail(&mut h.studies, Detail { slug: "t1".into() })
+        .await
+        .unwrap();
+    assert_eq!(d.info.segment, 1);
+    assert!(
+        d.needs_eyes
+            .iter()
+            .any(|l| l.contains("segment 1 opened automatically at #1")),
+        "{:?}",
+        d.needs_eyes
+    );
+    // 140-P2 live: the headline read "+0 % vs base" after the regime segment (the Δ was taken
+    // against the new segment's baseline). "Base" is the study base; the brief's line is
+    // `brief::tests::vs_base_reads_the_study_base_on_a_later_segment` (the Fake renders none).
+    assert_eq!(d.info.baseline_mean, Some(100.0));
+    assert!(
+        (d.info.delta_pct.unwrap() + 49.75).abs() < 1e-9,
+        "{:?}",
+        d.info.delta_pct
+    );
+
+    // A keep under the threshold, or with the knob off, leaves the segment alone.
+    for (slug, regime_sigma, delta) in [("t2", 10.0, 5.0), ("t3", 0.0, 50.0)] {
+        let fake = Fake::with_values(&[100.0, 101.0, 99.0, 50.0]);
+        let mut cfg = AutoresearchConfig::default();
+        cfg.gate.regime_sigma = regime_sigma;
+        let mut h = harness(fake.clone(), cfg).await;
+        let session = started(&mut h, slug, 10).await;
+        begin(&mut h.studies, b(session)).await.unwrap();
+        fake.decide(Verdict::Improved, delta, 12.0);
+        run(&mut h.studies, r(session, "x")).await.unwrap();
+        log(&mut h.studies, l(session, Decision::Auto))
+            .await
+            .unwrap();
+        let s = h.studies.store.get_study(slug).await.unwrap().unwrap();
+        assert_eq!(s.segment, 0, "{slug}");
+        assert_eq!(*fake.samples_taken.lock(), 4, "{slug}");
+    }
 }
 
 /// 140-P live: one fire ran seven experiments. A turn that already began an
@@ -2334,6 +2484,7 @@ async fn finalize_writes_the_report_prose_before_the_tables() {
     let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
     let session = started(&mut h, "t1", 1).await;
     begin(&mut h.studies, b(session)).await.unwrap();
+    *fake.spend.lock() = Ok(0.5); // the tree spent $0.50 between begin and close
     fake.decide(Verdict::Improved, 5.0, 4.0);
     run(&mut h.studies, r(session, "x")).await.unwrap();
     log(&mut h.studies, l(session, Decision::Auto))
@@ -2362,6 +2513,54 @@ async fn finalize_writes_the_report_prose_before_the_tables() {
             .unwrap()
             .len(),
         1
+    );
+    // 140-P: the detail reads W2's changesets record and a finished study's closed spend.
+    let d = detail(&mut h.studies, Detail { slug: "t1".into() })
+        .await
+        .unwrap();
+    assert_eq!(d.changesets.len(), 1, "{:?}", d.changesets);
+    assert_eq!(d.changesets[0].branch, "autoresearch/t1+1-a");
+    let x = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        (d.info.budget_used.usd - x.cost_nanos as f64 / 1e9).abs() < 1e-9,
+        "{} vs {}",
+        d.info.budget_used.usd,
+        x.cost_nanos
+    );
+    // Revision 2: finalize's holdout result reaches the Study view; its final-tree samples
+    // at n = 0 never pool into the base's holdout point.
+    assert_eq!(d.final_holdout.as_deref(), Some("5 → 4 (−20.0 %)"));
+    for (tree, v) in [("base0000", 5.0), ("keep0001", 4.0)] {
+        h.studies
+            .store
+            .insert_sample(
+                "t1",
+                &Sample {
+                    n: 0,
+                    k: 1,
+                    tree_sha: tree.into(),
+                    role: Some(SampleRole::Holdout),
+                    value: Some(v),
+                    at: now(),
+                    ..Sample::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let d = detail(&mut h.studies, Detail { slug: "t1".into() })
+        .await
+        .unwrap();
+    assert_eq!(d.series.holdout.len(), 1);
+    assert_eq!(
+        (d.series.holdout[0].n, d.series.holdout[0].metric),
+        (0, Some(5.0))
     );
 }
 
@@ -2556,6 +2755,10 @@ async fn create_and_discard_use_the_worktree_and_the_repo_cleanup() {
     .unwrap();
     wait_state(&h.studies.store, "t1", |s| *s == StudyState::Running).await;
     assert_eq!(*fake.include_dirty.lock(), Some(true));
+    // 140-P: the study's base is the snapshot the baseline measured, not the resolved HEAD.
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert_eq!(s.base_sha.as_deref(), Some("snapshot"));
+    assert_eq!(s.incumbent_sha.as_deref(), Some("snapshot"));
     let worktree = h.studies.root.join("t1/worktree");
     assert_eq!(fake.custody_from.lock().clone(), vec![worktree]);
     let c = |op| Control {

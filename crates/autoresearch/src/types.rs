@@ -1195,7 +1195,7 @@ wire! {
         pub base_sha: Option<String>,
         /// The incumbent.
         pub incumbent: Incumbent,
-        /// Baseline mean of the current segment.
+        /// The study base's measured mean (segment 0's baseline); `delta_pct` is vs this.
         pub baseline_mean: Option<f64>,
         /// Pooled σ of the current segment.
         pub sigma: Option<f64>,
@@ -1251,6 +1251,8 @@ wire! {
         pub needs_eyes: Vec<String>,
         /// The last 30 lines / 4 KiB of the running sample's log while an experiment is measuring.
         pub tail: Option<String>,
+        /// Finalize's holdout result (`61.0 → 49.7 (−18.5 %)`, §11.1) once finished.
+        pub final_holdout: Option<String>,
     }
 }
 

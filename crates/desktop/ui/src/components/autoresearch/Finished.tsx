@@ -7,7 +7,8 @@ import { cn } from '@/lib/utils'
 import type { StudyChangeset } from '@/rpc/bindings/StudyChangeset'
 import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
 import { Panel } from './SidePanel'
-import { holdoutSummary, metric, pct, reviewWord, stopReasonLabel } from './model'
+import { Delta } from './StudyList'
+import { delta, holdoutSummary, metric, reviewWord, stopReasonLabel } from './model'
 import { useControl } from './queries'
 
 /**
@@ -22,10 +23,13 @@ export function Finished({ detail }: { detail: StudyDetail }) {
   const info = detail.info
   const unit = info.metric.unit
   const holdout = holdoutSummary(detail.series)
-  // §11.1's headline from the numbers the detail carries (`info.headline` is the routines-row sentence).
+  // §11.1's headline from the numbers the detail carries (`info.headline` is the routines-row sentence); the Δ is the raw
+  // change with the direction's word (Revision 2), the holdout is finalize's line when the series has only the base.
+  const d = delta(info.metric.direction, info.delta_pct)
+  const holdoutText = holdout ? `${metric(holdout.base, '')} → ${metric(holdout.latest, unit)} (${delta(info.metric.direction, holdout.delta_pct).text})` : detail.final_holdout
   const headline =
     info.baseline_mean !== null && info.incumbent.mean !== null
-      ? `${info.metric.name} ${metric(info.baseline_mean, '')} → ${metric(info.incumbent.mean, unit)} (${pct(info.delta_pct)})${holdout ? ` · holdout ${metric(holdout.base, '')} → ${metric(holdout.latest, unit)} (${pct(holdout.delta_pct)})` : ''}`
+      ? `${info.metric.name} ${metric(info.baseline_mean, '')} → ${metric(info.incumbent.mean, unit)} (${d.text}${d.word ? `, ${d.word}` : ''})${holdoutText ? ` · holdout ${holdoutText}` : ''}`
       : null
   return (
     <Panel
@@ -72,7 +76,7 @@ export function Finished({ detail }: { detail: StudyDetail }) {
             </thead>
             <tbody>
               {sets.map((c) => (
-                <Row key={c.k} c={c} slug={detail.info.slug} pending={control.isPending} onMerge={() => control.mutate({ op: 'merge', changeset: c.k })} />
+                <Row key={c.k} c={c} slug={detail.info.slug} direction={info.metric.direction} pending={control.isPending} onMerge={() => control.mutate({ op: 'merge', changeset: c.k })} />
               ))}
             </tbody>
           </table>
@@ -85,7 +89,7 @@ export function Finished({ detail }: { detail: StudyDetail }) {
   )
 }
 
-function Row({ c, slug, pending, onMerge }: { c: StudyChangeset; slug: string; pending: boolean; onMerge: () => void }) {
+function Row({ c, slug, direction, pending, onMerge }: { c: StudyChangeset; slug: string; direction: 'lower' | 'higher'; pending: boolean; onMerge: () => void }) {
   const alone = c.only_with.length === 0
   const review = reviewWord(c.review)
   return (
@@ -99,8 +103,12 @@ function Row({ c, slug, pending, onMerge }: { c: StudyChangeset; slug: string; p
           {!alone && <span className="ml-1 text-warning">· only helps together with #{c.only_with.join(', #')}</span>}
         </div>
       </td>
-      <td className={cn('px-2 py-1.5 text-right tabular-nums whitespace-nowrap', alone && 'text-success')}>{pct(c.delta_alone_pct)}</td>
-      <td className="px-2 py-1.5 text-right tabular-nums whitespace-nowrap">{pct(c.delta_together_pct)}</td>
+      <td className="px-2 py-1.5 text-right whitespace-nowrap">
+        <Delta direction={direction} delta_pct={c.delta_alone_pct} muted={!alone} />
+      </td>
+      <td className="px-2 py-1.5 text-right whitespace-nowrap">
+        <Delta direction={direction} delta_pct={c.delta_together_pct} muted />
+      </td>
       <td className="hidden max-w-[260px] px-2 py-1.5 2xl:table-cell">
         <span className="line-clamp-2 font-mono text-xs text-fg-secondary" title={c.files.join('\n')}>
           {c.files.join(', ')}
