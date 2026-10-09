@@ -72,6 +72,9 @@ public static class PointFlow
     /// <summary>The wait for the dictation's final flush before sending what we have (<c>FINAL_TEXT_MS</c>).</summary>
     public const int FinalTextMs = 8000;
 
+    /// <summary>149 voice-key fix: how long the send path waits for an in-flight <c>dictation_start</c> before letting the late answer stop itself (<see cref="DictationLease"/>).</summary>
+    public const int StartWaitMs = 1500;
+
     /// <summary>How long a hint stays (<c>HINT_MS</c>).</summary>
     public const int HintMs = 2000;
 

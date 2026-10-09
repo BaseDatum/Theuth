@@ -89,12 +89,21 @@ internal sealed class VoiceRecorder
             resampler = direct ? null : new MonoResampler(f.SampleRate, f.Channels);
             Description = $"device \"{device.FriendlyName}\" mix={Describe(mix)} capture={Describe(f)} path={(direct ? "wasapi-autoconvert" : "mix-format+MonoResampler")}" +
                           (directError is null ? "" : $" (direct 16 kHz refused: {directError})");
+            WasapiRecorder? previous;
             lock (gate)
             {
                 chunker.Reset();
                 scratch.Clear();
                 stopping = false;
+                previous = recorder; // (c) idempotent start: a capture still open from an earlier gesture is torn down, never leaked
                 recorder = rec;
+            }
+            if (previous is not null)
+            {
+                try { previous.StopRecording(); } catch (Exception) { }
+                previous.DataAvailable -= OnData;
+                previous.RecordingStopped -= OnStopped;
+                try { previous.Dispose(); } catch (Exception) { }
             }
             return null;
         }
