@@ -213,6 +213,7 @@ internal sealed class PointController : IDisposable
         if (next != state) Log.Write($"point: {state.Json} --{e.GetType().Name}--> {next.Json}{(effects.Count > 0 ? " fx=" + string.Join(",", effects.Select(f => f.GetType().Name)) : "")}");
         state = next;
         foreach (var fx in effects) Run(fx);
+        if (state is PointState.Idle) UnregisterEsc(); // (Sending, Cancel) has no effect of its own: Esc must not stay registered system-wide while idle
         // The machine's timers: Armed → a tick at HOLD_MS; Tap1 → a tick just past DOUBLE_TAP_MS.
         switch (state)
         {
@@ -374,6 +375,7 @@ internal sealed class PointController : IDisposable
         {
             ShowHint("Nothing recognized");
             Step(new PointEvent.Cancel());
+            AuditDictation("stop (nothing recognized)");
             return;
         }
         string target;
@@ -386,6 +388,7 @@ internal sealed class PointController : IDisposable
             Log.Write($"point: desk_open failed: {Why(e)}");
             ShowHint(PointFlow.RefusalHint("hub"));
             Step(new PointEvent.Cancel());
+            AuditDictation("stop (desk_open failed)");
             return;
         }
         if (g != gesture) return;
@@ -402,6 +405,7 @@ internal sealed class PointController : IDisposable
             Log.Write($"point: send_input failed: {why}");
             ShowHint(why);
             Step(new PointEvent.Cancel());
+            AuditDictation("stop (send_input failed)");
             return;
         }
         if (g != gesture) return;
@@ -431,14 +435,19 @@ internal sealed class PointController : IDisposable
             if (first != s) Log.Write($"point: dictation_start still in flight after {PointFlow.StartWaitMs} ms — the late start will stop itself");
         }
         var id = lease.Close();
-        dictationId = null;
-        if (id is null) return dictation.LiveText;
+        if (id is null)
+        {
+            dictationId = null;
+            return dictation.LiveText;
+        }
+        // dictationId stays set until the final text is in: OnDictationWire filters DictationFinished by it.
         dictation.Handle(AskDictation.Event.Stop.Instance);
         try { await store.Dictation.StopAsync(id); }
-        catch (Exception e) { Log.Write($"point: dictation_stop failed: {Why(e)}"); return dictation.LiveText; }
+        catch (Exception e) { Log.Write($"point: dictation_stop failed: {Why(e)}"); dictationId = null; return dictation.LiveText; }
         var done = finalText?.Task ?? Task.FromResult(dictation.LiveText);
         var winner = await Task.WhenAny(done, Task.Delay(PointFlow.FinalTextMs));
         if (winner != done) Log.Write($"point: final text not flushed within {PointFlow.FinalTextMs} ms — sending the live text");
+        dictationId = null;
         return done.IsCompletedSuccessfully ? done.Result : dictation.LiveText;
     }
 
