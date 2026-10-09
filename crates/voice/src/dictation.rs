@@ -34,7 +34,7 @@ use crate::shape::end::EndParser;
 use crate::shape::{EndCommand, EndPhrases, Preset, ShapeConfig, ShapePresets, Shaped, Shaper};
 use crate::{
     AppProfile, Destination, DeviceState, DictationId, DictationOpts, DictationTimings,
-    FinishReason, HistoryConfig, ModelState, Surface, VoiceConfig, VoiceEvent,
+    FinishReason, HistoryConfig, ModelState, Surface, VoiceConfig, VoiceEvent, VoiceSettings,
 };
 
 /// Chunks per [`VoiceEvent::DictationLevel`] (160 ms) — also §8.3's level window.
@@ -219,6 +219,11 @@ pub enum Setting {
 /// The live `voice.input_devices` list (the companions read it from `voice_status`).
 #[derive(Clone, Copy, Debug)]
 pub struct InputDevicePrefs;
+
+/// The live `voice.*` settings (`voice_settings`): this actor's keys as the setters left
+/// them; the rest (`duck_media`, `polish_profiles`) from the startup config.
+#[derive(Clone, Copy, Debug)]
+pub struct CurrentSettings;
 
 /// The history store (153 §6.5) for `dictation_history*` / `dictation_audio_get`;
 /// `None` when it failed to open or history is disabled.
@@ -1010,6 +1015,25 @@ impl Message<InputDevicePrefs> for Dictation {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.cfg.input_devices.clone()
+    }
+}
+
+impl Message<CurrentSettings> for Dictation {
+    type Reply = VoiceSettings;
+    async fn handle(
+        &mut self,
+        _: CurrentSettings,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let base: VoiceConfig = self.rt.section("voice").unwrap_or_default();
+        VoiceSettings {
+            shape: self.cfg.shape,
+            end_commands: self.cfg.phrases.clone(),
+            input_devices: self.cfg.input_devices.clone(),
+            standby_secs: self.cfg.standby.as_secs(),
+            history: self.cfg.history.clone(),
+            ..VoiceSettings::from(&base)
+        }
     }
 }
 

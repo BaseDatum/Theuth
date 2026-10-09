@@ -11889,12 +11889,14 @@ pub fn voice_cmd(arg: &str) -> Result<Command, &'static str> {
     }
 }
 
-/// The `/voice` reply (153 §8.1, §8.7): the mic preference and what the host
-/// enumerates, the running dictation's device, the last dictation's timings.
+/// The `/voice` reply (153 §8.1, §8.7, §4.5): the mic preference and what the host
+/// enumerates, the running dictation's device, the shaping preset per surface, the
+/// last dictation's timings.
 pub fn voice_line(
     status: &voice::VoiceStatus,
     dictation: &voice::DictationState,
     devices: &[voice::InputDevice],
+    settings: Option<&voice::VoiceSettings>,
 ) -> String {
     let ms = |v: Option<u32>| v.map_or_else(|| "—".to_owned(), |v| format!("{v} ms"));
     let mut out = format!(
@@ -11921,6 +11923,18 @@ pub fn voice_line(
     }
     if let Some(dev) = &dictation.input_device {
         let _ = write!(out, "\n  dictating on {dev}");
+    }
+    if let Some(s) = settings {
+        let p = |p: voice::Preset| format!("{p:?}").to_lowercase();
+        let _ = write!(
+            out,
+            "\n  shape: tui {} · composer {} · companion {} · phone {} · any app {}",
+            p(s.shape.tui),
+            p(s.shape.composer),
+            p(s.shape.companion),
+            p(s.shape.phone),
+            p(s.shape.any_app)
+        );
     }
     match &dictation.last {
         Some(t) => {
@@ -13426,7 +13440,19 @@ mod tests {
                 default: true,
             },
         ];
-        let line = voice_line(&status, &dictation, &devices);
+        let line = voice_line(&status, &dictation, &devices, None);
+        assert!(!line.contains("shape:"));
+        let settings = voice::VoiceSettings {
+            shape: voice::ShapePresets {
+                tui: voice::Preset::Plain,
+                ..Default::default()
+            },
+            ..voice::VoiceSettings::from(&voice::VoiceConfig::default())
+        };
+        let line = voice_line(&status, &dictation, &devices, Some(&settings));
+        assert!(line.contains(
+            "shape: tui plain · composer full · companion full · phone full · any app full"
+        ));
         assert!(line.contains("mic preference: Shure MV7"));
         assert!(line.contains("● Shure MV7\n"));
         assert!(line.contains("○ MacBook Pro Microphone  (system default)"));

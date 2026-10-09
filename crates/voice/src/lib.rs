@@ -38,9 +38,9 @@ mod stt;
 pub mod vad;
 
 pub use dictation::{
-    AnswerSuggestion, AudioSource, Correction as DictationCorrection, Dictation, DictationState,
-    DictationStatus, DictionaryOp, DictionaryReply, HistoryStore, InputDevicePrefs, Lease, Prewarm,
-    PushAudio, Return, Setting, StartDictation, StopDictation,
+    AnswerSuggestion, AudioSource, Correction as DictationCorrection, CurrentSettings, Dictation,
+    DictationState, DictationStatus, DictionaryOp, DictionaryReply, HistoryStore, InputDevicePrefs,
+    Lease, Prewarm, PushAudio, Return, Setting, StartDictation, StopDictation,
 };
 pub use dictionary::{Dictionary, Entry, EntryId, Kind, Match, Negative, Scope, Source, Variant};
 pub use history::{Correction, HistoryRow, Store, SuggestionAnswer, SuggestionId};
@@ -445,6 +445,7 @@ pub enum Duck {
 
 /// `voice.history` (153 §6.5).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct HistoryConfig {
     /// Write dictation rows and audio at all.
@@ -691,6 +692,46 @@ impl Default for VoiceConfig {
             polish_profiles: BTreeMap::new(),
             rewrite_template: None,
             history: HistoryConfig::default(),
+        }
+    }
+}
+
+/// The `voice_settings` reply (153 F1): the user-facing `voice.*` keys as the engine
+/// holds them now (every setter has a reader; clients remember nothing).
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct VoiceSettings {
+    /// `voice.shape` (§4.5).
+    pub shape: ShapePresets,
+    /// `voice.end_commands` (§7.2).
+    pub end_commands: EndPhrases,
+    /// `voice.input_devices` (§8.1).
+    pub input_devices: Vec<String>,
+    /// `voice.standby_secs` (§8.4).
+    pub standby_secs: u64,
+    /// `voice.duck_media` (§8.6).
+    pub duck_media: Duck,
+    /// `voice.polish_model` (§9.2).
+    pub polish_model: Option<String>,
+    /// `voice.polish_profiles` (§9.1).
+    pub polish_profiles: BTreeMap<String, String>,
+    /// `voice.history` (§6.5).
+    pub history: HistoryConfig,
+}
+
+impl From<&VoiceConfig> for VoiceSettings {
+    fn from(c: &VoiceConfig) -> Self {
+        Self {
+            shape: c.shape,
+            end_commands: c.end_commands.clone(),
+            input_devices: c.input_devices.clone(),
+            standby_secs: c.standby_secs,
+            duck_media: c.duck_media,
+            polish_model: c.polish_model.clone(),
+            polish_profiles: c.polish_profiles.clone(),
+            history: c.history.clone(),
         }
     }
 }
@@ -1266,6 +1307,23 @@ mod tests {
         assert_eq!(note_text("", 0), "[voice note, 1 s] ");
         assert!(is_note("  [voice note, 3 s] x"));
         assert!(!is_note("[attachment: a.m4a]"));
+    }
+
+    /// 153 F1: `voice_settings` mirrors the config section field for field and survives serde.
+    #[test]
+    fn voice_settings_round_trip_defaults() {
+        let cfg = VoiceConfig::default();
+        let settings = VoiceSettings::from(&cfg);
+        assert_eq!(settings.shape, cfg.shape);
+        assert_eq!(settings.end_commands, cfg.end_commands);
+        assert_eq!(settings.standby_secs, 8);
+        assert_eq!(settings.duck_media, Duck::Off);
+        assert_eq!(settings.history, HistoryConfig::default());
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["shape"]["tui"], "full");
+        assert_eq!(json["end_commands"]["send"][0], "send it");
+        let back: VoiceSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(back, settings);
     }
 
     /// 144 §10: a dialogue clip is one MP3 of every turn (5 frames each on the
