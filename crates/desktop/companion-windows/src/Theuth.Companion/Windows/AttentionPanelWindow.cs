@@ -12,6 +12,7 @@ using Microsoft.UI.Xaml.Media;
 using Theuth.Companion.Core;
 using Theuth.Companion.Interop;
 using Theuth.Companion.Rpc;
+using Theuth.Companion.Voice;
 using Windows.Graphics;
 using Windows.Win32;
 using Windows.Win32.Foundation;
@@ -40,7 +41,7 @@ internal readonly record struct PanelAnchor(PanelAnchorKind Kind, RECT Rect, boo
 /// </summary>
 internal sealed partial class AttentionPanelWindow : ToolWindow
 {
-    public const double PanelWidth = 372;
+    public const double PanelWidth = 420; // 149 §3.9 (372 → ≈ 420)
     public const double MaxHeight = 560;
     private const int MaxLines = 6;
     private const int DoneRows = 4;
@@ -62,6 +63,15 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
     private bool renderQueued;
     private HWND previous;
     private PanelAnchor anchor = PanelAnchor.Mouse;
+    // 149 WW2: V hold-to-talk into the card's session, P point, X stop.
+    private readonly RowTalk talk;
+    private bool talkBusy;
+    private string? talkError;
+    private bool vDown;
+    private Border? replyCap;
+
+    /// <summary>P on a card / the ▣ button (§3.3): the composition root closes the panel and runs <c>screen_context</c> (WW3's point-and-say seam).</summary>
+    public event Action<Card>? PointRequested;
 
     public AttentionPanelWindow(Store store)
         : base("theuth — Attention", default, excludeFromCapture: !Flags.Shareable)
@@ -102,6 +112,8 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             if (IsOpen) Render(force: true);
         };
         Content = host;
+        // 149 WW2 (§7.4 #2): opaque with DWM rounded corners (the system shadow stays); the W6 backdrop path is kept as-is below.
+        if (!Shape.RoundCorners(Hwnd)) Log.Write("panel: DWM rounded corners unavailable (rectangular)");
         // W6 item 2 (§4.2, A7): Mica Base, Acrylic Base where Mica is unsupported, the opaque surface when transparency effects are off.
         ApplyEffects(initial: true);
         if (SystemEffects.Current is { } fx) fx.Changed += () => ApplyEffects(initial: false);
@@ -129,6 +141,18 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
             replyBox.Text = "";
             store.SubmitReply(text);
         };
+
+        talk = new RowTalk(store, DispatcherQueue);
+        talk.LiveText += t =>
+        {
+            if (!talkBusy || replyBox.Parent is null) return;
+            replyBox.Text = t;
+            replyBox.SelectionStart = t.Length;
+        };
+        talk.Finished += OnCardTalkFinished;
+        host.PreviewKeyUp += OnPreviewKeyUp;
+        replyBox.GotFocus += (_, _) => { if (replyCap is { } c) c.Visibility = Visibility.Collapsed; };
+        replyBox.LostFocus += (_, _) => { if (replyCap is { } c) c.Visibility = replyBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed; };
 
         Activated += (_, e) =>
         {
@@ -255,13 +279,125 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
     private void OnPreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
         var press = KeyInput.From(e);
-        bool textField = store.NoteFor is not null || store.Ask.ReplyFor is not null
+        bool textField = store.NoteFor is not null
             || (host.XamlRoot is { } xr && FocusManager.GetFocusedElement(xr) is TextBox);
+        // 149 WW2 (§8 panel ★ rows): V hold-to-talk · P point · X stop (hold) · space = focus the reply field. Letters type while a field has focus.
+        if (!textField && CardVerbFor(press) is { } verb)
+        {
+            e.Handled = true;
+            if (verb == CardVerb.Talk && e.KeyStatus.WasKeyDown) return; // auto-repeat while held
+            Log.Write($"panel key {press.Chord.Symbol} -> {verb}");
+            switch (verb)
+            {
+                case CardVerb.Talk:
+                    vDown = true;
+                    if (store.FocusedCard is { } tc) BeginCardTalk(tc);
+                    break;
+                case CardVerb.Point:
+                    if (store.FocusedCard is { } pc && store.FocusedAnatomy is { Reply.Point: true }) PointRequested?.Invoke(pc);
+                    break;
+                case CardVerb.Stop:
+                    if (store.FocusedAnatomy is { } sa) store.StopCardAgent(sa);
+                    break;
+                case CardVerb.Reply:
+                    if (replyBox.Parent is not null) replyBox.Focus(FocusState.Programmatic);
+                    break;
+            }
+            return;
+        }
+        if (textField && press.Chord == Chord.Escape && host.XamlRoot is { } xr2 && ReferenceEquals(FocusManager.GetFocusedElement(xr2), replyBox) && store.HeldNow is null && store.NoteFor is null)
+        {
+            // Esc in the always-visible reply field: leave the field first (a second Esc closes the panel).
+            e.Handled = true;
+            if (talkBusy) { talk.Cancel(); talkBusy = false; }
+            host.Focus(FocusState.Programmatic);
+            return;
+        }
         var intent = KeyGrammar.IntentFor(press, KeyScope.Panel, store.Keys, textField);
         if (intent.Kind == IntentKind.None) return;
         e.Handled = true;
         Log.Write($"panel key {press.Chord.Symbol} -> {intent.Kind}{(intent.Kind == IntentKind.Answer ? $" {intent.Option}" : "")}");
+        if (intent.Kind == IntentKind.Reply)
+        {
+            if (replyBox.Parent is not null) replyBox.Focus(FocusState.Programmatic);
+            else store.Perform(intent);
+            return;
+        }
         store.Perform(intent);
+    }
+
+    private enum CardVerb { Talk, Point, Stop, Reply }
+
+    /// <summary>The key table's panel rows for the 149 verbs (WW1's <c>TalkReply</c> · <c>PointAttach</c> · <c>StopAgent</c> · space), else the design's defaults.</summary>
+    private CardVerb? CardVerbFor(KeyPress press)
+    {
+        var chord = press.Chord;
+        if (store.Keys.ActionFor(chord, KeyScope.Panel) is { } action)
+        {
+            switch (action.RawValue())
+            {
+                case "talkReply": return CardVerb.Talk;
+                case "pointAttach": return CardVerb.Point;
+                case "stopAgent": return CardVerb.Stop;
+            }
+        }
+        if (chord == Chord.Space) return CardVerb.Reply;
+        var c = chord.NormalizedLocal;
+        if (c.Modifiers != ChordModifiers.None) return null;
+        return c.Chars switch { "v" => CardVerb.Talk, "p" => CardVerb.Point, "x" => CardVerb.Stop, _ => null };
+    }
+
+    private void OnPreviewKeyUp(object sender, KeyRoutedEventArgs e)
+    {
+        if (!vDown) return;
+        var press = KeyInput.From(e);
+        if (CardVerbFor(press) != CardVerb.Talk && press.Chord.NormalizedLocal.Chars != "v") return;
+        vDown = false;
+        e.Handled = true;
+        EndCardTalk();
+    }
+
+    /// <summary>V / the 🎙 button: dictate into the field with the card's session; the release lands the words in the field, ⏎ sends.</summary>
+    private void BeginCardTalk(Card card)
+    {
+        if (talk.Busy || card.Item.Session is not { } s) return;
+        if (store.FocusedAnatomy is { Reply.Talk: false }) return;
+        talkBusy = true;
+        talkError = null;
+        talk.Begin(s);
+        Render(force: true);
+    }
+
+    private void EndCardTalk()
+    {
+        if (!talk.Busy) return;
+        talk.End();
+    }
+
+    private void OnCardTalkFinished(string text, string? error)
+    {
+        talkBusy = false;
+        talkError = error;
+        if (error is null && text.Length > 0 && replyBox.Parent is not null)
+        {
+            replyBox.Text = text;
+            replyBox.SelectionStart = text.Length;
+            replyBox.Focus(FocusState.Programmatic);
+        }
+        Render(force: true);
+        if (error is not null)
+        {
+            var t = DispatcherQueue.CreateTimer();
+            t.Interval = TimeSpan.FromSeconds(5);
+            t.IsRepeating = false;
+            t.Tick += (_, _) =>
+            {
+                t.Stop();
+                talkError = null;
+                if (IsOpen) Render(force: true);
+            };
+            t.Start();
+        }
     }
 
     private void OnStoreChanged(object? sender, PropertyChangedEventArgs e)
@@ -287,7 +423,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         var sb = new StringBuilder();
         var p = store.Panel;
         sb.Append(p.Headline).Append('|').Append(p.Position).Append('|').Append(store.Connection).Append('|').Append(p.Focus).Append('|');
-        sb.Append(store.NoteFor).Append('|').Append(store.Ask.ReplyFor).Append('|').Append(store.HeldNow is null).Append('|').Append(store.UndoDelay).Append('|');
+        sb.Append(store.NoteFor).Append('|').Append(store.Ask.ReplyFor).Append('|').Append(store.HeldNow is null).Append('|').Append(store.UndoDelay).Append('|').Append(talkBusy).Append(talkError).Append('|').Append(store.Activity.Count).Append('|');
         if (store.FocusedCard is { } c)
         {
             sb.Append(c.Item.Id).Append('|').Append(c.Question).Append('|').Append(c.Why).Append('|').Append(c.Model).Append('|').Append(c.MoreOptions).Append(c.Clearable);
@@ -356,13 +492,24 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         }
         else
         {
-            var empty = new TextBlock
-            {
-                Text = store.Connection == RpcClient.State.Open ? "Nothing needs you." : "Connecting to the engine…",
-                FontSize = 12.5, Foreground = Palette.Brush(Palette.Ink2, theme), HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 26, 0, 26),
-            };
-            AutomationProperties.SetAutomationId(empty, "panel-empty");
+            // 149 §3.4 / Revision 1 #8: the wordmark glyph · "Nothing needs you." at 24 · the sub-line; "Connecting…" while the engine is away.
+            bool open = store.Connection == RpcClient.State.Open;
+            var empty = new Grid { Padding = new Thickness(26, 22, 26, 28), ColumnSpacing = 18 };
+            empty.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            empty.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var mark = MarkGlyph.Wordmark(theme);
+            mark.Width = 40;
+            mark.Height = 40;
+            mark.VerticalAlignment = VerticalAlignment.Top;
+            if (!open) mark.Opacity = 0.45;
+            empty.Children.Add(mark);
+            var words = new StackPanel { Spacing = 6 };
+            var title = new TextBlock { Text = open ? CardAnatomyModel.EmptyTitle : CardAnatomyModel.Connecting, FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Palette.Brush(Palette.Ink, theme), TextWrapping = TextWrapping.Wrap };
+            AutomationProperties.SetAutomationId(title, "panel-empty");
+            words.Children.Add(title);
+            if (open) words.Children.Add(new TextBlock { Text = CardAnatomyModel.EmptyBody, FontSize = 15, Foreground = Palette.Brush(Palette.Sand, theme), TextWrapping = TextWrapping.Wrap });
+            Grid.SetColumn(words, 1);
+            empty.Children.Add(words);
             content.Children.Add(empty);
         }
         DoneZone(theme);
@@ -383,75 +530,73 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         if (e.Parent is Panel panel) panel.Children.Remove(e);
     }
 
+    /// <summary>149 §3.3 header row: ‹agent name› (bold; "Inbox" when nothing is focused) · position dots · ‹J K› · ? · ✕ esc, the glance sentence as the sub-line (Revision 1 #7).</summary>
     private FrameworkElement Header(ElementTheme theme)
     {
-        var grid = new Grid { Padding = new Thickness(12, 9, 12, 9), ColumnSpacing = 8 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var grid = new Grid { Padding = new Thickness(20, 14, 14, 6), ColumnSpacing = 8 };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var anatomy = store.FocusedAnatomy;
+        var titleStack = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
+        var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
+        var name = new TextBlock
+        {
+            Text = anatomy?.Header.Name ?? CardAnatomyModel.InboxTitle, FontSize = 19, FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            Foreground = Palette.Brush(Palette.Ink, theme), TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center,
+        };
+        nameRow.Children.Add(name);
+        if (anatomy is { } an && an.Header.Count > 1) nameRow.Children.Add(CardChrome.PositionDots(theme, an.Header.Position, an.Header.Count));
+        titleStack.Children.Add(nameRow);
         bool gold = store.Rail.NeedsYouCount > 0;
-        if (gold)
+        var glance = new TextBlock { Text = store.Panel.Headline, FontSize = 11.5, Foreground = Palette.Brush(gold ? Palette.Gold : Palette.Ink2, theme), TextTrimming = TextTrimming.CharacterEllipsis };
+        titleStack.Children.Add(glance);
+        AutomationProperties.SetAutomationId(titleStack, "panel-headline");
+        AutomationProperties.SetName(titleStack, store.Panel.Position.Length == 0 ? store.Panel.Headline : $"{anatomy?.Header.Spoken ?? store.Panel.Headline}, {store.Panel.Headline}");
+        grid.Children.Add(titleStack);
+        if (anatomy is { } a2 && a2.Header.Count > 1)
         {
-            grid.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 7, Height = 7, Fill = Palette.Brush(Palette.Gold, theme), VerticalAlignment = VerticalAlignment.Center });
+            var jk = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+            jk.Children.Add(CardChrome.KeyCapButton(theme, null, "J", () => store.Perform(Intent.Next), "card-next"));
+            jk.Children.Add(CardChrome.KeyCapButton(theme, null, "K", () => store.Perform(Intent.Previous), "card-previous"));
+            Grid.SetColumn(jk, 1);
+            grid.Children.Add(jk);
         }
-        var parts = store.Panel.Headline.Split(" · ");
-        var headline = new TextBlock { FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
-        headline.Inlines.Add(new Run
-        {
-            Text = parts[0],
-            Foreground = gold ? Palette.Brush(Palette.Gold, theme) : Palette.Brush(Palette.Ink2, theme),
-            FontWeight = gold ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
-        });
-        foreach (var part in parts.Skip(1)) headline.Inlines.Add(new Run { Text = $" · {part}", Foreground = Palette.Brush(Palette.Ink2, theme) });
-        Grid.SetColumn(headline, 1);
-        grid.Children.Add(headline);
-        var position = new TextBlock { Text = store.Panel.Position, FontSize = 11.5, FontFamily = new FontFamily("Consolas"), Foreground = Palette.Brush(Palette.Sand, theme), VerticalAlignment = VerticalAlignment.Center };
-        Grid.SetColumn(position, 2);
-        grid.Children.Add(position);
-        AutomationProperties.SetAutomationId(grid, "panel-headline");
-        AutomationProperties.SetName(grid, store.Panel.Position.Length == 0 ? store.Panel.Headline : $"{store.Panel.Headline}, {store.Panel.Position}");
+        var legend = CardChrome.KeyCapButton(theme, null, "?", () => store.Perform(Intent.Legend), "card-legend");
+        Grid.SetColumn(legend, 2);
+        grid.Children.Add(legend);
+        var close = CardChrome.KeyCapButton(theme, "✕", "esc", () => store.Perform(Intent.Escape), "card-close");
+        Grid.SetColumn(close, 3);
+        grid.Children.Add(close);
         return grid;
     }
 
+    /// <summary>
+    /// 149 §3.3 (+ Revision 1 #2–3, #6, #18): status line · context bubbles (E6 or the interim join) · the bold question · why ·
+    /// chips · numbered options "(Recommended)" · the reply row [▣ P] [field R] [🎙 V] [↑ ⏎] · the footer "Next steps" + pills
+    /// (Stop agent X only while the agent runs or waits · Clear E on finished/info · Snooze S on asks).
+    /// </summary>
     private FrameworkElement CardView(Card card, ElementTheme theme)
     {
-        var stack = new StackPanel { Spacing = 7, Padding = new Thickness(12, 11, 12, 10) };
+        var anatomy = store.FocusedAnatomy ?? CardAnatomyModel.Make(card, store.Panel.Focus + 1, store.Panel.Items.Count, null, null, null, DateTimeOffset.Now);
+        var stack = new StackPanel { Spacing = 9, Padding = new Thickness(20, 6, 20, 12) };
 
-        var head = new Grid { ColumnSpacing = 7 };
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var who = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7 };
-        var glyph = MarkGlyph.ForItem(card.Item, theme);
-        glyph.VerticalAlignment = VerticalAlignment.Center;
-        who.Children.Add(glyph);
-        who.Children.Add(new TextBlock { Text = card.Who, FontSize = 11.5, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
-        if (card.Model is { } model) who.Children.Add(Small($"· {model}", Palette.Ink2, theme, default, 11.5));
-        if (card.Question != card.Item.Title)
+        stack.Children.Add(CardChrome.StatusLine(theme, anatomy.Status, card.Item.Kind.NeedsYou));
+        if (anatomy.Bubbles.Any)
         {
-            var title = Small($"· {card.Item.Title}", Palette.Ink2, theme, default, 11.5);
-            title.TextTrimming = TextTrimming.CharacterEllipsis;
-            title.MaxWidth = 150;
-            who.Children.Add(title);
+            var bubbles = new StackPanel { Spacing = 6 };
+            if (anatomy.Bubbles.Request is { } rq) bubbles.Children.Add(CardChrome.Bubble(theme, rq, mine: true));
+            if (anatomy.Bubbles.LastReply is { } lr) bubbles.Children.Add(CardChrome.Bubble(theme, lr, mine: false));
+            stack.Children.Add(bubbles);
         }
-        head.Children.Add(who);
-        bool finished = card.Item.Kind == AttentionKind.Finished;
-        var since = Small("", Palette.Sand, theme, default, 11.5);
-        since.FontFamily = new FontFamily("Consolas");
-        since.VerticalAlignment = VerticalAlignment.Center;
-        Ago(since, card.Item.WaitingSince, finished ? "finished " : "waiting ", finished ? " ago" : "");
-        Grid.SetColumn(since, 1);
-        head.Children.Add(since);
-        stack.Children.Add(head);
 
-        var question = new TextBlock { Text = card.Question, FontSize = 13.5, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, MaxLines = 3, TextTrimming = TextTrimming.CharacterEllipsis };
+        var question = new TextBlock { Text = anatomy.Question, FontSize = CardChrome.Question, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, MaxLines = 3, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = Palette.Brush(Palette.Ink, theme) };
         AutomationProperties.SetAutomationId(question, "card-question");
         stack.Children.Add(question);
-        if (card.Why is { Length: > 0 } why)
+        if (anatomy.Why is { } why && why != anatomy.Bubbles.LastReply)
         {
-            var w = Small(why, Palette.Ink2, theme, default, 11.5);
-            w.TextWrapping = TextWrapping.Wrap;
-            w.MaxLines = 4;
-            w.TextTrimming = TextTrimming.CharacterEllipsis;
+            var w = new TextBlock { Text = why, FontSize = 13, Foreground = Palette.Brush(Palette.Ink2, theme), TextWrapping = TextWrapping.Wrap, MaxLines = 4, TextTrimming = TextTrimming.CharacterEllipsis };
             AutomationProperties.SetAutomationId(w, "card-why");
             stack.Children.Add(w);
         }
@@ -463,8 +608,7 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
                 var key = chip.Ok == true ? Palette.Malachite : chip.Ok == false ? Palette.Carnelian : Palette.Ink2;
                 chips.Children.Add(new Border
                 {
-                    CornerRadius = new CornerRadius(9), BorderThickness = new Thickness(1), BorderBrush = Palette.Brush(key, theme),
-                    Padding = new Thickness(7, 2, 7, 2),
+                    CornerRadius = new CornerRadius(9), BorderThickness = new Thickness(1), BorderBrush = Palette.Brush(key, theme), Padding = new Thickness(7, 2, 7, 2),
                     Child = new TextBlock { Text = chip.Text, FontSize = 10.5, Foreground = Palette.Brush(key, theme), TextTrimming = TextTrimming.CharacterEllipsis },
                 });
             }
@@ -478,33 +622,100 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         }
         else
         {
-            foreach (var o in card.Options) stack.Children.Add(OptionButton(o, card, theme));
-            if (card.MoreOptions > 0) stack.Children.Add(Small($"+{card.MoreOptions} more — O opens the full list in theuth", Palette.Sand, theme, default));
-            if (card.Options.Count == 0 && !card.Clearable)
+            if (anatomy.NextStepsHeader) stack.Children.Add(Small("Next steps", Palette.Sand, theme, new Thickness(0, 2, 0, -3), 11.5));
+            var options = new StackPanel { Spacing = 6 };
+            foreach (var line in anatomy.Options)
+            {
+                var o = line.Option;
+                options.Children.Add(CardChrome.OptionRow(theme, line, () => store.Pick(o, card)));
+            }
+            if (options.Children.Count > 0) stack.Children.Add(options);
+            if (anatomy.MoreOptions > 0) stack.Children.Add(Small($"+{anatomy.MoreOptions} more — O opens the full list in theuth", Palette.Sand, theme, default));
+            if (card.Options.Count == 0 && !card.Clearable && !anatomy.Reply.Send)
             {
                 var open = OptionButton(new CardOption(0, "Open in theuth", null, false, new CardAction.Dismiss(card.Item.Id)), card, theme, keyLabel: "O");
                 stack.Children.Add(open);
             }
         }
-        if (store.Ask.ReplyFor == card.Item.Id)
+
+        if (anatomy.Reply.Send && store.NoteFor is null)
         {
-            replyBox.PlaceholderText = card.ReplyLabel();
-            AutomationProperties.SetName(replyBox, card.ReplyLabel());
-            stack.Children.Add(replyBox);
-            stack.Children.Add(Small("Enter send · Esc cancel · dictation stays the Ask bar's", Palette.Sand, theme, default));
+            // The reply row is always visible (§3.3): [▣ P] [field "Reply to ‹name›" R] [🎙 V] [↑ ⏎].
+            var row = new Grid { ColumnSpacing = 6 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var point = CardChrome.IconCap(theme, "\uE722", "P", "Point — attach the screen", anatomy.Reply.Point, () => PointRequested?.Invoke(card), "reply-point");
+            row.Children.Add(point);
+            replyBox.PlaceholderText = anatomy.Reply.Placeholder;
+            replyBox.Height = 36;
+            replyBox.VerticalAlignment = VerticalAlignment.Center;
+            replyBox.CornerRadius = new CornerRadius(12);
+            AutomationProperties.SetName(replyBox, anatomy.Reply.Placeholder);
+            var fieldWrap = new Grid();
+            fieldWrap.Children.Add(replyBox);
+            var cap = CardChrome.KeyCap(theme, ReplyRowSpec.KeyCap);
+            cap.HorizontalAlignment = HorizontalAlignment.Right;
+            cap.Margin = new Thickness(0, 0, 8, 0);
+            cap.IsHitTestVisible = false;
+            cap.Visibility = replyBox.FocusState == FocusState.Unfocused && replyBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            replyCap = cap;
+            fieldWrap.Children.Add(cap);
+            Grid.SetColumn(fieldWrap, 1);
+            row.Children.Add(fieldWrap);
+            var mic = CardChrome.IconCap(theme, "\uE720", "V", talkBusy ? "Listening" : "Hold to talk", anatomy.Reply.Talk, () => { }, "reply-mic");
+            if (anatomy.Reply.Talk)
+            {
+                mic.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((s, e) =>
+                {
+                    ((UIElement)s).CapturePointer(e.Pointer);
+                    BeginCardTalk(card);
+                }), true);
+                mic.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((s, e) =>
+                {
+                    ((UIElement)s).ReleasePointerCapture(e.Pointer);
+                    EndCardTalk();
+                }), true);
+                mic.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) => EndCardTalk()), true);
+                if (talkBusy && mic.Content is StackPanel sp && sp.Children[0] is FontIcon fi) fi.Foreground = Palette.Brush(Palette.Carnelian, theme);
+            }
+            Grid.SetColumn(mic, 2);
+            row.Children.Add(mic);
+            var send = CardChrome.IconCap(theme, "\uE74A", "⏎", "Send", true, () =>
+            {
+                var text = replyBox.Text;
+                if (text.Trim().Length == 0) return;
+                replyBox.Text = "";
+                store.SubmitReply(text);
+            }, "reply-send");
+            Grid.SetColumn(send, 3);
+            row.Children.Add(send);
+            AutomationProperties.SetAutomationId(row, "reply-row");
+            stack.Children.Add(row);
+            if (talkBusy || talkError is not null)
+            {
+                stack.Children.Add(Small(talkError ?? "Listening… release → the words land in the field", talkError is null ? Palette.Sand : Palette.Carnelian, theme, default));
+            }
+        }
+
+        if (anatomy.Footer.Count > 0)
+        {
+            var footer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 2, 0, 0) };
+            foreach (var verb in anatomy.Footer)
+            {
+                var v = verb;
+                footer.Children.Add(CardChrome.FooterPill(theme, v, () => store.RunFooterVerb(anatomy, v)));
+            }
+            AutomationProperties.SetAutomationId(footer, "card-footer");
+            stack.Children.Add(footer);
         }
 
         var hints = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        hints.Children.Add(Hint("S", "snooze 30 m", theme));
-        if (card.Clearable) hints.Children.Add(Hint("E", "clear", theme));
-        if (card.Item.Kind == AttentionKind.Decision) hints.Children.Add(Hint("O", "board", theme));
-        else if (card.Options.Count > 0 && !card.Clearable && card.Item.Kind != AttentionKind.Review) hints.Children.Add(Hint("O", "open", theme));
-        if (card.Item.Kind == AttentionKind.Review || card.Item.Kind == AttentionKind.Finished) hints.Children.Add(Hint("D", "diff", theme));
-        if (card.SessionUrl is not null) hints.Children.Add(Hint("Ctrl+O", "session", theme));
-        if (card.ReplyAction("") is not null) hints.Children.Add(Hint("R", "reply", theme));
+        foreach (var k in anatomy.Keys.Where(k => k.Cap is "D" or "O" or "Ctrl+O" or "?" or "Esc")) hints.Children.Add(Hint(k.Cap, k.Label, theme));
         stack.Children.Add(hints);
 
-        var frame = new Grid { Background = Palette.Tint(Palette.Ink, theme, 0.045) };
+        var frame = new Grid { Background = Palette.Tint(Palette.Ink, theme, 0.035) };
         frame.Children.Add(stack);
         if (card.Item.Kind.NeedsYou)
         {
