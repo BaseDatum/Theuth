@@ -532,24 +532,28 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var anatomy = store.FocusedAnatomy;
         var titleStack = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
-        // 149 NATIVE (Sky's Mac review): a long title gives way — it sits in the star column, NoWrap + CharacterEllipsis — while the
-        // position dots and the key caps (Auto columns) never wrap.
-        var nameRow = new Grid { ColumnSpacing = 10, VerticalAlignment = VerticalAlignment.Center };
-        nameRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        nameRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // 149 NATIVE (Sky's Mac review): a long title gives way — NoWrap + CharacterEllipsis, its MaxWidth following the header's
+        // star column (minus the position dots) on every size change — while the dots stay right after the name and the key caps
+        // (Auto columns) never wrap. Layout as designed: name · dots, left-aligned.
+        var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
         var name = new TextBlock
         {
             Text = anatomy?.Header.Name ?? CardAnatomyModel.InboxTitle, FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = Theme.Brush(NativeLook.TextPrimary, theme), TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap,
-            VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center, MaxWidth = 200,
         };
         nameRow.Children.Add(name);
+        FrameworkElement? dots = null;
         if (anatomy is { } an && an.Header.Count > 1)
         {
-            var dots = CardChrome.PositionDots(theme, an.Header.Position, an.Header.Count);
-            Grid.SetColumn(dots, 1);
+            dots = CardChrome.PositionDots(theme, an.Header.Position, an.Header.Count);
             nameRow.Children.Add(dots);
         }
+        titleStack.SizeChanged += (_, e) =>
+        {
+            double reserved = dots is null ? 0 : dots.ActualWidth + 10;
+            name.MaxWidth = Math.Max(40, e.NewSize.Width - reserved);
+        };
         titleStack.Children.Add(nameRow);
         bool gold = store.Rail.NeedsYouCount > 0;
         var glance = new TextBlock { Text = store.Panel.Headline, FontSize = 12, Foreground = Theme.Brush(gold ? NativeLook.Accent : NativeLook.TextSecondary, theme), TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap };
