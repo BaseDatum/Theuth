@@ -35,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // 149 W1: agentsPanel.installHotkeys()
         // 149 W2: pointAndSay.install()
-        // 149 W3: island.install()
+        island.install() // 149 W3
         store.onLegend = { [weak self] in self?.showLegend() }
         store.onSettings = { NotificationsInstaller.shared?.settings.show(activate: true) }
         legend.onSettings = { NotificationsInstaller.shared?.settings.show(activate: true) }

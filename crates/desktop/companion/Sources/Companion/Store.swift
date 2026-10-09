@@ -104,7 +104,7 @@ final class Store: ObservableObject {
             if WireEvent.attentionTriggers.contains(t) || t == "TurnStarted" || t == "SubagentSpawned" { scheduleRefetch() }
         }
         askObserve(data)
-        // 149 W3: meetingObserve(data) — MeetingEvent.decode(data) → MeetingReducer.reduce(meeting, …)
+        meetingObserve(data) // 149 W3: MeetingEvent.decode(data) → MeetingReducer.reduce(meeting, …)
     }
 
     /// Debounced 250 ms (130 §5.2); never on a timer.

@@ -17,7 +17,7 @@ extension KeyboardShortcuts.Name {
 enum Hotkeys {
     /// 149: a global row is probed and registered only once it is listed here — W1 adds `.openAgents`, W2 `.voiceKey`,
     /// W3 `.meetingPtt`/`.meetingEye`; an unlisted row's chord is data for Settings › Keys and the Windows twin.
-    static let names: [KeyAction: KeyboardShortcuts.Name] = [.openPanel: .openPanel, .openAskBar: .openAskBar]
+    static let names: [KeyAction: KeyboardShortcuts.Name] = [.openPanel: .openPanel, .openAskBar: .openAskBar, .meetingPtt: .meetingPtt, .meetingEye: .meetingEye]
 
     /// Launch: resolve the saved global chords against the registrar (fallback to the default with a notice),
     /// persist the outcome, then hand every global row to KeyboardShortcuts.
