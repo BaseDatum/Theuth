@@ -57,6 +57,18 @@ Render rule (H3-B1/B2): shown = `shaped` when non-empty; else "" when the piece 
 to ""); else the raw `text` (an engine before 153 sends no `shaped`). Send: the latest piece's `command: send` arms; a later piece without it
 disarms; the field acts once, on `DictationFinished`.
 
+## H-BC alignment (153-as-built-BC.md deviations rows and §Hand-offs › Windows twin)
+- §4.4 render rule — followed the UI/TUI form `shaped || (command ? "" : text)` (H3-B1/B2); the Swift companion's `shaped ?? text` differs only
+  for an empty `shaped` without a command.
+- §3.1 settling copy — followed: "sending…" while "send it" is armed (no countdown source on the surface).
+- §6.1 correction at send — Ask bar as the Mac; the row mics (agents panel, card V) also report at their commit (the Mac leaves its
+  `HoldToTalk` callers to wave D) — an addition, same RPC and the same "commit only" rule.
+- §8.7 Settings — followed: shape presets and end phrases write-only, last value remembered locally; the learn flag is a read-only pointer.
+- §Hand-offs › Windows twin constants — `holdThreshold 250 ms`, `maxDuration 60 s`, suggestion auto-dismiss 20 s and the exact
+  `dictation_start` params `[16000, {"surface":"companion","destination":{"kind":"agent_prompt"},"commands":[],"press_ago_ms":N}]` all match
+  (pinned by `AskVoiceTests` / `RpcClient153Tests`); the 13 fixtures are decoded by `Fixture153Tests`.
+- §10.6 (approval listen), the command card and the `powershell` tool are W153C's; the AnyApp hand-offs are W153D's.
+
 ## Verification (step 3)
 | Gate | Result |
 |---|---|

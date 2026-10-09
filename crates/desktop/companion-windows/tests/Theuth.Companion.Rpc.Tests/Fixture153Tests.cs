@@ -4,12 +4,12 @@ namespace Theuth.Companion.Rpc.Tests;
 
 /// <summary>
 /// 153's cross-platform fixtures (the 13 <c>153-*.json</c> files the Mac companion contract wave hand-wrote from the serde attrs,
-/// <c>feat/153-cc</c> 557eb083, copied under <c>Fixtures153/</c>): every one decodes with the C# records — one fixture set, two
+/// <c>feat/153-cc</c> 557eb083, linked from the shared <c>Fixtures/</c> directory since main 253f1ada): every one decodes with the C# records — one fixture set, two
 /// companions. A Swift field the C# record lacks would show up here as a failed equality, not a silent drop.
 /// </summary>
 public sealed class Fixture153Tests
 {
-    private static string FixtureDir => Path.Combine(AppContext.BaseDirectory, "Fixtures153");
+    private static string FixtureDir => Path.Combine(AppContext.BaseDirectory, "Fixtures"); // the shared directory since H-BC (253f1ada)
 
     private static byte[] Fixture(string name) => File.ReadAllBytes(Path.Combine(FixtureDir, name + ".json"));
 

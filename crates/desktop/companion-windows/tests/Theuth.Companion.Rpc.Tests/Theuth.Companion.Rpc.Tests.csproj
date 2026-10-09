@@ -29,7 +29,5 @@
     <None Include="..\..\..\companion\Tests\TheuthKitTests\Fixtures\*.json" Link="Fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- 149 WW1 R1: one loopback Kestrel host at a time (collections serial) and a long-running-test warning at 20 s. -->
     <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
-    <!-- 153 W153B: the 13 cross-platform fixtures from feat/153-cc (557eb083), copied under their own names until they reach main's Fixtures/ dir. -->
-    <None Include="Fixtures153\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

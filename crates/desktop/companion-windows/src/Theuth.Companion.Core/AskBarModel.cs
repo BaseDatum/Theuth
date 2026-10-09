@@ -67,8 +67,9 @@ public sealed class AskBarModel : INotifyPropertyChanged
     /// <summary>"finishing…" never lasts longer: the text so far lands (Swift's ponytail cap).</summary>
     public static readonly TimeSpan FinishCap = TimeSpan.FromSeconds(5);
 
-    /// <summary>153 §7.3: the status while "send it" is armed — the engine stops after the 1.5 s settle and sends without the hold.</summary>
-    public const string SendingSoon = "sending in 1.5 s…";
+    /// <summary>153 §7.3: the status while "send it" is armed — the engine stops after its settle and the field sends without the hold.
+    /// "sending…" as the Mac companion (153-as-built-BC §3.1 row: no countdown source on the surface).</summary>
+    public const string SendingSoon = "sending…";
 
     private readonly StoreModel store;
     private readonly IDictationCalls calls;
