@@ -1292,8 +1292,14 @@ rewrite panel reuse it).
 | Q6 | "Automatic" gesture default off (hold / double-tap lock stays)? | yes (W-i) |
 | Q7 | The command turn cap 12; the approval listen window 8 s; polish budget 4 s — constants to tune after the first week? | yes; they are `pub const`s with one home each |
 | Q8 | Polish and rewrite are charged to theuth's desk session when the destination has none (W-h). OK, or a dedicated "voice" session row? | the desk |
+| Q9 | 149 ISLAND FIX (main `46960464`, landed while 153 was written) pins pill + card to the island area for the whole gesture. Keep that (island area of the display under the pointer at press, fixed for the gesture) or let 153's card follow the pointer? | keep the island-area rule; choose the display at press |
 
 ### Amendment log
 - 2026-10-09 v0 — written. Amends: 54 §0.10/§12 (audio may be kept under D9's budget; `dictation.rs:7`'s header changes with wave A);
   96 §0.6 (modifier-only chords become an opt-in companion option, §12.6); 149 §8 (two new anywhere rows, §15); 149 §3.7/D14 (the
   AnswerCard grows into §12's card); the study's §2.4 latency inference (0.7 s → ≈0.24 s structural floor, both [INFERENCE] until §8.7 measures).
+- 2026-10-09 17:35 (orchestrator, before landing) — main moved to `46960464` (149 ISLAND FIX) while this was written: its item P pins the
+  point-and-say dictation pill and the answer card to the **island area for the whole gesture** instead of following the pointer, and D1/D2
+  make the island open while a meeting is live with no hover model. §12's "pointer-screen presentation" and §2.3's "card and pill already
+  follow the pointer" must be read against that landing: wave C presents the card/pill in the island area of the display under the pointer
+  **at press** (per-display island memory, 149 D3) and does not move it mid-gesture. Q9 below records the fork.
