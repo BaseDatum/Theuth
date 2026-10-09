@@ -31,6 +31,7 @@ Worktree `~/Develop/theuth-153-a4`, branch `feat/153-a4`, cut from the PIN `cbaf
 | §6.5 store setup | `Store::open(..).with_budget(rows, audio_mib << 20)`, gated on `Store::recording_allowed(&history, false)` — no private-session signal exists in the frozen `DictationOpts`, so `false`. Audio: `attach_audio` once per closed utterance (the task batches a 16 kHz i16 utterance incl. a 500 ms pre-roll), rows at `Finished`. |
 | §14.1 message named `SuggestionAnswer` | Named `AnswerSuggestion` (the enum `history::SuggestionAnswer` already has the name). |
 | §14.1 `DictationOpts.commands` | Applied via A1's `Shaper::with_commands` + `with_surface` (post-merge). Per-utterance `EndParser` through `shape_with`. |
+| A1's `with_mentions(agent names)` | Not wired: the voice crate has no agent registry and the frozen `DictationOpts` carries no mention list; the dictionary's `mention`-tagged entries still apply. Integrator/wave B: add a `mentions` field or have the RPC layer resolve `agents_list` if wanted. |
 
 ## Tests (`crates/voice/src/dictation.rs`, fake engine + injected mic opener; no model, no device)
 `none_opts_is_today`, `send_it_settle_then_silence_stops`, `scratch_that_empties_previous_utterance`, `device_lost_rearms_within_5s`,
