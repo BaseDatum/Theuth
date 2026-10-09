@@ -7,6 +7,7 @@ extension AppDelegate {
     /// W3: the Ask bar panel, the key-down half of the hotkey (key-up stays in W1's handler), `--ask`, `--ask-probe N`.
     func installAskBar(attention: PanelController) {
         askBar = AskBarController(store: store, attention: attention)
+        askBar.suggestionCard = DictionarySuggestionCard(store: store, askBar: askBar) // 153 §6.4
         KeyboardShortcuts.onKeyDown(for: .openPanel) { [weak self] in
             guard let self, Flags.probe == nil else { return }
             self.askBar.hotkeyDown()
