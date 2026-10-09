@@ -325,13 +325,263 @@ omp:
 - Without `permission`: nothing derived from a child's quiet is ever a needs-you alert (§7.2 has no such row in v1; the invariant binds future rows).
 - `session_load` is informational in v1 (the respawn path already probes `loadSession` itself, `crates/acp/src/harness.rs:326-356` per the seam map); it is recorded so 146's RESUME brief can read it.
 
-
 ## 9 Frozen signatures
+
+These are law (working rules): the `155 C: skeleton` commit contains exactly these shapes with neutral bodies; workers fill bodies and may add private items, never change a frozen name, field, type or default. A deviation goes in the DONE message.
+
+### 9.1 `crates/agent/src/activity.rs` (new; W1)
+
+```rust
+/// `agent.activity` (155 §3.5).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ActivityConfig {
+    pub first_update_secs: u64, // 60; 0 = never
+    pub silent_secs: u64,       // 180; 0 = never
+}
+
+#[serde(rename_all = "snake_case")] // + JsonSchema, ts
+pub enum StallPhase { NoFirstUpdate, Silent }
+impl StallPhase { pub const fn as_str(self) -> &'static str } // "no_first_update" | "silent"
+
+/// One `session/update` as the monitor sees it.
+pub enum ChildUpdate<'a> { Message, Thinking, ToolStarted(&'a str), ToolFinished, Other }
+
+/// One wake (§4.1).
+pub struct Stall { pub phase: StallPhase, pub quiet_secs: u64, pub last: String }
+
+/// The per-child monitor (§3). Pure: every method takes `now`.
+pub struct ChildActivity { /* private */ }
+impl ChildActivity {
+    pub fn new(cfg: ActivityConfig) -> Self;
+    pub fn delivered(&mut self, now: Instant);
+    pub fn update(&mut self, now: Instant, what: ChildUpdate<'_>);
+    pub fn turn_ended(&mut self, now: Instant);
+    pub fn deadline(&self, now: Instant) -> Option<Instant>;
+    pub fn fire(&mut self, now: Instant) -> Option<Stall>;
+    pub fn tools_in_progress(&self) -> u32;
+    pub fn last(&self) -> &str;
+}
+
+/// The §5.1 words; `until` accepts the first four after `running`.
+#[serde(rename_all = "snake_case")] // + JsonSchema, ts
+pub enum PeerStateWord { Running, Blocked, Idle, Done, Stalled, NotRunning, Timeout }
+impl PeerStateWord {
+    pub const fn as_str(self) -> &'static str;
+    pub const fn waitable(self) -> bool; // Blocked | Idle | Done | Stalled
+}
+
+/// What the supervisor knows about one child (§5.1 table).
+pub struct PeerFacts {
+    pub live: bool, pub dead: bool, pub running: bool,
+    pub approval: bool, pub ask: bool, pub requires_action: bool,
+    pub stalled_secs: Option<u64>, pub result_delivered: bool, pub queued: bool,
+    pub reports: acp::Reports,
+}
+pub fn peer_state_of(f: &PeerFacts) -> PeerStateWord;
+
+/// One registered `wait_peer` (§5.2).
+pub struct PeerWait {
+    pub caller: SessionId, pub call_id: String, pub child: SessionId, pub name: String,
+    pub until: Vec<PeerStateWord>, pub deadline: Option<Instant>, pub since: Instant,
+}
+
+/// Supervisor-side state: `Agents.activity` (§4.2, §5.2).
+#[derive(Default)]
+pub struct Monitor {
+    pub stalls: HashMap<SessionId, (StallPhase, Instant)>,
+    pub waits: HashMap<(SessionId, SessionId), PeerWait>, // (caller, child)
+}
+
+/// `tell` from the child actor (§4.2): `Some` opens an episode, `None` ends it.
+pub struct ChildStalled { pub child: SessionId, pub stall: Option<Stall> }
+/// `ask` → `Result<PeerWaitRegistered, String>` (§5.2).
+pub struct WaitPeer {
+    pub session: SessionId, pub call_id: String, pub to: String,
+    pub until: Vec<PeerStateWord>, pub timeout_secs: Option<u64>,
+}
+#[derive(Serialize)] // the tool's `structured`
+pub struct PeerWaitRegistered {
+    pub child: SessionId, pub name: String, pub state: PeerStateWord, pub holds: bool, pub since_secs: u64,
+}
+```
+
+### 9.2 crates/agent, other files (W1)
+
+```rust
+// lib.rs
+pub mod activity;
+pub use activity::{ActivityConfig, ChildStalled, PeerStateWord, StallPhase, WaitPeer, PeerWaitRegistered};
+pub struct AgentConfig { /* … */ pub activity: ActivityConfig, /* … */ }          // after `endless`
+
+// communication.rs
+pub struct PeerActivity { /* … */ #[serde(default)] pub stalled_secs: Option<u64> } // §5.5
+
+// acp_child.rs
+pub struct AcpChild { /* … */ activity: ChildActivity, stall: Option<AbortHandle> }
+impl AcpChild { pub fn with_activity(self, cfg: ActivityConfig) -> Self; }
+struct StallCheck;                                                                  // timer message (§3.3)
+
+// supervisor.rs
+pub struct Agents { /* … */ pub(crate) activity: crate::activity::Monitor }
+pub(crate) fn job_idle(id, command, name, quiet, secs, nudge, user_typed, why: &str, text, now) -> String; // why="…" after nudge
+pub(crate) fn child_stalled(name: &str, session: SessionId, phase: StallPhase, quiet_secs: u64, last: &str, body: &str, now) -> String;
+pub(crate) fn peer_state(name: &str, session: SessionId, state: PeerStateWord, since_secs: u64, body: &str, now) -> String;
+impl Message<ChildStalled> for Agents { type Reply = (); }                          // supervisor/activity.rs
+impl Message<WaitPeer> for Agents { type Reply = Result<PeerWaitRegistered, String>; }
+// registration: reg.ask(RegisterTool(Arc::new(WaitPeerTool))) after PeerMessageTool
+
+// peers.rs
+pub struct WaitPeerArgs { pub to: String, pub until: Vec<PeerStateWord>, #[serde(default)] pub timeout_secs: Option<u64> }
+pub struct WaitPeerTool;  // Tool: NAME = "wait_peer", RISK = ReadOnly, RETURNS = "dict", not DIRECT
+
+// store/durability.rs
+pub async fn peer_state_waits(&self, scope: Scope) -> anyhow::Result<Vec<WaitRow>>; // kind = 'peer_state'
+```
+
+### 9.3 crates/tools and crates/platform (W2)
+
+```rust
+// tools/src/journal.rs
+pub enum WaitKind { PeerReply, ChildResult, Job, PtyWait, Question, PeerState }     // "peer_state"
+
+// tools/src/jobs.rs
+JobEvent::Idle { /* … */ #[serde(default)] why: String }
+
+// tools/src/lib.rs
+pub struct ToolsConfig { /* … */ pub pty_reaction_secs: u64, pub pty_tree_cpu_pct: u8 } // 10, 2
+pub mod proctree; pub use proctree::{PtyThresholds, TreeQuiet};
+
+// tools/src/proctree.rs (new)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PtyThresholds { pub reaction: Duration, pub tree_cpu_pct: u8 }
+impl PtyThresholds { pub fn from_config(cfg: &ToolsConfig) -> Self; }
+/// The §6.2 rule over successive `platform::TreeSample`s.
+pub struct TreeQuiet { /* private */ }
+impl TreeQuiet {
+    pub fn new(thresholds: PtyThresholds) -> Self;
+    pub fn saw(&mut self, now: Instant, sample: Option<platform::TreeSample>, foreground_is_leader: bool);
+    pub fn quiet(&self) -> bool;         // true until two samples exist
+    pub fn moved_since(&self, t: Instant) -> bool;
+}
+
+// tools/src/pty.rs
+pub(crate) struct PtyHandle { /* … */ sent_at: Mutex<Option<Instant>> }
+impl Idle { fn defer(&mut self, now: Instant); }
+impl StartTool { pub fn new(jobs, shells, ready_timeout, idle_default, pty_shell, thresholds: PtyThresholds) -> Self; }
+
+// platform/src/process.rs
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreeSample { pub processes: u32, pub cpu: Duration }
+impl ProcessTree { pub fn sample(&self) -> Option<TreeSample>; }
+```
+
+### 9.4 crates/acp (W1)
+
+```rust
+// agents.rs
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] // + ts
+#[serde(default)]
+pub struct Reports { pub permission: bool, pub turn_end: bool, pub session_load: bool }
+impl Reports {
+    pub fn for_command(command: &str, args: &[String]) -> Self; // §8.1 table
+    pub fn for_registry(id: &str) -> Self;
+}
+pub struct Entry { /* … */ #[serde(default, skip_serializing_if = "Option::is_none")] pub reports: Option<Reports> }
+impl Entry { pub fn reports(&self) -> Reports; }
+pub struct EntryInfo { /* … */ #[serde(default)] pub reports: Reports }
+```
+
+### 9.5 crates/roster and crates/rpc (W3)
+
+```rust
+// roster/src/alert.rs (new)
+#[serde(rename_all = "snake_case")] // + JsonSchema, ts
+pub enum AlertClass { NeedsYou, Finished }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)] // + ts
+pub struct Alert { pub id: String, pub class: AlertClass, pub why: String, #[ts(type = "number")] pub at_ms: u64 }
+pub fn class_of(item: &AttentionItem) -> Option<AlertClass>;
+pub fn why_of(item: &AttentionItem) -> String;
+#[derive(Default)]
+pub struct Episodes { /* item id → episode start ms */ }
+impl Episodes {
+    pub fn alert(&mut self, item: &AttentionItem, now_ms: u64, delay_ms: u64) -> Option<Alert>;
+    pub fn retain<'a>(&mut self, live: impl Iterator<Item = &'a str>);
+    pub fn next_due(&self, now_ms: u64, delay_ms: u64) -> Option<u64>;
+}
+
+// roster/src/attention.rs
+pub struct AttentionItem { /* … */ #[serde(default)] #[ts(optional = nullable)] pub alert: Option<Alert> } // last field
+pub struct Attention { /* … */ episodes: Episodes }
+pub struct AlertDue;                                        // timer message (§7.4)
+
+// roster/src/config.rs
+pub struct RosterConfig { /* … */ pub alert_delay_ms: u64 } // 2000
+
+// rpc/src/api.rs
+pub type SeenMap = Arc<RwLock<HashMap<u64, HashSet<String>>>>;
+pub struct Server { /* … */ pub seen: SeenMap }
+#[method(name = "attention_list", with_extensions)]
+async fn attention_list(&self) -> RpcResult<Vec<roster::attention::AttentionItem>>;
+```
+
+Wire additions the clients see after the bindings regen: `AttentionItem.alert?: Alert | null`, `Alert`, `AlertClass`, `PeerActivity.stalled_secs`, `JobEvent.JobIdle.why`, `PeerStateWord`, `StallPhase`, `EntryInfo.reports` / `Reports`.
 
 ## 10 Waves and file ownership
 
+| wave | owns | must not touch |
+|---|---|---|
+| **W1 ENGINE-ACTIVITY** | `crates/agent/src/activity.rs`, `acp_child.rs` (hooks §3.1, §3.3), `supervisor.rs` (`child_stalled`/`peer_state` wrappers, `job_idle` `why`, `peer_activity`, registration), `supervisor/activity.rs` (new; `ChildStalled`, `WaitPeer`, `check_peer_waits`, boot re-arm), `peers.rs` (`WaitPeerTool`, `discover_peers` text), `communication.rs`, `store/durability.rs` (`peer_state_waits`, `cut_journal_in`), `lib.rs` (config), `crates/acp/src/agents.rs`, `crates/acp/src/registry.rs` | anything under `crates/tools`, `crates/platform`, `crates/roster`, `crates/rpc`, `crates/desktop` |
+| **W2 PTY-SIGNALS** | `crates/tools/src/pty.rs`, `proctree.rs` (new), `activity.rs`, `jobs.rs`, `lib.rs` (config), `registry.rs` (wiring), `crates/tools/Cargo.toml` only if truly needed, `crates/platform/src/process.rs` (`sample`) and `crates/platform/Cargo.toml` features | `crates/tools/src/journal.rs` (`WaitKind::PeerState` is in the skeleton; W1 reads it), `crates/agent/**` (the `why` rendering is W1's), `crates/desktop/ui/src/store/reduce.test.ts` (fixture already updated by C) |
+| **W3 ALERTS** | `crates/roster/src/alert.rs` (new), `attention.rs` (decorate + `AlertDue`), `config.rs`, `crates/rpc/src/api.rs` (`attention_list` masking, `set_event_focus` → seen), `crates/desktop/ui/**`, `crates/desktop/companion/Sources/Companion/Notifications/**`, `crates/desktop/companion/Sources/CompanionCore/Policy.swift`, `crates/desktop/companion/Sources/TheuthKit/Models.swift` (the Codable `Alert`) | `crates/agent/**`, `crates/tools/**`, `crates/acp/**`, `crates/desktop/companion-windows/**` |
+
+PIN dependencies: none at wave start — every cross-wave type is in the `155 C: skeleton` commit (`WaitKind::PeerState`, `JobEvent::Idle.why`, `acp::Reports`, `Alert`, `PeerStateWord`, `TreeSample`). W1 renders `why` from the field W2 fills; W3 reads `Reports` only through `EntryInfo`. If a worker must change a frozen shape, it messages the orchestrator first and lists the deviation in DONE.
+
+Integrator (after the three DONEs): merge in the order W2 → W1 → W3 (tools below agent below roster/rpc), `cargo fmt -p` the touched crates, `mbx check -p agent -p tools -p roster -p rpc -p acp -p platform --tests`, the bindings export + copy, `bunx tsc --noEmit -p crates/desktop/ui`, `swift build` for the companion, then the live proofs of §11 on a scratch engine and the as-built `docs/design/155-as-built.md`.
+
 ## 11 Proof list
+
+Unit tests (one per bullet, in the owning crate; fake clocks by passing `Instant`s / `now_ms`):
+
+- W1 `activity.rs`: `no_first_update` fires at `delivered + 60 s` and not at 59; `silent` fires 180 s after the last update only when `tools_in_progress == 0`; a `ToolStarted` suspends the `silent` deadline and `ToolFinished` resumes it from the finish; one `Some` per episode, re-armed by `update`; `first_update_secs = 0` never fires; a continuation turn (no `delivered`) only fires `silent`.
+- W1 `activity.rs`: `peer_state_of` precedence table (blocked beats stalled beats done beats idle); `reports.turn_end = false` turns idle/done into running; `dead` → not_running.
+- W1 `supervisor/activity.rs` (actor rig as `child_waits.rs` tests): `wait_peer` returns `holds: true` without a row when the state already holds; a registered wait writes a `peer_state` row and wakes the caller with `<peer_state state="done">` after `hand_off`; a second child spawned under the same name does not satisfy the first wait (pinning); the child's actor stopping settles `not_running`; a timeout settles `timeout` and clears the row; boot `peer_state_waits(Scope::Here)` re-arms a row, settles a past deadline, settles a missing child.
+- W1 `supervisor.rs`: `child_stalled` wrapper renders every attribute and escapes `last`; `job_idle` renders `why`.
+- W1 `acp::agents`: `Reports::for_command` rows of §8.1; an explicit `reports:` block round-trips through `agents.yaml`; an entry without it serialises without the key.
+- W2 `proctree.rs`: `TreeQuiet` is quiet with no samples, busy when cpu delta exceeds the threshold, busy when `foreground_is_leader` is false, quiet again after one quiet sample; `moved_since`.
+- W2 `pty.rs`: the idle rule with a fake `TreeQuiet` — screen unchanged + tree busy → no fire and `defer`; screen unchanged + tree quiet → fire with the quiet `why`; reaction check — `send()` then neither screen nor tree moves for `reaction` → one fire with `why = "no reaction to input"`, suppressed while `waiting > 0`, no second fire.
+- W2 `platform::process`: `sample` on the test's own process group returns `processes ≥ 1` and a cpu that does not decrease between two calls (unix and Windows).
+- W3 `alert.rs`: `class_of`/`why_of` for all 14 kinds (table §7.2); `Episodes::alert` is `None` before `start + delay`, `Some` with a stable id after, a new id after the item left and returned; `next_due`.
+- W3 `api.rs`: `attention_list` blanks `alert` for a focused session and keeps it for an unfocused one on a second connection; a `finished` alert blanked once by focus stays blanked for that connection and visible on another; the seen set dies with the connection.
+- W3 desktop (vitest): one `notifyIfHidden` per `alert.id`, none for the focused session, old path for items without `alert`. Companion (Swift Testing): `NotificationPolicy.update` posts one banner per `alert.id`, respects `pausedUntil`, falls back to `classify` without `alert`.
+
+Live proofs on a scratch engine (integrator, recorded in the as-built with timestamps):
+
+1. A fake ACP child (the `Rig` fake harness pattern, `crates/agent/src/acp_child.rs:3466`) that accepts the prompt and sends nothing wakes its parent with `<child_stalled phase="no_first_update">` within 60 s + one tick; one that streams a tool call and then goes silent with the call still open never wakes; after the call completes it wakes with `phase="silent"` at 180 s.
+2. `wait_peer(w1, until=["done"])` from a parent returns `holds: false`, and the parent is woken with `<peer_state state="done">` within one second of the child's result delivery; `wait_peer(w1, until=["blocked"])` wakes when the child asks for a permission.
+3. `start(command="bash")`, `send("sleep 300")`: no `<job_idle>` for 300 s although the screen never changes; after `sleep` ends, `<job_idle why="screen unchanged for … s, process tree quiet">` within `pty_idle_secs`. `start(command="bash")`, `send("cat")` then `send("x")` with no echo (`stty -echo` first): `<job_idle why="no reaction to input">` at 10 s.
+4. A root session finishes a turn while the desktop shows another session: one notification; the same with the finished session in view: none; focusing the session afterwards clears "done" on that client and not on the companion.
+5. Engine restart with a `peer_state` wait open: the wait is re-armed and still wakes.
 
 ## 12 Out of scope
 
+- The decision model and any model-written state reason (D8; `docs/design/155/eval-decision-model.md:21`).
+- Process survival across an engine restart (109 D14 stands); PTY state across a restart (`pty_screens` snapshots remain the only trace).
+- Per-harness screen rules, manifests, OSC title/progress parsing, plugins (D9; herdr A1 is explicitly not borrowed).
+- An attention item for a stalled child (D2 — v1 wakes the parent only); a `Blocked{why}` word on `AgentState`.
+- Network-traffic signals for PTY busy/quiet; engine-managed worktrees.
+- The Windows companion (follow-up brief); push to phones (42, not built).
+- A `t agents wait` CLI; a `wait_state` for PTY jobs (`wait_peer` is for children; a PTY still uses `wait(pattern)` and `<job_idle why>`).
+- Persisting the finished-seen set across reconnects (C-g); live knobs/Settings rows for the new config keys.
+
 ## 13 Inconsistencies and open questions
+
+1. **`reports.turn_end` for omp** (§8.1): set true because the continuation turn already covers omp's post-prompt work; the cost is `idle` arriving up to `CONTINUATION_QUIET` = 120 s late. If Sky wants `done` faster for omp, the knob is `CONTINUATION_QUIET`, not this table.
+2. **`blocked` and `ask_user`**: the pending-ask map is in tools (`tools::PendingAsks`), not on `Agents`; W1 reads it through `ListAsks`-style access or the `SessionActivity.asks` count (`crates/agent/src/lib.rs:1348-1363`). The §5.1 fact is `ask: bool`; how it is fetched is W1's.
+3. **`done` for a child the parent never waited on** (a `spawn_subagent` with no `child_result` row because `call_id` was empty, `crates/agent/src/supervisor/child_waits.rs:19-22`): `result_delivered` is true vacuously; `done` then equals `idle ∧ !queued`. Acceptable.
+4. **Seen per connection vs per device** (C-g): D6 says per device. `RpcPeer` has no device id; a per-device key needs the link device registry wired into rpc, which is out of this wave. Clients persist their own set if they want more.
+5. **Focus and the companion**: the companion never calls `set_event_focus` today; its finished items therefore stay "done" until the desktop focuses the session on the *same* connection — which never happens (different connections). W3 must either make the companion call `set_event_focus([session])` when the user opens an item, or accept that the companion's done bit clears only by dismiss. Decide in W3's DONE.
+6. **`is_delta` focus filtering** (`crates/rpc/src/api.rs:7946-7951`) is unchanged: `AttentionChanged` still reaches every connection; suppression happens in `attention_list`, not the stream.
+7. **Windows foreground rule** (§6.2) is weaker than unix (`processes ≤ baseline` instead of `tcgetpgrp`); a PowerShell `Start-Sleep` is in-process and shows only as low CPU — the reaction check still covers an ignored `send`.
+8. **Two wake inputs in one tick**: a child can be `stalled` and then `done` within a second (the harness answers and ends the turn). The parent then receives `<child_stalled>` and `<peer_state state="done">` back to back; both are true at their time. No coalescing in v1.
+9. The seam map's `Idle` line numbers (`crates/tools/src/pty.rs:1972-2038`) and the recon's `state_of` lines (`supervisor.rs:5924-5955`) have drifted on this base; the cites in this document are the current ones (`state_of` is at `:6013-6042`).
