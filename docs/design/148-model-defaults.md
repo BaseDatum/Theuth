@@ -224,12 +224,34 @@ Two UI tickets:
   autoresearch, a smoke script line): no conflicts, nothing in our crates;
   `cargo fmt --all -- --check` 0, `check -p theuth` clean; `t2` rebuilt.
 
+## R4 post-landing fix (Z2-C, 2026-10-09)
+
+148 landed on main as `d5a8666e`; the post-landing live check Z2 passed 5/6.
+Row C: `roster.theuth_model: nope/none` opened theuth's desk ON `nope/none`
+with no warn — the F7 fallback relied on `agent::SetModel { session: None,
+manual: false }`, whose `catalog.resolve` passes any `<provider>/<id>`; the
+"provider has no credentials" refusal lived only in `SetSubagentModel` and in
+the roster's `ListModels`-based check.
+
+- `agent::ResolveModel { model }` → `Result<ModelInfo, String>`: catalog
+  resolve + the `configured` provider check, shared with `SetSubagentModel`
+  (`Agents::resolve_keyed`), same error text, no side effects. Unknown ids
+  under a keyed provider still pass through.
+- roster: `resolve_configured` (open_desk / apply_desk_model fallback for any
+  agent — warn with `agent` + `model`, open on the live default) and
+  `resolve_keyed` (SetTheuthModel) use it; the `ListModels` check is gone.
+  `theuth_agent_model()` keeps returning the raw id.
+- `spawn_test_agents(rt, configured)` takes the keyed-provider predicate.
+- Tests: agent `resolve_model_checks_credentials_without_side_effects`;
+  roster rig test gains (vi): an agent with `model: nope/none` opens on the
+  default, `SetTheuthModel("nope/none")` is refused, a stored theuth
+  `nope/none` leaves the desk on the default and reads back as itself.
+- Branch `fix/148-r4-resolve` from `origin/main`.
+
 ## Follow-ups
 
 - TUI: no way to set the default model/effort (Settings UI owns it).
 - Subagent default effort row in Settings › Chat (`agent.subagents.effort` is
   config.yaml-only today).
-- `agent::ResolveModel` ask with the credential check, so roster-side
-  validation stops reading `ListModels`.
 - A desk whose configured model no longer resolves follows the default only
   after a restart or a model change, not on `DefaultModelChanged` (F7 gap).
