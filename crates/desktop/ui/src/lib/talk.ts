@@ -15,6 +15,7 @@ import type { State } from '@/rpc/bindings/State'
 import type { TalkEvent } from '@/rpc/bindings/TalkEvent'
 import type { VoiceEvent } from '@/rpc/bindings/VoiceEvent'
 import { on } from '@/store/sessions'
+import { openDraftSession } from '@/lib/drafts'
 
 /** The orb's three looks (§0.12). */
 export type OrbState = 'idle' | 'thinking' | 'speaking'
@@ -314,13 +315,14 @@ export async function start(api: Api, session: string): Promise<void> {
 }
 
 /**
- * The sidebar's Talk and the composer's Talk button: `session ?? new_session()`, then start (inside the user's
- * gesture — a relay client's mic needs it). Returns the session to navigate to; a talk already running on another
- * session is left alone (the daemon holds one) and that session comes back instead.
+ * The sidebar's Talk and the composer's Talk button: `session ?? openDraftSession()` (148 R1: a draft pick rides
+ * along), then start (inside the user's gesture — a relay client's mic needs it). Returns the session to navigate
+ * to; a talk already running on another session is left alone (the daemon holds one) and that session comes back
+ * instead.
  */
 export async function open(api: Api, session: string | null): Promise<string> {
   if (talk.phase !== 'off' && talk.session) return talk.session
-  const target = session ?? (await api.new_session())
+  const target = session ?? (await openDraftSession(api)).id
   void start(api, target)
   return target
 }

@@ -17,7 +17,7 @@ import type { EndlessConfig } from '@/rpc/bindings/EndlessConfig'
 
 /**
  * The new-chat body shared by the `/new` route and a draft pane: header, prompt, composer, create options.
- * Nothing exists until the first `send_input(null, …)` / `create_session` reply names the session.
+ * Nothing exists until the first send's `new_session` / `create_session` reply (`openDraftSession`) names the session.
  */
 export function NewChat({
   preset,

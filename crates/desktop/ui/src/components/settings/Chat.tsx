@@ -39,7 +39,7 @@ export function Chat() {
             models={models.data ?? []}
             value={info?.default_model}
             effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: info?.default_effort, onSelect: (level) => setDefaultEffort.mutate(level) } : undefined}
-            disabled={!info || setDefaultModel.isPending}
+            disabled={!info || setDefaultModel.isPending || setDefaultEffort.isPending}
             onChange={(v) => v && setDefaultModel.mutate(v)}
           />
         </Row>

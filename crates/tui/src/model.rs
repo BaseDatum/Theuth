@@ -15956,6 +15956,108 @@ mod tests {
         ));
     }
 
+    /// 148 R1: the other session-creating entries — `/talk`, the MCP menu's
+    /// `s` scope and `/<skill>` — carry the draft's picks the same way the
+    /// first send does; without a pick their `draft` is `None`.
+    #[test]
+    fn draft_picks_ride_on_talk_mcp_and_skill_entries() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("openai/gpt-5.4".into(), true);
+        let server = || McpServer {
+            name: "fs".into(),
+            connected: true,
+            repo: None,
+            auth: McpAuth::None,
+            gate: Some(Gate::Destructive),
+            tools: vec![McpToolInfo {
+                name: "read".into(),
+                description: String::new(),
+                gate: None,
+                risk: tools::Risk::Mutating,
+                action: PolicyAction::Ask,
+                registered: Some("read".into()),
+                hidden: false,
+            }],
+        };
+        m.apply(UiEvent::Skills(vec![SkillMeta {
+            name: "caveman".into(),
+            description: "caveman skill".into(),
+            path: "/skills/caveman.md".into(),
+            always: false,
+            repo: None,
+        }]));
+        let picked = |d: &Option<CreateSessionOptions>| {
+            let d = d.as_ref().expect("draft");
+            d.model.as_deref() == Some("anthropic/claude-sonnet-4-5")
+                && d.effort.as_deref() == Some("high")
+        };
+        m.submit("/model anthropic/claude-sonnet-4-5", &tx);
+        m.submit("/effort high", &tx);
+        assert!(rx.try_recv().is_err());
+
+        // `/talk` with no session: the created session starts on the picks.
+        m.submit("/talk", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::TalkStart { session: None, draft }) if picked(&draft)
+        ));
+        // MCP menu, ⏎ then `s` with no session: the hide creates it on the picks.
+        m.submit("/mcp", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListMcp(None))));
+        m.apply(UiEvent::Mcp(vec![server()]));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHidden { session: None, hidden: true, draft, .. }) if picked(&draft)
+        ));
+        // `/<skill>` with no session.
+        m.submit("/caveman lite", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::UseSkill { session: None, name, draft, .. }) if name == "caveman" && picked(&draft)
+        ));
+        let s = SessionId::new();
+        m.apply(UiEvent::SessionCreated(s));
+        assert_eq!(m.session, Some(s));
+        assert!(m.draft.is_none());
+
+        // A fresh draft with no pick: the same entries create on the engine side.
+        m.submit("/new", &tx);
+        assert!(m.draft.is_none());
+        m.submit("/talk", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::TalkStart {
+                session: None,
+                draft: None
+            })
+        ));
+        m.submit("/mcp", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListMcp(None))));
+        m.apply(UiEvent::Mcp(vec![server()]));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHidden {
+                session: None,
+                hidden: true,
+                draft: None,
+                ..
+            })
+        ));
+        m.submit("/caveman lite", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::UseSkill {
+                session: None,
+                draft: None,
+                ..
+            })
+        ));
+    }
+
     /// 75 §8: on an ACP session `/model` lists the harness's options,
     /// `/model <v>` and `/effort <v>` set them by alias, and a queued change
     /// is announced as landing after the turn.

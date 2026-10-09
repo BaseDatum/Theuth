@@ -14,6 +14,9 @@
 import { create } from 'zustand'
 import type { AttachRef } from '@/lib/attach'
 import type { Paste, Pastes } from '@/lib/pastes'
+import type { Api } from '@/rpc/api'
+import type { CreateSessionOptions } from '@/rpc/bindings/CreateSessionOptions'
+import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
 
 const KEY = 'composer-drafts'
 
@@ -158,3 +161,35 @@ export const useDraftPick = create<PickStore>()((set) => ({
   setEffort: (effort) => set({ effort }),
   reset: () => set({ model: null, effort: null }),
 }))
+
+/** `create_session` options that give exactly what `new_session()` gives: every switch off, the engine's defaults. */
+export const PLAIN_OPTIONS: CreateSessionOptions = {
+  retention: 'durable',
+  project: null,
+  notebook: null,
+  view: null,
+  cwd: null,
+  model: null,
+  effort: null,
+  parent_session: null,
+  parent_engine: null,
+  harness: null,
+}
+
+/**
+ * 148 R1: open the session a draft's first action creates (a send, Talk, `/<skill>`, a parked skill). `options`
+ * (a New Chat switch on, built by the composer with the pick in it) or a bare model/effort pick goes through
+ * `create_session`; otherwise `new_session()`. The pick is spent either way. `open` is the `create_session` reply
+ * when it ran (a private session needs it); `pick` is what was spent, for seeding the transcript header.
+ */
+export async function openDraftSession(
+  api: Api,
+  options: CreateSessionOptions | null = null,
+): Promise<{ id: string; open: SessionOpen | null; pick: { model: string | null; effort: string | null } }> {
+  const { model, effort, reset } = useDraftPick.getState()
+  const wanted = options ?? (model || effort ? { ...PLAIN_OPTIONS, model, effort } : null)
+  const open = wanted ? await api.create_session(wanted) : null
+  const id = open ? open.session : await api.new_session()
+  reset()
+  return { id, open, pick: { model, effort } }
+}

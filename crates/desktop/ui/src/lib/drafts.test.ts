@@ -1,5 +1,6 @@
 import { beforeEach, expect, test, vi } from 'vitest'
-import { EMPTY, load, useDrafts } from './drafts'
+import type { Api } from '@/rpc/api'
+import { EMPTY, PLAIN_OPTIONS, load, openDraftSession, useDraftPick, useDrafts } from './drafts'
 import { attach, attachRef } from './pastes'
 
 // No DOM in the test runner: the smallest `Storage` the store needs (the module's own `load()` ran without one and
@@ -86,4 +87,41 @@ test('a failed send leaves the flagged draft through edits; emptying the box dro
 test('a corrupt store reads as empty', () => {
   localStorage.setItem('composer-drafts', '{not json')
   expect(load()).toEqual({ by: {}, edits: {} })
+})
+
+// 148 R1: the one seam every draft-born session goes through (the composer's send, Talk, `/<skill>`, a parked skill).
+const opened = { session: 's-new', retention: 'durable' }
+const apiFor = () => {
+  const create_session = vi.fn(async () => opened)
+  const new_session = vi.fn(async () => 's-plain')
+  return { api: { create_session, new_session } as unknown as Api, create_session, new_session }
+}
+
+test('148 R1: a draft model/effort pick opens through create_session with it (never new_session) and is spent', async () => {
+  const { api, create_session, new_session } = apiFor()
+  useDraftPick.getState().setModel('openai/gpt-5.4')
+  useDraftPick.getState().setEffort('high')
+  const r = await openDraftSession(api)
+  expect(create_session).toHaveBeenCalledWith({ ...PLAIN_OPTIONS, model: 'openai/gpt-5.4', effort: 'high' })
+  expect(new_session).not.toHaveBeenCalled()
+  expect(r).toEqual({ id: 's-new', open: opened, pick: { model: 'openai/gpt-5.4', effort: 'high' } })
+  expect(useDraftPick.getState()).toMatchObject({ model: null, effort: null })
+  // Effort alone is enough: `new_session()` cannot carry it.
+  useDraftPick.getState().setEffort('low')
+  await openDraftSession(api)
+  expect(create_session).toHaveBeenLastCalledWith({ ...PLAIN_OPTIONS, effort: 'low' })
+  expect(useDraftPick.getState().effort).toBeNull()
+})
+
+test('148 R1: no pick and no switch → new_session(); a switch (the composer\'s options) → create_session with them', async () => {
+  const { api, create_session, new_session } = apiFor()
+  useDraftPick.getState().reset()
+  expect(await openDraftSession(api)).toEqual({ id: 's-plain', open: null, pick: { model: null, effort: null } })
+  expect(create_session).not.toHaveBeenCalled()
+  const options = { ...PLAIN_OPTIONS, project: 'lab', model: 'openai/gpt-5.4' }
+  useDraftPick.getState().setModel('openai/gpt-5.4')
+  expect((await openDraftSession(api, options)).id).toBe('s-new')
+  expect(create_session).toHaveBeenCalledWith(options)
+  expect(new_session).toHaveBeenCalledTimes(1)
+  expect(useDraftPick.getState().model).toBeNull()
 })

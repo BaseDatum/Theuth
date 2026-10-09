@@ -224,7 +224,7 @@ function Overview({ file: f, summary: s, agents }: { file: AgentFile; summary: A
       >
         <Rows
           rows={[
-            ['Model', f.model ?? dim('node default')],
+            ['Model', f.model ?? dim(SAME_AS_NEW.label)],
             ['Effort', f.effort ?? dim('default')],
             ['Tools ceiling', f.tools ?? dim('inherited')],
             ['MCP', f.mcp === null ? dim('every server') : f.mcp.length === 0 ? dim('none') : f.mcp.join(', ')],
