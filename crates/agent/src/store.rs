@@ -1161,6 +1161,19 @@ impl Store {
         Ok(())
     }
 
+    /// Set `sessions.kind` of an existing row (144 §9: a root created as a chat
+    /// becomes the `ask` session the moment the ask run claims it).
+    pub async fn set_kind(&self, id: SessionId, kind: SessionKind) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET kind = ? WHERE id = ?")
+            .bind(advisor::kind_str(kind))
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Pin (or unpin) a session: pinned rows sort first in `list_sessions`.
     pub async fn set_pinned(&self, id: SessionId, pinned: bool) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
@@ -3916,6 +3929,33 @@ mod tests {
         assert_eq!("inside_parent".parse(), Ok(CostRule::InsideParent));
         assert!(ObservedState::Cancelled.is_terminal());
         assert!(!ObservedState::Unknown.is_terminal());
+    }
+
+    /// 144 §9: `ask` is a stored kind; `set_kind` flips a chat root into it and the row reads back as such.
+    #[tokio::test]
+    async fn ask_kind_round_trips_through_the_row() {
+        assert_eq!(advisor::kind_str(SessionKind::Ask), "ask");
+        assert_eq!(advisor::kind_of("ask"), SessionKind::Ask);
+        assert_eq!(serde_json::to_string(&SessionKind::Ask).unwrap(), "\"ask\"");
+        let (store, id, _dir) = fresh().await;
+        assert_eq!(
+            store.session(id).await.unwrap().unwrap().kind,
+            SessionKind::Chat
+        );
+        store.set_kind(id, SessionKind::Ask).await.unwrap();
+        assert_eq!(
+            store.session(id).await.unwrap().unwrap().kind,
+            SessionKind::Ask
+        );
+        // Listed like a chat (only advisors are hidden).
+        assert!(
+            store
+                .list_sessions()
+                .await
+                .unwrap()
+                .iter()
+                .any(|s| s.id == id)
+        );
     }
 
     #[tokio::test]

@@ -1175,6 +1175,34 @@ pub trait Api {
         turn: u32,
         note: document::DocId,
     ) -> RpcResult<()>;
+    /// Ask a question across `scope` (144 §9): a new `kind: ask` session plans, searches each notebook and writes
+    /// one cited answer as its first turn; the run streams as `NotebookAsk` on `subscribe_events`. `save_into` files
+    /// the answer as a note there when done. Owner only.
+    #[method(name = "notebook_ask", with_extensions)]
+    async fn notebook_ask(
+        &self,
+        scope: Vec<document::DocId>,
+        question: String,
+        save_into: Option<document::DocId>,
+    ) -> RpcResult<agent::ask::AskStarted>;
+    /// The ask sessions, newest first. Owner only.
+    #[method(name = "notebook_ask_list", with_extensions)]
+    async fn notebook_ask_list(&self, limit: Option<u32>)
+    -> RpcResult<Vec<agent::ask::AskSummary>>;
+    /// Generate (or regenerate → next version) one overview of `notebook` (144 §10) in its overview session; the
+    /// artifact is filed in the notebook when the `show` lands. Owner only.
+    #[method(name = "notebook_overview_run", with_extensions)]
+    async fn notebook_overview_run(
+        &self,
+        notebook: document::DocId,
+        kind: agent::overviews::OverviewKind,
+    ) -> RpcResult<agent::overviews::OverviewRun>;
+    /// The overviews of `notebook`, newest version first per kind (a running or failed run on top). Owner only.
+    #[method(name = "notebook_overviews", with_extensions)]
+    async fn notebook_overviews(
+        &self,
+        notebook: document::DocId,
+    ) -> RpcResult<Vec<agent::overviews::Overview>>;
     /// Row counts and freshness of the code index for `root` (default: the
     /// git top-level of the process cwd; design doc 60 §10). Opens the
     /// index without reconciling it.
@@ -5394,6 +5422,59 @@ impl ApiServer for Server {
         owner(ext)?;
         let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
         nb_result(agent::notebooks::promote_answer(&agents, session, turn, note.to_string()).await)
+    }
+
+    async fn notebook_ask(
+        &self,
+        ext: &Extensions,
+        scope: Vec<document::DocId>,
+        question: String,
+        save_into: Option<document::DocId>,
+    ) -> RpcResult<agent::ask::AskStarted> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(
+            agent::ask::notebook_ask(
+                &agents,
+                scope.iter().map(ToString::to_string).collect(),
+                question,
+                save_into.map(|n| n.to_string()),
+            )
+            .await,
+        )
+    }
+
+    async fn notebook_ask_list(
+        &self,
+        ext: &Extensions,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<agent::ask::AskSummary>> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(agent::ask::notebook_ask_list(&agents, limit).await)
+    }
+
+    async fn notebook_overview_run(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+        kind: agent::overviews::OverviewKind,
+    ) -> RpcResult<agent::overviews::OverviewRun> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(
+            agent::overviews::notebook_overview_run(&agents, notebook.to_string(), kind).await,
+        )
+    }
+
+    async fn notebook_overviews(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+    ) -> RpcResult<Vec<agent::overviews::Overview>> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(agent::overviews::notebook_overviews(&agents, notebook.to_string()).await)
     }
 
     async fn doc_snapshots(&self, doc: document::DocId) -> RpcResult<Vec<document::SnapshotInfo>> {
