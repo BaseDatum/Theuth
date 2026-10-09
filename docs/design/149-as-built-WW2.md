@@ -31,7 +31,7 @@ screen that needs an agent turn was rendered from the `--ww2-fixture` overlay (n
 
 ## 2. Verification
 
-- Mac: Core **191/191** at d978afc1 (after merging WW1's final 0b3de92e; 22 of them WW2's); Rpc **43/43** at 78d9375c (the SKELETON merge) — the Rpc suite at the merged head is WW1's and ran separately (see the report).
+- Mac: Core **191/191** at d978afc1 (after merging WW1's final 0b3de92e; 22 of them WW2's); Rpc **43/43** at 78d9375c (the SKELETON merge). At the merged head (f357cf5e and later) the Rpc test host hung twice on the Mac (20 and 10 min, load 30–60; the loopback-Kestrel hang WW1 describes — WW2 touches no Rpc file); both runs were killed by pid. build-B compiles `Theuth.Companion.Rpc.Tests` in every 0/0 build; WW1's own report carries that suite's green.
 - build-B Debug x64 of the whole solution (`Theuth.Companion.slnx`, slot `ww2`): **d978afc1 → 0 errors / 0 warnings**, 31 s (job 20261009T021157-88); also f357cf5e (the UI round's build, 0/0, 43 s, 20261009T015031-67) and a1ec4959 (0/0, 39 s). Earlier rounds 2ed44bdf (3 errors: DispatcherQueue ambiguity) and 78d4cf14 (15: Shape ambiguity, HWND.Value is `void*`, nullable flow in ctor lambdas) were fixed in a1ec4959.
 - UI round on build-B under the desk lock (owner `ww2`): one round 03:00–03:10 (acquired 03:00:30 after WE1, released 03:10:30, 10 min). Launches from slot `ww2` at f357cf5e with
   `--shareable` (the companion's windows are capture-excluded otherwise — the first launch without it produced empty screenshots):
