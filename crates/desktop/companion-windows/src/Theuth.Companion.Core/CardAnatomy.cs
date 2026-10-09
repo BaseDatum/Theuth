@@ -196,10 +196,13 @@ public static class CardAnatomyModel
         _ => ("", ""),
     };
 
-    /// <summary>The hold pill before <c>cancel(session, "tree")</c>: "Stopping ‹name› · Esc undo" (N children when known).</summary>
-    public static string StopPill(string who, int children) => children > 0
-        ? $"Stopping {who} and {children} {(children == 1 ? "child" : "children")} · Esc undo"
-        : $"Stopping {who} · Esc undo";
+    /// <summary>The hold label before <c>cancel(session, "tree")</c>: "Stopping ‹name› and N children" (the receipt row appends "Esc undo · N").</summary>
+    public static string StopLabel(string who, int children) => children > 0
+        ? $"Stopping {who} and {children} {(children == 1 ? "child" : "children")}"
+        : $"Stopping {who}";
+
+    /// <summary>The hold pill as the design words it.</summary>
+    public static string StopPill(string who, int children) => $"{StopLabel(who, children)} · Esc undo";
 
     public static string StateWord(AttentionKind kind) => kind.Tag switch
     {

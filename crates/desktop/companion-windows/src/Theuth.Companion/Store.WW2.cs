@@ -137,11 +137,11 @@ public sealed partial class Store
         if (!row.CanStop) return;
         if (row.DeskName is { } desk)
         {
-            Hold(new Held("", desk, row.StopPill, new CardAction.PauseDesk(desk)));
+            Hold(new Held("", desk, row.StopLabel, new CardAction.PauseDesk(desk)));
             return;
         }
         if (row.Session is not { } s) return;
-        Hold(new Held("", row.Name, row.StopPill, new CardAction.StopTree(s)));
+        Hold(new Held("", row.Name, row.StopLabel, new CardAction.StopTree(s)));
     }
 
     /// <summary>X on a card (Revision 1 #2: only while the agent runs or waits).</summary>
@@ -149,7 +149,7 @@ public sealed partial class Store
     {
         if (!a.Stops || a.Card.Item.Session is not { } s) return;
         int children = ActivityOf(s)?.Activity.Children ?? 0;
-        Hold(new Held("", a.Card.Who, CardAnatomyModel.StopPill(a.Card.Who, children), new CardAction.StopTree(s)));
+        Hold(new Held("", a.Card.Who, CardAnatomyModel.StopLabel(a.Card.Who, children), new CardAction.StopTree(s)));
     }
 
     /// <summary>The row mic's text (ruling 3): <c>send_input(session, text)</c> after the hold; the receipt names the row.</summary>
@@ -157,7 +157,7 @@ public sealed partial class Store
     {
         var t = text.Trim();
         if (t.Length == 0 || row.Session is not { } s || !row.CanTalk) return;
-        Hold(new Held("", row.Name, "sent · Esc undo", new CardAction.SendInputTo(s, t)));
+        Hold(new Held("", row.Name, "sending", new CardAction.SendInputTo(s, t)));
     }
 
     /// <summary>The footer pill / key E · S on a card: E clears (finished / info only), S snoozes 30 m (never answers).</summary>

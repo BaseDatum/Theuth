@@ -284,6 +284,8 @@ internal sealed partial class RailPillsWindow : ToolWindow
             AutomationProperties.SetAutomationId(badge, "needs-you-count");
             AutomationProperties.SetName(badge, n == 1 ? "1 needs you" : $"{n} need you");
             var holder = new Grid { Width = RailPillsModel.PillWidth, Height = RailPillsModel.PillWidth };
+            Canvas.SetZIndex(pill, 0);
+            Canvas.SetZIndex(badge, 10); // round 1 on build-B drew the pill over the badge: pin the order explicitly
             holder.Children.Add(pill);
             holder.Children.Add(badge);
             var wrap = new Border { Child = holder };

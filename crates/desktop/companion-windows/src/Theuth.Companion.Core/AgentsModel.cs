@@ -62,12 +62,15 @@ public sealed record AgentRow
     /// <summary>Why the mic / ✕ are disabled: "open it on ‹node›" · "nothing is running".</summary>
     public string? DisabledReason => Remote ? $"open it on {HostName}" : CanStop ? null : "nothing is running";
 
-    /// <summary>The hold pill: "Stopping ‹name› and N children · Esc undo" · "Pausing ‹desk› · Esc undo".</summary>
-    public string StopPill => DeskName is { } d
-        ? $"Pausing {d} · Esc undo"
+    /// <summary>The hold label: "Stopping ‹name› and N children" · "Pausing ‹desk›" (the receipt row appends "Esc undo · N" itself).</summary>
+    public string StopLabel => DeskName is { } d
+        ? $"Pausing {d}"
         : Children > 0
-            ? $"Stopping {Name} and {Children} {(Children == 1 ? "child" : "children")} · Esc undo"
-            : $"Stopping {Name} · Esc undo";
+            ? $"Stopping {Name} and {Children} {(Children == 1 ? "child" : "children")}"
+            : $"Stopping {Name}";
+
+    /// <summary>The hold pill as the design words it: "Stopping ‹name› and N children · Esc undo".</summary>
+    public string StopPill => $"{StopLabel} · Esc undo";
 
     /// <summary>Narrator line.</summary>
     public string Detail

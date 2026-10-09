@@ -186,6 +186,7 @@ public sealed class AgentsModelTests
         Assert.False(rows[2].CanStop);
         Assert.Equal("nothing is running", rows[2].DisabledReason);
         Assert.Equal("Stopping 149 orchestration and 2 children · Esc undo", rows[0].StopPill);
+        Assert.Equal("Stopping 149 orchestration and 2 children", rows[0].StopLabel);
         Assert.Equal("Stopping w3-149-island · Esc undo", rows[1].StopPill);
         Assert.Equal("theuth", rows[0].Project);
         Assert.Equal(0, p.FirstWorking);
@@ -409,6 +410,7 @@ public sealed class CardAnatomyTests
         Assert.Equal(("Stop agent", "X"), CardAnatomyModel.FooterText(FooterVerb.Stop));
         Assert.Equal(("Snooze", "S"), CardAnatomyModel.FooterText(FooterVerb.Snooze));
         Assert.Equal("Stopping w1 and 1 child · Esc undo", CardAnatomyModel.StopPill("w1", 1));
+        Assert.Equal("Stopping w1", CardAnatomyModel.StopLabel("w1", 0));
     }
 }
 
