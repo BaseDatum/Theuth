@@ -46,4 +46,11 @@ public extension RpcClient {
     func dictationStop(id: String) async throws {
         let _: JSONValue = try await call("dictation_stop", [.init(id)])
     }
+
+    /// `dictation_status` → the active dictation's id, if any (the one-dictation slot; 149f's probe asserts it is free).
+    func dictationActive() async throws -> String? {
+        struct State: Decodable { let active: String? }
+        let s: State = try await call("dictation_status")
+        return s.active
+    }
 }

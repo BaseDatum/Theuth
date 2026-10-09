@@ -14,21 +14,38 @@ extension Color {
     static let paused = Color(nsColor: .systemOrange)
 }
 
-/// stderr plus `/tmp/130-w1-probe.log` during `--probe` and `/tmp/130-w6-probe.log` during a W6 probe (`open`
-/// gives the app no stdout).
+/// stderr, always `~/.theuth/logs/companion.log` (append; rotated to `.1` past `rotateBytes` — 149f: the voice-key report had
+/// no companion log to read), plus `/tmp/130-w1-probe.log` during `--probe` and `/tmp/130-w6-probe.log` during a W6 probe
+/// (`open` gives the app no stdout).
 enum Log {
     static let file = URL(fileURLWithPath: "/tmp/130-w1-probe.log")
     static let w6File = URL(fileURLWithPath: "/tmp/130-w6-probe.log")
-    private static let f: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f }()
+    static let permanent = FileManager.default.homeDirectoryForCurrentUser.appending(path: ".theuth/logs/companion.log")
+    static let rotateBytes: UInt64 = 5 * 1024 * 1024
+    private static let f: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"; return f }()
+    private static let lock = NSLock()
 
     static func write(_ s: String) {
         let line = "[companion \(f.string(from: Date())) pid \(getpid())] \(s)\n"
         FileHandle.standardError.write(Data(line.utf8))
-        let file: URL
-        if Flags.probe != nil { file = Self.file } else if Flags.w6Probe { file = w6File } else { return }
+        lock.lock(); defer { lock.unlock() }
+        append(line, to: permanent, rotate: true)
+        if Flags.probe != nil { append(line, to: file, rotate: false) } else if Flags.w6Probe { append(line, to: w6File, rotate: false) }
+    }
+
+    private static func append(_ line: String, to file: URL, rotate: Bool) {
         if let h = try? FileHandle(forWritingTo: file) {
-            h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+            let end = h.seekToEndOfFile()
+            if rotate, end >= rotateBytes {
+                try? h.close()
+                let old = file.appendingPathExtension("1")
+                try? FileManager.default.removeItem(at: old)
+                try? FileManager.default.moveItem(at: file, to: old)
+                return append(line, to: file, rotate: false)
+            }
+            h.write(Data(line.utf8)); try? h.close()
         } else {
+            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? Data(line.utf8).write(to: file)
         }
     }
