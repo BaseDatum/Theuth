@@ -15,6 +15,8 @@ extension KeyboardShortcuts.Name {
 /// KeyboardShortcuts' own UserDefaults entry is rewritten from it at launch and on every change.
 @MainActor
 enum Hotkeys {
+    /// 149: a global row is probed and registered only once it is listed here — W1 adds `.openAgents`, W2 `.voiceKey`,
+    /// W3 `.meetingPtt`/`.meetingEye`; an unlisted row's chord is data for Settings › Keys and the Windows twin.
     static let names: [KeyAction: KeyboardShortcuts.Name] = [.openPanel: .openPanel, .openAskBar: .openAskBar]
 
     /// Launch: resolve the saved global chords against the registrar (fallback to the default with a notice),
@@ -22,7 +24,7 @@ enum Hotkeys {
     static func start(_ model: SettingsModel) {
         var table = model.value.keys
         var notices: [String] = []
-        for b in table.bindings(in: .anywhere) {
+        for b in table.bindings(in: .anywhere) where names[b.action] != nil {
             let r = KeyTable.resolveGlobal(saved: b.chord, default: b.defaultChord, canRegister: canRegister)
             if r.chord != b.chord { table.set(r.chord, for: b.action) }
             if let n = r.notice { notices.append(n); Log.write("hotkey: \(n)") }

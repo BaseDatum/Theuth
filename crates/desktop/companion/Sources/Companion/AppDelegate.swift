@@ -33,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, !AskFlags.automated else { return }
             self.askBar.toggle()
         }
+        // 149 W1: agentsPanel.installHotkeys()
+        // 149 W2: pointAndSay.install()
+        // 149 W3: island.install()
         store.onLegend = { [weak self] in self?.showLegend() }
         store.onSettings = { NotificationsInstaller.shared?.settings.show(activate: true) }
         legend.onSettings = { NotificationsInstaller.shared?.settings.show(activate: true) }
@@ -133,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.items.forEach { $0.target = $0.action == #selector(openTheuth) || $0.action == #selector(showLegend) || $0.action == #selector(quitTheuth) ? self : nil }
             askBar.addMenuItem(to: menu) // W3
             NotificationsInstaller.shared?.appendMenu(menu) // W2: Pause notifications ▸ · Launch at login · Settings…
+            // 149 W1: agentsPanel.addMenuItem(to: menu)
             statusItem.menu = menu
             sender.performClick(nil)
             statusItem.menu = nil
