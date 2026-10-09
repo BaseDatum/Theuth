@@ -120,6 +120,8 @@ switch ($Action) {
         $bmp.Save($file, [System.Drawing.Imaging.ImageFormat]::Png)
         $g.Dispose(); $bmp.Dispose()
         Say "hold-draw: shot $file size=$((Get-Item $file).Length) at $(Get-Date -Format 'HH:mm:ss.fff')"
+        $after = if ($Rest.Count -gt 1) { [int]$Rest[1] } else { 0 }
+        if ($after -gt 0) { Start-Sleep -Milliseconds $after }
         Chord $false
         Say "hold-draw: up at $(Get-Date -Format 'HH:mm:ss.fff')"
     }
