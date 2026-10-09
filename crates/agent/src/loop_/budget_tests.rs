@@ -21,8 +21,8 @@ fn stop_reason(events: &[AgentEvent]) -> Option<&str> {
 }
 
 async fn scenario() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-budget-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("budget-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 
@@ -131,6 +131,4 @@ async fn scenario() {
         (250_000_000, 250_000_000),
         "no row was written for a refused call"
     );
-
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }

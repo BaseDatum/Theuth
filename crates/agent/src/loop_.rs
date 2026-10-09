@@ -8217,8 +8217,8 @@ mod tests {
     /// projection is that frame's estimate.
     #[tokio::test]
     async fn context_edit_is_idle_only_and_installs_committed_frame() {
-        let dir = std::env::temp_dir().join(format!("theuth-loop-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("loop");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -8410,7 +8410,6 @@ mod tests {
         assert_eq!(turn.compact_instruction(), compact::COMPACT_INSTRUCTION);
         drop(turn);
         drop(store);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 47 §3.3: only a recognised, tool-free completion is a natural yield;
@@ -8623,7 +8622,8 @@ mod tests {
 
     #[test]
     fn prompt_parts_in_order_with_blank_lines() {
-        let data_dir = std::env::temp_dir().join(format!("theuth-prompt-{}", uuid::Uuid::new_v4()));
+        let scratch = crate::TestDir::new("prompt");
+        let data_dir = scratch.0.clone();
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
         let bare = frame::baseline(&data_dir, None, "", "", false, None, true, false, false);
@@ -8648,7 +8648,6 @@ mod tests {
             false,
             false,
         );
-        std::fs::remove_dir_all(&data_dir).unwrap();
 
         let pos = |needle: &str| {
             full.find(needle)
@@ -8888,8 +8887,8 @@ mod tests {
     async fn peer_input_consumes_once_and_never_after_revocation() {
         use crate::communication::PeerMessageState;
         use crate::store::communication::AcceptExchange;
-        let dir = std::env::temp_dir().join(format!("theuth-peer-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("peer");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -9000,7 +8999,6 @@ mod tests {
         assert_eq!(turn.result_text(), "");
         drop(turn);
         drop(store);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 52 §4.1/§5.1/§5.3: preparation is a no-op for a main model that sees
@@ -9013,8 +9011,8 @@ mod tests {
     /// from `pending` at the next snapshot and the marker stays put.
     #[tokio::test]
     async fn prepare_images_branches_on_vision_and_projects_text_only_frames() {
-        let dir = std::env::temp_dir().join(format!("theuth-vision-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("vision");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -9174,7 +9172,6 @@ mod tests {
         assert_eq!(aux_conversation(id), aux_conversation(id));
         drop(turn);
         drop(store);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 50 §8: through the registry's execution seam, a peer-opened turn's
@@ -9780,8 +9777,8 @@ mod tests {
     /// shows it as returned money, and the bus announces the new revision.
     #[tokio::test]
     async fn accounted_call_settles_returned_cost_and_announces() {
-        let dir = std::env::temp_dir().join(format!("theuth-cost-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("cost");
+        let dir = scratch.0.clone();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -9846,7 +9843,6 @@ mod tests {
             (10, 5)
         );
         assert_eq!(next_usage_changed(&mut events).await, (id, cost.revision));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 51 §6.1: a transient failure and its resend are two attempts — two
@@ -9854,8 +9850,8 @@ mod tests {
     /// `settled`; only the settled one carries money.
     #[tokio::test]
     async fn retried_attempts_share_a_request_under_distinct_call_ids() {
-        let dir = std::env::temp_dir().join(format!("theuth-cost-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("cost");
+        let dir = scratch.0.clone();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -9913,7 +9909,6 @@ mod tests {
             (2, 2, 1)
         );
         assert_eq!(cost.direct.returned[0].nanos, 250_000_000);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The litellm/vLLM overflow body of the 116 incident, as the gateway returns it.
@@ -9928,8 +9923,8 @@ mod tests {
     /// frame's own budget reaches the wire on the first attempt.
     #[tokio::test]
     async fn overflow_with_numbers_is_resent_with_the_servers_reply_budget() {
-        let dir = std::env::temp_dir().join(format!("theuth-116-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("116");
+        let dir = scratch.0.clone();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -9977,15 +9972,14 @@ mod tests {
             Some(u64::from(1_048_576 - 105_663 - compact::HEADROOM_PAD))
         );
         assert_eq!(turn.retries.load(Ordering::Relaxed), 1);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 116 (C): a prompt that does not fit on its own is not resent — the
     /// overflow goes back to `round()` for its one compaction.
     #[tokio::test]
     async fn overflow_of_the_prompt_alone_is_left_to_compaction() {
-        let dir = std::env::temp_dir().join(format!("theuth-116-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("116");
+        let dir = scratch.0.clone();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -10029,7 +10023,6 @@ mod tests {
         assert!(compact::is_overflow(&err), "{err}");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(turn.retries.load(Ordering::Relaxed), 0);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 51 §6.1: no reservation, no transport. A session the ledger does not
@@ -10037,8 +10030,8 @@ mod tests {
     /// and the endpoint is never contacted.
     #[tokio::test]
     async fn refused_reservation_aborts_before_transport() {
-        let dir = std::env::temp_dir().join(format!("theuth-cost-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("cost");
+        let dir = scratch.0.clone();
         let store = Store::open_memory().await.unwrap();
         let orphan = SessionId::new();
         let (base_url, hits, _) =
@@ -10074,7 +10067,6 @@ mod tests {
         assert!(err.starts_with("accounting:"), "{err}");
         assert_eq!(hits.load(Ordering::SeqCst), 0);
         assert!(calls(&store, orphan).await.is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 136 §2.2: a 1-cent budget. The first call (spend 0, no estimate yet)
@@ -10083,8 +10075,8 @@ mod tests {
     /// hit. Clearing the budget lets the next call through again.
     #[tokio::test]
     async fn budget_refuses_the_call_that_would_pass_the_cap() {
-        let dir = std::env::temp_dir().join(format!("theuth-budget-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("budget");
+        let dir = scratch.0.clone();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -10192,7 +10184,6 @@ mod tests {
         );
         assert!(note.contains("0.25 USD of a 0.01 USD cap"));
         assert!(note.ends_with("\n</budget>"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn resolved(id: &str) -> Resolved {
@@ -10209,8 +10200,8 @@ mod tests {
     /// the main model's resolution error instead of a model.
     #[tokio::test]
     async fn role_model_inherits_escalate_title_session() {
-        let dir = std::env::temp_dir().join(format!("theuth-role-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("role");
+        let dir = scratch.0.clone();
         let store = Store::open_memory().await.unwrap();
         let (base_url, _hits, _) = fake_openai(vec![]).await;
         let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
@@ -10240,7 +10231,6 @@ mod tests {
             "model: no such model"
         );
         assert_eq!(id_of(ModelRole::Escalate).unwrap(), "cheap/e");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 57 §2 / 51 §6.1: a side call is one `escalate` attempt on the session's
@@ -10248,8 +10238,8 @@ mod tests {
     /// budget runs out — and the reply carries text, model and tokens.
     #[tokio::test]
     async fn side_call_settles_under_its_kind() {
-        let dir = std::env::temp_dir().join(format!("theuth-side-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("side");
+        let dir = scratch.0.clone();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -10318,6 +10308,5 @@ mod tests {
             (rows[1].2.as_str(), rows[1].3.as_str()),
             ("escalate", "failed")
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

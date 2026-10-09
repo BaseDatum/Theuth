@@ -1784,7 +1784,8 @@ mod tests {
     #[test]
     fn output_turns_image_blocks_into_files_in_source_order() {
         use image::ImageFormat;
-        let dir = std::env::temp_dir().join(format!("theuth-mcp-img-{}", uuid::Uuid::new_v4()));
+        let guard = crate::TestDir::new("mcp-img");
+        let dir = guard.0.clone();
         let (png, jpg) = (
             b64(&images::tests::encoded(ImageFormat::Png, 2, 2, 1)),
             b64(&images::tests::encoded(ImageFormat::Jpeg, 2, 2, 1)),
@@ -1837,13 +1838,14 @@ mod tests {
         assert_eq!(structured["shot"], path);
         assert_eq!(structured["nested"][0]["again"], path);
         assert_eq!(structured["other"], "kept");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn output_rejects_malformed_images_without_echoing_them() {
         use image::ImageFormat;
-        let dir = std::env::temp_dir().join(format!("theuth-mcp-bad-{}", uuid::Uuid::new_v4()));
+        // Uncreated on purpose: the test asserts a rejected image leaves no dir.
+        let guard = crate::TestDir::path("mcp-bad");
+        let dir = guard.0.clone();
         let png = images::tests::encoded(ImageFormat::Png, 2, 2, 1);
         let check = |data: String, mime: &str, needle: &str| {
             let out = output(
@@ -2023,7 +2025,8 @@ mod tests {
 
     #[test]
     fn repo_detected_from_cwd_inside_a_clone() {
-        let dir = std::env::temp_dir().join(format!("theuth-mcp-{}", uuid::Uuid::new_v4()));
+        let guard = crate::TestDir::new("mcp");
+        let dir = guard.0.clone();
         std::fs::create_dir_all(dir.join("repos/srv/.git")).unwrap();
         std::fs::create_dir_all(dir.join("repos/plain")).unwrap();
         let spec = |cwd: &str| {
@@ -2042,7 +2045,6 @@ mod tests {
         assert_eq!(repo_of(&dir, &spec("repos/plain")), None, "no .git");
         assert_eq!(repo_of(&dir, &spec("/elsewhere")), None);
         assert_eq!(repo_of(&dir, &stdio("x", &[], &[])), None);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -123,8 +123,8 @@ fn input_during_compaction_queues_and_never_cancels_it() {
 }
 
 async fn scenarios() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-compact-queue-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("compact-queue-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 
@@ -133,8 +133,6 @@ async fn scenarios() {
     failed_compaction_rolls_back_and_keeps_the_queue().await;
     interrupted_compaction_rolls_back_and_keeps_the_queue().await;
     session_head_forces_a_text_summary_without_a_model_call().await;
-
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }
 
 /// `/compact` mini-turn: the inputs wait, the epoch commits, one turn follows.

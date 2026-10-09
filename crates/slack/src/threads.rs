@@ -240,11 +240,14 @@ impl Threads {
 mod tests {
     use super::*;
 
-    fn tmp() -> PathBuf {
-        std::env::temp_dir()
-            .join(format!("theuth-slack-{}", uuid::Uuid::new_v4()))
-            .join("slack")
-            .join("threads.json")
+    /// `$TMPDIR/theuth-slack-<rand>/slack/threads.json`; the dir goes when the guard drops (141 R4).
+    fn tmp() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix("theuth-slack-")
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("slack").join("threads.json");
+        (dir, path)
     }
 
     fn thread(user: &str) -> Thread {
@@ -253,7 +256,7 @@ mod tests {
 
     #[test]
     fn round_trips_threads_streams_and_title() {
-        let path = tmp();
+        let (_td, path) = tmp();
         let key = thread_key("C1", "1.000");
         let t = thread("U1");
         {
@@ -281,7 +284,7 @@ mod tests {
 
     #[test]
     fn corrupt_file_starts_empty() {
-        let path = tmp();
+        let (_td, path) = tmp();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"{ not json").unwrap();
         let th = Threads::load(&path);
@@ -291,7 +294,8 @@ mod tests {
 
     #[test]
     fn bind_replaces_older_key_for_same_session() {
-        let mut th = Threads::load(&tmp());
+        let (_td, path) = tmp();
+        let mut th = Threads::load(&path);
         let t = thread("U1");
         th.bind(thread_key("C1", "1.000"), t.clone());
         th.bind(thread_key("C1", "2.000"), t.clone());
@@ -308,7 +312,7 @@ mod tests {
 
     #[test]
     fn agent_binding_persists() {
-        let path = tmp();
+        let (_td, path) = tmp();
         let desk = SessionId(uuid::Uuid::new_v4());
         let mut a = Thread::new(desk, "U1".into(), "T1".into());
         a.agent = Some("ops".into());
@@ -345,7 +349,8 @@ mod tests {
 
     #[test]
     fn latest_for_picks_newest_of_user_in_channel() {
-        let mut th = Threads::load(&tmp());
+        let (_td, path) = tmp();
+        let mut th = Threads::load(&path);
         th.bind(thread_key("C1", "1.000"), thread("U1"));
         th.bind(thread_key("C1", "2.000"), thread("U2"));
         th.bind(thread_key("C2", "3.000"), thread("U1"));

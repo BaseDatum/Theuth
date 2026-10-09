@@ -40,8 +40,8 @@ fn regenerate_replays_the_stamp_to_the_model_only() {
 }
 
 async fn scenario() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-regen-stamp-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("regen-stamp-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 
@@ -102,6 +102,4 @@ async fn scenario() {
         sent.iter().flatten().any(|t| t == &stored),
         "the model frame carries the stamped opener: {sent:?}"
     );
-
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }

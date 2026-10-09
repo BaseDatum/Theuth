@@ -479,19 +479,19 @@ mod tests {
     use super::*;
     use crate::endless::compactor::CallRow;
 
-    async fn fresh() -> Store {
-        let dir = std::env::temp_dir().join(format!("theuth-endless-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
-        Store::open(&dir.join("sessions.sqlite"), None)
+    async fn fresh() -> (Store, crate::TestDir) {
+        let scratch = crate::TestDir::new("endless");
+        let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
             .await
-            .unwrap()
+            .unwrap();
+        (store, scratch)
     }
 
     /// Mode round-trips, units/nodes/calls persist, FTS follows level 0
     /// through insert / replace / delete, stats sum trips and cost.
     #[tokio::test]
     async fn endless_rows_round_trip_and_fts_follows_level0() {
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let id = SessionId::new();
         store
             .create_session(id, "m", None, None, None)

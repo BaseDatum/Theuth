@@ -864,8 +864,8 @@ mod tests {
 
     #[tokio::test]
     async fn private_session_refuses_mutations_durable_writes() {
-        let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("ktools");
+        let dir = scratch.0.clone();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
         let msg = "knowledge mutations are disabled in a private session";
@@ -894,8 +894,8 @@ mod tests {
     /// `knowledge_get` records an open.
     #[tokio::test]
     async fn search_marks_archived_and_get_records_an_open() {
-        let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("ktools");
+        let dir = scratch.0.clone();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
         k.put(put(), Source::Model).await.unwrap();
@@ -954,8 +954,8 @@ mod tests {
     /// allows; `knowledge_stats` answers anywhere.
     #[tokio::test]
     async fn consolidation_tools_need_owner_root_or_unattended() {
-        let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("ktools");
+        let dir = scratch.0.clone();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
         let archive = || ArchiveArgs {
@@ -1071,7 +1071,8 @@ mod tests {
     #[tokio::test]
     async fn verify_needs_evidence_from_a_read() {
         use crate::types::VerifyOutcome::{Ok as VOk, Stale};
-        let dir = std::env::temp_dir().join(format!("theuth-ktools-{}", uuid::Uuid::new_v4()));
+        let scratch = crate::TestDir::new("ktools");
+        let dir = scratch.0.clone();
         std::fs::create_dir_all(dir.join("conf")).unwrap();
         std::fs::write(dir.join("conf/pg.toml"), "port = 5432\n").unwrap();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());

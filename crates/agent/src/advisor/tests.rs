@@ -175,15 +175,16 @@ struct Rig {
     rx: UnboundedReceiver<AgentEvent>,
     script: Arc<Script>,
     _server: MockServer,
-    _reg_dir: std::path::PathBuf,
+    _reg_dir: crate::TestDir,
+    _scratch: crate::TestDir,
 }
 
 impl Rig {
     async fn new(cfg: AdvisorConfig) -> Self {
         crate::loop_::advisor_tests::clear_stale::<Agents>(AGENT_ACTOR);
         crate::loop_::advisor_tests::clear_stale::<Advisors>(ADVISORS_ACTOR);
-        let reg_dir = std::env::temp_dir().join(format!("theuth-adv-reg-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&reg_dir).unwrap();
+        let reg_scratch = crate::TestDir::new("adv-reg");
+        let reg_dir = reg_scratch.0.clone();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -194,7 +195,8 @@ impl Rig {
             .respond_with(Shared(script.clone()))
             .mount(&server)
             .await;
-        let dir = std::env::temp_dir().join(format!("theuth-adv-rig-{}", uuid::Uuid::now_v7()));
+        let scratch = crate::TestDir::new("adv-rig");
+        let dir = scratch.0.clone();
         let a = agents_on(dir.clone(), None, true).await;
         a.test_auth()
             .gateways
@@ -233,7 +235,8 @@ impl Rig {
             rx,
             script,
             _server: server,
-            _reg_dir: reg_dir,
+            _reg_dir: reg_scratch,
+            _scratch: scratch,
         }
     }
 
@@ -407,7 +410,6 @@ fn advisors_contract() {
         reset_replays(&mut r).await;
         isolation(&mut r).await;
         off_disposes(&mut r).await;
-        let _ = std::fs::remove_dir_all(&r.dir);
     });
 }
 
@@ -974,7 +976,6 @@ fn restart_reseeds_and_prefaces() {
         );
         assert!(!text.contains("unreviewed"));
         r.until(is_state(advised, AdvisorState::Idle)).await;
-        let _ = std::fs::remove_dir_all(&r.dir);
     });
 }
 
@@ -1137,7 +1138,6 @@ fn consult_contract() {
         consult_quarantine_and_blocker(&mut r).await;
         consult_timeout_and_stop(&mut r).await;
         subagent_one_shot(&mut r).await;
-        let _ = std::fs::remove_dir_all(&r.dir);
     });
 }
 

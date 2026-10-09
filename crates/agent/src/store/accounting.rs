@@ -1067,12 +1067,12 @@ impl Store {
 mod tests {
     use super::*;
 
-    async fn fresh() -> Store {
-        let dir = std::env::temp_dir().join(format!("theuth-acct-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
-        Store::open(&dir.join("sessions.sqlite"), None)
+    async fn fresh() -> (Store, crate::TestDir) {
+        let scratch = crate::TestDir::new("acct");
+        let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
             .await
-            .unwrap()
+            .unwrap();
+        (store, scratch)
     }
 
     fn usd(amount: f64) -> Money {
@@ -1101,7 +1101,7 @@ mod tests {
 
     #[tokio::test]
     async fn worked_example_lineage_replay_tombstone_delete() {
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let (r, c, g) = (SessionId::new(), SessionId::new(), SessionId::new());
         store.ensure_owner(r, None).await.unwrap();
         store.ensure_owner(c, Some(r)).await.unwrap();
@@ -1202,7 +1202,7 @@ mod tests {
 
     #[tokio::test]
     async fn partition_returned_estimate_unavailable() {
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let o = SessionId::new();
         store.ensure_owner(o, None).await.unwrap();
         charge(
@@ -1260,7 +1260,7 @@ mod tests {
 
     #[tokio::test]
     async fn meter_state_machine() {
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let (r, child) = (SessionId::new(), SessionId::new());
         store.ensure_owner(r, None).await.unwrap();
         store.ensure_owner(child, Some(r)).await.unwrap();
@@ -1360,7 +1360,7 @@ mod tests {
     /// harness's own rows stay `opaque_remote_inclusive`.
     #[tokio::test]
     async fn observed_meter_rows_keep_their_scope_and_roll_up() {
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let (acp, child) = (SessionId::new(), SessionId::new());
         store.ensure_owner(acp, None).await.unwrap();
         store.ensure_owner(child, Some(acp)).await.unwrap();
@@ -1416,7 +1416,7 @@ mod tests {
     /// in EUR takes over the row instead of opening an imported epoch.
     #[tokio::test]
     async fn zero_baseline_takes_first_currency() {
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let child = SessionId::new();
         store.ensure_owner(child, None).await.unwrap();
         store
@@ -1451,7 +1451,7 @@ mod tests {
     /// raw reports kept; two lower totals flag a suspected per-turn reporter.
     #[tokio::test]
     async fn lower_totals_flag_delta_suspected() {
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let child = SessionId::new();
         store.ensure_owner(child, None).await.unwrap();
         for amount in [0.0, 0.2, 0.2, 0.35, 0.5] {
@@ -1520,7 +1520,7 @@ mod tests {
     #[tokio::test]
     async fn spend_report_buckets_days_month_and_owners() {
         use chrono::{Datelike, Local};
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let now = chrono::Utc::now();
         let now_ms = u64::try_from(now.timestamp_millis()).unwrap();
         let today = now.with_timezone(&Local).date_naive();
@@ -1648,7 +1648,7 @@ mod tests {
     /// settles at $0.20, and the call after it (estimate $0.20) is refused.
     #[tokio::test]
     async fn budget_spent_windows_from_since() {
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let s = SessionId::new();
         store.ensure_owner(s, None).await.unwrap();
         charge(
@@ -1689,7 +1689,7 @@ mod tests {
     /// concurrent side calls cannot each pass the guard against the same total.
     #[tokio::test]
     async fn budget_spent_counts_in_flight_calls_at_the_estimate() {
-        let store = fresh().await;
+        let (store, _dir) = fresh().await;
         let s = SessionId::new();
         store.ensure_owner(s, None).await.unwrap();
         let since = "2000-01-01T00:00:00+00:00";

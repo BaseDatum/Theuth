@@ -29,8 +29,8 @@ fn floor_turns_auto_compaction_off_once() {
 }
 
 async fn scenario() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-compact-floor-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("compact-floor-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 
@@ -83,6 +83,4 @@ async fn scenario() {
         notes[0]
     );
     assert_eq!(h.store.frame(h.id).await.unwrap().0, 0, "no epoch opened");
-
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }

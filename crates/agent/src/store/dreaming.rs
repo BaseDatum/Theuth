@@ -432,8 +432,8 @@ mod tests {
     /// session lives in another store and is not here to begin with.
     #[tokio::test]
     async fn ledger_counts_filters_and_scrubs() {
-        let dir = std::env::temp_dir().join(format!("theuth-ledger-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("ledger");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -706,7 +706,6 @@ mod tests {
             .await
             .unwrap();
         assert!(l.sessions.is_empty() && hinted.is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

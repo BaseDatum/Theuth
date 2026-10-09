@@ -141,7 +141,7 @@ struct Harness {
     bodies: Arc<Mutex<Vec<Value>>>,
     client: Client,
     catalog: models::Catalog,
-    dir: std::path::PathBuf,
+    dir: crate::TestDir,
     _server: MockServer,
 }
 
@@ -189,12 +189,11 @@ impl Harness {
             ))
             .build()
             .unwrap();
-        let dir = std::env::temp_dir().join(format!("theuth-thinking-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::TestDir::new("thinking");
         Self {
             bodies,
             client,
-            catalog: models::Catalog::load(&dir),
+            catalog: models::Catalog::load(&dir.0),
             dir,
             _server: server,
         }
@@ -265,7 +264,7 @@ impl Harness {
             .create_session(id, &model.id, None, None, None)
             .await
             .unwrap();
-        let rt = Runtime::new(figment::Figment::new(), self.dir.clone());
+        let rt = Runtime::new(figment::Figment::new(), self.dir.0.clone());
         let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
         let sink = kameo::actor::Spawn::spawn_with_mailbox(
             super::vision_fallback_tests::Sink(tx),
@@ -287,12 +286,12 @@ impl Harness {
             Arc::default(),
             store.clone(),
             self.client.clone(),
-            Auth::stub(&self.dir),
+            Auth::stub(&self.dir.0),
             rt,
-            Arc::new(models::Catalog::load(&self.dir)),
+            Arc::new(models::Catalog::load(&self.dir.0)),
             None,
             Arc::new(Semaphore::new(1)),
-            SessionResources::durable_arc(&self.dir),
+            SessionResources::durable_arc(&self.dir.0),
         );
         let mut turn = Turn::new(
             session.shared.clone(),

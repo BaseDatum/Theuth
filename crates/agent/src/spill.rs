@@ -187,7 +187,8 @@ mod tests {
 
     #[test]
     fn cap_spills_head_marker_tail() {
-        let dir = std::env::temp_dir().join(format!("theuth-spill-{}", uuid::Uuid::new_v4()));
+        let scratch = crate::TestDir::new("spill");
+        let dir = scratch.0.join("spill");
         let session = SessionId::new();
         // Multibyte chars so char/byte boundaries differ.
         let content: String = (0..3000)
@@ -221,13 +222,12 @@ mod tests {
         assert!(!tail.is_empty());
         let omitted: usize = out[start..end].split(' ').nth(1).unwrap().parse().unwrap();
         assert_eq!(omitted, 3000 - head.chars().count() - tail.chars().count());
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn epoch_writes_transcript_and_summary() {
-        let dir = std::env::temp_dir().join(format!("theuth-spill-{}", uuid::Uuid::new_v4()));
+        let scratch = crate::TestDir::new("spill");
+        let dir = scratch.0.clone();
         let session = SessionId::new();
         let folded = [
             ChatMessage::user("what time is it"),
@@ -250,6 +250,5 @@ mod tests {
         );
         let summary = std::fs::read_to_string(txt.with_file_name("epoch_3.summary.md")).unwrap();
         assert_eq!(summary, "## Summary\nasked the time");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

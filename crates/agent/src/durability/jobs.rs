@@ -340,10 +340,8 @@ mod tests {
     use crate::store::durability::{calls_planned_in, step_in};
     use runtime::TurnId;
 
-    fn temp() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("theuth-109-w2-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp() -> crate::TestDir {
+        crate::TestDir::new("109-w2")
     }
 
     /// 139 Z-fix: a bridged call's job (`<call_id>.<n>`) is that call's; a
@@ -391,7 +389,8 @@ mod tests {
     /// `<job_result exit="lost">` names the log and the last screen.
     #[tokio::test]
     async fn reaper_kills_leaked_group() {
-        let dir = temp();
+        let scratch = temp();
+        let dir = scratch.0.clone();
         let path = dir.join("sessions.sqlite");
         let store = Arc::new(Store::open(&path, None).await.unwrap());
         let session = session(&store).await;
@@ -505,7 +504,6 @@ mod tests {
         // proper finds no actor and still reports the pass.
         let again = reap_jobs(&store).await;
         assert_eq!(again, ReapReport::default());
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// §5.4 / §15 Q6: every `running` row is settled — a dead group, a job
@@ -513,7 +511,8 @@ mod tests {
     /// it), and another session's row; the shutdown-stamped row says so.
     #[tokio::test]
     async fn reaper_skips_nothing() {
-        let dir = temp();
+        let scratch = temp();
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -586,7 +585,6 @@ mod tests {
                 assert_eq!(row.state, JobState::Lost, "{}", row.id);
             }
         }
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A live local process group standing in for one another engine
@@ -610,7 +608,8 @@ mod tests {
     /// ours — and is not reported; `b`'s own row is reaped as before.
     #[tokio::test]
     async fn reaper_ignores_foreign_engine_rows() {
-        let dir = temp();
+        let scratch = temp();
+        let dir = scratch.0.clone();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("b".into())),
@@ -645,7 +644,6 @@ mod tests {
         );
         tree.kill();
         let _ = child.wait();
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// 139 §7.1: `settle_transferred` on the new owner settles the
@@ -655,7 +653,8 @@ mod tests {
     /// row is not touched.
     #[tokio::test]
     async fn settle_transferred_never_signals() {
-        let dir = temp();
+        let scratch = temp();
+        let dir = scratch.0.clone();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("b".into())),
@@ -753,7 +752,6 @@ mod tests {
         assert!(settle_transferred(&store, s, "a").await.jobs.is_empty());
         tree.kill();
         let _ = child.wait();
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// §4.3 / §5.6: the job rule's answers for a `shell` call with a row
@@ -761,7 +759,8 @@ mod tests {
     /// planned), and a `wait` on a lost PTY (its exited reply, `lost`).
     #[tokio::test]
     async fn job_rule_notes() {
-        let dir = temp();
+        let scratch = temp();
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -884,6 +883,5 @@ mod tests {
             "{}",
             send.content
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

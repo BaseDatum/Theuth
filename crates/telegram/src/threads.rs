@@ -283,11 +283,14 @@ impl Threads {
 mod tests {
     use super::*;
 
-    fn tmp() -> PathBuf {
-        std::env::temp_dir()
-            .join(format!("theuth-telegram-{}", uuid::Uuid::new_v4()))
-            .join("telegram")
-            .join("threads.json")
+    /// `$TMPDIR/theuth-telegram-<rand>/telegram/threads.json`; the dir goes when the guard drops (141 R4).
+    fn tmp() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix("theuth-telegram-")
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("telegram").join("threads.json");
+        (dir, path)
     }
 
     fn thread(user: u64) -> Thread {
@@ -318,7 +321,7 @@ mod tests {
 
     #[test]
     fn round_trips_threads_open_and_title() {
-        let path = tmp();
+        let (_td, path) = tmp();
         let k = key(7, Some(3));
         let t = Thread::new(
             SessionId(uuid::Uuid::new_v4()),
@@ -367,7 +370,7 @@ mod tests {
 
     #[test]
     fn corrupt_file_starts_empty() {
-        let path = tmp();
+        let (_td, path) = tmp();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"{ not json").unwrap();
         let th = Threads::load(&path);
@@ -377,7 +380,8 @@ mod tests {
 
     #[test]
     fn bind_replaces_older_key_for_same_session() {
-        let mut th = Threads::load(&tmp());
+        let (_td, path) = tmp();
+        let mut th = Threads::load(&path);
         let t = thread(1);
         th.bind(key(7, Some(1)), t.clone());
         th.bind(key(7, Some(2)), t.clone());
@@ -391,7 +395,8 @@ mod tests {
 
     #[test]
     fn latest_in_chat_and_unbind_chat() {
-        let mut th = Threads::load(&tmp());
+        let (_td, path) = tmp();
+        let mut th = Threads::load(&path);
         th.bind(key(7, Some(1)), thread(1));
         th.bind(key(7, Some(2)), thread(2));
         th.bind(key(8, None), thread(1));

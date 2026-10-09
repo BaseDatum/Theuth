@@ -289,8 +289,8 @@ fn journal_and_resume_contract() {
 }
 
 async fn scenarios() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-109-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("109-reg");
+    let reg_dir = scratch.0.clone();
     let hits = reg_dir.join("hits");
     let (registry, holds) = registry(&reg_dir, &hits, false).await;
 
@@ -302,8 +302,6 @@ async fn scenarios() {
     stale_batch_closes_from_the_journal_and_pre_0033_repairs(&registry, &hits).await;
     spared_child_results_are_listed().await;
     crash_matrix(&registry, &hits, &reference).await;
-
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }
 
 /// §3.3: every write point leaves its row; the batch message is the rows.
@@ -1324,8 +1322,8 @@ fn drain_suspends_and_the_next_start_resumes() {
 }
 
 async fn suspended_scenarios() {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-109-w6-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("109-w6-reg");
+    let reg_dir = scratch.0.clone();
     let hits = reg_dir.join("hits");
     let (registry, holds) = registry(&reg_dir, &hits, false).await;
     let reference = normal_turn_journals_every_write_point(&registry, &hits).await;
@@ -1336,7 +1334,6 @@ async fn suspended_scenarios() {
     release_drain_writes_suspended_or_finished(&registry, &holds).await;
     cancel_while_draining_is_a_suspension(&registry, &hits, &holds, &reference).await;
     unload_always_lands_the_cancel(&registry, &holds).await;
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }
 
 /// §9.2 step 2: a session told `Draining` opens no model call — the turn

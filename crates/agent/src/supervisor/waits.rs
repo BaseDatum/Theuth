@@ -891,8 +891,8 @@ mod tests {
     /// (a replica re-arms nothing of the owner's — `Scope::Here`).
     #[tokio::test]
     async fn rebuild_waits_for_one_session_leaves_others() {
-        let dir = std::env::temp_dir().join(format!("theuth-139-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("139");
+        let dir = scratch.0.clone();
         let a = crate::store::Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("a".into())),
@@ -944,7 +944,7 @@ mod tests {
     /// forward fails as `OwnerUnreachable` and the receipt says so.
     #[tokio::test]
     async fn spared_result_for_a_foreign_parent_is_forwarded_not_injected() {
-        let (mut b, foreign, _, _dir) = b_holding_a_turn(true).await;
+        let (_dir, mut b, foreign, _) = b_holding_a_turn(true).await;
         let child = SessionId::new();
         b.store
             .create_session(child, "m", Some(foreign), Some("kid"), None)

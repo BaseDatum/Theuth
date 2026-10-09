@@ -267,15 +267,16 @@ mod tests {
 
     /// Temp tree with a `.git` marker so `.gitignore` is honoured (the walker
     /// only reads it inside a repository).
-    fn tree(files: &[&str]) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("theuth-glob-{}", uuid::Uuid::new_v4()));
+    fn tree(files: &[&str]) -> (crate::TestDir, PathBuf) {
+        let guard = crate::TestDir::new("glob");
+        let root = guard.0.clone();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         for f in files {
             let p = root.join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, f).unwrap();
         }
-        root
+        (guard, root)
     }
 
     fn run(root: &Path, pattern: &str, limit: Option<u32>, hidden: bool) -> Found {
@@ -291,7 +292,7 @@ mod tests {
 
     #[test]
     fn name_pattern_matches_anywhere_and_path_pattern_is_anchored() {
-        let root = tree(&["a.rs", "src/b.rs", "src/deep/c.rs", "src/d.txt"]);
+        let (_g, root) = tree(&["a.rs", "src/b.rs", "src/deep/c.rs", "src/d.txt"]);
         let (star, _) = run(&root, "*.rs", None, false);
         assert_eq!(sorted(star), ["a.rs", "src/b.rs", "src/deep/c.rs"]);
         let (dstar, _) = run(&root, "**/*.rs", None, false);
@@ -304,7 +305,7 @@ mod tests {
 
     #[test]
     fn gitignore_is_respected() {
-        let root = tree(&["keep.rs", "target/gen.rs", ".gitignore"]);
+        let (_g, root) = tree(&["keep.rs", "target/gen.rs", ".gitignore"]);
         std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
         let (files, _) = run(&root, "*.rs", None, false);
         assert_eq!(files, ["keep.rs"]);
@@ -312,7 +313,7 @@ mod tests {
 
     #[test]
     fn hidden_excluded_unless_asked() {
-        let root = tree(&["shown.rs", ".hidden.rs", ".dir/inner.rs"]);
+        let (_g, root) = tree(&["shown.rs", ".hidden.rs", ".dir/inner.rs"]);
         let (files, _) = run(&root, "*.rs", None, false);
         assert_eq!(files, ["shown.rs"]);
         let (files, _) = run(&root, "*.rs", None, true);
@@ -321,7 +322,7 @@ mod tests {
 
     #[test]
     fn limit_truncates_with_header() {
-        let root = tree(&["a.rs", "b.rs", "c.rs", "d.rs"]);
+        let (_g, root) = tree(&["a.rs", "b.rs", "c.rs", "d.rs"]);
         let (files, truncated) = run(&root, "*.rs", Some(2), false);
         assert_eq!(files.len(), 2);
         assert!(truncated);
@@ -340,7 +341,7 @@ mod tests {
 
     #[test]
     fn newest_first_then_path() {
-        let root = tree(&["old.rs", "new.rs", "tie_b.rs", "tie_a.rs"]);
+        let (_g, root) = tree(&["old.rs", "new.rs", "tie_b.rs", "tie_a.rs"]);
         let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         let set = |f: &str, t: SystemTime| {
             std::fs::File::options()
@@ -360,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_match_is_a_plain_message_not_an_error() {
-        let root = tree(&["a.txt"]);
+        let (_g, root) = tree(&["a.txt"]);
         let a = GlobArgs {
             pattern: "*.rs".into(),
             path: Some(root.clone()),
@@ -389,7 +390,7 @@ mod tests {
 
     #[test]
     fn non_directory_path_errors() {
-        let root = tree(&["a.rs"]);
+        let (_g, root) = tree(&["a.rs"]);
         let err = glob(&root.join("a.rs"), "*.rs", 10, false)
             .unwrap_err()
             .to_string();
@@ -404,7 +405,7 @@ mod tests {
     fn cap_holds_under_parallel_walk() {
         let files: Vec<String> = (0..300).map(|i| format!("d{}/f{i}.rs", i % 7)).collect();
         let refs: Vec<&str> = files.iter().map(String::as_str).collect();
-        let root = tree(&refs);
+        let (_g, root) = tree(&refs);
         let (found, truncated) = run(&root, "*.rs", Some(50), false);
         assert_eq!((found.len(), truncated), (50, true));
         let out = render(found, truncated, false, 50, "*.rs", "r");
@@ -415,7 +416,7 @@ mod tests {
 
     #[test]
     fn anchored_pattern_prunes_but_matches_the_same() {
-        let root = tree(&["src/a.rs", "other/b.rs", "src/deep/c.rs"]);
+        let (_g, root) = tree(&["src/a.rs", "other/b.rs", "src/deep/c.rs"]);
         let ((anchored, _), pruned) = glob(&root, "src/**/*.rs", 500, false).unwrap();
         assert_eq!(sorted(anchored), ["src/a.rs", "src/deep/c.rs"]);
         let ((all, _), full) = glob(&root, "**/*.rs", 500, false).unwrap();
@@ -437,7 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn ancestor_gitignore_hiding_the_root_is_bypassed_once() {
-        let outer = tree(&["inner/a.rs", "inner/b.txt"]);
+        let (_g, outer) = tree(&["inner/a.rs", "inner/b.txt"]);
         std::fs::write(outer.join(".gitignore"), "*\n").unwrap();
         let inner = outer.join("inner");
         let ((files, _), stats) = glob(&inner, "*.rs", 500, false).unwrap();

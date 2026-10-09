@@ -75,9 +75,8 @@ fn compaction_does_not_wait_for_the_harvest() {
 }
 
 async fn scenarios() {
-    let reg_dir =
-        std::env::temp_dir().join(format!("theuth-harvest-compact-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
+    let scratch = crate::TestDir::new("harvest-compact-reg");
+    let reg_dir = scratch.0.clone();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
     runtime::Plugin::start(Box::new(knowledge::KnowledgePlugin), &reg_rt)
@@ -91,8 +90,6 @@ async fn scenarios() {
     compaction_returns_before_the_harvest().await;
     a_running_harvest_is_chained_not_skipped().await;
     a_cancelled_compaction_rolls_back_and_the_harvest_lands().await;
-
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }
 
 /// A. `/compact cut` (no summariser call): `Ok(1)` and `Compacted` while the

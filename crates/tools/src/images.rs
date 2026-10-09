@@ -147,8 +147,10 @@ pub(crate) mod tests {
         out.into_inner()
     }
 
-    fn tmp() -> PathBuf {
-        std::env::temp_dir().join(format!("theuth-images-{}", uuid::Uuid::new_v4()))
+    fn tmp() -> (crate::TestDir, PathBuf) {
+        let guard = crate::TestDir::new("images");
+        let dir = guard.0.clone();
+        (guard, dir)
     }
 
     #[test]
@@ -201,7 +203,7 @@ pub(crate) mod tests {
 
     #[test]
     fn snapshot_captures_each_overwrite_distinctly() {
-        let dir = tmp();
+        let (_g, dir) = tmp();
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("shot.png");
         let out = dir.join("out");
@@ -250,12 +252,11 @@ pub(crate) mod tests {
                 .to_string()
                 .contains("exceeds 5 MB")
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn corrupted_existing_blob_is_replaced_not_served() {
-        let dir = tmp();
+        let (_g, dir) = tmp();
         let png = encoded(ImageFormat::Png, 2, 2, 1);
         let a = save(&png, "image/png", &dir).unwrap();
         // Truncated, tampered, and replaced by a non-file: each time the next
@@ -273,13 +274,12 @@ pub(crate) mod tests {
         assert_eq!(save(&png, "image/png", &dir).unwrap(), a);
         // No temp files linger next to the blob.
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
     fn fifo_is_refused_without_blocking() {
-        let dir = tmp();
+        let (_g, dir) = tmp();
         std::fs::create_dir_all(&dir).unwrap();
         let fifo = dir.join("shot.png");
         assert!(
@@ -296,6 +296,5 @@ pub(crate) mod tests {
                 .to_string()
                 .contains("not a regular file")
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

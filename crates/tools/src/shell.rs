@@ -481,12 +481,13 @@ mod tests {
 
     /// An executable script standing in for the login shell.
     #[cfg(unix)]
-    fn fake_shell(body: &str) -> PathBuf {
+    fn fake_shell(body: &str) -> (crate::TestDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
-        let p = std::env::temp_dir().join(format!("theuth-shell-{}", uuid::Uuid::new_v4()));
+        let dir = crate::TestDir::new("shell");
+        let p = dir.0.join("sh");
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        p
+        (dir, p)
     }
 
     #[cfg(unix)]
@@ -505,7 +506,7 @@ mod tests {
             assert_eq!(state_of(&state), LoginPathState::Failed { attempts });
         }
         // Given up: a shell that would now succeed is never run.
-        let good = fake_shell("printf %s /late/bin");
+        let (_g, good) = fake_shell("printf %s /late/bin");
         assert_eq!(login_path_with(&state, good.as_os_str(), long).await, None);
         assert_eq!(
             state_of(&state),
@@ -519,7 +520,7 @@ mod tests {
     #[tokio::test]
     async fn timed_out_probe_counts_as_a_failure_and_success_is_cached() {
         let state = probe_state();
-        let hang = fake_shell("sleep 30");
+        let (_g, hang) = fake_shell("sleep 30");
         let started = Instant::now();
         assert_eq!(
             login_path_with(&state, hang.as_os_str(), Duration::from_millis(200)).await,
@@ -528,7 +529,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(state_of(&state), LoginPathState::Failed { attempts: 1 });
         // Retry succeeds and is cached: a later failing shell is not consulted.
-        let good = fake_shell("printf %s /fake/bin:/bin");
+        let (_g, good) = fake_shell("printf %s /fake/bin:/bin");
         let path = login_path_with(&state, good.as_os_str(), Duration::from_secs(5)).await;
         assert_eq!(path.as_deref(), Some("/fake/bin:/bin"));
         assert_eq!(
@@ -544,7 +545,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_callers_share_one_probe() {
         let state = probe_state();
-        let counted = fake_shell("printf %s /once >> \"$0.calls\"; printf %s /once/bin");
+        let (_g, counted) = fake_shell("printf %s /once >> \"$0.calls\"; printf %s /once/bin");
         let long = Duration::from_secs(5);
         let (a, b) = tokio::join!(
             login_path_with(&state, counted.as_os_str(), long),
@@ -563,7 +564,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn probe_child_has_no_controlling_terminal() {
-        let shell = fake_shell(
+        let (_g, shell) = fake_shell(
             r#"if (exec 3</dev/tty) 2>/dev/null; then printf HASTTY; else printf NOTTY; fi
 printf ' %s' "$(ps -o pgid= -p $$)""#,
         );

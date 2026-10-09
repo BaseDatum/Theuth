@@ -51,7 +51,7 @@ impl Compactor for Echo {
     }
 }
 
-async fn harness() -> (Endless, Store, Arc<Echo>, SessionId, std::path::PathBuf) {
+async fn harness() -> (crate::TestDir, Endless, Store, Arc<Echo>, SessionId) {
     harness_with(EndlessConfig {
         view_bytes: 16_000,
         settle_secs: 5,
@@ -62,9 +62,9 @@ async fn harness() -> (Endless, Store, Arc<Echo>, SessionId, std::path::PathBuf)
 
 async fn harness_with(
     cfg: EndlessConfig,
-) -> (Endless, Store, Arc<Echo>, SessionId, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("theuth-endless-e2e-{}", uuid::Uuid::now_v7()));
-    std::fs::create_dir_all(&dir).unwrap();
+) -> (crate::TestDir, Endless, Store, Arc<Echo>, SessionId) {
+    let scratch = crate::TestDir::new("endless-e2e");
+    let dir = scratch.0.clone();
     let store = Store::open(&dir.join("sessions.sqlite"), None)
         .await
         .unwrap();
@@ -89,7 +89,7 @@ async fn harness_with(
         .create_session(id, "fake/session", None, None, None)
         .await
         .unwrap();
-    (endless, store, echo, id, dir)
+    (scratch, endless, store, echo, id)
 }
 
 fn attached() -> Attached {
@@ -149,7 +149,7 @@ async fn seed(store: &Store, id: SessionId, long: &str) {
 /// off` writes the head and `on` needs no backfill.
 #[tokio::test]
 async fn pump_builds_tree_and_tools_answer() {
-    let (endless, store, echo, id, _dir) = harness().await;
+    let (_dir, endless, store, echo, id) = harness().await;
     store
         .set_session_memory(id, MemoryMode::Endless)
         .await
@@ -262,7 +262,7 @@ async fn pump_builds_tree_and_tools_answer() {
 /// reloads the tree from rows without rebuilding.
 #[tokio::test]
 async fn history_backfills_then_activates_and_resumes_from_rows() {
-    let (endless, store, echo, id, _dir) = harness().await;
+    let (_dir, endless, store, echo, id) = harness().await;
     seed(&store, id, "short tool output").await;
     endless.attach(id, attached()).await.unwrap();
     assert!(!endless.active(id), "epochs session");
@@ -290,10 +290,7 @@ async fn history_backfills_then_activates_and_resumes_from_rows() {
     endless.detach(id);
 
     // Restart: rows are the hand-off (8.7).
-    let endless2 = {
-        let (e, ..) = harness().await;
-        e
-    };
+    let (_dir2, endless2, ..) = harness().await;
     assert_eq!(
         endless2.resume_all().await.unwrap(),
         0,
@@ -350,7 +347,7 @@ fn wire_types_round_trip() {
 /// reach the units below, merged lines below the base do not exist.
 #[tokio::test]
 async fn backfill_cap_sets_base_and_keeps_raw_history_reachable() {
-    let (endless, store, _echo, id, _dir) = harness_with(EndlessConfig {
+    let (_dir, endless, store, _echo, id) = harness_with(EndlessConfig {
         view_bytes: 16_000,
         backfill_max_units: 3,
         ..EndlessConfig::default()
@@ -482,7 +479,7 @@ fn compactor_chain_and_meeting_filter() {
 /// serves its lines.
 #[tokio::test]
 async fn meeting_filter_session_is_served_but_never_active() {
-    let (endless, store, _echo, id, _dir) = harness().await;
+    let (_dir, endless, store, _echo, id) = harness().await;
     store
         .append(
             id,

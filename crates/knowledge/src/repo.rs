@@ -554,10 +554,10 @@ fn touching<'r>(
 mod tests {
     use super::*;
 
-    fn tmp() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("theuth-repo-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tmp() -> (crate::TestDir, PathBuf) {
+        let guard = crate::TestDir::new("repo");
+        let dir = guard.0.clone();
+        (guard, dir)
     }
 
     fn put(root: &Path, rel: &str, body: &str) -> PathBuf {
@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn open_empty_dir_leaves_head_unborn() {
-        let root = tmp();
+        let (_g, root) = tmp();
         let repo = Repo::open(&root).unwrap();
         assert!(root.join(".git").is_dir());
         assert!(repo.history(None, 10).unwrap().is_empty());
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn open_with_files_reconciles_once() {
-        let root = tmp();
+        let (_g, root) = tmp();
         put(&root, "a.md", "a\n");
         put(&root, "sub/b.md", "b\n");
         let repo = Repo::open(&root).unwrap();
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn commit_history_show_diff_previous() {
-        let root = tmp();
+        let (_g, root) = tmp();
         let repo = Repo::open(&root).unwrap();
         let a = put(&root, "a.md", "old\n");
         let first = repo.commit(std::slice::from_ref(&a), &[], "add a").unwrap();
@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn root_commit_has_no_diff_or_previous() {
-        let root = tmp();
+        let (_g, root) = tmp();
         let a = put(&root, "a.md", "only\n");
         let repo = Repo::open(&root).unwrap();
         assert_eq!(repo.last_diff(&a).unwrap(), None);

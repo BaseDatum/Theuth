@@ -2220,16 +2220,12 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn tempdir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("theuth-knowledge-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
-
-    async fn open() -> (Arc<Knowledge>, PathBuf) {
-        let dir = tempdir();
-        let rt = Runtime::new(figment::Figment::new(), dir.clone());
-        (Knowledge::open(&dir, rt).await.unwrap(), dir)
+    /// Guard first in the tuple: it is declared first, so it drops last.
+    async fn open() -> (crate::TestDir, Arc<Knowledge>) {
+        let dir = crate::TestDir::new("knowledge");
+        let rt = Runtime::new(figment::Figment::new(), dir.0.clone());
+        let k = Knowledge::open(&dir.0, rt).await.unwrap();
+        (dir, k)
     }
 
     fn put(id: &str, title: &str, body: &str) -> Put {
@@ -2250,8 +2246,8 @@ mod tests {
     /// existing file; a put that sets one overwrites only that one.
     #[tokio::test]
     async fn put_for_round_trips_the_136_keys_and_unknown_keys() {
-        let (k, dir) = open().await;
-        let path = dir.join(DIR).join("facts").join("rt.md");
+        let (dir, k) = open().await;
+        let path = dir.0.join(DIR).join("facts").join("rt.md");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -2332,7 +2328,7 @@ mod tests {
         assert!(m.hint);
         assert!(m.evidence.is_empty());
         assert!(
-            !std::fs::read_to_string(dir.join(DIR).join("facts").join("plain.md"))
+            !std::fs::read_to_string(dir.0.join(DIR).join("facts").join("plain.md"))
                 .unwrap()
                 .contains("status:")
         );
@@ -2342,7 +2338,7 @@ mod tests {
     /// unknown ids, and survives `sync`.
     #[tokio::test]
     async fn uses_table_records_shown_and_opened_and_survives_sync() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(put("facts/a", "A", "a"), Source::Model)
             .await
             .unwrap();
@@ -2376,7 +2372,7 @@ mod tests {
     /// but stay searchable.
     #[tokio::test]
     async fn hint_for_skips_unhinted_and_non_live_but_search_keeps_them() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(
             Put {
                 hint: Some(false),
@@ -2423,7 +2419,7 @@ mod tests {
     /// body, `architecture`/`tool` types, no `visibility`, a 1,500-char title.
     #[tokio::test]
     async fn live_shapes_parse_unchanged() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         let long_title = "x".repeat(1_500);
         let files = [
             (
@@ -2518,7 +2514,7 @@ mod tests {
     /// leaves the shelf but stays searchable.
     #[tokio::test]
     async fn hint_rank_uses_opens_impressions_and_record_lifetime() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         for id in ["facts/one", "facts/two", "facts/three"] {
             k.put(
                 put(id, "rustup toolchain pins", "the toolchain is pinned"),
@@ -2586,7 +2582,7 @@ mod tests {
     /// `dreaming`; `restore` brings a stub back.
     #[tokio::test]
     async fn merge_folds_into_stubs_and_is_restorable() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(
             Put {
                 evidence: vec!["s1".into()],
@@ -2780,7 +2776,7 @@ mod tests {
     /// and `restore(C, before)` brings the old link back in the index too.
     #[tokio::test]
     async fn merge_rewrites_citers_and_publishes_them() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(put("facts/a", "A", "a body"), Source::Model)
             .await
             .unwrap();
@@ -2849,7 +2845,7 @@ mod tests {
     /// bodies equal to the named revisions, one `KnowledgeChanged` per id.
     #[tokio::test]
     async fn restore_many_restores_several_ids_in_one_commit() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         let ids = ["facts/x", "facts/y", "facts/z"];
         let mut want = Vec::new();
         for id in ids {
@@ -2907,7 +2903,7 @@ mod tests {
     /// subject, and `restore` undoing each.
     #[tokio::test]
     async fn supersede_archive_verify_retitle_effects_author_and_restore() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(put("facts/old", "Old claim", "was true"), Source::Model)
             .await
             .unwrap();
@@ -3121,7 +3117,7 @@ mod tests {
     /// `source` and `timestamp`; only `consolidated_at` moves.
     #[tokio::test]
     async fn dreaming_put_preserves_identity() {
-        let (k, _dir, ops, _cto, _mkt) = scoped().await;
+        let (_dir, k, ops, _cto, _mkt) = scoped().await;
         k.put_for(
             Put {
                 scope: Some(PathBuf::from("/work/relay")),
@@ -3174,8 +3170,8 @@ mod tests {
     /// record is still past the hint shelf's lifetime after a retitle.
     #[tokio::test]
     async fn ops_do_not_restamp_timestamp() {
-        let (k, dir) = open().await;
-        let path = dir.join(DIR).join("records").join("old.md");
+        let (dir, k) = open().await;
+        let path = dir.0.join(DIR).join("records").join("old.md");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let old = (chrono::Utc::now() - chrono::Duration::days(20))
             .format("%Y-%m-%dT%H:%M:%SZ")
@@ -3216,8 +3212,8 @@ mod tests {
     /// evidence union and the `merged` status.
     #[tokio::test]
     async fn harvest_reput_unions_evidence_and_never_demotes_status() {
-        let (k, dir) = open().await;
-        let path = dir.join(DIR).join("facts").join("m.md");
+        let (dir, k) = open().await;
+        let path = dir.0.join(DIR).join("facts").join("m.md");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -3258,14 +3254,14 @@ mod tests {
     /// — while a retitle is allowed.
     #[tokio::test]
     async fn user_authored_entries_are_refused_by_the_destructive_ops() {
-        let (k, dir) = open().await;
+        let (dir, k) = open().await;
         k.put(put("facts/h", "Human note", "typed by hand"), Source::User)
             .await
             .unwrap();
         k.put(put("facts/other", "Other", "model"), Source::Model)
             .await
             .unwrap();
-        let path = dir.join(DIR).join("facts").join("h.md");
+        let path = dir.0.join(DIR).join("facts").join("h.md");
         let before = std::fs::read(&path).unwrap();
         let scope = AgentScope {
             owner: USER_OWNER.into(),
@@ -3316,7 +3312,7 @@ mod tests {
     /// live — `hint: true`, no `superseded_by`/`valid_until`.
     #[tokio::test]
     async fn merge_revives_an_archived_canonical() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(put("facts/canon", "Canon", "old"), Source::Model)
             .await
             .unwrap();
@@ -3366,7 +3362,7 @@ mod tests {
     /// twins and a merge stub outrank them.
     #[tokio::test]
     async fn hint_window_is_not_spent_on_dead_rows() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         let cwd = Path::new("/tmp");
         // Dead rows repeat the terms (better bm25) …
         for i in 0..4 {
@@ -3434,7 +3430,7 @@ mod tests {
                 s == self.0
             }
         }
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         let (owner, dreaming, routine) = (SessionId::new(), SessionId::new(), SessionId::new());
         assert!(!k.may_consolidate(owner).await, "nobody until installed");
         k.set_consolidator(Arc::new(OwnerRoot(owner)));
@@ -3467,8 +3463,14 @@ mod tests {
     }
 
     /// `ops` reports to `cto`; `mkt` is another line. Sessions: ops, cto, mkt.
-    async fn scoped() -> (Arc<Knowledge>, PathBuf, SessionId, SessionId, SessionId) {
-        let (k, dir) = open().await;
+    async fn scoped() -> (
+        crate::TestDir,
+        Arc<Knowledge>,
+        SessionId,
+        SessionId,
+        SessionId,
+    ) {
+        let (dir, k) = open().await;
         let (ops, cto, mkt) = (SessionId::new(), SessionId::new(), SessionId::new());
         let mut t = HashMap::new();
         t.insert(
@@ -3490,14 +3492,14 @@ mod tests {
             scope("agent:mkt", &["agent:mkt", "agent:theuth", "user"]),
         );
         k.set_scoper(Arc::new(Table(t)));
-        (k, dir, ops, cto, mkt)
+        (dir, k, ops, cto, mkt)
     }
 
     #[tokio::test]
     async fn existing_concepts_default_to_user_and_shared() {
-        let (k, dir) = open().await;
+        let (dir, k) = open().await;
         // A hand-written file without the 67 §9 keys.
-        let path = dir.join(DIR).join("facts").join("old.md");
+        let path = dir.0.join(DIR).join("facts").join("old.md");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "---\ntype: fact\ntitle: Old\n---\nold body\n").unwrap();
         k.sync().await.unwrap();
@@ -3522,7 +3524,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_put_is_private_to_it_and_search_is_scoped() {
-        let (k, _dir, ops, cto, mkt) = scoped().await;
+        let (_dir, k, ops, cto, mkt) = scoped().await;
         let (m, _) = k
             .put_for(
                 put("ops/runbook", "Relay runbook", "pelican restart steps"),
@@ -3606,7 +3608,7 @@ mod tests {
 
     #[tokio::test]
     async fn share_is_for_the_owner_and_its_line() {
-        let (k, _dir, ops, cto, mkt) = scoped().await;
+        let (_dir, k, ops, cto, mkt) = scoped().await;
         k.put_for(
             put("ops/secret", "Secret", "body"),
             Source::Model,
@@ -3651,7 +3653,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_get_round_trip_with_links() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         let (meta, created) = k
             .put(
                 put(
@@ -3710,7 +3712,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_ids_and_documents_rejected() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         for id in ["../x", "index", "facts/log", "a/b/c/d", ""] {
             assert!(
                 k.put(put(id, "t", "b"), Source::Model).await.is_err(),
@@ -3735,7 +3737,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_keeps_unknown_frontmatter_and_stamps_user() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         let meta = k
             .write(
                 "Facts/Raw.md",
@@ -3775,7 +3777,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_ranks_title_over_body_and_boosts_scope() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(
             put("a/title-hit", "rustup toolchain", "nothing here"),
             Source::Model,
@@ -3829,7 +3831,7 @@ mod tests {
 
     #[tokio::test]
     async fn hint_needs_two_terms_and_honours_exclude() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(
             put("a/src-only", "the src directory", "src src src"),
             Source::Model,
@@ -3874,7 +3876,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_sees_external_add_edit_and_remove() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         let file = k.root().join("facts/external.md");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, "---\ntype: fact\ntitle: External\n---\nbody\n").unwrap();
@@ -3907,7 +3909,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_filters() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(put("facts/a", "a", "x"), Source::Model)
             .await
             .unwrap();
@@ -3942,20 +3944,21 @@ mod tests {
 
     #[tokio::test]
     async fn index_rebuilt_when_deleted() {
-        let (k, dir) = open().await;
+        let (dir, k) = open().await;
         k.put(put("facts/a", "a", "x"), Source::Model)
             .await
             .unwrap();
         drop(k);
-        std::fs::remove_file(dir.join(INDEX_FILE)).unwrap();
-        let rt = Runtime::new(figment::Figment::new(), dir.clone());
-        let k = Knowledge::open(&dir, rt).await.unwrap();
+        std::fs::remove_file(dir.0.join(INDEX_FILE)).unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.0.clone());
+        let k = Knowledge::open(&dir.0, rt).await.unwrap();
         assert_eq!(k.list(None, None, None, 10).await.unwrap().len(), 1);
     }
 
     #[test]
     fn regenerate_indexes_skips_dot_dirs_and_unchanged_files() {
-        let dir = tempdir();
+        let scratch = crate::TestDir::new("knowledge");
+        let dir = scratch.0.clone();
         let md = "---\ntype: fact\ntitle: A\n---\nbody\n";
         std::fs::create_dir_all(dir.join("facts")).unwrap();
         std::fs::create_dir_all(dir.join(".git")).unwrap();
@@ -3976,7 +3979,7 @@ mod tests {
 
     #[tokio::test]
     async fn history_and_restore_through_repo() {
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(put("facts/a", "first", "one"), Source::Model)
             .await
             .unwrap();
@@ -4025,7 +4028,7 @@ mod tests {
     #[tokio::test]
     async fn revision_details_root_edit_delete_and_sync_without_writing() {
         use crate::types::ChangeStatus;
-        let (k, _dir) = open().await;
+        let (_dir, k) = open().await;
         k.put(put("facts/a", "first", "one"), Source::Model)
             .await
             .unwrap();

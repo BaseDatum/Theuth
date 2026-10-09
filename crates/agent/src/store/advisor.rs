@@ -231,10 +231,10 @@ mod tests {
     use crate::store::turn_openers;
     use crate::{AdvisorSeverity, AdvisoryNote};
 
-    /// Fresh store in a temp dir with one chat session; caller removes `dir`.
-    async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("theuth-advisor-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+    /// Fresh store in a temp dir with one chat session; the dir goes when the guard drops.
+    async fn fresh() -> (Store, SessionId, crate::TestDir) {
+        let scratch = crate::TestDir::new("advisor");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -243,7 +243,7 @@ mod tests {
             .create_session(id, "m", None, None, None)
             .await
             .unwrap();
-        (store, id, dir)
+        (store, id, scratch)
     }
 
     /// An advisor child of `advised`, created the way W1 will (`kind = advisor`).
@@ -279,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn link_upserts_round_trips_and_deletes() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         assert_eq!(store.advisor_link(id).await.unwrap(), None);
         assert!(store.advisor_links().await.unwrap().is_empty());
 
@@ -310,7 +310,6 @@ mod tests {
         // The advisor session itself stays (D1).
         assert!(store.session(advisor).await.unwrap().is_some());
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 125 F1: the link is captured (68 §3), so a session moved to another
@@ -342,7 +341,9 @@ mod tests {
             "put_advisor_link left no log row for the advised session"
         );
 
-        let other = Store::open(&dir.join("other.sqlite"), None).await.unwrap();
+        let other = Store::open(&dir.0.join("other.sqlite"), None)
+            .await
+            .unwrap();
         for row in &rows {
             let mut tx = other.begin_apply().await.unwrap();
             let rc = tx
@@ -364,12 +365,11 @@ mod tests {
         assert_eq!(other.advisor_link(id).await.unwrap(), Some(link));
         assert!(other.session(advisor).await.unwrap().is_some());
         drop((store, other));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn appended_advisory_opens_no_turn_and_renders_typed() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         let advisor = advisor_of(&store, id).await;
         store.append(id, &ChatMessage::user("u1")).await.unwrap();
         store
@@ -446,12 +446,11 @@ mod tests {
         );
         assert!(store.rows_since(id, 0).await.is_err());
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn advisors_hidden_from_lists_trees_and_search_unless_asked() {
-        let (store, root, dir) = fresh().await;
+        let (store, root, _dir) = fresh().await;
         let kid = SessionId::new();
         store
             .create_session(kid, "m", Some(root), Some("kid"), None)
@@ -504,15 +503,14 @@ mod tests {
         assert!(removed.contains(&advisor) && removed.contains(&kid));
         assert!(store.session(advisor).await.unwrap().is_none());
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 0034 applies on a database at 0033: existing rows read as `chat` with
     /// no advisory, and the new table is usable.
     #[tokio::test]
     async fn migration_applies_on_a_0033_database() {
-        let dir = std::env::temp_dir().join(format!("theuth-advisor-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("advisor");
+        let dir = scratch.0.clone();
         let path = dir.join("sessions.sqlite");
         let old = SessionId::new();
         {
@@ -574,14 +572,13 @@ mod tests {
             .unwrap();
         assert_eq!(store.advisor_links().await.unwrap().len(), 1);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// R1 D-R1.6: a consultation row is masked — a card in `rows_since`,
     /// `removed` in the context metadata, gone from the effective frame.
     #[tokio::test]
     async fn masked_advisory_is_a_card_but_not_model_context() {
-        let (store, id, dir) = fresh().await;
+        let (store, id, _dir) = fresh().await;
         let advisor = advisor_of(&store, id).await;
         store.append(id, &ChatMessage::user("u1")).await.unwrap();
         let mut meta = card(advisor, AdvisorSeverity::Advice, "read the justfile first");
@@ -621,13 +618,12 @@ mod tests {
             .unwrap();
         assert!(!store.context_history(id).await.unwrap().entries[&seq].removed);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// R1.5: the parent chain nearest first, bounded like `root_of`.
     #[tokio::test]
     async fn ancestors_are_nearest_first_and_bounded() {
-        let (store, root, dir) = fresh().await;
+        let (store, root, _dir) = fresh().await;
         let child = SessionId::new();
         let grandchild = SessionId::new();
         store
@@ -653,6 +649,5 @@ mod tests {
         assert_eq!(chain.len(), super::super::ROOT_HOPS);
         assert_eq!(chain[0], child);
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

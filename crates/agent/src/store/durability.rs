@@ -1506,9 +1506,9 @@ mod tests {
 
     use super::*;
 
-    async fn fresh() -> (Store, SessionId, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("theuth-dur-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+    async fn fresh() -> (Store, SessionId, crate::TestDir) {
+        let scratch = crate::TestDir::new("dur");
+        let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -1517,7 +1517,7 @@ mod tests {
             .create_session(id, "m", None, None, None)
             .await
             .unwrap();
-        (store, id, dir)
+        (store, id, scratch)
     }
 
     fn call(id: &str, name: &str) -> ToolCall {
@@ -1587,7 +1587,7 @@ mod tests {
 
     #[tokio::test]
     async fn plan_follows_the_newest_step() {
-        let (store, s, dir) = fresh().await;
+        let (store, s, _dir) = fresh().await;
         let t = TurnId::new();
         assert!(store.resume_plan(s, t).await.is_err());
 
@@ -1677,12 +1677,11 @@ mod tests {
         assert_eq!(p.last, LastStep::Finished);
         assert!(p.partial.is_none());
         assert!(store.open_turns(Scope::Here).await.unwrap().is_empty());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn batch_plan_tracks_call_states() {
-        let (store, s, dir) = fresh().await;
+        let (store, s, _dir) = fresh().await;
         let t = batch_turn(&store, s).await;
         let p = store.resume_plan(s, t).await.unwrap();
         assert_eq!(
@@ -1756,12 +1755,11 @@ mod tests {
         assert_eq!(p.calls[2].state, CallState::Finished);
         assert!(p.calls[2].is_error);
         assert_eq!(store.calls_of(s, t).await.unwrap().len(), 3);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn open_turns_order_and_prune() {
-        let (store, s, dir) = fresh().await;
+        let (store, s, _dir) = fresh().await;
         let other = SessionId::new();
         store
             .create_session(other, "m", None, None, None)
@@ -1803,12 +1801,11 @@ mod tests {
         assert!(store.resume_plan(s, old).await.is_err());
         // The other session's open turn is untouched.
         assert_eq!(store.calls_of(other, newer).await.unwrap().len(), 3);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn questions_waits_jobs_screens_round_trip() {
-        let (store, s, dir) = fresh().await;
+        let (store, s, _dir) = fresh().await;
         let t = batch_turn(&store, s).await;
         let asked = Utc::now();
         let q = QuestionRow {
@@ -1971,14 +1968,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 0);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// 139 §5.3 / §7.2: `pty_screens` is attached — a screen row logs like
     /// every other journal row (inverts 109's `…_but_screens_do_not`).
     #[tokio::test]
     async fn pty_screen_rows_replicate() {
-        let (store, s, dir) = fresh().await;
+        let (store, s, _dir) = fresh().await;
         let before = store.log_after(0).await.unwrap().len();
         let t = TurnId::new();
         store
@@ -2026,16 +2022,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.log_after(0).await.unwrap().len(), after_job + 1);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A file written by engine `a` — one session with an open batch turn,
     /// a finished turn, a running job spawned on `a` and a `child_result`
     /// wait — reopened by engine `b` (the shape of
     /// `store::tests::writes_on_a_foreign_session_are_refused_until_taken`).
-    async fn reopened_by_b() -> (Store, SessionId, TurnId, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("theuth-dur-ab-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+    async fn reopened_by_b() -> (Store, SessionId, TurnId, crate::TestDir) {
+        let scratch = crate::TestDir::new("dur-ab");
+        let dir = scratch.0.clone();
         let path = dir.join("sessions.sqlite");
         let a = Store::open(&path, Some(mesh::EngineId("a".into())))
             .await
@@ -2063,7 +2058,7 @@ mod tests {
         let b = Store::open(&path, Some(mesh::EngineId("b".into())))
             .await
             .unwrap();
-        (b, foreign, open, dir)
+        (b, foreign, open, scratch)
     }
 
     fn job(session: SessionId, id: &str) -> JobRow {
@@ -2102,7 +2097,7 @@ mod tests {
     /// (an `All` prune would hit the fence and fail as a whole).
     #[tokio::test]
     async fn open_turns_here_excludes_foreign_owners() {
-        let (b, foreign, foreign_turn, dir) = reopened_by_b().await;
+        let (b, foreign, foreign_turn, _dir) = reopened_by_b().await;
         let mine = SessionId::new();
         b.create_session(mine, "m", None, None, None).await.unwrap();
         let my_turn = batch_turn(&b, mine).await;
@@ -2148,7 +2143,6 @@ mod tests {
         .unwrap();
         assert_eq!(kept, 1);
         assert!(b.journal_prune(Scope::All, 0).await.is_err(), "fenced");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// 139 D14 / I6: `jobs_open(Here)` keeps the rows of sessions owned
@@ -2158,7 +2152,7 @@ mod tests {
     /// a signal and returns it settled.
     #[tokio::test]
     async fn jobs_open_here_filters_by_engine() {
-        let (b, _foreign, _, dir) = reopened_by_b().await;
+        let (b, _foreign, _, _dir) = reopened_by_b().await;
         let mine = SessionId::new();
         b.create_session(mine, "m", None, None, None).await.unwrap();
         for (id, engine) in [("j1", ""), ("j2", "b"), ("j3", "a")] {
@@ -2192,14 +2186,13 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// `resume_reports`: round trip, upsert, `latest` follows the newest
     /// turn, the row replicates, and prune / delete take it.
     #[tokio::test]
     async fn resume_reports_round_trip_latest_and_prune() {
-        let (store, s, dir) = fresh().await;
+        let (store, s, _dir) = fresh().await;
         let t = batch_turn(&store, s).await;
         assert!(store.resume_report(s, t).await.unwrap().is_none());
         assert!(store.latest_resume_report(s).await.unwrap().is_none());
@@ -2266,6 +2259,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 0);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

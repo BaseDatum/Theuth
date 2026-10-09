@@ -321,11 +321,12 @@ mod tests {
     use super::*;
     use crate::types::{Put, Source};
 
-    async fn bundle() -> (Arc<Knowledge>, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("theuth-ksync-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
-        (Knowledge::open(&dir, rt).await.unwrap(), dir)
+    /// Guard first in the tuple: it is declared first, so it drops last.
+    async fn bundle() -> (crate::TestDir, Arc<Knowledge>) {
+        let dir = crate::TestDir::new("ksync");
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
+        let k = Knowledge::open(&dir.0, rt).await.unwrap();
+        (dir, k)
     }
 
     fn put(id: &str, body: &str) -> Put {
@@ -365,8 +366,8 @@ mod tests {
 
     #[tokio::test]
     async fn two_bundles_converge_both_ways_and_deletions_travel() {
-        let (a, da) = bundle().await;
-        let (b, db) = bundle().await;
+        let (_da, a) = bundle().await;
+        let (db, b) = bundle().await;
         a.put(put("facts/only-a", "from a"), Source::User)
             .await
             .unwrap();
@@ -391,19 +392,16 @@ mod tests {
         a.delete("facts/only-b").await.unwrap();
         sync_pair(&a, &b).await;
         assert_eq!(ids(&b).await, ["facts/only-a"]);
-        assert!(!db.join("facts/only-b.md").exists());
+        assert!(!db.0.join("facts/only-b.md").exists());
         // …and the deletion does not come back from B on the next round.
         sync_pair(&b, &a).await;
         assert_eq!(ids(&a).await, ["facts/only-a"]);
-
-        let _ = std::fs::remove_dir_all(da);
-        let _ = std::fs::remove_dir_all(db);
     }
 
     #[tokio::test]
     async fn conflicting_edit_newer_wins_and_history_keeps_both() {
-        let (a, da) = bundle().await;
-        let (b, db) = bundle().await;
+        let (_da, a) = bundle().await;
+        let (_db, b) = bundle().await;
         a.put(put("facts/shared", "v0"), Source::User)
             .await
             .unwrap();
@@ -456,8 +454,5 @@ mod tests {
         let head_a = a.repo.as_ref().unwrap().head_id().unwrap();
         sync_pair(&b, &a).await;
         assert_eq!(a.repo.as_ref().unwrap().head_id().unwrap(), head_a);
-
-        let _ = std::fs::remove_dir_all(da);
-        let _ = std::fs::remove_dir_all(db);
     }
 }

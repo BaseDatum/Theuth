@@ -34,12 +34,11 @@ fn view() -> ViewRender {
 }
 
 /// A registry for `rebase`'s `ListTools`; process-global, so one per scenario.
-async fn registry() -> PathBuf {
-    let reg_dir = std::env::temp_dir().join(format!("theuth-endless-reg-{}", Uuid::now_v7()));
-    std::fs::create_dir_all(&reg_dir).unwrap();
-    let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
+async fn registry() -> crate::TestDir {
+    let scratch = crate::TestDir::new("endless-reg");
+    let reg_rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
     tools::registry::start(&reg_rt).await.unwrap();
-    reg_dir
+    scratch
 }
 
 /// The session actor over the harness's store, the endless turn's view
@@ -118,7 +117,7 @@ fn endless_turns_rebuild_the_frame_from_the_view() {
 }
 
 async fn scenario_fresh_turns() {
-    let reg_dir = registry().await;
+    let _reg_dir = registry().await;
     let mut h = Harness::new(Fake::compact_held(Duration::ZERO)).await;
     let actor = actor(&h, true).await;
     send(&mut h, &actor, "First question.").await;
@@ -164,7 +163,6 @@ async fn scenario_fresh_turns() {
     let (_, head, history) = h.store.frame(h.id).await.unwrap();
     assert!(head.is_none());
     assert_eq!(history.len(), 4, "two inputs, two replies");
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }
 
 #[test]
@@ -173,7 +171,7 @@ fn epochs_session_keeps_the_dated_prompt_and_no_endless_tools() {
 }
 
 async fn scenario_epochs() {
-    let reg_dir = registry().await;
+    let _reg_dir = registry().await;
     let mut h = Harness::new(Fake::compact_held(Duration::ZERO)).await;
     let actor = actor(&h, false).await;
     send(&mut h, &actor, "First question.").await;
@@ -192,7 +190,6 @@ async fn scenario_epochs() {
     // The carried history: turn 1's input and reply precede turn 2's input.
     let t2 = texts(r2);
     assert!(t2.iter().any(|t| t.contains("First question.")));
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }
 
 #[test]
@@ -201,7 +198,7 @@ fn overflow_in_an_endless_turn_cuts_with_the_view_as_head() {
 }
 
 async fn scenario_overflow() {
-    let reg_dir = registry().await;
+    let _reg_dir = registry().await;
     let mut h = Harness::new(Fake::tool_call_then_overflow(
         "todo",
         &json!({"op": "view"}),
@@ -254,7 +251,6 @@ async fn scenario_overflow() {
     let (epoch, stored_head, _) = h.store.frame(h.id).await.unwrap();
     assert_eq!(epoch, 1);
     assert!(text_of(&stored_head.unwrap().content).contains("</chat>"));
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }
 
 #[test]
@@ -263,7 +259,7 @@ fn endless_off_installs_the_view_head_as_the_next_epoch() {
 }
 
 async fn scenario_off() {
-    let reg_dir = registry().await;
+    let _reg_dir = registry().await;
     let mut h = Harness::new(Fake::compact_held(Duration::ZERO)).await;
     let actor = actor(&h, true).await;
     send(&mut h, &actor, "First question.").await;
@@ -288,5 +284,4 @@ async fn scenario_off() {
     let (mut empty, _) = h.turn("openai/textonly", CancellationToken::new()).await;
     empty.state.history.clear();
     assert_eq!(empty.install_view_head(2, text).await.unwrap(), 0);
-    let _ = std::fs::remove_dir_all(&reg_dir);
 }

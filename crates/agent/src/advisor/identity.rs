@@ -64,8 +64,8 @@ mod tests {
 
     #[test]
     fn assembles_prompt_project_context_and_attention() {
-        let dir = std::env::temp_dir().join(format!("theuth-adv-id-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("adv-id");
+        let dir = scratch.0.clone();
         std::fs::write(dir.join("prompt.md"), "Always run the check.\n").unwrap();
         let bare = identity(&dir, 4);
         assert!(bare.starts_with("<conventions>"));
@@ -86,6 +86,5 @@ mod tests {
         assert!(one.contains("There is no `advise` tool") && one.contains("<consultation>"));
         assert!(!one.contains("read_file, grep"));
         assert!(one.contains("Always run the check.") && one.ends_with("</attention>"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

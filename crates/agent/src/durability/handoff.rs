@@ -395,8 +395,8 @@ mod tests {
         use crate::todo::{Todo, TodoSource};
         use genai::chat::ChatMessage;
 
-        let dir = std::env::temp_dir().join(format!("theuth-handoff-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::TestDir::new("handoff");
+        let dir = scratch.0.clone();
         let sh = |args: &[&str]| {
             let o = std::process::Command::new("git")
                 .args(args)
@@ -518,6 +518,5 @@ mod tests {
         let out = compose_handoff(&store, bare, 4000).await;
         assert!(!out.contains("Uncommitted work"), "{out}");
         assert!(!out.contains("Diff since"), "{out}");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

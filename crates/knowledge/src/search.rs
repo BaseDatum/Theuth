@@ -774,11 +774,12 @@ mod tests {
     use super::*;
     use crate::types::{Put, Source};
 
-    async fn open() -> Arc<Knowledge> {
-        let dir = std::env::temp_dir().join(format!("theuth-ksearch-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let rt = Runtime::new(figment::Figment::new(), dir.clone());
-        Knowledge::open(&dir, rt).await.unwrap()
+    /// Guard first in the tuple: it is declared first, so it drops last.
+    async fn open() -> (crate::TestDir, Arc<Knowledge>) {
+        let dir = crate::TestDir::new("ksearch");
+        let rt = Runtime::new(figment::Figment::new(), dir.0.clone());
+        let k = Knowledge::open(&dir.0, rt).await.unwrap();
+        (dir, k)
     }
 
     fn put(id: &str, title: &str, body: &str) -> Put {
@@ -824,7 +825,7 @@ mod tests {
 
     #[tokio::test]
     async fn current_search_reads_ids_and_whole_bodies_and_excludes_stale_rows() {
-        let k = open().await;
+        let (_dir, k) = open().await;
         let filler = "unrelated line\n".repeat(40);
         k.put(
             put(
@@ -915,7 +916,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_backfill_invalidates_current_snapshot() {
-        let k = open().await;
+        let (_dir, k) = open().await;
         k.put(put("facts/a", "A", "alpha"), Source::Model)
             .await
             .unwrap();
@@ -930,7 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn history_covers_full_text_root_deletion_merge_and_head_rewind() {
-        let k = open().await;
+        let (_dir, k) = open().await;
         let repo = k.repo.clone().unwrap();
         let far = "filler line\n".repeat(12);
         k.put(
@@ -1123,7 +1124,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_revision_accepts_prefix_and_rejects_unknown_or_invalid() {
-        let k = open().await;
+        let (_dir, k) = open().await;
         k.put(put("facts/a", "A", "alpha"), Source::Model)
             .await
             .unwrap();
