@@ -76,10 +76,13 @@ extension IslandController {
             await click("deeper")
             check("deeper click", store.meetingActs.contains("meeting_deeper(b2)"), "acts=\(store.meetingActs)")
             // Hover topic 1 → its dismiss x appears → click it. A real hover is a sweep of moves, not one jump: the tracking
-            // area wants an enter and movement inside before SwiftUI's `onHover` flips.
+            // area wants an enter and movement inside before SwiftUI's `onHover` flips; a human wiggles, so up to three sweeps.
             if let r = rect("topic:t1") {
-                for i in 0...8 { post(.mouseMoved, at: NSPoint(x: r.minX - 10 + CGFloat(i) * (r.width / 2 + 10) / 8, y: r.midY)); await sleep(0.04) }
-                await sleep(0.7)
+                for attempt in 1...3 where rect("dismiss:t1") == nil {
+                    for i in 0...8 { post(.mouseMoved, at: NSPoint(x: r.minX - 10 + CGFloat(i) * (r.width / 2 + 10) / 8, y: r.midY)); await sleep(0.04) }
+                    await sleep(0.7)
+                    if rect("dismiss:t1") == nil { IslandLog.write("probe hover topic:t1: no dismiss after sweep \(attempt)"); post(.mouseMoved, at: NSPoint(x: r.minX - 40, y: r.midY)); await sleep(0.3) }
+                }
             }
             logRects(["dismiss:t1"])
             await click("dismiss:t1")
