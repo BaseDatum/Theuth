@@ -95,3 +95,7 @@ Live re-proof: fresh data dir `/tmp/151/live-r1` (same config), rebuilt `t3` wit
 Scratch-process note: engines and vite started from the tool shell died silently twice more; both now run under tiny restart loops (`/tmp/151/engine.sh`, `/tmp/151/vite.sh`, stop files) and survived. The eval kernel has no `ANTHROPIC_API_KEY`, so the engine must be started from the shell.
 
 Screenshots replaced: `02`, `04`, `06`, `08`, `09`; new `10-start-card-in-setup-chat.webp`. Everything stopped; `/tmp/151` left (binaries `t`, `t2`, `t3` ≈ 3.8 GB under `/tmp/151/bin`).
+
+## 9. R2
+
+Phone sheet only: the `DraftPanel` inside the bottom `Sheet` gets `[&>header]:pr-10`, so the header's "n of m settled" clears the sheet's close × (desktop panel unchanged). Gates: `tsc -b --noEmit` 0 · `vitest run src/components/autoresearch` 4 files / 34 passed · `vite build` ✓ (the variant is in the built CSS). No live re-proof (orchestrator's call).

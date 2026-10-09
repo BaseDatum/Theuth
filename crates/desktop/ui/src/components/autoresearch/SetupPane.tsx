@@ -92,7 +92,8 @@ export function SetupPane({ chat }: { chat: string | undefined }) {
         <Sheet open={panelOpen} onOpenChange={setPanelOpen}>
           <SheetContent side="bottom" className="flex h-[85dvh] flex-col gap-0 p-0">
             <SheetTitle className="sr-only">Study draft</SheetTitle>
-            {panel}
+            {/* R2: the sheet's close × sits top-right; the panel header's count would run under it. */}
+            <DraftPanel draft={draft.data} session={session} onDiscarded={() => void navigate({ to: '/autoresearch', search: {} })} className="h-full [&>header]:pr-10" />
           </SheetContent>
         </Sheet>
       )}
