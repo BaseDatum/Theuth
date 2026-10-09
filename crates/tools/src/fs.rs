@@ -799,7 +799,9 @@ mod tests {
     /// directory and its writes stay inside its write root; reads outside pass.
     #[tokio::test]
     async fn seated_session_resolves_relative_paths_and_confines_writes() {
-        let dir = std::env::temp_dir().join(format!("theuth-seat-fs-{}", uuid::Uuid::new_v4()));
+        // Drop guard (141 R4): the scratch dir goes when the test ends, pass or fail.
+        let scratch = crate::TestDir::new("seat-fs");
+        let dir = scratch.0.clone();
         let wt = dir.join("worktree");
         std::fs::create_dir_all(&wt).unwrap();
         std::fs::write(wt.join("a.txt"), "in\n").unwrap();
@@ -879,7 +881,6 @@ mod tests {
         assert!(err.contains("outside this session's write root"), "{err}");
         assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "out\n");
         crate::seat::forget(s);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
