@@ -47,8 +47,8 @@ final class PointController {
     private let store: Store
     private(set) var state = PointMachine.State.idle
     private var pressAt: UInt64 = 0
-    /// Bumped on every `Start`: a Stop sequence that outlives its gesture drops its result.
-    private var gesture = 0
+    /// Bumped on every `Start`: a Stop sequence that outlives its gesture drops its result. The probe counts gestures by it.
+    private(set) var gesture = 0
     let sampler = PointerSampler()
     let overlays = OverlayWindows()
     let pill = VoicePill()
@@ -71,6 +71,11 @@ final class PointController {
     private var prewarmed = false
     /// `--probe-point`'s gesture phase: the Stop sequence runs to the point of `desk_open` and stops there.
     var dryRun = false
+    /// `--probe-point` only: `dictation_start` is held this long before it is sent, so a release-into-send that beats the
+    /// reply (a slow engine) is reproducible against a live one.
+    var probeStartDelay: Duration = .zero
+    /// 149f: one physical press = one gesture; auto-repeat key-downs never reach the machine.
+    private var gate = VoiceKeyGate()
 
     init(store: Store) {
         self.store = store
@@ -80,8 +85,8 @@ final class PointController {
             SettingsModel.shared.$value.removeDuplicates().dropFirst().receive(on: RunLoop.main)
                 .sink { [weak self] v in MainActor.assumeIsolated { self?.applyHotkey(v) } }
                 .store(in: &subs)
-            KeyboardShortcuts.onKeyDown(for: .voiceKey) { [weak self] in self?.send(.pressed) }
-            KeyboardShortcuts.onKeyUp(for: .voiceKey) { [weak self] in self?.send(.released) }
+            KeyboardShortcuts.onKeyDown(for: .voiceKey) { [weak self] in self?.keyDown() }
+            KeyboardShortcuts.onKeyUp(for: .voiceKey) { [weak self] in self?.keyUp() }
             KeyboardShortcuts.onKeyDown(for: .pointEscape) { [weak self] in self?.send(.esc) }
             KeyboardShortcuts.disable(.pointEscape)
         }
@@ -107,7 +112,9 @@ final class PointController {
     /// would see Tauri's ⌃S (still bound until `companion-alive` lands, D22) and persist the row as unassigned.
     private func applyHotkey(_ v: CompanionSettings) {
         let want = VoiceKeySettings.enabled ? v.keys.chord(for: .voiceKey).map(Hotkeys.shortcut) : nil
-        if KeyboardShortcuts.getShortcut(for: .voiceKey) != want { KeyboardShortcuts.setShortcut(want, for: .voiceKey) }
+        guard KeyboardShortcuts.getShortcut(for: .voiceKey) != want else { return }
+        KeyboardShortcuts.setShortcut(want, for: .voiceKey)
+        PointLog.write("hotkey voiceKey \(want.map { "registered \($0)" } ?? "unregistered")")
     }
 
     /// Settings › Voice key flipped "enabled".
@@ -124,13 +131,26 @@ final class PointController {
 
     // MARK: the machine
 
+    /// The hot key's `kEventHotKeyPressed` — Carbon re-posts it for every keyboard auto-repeat while the chord is held, and
+    /// KeyboardShortcuts forwards each one — filtered by `VoiceKeyGate` to the real key-down; the probe's synthetic presses
+    /// come in here too. A gesture a refusal ended stays ended until the key is released.
+    func keyDown() {
+        guard gate.press(now: PointClock.now()) else { return }
+        send(.pressed)
+    }
+
+    func keyUp() {
+        guard gate.release() else { return PointLog.write("hotkey key-up without a key-down (ignored)") }
+        send(.released)
+    }
+
     func send(_ e: PointMachine.Event) {
         let now = PointClock.now()
         let refused: String? = (meetingLive || store.meeting?.isLive == true) ? "talking" : nil
         let (next, effects) = PointMachine.step(state, e, now: now, refused: refused)
         let prev = state
         state = next
-        if prev != next { PointLog.write("point \(e) → \(next) \(effects)") }
+        if prev != next || !effects.isEmpty { PointLog.write("point \(e) \(prev) → \(next) \(effects)") }
         publish()
         for fx in effects { run(fx, now: now) }
         after(prev, next)
@@ -317,16 +337,24 @@ final class PointController {
     func beginDictation() {
         _ = dictation.handle(.start)
         pendingChunks = []; stopWanted = false
+        let g = gesture
         if !AskFlags.automated {
             Task { [weak self] in
-                guard let self, let why = await self.recorder.start() else { return }
+                guard let self, let why = await self.recorder.start(), g == self.gesture else { return }
                 self.refuse(why)
             }
         }
         enqueue { [weak self, store] in
             do {
+                if let d = self?.probeStartDelay, d > .zero { try? await Task.sleep(for: d) }
                 let id = try await store.client.dictationStart()
                 guard let self else { return }
+                // The gesture ended (cancel/Esc/short) before the reply: the dictation is live on the engine with no owner —
+                // stop it now, or it holds the one slot until `dictation_max_secs` ("dictating elsewhere" everywhere).
+                guard g == self.gesture, self.dictation.phase == .starting else {
+                    PointLog.write("dictation_start → \(id) landed after the gesture ended: dictation_stop")
+                    return try await store.client.dictationStop(id: id)
+                }
                 _ = self.dictation.handle(.started(id: id))
                 PointLog.write("dictation_start → \(id)")
                 for c in self.pendingChunks { self.sendChunk(c, id: id) }
@@ -334,6 +362,8 @@ final class PointController {
                 if self.stopWanted { self.stopWanted = false; self.endDictation() }
             } catch {
                 guard let self else { return }
+                PointLog.write("dictation_start failed: \(error)")
+                guard g == self.gesture else { return }
                 _ = self.dictation.handle(.startFailed("\(error)"))
                 self.refuse(self.dictation.error ?? "\(error)")
             }

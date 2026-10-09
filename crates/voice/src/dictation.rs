@@ -215,6 +215,17 @@ impl Dictation {
         });
     }
 
+    /// [`Self::begin`] traced: every start, refusal and failure at INFO with the source — the companion's 2026-10-09 voice-key
+    /// report found nothing of the dictation path in the engine log (149f). The peer is the RPC layer's; it is not known here.
+    fn start(&mut self, me: ActorRef<Self>, source: AudioSource) -> Result<DictationId, String> {
+        let r = self.begin(me, source);
+        match &r {
+            Ok(id) => tracing::info!("voice: dictation started id={id} source={source:?}"),
+            Err(e) => tracing::info!("voice: dictation refused source={source:?} reason={e}"),
+        }
+        r
+    }
+
     /// Open the audio source and start the task on the loaded engine.
     /// `source` was validated by the `StartDictation` handler.
     fn begin(&mut self, me: ActorRef<Self>, source: AudioSource) -> Result<DictationId, String> {
@@ -337,11 +348,23 @@ impl Message<StartDictation> for Dictation {
         {
             tx.send(Err(e));
         } else if self.active.is_some() {
+            tracing::info!(
+                "voice: dictation refused source={:?} reason=already dictating active={}",
+                m.source,
+                self.active
+                    .as_ref()
+                    .map(|r| r.id.to_string())
+                    .unwrap_or_default()
+            );
             tx.send(Err("already dictating".into()));
         } else if self.leased {
+            tracing::info!(
+                "voice: dictation refused source={:?} reason=talking",
+                m.source
+            );
             tx.send(Err("talking".into()));
         } else if self.model == ModelState::Ready {
-            tx.send(self.begin(me, m.source));
+            tx.send(self.start(me, m.source));
         } else {
             self.load(me).await;
             self.waiters.push(Waiter::Start(m.source, tx));
@@ -418,6 +441,8 @@ impl Message<StopDictation> for Dictation {
         m: StopDictation,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        let known = self.active.as_ref().is_some_and(|r| r.id == m.id);
+        tracing::info!("voice: dictation stop id={} known={known}", m.id);
         if let Some(r) = self.active.as_ref().filter(|r| r.id == m.id) {
             r.cancel.cancel();
         }
@@ -450,7 +475,7 @@ impl Message<Loaded> for Dictation {
                 // The first waiter gets the slot; the rest hear "already dictating" / "talking".
                 for w in std::mem::take(&mut self.waiters) {
                     match w {
-                        Waiter::Start(source, tx) => tx.send(self.begin(me.clone(), source)),
+                        Waiter::Start(source, tx) => tx.send(self.start(me.clone(), source)),
                         Waiter::Lease(tx) => tx.send(self.lease()),
                     }
                 }
@@ -495,6 +520,7 @@ impl Message<Report> for Dictation {
                 is_final,
             },
             Progress::Finished { reason, engine } => {
+                tracing::info!("voice: dictation finished id={id} reason={reason:?}");
                 self.active = None;
                 match *engine {
                     Some(e) => self.engine = Some(e),

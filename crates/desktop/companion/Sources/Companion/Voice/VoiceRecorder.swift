@@ -12,10 +12,17 @@ final class VoiceRecorder {
     private var engine: AVAudioEngine?
     private var pending: [Int16] = []
     private let lock = NSLock()
+    /// 149f: bumped by `start`/`stop`/`cancel`; a `start` that resumes (the permission prompt) into a later session installs
+    /// nothing — the gesture that asked is over, and an engine assigned now would run with no one to stop it.
+    private var session = 0
     var onChunk: (([Int16]) -> Void)?
 
-    /// `nil` on success, else why it did not start (shown in the Ask bar's status).
+    /// `nil` on success, else why it did not start (shown in the Ask bar's status). A second `start` while one runs replaces
+    /// it (the old tap and engine are torn down first — never two input engines, never a leaked one).
     func start() async -> String? {
+        tearDown()
+        session += 1
+        let s = session
         guard Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil else {
             return "dictation needs the bundled app (no NSMicrophoneUsageDescription)"
         }
@@ -23,6 +30,7 @@ final class VoiceRecorder {
         case .authorized: break
         case .notDetermined:
             guard await AVCaptureDevice.requestAccess(for: .audio) else { return "microphone access denied" }
+            guard s == session else { return nil }
         default: return "microphone access denied — System Settings › Privacy › Microphone"
         }
         let engine = AVAudioEngine()
@@ -70,12 +78,14 @@ final class VoiceRecorder {
 
     /// Stop; the tail under one chunk goes out too.
     func stop() {
+        session += 1
         tearDown()
         lock.lock(); let tail = pending; pending = []; lock.unlock()
         if !tail.isEmpty { onChunk?(tail) }
     }
 
     func cancel() {
+        session += 1
         tearDown()
         lock.lock(); pending = []; lock.unlock()
     }

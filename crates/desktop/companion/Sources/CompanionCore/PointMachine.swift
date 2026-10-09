@@ -102,6 +102,35 @@ public enum PointMachine {
     private static func elapsed(_ now: UInt64, _ since: UInt64) -> UInt64 { now > since ? now - since : 0 }
 }
 
+/// 149f: the hot key's key-down/key-up filtered to one physical press. Carbon re-posts `kEventHotKeyPressed` for every
+/// keyboard auto-repeat while the chord is held (KeyboardShortcuts forwards each one); the machine ignores them in
+/// `armed`/`holding`, but a gesture ended by a refusal (`.cancel` → `.idle`) was re-armed by the very next repeat —
+/// start, refuse, cancel at the repeat rate (the 2026-10-09 report). One key-down opens one gesture; nothing re-arms
+/// until the key is released. A press `lostKeyUpMs` after the last one while "down" is a new press (the release was
+/// never delivered — slower than any auto-repeat), so a missed key-up can never leave the key dead.
+public struct VoiceKeyGate: Equatable, Sendable {
+    /// Slowest macOS auto-repeat is 1.8 s (`KeyRepeat` 120 × 15 ms); the mechanical slot is safely past it.
+    public static let lostKeyUpMs: UInt64 = 2_500
+    public private(set) var isDown = false
+    private var lastPressMs: UInt64 = 0
+
+    public init() {}
+
+    /// `true` for a real key-down; `false` for an auto-repeat while the key is held.
+    public mutating func press(now: UInt64) -> Bool {
+        defer { lastPressMs = now }
+        if isDown, now &- lastPressMs < Self.lostKeyUpMs { return false }
+        isDown = true
+        return true
+    }
+
+    /// `true` when a key was down (a stray release is reported but harmless).
+    public mutating func release() -> Bool {
+        defer { isDown = false }
+        return isDown
+    }
+}
+
 /// 149 W2: what the Store publishes while a gesture is live (`Store.point`); nil while idle.
 public struct PointSlice: Equatable, Sendable {
     public var state: PointMachine.State

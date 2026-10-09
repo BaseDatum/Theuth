@@ -125,7 +125,7 @@ enum PointProbe {
         try? await Task.sleep(for: .seconds(4))
         c.card.hide(returnKey: false)
         c.dryRun = true
-        c.send(.pressed)
+        c.keyDown()
         try? await Task.sleep(for: .milliseconds(400))
         PointLog.write("gesture: after 400 ms state=\(c.state) overlays=\(c.overlays.revealed) pill=\(c.pill.isVisible) samples=\(c.sampler.samples.count) point.slice=\(store.point.map { "\($0.state)" } ?? "nil")")
         for i in 0..<20 {
@@ -134,9 +134,108 @@ enum PointProbe {
             try? await Task.sleep(for: .milliseconds(100))
         }
         let sampled = c.sampler.samples.count
-        c.send(.released)
+        c.keyUp()
         try? await Task.sleep(for: .seconds(3))
         PointLog.write("gesture: released after ~2.4 s with \(sampled) samples → state=\(c.state) overlays=\(c.overlays.revealed) card=\(c.card.isVisible) pill=\(c.pill.isVisible) hint=\"\(c.pill.state.hint)\" point.slice=\(store.point.map { "\($0.state)" } ?? "nil")")
+        await holdScenarios(store: store, controller: c)
+    }
+
+    static let holdCopy = URL(fileURLWithPath: "/tmp/149f-hold-probe.png")
+
+    /// 100 ms of a 440 Hz tone, chunk `i`.
+    static func tone(_ i: Int) -> [Int16] {
+        let start = i * VoiceRecorder.chunk
+        return (0..<VoiceRecorder.chunk).map { j in Int16(sin(2 * .pi * 440 * Double(start + j) / VoiceRecorder.sampleRate) * 0.3 * 32767) }
+    }
+
+    /// 149f (the 2026-10-09 voice-key report), through the hot key's own entry points with what Carbon delivers while the chord
+    /// is held — a key-down, then a key-down every 30 ms (auto-repeat), then the key-up:
+    /// 1. HOLD 1.5 s with the tone: ONE gesture, the Stop sequence, `dictation_status.active` nil afterwards.
+    /// 2. REFUSED HOLD: the probe takes the engine's one dictation slot first, so the gesture's `dictation_start` is refused
+    ///    ("already dictating" → "dictating elsewhere"): the gesture must end ONCE and stay ended for the rest of the hold —
+    ///    not start/refuse/cancel at the repeat rate — and the probe's own dictation must be untouched.
+    /// 3. CANCEL IN FLIGHT: key-down, Esc before `dictation_start` replies, key-up: the dictation that lands must be stopped
+    ///    (`active` nil within 1 s), not left on the engine until `dictation_max_secs`.
+    /// 4. RELEASE BEFORE START: `dictation_start` held 1.5 s, a 1 s hold released into the Stop sequence: the late start must
+    ///    adopt and stop itself; `active` nil afterwards.
+    /// Whatever leaks is stopped at the end: this runs against the owner's live engine.
+    private static func holdScenarios(store: Store, controller c: PointController) async {
+        func active() async -> String? {
+            do { return try await store.client.dictationActive() } catch { PointLog.write("dictation_status failed: \(error)"); return "rpc-failed" }
+        }
+        func hold(ms: Int, tone withTone: Bool, snapshot: Bool = false) async -> Int {
+            c.keyDown()
+            let t0 = Date()
+            var repeats = 0
+            var shot: Task<ScreenContextReply?, Never>?
+            while Date().timeIntervalSince(t0) * 1000 < Double(ms) {
+                try? await Task.sleep(for: .milliseconds(30))
+                c.keyDown(); repeats += 1
+                if withTone, repeats % 3 == 0 { c.feed(tone(repeats / 3)) }
+                if snapshot, shot == nil, repeats == 25 {
+                    let samples = c.sampler.samples
+                    shot = Task { await c.screenContext(samples: samples, durationMs: 750) }
+                }
+            }
+            c.keyUp()
+            if let f = await shot?.value?.files.first {
+                try? FileManager.default.removeItem(at: holdCopy); try? FileManager.default.copyItem(atPath: f, toPath: holdCopy.path)
+                PointLog.write("HOLD mid-hold capture copied to \(holdCopy.path)")
+            }
+            return repeats
+        }
+        func settle(_ s: Double = 1) async { try? await Task.sleep(for: .seconds(s)) }
+
+        try? await Task.sleep(for: .seconds(1))
+        let g0 = c.gesture
+        PointLog.write("HOLD: key-down, auto-repeat key-down every 30 ms for 1.5 s with the tone, key-up")
+        let r0 = await hold(ms: 1500, tone: true, snapshot: true)
+        await settle(3)
+        let a0 = await active()
+        PointLog.write("HOLD result: \(r0) repeats → gestures=\(c.gesture - g0) state=\(c.state) hint=\"\(c.pill.state.hint)\" overlays=\(c.overlays.revealed) dictation.phase=\(c.dictation.phase) dictation_status.active=\(a0 ?? "nil")")
+        PointLog.write("ASSERT HOLD one gesture, idle after the Stop sequence, slot free: \((c.gesture - g0 == 1 && c.state == .idle && a0 == nil) ? "PASS" : "FAIL")")
+
+        let held: String
+        do { held = try await store.client.dictationStart() } catch { PointLog.write("REFUSED HOLD skipped: the probe could not take the slot: \(error)"); return }
+        PointLog.write("REFUSED HOLD: the probe holds dictation \(held); key-down, auto-repeat every 30 ms for 1.5 s, key-up")
+        let g1 = c.gesture
+        let r1 = await hold(ms: 1500, tone: false)
+        await settle()
+        let a1 = await active()
+        PointLog.write("REFUSED HOLD result: \(r1) repeats → gestures=\(c.gesture - g1) state=\(c.state) hint=\"\(c.pill.state.hint)\" overlays=\(c.overlays.revealed) dictation_status.active=\(a1 ?? "nil") (the probe's \(held))")
+        PointLog.write("ASSERT REFUSED HOLD one gesture, idle, the probe's dictation untouched: \((c.gesture - g1 == 1 && c.state == .idle && a1 == held) ? "PASS" : "FAIL")")
+        do { try await store.client.dictationStop(id: held) } catch { PointLog.write("dictation_stop \(held) failed: \(error)") }
+        await settle()
+        PointLog.write("REFUSED HOLD: probe's dictation stopped → active=\(await active() ?? "nil")")
+
+        PointLog.write("CANCEL IN FLIGHT: key-down, Esc before dictation_start replies, key-up")
+        c.keyDown()
+        c.send(.esc)
+        c.keyUp()
+        await settle()
+        let a2 = await active()
+        PointLog.write("CANCEL IN FLIGHT result: state=\(c.state) dictation.phase=\(c.dictation.phase) dictation_status.active=\(a2 ?? "nil")")
+        PointLog.write("ASSERT CANCEL IN FLIGHT slot free within 1 s: \(a2 == nil ? "PASS" : "FAIL")")
+        if let leaked = a2, leaked != "rpc-failed" {
+            do { try await store.client.dictationStop(id: leaked); PointLog.write("cleanup: stopped the leaked dictation \(leaked)") }
+            catch { PointLog.write("cleanup: dictation_stop \(leaked) failed: \(error)") }
+        }
+
+        // 4. RELEASE BEFORE START (the Windows port's race, 149f addendum): the start is held 1.5 s; a 1 s hold releases into
+        // the Stop sequence before the id exists. The late start must adopt and stop itself (`stopWanted`), the slot must be free.
+        PointLog.write("RELEASE BEFORE START: dictation_start held 1.5 s; key-down, 1 s hold with the tone, key-up into send")
+        c.probeStartDelay = .milliseconds(1500)
+        let g3 = c.gesture
+        _ = await hold(ms: 1000, tone: true)
+        c.probeStartDelay = .zero
+        await settle(4)
+        let a3 = await active()
+        PointLog.write("RELEASE BEFORE START result: gestures=\(c.gesture - g3) state=\(c.state) hint=\"\(c.pill.state.hint)\" dictation.phase=\(c.dictation.phase) dictation_status.active=\(a3 ?? "nil")")
+        PointLog.write("ASSERT RELEASE BEFORE START idle, slot free: \((c.gesture - g3 == 1 && c.state == .idle && a3 == nil) ? "PASS" : "FAIL")")
+        if let leaked = a3, leaked != "rpc-failed" {
+            do { try await store.client.dictationStop(id: leaked); PointLog.write("cleanup: stopped the leaked dictation \(leaked)") }
+            catch { PointLog.write("cleanup: dictation_stop \(leaked) failed: \(error)") }
+        }
     }
 
     // MARK: the detector
