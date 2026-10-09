@@ -83,6 +83,9 @@ Open Settings from the sidebar footer, from the tray menu, or with `⌘/` (which
 
 ### Chat
 
+- **Models**: **New sessions** — the model (and effort) every new chat starts on; a pick inside a chat changes only that chat.
+- **Models**: **Subagents** — what theuth subagents start on unless you ask the agent for a specific model; external harnesses (omp, OpenCode) keep their own. *Same as new sessions* when unset.
+- **Models**: **theuth agent** — the built-in root on the Agents page: its desk and the work it starts. *Same as new sessions* when unset.
 - **Collapse tool calls by default** (*local*).
 - **Turn chime** — a two-tone cue in the talk view when the model takes the turn (*local*).
 
@@ -93,7 +96,7 @@ Engine-wide tuning; the number fields apply to new sessions.
 - **Model calls**: **Stream idle timeout** (seconds without model output before the call is abandoned), **Reply recoveries per turn** (0 turns recovery off), **Tool rounds per turn**, **Subagent timeout**, **Terminal idle wake** (seconds a PTY job's screen must stay still before the model is woken with its screen; 0 off).
 - **Routines**: **Run time limit** for a routine run (minimum 30 s; a routine's own `run_timeout:` overrides it).
 - **Context**: **Default compact style** (Summary, Cut or Snap) and **Show theuth nudges** (display only, *local*).
-- **Helper models**: **Title model** (names new chats), **Subagent model**, **Vision fallback model** (only image-capable models are offered) and **Escalation model** (inherits the title model when off). These are the same values `/title`, `/subagent`, `/vision` and `/escalate` set.
+- **Helper models**: **Title model** (names new chats), **Vision fallback model** (only image-capable models are offered) and **Escalation model** (inherits the title model when off). These are the same values `/title`, `/vision` and `/escalate` set; the subagent default lives under Chat › Models (`/subagent`).
 
 ### Approvals
 

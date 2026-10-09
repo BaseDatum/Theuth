@@ -50,7 +50,12 @@ pub fn notice(kind: &str, text: &str) -> String {
 /// `roster.max_rounds`.
 pub fn manual(f: &AgentFile, max_rounds: u32) -> String {
     let name = f.name.as_str();
-    let model = f.model.as_deref().unwrap_or("the default");
+    // 148 E3: a desk without a `model:` leaves the child's `model` unset so the
+    // user's subagent default applies; a configured one is named.
+    let model = f.model.as_deref().map_or_else(
+        || "omit it (the user's subagent default applies)".to_owned(),
+        |m| format!("`{m}`"),
+    );
     let tools = f.tools.as_deref().unwrap_or("destructive");
     format!(
         "You are the desk of agent `{name}` ({title}): an employee finishing a job, not a chat bot relaying \
@@ -63,7 +68,7 @@ charter, hand it over at once with `task_reassign {{task, to, why}}`: the thread
 ‹why›` and they are woken. `theuth`'s desk is the router by default — most user tasks land on it, and routing IS \
 its job. Only when nobody fits do you work the task yourself: `task_checkout()`, then `spawn_subagent` exactly where \
 the task says (`agent: \"<harness>@<engine>\"` from the task's `harness` and `where`, or the engine name alone for \
-the native harness; pass `model` and `tools` from your file: model {model}, tools {tools}) with a complete brief. \
+the native harness; pass `model` and `tools` from your file: model: {model}, tools {tools}) with a complete brief. \
 A role missing from the roster is a proposal, not a hire: `agent_propose()` (it lands paused and files a \
 `hire_agent` approval up your line); the user decides.\n\
 \n\
@@ -338,7 +343,8 @@ pub struct Desk {
     pub working: bool,
     /// The opening block was delivered: the transcript holds context worth a journal.
     pub primed: bool,
-    /// Model the last turn ran on (for the context window).
+    /// The model the desk runs on: as opened or switched (148 E3), then the
+    /// last turn's (for the context window).
     pub model: Option<String>,
     /// The wake the desk is handling (70 DESK-PROTOCOL 3): set at delivery,
     /// judged at every turn end by [`nudges::TABLE`], cleared when handled.
@@ -590,6 +596,11 @@ impl Shared {
         s.theuth = Some(theuth);
     }
 
+    /// 148 E3: the synthesised default agent changed (its live model).
+    pub fn set_theuth(&self, theuth: AgentFile) {
+        self.write().theuth = Some(theuth);
+    }
+
     /// One file changed or appeared.
     pub fn set_file(&self, name: &str, parsed: Parsed) {
         self.write().files.insert(name.to_owned(), parsed);
@@ -718,9 +729,23 @@ mod tests {
         files.insert("mkt".into(), parse("mkt", "Marketing."));
         s.set_files(
             files,
-            crate::file::default_agent(std::path::Path::new("/nonexistent")),
+            crate::file::default_agent(std::path::Path::new("/nonexistent"), None),
         );
         s
+    }
+
+    #[test]
+    fn manual_names_the_model_or_says_to_omit_it() {
+        let none = parse("ops", "Ops.").unwrap();
+        assert!(
+            manual(&none, 3).contains("model: omit it (the user's subagent default applies)"),
+            "148 E3: no `model:` = leave the child's unset"
+        );
+        let some = parse("ops", "---\nmodel: testvis/eyes\n---\nOps.").unwrap();
+        assert!(manual(&some, 3).contains("model: `testvis/eyes`"));
+        let theuth =
+            crate::file::default_agent(std::path::Path::new("/nonexistent"), Some("a/b".into()));
+        assert!(manual(&theuth, 3).contains("model: `a/b`"));
     }
 
     #[test]
@@ -749,7 +774,7 @@ mod tests {
         assert!(!mcp_visible(&ops, "slack", "post"));
         let open = parse("qa", "QA.").unwrap();
         assert!(mcp_visible(&open, "slack", "post"), "no `mcp:` = no limit");
-        let theuth = crate::file::default_agent(std::path::Path::new("/nonexistent"));
+        let theuth = crate::file::default_agent(std::path::Path::new("/nonexistent"), None);
         assert!(mcp_visible(&theuth, "argocd_prod", "sync_application"));
         let none = parse("intern", "---\nmcp: []\n---\nIntern.").unwrap();
         assert!(
@@ -766,7 +791,7 @@ mod tests {
         files.insert("ops".into(), parse("ops", "---\nmcp: [grafana]\n---\nOps."));
         s.set_files(
             files,
-            crate::file::default_agent(std::path::Path::new("/nonexistent")),
+            crate::file::default_agent(std::path::Path::new("/nonexistent"), None),
         );
         let s = std::sync::Arc::new(s);
         let desks = crate::Desks(s.clone());
@@ -895,7 +920,7 @@ Attached (read with the tool for the kind, see Attachments):\n\
              You run the clusters.\n\nCapabilities (when you are the one to hand a task to): k8s, networks\n\n\
              <journal>\n## Done\n- x\n</journal>\n\nYou are the desk of agent `karol`"
         ), "{text}");
-        assert!(text.contains("model m1, tools mutating"));
+        assert!(text.contains("model: `m1`, tools mutating"), "{text}");
         assert!(text.contains("at most 3 rounds per task"));
         assert!(text.contains("`task_reassign {task, to, why}`"));
         assert!(

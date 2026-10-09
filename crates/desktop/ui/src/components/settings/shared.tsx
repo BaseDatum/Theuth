@@ -57,10 +57,10 @@ export function ChordInput({
   )
 }
 
-/** One `label / description / control` line of a settings pane. */
-export function Row({ label, description, children }: { label: ReactNode; description?: ReactNode; children?: ReactNode }) {
+/** One `label / description / control` line of a settings pane. `stack` drops a wide control under the label below `md`. */
+export function Row({ label, description, stack, children }: { label: ReactNode; description?: ReactNode; stack?: boolean; children?: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-6 border-b border-border-subtle py-4 last:border-0">
+    <div className={`flex items-center justify-between gap-6 border-b border-border-subtle py-4 last:border-0${stack ? ' max-md:flex-col max-md:items-stretch max-md:gap-3' : ''}`}>
       <div className="min-w-0">
         <div className="text-sm">{label}</div>
         {description && <div className="mt-0.5 text-[13px] text-fg-secondary">{description}</div>}

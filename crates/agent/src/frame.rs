@@ -47,10 +47,10 @@ or reuse a session address from earlier in the conversation; if the tools are ab
 Pick the worker. spawn_subagent with `agent` runs an external harness (Claude Code, Codex, OpenCode, ...; \
 the tool description lists what is configured) as a child: it brings its own model, tools, login and conventions \
 and is the right choice for any work inside a code repository - set `cwd` to that repository. \
-Without `agent` you get a theuth subagent with your tools: research, fan-out, non-code work. You choose its \
-`model` and `effort` (`list_models()` shows what is available): match the model to the task - a small fast one for \
-mechanical collection or edits, a frontier one for design, debugging and judgement - and when in doubt pick \
-a little more capability than the task seems to need; a wrong answer costs more than the tokens.\n\
+Without `agent` you get a theuth subagent with your tools: research, fan-out, non-code work. Leave its \
+`model` and `effort` unset: the user's subagent defaults apply. Name a `model` or `effort` only when the user \
+asks for one, or when a file the user wrote names one (an agent's `model:`, a routine's `model:`); \
+`list_models()` shows the ids.\n\
 Write `task` as a complete brief: goal, paths, constraints, what done looks like. The child sees nothing of \
 this conversation and an external harness cannot ask you questions, so every decision goes in the brief. \
 Independent tasks go out in one message and run concurrently; give each a `name`.\n\
@@ -457,8 +457,8 @@ pub fn baseline_dated(
     }
     if let Some(m) = subagent_model {
         header.push_str(&format!(
-            "\nPreferred subagent model: {m} (the user's choice; spawn_subagent uses it when you omit `model`, so pass \
-             `model` only when a task clearly needs something else)"
+            "\nSubagent default model: {m} (the user's setting; spawn_subagent uses it when you omit `model` - pass \
+             `model` only when the user asks for a specific model)"
         ));
     }
     let skills_dir = skills::dir(data_dir);
