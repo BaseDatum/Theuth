@@ -680,16 +680,20 @@ internal sealed class PointController : IDisposable
         await Task.Delay(200);
         var samples = sampler.Samples.ToArray();
         long durationMs = samples.Length > 0 ? samples[^1].TMs : 0;
+        // The engine paints the path it is given and crops around it: hand it the loop shifted 300 px right, so its magenta
+        // stroke and its crop sit beside the overlay's real loop, which stays countable in the display overview (second run of
+        // this probe: with the true samples the engine's stroke covered the overlay's exactly — 69 vs 55 malachite px, no signal).
+        var shifted = samples.Select(s => new PointSample(s.TMs, s.X + 300, s.Y, s.Pen)).ToArray();
         // (A) overlays up and visible to capture
         overlays.SetHiddenFromCapture(false);
         await Yield();
-        var (_, filesUp) = await ScreenContext(samples, durationMs, false, ProbeColor);
+        var (_, filesUp) = await ScreenContext(shifted, durationMs, false, ProbeColor);
         var up = await CountTrail(filesUp);
         // (B) the real Stop sequence: WDA_EXCLUDEFROMCAPTURE + hidden + one dispatcher turn, then the engine captures
         overlays.SetHiddenFromCapture(true);
         overlays.Hide();
         await Yield();
-        var (_, filesDown) = await ScreenContext(samples, durationMs, false, ProbeColor);
+        var (_, filesDown) = await ScreenContext(shifted, durationMs, false, ProbeColor);
         var down = await CountTrail(filesDown);
         var line = $"capture-probe: {samples.Length} samples over {durationMs} ms; overlays UP → malachite px {up.Trail} (engine magenta {up.Green}) in {up.Files} file(s) {up.Size}; STOP sequence → malachite px {down.Trail} (engine magenta {down.Green}) in {down.Files} file(s) {down.Size}";
         Log.Write(line);
@@ -715,8 +719,9 @@ internal sealed class PointController : IDisposable
                 var data = await decoder.GetPixelDataAsync(global::Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8, global::Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
                     new global::Windows.Graphics.Imaging.BitmapTransform(), global::Windows.Graphics.Imaging.ExifOrientationMode.IgnoreExifOrientation, global::Windows.Graphics.Imaging.ColorManagementMode.DoNotColorManage);
                 var px = data.DetachPixelData();
-                size = $"{decoder.PixelWidth}x{decoder.PixelHeight}";
+                size += $"{(n > 0 ? "+" : "")}{decoder.PixelWidth}x{decoder.PixelHeight}";
                 n++;
+                int trailBefore = trail;
                 int tr = (int)(PointFlow.TrailRgb >> 16 & 0xff), tg = (int)(PointFlow.TrailRgb >> 8 & 0xff), tb = (int)(PointFlow.TrailRgb & 0xff);
                 for (int i = 0; i + 3 < px.Length; i += 4)
                 {
@@ -724,6 +729,7 @@ internal sealed class PointController : IDisposable
                     if (Near(r, g, b, tr, tg, tb, 0x10) || Near(r, g, b, tr, tg, tb, 0xf0)) trail++;
                     if (Near(r, g, b, 0xff, 0x00, 0xff, 0x10) || Near(r, g, b, 0xff, 0x00, 0xff, 0xf0)) green++; // the engine's magenta
                 }
+                Log.Write($"capture-probe: {Path.GetFileName(path)} {decoder.PixelWidth}x{decoder.PixelHeight} malachite={trail - trailBefore}");
             }
             catch (Exception e) { Log.Write($"capture-probe: {path}: {e.Message}"); }
         }
