@@ -274,6 +274,11 @@ export function useInvalidateOn(): void {
         void qc.invalidateQueries({ queryKey: queryKeys.meetingSummary(e.meeting) })
         void qc.invalidateQueries({ queryKey: queryKeys.meetingTranscript(e.meeting) })
       }),
+      // 156 D4: topic briefs publish only `TopicAdded` (the model's `meeting_topic`, the alias scan), so the page's brief
+      // column re-reads `meeting_briefs` on every topic/brief event rather than listening for `Brief` alone.
+      on('TopicAdded', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
+      on('TopicRemoved', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
+      on('Brief', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
       on('BriefChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.briefs })),
       // 79 §4.4: VM rows are patched in place; the bring-up log per name; `OpenDesktop` (the `sandbox_desktop` tool) pops
       // the window out of the main shell only — pop-outs receive the same stream. `Changed` is also a `ScheduleEvent`.

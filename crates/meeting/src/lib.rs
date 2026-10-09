@@ -958,6 +958,64 @@ pub struct DeleteSpeaker {
     pub profile: ProfileId,
 }
 
+/// 156 D14: whose voiceprint the chosen speech becomes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind")]
+pub enum EnrollTarget {
+    /// A new profile; refused when that name (case-insensitive) is enrolled.
+    New {
+        /// Display name.
+        name: String,
+        /// Knowledge entity id, if the user picked one.
+        entity: Option<String>,
+    },
+    /// Fold the speech into this enrolled profile ("enhance").
+    Existing {
+        /// Which.
+        profile: ProfileId,
+    },
+}
+
+/// 156 D14: what `EnrollSegments` returns.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Enrolled {
+    /// The profile as written.
+    pub profile: Profile,
+    /// Speech used for the voiceprint (<= 30 s).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub speech_ms: u64,
+    /// Speech in the chosen segments before the cap.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub available_ms: u64,
+    /// The transcript after linking (label.profile/name set, proposed refreshed); unchanged when not linked.
+    pub transcript: Transcript,
+}
+
+/// 156 D14: `ask` → `Result<Enrolled, String>`: a voiceprint from the word spans of
+/// `segments` (one track, first 30 s), as a new profile or folded into an enrolled one;
+/// the label is linked when every segment shares one. Review and Done only. The embedding
+/// runs off the mailbox; the profile write, the link and the transcript save run on it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnrollSegments {
+    /// Which.
+    pub meeting: MeetingId,
+    /// Segment ids.
+    pub segments: Vec<u32>,
+    /// New or existing profile.
+    pub target: EnrollTarget,
+}
+
+/// Second half of [`EnrollSegments`], asked by its task once the embedding is back: the
+/// profile write, the link and the save, on the actor so a concurrent edit is not lost.
+struct EnrollApply {
+    m: EnrollSegments,
+    emb: Vec<f32>,
+    speech_ms: u64,
+    available_ms: u64,
+}
+
 /// `ask` → `bool`: the `meeting.live_diarization` switch (07 §6) as configured.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct LiveDiarization;
@@ -1237,17 +1295,57 @@ impl Meeting {
         Ok(())
     }
 
-    /// The manifest of a meeting that is not the live one.
-    fn stored(&self, id: MeetingId) -> Result<Manifest, String> {
-        let live = self
-            .current
+    /// The meeting being recorded or started, if any.
+    fn live_id(&self) -> Option<MeetingId> {
+        self.current
             .as_ref()
             .map(|r| r.manifest.id)
-            .or_else(|| self.starting.as_ref().map(|m| m.id));
-        if live == Some(id) {
+            .or_else(|| self.starting.as_ref().map(|m| m.id))
+    }
+
+    /// The manifest of a meeting that is not the live one.
+    fn stored(&self, id: MeetingId) -> Result<Manifest, String> {
+        if self.live_id() == Some(id) {
             return Err("that meeting is recording; stop it first".into());
         }
         self.store.manifest(id).map_err(|e| format!("{e:#}"))
+    }
+
+    /// 156 D14: the manifest of a meeting whose transcript may take an enrollment
+    /// (Review or Done); every other state is refused in the UI's words.
+    fn enrollable(&self, id: MeetingId) -> Result<Manifest, String> {
+        const RECORDING: &str = "still recording: wait for the meeting to end";
+        if self.live_id() == Some(id) {
+            return Err(RECORDING.into());
+        }
+        let m = self.store.manifest(id).map_err(|e| format!("{e:#}"))?;
+        match m.state {
+            MeetingState::Review | MeetingState::Done => Ok(m),
+            MeetingState::Post(_) => Err("still processing: wait for the post pipeline".into()),
+            MeetingState::Summarizing => Err("Summarizing: wait for it to finish".into()),
+            MeetingState::Starting
+            | MeetingState::Recording
+            | MeetingState::Paused
+            | MeetingState::Stopping => Err(RECORDING.into()),
+            MeetingState::Idle | MeetingState::Failed => {
+                Err(format!("{:?}: this meeting has no transcript", m.state))
+            }
+        }
+    }
+
+    /// The file of `track` in `manifest`'s directory.
+    fn track_path(&self, manifest: &Manifest, track: Track) -> PathBuf {
+        let stem = match track {
+            Track::Mic => Stem::Mic,
+            Track::System => Stem::System,
+        };
+        self.store.meeting_dir(manifest.id).join(
+            manifest
+                .tracks
+                .iter()
+                .find(|t| t.track == stem)
+                .map_or(stem.file(), |t| t.file.as_str()),
+        )
     }
 
     fn state(&self) -> MeetingState {
@@ -3257,7 +3355,7 @@ impl Message<EditTranscript> for Meeting {
 impl Message<SegmentAudio> for Meeting {
     type Reply = DelegatedReply<Result<String, String>>;
 
-    /// Off the mailbox: a whole-file decode (04 §0.5) is seconds for a long track.
+    /// Off the mailbox: decoding up to `t1` (04 §0.5, 156 D10) is seconds for a late segment.
     async fn handle(
         &mut self,
         m: SegmentAudio,
@@ -3265,24 +3363,13 @@ impl Message<SegmentAudio> for Meeting {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let manifest = match self.store.manifest(m.meeting) {
-            Ok(x) => x,
+        let path = match self.store.manifest(m.meeting) {
+            Ok(manifest) => self.track_path(&manifest, m.track),
             Err(e) => {
                 tx.send(Err(format!("{e:#}")));
                 return reply;
             }
         };
-        let stem = match m.track {
-            Track::Mic => Stem::Mic,
-            Track::System => Stem::System,
-        };
-        let path = self.store.meeting_dir(m.meeting).join(
-            manifest
-                .tracks
-                .iter()
-                .find(|t| t.track == stem)
-                .map_or(stem.file(), |t| t.file.as_str()),
-        );
         tokio::spawn(async move {
             let r = tokio::task::spawn_blocking(move || segment_wav(&path, m.t0_ms, m.t1_ms))
                 .await
@@ -3295,19 +3382,16 @@ impl Message<SegmentAudio> for Meeting {
 }
 
 /// `[t0, t1)` of the Opus file at `path` as a base64 16-bit mono WAV at the decoder's rate.
+/// 156 D10: decoded only as far as `t1`, keeping only the range.
 fn segment_wav(path: &Path, t0_ms: u64, t1_ms: u64) -> anyhow::Result<String> {
     use base64::Engine as _;
     if t1_ms <= t0_ms {
         anyhow::bail!("empty span");
     }
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("opus");
-    // ponytail: whole-file decode (~2 s for 3 h); page seeking if a click ever feels slow.
-    let (pcm, rate) = voice::decode(std::fs::read(path)?, ext)?;
-    let at = |ms: u64| ((ms * u64::from(rate) / 1000) as usize).min(pcm.len());
-    let slice = &pcm[at(t0_ms)..at(t1_ms)];
+    let slice = post::transcribe::opus_ranges(path, &[(t0_ms, t1_ms)])?;
     let spec = hound::WavSpec {
         channels: 1,
-        sample_rate: rate,
+        sample_rate: post::transcribe::OPUS_RATE,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
@@ -3320,6 +3404,128 @@ fn segment_wav(path: &Path, t0_ms: u64, t1_ms: u64) -> anyhow::Result<String> {
         w.finalize()?;
     }
     Ok(base64::engine::general_purpose::STANDARD.encode(out.into_inner()))
+}
+
+impl Message<EnrollSegments> for Meeting {
+    type Reply = DelegatedReply<Result<Enrolled, String>>;
+
+    /// Checks and the cheap reads here; the embedding off the mailbox (seconds); then
+    /// [`EnrollApply`] back on it, so a `meeting_edit` in between is not overwritten.
+    async fn handle(
+        &mut self,
+        m: EnrollSegments,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let prep = (|| -> Result<_, String> {
+            let manifest = self.enrollable(m.meeting)?;
+            let t = self
+                .store
+                .transcript(m.meeting)
+                .map_err(|e| format!("{e:#}"))?;
+            let (track, spans) = transcript::speech_spans(&t, &m.segments)?;
+            let vp = transcript::voiceprint_spans(&spans)?;
+            let paths = self.paths();
+            let profiles = Profiles::load(&paths.speakers).map_err(|e| format!("{e:#}"))?;
+            // Refuse a bad target before the seconds of embedding; `EnrollApply` re-checks.
+            match &m.target {
+                EnrollTarget::New { name, .. } => {
+                    if let Some(p) = profiles
+                        .list()
+                        .into_iter()
+                        .find(|p| p.name.eq_ignore_ascii_case(name.trim()))
+                    {
+                        return Err(format!("a speaker named {} is already enrolled", p.name));
+                    }
+                }
+                EnrollTarget::Existing { profile } => {
+                    if !profiles.list().iter().any(|p| p.id == *profile) {
+                        return Err(format!("no speaker profile {profile}"));
+                    }
+                }
+            }
+            let models =
+                post::diarize::models(&paths.models, &paths.data_dir).ok_or_else(|| {
+                    format!(
+                        "speaker models not installed under {}",
+                        paths.models.display()
+                    )
+                })?;
+            Ok((self.track_path(&manifest, track), vp, models))
+        })();
+        let (path, vp, models) = match prep {
+            Ok(p) => p,
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+        };
+        let me = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            let transcript::Voiceprint {
+                spans,
+                speech_ms,
+                available_ms,
+            } = vp;
+            let emb =
+                tokio::task::spawn_blocking(move || post::embed_spans(&path, &spans, &models))
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| r.map_err(|e| format!("{e:#}")));
+            let r = match emb {
+                Ok(emb) => me
+                    .ask(EnrollApply {
+                        m,
+                        emb,
+                        speech_ms,
+                        available_ms,
+                    })
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e),
+            };
+            tx.send(r);
+        });
+        reply
+    }
+}
+
+impl Message<EnrollApply> for Meeting {
+    type Reply = Result<Enrolled, String>;
+
+    async fn handle(&mut self, a: EnrollApply, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.enrollable(a.m.meeting)?;
+        let mut profiles = Profiles::load(&self.paths().speakers).map_err(|e| format!("{e:#}"))?;
+        let profile = match a.m.target {
+            EnrollTarget::New { name, entity } => profiles.create(&name, entity, &a.emb)?,
+            EnrollTarget::Existing { profile } => profiles.add_sample(profile, &a.emb)?,
+        };
+        let mut t = self
+            .store
+            .transcript(a.m.meeting)
+            .map_err(|e| format!("{e:#}"))?;
+        let embeddings: HashMap<String, Vec<f32>> = std::fs::read(
+            self.store
+                .meeting_dir(a.m.meeting)
+                .join(transcript::EMBEDDINGS),
+        )
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+        if transcript::link_enrolled(&mut t, &a.m.segments, &profile, &embeddings, &profiles) {
+            self.store
+                .save_transcript(&t)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+        }
+        Ok(Enrolled {
+            profile,
+            speech_ms: a.speech_ms,
+            available_ms: a.available_ms,
+            transcript: t,
+        })
+    }
 }
 
 impl Message<ListSpeakers> for Meeting {
@@ -4020,5 +4226,190 @@ mod tests {
             matches!(&r, Err(kameo::error::SendError::HandlerError(e)) if e == "Done: review it first"),
             "{r:?}"
         );
+    }
+
+    /// The handler's `Err`, or a panic naming what came back instead.
+    fn refused<T: std::fmt::Debug, M: std::fmt::Debug>(
+        r: Result<T, kameo::error::SendError<M, String>>,
+    ) -> String {
+        match r {
+            Err(kameo::error::SendError::HandlerError(e)) => e,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// A one-segment transcript of 1.5 s on the mic track.
+    fn mic_transcript(meeting: MeetingId) -> Transcript {
+        let words = vec![Word {
+            text: "Hello".into(),
+            t0_ms: 0,
+            t1_ms: 1_500,
+        }];
+        Transcript {
+            meeting,
+            speakers: vec![SpeakerLabel {
+                id: transcript::ME.into(),
+                name: "Me".into(),
+                profile: None,
+                proposed: None,
+            }],
+            segments: vec![Segment {
+                id: 0,
+                track: Track::Mic,
+                speaker: transcript::ME.into(),
+                t0_ms: 0,
+                t1_ms: 1_500,
+                text: "Hello".into(),
+                words,
+            }],
+            reviewed_at: None,
+            summarized_at: None,
+            diarized: true,
+            note: None,
+        }
+    }
+
+    /// 156 D14: `EnrollSegments` is refused while recording, in `Post(_)` and `Summarizing`,
+    /// and in Review and Done passes the gate as far as the models (none on the bench).
+    #[tokio::test]
+    async fn enroll_segments_is_gated_by_state() {
+        let b = bench().await;
+        let ask = |id| {
+            b.actor.ask(EnrollSegments {
+                meeting: id,
+                segments: vec![0],
+                target: EnrollTarget::New {
+                    name: "Dana".into(),
+                    entity: None,
+                },
+            })
+        };
+        for (state, msg) in [
+            (
+                MeetingState::Post(PostStage::Aligning),
+                "still processing: wait for the post pipeline",
+            ),
+            (
+                MeetingState::Summarizing,
+                "Summarizing: wait for it to finish",
+            ),
+            (
+                MeetingState::Recording,
+                "still recording: wait for the meeting to end",
+            ),
+        ] {
+            let m = finished(&b.store, state).await;
+            assert_eq!(refused(ask(m.id).await), msg);
+        }
+        for state in [MeetingState::Review, MeetingState::Done] {
+            let m = finished(&b.store, state).await;
+            b.store
+                .save_transcript(&mic_transcript(m.id))
+                .await
+                .unwrap();
+            let e = refused(ask(m.id).await);
+            assert!(
+                e.starts_with("speaker models not installed under "),
+                "{state:?}: {e}"
+            );
+            let e = refused(
+                b.actor
+                    .ask(EnrollSegments {
+                        meeting: m.id,
+                        segments: vec![7],
+                        target: EnrollTarget::Existing {
+                            profile: ProfileId::new(),
+                        },
+                    })
+                    .await,
+            );
+            assert_eq!(e, "no segment 7 in this meeting");
+        }
+    }
+
+    /// 156 D14, the real embedder on a COPY of a real meeting. Needs
+    /// `THEUTH_TEST_MEETING_DIR` (the copied `meetings/<id>/` directory) and the models under
+    /// `$THEUTH_DATA_DIR` (else `~/.theuth`) read-only; the profiles go to a temp dir.
+    ///
+    /// ```text
+    /// THEUTH_TEST_MEETING_DIR=/tmp/156/w3-data/meetings/<id> \
+    ///   cargo test -p meeting --lib enroll_segments_on_a_real_meeting_copy -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs the real speaker models and THEUTH_TEST_MEETING_DIR (a copied meeting)"]
+    fn enroll_segments_on_a_real_meeting_copy() {
+        let dir = PathBuf::from(
+            std::env::var_os("THEUTH_TEST_MEETING_DIR").expect("THEUTH_TEST_MEETING_DIR"),
+        );
+        let data_dir = std::env::var_os("THEUTH_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap()).join(".theuth"));
+        let models =
+            post::diarize::models(&data_dir.join("models"), &data_dir).expect("speaker models");
+        let t: Transcript =
+            serde_json::from_slice(&std::fs::read(dir.join(transcript::FILE)).unwrap()).unwrap();
+        let embeddings: HashMap<String, Vec<f32>> =
+            serde_json::from_slice(&std::fs::read(dir.join(transcript::EMBEDDINGS)).unwrap())
+                .unwrap();
+        // The first mic segments reaching 5 s of words: the `me` voice.
+        let mut chosen = Vec::new();
+        let mut ms = 0;
+        for s in t.segments.iter().filter(|s| s.track == Track::Mic) {
+            chosen.push(s.id);
+            ms += s.words.iter().map(|w| w.t1_ms - w.t0_ms).sum::<u64>();
+            if ms >= 5_000 {
+                break;
+            }
+        }
+        let (track, spans) = transcript::speech_spans(&t, &chosen).unwrap();
+        let transcript::Voiceprint {
+            spans,
+            speech_ms,
+            available_ms,
+        } = transcript::voiceprint_spans(&spans).unwrap();
+        let path = dir.join(Stem::Mic.file());
+        let started = Instant::now();
+        let emb = post::embed_spans(&path, &spans, &models).unwrap();
+        let took = started.elapsed();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut profiles = Profiles::load(tmp.path()).unwrap();
+        let created = profiles.create("Test Me", None, &emb).unwrap();
+        let folded = profiles.add_sample(created.id, &emb).unwrap();
+        let mut linked = t.clone();
+        let did_link =
+            transcript::link_enrolled(&mut linked, &chosen, &folded, &embeddings, &profiles);
+        let me_cos = embeddings
+            .get(transcript::ME)
+            .map(|me| speakers::cosine(me, &emb));
+        eprintln!(
+            "segments {chosen:?} on {track:?}: {} spans, speech_ms {speech_ms}, available_ms {available_ms}; \
+             embedding len {}, {took:?}; profile {} samples {}; cosine to the pipeline's `me` {me_cos:?}; linked {did_link}",
+            spans.len(),
+            emb.len(),
+            folded.id,
+            folded.samples
+        );
+        assert_eq!(track, Track::Mic);
+        assert!((1_000..=30_000).contains(&speech_ms));
+        assert_eq!(folded.samples, 2);
+        assert!(emb.len() >= 128, "{}", emb.len());
+        assert!(did_link);
+        let me = linked
+            .speakers
+            .iter()
+            .find(|l| l.id == transcript::ME)
+            .unwrap();
+        assert_eq!(
+            (me.name.as_str(), me.profile),
+            ("Test Me", Some(created.id))
+        );
+        if let Some(c) = me_cos {
+            assert!(
+                c >= speakers::MATCH,
+                "the segment voiceprint should match the pipeline's `me`: {c}"
+            );
+        }
+        assert_eq!(Profiles::load(tmp.path()).unwrap().list().len(), 1);
     }
 }
