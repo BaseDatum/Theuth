@@ -1,4 +1,4 @@
-import { getRouteApi, useNavigate } from '@tanstack/react-router'
+import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Flag, OctagonX, Pause, Play, Scissors, SkipForward, StepForward } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog'
@@ -17,8 +17,8 @@ import { DiscardStudy, Finished } from './Finished'
 import { RunTable } from './RunTable'
 import { Panel, SidePanel } from './SidePanel'
 import { StudyChart } from './StudyChart'
-import { StatePill } from './StudyList'
-import { type Bar, type Progress, budgetBars, clock, holdoutSummary, improved, keepNeedsPct, metric, pauseReasonLabel, pct, phaseChips, shortSha, tally } from './model'
+import { Delta, StatePill } from './StudyList'
+import { type Bar, type Progress, budgetBars, clock, holdoutSummary, keepNeedsPct, metric, pauseReasonLabel, pct, phaseChips, shortSha, tally } from './model'
 import { useControl, useExperiments, useProgress, useStudy } from './queries'
 
 const route = getRouteApi('/autoresearch/$slug')
@@ -63,7 +63,7 @@ export function StudyView() {
   const info = d.info
   const st = info.state
   const unit = info.metric.unit
-  const better = improved(info.metric.direction, info.delta_pct)
+  const direction = info.metric.direction
   const holdout = holdoutSummary(d.series)
   const needs = keepNeedsPct(info.sigma, info.incumbent.mean, info.metric.min_effect)
   const current = info.current !== null ? (runs.data?.find((r) => r.n === info.current) ?? null) : null
@@ -97,6 +97,14 @@ export function StudyView() {
               </>
             )}
             {d.spec.checks ? null : <span className="ml-1 text-warning">· no correctness check</span>}
+            {info.session && (
+              <>
+                {' · '}
+                <Link to="/c/$session" params={{ session: info.session }} search={{}} className="underline underline-offset-2">
+                  study session
+                </Link>
+              </>
+            )}
           </p>
 
           {st.state === 'paused' && st.reason.kind !== 'user' && <PausedBanner reason={st.reason} slug={slug} />}
@@ -110,7 +118,7 @@ export function StudyView() {
 
           <div className="grid grid-cols-2 gap-2.5 2xl:grid-cols-4">
             <Stat label="Incumbent" sub={info.baseline_mean !== null ? `base ${metric(info.baseline_mean, unit)}` : 'measuring the baseline'}>
-              {metric(info.incumbent.mean, unit)} {info.delta_pct !== null && <span className={cn('text-sm font-semibold', better ? 'text-success' : 'text-fg-secondary')}>{pct(info.delta_pct)}</span>}
+              {metric(info.incumbent.mean, unit)} {info.delta_pct !== null && <Delta direction={direction} delta_pct={info.delta_pct} className="text-sm font-semibold" />}
             </Stat>
             <Stat label="Noise σ" sub={info.sigma !== null && info.baseline_mean ? `${pct((info.sigma / Math.abs(info.baseline_mean)) * 100).replace(/^[+−]/, '')}${needs !== null ? ` · a keep needs ≈ ${pct(needs).replace(/^[+−]/, '')}` : ''}` : `${d.spec.bench.repeats} baseline samples`}>
               {metric(info.sigma, unit)}
@@ -118,13 +126,28 @@ export function StudyView() {
             <Stat label="Kept" sub={[counts.reverted > 0 && `${counts.reverted} reverted by review`, counts.crashed > 0 && `${counts.crashed} crashed`, counts.checks_failed > 0 && `${counts.checks_failed} failed checks`].filter(Boolean).join(' · ') || 'nothing reverted'}>
               {info.incumbent.kept} / {info.experiments}
             </Stat>
-            <Stat label="Holdout" sub={holdout ? (info.stop_reason?.kind === 'overfit' ? 'overfit: the holdout disagrees' : `after keep ${holdout.n}${d.spec.holdout ? ` · every ${d.spec.holdout.every} keeps` : ''}`) : d.spec.holdout ? 'not yet measured' : 'none configured'}>
+            {/* §13 Revision 2: never "base → base" — finalize's holdout once finished, else when it is due. */}
+            <Stat
+              label="Holdout"
+              sub={
+                holdout
+                  ? info.stop_reason?.kind === 'overfit'
+                    ? 'overfit: the holdout disagrees'
+                    : `after keep ${holdout.n}${d.spec.holdout ? ` · every ${d.spec.holdout.every} keeps` : ''}`
+                  : d.final_holdout
+                    ? 'base → final, measured at finalize'
+                    : d.spec.holdout
+                      ? `holdout not measured yet (every ${d.spec.holdout.every} keeps)`
+                      : 'none configured'
+              }
+            >
               {holdout ? (
                 <>
-                  {metric(holdout.latest, unit)} <span className={cn('text-sm font-semibold', info.stop_reason?.kind === 'overfit' ? 'text-danger' : improved(info.metric.direction, holdout.delta_pct) ? 'text-success' : 'text-fg-secondary')}>{pct(holdout.delta_pct)}</span>
+                  {metric(holdout.latest, unit)}{' '}
+                  {info.stop_reason?.kind === 'overfit' ? <span className="text-sm font-semibold text-danger">{pct(holdout.delta_pct)}</span> : <Delta direction={direction} delta_pct={holdout.delta_pct} className="text-sm font-semibold" />}
                 </>
               ) : (
-                '—'
+                (d.final_holdout ?? '—')
               )}
             </Stat>
           </div>
@@ -140,7 +163,7 @@ export function StudyView() {
           {/* Below 2xl the side panel sits above the table as two columns (the steer box stays near the top); at 2xl it is the mock's 300 px column. */}
           <div className="grid min-w-0 grid-cols-1 gap-3 2xl:grid-cols-[minmax(0,1fr)_300px]">
             <div className="order-2 min-w-0 2xl:order-1">
-              <RunTable rows={runs.data} metricName={info.metric.name} pending={runs.isPending} active={n ?? null} onPick={pick} />
+              <RunTable rows={runs.data} metricName={info.metric.name} direction={direction} pending={runs.isPending} active={n ?? null} onPick={pick} />
             </div>
             <div className="order-1 min-w-0 2xl:order-2">
               <SidePanel detail={d} rows={runs.data ?? []} onPick={pick} />
