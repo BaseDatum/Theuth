@@ -31,7 +31,7 @@ final class AskBarController: NSObject {
     init(store: Store, attention: PanelController) {
         self.store = store
         self.attention = attention
-        let (panel, container) = GlassPanel.make(width: Self.width, height: 120)
+        let (panel, container) = GlassPanel.make(width: Self.width, height: 120, radius: Type.askBarRadius) // 149 W1 (§3.5)
         self.panel = panel
         hosting = NSHostingView(rootView: AskBarView(store: store, state: state))
         hosting.frame = container.bounds
@@ -362,8 +362,9 @@ final class AskBarController: NSObject {
 
 /// The Attention panel's glass, for a second panel (W1's `PanelController.init` builds the same by hand).
 enum GlassPanel {
+    /// 149 W1: `radius` (§3.9: cards 24, the Ask bar 28) and `.darkAqua` forced on every companion panel.
     @MainActor
-    static func make(width: CGFloat, height: CGFloat) -> (KeyPanel, NSView) {
+    static func make(width: CGFloat, height: CGFloat, radius: CGFloat = 12) -> (KeyPanel, NSView) {
         let panel = KeyPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
                              styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .statusBar
@@ -376,10 +377,11 @@ enum GlassPanel {
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .utilityWindow
+        panel.appearance = Type.dark
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         container.wantsLayer = true
-        container.layer?.cornerRadius = 12
+        container.layer?.cornerRadius = radius
         container.layer?.cornerCurve = .continuous
         container.layer?.masksToBounds = true
         container.layer?.borderWidth = 0.5
@@ -388,7 +390,7 @@ enum GlassPanel {
         let backdrop: NSView
         if #available(macOS 26, *) {
             let glass = NSGlassEffectView()
-            glass.cornerRadius = 12
+            glass.cornerRadius = radius
             backdrop = glass
         } else {
             let effect = NSVisualEffectView()

@@ -1138,10 +1138,12 @@ mod tests {
         // The fake wall clock moves a day forward every time the cap pauses the run.
         let (fake, ev) = (h.fake.clone(), h.events.clone());
         let clock = tokio::spawn(async move {
-            for n in 1.. {
+            let mut n = 1;
+            loop {
                 seen(&ev, RunState::Paused, n).await;
                 let next = *fake.now.lock() + ChronoDuration::days(1);
                 *fake.now.lock() = next;
+                n += 1;
             }
         });
         let mut run = run_row(Tier::B);

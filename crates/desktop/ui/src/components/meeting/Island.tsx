@@ -9,6 +9,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { ArrowUp, ChevronDown, ChevronUp, Eye, EyeOff, LoaderCircle, MoreVertical, Pause, Play, Square, X, Zap, ZoomIn } from 'lucide-react'
 import { type ComponentProps, useCallback, useEffect, useRef, useState } from 'react'
 import { IslandTranscript } from '@/components/meeting/IslandTranscript'
+import { useCompanionAlive } from '@/lib/companion'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import {
@@ -67,7 +68,9 @@ export function Island() {
   }, [])
   const [menu, setMenu] = useState(false)
   const brief = current({ briefs, cursor })
-  const shown = live(state) || state === 'Starting' || state === 'Stopping'
+  // 149 D15: the companion draws the island natively while it is alive; this window hides and sends no cursor.
+  const companion = useCompanionAlive()
+  const shown = (live(state) || state === 'Starting' || state === 'Stopping') && !companion
   const placed = useRef(false)
   const key = useRef<string | null>(null)
   // Content-fit size: the strip, the brief pane at its wrapped height, the request box. Once the user has dragged

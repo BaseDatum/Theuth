@@ -1,8 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { Island } from '@/components/meeting/Island'
+import { useCompanionAlive } from '@/lib/companion'
 import { VoicePanel } from '@/components/voice/VoicePanel'
-import { pointRefuse } from '@/lib/tauri'
+import { islandHide, pointRefuse } from '@/lib/tauri'
 import { useVoiceKey } from '@/lib/voice-key'
 import { live, useMeeting } from '@/store/meeting'
 
@@ -18,6 +19,11 @@ function IslandRoute() {
   const { fixture } = Route.useSearch()
   const voice = useVoiceKey((s) => s.phase !== 'idle')
   const meeting = useMeeting((s) => live(s.state))
+  // 149 D15: nothing to draw while the companion owns the island and the voice key.
+  const companion = useCompanionAlive()
+  useEffect(() => {
+    if (companion) void islandHide()
+  }, [companion])
   // A recording meeting leases the `Utterer`: the shell answers the next press with `point:refused` instead of `Start`.
   useEffect(() => {
     void pointRefuse(meeting ? 'meeting' : null)
@@ -34,5 +40,6 @@ function IslandRoute() {
       stop = null
     }
   }, [fixture])
+  if (companion) return null
   return voice ? <VoicePanel /> : <Island />
 }

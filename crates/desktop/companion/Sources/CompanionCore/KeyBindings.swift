@@ -93,12 +93,21 @@ public enum KeyScope: String, CaseIterable, Codable, Sendable {
     case panel
     /// While the Ask bar is key.
     case askBar
+    /// 149: while the agents panel is key.
+    case agents
+    /// 149: the island takes key only in its request box.
+    case island
+    /// 149: between the voice key's press and the send.
+    case pointAndSay
 
     public var title: String {
         switch self {
         case .anywhere: return "Anywhere"
         case .panel: return "Attention panel"
         case .askBar: return "Ask bar"
+        case .agents: return "Agents panel"
+        case .island: return "Island"
+        case .pointAndSay: return "Point and say"
         }
     }
 }
@@ -109,11 +118,28 @@ public enum KeyAction: String, CaseIterable, Codable, Sendable {
     case answer1, answer2, answer3, answerRecommended, escape, next, previous, snooze, clear
     case openDiff, openBoard, openSession, reply, askBar, legend, settings
     case askSend, askEscape, askOpenSession, askLegend
+    // 149 (§8 ★ rows; intents are wired by the owning wave):
+    case openAgents, voiceKey, meetingPtt, meetingEye
+    case replyFocus, talk, point, stopAgent
+    case askPoint
+    case agentsNext, agentsPrevious, agentsOpenSession, agentsOpenSessionCmd, agentsTalk, agentsStop, agentsEscape
+    case islandMute, islandStop, islandDismiss, islandDeeper, islandSend, islandEscape
+    case pointEscape
 
     /// What the Attention panel / Ask bar does; `nil` for the global rows (the app's hotkey handlers).
     public var intent: Intent? {
         switch self {
         case .openPanel, .openAskBar: return nil
+        // 149: global rows are the app's handlers; `replyFocus` is R's alias (Revision 1 row 18); the rest are wired by W1/W2/W3.
+        case .openAgents, .voiceKey, .meetingPtt, .meetingEye: return nil
+        case .replyFocus: return .reply
+        case .talk, .point, .stopAgent, .askPoint: return nil
+        case .agentsNext: return .next
+        case .agentsPrevious: return .previous
+        case .agentsOpenSession, .agentsOpenSessionCmd: return .openSession
+        case .agentsTalk, .agentsStop: return nil
+        case .agentsEscape, .islandEscape, .pointEscape: return .escape
+        case .islandMute, .islandStop, .islandDismiss, .islandDeeper, .islandSend: return nil
         case .answer1: return .answer(1)
         case .answer2: return .answer(2)
         case .answer3: return .answer(3)
@@ -163,7 +189,7 @@ public struct KeyTable: Equatable, Sendable {
     }
     private static func key(_ c: String, _ code: UInt16, _ m: Chord.Modifiers = []) -> Chord { Chord(chars: c, keyCode: code, modifiers: m) }
 
-    /// The table (130 §4.2 · §4.3 · D6), scope order anywhere · panel · askBar.
+    /// The table (130 §4.2 · §4.3 · D6; 149 §8 ★ rows), scope order anywhere · panel · askBar · agents · island · pointAndSay.
     public static let defaults: [KeyBinding] = [
         row(.openPanel, .anywhere, "Open the panel · hold to talk", Chord(chars: " ", keyCode: 49, modifiers: [.control, .shift])),
         row(.openAskBar, .anywhere, "Open the Ask bar", nil),
@@ -187,11 +213,60 @@ public struct KeyTable: Equatable, Sendable {
         row(.askOpenSession, .askBar, "Open the desk's session", key("o", 31, .command)),
         row(.askLegend, .askBar, "Keyboard shortcuts", key("/", 44, .command)),
         row(.askEscape, .askBar, "Undo the hold, else close", .escape, fixed: true),
+        // 149 §8 ★ — anywhere
+        row(.openAgents, .anywhere, "Open the agents panel", key("a", 0, [.control, .shift])),
+        row(.voiceKey, .anywhere, "Voice key — point and say", key("s", 1, .control)),
+        row(.meetingPtt, .anywhere, "Meeting push-to-talk", key("`", 50, .option)),
+        row(.meetingEye, .anywhere, "Meeting eye (hide from capture)", key("e", 14, [.option, .shift])),
+        // 149 §8 ★ — panel
+        row(.replyFocus, .panel, "Focus the reply field", .space),
+        row(.talk, .panel, "Hold to talk into the reply", key("v", 9)),
+        row(.point, .panel, "Point — attach the screen", key("p", 35)),
+        row(.stopAgent, .panel, "Stop the agent (hold)", key("x", 7)),
+        // 149 §8 ★ — askBar
+        row(.askPoint, .askBar, "Point — attach the screen", key("p", 35)),
+        // 149 §8 ★ — agents
+        row(.agentsNext, .agents, "Next row", key("j", 38)),
+        row(.agentsPrevious, .agents, "Previous row", key("k", 40)),
+        row(.agentsOpenSession, .agents, "Open the session", .returnKey),
+        row(.agentsOpenSessionCmd, .agents, "Open the session", key("o", 31, .command)),
+        row(.agentsTalk, .agents, "Hold to talk into the row", key("v", 9)),
+        row(.agentsStop, .agents, "Stop the agent (hold)", key("x", 7)),
+        row(.agentsEscape, .agents, "Close", .escape, fixed: true),
+        // 149 §8 ★ — island (key only in the request box)
+        row(.islandMute, .island, "Mute (pause)", key("m", 46)),
+        row(.islandStop, .island, "Stop the meeting (hold)", key("m", 46, .control)), // §8 ⌃⇧M: local chords drop ⇧ (`normalizedLocal`)
+        row(.islandDismiss, .island, "Dismiss the topic", key("e", 14)),
+        row(.islandDeeper, .island, "Deeper", key("d", 2)),
+        row(.islandSend, .island, "Send the request", .returnKey),
+        row(.islandEscape, .island, "Leave the box", .escape, fixed: true),
+        // 149 §8 ★ — pointAndSay (registered only between press and send)
+        row(.pointEscape, .pointAndSay, "Cancel", .escape, fixed: true),
     ]
+
+    /// 149 §8: the per-platform default table. macOS is `defaults`; the Windows twin mirrors this list and reads
+    /// every other row's chord with ⌘ → Ctrl (134 D6). Data only — this app is macOS, but the table is the contract.
+    public enum Platform: String, CaseIterable, Sendable { case macOS, windows, linux }
+
+    public static let platformDefaults: [KeyAction: [Platform: Chord]] = [
+        .voiceKey: [
+            .macOS: key("s", 1, .control),
+            .windows: Chord(chars: " ", keyCode: 49, modifiers: [.control, .option]),
+            .linux: Chord(chars: " ", keyCode: 49, modifiers: [.control, .option]),
+        ],
+    ]
+
+    /// The default chord of `action` on `platform`: the per-platform row when there is one, else the table's.
+    public static func defaultChord(for action: KeyAction, on platform: Platform) -> Chord? {
+        if let p = platformDefaults[action]?[platform] { return p }
+        return defaults.first { $0.action == action }?.defaultChord
+    }
 
     /// Fixed synonyms, never rebound: ↓/↑ walk, keypad ⏎ answers, `?` opens the legend. Shown in the legend.
     public static let aliases: [(chord: Chord, action: KeyAction)] = [
         (.down, .next), (.up, .previous), (.keypadEnter, .answerRecommended), (key("?", 44), .legend), (key("?", 44), .askLegend),
+        // 149: the agents panel walks like the Attention panel; keypad ⏎ sends in the island's box.
+        (.down, .agentsNext), (.up, .agentsPrevious), (.keypadEnter, .agentsOpenSession), (.keypadEnter, .islandSend),
     ]
 
     /// Every row with its effective chord, table order.

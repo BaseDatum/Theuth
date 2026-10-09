@@ -6,6 +6,7 @@
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { useEffect } from 'react'
 import { toast } from 'sonner'
+import { useCompanionAlive } from '@/lib/companion'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { isDesktop } from '@/lib/platform'
 import { isIsland, setHiddenFromCapture } from '@/lib/tauri'
@@ -17,8 +18,10 @@ export function useMeetingHotkeys(): void {
   const active = useMeeting((s) => live(s.state))
   const ptt = useMeetingSettings((s) => s.ptt)
   const eye = useMeetingSettings((s) => s.eye)
+  // 149 D15: the companion's island registers PTT/eye while it is alive.
+  const companion = useCompanionAlive()
   useEffect(() => {
-    if (!active || !isDesktop() || isIsland()) return
+    if (!active || !isDesktop() || isIsland() || companion) return
     let held = false
     const api = () => useConnection.getState().api
     void register(ptt, (e) => {
@@ -35,5 +38,5 @@ export function useMeetingHotkeys(): void {
       // The key may still be down across a state change or rebind: the span must close.
       if (held) void api()?.meeting_ptt(false).catch(() => undefined)
     }
-  }, [active, ptt, eye])
+  }, [active, ptt, eye, companion])
 }

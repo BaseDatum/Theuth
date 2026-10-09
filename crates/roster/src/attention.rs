@@ -119,6 +119,12 @@ pub struct AttentionItem {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
     pub next_steps: Vec<String>,
+    /// 149 E6: the conversation the item sits in, for session-born kinds
+    /// (ask, approval, finished, resume, blocked-with-session); `None` when
+    /// the session is unknown or has no messages.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub context: Option<ItemContext>,
     /// 132 D4: the task's priority — task-born items and session items whose
     /// session is a task checkout; `None` otherwise.
     #[serde(default)]
@@ -129,6 +135,23 @@ pub struct AttentionItem {
     #[serde(default)]
     pub rank: u32,
 }
+
+/// 149 E6: the two bubbles behind an item — the user's last input to the
+/// session and the agent's last assistant text before the item arose, each
+/// ≤ [`CONTEXT_MAX`] chars (sentence-clipped, fences dropped); `None` when unknown.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ItemContext {
+    /// What the user last asked the session.
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub request: Option<String>,
+    /// The agent's last reply (the text after that input).
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub last_reply: Option<String>,
+}
+
+/// 149 E6: cap of each [`ItemContext`] text in chars.
+pub const CONTEXT_MAX: usize = 280;
 
 /// 130 E1: bus event the [`Attention`] actor publishes after a derive whose
 /// result differs from the previous one by id set; `count` is the new badge.
@@ -293,6 +316,9 @@ pub struct Inputs {
     pub finished: Vec<Finished>,
     /// 132 D4: `tasks.project_order` from config, for [`tasks::rank::rank`].
     pub project_order: Vec<String>,
+    /// 149 E6: session id → its last exchange, for the sessions behind
+    /// session-born items (the actor reads the agent store; tests build it).
+    pub session_context: HashMap<String, ItemContext>,
 }
 
 /// Dismissed / snoozed state per item id.
@@ -334,6 +360,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         waiting_since_ms: Some(at_ms),
         summary: None,
         next_steps: Vec::new(),
+        context: None,
         priority: None,
         rank: tasks::Priority::Medium.weight(),
     };
@@ -812,6 +839,16 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
         });
     }
 
+    // 149 E6: the exchange behind every session-born item, by session.
+    for i in out.iter_mut().filter(|i| context_kind(i.kind)) {
+        i.context = i
+            .session
+            .as_deref()
+            .and_then(|s| inputs.session_context.get(s))
+            .filter(|c| **c != ItemContext::default())
+            .cloned();
+    }
+
     out.retain(|i| {
         !states
             .get(&i.id)
@@ -832,6 +869,38 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
             .then_with(|| b.at_ms.cmp(&a.at_ms))
     });
     out
+}
+
+/// 149 E6: the kinds that carry an [`ItemContext`] — the ones born of a session's turn.
+fn context_kind(kind: AttentionKind) -> bool {
+    matches!(
+        kind,
+        AttentionKind::Ask
+            | AttentionKind::Approval
+            | AttentionKind::Finished
+            | AttentionKind::Resume
+            | AttentionKind::Blocked
+    )
+}
+
+/// 149 E6: one bubble's text — fenced code blocks dropped, whitespace
+/// collapsed to one line, cut to [`CONTEXT_MAX`] on a sentence end (else a
+/// word) as [`tasks::packet::head_sentence`]; `None` when nothing is left.
+pub fn clip_context(text: &str) -> Option<String> {
+    let mut in_fence = false;
+    let kept = text
+        .lines()
+        .filter(|l| {
+            if l.trim_start().starts_with("```") {
+                in_fence = !in_fence;
+                return false;
+            }
+            !in_fence
+        })
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(tasks::packet::head_sentence(&kept, CONTEXT_MAX)).filter(|s| !s.is_empty())
 }
 
 /// 130 E3: `(summary, next_steps)` from a turn's final assistant text — a
@@ -1128,6 +1197,7 @@ impl Attention {
             .filter_map(|a| Some((a.desk.clone()?, a.file.name.as_str().to_owned())))
             .collect();
         let mut resumes: Vec<ResumeNeed> = self.reports.values().cloned().collect();
+        let mut session_context = HashMap::new();
         if let Ok(Some(ag)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) {
             if let Ok(sessions) = ag.ask(agent::ListSessions).await {
                 desks.extend(desk_map(&sessions));
@@ -1147,6 +1217,45 @@ impl Attention {
                     detail: None,
                     taken_from: None,
                 }));
+            }
+            // 149 E6: the exchange behind every session-born item (ask, approval,
+            // finished, resume, blocked-with-session), one store read per session.
+            let mut wanted: HashSet<String> = HashSet::new();
+            wanted.extend(asks.iter().map(|a| a.session.to_string()));
+            wanted.extend(self.pending.values().map(|(a, _)| a.session.to_string()));
+            wanted.extend(finished.iter().map(|f| f.session.clone()));
+            wanted.extend(resumes.iter().map(|r| r.session.clone()));
+            wanted.extend(
+                tasks
+                    .iter()
+                    .filter(|t| matches!(t.state, tasks::TaskState::Blocked))
+                    .filter_map(|t| {
+                        t.checkout
+                            .as_ref()
+                            .map(|c| c.session.clone())
+                            .or_else(|| task_sessions.get(&t.id.0).cloned())
+                    }),
+            );
+            if !wanted.is_empty()
+                && let Ok(store) = ag.ask(agent::DurableStore).await
+            {
+                for s in wanted {
+                    let Ok(id) = s.parse::<runtime::SessionId>() else {
+                        continue;
+                    };
+                    match store.last_exchange(id).await {
+                        Ok((request, reply)) => {
+                            session_context.insert(
+                                s,
+                                ItemContext {
+                                    request: request.as_deref().and_then(clip_context),
+                                    last_reply: clip_context(&reply),
+                                },
+                            );
+                        }
+                        Err(e) => tracing::warn!("attention: last_exchange {s}: {e:#}"),
+                    }
+                }
             }
         }
         Inputs {
@@ -1182,6 +1291,7 @@ impl Attention {
                 .section::<tasks::TasksConfig>("tasks")
                 .map(|c| c.project_order)
                 .unwrap_or_default(),
+            session_context,
         }
     }
 
@@ -1854,7 +1964,7 @@ mod tests {
     #[test]
     fn derives_every_kind_and_hides_dismissed_or_snoozed() {
         let ops = tasks::Owner::Agent("ops".into());
-        let inputs = Inputs {
+        let mut inputs = Inputs {
             tasks: vec![
                 task(
                     "deploy",
@@ -1943,6 +2053,17 @@ mod tests {
             }],
             ..Default::default()
         };
+        // 149 E6: the blocked task's newest event named a session whose exchange is known.
+        inputs
+            .task_sessions
+            .insert(inputs.tasks[1].id.0.clone(), "s-blocked".into());
+        inputs.session_context.insert(
+            "s-blocked".into(),
+            ItemContext {
+                request: Some("Migrate the users table.".into()),
+                last_reply: Some("Blocked on Sky's sign-off.".into()),
+            },
+        );
         let items = derive(&inputs, &HashMap::new(), 100);
         let kinds: Vec<_> = items.iter().map(|i| i.kind).collect();
         // 132 D4: equal rank → the longest-waiting first; budgets without a filed task wait since `now`.
@@ -1975,6 +2096,19 @@ mod tests {
             .find(|i| i.kind == AttentionKind::Decision)
             .unwrap();
         assert_eq!(decision.decision.as_deref(), Some("decision:d1"));
+        assert_eq!(
+            decision.context, None,
+            "a decision is task-born: no bubbles"
+        );
+        let blocked = items
+            .iter()
+            .find(|i| i.kind == AttentionKind::Blocked)
+            .unwrap();
+        assert_eq!(blocked.session.as_deref(), Some("s-blocked"));
+        assert_eq!(
+            blocked.context.as_ref().and_then(|c| c.request.as_deref()),
+            Some("Migrate the users table.")
+        );
         assert_eq!(
             items
                 .iter()
@@ -3041,6 +3175,109 @@ mod tests {
         let by = |id: String| items.iter().find(|i| i.id == id).unwrap().waiting_since_ms;
         assert_eq!(by(format!("approval:{}", a.id.0)), Some(40));
         assert_eq!(by(format!("ask:{}", q.id.0)), Some(70));
+    }
+
+    /// 149 E6: every session-born kind carries the exchange of its session;
+    /// a show on the same session does not; an empty store leaves `None`.
+    #[test]
+    fn context_lands_on_session_born_kinds_only() {
+        let s = runtime::SessionId::new();
+        let a = ApprovalRequested {
+            id: ApprovalId(uuid::Uuid::now_v7()),
+            session: s,
+            tool: "bash".into(),
+            args: serde_json::json!({ "command": "ls" }),
+            risk: tools::Risk::Destructive,
+        };
+        let mut inputs = Inputs {
+            approvals: vec![(a, 40)],
+            asks: vec![ask(s, &[("Ship?", &["Yes"])])],
+            finished: vec![Finished {
+                session: s.to_string(),
+                turn: "t1".into(),
+                at_ms: 50,
+                summary: None,
+                next_steps: vec![],
+            }],
+            resumes: vec![ResumeNeed {
+                session: s.to_string(),
+                turn: "t2".into(),
+                at_ms: 60,
+                detail: None,
+                taken_from: None,
+            }],
+            shows: vec![Shown {
+                call_id: "c1".into(),
+                session: s.to_string(),
+                title: "chart".into(),
+                name: "c.png".into(),
+                kind: "image".into(),
+                mime: "image/png".into(),
+                bytes: 1,
+                version: 1,
+                at_ms: 70,
+            }],
+            ..Default::default()
+        };
+        let empty = derive(&inputs, &HashMap::new(), 100);
+        assert_eq!(empty.len(), 5);
+        assert!(
+            empty.iter().all(|i| i.context.is_none()),
+            "empty store: no bubbles"
+        );
+
+        let ctx = ItemContext {
+            request: Some("Ship it?".into()),
+            last_reply: Some("Running the checks.".into()),
+        };
+        inputs.session_context.insert(s.to_string(), ctx.clone());
+        let items = derive(&inputs, &HashMap::new(), 100);
+        for kind in [
+            AttentionKind::Ask,
+            AttentionKind::Approval,
+            AttentionKind::Finished,
+            AttentionKind::Resume,
+        ] {
+            let it = items.iter().find(|i| i.kind == kind).unwrap();
+            assert_eq!(it.context.as_ref(), Some(&ctx), "{kind:?}");
+        }
+        let show = items
+            .iter()
+            .find(|i| i.kind == AttentionKind::Show)
+            .unwrap();
+        assert_eq!(show.context, None);
+
+        // A session whose exchange is empty on both sides yields `None`, not an empty object.
+        inputs
+            .session_context
+            .insert(s.to_string(), ItemContext::default());
+        let blank = derive(&inputs, &HashMap::new(), 100);
+        assert!(blank.iter().all(|i| i.context.is_none()));
+    }
+
+    /// 149 E6: fences dropped, lines joined, sentence-clipped at [`CONTEXT_MAX`].
+    #[test]
+    fn clip_context_drops_fences_and_clips_on_a_sentence() {
+        assert_eq!(
+            clip_context("Here you go:\n```sh\nrm -rf x\n```\nDone. Next?").as_deref(),
+            Some("Here you go: Done. Next?")
+        );
+        assert_eq!(clip_context("```\nonly code\n```\n  "), None);
+        assert_eq!(clip_context(""), None);
+        let long = format!(
+            "{} A second sentence that runs past the cap.",
+            "word ".repeat(55)
+        );
+        let clipped = clip_context(&long).unwrap();
+        assert!(
+            clipped.chars().count() <= CONTEXT_MAX,
+            "{}",
+            clipped.chars().count()
+        );
+        assert!(
+            clipped.ends_with('…') || clipped.ends_with('.'),
+            "{clipped}"
+        );
     }
 
     /// 130 E3: the `## Next` parser — two items, none, over-long.
