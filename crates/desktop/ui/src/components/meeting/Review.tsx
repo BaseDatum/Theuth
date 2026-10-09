@@ -316,15 +316,17 @@ export function SegmentList({ id, transcript, onEdit }: { id: string; transcript
           )
         })}
       </div>
-      <EnrollDialog
-        open={enrolling !== null}
-        onOpenChange={(o) => !o && setEnrolling(null)}
-        count={enrolling?.length ?? 0}
-        speechMs={speechMs(transcript.segments, enrolling ?? [])}
-        profiles={profiles.data}
-        enroll={(target) => api.meeting_speaker_enroll(id, enrolling ?? [], target)}
-        onDone={enrolled}
-      />
+      {enrolling && (
+        <EnrollDialog
+          open
+          onOpenChange={(o) => !o && setEnrolling(null)}
+          count={enrolling.length}
+          speechMs={speechMs(transcript.segments, enrolling)}
+          profiles={profiles.data}
+          enroll={(target) => api.meeting_speaker_enroll(id, enrolling, target)}
+          onDone={enrolled}
+        />
+      )}
     </div>
   )
 }
