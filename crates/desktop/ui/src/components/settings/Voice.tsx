@@ -37,6 +37,7 @@ const HISTORY = 50
 const keys = {
   devices: ['voice', 'input-devices'] as const,
   status: ['voice', 'status'] as const,
+  settings: ['voice', 'settings'] as const,
   polishModel: ['polish-model'] as const,
   history: ['voice', 'history'] as const,
   dictation: ['voice', 'dictation-status'] as const,
@@ -75,43 +76,24 @@ export function phrases(raw: string): string[] {
     .filter(Boolean)
 }
 
-// ponytail: the frozen contract has no getter for `voice.shape.*` / `voice.end_commands`; the last value written here
-// is kept in localStorage. Replace with `voice_status` fields when the engine exposes them.
-function useRemembered<T>(key: string, fallback: T): [T, (v: T) => void] {
-  const [v, setV] = useState<T>(() => {
-    try {
-      const raw = localStorage.getItem(`theuth.voice.${key}`)
-      return raw === null ? fallback : (JSON.parse(raw) as T)
-    } catch {
-      return fallback
-    }
-  })
-  return [
-    v,
-    (next) => {
-      setV(next)
-      localStorage.setItem(`theuth.voice.${key}`, JSON.stringify(next))
-    },
-  ]
-}
-
 export function Voice() {
   const api = useApi()
   const devices = useQuery({ queryKey: keys.devices, queryFn: () => api.list_input_devices() })
   const status = useQuery({ queryKey: keys.status, queryFn: () => api.voice_status() })
+  const settings = useQuery({ queryKey: keys.settings, queryFn: () => api.voice_settings() })
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const polishModel = useQuery({ queryKey: keys.polishModel, queryFn: () => api.polish_model() })
   const history = useQuery({ queryKey: keys.history, queryFn: () => api.dictation_history(HISTORY) })
   const dictation = useQuery({ queryKey: keys.dictation, queryFn: () => api.dictation_status() })
 
-  const setDevice = useAction((name: string) => api.set_input_devices(inputDevicesFor(name)), { keys: [keys.status] })
-  const setShape = useAction(({ surface, preset }: { surface: Surface; preset: Preset }) => api.set_shape(surface, preset))
-  const setEnd = useAction((p: EndPhrases) => api.set_end_phrases(p))
-  const setPolishModel = useAction((id: string | null) => api.set_polish_model(id), { keys: [keys.polishModel] })
+  const setDevice = useAction((name: string) => api.set_input_devices(inputDevicesFor(name)), { keys: [keys.status, keys.settings] })
+  const setShape = useAction(({ surface, preset }: { surface: Surface; preset: Preset }) => api.set_shape(surface, preset), { keys: [keys.settings] })
+  const setEnd = useAction((p: EndPhrases) => api.set_end_phrases(p), { keys: [keys.settings] })
+  const setPolishModel = useAction((id: string | null) => api.set_polish_model(id), { keys: [keys.polishModel, keys.settings] })
   const forget = useAction((id: string | null) => api.dictation_history_forget(id), { keys: [keys.history] })
 
-  const [shape, rememberShape] = useRemembered<Record<string, Preset>>('shape', {})
-  const [end, rememberEnd] = useRemembered<EndPhrases>('end', END_DEFAULTS)
+  const shape = settings.data?.shape
+  const end = settings.data?.end_commands ?? END_DEFAULTS
   const preferred = status.data?.input_devices[0]
   // A preferred device the host no longer enumerates stays visible, never silently "System default".
   const deviceNames = devices.data?.map((d) => d.name) ?? []
@@ -153,13 +135,9 @@ export function Voice() {
         {SURFACES.map(([surface, label, description]) => (
           <Row key={surface} label={label} description={`${description} Full writes punctuation, numbers, code words, dictionary terms and takes "send it" / "scratch that"; Plain skips the dictionary and the end phrases; Off keeps the model's words.`}>
             <Select
-              value={shape[surface] ?? 'full'}
-              disabled={setShape.isPending}
-              onValueChange={(v) => {
-                const preset = v as Preset
-                rememberShape({ ...shape, [surface]: preset })
-                setShape.mutate({ surface, preset })
-              }}
+              value={shape?.[surface] ?? 'full'}
+              disabled={!settings.isSuccess || setShape.isPending}
+              onValueChange={(v) => setShape.mutate({ surface, preset: v as Preset })}
             >
               <SelectTrigger className="w-32" aria-label={`${label} shaping`}>
                 <SelectValue />
@@ -177,34 +155,25 @@ export function Voice() {
       </Section>
       <Section title="End phrases">
         <PhraseRow
+          key={`send:${end.send.join(',')}`}
           label="Send"
           description="Said at the end of a dictation, sends the message after 1.5 s of silence. Comma-separated."
           value={end.send.join(', ')}
-          commit={(raw) => {
-            const next = { ...end, send: phrases(raw) }
-            rememberEnd(next)
-            setEnd.mutate(next)
-          }}
+          commit={(raw) => setEnd.mutate({ ...end, send: phrases(raw) })}
         />
         <PhraseRow
+          key={`scratch:${end.scratch.join(',')}`}
           label="Scratch"
           description="Drops the last closed utterance. Comma-separated."
           value={end.scratch.join(', ')}
-          commit={(raw) => {
-            const next = { ...end, scratch: phrases(raw) }
-            rememberEnd(next)
-            setEnd.mutate(next)
-          }}
+          commit={(raw) => setEnd.mutate({ ...end, scratch: phrases(raw) })}
         />
         <PhraseRow
+          key={`literal:${end.literal}`}
           label="Literal"
           description="Say this before a phrase or symbol word to write it as said."
           value={end.literal}
-          commit={(raw) => {
-            const next = { ...end, literal: raw.trim().toLowerCase() || END_DEFAULTS.literal }
-            rememberEnd(next)
-            setEnd.mutate(next)
-          }}
+          commit={(raw) => setEnd.mutate({ ...end, literal: raw.trim().toLowerCase() || END_DEFAULTS.literal })}
         />
       </Section>
       <Section title="Polish">

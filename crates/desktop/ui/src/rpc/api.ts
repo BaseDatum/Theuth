@@ -48,6 +48,7 @@ import type { Surface } from '@/rpc/bindings/Surface'
 import type { Preset } from '@/rpc/bindings/Preset'
 import type { EndPhrases } from '@/rpc/bindings/EndPhrases'
 import type { PolishReply } from '@/rpc/bindings/PolishReply'
+import type { VoiceSettings } from '@/rpc/bindings/VoiceSettings'
 import type { Delivery } from '@/rpc/bindings/Delivery'
 import type { Decision } from '@/rpc/bindings/Decision'
 import type { Gate } from '@/rpc/bindings/Gate'
@@ -404,6 +405,8 @@ export interface Api {
   set_shape(surface: Surface, preset: Preset): Promise<null>
   /** 153 §7.2: persist `voice.end_commands`. */
   set_end_phrases(phrases: EndPhrases): Promise<null>
+  /** 153 F1: the live `voice.*` settings every `set_*` above wrote (shape presets, end phrases, devices, polish model, …). */
+  voice_settings(): Promise<VoiceSettings>
   /** 153 §9.2: `voice.polish_model`, `null` = the chain (title model, then the session's). */
   polish_model(): Promise<ModelInfo | null>
   set_polish_model(model: string | null): Promise<ModelInfo | null>
@@ -1563,6 +1566,7 @@ export const METHODS = [
   'update_status',
   'use_skill',
   'vision_model',
+  'voice_settings',
   'voice_status',
   'withdraw',
 ] as const satisfies readonly (keyof Api)[]
