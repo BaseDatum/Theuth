@@ -304,6 +304,13 @@ final class Store: ObservableObject {
     /// W3: the Ask bar's receipts share this row.
     func setReceipt(_ r: Receipt?) { receipt = r }
     func setReceiptCount(_ n: Int) { panel.receiptCount = n }
+
+    /// 153 §12.1: the one AnswerCard — the Ask bar's receipt (B3) and the voice/command card (C1) both hand their state here.
+    /// `CompanionCore.AnswerCardState` is the pure model; the card's view-model (PointAndSay/AnswerCard.swift) shadows the name.
+    func showAnswerCard(_ state: CompanionCore.AnswerCardState) {
+        // 153-CC stub — C1 fills.
+        _ = state
+    }
     // MARK: W2 notifications
 
     /// A deliberate tap on a notification action (D8): the same commit path, no hold; an optional note
