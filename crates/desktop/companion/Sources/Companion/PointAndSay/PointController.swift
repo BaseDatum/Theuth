@@ -281,7 +281,7 @@ final class PointController {
         await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
     }
 
-    func screenContext(samples: [PointerSample], durationMs: UInt64, color: String = Palette.malachiteHex) async -> ScreenContextReply? {
+    func screenContext(samples: [PointerSample], durationMs: UInt64, color: String = PointController.accentHex) async -> ScreenContextReply? {
         guard VoiceKeySettings.includeScreen else { return nil }
         let req = ScreenContextReq(samples: samples, color: color, sinceMs: durationMs, accessibility: VoiceKeySettings.accessibility)
         do {
@@ -503,9 +503,14 @@ enum VoiceKeySettings {
     }
 }
 
-extension Palette {
-    /// The trail colour the engine stamps on its capture (`screen_context.color`), the dark malachite.
-    static let malachiteHex = "#4a8a6e"
+extension PointController {
+    /// The trail colour the engine stamps on its capture (`screen_context.color`): the system accent colour, resolved
+    /// at request time, as `#rrggbb` — the same colour the ring and trail are drawn in (`OverlayView.show`).
+    nonisolated static var accentHex: String {
+        // nil only for pattern colours, never for a system colour (the fallback must be an RGB colour: `redComponent` throws on gray).
+        let c = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+        return OverlayModel.hex(red: c.redComponent, green: c.greenComponent, blue: c.blueComponent)
+    }
 }
 
 /// stderr plus `/tmp/149-W2-probe.log` during `--probe-point`.

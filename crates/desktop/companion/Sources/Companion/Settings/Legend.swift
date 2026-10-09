@@ -123,13 +123,13 @@ struct LegendView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Keyboard shortcuts").font(.system(size: 13, weight: .semibold))
+                Text("Keyboard shortcuts").font(.body.weight(.semibold))
                 Spacer()
                 Hint("⎋", "close")
             }
             .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
             ForEach(KeyScope.allCases, id: \.self) { scope in
-                Text(scope.title.uppercased()).font(.system(size: 10, weight: .semibold)).foregroundColor(.sand).tracking(0.6)
+                Text(scope.title.uppercased()).font(.caption.weight(.semibold)).foregroundColor(.tertiary).tracking(0.6)
                     .padding(.horizontal, 14).padding(.top, 7).padding(.bottom, 2)
                 ForEach(model.keys.bindings(in: scope)) { b in
                     row(b.label, chord(b), lost: b.chord == nil && b.defaultChord != nil)
@@ -140,18 +140,18 @@ struct LegendView: View {
             }
             Divider().padding(.horizontal, 14).padding(.top, 8)
             VStack(alignment: .leading, spacing: 4) {
-                if let n = model.hotkeyNotice { Text(n).font(.system(size: 10.5)).foregroundColor(.carnelian) }
+                if let n = model.hotkeyNotice { Text(n).font(.caption).foregroundColor(.failed) }
                 Text("Panel and Ask bar keys fire only while that surface is key, so they never collide with other apps — which is why the global set stays tiny.")
-                    .font(.system(size: 10.5)).foregroundColor(.sand)
+                    .font(.caption).foregroundColor(.tertiary)
                 HStack {
-                    Button(action: onSettings) { Text("Change in Settings…  ⌘,").font(.system(size: 11.5)) }.buttonStyle(.plain).foregroundColor(.ink)
+                    Button(action: onSettings) { Text("Change in Settings…  ⌘,").font(.subheadline) }.buttonStyle(.plain).foregroundColor(.primary)
                     Spacer()
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
         }
         .frame(width: LegendController.width)
-        .foregroundColor(.ink)
+        .foregroundColor(.primary)
         .accessibilityElement(children: .contain)
     }
 
@@ -163,9 +163,9 @@ struct LegendView: View {
 
     private func row(_ label: String, _ chord: String, lost: Bool = false) -> some View {
         HStack {
-            Text(label).font(.system(size: 11.5))
+            Text(label).font(.subheadline)
             Spacer()
-            Text(chord).font(.system(size: 11.5, weight: .medium, design: .rounded)).foregroundColor(lost ? .carnelian : chord == "unassigned" ? .sand : .ink2)
+            Text(chord).font(.subheadline.weight(.medium)).foregroundColor(lost ? .failed : chord == "unassigned" ? .tertiary : .secondary)
         }
         .padding(.horizontal, 14).padding(.vertical, 1.5)
         .accessibilityElement(children: .combine)

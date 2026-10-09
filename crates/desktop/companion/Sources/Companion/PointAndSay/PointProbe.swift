@@ -4,14 +4,15 @@ import CompanionCore
 import TheuthKit
 
 /// `--probe-point N --shareable` (§10): the overlays revealed with a synthetic 2 s spiral on every display and the voice
-/// pill beside the pointer; a CONTROL `screen_context` with the overlays up (the detector must see malachite along the
-/// spiral), then the Stop sequence — a synthetic 16 kHz tone through `dictation_start/audio/stop`, every overlay ordered
-/// out and one run-loop turn awaited, a REAL `screen_context` — and the assertion that no malachite remains along the
+/// pill beside the pointer; a CONTROL `screen_context` with the overlays up (the detector must see the accent colour along
+/// the spiral), then the Stop sequence — a synthetic 16 kHz tone through `dictation_start/audio/stop`, every overlay
+/// ordered out and one run-loop turn awaited, a REAL `screen_context` — and the assertion that no trail remains along the
 /// spiral; the answer card shown (not key) with a canned text for the screenshot; quit after N s. STOPS before
 /// `desk_open`: nothing is sent, the microphone is never opened, nothing takes key. Log `/tmp/149-W2-probe.log`.
 ///
 /// The engine stamps the request's path on its capture in the request's colour (`context.rs:25-29`), so the request
-/// carries a short segment away from the spiral in carnelian: every malachite pixel along the spiral is ours.
+/// carries a short segment away from the spiral in a fixed CONTROL colour (the accent's complement, never shipped on
+/// screen outside this probe): every accent-coloured pixel along the spiral is ours. (149n: was malachite vs carnelian.)
 @MainActor
 enum PointProbe {
     private static var subs = Set<AnyCancellable>()
@@ -66,18 +67,19 @@ enum PointProbe {
         }
         PointLog.write("spiral drawn: \(samples.count) samples on \(displays.count) displays")
         // The request path: one short pen-down segment per display, far from the spiral, so the engine's own stamp (in
-        // carnelian) never lands where the detector looks.
+        // the control colour) never lands where the detector looks.
         let reqSamples: [PointerSample] = displays.enumerated().flatMap { i, d in
             (0..<12).map { k in
                 PointerSample(tMs: UInt32(i * 200 + k * 16), x: Float(d.frame.minX + d.frame.width * 0.15 + Double(k) * 4), y: Float(d.frame.minY + d.frame.height * 0.85), pen: true)
             }
         }
-        let carnelian = "#c45a48"
+        let accent = accentRGB
+        let control = OverlayModel.hex(red: 1 - accent.r, green: 1 - accent.g, blue: 1 - accent.b) // the control colour: the accent's complement
 
         // Control: overlays up → the detector must see the trail.
-        let control = await c.screenContext(samples: reqSamples, durationMs: 2000, color: carnelian)
-        let before = count(reply: control, spirals: spirals, displays: displays)
-        PointLog.write("control (overlays visible): malachite \(before.map { "\($0.hit)/\($0.total)" }) files=\(control?.files ?? [])")
+        let controlReply = await c.screenContext(samples: reqSamples, durationMs: 2000, color: control)
+        let before = count(reply: controlReply, spirals: spirals, displays: displays)
+        PointLog.write("control (overlays visible): accent \(before.map { "\($0.hit)/\($0.total)" }) files=\(controlReply?.files ?? [])")
 
         // The Stop sequence: tone in, overlays out + one run-loop turn, dictation_stop ∥ screen_context.
         c.beginDictation()
@@ -94,12 +96,12 @@ enum PointProbe {
         PointLog.write("overlays ordered out before the capture: revealed=\(c.overlays.revealed) own on-screen windows=\(mine)")
         c.endDictation()
         async let text = c.finalText()
-        async let ctx = c.screenContext(samples: reqSamples, durationMs: 2000, color: carnelian)
+        async let ctx = c.screenContext(samples: reqSamples, durationMs: 2000, color: control)
         let (t2, reply) = await (text, ctx)
         let after = count(reply: reply, spirals: spirals, displays: displays)
         let pass = !before.isEmpty && before.contains { $0.hit * 5 >= $0.total } && after.allSatisfy { $0.hit * 50 <= $0.total }
-        PointLog.write("stop (overlays out): malachite \(after.map { "\($0.hit)/\($0.total)" }) lines=\(reply?.lines ?? []) files=\(reply?.files ?? [])")
-        PointLog.write("ASSERT no malachite along the path after the order-out: \(pass ? "PASS" : "FAIL") (control ≥ 20 % hit on some display, stop ≤ 2 % on every display)")
+        PointLog.write("stop (overlays out): accent \(after.map { "\($0.hit)/\($0.total)" }) lines=\(reply?.lines ?? []) files=\(reply?.files ?? [])")
+        PointLog.write("ASSERT no accent trail along the path after the order-out: \(pass ? "PASS" : "FAIL") (control ≥ 20 % hit on some display, stop ≤ 2 % on every display)")
         PointLog.write("dictation after stop: text=\"\(t2)\" phase=\(c.dictation.phase) error=\(c.dictation.error ?? "nil")")
         if let f = reply?.files.first { try? FileManager.default.removeItem(at: overviewCopy); try? FileManager.default.copyItem(atPath: f, toPath: overviewCopy.path); PointLog.write("overview copied to \(overviewCopy.path)") }
         // The answer card, not key, with a canned reply (nothing was sent).
@@ -134,10 +136,18 @@ enum PointProbe {
 
     struct Count { var hit = 0; var total = 0 }
 
+    /// The accent colour's sRGB components (the trail's colour, `OverlayView.show`).
+    static var accentRGB: (r: Double, g: Double, b: Double) {
+        let c = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .black
+        return (c.redComponent, c.greenComponent, c.blueComponent)
+    }
+
     /// Per visited display (the overviews come first, in visit order): the spiral's points mapped into the PNG, classified
-    /// as malachite-ish (green well above red and blue; the trail is 0.85 malachite over whatever is under it).
+    /// as accent-ish: within 0.3 (RGB Euclidean, 0...1) of the accent — the trail is 0.85 accent over whatever is under it,
+    /// so a trail pixel is at most 0.15 × √3 ≈ 0.26 away.
     static func count(reply: ScreenContextReply?, spirals: [[CGPoint]], displays: [OverlayDisplay]) -> [Count] {
         guard let reply else { return [] }
+        let accent = accentRGB
         return displays.indices.compactMap { i -> Count? in
             guard i < reply.files.count, let img = NSBitmapImageRep(data: (try? Data(contentsOf: URL(fileURLWithPath: reply.files[i]))) ?? Data()) else { return nil }
             let d = displays[i]
@@ -147,8 +157,8 @@ enum PointProbe {
                 let x = Int((p.x - d.frame.minX) * sx), y = Int((p.y - d.frame.minY) * sy)
                 guard x >= 0, y >= 0, x < img.pixelsWide, y < img.pixelsHigh, let col = img.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
                 c.total += 1
-                let r = col.redComponent * 255, g = col.greenComponent * 255, b = col.blueComponent * 255
-                if g >= 55, g > r + 25, g > b + 5 { c.hit += 1 }
+                let dr = col.redComponent - accent.r, dg = col.greenComponent - accent.g, db = col.blueComponent - accent.b
+                if (dr * dr + dg * dg + db * db).squareRoot() <= 0.3 { c.hit += 1 }
             }
             return c
         }

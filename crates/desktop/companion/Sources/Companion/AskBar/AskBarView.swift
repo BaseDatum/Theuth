@@ -31,20 +31,20 @@ struct AskBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 149 W1 (§3.5, F3): the wide capsule's 24 pt line — finals in ink, the open partial in sand; while recording the
-            // mic glyph gives way to one carnelian bar per `DictationLevel` band (D8), mirrored in the rail's actions pill.
+            // 149 W1 (§3.5, F3): the wide capsule's line — finals in primary, the open partial in tertiary; while recording the
+            // mic glyph gives way to one accent bar per `DictationLevel` band (D8), mirrored in the rail's actions pill.
             HStack(spacing: 12) {
-                Image(systemName: "text.cursor").font(.system(size: 15)).foregroundColor(.sand)
+                Image(systemName: "text.cursor").font(.title3).foregroundColor(.tertiary)
                 if state.live {
-                    (Text(state.text.isEmpty && state.partial.isEmpty ? "Listening…" : state.text).foregroundColor(state.text.isEmpty ? .sand : .ink)
-                        + Text(state.text.isEmpty || state.partial.isEmpty ? "" : " ") + Text(state.partial).foregroundColor(.sand))
-                        .font(Type.headline.weight(.regular)).lineLimit(3)
+                    (Text(state.text.isEmpty && state.partial.isEmpty ? "Listening…" : state.text).foregroundColor(state.text.isEmpty ? .tertiary : .primary)
+                        + Text(state.text.isEmpty || state.partial.isEmpty ? "" : " ") + Text(state.partial).foregroundColor(.tertiary))
+                        .font(.title2).lineLimit(3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityLabel("Dictating: \(state.text) \(state.partial)")
                 } else {
                     TextField("Ask theuth…", text: $state.text)
                         .textFieldStyle(.plain)
-                        .font(Type.headline.weight(.regular))
+                        .font(.title2)
                         .focused($focused)
                         .onChange(of: state.text) { _, new in state.onTyped?(new) }
                         .onChange(of: state.focusTick) { _, _ in focused = true }
@@ -56,21 +56,21 @@ struct AskBarView: View {
                     LevelBars(levels: store.ask.dictation.levels, height: 18, barWidth: 2.5, spacing: 2)
                 } else {
                     Image(systemName: state.recording ? "mic.fill" : "mic")
-                        .font(.system(size: 16))
-                        .foregroundColor(state.recording ? .carnelian : .ink2)
+                        .font(.title3)
+                        .foregroundColor(state.recording ? .failed : .secondary)
                         .accessibilityLabel(state.recording ? "Listening" : "Hold the hotkey to dictate")
                 }
             }
             .padding(.horizontal, 22).padding(.top, 14).padding(.bottom, 8)
-            // One line: "hold ⌃⇧Space to talk · release → sends in 3 s · ⎋ keeps editing · theuth routes it".
+            // One line: "hold ⌃⇧Space to talk · release sends in 3 s · ⎋ keeps editing · theuth routes it".
             HStack(spacing: 8) {
                 if let hold = settings.keys.chord(for: .openPanel)?.symbol { Hint("hold \(hold)", "to talk").fixedSize() }
-                Text("· release → sends in \(Int(store.undo.delay)) s ·").font(Type.caps).foregroundColor(.sand).fixedSize()
+                Text("· release sends in \(Int(store.undo.delay)) s ·").font(Type.caps).foregroundColor(.tertiary).fixedSize()
                 Hint("⎋", store.undo.held == nil ? "keeps editing" : "undo").fixedSize()
-                Text("· theuth routes it").font(Type.caps).foregroundColor(.sand).fixedSize()
+                Text("· theuth routes it").font(Type.caps).foregroundColor(.tertiary).fixedSize()
                 Spacer(minLength: 0)
                 if let s = state.status {
-                    Text(s).font(Type.caps).foregroundColor(state.recording ? .carnelian : .sand).lineLimit(1)
+                    Text(s).font(Type.caps).foregroundColor(state.recording ? .failed : .tertiary).lineLimit(1)
                 }
             }
             .padding(.horizontal, 22).padding(.bottom, 12)
@@ -79,7 +79,7 @@ struct AskBarView: View {
             }
         }
         .frame(width: AskBarController.width)
-        .foregroundColor(.ink)
+        .foregroundColor(.primary)
         .accessibilityElement(children: .contain)
     }
 }

@@ -60,7 +60,7 @@ struct IslandRoot: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(ui.isOpen ? .bouncy(duration: 0.4) : .smooth(duration: 0.4), value: ui.isOpen)
-        .foregroundColor(.ink)
+        .foregroundColor(.primary)
         .onChange(of: ui.blurTick) { _, _ in NSApp.keyWindow?.makeFirstResponder(nil) }
     }
 }
@@ -69,35 +69,45 @@ struct IslandRoot: View {
 
 /// The notch-hugging pill: meters · the speaker · `rec mm:ss` · the topic count. Hugs the real notch (its width + wings,
 /// its height) or is the 300 × menu-bar fallback. Idle ("Always show", nothing live) → the wordmark, click → `theuth://meetings`.
+/// Over the hardware notch the pill is black like the notch itself (and so always dark); the fallback pill is a material.
 struct ClosedPill: View {
     @ObservedObject var ui: IslandUI
     @ObservedObject var store: Store
     let size: CGSize
     let notch: Bool
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         let s = store.meeting ?? .empty
         let w = notch ? size.width + 2 * IslandLayout.pillWings : size.width
         let h = size.height
-        let font = h >= 34 ? 13.0 : 11.0
+        let font: Font = h >= 34 ? .body : .subheadline
+        let small: Font = h >= 34 ? .callout : .caption
         HStack(spacing: 10) {
             if s.isLive || s.state == .starting || s.state == .stopping {
                 Meters(level: s.level, height: h * 0.45)
-                Text(s.state == .paused ? "paused" : (speaker(s) ?? "Meeting")).font(.system(size: font, weight: .semibold)).lineLimit(1).layoutPriority(1)
+                Text(s.state == .paused ? "paused" : (speaker(s) ?? "Meeting")).font(font.weight(.semibold)).lineLimit(1).layoutPriority(1)
                 Spacer(minLength: notch ? size.width - 20 : 4)
-                RecClock(slice: s, now: ui.now, size: font - 1)
+                RecClock(slice: s, now: ui.now, font: small)
                 if !s.topics.isEmpty {
-                    Text("\(s.topics.count) topic\(s.topics.count == 1 ? "" : "s")").font(.system(size: font - 1)).foregroundColor(.sand).lineLimit(1).fixedSize()
+                    Text("\(s.topics.count) topic\(s.topics.count == 1 ? "" : "s")").font(small).foregroundColor(.tertiary).lineLimit(1).fixedSize()
                 }
             } else {
-                Text("⌸").font(.system(size: font + 1, weight: .bold)).foregroundColor(.gold)
-                Text(s.briefs.isEmpty ? "theuth" : "\(s.briefs.count) brief\(s.briefs.count == 1 ? "" : "s")").font(.system(size: font)).foregroundColor(.ink2)
+                Image(systemName: "rectangle.topthird.inset.filled").font(font.weight(.bold)).foregroundStyle(Color.accentColor).accessibilityHidden(true)
+                Text(s.briefs.isEmpty ? "theuth" : "\(s.briefs.count) brief\(s.briefs.count == 1 ? "" : "s")").font(font).foregroundColor(.secondary)
                 Spacer(minLength: 0)
             }
         }
         .padding(.horizontal, notch ? 14 : 12)
         .frame(width: w, height: h)
-        .background(IslandShape(radius: notch ? 18 : h / 2, bottomOnly: notch).fill(Color.black.opacity(0.94)))
+        .background {
+            if notch {
+                IslandShape(radius: Type.cardRadius, bottomOnly: true).fill(Color.black) // native: the hardware notch is black
+            } else {
+                IslandShape(radius: h / 2, bottomOnly: false).fill(.regularMaterial)
+            }
+        }
+        .environment(\.colorScheme, notch ? .dark : scheme)
         .contentShape(Rectangle())
         .onTapGesture {
             if s.isLive || s.state == .starting || s.state == .stopping { ui.pinned.toggle(); if ui.pinned { ui.state = .open } }
@@ -132,16 +142,17 @@ struct OpenIsland: View {
             Strip(ui: ui, store: store, slice: s)
                 .background(DragGrip(ui: ui))
             if let b = s.current {
-                Divider().overlay(Color.ink.opacity(0.08))
+                Divider()
                 BriefPane(ui: ui, store: store, slice: s, brief: b)
             }
-            Divider().overlay(Color.ink.opacity(0.08))
+            Divider()
             TranscriptRow(ui: ui, slice: s)
-            Divider().overlay(Color.ink.opacity(0.08))
+            Divider()
             RequestBox(ui: ui, store: store)
         }
         .frame(width: width)
-        .background(IslandShape(radius: attached ? 26 : 22, bottomOnly: attached).fill(Color.black.opacity(0.94)))
+        // Detached, `DetachedIsland` draws the one material behind the grip and the pane (two stacked would seam).
+        .background { if attached { IslandShape(radius: Type.cardRadius, bottomOnly: true).fill(.regularMaterial) } }
         .onHover { if $0 { ui.hover = true } }
     }
 }
@@ -151,14 +162,14 @@ struct DetachedIsland: View {
     @ObservedObject var store: Store
     var body: some View {
         VStack(spacing: 0) {
-            Capsule().fill(Color.ink.opacity(0.2)).frame(width: 36, height: 4).padding(.top, 8).padding(.bottom, 2)
+            Capsule().fill(Color.primary.opacity(0.2)).frame(width: 36, height: 4).padding(.top, 8).padding(.bottom, 2)
                 .frame(maxWidth: .infinity).contentShape(Rectangle())
                 .background(DragGrip(ui: ui))
                 .accessibilityLabel("Drag handle; double-click returns the island to the notch")
             OpenIsland(ui: ui, store: store, width: IslandLayout.detachedWidth, attached: false)
         }
         .frame(width: IslandLayout.detachedWidth)
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Color.black.opacity(0.94)))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Type.cardRadius, style: .continuous))
     }
 }
 
@@ -172,7 +183,7 @@ struct Strip: View {
             // The left 24 pt is always the grip.
             Color.clear.frame(width: 18, height: IslandLayout.stripHeight).contentShape(Rectangle()).background(DragGrip(ui: ui))
             Meters(level: slice.level, height: 16)
-            RecClock(slice: slice, now: ui.now, size: 11)
+            RecClock(slice: slice, now: ui.now, font: .subheadline)
             OracleChip(ui: ui, slice: slice)
             HStack(spacing: 4) {
                 if ui.menuOpen {
@@ -188,14 +199,14 @@ struct Strip: View {
                                     tap: { store.meetingTap(t.id) }, dismiss: { store.meetingDismiss(t.id) })
                             .onHover { if $0 { ui.focusedTopic = i } }
                     }
-                    ForEach(badges, id: \.self) { Text($0).font(.system(size: 10)).foregroundColor(.sand).lineLimit(1) }
+                    ForEach(badges, id: \.self) { Text($0).font(.caption).foregroundColor(.tertiary).lineLimit(1) }
                     if let a = slice.activity {
-                        HStack(spacing: 3) { ProgressView().controlSize(.mini); Text(a).font(.system(size: 10)) }.foregroundColor(.sand)
+                        HStack(spacing: 3) { ProgressView().controlSize(.mini); Text(a).font(.caption) }.foregroundColor(.tertiary)
                     }
-                    if let p = slice.progress { Text("\(p.stage.rawValue.lowercased()) \(p.pct) %").font(.system(size: 10)).foregroundColor(.sand) }
+                    if let p = slice.progress { Text("\(p.stage.rawValue.lowercased()) \(p.pct) %").font(.caption).foregroundColor(.tertiary) }
                     if let h = ui.stopHoldStarted {
                         let left = max(0, Settings.undoDelay - ui.now.timeIntervalSince(h))
-                        Text("stopping in \(String(format: "%.1f", left)) s · ⎋ undo").font(.system(size: 10)).foregroundColor(.carnelian)
+                        Text("stopping in \(String(format: "%.1f", left)) s · ⎋ undo").font(.caption).foregroundColor(.failed)
                     }
                 }
             }
@@ -245,16 +256,16 @@ struct TopicButton: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Text(topic.label).font(.system(size: 12)).lineLimit(1)
-            if topic.source == .oracle { Image(systemName: "bolt.fill").font(.system(size: 8)).foregroundColor(.gold).accessibilityLabel("published by the decision oracle") }
-            else if topic.cached != nil { Circle().fill(Color.gold).frame(width: 5, height: 5).accessibilityLabel("cached brief") }
+            Text(topic.label).font(.callout).lineLimit(1)
+            if topic.source == .oracle { Image(systemName: "bolt.fill").font(.caption2).foregroundStyle(Color.accentColor).accessibilityLabel("published by the decision oracle") }
+            else if topic.cached != nil { Circle().fill(Color.accentColor).frame(width: 5, height: 5).accessibilityLabel("cached brief") }
             if hovering {
-                Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9)).foregroundColor(.sand) }.buttonStyle(.plain).accessibilityLabel("Dismiss")
+                Button(action: dismiss) { Image(systemName: "xmark").font(.caption2).foregroundColor(.tertiary) }.buttonStyle(.plain).accessibilityLabel("Dismiss")
             }
         }
         .padding(.horizontal, 10).frame(height: 28).frame(maxWidth: 128)
-        .background(Capsule().fill(Color.ink.opacity(hovering ? 0.14 : 0.08)))
-        .overlay(Capsule().stroke(Color.ink.opacity(focused ? 0.25 : 0), lineWidth: 1))
+        .background(Capsule().fill(Color.primary.opacity(hovering ? 0.14 : 0.08)))
+        .overlay(Capsule().stroke(Color.primary.opacity(focused ? 0.25 : 0), lineWidth: 1))
         .opacity(tapped ? 0.5 : 1)
         .contentShape(Capsule())
         .onTapGesture(perform: tap)
@@ -273,18 +284,18 @@ struct BriefPane: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(brief.title).font(.system(size: 12.5, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                Text(brief.title).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
                 ForEach(Array(brief.bullets.prefix(3).enumerated()), id: \.offset) { _, b in
                     HStack(alignment: .top, spacing: 6) {
-                        Text("•").foregroundColor(.sand)
+                        Circle().fill(Color.tertiary).frame(width: 4, height: 4).padding(.top, 5).accessibilityHidden(true)
                         Text(b).fixedSize(horizontal: false, vertical: true)
-                    }.font(.system(size: 12)).foregroundColor(.ink2)
+                    }.font(.callout).foregroundColor(.secondary)
                 }
                 HStack(spacing: 8) {
                     StripButton("deeper", icon: "plus.magnifyingglass") { store.meetingDeeper(brief.id) }
                         .help("Ask for a longer, more specific brief on this")
                     if !ui.boxFocused, let d = SettingsModel.shared.keys.chord(for: .islandDeeper)?.symbol { Hint(d, "deeper") }
-                    Text(brief.source.rawValue.lowercased()).font(.system(size: 10)).foregroundColor(.sand)
+                    Text(brief.source.rawValue.lowercased()).font(.caption).foregroundColor(.tertiary)
                 }.padding(.top, 2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -293,15 +304,17 @@ struct BriefPane: View {
                     .disabled(slice.cursor >= slice.briefs.count - 1).opacity(slice.cursor >= slice.briefs.count - 1 ? 0.3 : 1)
                     .accessibilityLabel("Newer brief")
                 if slice.unseen > 0 {
-                    Text("↑ \(slice.unseen) new").font(.system(size: 10, weight: .semibold)).foregroundColor(.black)
-                        .padding(.horizontal, 6).padding(.vertical, 1).background(Capsule().fill(Color.gold))
+                    HStack(spacing: 2) { Image(systemName: "arrow.up"); Text("\(slice.unseen) new") }
+                        .font(.caption.weight(.semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 1).background(Capsule().fill(Color.accentColor))
+                        .accessibilityLabel("\(slice.unseen) new briefs")
                 }
                 Button { store.meetingMove(-1) } label: { Image(systemName: "chevron.down") }.buttonStyle(.plain)
                     .disabled(slice.cursor <= 0).opacity(slice.cursor <= 0 ? 0.3 : 1)
                     .accessibilityLabel("Older brief")
-                Text("\(slice.cursor + 1)/\(slice.briefs.count)").font(.system(size: 9, design: .monospaced)).foregroundColor(.sand)
+                Text("\(slice.cursor + 1)/\(slice.briefs.count)").font(.caption2.monospaced()).foregroundColor(.tertiary)
             }
-            .foregroundColor(.ink2)
+            .foregroundColor(.secondary)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -316,17 +329,17 @@ struct TranscriptRow: View {
         VStack(alignment: .leading, spacing: 3) {
             Button { ui.transcriptOpen.toggle() } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: ui.transcriptOpen ? "chevron.down" : "chevron.right").font(.system(size: 9))
-                    Text("Transcript").font(.system(size: 11))
-                    Text("\(slice.lines.count)").font(.system(size: 10, design: .monospaced))
+                    Image(systemName: ui.transcriptOpen ? "chevron.down" : "chevron.right").font(.caption2)
+                    Text("Transcript").font(.subheadline)
+                    Text("\(slice.lines.count)").font(Type.mono)
                     Spacer()
-                }.foregroundColor(.sand).contentShape(Rectangle())
+                }.foregroundColor(.tertiary).contentShape(Rectangle())
             }.buttonStyle(.plain)
             if ui.transcriptOpen {
                 ForEach(Array(slice.lines.suffix(6).enumerated()), id: \.offset) { _, l in
                     HStack(alignment: .top, spacing: 6) {
-                        Text(who(l)).font(.system(size: 11, weight: .medium)).foregroundColor(l.utterance.track == .mic ? .malachite : .ink2)
-                        Text(l.utterance.text).font(.system(size: 11)).foregroundColor(l.open ? .sand : .ink).lineLimit(2)
+                        Text(who(l)).font(.subheadline.weight(.medium)).foregroundColor(l.utterance.track == .mic ? .done : .secondary)
+                        Text(l.utterance.text).font(.subheadline).foregroundColor(l.open ? .tertiary : .primary).lineLimit(2)
                     }
                 }
             }
@@ -351,14 +364,14 @@ struct RequestBox: View {
     var body: some View {
         HStack(spacing: 6) {
             TextField("Ask the meeting agent… a topic name = brief it", text: $ui.requestText)
-                .textFieldStyle(.plain).font(.system(size: 12))
+                .textFieldStyle(.plain).font(.callout)
                 .focused($focused)
                 .onSubmit(send)
                 .onChange(of: focused) { _, f in ui.boxFocused = f }
                 .onChange(of: ui.blurTick) { _, _ in focused = false }
                 .accessibilityLabel("Ask the meeting agent")
-            Button(action: send) { Image(systemName: "arrow.up").font(.system(size: 11, weight: .semibold)) }
-                .buttonStyle(.plain).foregroundColor(.ink2)
+            Button(action: send) { Image(systemName: "arrow.up").font(.subheadline.weight(.semibold)) }
+                .buttonStyle(.plain).foregroundColor(.secondary)
                 .disabled(ui.requestText.trimmingCharacters(in: .whitespaces).isEmpty)
                 .opacity(ui.requestText.trimmingCharacters(in: .whitespaces).isEmpty ? 0.3 : 1)
                 .accessibilityLabel("Send request")
@@ -378,14 +391,14 @@ struct RequestBox: View {
 
 // MARK: pieces
 
-/// Two bars from the `Level` event at 10 Hz (`Island.tsx:439-457`): mic gold, system bone.
+/// Two bars from the `Level` event at 10 Hz (`Island.tsx:439-457`): mic accent, system secondary.
 struct Meters: View {
     let level: Level?
     let height: CGFloat
     var body: some View {
         HStack(alignment: .bottom, spacing: 2) {
-            RoundedRectangle(cornerRadius: 1.5).fill(Color.gold).frame(width: 5, height: bar(level?.micRms))
-            RoundedRectangle(cornerRadius: 1.5).fill(Color.ink2).frame(width: 5, height: bar(level?.systemRms))
+            RoundedRectangle(cornerRadius: 1.5).fill(Color.accentColor).frame(width: 5, height: bar(level?.micRms))
+            RoundedRectangle(cornerRadius: 1.5).fill(Color.secondary).frame(width: 5, height: bar(level?.systemRms))
         }
         .frame(height: height, alignment: .bottom)
         .animation(.linear(duration: 0.1), value: level)
@@ -398,19 +411,19 @@ struct Meters: View {
 struct RecClock: View {
     let slice: MeetingSlice
     let now: Date
-    let size: CGFloat
+    let font: Font
     var body: some View {
         HStack(spacing: 4) {
-            if slice.state == .paused { Image(systemName: "pause.fill").font(.system(size: size - 2)) }
-            else { Circle().fill(Color.carnelian).frame(width: 7, height: 7).overlay(Circle().stroke(Color.carnelian.opacity(0.3), lineWidth: 3)) }
-            Text(MeetingReducer.mmss(MeetingReducer.elapsed(slice, now: now))).font(.system(size: size, design: .monospaced)).monospacedDigit().lineLimit(1).fixedSize()
+            if slice.state == .paused { Image(systemName: "pause.fill").font(font).imageScale(.small) }
+            else { Circle().fill(Color.failed).frame(width: 7, height: 7).overlay(Circle().stroke(Color.failed.opacity(0.3), lineWidth: 3)) }
+            Text(MeetingReducer.mmss(MeetingReducer.elapsed(slice, now: now))).font(font.monospaced()).monospacedDigit().lineLimit(1).fixedSize()
         }
-        .foregroundColor(.ink2)
+        .foregroundColor(.secondary)
         .accessibilityLabel("Recording \(MeetingReducer.mmss(MeetingReducer.elapsed(slice, now: now)))")
     }
 }
 
-/// 57 §3.4: the mode badge (`shadow` / `active`; nothing when off) + `deciding` → `skip` / `brief` / `→ model` (`Island.tsx:338-373`).
+/// 57 §3.4: the mode badge (`shadow` / `active`; nothing when off) + `deciding` → `skip` / `brief` / `model` (`Island.tsx:338-373`).
 struct OracleChip: View {
     @ObservedObject var ui: IslandUI
     let slice: MeetingSlice
@@ -420,15 +433,15 @@ struct OracleChip: View {
         if effective != "off" || slice.deciding != nil || last != nil {
             HStack(spacing: 3) {
                 if effective != "off" { Text(effective.uppercased()).tracking(0.5) }
-                if slice.deciding != nil { Image(systemName: "bolt.fill").font(.system(size: 8)).foregroundColor(.gold); Text("deciding").foregroundColor(.gold) }
+                if slice.deciding != nil { Image(systemName: "bolt.fill").font(.caption2).foregroundStyle(Color.accentColor); Text("deciding").foregroundStyle(Color.accentColor) }
                 else if let l = last, !ui.verdictFaded { Text(verdict(l.family)).opacity(l.family == "skip" ? 0.6 : 1) }
             }
-            .font(.system(size: 10)).foregroundColor(.sand)
-            .padding(.horizontal, 6).frame(height: 18).background(Capsule().fill(Color.ink.opacity(0.08)))
+            .font(.caption).foregroundColor(.tertiary)
+            .padding(.horizontal, 6).frame(height: 18).background(Capsule().fill(Color.primary.opacity(0.08)))
             .help("decision oracle \(effective)")
         }
     }
-    private func verdict(_ family: String) -> String { family == "skip" ? "skip" : family == "brief" ? "brief" : "→ model" }
+    private func verdict(_ family: String) -> String { family == "skip" ? "skip" : family == "brief" ? "brief" : "model" }
 }
 
 struct StripButton: View {
@@ -439,10 +452,10 @@ struct StripButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 9))
-                if let t = title { Text(t).font(.system(size: 11)) }
+                Image(systemName: icon).font(.caption2)
+                if let t = title { Text(t).font(.subheadline) }
             }
-            .padding(.horizontal, 9).frame(height: 24).background(Capsule().fill(Color.ink.opacity(0.08)))
+            .padding(.horizontal, 9).frame(height: 24).background(Capsule().fill(Color.primary.opacity(0.08)))
             .contentShape(Capsule())
         }.buttonStyle(.plain)
     }
@@ -454,7 +467,7 @@ struct RoundButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Image(systemName: icon).font(.system(size: 12)).foregroundColor(.ink2).frame(width: 26, height: 26).contentShape(Circle())
+            Image(systemName: icon).font(.callout).foregroundColor(.secondary).frame(width: 26, height: 26).contentShape(Circle())
         }.buttonStyle(.plain).help(label).accessibilityLabel(label)
     }
 }

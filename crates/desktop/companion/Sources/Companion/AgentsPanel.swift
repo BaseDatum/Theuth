@@ -7,14 +7,14 @@ import TheuthKit
 
 // 149 W1 — §3.2 the agents panel grouped by host; §5.4 A per-row talk; §8 agents-scope keys; §10 `--probe-agents`.
 
-/// What a row's ✕ or mic holds for the undo delay (§3.2 "Per-row ✕", "Per-row mic").
+/// What a row's stop or mic holds for the undo delay (§3.2 "Per-row ✕", "Per-row mic").
 enum RowAction: Equatable {
     case stop(session: String, name: String, children: Int)
     case pauseDesk(name: String)
     case send(session: String, name: String, text: String)
 
-    /// The hold pill's tint: carnelian for stop/pause, malachite for a send.
-    var tint: Color { if case .send = self { return .malachite } else { return .carnelian } }
+    /// The hold pill's tint: red for stop/pause, green for a send.
+    var tint: Color { if case .send = self { return .done } else { return .failed } }
 }
 
 /// The panel's own state; `groups` is re-derived from the Store, the rest is this surface's (focus, hold, reply field).
@@ -33,7 +33,7 @@ final class AgentsPanelState: ObservableObject {
     @Published var now = Date()
     @Published var pill: String?
     @Published var receipt: String?
-    @Published var receiptColor: Color = .malachite
+    @Published var receiptColor: Color = .done
     @Published var scrollTarget: String?
     /// The controller's hook for row buttons.
     var onEvent: ((RowEvent) -> Void)?
@@ -44,11 +44,11 @@ final class AgentsPanelState: ObservableObject {
 }
 
 private extension AgentRow {
-    /// `agents_list` desks carry `agent:<name>` ids (✕ = `agent_pause`, not `cancel`).
+    /// `agents_list` desks carry `agent:<name>` ids (stop = `agent_pause`, not `cancel`).
     var isDesk: Bool { id.hasPrefix("agent:") }
     var deskName: String { String(id.dropFirst(6)) }
     var canTalk: Bool { live && !session.isEmpty }
-    /// §3.2: a row whose session is not running shows ✕ disabled; a desk pauses whenever it has a session.
+    /// §3.2: a row whose session is not running shows stop disabled; a desk pauses whenever it has a session.
     var canStop: Bool {
         guard live else { return false }
         if isDesk { return !session.isEmpty }
@@ -242,7 +242,7 @@ final class AgentsPanelController: NSObject {
         close(returnKey: false)
     }
 
-    /// ✕ / X: the hold IS the confirmation (§3.2, Revision 1 row 2); desks pause, sessions cancel the tree.
+    /// Stop / X: the hold IS the confirmation (§3.2, Revision 1 row 2); desks pause, sessions cancel the tree.
     private func stop(_ row: AgentRow) {
         guard row.canStop else { return }
         if row.isDesk { hold(.pauseDesk(name: row.deskName)) }
@@ -312,13 +312,13 @@ final class AgentsPanelController: NSObject {
                 }
                 Log.write("agents committed \(a) ok=true")
             } catch {
-                receipt("Failed · \(error)", color: .carnelian)
+                receipt("Failed · \(error)", color: .failed)
                 Log.write("agents commit failed: \(error)")
             }
         }
     }
 
-    private func receipt(_ text: String, color: Color = .malachite, after s: TimeInterval = 3) {
+    private func receipt(_ text: String, color: Color = .done, after s: TimeInterval = 3) {
         state.receipt = text
         state.receiptColor = color
         receiptTimer?.invalidate()
@@ -335,7 +335,7 @@ final class AgentsPanelController: NSObject {
         if state.hold.cancel() {
             stopTicking()
             state.pill = nil
-            receipt("Taken back", color: .ink2, after: 1.5)
+            receipt("Taken back", color: .secondary, after: 1.5)
             return
         }
         if voice.isBusy { voice.cancel(); return }
@@ -423,7 +423,7 @@ struct AgentsPanelView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             if store.connection != .open {
-                Text("Connecting to the engine…").font(Type.meta).foregroundColor(.sand).padding(.horizontal, 14).padding(.bottom, 4)
+                Text("Connecting to the engine…").font(Type.meta).foregroundColor(.tertiary).padding(.horizontal, 14).padding(.bottom, 4)
             }
             if state.groups.isEmpty { empty } else { list.opacity(store.connection == .open ? 1 : 0.5) }
             if let pill = state.pill, let held = state.hold.held {
@@ -435,7 +435,7 @@ struct AgentsPanelView: View {
             footer
         }
         .frame(width: AgentsPanelController.width)
-        .foregroundColor(.ink)
+        .foregroundColor(.primary)
     }
 
     private var header: some View {
@@ -445,11 +445,11 @@ struct AgentsPanelView: View {
             Hint("J K", "move")
             Button { state.onEvent?(.close) } label: {
                 HStack(spacing: 4) {
-                    Text("✕").font(.system(size: 10.5))
-                    Text("esc").font(.system(size: 10, design: .monospaced)).padding(.horizontal, 4).padding(.vertical, 1)
-                        .background(RoundedRectangle(cornerRadius: 3).stroke(Color.rule, lineWidth: 1))
-                }.foregroundColor(.sand)
-            }.buttonStyle(.plain).help("Close")
+                    Image(systemName: "xmark").font(.caption)
+                    Text("esc").font(Type.mono).padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(RoundedRectangle(cornerRadius: Type.capRadius).stroke(Color.separator, lineWidth: 1))
+                }.foregroundColor(.secondary)
+            }.buttonStyle(.borderless).help("Close").accessibilityLabel("Close")
         }
         .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 6)
     }
@@ -459,7 +459,7 @@ struct AgentsPanelView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(state.groups) { g in
-                        Text(g.title).font(Type.caps).foregroundColor(.sand).padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 2)
+                        Text(g.title).font(Type.caps).foregroundColor(.tertiary).padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 2)
                         ForEach(g.rows) { row in
                             let recording = voice.target == row.session && (voice.recording || voice.finishing)
                             AgentRowView(row: row, peer: g.node ?? g.title, focused: state.focusedRow?.id == row.id, recording: recording,
@@ -480,8 +480,8 @@ struct AgentsPanelView: View {
 
     private var empty: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("No agents running.").font(Type.body).foregroundColor(.ink2)
-            Text("Desks appear here when they wake; Ask theuth starts one.").font(Type.meta).foregroundColor(.sand)
+            Text("No agents running.").font(Type.body).foregroundColor(.secondary)
+            Text("Desks appear here when they wake; Ask theuth starts one.").font(Type.meta).foregroundColor(.tertiary)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -494,7 +494,7 @@ struct AgentsPanelView: View {
     }
 }
 
-/// dot/spinner · harness icon · name · ⑂N · last · mic · ✕ (§3.2). Focused: faience wash + 3 pt bar (One's green → faience).
+/// dot/spinner · harness icon · name · children · last · mic · stop (§3.2). Focused: accent wash + 3 pt bar.
 struct AgentRowView: View {
     let row: AgentRow
     /// The group's node name — a remote row's "on ‹peer›" suffix and tooltip.
@@ -513,18 +513,21 @@ struct AgentRowView: View {
             dot.frame(width: 10, height: 10)
             HarnessIcon(key: row.harness)
             Text(row.name).font(Type.body).lineLimit(1).layoutPriority(1)
-            if row.children > 0 { Text("⑂\(row.children)").font(Type.mono).foregroundColor(.ink2) }
-            if !row.live { Text("on \(peer)").font(Type.caps).foregroundColor(.sand).lineLimit(1) }
-            if !row.last.isEmpty { Text(row.last).font(Type.meta).foregroundColor(.ink2).lineLimit(1) }
+            if row.children > 0 {
+                HStack(spacing: 2) { Image(systemName: "arrow.triangle.branch"); Text("\(row.children)") }
+                    .font(Type.mono).foregroundColor(.secondary)
+            }
+            if !row.live { Text("on \(peer)").font(Type.caps).foregroundColor(.tertiary).lineLimit(1) }
+            if !row.last.isEmpty { Text(row.last).font(Type.meta).foregroundColor(.secondary).lineLimit(1) }
             Spacer(minLength: 4)
             mic
             stop
         }
         .padding(.leading, 14).padding(.trailing, 8)
         .frame(height: 36)
-        .background(focused ? Color.faience.opacity(0.12)
-                    : hover.session == row.session && !row.session.isEmpty ? Color.ink.opacity(0.05) : Color.clear)
-        .overlay(alignment: .leading) { if focused { Rectangle().fill(Color.faience).frame(width: 3) } }
+        .background(focused ? Color.accentColor.opacity(0.12)
+                    : hover.session == row.session && !row.session.isEmpty ? Color.primary.opacity(0.05) : Color.clear)
+        .overlay(alignment: .leading) { if focused { Rectangle().fill(Color.accentColor).frame(width: 3) } }
         .contentShape(Rectangle())
         .onHover { inside in
             if inside { hover.session = row.session } else if hover.session == row.session { hover.session = nil }
@@ -534,13 +537,13 @@ struct AgentRowView: View {
         .accessibilityLabel("\(row.name), \(row.state.word)\(row.live ? "" : ", on \(peer)")")
     }
 
-    /// A remote row is hollow sand whatever its state: this engine has no live state for it (§3.2 "honestly").
+    /// A remote row is a hollow tertiary dot whatever its state: this engine has no live state for it (§3.2 "honestly").
     @ViewBuilder private var dot: some View {
         if !row.live {
-            Circle().strokeBorder(Color.sand, lineWidth: 1.5)
+            Circle().strokeBorder(Color.tertiary, lineWidth: 1.5)
         } else {
             switch row.state {
-            case .running: if reduceMotion { MarkView(state: .working) } else { ArcSpinner() }
+            case .running: if reduceMotion { MarkView(state: .working) } else { ProgressView().controlSize(.mini) }
             case .awaiting, .approval: MarkView(state: .needsYou(.ask))
             case .idle, .cancelled: MarkView(state: .idle)
             case .error: MarkView(state: .error)
@@ -553,7 +556,7 @@ struct AgentRowView: View {
     private var mic: some View {
         Group {
             if recording { LevelBars(levels: levels, height: 12) }
-            else { Image(systemName: "mic").font(.system(size: 12)).foregroundColor(.ink2) }
+            else { Image(systemName: "mic").font(.callout).foregroundColor(.secondary) }
         }
         .frame(width: 28, height: 24)
         .contentShape(Rectangle())
@@ -568,8 +571,8 @@ struct AgentRowView: View {
 
     private var stop: some View {
         Button { onEvent(.stop(row)) } label: {
-            Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
-                .foregroundColor(xHover && row.canStop ? .carnelian : .sand)
+            Image(systemName: "xmark").font(.subheadline.weight(.semibold))
+                .foregroundColor(xHover && row.canStop ? .failed : .tertiary)
                 .frame(width: 24, height: 24).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -577,16 +580,6 @@ struct AgentRowView: View {
         .opacity(row.canStop ? 1 : 0.35)
         .onHover { xHover = $0 }
         .help(row.canStop ? (row.isDesk ? "Pause \(row.name)" : "Stop \(row.name)") : disabledHelp)
-    }
-}
-
-/// The working spinner: a 0.7 faience arc turning every 0.38 s (`MarkView(.working)` under Reduce Motion).
-struct ArcSpinner: View {
-    @State private var spin = false
-    var body: some View {
-        Circle().trim(from: 0, to: 0.7).stroke(Color.faience, lineWidth: 2)
-            .rotationEffect(.degrees(spin ? 360 : 0))
-            .onAppear { withAnimation(.linear(duration: 0.38).repeatForever(autoreverses: false)) { spin = true } }
     }
 }
 
@@ -602,7 +595,7 @@ struct AgentReplyField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let live {
-                Text(live.isEmpty ? "listening…" : live).font(Type.meta).foregroundColor(.ink2).lineLimit(2)
+                Text(live.isEmpty ? "listening…" : live).font(Type.meta).foregroundColor(.secondary).lineLimit(2)
             } else {
                 TextField("Reply to \(name)", text: $text)
                     .textFieldStyle(.roundedBorder).font(Type.meta)
@@ -610,7 +603,7 @@ struct AgentReplyField: View {
                     .onSubmit(onSubmit)
                     .onAppear { if !AskFlags.automated { focused = true } } // a probe's panel is never key
             }
-            Text("⏎ send · ⎋ keeps editing").font(Type.caps).foregroundColor(.sand)
+            Text("⏎ send · ⎋ keeps editing").font(Type.caps).foregroundColor(.tertiary)
         }
         .padding(.leading, 40).padding(.trailing, 14).padding(.vertical, 6)
     }

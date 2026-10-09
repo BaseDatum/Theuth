@@ -1,49 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// theuth's palette as dark/light pairs, hex values verbatim from `crates/desktop/ui/src/styles.css`.
-/// Gold is used ONLY for needs-you marks, the count and the wordmark (C7).
-enum Palette {
-    static let gold = pair(dark: 0xc47a2c, light: 0xb4531e)
-    static let faience = pair(dark: 0x5b8f8a, light: 0x3d6b66)
-    static let malachite = pair(dark: 0x4a8a6e, light: 0x2f5d4a)
-    static let carnelian = pair(dark: 0xc45a48, light: 0x9b2d1f)
-    /// `--fg-tertiary`: sand / dust — the lapsed ring and dim text.
-    static let sand = pair(dark: 0x9a8b72, light: 0x8f7f6a)
-    /// `--fg-primary`: bone on soot / soot on bone.
-    static let text = pair(dark: 0xe8dcc8, light: 0x1a1612)
-    /// `--fg-secondary`.
-    static let text2 = pair(dark: 0xc9b89a, light: 0x6b5e4f)
-    /// `--bg-layer-1`: the rail's chrome.
-    static let surface = pair(dark: 0x1c1915, light: 0xf3eadf)
-    /// `--border-strong`.
-    static let border = pair(dark: 0x3a3228, light: 0xc9b48a)
-
-    static func pair(dark: UInt32, light: UInt32) -> NSColor {
-        NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            return NSColor(hex: isDark ? dark : light)
-        }
-    }
-}
-
-extension NSColor {
-    convenience init(hex: UInt32, alpha: CGFloat = 1) {
-        self.init(srgbRed: CGFloat((hex >> 16) & 0xff) / 255, green: CGFloat((hex >> 8) & 0xff) / 255,
-                  blue: CGFloat(hex & 0xff) / 255, alpha: alpha)
-    }
-}
-
+/// 149n — fully native: system semantic colours only. The web palette (bone/soot, gold, faience, malachite, carnelian,
+/// sand) is gone; see docs/design/149-as-built-native-look.md for the mapping. Backgrounds are materials, never fills.
 extension Color {
-    static let gold = Color(nsColor: Palette.gold)
-    static let faience = Color(nsColor: Palette.faience)
-    static let malachite = Color(nsColor: Palette.malachite)
-    static let carnelian = Color(nsColor: Palette.carnelian)
-    static let sand = Color(nsColor: Palette.sand)
-    static let ink = Color(nsColor: Palette.text)
-    static let ink2 = Color(nsColor: Palette.text2)
-    static let surface = Color(nsColor: Palette.surface)
-    static let rule = Color(nsColor: Palette.border)
+    static let tertiary = Color(nsColor: .tertiaryLabelColor)
+    static let separator = Color(nsColor: .separatorColor)
+    /// Status: red = failed / stopped, green = done / sent, orange = waiting. Accent = needs you / selection.
+    static let failed = Color(nsColor: .systemRed)
+    static let done = Color(nsColor: .systemGreen)
+    static let waiting = Color(nsColor: .systemOrange)
 }
 
 /// stderr plus `/tmp/130-w1-probe.log` during `--probe` and `/tmp/130-w6-probe.log` during a W6 probe (`open`
@@ -95,30 +61,25 @@ enum Settings {
     static var railSide: String { UserDefaults.standard.string(forKey: "railSide") ?? "right" }
 }
 
-// MARK: 149 W1 — the visual language (§3.9)
+// MARK: 149n — the visual language, native
 
-/// The type scale (§3.9): headline 24 · question 17 · body 15 · meta 12.5 · caps 10.5.
+/// System text styles only (Dynamic Type sizes on macOS: title2 17 · title3 15 · body 13 · callout 12 · caption 10).
 enum Type {
-    static let headline = Font.system(size: 24, weight: .semibold)
-    static let question = Font.system(size: 17, weight: .semibold)
-    static let body = Font.system(size: 15)
-    static let meta = Font.system(size: 12.5)
-    static let caps = Font.system(size: 10.5, weight: .medium)
-    /// Key caps and counts.
-    static let mono = Font.system(size: 10.5, design: .monospaced)
-    /// Radii: pill capsules 26, the Ask bar 28, cards 24, option rows 10, key caps 4.
-    static let pillRadius: CGFloat = 26
-    static let askBarRadius: CGFloat = 28
-    static let cardRadius: CGFloat = 24
+    static let headline = Font.title2.weight(.semibold)
+    static let question = Font.title3.weight(.semibold)
+    static let body = Font.body
+    static let meta = Font.callout
+    static let caps = Font.caption.weight(.medium)
+    /// Key caps, counts, ids.
+    static let mono = Font.caption.monospaced()
+    /// Standard macOS radii: panels/cards 12, option rows 10, buttons 6, key caps 4. Rail pills and the Ask bar are capsules.
+    static let cardRadius: CGFloat = 12
     static let optionRadius: CGFloat = 10
+    static let buttonRadius: CGFloat = 6
     static let capRadius: CGFloat = 4
-    /// Dark-first glass: the rail, the panels and the Ask bar force `.darkAqua`; Settings and the legend follow the system.
-    static let dark = NSAppearance(named: .darkAqua)
-    /// `#4a8a6e` — the trail/ring colour `screen_context` is told about (D13).
-    static let malachiteHex = "#4a8a6e"
 }
 
-/// Carnelian level bars from `DictationLevel.levels` (D8): one bar per band, newest right, 20 ms per frame as 54 §8's
+/// Accent level bars from `DictationLevel.levels` (D8): one bar per band, newest right, 20 ms per frame as 54 §8's
 /// meter. Replaces the mic glyph in the Ask bar and the rail's actions pill while a dictation records.
 struct LevelBars: View {
     var levels: [Float]
@@ -129,7 +90,7 @@ struct LevelBars: View {
     var body: some View {
         HStack(alignment: .center, spacing: spacing) {
             ForEach(levels.indices, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 1).fill(Color.carnelian)
+                RoundedRectangle(cornerRadius: 1).fill(Color.accentColor)
                     .frame(width: barWidth, height: max(2, CGFloat(min(1, max(0, levels[i]))) * height))
             }
         }

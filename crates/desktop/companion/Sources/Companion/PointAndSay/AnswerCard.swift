@@ -25,27 +25,27 @@ struct AnswerCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("theuth").font(.system(size: 14, weight: .semibold)).foregroundColor(.ink)
-                Text("· \(state.status)").font(.system(size: 13)).foregroundColor(state.failed ? .carnelian : .sand).lineLimit(1)
+                Text("theuth").font(.body.weight(.semibold)).foregroundColor(.primary)
+                Text("· \(state.status)").font(.body).foregroundColor(state.failed ? .failed : .tertiary).lineLimit(1)
                 if state.speaking {
-                    Image(systemName: "speaker.wave.2.fill").font(.system(size: 11)).foregroundColor(.malachite)
+                    Image(systemName: "speaker.wave.2.fill").font(.subheadline).foregroundColor(.done)
                         .accessibilityLabel("Speaking")
                 }
                 Spacer()
                 Cap("esc")
             }
             if !state.question.isEmpty {
-                Text("“\(state.question)”").font(.system(size: 13)).foregroundColor(.sand).lineLimit(2)
+                Text("“\(state.question)”").font(.body).foregroundColor(.tertiary).lineLimit(2)
             }
             if !state.text.isEmpty {
-                Text(state.text).font(.system(size: 14)).foregroundColor(.ink).lineLimit(12).textSelection(.enabled)
+                Text(state.text).font(.body).foregroundColor(.primary).lineLimit(12).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if !state.failed {
                 ProgressView().controlSize(.small).padding(.vertical, 2)
             }
             HStack(spacing: 12) {
-                HStack(spacing: 4) { Cap("O"); Text("open the desk").font(.system(size: 11)).foregroundColor(.sand) }
-                HStack(spacing: 4) { Cap("⎋"); Text("dismiss").font(.system(size: 11)).foregroundColor(.sand) }
+                HStack(spacing: 4) { Cap("O"); Text("open the desk").font(.subheadline).foregroundColor(.tertiary) }
+                HStack(spacing: 4) { Cap("⎋"); Text("dismiss").font(.subheadline).foregroundColor(.tertiary) }
                 Spacer()
             }
         }
@@ -61,9 +61,9 @@ private struct Cap: View {
     let k: String
     init(_ k: String) { self.k = k }
     var body: some View {
-        Text(k).font(.system(size: 10.5, weight: .medium, design: .monospaced)).foregroundColor(.ink)
+        Text(k).font(.caption.weight(.medium).monospaced()).foregroundColor(.primary)
             .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color.white.opacity(0.1)))
+            .background(RoundedRectangle(cornerRadius: Type.capRadius, style: .continuous).fill(Color.primary.opacity(0.1)))
     }
 }
 
@@ -85,7 +85,6 @@ final class AnswerCard {
         let (panel, container) = GlassPanel.make(width: Self.width, height: 120)
         self.panel = panel
         panel.level = .popUpMenu
-        panel.appearance = NSAppearance(named: .darkAqua)
         hosting = NSHostingView(rootView: AnswerCardView(state: state))
         hosting.frame = container.bounds
         hosting.autoresizingMask = [.width, .height]

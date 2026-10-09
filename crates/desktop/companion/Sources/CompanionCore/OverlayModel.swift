@@ -27,6 +27,13 @@ public enum OverlayModel {
     public static let ringDiameter: Double = 14
     public static let alpha: Double = 0.85
 
+    /// `"#rrggbb"` for the engine's `screen_context.color` from sRGB components in 0...1 (the companion feeds it the
+    /// system accent colour at request time, so the stamp matches the ring and trail on screen).
+    public static func hex(red: Double, green: Double, blue: Double) -> String {
+        let c = [red, green, blue].map { Int((min(1, max(0, $0)) * 255).rounded()) }
+        return String(format: "#%02x%02x%02x", c[0], c[1], c[2])
+    }
+
     /// Pen-down samples split by the display that contains them, in that display's local points; a sample on no display
     /// (a seam, a display that just vanished) is skipped. The ring follows the newest sample, pen up or down, on the last run
     /// of its display (an empty run is added when that display has none yet).

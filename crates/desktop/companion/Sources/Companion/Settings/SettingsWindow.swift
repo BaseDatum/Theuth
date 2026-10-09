@@ -81,7 +81,7 @@ struct SettingsView: View {
                 ForEach(RailPresence.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             Text(model.value.railPresence == .alwaysSliver
-                 ? "The rail stays a 4 pt sliver; the menu bar's gold ●N is the indicator. Hover the sliver to see it."
+                 ? "The rail stays a 4 pt sliver; the menu bar's count is the indicator. Hover the sliver to see it."
                  : "Sliver when quiet: 4 pt after 8 s with nothing needing you and nothing working; hover reveals it.")
                 .font(.caption).foregroundStyle(.secondary)
             Text("Side and display apply on the next layout; the rail never takes focus.")
