@@ -13,7 +13,7 @@ Two things UI151 should know (both inside the contract):
 ## Built, file by file
 
 - `crates/autoresearch/src/setup.rs` (C's stub → the module, ~1500 lines incl. tests)
-  - Rows/leaves: `MAIN_ROWS`, `ADVANCED_ROWS`, `LEAVES` (31), `label`, `row_of` (`base → repo`, `off_limits → scope`), `present`, `row_json` (the sticky comparison), `value` (one-liners).
+  - Rows/leaves: `MAIN_ROWS`, `ADVANCED_ROWS`, `LEAVES` (31 of §4.3 + `include_dirty`, R1 below), `label`, `row_of` (`base → repo`, `off_limits → scope`), `present`, `row_json` (the sticky comparison), `value` (one-liners).
   - §5 `view(root, draft_id, started)` / `view_of(root, Draft, started)`: the six rules in order; repo verified through `git::is_git_repo` + `resolve_base(repo, base, true)`, dirty count from `git::dirty_paths` (made `pub(crate)`); bench/check/holdout verified from `probe.json` entries that are `ok` and whose `fingerprint == fingerprint(kind, spec, base_sha)`; `settled`, `total = 9`, `blocking` in row order (`<Label> is missing`, `<Label> needs your OK`, then the `validate_spec` message), `ready = blocking.is_empty()`, `dirty`, `probes` = fingerprint-matching entries (ok or not — the failed one is kept for the sparkline but never verifies).
   - §6.1 `validate_partial` (slug rule + absolute repo).
   - `ProbeFile {bench, check, holdout}` read/write/merge; `fingerprint` = sha256 over `{kind, repo, base_sha, warm, bench{command,timeout,repeats,exclusive,smoke}, metric_name, checks_command, holdout{command,repeats}}`.
@@ -57,4 +57,5 @@ Stable 1.96.1, `BUILD_LABEL=ENG151 build-lock mbx`, `CARGO_BUILD_JOBS=4`, crate-
 ## Hand-offs
 
 - UI151: nothing to regenerate; `DraftView.fields[i].value` / `evidence` formats above; `autoresearch.draft` returns Err `no draft `<id>` (…)` after discard; `draft_edit` errors are `"<leaf>: <reason>"` (e.g. `bench.timeout: `soon`: …`), `draft_confirm` on a missing row `"<Label> is missing; nothing to confirm"`.
+- **R1 (orchestrator, 15:08, for UI151's "Start with my uncommitted changes")**: `autoresearch.draft_edit {draft_id, field: "include_dirty", value: "true"}` is accepted (bool grammar `true|false|on|off|yes|no`) with the effect of `tools::mark_include_dirty`: `spec.include_dirty` flips, token and origin stay, **no row** becomes user-set or confirmed, `settled` is unchanged (it is not a row; `version` bumps like every write). The UI then calls `autoresearch.create {draft_id, start}`. Covered in `setup::tests::edit_parses_every_leaf` (grammar) and `user_set_rows_are_sticky` (on disk: token/user_set/confirmed/settled unchanged, `no` flips it back). Gates after R1: `mbx test -p autoresearch` 173 passed, clippy `-p autoresearch --all-targets -D warnings` clean, fmt clean.
 - Closer (live proof §10): the card's Discard now deletes the draft; the rail row disappears on the next `autoresearch.drafts` fetch.

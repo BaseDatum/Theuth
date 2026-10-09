@@ -43,7 +43,7 @@ const REQUIRED: [&str; 6] = ["goal", "repo", "metric", "bench", "checks", "scope
 const DEFAULTABLE: [&str; 3] = ["budget", "parallel", "models"];
 
 /// Every leaf `draft_edit.field` accepts (§4.3).
-pub const LEAVES: [&str; 31] = [
+pub const LEAVES: [&str; 32] = [
     "goal",
     "repo",
     "base",
@@ -75,6 +75,7 @@ pub const LEAVES: [&str; 31] = [
     "models.executor",
     "models.review",
     "models.advisor",
+    "include_dirty",
 ];
 
 /// The panel label of a row.
@@ -751,6 +752,9 @@ pub fn set_leaf(spec: &mut StudySpec, leaf: &str, v: &str) -> std::result::Resul
         "models.executor" => spec.models.executor = opt(v),
         "models.review" => spec.models.review = opt(v),
         "models.advisor" => spec.models.advisor = opt(v),
+        // R1: the panel's "Start with my uncommitted changes" (= `tools::mark_include_dirty`);
+        // not a row, so `edit` marks nothing user-set or confirmed.
+        "include_dirty" => spec.include_dirty = parse_bool(v)?,
         other => return Err(format!("unknown field `{other}`")),
     }
     Ok(())
@@ -761,9 +765,11 @@ pub fn edit(root: &Path, draft_id: &str, leaf: &str, value: &str) -> Result<()> 
     let mut d = read_draft(root, draft_id)?;
     set_leaf(&mut d.spec, leaf, value).map_err(|e| Error::refused(format!("{leaf}: {e}")))?;
     validate_partial(&d.spec).map_err(Error::refused)?;
-    let row = row_of(leaf);
-    push_unique(&mut d.user_set, row);
-    push_unique(&mut d.confirmed, row);
+    if leaf != "include_dirty" {
+        let row = row_of(leaf);
+        push_unique(&mut d.user_set, row);
+        push_unique(&mut d.confirmed, row);
+    }
     save(root, &mut d)
 }
 
@@ -1276,6 +1282,19 @@ mod tests {
         assert_eq!(d.user_set, vec!["budget"]);
         assert_eq!(d.confirmed, vec!["goal", "budget", "scope"]);
         assert_eq!((d.spec.budget.usd, d.version), (7.0, 3));
+        // R1: `include_dirty` is the panel's third Start button, not a row — the flag flips,
+        // the token stays, nothing becomes user-set or confirmed, `settled` is unchanged.
+        let settled_before = view_of(&root, read_draft(&root, "toy").unwrap(), false).settled;
+        edit(&root, "toy", "include_dirty", "true").unwrap();
+        let d2 = read_draft(&root, "toy").unwrap();
+        assert!(d2.spec.include_dirty);
+        assert_eq!(
+            (&d2.token, &d2.user_set, &d2.confirmed),
+            (&d.token, &d.user_set, &d.confirmed)
+        );
+        assert_eq!(view_of(&root, d2, false).settled, settled_before);
+        edit(&root, "toy", "include_dirty", "no").unwrap();
+        assert!(!read_draft(&root, "toy").unwrap().spec.include_dirty);
         // A re-draft that changes the user-set budget: applied, but the row drops to proposed
         // and is named; the untouched panel OK on scope survives; goal (changed) does not.
         let mut again = s.clone();
@@ -1320,7 +1339,7 @@ mod tests {
     #[test]
     fn edit_parses_every_leaf() {
         let mut s = StudySpec::default();
-        let cases: [(&str, &str); 31] = [
+        let cases: [(&str, &str); 32] = [
             ("goal", " faster "),
             ("repo", "/r"),
             ("base", ""),
@@ -1352,6 +1371,7 @@ mod tests {
             ("models.executor", "x/y"),
             ("models.review", "off"),
             ("models.advisor", ""),
+            ("include_dirty", "true"),
         ];
         for (leaf, v) in cases {
             assert!(LEAVES.contains(&leaf), "{leaf}");
@@ -1376,6 +1396,7 @@ mod tests {
         assert_eq!(s.secondary_guards[1].direction, Direction::Higher);
         assert_eq!(s.models.review.as_deref(), Some("off"));
         assert_eq!(s.models.advisor, None);
+        assert!(s.include_dirty);
         // Emptying optional leaves clears them; bad values are refused with the leaf named.
         set_leaf(&mut s, "checks.command", "").unwrap();
         assert!(s.checks.is_none());
