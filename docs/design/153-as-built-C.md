@@ -37,4 +37,19 @@ Behaviour is not in this wave slice: every new body is a no-op marked `// 153-C 
 - `HistoryRow.has_audio: bool` instead of `audio_path`; the path never leaves the engine.
 - `ShapePresets::get(surface)` and `Dictionary::{packaged_version, counts}` are additions for A4's `voice_status.dictionary` line.
 
-## Gates (output lines appended below as run)
+- `CallKind.ts` (§14.5) does not exist today — `CallKind` is not in the export list; unchanged. Bindings dirs (`/bindings`, `crates/desktop/ui/src/rpc/bindings/`) are gitignored, so "commit the bindings" is a no-op: regenerated + copied, 838 files, `methods.json` carries the 17 new names.
+
+## Gates (all green, first run)
+- `build-lock mbx check -p voice -p rpc -p agent -p runtime` → `Finished dev profile in 4m 33s`, 0 warnings, 0 errors.
+- `BUILD_SLOTS=1 build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` → `test result: ok. 8 passed; 0 failed`; `cp -R bindings/. crates/desktop/ui/src/rpc/bindings/` done.
+- `build-lock mbx test -p voice --no-run` → `Finished test profile in 1m 46s`.
+- `MBX_SCHEDULER_TESTS=0 mbx test -p voice` bare → `test result: ok. 27 passed; 0 failed; 0 ignored`.
+- No new tests (stubs only). `cargo fmt -p voice|rpc|agent|runtime|tui` before each commit.
+
+## Hand-offs
+- A1: `shape/mod.rs` `Shaper::shape` + `end.rs`; `Shaped`/`Replaced` are not ts-exported (engine-internal); `EndCommand`/`Action` are.
+- A2: `dictionary/mod.rs` bodies + `matcher.rs`; `Dictionary` is `Default` and in-memory; swap in the §5.5 storage behind the same methods.
+- A3: `history/mod.rs` `Store.db: Option<SqlitePool>`; add `migrations/`, make `open` build the pool. `Correction` fields are yours to extend (not ts-exported).
+- A4: `dictation.rs:466` (`input_device`, `last`), `:528` (shaper output); `api.rs` region "153 dictation history / dictionary"; `lib.rs` may gain `pub mod`/re-exports only.
+- A5: `side.rs` `ModelRole::Polish` chain; `supervisor.rs` `Agents::polish` (+ `Rewrite` handler) and `POLISH_SYSTEM`; `api.rs` region "153 polish / rewrite" already routes through `ask`.
+- Integrator: `crates/tui/src/{lib,model}.rs` touched (additive adapt only); `crates/voice/src/dictation.rs` touched for the two frozen §14.1 hunks.
