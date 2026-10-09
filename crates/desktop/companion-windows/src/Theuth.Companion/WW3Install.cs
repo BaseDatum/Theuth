@@ -46,6 +46,13 @@ internal sealed class WW3Install : IDisposable
         Current = install;
         if (Environment.GetCommandLineArgs().Contains("--point-probe")) PointProbe.Run(dispatcher, point, island);
         if (Environment.GetCommandLineArgs().Contains("--point-replay")) PointProbe.Replay(dispatcher, point);
+        // 149 R3: --speech-probe → 4 s after start, speak a line through the desk and log decode + device (--speech-dump keeps the packets).
+        if (Environment.GetCommandLineArgs().Contains("--speech-probe"))
+        {
+            var t = dispatcher.CreateTimer(); t.Interval = TimeSpan.FromSeconds(4); t.IsRepeating = false;
+            t.Tick += (_, _) => _ = point.ProbeSpeakAsync("Testing the Windows speaker. One, two, three. The island is listening.");
+            t.Start();
+        }
         return install;
     }
 
