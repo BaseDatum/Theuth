@@ -97,6 +97,11 @@ test('job idle carries id, command, optional name, quiet, secs, nudge, user_type
   expect(classify('<job_idle id="j1" command="python3 -q" quiet="120" secs="200" nudge="2">\n</job_idle>')).toEqual([
     { kind: 'job_idle', id: 'j1', command: 'python3 -q', quiet: '120', secs: '200', nudge: '2', text: '' },
   ])
+  // 155 §6.5: `why` after `nudge`, escaped like the other attributes; empty = absent.
+  expect(classify('<job_idle id="j2" command="bash" quiet="60" secs="400" nudge="1" why="screen unchanged for 60 s, process tree quiet &amp; idle">\n$ \n</job_idle>')).toEqual([
+    { kind: 'job_idle', id: 'j2', command: 'bash', quiet: '60', secs: '400', nudge: '1', why: 'screen unchanged for 60 s, process tree quiet & idle', text: '$' },
+  ])
+  expect(classify('<job_idle id="j3" command="bash" quiet="60" secs="400" nudge="1" why="">\n</job_idle>')).toEqual([{ kind: 'job_idle', id: 'j3', command: 'bash', quiet: '60', secs: '400', nudge: '1', text: '' }])
 })
 
 test('schedule fire carries name, at, quiet and the prompt body', () => {

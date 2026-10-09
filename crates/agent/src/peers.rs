@@ -23,6 +23,7 @@ use tools::communication::{Disabled, refused};
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 use uuid::Uuid;
 
+use crate::activity::{PeerStateWord, PeerWaitRegistered, WaitPeer};
 use crate::communication::{
     DISCOVER_DEFAULT_LIMIT, DISCOVER_MAX_LIMIT, GetPeerMessage, ListPeers, PeerMessageState,
     PeerReceipt, PeerRecord,
@@ -572,7 +573,8 @@ impl Tool for DiscoverPeersTool {
              other owner roots and configured remote agents. Each row has the canonical address for send_message, \
              a short name, kind, relationship, coarse state and capabilities, plus `activity` for local peers: \
              `state` (idle|running|approval|awaiting|error|cancelled|stored), `last_active` (the last input or stop, \
-             not a heartbeat), `turn_secs`, `jobs`, `ptys`, `children`; remote peers have none. `engine` names the \
+             not a heartbeat), `turn_secs`, `jobs`, `ptys`, `children`, `stalled_secs` (an ACP child whose \
+             harness has sent no session update for the configured time; wait on it with wait_peer); remote peers have none. `engine` names the \
              engine a session lives on; a session owned by another engine of the mesh has state `remote` (its \
              activity is unknown here; send_message still reaches it). `title` is filled only \
              for your own tree (parent, children, siblings, ancestors, descendants); `tags` (short keywords the title \
@@ -623,6 +625,9 @@ impl Tool for DiscoverPeersTool {
                         s.push_str(&format!(" {:?}", a.state).to_lowercase());
                         if let Some(t) = a.turn_secs {
                             s.push_str(&format!(" turn={t}s"));
+                        }
+                        if let Some(t) = a.stalled_secs {
+                            s.push_str(&format!(" stalled={t}s"));
                         }
                         if a.jobs + a.ptys > 0 {
                             s.push_str(&format!(" jobs={} ptys={}", a.jobs, a.ptys));
@@ -723,6 +728,77 @@ impl Tool for PeerMessageTool {
         }
         let mut out = ToolOutput::ok(text);
         out.structured = serde_json::to_value(&rec).ok();
+        Ok(out)
+    }
+}
+
+/// Arguments for [`WaitPeerTool`] (155 §5.2).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WaitPeerArgs {
+    /// One of your subagents by name, or its `session:<uuid>` address.
+    pub to: String,
+    /// Words that end the wait: a non-empty subset of `blocked`, `idle`, `done`, `stalled`.
+    pub until: Vec<PeerStateWord>,
+    /// Give up after this many seconds (woken with `state="timeout"`); unset = no deadline.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+/// Wait on a child's state (155 §5, D4): registers and returns at once; the
+/// wake is a `<peer_state>` input. Registered beside `discover_peers`.
+pub struct WaitPeerTool;
+
+#[async_trait::async_trait]
+impl Tool for WaitPeerTool {
+    const NAME: &'static str = "wait_peer";
+    const RISK: Risk = Risk::ReadOnly;
+    const RETURNS: &'static str = "dict";
+    type Args = WaitPeerArgs;
+
+    fn description(&self) -> String {
+        "Wait until one of your subagents reaches a state. `to`: a child's name or `session:<uuid>`; `until`: \
+         a non-empty subset of blocked (an unanswered permission or question), idle (its turn ended, it can be \
+         prompted again), done (idle and its result was delivered to you with nothing queued), stalled (no \
+         session update for the configured time). Returns at once with the child's current `state` and \
+         `holds` (true = the condition is already met, nothing is registered). Otherwise you are woken later \
+         with `<peer_state child=… state=… since_secs=…>`; `not_running` if that child goes away or is \
+         replaced, `timeout` after `timeout_secs`. The wait is pinned to this child: a new child under the \
+         same name does not satisfy it. One wait per child; a second call replaces the first."
+            .into()
+    }
+
+    async fn call(&self, args: WaitPeerArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let agents = match supervisor() {
+            Ok(a) => a,
+            Err(out) => return Ok(ToolOutput::err(out)),
+        };
+        let reg: PeerWaitRegistered = match agents
+            .ask(WaitPeer {
+                session: cx.session,
+                call_id: cx.call_id.clone(),
+                to: args.to,
+                until: args.until,
+                timeout_secs: args.timeout_secs,
+            })
+            .await
+        {
+            Ok(r) => r,
+            Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
+            Err(e) => return Ok(ToolOutput::err(format!("agent supervisor: {e}"))),
+        };
+        let text = format!(
+            "{} ({}) is {}{}",
+            reg.name,
+            reg.child,
+            reg.state.as_str(),
+            if reg.holds {
+                " — the condition already holds; nothing registered"
+            } else {
+                " — registered; you will be woken with <peer_state>"
+            }
+        );
+        let mut out = ToolOutput::ok(text);
+        out.structured = serde_json::to_value(&reg).ok();
         Ok(out)
     }
 }
@@ -941,6 +1017,7 @@ mod tests {
                 skills: None,
                 skills_dir: None,
                 mcp: None,
+                reports: None,
             },
         );
         acp::save(&dir, &entries).unwrap();

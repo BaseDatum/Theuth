@@ -27,6 +27,7 @@ use runtime::{InputId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
 
 pub mod acp_child;
+pub mod activity;
 pub mod advisor;
 pub mod ask;
 pub mod attach;
@@ -149,6 +150,9 @@ pub mod cost;
 pub mod lifecycle;
 pub mod private;
 
+pub use activity::{
+    ActivityConfig, ChildStalled, PeerStateWord, PeerWaitRegistered, StallPhase, WaitPeer,
+};
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
     AnswerPeerRequest, CommunicationChanged, CommunicationState, GetCommunication, GetPeerMessage,
@@ -3333,6 +3337,8 @@ pub struct AgentConfig {
     pub openrouter: OpenRouterConfig,
     /// Endless memory mode defaults and compactor settings (137 §11.1).
     pub endless: EndlessConfig,
+    /// 155 §3.5: the ACP child stall thresholds (D3).
+    pub activity: ActivityConfig,
     /// The top-level `surface:` section (design doc 30 §12), filled by
     /// `supervisor::start` — not part of `agent:`.
     #[serde(skip)]
@@ -3371,6 +3377,7 @@ impl Default for AgentConfig {
             compaction: CompactionConfig::default(),
             openrouter: OpenRouterConfig::default(),
             endless: EndlessConfig::default(),
+            activity: ActivityConfig::default(),
             surface: SurfaceConfig::default(),
             durability: durability::DurabilityConfig::default(),
             advisor: AdvisorConfig::default(),

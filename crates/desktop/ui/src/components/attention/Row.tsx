@@ -32,6 +32,8 @@ export function Row({ item, active, sessions }: { item: AttentionItem; active: b
         <span className="flex flex-wrap items-center gap-1.5">
           <span className="w-fit rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{KIND_LABEL[item.kind]}</span>
           <PriorityChip priority={item.priority} />
+          {/* 155 §7.5: done ≠ idle — the engine keeps `alert` on a finished item until this connection has looked at the session. */}
+          {item.alert?.class === 'finished' && <span className="w-fit rounded-full border border-success-border px-2 py-0.5 text-[11px] uppercase tracking-wide text-success">done</span>}
           <DoubleChip ids={doubleIds(item)} />
         </span>
         <p className="line-clamp-2 font-medium">{item.title}</p>

@@ -16,19 +16,23 @@ extension KeyboardShortcuts.Name {
     static let pointEscapeHeld = Self("pointEscapeHeld")
     /// 153 §15: the held-⎋ twin for the command chord (⌃⌥⎋).
     static let commandEscapeHeld = Self("commandEscapeHeld")
+    /// 153 §15 / D2: the dictate-anywhere key (`KeyAction.dictateAnywhere`, ⌃⌥D) — the same gesture with `mode = .dictate`.
+    static let dictateKey = Self("dictateKey")
+    static let dictateEscapeHeld = Self("dictateEscapeHeld")
 }
 
 @MainActor private var pointAndSay: PointController?
 
 extension AppDelegate {
     /// 149 W2: the voice key, overlays, dictation, screen context, the answer card, the spoken reply; `--probe-point`.
-    /// 153 C1: the command key, `--probe-command`, `--probe-card`.
+    /// 153 C1: the command key, `--probe-command`, `--probe-card`. 153 D2: the dictate key, `--probe-anyapp`.
     func installPointAndSay() {
         let c = PointController(store: store)
         pointAndSay = c
         if let seconds = Flags.probePoint { PointProbe.run(seconds: seconds, store: store, controller: c) }
         if let kind = Flags.probeCommand { CommandProbe.run(kind: kind, card: false, store: store, controller: c) }
         if let kind = Flags.probeCard { CommandProbe.run(kind: kind, card: true, store: store, controller: c) }
+        if let kind = Flags.probeAnyApp { AnyAppProbe.run(kind: kind, store: store, controller: c) }
     }
 }
 
@@ -53,6 +57,11 @@ extension Flags {
     }()
     static let probeCard: String? = {
         guard let i = args.firstIndex(of: "--probe-card"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }()
+    /// 153 §16 row 24: `--probe-anyapp <refused|landed|notlanded|rewrite>` → PNGs under `/tmp/153-d2/` (render only).
+    static let probeAnyApp: String? = {
+        guard let i = args.firstIndex(of: "--probe-anyapp"), i + 1 < args.count else { return nil }
         return args[i + 1]
     }()
 }
@@ -84,6 +93,8 @@ final class PointController {
     let overlays = OverlayWindows()
     let pill = VoicePill()
     let card = AnswerCard()
+    /// 153 D2: the target side of `.dictate` — AX capture, delivery, verification, the failure card, rewrite.
+    let anyApp: AnyAppController
     /// 149s: the Store's shared `Speaker`; `card.state.speaking` mirrors its `surface == .voiceKey`.
     private var speaker: Speaker { store.speaker }
     private let recorder = VoiceRecorder()
@@ -113,6 +124,7 @@ final class PointController {
 
     init(store: Store) {
         self.store = store
+        anyApp = AnyAppController(store: store)
         // A probe registers nothing: a Carbon hot key swallows the chord for every app while the process lives.
         if !AskFlags.automated {
             applyHotkey(SettingsModel.shared.value)
@@ -123,12 +135,16 @@ final class PointController {
             KeyboardShortcuts.onKeyUp(for: .voiceKey) { [weak self] in self?.keyUp(.ask) }
             KeyboardShortcuts.onKeyDown(for: .commandKey) { [weak self] in self?.keyDown(.command) }
             KeyboardShortcuts.onKeyUp(for: .commandKey) { [weak self] in self?.keyUp(.command) }
-            for name in [KeyboardShortcuts.Name.pointEscape, .pointEscapeHeld, .commandEscapeHeld] {
+            KeyboardShortcuts.onKeyDown(for: .dictateKey) { [weak self] in self?.keyDown(.dictate) }
+            KeyboardShortcuts.onKeyUp(for: .dictateKey) { [weak self] in self?.keyUp(.dictate) }
+            for name in [KeyboardShortcuts.Name.pointEscape, .pointEscapeHeld, .commandEscapeHeld, .dictateEscapeHeld] {
                 KeyboardShortcuts.onKeyDown(for: name) { [weak self] in self?.send(.esc) }
             }
             escapeHotkeys(false)
         }
         recorder.onChunk = { [weak self] c in self?.feed(c) }
+        anyApp.onLabel = { [weak self] l in self?.pill.state.label = l }
+        anyApp.onHint = { [weak self] h in self?.pill.showHint(h, near: NSEvent.mouseLocation) }
         card.onEscape = { [weak self] in self?.cardEscape() }
         card.onOpen = { [weak self] in
             guard let self, let d = self.card.state.session ?? self.desk else { return }
@@ -154,9 +170,12 @@ final class PointController {
     /// The table's `voiceKey` / `command` chords into KeyboardShortcuts; off = unregistered. NOT in `Hotkeys.names`: that
     /// launch probe would see Tauri's ⌃S (still bound until `companion-alive` lands, D22) and persist the row as unassigned.
     private func applyHotkey(_ v: CompanionSettings) {
+        guard !AskFlags.automated else { return } // a probe registers nothing (the Settings tabs call `hotkeyChanged` on appear)
+        var heldSeen: [KeyboardShortcuts.Shortcut] = []
         let rows: [(KeyAction, Bool, KeyboardShortcuts.Name, KeyboardShortcuts.Name)] = [
             (.voiceKey, VoiceKeySettings.enabled, .voiceKey, .pointEscapeHeld),
             (.command, ModeKeySettings.commandKeyEnabled(Settings.defaults), .commandKey, .commandEscapeHeld),
+            (.dictateAnywhere, AnyAppController.hotkeyEnabled, .dictateKey, .dictateEscapeHeld),
         ]
         for (action, enabled, name, heldName) in rows {
             let chord = enabled ? v.keys.chord(for: action) : nil
@@ -166,7 +185,9 @@ final class PointController {
                 PointLog.write("hotkey \(name.rawValue) \(want.map { "registered \($0)" } ?? "unregistered")")
             }
             // 149g: ⎋ as the held chord makes it; `setShortcut` registers at once, so it goes off again unless a gesture is live.
-            let held = chord.flatMap { KeyTable.escapeDuringHold(of: $0, reserved: Hotkeys.reserved) }.map(Hotkeys.shortcut)
+            // The held-⎋ twin is one Carbon registration per chord: ⌃⌥D and ⌃⌥C share ⌃⌥⎋, so the second row leaves it to the first.
+            var held = chord.flatMap { KeyTable.escapeDuringHold(of: $0, reserved: Hotkeys.reserved) }.map(Hotkeys.shortcut)
+            if let h = held { if heldSeen.contains(h) { held = nil } else { heldSeen.append(h) } }
             guard KeyboardShortcuts.getShortcut(for: heldName) != held else { continue }
             KeyboardShortcuts.setShortcut(held, for: heldName)
             switch state {
@@ -180,7 +201,7 @@ final class PointController {
     /// The ⎋ registrations live exactly as long as a gesture (press → send/discard); logged as the voice key's are.
     private func escapeHotkeys(_ on: Bool) {
         guard !AskFlags.automated else { return } // a probe registers nothing, ⎋ included
-        let names: [KeyboardShortcuts.Name] = [.pointEscape, .pointEscapeHeld, .commandEscapeHeld]
+        let names: [KeyboardShortcuts.Name] = [.pointEscape, .pointEscapeHeld, .commandEscapeHeld, .dictateEscapeHeld]
         for name in names { on ? KeyboardShortcuts.enable(name) : KeyboardShortcuts.disable(name) }
         PointLog.write("hotkey pointEscape \(on ? "registered" : "unregistered") \(names.compactMap(KeyboardShortcuts.getShortcut).map { "\($0)" }.joined(separator: " "))")
     }
@@ -192,11 +213,19 @@ final class PointController {
         let keys = SettingsModel.shared.value.keys
         switch m {
         case .command: return keys.chord(for: .command)?.symbol ?? "⌃⌥C"
-        case .ask, .dictate: return keys.chord(for: .voiceKey)?.symbol ?? "⌃S"
+        case .dictate: return keys.chord(for: .dictateAnywhere)?.symbol ?? "⌃⌥D"
+        case .ask: return keys.chord(for: .voiceKey)?.symbol ?? "⌃S"
         }
     }
 
-    private static func pillLabel(_ m: PointMachine.Mode) -> String { m == .command ? "Command · theuth desk" : "theuth's desk" }
+    /// The pill's label after the chord; `.dictate` names the target ("Dictating into Mail") once the press assessed it.
+    private func pillLabel(_ m: PointMachine.Mode) -> String {
+        switch m {
+        case .command: return "Command · theuth desk"
+        case .dictate: return anyApp.session?.label ?? "Dictate anywhere"
+        case .ask: return "theuth's desk"
+        }
+    }
 
     private func refreshMeeting() {
         Task { [weak self] in
@@ -259,32 +288,40 @@ final class PointController {
             gesture += 1
             pressAt = now
             endApprovalListen()
-            displays = PointerSampler.displays()
-            let mouse = VoiceKeySettings.annotateMouse
-            overlays.reveal(catchMouse: mouse)
-            sampler.onTick = { [weak self] s, _ in self?.tick(s) }
-            sampler.start(t0: now, penAlways: !mouse, displays: displays)
             // §10.5 / §12.2: a hold while the card is up in the same mode is a follow-up in its thread; else the old reply is over.
             cardWasUp = card.isVisible
             card.hide(returnKey: false)
             doneTimer?.invalidate(); doneTimer = nil
             speaker.stop() // S3: a new gesture silences whatever is speaking, the Ask bar's reply included
             router = AskRouter()
-            pill.state.reset(chord: chordSymbol(mode), label: Self.pillLabel(mode))
+            // D2 §13.1: the target is assessed before the mic opens; a certainly-not target ends the gesture with the hint.
+            if mode == .dictate, !anyAppPress() { return }
+            if mode != .dictate { // the pointer trail is the voice key's and the command key's (§3.2: the pill alone for dictation)
+                displays = PointerSampler.displays()
+                let mouse = VoiceKeySettings.annotateMouse
+                overlays.reveal(catchMouse: mouse)
+                sampler.onTick = { [weak self] s, _ in self?.tick(s) }
+                sampler.start(t0: now, penAlways: !mouse, displays: displays)
+            }
+            pill.state.reset(chord: chordSymbol(mode), label: pillLabel(mode))
             pill.show(near: NSEvent.mouseLocation)
             escapeHotkeys(true)
             prewarm()
-            beginDictation()
+            beginDictation(opts: mode == .dictate ? anyApp.opts(pressAgoMs: 0) : nil)
         case .showLock:
             pill.state.phase = .locked
         case .relabel(let m):
+            let was = mode
             mode = m
-            pill.state.chord = chordSymbol(m); pill.state.label = Self.pillLabel(m)
+            if was == .dictate, m != .dictate { anyApp.abandon() }
+            if m == .dictate, was != .dictate, !anyAppPress() { return }
+            pill.state.chord = chordSymbol(m); pill.state.label = pillLabel(m)
             PointLog.write("point mode → \(m)")
         case .stop(let reason):
             let g = gesture
             Task { await self.stopSequence(gesture: g, reason: reason) }
         case .discard(let reason, let hint):
+            if mode == .dictate { anyApp.abandon() }
             teardownGesture()
             if let hint { pill.showHint(hint, near: NSEvent.mouseLocation) } else { pill.hide() }
             if followUp { card.show(near: NSEvent.mouseLocation, key: !AskFlags.automated) } // the thread it interrupted stays
@@ -350,6 +387,7 @@ final class PointController {
     // MARK: the Stop sequence (§5.4 D 4-6)
 
     private func stopSequence(gesture g: Int, reason: String) async {
+        if mode == .dictate { return await dictateStop(gesture: g, reason: reason) }
         let samples = sampler.stop()
         let durationMs = PointClock.now() &- pressAt
         // D13: every overlay out and one run-loop turn awaited before the capture can start.
@@ -382,6 +420,39 @@ final class PointController {
         pill.hide()
         card.show(near: NSEvent.mouseLocation, key: !AskFlags.automated)
         send(.panelDone)
+    }
+
+    // MARK: dictate anywhere (153 D2, §3.2 / §13)
+
+    /// The press side of `.dictate`: the AX assessment; a refusal ends the gesture with the §13.1 hint before the mic opens.
+    /// Answers whether the gesture goes on.
+    private func anyAppPress() -> Bool {
+        let (refused, _) = anyApp.press()
+        guard let refused else { return true }
+        Task { @MainActor in
+            self.send(.cancel)
+            self.pill.showHint(refused, near: NSEvent.mouseLocation)
+        }
+        return false
+    }
+
+    /// The gesture ended (release / tap / "send it" settled): the open utterance is flushed and delivered, "send it" presses
+    /// Return when §7.4 allows, the pill says "✓ N lines into ‹App›" or the failure card opens (§13.5). Rewrite mode: the
+    /// words are the instruction (§13.6). Works from `sending` (a release) and from a live state ("send it" ended the
+    /// dictation under the held key): `finish(hint:)`'s `.cancel` idles the machine either way.
+    private func dictateStop(gesture g: Int, reason: String) async {
+        let mouse = NSEvent.mouseLocation
+        recorder.stop()
+        endDictation()
+        pill.state.phase = .sending
+        let text = await finalText()
+        guard g == gesture, mode == .dictate, state != .idle else { return }
+        let sendIt = dictation.send
+        PointLog.write("anyapp stop (\(reason)): \(dictation.utterances.count) utterances, send it \(sendIt)")
+        let hint = await anyApp.finish(text: text, sendIt: sendIt, mouse: mouse)
+        guard g == gesture else { return }
+        send(.cancel)
+        if !hint.isEmpty { pill.showHint(hint, near: mouse) } else { pill.hide() }
     }
 
     /// §10.1 / Q (writer's default): the voice key sends the screen when its setting says so; command mode only when
@@ -567,8 +638,11 @@ final class PointController {
         let risk: String?
         let decision: String?
         let timedOut: Bool?
+        /// 153 §4.4 / §7: the shaped form and the end command of a `DictationText` piece (D2's dictate mode reads them).
+        let shaped: String?
+        let command: EndCommand?
         enum CodingKeys: String, CodingKey {
-            case type, id, session, text, stopReason, message, utterance, isFinal = "final", levels, reason, name, callId, args, arguments, isError, tool, risk, decision, timedOut
+            case type, id, session, text, stopReason, message, utterance, isFinal = "final", levels, reason, name, callId, args, arguments, isError, tool, risk, decision, timedOut, shaped, command
         }
     }
 
@@ -580,11 +654,15 @@ final class PointController {
         // `dictation_start` reply's, nothing else.
         case "DictationText":
             guard let id = w.id else { return }
-            if dictation.handle(.text(id: id, utterance: w.utterance ?? 0, text: w.text ?? "", final: w.isFinal ?? false)) {
-                if approvalListen != nil { if w.isFinal == true { spokenApproval(w.text ?? "") }; return }
+            // §4.4: the field form is `shaped ?? text` — what goes into the app; the voice key keeps sending the raw words.
+            let text = mode == .dictate ? (w.shaped ?? w.text ?? "") : (w.text ?? "")
+            let i = w.utterance ?? 0, final = w.isFinal ?? false
+            if dictation.handle(.text(id: id, utterance: i, text: text, final: final, command: w.command)) {
+                if approvalListen != nil { if final { spokenApproval(w.text ?? "") }; return }
                 pill.state.text = dictation.finalText
                 pill.state.partial = dictation.partialText
                 publish()
+                if mode == .dictate, final { anyApp.utterance(i, text: text, final: true) } // §3.2: delivered as it closes
             }
         case "DictationLevel":
             guard let id = w.id else { return }
@@ -595,6 +673,8 @@ final class PointController {
             if approvalListen != nil { return endApprovalListen() }
             pill.state.text = dictation.liveText; pill.state.partial = ""
             resumeFinal()
+            // §7.3: "send it" settled and the engine ended the dictation under the held key — the gesture ends now.
+            if mode == .dictate, dictation.send, isLive { let g = gesture; Task { await self.dictateStop(gesture: g, reason: "send it") } }
         case "SpeechStarted", "SpeechAudio", "SpeechFinished": break // 149s: the Store's SpeechPlayer takes them
         case "TextDelta", "TurnFinished", "Error", "ToolCallPending", "ToolCallStarted", "ToolCallFinished":
             replyEvent(w)

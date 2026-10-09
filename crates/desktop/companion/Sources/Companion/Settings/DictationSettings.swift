@@ -17,7 +17,7 @@ struct DictationSettingsTab: View {
             LabeledContent("Learn from my corrections") { Text("theuth › Settings › Voice").foregroundStyle(.secondary) }
             caption("An engine setting (`voice.history.learn`, on by default): the companion reports what you actually sent after a dictation; the engine proposes a dictionary entry when the same change repeats, as a card under the Ask bar. Change it in theuth's Settings › Voice.")
             Divider()
-            LabeledContent("Apps") { Text("per-app profiles arrive with Dictate anywhere").foregroundStyle(.tertiary) }
+            AppProfilesSection() // 153 D2: Dictate anywhere + Apps (`AppProfilesSettings.swift`)
             Divider()
             LabeledContent("Last dictation") { Text(lastLine).foregroundStyle(.secondary).font(Type.mono) }
                 .task { status = try? await (NSApp.delegate as? AppDelegate)?.store.client.dictationStatus() }

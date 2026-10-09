@@ -2330,7 +2330,10 @@ pub trait Api {
     ) -> RpcResult<Vec<tasks::activity::ActivityEntry>>;
     /// The attention inbox (70 HUD): approvals, decisions, hires, blocked / review tasks,
     /// budgets, unreachable nodes — undismissed and unsnoozed, newest first. Badge = length.
-    #[method(name = "attention_list")]
+    /// 155 §7.3 / §7.5: per connection — `alert` is blanked for items whose
+    /// session this connection focuses (`set_event_focus`) and for `finished`
+    /// alerts it has already seen.
+    #[method(name = "attention_list", with_extensions)]
     async fn attention_list(&self) -> RpcResult<Vec<roster::attention::AttentionItem>>;
     /// Hide an attention item until `until_ms` (ms since epoch).
     #[method(name = "attention_snooze")]
@@ -2539,6 +2542,12 @@ static PRIVATE: LazyLock<PrivateMap> = LazyLock::new(Default::default);
 /// everything; the entry is removed when the connection closes.
 pub type FocusMap = Arc<RwLock<HashMap<u64, Arc<HashSet<String>>>>>;
 
+/// 155 §7.5: `connection id → finished alert ids` this connection has seen
+/// (it focused the item's session after the finish). Dropped with the
+/// connection like [`FocusMap`]; `attention_list` blanks seen `finished`
+/// alerts for that connection only.
+pub type SeenMap = Arc<RwLock<HashMap<u64, HashSet<String>>>>;
+
 /// Server state: the event feed and the runtime (for `shutdown`).
 pub struct Server {
     /// Feed from [`crate::bridge`].
@@ -2549,6 +2558,8 @@ pub struct Server {
     pub private: PrivateMap,
     /// Per-connection delta focus; see [`FocusMap`].
     pub focus: FocusMap,
+    /// Per-connection finished-seen set; see [`SeenMap`].
+    pub seen: SeenMap,
 }
 
 impl Server {
@@ -2561,7 +2572,20 @@ impl Server {
             rt,
             private: PRIVATE.clone(),
             focus: Default::default(),
+            seen: Default::default(),
         }
+    }
+
+    /// 129 §3 / 155 §7.5: drop the connection's focus and seen entries when
+    /// it closes. A second waiter for the same peer (either map was fresh)
+    /// removes nothing new; one spawned after the close removes at once.
+    fn forget_on_close(&self, peer: link::RpcPeer) {
+        let (focus, seen) = (self.focus.clone(), self.seen.clone());
+        tokio::spawn(async move {
+            peer.closed().await;
+            focus.write().remove(&peer.id());
+            seen.write().remove(&peer.id());
+        });
     }
 
     /// The `double:` section as read at start (126 §12); defaults when absent.
@@ -7688,8 +7712,27 @@ impl ApiServer for Server {
         send(&actor, tasks::activity::ListActivity(filter)).await
     }
 
-    async fn attention_list(&self) -> RpcResult<Vec<roster::attention::AttentionItem>> {
-        send(&attention_actor()?, roster::attention::ListAttention).await
+    async fn attention_list(
+        &self,
+        ext: &Extensions,
+    ) -> RpcResult<Vec<roster::attention::AttentionItem>> {
+        let mut items: Vec<roster::attention::AttentionItem> =
+            send(&attention_actor()?, roster::attention::ListAttention).await?;
+        if let Some(peer) = ext.get::<link::RpcPeer>() {
+            let focus = self.focus.read().get(&peer.id()).cloned();
+            let mut seen = self.seen.write();
+            let fresh = !seen.contains_key(&peer.id());
+            mask_alerts(
+                &mut items,
+                focus.as_deref(),
+                seen.entry(peer.id()).or_default(),
+            );
+            drop(seen);
+            if fresh {
+                self.forget_on_close(peer.clone());
+            }
+        }
+        Ok(items)
     }
 
     async fn attention_snooze(&self, id: String, until_ms: u64) -> RpcResult<()> {
@@ -8213,17 +8256,51 @@ impl ApiServer for Server {
         let peer = peer(ext)?;
         let set: Arc<HashSet<String>> =
             Arc::new(sessions.iter().map(ToString::to_string).collect());
-        let fresh = self.focus.write().insert(peer.id(), set).is_none();
+        let fresh = self.focus.write().insert(peer.id(), set.clone()).is_none();
         if fresh {
-            // The entry dies with the connection; a re-insert after that spawns
-            // another waiter on the already-cancelled token, which removes at once.
-            let focus = self.focus.clone();
-            tokio::spawn(async move {
-                peer.closed().await;
-                focus.write().remove(&peer.id());
-            });
+            self.forget_on_close(peer.clone());
+        }
+        // 155 §7.5: looking at a session marks its finished alert seen here.
+        if !set.is_empty()
+            && let Ok(actor) = attention_actor()
+            && let Ok(mut items) = actor.ask(roster::attention::ListAttention).await
+        {
+            let mut seen = self.seen.write();
+            let fresh = !seen.contains_key(&peer.id());
+            mask_alerts(&mut items, Some(&set), seen.entry(peer.id()).or_default());
+            drop(seen);
+            if fresh {
+                self.forget_on_close(peer);
+            }
         }
         Ok(())
+    }
+}
+
+/// 155 §7.3 / §7.5: blank `alert` for this connection — every item whose
+/// session it focuses (a focused `finished` alert is marked seen first) and
+/// every `finished` alert it has already seen.
+fn mask_alerts(
+    items: &mut [roster::attention::AttentionItem],
+    focus: Option<&HashSet<String>>,
+    seen: &mut HashSet<String>,
+) {
+    for it in items {
+        let Some(alert) = it.alert.as_ref() else {
+            continue;
+        };
+        let focused = it
+            .session
+            .as_deref()
+            .zip(focus)
+            .is_some_and(|(s, f)| f.contains(s));
+        let finished = alert.class == roster::alert::AlertClass::Finished;
+        if focused && finished {
+            seen.insert(alert.id.clone());
+        }
+        if focused || (finished && seen.contains(&alert.id)) {
+            it.alert = None;
+        }
     }
 }
 
