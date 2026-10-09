@@ -115,57 +115,99 @@ impl Profiles {
         if emb.is_empty() {
             return Err("empty embedding".into());
         }
-        let now = chrono::Local::now().to_rfc3339();
         let id = match self
             .list
             .iter_mut()
             .find(|s| s.profile.name.eq_ignore_ascii_case(name))
         {
             Some(s) => {
-                if s.embedding.len() != emb.len() {
-                    return Err("embedding size differs from the profile's".into());
-                }
-                let n = s.profile.samples as f32;
-                for (m, x) in s.embedding.iter_mut().zip(emb) {
-                    *m = (*m * n + x) / (n + 1.0);
-                }
-                s.profile.samples += 1;
-                s.profile.updated_at = now;
+                fold(s, emb)?;
                 if entity.is_some() {
                     s.profile.entity = entity;
                 }
                 s.profile.id
             }
-            None => {
-                let id = ProfileId::new();
-                self.list.push(Stored {
-                    profile: Profile {
-                        id,
-                        name: name.to_owned(),
-                        entity,
-                        samples: 1,
-                        created_at: now.clone(),
-                        updated_at: now,
-                    },
-                    embedding: emb.to_vec(),
-                });
-                id
-            }
+            None => self.push(name, entity, emb),
         };
-        let s = self
+        self.write(id)?;
+        Ok(id)
+    }
+
+    /// 156 D14: a new profile; refused when `name` (case-insensitive) is enrolled.
+    pub fn create(
+        &mut self,
+        name: &str,
+        entity: Option<String>,
+        emb: &[f32],
+    ) -> Result<Profile, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("empty name".into());
+        }
+        if emb.is_empty() {
+            return Err("empty embedding".into());
+        }
+        if let Some(s) = self
             .list
             .iter()
+            .find(|s| s.profile.name.eq_ignore_ascii_case(name))
+        {
+            return Err(format!(
+                "a speaker named {} is already enrolled",
+                s.profile.name
+            ));
+        }
+        let id = self.push(name, entity, emb);
+        self.write(id)?;
+        Ok(self.get(id).profile.clone())
+    }
+
+    /// 156 D14: fold `emb` into profile `id`'s running mean (samples + 1).
+    pub fn add_sample(&mut self, id: ProfileId, emb: &[f32]) -> Result<Profile, String> {
+        let s = self
+            .list
+            .iter_mut()
             .find(|s| s.profile.id == id)
-            .expect("just placed");
+            .ok_or_else(|| format!("no speaker profile {id}"))?;
+        fold(s, emb)?;
+        self.write(id)?;
+        Ok(self.get(id).profile.clone())
+    }
+
+    fn push(&mut self, name: &str, entity: Option<String>, emb: &[f32]) -> ProfileId {
+        let id = ProfileId::new();
+        let now = chrono::Local::now().to_rfc3339();
+        self.list.push(Stored {
+            profile: Profile {
+                id,
+                name: name.to_owned(),
+                entity,
+                samples: 1,
+                created_at: now.clone(),
+                updated_at: now,
+            },
+            embedding: emb.to_vec(),
+        });
+        id
+    }
+
+    fn get(&self, id: ProfileId) -> &Stored {
+        self.list
+            .iter()
+            .find(|s| s.profile.id == id)
+            .expect("just placed")
+    }
+
+    /// `<id>.json`, `.tmp` + rename.
+    fn write(&self, id: ProfileId) -> Result<(), String> {
         let path = self.path(id);
         let tmp = path.with_extension("json.tmp");
         std::fs::write(
             &tmp,
-            serde_json::to_vec_pretty(s).map_err(|e| e.to_string())?,
+            serde_json::to_vec_pretty(self.get(id)).map_err(|e| e.to_string())?,
         )
         .and_then(|()| std::fs::rename(&tmp, &path))
-        .map_err(|e| format!("write {}: {e}", path.display()))?;
-        Ok(id)
+        .map_err(|e| format!("write {}: {e}", path.display()))
     }
 
     /// Remove the file; `Err` when unknown.
@@ -182,6 +224,23 @@ impl Profiles {
     fn path(&self, id: ProfileId) -> PathBuf {
         self.dir.join(format!("{id}.json"))
     }
+}
+
+/// The running mean: `(mean · n + emb) / (n + 1)`, samples + 1, `updated_at` now.
+fn fold(s: &mut Stored, emb: &[f32]) -> Result<(), String> {
+    if emb.is_empty() {
+        return Err("empty embedding".into());
+    }
+    if s.embedding.len() != emb.len() {
+        return Err("embedding size differs from the profile's".into());
+    }
+    let n = s.profile.samples as f32;
+    for (m, x) in s.embedding.iter_mut().zip(emb) {
+        *m = (*m * n + x) / (n + 1.0);
+    }
+    s.profile.samples += 1;
+    s.profile.updated_at = chrono::Local::now().to_rfc3339();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -218,5 +277,49 @@ mod tests {
         p.delete(john).unwrap();
         assert!(p.delete(john).is_err());
         assert_eq!(Profiles::load(tmp.path()).unwrap().list().len(), 1);
+    }
+
+    /// 156 D14: `create` refuses a name already enrolled (case-insensitive) where `enroll`
+    /// would merge; `add_sample` folds by id with the same mean and survives a reload.
+    #[test]
+    fn create_refuses_duplicates_and_add_sample_folds_by_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut p = Profiles::load(tmp.path()).unwrap();
+        let dana = p
+            .create("Dana", Some("people/dana".into()), &[1.0, 0.0])
+            .unwrap();
+        assert_eq!(
+            (dana.samples, dana.entity.as_deref()),
+            (1, Some("people/dana"))
+        );
+        assert_eq!(
+            p.create(" dana ", None, &[0.0, 1.0]).unwrap_err(),
+            "a speaker named Dana is already enrolled"
+        );
+        assert_eq!(p.create("  ", None, &[0.0, 1.0]).unwrap_err(), "empty name");
+        let d2 = p.add_sample(dana.id, &[0.0, 1.0]).unwrap();
+        assert_eq!((d2.id, d2.samples), (dana.id, 2));
+        let d3 = p.add_sample(dana.id, &[0.0, 1.0]).unwrap();
+        assert_eq!(d3.samples, 3);
+        let other = ProfileId::new();
+        assert_eq!(
+            p.add_sample(other, &[0.0, 1.0]).unwrap_err(),
+            format!("no speaker profile {other}")
+        );
+        assert!(p.add_sample(dana.id, &[1.0]).is_err(), "size mismatch");
+        let reloaded = Profiles::load(tmp.path()).unwrap();
+        let d = reloaded
+            .list
+            .iter()
+            .find(|s| s.profile.id == dana.id)
+            .unwrap();
+        // (1,0) → (0.5,0.5) → (1/3, 2/3).
+        assert!(
+            (d.embedding[0] - 1.0 / 3.0).abs() < 1e-6 && (d.embedding[1] - 2.0 / 3.0).abs() < 1e-6,
+            "{:?}",
+            d.embedding
+        );
+        assert_eq!(d.profile.samples, 3);
+        assert_eq!(reloaded.list().len(), 1);
     }
 }

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::speakers::{ProfileId, Profiles};
+use crate::speakers::{Profile, ProfileId, Profiles};
 use crate::{MeetingId, Track};
 
 /// File name inside a meeting's directory.
@@ -15,6 +15,10 @@ pub const FILE: &str = "transcript.json";
 pub const EMBEDDINGS: &str = "embeddings.json";
 /// The mic track's label.
 pub const ME: &str = "me";
+/// 156 D14: the least speech a voiceprint is made from.
+pub const ENROLL_MIN_MS: u64 = 1_000;
+/// 156 D14: the most speech folded into one voiceprint (as the pipeline's 30 s per label).
+pub const ENROLL_MAX_MS: u64 = 30_000;
 
 /// One word with its times on the recording clock.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -325,6 +329,114 @@ pub fn apply(
     Ok(())
 }
 
+/// 156 D14: the word spans `(t0_ms, t1_ms)` of `segments`, in transcript order, and the
+/// one track they are on. A segment without words contributes its own span.
+pub fn speech_spans(t: &Transcript, segments: &[u32]) -> Result<(Track, Vec<(u64, u64)>), String> {
+    if segments.is_empty() {
+        return Err("pick at least one segment".into());
+    }
+    for id in segments {
+        t.index(*id)
+            .map_err(|_| format!("no segment {id} in this meeting"))?;
+    }
+    let mut track = None;
+    let mut spans = Vec::new();
+    for s in t.segments.iter().filter(|s| segments.contains(&s.id)) {
+        if track.get_or_insert(s.track) != &s.track {
+            return Err("segments span both tracks".into());
+        }
+        if s.words.is_empty() {
+            spans.push((s.t0_ms, s.t1_ms));
+        }
+        spans.extend(
+            s.words
+                .iter()
+                .filter(|w| w.t1_ms > w.t0_ms)
+                .map(|w| (w.t0_ms, w.t1_ms)),
+        );
+    }
+    Ok((track.expect("at least one segment"), spans))
+}
+
+/// 156 D14: the speech a voiceprint is made from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Voiceprint {
+    /// Word spans, the first [`ENROLL_MAX_MS`] of what was chosen (the last one trimmed).
+    pub spans: Vec<(u64, u64)>,
+    /// Sum of `spans`.
+    pub speech_ms: u64,
+    /// Sum of what was chosen, before the cap.
+    pub available_ms: u64,
+}
+
+/// 156 D14: `spans` cut to the first [`ENROLL_MAX_MS`]; under [`ENROLL_MIN_MS`] in total is refused.
+pub fn voiceprint_spans(spans: &[(u64, u64)]) -> Result<Voiceprint, String> {
+    let available_ms: u64 = spans.iter().map(|(a, b)| b - a).sum();
+    if available_ms < ENROLL_MIN_MS {
+        return Err(format!(
+            "pick at least 1 s of speech (got {available_ms} ms)"
+        ));
+    }
+    let mut speech_ms = 0;
+    let mut out = Vec::with_capacity(spans.len());
+    for &(a, b) in spans {
+        let b = b.min(a + (ENROLL_MAX_MS - speech_ms));
+        if b > a {
+            out.push((a, b));
+            speech_ms += b - a;
+        }
+        if speech_ms >= ENROLL_MAX_MS {
+            break;
+        }
+    }
+    Ok(Voiceprint {
+        spans: out,
+        speech_ms,
+        available_ms,
+    })
+}
+
+/// 156 D14: when every one of `segments` carries one label, link it to `profile`
+/// (`name` and `profile` set, `proposed` cleared), then refresh `proposed` for every other
+/// unlinked label that has an embedding. Returns whether anything changed.
+pub fn link_enrolled(
+    t: &mut Transcript,
+    segments: &[u32],
+    profile: &Profile,
+    embeddings: &HashMap<String, Vec<f32>>,
+    profiles: &Profiles,
+) -> bool {
+    let mut chosen = t
+        .segments
+        .iter()
+        .filter(|s| segments.contains(&s.id))
+        .map(|s| s.speaker.as_str());
+    let Some(label) = chosen.next().map(str::to_owned) else {
+        return false;
+    };
+    if chosen.any(|s| s != label) {
+        return false;
+    }
+    for l in &mut t.speakers {
+        if l.id == label {
+            l.name.clone_from(&profile.name);
+            l.profile = Some(profile.id);
+            l.proposed = None;
+        } else if l.profile.is_none()
+            && let Some(e) = embeddings.get(&l.id)
+        {
+            l.proposed = profiles
+                .best_match(e)
+                .map(|(profile, name, score)| Proposed {
+                    profile,
+                    name,
+                    score,
+                });
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,5 +677,86 @@ mod tests {
             Some("people/john"),
             "entity kept"
         );
+    }
+
+    #[test]
+    fn speech_spans_are_word_spans_of_one_track_in_transcript_order() {
+        let t = transcript();
+        let (track, spans) = speech_spans(&t, &[3, 2]).unwrap();
+        assert_eq!(track, Track::System);
+        assert_eq!(
+            spans,
+            [(2000, 2100), (2150, 2500), (2600, 3000), (3200, 3600)]
+        );
+        assert_eq!(
+            speech_spans(&t, &[0, 1]).unwrap_err(),
+            "segments span both tracks"
+        );
+        assert_eq!(
+            speech_spans(&t, &[0, 42]).unwrap_err(),
+            "no segment 42 in this meeting"
+        );
+        assert_eq!(
+            speech_spans(&t, &[]).unwrap_err(),
+            "pick at least one segment"
+        );
+    }
+
+    #[test]
+    fn voiceprint_caps_at_thirty_seconds_and_refuses_under_one() {
+        let vp = voiceprint_spans(&[(0, 20_000), (20_000, 45_000), (50_000, 60_000)]).unwrap();
+        assert_eq!(
+            vp.spans,
+            [(0, 20_000), (20_000, 30_000)],
+            "last span trimmed"
+        );
+        assert_eq!((vp.speech_ms, vp.available_ms), (30_000, 55_000));
+        let vp = voiceprint_spans(&[(0, 400), (450, 1_100)]).unwrap();
+        assert_eq!(
+            (vp.spans.len(), vp.speech_ms, vp.available_ms),
+            (2, 1_050, 1_050)
+        );
+        assert_eq!(
+            voiceprint_spans(&[(0, 400), (450, 900)]).unwrap_err(),
+            "pick at least 1 s of speech (got 850 ms)"
+        );
+    }
+
+    #[test]
+    fn link_enrolled_links_one_label_and_refreshes_the_other_proposals() {
+        let (_tmp, mut p) = profiles();
+        let dana = p.create("Dana", None, &[1.0, 0.0, 0.0]).unwrap();
+        let john = p.create("John", None, &[0.0, 1.0, 0.0]).unwrap();
+        let mut emb = HashMap::new();
+        emb.insert("s1".to_owned(), vec![0.9, 0.1, 0.0]);
+        emb.insert("s2".to_owned(), vec![0.0, 1.0, 0.0]);
+        emb.insert(ME.to_owned(), vec![1.0, 0.0, 0.0]);
+        let mut t = transcript();
+        let stale = ProfileId::new();
+        t.speakers[1].proposed = Some(Proposed {
+            profile: stale,
+            name: "stale".into(),
+            score: 0.7,
+        });
+        t.speakers[2].proposed = t.speakers[1].proposed.clone();
+        t.speakers[0].profile = Some(stale);
+        // Mixed labels: nothing changes.
+        let before = t.clone();
+        assert!(!link_enrolled(&mut t, &[0, 2], &john, &emb, &p));
+        assert_eq!(t, before);
+        // s2's segments: s2 linked to John; s1 re-proposed as Dana; the linked `me` untouched.
+        assert!(link_enrolled(&mut t, &[3, 2], &john, &emb, &p));
+        let s2 = &t.speakers[2];
+        assert_eq!(
+            (s2.name.as_str(), s2.profile, &s2.proposed),
+            ("John", Some(john.id), &None)
+        );
+        let s1 = &t.speakers[1];
+        assert_eq!(s1.name, "Speaker 1", "unlinked label keeps its name");
+        assert_eq!(
+            s1.proposed.as_ref().map(|x| (x.profile, x.name.as_str())),
+            Some((dana.id, "Dana"))
+        );
+        assert_eq!(t.speakers[0].proposed, None);
     }
 }

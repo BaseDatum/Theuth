@@ -17,6 +17,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { groupOf } from '@/lib/nav'
 import { isPopout } from '@/lib/popout'
+import type { DocKind } from '@/rpc/bindings/DocKind'
 import type { ItemKind } from '@/rpc/bindings/ItemKind'
 import { cn } from 'cn'
 
@@ -28,6 +29,13 @@ import { cn } from 'cn'
 export type NotebookBack = { to: '/notebooks/$id'; params: { id: string }; search: { tab: 'notes' | 'sources' }; label: string; always: true }
 
 /**
+ * 156 D1: a meeting note belongs to its meeting — `manifest.note` points at it and the meeting's own Delete removes it —
+ * so the note page never offers Delete for one. `meeting` is the page's own knowledge (the meeting pane, the popped
+ * meeting note) before `meta` lands; `kind` covers `/notes/<id>` opened straight on one.
+ */
+export const ownedByMeeting = (kind: DocKind | undefined, meeting: string | undefined): boolean => kind === 'meeting_note' || meeting !== undefined
+
+/**
  * The bars over a document pane's body. In the shell (97b): the section's `SectionBand` (unless the page's explorer
  * already renders it, `band={false}`), then a `SectionRow` with the phone-only back chevron, `title` and `actions`.
  * In a popped window: the 52 px drag bar of 49 §5.1 (back chevron and search trigger under `md`), unchanged.
@@ -36,6 +44,8 @@ export type NotebookBack = { to: '/notebooks/$id'; params: { id: string }; searc
  * a page without one (a task) passes `backAlways` and keeps its back at every width, in both shells.
  * 144 §4: `back` (a `NotebookBack`) replaces the row's list chevron with the always-visible notebook control; the
  * popped window keeps 143's rule (no band, no back) and ignores it.
+ * 156 D1: `embedded` (the meeting page's note pane) draws neither the band nor any back link — the `SectionRow` alone
+ * is the pane's toolbar, with `title` and `actions`.
  */
 export function Frame({
   backTo,
@@ -45,6 +55,7 @@ export function Frame({
   title,
   actions,
   band = true,
+  embedded = false,
   children,
 }: {
   backTo: '/knowledge' | '/notes' | '/notebooks' | '/tasks' | '/agents'
@@ -54,6 +65,7 @@ export function Frame({
   title: ReactNode
   actions?: ReactNode
   band?: boolean
+  embedded?: boolean
   children: ReactNode
 }) {
   const backClass = backAlways ? undefined : 'md:hidden'
@@ -73,6 +85,12 @@ export function Frame({
           {actions}
           <SearchTrigger className="md:hidden" />
         </header>
+      ) : embedded ? (
+        // A pane can be narrow: the actions wrap under the title instead of squeezing it to nothing.
+        <SectionRow className="h-auto min-h-11 flex-wrap py-1">
+          {title}
+          {actions}
+        </SectionRow>
       ) : (
         <>
           {band && <SectionBand group={groupOf(backTo) ?? 'library'} />}
@@ -213,6 +231,7 @@ export function DocumentPage({
   title: ReactNode
   actions?: ReactNode
   band?: boolean
+  embedded?: boolean
   back?: NotebookBack
 }) {
   const mobile = useIsMobile()

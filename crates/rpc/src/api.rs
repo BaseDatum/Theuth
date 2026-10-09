@@ -1802,6 +1802,14 @@ pub trait Api {
     /// Enrolled speaker profiles (embedding omitted).
     #[method(name = "meeting_speakers")]
     async fn meeting_speakers(&self) -> RpcResult<Vec<meeting::Profile>>;
+    /// 156: a voiceprint from the speech of `segments` (one track): a new profile, or folded into an enrolled one.
+    #[method(name = "meeting_speaker_enroll")]
+    async fn meeting_speaker_enroll(
+        &self,
+        id: meeting::MeetingId,
+        segments: Vec<u32>,
+        target: meeting::EnrollTarget,
+    ) -> RpcResult<meeting::Enrolled>;
     /// Delete a speaker profile file. Transcripts keep their labels.
     #[method(name = "meeting_speaker_delete")]
     async fn meeting_speaker_delete(&self, profile: meeting::ProfileId) -> RpcResult<()>;
@@ -6850,6 +6858,23 @@ impl ApiServer for Server {
 
     async fn meeting_speakers(&self) -> RpcResult<Vec<meeting::Profile>> {
         send(&meeting()?, meeting::ListSpeakers).await
+    }
+
+    async fn meeting_speaker_enroll(
+        &self,
+        id: meeting::MeetingId,
+        segments: Vec<u32>,
+        target: meeting::EnrollTarget,
+    ) -> RpcResult<meeting::Enrolled> {
+        send(
+            &meeting()?,
+            meeting::EnrollSegments {
+                meeting: id,
+                segments,
+                target,
+            },
+        )
+        .await
     }
 
     async fn decision_mode(&self, prefix: String) -> RpcResult<decision::ModeInfo> {
