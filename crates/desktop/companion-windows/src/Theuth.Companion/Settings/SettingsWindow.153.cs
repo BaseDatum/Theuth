@@ -148,7 +148,7 @@ internal sealed partial class SettingsWindow
         voice.Click += (_, _) => _ = Links.Open(new Uri("theuth://settings/voice"));
         page.Children.Add(voice);
         _ = LoadHistory(history, Current, Say);
-        if (AskBar.AskFlags.DictationShot) _ = ShotAfterLoad(page, Current);
+        if (global::Theuth.Companion.AskBar.AskFlags.DictationShot) _ = ShotAfterLoad(page, Current);
     }
 
     /// <summary><c>--dictation-shot</c>: the page rendered to a PNG once the engine's answers had time to land (RenderTargetBitmap).</summary>
@@ -156,7 +156,7 @@ internal sealed partial class SettingsWindow
     {
         await Task.Delay(TimeSpan.FromSeconds(4));
         if (!current()) return;
-        var path = AskBar.AskFlags.Png("6-settings-dictation");
+        var path = global::Theuth.Companion.AskBar.AskFlags.Png("6-settings-dictation");
         try
         {
             await XamlPng.Write(page, path);
