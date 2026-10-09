@@ -150,14 +150,14 @@ D9 amends both (§17, §18).
 ### 2.3 In flight
 `fix/149-island` at `03fe260a` (island eye tint, probe sweeps; local branch, not on main) and its Windows twin `fix/149w-island`. Wave C
 (§16) starts after they land; nothing here touches `IslandPanel.swift`'s placement or visibility code, and the voice view keeps being hosted
-by the island (96 §0.3 rule, `docs/design/96-point-and-say.md:51-61`).
+by the island (96 §0.3 rule, `docs/design/96-point-and-say.md:62-70`).
 
 ### 2.4 The latency inference — INFERENCE, measured by D7 before any promise
 The study put the first partial at ≥ 0.7 s after speech start (onset 160 ms + one 560 ms window; appendix B §A1(b)). Re-reading the gate:
 the onset opens the utterance at `end − (ONSET + PREROLL) × FRAME` (`VOICE/live.rs:153-157`), so 480 ms of the first window are already in
 the buffer when the onset is confirmed, and `feed_full` feeds the first window once `total − fed ≥ WINDOW` (`:177-191`) — about 80 ms later.
 Structural floor ≈ 160 + 80 = 240 ms after speech start, plus one encoder step and the RPC hop; the first window "often" emits nothing
-(`VOICE/stt.rs:255`), so the first *word* commonly waits for the second window (+560 ms). Both numbers are [INFERENCE]; §8.6's metric replaces
+(`VOICE/stt.rs:255`), so the first *word* commonly waits for the second window (+560 ms). Both numbers are [INFERENCE]; §8.7's metric replaces
 them with press → first partial → final per surface, as R5 asks.
 
 ## 3. The target experience
@@ -404,6 +404,92 @@ a user entry added mid-dictation applies from the next one.
 ("end" never passes as "send"); `literal_escapes_end_phrase_and_symbol`; `terminal_spacing_only_on_terminal_surfaces`; `partial_then_final_is_idempotent_on_plain_prose`;
 `shape_is_total_over_fuzzed_utf8` (proptest, 10 k cases, no panic); `presets_full_plain_off_resolve`; `scratch_that_drops_previous_final_only`.
 
+## 5. Dictionary
+
+Three layers behind one matcher: the **packaged** technical dataset (shipped, read-only), **user** entries (Settings, `dictionary_put`) and
+**learned** entries (§6's Add). No seeding from the user's computer or project (D3, R4; §5.7). Summary of the datasets sheet
+`docs/design/153-datasets.md` (fv-datasets, 2026-10-09; every source cited there) follows — it is the source of record for licences.
+
+### 5.1 Packaged dataset — sources, counts, licences (`153-datasets.md:7-26`, `:122-140`)
+| Layer | Source | What we take | Count | Licence | Sheet |
+|---|---|---|---|---|---|
+| spoken → written core | talonhub/community (pushed 2026-10-08) | symbols with dictation/command forms (≈45), 17 casing formatters, 436 abbreviations, number words, homophones, file extensions, TLDs, per-language keywords | ≈500 rules + lists | MIT | `:9-15`, `:41-46` |
+| commands and tools | Homebrew `formula.json` + `cask.json`; tldr-pages names; oh-my-zsh plugin names | names, aliases, oldnames (brew); page names (tldr); 371 plugin names | brew thousands (not verified); tldr > 1 000; omz 371 | BSD-2 (brew API); CC BY 4.0 pages / MIT scripts (tldr); MIT (omz) | `:17-19`, `:59-61` |
+| languages | GitHub linguist `languages.yml` | names + aliases | ≈830 | MIT | `:20`, `:62` |
+| packages | hugovk top-pypi-packages | names | 15 000 | no licence file; bare names are facts | `:21`, `:63` |
+| cloud | botocore `data/` service ids; Kubernetes OpenAPI kinds; Terraform registry providers | ids / kinds / `namespace/name` | ≈430 AWS; k8s/TF not counted | Apache-2.0; Apache-2.0; registry terms not checked | `:22`, `:64-66` |
+| AI vocabulary | models.dev `api.json`; Hugging Face top-N; a **hand-curated** harness list (Claude Code, Codex, Cursor, OpenCode, Gemini CLI, omp, theuth's agent names) | provider/model ids and names; org names | a few thousand (not counted) | MIT; HF terms not checked; ours | `:23`, `:67-68` |
+| phonetics | CMUdict (ARPAbet) for the spoken-form generator and variant seeding | pronunciations of the canonical terms only | subset | CMU BSD-style (notice kept) | `:24`, `:85` |
+**Kept out** (share-alike or unclear, `:28-35`): Wikipedia lists, Stack Overflow tags, the Kaggle TN corpus (CC BY-NC-SA), GPL/AGPL/LGPL app
+tables (FluidVoice, VoiceInk, Whispering, Caster/dragonfly), Jargon File, Microsoft Terminology. Approximate size 30–40 k canonical terms
+(`:26`). Attribution: `crates/voice/data/THIRD_PARTY.md` carries each licence/NOTICE (`:124-130`).
+
+### 5.2 Packaging — a data file with a sha256 record, `fetch-models.sh` style
+`scripts/build-dictionary.sh` (offline, run by the maintainer, not at build) fetches the sources above, normalises to one JSON Lines list
+`{canonical, kind, aliases[], spoken[], tags[]}`, derives spoken forms (the talon `create_spoken_forms` idea — split case, expand digits and
+symbols — ported to Rust in `VOICE/dictionary/spoken.rs`, `153-datasets.md:46`), and writes `crates/voice/data/dictionary.v1.json.gz`
+(`PackagedSet { version, built_at, terms: Vec<Term>, symbols, formatters, abbreviations, tlds, extensions }` as serde_json, gzip through
+`flate2` — both workspace dependencies already, `Cargo.toml:186`, `:242`; ≈ 3–5 MB) plus `dictionary.json` `{ "file": "dictionary.v1.json.gz",
+"size": N, "sha256": "…", "sources": [...] }` — the record shape of `scripts/fetch-models.sh:11` (`{repo, path, revision, etag, size, sha256,
+fetched_at}`). The file is `include_bytes!`'d (no download, no REQUIRED-list change; a later `v2` may move to the models bucket when it
+outgrows the binary — then it joins REQUIRED with its sha256). At load the hash is verified once (proof row 3); the loader is ~40 lines.
+
+### 5.3 Entries, scopes, variants, negatives
+```rust
+pub struct Entry { pub id: EntryId, pub canonical: String, pub kind: Kind /* Term | Symbol | Formatter | Abbrev | Mention | Command | Path */,
+                   pub spoken: Vec<String>, pub variants: Vec<Variant>, pub scope: Scope, pub source: Source /* Packaged | User | Learned */,
+                   pub tags: Vec<String> /* "tld", "ext", "mention", "path", "terminal" … */ }
+pub struct Variant { pub heard: String, pub metaphone: (String, String), pub seen: u32, pub last_ms: u64 }
+pub enum Scope { Global, Surface(Surface), App(String) }          // per-term scope; an any-app term can be limited to one app
+pub struct Negative { pub heard_lc: String, pub canonical: String }  // "this heard form must NOT become canonical" (Never, or an unchanged delivery)
+```
+User entries come from Settings › Voice › Dictionary (desktop) / Settings › Dictation (companion) and `dictionary_put`; learned entries from
+§6.3's Add carry the heard variant and `source: Learned`. A **negative** is written by "Never for this" and — the cheap acoustic-free version
+of A:L89 — by any delivered utterance the user *sent unchanged* that contained the heard form (the pair is then vetoed for that surface).
+
+### 5.4 Matcher algorithm (`VOICE/dictionary/matcher.rs`, pure; W-k constants)
+1. **Candidates**: for every 1–3-token window of the utterance, look up (a) exact `spoken`/`heard` forms (hash map), (b) Double Metaphone
+   primary/alternate codes of the window (`rphonetic`, Apache-2.0 — `153-datasets.md:87`) in a code → entries map. ≤ 32 candidates per window.
+2. **Score**: `s = 1 − lev(norm(heard), norm(window)) / max(len)` using `strsim` (`:89`) over lowercase, digit-spelled text; a phonetic hit with
+   `lev ≤ EDIT_MAX = 2` adds 0.1. `norm` folds the spelled-letters rule (§4.2 stage 3) so `tee dee tee` ≈ `tdt`.
+3. **Accept**: `s ≥ ACCEPT_KNOWN = 0.70` when the entry already has this `heard` as a variant (or is a user entry), else `s ≥ ACCEPT_NEW = 0.85`;
+   ties → longest window, then `source` order User > Learned > Packaged, then catalog order.
+4. **Veto**: a `Negative` for `(heard_lc, canonical)` on this scope refuses regardless of score — negatives never *create* a match (A:L89).
+5. **Guard**: a window that lies inside a span produced by *this* rule in this pass is skipped (self-expansion, §4.2 stage 7); possessives on
+   the heard form are carried to the output (`kubernetes's` → `Kubernetes's`).
+6. **Scope**: `Global` always; `Surface(s)` only when `DictationOpts.surface == s`; `App(id)` only when `AppProfile.id == id`.
+7. **Bound**: the packaged set is indexed at load (two hash maps + an `fst` set for prefix checks, `:91`); a 40-token utterance costs ≤ 120
+   window lookups — microseconds. No fuzzy scan over 30 k terms per token.
+8. **Casing**: the canonical's casing wins (`GitHub`, `PostgreSQL`); the model's sentence-initial capital is re-applied if the match starts the
+   utterance and the canonical is all-lowercase (`npm` stays `npm` — tag `keep_case`).
+Tests: `match_thresholds` (proof row 4), `phonetic_hit_needs_edit_le_2`, `scope_filters`, `negative_vetoes_never_creates`, `possessive_carried`,
+`casing_rules`, `packaged_index_builds_under_200ms` (`#[ignore]` perf), `learned_variant_lowers_threshold_to_known`.
+
+### 5.5 Storage
+Packaged: in the binary (§5.2). User + learned + negatives: `voice.db` (§6.5) tables `dictionary_entries (id, canonical, kind, spoken_json,
+scope, source, tags_json, created_ms)`, `dictionary_variants (entry_id, heard, metaphone1, metaphone2, seen, last_ms)`, `dictionary_negatives
+(heard_lc, canonical, scope, created_ms, PRIMARY KEY(heard_lc, canonical, scope))`. The actor holds an `Arc<Dictionary>` snapshot rebuilt on
+every write (cheap: the user layer is small) and handed to each new dictation (§4.6). Export/import: `dictionary_list` → JSON in Settings
+("Export my words"), `dictionary_put` per row on import.
+
+### 5.6 API
+`dictionary_list(scope)`, `dictionary_put(entry)`, `dictionary_delete(id)`, `dictionary_suggestion_answer(id, answer)` (§14.2); the actor
+message `DictionaryOp { List | Put(Entry) | Delete(EntryId) | Negative(Negative) }`; `voice_status` reports `dictionary: { packaged_version,
+packaged_terms, user_entries, learned_entries }` for the Settings header line ("32 410 technical terms · 14 of yours · 6 learned").
+
+### 5.7 REJECTED: project/computer seeding (D18) — and the questions an algorithm must answer first
+Seeding from the code index, agent names, knowledge titles, installed apps or the shell history is **not** built. R4's reason stands: theuth is
+not a coding agent; it drives harnesses whose vocabularies vary by project, and a wrong seed ("Git" → a project symbol) misfires on every
+surface. What would reopen it — one page answering, for each proposed source:
+| Question | What it must say |
+|---|---|
+| **source** | which store (code index symbols? `agents_list` names? knowledge titles? app names?) and why its terms are *spoken* often enough to matter |
+| **rate** | how many terms per project, how often re-derived, the cap, and the cost of a false expansion per 1 000 words |
+| **trigger** | when a term enters (first open? after N mentions in sessions? only after one correction, i.e. §6's path with the project as a *hint*?) |
+| **veto** | how a term leaves (negatives as §5.3? per-project scope only? user review before activation?) |
+Until then the only project-aware path is the one already here: `@mentions` resolve against `agents_list` at shaping time (§4.2 stage 4) — a
+lookup, not a seed.
+
 ## 6. Correction learning and history
 
 ### 6.1 Observation in our own fields (D4) — no accessibility tree needed
@@ -587,15 +673,12 @@ untouched. The voice key's 800 ms discard (`PointMachine.minNoteMs`) is unchange
 buffers. Cost: the OS mic indicator lights on every tap of the panel key; Settings › Dictation "Open the mic on key-down" default on.
 
 ### 8.6 Media pause/duck (opt-in)
-`voice.duck_media: off | duck | pause` (default off). `duck`: on macOS the engine's own mic can open through VPIO with
-`kAUVoiceIOProperty_OtherAudioDuckingConfiguration` (`VOICE/mic.rs:233-239` already carries the constants) — but VPIO also enables AEC/NS/AGC
-(`:233`) which changes the dictation audio; so `duck` opens the plain input and the companion lowers the system volume by 50 % for the
-dictation (`MPVolumeView`-free: `CoreAudio kAudioHardwareServiceDeviceProperty_VirtualMainVolume`, restored at the end) — Windows:
-`IAudioEndpointVolume` scalar. `pause`: the companion sends a media key `Play/Pause` (`MPRemoteCommandCenter` cannot pause others; use
-`HIDPostAuxKey`/`NX_KEYTYPE_PLAY`, Windows `VK_MEDIA_PLAY_PAUSE`) only if something is playing (`MRMediaRemote` is private → macOS: query
-`NowPlaying` through `MPNowPlayingInfoCenter` is read-only for others — so `pause` toggles blindly and is labelled "may un-pause") — the honest
-copy is in the setting. One reconciler owns intent (A:L38): a release before the query returns never issues a pause; a stop never resumes a
-newer dictation's media.
+`voice.duck_media: off | duck | pause` (default off), executed by the companion (the engine's VPIO ducking, `VOICE/mic.rs:233-239`, also
+turns on AEC/NS/AGC and would change the dictation audio — not used). `duck`: system output volume −50 % for the dictation
+(`kAudioHardwareServiceDeviceProperty_VirtualMainVolume`; Windows `IAudioEndpointVolume`), restored at the end. `pause`: one media
+Play/Pause key (`NX_KEYTYPE_PLAY`; `VK_MEDIA_PLAY_PAUSE`) at press and again at the end — macOS offers no public "is something playing", so
+the setting is labelled "may un-pause". One reconciler owns the intent (A:L38): a release before the key went out cancels it; an older
+dictation's end never resumes a newer one's media.
 
 ### 8.7 The metrics (D7)
 Recorded by the engine per dictation, relative to `press_ms` which the client passes in `DictationOpts.press_ms` (its monotonic clock
@@ -1070,7 +1153,7 @@ Pure machines (tested on the Mac for both platforms): `PointMachine` + `switchMo
 ### 14.6 File ownership per crate (one owner per file per wave; §16 has the waves)
 | Crate / dir | Files | Wave |
 |---|---|---|
-| `crates/voice` | `src/shape/*`, `src/dictionary/*`, `src/history/*`, `migrations/*`, `data/dictionary.v1.bin` + `data/THIRD_PARTY.md` (§5), `src/dictation.rs` (opts, shaper, timings, re-arm, standby), `src/mic.rs` (`open_on`, device list), `src/lib.rs` (types, config) | A |
+| `crates/voice` | `src/shape/*`, `src/dictionary/*`, `src/history/*`, `migrations/*`, `data/dictionary.v1.json.gz` + `dictionary.json` + `data/THIRD_PARTY.md` (§5), `src/dictation.rs` (opts, shaper, timings, re-arm, standby), `src/mic.rs` (`open_on`, device list), `src/lib.rs` (types, config); new deps `sqlx` (workspace), `rphonetic` (Apache-2.0, new), `strsim` (MIT, in the lock already), `fst` (optional) | A |
 | `crates/runtime` | `src/side_call.rs` (`CallKind::Polish`) | A |
 | `crates/agent` | `src/loop_/side.rs` (`ModelRole::Polish`), `src/supervisor.rs` (`Polish`, `polish_model` slot + setter) | A |
 | `crates/rpc` | `src/api.rs` (methods/events above), bindings | A |
