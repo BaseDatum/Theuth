@@ -912,7 +912,7 @@ mod macos {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl Reader {
     /// No reader on this OS.
     #[must_use]
@@ -922,14 +922,14 @@ impl Reader {
 }
 
 /// No reader on this OS.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[must_use]
 pub fn frontmost() -> Option<AxFront> {
     None
 }
 
 /// No bundle on this OS.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[must_use]
 pub fn own_bundle_id() -> Option<String> {
     None
