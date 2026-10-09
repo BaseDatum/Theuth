@@ -721,7 +721,7 @@ struct Shared {
     /// Tier-2 model of the decision oracle (57 §0.9); `None` = the title model,
     /// then the session's model. Shared with the supervisor.
     escalate_model: Arc<RwLock<Option<Resolved>>>,
-    /// Preferred subagent model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
+    /// Subagent default model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
     /// 136 §2.2: the session's money cap from [`SetBudgetNow`] (persisted on
     /// the session row by the supervisor, loaded by [`Session::with_budget`]

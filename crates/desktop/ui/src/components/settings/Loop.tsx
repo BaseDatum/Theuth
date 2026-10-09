@@ -33,10 +33,6 @@ export function Loop() {
     queryKey: queryKeys.titleModel,
     queryFn: () => api.title_model(),
   })
-  const subagentModel = useQuery({
-    queryKey: queryKeys.subagentModel,
-    queryFn: () => api.subagent_model(),
-  })
   const visionModel = useQuery({
     queryKey: queryKeys.visionModel,
     queryFn: () => api.vision_model(),
@@ -44,9 +40,6 @@ export function Loop() {
 
   const setTitleModel = useAction((id: string) => api.set_title_model(id === 'off' ? null : id), {
     keys: [queryKeys.titleModel, queryKeys.escalateModel],
-  })
-  const setSubagentModel = useAction((id: string) => api.set_subagent_model(id === 'off' ? null : id), {
-    keys: [queryKeys.subagentModel],
   })
   const setVisionModel = useAction((id: string) => api.set_vision_model(id === 'off' ? null : id), {
     keys: [queryKeys.visionModel],
@@ -160,10 +153,10 @@ export function Loop() {
         </Row>
       </Section>
       <Section title="Helper models">
-        <Row label="Title model" description="Names new chats after the first exchange.">
+        <Row stack label="Title model" description="Names new chats after the first exchange.">
           <ModelCombobox
             aria-label="Title model"
-            className="max-w-64"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
             value={titleModel.data?.id}
             none={{ label: 'Off' }}
@@ -172,20 +165,7 @@ export function Loop() {
           />
         </Row>
         <Row
-          label="Subagent model"
-          description="What spawn_subagent uses when the agent does not name a model. The agent is told your choice in its system prompt. Off = the session's model."
-        >
-          <ModelCombobox
-            aria-label="Subagent model"
-            className="max-w-64"
-            models={models.data ?? []}
-            value={subagentModel.data?.id}
-            none={{ label: 'Off' }}
-            disabled={subagentModel.isPending || setSubagentModel.isPending}
-            onChange={(v) => setSubagentModel.mutate(v ?? 'off')}
-          />
-        </Row>
-        <Row
+          stack
           label="Vision fallback model"
           description={
             visionModel.isError
@@ -197,7 +177,7 @@ export function Loop() {
         >
           <ModelCombobox
             aria-label="Vision fallback model"
-            className="max-w-64"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
             models={visionModels}
             value={vision?.id}
             none={{ label: 'Off' }}
@@ -206,6 +186,7 @@ export function Loop() {
           />
         </Row>
         <Row
+          stack
           label="Escalation model"
           description={
             escalateModel.isError
@@ -219,7 +200,7 @@ export function Loop() {
         >
           <ModelCombobox
             aria-label="Escalation model"
-            className="max-w-64"
+            className="max-w-64 max-md:w-full max-md:max-w-none"
             models={models.data ?? []}
             value={escalateModel.data?.model?.id}
             none={{ label: escalateModel.data?.effective ? `Off (inherits title model ${escalateModel.data.effective.id})` : 'Off (inherits title model)' }}

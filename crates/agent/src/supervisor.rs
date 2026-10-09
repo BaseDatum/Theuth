@@ -95,11 +95,12 @@ use crate::{
     NewSession, PinSession, PinTitle, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate,
     RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
     ResetRuntime, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
-    SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
-    SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
-    SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel,
-    ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS,
-    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
+    SessionContextBreakdown, SessionModel, SessionRead, SessionSummary, SetCompactStyle,
+    SetCompaction, SetDeskModel, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds,
+    SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel,
+    SetToolset, SetVisionModel, ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer,
+    SyncSkills, TALK_COALESCE_MS, TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill,
+    Withdraw, effort_of,
 };
 use crate::{
     AdvisorConfig, DurableStore, ObservedState, SessionCostQuery, SessionKind, SpendReportQuery,
@@ -147,9 +148,13 @@ pub struct Agents {
     compact_style: Arc<RwLock<CompactStyle>>,
     /// Live title model (07 §15); `None` = each session's own model. Shared with every session.
     title_model: Arc<RwLock<Option<Resolved>>>,
-    /// Live preferred subagent model (`agent.subagents.model`); `None` = `agent.model`.
+    /// Live subagent default model (`agent.subagents.model`); `None` = `agent.model`.
     /// Children spawned without `model` use it; the system prompt names it. Shared with every session.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
+    /// 148 E2: desk session → its agent's configured model ([`SetDeskModel`]);
+    /// `None` = the agent has none. A native child of a desk starts on it
+    /// before `subagent_model` and `default_model`.
+    desk_models: HashMap<SessionId, Option<String>>,
     /// Live vision fallback model (52 §3.1); `None` = no fallback. Shared with
     /// every native session once the loop consults it; snapshot, never hold
     /// the lock across an await.
@@ -893,9 +898,15 @@ impl Agents {
                     .unwrap_or_else(|p| p.into_inner())
                     .as_ref()
                     .map(|r| r.id.clone());
+                let desk_model = parent
+                    .and_then(|(p, _)| self.desk_models.get(&p))
+                    .and_then(|m| m.as_deref());
                 let (model, effort) = match parent {
+                    // 148 E2: an explicit pick, then the desk agent's model
+                    // when the parent is a desk, then the subagent default.
                     Some(_) => (
                         pick.0
+                            .or(desk_model)
                             .or(preferred.as_deref())
                             .unwrap_or(&self.default_model),
                         pick.1
@@ -911,6 +922,17 @@ impl Agents {
                     ),
                 };
                 let model = self.resolve_model(model);
+                // 148 R1 F6: an inherited default effort (not a pick) that the
+                // chosen model does not take would 400 the first call: drop it,
+                // as `set_model` does for an in-session switch.
+                let effort = effort.filter(|e| {
+                    pick.1.is_some()
+                        || model
+                            .0
+                            .model
+                            .as_ref()
+                            .is_none_or(|m| m.validate_effort(e).is_ok())
+                });
                 store
                     .create_session(
                         id,
@@ -4029,7 +4051,7 @@ impl Message<GetSubagentModel> for Agents {
 }
 
 impl Agents {
-    /// The preferred subagent model's id for the system prompt, if set.
+    /// The subagent default model's id for the system prompt, if set.
     fn subagent_model_id(&self) -> Option<String> {
         self.subagent_model
             .read()
@@ -7467,10 +7489,39 @@ impl Message<MarkDesk> for Agents {
         m: MarkDesk,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
+        // 148 R1 F5: a put-away desk is no desk; its model entry goes with it.
+        if m.agent.is_none() {
+            self.desk_models.remove(&m.session);
+        }
         self.store_for(m.session)
             .set_desk(m.session, m.agent.as_deref())
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<SessionModel> for Agents {
+    type Reply = Option<String>;
+
+    async fn handle(
+        &mut self,
+        m: SessionModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<String> {
+        self.store_for(m.0)
+            .session(m.0)
+            .await
+            .ok()
+            .flatten()
+            .map(|row| row.model)
+    }
+}
+
+impl Message<SetDeskModel> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetDeskModel, _: &mut Context<Self, Self::Reply>) {
+        self.desk_models.insert(m.session, m.model);
     }
 }
 
@@ -7557,6 +7608,7 @@ impl Message<DeleteSession> for Agents {
             self.owned_children.remove(id);
             self.caps.remove(id);
             self.remote_parent.remove(id);
+            self.desk_models.remove(id);
             if let Some(live) = self.sessions.remove(id) {
                 live.actor.kill().await;
             }
@@ -7771,10 +7823,11 @@ impl Agents {
 }
 
 impl Agents {
-    /// 82 §2: switch `m.session` now; only a manual pick also becomes the
-    /// default for new sessions (`agent.model` in config.yaml, announced as
-    /// `DefaultModelChanged`). A programmatic switch with no session is a
-    /// no-op beyond resolving the id.
+    /// 148 R1: with a session, switch that session only — whatever `manual`
+    /// says, the default for new sessions is untouched. With no session, a
+    /// manual pick sets the default (`agent.model` in config.yaml, announced as
+    /// `DefaultModelChanged`): the Settings path. A programmatic call with no
+    /// session is a no-op beyond resolving the id.
     async fn set_model(&mut self, m: SetModel) -> Result<ModelInfo, String> {
         let resolved = self.catalog.resolve(&m.model, &*self.configured)?;
         if let Some(id) = m.session {
@@ -7810,7 +7863,7 @@ impl Agents {
                 self.apply_effort(id, &actor, None).await;
             }
         }
-        if m.manual {
+        if m.session.is_none() && m.manual {
             self.default_model = resolved.id.clone();
             // ponytail: writes <data_dir>/config.yaml; a `--config <other>` file is not written back.
             let path = self.rt.data_dir.join("config.yaml");
@@ -7870,10 +7923,11 @@ impl Message<GetDefaultEffort> for Agents {
 }
 
 impl Agents {
-    /// 83 §2: switch `m.session` now; only a manual pick also becomes the
-    /// default for new sessions (`agent.effort` in config.yaml, announced as
-    /// `DefaultEffortChanged`). A programmatic change with no session is a
-    /// no-op beyond validating the value.
+    /// 148 R1: with a session, switch that session only — whatever `manual`
+    /// says. With no session, a manual change sets the default
+    /// (`agent.effort` in config.yaml, announced as `DefaultEffortChanged`):
+    /// the Settings path. A programmatic change with no session is a no-op
+    /// beyond validating the value.
     async fn set_effort(&mut self, m: SetEffort) -> Result<(), String> {
         let target = match m.session {
             Some(id) => {
@@ -7902,7 +7956,7 @@ impl Agents {
             let actor = self.actor(id).await?.native()?.clone();
             self.apply_effort(id, &actor, m.effort.clone()).await;
         }
-        if m.manual {
+        if m.session.is_none() && m.manual {
             self.default_effort = m.effort.clone();
             // Quoted so a bare budget (`"8000"`) stays a YAML string; `~` clears.
             let value = m
@@ -8703,7 +8757,7 @@ pub(crate) struct Auth {
 
 impl Auth {
     /// No vault, no logins, no gateways; `dir` holds the (empty) OAuth store.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn stub(dir: &Path) -> Self {
         Self {
             vault: None,
@@ -9240,6 +9294,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             title_model: Arc::new(RwLock::new(title_model)),
             subagent_model: Arc::new(RwLock::new(subagent_model)),
+            desk_models: HashMap::new(),
             vision_model: Arc::new(RwLock::new(vision_model)),
             escalate_model: Arc::new(RwLock::new(escalate_model)),
             vision_error,
@@ -10246,6 +10301,112 @@ impl Agents {
     }
 }
 
+/// An `Agents` value (no actor, no tool registry) over `rt.data_dir`: the
+/// store at `sessions.sqlite`, the catalog from `models.json`, one native and
+/// one external child slot per tree. Session actors it spawns are real; with
+/// no registry their turns end as `error` before any model is called. The
+/// in-crate tests' rig, shared with other crates' tests under `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication: bool) -> Agents {
+    let dir = rt.data_dir.clone();
+    std::fs::create_dir_all(&dir).unwrap();
+    // One native and one external child slot per tree: a second spawn queues.
+    let mut cfg = AgentConfig::default();
+    cfg.subagents.max_concurrent = 1;
+    cfg.subagents.max_concurrent_external = 1;
+    let cfg = Arc::new(cfg);
+    let engine = engine.map(|e| mesh::EngineId(e.to_owned()));
+    let store = Store::open(&dir.join("sessions.sqlite"), engine)
+        .await
+        .unwrap();
+    let client = Client::new().unwrap();
+    let auth = Auth::stub(&dir);
+    let catalog = Arc::new(Catalog::load(&dir));
+    let endless = Endless::new(
+        store.clone(),
+        rt.clone(),
+        client.clone(),
+        auth.clone(),
+        catalog.clone(),
+        cfg.endless.clone(),
+        cfg.title_model.clone(),
+    );
+    Agents {
+        rt,
+        default_model: cfg.model.clone(),
+        default_effort: None,
+        favorite_models: Vec::new(),
+        cfg,
+        compact_style: Arc::default(),
+        title_model: Arc::default(),
+        subagent_model: Arc::default(),
+        vision_model: Arc::default(),
+        escalate_model: Arc::default(),
+        vision_error: None,
+        catalog,
+        pool: None,
+        configured: Arc::new(|_: &str| false),
+        store,
+        client,
+        auth,
+        endless,
+        sessions: HashMap::new(),
+        desk_models: HashMap::new(),
+        running: HashSet::new(),
+        boot: None,
+        last_boot: None,
+        draining_sessions: HashMap::new(),
+        pending_takeovers: HashMap::new(),
+        communication: SharedPolicy::new(Policy::new(communication, "config")),
+        network: network::NetworkState::default(),
+        waits: HashMap::new(),
+        bound: HashMap::new(),
+        turn_text: HashMap::new(),
+        delivered: HashMap::new(),
+        enqueued: HashSet::new(),
+        pools: HashMap::new(),
+        child_turns: HashMap::new(),
+        queued: HashMap::new(),
+        undelivered: HashMap::new(),
+        timed_out: HashSet::new(),
+        caps: HashMap::new(),
+        remote_parent: HashMap::new(),
+        owned_children: HashMap::new(),
+        last_stop: HashMap::new(),
+        last_input: HashMap::new(),
+        seen: HashMap::new(),
+        talk: HashMap::new(),
+        approvals: HashMap::new(),
+        search: Arc::default(),
+        nodes: Nodes::default(),
+        ledger: Ledger::default(),
+        private: HashMap::new(),
+        private_member: HashMap::new(),
+        closing: HashSet::new(),
+        generation: 0,
+        durable_resources: SessionResources::durable_arc(&dir),
+        // Short enough for a test to outwait it (`resume_rebinds_and_cancels_old_watcher`).
+        private_grace: Duration::from_millis(200),
+        transport: None,
+        identity: None,
+        advisors: HashSet::new(),
+        advisor_cfg: AdvisorConfig::default(),
+    }
+}
+
+/// 148 R1 (`test-support`): [`bare_agents`] with every catalog provider
+/// treated as configured, spawned and registered as [`AGENT_ACTOR`] so a
+/// dependent crate's tests (the roster's desks) can talk to a live engine
+/// that never calls a model. `Err` when an actor already holds the name.
+#[cfg(feature = "test-support")]
+pub async fn spawn_test_agents(rt: Runtime) -> Result<ActorRef<Agents>, String> {
+    let mut a = bare_agents(rt, None, false).await;
+    a.configured = Arc::new(|_: &str| true);
+    let agents = Agents::spawn(a);
+    agents.register(AGENT_ACTOR).map_err(|e| e.to_string())?;
+    Ok(agents)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -11042,88 +11203,8 @@ pub(crate) mod tests {
         communication: bool,
     ) -> Agents {
         std::fs::create_dir_all(&dir).unwrap();
-        // One native and one external child slot per tree: a second spawn queues.
-        let mut cfg = AgentConfig::default();
-        cfg.subagents.max_concurrent = 1;
-        cfg.subagents.max_concurrent_external = 1;
-        let cfg = Arc::new(cfg);
-        let engine = engine.map(|e| mesh::EngineId(e.to_owned()));
-        let rt = Runtime::new(figment::Figment::new(), dir.clone());
-        let store = Store::open(&dir.join("sessions.sqlite"), engine)
-            .await
-            .unwrap();
-        let client = Client::new().unwrap();
-        let auth = Auth::stub(&dir);
-        let catalog = Arc::new(Catalog::load(&dir));
-        let endless = Endless::new(
-            store.clone(),
-            rt.clone(),
-            client.clone(),
-            auth.clone(),
-            catalog.clone(),
-            cfg.endless.clone(),
-            cfg.title_model.clone(),
-        );
-        Agents {
-            rt,
-            default_model: cfg.model.clone(),
-            default_effort: None,
-            favorite_models: Vec::new(),
-            cfg,
-            compact_style: Arc::default(),
-            title_model: Arc::default(),
-            subagent_model: Arc::default(),
-            vision_model: Arc::default(),
-            escalate_model: Arc::default(),
-            vision_error: None,
-            catalog,
-            pool: None,
-            configured: Arc::new(|_: &str| false),
-            store,
-            client,
-            auth,
-            endless,
-            sessions: HashMap::new(),
-            running: HashSet::new(),
-            boot: None,
-            last_boot: None,
-            draining_sessions: HashMap::new(),
-            pending_takeovers: HashMap::new(),
-            communication: SharedPolicy::new(Policy::new(communication, "config")),
-            network: network::NetworkState::default(),
-            waits: HashMap::new(),
-            bound: HashMap::new(),
-            turn_text: HashMap::new(),
-            delivered: HashMap::new(),
-            enqueued: HashSet::new(),
-            pools: HashMap::new(),
-            child_turns: HashMap::new(),
-            queued: HashMap::new(),
-            undelivered: HashMap::new(),
-            timed_out: HashSet::new(),
-            caps: HashMap::new(),
-            remote_parent: HashMap::new(),
-            owned_children: HashMap::new(),
-            last_stop: HashMap::new(),
-            last_input: HashMap::new(),
-            seen: HashMap::new(),
-            talk: HashMap::new(),
-            approvals: HashMap::new(),
-            search: Arc::default(),
-            nodes: Nodes::default(),
-            ledger: Ledger::default(),
-            private: HashMap::new(),
-            private_member: HashMap::new(),
-            closing: HashSet::new(),
-            generation: 0,
-            durable_resources: SessionResources::durable_arc(&dir),
-            // Short enough for a test to outwait it (`resume_rebinds_and_cancels_old_watcher`).
-            private_grace: Duration::from_millis(200),
-            transport: None,
-            identity: None,
-            advisors: HashSet::new(),
-            advisor_cfg: AdvisorConfig::default(),
-        }
+        let rt = Runtime::new(figment::Figment::new(), dir);
+        bare_agents(rt, engine, communication).await
     }
 
     /// A catalog with an image-capable `testvis/eyes`, a text-only
@@ -11311,13 +11392,15 @@ pub(crate) mod tests {
         assert_eq!(cfg.escalate_model, None);
     }
 
-    /// 82 §2: only a manual pick becomes the default (`default_model`,
-    /// `agent.model` in config.yaml, `DefaultModelChanged`); a programmatic
-    /// switch changes the named session alone, and with no session nothing.
-    /// A new session without a model of its own starts on the default; one
-    /// opened with `CreateSessionOptions.model` (a meeting) leaves it alone.
+    /// 148 R1: a pick with a session switches that session alone, manual or
+    /// not — `default_model`, `agent.model` in config.yaml and
+    /// `DefaultModelChanged` stay put. Only a manual pick with no session (the
+    /// Settings path) sets the default; a programmatic one with no session
+    /// resolves and nothing else. A new session without a model of its own
+    /// starts on the default; one opened with `CreateSessionOptions.model`
+    /// (a meeting, a draft pick) leaves it alone.
     #[tokio::test]
-    async fn only_a_manual_pick_becomes_the_default() {
+    async fn only_a_settings_pick_becomes_the_default() {
         let mut a = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
@@ -11346,7 +11429,7 @@ pub(crate) mod tests {
         assert_eq!(a.default_model, at_start);
         assert!(!yaml.exists());
 
-        // The picker: the session and the default move together, announced.
+        // (a) The in-chat picker: the session moves, the default does not.
         let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let sink = Sink::spawn_with_mailbox(Sink(Arc::clone(&seen)), runtime::subscriber_mailbox());
         a.rt.subscribe::<Sink, AgentEvent>(&sink).await;
@@ -11359,10 +11442,36 @@ pub(crate) mod tests {
         .unwrap();
         let row = a.store.session(root).await.unwrap().unwrap();
         assert_eq!(row.model, "testvis/eyes");
+        assert_eq!(a.default_model, at_start);
+        assert!(!yaml.exists());
+        // The bus is a `tell`; a round trip through the sink orders us after it.
+        let _ = sink
+            .ask(AgentEvent::TitleChanged {
+                session: root,
+                title: String::new(),
+                tags: Vec::new(),
+            })
+            .await;
+        assert!(
+            !seen
+                .lock()
+                .iter()
+                .any(|e| matches!(e, AgentEvent::DefaultModelChanged { .. })),
+            "{:?}",
+            seen.lock()
+        );
+
+        // (b) Settings: no session, manual — the default, config.yaml, the event.
+        a.set_model(SetModel {
+            session: None,
+            model: "testvis/eyes".into(),
+            manual: true,
+        })
+        .await
+        .unwrap();
         assert_eq!(a.default_model, "testvis/eyes");
         let written = std::fs::read_to_string(&yaml).unwrap();
         assert!(written.contains("  model: testvis/eyes\n"), "{written}");
-        // The bus is a `tell`; a round trip through the sink orders us after it.
         let _ = sink
             .ask(AgentEvent::TitleChanged {
                 session: root,
@@ -11410,12 +11519,12 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// 83 §2: only a manual pick becomes the default effort (`default_effort`,
-    /// `agent.effort` in config.yaml, `DefaultEffortChanged`); a programmatic
-    /// change sets the named session's row alone, and with no session nothing.
-    /// A new session starts on the default.
+    /// 148 R1: an effort pick with a session changes that session's row
+    /// alone, manual or not; only a manual change with no session (Settings)
+    /// sets `default_effort`, `agent.effort` in config.yaml and announces
+    /// `DefaultEffortChanged`. A new session starts on the default.
     #[tokio::test]
-    async fn only_a_manual_effort_becomes_the_default() {
+    async fn only_a_settings_effort_becomes_the_default() {
         let mut a = agents().await;
         let dir = a.rt.data_dir.clone();
         let yaml = dir.join("config.yaml");
@@ -11442,16 +11551,29 @@ pub(crate) mod tests {
         assert_eq!(a.default_effort, None);
         assert!(!yaml.exists());
 
-        // The picker: the session and the default move together, announced.
+        // (a) The in-chat picker: the session moves, the default does not.
         a.set_effort(SetEffort {
             session: Some(root),
+            effort: Some("medium".into()),
+            manual: true,
+        })
+        .await
+        .unwrap();
+        let row = a.store.session(root).await.unwrap().unwrap();
+        assert_eq!(row.effort.as_deref(), Some("medium"));
+        assert_eq!(a.default_effort, None);
+        assert!(!yaml.exists());
+
+        // (b) Settings: no session, manual — the default, config.yaml, the event.
+        a.set_effort(SetEffort {
+            session: None,
             effort: Some("high".into()),
             manual: true,
         })
         .await
         .unwrap();
         let row = a.store.session(root).await.unwrap().unwrap();
-        assert_eq!(row.effort.as_deref(), Some("high"));
+        assert_eq!(row.effort.as_deref(), Some("medium"));
         assert_eq!(a.default_effort.as_deref(), Some("high"));
         let written = std::fs::read_to_string(&yaml).unwrap();
         assert!(written.contains("  effort: \"high\"\n"), "{written}");
@@ -11489,6 +11611,151 @@ pub(crate) mod tests {
             agents.ask(GetDefaultEffort).await.unwrap(),
             Some("high".to_owned())
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 148 E2: a native child of a desk starts on the desk agent's configured
+    /// model ([`SetDeskModel`]) unless the spawn names one; a desk without a
+    /// model, and any non-desk parent, fall through to `agent.subagents.model`
+    /// and then the default.
+    #[tokio::test]
+    async fn a_desk_child_starts_on_the_desk_agents_model() {
+        let mut a = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let default = a.default_model.clone();
+        async fn child_of(a: &mut Agents, parent: SessionId, pick: Option<&str>) -> String {
+            let child = SessionId::new();
+            a.session(Some(child), Some((parent, "kid")), None, (pick, None))
+                .await
+                .unwrap();
+            a.store.session(child).await.unwrap().unwrap().model
+        }
+
+        let (desk, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.desk_models.insert(desk, Some("testvis/eyes".into()));
+        assert_eq!(child_of(&mut a, desk, None).await, "testvis/eyes");
+        // An explicit pick wins.
+        assert_eq!(
+            child_of(&mut a, desk, Some("testvis/blind")).await,
+            "testvis/blind"
+        );
+
+        // A desk without a model: the subagent default, then the default.
+        let (bare, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.desk_models.insert(bare, None);
+        assert_eq!(child_of(&mut a, bare, None).await, default);
+        let blind = a.catalog.resolve("testvis/blind", &*a.configured).unwrap();
+        *a.subagent_model.write().unwrap_or_else(|p| p.into_inner()) = Some(blind);
+        assert_eq!(child_of(&mut a, bare, None).await, "testvis/blind");
+        // A non-desk parent never sees a desk model.
+        let (plain, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        assert_eq!(child_of(&mut a, plain, None).await, "testvis/blind");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `ask` → the desk sessions with a model entry (test-only inspection).
+    #[derive(Clone, Copy, Debug)]
+    struct DeskModelKeys;
+
+    impl Message<DeskModelKeys> for Agents {
+        type Reply = Vec<SessionId>;
+
+        async fn handle(
+            &mut self,
+            _: DeskModelKeys,
+            _: &mut Context<Self, Self::Reply>,
+        ) -> Vec<SessionId> {
+            self.desk_models.keys().copied().collect()
+        }
+    }
+
+    /// 148 R1 F5: a desk's model entry leaves with the desk — on a put-away
+    /// (`MarkDesk { agent: None }`) and on `DeleteSession`.
+    #[tokio::test]
+    async fn desk_models_leave_with_the_desk() {
+        let a = agents().await;
+        let dir = a.rt.data_dir.clone();
+        let agents = Agents::spawn(a);
+        let open = |agents: &ActorRef<Agents>| {
+            let agents = agents.clone();
+            async move {
+                let s = agents
+                    .ask(CreateSession {
+                        options: CreateSessionOptions::default(),
+                        peer: None,
+                    })
+                    .await
+                    .unwrap()
+                    .session;
+                agents
+                    .ask(MarkDesk {
+                        session: s,
+                        agent: Some("ops".into()),
+                    })
+                    .await
+                    .unwrap();
+                agents
+                    .ask(SetDeskModel {
+                        session: s,
+                        model: Some("x/y".into()),
+                    })
+                    .await
+                    .unwrap();
+                s
+            }
+        };
+        let put_away = open(&agents).await;
+        agents
+            .ask(MarkDesk {
+                session: put_away,
+                agent: None,
+            })
+            .await
+            .unwrap();
+        let deleted = open(&agents).await;
+        agents
+            .ask(DeleteSession { session: deleted })
+            .await
+            .unwrap();
+        let kept = open(&agents).await;
+        assert_eq!(agents.ask(DeskModelKeys).await.unwrap(), vec![kept]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 148 R1 F6: a new session with its own model inherits the default
+    /// effort only when that model takes it; a model without reasoning
+    /// options drops it (its own default applies), an unknown pass-through
+    /// id keeps it, and an explicit effort pick is never second-guessed here.
+    #[tokio::test]
+    async fn an_inherited_default_effort_the_model_rejects_is_dropped() {
+        let mut a = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        a.default_effort = Some("high".into());
+        async fn row_effort(a: &Agents, id: SessionId) -> Option<String> {
+            a.store.session(id).await.unwrap().unwrap().effort
+        }
+        // `blind` takes no effort: the inherited default is dropped.
+        let (blind, _) = a
+            .session(None, None, None, (Some("testvis/blind"), None))
+            .await
+            .unwrap();
+        assert_eq!(row_effort(&a, blind).await, None);
+        // A pass-through id cannot be checked: the default is kept.
+        let (raw, _) = a
+            .session(None, None, None, (Some("nowhere/model"), None))
+            .await
+            .unwrap();
+        assert_eq!(row_effort(&a, raw).await.as_deref(), Some("high"));
+        // An explicit pick is the caller's (validated upstream).
+        let (picked, _) = a
+            .session(None, None, None, (Some("testvis/blind"), Some("low")))
+            .await
+            .unwrap();
+        assert_eq!(row_effort(&a, picked).await.as_deref(), Some("low"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -13,7 +13,7 @@ import type { LoadedPage } from '@/rpc/extra'
 import { useConnection } from '@/store/connection'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
-import { EMPTY, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { EMPTY, openDraftSession, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { openContextPicker, type ShakeCategory } from './ContextPicker'
 import { openBroadcastDialog } from './BroadcastDialog'
 
@@ -38,7 +38,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   {
     name: '/subagent',
     hint: '[model|off]',
-    desc: "model for subagents spawned without an explicit one (off = the session's model)",
+    desc: 'default model for theuth subagents spawned without an explicit one (off = same as new sessions)',
   },
   {
     name: '/effort',
@@ -235,6 +235,7 @@ export function surfaceOf(e: Event): Surface | null {
 
 export type SettingsTab =
   | 'general'
+  | 'chat'
   | 'loop'
   | 'approvals'
   | 'communication'
@@ -311,8 +312,8 @@ export const FRESH: LoadedPage = {
 }
 
 /** Park `name` (and any `words` typed after it) on `session`'s composer — creating and opening the session when
- * there is none — and show that chat. No turn starts: the next send hands the skill over with the user's words
- * (`use_skill`). Returns the session shown. */
+ * there is none (`openDraftSession`: a draft model/effort pick rides along, 148 R1) — and show that chat. No turn
+ * starts: the next send hands the skill over with the user's words (`use_skill`). Returns the session shown. */
 export async function draftSkill(
   api: Api,
   navigate: Navigate,
@@ -320,7 +321,7 @@ export async function draftSkill(
   name: string,
   words = '',
 ): Promise<string> {
-  const id = session ?? (await api.new_session())
+  const id = session ?? (await openDraftSession(api)).id
   if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
   useSkillDraft.getState().set(id, name)
   // Before `navigate`: the chat's composer reads its text from the draft store as it mounts.
@@ -365,12 +366,16 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     case '/new':
       await navigate({ to: '/new' })
       return
+    // 148 R1: a pick is this chat's only — the engine switches the session; with no session yet the draft keeps
+    // it until the first send creates the session (never `set_model(null, …)`, which would set the default).
     case '/model':
       if (!arg) return openSurface('model')
+      if (!session) return useDrafts.getState().setPick({ model: arg })
       await api.set_model(session, arg, true)
       return
     case '/effort':
       if (!arg) return openSurface('model')
+      if (!session) return useDrafts.getState().setPick({ effort: arg === 'clear' ? null : arg })
       await api.set_effort(session, arg === 'clear' ? null : arg, true)
       return
     case '/title': {
@@ -391,10 +396,10 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     }
     case '/subagent': {
-      if (!arg) return settings(navigate, 'loop', session)
+      if (!arg) return settings(navigate, 'chat', session)
       const m = await api.set_subagent_model(arg === 'off' || arg === 'clear' ? null : arg)
       active().qc.setQueryData(queryKeys.subagentModel, m)
-      toast(m ? `subagent model: ${m.id}` : 'subagent model: off')
+      toast(m ? `subagent model: ${m.id}` : 'subagent model: same as new sessions')
       return
     }
     // 52 §3.2: the Agent loop dropdown's RPC and query; the server rejects unavailable/text-only ids.
@@ -696,7 +701,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       // `/<skill> [args]` hands the skill to the model now (04 §2.4): `isCommand` let only a known skill (or, before
       // the index loads, a plain word the agent may name) through; unknown words are message text, never an error.
       // `/skill:<name>` never reaches here: the composer parks it (`draftSkill`) and keeps the words typed after it.
-      const id = session ?? await api.new_session()
+      const id = session ?? (await openDraftSession(api)).id
       if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
       await api.use_skill(id, cmd.slice(1), arg)
       if (!session) await navigate({ to: '/c/$session', params: { session: id } })
