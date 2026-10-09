@@ -121,7 +121,8 @@ test('finish: "send it" on a closed utterance sends; a partial that only armed i
   expect(finish(sent, false)).toEqual({ value: 'ship it', caret: 7, id: 'd1', send: true })
   const armed: Active = { ...base, utts: [{ text: 'ship it send', shaped: 'ship it', final: false, command: { command: 'send', near_miss: false } }] }
   expect(finish(armed, false).send).toBe(false)
-  expect(finish(sent, true)).toEqual({ value: '', caret: 0, id: 'd1', send: false })
+  // Esc: `before + after` back, no id (nothing to report), never a send.
+  expect(finish(sent, true)).toEqual({ value: '', caret: 0, id: '', send: false })
   const scratched: Active = { ...base, utts: [{ text: 'foo', shaped: 'foo', final: true, command: { command: 'scratch_that' } }] }
   expect(finish(scratched, false).send).toBe(false)
 })

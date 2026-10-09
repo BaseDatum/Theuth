@@ -110,7 +110,10 @@ let discarding = false
 const subs = new Set<() => void>()
 const finishers = new Set<(r: Finish) => void>()
 
-/** What `onFinish` hands the surface: the splice, the dictation's id (for `correction`), and whether "send it" was said. */
+/**
+ * What `onFinish` hands the surface: the splice, the dictation's id (for `correction`; `''` when Esc discarded it —
+ * §6.1 reports nothing for a discard), and whether "send it" was said.
+ */
 export type Finish = Splice & { id: string; send: boolean }
 
 /**
@@ -118,12 +121,14 @@ export type Finish = Splice & { id: string; send: boolean }
  * closed utterance carries the `send` command — a partial that only armed it never sends.
  */
 export function finish(a: Active, discard: boolean): Finish {
-  const r = discard ? { value: a.before + a.after, caret: a.before.length } : splice(a.before, a.after, a.utts)
-  const send = !discard && a.utts.some((u) => u.final && u.command?.command === 'send')
-  return { ...r, id: a.id, send }
+  if (discard) return { value: a.before + a.after, caret: a.before.length, id: '', send: false }
+  return { ...splice(a.before, a.after, a.utts), id: a.id, send: a.utts.some((u) => u.final && u.command?.command === 'send') }
 }
 
-/** 153 §6.3: a dictionary suggestion the engine published; `reporter` is the token the sending surface gave `correction`. */
+/**
+ * 153 §6.3: a dictionary suggestion the engine published. `reporter` is the token the sending surface gave `correction`
+ * (its card shows it); `dictationId` the dictation that report named — the event carries none, and ▶ plays its audio.
+ */
 export type Suggestion = {
   id: string
   heard: string
@@ -131,10 +136,11 @@ export type Suggestion = {
   occurrences: number
   hasAudio: boolean
   reporter: object | null
+  dictationId: string | null
 }
 let suggestion: Suggestion | null = null
-/** The surface that last reported a `correction`; its card shows the suggestion (§6.3 step 4). */
-let reporter: object | null = null
+/** The last `correction` report: who sent, and which dictation (§6.3 step 4). */
+let reporter: { by: object; dictationId: string } | null = null
 const suggestionSubs = new Set<() => void>()
 const suggestionSnapshot = () => suggestion
 const subscribeSuggestion = (cb: () => void) => {
@@ -160,7 +166,7 @@ export function clearSuggestion(id: string): void {
  */
 export function correction(api: Api, id: string, sentText: string, by: object): void {
   if (!id || !sentText) return
-  reporter = by
+  reporter = { by, dictationId: id }
   void api.dictation_correction(id, sentText).catch(() => undefined)
 }
 
@@ -291,7 +297,15 @@ export function anchor(value: string, start: number | null, end: number | null):
 
 function handle(e: VoiceEvent): void {
   if (e.type === 'DictionarySuggestion') {
-    suggestion = { id: e.id, heard: e.heard, typed: e.typed, occurrences: e.occurrences, hasAudio: e.has_audio, reporter }
+    suggestion = {
+      id: e.id,
+      heard: e.heard,
+      typed: e.typed,
+      occurrences: e.occurrences,
+      hasAudio: e.has_audio,
+      reporter: reporter?.by ?? null,
+      dictationId: reporter?.dictationId ?? null,
+    }
     for (const cb of suggestionSubs) cb()
     return
   }
