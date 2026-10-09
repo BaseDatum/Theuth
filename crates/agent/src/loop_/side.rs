@@ -32,8 +32,9 @@ pub(crate) struct Side {
 
 impl Shared {
     /// The role's model: `Escalate` → escalate → title → session; `Title` →
-    /// title → session; `Vision` → the fallback or an error; `Session` → the
-    /// session's model (its resolution error, if any); `Named` → the catalog.
+    /// title → session; `Polish` → polish → title → session (153 §9.3);
+    /// `Vision` → the fallback or an error; `Session` → the session's model
+    /// (its resolution error, if any); `Named` → the catalog.
     pub(crate) fn role_model(&self, role: &ModelRole) -> Result<Resolved, String> {
         let slot = |s: &std::sync::RwLock<Option<Resolved>>| {
             s.read().unwrap_or_else(|p| p.into_inner()).clone()
@@ -50,6 +51,9 @@ impl Shared {
                 .or_else(|| slot(&self.title_model))
                 .map_or_else(session, Ok),
             ModelRole::Title => slot(&self.title_model).map_or_else(session, Ok),
+            ModelRole::Polish => slot(&self.polish_model)
+                .or_else(|| slot(&self.title_model))
+                .map_or_else(session, Ok),
             ModelRole::Vision => {
                 slot(&self.vision_model).ok_or_else(|| "no vision fallback model is set".to_owned())
             }

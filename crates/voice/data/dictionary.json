@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "file": "dictionary.v1.json.gz",
+  "sha256": "b63a9f7386a904cdf9b8500789c8f604bee75207f4f64aba67a6478af6d3456c",
+  "bytes": 296865,
+  "terms": 40641,
+  "pairs": 492,
+  "built_at": "2026-10-09T17:48:03Z",
+  "sources": [
+    {
+      "name": "curated-harnesses",
+      "terms": 149
+    },
+    {
+      "name": "talon-symbols",
+      "terms": 37
+    },
+    {
+      "name": "talon-formatters",
+      "terms": 16
+    },
+    {
+      "name": "talon-abbreviations",
+      "terms": 436
+    },
+    {
+      "name": "talon-numbers",
+      "terms": 40
+    },
+    {
+      "name": "talon-extensions",
+      "terms": 35
+    },
+    {
+      "name": "talon-tlds",
+      "terms": 8
+    },
+    {
+      "name": "models.dev",
+      "terms": 8691
+    },
+    {
+      "name": "huggingface-top-models",
+      "terms": 3992
+    },
+    {
+      "name": "linguist-languages",
+      "terms": 822
+    },
+    {
+      "name": "kubernetes-kinds",
+      "terms": 158
+    },
+    {
+      "name": "botocore-services",
+      "terms": 1006
+    },
+    {
+      "name": "homebrew-formula",
+      "terms": 8641
+    },
+    {
+      "name": "homebrew-cask",
+      "terms": 7780
+    },
+    {
+      "name": "tldr-pages",
+      "terms": 4697
+    },
+    {
+      "name": "oh-my-zsh-plugins",
+      "terms": 370
+    },
+    {
+      "name": "top-pypi-packages",
+      "terms": 15000
+    }
+  ],
+  "skipped": []
+}

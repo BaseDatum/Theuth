@@ -39,6 +39,8 @@ pub enum CallKind {
     CodeMap,
     /// 125 R1: a native subagent's one-shot consultation of its ancestor's advisor.
     Consult,
+    /// 153 §9: a dictation polish/rewrite side call.
+    Polish,
 }
 
 impl CallKind {
@@ -56,6 +58,7 @@ impl CallKind {
             Self::Autoresearch => "autoresearch",
             Self::CodeMap => "codemap",
             Self::Consult => "consult",
+            Self::Polish => "polish",
         }
     }
 }
@@ -81,6 +84,7 @@ impl FromStr for CallKind {
             "autoresearch" => Ok(Self::Autoresearch),
             "codemap" => Ok(Self::CodeMap),
             "consult" => Ok(Self::Consult),
+            "polish" => Ok(Self::Polish),
             _ => Err(format!("unknown CallKind: {s:?}")),
         }
     }
@@ -100,13 +104,16 @@ pub enum ModelRole {
     Session,
     /// An explicit `provider/model` or bare id.
     Named(String),
+    /// `voice.polish_model` → `agent.title_model` → the session's model (153 §9.3).
+    Polish,
 }
 
 /// `ask` on the `agent` actor → `Result<SideReply, String>`: one non-streaming,
 /// no-tools, no-history request on a role model, run detached from the session's
 /// turn and cost-attributed to `session` under `kind`. Fails with the provider's
 /// error, `timed out` after `budget`, or `cancelled` when the session closes.
-/// Consumers: the title turn, `decision::escalate`, the 57 §11 training composer.
+/// Consumers: the title turn, `decision::escalate`, the 57 §11 training composer,
+/// 153 §9 polish/rewrite (`CallKind::Polish` on `ModelRole::Polish`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SideCall {
     /// Session the call belongs to (cost row owner; also the `Session` role's model).
@@ -119,7 +126,7 @@ pub struct SideCall {
     pub user: String,
     /// Wall-clock budget for the whole call.
     pub budget: Duration,
-    /// Cost tag (`model_calls.kind`): `Escalate` for the oracle, `Title` for titles.
+    /// Cost tag (`model_calls.kind`): `Escalate` for the oracle, `Title` for titles, `Polish` for dictation polish.
     pub kind: CallKind,
 }
 
@@ -173,6 +180,7 @@ mod tests {
             CallKind::Endless,
             CallKind::CodeMap,
             CallKind::Consult,
+            CallKind::Polish,
         ] {
             assert_eq!(k.as_str().parse::<CallKind>().unwrap(), k);
         }

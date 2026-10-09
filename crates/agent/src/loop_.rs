@@ -721,6 +721,9 @@ struct Shared {
     /// Tier-2 model of the decision oracle (57 §0.9); `None` = the title model,
     /// then the session's model. Shared with the supervisor.
     escalate_model: Arc<RwLock<Option<Resolved>>>,
+    /// 153 §9.2 `voice.polish_model`; `None` = the title model, then the session's
+    /// model. Shared with the supervisor ([`Session::with_polish_model`]).
+    polish_model: Arc<RwLock<Option<Resolved>>>,
     /// Subagent default model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
     /// 136 §2.2: the session's money cap from [`SetBudgetNow`] (persisted on
@@ -884,6 +887,7 @@ impl Session {
                 title_model,
                 vision_model,
                 escalate_model,
+                polish_model: Arc::default(),
                 subagent_model,
                 budget: Arc::default(),
                 store,
@@ -949,6 +953,12 @@ impl Session {
     /// 136 R-22: the persisted money cap a resumed session still runs under.
     pub(crate) fn with_budget(self, budget: Option<crate::Budget>) -> Self {
         *self.shared.budget.write() = budget;
+        self
+    }
+
+    /// 153 §9.2: the supervisor's shared `voice.polish_model` slot.
+    pub(crate) fn with_polish_model(mut self, slot: Arc<RwLock<Option<Resolved>>>) -> Self {
+        self.shared.polish_model = slot;
         self
     }
 
@@ -10237,6 +10247,34 @@ mod tests {
             "model: no such model"
         );
         assert_eq!(id_of(ModelRole::Escalate).unwrap(), "cheap/e");
+    }
+
+    /// 153 §9.3: `Polish` = polish → title → session, independent of the escalate slot.
+    #[tokio::test]
+    async fn polish_chain_prefers_polish_then_title_then_session() {
+        let scratch = crate::TestDir::new("polish-role");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let (base_url, _hits, _) = fake_openai(vec![]).await;
+        let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
+        let shared = &turn.shared;
+        let id_of = |role: ModelRole| shared.role_model(&role).map(|r| r.id);
+
+        assert_eq!(id_of(ModelRole::Polish).unwrap(), "fake/m");
+        *shared.escalate_model.write().unwrap() = Some(resolved("cheap/e"));
+        assert_eq!(id_of(ModelRole::Polish).unwrap(), "fake/m");
+        *shared.title_model.write().unwrap() = Some(resolved("cheap/t"));
+        assert_eq!(id_of(ModelRole::Polish).unwrap(), "cheap/t");
+        *shared.polish_model.write().unwrap() = Some(resolved("small/p"));
+        assert_eq!(id_of(ModelRole::Polish).unwrap(), "small/p");
+        assert_eq!(id_of(ModelRole::Title).unwrap(), "cheap/t");
+        *shared.polish_model.write().unwrap() = None;
+        *shared.title_model.write().unwrap() = None;
+        shared.model.lock().unwrap().error = Some("no such model".into());
+        assert_eq!(
+            id_of(ModelRole::Polish).unwrap_err(),
+            "model: no such model"
+        );
     }
 
     /// 57 §2 / 51 §6.1: a side call is one `escalate` attempt on the session's
