@@ -95,6 +95,9 @@ wire! {
         pub remeasure_after: u32,
         /// Every this many keeps, one incumbent sample at the next experiment's start.
         pub remeasure_every: u32,
+        /// A keep whose |Δ| is at least this many σ opens a new segment automatically
+        /// (§5.3 Revision 2); 0 disables.
+        pub regime_sigma: f64,
     }
 }
 
@@ -284,6 +287,7 @@ impl Default for GateConfig {
             confirm_runs: 2,
             remeasure_after: 6,
             remeasure_every: 5,
+            regime_sigma: 10.0,
         }
     }
 }
@@ -509,6 +513,7 @@ mod tests {
         assert_eq!(c.defaults.budget.usd, 20.0);
         assert_eq!(c.defaults.budget.experiments, 120);
         assert_eq!(c.gate.z_fast, 3.5);
+        assert_eq!(c.gate.regime_sigma, 10.0);
         let c: AutoresearchConfig =
             serde_yaml::from_str("gate: {z: 2.5}\nreview: {model: off}").unwrap();
         assert_eq!(c.gate.z, 2.5);

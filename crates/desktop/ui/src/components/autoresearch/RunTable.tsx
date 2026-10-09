@@ -2,7 +2,8 @@ import { type ReactNode, useMemo, useState } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
-import { OUTCOME_CLASS, type RunFilter, duration, filterRuns, metric, outcome, outcomeLabel, pct, rowDuration, shortSha, sigmas, usd } from './model'
+import { Delta } from './StudyList'
+import { OUTCOME_CLASS, type RunFilter, duration, filterRuns, metric, outcome, outcomeLabel, rowDuration, shortSha, sigmas, usd } from './model'
 
 const FILTERS: { id: RunFilter; label: string }[] = [
   { id: 'all', label: 'all' },
@@ -19,7 +20,7 @@ export function VerdictBadge({ row, className }: { row: Pick<ExperimentRow, 'sta
  * §13.1 the run table: #, verdict, value, Δ vs the incumbent, σ-multiple, idea [category], duration, cost, commit;
  * filters all / kept / flagged. A row is a button to its experiment. Newest first, as the RPC returns them.
  */
-export function RunTable({ rows, metricName, pending, active, onPick }: { rows: ExperimentRow[] | undefined; metricName: string; pending: boolean; active: number | null; onPick: (n: number) => void }) {
+export function RunTable({ rows, metricName, direction, pending, active, onPick }: { rows: ExperimentRow[] | undefined; metricName: string; direction: 'lower' | 'higher'; pending: boolean; active: number | null; onPick: (n: number) => void }) {
   const [filter, setFilter] = useState<RunFilter>('all')
   const shown = useMemo(() => filterRuns(rows ?? [], filter), [rows, filter])
   return (
@@ -87,7 +88,9 @@ export function RunTable({ rows, metricName, pending, active, onPick }: { rows: 
                     <VerdictBadge row={r} />
                   </Td>
                   <Td className="text-right tabular-nums">{metric(r.metric, '')}</Td>
-                  <Td className={cn('text-right tabular-nums', r.state === 'kept' && 'text-success')}>{pct(r.delta_pct)}</Td>
+                  <Td className="text-right">
+                    <Delta direction={direction} delta_pct={r.delta_pct} muted={r.state !== 'kept'} />
+                  </Td>
                   <Td className="hidden text-right tabular-nums md:table-cell">{sigmas(r.z)}</Td>
                   <Td className="max-w-[360px] min-w-[150px] whitespace-normal">
                     <span className="line-clamp-2">

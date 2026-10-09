@@ -33,9 +33,13 @@ pub struct Store {
     pool: SqlitePool,
 }
 
-/// RFC 3339 now (UTC, seconds).
+/// RFC 3339 now (UTC, milliseconds). Segments cut the sample series at `opened_at` by string
+/// order (`samples` has no segment column), and a regime segment opens at a keep's first
+/// sample (§5.3 Revision 2) — at whole seconds a sub-second bench's neighbours shared the cut.
 pub fn now() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {

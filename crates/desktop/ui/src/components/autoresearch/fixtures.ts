@@ -312,7 +312,7 @@ export const SETTINGS: AutoresearchConfig = {
   enabled: true,
   root: null,
   defaults: { repeats: 3, bench_timeout: '600s', checks_timeout: '300s', crash_retries: 2, budget: { usd: 20, per_experiment_usd: 1.5, hours: 10, experiments: 120 }, parallel: 1 },
-  gate: { z: 2, z_fast: 3.5, z_discard: 1, z_suspicious: 8, confirm_runs: 2, remeasure_after: 6, remeasure_every: 5 },
+  gate: { z: 2, z_fast: 3.5, z_discard: 1, z_suspicious: 8, confirm_runs: 2, remeasure_after: 6, remeasure_every: 5, regime_sigma: 10 },
   noise: { max_cv: 0.05 },
   plateau: { window: 12 },
   pause: { crash_streak: 4, custody_refusals: 2 },
@@ -382,6 +382,7 @@ function study(args: { slug: string; goal?: string; repo?: string; state: StudyS
     changesets: args.changesets ?? [],
     needs_eyes: args.eyes ?? [],
     tail: info.current !== null ? 'CASE n4000 time_ms=144.196\nCASE n8000 time_ms=591.764\nCASE n12000 time_ms=1213.014\nMETRIC time_ms=1948.974' : null,
+    final_holdout: args.state.state === 'finished' && args.holdout ? '61.0 → 49.7 (−18.5 %)' : null,
   }
   return { info, detail, rows: [...b.rows].reverse(), details: b.details }
 }

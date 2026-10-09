@@ -93,11 +93,13 @@ impl Fake {
         *f.values.lock() = v.iter().copied().collect();
         Arc::new(f)
     }
-    fn decide(&self, verdict: Verdict, delta_pct: f64, z: f64) {
+    /// `delta` is direction-normalised (the harness studies are lower-is-better), so the
+    /// raw `delta_pct` of a win reads negative (Revision 2).
+    fn decide(&self, verdict: Verdict, delta: f64, z: f64) {
         *self.decide.lock() = Some(GateStep::Decide {
             verdict,
-            delta: delta_pct,
-            delta_pct,
+            delta,
+            delta_pct: -delta,
             z: Some(z),
         });
     }
@@ -360,6 +362,7 @@ impl Backend for Fake {
             base_mean: 100.0,
             final_mean: study.incumbent_mean.unwrap_or(100.0),
             delta_pct: -10.0,
+            holdout: Some("5 → 4 (−20.0 %)".into()),
             ..Headline::default()
         };
         // W2 records the changesets and the report steps; the actor's §11.3 turn, the
@@ -773,7 +776,7 @@ async fn one_experiment_kept_moves_the_incumbent() {
     .unwrap();
     assert_eq!(report.verdict, Verdict::Improved);
     assert_eq!(report.samples.len(), 1);
-    assert_eq!(report.delta_pct, Some(10.0));
+    assert_eq!(report.delta_pct, Some(-10.0), "raw Δ: 100 → 90 reads −10 %");
     let e = run(
         &mut h.studies,
         Run {
@@ -837,7 +840,7 @@ async fn one_experiment_kept_moves_the_incumbent() {
         .unwrap();
     assert_eq!(d.series.incumbent.len(), 2, "baseline step + the keep");
     assert_eq!(d.info.incumbent.kept, 1);
-    assert_eq!(d.info.delta_pct.map(|p| p.round()), Some(10.0));
+    assert_eq!(d.info.delta_pct.map(|p| p.round()), Some(-10.0));
     let x = experiment(
         &mut h.studies,
         Experiment {
@@ -1886,7 +1889,7 @@ fn metric_line_reads_the_raw_change() {
     study.incumbent_mean = Some(8996.0);
     let mut exp = ExperimentRecord::open("s", 2, 0, "inc");
     exp.metric = Some(39.0);
-    exp.delta_pct = Some(99.6); // direction-normalised, positive = better
+    exp.delta_pct = Some(-99.6);
     exp.z = Some(15.3);
     exp.n_samples = 3;
     let line = super::metric_line(&study, &exp);
@@ -1894,6 +1897,85 @@ fn metric_line_reads_the_raw_change() {
         line.contains("8996 -> 39.0 (-99.6%, 15.3 sigma, n=3)"),
         "{line}"
     );
+}
+
+/// §5.3 Revision 2 (140-P live: 8996 → 39 ms left σ ≈ 500 ms): a keep with |Δ| ≥
+/// `gate.regime_sigma` × σ opens a segment at the keep; σ restarts from the keep's own
+/// samples (one re-measure tops a single sample up); `regime_sigma: 0` disables it.
+#[tokio::test]
+async fn a_regime_change_opens_a_segment_at_the_keep() {
+    // baseline 100/101/99 (σ 1), candidate 50, the segment's top-up re-measure 50.5.
+    let fake = Fake::with_values(&[100.0, 101.0, 99.0, 50.0, 50.5]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(&mut h.studies, b(session)).await.unwrap();
+    fake.decide(Verdict::Improved, 50.0, 12.0);
+    run(&mut h.studies, r(session, "x")).await.unwrap();
+    log(&mut h.studies, l(session, Decision::Auto))
+        .await
+        .unwrap();
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert_eq!(s.segment, 1);
+    assert_eq!(s.incumbent_mean, Some(50.25));
+    assert!(
+        (s.sigma.unwrap() - 0.5f64 / 2f64.sqrt()).abs() < 1e-9,
+        "{:?}",
+        s.sigma
+    );
+    let seg = h.studies.store.get_segment("t1", 1).await.unwrap().unwrap();
+    assert_eq!(seg.opened_by, By::Plugin);
+    assert_eq!((seg.baseline_mean, seg.baseline_n), (Some(50.25), 2));
+    assert!(
+        seg.reason.as_deref() == Some("regime change at #1: Δ 50.0 ms ≥ 10σ (σ 1.00)"),
+        "{:?}",
+        seg.reason
+    );
+    let ev = h
+        .studies
+        .store
+        .list_events("t1", Some("segment_auto"), 5)
+        .await
+        .unwrap();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].payload["segment"], 1);
+    assert_eq!(ev[0].payload["n"], 1);
+    assert_eq!(ev[0].payload["sigma"], 1.0);
+    assert_eq!(ev[0].payload["delta"], 50.0);
+    // The keep's samples (retagged to the new incumbent) are the segment's; the old baseline is not.
+    let inc = incumbent_samples(&h.studies.env(), &s, "keep0001")
+        .await
+        .unwrap();
+    assert_eq!(inc.len(), 2);
+    assert_eq!(*fake.samples_taken.lock(), 5);
+    let d = detail(&mut h.studies, Detail { slug: "t1".into() })
+        .await
+        .unwrap();
+    assert_eq!(d.info.segment, 1);
+    assert!(
+        d.needs_eyes
+            .iter()
+            .any(|l| l.contains("segment 1 opened automatically at #1")),
+        "{:?}",
+        d.needs_eyes
+    );
+
+    // A keep under the threshold, or with the knob off, leaves the segment alone.
+    for (slug, regime_sigma, delta) in [("t2", 10.0, 5.0), ("t3", 0.0, 50.0)] {
+        let fake = Fake::with_values(&[100.0, 101.0, 99.0, 50.0]);
+        let mut cfg = AutoresearchConfig::default();
+        cfg.gate.regime_sigma = regime_sigma;
+        let mut h = harness(fake.clone(), cfg).await;
+        let session = started(&mut h, slug, 10).await;
+        begin(&mut h.studies, b(session)).await.unwrap();
+        fake.decide(Verdict::Improved, delta, 12.0);
+        run(&mut h.studies, r(session, "x")).await.unwrap();
+        log(&mut h.studies, l(session, Decision::Auto))
+            .await
+            .unwrap();
+        let s = h.studies.store.get_study(slug).await.unwrap().unwrap();
+        assert_eq!(s.segment, 0, "{slug}");
+        assert_eq!(*fake.samples_taken.lock(), 4, "{slug}");
+    }
 }
 
 /// 140-P live: one fire ran seven experiments. A turn that already began an
@@ -2423,6 +2505,35 @@ async fn finalize_writes_the_report_prose_before_the_tables() {
         "{} vs {}",
         d.info.budget_used.usd,
         x.cost_nanos
+    );
+    // Revision 2: finalize's holdout result reaches the Study view; its final-tree samples
+    // at n = 0 never pool into the base's holdout point.
+    assert_eq!(d.final_holdout.as_deref(), Some("5 → 4 (−20.0 %)"));
+    for (tree, v) in [("base0000", 5.0), ("keep0001", 4.0)] {
+        h.studies
+            .store
+            .insert_sample(
+                "t1",
+                &Sample {
+                    n: 0,
+                    k: 1,
+                    tree_sha: tree.into(),
+                    role: Some(SampleRole::Holdout),
+                    value: Some(v),
+                    at: now(),
+                    ..Sample::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let d = detail(&mut h.studies, Detail { slug: "t1".into() })
+        .await
+        .unwrap();
+    assert_eq!(d.series.holdout.len(), 1);
+    assert_eq!(
+        (d.series.holdout[0].n, d.series.holdout[0].metric),
+        (0, Some(5.0))
     );
 }
 
