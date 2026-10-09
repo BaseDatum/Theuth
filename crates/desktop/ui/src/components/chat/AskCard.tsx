@@ -59,7 +59,6 @@ function OwnAnswer({ value, active, kept, onChange, onFocus, ref }: { value: str
       value={value}
       onChange={(e) => onChange(e.target.value)}
       onFocus={onFocus}
-      // pointer-coarse: the row's 44 px buttons centre a one-line box 6 px down; the box starts there so growing keeps its first line level with them.
       className={cn('min-w-0 flex-1 pointer-coarse:mt-1.5', active && 'border-fg-accent', kept && 'text-fg-secondary')}
     />
   )
@@ -153,6 +152,8 @@ export function QuestionBlock({
             </div>
           )
         ) : (
+          // ○ and Skip stay level with the box's first line as it grows. pointer-coarse: ○ is 44 px and the one-line box 32,
+          // so the box and Skip start 6 px down — where `items-center` put them.
           <div className="flex items-start gap-2">
             <Button
               type="button"
@@ -172,6 +173,7 @@ export function QuestionBlock({
               variant={skipped ? 'secondary' : 'ghost'}
               aria-pressed={skipped}
               onClick={() => onChange(skipped ? null : { kind: 'skipped' })}
+              className="pointer-coarse:mt-1.5"
             >
               {skipped ? 'Skipped' : 'Skip'}
             </Button>
