@@ -220,6 +220,9 @@ Two UI tickets:
   on agent/roster/rpc/tui. Full gates above.
 - Smoke binary: `mbx build -p theuth` → copied to
   `~/.theuth/briefs/2026-10-08/148/smoke/t2`, `INTEGRATED2` = `sha=<HEAD>`.
+- Fold of main `3649b4f0` (134/149: `#[cfg(unix)] process_group` in
+  autoresearch, a smoke script line): no conflicts, nothing in our crates;
+  `cargo fmt --all -- --check` 0, `check -p theuth` clean; `t2` rebuilt.
 
 ## Follow-ups
 
