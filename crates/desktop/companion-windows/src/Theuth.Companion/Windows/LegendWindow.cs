@@ -39,27 +39,26 @@ internal sealed partial class LegendWindow : ToolWindow
         AutomationProperties.SetName(host, "Keyboard shortcuts");
         host.PreviewKeyDown += OnKey;
         Content = host;
-        // 149 NATIVE: a transient over the desktop — Mica Base (Acrylic Base where unsupported) like the panels, DWM round corners,
-        // nothing painted over the material; follows Windows light/dark live.
+        // 149 NATIVE: a transient over the desktop — Mica Base (Acrylic Base where unsupported) through Window.SystemBackdrop like the
+        // panels, DWM round corners, nothing painted over the material; follows Windows light/dark live.
         if (!Shape.RoundCorners(Hwnd)) Log.Write("legend: DWM rounded corners unavailable (rectangular)");
         ApplyEffects();
         if (SystemEffects.Current is { } fx) fx.Changed += () => { ApplyEffects(); if (IsOpen) Render(); };
-        Theme.Follow(host, () => { backdrop?.SetTheme(host.ActualTheme); if (IsOpen) Render(); });
+        Theme.Follow(host, () => { FrameworkBackdrop.ImmersiveDark(Hwnd, host.ActualTheme); if (IsOpen) Render(); });
+        FrameworkBackdrop.ImmersiveDark(Hwnd, host.ActualTheme);
         Activated += (_, e) =>
         {
             if (e.WindowActivationState != WindowActivationState.Deactivated && IsOpen) host.Focus(FocusState.Programmatic);
         };
     }
 
-    private Backdrop? backdrop;
+    private string? material;
 
-    public string BackdropText => backdrop?.Material ?? "solid";
+    public string BackdropText => material is null or "none" ? "solid" : material;
 
     private void ApplyEffects()
     {
-        bool transparency = SystemEffects.TransparencyOn;
-        if (transparency && backdrop is null) backdrop = Backdrop.Attach(this, BackdropKind.MicaBase, Theme.ColorOf(NativeLook.SolidBackgroundBase, host.ActualTheme), host.ActualTheme, "legend");
-        else if (!transparency && backdrop is not null) { backdrop.Dispose(); backdrop = null; }
+        if (material is null) material = FrameworkBackdrop.Apply(this, "legend");
     }
 
     public bool IsOpen { get; private set; }
@@ -119,8 +118,7 @@ internal sealed partial class LegendWindow : ToolWindow
     private void Render()
     {
         var theme = host.ActualTheme;
-        backdrop?.SetTheme(theme);
-        host.Background = backdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, theme) : Theme.Transparent;
+        host.Background = SystemBackdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, theme) : Theme.Transparent;
         host.Foreground = Theme.Brush(NativeLook.TextPrimary, theme);
         content.Children.Clear();
         var head = new Grid { Padding = new Thickness(14, 12, 14, 8) };

@@ -56,7 +56,6 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
     private readonly Border receiptBar;
     private readonly TextBox noteBox;
     private readonly TextBox replyBox;
-    private Backdrop? backdrop;
     private readonly List<(TextBlock Block, DateTimeOffset Since, string Prefix, string Suffix)> agoLabels = new();
     private readonly DispatcherQueueTimer agoTimer;
     private string renderKey = "";
@@ -109,9 +108,10 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         // 149 NATIVE: follow Windows light/dark live (system switch → RequestedTheme mirrors it, the material and the content re-render).
         Theme.Follow(host, () =>
         {
-            backdrop?.SetTheme(host.ActualTheme);
+            FrameworkBackdrop.ImmersiveDark(Hwnd, host.ActualTheme);
             if (IsOpen) Render(force: true);
         });
+        FrameworkBackdrop.ImmersiveDark(Hwnd, host.ActualTheme);
         Content = host;
         // 149 WW2 (§7.4 #2): opaque with DWM rounded corners (the system shadow stays); the W6 backdrop path is kept as-is below.
         if (!Shape.RoundCorners(Hwnd)) Log.Write("panel: DWM rounded corners unavailable (rectangular)");
@@ -177,34 +177,27 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
     /// <summary>The window the panel took the foreground from (Esc gives it back).</summary>
     public HWND Previous => previous;
 
-    /// <summary>"mica-base" · "acrylic-base" while attached; "opaque" when transparency effects are off or nothing is supported.</summary>
-    public string BackdropText => backdrop?.Material ?? "opaque";
+    /// <summary>"mica-base" · "acrylic-base" while the framework backdrop is set; "solid" when nothing is supported or `--panel-opaque`.</summary>
+    private string? material;
+
+    public string BackdropText => material is null or "none" ? "solid" : material;
 
     /// <summary>At quit the controller goes before the window: a window destroyed under a live backdrop target faulted in Microsoft.UI.Xaml.dll (build-B, Application Error 1000).</summary>
     protected override void OnClosingForGood()
     {
-        backdrop?.Dispose();
-        backdrop = null;
+        try { SystemBackdrop = null; } catch (Exception) { }
+        material = null;
     }
 
     /// <summary>C13 live (W6 item 3): the transparency switch attaches/detaches the material; the animation switch pins the window transitions.</summary>
     private void ApplyEffects(bool initial)
     {
-        // 149 NATIVE: Mica Base is the panel's backdrop by default (Acrylic Base where Mica is unsupported), with NO painted fill
-        // over it; the W6 light-Mica-under-dark-text finding is covered by Theme.Follow (RequestedTheme mirrors the system, and the
-        // configuration's Theme is set from the same value). `--panel-opaque` keeps the solid SolidBackgroundFillColorBase surface.
+        // 149 NATIVE: Mica Base through the framework's own Window.SystemBackdrop (Acrylic Base where Mica is unsupported), nothing
+        // painted over it; the framework takes the material's theme from the content's ActualTheme (the manual controller of 134 W6
+        // painted Mica light under a dark theme on build-B) and handles "Transparency effects" off itself. `--panel-opaque` keeps
+        // the solid SolidBackgroundFillColorBase surface.
         bool wantBackdrop = !Environment.GetCommandLineArgs().Contains("--panel-opaque");
-        bool transparency = SystemEffects.TransparencyOn;
-        if (wantBackdrop && transparency && backdrop is null)
-        {
-            backdrop = Backdrop.Attach(this, BackdropKind.MicaBase, Theme.ColorOf(NativeLook.SolidBackgroundBase, host.ActualTheme), host.ActualTheme, "panel");
-        }
-        else if ((!transparency || !wantBackdrop) && backdrop is not null)
-        {
-            backdrop.Dispose();
-            backdrop = null;
-            Log.Write("panel: backdrop detached — solid SolidBackgroundFillColorBase surface (transparency effects off)");
-        }
+        if (wantBackdrop && material is null) material = FrameworkBackdrop.Apply(this, "panel");
         SystemEffects.ApplyTransitions(Hwnd, SystemEffects.AnimationsOn);
         if (initial) return;
         Log.Write($"panel: effects applied — backdrop={BackdropText} animations={(SystemEffects.AnimationsOn ? "on" : "off")}");
@@ -454,10 +447,9 @@ internal sealed partial class AttentionPanelWindow : ToolWindow
         agoLabels.Clear();
         content.Children.Clear();
         var theme = host.ActualTheme;
-        backdrop?.SetTheme(theme);
         // 149 NATIVE: nothing is painted over the material (the 82 % tint of 134 W6 is gone); without a backdrop the surface is the
         // theme's SolidBackgroundFillColorBase.
-        host.Background = backdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, theme) : Theme.Transparent;
+        host.Background = SystemBackdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, theme) : Theme.Transparent;
         host.Foreground = Theme.Brush(NativeLook.TextPrimary, theme);
         receiptRow.BorderBrush = Theme.Brush(NativeLook.Divider, theme);
 

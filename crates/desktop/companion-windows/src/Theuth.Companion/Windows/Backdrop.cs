@@ -5,6 +5,49 @@ using WinRT;
 
 namespace Theuth.Companion.Ui;
 
+/// <summary>
+/// 149 NATIVE: the framework-managed system backdrop for a window that IS activated (the panels, the legend): <c>Window.SystemBackdrop</c>
+/// with <see cref="MicaBackdrop"/> (Acrylic where Mica is unsupported). The framework reads the content's <c>ActualTheme</c> for the material
+/// and handles "Transparency effects" off itself; the manual controller below stays for the never-activated rail (A7).
+/// </summary>
+internal static class FrameworkBackdrop
+{
+    private const uint DwmwaUseImmersiveDarkMode = 20;
+
+    /// <summary>Sets <c>Window.SystemBackdrop</c>; returns the material name ("mica-base", "acrylic-base", "none").</summary>
+    public static string Apply(Window window, string who)
+    {
+        try
+        {
+            if (Supported(MicaController.IsSupported)) { window.SystemBackdrop = new MicaBackdrop { Kind = MicaKind.Base }; Log.Write($"{who}: framework backdrop mica-base"); return "mica-base"; }
+            if (Supported(DesktopAcrylicController.IsSupported)) { window.SystemBackdrop = new DesktopAcrylicBackdrop(); Log.Write($"{who}: framework backdrop acrylic-base"); return "acrylic-base"; }
+        }
+        catch (Exception e)
+        {
+            Log.Write($"{who}: framework backdrop FAILED hr=0x{e.HResult:X8} {e.GetType().Name}: {e.Message} — solid surface");
+        }
+        return "none";
+    }
+
+    /// <summary>DWM's own dark-mode flag for the HWND (title bar / the material's tint on Win32 surfaces) — set from the element theme.</summary>
+    public static void ImmersiveDark(Windows.Win32.Foundation.HWND hwnd, ElementTheme theme)
+    {
+        int dark = Theme.Resolve(theme) == ElementTheme.Dark ? 1 : 0;
+        nint h;
+        unsafe { h = (nint)hwnd.Value; }
+        _ = DwmSetWindowAttribute(h, DwmwaUseImmersiveDarkMode, ref dark, sizeof(int));
+    }
+
+    private static bool Supported(Func<bool> probe)
+    {
+        try { return probe(); }
+        catch (Exception) { return false; }
+    }
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint hwnd, uint attribute, ref int value, uint size);
+}
+
 /// <summary>Which material a <see cref="Backdrop"/> wants (design 134 A7, §4.1–4.2).</summary>
 internal enum BackdropKind
 {

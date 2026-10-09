@@ -139,7 +139,8 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         };
 
         // 149 NATIVE: follow Windows light/dark live; Mica Base (Acrylic Base where unsupported) with nothing painted over it.
-        Theme.Follow(host, () => { backdrop?.SetTheme(host.ActualTheme); if (IsOpen) Render(force: true); });
+        Theme.Follow(host, () => { FrameworkBackdrop.ImmersiveDark(Hwnd, host.ActualTheme); if (IsOpen) Render(force: true); });
+        FrameworkBackdrop.ImmersiveDark(Hwnd, host.ActualTheme);
         Content = host;
         if (!Shape.RoundCorners(Hwnd)) Log.Write("agents panel: DWM rounded corners unavailable (rectangular)");
         ApplyEffects(initial: true);
@@ -446,24 +447,14 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         }
     }
 
-    private Backdrop? backdrop;
+    private string? material;
 
-    public string BackdropText => backdrop?.Material ?? "solid";
+    public string BackdropText => material is null or "none" ? "solid" : material;
 
-    /// <summary>149 NATIVE: Mica Base on the agents panel (Acrylic Base where Mica is unsupported); detached while Transparency effects are off.</summary>
+    /// <summary>149 NATIVE: Mica Base through the framework's Window.SystemBackdrop (Acrylic Base where Mica is unsupported); the framework handles the theme and "Transparency effects" off.</summary>
     private void ApplyEffects(bool initial)
     {
-        bool transparency = SystemEffects.TransparencyOn;
-        if (transparency && backdrop is null)
-        {
-            backdrop = Backdrop.Attach(this, BackdropKind.MicaBase, Theme.ColorOf(NativeLook.SolidBackgroundBase, host.ActualTheme), host.ActualTheme, "agents panel");
-        }
-        else if (!transparency && backdrop is not null)
-        {
-            backdrop.Dispose();
-            backdrop = null;
-            Log.Write("agents panel: backdrop detached — solid SolidBackgroundFillColorBase surface (transparency effects off)");
-        }
+        if (material is null) material = FrameworkBackdrop.Apply(this, "agents panel");
         SystemEffects.ApplyTransitions(Hwnd, SystemEffects.AnimationsOn);
         if (initial) return;
         if (IsOpen) Render(force: true);
@@ -511,8 +502,7 @@ internal sealed partial class AgentsPanelWindow : ToolWindow
         content.Children.Clear();
         rowViews.Clear();
         var theme = host.ActualTheme;
-        backdrop?.SetTheme(theme);
-        host.Background = backdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, theme) : Theme.Transparent;
+        host.Background = SystemBackdrop is null ? Theme.Brush(NativeLook.SolidBackgroundBase, theme) : Theme.Transparent;
         host.Foreground = Theme.Brush(NativeLook.TextPrimary, theme);
         receiptRow.BorderBrush = Theme.Brush(NativeLook.Divider, theme);
         var p = store.AgentsPanel;
