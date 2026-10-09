@@ -65,6 +65,7 @@ internal sealed class Surfaces : IDisposable
         Hotkeys.Apply(store.Keys);
         store.HotkeyNotice = Hotkeys.Notice;
         Hotkeys.Pressed += OnHotkey;
+        store.InstallHotkeys(Hotkeys); // 149 WW1: raw global keys → Store.GlobalKeyPressed/Released (Store.WW1.cs)
 
         rail = new RailWindow(store, settings.RailPresence, settings.RailSide);
         peek = new PeekCardWindow(store, () => rail.LastForeign);
