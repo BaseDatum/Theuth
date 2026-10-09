@@ -2536,7 +2536,7 @@ pub(crate) mod tests {
     /// authoritative empty list, not a missing one.
     #[tokio::test]
     async fn stored_acp_plan_keeps_source_status_and_reopens() {
-        let scratch = Scratch::new("acp-plan");
+        let scratch = TestDir::new("acp-plan");
         let dir = scratch.0.clone();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
@@ -2828,49 +2828,10 @@ pub(crate) mod tests {
     ];
     const FAST_QUIET: Duration = Duration::from_millis(300);
 
+    pub(crate) use crate::TestDir;
+
     /// One spawned `AcpChild` on a fresh runtime and store, connected to a
     /// [`Fake`] whose handshake is done.
-    /// A test scratch directory under `$TMPDIR`, removed on drop — on a
-    /// passing test and on a panic alike (141 R3 T15: 1 529 leaked
-    /// `theuth-acp-rig-*` dirs filled the shared machine's disk).
-    pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
-
-    impl Scratch {
-        pub(crate) fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("theuth-{tag}-{}", Uuid::now_v7()));
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    /// 141 R3 T15: the guard deletes its dir on drop — also mid-panic, since
-    /// unwinding drops the test's locals.
-    #[test]
-    fn scratch_is_removed_on_drop() {
-        let path = {
-            let s = Scratch::new("acp-scratch-check");
-            std::fs::write(s.0.join("x"), b"x").unwrap();
-            assert!(s.0.is_dir());
-            s.0.clone()
-        };
-        assert!(!path.exists(), "{path:?}");
-        let path = std::panic::catch_unwind(|| {
-            let s = Scratch::new("acp-scratch-panic");
-            let p = s.0.clone();
-            std::panic::panic_any(p);
-        })
-        .unwrap_err()
-        .downcast::<std::path::PathBuf>()
-        .unwrap();
-        assert!(!path.exists(), "{path:?}");
-    }
-
     struct Rig {
         actor: ActorRef<AcpChild>,
         fake: Fake,
@@ -2880,7 +2841,7 @@ pub(crate) mod tests {
         events: UnboundedReceiver<AgentEvent>,
         approvals: UnboundedReceiver<ApprovalRequested>,
         /// The runtime's data dir; deleted with the rig.
-        _dir: Scratch,
+        _dir: TestDir,
     }
 
     impl Rig {
@@ -2919,7 +2880,7 @@ pub(crate) mod tests {
             tune: impl FnOnce(&mut AcpChild),
             handshake: bool,
         ) -> Self {
-            let scratch = Scratch::new("acp-rig");
+            let scratch = TestDir::new("acp-rig");
             let dir = scratch.0.clone();
             let rt = Runtime::new(figment::Figment::new(), dir.clone());
             let (etx, events) = unbounded_channel();
@@ -5266,8 +5227,8 @@ pub(crate) mod tests {
 
     /// A throwaway omp home for the `Fake`'s session `s1` (141 §6.4 feed 2
     /// layout): `(home, artifacts dir)`; the parent transcript is empty.
-    fn omp_home() -> (Scratch, std::path::PathBuf) {
-        let home = Scratch::new("acp-omp");
+    fn omp_home() -> (TestDir, std::path::PathBuf) {
+        let home = TestDir::new("acp-omp");
         let cwd = home.0.join(".omp/agent/sessions/--tmp-x--");
         let art = cwd.join("2026-10-08T16-00-00-000Z_s1");
         std::fs::create_dir_all(&art).unwrap();
@@ -5562,6 +5523,104 @@ pub(crate) mod tests {
         assert_eq!(
             rig.store.observed_cursor(slow_a).await.unwrap(),
             Some(std::fs::metadata(art.join("SlowA.jsonl")).unwrap().len())
+        );
+        actor.tell(Shutdown).await.unwrap();
+    }
+
+    /// 141 R4 (T2 follow-through): the tail's per-child cost sum lives in
+    /// memory. A resumed engine re-attaches at the stored cursor; were the
+    /// sum to restart at 0, a post-restart turn would report less than the
+    /// stored high-water (under-count, `lower_total` coverage) until the
+    /// partial sum caught up. The sum is rebuilt from the transcript before
+    /// the cursor, so the meter reads a + b + c — no lower, no higher.
+    #[tokio::test]
+    async fn omp_tail_cost_survives_an_engine_restart() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let (home, art) = omp_home();
+        let h = home.0.clone();
+        let mut rig = Rig::build(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("oh-my-pi", "18.3.1")),
+            move |c| c.omp_home = h,
+            true,
+        )
+        .await;
+        // Life 1: feed 1 announces ReadA (`counted`); the tail meters both
+        // turns of the fixture (a = 0.1149025, b = 0.00637775).
+        rig.input("spawn readers, do not wait").await;
+        let (id, _) = rig.fake.prompt().await;
+        let path = format!(
+            "{}/../acp/fixtures/omp-18.3.1/task.completed_stale.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut frame: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
+        frame["params"]["sessionId"] = json!("s1");
+        rig.fake.send(frame);
+        rig.fake.end_turn(&id);
+        let events = rig
+            .until(|e| matches!(changed(e), Some((_, "ReadB", _))))
+            .await;
+        let (read_a, ..) = events
+            .iter()
+            .find_map(|e| changed(e).filter(|(_, n, _)| *n == "ReadA"))
+            .unwrap();
+        let lines = omp_fixture_lines("ReadA.jsonl");
+        let jsonl = art.join("ReadA.jsonl");
+        std::fs::write(&jsonl, format!("{}\n", lines.join("\n"))).unwrap();
+        rig.until(|e| matches!(e, AgentEvent::ToolCallFinished { session, call_id, .. } if *session == read_a && call_id == "toolu_01CcxeBFS3rftpne67JPvF8V"))
+            .await;
+        assert_eq!(usd_of(&rig, read_a).await, 121_280_250, "a + b");
+        let eof = std::fs::metadata(&jsonl).unwrap().len();
+        assert_eq!(rig.store.observed_cursor(read_a).await.unwrap(), Some(eof));
+        rig.actor.tell(Shutdown).await.unwrap();
+        rig.actor.wait_for_shutdown().await;
+
+        // Life 2: a new actor on the same row re-attaches at the stored cursor.
+        let (mut fake, dialer) = Fake::new();
+        let mut child = AcpChild::new(
+            rig.session,
+            "omp".into(),
+            Transport::Dial(dialer),
+            rig.rt.data_dir.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Duration::from_secs(60),
+            rig.store.clone(),
+            rig.rt.clone(),
+            Default::default(),
+            Vec::new(),
+        );
+        child.remote = false;
+        child.omp_home = home.0.clone();
+        let actor = AcpChild::spawn(child);
+        fake.handshake(Vec::new(), Some(Implementation::new("oh-my-pi", "18.3.1")))
+            .await;
+        rig.until(|e| matches!(changed(e), Some((c, _, ObservedState::Unknown)) if c == read_a))
+            .await;
+        // Turn c (0.01 USD) lands after the restart.
+        let c = json!({"type": "message", "id": "c0ffee01", "parentId": "8c94f215", "timestamp": "2026-10-08T10:54:00.000Z", "message": {
+            "role": "assistant", "content": [{"type": "text", "text": "alpha line one"}], "api": "anthropic-messages",
+            "provider": "anthropic", "model": "claude-fable-5-1", "stopReason": "stop",
+            "usage": {"input": 3, "output": 7, "cacheRead": 9000, "cacheWrite": 0, "totalTokens": 9010,
+                      "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.01}}}});
+        let mut all = lines.clone();
+        all.push(c.to_string());
+        std::fs::write(&jsonl, format!("{}\n", all.join("\n"))).unwrap();
+        rig.until(|e| matches!(e, AgentEvent::TextDelta { session, text, .. } if *session == read_a && &**text == "alpha line one"))
+            .await;
+        assert_eq!(
+            usd_of(&rig, read_a).await,
+            131_280_250,
+            "a + b + c: nothing lost to the restart, nothing counted twice"
+        );
+        assert_eq!(
+            rig.store.observed_cursor(read_a).await.unwrap(),
+            Some(std::fs::metadata(&jsonl).unwrap().len())
         );
         actor.tell(Shutdown).await.unwrap();
     }

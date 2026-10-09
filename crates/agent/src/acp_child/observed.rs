@@ -113,10 +113,10 @@ struct ObservedChild {
     dirty: Option<AbortHandle>,
     last_emit: Instant,
     /// omp: the sum of the tail's per-turn `usage.cost.total` so far (141
-    /// R1 T2) — the `counted` meter when feed 1 fell silent. Restarts from
-    /// 0 on a new connection; the meter is high-water, so it never lowers.
-    // ponytail: not persisted; a child whose cost all lands after a restart
-    // under-meters until feed 1 speaks again. Persist beside observed_cursor if that shows.
+    /// R1 T2) — the `counted` meter when feed 1 fell silent. On a new
+    /// connection it is rebuilt from the transcript prefix the previous life
+    /// replayed (R4, `OmpFeeds::rebuild`), so the high-water meter keeps
+    /// counting post-restart turns.
     tail_cost: f64,
     /// omp: tool calls and Q3 tokens the tail has seen (141 R3 T10).
     tail_tools: u64,
@@ -157,6 +157,10 @@ struct OmpFeeds {
     cursors: HashMap<String, u64>,
     parent_cursor: u64,
     poll: Option<AbortHandle>,
+    /// Children seeded with a stored cursor whose tail sums (`tail_cost`,
+    /// `tail_tools`, `tail_tokens`) are still to be rebuilt from the
+    /// transcript before that cursor, once the tailer is located (141 R4).
+    rebuild: Vec<String>,
 }
 
 /// `ChildSource` (acp) → `ObservedSource` (agent): the same four names.
@@ -269,11 +273,15 @@ impl AcpChild {
         self.observed_lost().await;
         if self.is_omp() && !self.remote {
             let mut cursors = HashMap::new();
+            let mut rebuild = Vec::new();
             for c in self.observed.by_external.values() {
                 if c.meta.source == ObservedSource::OmpTask
                     && let Ok(Some(cur)) = self.store.observed_cursor(c.id).await
                 {
                     cursors.insert(c.meta.external.clone(), cur);
+                    if cur > 0 {
+                        rebuild.push(c.meta.external.clone());
+                    }
                 }
             }
             self.observed.omp = Some(OmpFeeds {
@@ -281,6 +289,7 @@ impl AcpChild {
                 cursors,
                 parent_cursor: 0,
                 poll: None,
+                rebuild,
             });
             self.omp_poll(me);
         }
@@ -965,6 +974,32 @@ impl AcpChild {
                 Vec::new()
             }
         };
+        // 141 R4 (T2 follow-through): the sums behind the `counted` meter and
+        // the tail stats restart with the process; rebuild them from the part
+        // of each transcript the previous life already replayed (before its
+        // stored cursor), then the reads below continue incrementally.
+        for ext in std::mem::take(&mut f.rebuild) {
+            let cursor = f.cursors.get(&ext).copied().unwrap_or(0);
+            let Some(c) = self.observed.by_external.get_mut(&ext) else {
+                continue;
+            };
+            match tailer.read_until(&ext, cursor) {
+                Ok(entries) => {
+                    for e in &entries {
+                        if let Entry::Assistant { calls, usage, .. } = e {
+                            c.tail_tools += calls.len() as u64;
+                            if let Some(u) = usage {
+                                c.tail_tokens += u.input + u.output + u.cache_write;
+                                c.tail_cost += u.cost;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(session = %self.id, child = %ext, "omp tail rebuild: {e}")
+                }
+            }
+        }
         let exts: Vec<String> = self
             .observed
             .by_external

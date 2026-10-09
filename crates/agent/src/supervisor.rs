@@ -11209,22 +11209,22 @@ pub(crate) mod tests {
             check_files(&[big]).unwrap_err(),
             "attachment big.jpg: 5.0 MB exceeds 5 MB"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// An `Agents` value (no actor, no tool registry) over a temp store: the
     /// supervisor's own sequencing runs inline and its ledger is readable.
     /// Session actors it spawns are real; with no registry their turns end
     /// as `error` before any model is called.
-    async fn agents() -> Agents {
+    async fn agents() -> (crate::TestDir, Agents) {
         agents_with(false).await
     }
 
     /// [`agents`] with `agent.communication` preset. Shared with the network
     /// module's tests, which drive the same value through its hooks.
-    pub(crate) async fn agents_with(communication: bool) -> Agents {
-        let dir = std::env::temp_dir().join(format!("theuth-agents-{}", uuid::Uuid::now_v7()));
-        agents_on(dir, None, communication).await
+    pub(crate) async fn agents_with(communication: bool) -> (crate::TestDir, Agents) {
+        let scratch = crate::TestDir::new("agents");
+        let a = agents_on(scratch.0.clone(), None, communication).await;
+        (scratch, a)
     }
 
     /// [`agents_with`] over `dir`'s store opened as mesh engine `engine`
@@ -11309,7 +11309,7 @@ pub(crate) mod tests {
     /// `None` clears both. A startup diagnostic is cleared by a successful set.
     #[tokio::test]
     async fn set_vision_model_persists_before_swapping() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.vision_error = Some("stale".into());
@@ -11349,7 +11349,6 @@ pub(crate) mod tests {
         assert_eq!(live(&a), None);
         let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
         assert!(yaml.contains("  vision_model: \n"), "{yaml}");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 57 §0.9: the setter refuses an id that is not a catalog entry (or is
@@ -11359,7 +11358,7 @@ pub(crate) mod tests {
     /// session's model) — and `None` clears the slot.
     #[tokio::test]
     async fn set_escalate_model_validates_and_reports_effective() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testvis" || ns == "othervis");
@@ -11407,7 +11406,6 @@ pub(crate) mod tests {
         let g = a.escalate_model();
         assert!(g.model.is_none());
         assert_eq!(g.effective.map(|m| m.id).as_deref(), Some("testvis/eyes"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `agent.escalate_model` reads and writes like its siblings; absent = unset.
@@ -11433,7 +11431,7 @@ pub(crate) mod tests {
     /// (a meeting, a draft pick) leaves it alone.
     #[tokio::test]
     async fn only_a_settings_pick_becomes_the_default() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testvis");
@@ -11548,7 +11546,6 @@ pub(crate) mod tests {
         assert_eq!(agents.ask(GetDefaultModel).await.unwrap(), "testvis/eyes");
         let written = std::fs::read_to_string(&yaml).unwrap();
         assert!(written.contains("  model: testvis/eyes\n"), "{written}");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 148 R1: an effort pick with a session changes that session's row
@@ -11557,7 +11554,7 @@ pub(crate) mod tests {
     /// `DefaultEffortChanged`. A new session starts on the default.
     #[tokio::test]
     async fn only_a_settings_effort_becomes_the_default() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         let yaml = dir.join("config.yaml");
         assert_eq!(a.default_effort, None);
@@ -11643,7 +11640,6 @@ pub(crate) mod tests {
             agents.ask(GetDefaultEffort).await.unwrap(),
             Some("high".to_owned())
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 148 E2: a native child of a desk starts on the desk agent's configured
@@ -11652,7 +11648,7 @@ pub(crate) mod tests {
     /// and then the default.
     #[tokio::test]
     async fn a_desk_child_starts_on_the_desk_agents_model() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testvis");
@@ -11707,7 +11703,7 @@ pub(crate) mod tests {
     /// (`MarkDesk { agent: None }`) and on `DeleteSession`.
     #[tokio::test]
     async fn desk_models_leave_with_the_desk() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let dir = a.rt.data_dir.clone();
         let agents = Agents::spawn(a);
         let open = |agents: &ActorRef<Agents>| {
@@ -11761,7 +11757,7 @@ pub(crate) mod tests {
     /// unknown id under a keyed provider pass through, and moves nothing.
     #[tokio::test]
     async fn resolve_model_checks_credentials_without_side_effects() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testvis");
@@ -11790,7 +11786,7 @@ pub(crate) mod tests {
     /// id keeps it, and an explicit effort pick is never second-guessed here.
     #[tokio::test]
     async fn an_inherited_default_effort_the_model_rejects_is_dropped() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testvis");
@@ -11832,7 +11828,7 @@ pub(crate) mod tests {
     /// bare id — `provider/model` passes through) leaves the file alone.
     #[tokio::test]
     async fn favorites_persist_as_one_flow_sequence_line() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testvis");
@@ -11976,7 +11972,7 @@ pub(crate) mod tests {
     /// ancestor's opt-out instead of routing as an unknown root.
     #[tokio::test]
     async fn topology_is_mirrored_and_reloaded_root_first() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -12001,7 +11997,7 @@ pub(crate) mod tests {
     /// guessed UUID with no row fails the same way and creates nothing.
     #[tokio::test]
     async fn cross_root_and_unknown_addresses_are_one_answer() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (me, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let (other, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let rev = a.store.context_revision(other).await.unwrap();
@@ -12061,7 +12057,7 @@ pub(crate) mod tests {
     /// remote alias) or the same refusal a single send would get, in order.
     #[tokio::test]
     async fn resolve_all_is_canonical_and_ordered() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -12091,7 +12087,7 @@ pub(crate) mod tests {
     /// and its activity; a cold child reads `stored`.
     #[tokio::test]
     async fn same_tree_rows_carry_title_and_activity() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         a.store.set_title(root, "deploy checklist").await.unwrap();
         let child = SessionId::new();
@@ -12175,7 +12171,7 @@ pub(crate) mod tests {
     /// accepted row durably, and the same wait cannot be resolved again.
     #[tokio::test]
     async fn waits_are_exact_and_expire_on_disable() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -12231,7 +12227,7 @@ pub(crate) mod tests {
     /// is still released in the ledger).
     #[tokio::test]
     async fn child_results_are_durably_deduplicated_and_respect_off() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (p, _) = in_turn(&mut a).await;
         let child = SessionId::new();
         a.session(Some(child), Some((p, "kid")), None, (None, None))
@@ -12339,7 +12335,7 @@ pub(crate) mod tests {
     /// starts: its ticket is released, nothing is routed.
     #[tokio::test]
     async fn scope_cancel_stops_owned_children_and_drops_their_results() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (p, _) = in_turn(&mut a).await;
         let scope = Uuid::now_v7();
         let owned = kid(&mut a, p, "owned").await;
@@ -12426,7 +12422,7 @@ pub(crate) mod tests {
     /// input; only the parent's own answered request suppresses that.
     #[tokio::test]
     async fn bound_reply_goes_to_the_requester_and_the_parent_keeps_its_result() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (p, _) = in_turn(&mut a).await;
         let child = kid(&mut a, p, "kid").await;
         let sibling = kid(&mut a, p, "sib").await;
@@ -12524,7 +12520,7 @@ pub(crate) mod tests {
     /// retired without a second delivery.
     #[tokio::test]
     async fn results_are_pending_input_before_their_source_is_released() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (p, t) = in_turn(&mut a).await;
         let child = SessionId::new();
         a.session(Some(child), Some((p, "kid")), None, (None, None))
@@ -12615,7 +12611,7 @@ pub(crate) mod tests {
     /// the job keeps running; one for a retired op injects nothing.
     #[tokio::test]
     async fn idle_notice_injects_only_for_a_live_op() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let sink = Sink::spawn_with_mailbox(Sink(Arc::clone(&seen)), runtime::subscriber_mailbox());
         a.rt.subscribe::<Sink, AgentEvent>(&sink).await;
@@ -12687,7 +12683,7 @@ pub(crate) mod tests {
     /// An input no runner ever held (rejected attachment) leaves nothing pending.
     #[tokio::test]
     async fn routing_failure_releases_the_ticket() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (p, _) = in_turn(&mut a).await;
         let r = a
             .input(
@@ -12707,7 +12703,7 @@ pub(crate) mod tests {
     /// a fresh id routes again.
     #[tokio::test]
     async fn retried_input_id_routes_once() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (p, _) = in_turn(&mut a).await;
         let id = InputId::new();
         let sid = a
@@ -12733,7 +12729,7 @@ pub(crate) mod tests {
     /// registered in this harness.)
     #[tokio::test]
     async fn activity_counts_a_pty_on_an_idle_root() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let counts = HashMap::from([(root, (0u16, 1u16))]);
         let act = a.assemble_activity(&[root], &counts).await;
@@ -12752,7 +12748,7 @@ pub(crate) mod tests {
     /// `approval`, gone once it resolves, and on the wire as a plain number.
     #[tokio::test]
     async fn activity_waiting_since_follows_the_pending_approval() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         a.approvals.insert(
             root,
@@ -12786,7 +12782,7 @@ pub(crate) mod tests {
     /// child included (its `last_active` from the store) — and nothing else.
     #[tokio::test]
     async fn activity_of_returns_rows_for_the_asked_ids() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -12809,7 +12805,7 @@ pub(crate) mod tests {
     /// while it has an actor or a job; a live child counts toward its root.
     #[tokio::test]
     async fn list_activity_keeps_cold_roots_and_drops_cold_children() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let (cold_root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let cold_child = SessionId::new();
@@ -12844,7 +12840,7 @@ pub(crate) mod tests {
     /// child is `running` while its idle root is not.
     #[tokio::test]
     async fn list_sessions_stamps_running() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -12860,7 +12856,7 @@ pub(crate) mod tests {
     /// swept in; a dry run fills `before` and routes nothing.
     #[tokio::test]
     async fn broadcast_running_selects_roots_and_dry_run_sends_nothing() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         // An idle root: live, but not `Running`.
         a.session(None, None, None, (None, None)).await.unwrap();
@@ -12900,7 +12896,7 @@ pub(crate) mod tests {
     /// stops early. Above the cap nothing is sent at all.
     #[tokio::test]
     async fn broadcast_rows_queue_start_fail_and_cap() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (busy, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let (idle, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let unknown = SessionId::new();
@@ -12949,7 +12945,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn mutation_reply_precedes_search_staleness() {
         use ::search::PageState;
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let store = a.store.clone();
         let agents = Agents::spawn(a);
         let id = SessionId::new();
@@ -13038,7 +13034,7 @@ pub(crate) mod tests {
     /// live config and refuses out-of-range values.
     #[tokio::test]
     async fn endless_settings_round_trip_and_validate() {
-        let a = agents_with(false).await;
+        let (_scratch, a) = agents_with(false).await;
         let dir = a.rt.data_dir.clone();
         let agents = Agents::spawn(a);
         let before = agents.ask(GetEndlessSettings).await.unwrap();
@@ -13102,7 +13098,8 @@ pub(crate) mod tests {
     /// is range-checked. The tree itself is the service's (W1).
     #[tokio::test]
     async fn memory_mode_is_created_queried_and_switched() {
-        let agents = Agents::spawn(agents_with(false).await);
+        let (_scratch, a) = agents_with(false).await;
+        let agents = Agents::spawn(a);
         let open = |memory| {
             agents.ask(CreateSession {
                 options: crate::CreateSessionOptions {
@@ -13202,7 +13199,7 @@ pub(crate) mod tests {
     /// and effort like a local subagent; a plain create carries neither.
     #[tokio::test]
     async fn remote_root_gets_cap_and_effort() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let remote = RemoteParent {
             session: "parent-1".into(),
             engine: Some("Ab3dEf9h".into()),
@@ -13286,7 +13283,8 @@ pub(crate) mod tests {
     /// and present in `PrivateTrees`, and its state reads through its own store.
     #[tokio::test]
     async fn private_root_is_owned_and_unlisted() {
-        let agents = Agents::spawn(agents().await);
+        let (_scratch, a) = agents().await;
+        let agents = Agents::spawn(a);
         let private = |view: Option<&str>| CreateSessionOptions {
             retention: Retention::Private,
             project: None,
@@ -13376,7 +13374,7 @@ pub(crate) mod tests {
     /// fails `Authorize` closed, and input to its id recreates nothing durable.
     #[tokio::test]
     async fn leave_revokes_and_never_recreates() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let store = a.store.clone();
         let agents = Agents::spawn(a);
         let open = open_private(&agents, 7, CancellationToken::new()).await;
@@ -13443,7 +13441,8 @@ pub(crate) mod tests {
     /// owner's does after the grace.
     #[tokio::test]
     async fn resume_rebinds_and_cancels_old_watcher() {
-        let agents = Agents::spawn(agents().await);
+        let (_scratch, a) = agents().await;
+        let agents = Agents::spawn(a);
         let old_closed = CancellationToken::new();
         let open = open_private(&agents, 7, old_closed.clone()).await;
         let (root, secret) = (open.root, open.lease_secret.unwrap());
@@ -13788,7 +13787,7 @@ pub(crate) mod tests {
     /// durability-resumed turn is still metered before its first call.
     #[tokio::test]
     async fn budget_survives_a_rebuild_from_the_store() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let store = a.store.clone();
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let agents = Agents::spawn(a);
@@ -13838,7 +13837,7 @@ pub(crate) mod tests {
     /// the directory carries this engine's name on every row.
     #[tokio::test]
     async fn a_lone_engine_delivers_locally_as_before() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -13882,7 +13881,7 @@ pub(crate) mod tests {
     /// §5.4) for a watch-only row with the watch-only text.
     #[tokio::test]
     async fn resume_child_refuses_native_node_and_unstored() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let store = a.store.clone();
         let agents = Agents::spawn(a);
         let native = SessionId::new();
@@ -13931,7 +13930,7 @@ pub(crate) mod tests {
     /// longer exists does not block the resume (75 §4).
     #[tokio::test]
     async fn resume_child_replaces_the_live_actor() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let store = a.store.clone();
         let dir = a.rt.data_dir.clone();
         acp::save(
@@ -14000,7 +13999,7 @@ pub(crate) mod tests {
     /// its last row.
     #[tokio::test]
     async fn resume_child_prompts_a_midprompt_child() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let store = a.store.clone();
         let dir = a.rt.data_dir.clone();
         acp::save(
@@ -14202,7 +14201,8 @@ pub(crate) mod tests {
     /// with nothing routed into the queued child and no permit left.
     #[tokio::test]
     async fn second_spawn_queues_and_tells_the_parent() {
-        let (agents, p) = rooted(agents().await).await;
+        let (_scratch, a) = agents().await;
+        let (agents, p) = rooted(a).await;
         let (_, x, queued) = agents.ask(spawn(p, "x", "first")).await.unwrap();
         assert!(queued.is_none(), "a free slot: started");
         let (_, y, queued) = agents.ask(spawn(p, "y", "second")).await.unwrap();
@@ -14236,7 +14236,7 @@ pub(crate) mod tests {
     /// takes the permit the instant it frees (a race the test must not pin).
     #[tokio::test]
     async fn held_message_follows_the_brief() {
-        let a = agents_with(true).await;
+        let (_scratch, a) = agents_with(true).await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
@@ -14290,7 +14290,7 @@ pub(crate) mod tests {
     /// slot frees it stays free.
     #[tokio::test]
     async fn stopped_queued_child_never_starts() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
@@ -14336,7 +14336,7 @@ pub(crate) mod tests {
     /// (ledger untouched, still running, actor alive); `Tree` stops both.
     #[tokio::test]
     async fn root_cancel_spares_running_children_tree_cancel_does_not() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
@@ -14398,7 +14398,7 @@ pub(crate) mod tests {
     /// sibling untouched.
     #[tokio::test]
     async fn human_input_promotes_a_queued_child() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         let (_, _x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
@@ -14503,7 +14503,7 @@ pub(crate) mod tests {
     /// turn whose text holds both envelopes in arrival order.
     #[tokio::test]
     async fn closed_window_parks_and_opening_coalesces() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         set_talk(&agents, p, false).await;
@@ -14535,7 +14535,7 @@ pub(crate) mod tests {
     /// turn; 500 ms apart they get one each.
     #[tokio::test]
     async fn open_window_coalesces_within_the_window_only() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         set_talk(&agents, p, true).await;
@@ -14570,7 +14570,7 @@ pub(crate) mod tests {
     /// 145 A3: the cap releases a parked input with the window still closed.
     #[tokio::test]
     async fn cap_releases_parked_input_while_closed() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         set_talk(&agents, p, false).await;
@@ -14589,7 +14589,7 @@ pub(crate) mod tests {
     /// since the test model fails at once).
     #[tokio::test]
     async fn human_input_releases_parked_items_as_steers() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         set_talk(&agents, p, false).await;
@@ -14613,7 +14613,7 @@ pub(crate) mod tests {
     /// 145 A6: the talk ending releases parked items and forgets the session.
     #[tokio::test]
     async fn talk_ending_releases_parked_items() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         set_talk(&agents, p, false).await;
@@ -14662,7 +14662,7 @@ pub(crate) mod tests {
     /// starts.
     #[tokio::test]
     async fn native_and_external_pools_are_separate() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
         let (agents, p) = rooted(a).await;
         let (_, _x, _) = agents.ask(spawn(p, "x", "native")).await.unwrap();
@@ -14706,7 +14706,7 @@ pub(crate) mod tests {
     /// releases the external permit with the turn.
     #[tokio::test]
     async fn harness_exit_releases_the_external_permit() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
         let rt = a.rt.clone();
         let (agents, p) = rooted(a).await;
@@ -14756,7 +14756,7 @@ pub(crate) mod tests {
     /// harness's state; a repeat announce is the same row.
     #[tokio::test]
     async fn observed_rows_are_refused_as_targets_and_listed_watch_only() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let acp = SessionId::new();
         a.store
@@ -14824,7 +14824,7 @@ pub(crate) mod tests {
     /// id. The parent's turn is untouched.
     #[tokio::test]
     async fn cancel_of_an_observed_child_is_forwarded_to_its_harness() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
         let rt = a.rt.clone();
         let (agents, p) = rooted(a).await;
@@ -14889,7 +14889,7 @@ pub(crate) mod tests {
     /// bounded turns' permits from B's native pool, never A's.
     #[tokio::test]
     async fn pools_are_per_orchestrator_tree() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (p1, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let (p2, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let agents = Agents::spawn(a);
@@ -14928,7 +14928,7 @@ pub(crate) mod tests {
     /// so a prompt that never returns cannot keep the child running forever.
     #[tokio::test]
     async fn follow_up_acp_turns_get_the_runtime_timer() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
         let rt = a.rt.clone();
         let (agents, p) = rooted(a).await;
@@ -14975,7 +14975,7 @@ pub(crate) mod tests {
     /// `Running` (with a start time) until its `TurnFinished`.
     #[tokio::test]
     async fn resumed_child_turn_counts_as_running() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let rt = a.rt.clone();
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = kid(&mut a, root, "kid").await;
@@ -15021,7 +15021,7 @@ pub(crate) mod tests {
     /// harness, which no test can dial, so the actor is told directly here.)
     #[tokio::test]
     async fn respawned_acp_child_counts_as_running() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
         let rt = a.rt.clone();
         let (agents, p) = rooted(a).await;
@@ -15085,7 +15085,7 @@ pub(crate) mod tests {
     /// delivered then, once the quota has room.
     #[tokio::test]
     async fn refused_child_result_is_visible_and_retried_once() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let mut rx = tap(&a.rt).await;
         let (p, _) = in_turn(&mut a).await;
         let child = kid(&mut a, p, "worker").await;
