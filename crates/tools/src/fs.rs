@@ -2,7 +2,9 @@
 //! `edit` lives in [`crate::edit`]. `read_file` renders documents as
 //! Markdown (20 §2.2).
 //!
-//! Paths are resolved against the process cwd; `~` is not expanded.
+//! Relative paths are resolved against the session's seated working directory
+//! ([`crate::seat`]), else the process cwd; `~` is not expanded. `write_file`
+//! refuses a path outside the session's write root.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -58,7 +60,7 @@ pub(crate) fn refuse_read_output(content: &str) -> anyhow::Result<()> {
 /// Arguments for [`ReadFile`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ReadFileArgs {
-    /// File path, absolute or relative to the process cwd (no `~`).
+    /// File path, absolute or relative to the session's working directory (no `~`).
     pub path: PathBuf,
     /// 1-based first line to return.
     #[serde(default)]
@@ -121,12 +123,13 @@ impl Tool for ReadFile {
     type Args = ReadFileArgs;
 
     fn description(&self) -> String {
-        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown; paths are relative to the process cwd, `~` is not expanded. Line 1 is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
+        "Read a text file, or a PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB document rendered as Markdown; paths are relative to the working directory, `~` is not expanded. Line 1 is always a header `[read_file <path>: N lines, B bytes; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
     }
 
-    async fn call(&self, a: ReadFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: ReadFileArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let shown = a.path.display().to_string();
-        let bytes = tokio::fs::read(&a.path)
+        let path = crate::seat::resolve(cx.session, &a.path);
+        let bytes = tokio::fs::read(&path)
             .await
             .map_err(|e| anyhow::anyhow!("{shown}: {e}"))?;
         let (note, text) = text_of(bytes, &shown).await?;
@@ -136,7 +139,7 @@ impl Tool for ReadFile {
             let Some(o) = outliner() else {
                 anyhow::bail!("outline needs the codeindex plugin (codeindex.enabled)");
             };
-            match o.outline(&a.path).await? {
+            match o.outline(&path).await? {
                 Some(outline) => {
                     return Ok(ToolOutput::ok(format!(
                         "{READ_HEADER_PREFIX}{shown}: {} lines, {} bytes{READ_HEADER_OUTLINE}\n{outline}",
@@ -429,7 +432,7 @@ fn render(out: &mut String, lines: &[&str], first: usize, width: usize) -> usize
 /// Arguments for [`WriteFile`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WriteFileArgs {
-    /// File path, absolute or relative to the process cwd (no `~`).
+    /// File path, absolute or relative to the session's working directory (no `~`).
     pub path: PathBuf,
     /// Full new content; the file is replaced.
     pub content: String,
@@ -447,13 +450,14 @@ impl Tool for WriteFile {
     const RETURNS: &'static str = "dict";
 
     fn description(&self) -> String {
-        "Create or overwrite a file with the given content; parent directories are created and the write is atomic. Overwriting an existing text file returns a unified diff of the change; identical content is a no-op. Content carrying a read_file truncation marker is refused. Paths are relative to the process cwd; `~` is not expanded.".into()
+        "Create or overwrite a file with the given content; parent directories are created and the write is atomic. Overwriting an existing text file returns a unified diff of the change; identical content is a no-op. Content carrying a read_file truncation marker is refused. Paths are relative to the working directory; `~` is not expanded.".into()
     }
 
-    async fn call(&self, a: WriteFileArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: WriteFileArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         refuse_read_output(&a.content)?;
         let shown = a.path.display().to_string();
-        let existing = match tokio::fs::read(&a.path).await {
+        let path = crate::seat::writable(cx.session, &a.path)?;
+        let existing = match tokio::fs::read(&path).await {
             Ok(bytes) => Some(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => anyhow::bail!("{shown}: {e}"),
@@ -488,7 +492,7 @@ impl Tool for WriteFile {
                 ),
             },
             None => {
-                if let Some(parent) = a.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                     tokio::fs::create_dir_all(parent)
                         .await
                         .map_err(|e| anyhow::anyhow!("{}: {e}", parent.display()))?;
@@ -496,7 +500,7 @@ impl Tool for WriteFile {
                 (format!("created {shown} ({bytes} bytes)"), false)
             }
         };
-        crate::edit::write_atomic(&a.path, a.content.as_bytes()).await?;
+        crate::edit::write_atomic(&path, a.content.as_bytes()).await?;
         let mut out = ToolOutput::ok(head);
         out.structured = Some(write_structured(&shown, bytes, !replaced, &diff));
         Ok(out)
@@ -523,7 +527,7 @@ fn write_structured(
 /// Arguments for [`ListDir`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ListDirArgs {
-    /// Directory path, absolute or relative to the process cwd (no `~`).
+    /// Directory path, absolute or relative to the session's working directory (no `~`).
     pub path: PathBuf,
 }
 
@@ -537,11 +541,13 @@ impl Tool for ListDir {
     type Args = ListDirArgs;
 
     fn description(&self) -> String {
-        "List a directory: one entry per line, sorted, directories end with `/`. Paths are relative to the process cwd; `~` is not expanded.".into()
+        "List a directory: one entry per line, sorted, directories end with `/`. Paths are relative to the working directory; `~` is not expanded.".into()
     }
 
-    async fn call(&self, a: ListDirArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
-        Ok(ToolOutput::ok(list_dir(&a.path).await?))
+    async fn call(&self, a: ListDirArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        Ok(ToolOutput::ok(
+            list_dir(&crate::seat::resolve(cx.session, &a.path)).await?,
+        ))
     }
 }
 
@@ -566,7 +572,7 @@ async fn list_dir(path: &Path) -> anyhow::Result<String> {
 pub struct GrepArgs {
     /// Regex to search for (Rust regex syntax).
     pub pattern: String,
-    /// File or directory to search; default: the process cwd.
+    /// File or directory to search; default: the working directory.
     #[serde(default)]
     pub path: Option<PathBuf>,
     /// Only search files matching this glob, e.g. `*.rs`.
@@ -590,10 +596,10 @@ impl Tool for Grep {
         "Search file contents with a regex. Respects .gitignore, skips hidden and binary files. Returns `path:line: text` per match, sorted by path, up to `limit` (default 200). `path` is a file or directory (default: cwd); `glob` filters files, e.g. `*.rs`. When an ancestor .gitignore would hide `path` itself, the walk ignores ancestor rules and says so in a header line.".into()
     }
 
-    async fn call(&self, a: GrepArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: GrepArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let root = match a.path {
-            Some(p) => p,
-            None => std::env::current_dir()?,
+            Some(p) => crate::seat::resolve(cx.session, &p),
+            None => crate::seat::cwd(cx.session)?,
         };
         let limit = a.limit.unwrap_or(GREP_LIMIT).max(1) as usize;
         let out =
@@ -787,6 +793,93 @@ mod tests {
         let (_g, p) = scratch("a\n\nc");
         let out = read(args(&p, Some(2), Some(50))).await;
         assert_eq!(out, format!("{}\n2\t\n3\tc", header(&p, 3, 4, "lines 2–3")));
+    }
+
+    /// 140 F4E: a seated session's relative paths resolve under its working
+    /// directory and its writes stay inside its write root; reads outside pass.
+    #[tokio::test]
+    async fn seated_session_resolves_relative_paths_and_confines_writes() {
+        let dir = std::env::temp_dir().join(format!("theuth-seat-fs-{}", uuid::Uuid::new_v4()));
+        let wt = dir.join("worktree");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("a.txt"), "in\n").unwrap();
+        let elsewhere = dir.join("elsewhere.txt");
+        std::fs::write(&elsewhere, "out\n").unwrap();
+        let cx = cx();
+        let s = cx.session;
+        let outside_rel = PathBuf::from("../elsewhere.txt");
+
+        // Unseated: relative paths follow the process cwd, so `a.txt` is not found.
+        assert!(
+            Tool::call(&ReadFile, args(Path::new("a.txt"), None, None), cx.clone())
+                .await
+                .is_err()
+        );
+
+        crate::seat::set_cwd(s, Some(wt.clone()));
+        crate::seat::set_write_root(s, Some(wt.clone()));
+        let out = Tool::call(&ReadFile, args(Path::new("a.txt"), None, None), cx.clone())
+            .await
+            .unwrap()
+            .content;
+        assert!(out.ends_with("\n1\tin"), "{out}");
+        let out = Tool::call(&ListDir, ListDirArgs { path: ".".into() }, cx.clone())
+            .await
+            .unwrap()
+            .content;
+        assert_eq!(out, "a.txt");
+        // A read outside the root is allowed.
+        let out = Tool::call(&ReadFile, args(&outside_rel, None, None), cx.clone())
+            .await
+            .unwrap()
+            .content;
+        assert!(out.ends_with("\n1\tout"), "{out}");
+        // A relative write lands in the worktree; one outside is refused by name.
+        Tool::call(
+            &WriteFile,
+            WriteFileArgs {
+                path: "sub/new.txt".into(),
+                content: "new\n".into(),
+            },
+            cx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(wt.join("sub/new.txt")).unwrap(),
+            "new\n"
+        );
+        let err = Tool::call(
+            &WriteFile,
+            WriteFileArgs {
+                path: outside_rel.clone(),
+                content: "x".into(),
+            },
+            cx.clone(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("outside this session's write root"), "{err}");
+        assert!(err.contains(&wt.display().to_string()), "{err}");
+        let err = Tool::call(
+            &crate::edit::Edit,
+            crate::edit::EditArgs {
+                path: elsewhere.clone(),
+                old: Some("out".into()),
+                new: Some("x".into()),
+                edits: None,
+                all: false,
+            },
+            cx.clone(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("outside this session's write root"), "{err}");
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "out\n");
+        crate::seat::forget(s);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

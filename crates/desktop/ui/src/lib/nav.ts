@@ -14,6 +14,8 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
     { to: '/agents', label: 'Agents', icon: Bot },
     { to: '/tasks', label: 'Tasks', icon: ListChecks },
     { to: '/routines', label: 'Routines', icon: CalendarClock },
+    // 140 (Sky, 2026-10-08 23:58): the Study view sits next to Routines — a study is a routine-driven loop.
+    { to: '/autoresearch', label: 'Autoresearch', icon: FlaskConical },
     { to: '/skills', label: 'Skills', icon: Sparkles },
     { to: '/tools', label: 'Tools', icon: Wrench },
   ],
@@ -25,8 +27,6 @@ export const GROUPS: Record<Group, readonly { to: Tab; label: string; icon: Luci
     { to: '/notebooks', label: 'Notebooks', icon: Notebook },
     { to: '/meetings', label: 'Meetings', icon: Mic },
     { to: '/secrets', label: 'Secrets', icon: Lock },
-    // 140 R1-D4: the Study view is the last Library tab.
-    { to: '/autoresearch', label: 'Autoresearch', icon: FlaskConical },
   ],
 }
 

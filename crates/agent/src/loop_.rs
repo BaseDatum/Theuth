@@ -2520,7 +2520,8 @@ struct Turn {
     hint_since: usize,
     /// Tool calls dispatched this turn, the harvest trigger (10 §5.2).
     calls: u32,
-    /// Process working directory, resolved once per turn.
+    /// The session's seated working directory (140 F4E), else the process
+    /// cwd; resolved once per turn.
     cwd: PathBuf,
     /// The `max_tool_rounds` landing call is in flight: tool calls are refused (36 §5).
     landing: bool,
@@ -3195,6 +3196,7 @@ impl Turn {
         cancel: CancellationToken,
         state: SessionState,
     ) -> Self {
+        let cwd = tools::seat::cwd(shared.id).unwrap_or_default();
         Self {
             since: state.history.len(),
             hint_since: state.history.len(),
@@ -3212,7 +3214,7 @@ impl Turn {
             repl: None,
             input_text: String::new(),
             calls: 0,
-            cwd: std::env::current_dir().unwrap_or_default(),
+            cwd,
             landing: false,
             retries: AtomicU32::new(0),
             salvaged: 0,
@@ -4275,6 +4277,7 @@ impl Turn {
                 self.shared.advisor.load(Ordering::Relaxed),
                 self.consult.is_some(),
                 !endless,
+                &self.cwd,
             );
             // R1-D1: a native child of an endless parent opens with the parent's view.
             if self.shared.parent_view {

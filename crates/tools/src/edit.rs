@@ -510,7 +510,7 @@ pub struct EditOp {
 /// Arguments for [`Edit`].
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EditArgs {
-    /// File path, absolute or relative to the process cwd (no `~`).
+    /// File path, absolute or relative to the session's working directory (no `~`).
     pub path: PathBuf,
     /// Text to replace (single-edit form). Mutually exclusive with `edits`.
     #[serde(default)]
@@ -599,11 +599,11 @@ impl Tool for Edit {
     const RETURNS: &'static str = "dict";
 
     fn description(&self) -> String {
-        "Replace `old` with `new` in a text file, or apply several `edits` in order (each sees the previous result; any failure writes nothing). Matching is exact first, then tolerant of trailing whitespace and a uniform indentation offset, then of any whitespace differences on whole lines, and as a last resort `cat -n` line-number prefixes (`N<tab>`, as read_file prints them) are stripped from `old` (and from `new` when every line has them); a match at more than one place is an error unless `all` is true, and a miss reports the closest region as a diff with its line numbers. Returns a unified diff of what changed. A `new` carrying a read_file header or truncation marker is refused; paths are relative to the process cwd, `~` is not expanded.".into()
+        "Replace `old` with `new` in a text file, or apply several `edits` in order (each sees the previous result; any failure writes nothing). Matching is exact first, then tolerant of trailing whitespace and a uniform indentation offset, then of any whitespace differences on whole lines, and as a last resort `cat -n` line-number prefixes (`N<tab>`, as read_file prints them) are stripped from `old` (and from `new` when every line has them); a match at more than one place is an error unless `all` is true, and a miss reports the closest region as a diff with its line numbers. Returns a unified diff of what changed. A `new` carrying a read_file header or truncation marker is refused; paths are relative to the working directory, `~` is not expanded.".into()
     }
 
-    async fn call(&self, a: EditArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
-        let path = a.path.clone();
+    async fn call(&self, a: EditArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let path = crate::seat::writable(cx.session, &a.path)?;
         let ops = a.ops()?;
         edit_file(&path, &ops).await
     }

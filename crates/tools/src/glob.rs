@@ -23,7 +23,7 @@ pub struct GlobArgs {
     /// `/` it matches file names anywhere under `path` (`*.rs`); with one it
     /// matches paths relative to `path` (`src/**/*.rs`).
     pub pattern: String,
-    /// Directory to search; default: the process cwd.
+    /// Directory to search; default: the working directory.
     #[serde(default)]
     pub path: Option<PathBuf>,
     /// Maximum number of paths to return; default 500.
@@ -48,10 +48,10 @@ impl Tool for Glob {
         "Find files by glob pattern: `*` matches within one path segment, `**` crosses directories; a pattern without `/` matches file names anywhere under `path` (e.g. `*.rs`), one with `/` matches paths relative to `path` (e.g. `src/**/*.rs`). Respects .gitignore and skips hidden files unless `hidden` is true; directories and symlinks are not listed. Returns paths relative to `path` (default: cwd), newest-modified first, up to `limit` (default 500). When an ancestor .gitignore would hide `path` itself, the walk ignores ancestor rules and says so in a header line.".into()
     }
 
-    async fn call(&self, a: GlobArgs, _: ToolCx) -> anyhow::Result<ToolOutput> {
+    async fn call(&self, a: GlobArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let root = match a.path {
-            Some(p) => p,
-            None => std::env::current_dir()?,
+            Some(p) => crate::seat::resolve(cx.session, &p),
+            None => crate::seat::cwd(cx.session)?,
         };
         let limit = a.limit.unwrap_or(GLOB_LIMIT).max(1) as usize;
         let shown = root.display().to_string();

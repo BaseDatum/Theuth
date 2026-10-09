@@ -97,12 +97,18 @@ impl ShellTool {
         Ok(shell)
     }
 
-    /// A clone of the session shell, built on first use.
+    /// A clone of the session shell, built on first use at the session's
+    /// seated working directory ([`crate::seat`]), else the process cwd.
     async fn session(&self, id: SessionId) -> anyhow::Result<Shell> {
         if let Some(shell) = lock(&self.sessions).get(&id) {
             return Ok(shell.clone());
         }
-        let shell = Self::build_shell(self.login_path).await?;
+        let mut shell = Self::build_shell(self.login_path).await?;
+        if let Some(cwd) = crate::seat::seat_of(id).cwd {
+            shell
+                .set_working_dir(&cwd)
+                .map_err(|e| anyhow::anyhow!("cwd {}: {e}", cwd.display()))?;
+        }
         // Two concurrent first calls race here; both jobs put their shell
         // back and the later exit wins, like any concurrent pair.
         Ok(lock(&self.sessions).entry(id).or_insert(shell).clone())

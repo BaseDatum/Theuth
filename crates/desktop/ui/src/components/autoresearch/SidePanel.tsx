@@ -240,7 +240,8 @@ function NeedsEyes({ detail, rows, onPick }: { detail: StudyDetail; rows: Experi
           const m = /^#(\d+)\b/.exec(line)
           const n = m ? Number(m[1]) : null
           const rev = n !== null && reverted.some((r) => r.n === n)
-          const tone = /overfit/i.test(line) ? 'danger' : /unreviewed/i.test(line) ? 'info' : 'warning'
+          // An auto-opened segment (§5.3 Revision 2) is a note, not a worry.
+          const tone = /overfit/i.test(line) ? 'danger' : /unreviewed|opened automatically/i.test(line) ? 'info' : 'warning'
           return (
             <Item key={`${i}-${line.slice(0, 24)}`} tone={tone}>
               {n !== null ? (

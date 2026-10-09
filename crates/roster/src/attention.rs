@@ -1220,8 +1220,7 @@ impl Attention {
         let Ok(chain) = ag.ask(agent::Ancestors { session }).await else {
             return;
         };
-        // A subagent has ancestors; the parent reports for it.
-        if chain.len() != 1 {
+        if !reports_finished(&chain) {
             return;
         }
         let (summary, next_steps) = parse_finished(&text, chain[0].title.as_deref());
@@ -1237,6 +1236,18 @@ impl Attention {
         }
         self.recheck_quietly().await;
     }
+}
+
+/// Whether a session's clean turn end earns a `finished:` row: roots only (a subagent has
+/// ancestors; the parent reports for it) and never an autoresearch study session — its
+/// title is the schedule name `autoresearch-<slug>` (140 §13 Revision 2), and the study's own
+/// attention item says when it is done.
+fn reports_finished(chain: &[agent::AncestorInfo]) -> bool {
+    chain.len() == 1
+        && !chain[0]
+            .title
+            .as_deref()
+            .is_some_and(|t| t.starts_with("autoresearch-"))
 }
 
 /// 130 E1: the `AttentionChanged` a derive raises against the previous id set; `None` when equal.
@@ -3059,6 +3070,27 @@ mod tests {
         assert_eq!(summary.as_ref().unwrap().chars().count(), SUMMARY_MAX);
         assert!(summary.unwrap().ends_with('\u{2026}'));
         assert_eq!(next[0].chars().count(), NEXT_STEP_MAX);
+    }
+
+    /// 140 §13 Revision 2: a study session (`autoresearch-<slug>`) and any subagent end
+    /// their turns without a `finished:` row; an ordinary root still gets one.
+    #[test]
+    fn study_sessions_and_subagents_report_no_finished_row() {
+        let link = |title: Option<&str>, name: Option<&str>| agent::AncestorInfo {
+            id: runtime::SessionId::new(),
+            title: title.map(str::to_owned),
+            name: name.map(str::to_owned),
+        };
+        assert!(reports_finished(&[link(Some("Gateway limits"), None)]));
+        assert!(reports_finished(&[link(None, None)]));
+        assert!(!reports_finished(&[link(
+            Some("autoresearch-sort-a3"),
+            None
+        )]));
+        assert!(!reports_finished(&[
+            link(Some("Gateway limits"), None),
+            link(None, Some("brisk-otter"))
+        ]));
     }
 
     /// 130 E3: one Finished item per session; the next turn's row replaces it; a dismissed one stays out.
