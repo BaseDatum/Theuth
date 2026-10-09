@@ -1411,23 +1411,68 @@ async fn incumbent_sample_in_place(
 }
 
 /// `Deliver` to the chat the draft card lived in, regardless of `quiet` (140 §13.1); off-mailbox.
-fn deliver(origin: Option<SessionId>, slug: &str, text: String) {
+/// 151 R1 (D7): when no user channel renders the origin — the desktop's setup chat is not a
+/// Slack/Signal/Telegram session — the card goes into the origin session itself as an
+/// `<autoresearch slug event>` input through `agent::SendInput`, the path reminders and desk
+/// notices already use; a channel-bound session keeps the channel path alone (never twice).
+fn deliver(origin: Option<SessionId>, slug: &str, event: &'static str, text: String) {
     let origin_label = format!("autoresearch {slug}");
+    let slug = slug.to_owned();
     tokio::spawn(async move {
-        let Ok(Some(user)) = ActorRef::<agent::UserChannels>::lookup(agent::USER_ACTOR) else {
-            tracing::debug!(%origin_label, "user actor not running; card not delivered");
+        let via_channel = match ActorRef::<agent::UserChannels>::lookup(agent::USER_ACTOR) {
+            Ok(Some(user)) => {
+                let m = agent::Outbound {
+                    sessions: origin.into_iter().collect(),
+                    origin: origin_label.clone(),
+                    text: text.clone(),
+                    files: vec![],
+                };
+                match user.ask(agent::Deliver { m, via: None }).await {
+                    Ok(_) => true,
+                    Err(e) => {
+                        tracing::debug!(%origin_label, "no channel took the card: {e}");
+                        false
+                    }
+                }
+            }
+            _ => false,
+        };
+        if via_channel {
+            return;
+        }
+        let (Some(origin), Some(agents)) = (origin, agents()) else {
+            tracing::warn!(%origin_label, "card not delivered: no channel and no origin session");
             return;
         };
-        let m = agent::Outbound {
-            sessions: origin.into_iter().collect(),
-            origin: origin_label.clone(),
-            text,
-            files: vec![],
-        };
-        if let Err(e) = user.ask(agent::Deliver { m, via: None }).await {
-            tracing::warn!(%origin_label, "card not delivered: {e}");
+        let r = agents
+            .ask(agent::SendInput {
+                session: Some(origin),
+                text: wrapped(&slug, event, &text),
+                files: vec![],
+                delivery: agent::Delivery::default(),
+                id: None,
+            })
+            .await;
+        if let Err(e) = r {
+            tracing::warn!(%origin_label, "card not delivered to the origin session: {e}");
         }
     });
+}
+
+/// The `<autoresearch slug="…" event="…">` wrapper a desktop/TUI client renders as the study's
+/// card (`injected.ts`, `tui::model::injected`); `text` is the card markdown.
+pub(crate) fn wrapped(slug: &str, event: &str, text: &str) -> String {
+    let attr = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    format!(
+        "<autoresearch slug=\"{}\" event=\"{}\">\n{text}\n</autoresearch>",
+        attr(slug),
+        attr(event)
+    )
 }
 
 fn card(elements: serde_json::Value, root: &str) -> String {
@@ -1728,6 +1773,7 @@ pub async fn prepare(env: Env, mut study: StudyRecord, start: StartWhen) {
             deliver(
                 study.origin,
                 &study.slug,
+                "failed",
                 format!(
                     "**Autoresearch study `{}` did not start** — {reason}",
                     study.slug
@@ -1875,7 +1921,12 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
     let text = schedule_file::text(&spec, &env.cfg, &worktree, &model, start);
     schedule_file::write(&env.data_dir, &slug, &text).await?;
     let sched = schedule_file::name(&slug);
-    deliver(study.origin, &slug, start_card(study, m, sigma, &sched));
+    deliver(
+        study.origin,
+        &slug,
+        "started",
+        start_card(study, m, sigma, &sched),
+    );
     Ok(())
 }
 
@@ -3961,6 +4012,7 @@ pub async fn finalize_task(env: Env, slug: String) {
             deliver(
                 study.origin,
                 &slug,
+                "finished",
                 result_card(&study, &headline, &series, &changesets, closed, kept),
             );
             env.publish(StudyEvent::StudyFinished {
@@ -3986,6 +4038,7 @@ pub async fn finalize_task(env: Env, slug: String) {
             deliver(
                 study.origin,
                 &slug,
+                "failed",
                 format!("**Autoresearch study `{slug}` could not finalize** — {reason}"),
             );
         }

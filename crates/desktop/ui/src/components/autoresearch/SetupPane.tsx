@@ -1,7 +1,6 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { ExternalLink } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { Divider } from '@/components/chat/Panes'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
@@ -21,7 +20,6 @@ import { StatePill } from './StudyList'
 export function SetupPane({ chat }: { chat: string | undefined }) {
   const navigate = useNavigate()
   const mobile = useIsMobile()
-  const [ratio, setRatio] = useState(0.62)
   const [panelOpen, setPanelOpen] = useState(false)
   const session = chat ?? null
   const studies = useStudies()
@@ -66,23 +64,28 @@ export function SetupPane({ chat }: { chat: string | undefined }) {
         )}
       </SectionRow>
       <div className="flex min-h-0 min-w-0 flex-1">
-        <div className="flex min-h-0 min-w-0 flex-col" style={!mobile && session ? { flex: `${ratio} 1 0%` } : { flex: '1 1 0%' }}>
-          <SetupChat session={session} repos={repos} onSession={(chat) => void navigate({ to: '/autoresearch/new', search: { chat } })} />
-          {mobile && session && (
-            <div className="flex shrink-0 justify-center border-t border-border-subtle py-1">
-              <Button variant="outline" size="xs" className="rounded-full" onClick={() => setPanelOpen(true)}>
-                {draft.data ? (draft.data.started ? `Study ${draft.data.draft_id}` : `Draft ${draft.data.settled} of ${draft.data.total}`) : 'Draft'}
-              </Button>
-            </div>
-          )}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <SetupChat
+            session={session}
+            repos={repos}
+            onSession={(chat) => void navigate({ to: '/autoresearch/new', search: { chat } })}
+            aboveComposer={
+              // R1 H4: the pill sits right above the composer, clear of the assistant FAB at the bottom edge.
+              mobile && session ? (
+                <div className="flex shrink-0 justify-center py-1">
+                  <Button variant="outline" size="xs" className="rounded-full" onClick={() => setPanelOpen(true)}>
+                    {draft.data ? (draft.data.started ? `Study ${draft.data.draft_id}` : `Draft ${draft.data.settled} of ${draft.data.total}`) : 'Draft'}
+                  </Button>
+                </div>
+              ) : undefined
+            }
+          />
         </div>
         {!mobile && session && (
-          <>
-            <Divider dir="row" ratio={ratio} onRatio={setRatio} />
-            <aside className="flex min-h-0 min-w-[260px] flex-col bg-layer-1" style={{ flex: `${1 - ratio} 1 0%` }}>
-              {panel}
-            </aside>
-          </>
+          // R1 U1: a fixed-width panel so rows read at 1280 px; the chat takes the rest.
+          <aside className="flex min-h-0 shrink-0 flex-col border-l border-border-subtle bg-layer-1" style={{ width: 'clamp(320px, 28vw, 400px)' }}>
+            {panel}
+          </aside>
         )}
       </div>
       {mobile && (

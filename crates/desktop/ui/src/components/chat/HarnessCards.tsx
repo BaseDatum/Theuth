@@ -4,7 +4,7 @@
 // 152: the same for a restart's `<resume_handoff>`, a parent's `<child_lost>` and the endless parent's view.
 
 import { Link } from '@tanstack/react-router'
-import { Bot, ChevronRight, Infinity as InfinityIcon, Radio, RotateCcw, Unplug, Zap } from 'lucide-react'
+import { Bot, ChevronRight, FlaskConical, Infinity as InfinityIcon, Radio, RotateCcw, Unplug, Zap } from 'lucide-react'
 import { useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { shortId } from '@/components/tasks/helpers'
@@ -12,6 +12,8 @@ import { Badge } from '@/components/ui/badge'
 import { fmtBytes } from '@/lib/files'
 import type { ResumeSection } from '@/lib/injected'
 import type { Entry } from '@/store/sessions'
+import { markdownComponents, plugins, shikiTheme } from './MessageAssistant'
+import { FenceContext } from './surface/JsonRenderFence'
 
 const SHELL = 'my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm'
 const SUMMARY = 'flex cursor-pointer list-none items-center gap-2 rounded-sm focus-visible:outline-2 [&::-webkit-details-marker]:hidden'
@@ -212,5 +214,33 @@ export function ParentViewCard({ lines, bytes }: Extract<Entry, { kind: 'parentV
         </div>
       )}
     </details>
+  )
+}
+
+/** A settled card: a broken fence shows its one dim line, never a skeleton. */
+const SETTLED: FenceContext = { running: false, hasLaterAssistant: false }
+
+/**
+ * 151 R1 (D7): `<autoresearch slug event>` — the study's start / result / failure card the engine delivered into its
+ * setup chat (no messaging channel renders a desktop session). The body is the card markdown (a `json-render` fence or
+ * one line) through the chat's fence renderers; the header links to the study page.
+ */
+export function AutoresearchCard({ slug, event, text }: Extract<Entry, { kind: 'autoresearch' }>) {
+  return (
+    <div className={SHELL}>
+      <div className={`${HEAD} text-xs text-fg-secondary`}>
+        <FlaskConical className={`size-3.5 shrink-0 ${event === 'failed' ? 'text-danger' : ''}`} aria-hidden="true" />
+        <span className="font-medium">Autoresearch · {slug}</span>
+        {event !== '' && <Badge variant={event === 'failed' ? 'destructive' : 'outline'}>{event}</Badge>}
+        <Link to="/autoresearch/$slug" params={{ slug }} className="ml-auto inline-flex items-center gap-0.5 hover:underline">
+          Open study <ChevronRight className="size-3" aria-hidden="true" />
+        </Link>
+      </div>
+      <FenceContext value={SETTLED}>
+        <Streamdown mode="static" plugins={plugins} components={markdownComponents} shikiTheme={shikiTheme} linkSafety={{ enabled: false }} className="mt-2 text-sm [&_p]:my-1">
+          {text}
+        </Streamdown>
+      </FenceContext>
+    </div>
   )
 }

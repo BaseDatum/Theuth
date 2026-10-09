@@ -6,9 +6,10 @@ import type * as Router from '@tanstack/react-router'
 import type * as Rpc from '@/lib/rpc'
 import type { DraftField } from '@/rpc/bindings/DraftField'
 import type { DraftView } from '@/rpc/bindings/DraftView'
-import { DraftPanel } from './DraftPanel'
+import { DraftPanel, footerText } from './DraftPanel'
 import { studies } from './fixtures'
 import { KEY } from './queries'
+import { ADVANCED } from './setup'
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -82,7 +83,22 @@ test('draft panel: Start is disabled while not ready and the footer names what b
   expect(ready).not.toMatch(/<button[^>]*disabled=""[^>]*>Start in idle window<\/button>/)
   expect(ready).toMatch(/<button[^>]*>Start in idle window<\/button>/)
   expect(ready).toContain('Start with my uncommitted changes')
-  expect(ready).toContain('Everything is settled.')
+  // R1 H5: ready, but theuth's proposal still stands on some rows — the footer names them, never "Everything is settled".
+  expect(ready).toContain('Ready to start · Scope, When are theuth’s proposals — OK or edit them')
+  expect(ready).not.toContain('Everything is settled')
+  const budget = { ...DRAFT, ready: true, blocking: [], fields: DRAFT.fields.map((f) => (f.name === 'budget' ? { ...f, state: 'proposed' as const } : f.state === 'proposed' ? { ...f, state: 'confirmed' as const } : f)) }
+  expect(footerText(budget)).toBe('Ready to start · Budget is theuth’s proposal — OK or edit it')
+  expect(footerText({ ...budget, fields: budget.fields.map((f) => (f.name === 'budget' ? { ...f, state: 'confirmed' as const } : f)) })).toBe('Everything is settled. Nothing runs on your repo until you press Start.')
+  expect(footerText({ ...budget, ready: false, blocking: ['Check is missing'] })).toBe('Start unlocks when: Check is missing')
+})
+
+test('draft panel (R1 U1): each row is label + badge + controls on one line with the value below; Edit on every row, OK only on proposed ones', () => {
+  const html = paint(createElement(DraftPanel, { draft: DRAFT, session: 's1' }))
+  expect((html.match(/aria-label="Edit /g) ?? []).length).toBe(DRAFT.fields.filter((f) => !ADVANCED[f.name]).length)
+  expect(html).toContain('aria-label="Edit Budget"')
+  // The value is its own full-width block after the header line, mono only for commands/paths.
+  expect(html).toMatch(/data-row="bench"[^>]*>.*?<\/span><\/div><div class="[^"]*font-mono[^"]*">bench\.sh · 10 launches<\/div>/)
+  expect(html).toMatch(/data-row="goal"[^>]*>.*?<\/span><\/div><div class="(?![^"]*font-mono)[^"]*">First frame faster; output unchanged<\/div>/)
 })
 
 test('draft panel: skeleton rows before the first draft; the status card from autoresearch.get once started', () => {

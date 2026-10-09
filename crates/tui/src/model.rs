@@ -1481,6 +1481,8 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
             // 152 D6: no sender attribute; the title is parsed from the body below.
             "resume_handoff" => (None, "</resume_handoff>"),
             "child_lost" => (Some("name=\""), "</child_lost>"),
+            // 151 R1: a study's start / result / failure card delivered into its setup chat.
+            "autoresearch" => (Some("slug=\""), "</autoresearch>"),
             _ => return None,
         };
         let (body, tail) = after.split_once(close)?;
@@ -1551,6 +1553,12 @@ pub fn injected(text: &str) -> Option<Vec<(CardKind, String, String)>> {
                 (
                     CardKind::Restart,
                     format!("lost · {} · {at} · {why}", unescape(from)),
+                )
+            } else if name == "autoresearch" {
+                let event = attr(open, "event=\"").unwrap_or_default();
+                (
+                    CardKind::Schedule,
+                    format!("autoresearch · {} · {event}", unescape(from)),
                 )
             } else {
                 (CardKind::Peer, from.to_owned())
@@ -15119,6 +15127,24 @@ mod tests {
             Some(vec![])
         );
         assert_eq!(injected("<child_lost at=\"1\">\nx\n</child_lost>"), None);
+    }
+
+    /// 151 R1: a study card delivered into its setup chat is one `◷` row titled by slug and event.
+    #[test]
+    fn injected_parses_autoresearch_cards() {
+        let card = "<autoresearch slug=\"sort-speed\" event=\"started\">\n```json-render\n{}\n```\n</autoresearch>";
+        assert_eq!(
+            injected(card),
+            Some(vec![(
+                CardKind::Schedule,
+                "autoresearch · sort-speed · started".to_owned(),
+                "```json-render\n{}\n```".to_owned()
+            )])
+        );
+        assert_eq!(
+            injected("<autoresearch event=\"failed\">\nx\n</autoresearch>"),
+            None
+        );
     }
 
     /// 152 D6: the parent's view before a native child's brief is an `∞`

@@ -43,11 +43,14 @@ export type Injected =
   | { kind: 'resume'; restored: boolean; clock: string; working?: string; previous?: string; sections: ResumeSection[]; omitted?: string[]; text: string }
   /** 152 D2: `<child_lost name session at why>` in a parent — a child not respawned after a restart (146 D4). */
   | { kind: 'lost'; name: string; session: string; clock: string; why: string; text: string }
+  /** 151 R1 (D7): `<autoresearch slug event>` — a study's start / result / failure card delivered into its setup chat
+   * when no messaging channel renders the session; `text` is the card markdown (a `json-render` fence or a line). */
+  | { kind: 'autoresearch'; slug: string; event: string; text: string }
 
 export type ResumeSection = { title: string; text: string; count?: number }
 
 /** Wrappers that render a card, with the attribute naming the sender, and wrappers that render nothing. */
-const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="', desk: 'agent="', advisory: 'severity="', child_lost: 'name="' }
+const CARD: Record<string, string> = { subagent_result: 'name="', message: 'from="', job_result: 'id="', job_idle: 'id="', schedule: 'name="', desk: 'agent="', advisory: 'severity="', child_lost: 'name="', autoresearch: 'slug="' }
 // `surface_error` (30 §8): the correction round is quiet on the desktop — the fence shows its own failure state — so the
 // `<surface_error>` / `<surface_error final="true">` notes render nothing; the notice entry above stays for other clients.
 // 144 §5.3: `<notebook id title>` is the bound chat's volatile context block — a harness note the context line already
@@ -302,6 +305,8 @@ export function classify(text: string): Injected[] | null {
         out.push({ kind: 'advisory', severity: from === 'concern' || from === 'blocker' ? from : 'nit', text: unescape(body.trim()) })
       } else if (name === 'child_lost') {
         out.push({ kind: 'lost', name: unescape(from), session: attr(open, 'session="') ?? '', clock: attr(open, 'at="') ?? '', why: unescape(attr(open, 'why="') ?? ''), text: body.trim() })
+      } else if (name === 'autoresearch') {
+        out.push({ kind: 'autoresearch', slug: unescape(from), event: unescape(attr(open, 'event="') ?? ''), text: body.trim() })
       } else if (name === 'desk') {
         const j = body.indexOf('</journal>')
         out.push({ kind: 'desk', agent: from, charter: inner(body, 'charter'), journal: inner(body, 'journal'), manual: j < 0 ? '' : body.slice(j + '</journal>'.length).trim() })

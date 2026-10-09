@@ -1,6 +1,6 @@
 import { open as pickFolder } from '@tauri-apps/plugin-dialog'
 import { FolderOpen, MessageSquarePlus } from 'lucide-react'
-import { useId, useState } from 'react'
+import { type ReactNode, useId, useState } from 'react'
 import { toast } from 'sonner'
 import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
@@ -15,8 +15,8 @@ import { startSetupChat } from './setup'
  * `LiveSession` with `first={false}`. The intro holds Repository (path + folder pick on the desktop + recent repos)
  * and the optional goal; "Start setup chat" is the §2 step 3 first send.
  */
-export function SetupChat({ session, repos, onSession }: { session: string | null; repos: string[]; onSession: (id: string) => void }) {
-  if (session) return <LiveSession session={session} first={false} />
+export function SetupChat({ session, repos, onSession, aboveComposer }: { session: string | null; repos: string[]; onSession: (id: string) => void; /** Phone: the "Draft n of m" pill, right above the composer (R1 H4). */ aboveComposer?: ReactNode }) {
+  if (session) return <LiveSession session={session} first={false} aboveComposer={aboveComposer} />
   return <Intro repos={repos} onSession={onSession} />
 }
 

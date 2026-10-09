@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { ChevronRight, Pause, Play, Square, Trash2 } from 'lucide-react'
+import { ChevronRight, Pause, Pencil, Play, Square, Trash2, X } from 'lucide-react'
 import { Fragment, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -135,7 +135,7 @@ function Rows({ draft, session, onDiscarded }: { draft: DraftView; session: stri
             <Trash2 /> Discard
           </Button>
         </div>
-        <p className="text-[11px] text-fg-secondary">{draft.ready ? 'Everything is settled. Nothing runs on your repo until you press Start.' : `Start unlocks when: ${draft.blocking.join(' · ')}`}</p>
+        <p className="text-[11px] text-fg-secondary">{footerText(draft)}</p>
         <p className="text-[11px] text-fg-tertiary">Verified = theuth's engine ran it · Confirmed = you said so · Needs your OK = theuth's proposal · Edit any row to set it yourself</p>
       </footer>
     </div>
@@ -144,29 +144,42 @@ function Rows({ draft, session, onDiscarded }: { draft: DraftView; session: stri
 
 type Change = { field: string; value: string }
 
+/**
+ * R1 H5: a `ready` draft can still carry theuth's proposal on a non-required row (Budget, Holdout, …); the footer
+ * says so instead of "Everything is settled".
+ */
+export function footerText(draft: DraftView): string {
+  if (!draft.ready) return `Start unlocks when: ${draft.blocking.join(' · ')}`
+  const proposed = draft.fields.filter((f) => f.state === 'proposed').map((f) => rowLabel(f.name))
+  if (proposed.length === 0) return 'Everything is settled. Nothing runs on your repo until you press Start.'
+  return `Ready to start · ${proposed.join(', ')} ${proposed.length === 1 ? 'is theuth\u2019s proposal — OK or edit it' : 'are theuth\u2019s proposals — OK or edit them'}`
+}
+
+/** R1 U1: label + badge + controls on one line, the value full width below (mono only for commands, paths, globs), evidence under it. */
 function Row({ field: f, draft, editing, busy, onOk, onEdit, onSave }: { field: DraftField; draft: DraftView; editing: boolean; busy: boolean; onOk: () => void; onEdit: () => void; onSave: (changes: Change[]) => Promise<void> }) {
   const badge = STATE_BADGE[f.state]
   const probe = PROBE_OF[f.name] ? draft.probes.find((p) => p.kind === PROBE_OF[f.name]) : undefined
   const spark = f.state === 'verified' && probe ? sparkPoints(probe.values) : null
+  const label = rowLabel(f.name)
   return (
     <div className={cn('flex flex-col gap-1 px-3 py-2', f.state === 'proposed' && 'bg-warning-bg/30')} data-row={f.name} data-state={f.state}>
-      <div className="flex items-start gap-2">
-        <span className="w-[72px] shrink-0 pt-px text-xs text-fg-secondary">{rowLabel(f.name)}</span>
-        <span className={cn('min-w-0 flex-1 break-words text-[13px]', MONO[f.name] && 'font-mono text-xs', !f.value && 'text-fg-tertiary')}>{f.value || (f.state === 'missing' ? 'not set yet' : 'none')}</span>
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-medium text-fg-secondary">{label}</span>
         <span className={cn('inline-flex h-5 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium whitespace-nowrap', badge.className)}>{badge.text}</span>
-      </div>
-      {(f.evidence || spark || f.state === 'proposed' || editing) && (
-        <div className="flex items-center gap-2 pl-[80px] text-[11px] text-fg-tertiary">
-          {f.state === 'proposed' && (
-            <Button size="xs" variant="outline" disabled={busy} onClick={onOk} aria-label={`OK ${rowLabel(f.name)}`}>
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          {f.state === 'proposed' && !editing && (
+            <Button size="xs" variant="outline" disabled={busy} onClick={onOk} aria-label={`OK ${label}`}>
               OK
             </Button>
           )}
-          {(f.state === 'proposed' || editing) && (
-            <Button size="xs" variant="ghost" disabled={busy} onClick={onEdit}>
-              {editing ? 'Cancel' : 'Edit'}
-            </Button>
-          )}
+          <Button size="icon-xs" variant="ghost" disabled={busy} onClick={onEdit} aria-label={editing ? `Cancel editing ${label}` : `Edit ${label}`} title={editing ? 'Cancel' : 'Edit'}>
+            {editing ? <X /> : <Pencil />}
+          </Button>
+        </span>
+      </div>
+      <div className={cn('min-w-0 text-[13px] leading-5 break-words', MONO[f.name] && 'font-mono text-xs', !f.value && 'text-fg-tertiary')}>{f.value || (f.state === 'missing' ? 'not set yet' : 'none')}</div>
+      {(f.evidence || spark) && (
+        <div className="flex items-center gap-2 text-[11px] text-fg-tertiary">
           {spark && (
             <svg width="56" height="12" viewBox="0 0 56 12" aria-hidden className="shrink-0 text-success">
               <polyline points={spark} fill="none" stroke="currentColor" strokeWidth="1.5" />
@@ -174,11 +187,6 @@ function Row({ field: f, draft, editing, busy, onOk, onEdit, onSave }: { field: 
           )}
           {f.evidence && <span className="min-w-0 truncate">{f.evidence}</span>}
         </div>
-      )}
-      {!editing && f.state !== 'proposed' && (
-        <button type="button" className="self-start pl-[80px] text-[11px] text-fg-tertiary hover:text-foreground hover:underline" onClick={onEdit} disabled={busy}>
-          Edit
-        </button>
       )}
       {editing && <Editor key={draft.version} row={f.name} draft={draft} busy={busy} onSave={onSave} />}
     </div>
@@ -193,7 +201,7 @@ function Editor({ row, draft, busy, onSave }: { row: string; draft: DraftView; b
   const changes = leaves.filter((l) => values[l] !== initial[l]).map((l) => ({ field: l, value: values[l] ?? '' }))
   return (
     <form
-      className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 pl-[80px] text-xs"
+      className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 text-xs"
       onSubmit={(e) => {
         e.preventDefault()
         if (changes.length) void onSave(changes)

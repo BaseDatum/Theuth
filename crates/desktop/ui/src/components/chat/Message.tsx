@@ -10,7 +10,7 @@ import type { Entry } from '@/store/sessions'
 import { AdvisorNoteCard } from './AdvisorNoteCard'
 import { ApprovalCard } from './ApprovalCard'
 import { AskCard } from './AskCard'
-import { BroadcastCard, ChildLostCard, DeskCard, ParentViewCard, ResumeCard, WakeCard } from './HarnessCards'
+import { AutoresearchCard, BroadcastCard, ChildLostCard, DeskCard, ParentViewCard, ResumeCard, WakeCard } from './HarnessCards'
 import { MessageAssistant, RemoveButton } from './MessageAssistant'
 import { MessageCompacted } from './MessageCompacted'
 import { MessageError, MessageInfo, MessageInterrupted } from './MessageInfo'
@@ -55,6 +55,8 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
       return <ResumeCard {...entry} />
     case 'lost':
       return <ChildLostCard {...entry} />
+    case 'autoresearch':
+      return <AutoresearchCard {...entry} />
     case 'parentView':
       return <ParentViewCard {...entry} />
     case 'vision':
@@ -145,6 +147,8 @@ function describe(entry: Entry): string {
       return entry.restored ? 'resumed after restart' : 'restarted fresh'
     case 'lost':
       return `subagent lost · ${entry.name}`
+    case 'autoresearch':
+      return `Autoresearch · ${entry.slug} · ${entry.event}`
     case 'parentView':
       return "parent's memory"
     case 'compacted':
@@ -253,7 +257,7 @@ export const Message = memo(function Message({
   const card =
     entry.context?.removed ? (
       <Tombstone entry={entry} session={session} readOnly={readOnly} reveal={reveal} />
-    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'engine' || entry.kind === 'vision' || entry.kind === 'desk' || entry.kind === 'wake' || entry.kind === 'advisory' || entry.kind === 'resume' || entry.kind === 'lost' || entry.kind === 'parentView') ? (
+    ) : !readOnly && (entry.kind === 'tool' || entry.kind === 'peer' || entry.kind === 'engine' || entry.kind === 'vision' || entry.kind === 'desk' || entry.kind === 'wake' || entry.kind === 'advisory' || entry.kind === 'resume' || entry.kind === 'lost' || entry.kind === 'autoresearch' || entry.kind === 'parentView') ? (
       <Card entry={entry} session={session}>
         {body(entry, session)}
       </Card>

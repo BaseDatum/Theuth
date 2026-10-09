@@ -282,6 +282,13 @@ test('child_lost: attributes and body, one card per block, mixable with other wr
   expect(classify('<child_lost session="s" at="1">\nx\n</child_lost>')).toBeNull()
 })
 
+test('autoresearch: the study card the engine delivered into its setup chat (151 R1) — slug, event and the fence body; never a bubble', () => {
+  const card = '```json-render\n{"root":"r","elements":{}}\n```'
+  expect(classify(`<autoresearch slug="sort-speed" event="started">\n${card}\n</autoresearch>`)).toEqual([{ kind: 'autoresearch', slug: 'sort-speed', event: 'started', text: card }])
+  expect(classify('<autoresearch slug="a&quot;b" event="failed">\n**did not start** — custody\n</autoresearch>')).toEqual([{ kind: 'autoresearch', slug: 'a"b', event: 'failed', text: '**did not start** — custody' }])
+  expect(classify('<autoresearch event="started">\nx\n</autoresearch>')).toBeNull()
+})
+
 const VIEW_BLOCKS = [
   '<chat>\n0+40|(earlier history, not summarized; recall searches it)\n40+16|Early weeks: the project was set up.\n',
   '56+8|Sky asked for cards; the worker shipped them.\n64+4|A restart lost one child.\n',
