@@ -23,6 +23,8 @@ internal sealed class SystemEffects : IDisposable
     private readonly Action<uint>? onSystemChanged;
     private readonly Windows.Foundation.TypedEventHandler<global::Windows.UI.ViewManagement.UISettings, object>? onEffects;
     private readonly Windows.Foundation.TypedEventHandler<global::Windows.UI.ViewManagement.UISettings, global::Windows.UI.ViewManagement.UISettingsAnimationsEnabledChangedEventArgs>? onAnimations;
+    private readonly Windows.Foundation.TypedEventHandler<global::Windows.UI.ViewManagement.UISettings, object>? onColors;
+    private Microsoft.UI.Xaml.ElementTheme systemTheme;
     private bool disposed;
 
     private SystemEffects(DispatcherQueue dispatcher, HostWindow? host)
@@ -38,6 +40,9 @@ internal sealed class SystemEffects : IDisposable
             onAnimations = (_, _) => Marshal("UISettings.AnimationsEnabledChanged");
             ui.AdvancedEffectsEnabledChanged += onEffects;
             ui.AnimationsEnabledChanged += onAnimations;
+            // 149 NATIVE: Windows light/dark and the accent, live (ColorValuesChanged fires on a background thread).
+            onColors = (_, _) => MarshalTheme("UISettings.ColorValuesChanged");
+            ui.ColorValuesChanged += onColors;
         }
         catch (Exception e)
         {
@@ -45,9 +50,10 @@ internal sealed class SystemEffects : IDisposable
             TransparencyEnabled = true;
             AnimationsEnabled = true;
         }
+        systemTheme = Theme.System;
         if (host is not null)
         {
-            onSystemChanged = msg => { if (msg == PInvoke.WM_SETTINGCHANGE) Reread("WM_SETTINGCHANGE"); };
+            onSystemChanged = msg => { if (msg == PInvoke.WM_SETTINGCHANGE) { Reread("WM_SETTINGCHANGE"); RereadTheme("WM_SETTINGCHANGE"); } };
             host.SystemChanged += onSystemChanged;
         }
         Log.Write($"effects: transparency={(TransparencyEnabled ? "on" : "off")} animations={(AnimationsEnabled ? "on" : "off")}");
@@ -82,6 +88,29 @@ internal sealed class SystemEffects : IDisposable
 
     /// <summary>After either value changed (UI thread).</summary>
     public event Action? Changed;
+
+    /// <summary>149 NATIVE: Windows switched between light and dark (or the accent changed) — the surfaces re-render with the system's brushes (UI thread).</summary>
+    public event Action? ThemeChanged;
+
+    /// <summary>The system's mode as last read (Light/Dark).</summary>
+    public Microsoft.UI.Xaml.ElementTheme SystemTheme => systemTheme;
+
+    private void MarshalTheme(string source)
+    {
+        if (disposed) return;
+        dispatcher.TryEnqueue(() => RereadTheme(source));
+    }
+
+    private void RereadTheme(string source)
+    {
+        if (disposed) return;
+        var now = Theme.System;
+        Theme.Invalidate(); // the accent may have changed even when the mode did not
+        if (now == systemTheme && source != "UISettings.ColorValuesChanged") return;
+        Log.Write($"theme: changed via {source}: {systemTheme} → {now}");
+        systemTheme = now;
+        ThemeChanged?.Invoke();
+    }
 
     private void Marshal(string source)
     {
@@ -135,6 +164,7 @@ internal sealed class SystemEffects : IDisposable
         {
             if (ui is not null && onEffects is not null) ui.AdvancedEffectsEnabledChanged -= onEffects;
             if (ui is not null && onAnimations is not null) ui.AnimationsEnabledChanged -= onAnimations;
+            if (ui is not null && onColors is not null) ui.ColorValuesChanged -= onColors;
         }
         catch (Exception) { }
     }
