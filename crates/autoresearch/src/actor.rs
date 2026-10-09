@@ -1650,6 +1650,12 @@ fn validate(spec: &StudySpec, cfg: &AutoresearchConfig) -> Result<()> {
 /// pipeline (worktree → warm → custody → baseline → σ → schedule file →
 /// running → start card) runs off the mailbox; failures end in `failed`.
 pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
+    // Windows (2026-10-09, found by the 134/149 session): every bench/check/holdout command
+    // runs under `/bin/bash -lc`, which a stock Windows box does not have — refuse honestly
+    // before anything is written. `cfg!` keeps the rest compiled (no Windows-only dead code).
+    if cfg!(windows) {
+        return Err(Error::refused(crate::WINDOWS_UNSUPPORTED));
+    }
     let env = a.env();
     validate(&m.spec, &env.cfg)?;
     // 140-P live: `spawn_subagent` is gated by `agent.communication` (50 §2.1); without it
