@@ -20,7 +20,30 @@ Brief: `~/Develop/theuth-144-briefs/wave2/Z2.md`. Contract: `docs/design/144-wav
 - Bindings for tsc: the base export (795 files, orchestrator's copy, `/tmp/144/w2/bindings.log`) + the workers' hand-written
   stubs `/tmp/144/w2/u1-stubs/*` (5) and `/tmp/144/w2/u2-stubs/*` (9) copied over them → 806 files, gitignored.
 
-**Engine phase (R1)** — pending.
+**Engine phase (R1, turn 2)**
+- `…` merge `feat/144-e1` (2aa03993) — clean. `a1498f77` merge `feat/144-e2` (2459df29) — 4 conflicts, both sides kept:
+  `crates/agent/src/notebooks.rs:405` (E2's doc line on `invoke`), `crates/rpc/src/api.rs` trait method list (E1's seven
+  then E2's four) and the two interleaved impl blocks (`notebook_context_set` … `insight_skills` from E1, `notebook_ask`
+  … `notebook_overviews` from E2). `lib.rs` mods and `export.rs` lists auto-merged with both.
+- Fold `origin/main` bbf68677 (146 + 146b + 140 windows fix): clean, 62 files. Migrations: main's 146 took 0043/0044,
+  ours stays `0045_session_context.sql` — unique, no renumber. Second fold `05b9a8ae` = d5a8666e (148 MODEL-DEFAULTS):
+  clean, 54 files; `slash.ts` keeps U2's `/ask` row + case beside 148's edits; `rpc/api.ts` METHODS gained 148's names.
+- Hand-offs applied (`870b5497`, `3e22a9a5`):
+  - **U1 dial before the first send** — `components/notebooks/NotebookContext.ts` `useEnsureNotebookSession(notebook)`:
+    no thread yet → `create_session { retention: durable, notebook }` (wave 1's binding at creation), `rename_session`
+    to the notebook title (what the composer does), remember it as the open thread (the composer re-keys onto it, so
+    the first message goes there), `applyContextDefaults` (the device's remembered dials → rows), invalidate the chat
+    list. `useDial` (`SourceCard.tsx:103`) awaits it before every `notebook_context_set/clear/set_all`; `ChatColumn`'s
+    `onCreated` shares `applyContextDefaults`. Test `NotebookContext.test.ts` (2).
+  - **E1 trailer** — `lib/citations.ts` `provenanceOf(md): 'chat' | 'source' | null` (the insight trailer `*From
+    [<source>](theuth://sources/…)…*`, plain or emphasis-split); `isProvenanceLine` = `!== null`; the Notes column row
+    reads `AI from chat` / `AI from source`. Tests in `lib/citations.test.ts`.
+  - **E1 store** — `crates/agent/src/store.rs:2917-2921` `DELETE FROM session_context WHERE session = ?` inside
+    `delete_session`'s transaction; asserted in `tests/notebooks_binding.rs::session_context_rows_round_trip_per_session`.
+    `CallKind::Insight` not added (147-F1 owns `side_call.rs` tonight) — Hand-offs.
+  - **`rpc/api.ts`** — the eleven methods on `Api` + `METHODS` (sorted positions); `lib/notebooks-rpc.ts` `ContextApi =
+    Pick<Api, …>`, `useContextApi = useApi`; `lib/ask-rpc.ts` `AskApi = Pick<Api, …>`, `useAskApi = useApi`; the
+    `contextApi`/`askApi` client shims and `ask-rpc.test.ts`'s shim test removed (`api.test.ts` pins the names).
 
 ## Gates
 
@@ -47,7 +70,19 @@ Brief: `~/Develop/theuth-144-briefs/wave2/Z2.md`. Contract: `docs/design/144-wav
 - `origin/main` re-fetched after the gates: still dd19bf63 → no fold, engine gates not re-run in this turn (no engine
   code moved; they run in full in the engine phase).
 
-**Engine phase (R1)** — pending.
+**Engine phase (R1, turn 2)** — mbx under build-lock, logs in `/tmp/144/w2/z2/`:
+- `cargo fmt --check` → clean (`fmt.log`).
+- `build-lock mbx test -p agent -p document -p rpc -p voice -p decision --no-run` → 0 warnings (`test-norun.log`,
+  `test-norun2.log` after the store hand-off). Bare `MBX_SCHEDULER_TESTS=0 mbx test` with the **same** `-p` set,
+  `--lib --tests --no-fail-fast` (`test-run.log`): agent lib 579 + binding 2 + block 6; document lib 74 + actor 11 +
+  cite_check_links 4 + index_search 3 + ingest_audio 1 + ingest_job 5 + insights 2 + replicate 1; rpc 56 + prompts 1;
+  voice 27; decision lib 93 (+ embed_actor 3, gliner 3, model 4). Two reds, neither ours:
+  `agent supervisor::tests::human_input_releases_parked_items_as_steers` (146 code; `a turn starts: Elapsed` while the
+  decision lib tests held the machine for 1005 s) → **passes alone in 0.62 s** (`test-rerun-agent.log`);
+  `decision tests/decide.rs::decide_many_releases_the_checkpoint_it_loaded` (`released 173 MB > before 71 MB + 50 MB`,
+  a memory-accounting assertion) — the brief's `decision --lib only` exclusion; not run again.
+- `build-lock mbx clippy -p agent -p document -p rpc -p voice --all-targets -- -D warnings` → clean (`clippy.log`).
+- `BUILD_SLOTS=1 build-lock mbx check --workspace --all-targets --exclude desktop` → see below (`check-ws.log`).
 
 ## Live proof
 
