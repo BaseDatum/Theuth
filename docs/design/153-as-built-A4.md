@@ -1,0 +1,53 @@
+# 153 as-built — A4 (actor + mic + RPC bodies)
+
+Worktree `~/Develop/theuth-153-a4`, branch `feat/153-a4`, cut from the PIN `cbaf4259`. Design: `153-voice-anywhere.md` §4.4, §4.6,
+§5.6, §6.1/6.3, §7.3–7.4, §8.1–8.4/8.7, §14, §16 rows 5–8, 10–11.
+
+## Files
+- `crates/voice/src/dictation.rs` — rewritten around the PIN's actor: `StartDictation { source, opts }`, the shaper per piece, sticky
+  end commands, "scratch that", the §7.3 settle, §8.2 re-arm, §8.3 readiness + silent-device gate, §8.4 standby, §8.7 timings,
+  history rows + per-utterance audio, the dictionary snapshot, new messages `Correction`, `AnswerSuggestion`, `DictionaryOp`/`DictionaryReply`,
+  `Setting`, `InputDevicePrefs`, `HistoryStore`.
+- `crates/voice/src/mic.rs` — `list_input_devices()`, `Capture::open_on(prefs)`, named open through `StreamConfig.device_id`, test-only `Capture::fake()`.
+- `crates/voice/src/lib.rs` — `pub use` lines only (new messages, `SETTLE`/`SILENCE`).
+- `crates/rpc/src/api.rs` — bodies of `dictation_start/correction/history/history_forget/audio_get`, `dictionary_list/put/delete/suggestion_answer`,
+  `list_input_devices`, `set_input_devices`, `set_shape`, `set_end_phrases`, `voice_status`; helpers `Server::write_voice_config`, `history_store(ext)`.
+- `crates/desktop/ui/src/rpc/bindings/*` — the re-export (see gates).
+
+## Design vs built
+| Design | Built |
+|---|---|
+| §4.6 `Task.shaper: ShaperOwned`, `prev_text` = finals joined | Same. `prev` = shaped finals joined with a space. `Shaper::shape` is `&self` (stateless), so §7.1's stickiness is kept by the task: a command on any piece of an utterance stays on its later pieces until the final. |
+| §4.6 "scratch that" re-sends the previous closed utterance empty | Same: `DictationText { utterance: prev, text: "", shaped: "", final: true }`; the scratch utterance itself is not kept as a final. |
+| §7.3 `SETTLE` 1.5 s then `SILENCE` 0.35 s | `SETTLE`/`SILENCE` constants live in `dictation.rs` (A1's `end.rs` had none at the PIN). Settle counts from the last piece carrying `Send`; silence = the utterer's gate closed (`is_open() == false`) for 0.35 s; new speech (gate open, or a piece without `Send`) resets. `Finished { Done }`. |
+| §8.1 `open_on(prefs)` walks the list, then default, then first input | Same; `flexaudio::devices()` (cpal names, `is_default`) enumerates and `StreamConfig.device_id = Some(name)` opens by name — no deviation needed. |
+| §8.2 retry 300 ms × 3 / 5 s | Brief's numbers: every 500 ms for 5 s. `DictationDevice { Lost }` then `{ Changed }`, the open utterance is closed first, no `Finished`; after 5 s `Error("microphone: device lost")`. Remote sources untouched. |
+| §8.3 `Started` after the first PCM; 2 s ready gate; 3 silent 160 ms windows | Mic only (a remote feed is the client's). The level window (8 × 20 ms) doubles as the detector window; after one non-silent window the detector is off. Rejection → next device once (the failed name dropped from the list), else `DictationDevice { Lost }` + `Error("microphone: no sound from ‹name›")` / `"no audio from ‹name›"`. |
+| §8.4 standby 8 s, prewarm primes the resampler | Standby built (`voice.standby_secs`, `0` = today; buffered chunks are drained at reuse; a stale device error drops it; a `Lease` or a device-list change drops it). Resampler priming skipped (one FFT block, sub-ms). |
+| §8.6 duck/pause | Not touched: companion-side per design; the setting is read into config by C. |
+| §8.7 timings | `press = recv − press_ago_ms`; `first_pcm`, `first_partial`, `first_final` on the task's clock; `stop_to_final_ms` from the stop observation (cancel/deadline/settle) to the `Finished` publish. In `DictationState.last` and the `dictations` row (`press_ms` column = press→first PCM). |
+| §5.6 `voice_status.dictionary { … }` | `VoiceStatus` (frozen, C's) has no such field; not added. `dictionary_list` reports user + learned as designed. |
+| §6.3 suggestion ids | `Store::correction` returns `Vec<Correction>` without an id or a count; the actor mints the `SuggestionId`, keeps the pair until answered, publishes `occurrences: 2` (the §6.2 due rule) and `has_audio: false`. `Add` writes a `Learned` entry (metaphone codes empty — A2's matcher may compute them on `put`), `Never` a negative, every answer is forwarded to `Store::answer`. |
+| §14.1 message named `SuggestionAnswer` | Named `AnswerSuggestion` (the enum `history::SuggestionAnswer` already has the name). |
+| §14.1 `DictationOpts.commands` | Carried, not applied: `Shaper::new` (frozen) has no slash-command input; A1/integrator seam. |
+
+## Tests (`crates/voice/src/dictation.rs`, fake engine + injected mic opener; no model, no device)
+`none_opts_is_today`, `send_it_settle_then_silence_stops`, `scratch_that_empties_previous_utterance`, `device_lost_rearms_within_5s`,
+`silent_device_rejected_in_480ms`, `readiness_gate_2s`, `timings_recorded_with_synthetic_feed`; the four PIN tests unchanged.
+The end-command tests arm through a `#[cfg(test)]` shim (exact phrase at the tail) until A1's parser lands — harmless after.
+
+## Gates
+(filled at the end — see DONE)
+
+## Probe (§16 row 11) — for the integrator
+No RPC harness calls `dictation_start` in `crates/rpc/tests` or `crates/app`. Manual: `t --headless`, then over the WS RPC
+`dictation_start [16000, {"surface":"tui","press_ago_ms":0}]` → push 20 ms chunks of a tone via `dictation_audio [id, <b64 i16>]` →
+`subscribe_events` shows `DictationText` with `shaped` (== `text` until A1), `DictationFinished`, then `dictation_status.last` with the four
+numbers; `dictation_start [16000, null]` → identical event shape.
+
+## Hand-offs (wave B surfaces)
+- Send `opts` with `surface`, `destination`, `press_ago_ms`; read `shaped`, act on `command: send` after `DictationFinished`; on a
+  `DictationText { final: true, text: "" }` for an earlier utterance, empty that splice (scratch).
+- Show `DictationDevice { lost | changed, device }` in the level slot; `dictation_status.input_device` / `.last` for the debug row.
+- `dictation_correction(id, sent_text)` at send; answer `DictionarySuggestion` with `dictionary_suggestion_answer`.
+- Settings: `list_input_devices` / `set_input_devices` (`voice_status.input_devices` is live), `set_shape`, `set_end_phrases`.
