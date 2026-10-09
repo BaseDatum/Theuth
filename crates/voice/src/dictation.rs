@@ -107,6 +107,12 @@ pub struct DictationState {
     pub model: ModelState,
     /// The dictation running, if any (one per daemon: one mic).
     pub active: Option<DictationId>,
+    /// The input device the running dictation opened (153 §8.1).
+    #[serde(default)]
+    pub input_device: Option<String>,
+    /// Timings of the last finished dictation (153 §8.7).
+    #[serde(default)]
+    pub last: Option<crate::DictationTimings>,
 }
 
 /// Loaded model, VAD and gate; moves into the dictation task and back.
@@ -460,6 +466,9 @@ impl Message<DictationStatus> for Dictation {
         DictationState {
             model: self.model.clone(),
             active: self.active.as_ref().map(|r| r.id),
+            // 153-C stub — A4 fills (device name, timings).
+            input_device: None,
+            last: None,
         }
     }
 }
@@ -516,8 +525,12 @@ impl Message<Report> for Dictation {
             } => VoiceEvent::DictationText {
                 id,
                 utterance,
+                // 153-C stub — A4 fills (shaper output, end command, actions).
+                shaped: text.clone(),
                 text,
                 is_final,
+                command: None,
+                actions: Vec::new(),
             },
             Progress::Finished { reason, engine } => {
                 tracing::info!("voice: dictation finished id={id} reason={reason:?}");
