@@ -1074,6 +1074,14 @@ after it.
   `SideCaller`) and fails with the supervisor's text before writing a job row. (6) Every rejected reply is kept in
   `jobs.error_log` (`rejected reply (attempt N, call <id>): <errors>` + the text, ≤ 4 096 chars). (7) Job and event cost
   totals are the sum of the replies' `cost_nanos`, i.e. what the agent settled in `model_calls`.
+- **Live re-proof follow-ups (F1-R3).** (1) Selective refresh (§8): a stage-B re-plan no longer clears the perspective —
+  rows the plan still holds with the same facts hash, not stale and with prose keep their prose, diagram, edges and
+  provenance (`write_identity` refreshes parent/order/shape only); rows the plan dropped are deleted; the rest are
+  rewritten and described. A touch of one leaf costs one stage-B call plus one describe batch. (2) `MapMeta.state`: one
+  predicate (`store::DESCRIBED_SQL` + `NO_PROSE_SQL`) decides both what stage C describes (`pending_prose`) and what
+  counts as missing prose (`state_counts`), so a finished run reads `ready`; leaf units nobody describes never make it
+  `partial`. (3) Every `generated` element has provenance: model-named groups (a single file included) and the bundle
+  carry the stage-B call's until stage C describes them.
 - **Known pre-existing reds**: `crates/codeindex/tests/index.rs` `map_and_symbol` and `impact_on_this_repository` (tool
   assertions against this repository's live index; unrelated to 147).
 - **Still open from §17**: human edits to prose (1), export overwrite rules (3), description model tier (5), mark semantics
