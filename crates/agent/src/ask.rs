@@ -587,8 +587,8 @@ impl Driver for Live {
                         .structured
                         .as_ref()
                         .and_then(|s| s["text"].as_str())
-                        .map_or(o.content.clone(), str::to_owned);
-                    texts.insert(doc.clone(), split_blocks(&md));
+                        .unwrap_or(&o.content);
+                    texts.insert(doc.clone(), split_blocks(md));
                 }
                 Err(e) => tracing::debug!(%doc, "ask doc_read: {e:#}"),
             }

@@ -166,17 +166,14 @@ fn records_path(rt: &Runtime) -> PathBuf {
     rt.data_dir.join("notebooks").join("overviews.json")
 }
 
-/// Live run states, keyed by `(notebook, kind)`; cleared on success.
-static RUNS: LazyLock<Mutex<HashMap<(String, OverviewKind), Result<(), String>>>> =
-    LazyLock::new(Mutex::default);
+/// Live run states by `(notebook, kind)`: `Ok(())` running, `Err(why)` failed; absent = idle. Cleared on success.
+pub type Runs = HashMap<(String, OverviewKind), Result<(), String>>;
+
+static RUNS: LazyLock<Mutex<Runs>> = LazyLock::new(Mutex::default);
 
 /// The rows of `notebook_overviews(notebook)` from `records` and `runs` (the live states): per kind the
 /// running/failed row first, then every shown version newest first. Pure; tested.
-pub fn list(
-    records: &[Record],
-    runs: &HashMap<(String, OverviewKind), Result<(), String>>,
-    notebook: &str,
-) -> Vec<Overview> {
+pub fn list(records: &[Record], runs: &Runs, notebook: &str) -> Vec<Overview> {
     let mut out = Vec::new();
     for r in records.iter().filter(|r| r.notebook == notebook) {
         let latest = r
