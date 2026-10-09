@@ -103,6 +103,12 @@ Brief: `~/Develop/theuth-144-briefs/wave2/Z2.md`. Contract: `docs/design/144-wav
   tsc **0 errors** (`tsc7.log`; `tsc6.log` shows the 6 pre-regen errors), full vitest **231 files / 1526 tests green**
   (`vitest3.log`) + `src/rpc` + `src/components/autoresearch` re-run after the regen 4/30 (`vitest4.log`), vite build
   rc 0 (`vite-build3.log`).
+- **R2 round (fold `origin/main` 98be99d8: 148-R4 ResolveModel, 141 R4 test helpers; clean, 20 files, no notebook
+  code; our tests use `Store::open` directly, so no `agents()` rebind was needed)**: `cargo fmt --check` clean
+  (`fmt3.log`); `mbx test … --no-run` 0 warnings (`test-norun5.log`); bare run, same `-p` set → **19 binaries, 883
+  passed, 0 failed** (`test-run3.log`); clippy clean (`clippy3.log`); `BUILD_SLOTS=1 mbx check --workspace --all-targets
+  --exclude desktop` rc 0 (`check-ws4.log`); tsc 0 errors (`tsc8.log`); vitest `notebooks sources editor notes lib rpc`
+  → **102 files / 575 tests** (`vitest5.log`); vite build rc 0 (`vite-build4.log`). No live re-proof.
 
 ## Live proof
 
