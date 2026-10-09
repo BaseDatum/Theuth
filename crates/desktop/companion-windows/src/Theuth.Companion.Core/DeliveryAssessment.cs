@@ -262,12 +262,14 @@ public static class DeliveryAssessment
     /// <summary>
     /// §13.2 for one utterance: refuse a certainly-not target; direct only for an editable, readable, non-secure target, a single line of
     /// at most <see cref="DirectMaxChars"/> characters without control characters, and only until a read-back has failed in this gesture
-    /// (<paramref name="fellBack"/>: "this and every later utterance" take the lease); everything else takes the lease.
+    /// (<paramref name="fellBack"/>: "this and every later utterance" take the lease); everything else takes the lease. Windows: while a
+    /// key is physically held (<paramref name="keysHeld"/> — the chord of a hold), the lease's one atomic Ctrl+V burst is used, because
+    /// paced typing cannot stay atomic against the held chord's auto-repeat.
     /// </summary>
-    public static DeliveryMethod Method(Assessment a, string text, bool fellBack)
+    public static DeliveryMethod Method(Assessment a, string text, bool fellBack, bool keysHeld = false)
     {
         if (a.Refused) return DeliveryMethod.Refuse;
-        if (!a.CanDirect || a.Secure || fellBack) return DeliveryMethod.Lease;
+        if (!a.CanDirect || a.Secure || fellBack || keysHeld) return DeliveryMethod.Lease;
         if (text.Length == 0 || text.Length > DirectMaxChars) return DeliveryMethod.Lease;
         foreach (char c in text) if (char.IsControl(c)) return DeliveryMethod.Lease; // Enter/Tab typed would send or move focus
         return DeliveryMethod.Direct;

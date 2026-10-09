@@ -124,12 +124,10 @@ switch ($Action) {
         Say "esc: sent to '$([GdNative]::Title([GdNative]::GetForegroundWindow()))'"
     }
     'probe' {
-        $line = ($Rest -join ' ')
+        # A nonce makes every write a new line (the companion ignores a line it has run already); the companion reads 300 ms after the last event.
+        $line = ($Rest -join ' ') + " n=$([DateTime]::Now.Ticks)"
         New-Item -ItemType Directory -Force -Path (Split-Path $trigger) | Out-Null
         Set-Content -Path $trigger -Value $line -NoNewline -Encoding utf8
-        # A watcher can fire on the truncation and read an empty file: touch it again (append, no truncation) after its debounce.
-        Start-Sleep -Milliseconds 1100
-        Add-Content -Path $trigger -Value ' ' -NoNewline -Encoding utf8
         Say "probe: wrote '$line' to $trigger at $(Get-Date -Format 'HH:mm:ss.fff')"
     }
     'clip-set' {

@@ -271,6 +271,15 @@ public sealed class DeliveryAssessmentTests
     }
 
     [Fact]
+    public void HeldKeysTakeTheLease()
+    {
+        // During a hold of Ctrl+Alt+D paced typing would interleave with the chord's auto-repeat: one atomic Ctrl+V instead.
+        var a = DeliveryAssessment.Assess(F(UiaControlType.Edit, value: true, valueRo: false));
+        Assert.Equal(DeliveryMethod.Lease, DeliveryAssessment.Method(a, "short", fellBack: false, keysHeld: true));
+        Assert.Equal(DeliveryMethod.Direct, DeliveryAssessment.Method(a, "short", fellBack: false, keysHeld: false));
+    }
+
+    [Fact]
     public void AFailedReadBackSendsThisAndEveryLaterUtteranceToTheLease()
     {
         var a = DeliveryAssessment.Assess(F(UiaControlType.Edit, value: true, valueRo: false));

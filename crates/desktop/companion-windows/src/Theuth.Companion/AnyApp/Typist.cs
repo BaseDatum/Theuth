@@ -11,9 +11,6 @@ namespace Theuth.Companion.AnyApp;
 /// </summary>
 internal static class Typist
 {
-    /// <summary>Characters per burst for direct insertion (§13.2 "chunked").</summary>
-    public const int ChunkChars = 64;
-
     private static readonly (ushort Vk, bool Extended)[] Modifiers =
     {
         (VkLControl, false), (VkRControl, true), (VkLMenu, false), (VkRMenu, true), (VkLShift, false), (VkRShift, false),
@@ -23,21 +20,33 @@ internal static class Typist
     /// <summary>Is any modifier physically down (§7.4: no Return while one is)?</summary>
     public static bool ModifierDown => Modifiers.Any(m => IsDown(m.Vk));
 
-    /// <summary>§13.2: type <paramref name="text"/> with KEYEVENTF_UNICODE (UTF-16 code units, so surrogate pairs go as two). True when
-    /// every event was inserted (UIPI-blocked targets are not reported by SendInput — the assessment marks those elevated).</summary>
-    public static bool Type(string text)
+    /// <summary>The pause between characters of a direct insertion. Measured on build-B: a batch of KEYEVENTF_UNICODE events into Win11
+    /// Notepad (a XAML/TSF text surface) keeps the first few characters and turns every later one into the batch's LAST character, because
+    /// the surface reads the packet character after the next one was injected — so characters go one per SendInput, paced.</summary>
+    public const int CharDelayMs = 8;
+
+    /// <summary>
+    /// §13.2: type <paramref name="text"/> with KEYEVENTF_UNICODE, one character (a surrogate pair stays together) per SendInput, paced by
+    /// <see cref="CharDelayMs"/>. Only called while no modifier is physically down (held keys take the lease: a paced sequence cannot stay
+    /// atomic against a held chord's auto-repeat). False when SendInput refused an event (UIPI-blocked targets are not reported — the
+    /// assessment marks those elevated).
+    /// </summary>
+    public static async Task<bool> TypeAsync(string text)
     {
         bool ok = true;
-        for (int i = 0; i < text.Length; i += ChunkChars)
+        for (int i = 0; i < text.Length; i++)
         {
-            var chunk = text.Substring(i, Math.Min(ChunkChars, text.Length - i));
-            var events = new List<Input>();
-            foreach (char c in chunk)
+            int n = char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]) ? 2 : 1;
+            var events = new Input[n * 2];
+            for (int k = 0; k < n; k++)
             {
-                events.Add(Key(0, c, KeyEventUnicode));
-                events.Add(Key(0, c, KeyEventUnicode | KeyEventKeyUp));
+                events[k * 2] = Key(0, text[i + k], KeyEventUnicode);
+                events[k * 2 + 1] = Key(0, text[i + k], KeyEventUnicode | KeyEventKeyUp);
             }
-            ok &= Burst(events, keepCtrl: false);
+            i += n - 1;
+            uint sent = SendInput((uint)events.Length, events, System.Runtime.InteropServices.Marshal.SizeOf<Input>());
+            if (sent != events.Length) { ok = false; Log.Write($"anyapp: SendInput inserted {sent}/{events.Length} events at char {i}"); break; }
+            await Task.Delay(CharDelayMs);
         }
         return ok;
     }

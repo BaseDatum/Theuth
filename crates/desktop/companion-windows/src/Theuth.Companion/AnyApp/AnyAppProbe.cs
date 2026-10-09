@@ -21,7 +21,8 @@ internal static class AnyAppProbe
 {
     private static readonly List<DispatcherQueueTimer> timers = new(); // dispatcher timers are not kept alive by the queue (PointProbe's finding)
     private static FileSystemWatcher? watcher;
-    private static DateTime lastRun;
+    private static DispatcherQueueTimer? debounce;
+    private static string lastLine = "";
 
     public static string TriggerFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "theuth", "companion", "anyapp-probe.txt");
 
@@ -65,9 +66,10 @@ internal static class AnyAppProbe
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(TriggerFile)!);
                 watcher = new FileSystemWatcher(Path.GetDirectoryName(TriggerFile)!, Path.GetFileName(TriggerFile)) { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName };
-                FileSystemEventHandler on = (_, _) => dispatcher.TryEnqueue(() => OnTrigger(c, dispatcher));
+                FileSystemEventHandler on = (_, _) => dispatcher.TryEnqueue(() => Debounce(c, dispatcher));
                 watcher.Changed += on;
                 watcher.Created += on;
+                watcher.Renamed += (_, _) => dispatcher.TryEnqueue(() => Debounce(c, dispatcher));
                 watcher.EnableRaisingEvents = true;
                 Log.Write($"anyapp-probe: watching {TriggerFile}");
             }
@@ -75,13 +77,34 @@ internal static class AnyAppProbe
         }
     }
 
+    /// <summary>One write raises several events, the first often on the truncation (an empty file): read 300 ms after the last one.</summary>
+    private static void Debounce(AnyAppController c, DispatcherQueue dispatcher)
+    {
+        debounce ??= dispatcher.CreateTimer();
+        debounce.Stop();
+        debounce.Interval = TimeSpan.FromMilliseconds(300);
+        debounce.IsRepeating = false;
+        debounce.Tick -= OnDebounce;
+        debounce.Tick += OnDebounce;
+        pending = (c, dispatcher);
+        debounce.Start();
+    }
+
+    private static (AnyAppController C, DispatcherQueue D)? pending;
+
+    private static void OnDebounce(DispatcherQueueTimer t, object? _)
+    {
+        t.Stop();
+        if (pending is { } p) OnTrigger(p.C, p.D);
+    }
+
     private static void OnTrigger(AnyAppController c, DispatcherQueue dispatcher)
     {
-        if ((DateTime.Now - lastRun).TotalMilliseconds < 800) return; // one write raises several events
-        lastRun = DateTime.Now;
         string line;
         try { line = File.ReadAllText(TriggerFile).Trim(); }
         catch (IOException) { return; }
+        if (line.Length == 0 || line == lastLine) return; // empty (truncated) or the same write seen twice
+        lastLine = line;
         var kv = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var part in line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {

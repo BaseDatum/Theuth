@@ -422,9 +422,9 @@ internal sealed class AnyAppController
                     continue;
                 }
                 string text = g.Profile.Polish ? await PolishAsync(g, raw) : raw;
-                var before = await reader.ReadAsync(g.Capture);
+                var before = await QuietReadAsync(g);
                 string delivered = AnyAppSpacing.Lead(text, before.Readable ? before.BeforeCaret : null, g.Previous);
-                var method = DeliveryAssessment.Method(g.Assessment, delivered, g.FellBack);
+                var method = DeliveryAssessment.Method(g.Assessment, delivered, g.FellBack, keysHeld: Typist.ModifierDown);
                 var verdict = method == DeliveryMethod.Direct ? await DirectAsync(g, delivered, before) : await LeaseAsync(g, delivered);
                 g.Delivered.Add(u);
                 if (verdict is PasteVerdict.Landed or PasteVerdict.Unknown or PasteVerdict.UserActed)
@@ -447,6 +447,26 @@ internal sealed class AnyAppController
             if (g.Pending.Count == 0 || g.Cancelled) g.Drained.TrySetResult();
         }
         if (!g.Cancelled && g.Pending.Count > 0 && !g.Delivering) _ = PumpAsync(g);
+    }
+
+    /// <summary>
+    /// The field read once it is quiet: two reads 60 ms apart agree (≤ 900 ms). A target still working through earlier input (a slow XAML
+    /// surface) would otherwise take the next delivery's keys out of order — on build-B a Ctrl+V queued behind a backlog arrived as "v".
+    /// </summary>
+    private async Task<FieldRead> QuietReadAsync(Gesture g)
+    {
+        var a = await reader.ReadAsync(g.Capture);
+        if (!a.Readable) return a;
+        var since = DateTimeOffset.Now;
+        while (DateTimeOffset.Now - since < TimeSpan.FromMilliseconds(900))
+        {
+            await Task.Delay(60);
+            var b = await reader.ReadAsync(g.Capture);
+            if (!PasteVerifier.Changed(a, b)) return b;
+            a = b;
+        }
+        Log.Write("anyapp: the field kept changing for 900 ms — delivering anyway");
+        return a;
     }
 
     /// <summary>§3.2 "paused": focus left the target app — wait until it is back (Esc cancels); after the gesture ended, give up after 10 s.</summary>
@@ -490,7 +510,7 @@ internal sealed class AnyAppController
     /// <summary>§13.2: SendInput typing, read back at 150 (and 350) ms; not landed → this utterance and every later one take the lease.</summary>
     private async Task<PasteVerdict> DirectAsync(Gesture g, string text, FieldRead before)
     {
-        bool ok = Typist.Type(text);
+        bool ok = await Typist.TypeAsync(text);
         var at = DateTimeOffset.Now;
         var verdict = ok ? await VerifyAsync(g, before, text, null, VerifyMode.Direct, at) : PasteVerdict.NotLanded;
         Log.Write($"anyapp: direct {text.Length} chars into {g.Assessment.App} → {verdict}");
@@ -616,10 +636,22 @@ internal sealed class AnyAppController
             if (wait > TimeSpan.Zero) await Task.Delay(wait);
             reads.Add(await reader.ReadAsync(g.Capture));
             checkedAt?.Add(at);
-            if (PasteVerifier.Step(before, reads, text, restored, mode) is { } v) return v;
+            if (PasteVerifier.Step(before, reads, text, restored, mode) is { } v) return Logged(v);
         }
-        return PasteVerifier.Verdict(before, reads, text, restored, mode);
+        return Logged(PasteVerifier.Verdict(before, reads, text, restored, mode));
+
+        PasteVerdict Logged(PasteVerdict v)
+        {
+            if (v != PasteVerdict.Landed && reads.Count > 0)
+            {
+                var last = reads[^1];
+                Log.Write($"anyapp: verify {mode} → {v} after {reads.Count} read(s): before …{Tail(before.BeforeCaret)} | after …{Tail(last.BeforeCaret)} | value {before.Value?.Length ?? -1}→{last.Value?.Length ?? -1} chars | wanted …{Tail(text)}");
+            }
+            return v;
+        }
     }
+
+    private static string Tail(string? s) => s is null ? "(null)" : "\"" + (s.Length > 40 ? s[^40..] : s).Replace("\n", "\\n").Replace("\r", "\\r") + "\"";
 
     // MARK: failures → the card (§13.5)
 

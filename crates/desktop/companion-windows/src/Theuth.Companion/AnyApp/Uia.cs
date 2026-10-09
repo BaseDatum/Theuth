@@ -361,7 +361,13 @@ internal sealed class FocusReader
     {
         try
         {
-            if (path.Length > 0 && System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileDescription is { Length: > 0 } d) return d.Trim();
+            if (path.Length > 0 && System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileDescription is { Length: > 0 } d)
+            {
+                d = d.Trim();
+                // Win11 Notepad describes itself as "Notepad.exe": a description that is a file name says the stem.
+                if (d.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) d = d[..^4];
+                if (d.Length > 0) return d;
+            }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { }
         var stem = Path.GetFileNameWithoutExtension(exe);
