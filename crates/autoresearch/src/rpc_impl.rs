@@ -123,19 +123,26 @@ pub async fn set_settings(
     ask(SetSettings(cfg)).await
 }
 
-// ───────────────────────────── 151 §4.4 the living draft (ENG builds the bodies) ─────────────────────────────
+// ───────────────────────────── 151 §4.4 the living draft ─────────────────────────────
+
+/// The drafts' root and whether a study with `draft_id` exists, from the actor.
+async fn draft_ctx(draft_id: &str) -> std::result::Result<(std::path::PathBuf, bool), String> {
+    let root = ask(DraftRoot).await?;
+    let slugs = ask(StudySlugs).await?;
+    Ok((root, slugs.iter().any(|s| s == draft_id)))
+}
 
 /// `autoresearch.draft {draft_id}` → the panel's `DraftView` (151 §5).
 pub async fn draft(draft_id: String) -> std::result::Result<DraftView, String> {
-    Err(format!(
-        "autoresearch.draft {draft_id}: {}",
-        crate::setup::NOT_BUILT
-    ))
+    let (root, started) = draft_ctx(&draft_id).await?;
+    crate::setup::view(&root, &draft_id, started).map_err(|e| e.to_string())
 }
 
 /// `autoresearch.drafts` → setting-up rows (drafts with no study yet), newest first (151 D6).
 pub async fn drafts() -> std::result::Result<Vec<DraftSummary>, String> {
-    Ok(Vec::new())
+    let root = ask(DraftRoot).await?;
+    let slugs = ask(StudySlugs).await?;
+    Ok(crate::setup::drafts(&root, &slugs))
 }
 
 /// `autoresearch.draft_edit {draft_id, field, value}` — a leaf set in the panel (151 §4.3 grammar).
@@ -144,11 +151,9 @@ pub async fn draft_edit(
     field: String,
     value: String,
 ) -> std::result::Result<DraftView, String> {
-    let _ = value;
-    Err(format!(
-        "autoresearch.draft_edit {draft_id} {field}: {}",
-        crate::setup::NOT_BUILT
-    ))
+    let (root, started) = draft_ctx(&draft_id).await?;
+    crate::setup::edit(&root, &draft_id, field.trim(), &value).map_err(|e| e.to_string())?;
+    crate::setup::view(&root, &draft_id, started).map_err(|e| e.to_string())
 }
 
 /// `autoresearch.draft_confirm {draft_id, field}` — a row OK'd in the panel.
@@ -156,16 +161,66 @@ pub async fn draft_confirm(
     draft_id: String,
     field: String,
 ) -> std::result::Result<DraftView, String> {
-    Err(format!(
-        "autoresearch.draft_confirm {draft_id} {field}: {}",
-        crate::setup::NOT_BUILT
-    ))
+    let (root, started) = draft_ctx(&draft_id).await?;
+    crate::setup::confirm(&root, &draft_id, field.trim()).map_err(|e| e.to_string())?;
+    crate::setup::view(&root, &draft_id, started).map_err(|e| e.to_string())
 }
 
 /// `autoresearch.discard_draft {draft_id}` — removes the drafts dir; later Starts are refused.
 pub async fn discard_draft(draft_id: String) -> std::result::Result<(), String> {
-    Err(format!(
-        "autoresearch.discard_draft {draft_id}: {}",
-        crate::setup::NOT_BUILT
-    ))
+    let root = ask(DraftRoot).await?;
+    crate::setup::discard(&root, &draft_id).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use runtime::SessionId;
+
+    use crate::tools::{read_draft, write_draft};
+    use crate::types::StudySpec;
+
+    /// 151 D6 + addition C: the rail lists readable drafts without a study, newest first;
+    /// a discarded draft is gone and a directory without a readable spec.json is skipped.
+    #[test]
+    fn drafts_skip_started_and_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for slug in ["older", "started", "newer"] {
+            let spec = StudySpec {
+                slug: slug.into(),
+                goal: format!("goal {slug}"),
+                repo: "/x".into(),
+                ..Default::default()
+            };
+            write_draft(root, &spec, SessionId::new(), true, vec![]).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Half-written / pre-format directories: no spec.json, or one that does not parse.
+        std::fs::create_dir_all(crate::drafts_dir(root, "empty")).unwrap();
+        std::fs::create_dir_all(crate::drafts_dir(root, "broken")).unwrap();
+        std::fs::write(
+            crate::drafts_dir(root, "broken").join("spec.json"),
+            b"{not json",
+        )
+        .unwrap();
+        let list = crate::setup::drafts(root, &["started".to_owned()]);
+        let ids: Vec<&str> = list.iter().map(|d| d.draft_id.as_str()).collect();
+        assert_eq!(ids, ["newer", "older"]);
+        assert_eq!(
+            (list[0].goal.as_str(), list[0].total, list[0].ready),
+            ("goal newer", 9, false)
+        );
+        crate::setup::discard(root, "newer").unwrap();
+        let e = read_draft(root, "newer").unwrap_err().to_string();
+        assert!(e.starts_with("no draft `newer`"), "{e}");
+        let ids: Vec<String> = crate::setup::drafts(root, &[])
+            .into_iter()
+            .map(|d| d.draft_id)
+            .collect();
+        assert_eq!(ids, ["started", "older"]);
+        let e = crate::setup::discard(root, "newer")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, "no draft `newer`");
+    }
 }

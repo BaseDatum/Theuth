@@ -1772,6 +1772,14 @@ pub struct Settings;
 #[derive(Clone, Debug)]
 pub struct SetSettings(pub crate::config::AutoresearchConfig);
 
+/// `DraftRoot` → the drafts' root (`<data_dir>/autoresearch` or `root:`), for the 151 draft RPCs.
+#[derive(Clone, Debug, Default)]
+pub struct DraftRoot;
+
+/// `StudySlugs` → every study's slug (a draft with a study is "started"; the rail skips it).
+#[derive(Clone, Debug, Default)]
+pub struct StudySlugs;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1826,16 +1834,22 @@ mod tests {
     /// enums wire as snake_case.
     #[test]
     fn draft_args_flatten_the_spec_with_default_flags() {
-        let a: DraftArgs =
-            serde_json::from_str(r#"{"slug":"x","goal":"g","repo":"/r"}"#).unwrap();
-        assert_eq!((a.spec.slug.as_str(), a.partial, a.confirmed.len()), ("x", false, 0));
+        let a: DraftArgs = serde_json::from_str(r#"{"slug":"x","goal":"g","repo":"/r"}"#).unwrap();
+        assert_eq!(
+            (a.spec.slug.as_str(), a.partial, a.confirmed.len()),
+            ("x", false, 0)
+        );
         assert_eq!(a.spec.budget, BudgetSpec::default());
         let a: DraftArgs = serde_json::from_str(
             r#"{"slug":"x","repo":"/r","partial":true,"confirmed":["goal","repo"],"metric":{"name":"t"}}"#,
         )
         .unwrap();
         assert_eq!(
-            (a.partial, a.confirmed.as_slice(), a.spec.metric.name.as_str()),
+            (
+                a.partial,
+                a.confirmed.as_slice(),
+                a.spec.metric.name.as_str()
+            ),
             (true, &["goal".to_owned(), "repo".to_owned()][..], "t")
         );
         let v = serde_json::to_value(&a).unwrap();
