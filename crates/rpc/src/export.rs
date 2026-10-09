@@ -644,6 +644,8 @@ async fn export_bindings() {
         meeting::EditOp,
         meeting::Profile,
         meeting::ProfileId,
+        meeting::EnrollTarget,
+        meeting::Enrolled,
         meeting::SearchHit,
         meeting::CachedBrief,
         meeting::CachedBriefPut,
