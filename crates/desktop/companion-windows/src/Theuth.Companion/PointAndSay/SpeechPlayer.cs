@@ -64,7 +64,8 @@ internal sealed class SpeechPlayer : IDisposable
         utterance = id;
         packets = 0; rmsSum = 0; finished = false; dump.Clear();
         decoder = new SpeechDecoder();
-        buffer = new BufferedWaveProvider(new WaveFormat(SpeechDecoder.OutputRate, 16, 1)) { BufferLength = SpeechDecoder.OutputRate * 2 * 60, DiscardOnBufferOverflow = true };
+        // NAudio 3.1: the buffer's length is a constructor argument (60 s of 48 kHz PCM16 mono); overflow discards rather than throws.
+        buffer = new BufferedWaveProvider(new WaveFormat(SpeechDecoder.OutputRate, 16, 1), SpeechDecoder.OutputRate * 2 * 60) { DiscardOnBufferOverflow = true };
         try
         {
             using var en = new MMDeviceEnumerator();
