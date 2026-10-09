@@ -86,7 +86,21 @@ The closer takes the live screenshots (pop-out window at 1100 × 720, Ask run, O
 
 ## Gates
 
-(filled after the runs)
+- Bindings: `/tmp/144/w2/ready-ui` appeared 01:00 (the orchestrator's export queued 35 min on slot 0). Its copy of the
+  795 generated files wiped the hand-written §2 stubs; restored from `/tmp/144/w2/u2-stubs/` (9 files: `AskBranch`,
+  `AskEvent`, `AskHit`, `AskStarted`, `AskSummary`, `Overview`, `OverviewKind`, `OverviewRun`, `OverviewStatus`;
+  gitignored, not committed). The orchestrator's `bun install` ran outside `crates/desktop/ui` ("could not find a
+  package.json", logged rc=0), so `BUILD_LABEL=144-U2 build-lock bun install --frozen-lockfile` was run here in
+  `crates/desktop/ui` (622 packages) and in `packages/apps` (484; `@openuidev/*` paths in `tsconfig.json`), as W4 had to.
+- `BUILD_LABEL=144-U2 build-lock bun run check` (`tsc -b --noEmit`) → rc 0, **0 errors** (`/tmp/144/w2/U2-tsc.log`; the
+  buildinfo lists `AskView.tsx`, `ask-rpc.ts`, the stubs).
+- `… build-lock bunx vitest run src/components/notebooks src/routes src/lib/ask-rpc.test.ts src/lib/popout.test.ts
+  src/components/chat/slash.test.ts` → **11 files / 41 tests passed** (new: `NotebookHeaderActions`, `NotebookPage`,
+  `AskView`, `AskDialog`, `OverviewsSection`, `NotebooksList`, `ask-rpc` tests; `popout.test.ts` +1). Neighbours
+  `src/components/artifacts src/lib/files.test.ts src/components/nav` → 5 files / 14 tests passed.
+- `routeTree.gen.ts`: regenerated with `@tanstack/router-generator` (`Generator.run()` with the vite plugin's options) —
+  byte-identical to the hand-merged file; committed.
+- No prettier/biome config in `crates/desktop/ui`; nothing to run.
 
 ## Deviations
 

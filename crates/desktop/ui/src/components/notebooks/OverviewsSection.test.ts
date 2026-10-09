@@ -48,11 +48,14 @@ test('rows: the newest version with its status, Open and Regenerate; older ones 
     row({ kind: 'briefing', version: 1, status: 'ready' }),
     row({ kind: 'briefing', version: 2, status: 'running', artifact: null }),
     row({ kind: 'faq', version: 1, status: 'failed', error: 'model timed out', artifact: null }),
+    row({ kind: 'timeline', version: 1, status: 'ready' }),
   ])
   expect(html).toContain('briefing.md · v2 ·')
   expect(html).toContain('running…')
   expect(html).toContain('versions · 1')
-  expect(html).toContain('href="/artifacts/call-briefing-1"')
+  // Older versions sit behind the closed disclosure; a running row has nothing to open yet.
+  expect(html).not.toContain('href="/artifacts/call-briefing-1"')
+  expect(html).toContain('href="/artifacts/call-timeline-1"')
   expect(html).toContain('failed · model timed out')
   expect(html).toContain('aria-label="Regenerate faq"')
   expect(html).not.toContain('No overviews yet')

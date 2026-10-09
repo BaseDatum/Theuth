@@ -164,6 +164,5 @@ function Player({ path }: { path: string }) {
   const src = useFileUrl(path)
   if (src === null) return <span className="h-8 w-full animate-pulse rounded-full bg-layer-2" />
   if (src === '') return <span className="text-[11px] text-danger">could not load the audio</span>
-  // biome-ignore lint/a11y/useMediaCaption: the script artifact under the player is the transcript.
   return <audio controls preload="metadata" src={src} className="h-8 w-full" />
 }
