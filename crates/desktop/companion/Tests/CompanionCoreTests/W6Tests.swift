@@ -185,6 +185,19 @@ struct KeyTableTests {
         ModeKeySettings.setAppProfiles(rows, d)
         #expect(ModeKeySettings.appProfiles(d) == rows)
     }
+
+    /// 153 C1: the machine's modes and gestures are the table's (`ModeKeySettings`); the hints follow the gesture; the
+    /// persisted table stays unique when both mode keys are rebound at once.
+    @Test func rows153ModeKeysDriveTheMachine() {
+        #expect(PointMachine.Mode.allCases == ModeKeySettings.Mode.allCases && PointMachine.Gesture.allCases == ModeKeySettings.Gesture.allCases)
+        #expect(PointMachine.hint(for: .holdLock) == PointMachine.hint && PointMachine.hint(for: .automatic) == PointMachine.automaticHint)
+        #expect(PointMachine.tapToggleMs == 400 && CommandCard.maxSteps == 12 && SpokenApproval.listenSecs == 8, "Q7: one home each")
+        var t = KeyTable()
+        t.set(Chord(chars: "x", keyCode: 7, modifiers: [.control, .option]), for: .command)
+        t.set(Chord(chars: "y", keyCode: 16, modifiers: [.control, .option]), for: .dictateAnywhere)
+        #expect(t.isUniquePerScope && KeyTable(json: t.json) == t)
+        #expect(t.check(Chord(chars: "x", keyCode: 7, modifiers: [.control, .option]), for: .voiceKey) == .usedBy(.command))
+    }
 }
 
 struct RailPresenceTests {
