@@ -19,7 +19,8 @@ the merged tree, the probe, and the hand-offs for waves B (surfaces) and C (comp
 ## What Z reconciled (commits `153-Z: …`)
 Order of events: Z first rewired items 1–2 in `dictation.rs` (`3e2864ed`); the orchestrator's 19:10 message then superseded A4's DONE
 with `feat/153-a4` `9080aae5`, which does the same two items itself. Z merged it (`4a7e1145`) resolving `dictation.rs` toward A4's
-version; the behaviour below is A4's final file, verified by Z against the merged tree (re-ran clippy + the test gate after the merge).
+version, then A4's final `c3bd3f3e` (`0c4997af`; as-built line only, no crate change); the behaviour below is A4's final file, verified
+by Z against the merged tree (re-ran clippy + the test gate after the merge).
 1. **Shaper wiring (A1 ↔ A4).** `ShaperOwned` carries `surface` + `commands`; per piece `Shaper::new(cfg, &phrases, &dict, app)
    .with_surface(surface).with_commands(opts.commands).shape_with(&mut parser, &prev, &t.text, t.is_final)`. One `EndParser` per task,
    `reset()` when the utterance index changes. A4's `armed` stickiness and the `#[cfg(test)]` exact-phrase shim are gone — the parser is
@@ -94,6 +95,7 @@ version; the behaviour below is A4's final file, verified by Z against the merge
   ignored`, notebooks 2 + 6, rpc `56 passed` + prompts 1, runtime `2 passed`, voice `test result: ok. 72 passed; 0 failed; 1 ignored`
   (the ignored one is the newly gated `live::tests::utterer_returns_the_spoken_sentence_punctuated`); workspace check `--exclude desktop`
   → `Finished dev profile … in 1m 29s`, 0 errors (workspace2.log); `fmt -- --check` clean. Bindings not re-exported: no ts type changed.
+  The later `c3bd3f3e` merge (`0c4997af`) touched only `153-as-built-A4.md`, so these lines are the final tree's.
 
 ## Live probe (§16 row 11)
 **Skipped** — the brief's condition failed at gate end (19:42): `uptime` 1-min load 23.57 (< 25 ok) but `vm_stat` free + speculative
@@ -129,7 +131,9 @@ text`, no command, `Finished { Done }`, `last.surface == Composer`), `timings_re
   `polish_model()` / `set_polish_model(id | null)` for Settings › Voice; `rewrite(instruction, selection, app, thread)` per §13.6.
 - Settings: `list_input_devices` / `set_input_devices` (`voice_status.input_devices` is live), `set_shape`, `set_end_phrases`,
   `dictionary_list/put/delete`; the dictionary header line reads `packaged_version()` + `counts()` through a future `VoiceStatus` field.
-- Agent names for `@mention` shaping: `Shaper::with_mentions` exists; `DictationOpts` has no field for them yet.
+- `@mention` shaping — **wave-B / design follow-up, not wired in wave A:** `Shaper::with_mentions` exists but `DictationOpts` (frozen
+  §14.1) carries no agent names and the engine has no other channel for them; the stage still applies the dictionary's `mention`-tagged
+  user/learned entries. Design decision needed: a `mentions: Vec<String>` on `DictationOpts`, or the actor asking `agents_list` itself.
 **Wave C (companion)**
 - `DictationDevice { lost | changed, device }` in the level slot; `dictation_status.input_device` / `.last` (§8.7 numbers) for the debug row.
 - Duck/pause (§8.6) is the companion's; `voice.duck_media` is already read into config.
