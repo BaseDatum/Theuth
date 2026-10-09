@@ -9,6 +9,9 @@ extension KeyboardShortcuts.Name {
     static let voiceKey = Self("voiceKey")
     /// ⎋ between press and send only (§8's pointAndSay row; `DESK/point/mod.rs:38-42`'s rule) — enabled/disabled per gesture.
     static let pointEscape = Self("pointEscape", default: .init(.escape))
+    /// 149g: the same ⎋ carrying the voice key's modifiers (⌃⎋ for ⌃S) — what ⎋ is while the chord is physically held, which
+    /// plain ⎋ never matches. Set from the table (`KeyTable.escapeDuringHold`), enabled/disabled with `pointEscape`.
+    static let pointEscapeHeld = Self("pointEscapeHeld")
 }
 
 @MainActor private var pointAndSay: PointController?
@@ -88,7 +91,8 @@ final class PointController {
             KeyboardShortcuts.onKeyDown(for: .voiceKey) { [weak self] in self?.keyDown() }
             KeyboardShortcuts.onKeyUp(for: .voiceKey) { [weak self] in self?.keyUp() }
             KeyboardShortcuts.onKeyDown(for: .pointEscape) { [weak self] in self?.send(.esc) }
-            KeyboardShortcuts.disable(.pointEscape)
+            KeyboardShortcuts.onKeyDown(for: .pointEscapeHeld) { [weak self] in self?.send(.esc) }
+            escapeHotkeys(false)
         }
         recorder.onChunk = { [weak self] c in self?.feed(c) }
         card.onEscape = { [weak self] in self?.send(.esc) }
@@ -111,10 +115,28 @@ final class PointController {
     /// The table's `voiceKey` chord into KeyboardShortcuts; off = unregistered. NOT in `Hotkeys.names`: that launch probe
     /// would see Tauri's ⌃S (still bound until `companion-alive` lands, D22) and persist the row as unassigned.
     private func applyHotkey(_ v: CompanionSettings) {
-        let want = VoiceKeySettings.enabled ? v.keys.chord(for: .voiceKey).map(Hotkeys.shortcut) : nil
-        guard KeyboardShortcuts.getShortcut(for: .voiceKey) != want else { return }
-        KeyboardShortcuts.setShortcut(want, for: .voiceKey)
-        PointLog.write("hotkey voiceKey \(want.map { "registered \($0)" } ?? "unregistered")")
+        let chord = VoiceKeySettings.enabled ? v.keys.chord(for: .voiceKey) : nil
+        let want = chord.map(Hotkeys.shortcut)
+        if KeyboardShortcuts.getShortcut(for: .voiceKey) != want {
+            KeyboardShortcuts.setShortcut(want, for: .voiceKey)
+            PointLog.write("hotkey voiceKey \(want.map { "registered \($0)" } ?? "unregistered")")
+        }
+        // 149g: ⎋ as the held chord makes it; `setShortcut` registers at once, so it goes off again unless a gesture is live.
+        let held = chord.flatMap { KeyTable.escapeDuringHold(of: $0, reserved: Hotkeys.reserved) }.map(Hotkeys.shortcut)
+        guard KeyboardShortcuts.getShortcut(for: .pointEscapeHeld) != held else { return }
+        KeyboardShortcuts.setShortcut(held, for: .pointEscapeHeld)
+        switch state {
+        case .idle, .replying: KeyboardShortcuts.disable(.pointEscapeHeld)
+        default: break
+        }
+        PointLog.write("hotkey pointEscapeHeld \(held.map { "set \($0)" } ?? "cleared — \(chord?.symbol ?? "no chord"): ⎋ with its modifiers is bare or the system's")")
+    }
+
+    /// Both ⎋ registrations live exactly as long as a gesture (press → send/discard); logged as the voice key's are.
+    private func escapeHotkeys(_ on: Bool) {
+        let names: [KeyboardShortcuts.Name] = [.pointEscape, .pointEscapeHeld]
+        for name in names { on ? KeyboardShortcuts.enable(name) : KeyboardShortcuts.disable(name) }
+        PointLog.write("hotkey pointEscape \(on ? "registered" : "unregistered") \(names.compactMap(KeyboardShortcuts.getShortcut).map { "\($0)" }.joined(separator: " "))")
     }
 
     /// Settings › Voice key flipped "enabled".
@@ -176,7 +198,7 @@ final class PointController {
             router = AskRouter()
             pill.state.reset(chord: chordSymbol)
             pill.show(near: NSEvent.mouseLocation)
-            KeyboardShortcuts.enable(.pointEscape)
+            escapeHotkeys(true)
             prewarm()
             beginDictation()
         case .showLock:
@@ -208,7 +230,7 @@ final class PointController {
         case .idle, .replying:
             switch prev {
             case .idle, .replying: break
-            default: KeyboardShortcuts.disable(.pointEscape); refreshMeeting()
+            default: escapeHotkeys(false); refreshMeeting()
             }
         default: break
         }
@@ -351,7 +373,7 @@ final class PointController {
                 guard let self else { return }
                 // The gesture ended (cancel/Esc/short) before the reply: the dictation is live on the engine with no owner —
                 // stop it now, or it holds the one slot until `dictation_max_secs` ("dictating elsewhere" everywhere).
-                guard g == self.gesture, self.dictation.phase == .starting else {
+                guard self.dictation.awaitsStart(from: g, current: self.gesture) else {
                     PointLog.write("dictation_start → \(id) landed after the gesture ended: dictation_stop")
                     return try await store.client.dictationStop(id: id)
                 }
@@ -363,7 +385,7 @@ final class PointController {
             } catch {
                 guard let self else { return }
                 PointLog.write("dictation_start failed: \(error)")
-                guard g == self.gesture else { return }
+                guard self.dictation.awaitsStart(from: g, current: self.gesture) else { return }
                 _ = self.dictation.handle(.startFailed("\(error)"))
                 self.refuse(self.dictation.error ?? "\(error)")
             }

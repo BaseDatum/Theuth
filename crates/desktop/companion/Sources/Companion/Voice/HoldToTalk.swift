@@ -31,6 +31,8 @@ final class HoldToTalk: ObservableObject {
     private var sendTask: Task<Void, Never>?
     private var pending: [[Int16]] = []
     private var stopWanted = false
+    /// 149g: as `AskBarController.hold` — the start's reply and refusal belong to the hold that sent them.
+    private var hold = 0
 
     init(store: Store) {
         self.store = store
@@ -83,9 +85,10 @@ final class HoldToTalk: ObservableObject {
                 recording = true
                 status = "listening…"
                 begin()
+                let g = hold
                 Task { [weak self] in
-                    guard let self else { return }
-                    if let why = await self.recorder.start() { self.event(.failed(why)) }
+                    guard let self, let why = await self.recorder.start(), g == self.hold else { return }
+                    self.event(.failed(why))
                 }
             case .stopDictation:
                 recording = false
@@ -103,6 +106,8 @@ final class HoldToTalk: ObservableObject {
                 finishing = false
                 recorder.cancel()
                 if let id = store.ask.dictation.id { enqueue { [store] in try await store.client.dictationStop(id: id) } }
+                store.ask.dictation = AskDictation() // 149g: a start still in flight lands into a reset session and stops itself
+                pending = []; stopWanted = false
                 liveText = ""; partial = ""; levels = []
                 status = why == "cancelled" ? nil : why
                 Log.write("hold-to-talk: \(why)")
@@ -124,16 +129,24 @@ final class HoldToTalk: ObservableObject {
         _ = store.ask.dictation.handle(.start)
         pending = []
         stopWanted = false
+        hold += 1
+        let g = hold
         enqueue { [weak self, store] in
             do {
                 let id = try await store.client.dictationStart()
                 guard let self else { return }
+                guard store.ask.dictation.awaitsStart(from: g, current: self.hold) else {
+                    Log.write("hold-to-talk: dictation_start → \(id) landed after the hold ended: dictation_stop")
+                    return try await store.client.dictationStop(id: id)
+                }
                 _ = store.ask.dictation.handle(.started(id: id))
                 for c in self.pending { self.send(c, id: id) }
                 self.pending = []
                 if self.stopWanted { self.stopWanted = false; self.end() }
             } catch {
                 guard let self else { return }
+                Log.write("hold-to-talk: dictation_start failed: \(error)")
+                guard store.ask.dictation.awaitsStart(from: g, current: self.hold) else { return }
                 _ = store.ask.dictation.handle(.startFailed("\(error)"))
                 let why = store.ask.dictation.error ?? "\(error)"
                 self.event(.failed(why))

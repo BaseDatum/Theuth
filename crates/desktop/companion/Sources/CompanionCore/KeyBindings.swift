@@ -262,6 +262,21 @@ public struct KeyTable: Equatable, Sendable {
         return defaults.first { $0.action == action }?.defaultChord
     }
 
+    /// 149g: while the voice key is held, ⎋ reaches Carbon as the chord's modifiers + ⎋ (⌃⎋ for ⌃S), which the plain-⎋
+    /// `pointEscape` row never matches — so a gesture also registers this second ⎋ carrying exactly the chord's modifiers (a
+    /// rebound key still works; ⌘ or ⌥ only if the chord has them). `nil` = register nothing extra: a bare chord (plain ⎋
+    /// covers it), the system's Force Quit chords (`systemEscapes`), or an enabled symbolic hot key (`reserved`, from
+    /// `CopySymbolicHotKeys`; tests pass it).
+    public static func escapeDuringHold(of chord: Chord, reserved: [Chord] = []) -> Chord? {
+        let m = chord.modifiers
+        guard !m.isEmpty, !systemEscapes.contains(m) else { return nil }
+        let esc = Chord(chars: Chord.escape.chars, keyCode: Chord.escape.keyCode, modifiers: m)
+        return reserved.contains(esc) ? nil : esc
+    }
+
+    /// ⌘⌥⎋ opens Force Quit; ⌘⌥⇧⎋ held force-quits the front app. Neither is in `CopySymbolicHotKeys`.
+    public static let systemEscapes: [Chord.Modifiers] = [[.command, .option], [.command, .option, .shift]]
+
     /// Fixed synonyms, never rebound: ↓/↑ walk, keypad ⏎ answers, `?` opens the legend. Shown in the legend.
     public static let aliases: [(chord: Chord, action: KeyAction)] = [
         (.down, .next), (.up, .previous), (.keypadEnter, .answerRecommended), (key("?", 44), .legend), (key("?", 44), .askLegend),

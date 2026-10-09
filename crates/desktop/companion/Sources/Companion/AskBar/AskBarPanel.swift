@@ -165,7 +165,8 @@ final class AskBarController: NSObject {
     // MARK: voice (D7, W6 live): hold → AVAudioEngine → dictation_audio every 100 ms → release → dictation_stop
     // → DictationFinished → the text stays in the field → the hold
 
-    private func voiceEvent(_ e: AskVoiceMachine.Event) {
+    /// The hotkey's events into the machine; the probe (`--synthetic-dictation`) drives the same entry.
+    func voiceEvent(_ e: AskVoiceMachine.Event) {
         apply(voice.handle(e))
         if voice.isBusy, voiceTimer == nil {
             voiceTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
@@ -191,9 +192,13 @@ final class AskBarController: NSObject {
                 state.recording = true
                 state.status = "listening…"
                 beginDictation()
-                Task { [weak self] in
-                    guard let self else { return }
-                    if let why = await self.recorder.start() { self.voiceEvent(.failed(why)) }
+                // A mic refusal landing after this hold ended (Esc, close) must not fail the next one. Probes never open the mic.
+                let g = hold
+                if !AskFlags.automated {
+                    Task { [weak self] in
+                        guard let self, let why = await self.recorder.start(), g == self.hold else { return }
+                        self.voiceEvent(.failed(why))
+                    }
                 }
             case .stopDictation:
                 state.recording = false
@@ -205,12 +210,16 @@ final class AskBarController: NSObject {
                 state.live = false
                 state.voiceText = text
                 state.text = text
-                store.submitAsk(text) // the same 3 s hold; typing or ⎋ keeps editing
+                if AskFlags.automated { AskLog.write("probe: send suppressed") } else { store.submitAsk(text) } // the same 3 s hold; typing or ⎋ keeps editing
             case .fail(let why):
                 state.recording = false
                 state.live = false
                 recorder.cancel()
+                // 149g: every exit stops what it started and ends the hold — a `dictation_start` still in flight lands into a
+                // reset session and stops its own id (`beginDictation`), instead of being adopted by nobody.
                 if let id = store.ask.dictation.id { enqueue { [store] in try await store.client.dictationStop(id: id) } }
+                store.ask.dictation = AskDictation()
+                pendingChunks = []; stopWanted = false
                 state.status = why
                 AskLog.write("voice: \(why)")
             }
@@ -224,6 +233,8 @@ final class AskBarController: NSObject {
     private var pendingChunks: [[Int16]] = []
     /// The release came before `dictation_start` replied.
     private var stopWanted = false
+    /// 149g: bumped by every `beginDictation`; the start's reply and refusal belong to the hold that sent them (`awaitsStart`).
+    private var hold = 0
 
     /// Calls run strictly in order (audio chunks, then the stop).
     private func enqueue(_ op: @escaping () async throws -> Void) {
@@ -249,21 +260,29 @@ final class AskBarController: NSObject {
         _ = store.ask.dictation.handle(.start)
         state.live = true
         state.partial = ""
-        pendingChunks = []
+        pendingChunks = []; stopWanted = false
+        hold += 1
+        let g = hold
         enqueue { [weak self, store] in
             do {
+                if let d = self?.probeStartDelay, d > .zero { try? await Task.sleep(for: d) }
                 let id = try await store.client.dictationStart()
-                AskLog.write("dictation_start → \(id)")
                 guard let self else { return }
+                guard store.ask.dictation.awaitsStart(from: g, current: self.hold) else {
+                    AskLog.write("dictation_start → \(id) landed after the hold ended: dictation_stop")
+                    return try await store.client.dictationStop(id: id)
+                }
+                AskLog.write("dictation_start → \(id)")
                 _ = store.ask.dictation.handle(.started(id: id))
                 for c in self.pendingChunks { self.send(c, id: id) }
                 self.pendingChunks = []
                 if self.stopWanted { self.stopWanted = false; self.endDictation() } // released before the start came back
             } catch {
                 guard let self else { return }
+                AskLog.write("dictation_start failed: \(error)")
+                guard store.ask.dictation.awaitsStart(from: g, current: self.hold) else { return } // a stale hold's refusal
                 _ = store.ask.dictation.handle(.startFailed("\(error)"))
                 let why = store.ask.dictation.error ?? "\(error)"
-                AskLog.write("dictation_start failed: \(error)")
                 self.voiceEvent(.failed(why))
                 self.probeFailed?(why)
             }
@@ -307,6 +326,11 @@ final class AskBarController: NSObject {
     // MARK: --synthetic-dictation (probe): 2 s of a 440 Hz tone through the same path, no microphone, no send
 
     var probeFailed: ((String) -> Void)?
+    /// 149g probe only: `dictation_start` is held this long before it is sent (`PointController.probeStartDelay`'s twin), so an
+    /// Esc/close/release that beats the reply is reproducible against a live engine.
+    var probeStartDelay: Duration = .zero
+    var voiceState: AskVoiceMachine.State { voice.state }
+    var probeStatus: String? { state.status }
 
     func probeDictation(seconds: TimeInterval, done: @escaping () -> Void) {
         prewarm()

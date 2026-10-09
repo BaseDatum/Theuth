@@ -179,7 +179,9 @@ struct VoiceKeyGateTests {
             state = next
             starts += fx.filter { $0 == .start }.count
             refusals += fx.filter { if case .refuse = $0 { return true } else { return false } }.count
+            discards += fx.compactMap { if case .discard(let r, let h) = $0 { return (r, h) } else { return nil } }
         }
+        var discards: [(reason: String, hint: String?)] = []
 
         /// Hold from `t0` for `ms`: the key-down, auto-repeats every `repeatMs`, then the key-up. Returns the release time.
         mutating func hold(from t0: UInt64, ms: UInt64, between: (inout Driver, UInt64) -> Void = { _, _ in }) -> UInt64 {
@@ -243,6 +245,37 @@ struct VoiceKeyGateTests {
         d.keyUp(t)
         d.keyDown(t + 500) // the real tap sends
         #expect(d.state == .sending(t0: 0))
+    }
+
+    /// 149g F1: ⎋ while the chord is physically held (it reaches the controller as ⌃⎋ — the second registration) cancels at once
+    /// with the hint; the auto-repeats that follow and the key-up change nothing; the next physical press is a new gesture.
+    @Test func escDuringTheHoldCancelsAndTheRestOfTheHoldIsIgnored() {
+        var d = Driver()
+        var stateAtEsc: PointMachine.State?
+        _ = d.hold(from: 0, ms: 1500) { d, t in
+            if t >= PointMachine.holdMs, case .armed = d.state { d.step(.tick(now: t), t) }
+            if t >= 500, stateAtEsc == nil { stateAtEsc = d.state; d.step(.esc, t) }
+        }
+        #expect(stateAtEsc == .holding(t0: 0))
+        #expect(d.starts == 1 && d.state == .idle)
+        #expect(d.discards.count == 1 && d.discards[0].reason == "esc" && d.discards[0].hint == PointMachine.hint)
+        d.keyDown(2000)
+        #expect(d.starts == 2, "released and pressed again: a new gesture")
+    }
+
+    @Test func escCancelsAnArmedOrLockedHoldToo() {
+        var d = Driver()
+        d.keyDown(0); d.keyDown(30) // armed, one auto-repeat, no hold tick yet
+        d.step(.esc, 60)
+        #expect(d.state == .idle && d.discards.last?.hint == PointMachine.hint)
+        d.keyUp(100)
+        d.keyDown(500); d.keyUp(600); d.keyDown(800) // tap, tap → locked
+        #expect(d.state == .locked(t0: 500))
+        for t in stride(from: 830, through: 1400, by: 30) { d.keyDown(UInt64(t)) } // the second tap held down
+        d.step(.esc, 1400)
+        #expect(d.state == .idle && d.discards.last?.reason == "esc" && d.discards.last?.hint == PointMachine.hint)
+        d.keyUp(1500)
+        #expect(d.state == .idle && d.starts == 2)
     }
 
     @Test func lostKeyUpIsNotADeadKey() {
