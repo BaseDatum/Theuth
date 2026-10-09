@@ -17,10 +17,11 @@ the merged tree, the probe, and the hand-offs for waves B (surfaces) and C (comp
 | `crates/tui/src/{lib,model}.rs` | C | additive adapt only (`dictation_start(None, None)`, new event variants ignored) |
 
 ## What Z reconciled (commits `153-Z: …`)
-Order of events: Z first rewired items 1–2 in `dictation.rs` (`3e2864ed`); the orchestrator's 19:10 message then superseded A4's DONE
-with `feat/153-a4` `9080aae5`, which does the same two items itself. Z merged it (`4a7e1145`) resolving `dictation.rs` toward A4's
-version, then A4's final `c3bd3f3e` (`0c4997af`; as-built line only, no crate change); the behaviour below is A4's final file, verified
-by Z against the merged tree (re-ran clippy + the test gate after the merge).
+Order of events: Z first rewired items 1–2 in `dictation.rs` (`3e2864ed`); the orchestrator then superseded A4's DONE three times
+(`9080aae5` → `c3bd3f3e` → final `02cefd6f`), A4 having done the same two items itself and being the authority for `dictation.rs`,
+`mic.rs` and its `api.rs` regions. Z merged each (`4a7e1145`, `0c4997af`, `bef55869`), taking A4's `dictation.rs` wholesale (A4 dropped
+Z's `recording()` helper and duplicate `parser` field on its side). The behaviour below is A4's final file, verified by Z against the
+merged tree (clippy, tests, workspace check re-run after the last merge).
 1. **Shaper wiring (A1 ↔ A4).** `ShaperOwned` carries `surface` + `commands`; per piece `Shaper::new(cfg, &phrases, &dict, app)
    .with_surface(surface).with_commands(opts.commands).shape_with(&mut parser, &prev, &t.text, t.is_final)`. One `EndParser` per task,
    `reset()` when the utterance index changes. A4's `armed` stickiness and the `#[cfg(test)]` exact-phrase shim are gone — the parser is
@@ -33,9 +34,10 @@ by Z against the merged tree (re-ran clippy + the test gate after the merge).
    learned entry or negative), then the dictation snapshot is rebuilt for `Add`/`Never`. Skipped when `!history.learn`. The store is
    opened only when `Store::recording_allowed(&cfg.history, false)` (`open_stores`), so rows, audio and corrections are all off together;
    `Store::open(..).with_budget(rows, audio_mib << 20)` applies `voice.history`.
-3. **Dictionary (A2 ↔ A4).** A4 already loads once (`spawn_blocking(Dictionary::load)` inside `open_stores`, awaited on `Prewarm` /
-   first start — ≈ 4 s debug, [INFERENCE] ≈ 0.2 s release, the actor mailbox waits that long once) and snapshots per dictation;
-   `dictionary_list/put/delete` → `DictionaryOp` → `list/put/delete`. `shape/mod.rs`: `Shaper::new` reads `dict.pairs(Kind::Path)`
+3. **Dictionary (A2 ↔ A4).** A4 loads once **off the mailbox**: `open_stores` spawns `spawn_blocking(Dictionary::load)` and the result
+   lands as `DictionaryLoaded` (≈ 4 s debug, [INFERENCE] ≈ 0.2 s release); until then `DictionaryOp` answers `DictionaryReply::Loading`,
+   which the RPC bodies map to the error "dictionary loading"; `snapshot()` per dictation; `dictionary_list/put/delete` → `DictionaryOp`
+   → `list/put/delete`. `shape/mod.rs`: `Shaper::new` reads `dict.pairs(Kind::Path)`
    tagged `tld`/`ext` (leading `.` trimmed) **on top of** the built-in lists — not fallback-only as the brief asked: the packaged `Path`
    pairs are the talon lists (6 TLDs: `.co.uk .com .edu .net .org .us`; 35 extensions, no `rs`/`ts`/`dev`/`io`), so fallback-only
    would break table rows 5 (`theuth.dev`) and 7 / `main.rs`. The built-ins stay as the floor; the test `Ctx` keeps `tlds: &[]`.
@@ -90,12 +92,15 @@ by Z against the merged tree (re-ran clippy + the test gate after the merge).
   lists 448 methods including all 17 new names + `voice_status`.
 - `BUILD_SLOTS=1 … mbx check --workspace --exclude desktop` → `Finished dev profile … in 3m 10s`, 0 errors, 0 warnings (workspace.log).
 - `cargo fmt -p voice -p rpc -p agent -p runtime -p tui -- --check` → clean (exit 0, empty output).
-- After the `9080aae5` merge (`4a7e1145`), re-run on the final tree: clippy same set → `Finished dev profile … in 3m 11s`, 0 warnings
-  (clippy2.log); `test --no-run` → `Finished test profile … in 5m 13s`; bare run (test-run2.log): agent `592 passed; 0 failed; 2
-  ignored`, notebooks 2 + 6, rpc `56 passed` + prompts 1, runtime `2 passed`, voice `test result: ok. 72 passed; 0 failed; 1 ignored`
-  (the ignored one is the newly gated `live::tests::utterer_returns_the_spoken_sentence_punctuated`); workspace check `--exclude desktop`
-  → `Finished dev profile … in 1m 29s`, 0 errors (workspace2.log); `fmt -- --check` clean. Bindings not re-exported: no ts type changed.
-  The later `c3bd3f3e` merge (`0c4997af`) touched only `153-as-built-A4.md`, so these lines are the final tree's.
+- After the final A4 merge `02cefd6f` (`bef55869`), re-run on the final tree: `mbx clippy -p voice -p rpc -p agent -p runtime --tests`
+  → `Finished dev profile … in 2m 21s`, 0 warnings (clippy3.log); `mbx test … --no-run` → `Finished test profile … in 5m 49s`; bare
+  `MBX_SCHEDULER_TESTS=0 mbx test -p voice -p rpc -p agent -p runtime` (test-run3.log): agent `test result: ok. 592 passed; 0 failed;
+  2 ignored` (173 s; the two known load flakes passed first time in all three runs), `notebooks_binding` 2, `notebooks_block` 6; rpc `56
+  passed`, `prompts` 1; runtime `2 passed`; voice `test result: ok. 72 passed; 0 failed; 1 ignored` (7.84 s; the ignored one is the newly
+  gated `live::tests::utterer_returns_the_spoken_sentence_punctuated`); `BUILD_SLOTS=1 … mbx check --workspace --exclude desktop` →
+  `Finished dev profile … in 3m 21s`, 0 errors, 0 warnings (workspace3.log); `cargo fmt … -- --check` clean. Bindings not re-exported
+  after the merges: no `ts(export)` type changed (`DictionaryReply` is engine-internal). Intermediate runs after `9080aae5`
+  (clippy2/test-run2/workspace2) were equally clean.
 
 ## Live probe (§16 row 11)
 **Skipped** — the brief's condition failed at gate end (19:42): `uptime` 1-min load 23.57 (< 25 ok) but `vm_stat` free + speculative
