@@ -43,6 +43,14 @@ Worker 140-F4A, 2026-10-09, branch `feat/140-f4a` from c96bcf1d (`fix/140-tab-ag
 - **Wave regime rule** uses the last promoted keep's own Δ, not the combined move of the wave.
 - **Brief kept-row fixture values** (`+2.4 %` for a kept row of a lower-is-better fixture) are hand-set test data, left as they were.
 - **Deterministic metrics** (σ = 0) never open a regime segment.
+- **`store::now()` is millisecond RFC 3339** (`…T01:02:03.456Z`, was whole seconds). Segments cut the sample series at `opened_at` by string order (`samples` has no segment column) and a regime segment opens at the keep's first sample; at whole seconds the old baseline's samples shared the cut in the actor test (σ pooled 0.84 instead of 0.35) and a sub-second bench would share it live. Every reader parses RFC 3339 (`parse_from_rfc3339`, `Date.parse`); old second-resolution rows sort after new rows within their own second only.
+- Not done: a `samples.segment` column (the exact cut) — hand-off if the timestamp cut ever bites again.
 
-## Gates
-(filled in below)
+## Gates (mbx 1.22.0, stable 1.96.1, `BUILD_LABEL=140-F4A`)
+- `mbx test -p autoresearch -p roster` — autoresearch **159 passed, 0 failed** (156 + `a_regime_change_opens_a_segment_at_the_keep`, `metric_line_reads_the_raw_change_with_the_direction_word`, `keeps_never_commit_build_junk_unless_scoped`); roster **69 passed** (+ `study_sessions_and_subagents_report_no_finished_row`). `/tmp/140f4a/test3.log`.
+- `mbx clippy -p autoresearch -p roster --tests -- -D warnings` — clean (`/tmp/140f4a/clippy.log`).
+- `cargo fmt -p autoresearch -p roster` — applied.
+- Bindings regenerated (`mbx test -p rpc --features ts --lib export_bindings`, 8 passed): `StudyDetail.final_holdout`, `AutoresearchGateConfig.regime_sigma`.
+- `bun run check` — 0 errors. `bunx vitest run src/components/autoresearch src/components/sidebar src/lib/session-tree` — **41 passed** in 4 files (`/tmp/140f4a/vitest2.log`).
+- `mbx check -p theuth --tests` — clean (`/tmp/140f4a/check-theuth.log`).
+- Not run: a browser/dev-server pass over the Study view (the paints are `renderToStaticMarkup` in vitest); the live engine proof of a regime change (needs a scratch engine; the actor test drives the same path with the Fake backend).
