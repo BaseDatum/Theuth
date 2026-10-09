@@ -146,6 +146,9 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
 
     public bool LaunchAtLogin { get; set; }
 
+    /// <summary>Sky 2026-10-09 15:58: "Ask theuth — speak the reply aloud", opt-in, OFF by default (independent of the voice key's switch).</summary>
+    public bool AskSpeak { get; set; }
+
     /// <summary>W6 (R2-4): every key binding's override, one table for the grammar, the legend and Settings › Keys.</summary>
     public KeyTable Keys { get; set; } = new();
 
@@ -164,6 +167,9 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         public const string NotifyBlocking = "notifyBlocking", NotifyDeferrable = "notifyDeferrable", NotifyError = "notifyError";
         public const string SoundOnErrors = "soundOnErrors", LaunchAtLogin = "launchAtLogin", KeyOverrides = "keyOverrides";
 
+        /// <summary>Windows (spoken replies): <see cref="CompanionSettings.AskSpeak"/>; absent = off.</summary>
+        public const string AskSpeak = "askSpeak";
+
         /// <summary>Windows only (design 134 D8, R2): Settings › Notifications "Errors break through Do not disturb" → <see cref="NotificationPrefs.TimeSensitiveAvailable"/>.</summary>
         public const string ErrorsBreakThroughDnd = "errorsBreakThroughDnd";
 
@@ -173,7 +179,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         public static readonly IReadOnlyList<string> All = new[]
         {
             RailSide, RailDisplay, RailCollapse, RailPresence, RailPills, DoubleTapAlt, UndoDelay,
-            NotifyBlocking, NotifyDeferrable, NotifyError, SoundOnErrors, LaunchAtLogin, KeyOverrides, ErrorsBreakThroughDnd, PinTipShownFor,
+            NotifyBlocking, NotifyDeferrable, NotifyError, SoundOnErrors, LaunchAtLogin, KeyOverrides, ErrorsBreakThroughDnd, PinTipShownFor, AskSpeak,
         };
     }
 
@@ -196,6 +202,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         n.TimeSensitiveAvailable = d.Bool(Key.ErrorsBreakThroughDnd); // off by default (R2, Sky)
         s.Notify = n;
         s.LaunchAtLogin = d.Bool(Key.LaunchAtLogin);
+        s.AskSpeak = d.Bool(Key.AskSpeak);
         if (d.String(Key.KeyOverrides) is { } j) s.Keys = new KeyTable(j);
         s.PinTipShownFor = d.String(Key.PinTipShownFor) ?? "";
         return s;
@@ -216,6 +223,7 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         d.Set(Key.SoundOnErrors, Notify.SoundOnErrors);
         d.Set(Key.ErrorsBreakThroughDnd, Notify.TimeSensitiveAvailable);
         d.Set(Key.LaunchAtLogin, LaunchAtLogin);
+        d.Set(Key.AskSpeak, AskSpeak);
         d.Set(Key.KeyOverrides, Keys.Json);
         if (PinTipShownFor.Length > 0) d.Set(Key.PinTipShownFor, PinTipShownFor);
         else d.Remove(Key.PinTipShownFor);
@@ -236,12 +244,12 @@ public sealed class CompanionSettings : IEquatable<CompanionSettings>
         o is not null
         && RailSide == o.RailSide && RailDisplay == o.RailDisplay && RailPresence == o.RailPresence && RailPills == o.RailPills
         && DoubleTapAlt == o.DoubleTapAlt && UndoDelay.Equals(o.UndoDelay) && Notify == o.Notify
-        && LaunchAtLogin == o.LaunchAtLogin && Keys == o.Keys && PinTipShownFor == o.PinTipShownFor;
+        && LaunchAtLogin == o.LaunchAtLogin && AskSpeak == o.AskSpeak && Keys == o.Keys && PinTipShownFor == o.PinTipShownFor;
 
     public override bool Equals(object? obj) => obj is CompanionSettings s && Equals(s);
 
     public override int GetHashCode() =>
-        HashCode.Combine(RailSide, RailDisplay, RailPresence, RailPills, DoubleTapAlt, UndoDelay, Notify, HashCode.Combine(LaunchAtLogin, Keys, PinTipShownFor));
+        HashCode.Combine(RailSide, RailDisplay, RailPresence, RailPills, DoubleTapAlt, UndoDelay, Notify, HashCode.Combine(LaunchAtLogin, AskSpeak, Keys, PinTipShownFor));
 }
 
 /// <summary>
