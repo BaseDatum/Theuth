@@ -127,6 +127,9 @@ switch ($Action) {
         $line = ($Rest -join ' ')
         New-Item -ItemType Directory -Force -Path (Split-Path $trigger) | Out-Null
         Set-Content -Path $trigger -Value $line -NoNewline -Encoding utf8
+        # A watcher can fire on the truncation and read an empty file: touch it again (append, no truncation) after its debounce.
+        Start-Sleep -Milliseconds 1100
+        Add-Content -Path $trigger -Value ' ' -NoNewline -Encoding utf8
         Say "probe: wrote '$line' to $trigger at $(Get-Date -Format 'HH:mm:ss.fff')"
     }
     'clip-set' {
