@@ -353,4 +353,25 @@ public sealed partial class AskVoiceTests
         Assert.Equal(new[] { "show", "mic start", "mic cancel", "mic cancel" }, surface.Events);
         Assert.DoesNotContain(calls.Calls, c => c.StartsWith("start", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void ASpeechPressStreamsInsideAVoicePressAndTheSpokenSendItSends()
+    {
+        var rig = new Rig();
+        rig.Bar.Open();
+        var done = false;
+        rig.Bar.ProbeSpeechPress(new short[AskAudio.ChunkSamples * 3], () => done = true);
+        Assert.Equal(AskVoiceMachine.StateKind.Recording, rig.Bar.VoiceState.Kind);
+        Assert.Contains(rig.Calls.Calls, c => c.StartsWith("start {\"surface\":\"companion\"", StringComparison.Ordinal));
+        rig.Event("""{"type":"DictationStarted","id":"d-1"}""");
+        rig.Clock.Advance(0.45); // three chunks, then the release
+        Assert.True(done);
+        Assert.Equal(3, rig.Calls.Calls.Count(c => c.StartsWith("audio d-1", StringComparison.Ordinal)));
+        Assert.Contains("stop d-1", rig.Calls.Calls);
+        Assert.Equal(AskVoiceMachine.StateKind.Stopping, rig.Bar.VoiceState.Kind);
+        rig.Event(Text("d-1", 0, "ship it send it", "Ship it", true, "send"));
+        rig.Finished("d-1");
+        Assert.Contains("send_input desk-1 Ship it", rig.Engine.Calls);
+        Assert.Null(rig.Store.HeldNow);
+    }
 }

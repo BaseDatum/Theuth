@@ -101,7 +101,8 @@ internal static class AskProbe
             RunTone(store, install);
             return;
         }
-        install.Model.ProbeSamples(pcm, () => AfterStop(store, install));
+        if (AskFlags.Press) install.Model.ProbeSpeechPress(pcm, () => AfterStop(store, install)); // 153 W153B: inside a voice press → SetText / SendNow
+        else install.Model.ProbeSamples(pcm, () => AfterStop(store, install));
     }
 
     private static void AfterStop(Store store, AskBarInstall install)

@@ -738,6 +738,40 @@ public sealed class AskBarModel : INotifyPropertyChanged
         });
     }
 
+    /// <summary>
+    /// 153 W153B (<c>--synthetic-speech "…" --ask-press</c>): real engine dictation of synthesized samples INSIDE a voice press — the
+    /// machine goes press → recording (no microphone), the samples stream through <c>dictation_start(16000, opts)</c> /
+    /// <c>dictation_audio</c>, then the release (<c>dictation_stop</c>) — so the engine's shaped text and a spoken "send it" land
+    /// through the same SetText / SendNow path as a real hold (the engine may end it first on the send-it settle).
+    /// </summary>
+    public void ProbeSpeechPress(short[] pcm, Action done)
+    {
+        var at = clock();
+        pressAt = at;
+        voice.OpenMicOnKeyDown = false;
+        voice.Handle(new AskVoiceMachine.Event.KeyDown(at));
+        voice.Handle(new AskVoiceMachine.Event.Tick(at.AddSeconds(AskVoiceMachine.HoldThreshold)));
+        Recording = true;
+        Status = "listening…";
+        BeginDictation();
+        int offset = 0;
+        probeTimer?.Dispose();
+        probeTimer = scheduler.Every(TimeSpan.FromMilliseconds(100), () =>
+        {
+            if (offset < pcm.Length && voice.IsRecording)
+            {
+                int n = Math.Min(AskAudio.ChunkSamples, pcm.Length - offset);
+                Feed(pcm.AsSpan(offset, n).ToArray());
+                offset += n;
+                return;
+            }
+            probeTimer?.Dispose();
+            probeTimer = null;
+            if (voice.IsRecording) Apply(voice.Handle(new AskVoiceMachine.Event.KeyUp(clock()))); // the release → dictation_stop
+            done();
+        });
+    }
+
     /// <summary>The item with its <c>id</c> member replaced (a recorded dictation id → the probe's).</summary>
     public static string WithId(string json, string id)
     {

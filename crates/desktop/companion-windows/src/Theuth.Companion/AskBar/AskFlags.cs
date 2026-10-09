@@ -25,6 +25,10 @@ internal static class AskFlags
     public static bool Replay { get; } = Args.Contains("--ask-replay");
     public static string? Fixture { get; } = Value("--ask-fixture");
 
+    /// <summary>153 W153B: <c>--synthetic-speech "…" --ask-press</c> dictates the synthesized speech inside a simulated voice press (the
+    /// real engine's shaped text and a spoken "send it" land through the voice path and send).</summary>
+    public static bool Press { get; } = Args.Contains("--ask-press");
+
     /// <summary>153 W153B: with <c>--settings dictation</c>, render the Settings › Dictation page to <c>%TEMP%\153-w153b-settings-dictation.png</c> once it loaded.</summary>
     public static bool DictationShot { get; } = Args.Contains("--dictation-shot");
 
