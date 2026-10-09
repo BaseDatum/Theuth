@@ -182,6 +182,26 @@ impl Message<Settings> for Studies {
     }
 }
 
+impl Message<DraftRoot> for Studies {
+    type Reply = std::result::Result<PathBuf, String>;
+
+    async fn handle(&mut self, _: DraftRoot, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        Ok(self.root.clone())
+    }
+}
+
+impl Message<StudySlugs> for Studies {
+    type Reply = std::result::Result<Vec<String>, String>;
+
+    async fn handle(&mut self, _: StudySlugs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store
+            .list_studies()
+            .await
+            .map(|v| v.into_iter().map(|s| s.slug).collect())
+            .map_err(|e| e.to_string())
+    }
+}
+
 impl Message<SetSettings> for Studies {
     type Reply = std::result::Result<AutoresearchConfig, String>;
 

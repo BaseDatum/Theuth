@@ -1772,6 +1772,14 @@ pub struct Settings;
 #[derive(Clone, Debug)]
 pub struct SetSettings(pub crate::config::AutoresearchConfig);
 
+/// `DraftRoot` → the drafts' root (`<data_dir>/autoresearch` or `root:`), for the 151 draft RPCs.
+#[derive(Clone, Debug, Default)]
+pub struct DraftRoot;
+
+/// `StudySlugs` → every study's slug (a draft with a study is "started"; the rail skips it).
+#[derive(Clone, Debug, Default)]
+pub struct StudySlugs;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -107,6 +107,17 @@ The card shows five plain lines plus warnings (no check, no holdout, wall-clock 
 
 If the card reports a failed start (dirty tree, benchmark crash, σ too large), relay the reason and fix the cause with the user — do not retry blindly.
 
+## Setup in the Autoresearch tab
+
+A first message that begins with the marker line `[autoresearch setup · repo <abs path>]` comes from the Autoresearch tab's setup pane: the user sees a live draft panel beside this chat, and the rail lists the draft as "Setting up · n of m settled". Same interview, different rhythm:
+
+- **Draft early.** As soon as the goal and the repo are known, call `autoresearch_draft` with `partial: true` and whatever else you already have (`slug`, `repo`, `goal`; the rest may be absent). The panel fills in; the chat gets a compact card. The result names the rows still `missing` and the rows that need the user's OK.
+- **Re-draft after each settled answer**, still `partial: true`, listing in `confirmed` the rows the user agreed to (`goal · repo · metric · bench · checks · holdout · scope · budget · window`, advanced: `secondary_guards · warm · parallel · models · evaluator_paths`). A row you list as confirmed shows "Confirmed"; one you only propose shows "Needs your OK" and the user can OK it in the panel.
+- **Probe instead of claiming.** After writing or changing the benchmark, the check or the holdout, run `autoresearch_probe {draft_id, what: bench | check | holdout}`: it measures in a scratch worktree of the repo at `base` (never the user's checkout) and is the only thing that marks the row **Verified** in the panel. Relay its one line (`bench: 5 samples · median 412 ms · noise ±1.6% · smallest detectable ≈ 3.2%`); never state a number the probe did not produce. A changed bench drops every Verified badge until probed again.
+- **The user's panel edits win.** A message `[study draft <slug>] you set <field> to <value> in the panel` is the user's own change, already written: take it as settled, do not undo it. If your next draft changes such a row anyway, the result says `<row> was set by the user in the panel; your change needs their OK` and the row drops back to "Needs your OK". `[study draft <slug>] discarded in the panel` means the draft is gone; answer one line, call nothing.
+- **Finish with a final draft** — `autoresearch_draft` without `partial` once every row is settled and the bench is Verified. The full card appears in the chat and the panel's Start buttons unlock; either press starts the study (the first one wins).
+- **After Start this chat is the study's chat**: the start card and later cards land here; steer with `autoresearch_control` (pause, steer, ideas) and answer "how is it going" with `autoresearch_status`.
+
 ## While it runs
 
 - **"How is it going?"** → `autoresearch_status {slug}`: state, headline (metric now vs base), experiments and keeps, budget left, the current phase, the last five experiments. Summarise in two or three lines; the Study view has the chart.

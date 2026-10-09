@@ -139,7 +139,7 @@ fn stage_intent(worktree: &Path) -> Result<()> {
 
 /// Tracked changes vs `HEAD` plus untracked non-ignored paths (`status --porcelain`), one per
 /// line; build junk (`__pycache__/`, `.DS_Store`, …) is never dirt.
-fn dirty_paths(repo: &Path) -> Result<Vec<String>> {
+pub(crate) fn dirty_paths(repo: &Path) -> Result<Vec<String>> {
     Ok(
         git(repo, &["status", "--porcelain", "--untracked-files=all"])?
             .lines()
