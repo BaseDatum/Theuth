@@ -55,6 +55,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     private readonly Border receiptRow;
     private readonly TextBlock receiptText;
     private readonly TextBlock receiptTrailing;
+    private readonly Button speakingGlyph; // spoken replies: Segoe Fluent Volume (E767) while the reply is read aloud; click stops
     private readonly Rectangle holdBar;
     // 149 NATIVE: the system's theme brushes, read live for the root's actual theme (no palette, no startup snapshot).
     private Brush ink => Theme.Brush(NativeLook.TextPrimary, root.ActualTheme);
@@ -175,6 +176,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         var receiptGrid = new Grid { Padding = new Thickness(12, 8, 12, 8), ColumnSpacing = 8 };
         receiptGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         receiptGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        receiptGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         receiptText = new TextBlock { FontSize = 12, Foreground = ink, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis };
         AutomationProperties.SetAutomationId(receiptText, "receipt-row");
         AutomationProperties.SetName(receiptText, "Receipt");
@@ -184,6 +186,18 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         Grid.SetColumn(receiptTrailing, 1);
         receiptGrid.Children.Add(receiptText);
         receiptGrid.Children.Add(receiptTrailing);
+        speakingGlyph = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE767", FontSize = 14 }, Width = 28, Height = 24, Padding = new Thickness(0), BorderThickness = new Thickness(0),
+            Background = Theme.Transparent, VerticalAlignment = VerticalAlignment.Top, Visibility = Visibility.Collapsed, IsTabStop = false,
+        };
+        ToolTipService.SetToolTip(speakingGlyph, "Speaking — click to stop");
+        AutomationProperties.SetAutomationId(speakingGlyph, "ask-speaking");
+        AutomationProperties.SetName(speakingGlyph, "Speaking — click to stop");
+        speakingGlyph.Click += (_, _) => store.Speaker.Stop(SpeechStop.Glyph);
+        Grid.SetColumn(speakingGlyph, 2);
+        receiptGrid.Children.Add(speakingGlyph);
+        store.Speaker.Changed += RenderSpeaking;
         holdBar = new Rectangle { Height = 2, Fill = accent, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom, Width = 0 };
         var receiptStack = new Grid();
         receiptStack.Children.Add(receiptGrid);
@@ -335,6 +349,7 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     private void OnPreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
         if (model is null) return;
+        if (e.Key == VirtualKey.Escape && store.Speaker.IsSpeaking) store.Speaker.Stop(SpeechStop.Esc); // Esc cuts a reply being read aloud (then does its usual work)
         if (pressVk != 0 && (int)e.Key == pressVk)
         {
             e.Handled = true; // the held hotkey's own key must not type
@@ -425,6 +440,14 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
         privacyLink.Visibility = model.Status == VoiceRecorder.BlockedStatus ? Visibility.Visible : Visibility.Collapsed;
         RenderReceipt();
         Fit();
+    }
+
+    private void RenderSpeaking()
+    {
+        bool speaking = store.Speaker.IsSpeaking;
+        speakingGlyph.Visibility = speaking ? Visibility.Visible : Visibility.Collapsed;
+        if (speakingGlyph.Content is FontIcon fi) fi.Foreground = accentText;
+        if (speaking && receiptRow.Visibility != Visibility.Visible && store.Receipt is not null) RenderReceipt();
     }
 
     private void RenderReceipt()

@@ -79,8 +79,8 @@ internal sealed partial class SettingsWindow
         Combo(page, "Draw the trail", "settings-voice-annotate",
             new[] { ("always", "Always while the key is held"), ("mouse", "Only while the mouse button is held") }, s.Annotate,
             v => Edit(island, p => p.Annotate = v == "mouse" ? "mouse" : "always"));
-        Toggle(page, "Speak the answer", "settings-voice-speak", s.Speak, on => Edit(island, p => p.Speak = on));
-        Caption(page, "The desk's reply is read aloud through the engine's voice (speak); the answer card shows it either way.");
+        Toggle(page, "Speak the answer aloud", "settings-voice-speak", s.Speak, on => Edit(island, p => { p.Speak = on; p.SpeakSet = true; })); // opt-in (Sky 2026-10-09): off by default
+        Caption(page, "Off by default. On: the desk's final reply is read aloud through the engine's voice; the answer card shows it either way. Esc, a new ask or a new gesture stops it. Ask theuth has its own switch (Settings › Ask bar).");
         var hints = new Button { Content = "Reset hints", IsEnabled = s.HintsShown > 0 };
         AutomationProperties.SetAutomationId(hints, "settings-voice-reset-hints");
         hints.Click += (_, _) => { Edit(island, p => p.HintsShown = 0); ShowPage("voice"); };
@@ -89,12 +89,21 @@ internal sealed partial class SettingsWindow
         AutomationProperties.SetAutomationId(disclosure, "settings-voice-disclosure");
     }
 
+    /// <summary>Spoken replies (Sky 2026-10-09 15:58): the Ask bar's settings place — "speak the reply aloud", opt-in, off by default.</summary>
+    private void AskBar(StackPanel page)
+    {
+        Heading(page, "Ask bar");
+        Caption(page, $"{(model.Keys.ChordFor(KeyAction.OpenAskBar) is { } c ? c.Symbol : "The Ask-bar key (unassigned — set it in Keys)")} opens the Ask bar; {ChordText(KeyAction.OpenPanel)} opens the Attention panel and, held, talks to theuth.");
+        Toggle(page, "Speak the reply aloud", "settings-ask-speak", model.Value.AskSpeak, on => model.Update(s => s.AskSpeak = on));
+        Caption(page, "Off by default. On: theuth's reply to an ask — typed or dictated — is read aloud once it is final, through the same voice as the voice key. Esc, a new ask or a voice-key gesture stops it; the speaker glyph on the rail and in the bar stops it too.");
+    }
+
     private static void Edit(Theuth.Companion.Island.IslandController island, Action<PointSettings> edit)
     {
         var next = new PointSettings
         {
             Enabled = island.PointSettings.Enabled, IncludeScreen = island.PointSettings.IncludeScreen, Accessibility = island.PointSettings.Accessibility,
-            Annotate = island.PointSettings.Annotate, Speak = island.PointSettings.Speak, HintsShown = island.PointSettings.HintsShown,
+            Annotate = island.PointSettings.Annotate, Speak = island.PointSettings.Speak, SpeakSet = island.PointSettings.SpeakSet, HintsShown = island.PointSettings.HintsShown,
         };
         edit(next);
         island.SavePointSettings(next);

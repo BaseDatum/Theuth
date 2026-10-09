@@ -169,7 +169,7 @@ internal sealed class Surfaces : IDisposable
     /// <summary>W3: the row's check mark.</summary>
     public Func<bool>? LaunchAtLoginState { get; set; }
 
-    /// <summary>W4: true when an Ask bar answers <c>Store.AskBarRequested</c> — then the hotkey opens it when nothing needs you.</summary>
+    /// <summary>W4: true when an Ask bar answers <c>Store.AskBarRequested</c> (the Ask-bar key routes there; the panel key never does — ruling 2).</summary>
     public Func<bool>? AskBarAvailable { get; set; }
 
     /// <summary>A second launch's (or a toast's) redirected activation, after W2 handled a plain launch (W3: toast arguments).</summary>
@@ -285,18 +285,14 @@ internal sealed class Surfaces : IDisposable
             Log.Write("hotkey ignored (probe)");
             return;
         }
-        switch (action)
+        // Ruling 2 (Sky 2026-10-09 16:02): the panel key ALWAYS opens the Attention panel (empty state included), the Ask-bar key only the
+        // Ask bar — the 130-W3 "panel when something needs you, else the Ask bar" fallback is gone (Core KeyRouting decides).
+        switch (KeyRouting.Route(action, store.Rail.NeedsYouCount, AskBarAvailable?.Invoke() == true))
         {
-            case KeyAction.OpenPanel:
+            case KeySurface.Panel:
                 if (panel.IsOpen)
                 {
                     panel.Close(returnFocus: true);
-                    return;
-                }
-                // 130 §4.2: the panel on the oldest needs-you item; the Ask bar (W4) when nothing needs you.
-                if (store.Rail.NeedsYouCount == 0 && AskBarAvailable?.Invoke() == true)
-                {
-                    store.Perform(Intent.AskBar);
                     return;
                 }
                 var prev = PreviousFor(PInvoke.GetForegroundWindow());
@@ -304,12 +300,16 @@ internal sealed class Surfaces : IDisposable
                 agents.Close(returnFocus: false);
                 store.FocusOldest();
                 panel.Open(PanelAnchor.Mouse, prev);
+                Log.Write($"hotkey {action.RawValue()}: Attention panel ({(store.Rail.NeedsYouCount == 0 ? "empty state" : $"{store.Rail.NeedsYouCount} need you")})");
                 break;
-            case KeyAction.OpenAskBar:
+            case KeySurface.AskBar:
                 store.Perform(Intent.AskBar);
                 break;
-            case KeyAction.OpenAgents: // 149 WW2 (§8 ★): toggles; opens scrolled to the first working row
+            case KeySurface.Agents: // 149 WW2 (§8 ★): toggles; opens scrolled to the first working row
                 OpenAgents(PanelAnchor.Mouse, null);
+                break;
+            case KeySurface.None:
+                if (action == KeyAction.OpenAskBar) Log.Write("hotkey openAskBar: the Ask bar is not installed in this build");
                 break;
         }
     }

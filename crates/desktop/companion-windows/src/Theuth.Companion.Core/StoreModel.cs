@@ -727,7 +727,12 @@ public partial class StoreModel : INotifyPropertyChanged
         SetReceipt(new ReceiptRow.Reply("theuth", text.Length == 0 ? "…" : text, reply.Session));
         if (reply.Failed) log($"ask failed on the desk: {(d.Type == "Error" ? d.Message : $"stop_reason={d.StopReason}")}");
         if (reply.Finished) ExpireReceipt(12);
+        // Spoken replies (2026-10-09): the whole reply, once final and successful — never a partial, never a failed turn.
+        if (reply.Finished && !reply.Failed && reply.Text.Trim().Length > 0) AskReplyFinished?.Invoke(reply.Session, reply.Text);
     }
+
+    /// <summary>An Ask theuth reply (typed or dictated) is final: (session, the full text). The app speaks it when Settings › Ask bar says so.</summary>
+    public event Action<string, string>? AskReplyFinished;
 
     /// <summary>Reduce one <c>Dictation*</c> event (W6 live dictation).</summary>
     private void DictationObserve(byte[] data)
