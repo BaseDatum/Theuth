@@ -584,12 +584,7 @@ impl Job {
         self.progress("describe", None, true).await;
         let mut pending: Vec<String> = Vec::new();
         for p in &plan {
-            let max_depth = if p.kind == PERSPECTIVES[0] {
-                MAX_DEPTH - 1
-            } else {
-                1
-            };
-            let mut ids = w::pending_prose(&self.pool, &p.id, max_depth)
+            let mut ids = w::pending_prose(&self.pool, &p.id)
                 .await
                 .unwrap_or_default();
             if let Some(only) = &self.only
@@ -813,22 +808,47 @@ impl Job {
             self.note(warning.clone());
         }
         let rows = build_tree(facts, p, &plan, prov, error, max_depth);
-        w::clear_perspective(&self.pool, &p.id)
+        // Selective refresh (§8): a planned row that already exists with the
+        // same facts hash, not stale and with prose keeps its prose, diagram,
+        // edges and provenance — only its place in the plan is refreshed.
+        // Rows the plan no longer holds go; the rest are (re)written.
+        let existing = w::element_keys(&self.pool, &p.id)
             .await
             .map_err(|e| Stop::Failed(format!("store: {e:#}")))?;
-        let mut ids = Vec::with_capacity(rows.len());
+        let kept: std::collections::HashSet<&str> = rows
+            .iter()
+            .filter(|r| r.depth >= 1 && r.fields.description.is_empty())
+            .filter(|r| {
+                existing.iter().any(|(id, hash, stale, prose)| {
+                    *id == r.id && *hash == r.facts_hash && !stale && *prose
+                })
+            })
+            .map(|r| r.id.as_str())
+            .collect();
+        let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        w::clear_perspective(&self.pool, &p.id, &ids)
+            .await
+            .map_err(|e| Stop::Failed(format!("store: {e:#}")))?;
         for row in &rows {
-            w::write_element(&self.pool, row)
-                .await
-                .map_err(|e| Stop::Failed(format!("store: {e:#}")))?;
-            ids.push(row.id.clone());
+            if kept.contains(row.id.as_str()) {
+                w::write_identity(&self.pool, row).await
+            } else {
+                w::write_element(&self.pool, row).await
+            }
+            .map_err(|e| Stop::Failed(format!("store: {e:#}")))?;
         }
         {
             let mut s = self.state();
             s.done += 1;
             let described = rows
                 .iter()
-                .filter(|r| r.depth >= 1 && r.depth < max_depth && r.kind != "bundle")
+                .filter(|r| {
+                    r.depth >= 1
+                        && r.depth < max_depth
+                        && r.kind != "bundle"
+                        && r.kind != "file"
+                        && !kept.contains(r.id.as_str())
+                })
                 .count();
             s.total += u32::try_from(described).unwrap_or(u32::MAX);
         }
@@ -1721,7 +1741,7 @@ fn build_tree(
         facts_hash: prov.facts_hash.clone(),
         diagram: Some(graph(nodes, &root_edges)),
         fields: plan.fields.clone(),
-        provenance: Some(prov),
+        provenance: Some(prov.clone()),
         edges: root_edges,
         anchors: Vec::new(),
         error,
@@ -1753,9 +1773,12 @@ fn build_tree(
             max_depth,
         );
         // The partition and its names are the model's: `generated` keeps them
-        // through the skeleton's recompute (W1 rewrites `structure` rows' names).
+        // through the skeleton's recompute (W1 rewrites `structure` rows' names)
+        // and carries the stage-B call as provenance (§6: every generated
+        // element has one); stage C replaces it when it describes the group.
         if let Some(group) = group_rows.first_mut() {
             group.origin = MapOrigin::Generated;
+            group.provenance = Some(prov.clone());
         }
         rows.extend(group_rows);
     }
@@ -1780,6 +1803,7 @@ fn build_tree(
         );
         if let Some(row) = bundle_rows.first_mut() {
             row.origin = MapOrigin::Generated;
+            row.provenance = Some(prov);
         }
         rows.extend(bundle_rows);
     }

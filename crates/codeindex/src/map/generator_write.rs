@@ -8,7 +8,7 @@
 
 use sqlx::SqlitePool;
 
-use super::{GraphProps, MapEdge, MapFields, MapJob, MapOrigin, MapProvenance};
+use super::{GraphProps, MapEdge, MapFields, MapJob, MapOrigin, MapProvenance, store};
 
 /// One element as the generator stores it.
 #[derive(Clone, Debug)]
@@ -182,16 +182,23 @@ pub async fn write_perspective(
     Ok(())
 }
 
-/// Remove a perspective's elements, edges and anchors (before a stage-B
-/// rewrite); the perspective row stays.
-pub async fn clear_perspective(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
+/// Remove a perspective's elements that a stage-B re-plan does not keep
+/// (not in `keep`), with their edges and anchors; the perspective row stays.
+pub async fn clear_perspective(pool: &SqlitePool, id: &str, keep: &[String]) -> anyhow::Result<()> {
+    let keep = serde_json::to_string(keep)?;
     let mut tx = pool.begin().await?;
     for sql in [
-        "DELETE FROM edges WHERE element IN (SELECT id FROM elements WHERE perspective = ?)",
-        "DELETE FROM anchors WHERE element IN (SELECT id FROM elements WHERE perspective = ?)",
-        "DELETE FROM elements WHERE perspective = ?",
+        "DELETE FROM edges WHERE element IN (SELECT id FROM elements WHERE perspective = ?1 \
+           AND id NOT IN (SELECT value FROM json_each(?2)))",
+        "DELETE FROM anchors WHERE element IN (SELECT id FROM elements WHERE perspective = ?1 \
+           AND id NOT IN (SELECT value FROM json_each(?2)))",
+        "DELETE FROM elements WHERE perspective = ?1 AND id NOT IN (SELECT value FROM json_each(?2))",
     ] {
-        sqlx::query(sql).bind(id).execute(&mut *tx).await?;
+        sqlx::query(sql)
+            .bind(id)
+            .bind(&keep)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     Ok(())
@@ -414,24 +421,65 @@ pub async fn generated_perspectives(pool: &SqlitePool) -> anyhow::Result<Vec<Sto
         .collect())
 }
 
-/// Elements of `perspective` the model describes (§6.2 stage C): every
-/// depth-1 row and every deeper row with a diagram, down to `max_depth`,
-/// that is stale or without prose; bundles and files are never described.
-pub async fn pending_prose(
+/// Elements of `perspective` the model describes (§6.2 stage C): those of
+/// [`store::DESCRIBED_SQL`] that are stale or without prose, parents first.
+pub async fn pending_prose(pool: &SqlitePool, perspective: &str) -> anyhow::Result<Vec<String>> {
+    // Composed from two `const` fragments, no caller input.
+    let sql = format!(
+        "SELECT e.id FROM elements e WHERE e.perspective = ? AND {} \
+         AND (e.stale <> 0 OR {}) ORDER BY e.depth, e.order_no",
+        store::DESCRIBED_SQL,
+        store::NO_PROSE_SQL
+    );
+    let rows: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(perspective)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// `(id, facts_hash, stale, has prose)` of every element of `perspective`:
+/// what a stage-B re-plan keeps or rewrites.
+pub async fn element_keys(
     pool: &SqlitePool,
     perspective: &str,
-    max_depth: u8,
-) -> anyhow::Result<Vec<String>> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT id FROM elements WHERE perspective = ? AND depth BETWEEN 1 AND ? AND kind NOT IN ('bundle', 'file') \
-         AND (depth = 1 OR diagram IS NOT NULL) \
-         AND (stale <> 0 OR description IS NULL OR description = '') ORDER BY depth, order_no",
+) -> anyhow::Result<Vec<(String, String, bool, bool)>> {
+    let rows: Vec<(String, Option<String>, i64, i64)> = sqlx::query_as(
+        "SELECT id, facts_hash, stale, description IS NOT NULL AND description <> '' \
+         FROM elements WHERE perspective = ?",
     )
     .bind(perspective)
-    .bind(i64::from(max_depth))
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(|(id,)| id).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(id, hash, stale, prose)| (id, hash.unwrap_or_default(), stale != 0, prose != 0))
+        .collect())
+}
+
+/// Stage-B re-plan, kept row: refresh where the row sits in the new plan
+/// (parent, order, depth, shape) and clear `stale`; prose, diagram, edges,
+/// anchors and provenance stay. `name` follows the plan only when the plan
+/// named it (a model group); a structure row keeps the model's stage-C name.
+pub async fn write_identity(pool: &SqlitePool, e: &ElementRow) -> anyhow::Result<()> {
+    let members = serde_json::to_string(&e.members)?;
+    sqlx::query(
+        "UPDATE elements SET parent = ?, depth = ?, order_no = ?, kind = ?, members = ?, path = ?, leaf = ?, \
+           stale = 0, name = CASE WHEN ? THEN ? ELSE name END WHERE id = ?",
+    )
+    .bind(&e.parent)
+    .bind(i64::from(e.depth))
+    .bind(i64::from(e.order_no))
+    .bind(&e.kind)
+    .bind(members)
+    .bind(&e.path)
+    .bind(i64::from(e.leaf))
+    .bind(e.origin == MapOrigin::Generated)
+    .bind(&e.name)
+    .bind(&e.id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// The identity columns of one stored element.

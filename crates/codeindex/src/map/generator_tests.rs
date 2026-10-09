@@ -316,6 +316,15 @@ fn omm_shaped(repo: &Path) {
         "src/lib/meta.ts",
         "import { store } from './store';\nexport function meta() { return store.size(); }\n",
     );
+    // `src/lib/platforms`: a depth-3 leaf unit nobody describes (R3-2).
+    for p in ["darwin", "linux", "win"] {
+        write(
+            &format!("src/lib/platforms/{p}.ts"),
+            &format!(
+                "import {{ store }} from '../store';\nexport function {p}() {{ return store.size(); }}\n"
+            ),
+        );
+    }
     write(
         "scripts/sync-version.js",
         "const fs = require('fs');\nmodule.exports = function sync() { return fs.existsSync('package.json'); };\n",
@@ -821,6 +830,43 @@ async fn file_unit_group_is_a_leaf_and_omm_shape_generates() {
     .await
     .unwrap();
     assert_eq!((kind.as_str(), leaf, under), ("file", 1, 0));
+    // R3-3: every generated element has provenance — the model-named file
+    // group carries the stage-B call's.
+    let (bare,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM elements WHERE origin = 'generated' AND (model IS NULL OR generated_ms IS NULL OR call_ids IS NULL)",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(bare, 0);
+    let (origin, model): (String, Option<String>) = sqlx::query_as(
+        "SELECT origin, model FROM elements WHERE id = 'overall-architecture/unit:tsup.config.ts'",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (origin.as_str(), model.as_deref()),
+        ("generated", Some("fake/model"))
+    );
+    // R3-2: a finished run is `ready` — `src/lib` (2 files, a leaf nobody
+    // describes) does not count as missing prose.
+    let (leaves,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM elements WHERE depth >= 2 AND kind = 'unit' AND diagram IS NULL AND description IS NULL",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert!(leaves > 0, "the fixture must hold an undescribed leaf unit");
+    let ov = super::super::skeleton::overview(
+        &s.ix,
+        super::super::Overview {
+            root: s.root.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(ov.meta.state, super::super::MapState::Ready);
     let (cost,): (i64,) = sqlx::query_as("SELECT cost_nanos FROM jobs WHERE id = ?")
         .bind(&job.id)
         .fetch_one(&s.pool)
@@ -1110,6 +1156,93 @@ async fn dead_session_is_refused_up_front() {
         .unwrap();
     assert_eq!(n, 0);
     script().dead_session = None;
+}
+
+/// R3-1 (§8 selective refresh): after a touch, regeneration re-plans the
+/// root but only the stale elements and their ancestors get new prose and
+/// provenance; unchanged ones keep theirs, and the run spends one stage-B
+/// call plus one describe batch.
+#[tokio::test]
+async fn regeneration_keeps_unchanged_prose() {
+    let _serial = SERIAL.lock().await;
+    let s = scratch().await;
+    *script() = Script::default();
+    let first = generate(
+        &s.ix,
+        Generate {
+            root: s.root.clone(),
+            session: SessionId::new(),
+            element: None,
+        },
+    )
+    .await
+    .unwrap();
+    wait_idle(&s.root).await;
+    assert_eq!(job_row(&s.pool, &first.id).await.0, "done");
+    type Prov = (String, Option<i64>, Option<String>, i64);
+    let read = |pool: SqlitePool| async move {
+        let rows: Vec<Prov> =
+            sqlx::query_as("SELECT id, generated_ms, description, stale FROM elements ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        rows
+    };
+    let before = read(s.pool.clone()).await;
+    let described: Vec<&Prov> = before.iter().filter(|r| r.2.is_some()).collect();
+    assert!(described.len() >= 3, "{before:?}");
+
+    // One leaf's file changes: its unit and the root go stale.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let cli = "crates/b/src/cli.rs";
+    let src = std::fs::read_to_string(s.root.join(cli)).unwrap();
+    std::fs::write(s.root.join(cli), format!("{src}\npub fn touched() {{}}\n")).unwrap();
+    s.ix.touch(&s.ri, &[cli.to_owned()]).await.unwrap();
+    let stale: Vec<String> = read(s.pool.clone())
+        .await
+        .into_iter()
+        .filter(|r| r.3 != 0)
+        .map(|r| r.0)
+        .collect();
+    assert!(
+        stale.contains(&"overall-architecture".to_owned())
+            && stale.iter().any(|id| id.ends_with("unit:crates/b")),
+        "{stale:?}"
+    );
+    assert!(stale.len() < described.len(), "{stale:?}");
+
+    *script() = Script::default();
+    let second = generate(
+        &s.ix,
+        Generate {
+            root: s.root.clone(),
+            session: SessionId::new(),
+            element: None,
+        },
+    )
+    .await
+    .unwrap();
+    wait_idle(&s.root).await;
+    let (stage, _, calls, log) = job_row(&s.pool, &second.id).await;
+    assert_eq!((stage.as_str(), calls), ("done", 2), "{log:?}");
+    let after = read(s.pool.clone()).await;
+    for b in &before {
+        let a = after
+            .iter()
+            .find(|a| a.0 == b.0)
+            .expect("every element survives");
+        if stale.contains(&b.0) {
+            assert!(a.1 > b.1, "{} must be regenerated: {b:?} → {a:?}", b.0);
+        } else {
+            assert_eq!(
+                (a.1, &a.2),
+                (b.1, &b.2),
+                "{} must keep its prose and provenance",
+                b.0
+            );
+        }
+        assert_eq!(a.3, 0, "{} is fresh again", b.0);
+    }
 }
 
 // --- fixture-backed validation tests ------------------------------------------------
