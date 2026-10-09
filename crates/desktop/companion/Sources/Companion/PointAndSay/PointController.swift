@@ -71,6 +71,8 @@ final class PointController {
     private var prewarmed = false
     /// `--probe-point`'s gesture phase: the Stop sequence runs to the point of `desk_open` and stops there.
     var dryRun = false
+    /// 149f: one physical press = one gesture; auto-repeat key-downs never reach the machine.
+    private var gate = VoiceKeyGate()
 
     init(store: Store) {
         self.store = store
@@ -126,10 +128,18 @@ final class PointController {
 
     // MARK: the machine
 
-    /// The hot key's `kEventHotKeyPressed` (every auto-repeat included) and `kEventHotKeyReleased`; the probe's synthetic
-    /// presses come in here too.
-    func keyDown() { send(.pressed) }
-    func keyUp() { send(.released) }
+    /// The hot key's `kEventHotKeyPressed` — Carbon re-posts it for every keyboard auto-repeat while the chord is held, and
+    /// KeyboardShortcuts forwards each one — filtered by `VoiceKeyGate` to the real key-down; the probe's synthetic presses
+    /// come in here too. A gesture a refusal ended stays ended until the key is released.
+    func keyDown() {
+        guard gate.press(now: PointClock.now()) else { return }
+        send(.pressed)
+    }
+
+    func keyUp() {
+        guard gate.release() else { return PointLog.write("hotkey key-up without a key-down (ignored)") }
+        send(.released)
+    }
 
     func send(_ e: PointMachine.Event) {
         let now = PointClock.now()
@@ -324,9 +334,10 @@ final class PointController {
     func beginDictation() {
         _ = dictation.handle(.start)
         pendingChunks = []; stopWanted = false
+        let g = gesture
         if !AskFlags.automated {
             Task { [weak self] in
-                guard let self, let why = await self.recorder.start() else { return }
+                guard let self, let why = await self.recorder.start(), g == self.gesture else { return }
                 self.refuse(why)
             }
         }
@@ -334,15 +345,22 @@ final class PointController {
             do {
                 let id = try await store.client.dictationStart()
                 guard let self else { return }
+                // The gesture ended (cancel/Esc/short) before the reply: the dictation is live on the engine with no owner —
+                // stop it now, or it holds the one slot until `dictation_max_secs` ("dictating elsewhere" everywhere).
+                guard g == self.gesture, self.dictation.phase == .starting else {
+                    PointLog.write("dictation_start → \(id) landed after the gesture ended: dictation_stop")
+                    return try await store.client.dictationStop(id: id)
+                }
                 _ = self.dictation.handle(.started(id: id))
-                PointLog.write("dictation_start → \(id) adopted=\(self.dictation.id == id) phase=\(self.dictation.phase)")
+                PointLog.write("dictation_start → \(id)")
                 for c in self.pendingChunks { self.sendChunk(c, id: id) }
                 self.pendingChunks = []
                 if self.stopWanted { self.stopWanted = false; self.endDictation() }
             } catch {
                 guard let self else { return }
-                _ = self.dictation.handle(.startFailed("\(error)"))
                 PointLog.write("dictation_start failed: \(error)")
+                guard g == self.gesture else { return }
+                _ = self.dictation.handle(.startFailed("\(error)"))
                 self.refuse(self.dictation.error ?? "\(error)")
             }
         }

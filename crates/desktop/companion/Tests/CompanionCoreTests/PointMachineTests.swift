@@ -151,3 +151,107 @@ struct PointMachineTests {
         #expect(PointMachine.doneMs == 6_000)
     }
 }
+
+/// 149f: the hot key's key-down/key-up through `VoiceKeyGate` into the machine — the controller's `keyDown`/`keyUp` as a pure
+/// driver with a fake clock (ms). What Carbon delivers while ⌃S is held: one key-down, then a key-down every `repeatMs`.
+struct VoiceKeyGateTests {
+    static let repeatMs: UInt64 = 30
+
+    /// The gate in front of the machine; `starts` counts `.start` effects, `refusals` `.refuse`.
+    struct Driver {
+        var gate = VoiceKeyGate()
+        var state = PointMachine.State.idle
+        var starts = 0, refusals = 0
+        var refused: String?
+
+        mutating func keyDown(_ now: UInt64) {
+            guard gate.press(now: now) else { return }
+            step(.pressed, now)
+        }
+
+        mutating func keyUp(_ now: UInt64) {
+            guard gate.release() else { return }
+            step(.released, now)
+        }
+
+        mutating func step(_ e: PointMachine.Event, _ now: UInt64) {
+            let (next, fx) = PointMachine.step(state, e, now: now, refused: refused)
+            state = next
+            starts += fx.filter { $0 == .start }.count
+            refusals += fx.filter { if case .refuse = $0 { return true } else { return false } }.count
+        }
+
+        /// Hold from `t0` for `ms`: the key-down, auto-repeats every `repeatMs`, then the key-up. Returns the release time.
+        mutating func hold(from t0: UInt64, ms: UInt64, between: (inout Driver, UInt64) -> Void = { _, _ in }) -> UInt64 {
+            keyDown(t0)
+            var t = t0
+            while t + repeatMs < t0 + ms {
+                t += repeatMs
+                between(&self, t)
+                keyDown(t)
+            }
+            keyUp(t0 + ms)
+            return t0 + ms
+        }
+    }
+
+    @Test func oneHoldIsOneGesture() {
+        var d = Driver()
+        let released = d.hold(from: 0, ms: 1500) { d, t in if t >= PointMachine.holdMs, case .armed = d.state { d.step(.tick(now: t), t) } }
+        #expect(d.starts == 1)
+        #expect(d.state == .sending(t0: 0))
+        #expect(released == 1500)
+        // The next physical press is a new gesture.
+        d.step(.cancel, 1600)
+        d.keyDown(2000)
+        #expect(d.starts == 2)
+    }
+
+    /// The report: a refusal ends the gesture; before 149f the next auto-repeat re-armed it (start/refuse/cancel at 30 ms).
+    @Test func refusalEndsTheGestureForTheRestOfTheHold() {
+        var d = Driver()
+        _ = d.hold(from: 0, ms: 1500) { d, t in
+            // The engine's "already dictating" lands right after the first start: the controller cancels.
+            if d.starts == 1, case .armed = d.state { d.step(.cancel, t) }
+        }
+        #expect(d.starts == 1)
+        #expect(d.state == .idle)
+        // Released: a real press re-arms.
+        d.keyDown(2000)
+        #expect(d.starts == 2)
+    }
+
+    /// A standing refusal (a live meeting) answers once per physical press, not once per auto-repeat.
+    @Test func standingRefusalAnswersOncePerPress() {
+        var d = Driver()
+        d.refused = "talking"
+        _ = d.hold(from: 0, ms: 1500)
+        #expect(d.refusals == 1)
+        #expect(d.starts == 0)
+        d.keyDown(2000)
+        #expect(d.refusals == 2)
+    }
+
+    @Test func lockedHoldDoesNotSendOnAutoRepeat() {
+        var d = Driver()
+        d.keyDown(0); d.keyUp(100) // tap
+        d.keyDown(250) // → locked
+        #expect(d.state == .locked(t0: 0))
+        var t: UInt64 = 250
+        for _ in 0..<40 { t += Self.repeatMs; d.keyDown(t) } // held for 1.2 s
+        #expect(d.state == .locked(t0: 0))
+        d.keyUp(t)
+        d.keyDown(t + 500) // the real tap sends
+        #expect(d.state == .sending(t0: 0))
+    }
+
+    @Test func lostKeyUpIsNotADeadKey() {
+        var g = VoiceKeyGate()
+        let presses = [g.press(now: 0), g.press(now: 30),
+                       g.press(now: VoiceKeyGate.lostKeyUpMs - 1 + 30), // inside the slowest auto-repeat
+                       g.press(now: VoiceKeyGate.lostKeyUpMs * 2 + 30)] // no release ever came: a new press
+        #expect(presses == [true, false, false, true])
+        let releases = [g.release(), g.release()] // the second is a stray key-up
+        #expect(releases == [true, false])
+    }
+}
