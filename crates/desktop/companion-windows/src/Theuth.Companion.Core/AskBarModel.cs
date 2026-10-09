@@ -100,6 +100,8 @@ public sealed class AskBarModel : INotifyPropertyChanged
     private bool swallowKeyUp;
     /// <summary>§6.1: the dictation whose text is in the field; reported with the sent text at commit, then forgotten.</summary>
     private string? dictatedId;
+    /// <summary>§8.5: bumped when a press ends early (tap, failure) — a microphone that finishes opening afterwards is closed again.</summary>
+    private int micGeneration;
 
     private string text = "";
     private string partial = "";
@@ -382,6 +384,7 @@ public sealed class AskBarModel : INotifyPropertyChanged
                     {
                         // A tap never starts a dictation: the early microphone stops and its buffer is dropped (§8.5).
                         micStartedEarly = false;
+                        micGeneration++;
                         surface.CancelMicrophone();
                         pendingChunks.Clear();
                     }
@@ -426,6 +429,7 @@ public sealed class AskBarModel : INotifyPropertyChanged
                     store.SubmitAskNow(Text);
                     break;
                 case AskVoiceMachine.EffectKind.Fail:
+                    micGeneration++;
                     micStartedEarly = false;
                     pendingChunks.Clear();
                     pressAt = null;
@@ -443,9 +447,16 @@ public sealed class AskBarModel : INotifyPropertyChanged
 
     private async Task StartMicrophone()
     {
+        int gen = micGeneration;
         string? why;
         try { why = await surface.StartMicrophoneAsync(); }
         catch (Exception e) { why = $"microphone failed to start: {e.Message}"; }
+        if (gen != micGeneration)
+        {
+            // 153 §8.5: the press ended (a tap, a failure) while the device was still opening — close it again; nothing was sent.
+            if (why is null) surface.CancelMicrophone();
+            return;
+        }
         if (why is not null) VoiceEvent(new AskVoiceMachine.Event.Failed(why));
     }
 

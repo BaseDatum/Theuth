@@ -322,4 +322,35 @@ public sealed partial class AskVoiceTests
         rig.Event("""{"type":"DictationDevice","id":"other","device":"X","state":"changed"}""");
         Assert.Equal("mic lost — reconnecting…", rig.Bar.Status); // another dictation's device is not ours
     }
+
+    /// <summary>A microphone that opens only when the test says so (the device-open race of a quick tap).</summary>
+    private sealed class SlowMicSurface : IAskBarSurface
+    {
+        public readonly List<string> Events = new();
+        public TaskCompletionSource<string?> Opening = new();
+
+        public void Show(bool activate) => Events.Add("show");
+        public void Hide(bool returnFocus) => Events.Add("hide");
+        public Task<string?> StartMicrophoneAsync() { Events.Add("mic start"); return Opening.Task; }
+        public void StopMicrophone() => Events.Add("mic stop");
+        public void CancelMicrophone() => Events.Add("mic cancel");
+        public void OpenUrl(Uri url) { }
+    }
+
+    [Fact]
+    public void ATapWhileTheMicIsStillOpeningClosesItOnceItOpens()
+    {
+        var clock = new ManualScheduler();
+        var store = new StoreModel(new FakeEngine(), clock, () => clock.Now, _ => { });
+        var calls = new FakeDictationCalls153();
+        var surface = new SlowMicSurface();
+        var bar = new AskBarModel(store, calls, surface, clock, () => clock.Now, _ => { }, micOnKeyDown: () => true);
+        bar.HotkeyDown();
+        clock.Advance(0.1);
+        bar.HotkeyUp(); // a tap: the device is still opening
+        Assert.Equal(new[] { "show", "mic start", "mic cancel" }, surface.Events);
+        surface.Opening.SetResult(null); // the device finished opening after the tap
+        Assert.Equal(new[] { "show", "mic start", "mic cancel", "mic cancel" }, surface.Events);
+        Assert.DoesNotContain(calls.Calls, c => c.StartsWith("start", StringComparison.Ordinal));
+    }
 }
