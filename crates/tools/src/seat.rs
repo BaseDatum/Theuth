@@ -165,7 +165,9 @@ mod tests {
 
     #[test]
     fn writes_stay_inside_the_root() {
-        let dir = std::env::temp_dir().join(format!("theuth-seat-{}", uuid::Uuid::new_v4()));
+        // Drop guard (141 R4): the scratch dir goes when the test ends, pass or fail.
+        let scratch = crate::TestDir::new("seat");
+        let dir = scratch.0.clone();
         let root = dir.join("wt");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/a.rs"), "x").unwrap();
