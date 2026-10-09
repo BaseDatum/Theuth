@@ -15,6 +15,7 @@ use std::process::{Command, Stdio};
 
 use sha2::{Digest, Sha256};
 
+use crate::custody;
 use crate::error::{Error, Result};
 use crate::types::StudySpec;
 
@@ -113,19 +114,38 @@ fn diff_bytes(cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-/// `git add -A -N`: untracked, non-ignored files become intent-to-add index
-/// entries so `diff <commit>` shows them as new files.
-fn stage_intent(worktree: &Path) -> Result<()> {
-    git(worktree, &["add", "-A", "-N", "--", "."]).map(drop)
+/// `:(exclude,glob)<pattern>` pathspecs for `patterns` (140 §6 Revision 2 build junk).
+fn exclude_pathspecs(patterns: &[&str]) -> Vec<String> {
+    patterns
+        .iter()
+        .map(|g| format!(":(exclude,glob){g}"))
+        .collect()
 }
 
-/// Tracked changes vs `HEAD` plus untracked non-ignored paths (`status --porcelain`), one per line.
+/// `git add -A -N`: untracked, non-ignored files become intent-to-add index
+/// entries so `diff <commit>` shows them as new files; build junk stays out of patches.
+fn stage_intent(worktree: &Path) -> Result<()> {
+    let mut args: Vec<String> = vec![
+        "add".into(),
+        "-A".into(),
+        "-N".into(),
+        "--".into(),
+        ".".into(),
+    ];
+    args.extend(exclude_pathspecs(&custody::BUILD_JUNK));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    git(worktree, &argv).map(drop)
+}
+
+/// Tracked changes vs `HEAD` plus untracked non-ignored paths (`status --porcelain`), one per
+/// line; build junk (`__pycache__/`, `.DS_Store`, …) is never dirt.
 fn dirty_paths(repo: &Path) -> Result<Vec<String>> {
     Ok(
         git(repo, &["status", "--porcelain", "--untracked-files=all"])?
             .lines()
             .filter(|l| l.len() > 3)
             .map(|l| l[3..].trim().to_owned())
+            .filter(|p| !custody::is_build_junk(p))
             .collect(),
     )
 }
@@ -310,7 +330,8 @@ impl KeepMeta {
     }
 }
 
-/// `git add -A -- . ':!<evaluator_paths>'` + commit with trailers; returns the new sha.
+/// `git add -A -- . ':!<evaluator_paths>' ':(exclude,glob)<build junk>'` + commit with
+/// trailers; returns the new sha. Junk (§6 Revision 2) is excluded unless `scope` names it.
 pub fn keep(
     worktree: &Path,
     spec: &StudySpec,
@@ -324,6 +345,7 @@ pub fn keep(
             args.push(format!(":(exclude){p}"));
         }
     }
+    args.extend(exclude_pathspecs(custody::build_junk(spec)));
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     run(worktree, author, &argv)?;
     let staged = git(worktree, &["diff", "--cached", "--name-only"])?;
@@ -1168,6 +1190,58 @@ mod tests {
         let sha = keep(&f.study, &f.spec, &meta(1), None).unwrap();
         let text = diff_text(&f.study, &base, &sha, 40).unwrap();
         assert!(text.contains("truncated at 40 bytes"));
+    }
+
+    /// §6 Revision 2 (140-P live: keeps committed `__pycache__/*.pyc` when the repo had no
+    /// `.gitignore`): junk is neither a change, a deviation, dirt nor part of a keep —
+    /// unless a `scope` pattern names it.
+    #[test]
+    fn keeps_never_commit_build_junk_unless_scoped() {
+        let f = fixture();
+        let base = resolve_base(&f.repo, "HEAD", false).unwrap();
+        worktree_add(&f.repo, &f.spec, &f.study, &base).unwrap();
+        std::fs::create_dir_all(f.study.join("src/__pycache__")).unwrap();
+        std::fs::create_dir_all(f.study.join("node_modules/x")).unwrap();
+        std::fs::write(f.study.join("src/lib.rs"), "fn a() {}\nfn c() {}\n").unwrap();
+        std::fs::write(
+            f.study.join("src/__pycache__/m.cpython-312.pyc"),
+            b"\x00junk",
+        )
+        .unwrap();
+        std::fs::write(f.study.join("compiled.pyc"), b"\x00junk").unwrap();
+        std::fs::write(f.study.join(".DS_Store"), b"\x00junk").unwrap();
+        std::fs::write(
+            f.study.join("node_modules/x/index.js"),
+            "module.exports = 1\n",
+        )
+        .unwrap();
+        let d = crate::custody::scope_diff(&f.spec, &f.study).unwrap();
+        assert_eq!(d.changed, vec!["src/lib.rs"], "{d:?}");
+        assert!(d.deviations.is_empty(), "{d:?}");
+        assert_eq!((d.added, d.removed), (1, 1));
+        let sha = keep(&f.study, &f.spec, &meta(1), None).unwrap();
+        assert_eq!(files_of(&f.study, &sha).unwrap(), vec!["src/lib.rs"]);
+        // The junk is still on disk but is not drift at the next begin.
+        assert!(f.study.join("compiled.pyc").exists());
+        let stray = f._tmp.path().join("stray.patch");
+        assert_eq!(repair(&f.study, &f.spec, &sha, &stray).unwrap(), None);
+        // Explicitly in scope: the user's call, counted and committed.
+        let mut scoped = f.spec.clone();
+        scoped.scope.push("**/*.pyc".into());
+        let d = crate::custody::scope_diff(&scoped, &f.study).unwrap();
+        assert_eq!(
+            d.changed,
+            vec![
+                ".DS_Store",
+                "compiled.pyc",
+                "node_modules/x/index.js",
+                "src/__pycache__/m.cpython-312.pyc"
+            ],
+            "{d:?}"
+        );
+        assert_eq!(d.deviations, vec![".DS_Store", "node_modules/x/index.js"]);
+        let sha2 = keep(&f.study, &scoped, &meta(2), None).unwrap();
+        assert_eq!(files_of(&f.study, &sha2).unwrap().len(), 4);
     }
 
     #[test]

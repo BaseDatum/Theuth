@@ -123,6 +123,16 @@ pub struct SideCall {
     pub kind: CallKind,
 }
 
+/// `ask` on the `agent` actor → `Result<(), String>`: whether `session` can
+/// take a [`SideCall`] right now — a live native session (C2). The `Err` is
+/// the supervisor's text, the one a [`SideCall`] would fail with; consumers
+/// (`codemap_generate`) refuse up front instead of starting work that fails.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SideCallable {
+    /// The session a side call would be charged to.
+    pub session: SessionId,
+}
+
 /// What a [`SideCall`] came back with.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SideReply {
@@ -136,6 +146,14 @@ pub struct SideReply {
     pub output_tokens: Option<u32>,
     /// Wall clock from dispatch to the final event.
     pub latency: Duration,
+    /// What the call cost, USD nanos — the priced amount `agent` settled in
+    /// `model_calls` (provider-reported, else estimated from the catalog);
+    /// `None` when unpriced or in another currency.
+    #[serde(default)]
+    pub cost_nanos: Option<u64>,
+    /// The `model_calls.request_id` of the call, for provenance.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 #[cfg(test)]
