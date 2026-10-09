@@ -754,6 +754,9 @@ pub struct Jobs {
     pub(crate) journal: Arc<dyn crate::Journal>,
     /// 109 §5.3: the PTY screen snapshot timer (`durability.pty_snapshot_secs`).
     pub(crate) pty_snapshot: Duration,
+    /// 155 §6.6: the static `tools.pty_reaction_secs` / `pty_tree_cpu_pct`
+    /// pair every PTY job task reads.
+    pub(crate) pty_thresholds: crate::PtyThresholds,
 }
 
 impl Jobs {
@@ -772,6 +775,7 @@ impl Jobs {
             reminders: HashMap::new(),
             journal: Arc::new(crate::NoopJournal),
             pty_snapshot: Duration::from_secs(5),
+            pty_thresholds: crate::PtyThresholds::from_config(&crate::ToolsConfig::default()),
         }
     }
 
@@ -840,6 +844,9 @@ pub fn start(rt: &Runtime, grace: Duration, timeout: Duration) -> anyhow::Result
         .extract_inner::<u64>("durability.pty_snapshot_secs")
     {
         actor.pty_snapshot = Duration::from_secs(secs.max(1));
+    }
+    if let Ok(cfg) = crate::registry::config(rt) {
+        actor.pty_thresholds = crate::PtyThresholds::from_config(&cfg);
     }
     let jobs = Jobs::spawn_with_mailbox(actor, runtime::subscriber_mailbox());
     jobs.register(JOBS_ACTOR)?;

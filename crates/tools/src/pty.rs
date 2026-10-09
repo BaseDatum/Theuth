@@ -32,7 +32,7 @@ use crate::jobs::{
     admit_job, lock, sep,
 };
 use crate::journal::{JobKind, JobRow, JobState, Journal, PtyScreenRow, WaitKind, WaitRow};
-use crate::proctree::PtyThresholds;
+use crate::proctree::{PtyThresholds, TreeQuiet};
 use crate::{Risk, Tool, ToolCx, ToolOutput};
 
 /// Screen height at `start` (22 §1.9); a viewer may resize it (`pty_resize`).
@@ -508,7 +508,6 @@ pub(crate) struct PtyHandle {
     snapshotted: AtomicU64,
     /// 155 §6.4: when the model last `send`-wrote, until the screen or the
     /// process tree moved (then `None`); the reaction check's clock.
-    #[allow(dead_code)] // 155 C skeleton: W2's reaction check in `run` reads it.
     sent_at: Mutex<Option<Instant>>,
 }
 
@@ -1446,7 +1445,7 @@ impl Message<Launch<StartPty>> for Jobs {
             log_path: log_path.clone(),
             log: log.clone(),
             pty: Arc::clone(&pty),
-            child: s.child,
+            child: Some(s.child),
             rx,
             cancel: cancel.clone(),
             claimable: claimable.clone(),
@@ -1457,6 +1456,7 @@ impl Message<Launch<StartPty>> for Jobs {
             activity,
             journal: Arc::clone(&self.journal),
             snapshot_every: self.pty_snapshot,
+            thresholds: self.pty_thresholds,
         }))
         .abort_handle();
         self.push(
@@ -1903,7 +1903,8 @@ struct Run {
     log_path: PathBuf,
     log: Arc<Mutex<Log>>,
     pty: Arc<PtyHandle>,
-    child: Box<dyn Child + Send + Sync>,
+    /// The leader; the reaper (`run`) takes it at start.
+    child: Option<Box<dyn Child + Send + Sync>>,
     rx: mpsc::Receiver<Vec<u8>>,
     cancel: Arc<Cancel>,
     claimable: Arc<AtomicBool>,
@@ -1920,6 +1921,8 @@ struct Run {
     journal: Arc<dyn Journal>,
     /// `durability.pty_snapshot_secs`.
     snapshot_every: Duration,
+    /// 155 §6.6: `tools.pty_reaction_secs` / `pty_tree_cpu_pct`.
+    thresholds: PtyThresholds,
 }
 
 /// The reader still draining a lingering slave, and the log its bytes reach.
@@ -1984,6 +1987,8 @@ struct Idle {
     last_fire: Option<Instant>,
     nudges: u32,
     backoff: Duration,
+    /// 155 §6.3: the last busy-tree deadline; the next one counts from here.
+    deferred: Option<Instant>,
 }
 
 impl Idle {
@@ -1995,6 +2000,7 @@ impl Idle {
             last_fire: None,
             nudges: 0,
             backoff: base,
+            deferred: None,
         }
     }
 
@@ -2020,15 +2026,18 @@ impl Idle {
             } else {
                 self.backoff
             };
-            tokio::time::Instant::from_std(self.last_change.max(touched) + interval)
+            let from = self
+                .last_change
+                .max(touched)
+                .max(self.deferred.unwrap_or(touched));
+            tokio::time::Instant::from_std(from + interval)
         })
     }
 
     /// The deadline passed: `(nudge, quiet_secs)` to send, or `None` while a
     /// `wait` is watching (61 §1.5; its return re-arms). Either way the
     /// detector is disarmed until the next change or touch.
-    fn fire(&mut self, pty: &PtyHandle) -> Option<(u32, u64)> {
-        let now = Instant::now();
+    fn fire(&mut self, pty: &PtyHandle, now: Instant) -> Option<(u32, u64)> {
         self.last_fire = Some(now);
         if pty.waiting.load(SeqCst) > 0 {
             return None;
@@ -2044,13 +2053,101 @@ impl Idle {
     }
 
     /// 155 §6.3: the deadline passed but the process tree was busy — push
-    /// the next check out by `base` without firing, resetting `nudges` or
-    /// pretending the screen changed.
-    #[allow(dead_code)] // 155 C skeleton: W2's idle rule calls it.
+    /// the next check out by one interval without firing, resetting `nudges`
+    /// or pretending the screen changed.
     fn defer(&mut self, now: Instant) {
-        // ponytail: skeleton (155 C); W2 decides the exact re-arm.
-        self.last_fire = Some(now);
+        self.deferred = Some(now);
     }
+}
+
+/// 155 §6.3: at the idle deadline. A busy tree defers; a quiet one fires as
+/// in 61 (still `None` while a `wait` watches) with the quiet reason.
+fn idle_due(
+    idle: &mut Idle,
+    tree: &TreeQuiet,
+    pty: &PtyHandle,
+    now: Instant,
+) -> Option<(u32, u64, String)> {
+    if !tree.quiet() {
+        idle.defer(now);
+        return None;
+    }
+    let (nudge, quiet_secs) = idle.fire(pty, now)?;
+    Some((
+        nudge,
+        quiet_secs,
+        format!("screen unchanged for {quiet_secs} s, process tree quiet"),
+    ))
+}
+
+/// 155 §6.4: the reaction check. `Some((nudge, quiet_secs))` once when a
+/// `send` saw neither a screen change nor tree movement for `reaction`.
+/// `sent_at` clears on movement, on firing and when a `wait` suppresses the
+/// fire (its timeout is the answer then), so nothing fires twice.
+fn reaction_due(
+    idle: &Idle,
+    tree: &TreeQuiet,
+    pty: &PtyHandle,
+    reaction: Duration,
+    now: Instant,
+) -> Option<(u32, u64)> {
+    let mut sent_at = lock(&pty.sent_at);
+    let sent = (*sent_at)?;
+    if idle.last_change > sent || tree.moved_since(sent) {
+        *sent_at = None;
+        return None;
+    }
+    if reaction.is_zero() || now.duration_since(sent) < reaction {
+        return None;
+    }
+    *sent_at = None;
+    if pty.waiting.load(SeqCst) > 0 {
+        return None;
+    }
+    Some((
+        idle.nudges + 1,
+        now.duration_since(idle.last_change).as_secs(),
+    ))
+}
+
+/// 155 §6.2: is the program theuth started still the terminal's foreground
+/// process group? `true` when that cannot be read (no master, no fd, or an
+/// OS without the notion), so the 61 behaviour stands.
+fn foreground_is_leader(pty: &PtyHandle) -> bool {
+    #[cfg(unix)]
+    {
+        let Some(fd) = lock(&pty.master).as_ref().and_then(|m| m.as_raw_fd()) else {
+            return true;
+        };
+        // SAFETY: `tcgetpgrp` reads one int from the kernel for a live fd.
+        let fg = unsafe { libc::tcgetpgrp(fd) };
+        fg < 0 || fg as u32 == pty.pid
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pty;
+        true
+    }
+}
+
+/// One `<job_idle>` (61 §1.8 / 155 §6.5): the wake rides the guard, the bus
+/// copy is for UIs.
+async fn nudge_model(j: &Run, nudge: u32, quiet_secs: u64, why: String) {
+    let (rows, cursor) = j.pty.screen();
+    let event = JobEvent::Idle {
+        session: j.session,
+        id: j.id.clone(),
+        command: j.command.clone(),
+        name: j.name.clone(),
+        quiet_secs,
+        secs: j.started.elapsed().as_secs(),
+        nudge,
+        user_typed_secs: attached_for(*lock(&j.pty.user_input)).map(|d| d.as_secs()),
+        output: screen_body(&rows, cursor),
+        why,
+    };
+    j.activity.notify(event.clone());
+    j.rt.publish(event).await;
 }
 
 /// The job task (22 §4.2): ingest chunks, coalesce `Screen` events, wake the
@@ -2079,15 +2176,15 @@ async fn run(mut j: Run) {
         session: j.session,
         id: j.id.clone(),
         command: j.command.clone(),
-        call_id: j.call_id,
-        log: j.log_path,
+        call_id: j.call_id.clone(),
+        log: j.log_path.clone(),
         name: j.name.clone(),
         pty: true,
         kind: JobKind::Pty,
     })
     .await;
 
-    let mut child = j.child;
+    let mut child = j.child.take().expect("the reaper takes the child once");
     let mut waited = tokio::task::spawn_blocking(move || child.wait());
     let tree = j.pty.tree.clone();
     let mut carry = Vec::new();
@@ -2096,7 +2193,20 @@ async fn run(mut j: Run) {
     let mut snap = tokio::time::interval(j.snapshot_every);
     snap.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut idle = j.idle_after.map(|base| Idle::new(base, j.started));
+    // 155 §6.2: the process tree, sampled once a second while the screen is
+    // unchanged; ticks missed while output flows are dropped, not replayed.
+    let mut quiet = TreeQuiet::new(j.thresholds);
+    let mut tree_tick = tokio::time::interval(Duration::from_secs(1));
+    tree_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let (exit, killed, origin) = loop {
+        // 155 §6.4: every wake (ticks, samples, chunks) re-checks the reaction
+        // clock; the tree tick bounds the lateness to a second.
+        if let Some(i) = &idle
+            && let Some((nudge, quiet_secs)) =
+                reaction_due(i, &quiet, &j.pty, j.thresholds.reaction, Instant::now())
+        {
+            nudge_model(&j, nudge, quiet_secs, "no reaction to input".to_owned()).await;
+        }
         let due = idle.as_ref().and_then(|i| i.deadline(&j.pty));
         tokio::select! {
             biased;
@@ -2136,26 +2246,17 @@ async fn run(mut j: Run) {
             // 109 §5.3: bounds the loss for a busy screen nobody reads;
             // an unchanged revision writes nothing.
             _ = snap.tick() => j.pty.snapshot_to_store(&*j.journal, j.session, &j.id).await,
+            _ = tree_tick.tick(), if idle.is_some() && !dirty => {
+                quiet.saw(Instant::now(), tree.sample(), foreground_is_leader(&j.pty));
+            }
             () = tokio::time::sleep_until(due.unwrap_or_else(tokio::time::Instant::now)), if due.is_some() => {
+                // A fresh reading: the verdict should not be a second stale.
+                let now = Instant::now();
+                quiet.saw(now, tree.sample(), foreground_is_leader(&j.pty));
                 if let Some(i) = &mut idle
-                    && let Some((nudge, quiet_secs)) = i.fire(&j.pty)
+                    && let Some((nudge, quiet_secs, why)) = idle_due(i, &quiet, &j.pty, now)
                 {
-                    let (rows, cursor) = j.pty.screen();
-                    let event = JobEvent::Idle {
-                        session: j.session,
-                        id: j.id.clone(),
-                        command: j.command.clone(),
-                        name: j.name.clone(),
-                        quiet_secs,
-                        secs: j.started.elapsed().as_secs(),
-                        nudge,
-                        user_typed_secs: attached_for(*lock(&j.pty.user_input)).map(|d| d.as_secs()),
-                        output: screen_body(&rows, cursor),
-                        why: format!("screen unchanged for {quiet_secs} s"),
-                    };
-                    // The wake rides the guard (61 §1.8); the bus copy is for UIs.
-                    j.activity.notify(event.clone());
-                    j.rt.publish(event).await;
+                    nudge_model(&j, nudge, quiet_secs, why).await;
                 }
             }
         }
@@ -2498,7 +2599,7 @@ async fn send(live: &Live, args: SendArgs) -> Result<ToolOutput, String> {
         false,
     )
     .await?;
-    // 155 §6.4: the reaction clock starts at the write (W2 reads it in `run`).
+    // 155 §6.4: the reaction clock starts at the write (`reaction_due` in `run`).
     *lock(&live.pty.sent_at) = Some(Instant::now());
     if let Some(sig) = args.signal {
         live.pty
@@ -2695,23 +2796,21 @@ pub struct StartTool {
     idle_default: Arc<AtomicU64>,
     /// `tools.pty_shell`: the PTY program instead of the platform default.
     pty_shell: Option<PathBuf>,
-    /// 155 §6.6: `tools.pty_reaction_secs` / `tools.pty_tree_cpu_pct`.
-    #[allow(dead_code)] // 155 C skeleton: W2 hands it to the job task.
-    thresholds: PtyThresholds,
 }
 
 impl StartTool {
     /// `shells` is [`crate::shell::ShellTool::shells`]: the default cwd is the
     /// session shell's (22 §1.5); `ready_timeout` is `tools.pty_ready_timeout_secs`;
     /// `idle_default` is the live `tools.pty_idle_secs` (61 §1.6), zero for never;
-    /// `pty_shell` is `tools.pty_shell` (58 §0.3); `thresholds` are the 155 §6.6 keys.
+    /// `pty_shell` is `tools.pty_shell` (58 §0.3). The 155 §6.6 thresholds
+    /// are the `Jobs` actor's (`jobs::start`), since `StartPty` is also
+    /// built outside this crate.
     pub fn new(
         jobs: ActorRef<Jobs>,
         shells: Arc<Mutex<HashMap<SessionId, Shell>>>,
         ready_timeout: Duration,
         idle_default: Arc<AtomicU64>,
         pty_shell: Option<PathBuf>,
-        thresholds: PtyThresholds,
     ) -> Self {
         Self {
             jobs,
@@ -2719,7 +2818,6 @@ impl StartTool {
             ready_timeout,
             idle_default,
             pty_shell,
-            thresholds,
         }
     }
 
@@ -3378,7 +3476,6 @@ mod tests {
             Duration::from_secs(30),
             Arc::new(AtomicU64::new(idle.as_secs())),
             None,
-            PtyThresholds::from_config(&crate::ToolsConfig::default()),
         )
     }
 
@@ -3408,6 +3505,149 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The `why` of every `Idle` on the bus (155 §6.5).
+    fn whys(fx: &Fx) -> Vec<String> {
+        lock(&fx.events)
+            .iter()
+            .filter_map(|e| match e {
+                JobEvent::Idle { why, .. } => Some(why.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 155 rule tests: a handle with no terminal behind it (unix: adopting
+    /// our own pid is free; on Windows it would put the test in a job).
+    #[cfg(unix)]
+    fn bare_handle(touched: Instant) -> PtyHandle {
+        let pid = std::process::id();
+        PtyHandle {
+            writer: Mutex::new(Box::new(std::io::sink())),
+            parser: Mutex::new(vt100::Parser::new(ROWS, COLS, HISTORY)),
+            revision: AtomicU64::new(0),
+            output: Notify::new(),
+            stream: broadcast::channel(1).0,
+            master: Mutex::new(None),
+            pid,
+            tree: ProcessTree::adopt(pid).unwrap(),
+            exit: Mutex::new(None),
+            user_input: Mutex::new(None),
+            touched: Mutex::new(touched),
+            idle_wake: Notify::new(),
+            waiting: AtomicUsize::new(0),
+            interacted: AtomicBool::new(false),
+            cursor: AtomicU64::new(0),
+            snapshotted: AtomicU64::new(u64::MAX),
+            sent_at: Mutex::new(None),
+        }
+    }
+
+    #[cfg(unix)]
+    const THRESHOLDS: PtyThresholds = PtyThresholds {
+        reaction: Duration::from_secs(10),
+        tree_cpu_pct: 2,
+    };
+
+    #[cfg(unix)]
+    fn tree_sample(cpu_ms: u64) -> Option<platform::TreeSample> {
+        Some(platform::TreeSample {
+            processes: 1,
+            cpu: Duration::from_millis(cpu_ms),
+        })
+    }
+
+    /// 155 §6.3 / §11: screen unchanged + tree busy → no fire, deferred one
+    /// interval with `nudges` untouched; tree quiet → the fire with its `why`.
+    #[cfg(unix)]
+    #[test]
+    fn idle_rule_defers_on_a_busy_tree_and_fires_with_why_when_quiet() {
+        let t0 = Instant::now();
+        let s = |secs: u64| t0 + Duration::from_secs(secs);
+        let at = |secs| Some(tokio::time::Instant::from_std(s(secs)));
+        let pty = bare_handle(t0);
+        let mut idle = Idle::new(Duration::from_secs(10), t0);
+        let mut tree = TreeQuiet::new(THRESHOLDS);
+        // 500 ms of CPU over one second: busy.
+        tree.saw(s(8), tree_sample(0), true);
+        tree.saw(s(9), tree_sample(500), true);
+        assert_eq!(idle.deadline(&pty), at(10));
+        assert_eq!(idle_due(&mut idle, &tree, &pty, s(10)), None);
+        assert_eq!(idle.nudges, 0);
+        assert_eq!(idle.deadline(&pty), at(20), "deferred by one interval");
+        // Quiet again: fires at the moved deadline with the quiet reason.
+        tree.saw(s(19), tree_sample(505), true);
+        assert_eq!(
+            idle_due(&mut idle, &tree, &pty, s(20)),
+            Some((
+                1,
+                20,
+                "screen unchanged for 20 s, process tree quiet".into()
+            ))
+        );
+        assert_eq!(
+            idle.deadline(&pty),
+            None,
+            "disarmed until a change or touch"
+        );
+        // A `wait` in flight still suppresses the quiet fire.
+        *lock(&pty.touched) = s(25);
+        pty.waiting.store(1, SeqCst);
+        assert_eq!(idle_due(&mut idle, &tree, &pty, s(45)), None);
+    }
+
+    /// 155 §6.4 / §11: a `send` with no screen or tree movement for `reaction`
+    /// fires once; suppressed while `waiting > 0`; movement clears it; `0` is off.
+    #[cfg(unix)]
+    #[test]
+    fn reaction_check_fires_once_when_nothing_answers_a_send() {
+        let t0 = Instant::now();
+        let s = |secs: u64| t0 + Duration::from_secs(secs);
+        let r = THRESHOLDS.reaction;
+        let pty = bare_handle(t0);
+        let idle = Idle::new(Duration::from_secs(60), t0);
+        let tree = TreeQuiet::new(THRESHOLDS);
+        assert_eq!(
+            reaction_due(&idle, &tree, &pty, r, s(1)),
+            None,
+            "nothing sent"
+        );
+
+        *lock(&pty.sent_at) = Some(s(1));
+        assert_eq!(reaction_due(&idle, &tree, &pty, r, s(5)), None, "too early");
+        assert!(lock(&pty.sent_at).is_some());
+        assert_eq!(reaction_due(&idle, &tree, &pty, r, s(11)), Some((1, 11)));
+        assert_eq!(reaction_due(&idle, &tree, &pty, r, s(12)), None, "once");
+
+        // Suppressed by a `wait`: its timeout is the answer, no late fire.
+        *lock(&pty.sent_at) = Some(s(20));
+        pty.waiting.store(1, SeqCst);
+        assert_eq!(reaction_due(&idle, &tree, &pty, r, s(31)), None);
+        assert!(lock(&pty.sent_at).is_none());
+        pty.waiting.store(0, SeqCst);
+
+        // A screen change after the send clears the clock.
+        *lock(&pty.sent_at) = Some(s(40));
+        let mut changed = Idle::new(Duration::from_secs(60), t0);
+        changed.last_change = s(41);
+        assert_eq!(reaction_due(&changed, &tree, &pty, r, s(55)), None);
+        assert!(lock(&pty.sent_at).is_none());
+
+        // Tree movement after the send clears it too.
+        *lock(&pty.sent_at) = Some(s(60));
+        let mut busy = TreeQuiet::new(THRESHOLDS);
+        busy.saw(s(60), tree_sample(0), true);
+        busy.saw(s(61), tree_sample(500), true);
+        assert_eq!(reaction_due(&idle, &busy, &pty, r, s(75)), None);
+        assert!(lock(&pty.sent_at).is_none());
+
+        // `pty_reaction_secs: 0` is off.
+        *lock(&pty.sent_at) = Some(s(80));
+        assert_eq!(
+            reaction_due(&idle, &tree, &pty, Duration::ZERO, s(100)),
+            None
+        );
     }
 
     /// Poll until `n` idle events are on the bus, or fail at `within`.
@@ -3862,7 +4102,6 @@ mod tests {
             Duration::from_secs(30),
             Arc::new(AtomicU64::new(0)),
             Some(PathBuf::from("/bin/sh")),
-            PtyThresholds::from_config(&crate::ToolsConfig::default()),
         );
         let out = Tool::call(
             &start,
@@ -4044,6 +4283,30 @@ mod tests {
         );
         let v = idles_within(&fx, 1, Duration::from_secs(3)).await;
         assert_eq!(v[0].0, 1, "{v:?}");
+        cancel(&fx, "j1").await;
+    }
+
+    /// 155 §6.3 (live proof 3 in miniature): a `sleep` in the foreground of
+    /// an interactive shell is a busy tree, so the unchanged prompt line does
+    /// not fire; once it ends the quiet fire carries the tree reason.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pty_idle_waits_for_a_busy_tree() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (_, send, ..) = tools(&fx);
+        start_quiet(&fx, "bash --norc -i").await;
+        let mut args = send_args("j1");
+        args.text = Some("sleep 4".into());
+        Tool::call(&send, args, cx(&fx)).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(idles(&fx).is_empty(), "{:?}", idles(&fx));
+        let v = idles_within(&fx, 1, Duration::from_secs(4)).await;
+        assert_eq!(v[0].0, 1, "{v:?}");
+        assert!(
+            whys(&fx)[0].ends_with("process tree quiet"),
+            "{:?}",
+            whys(&fx)
+        );
         cancel(&fx, "j1").await;
     }
 
