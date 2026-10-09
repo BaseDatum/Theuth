@@ -5565,4 +5565,102 @@ pub(crate) mod tests {
         );
         actor.tell(Shutdown).await.unwrap();
     }
+
+    /// 141 R4 (T2 follow-through): the tail's per-child cost sum lives in
+    /// memory. A resumed engine re-attaches at the stored cursor; were the
+    /// sum to restart at 0, a post-restart turn would report less than the
+    /// stored high-water (under-count, `lower_total` coverage) until the
+    /// partial sum caught up. The sum is rebuilt from the transcript before
+    /// the cursor, so the meter reads a + b + c — no lower, no higher.
+    #[tokio::test]
+    async fn omp_tail_cost_survives_an_engine_restart() {
+        use agent_client_protocol::schema::v1::Implementation;
+        let (home, art) = omp_home();
+        let h = home.0.clone();
+        let mut rig = Rig::build(
+            Duration::from_secs(3600),
+            Vec::new(),
+            Some(Implementation::new("oh-my-pi", "18.3.1")),
+            move |c| c.omp_home = h,
+            true,
+        )
+        .await;
+        // Life 1: feed 1 announces ReadA (`counted`); the tail meters both
+        // turns of the fixture (a = 0.1149025, b = 0.00637775).
+        rig.input("spawn readers, do not wait").await;
+        let (id, _) = rig.fake.prompt().await;
+        let path = format!(
+            "{}/../acp/fixtures/omp-18.3.1/task.completed_stale.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut frame: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).unwrap();
+        frame["params"]["sessionId"] = json!("s1");
+        rig.fake.send(frame);
+        rig.fake.end_turn(&id);
+        let events = rig
+            .until(|e| matches!(changed(e), Some((_, "ReadB", _))))
+            .await;
+        let (read_a, ..) = events
+            .iter()
+            .find_map(|e| changed(e).filter(|(_, n, _)| *n == "ReadA"))
+            .unwrap();
+        let lines = omp_fixture_lines("ReadA.jsonl");
+        let jsonl = art.join("ReadA.jsonl");
+        std::fs::write(&jsonl, format!("{}\n", lines.join("\n"))).unwrap();
+        rig.until(|e| matches!(e, AgentEvent::ToolCallFinished { session, call_id, .. } if *session == read_a && call_id == "toolu_01CcxeBFS3rftpne67JPvF8V"))
+            .await;
+        assert_eq!(usd_of(&rig, read_a).await, 121_280_250, "a + b");
+        let eof = std::fs::metadata(&jsonl).unwrap().len();
+        assert_eq!(rig.store.observed_cursor(read_a).await.unwrap(), Some(eof));
+        rig.actor.tell(Shutdown).await.unwrap();
+        rig.actor.wait_for_shutdown().await;
+
+        // Life 2: a new actor on the same row re-attaches at the stored cursor.
+        let (mut fake, dialer) = Fake::new();
+        let mut child = AcpChild::new(
+            rig.session,
+            "omp".into(),
+            Transport::Dial(dialer),
+            rig.rt.data_dir.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Duration::from_secs(60),
+            rig.store.clone(),
+            rig.rt.clone(),
+            Default::default(),
+            Vec::new(),
+        );
+        child.remote = false;
+        child.omp_home = home.0.clone();
+        let actor = AcpChild::spawn(child);
+        fake.handshake(Vec::new(), Some(Implementation::new("oh-my-pi", "18.3.1")))
+            .await;
+        rig.until(|e| matches!(changed(e), Some((c, _, ObservedState::Unknown)) if c == read_a))
+            .await;
+        // Turn c (0.01 USD) lands after the restart.
+        let c = json!({"type": "message", "id": "c0ffee01", "parentId": "8c94f215", "timestamp": "2026-10-08T10:54:00.000Z", "message": {
+            "role": "assistant", "content": [{"type": "text", "text": "alpha line one"}], "api": "anthropic-messages",
+            "provider": "anthropic", "model": "claude-fable-5-1", "stopReason": "stop",
+            "usage": {"input": 3, "output": 7, "cacheRead": 9000, "cacheWrite": 0, "totalTokens": 9010,
+                      "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.01}}}});
+        let mut all = lines.clone();
+        all.push(c.to_string());
+        std::fs::write(&jsonl, format!("{}\n", all.join("\n"))).unwrap();
+        rig.until(|e| matches!(e, AgentEvent::TextDelta { session, text, .. } if *session == read_a && &**text == "alpha line one"))
+            .await;
+        assert_eq!(
+            usd_of(&rig, read_a).await,
+            131_280_250,
+            "a + b + c: nothing lost to the restart, nothing counted twice"
+        );
+        assert_eq!(
+            rig.store.observed_cursor(read_a).await.unwrap(),
+            Some(std::fs::metadata(&jsonl).unwrap().len())
+        );
+        actor.tell(Shutdown).await.unwrap();
+    }
 }

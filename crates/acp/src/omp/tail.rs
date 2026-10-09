@@ -78,6 +78,25 @@ impl Tailer {
         Ok((lines.iter().map(Entry::parse).collect(), cursor))
     }
 
+    /// The entries before byte `end` of `id`'s transcript — the part a
+    /// previous engine life already replayed. 141 R4: a re-attached tail
+    /// rebuilds its per-child sums (cost, tools, tokens) from it, then
+    /// continues from `end` as usual. A missing file, or `end` past EOF
+    /// (truncated / rotated: [`Self::read`] then starts over at 0), reads as nothing.
+    pub fn read_until(&self, id: &str, end: u64) -> io::Result<Vec<Entry>> {
+        let file = match File::open(self.child_path(id)) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        if end > file.metadata()?.len() {
+            return Ok(Vec::new());
+        }
+        let mut buf = Vec::new();
+        file.take(end).read_to_end(&mut buf)?;
+        Ok(parse_lines(&buf).0.iter().map(Entry::parse).collect())
+    }
+
     /// `<id>.md` exists with content: the child finished and omp wrote its
     /// final output. A zero-byte `.md` is what omp leaves behind when it
     /// aborts the job on exit (141 R1 T5) — not a completion.
@@ -131,13 +150,20 @@ fn lines_from(path: &Path, cursor: u64) -> io::Result<(Vec<Value>, u64)> {
     file.seek(SeekFrom::Start(cursor))?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
+    let (lines, end) = parse_lines(&buf);
+    Ok((lines, cursor + end as u64))
+}
+
+/// The whole lines of `buf` as JSON (unparseable ones skipped) and the byte
+/// length consumed (through the last newline).
+fn parse_lines(buf: &[u8]) -> (Vec<Value>, usize) {
     let end = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
     let lines = buf[..end]
         .split(|&b| b == b'\n')
         .filter(|l| !l.is_empty())
         .filter_map(|l| serde_json::from_slice(l).ok())
         .collect();
-    Ok((lines, cursor + end as u64))
+    (lines, end)
 }
 
 /// A tool call inside a child transcript entry.
