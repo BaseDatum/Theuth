@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::Instant;
 
-use runtime::{CallKind, ModelRole, SideCall, SideReply};
+use runtime::{CallKind, ModelRole, SessionId, SideCall, SideReply};
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -51,6 +51,8 @@ pub const PROGRESS_GATE: std::time::Duration = std::time::Duration::from_millis(
 pub const TRANSPORT_FAILURES: u32 = 3;
 /// `MapProvenance.currency` when the ledger reports nothing.
 const CURRENCY: &str = "USD";
+/// Chars of a rejected model reply kept in `jobs.error_log` per attempt.
+pub const REJECTED_LOG_CHARS: usize = 4096;
 
 /// Sends one [`SideCall`] and returns the reply or the agent plugin's error
 /// text (`decision::SideCaller`'s shape).
@@ -68,11 +70,47 @@ pub fn install_side_caller(caller: SideCaller) -> bool {
     SIDE_CALLER.set(caller).is_ok()
 }
 
+/// Answers `runtime::SideCallable` for a session: `Ok` when a side call
+/// charged to it would run, else the supervisor's text (§10.2).
+pub type SideProbe = Arc<
+    dyn Fn(SessionId) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
+>;
+
+static SIDE_PROBE: OnceLock<SideProbe> = OnceLock::new();
+
+/// Install the process-wide liveness probe once; without one `generate`
+/// starts the job and its first side call reports the refusal.
+pub fn install_side_probe(probe: SideProbe) -> bool {
+    SIDE_PROBE.set(probe).is_ok()
+}
+
+/// Mark the `jobs` rows a previous process left running as `interrupted`
+/// (§6.7): called when a root's map pool opens. Rows of jobs alive in this
+/// process (a reopened root) are kept. The next `generate` resumes from the
+/// stored perspectives.
+pub(crate) async fn interrupt_orphans(pool: &SqlitePool) -> anyhow::Result<u64> {
+    let live: Vec<String> = jobs()
+        .values()
+        .map(|h| h.state.lock().unwrap_or_else(|e| e.into_inner()).id.clone())
+        .collect();
+    w::interrupt_running_jobs(pool, &live).await
+}
+
 /// A running job: its live state and the task to abort.
 struct JobHandle {
     state: Arc<Mutex<MapJob>>,
     task: tokio::task::AbortHandle,
     pool: SqlitePool,
+}
+
+/// A spawned task aborted when the handle is dropped (the owning task was
+/// aborted or finished without awaiting it).
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 static JOBS: LazyLock<Mutex<HashMap<PathBuf, JobHandle>>> = LazyLock::new(Mutex::default);
@@ -102,6 +140,11 @@ pub async fn generate(ix: &Arc<Codeindex>, m: Generate) -> anyhow::Result<MapJob
         && !h.task.is_finished()
     {
         return Ok(h.state.lock().unwrap_or_else(|e| e.into_inner()).clone());
+    }
+    if let Some(probe) = SIDE_PROBE.get() {
+        probe(m.session)
+            .await
+            .map_err(|e| anyhow::anyhow!("generation needs an open native session: {e}"))?;
     }
     let caller = SIDE_CALLER.get().cloned().ok_or_else(|| {
         anyhow::anyhow!("codemap generation needs the agent plugin (no side caller installed)")
@@ -139,7 +182,19 @@ pub async fn generate(ix: &Arc<Codeindex>, m: Generate) -> anyhow::Result<MapJob
     });
     let root = ri.root.clone();
     let task = tokio::spawn(async move {
-        let outcome = cx.run().await;
+        // The pipeline runs on its own task so a panic inside it ends the
+        // job `failed` (and publishes the final progress) instead of leaving
+        // the row `generating` forever; aborting this task aborts it too.
+        let inner = Arc::clone(&cx);
+        let mut work = AbortOnDrop(tokio::spawn(async move { inner.run().await }));
+        let outcome = match (&mut work.0).await {
+            Ok(outcome) => outcome,
+            Err(e) if e.is_panic() => Err(Stop::Failed(format!(
+                "generator panicked: {}",
+                crate::panic_text(&*e.into_panic())
+            ))),
+            Err(_) => Err(Stop::Cancelled),
+        };
         cx.finish(outcome).await;
         jobs().remove(&cx.ri.root);
     });
@@ -210,11 +265,14 @@ enum Stop {
 /// One side call that came back.
 #[derive(Clone, Debug)]
 struct CallOut {
+    /// `model_calls.request_id` when the agent reported it, else our own.
     id: String,
     text: String,
     model: String,
     input: u32,
     output: u32,
+    /// USD nanos the agent priced the call at (0 when unpriced).
+    cost_nanos: u64,
 }
 
 /// What a validated call produced: the value, the calls it took, whether a
@@ -357,14 +415,20 @@ impl Job {
             kind: CallKind::CodeMap,
         })
         .await;
-        self.state().calls += 1;
+        let cost_nanos = r.as_ref().map_or(0, |reply| reply.cost_nanos.unwrap_or(0));
+        {
+            let mut s = self.state();
+            s.calls += 1;
+            s.cost_nanos = s.cost_nanos.saturating_add(cost_nanos);
+        }
         match r {
             Ok(reply) => Ok(CallOut {
-                id: new_id(),
+                id: reply.request_id.unwrap_or_else(new_id),
                 text: reply.text,
                 model: reply.model,
                 input: reply.input_tokens.unwrap_or(0),
                 output: reply.output_tokens.unwrap_or(0),
+                cost_nanos,
             }),
             Err(e) if e.contains("cancelled") => Err(Stop::Cancelled),
             Err(e) if e.to_ascii_lowercase().contains("budget") => Err(Stop::Failed(format!(
@@ -381,7 +445,10 @@ impl Job {
     }
 
     /// Ask, parse as `T`, run `validate`; one repair round on any error
-    /// (§6.6), then [`Failure::Invalid`]. Transport errors are never repaired.
+    /// (§6.6) — the facts, the previous reply and the errors — then
+    /// [`Failure::Invalid`]. Transport errors are never repaired. Every
+    /// rejected reply goes to the job log (`jobs.error_log`), cut to
+    /// [`REJECTED_LOG_CHARS`].
     async fn ask<T, V>(
         &self,
         user: String,
@@ -391,9 +458,9 @@ impl Job {
         T: for<'de> Deserialize<'de>,
     {
         let mut calls = Vec::with_capacity(2);
-        let first = self.call(user).await.map_err(Failure::Transport)?;
+        let first = self.call(user.clone()).await.map_err(Failure::Transport)?;
         calls.push(first.clone());
-        let (errors, _) = match parse_reply::<T>(&first.text) {
+        let errors = match parse_reply::<T>(&first.text) {
             Ok(t) => match validate(&t) {
                 Ok(v) => {
                     return Ok(Validated {
@@ -402,32 +469,48 @@ impl Job {
                         repaired: false,
                     });
                 }
+                Err(errors) => errors,
+            },
+            Err(e) => vec![e],
+        };
+        self.note_rejected(&first, 1, &errors);
+        let repair = validate::repair_message(&user, &first.text, &errors).unwrap_or_default();
+        let second = self.call(repair).await.map_err(Failure::Transport)?;
+        calls.push(second.clone());
+        let (errors, last) = match parse_reply::<T>(&second.text) {
+            Ok(t) => match validate(&t) {
+                Ok(v) => {
+                    return Ok(Validated {
+                        value: v,
+                        calls,
+                        repaired: true,
+                    });
+                }
                 Err(errors) => (errors, Some(t)),
             },
             Err(e) => (vec![e], None),
         };
-        let repair = validate::repair_message(&first.text, &errors).unwrap_or_default();
-        let second = self.call(repair).await.map_err(Failure::Transport)?;
-        calls.push(second.clone());
-        match parse_reply::<T>(&second.text) {
-            Ok(t) => match validate(&t) {
-                Ok(v) => Ok(Validated {
-                    value: v,
-                    calls,
-                    repaired: true,
-                }),
-                Err(errors) => Err(Failure::Invalid {
-                    errors,
-                    last: Some(t),
-                    calls,
-                }),
-            },
-            Err(e) => Err(Failure::Invalid {
-                errors: vec![e],
-                last: None,
-                calls,
-            }),
-        }
+        self.note_rejected(&second, 2, &errors);
+        Err(Failure::Invalid {
+            errors,
+            last,
+            calls,
+        })
+    }
+
+    /// Job-log line for a reply the validator refused: the errors, then the
+    /// model's text (cut at a char boundary).
+    fn note_rejected(&self, call: &CallOut, attempt: u8, errors: &[Located]) {
+        let errors = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        let text = cut(call.text.trim(), REJECTED_LOG_CHARS);
+        self.note(format!(
+            "rejected reply (attempt {attempt}, call {}): {errors}\n<reply>\n{text}\n</reply>",
+            call.id
+        ));
     }
 
     fn provenance(
@@ -443,7 +526,9 @@ impl Job {
             index_state: facts.index_state.clone(),
             generated_ms: u64::try_from(w::now_ms()).unwrap_or(0),
             call_ids: calls.iter().map(|c| c.id.clone()).collect(),
-            cost_nanos: 0,
+            cost_nanos: calls
+                .iter()
+                .fold(0u64, |a, c| a.saturating_add(c.cost_nanos)),
             currency: CURRENCY.to_owned(),
             input_tokens: calls.iter().map(|c| c.input).sum(),
             output_tokens: calls.iter().map(|c| c.output).sum(),
@@ -499,12 +584,7 @@ impl Job {
         self.progress("describe", None, true).await;
         let mut pending: Vec<String> = Vec::new();
         for p in &plan {
-            let max_depth = if p.kind == PERSPECTIVES[0] {
-                MAX_DEPTH - 1
-            } else {
-                1
-            };
-            let mut ids = w::pending_prose(&self.pool, &p.id, max_depth)
+            let mut ids = w::pending_prose(&self.pool, &p.id)
                 .await
                 .unwrap_or_default();
             if let Some(only) = &self.only
@@ -728,22 +808,47 @@ impl Job {
             self.note(warning.clone());
         }
         let rows = build_tree(facts, p, &plan, prov, error, max_depth);
-        w::clear_perspective(&self.pool, &p.id)
+        // Selective refresh (§8): a planned row that already exists with the
+        // same facts hash, not stale and with prose keeps its prose, diagram,
+        // edges and provenance — only its place in the plan is refreshed.
+        // Rows the plan no longer holds go; the rest are (re)written.
+        let existing = w::element_keys(&self.pool, &p.id)
             .await
             .map_err(|e| Stop::Failed(format!("store: {e:#}")))?;
-        let mut ids = Vec::with_capacity(rows.len());
+        let kept: std::collections::HashSet<&str> = rows
+            .iter()
+            .filter(|r| r.depth >= 1 && r.fields.description.is_empty())
+            .filter(|r| {
+                existing.iter().any(|(id, hash, stale, prose)| {
+                    *id == r.id && *hash == r.facts_hash && !stale && *prose
+                })
+            })
+            .map(|r| r.id.as_str())
+            .collect();
+        let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        w::clear_perspective(&self.pool, &p.id, &ids)
+            .await
+            .map_err(|e| Stop::Failed(format!("store: {e:#}")))?;
         for row in &rows {
-            w::write_element(&self.pool, row)
-                .await
-                .map_err(|e| Stop::Failed(format!("store: {e:#}")))?;
-            ids.push(row.id.clone());
+            if kept.contains(row.id.as_str()) {
+                w::write_identity(&self.pool, row).await
+            } else {
+                w::write_element(&self.pool, row).await
+            }
+            .map_err(|e| Stop::Failed(format!("store: {e:#}")))?;
         }
         {
             let mut s = self.state();
             s.done += 1;
             let described = rows
                 .iter()
-                .filter(|r| r.depth >= 1 && r.depth < max_depth && r.kind != "bundle")
+                .filter(|r| {
+                    r.depth >= 1
+                        && r.depth < max_depth
+                        && r.kind != "bundle"
+                        && r.kind != "file"
+                        && !kept.contains(r.id.as_str())
+                })
                 .count();
             s.total += u32::try_from(described).unwrap_or(u32::MAX);
         }
@@ -1064,16 +1169,17 @@ impl Handles {
     }
 }
 
-// --- stage replies (deny_unknown_fields, §6.6 rule 1) -------------------------------
+// --- stage replies ---------------------------------------------------------------
+// Unknown keys are ignored (the live model adds `description` to nodes and
+// the like); what matters — ids, members, evidence, labels, prose length —
+// is checked by the stage validators, not by serde.
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SelectReply {
     perspectives: Vec<SelectRow>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SelectRow {
     kind: String,
     #[serde(default)]
@@ -1084,7 +1190,6 @@ struct SelectRow {
 
 /// omm's prose fields as the model writes them.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Fields {
     #[serde(default)]
     description: String,
@@ -1115,8 +1220,8 @@ impl Fields {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct TopReply {
+    #[serde(default)]
     fields: Fields,
     nodes: Vec<TopNode>,
     mermaid: String,
@@ -1125,7 +1230,6 @@ struct TopReply {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct TopNode {
     id: String,
     name: String,
@@ -1135,7 +1239,6 @@ struct TopNode {
 /// Per-edge annotation beside the mermaid: a label override, cited evidence
 /// handles, or the reason for an edge the facts do not back.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct EdgeNote {
     from: String,
     to: String,
@@ -1148,9 +1251,9 @@ struct EdgeNote {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct FlowReply {
     title: String,
+    #[serde(default)]
     fields: Fields,
     steps: Vec<StepName>,
     mermaid: String,
@@ -1159,30 +1262,74 @@ struct FlowReply {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct StepName {
     id: String,
     name: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct DescribeReply {
     elements: Vec<Described>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Described {
     id: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
     fields: Fields,
     #[serde(default)]
     edge_labels: BTreeMap<String, String>,
 }
 
-/// Strict JSON after trimming a Markdown fence or chatter around the object.
+/// The prose keys of [`Fields`]; written at the top level of an object
+/// instead of under `fields` they are folded in (the live model does this).
+const PROSE_KEYS: [&str; 6] = [
+    "description",
+    "context",
+    "constraint",
+    "concern",
+    "todo",
+    "note",
+];
+
+/// Move top-level prose keys of `v` under `fields` when `v` has no `fields`
+/// object of its own; also for every object in `v`'s top-level arrays (the
+/// `elements` of a describe reply).
+fn fold_prose(v: &mut serde_json::Value) {
+    fn fold_one(o: &mut serde_json::Map<String, serde_json::Value>) {
+        if o.get("fields").is_some_and(serde_json::Value::is_object) {
+            return;
+        }
+        let mut fields = serde_json::Map::new();
+        for k in PROSE_KEYS {
+            if let Some(x) = o.remove(k)
+                && x.is_string()
+            {
+                fields.insert(k.to_owned(), x);
+            }
+        }
+        if !fields.is_empty() {
+            o.insert("fields".to_owned(), serde_json::Value::Object(fields));
+        }
+    }
+    let Some(o) = v.as_object_mut() else { return };
+    fold_one(o);
+    for x in o.values_mut() {
+        if let Some(items) = x.as_array_mut() {
+            for item in items
+                .iter_mut()
+                .filter_map(serde_json::Value::as_object_mut)
+            {
+                fold_one(item);
+            }
+        }
+    }
+}
+
+/// JSON after trimming a Markdown fence or chatter around the object and
+/// folding stray top-level prose into `fields` ([`fold_prose`]).
 fn parse_reply<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T, Located> {
     let start = text.find('{');
     let end = text.rfind('}');
@@ -1190,13 +1337,17 @@ fn parse_reply<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T, Located> {
         (Some(s), Some(e)) if e > s => &text[s..=e],
         _ => text,
     };
-    serde_json::from_str(body).map_err(|e| {
+    let invalid = |e: String| {
         Located::new(
             "",
             format!("invalid JSON: {e}"),
             "one JSON object matching the stage schema, nothing else",
         )
-    })
+    };
+    let mut v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| invalid(e.to_string()))?;
+    fold_prose(&mut v);
+    serde_json::from_value(v).map_err(|e| invalid(e.to_string()))
 }
 
 // --- stage B validation and assembly -----------------------------------------------
@@ -1590,14 +1741,17 @@ fn build_tree(
         facts_hash: prov.facts_hash.clone(),
         diagram: Some(graph(nodes, &root_edges)),
         fields: plan.fields.clone(),
-        provenance: Some(prov),
+        provenance: Some(prov.clone()),
         edges: root_edges,
         anchors: Vec::new(),
         error,
     });
     for (i, g) in plan.groups.iter().enumerate() {
+        // A single-member group IS that unit: a directory stays `unit`, a
+        // top-level FILE is a `file` leaf (asking it for children was the
+        // live `tsup.config.ts` panic path).
         let kind = if g.members.len() == 1 {
-            "unit"
+            g.child.kind
         } else {
             "cluster"
         };
@@ -1619,9 +1773,12 @@ fn build_tree(
             max_depth,
         );
         // The partition and its names are the model's: `generated` keeps them
-        // through the skeleton's recompute (W1 rewrites `structure` rows' names).
+        // through the skeleton's recompute (W1 rewrites `structure` rows' names)
+        // and carries the stage-B call as provenance (§6: every generated
+        // element has one); stage C replaces it when it describes the group.
         if let Some(group) = group_rows.first_mut() {
             group.origin = MapOrigin::Generated;
+            group.provenance = Some(prov.clone());
         }
         rows.extend(group_rows);
     }
@@ -1646,6 +1803,7 @@ fn build_tree(
         );
         if let Some(row) = bundle_rows.first_mut() {
             row.origin = MapOrigin::Generated;
+            row.provenance = Some(prov);
         }
         rows.extend(bundle_rows);
     }
@@ -2148,7 +2306,9 @@ pub fn system_prompt() -> String {
            when the facts answer it, and say why.\n\
          - Prose: `description` is 2–5 plain sentences saying what the thing is and which paths it covers; \
            `concern` only when a listed trigger trips; `context` / `constraint` only when the facts show why.\n\
-         - Output exactly one JSON object matching the stage's schema — no Markdown fence, no commentary.\n\
+         - Output exactly one JSON object matching the stage's schema — no Markdown fence, no commentary. \
+           Prose always sits inside the `fields` object (`\"fields\": {\"description\": …}`), never at the \
+           top level and never on a node; the stage message carries an `example` of the exact shape.\n\
          Catalogue (kind — the question it answers):\n",
     );
     for kind in PERSPECTIVES {
@@ -2281,6 +2441,12 @@ fn top_message(
             "nodes": [{ "id": "g1", "name": "<2–4 words>", "members": ["n3", "n7"] }],
             "mermaid": "flowchart LR\n  g1 -->|\"why\"| g2\n  g2 -.->|\"why\"| g3",
             "edges": [{ "from": "g1", "to": "g2", "evidence": ["e4", "e9"] }, { "from": "g2", "to": "g3", "reason": "<why you believe it despite no evidence>" }]
+        },
+        "example": {
+            "fields": { "description": "A command-line tool in src with its release scripts beside it. The source tree holds the commands, the library they share and the tests; scripts holds the version checks the release runs. Nothing is bundled." },
+            "nodes": [{ "id": "g1", "name": "Command Line Tool", "members": ["n1"] }, { "id": "g2", "name": "Release Scripts", "members": ["n2"] }],
+            "mermaid": "flowchart LR\n  g1 -->|\"checks version before release\"| g2",
+            "edges": [{ "from": "g1", "to": "g2", "evidence": ["e1"] }]
         },
         "profile": facts.profile,
         "units": units_json(facts, h),

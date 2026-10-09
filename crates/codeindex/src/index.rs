@@ -193,6 +193,14 @@ impl Codeindex {
             return Ok(p.clone());
         }
         let p = map::store::open(&map::store::path(&self.dir, &ri.root), &ri.root).await?;
+        // 147 §6.7: jobs a previous process left running end `interrupted`.
+        match map::generator::interrupt_orphans(&p).await {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::info!(root = %ri.root.display(), "codemap: {n} interrupted job(s) closed")
+            }
+            Err(e) => tracing::warn!(root = %ri.root.display(), "codemap: interrupted jobs: {e:#}"),
+        }
         *slot = Some(p.clone());
         Ok(p)
     }

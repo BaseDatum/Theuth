@@ -1987,6 +1987,21 @@ async fn start_plugins(rt: &Runtime, plugins: Vec<Box<dyn Plugin>>) -> anyhow::R
             agents.ask(call).await.map_err(|e| e.to_string())
         })
     }));
+    // §10.2: `codemap_generate` refuses a session the supervisor would refuse
+    // before writing a job row.
+    codeindex::map::generator::install_side_probe(std::sync::Arc::new(|session| {
+        Box::pin(async move {
+            let agents =
+                runtime::kameo::actor::ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    .ok()
+                    .flatten()
+                    .ok_or_else(|| "agent is not running".to_owned())?;
+            agents
+                .ask(agent::SideCallable { session })
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }));
     for plugin in plugins {
         let name = plugin.name();
         plugin
