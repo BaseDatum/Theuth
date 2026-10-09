@@ -48,11 +48,11 @@ internal static class AskFixtures
         {
             case "shaped": Dictate("shaped", Shaped, store, install, dispatcher); break;
             case "send-it": Dictate("send-it", SendIt, store, install, dispatcher); break;
-            case "suggestion": Suggest(store, install); break;
+            case "suggestion": Suggest(store, install, dispatcher); break;
             default:
                 Dictate("shaped", Shaped, store, install, dispatcher);
                 After(dispatcher, 10, () => Dictate("send-it", SendIt, store, install, dispatcher));
-                After(dispatcher, 18, () => Suggest(store, install));
+                After(dispatcher, 18, () => Suggest(store, install, dispatcher));
                 break;
         }
     }
@@ -68,6 +68,9 @@ internal static class AskFixtures
             if (e.PropertyName is nameof(AskBarModel.FieldText) or nameof(AskBarModel.Text) or nameof(AskBarModel.Partial)) Trace($"step {step}");
         }
         model.PropertyChanged += OnChange;
+        // PNG evidence (RenderTargetBitmap of the bar): a live partial (muted) after the third item, the landing after the finish.
+        After(dispatcher, name == "shaped" ? 3.1 : 2.2, () => Shot(install, name == "shaped" ? "1-shaped-live" : "3-sendit-armed"));
+        After(dispatcher, name == "shaped" ? 5.2 : 4.3, () => Shot(install, name == "shaped" ? "2-shaped-hold" : "4-sendit-sent"));
         model.ProbeFixture(items, id, TimeSpan.FromMilliseconds(900), () =>
         {
             model.PropertyChanged -= OnChange;
@@ -78,10 +81,23 @@ internal static class AskFixtures
         store.EventReceived += (type, _) => { if (type.StartsWith("Dictation", StringComparison.Ordinal)) step++; };
     }
 
-    private static void Suggest(Store store, AskBarInstall install)
+    private static async void Shot(AskBarInstall install, string name)
+    {
+        var path = AskFlags.Png(name);
+        bool ok = await install.Bar.CapturePng(path);
+        AskLog.Write($"ask-fixture shot {name}: {(ok ? path : "failed")} field=\"{install.Model.FieldText}\" status=\"{install.Model.Status ?? ""}\"");
+    }
+
+    private static void Suggest(Store store, AskBarInstall install, DispatcherQueue dispatcher)
     {
         store.HandleEvent(System.Text.Encoding.UTF8.GetBytes(Suggestion));
         var card = install.Suggestions;
+        After(dispatcher, 0.8, async () =>
+        {
+            var path = AskFlags.Png("5-suggestion");
+            bool ok = card is not null && await card.CapturePng(path);
+            AskLog.Write($"ask-fixture shot 5-suggestion: {(ok ? path : "failed")}");
+        });
         AskLog.Write($"ask-fixture suggestion: card shown={(card?.IsShown == true ? "true" : "false")} current={card?.Showing?.Id ?? "none"} backdrop={card?.BackdropText ?? "-"} text=\"{(card?.Showing is { } c ? SuggestionCopy.Sentence(c) + " " + SuggestionCopy.Detail(c) : "")}\"");
     }
 

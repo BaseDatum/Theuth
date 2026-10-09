@@ -25,6 +25,12 @@ internal static class AskFlags
     public static bool Replay { get; } = Args.Contains("--ask-replay");
     public static string? Fixture { get; } = Value("--ask-fixture");
 
+    /// <summary>153 W153B: with <c>--settings dictation</c>, render the Settings › Dictation page to <c>%TEMP%\153-w153b-settings-dictation.png</c> once it loaded.</summary>
+    public static bool DictationShot { get; } = Args.Contains("--dictation-shot");
+
+    /// <summary>Where the 153 probes put their PNGs (<c>w153c-gate.ps1 pngs</c> / <c>b64</c> read them there).</summary>
+    public static string Png(string name) => Path.Combine(Path.GetTempPath(), $"153-w153b-{name}.png");
+
     /// <summary>A probe run: the hotkey and the microphone are inert (Swift <c>AskFlags.automated</c>).</summary>
     public static bool Automated => Probe is not null || MicProbe is not null || Replay;
 

@@ -148,6 +148,24 @@ internal sealed partial class SettingsWindow
         voice.Click += (_, _) => _ = Links.Open(new Uri("theuth://settings/voice"));
         page.Children.Add(voice);
         _ = LoadHistory(history, Current, Say);
+        if (AskBar.AskFlags.DictationShot) _ = ShotAfterLoad(page, Current);
+    }
+
+    /// <summary><c>--dictation-shot</c>: the page rendered to a PNG once the engine's answers had time to land (RenderTargetBitmap).</summary>
+    private async Task ShotAfterLoad(StackPanel page, Func<bool> current)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(4));
+        if (!current()) return;
+        var path = AskBar.AskFlags.Png("6-settings-dictation");
+        try
+        {
+            await XamlPng.Write(page, path);
+            Log.Write($"settings: dictation page captured to {path}");
+        }
+        catch (Exception e)
+        {
+            Log.Write($"settings: dictation page capture failed: {e.GetType().Name}: {e.Message}");
+        }
     }
 
     // MARK: loaders and actions (UI thread; every answer checks the page is still the one that asked)

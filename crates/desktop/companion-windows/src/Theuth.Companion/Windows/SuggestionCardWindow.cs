@@ -261,4 +261,20 @@ internal sealed partial class SuggestionCardWindow : ToolWindow
     }
 
     public string BackdropText => material is null or "none" ? "solid" : material;
+
+    /// <summary>153 probe evidence: the card's content rendered to a PNG (RenderTargetBitmap).</summary>
+    public async Task<bool> CapturePng(string path)
+    {
+        if (current is null) return false;
+        try
+        {
+            await XamlPng.Write(host, path);
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.Write($"suggestion card: capture {path} failed: {e.GetType().Name}: {e.Message}");
+            return false;
+        }
+    }
 }
