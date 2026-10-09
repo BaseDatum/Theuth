@@ -340,6 +340,28 @@ pub async fn write_job(
     Ok(())
 }
 
+/// Close every `jobs` row still running (`finished_ms IS NULL`) whose id is
+/// not in `live` as `interrupted` (§6.7: a previous process died with it).
+/// Returns the rows closed.
+pub async fn interrupt_running_jobs(pool: &SqlitePool, live: &[String]) -> anyhow::Result<u64> {
+    let open: Vec<String> = sqlx::query_scalar("SELECT id FROM jobs WHERE finished_ms IS NULL")
+        .fetch_all(pool)
+        .await?;
+    let mut n = 0;
+    for id in open.iter().filter(|id| !live.contains(id)) {
+        n += sqlx::query(
+            "UPDATE jobs SET finished_ms = ?, stage = 'interrupted', \
+             error = 'interrupted: the engine stopped while generating' WHERE id = ?",
+        )
+        .bind(now_ms())
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    }
+    Ok(n)
+}
+
 /// One stored perspective the resume logic looks at.
 #[derive(Clone, Debug)]
 pub struct StoredPerspective {

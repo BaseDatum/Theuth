@@ -29,6 +29,8 @@ struct Script {
     delay: Option<Duration>,
     /// Hold calls of this stage this long (cancel test).
     stall: Option<(&'static str, Duration)>,
+    /// The session the liveness probe refuses (R2-5).
+    dead_session: Option<SessionId>,
 }
 
 static SCRIPT: LazyLock<Mutex<Script>> = LazyLock::new(Mutex::default);
@@ -42,6 +44,16 @@ fn script() -> std::sync::MutexGuard<'static, Script> {
 }
 
 fn install() {
+    install_side_probe(Arc::new(|session: SessionId| {
+        let dead = script().dead_session == Some(session);
+        Box::pin(async move {
+            if dead {
+                Err(format!("no live session {session}"))
+            } else {
+                Ok(())
+            }
+        })
+    }));
     install_side_caller(Arc::new(|call: SideCall| {
         Box::pin(async move {
             let mut user: Value = serde_json::from_str(&call.user).unwrap_or(Value::Null);
@@ -181,25 +193,75 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
+/// Every `CodeindexEvent` the bus delivered.
+type Seen = Arc<Mutex<Vec<CodeindexEvent>>>;
+
+#[derive(kameo::Actor)]
+struct Sink(Seen);
+
+impl kameo::message::Message<CodeindexEvent> for Sink {
+    type Reply = ();
+    async fn handle(&mut self, ev: CodeindexEvent, _: &mut kameo::message::Context<Self, ()>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(ev);
+    }
+}
+
 struct Scratch {
-    _data: TempDir,
+    data: TempDir,
     _repo: TempDir,
     root: PathBuf,
     ix: Arc<Codeindex>,
     ri: Arc<RootIndex>,
     pool: SqlitePool,
+    seen: Seen,
+    _sink: kameo::actor::ActorRef<Sink>,
 }
 
+impl Scratch {
+    /// The `CodeMapProgress` events so far as `(stage, calls, cost_nanos, error)`.
+    fn progress(&self) -> Vec<(String, u32, u64, Option<String>)> {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(|e| match e {
+                CodeindexEvent::CodeMapProgress {
+                    stage,
+                    calls,
+                    cost_nanos,
+                    error,
+                    ..
+                } => Some((stage.clone(), *calls, *cost_nanos, error.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// The rust fixture, indexed into a scratch data dir.
 async fn scratch() -> Scratch {
+    scratch_with(|repo| {
+        copy_dir(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust"),
+            repo,
+        );
+    })
+    .await
+}
+
+/// A repo `fill` writes, indexed into a scratch data dir, with the bus events
+/// captured.
+async fn scratch_with(fill: impl FnOnce(&Path)) -> Scratch {
+    use kameo::actor::Spawn;
     install();
     let data = TempDir(std::env::temp_dir().join(format!("codemap-gen-{}", new_id())));
     let repo = TempDir(std::env::temp_dir().join(format!("codemap-gen-repo-{}", new_id())));
     std::fs::create_dir_all(&data.0).unwrap();
-    copy_dir(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust"),
-        &repo.0,
-    );
+    fill(&repo.0);
     let rt = Runtime::new(figment::Figment::new(), data.0.clone());
+    let seen: Seen = Arc::default();
+    let sink = Sink::spawn(Sink(seen.clone()));
+    rt.subscribe::<Sink, CodeindexEvent>(&sink).await;
     let ix = Arc::new(
         Codeindex::new(crate::CodeindexConfig::default(), &data.0)
             .unwrap()
@@ -211,13 +273,61 @@ async fn scratch() -> Scratch {
     assert!(r.reparsed > 0, "{r:?}");
     let pool = ix.map_pool(&ri).await.unwrap();
     Scratch {
-        _data: data,
+        data,
         _repo: repo,
         root,
         ix,
         ri,
         pool,
+        seen,
+        _sink: sink,
     }
+}
+
+/// An omm-shaped repo: a FILE unit at the top level beside `src/` (the live
+/// `tsup.config.ts` crash) and a scripts folder.
+fn omm_shaped(repo: &Path) {
+    let write = |rel: &str, body: &str| {
+        let p = repo.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    write(
+        "package.json",
+        "{ \"name\": \"omm\", \"version\": \"1.0.0\" }\n",
+    );
+    write(
+        "tsup.config.ts",
+        "export const config = { entry: ['src/index.ts'] };\n",
+    );
+    write(
+        "src/index.ts",
+        "import { run } from './cli';\nimport { store } from './lib/store';\nexport function main() { run(store); }\n",
+    );
+    write(
+        "src/cli.ts",
+        "import { Store } from './lib/store';\nexport function run(s: Store) { return s.size(); }\n",
+    );
+    write(
+        "src/lib/store.ts",
+        "export class Store { size() { return 0; } }\nexport const store = new Store();\n",
+    );
+    write(
+        "src/lib/meta.ts",
+        "import { store } from './store';\nexport function meta() { return store.size(); }\n",
+    );
+    write(
+        "scripts/sync-version.js",
+        "const fs = require('fs');\nmodule.exports = function sync() { return fs.existsSync('package.json'); };\n",
+    );
+    write(
+        "scripts/check.js",
+        "const sync = require('./sync-version');\nmodule.exports = () => sync();\n",
+    );
+    write(
+        "scripts/release.js",
+        "const check = require('./check');\nmodule.exports = () => check();\n",
+    );
 }
 
 async fn wait_idle(root: &Path) {
@@ -666,6 +776,342 @@ async fn cancel_stops_and_keeps_written_elements() {
     );
 }
 
+// --- F1-R2: the live proof's findings --------------------------------------------
+
+/// R2-1: a single-member group over a top-level FILE is a `file` leaf; the
+/// omm-shaped repo generates to `done` (the live run panicked asking the file
+/// for children). R2-7: the job's cost is the sum of the replies' and the
+/// final `CodeMapProgress` carries it.
+#[tokio::test]
+async fn file_unit_group_is_a_leaf_and_omm_shape_generates() {
+    let _serial = SERIAL.lock().await;
+    let s = scratch_with(omm_shaped).await;
+    *script() = Script::default();
+    let facts = Facts::load(&s.ri, &s.pool).await.unwrap();
+    assert!(
+        facts
+            .top
+            .iter()
+            .any(|c| c.path == "tsup.config.ts" && c.kind == "file"),
+        "{:?}",
+        facts
+            .top
+            .iter()
+            .map(|c| (&c.path, c.kind))
+            .collect::<Vec<_>>()
+    );
+    let job = generate(
+        &s.ix,
+        Generate {
+            root: s.root.clone(),
+            session: SessionId::new(),
+            element: None,
+        },
+    )
+    .await
+    .unwrap();
+    wait_idle(&s.root).await;
+    let (stage, _, calls, log) = job_row(&s.pool, &job.id).await;
+    assert_eq!(stage, "done", "{log:?}");
+    let (kind, leaf, under): (String, i64, i64) = sqlx::query_as(
+        "SELECT kind, leaf, (SELECT count(*) FROM elements WHERE parent = e.id) FROM elements e \
+         WHERE id = 'overall-architecture/unit:tsup.config.ts'",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!((kind.as_str(), leaf, under), ("file", 1, 0));
+    let (cost,): (i64,) = sqlx::query_as("SELECT cost_nanos FROM jobs WHERE id = ?")
+        .bind(&job.id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    let expected = calls * i64::try_from(FAKE_CALL_COST).unwrap();
+    assert_eq!(cost, expected);
+    let progress = s.progress();
+    let last = progress.last().expect("a final CodeMapProgress");
+    assert_eq!(
+        (last.0.as_str(), last.1, last.2),
+        (
+            "done",
+            u32::try_from(calls).unwrap(),
+            u64::try_from(expected).unwrap()
+        ),
+        "{progress:?}"
+    );
+}
+
+/// R2-2: a panic inside the pipeline ends the job `failed` with the message
+/// and publishes the final progress; the engine keeps serving.
+#[tokio::test]
+async fn panic_in_the_pipeline_fails_the_job() {
+    let _serial = SERIAL.lock().await;
+    let s = scratch().await;
+    {
+        let mut sc = script();
+        *sc = Script::default();
+        sc.handlers
+            .entry("select")
+            .or_default()
+            .push_back(Box::new(|_| panic!("fake model exploded")));
+    }
+    let job = generate(
+        &s.ix,
+        Generate {
+            root: s.root.clone(),
+            session: SessionId::new(),
+            element: None,
+        },
+    )
+    .await
+    .unwrap();
+    wait_idle(&s.root).await;
+    let (stage, _, _, log) = job_row(&s.pool, &job.id).await;
+    assert_eq!(stage, "failed");
+    assert!(
+        log.as_deref()
+            .unwrap_or_default()
+            .contains("generator panicked: fake model exploded"),
+        "{log:?}"
+    );
+    let (finished,): (Option<i64>,) = sqlx::query_as("SELECT finished_ms FROM jobs WHERE id = ?")
+        .bind(&job.id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert!(finished.is_some());
+    let last = s.progress().pop().expect("a final CodeMapProgress");
+    assert_eq!(last.0, "failed");
+    assert!(
+        last.3.as_deref().unwrap_or_default().contains("panicked"),
+        "{last:?}"
+    );
+    // A later generate starts a fresh job.
+    *script() = Script::default();
+    let again = generate(
+        &s.ix,
+        Generate {
+            root: s.root.clone(),
+            session: SessionId::new(),
+            element: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_ne!(again.id, job.id);
+    wait_idle(&s.root).await;
+    assert_eq!(job_row(&s.pool, &again.id).await.0, "done");
+}
+
+/// R2-3: the exact replies the live model returned (anthropic/claude-sonnet-4-5,
+/// `/tmp/147/proof/repro-topB.out`): a ```json fence and top-level prose
+/// instead of `fields`, and a node carrying a `description`. Both parse now;
+/// the validator still owns ids, members, labels and prose length.
+#[test]
+fn live_rejected_stage_b_replies_parse() {
+    let fenced = "```json\n{\n  \"description\": \"The codebase comprises two top-level directories: a main source tree containing application logic, tests, and 410 exported symbols across 55 files, and a scripts directory with build or automation utilities. The source tree dominates at 93% of the codebase and references the scripts folder for tooling support. No units are bundled; both directories are accounted for in the architecture.\",\n  \"nodes\": [\n    {\n      \"id\": \"g1\",\n      \"name\": \"Application Source\",\n      \"members\": [\"n1\"]\n    },\n    {\n      \"id\": \"g2\",\n      \"name\": \"Build Scripts\",\n      \"members\": [\"n2\"]\n    }\n  ],\n  \"mermaid\": \"flowchart LR\\n  g1 -->|\\\"invokes tooling\\\"| g2\",\n  \"edges\": [\n    {\n      \"from\": \"g1\",\n      \"to\": \"g2\",\n      \"evidence\": [\"e1\"]\n    }\n  ]\n}\n```";
+    let r: TopReply = parse_reply(fenced).unwrap();
+    assert!(
+        r.fields
+            .description
+            .starts_with("The codebase comprises two")
+    );
+    assert_eq!(r.nodes.len(), 2);
+    assert_eq!(r.edges[0].evidence, ["e1"]);
+
+    let node_prose = r#"{"fields":{"description":"Two groups. The source and the scripts."},
+        "nodes":[{"id":"g1","name":"Source","members":["n1"],"description":"the app"}],
+        "mermaid":"flowchart LR\n  g1","edges":[],"notes":"ignored"}"#;
+    let r: TopReply = parse_reply(node_prose).unwrap();
+    assert_eq!(r.nodes[0].name, "Source");
+
+    // No prose anywhere: parses with an empty description — the validator's
+    // `/fields/description` line, not a serde `missing field`, drives repair.
+    let bare = r#"{"nodes":[{"id":"g1","name":"Source","members":["n1"]}],"mermaid":"flowchart LR\n  g1"}"#;
+    let r: TopReply = parse_reply(bare).unwrap();
+    assert!(r.fields.description.is_empty());
+    assert!(check_description("/fields/description", &r.fields.description).is_some());
+
+    // Top-level prose on a describe element folds too.
+    let described = r#"{"elements":[{"id":"x","name":"X","description":"Prose here. More prose.","context":"why"}]}"#;
+    let r: DescribeReply = parse_reply(described).unwrap();
+    assert_eq!(r.elements[0].fields.context.as_deref(), Some("why"));
+}
+
+/// R2-3 end to end + R2-6: a stage-B reply in the live shape is accepted
+/// without a repair round; a reply rejected twice leaves its text in
+/// `jobs.error_log`, and the repair message re-sent the facts.
+#[tokio::test]
+async fn live_shape_passes_and_rejected_text_is_logged() {
+    let _serial = SERIAL.lock().await;
+    let s = scratch().await;
+    {
+        let mut sc = script();
+        *sc = Script::default();
+        sc.handlers
+            .entry("top")
+            .or_default()
+            .push_back(Box::new(|u| {
+                let mut r = top_reply(u, "uses it", None);
+                let fields = r.as_object_mut().unwrap().remove("fields").unwrap();
+                r["description"] = fields["description"].clone();
+                Ok(format!("```json\n{r}\n```"))
+            }));
+        // Stage C: both attempts leave every description empty → invalid twice.
+        for _ in 0..2 {
+            sc.handlers
+                .entry("describe")
+                .or_default()
+                .push_back(Box::new(|u| {
+                    let mut v: Value =
+                        serde_json::from_str(&default_reply("describe", u)?).unwrap();
+                    for e in v["elements"].as_array_mut().into_iter().flatten() {
+                        e["fields"]["description"] = json!("");
+                    }
+                    Ok(format!("REJECT-ME {v}"))
+                }));
+        }
+    }
+    let job = generate(
+        &s.ix,
+        Generate {
+            root: s.root.clone(),
+            session: SessionId::new(),
+            element: None,
+        },
+    )
+    .await
+    .unwrap();
+    wait_idle(&s.root).await;
+    let (stage, _, _, log) = job_row(&s.pool, &job.id).await;
+    assert_eq!(stage, "done", "{log:?}");
+    let (repaired,): (i64,) =
+        sqlx::query_as("SELECT repaired FROM elements WHERE id = 'overall-architecture'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(repaired, 0, "the live shape needs no repair round");
+    let log = log.unwrap_or_default();
+    assert!(log.contains("rejected reply (attempt 1"), "{log}");
+    assert!(log.contains("rejected reply (attempt 2"), "{log}");
+    assert!(log.contains("<reply>\nREJECT-ME"), "{log}");
+    let repair = {
+        let seen = script();
+        seen.calls
+            .iter()
+            .find(|c| c.user.contains("<errors>"))
+            .map(|c| c.user.clone())
+            .expect("a repair message was sent")
+    };
+    assert!(repair.contains("<request>\n{"), "{repair}");
+    assert!(repair.contains("\"stage\": \"describe\""), "{repair}");
+}
+
+/// R2-4: a `jobs` row a dead process left running is `interrupted` when the
+/// map opens in a new process; the next generate starts a fresh job.
+#[tokio::test]
+async fn orphan_job_is_interrupted_on_open() {
+    let _serial = SERIAL.lock().await;
+    let s = scratch().await;
+    *script() = Script::default();
+    let orphan = MapJob {
+        id: new_id(),
+        session: SessionId::new(),
+        started_ms: 1,
+        stage: "describe".to_owned(),
+        done: 3,
+        total: 9,
+        calls: 4,
+        cost_nanos: 7,
+        currency: "USD".to_owned(),
+        error: None,
+    };
+    w::write_job(&s.pool, &orphan, false, None).await.unwrap();
+    assert!(
+        super::super::store::running_job(&s.pool)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // A new process: a fresh `Codeindex` over the same data dir.
+    let ix2 = Arc::new(Codeindex::new(crate::CodeindexConfig::default(), &s.data.0).unwrap());
+    let ri2 = ix2.open_root(&s.root).await.unwrap();
+    let pool2 = ix2.map_pool(&ri2).await.unwrap();
+    assert!(
+        super::super::store::running_job(&pool2)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (stage, error): (String, Option<String>) =
+        sqlx::query_as("SELECT stage, error FROM jobs WHERE id = ?")
+            .bind(&orphan.id)
+            .fetch_one(&pool2)
+            .await
+            .unwrap();
+    assert_eq!(stage, "interrupted");
+    assert!(error.unwrap_or_default().starts_with("interrupted"));
+    let ov = super::super::skeleton::overview(
+        &ix2,
+        super::super::Overview {
+            root: s.root.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(ov.meta.job.is_none());
+    assert_ne!(ov.meta.state, super::super::MapState::Generating);
+    let job = generate(
+        &ix2,
+        Generate {
+            root: s.root.clone(),
+            session: SessionId::new(),
+            element: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_ne!(job.id, orphan.id);
+    wait_idle(&s.root).await;
+    assert_eq!(job_row(&pool2, &job.id).await.0, "done");
+}
+
+/// R2-5: a session the supervisor would refuse is refused before any job row
+/// is written.
+#[tokio::test]
+async fn dead_session_is_refused_up_front() {
+    let _serial = SERIAL.lock().await;
+    let s = scratch().await;
+    let dead = SessionId::new();
+    {
+        let mut sc = script();
+        *sc = Script::default();
+        sc.dead_session = Some(dead);
+    }
+    let err = generate(
+        &s.ix,
+        Generate {
+            root: s.root.clone(),
+            session: dead,
+            element: None,
+        },
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        format!("generation needs an open native session: no live session {dead}")
+    );
+    assert!(!jobs().contains_key(&s.root));
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM jobs")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+    script().dead_session = None;
+}
+
 // --- fixture-backed validation tests ------------------------------------------------
 
 /// A stage-B reply over one group per unit; `mermaid` is the edge lines only,
@@ -787,7 +1233,7 @@ async fn labels_with_counts_are_rejected() {
     assert_eq!(err.len(), 1, "{err:#?}");
     assert_eq!(err[0].expected, COUNTS_FROM_EVIDENCE);
     assert_eq!(err[0].path, "/mermaid/edges/0");
-    let msg = validate::repair_message("{…}", &err).unwrap();
+    let msg = validate::repair_message("{}", "{…}", &err).unwrap();
     assert!(msg.contains("/mermaid/edges/0 · label \"mesh · 4 deps\" carries a number · counts are rendered from evidence"));
 
     // A label override in `edges` is checked the same way; a clean one passes.

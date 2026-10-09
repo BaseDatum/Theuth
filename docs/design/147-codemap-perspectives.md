@@ -1059,6 +1059,21 @@ after it.
   `cost_nanos` into `MapJob` (every `CodeMapProgress` and the `jobs` row) and into each element's `MapProvenance`, and
   uses `request_id` as the provenance call id when present (own uuid otherwise). The panel's cost chip (§17 item 2) now
   moves.
+- **Live-proof follow-ups (F1-R2).** (1) Root cause of the panic beyond the slice: `build_tree` typed a single-member
+  group `unit` even when the member is a file; it now takes the member's own kind, so `unit:tsup.config.ts` is a `file` leaf
+  nobody asks for children. (2) The pipeline runs on its own task under the job task: a panic ends the job `failed`
+  ("generator panicked: …") with the final `CodeMapProgress`; aborting the job aborts the pipeline. (3) Stage B with
+  claude-sonnet-4-5 failed validation 5/5 live: a ```json fence, prose at the top level instead of `fields`, a
+  `description` on a node. Reply structs no longer `deny_unknown_fields` (§6.6 rule 1 amended — ids, members, evidence,
+  labels and prose length stay validator-checked); `parse_reply` folds stray top-level prose keys into `fields` (also per
+  element of a describe reply); the system prompt states where prose goes and stage B's message carries an exact
+  `example`; the repair message resends the whole request (facts + schema + example) with the previous reply and the
+  errors. (4) A `jobs` row a dead process left running is closed `interrupted` when the root's map pool opens in a new
+  process (rows of jobs alive in-process are kept); the next `codemap_generate` resumes from the stored perspectives.
+  (5) `codemap_generate` asks the agent `runtime::SideCallable { session }` first (installed as a `SideProbe` beside the
+  `SideCaller`) and fails with the supervisor's text before writing a job row. (6) Every rejected reply is kept in
+  `jobs.error_log` (`rejected reply (attempt N, call <id>): <errors>` + the text, ≤ 4 096 chars). (7) Job and event cost
+  totals are the sum of the replies' `cost_nanos`, i.e. what the agent settled in `model_calls`.
 - **Known pre-existing reds**: `crates/codeindex/tests/index.rs` `map_and_symbol` and `impact_on_this_repository` (tool
   assertions against this repository's live index; unrelated to 147).
 - **Still open from §17**: human edits to prose (1), export overwrite rules (3), description model tier (5), mark semantics

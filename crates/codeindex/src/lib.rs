@@ -248,13 +248,18 @@ fn panic_message(msg: &str, join: tokio::task::JoinError) -> String {
     if !join.is_panic() {
         return format!("{msg}: handler task cancelled");
     }
-    let p = join.into_panic();
-    let text = p
-        .downcast_ref::<String>()
+    format!(
+        "{msg}: handler panicked: {}",
+        panic_text(&*join.into_panic())
+    )
+}
+
+/// The message of a panic payload (`panic!("…")` is a `String` or a `&str`).
+pub(crate) fn panic_text(p: &(dyn std::any::Any + Send)) -> &str {
+    p.downcast_ref::<String>()
         .map(String::as_str)
         .or_else(|| p.downcast_ref::<&str>().copied())
-        .unwrap_or("non-string panic payload");
-    format!("{msg}: handler panicked: {text}")
+        .unwrap_or("non-string panic payload")
 }
 lens_handler! {
     Here => HereLens, lens::here;

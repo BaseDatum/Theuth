@@ -98,8 +98,9 @@ use crate::{
     SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
     SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
     SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel,
-    ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS,
-    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
+    ShowPrompt, SideCall, SideCallable, SideReply, SkillBody, SkillMeta, Steer, SyncSkills,
+    TALK_COALESCE_MS, TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw,
+    effort_of,
 };
 use crate::{
     AdvisorConfig, DurableStore, ObservedState, SessionCostQuery, SessionKind, SpendReportQuery,
@@ -3928,11 +3929,7 @@ impl Message<SideCall> for Agents {
 
     async fn handle(&mut self, m: SideCall, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
-        let actor = match self.sessions.get(&m.session).map(|l| &l.actor) {
-            Some(LiveActor::Native(a)) => Ok(a.clone()),
-            Some(LiveActor::Acp(_)) => Err("session runs on an external harness".to_owned()),
-            None => Err(format!("no live session {}", m.session)),
-        };
+        let actor = self.side_target(m.session);
         tokio::spawn(async move {
             let out = match actor {
                 Ok(a) => a.ask(m).await.map_err(|e| e.to_string()),
@@ -3943,6 +3940,26 @@ impl Message<SideCall> for Agents {
             }
         });
         reply
+    }
+}
+
+impl Message<SideCallable> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: SideCallable, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.side_target(m.session).map(drop)
+    }
+}
+
+impl Agents {
+    /// The native session actor a [`SideCall`] for `session` runs on, or the
+    /// text it fails with (an ACP session has no model of ours).
+    fn side_target(&self, session: SessionId) -> Result<ActorRef<Session>, String> {
+        match self.sessions.get(&session).map(|l| &l.actor) {
+            Some(LiveActor::Native(a)) => Ok(a.clone()),
+            Some(LiveActor::Acp(_)) => Err("session runs on an external harness".to_owned()),
+            None => Err(format!("no live session {session}")),
+        }
     }
 }
 

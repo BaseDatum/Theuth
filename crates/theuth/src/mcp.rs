@@ -259,7 +259,11 @@ mod tests {
             "ponytail: lazy"
         );
         assert_eq!(
-            text(call("load_skill", json!({"name": "ponytail"})).await.unwrap()),
+            text(
+                call("load_skill", json!({"name": "ponytail"}))
+                    .await
+                    .unwrap()
+            ),
             "# ponytail\n\nfiles:\n- a.md\n"
         );
         assert_eq!(
