@@ -1,24 +1,45 @@
 //! Outbound clip container (45 §0.4): MP3, mono, 48 kbit/s via LAME — the one
 //! format Signal (Android, iOS, Desktop) and Slack's inline player all play.
+//! 144 §10: a clip may be a dialogue — one synthesis per speaker turn, each in
+//! its own voice, the PCM joined with [`GAP_MS`] of silence, encoded once.
 
 use mp3lame_encoder::{Bitrate, Builder, FlushNoGap, MonoPcm, Quality, max_required_buffer_size};
 
 use crate::Clip;
 use crate::speak::{SAMPLE_RATE, Synthesizer};
 
-/// Synthesize `spoken` (already sentences) to one [`Clip`]. Blocking; no
-/// cancellation — a block is short and nobody is listening yet.
-pub(crate) fn render(synth: &dyn Synthesizer, voice: &str, spoken: &str) -> anyhow::Result<Clip> {
-    let stream = synth.stream(spoken, voice)?;
-    let mut pcm: Vec<f32> = Vec::new();
-    for chunk in stream {
-        pcm.extend_from_slice(&chunk?);
-    }
+/// Silence between two speaker turns of a dialogue.
+pub const GAP_MS: u32 = 350;
+
+/// Synthesize `turns` (`(voice, spoken)`, already sentences) to one [`Clip`]:
+/// every turn in its voice, [`GAP_MS`] of silence between turns, one MP3.
+/// Blocking; no cancellation — a block is short and nobody is listening yet.
+pub(crate) fn render(synth: &dyn Synthesizer, turns: &[(String, String)]) -> anyhow::Result<Clip> {
+    let pcm = dialogue(synth, turns)?;
     Ok(Clip {
         bytes: mp3(&pcm, SAMPLE_RATE)?,
         mime: "audio/mpeg",
         duration_ms: pcm.len() as u64 * 1000 / SAMPLE_RATE as u64,
     })
+}
+
+/// The joined PCM of `turns`: each turn's samples in order, [`GAP_MS`] of
+/// zeros between consecutive turns (none before the first or after the last).
+pub(crate) fn dialogue(
+    synth: &dyn Synthesizer,
+    turns: &[(String, String)],
+) -> anyhow::Result<Vec<f32>> {
+    let gap = (SAMPLE_RATE * GAP_MS / 1000) as usize;
+    let mut pcm: Vec<f32> = Vec::new();
+    for (i, (voice, spoken)) in turns.iter().enumerate() {
+        if i > 0 {
+            pcm.resize(pcm.len() + gap, 0.0);
+        }
+        for chunk in synth.stream(spoken, voice)? {
+            pcm.extend_from_slice(&chunk?);
+        }
+    }
+    Ok(pcm)
 }
 
 /// Encode mono f32 PCM at `rate` Hz.
@@ -49,6 +70,11 @@ pub(crate) fn mp3(pcm: &[f32], rate: u32) -> anyhow::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use parking_lot::Mutex;
+
+    use super::*;
+    use crate::speak::Pcm;
+
     #[test]
     fn encodes_a_second_of_tone() {
         let pcm: Vec<f32> = (0..24_000)
@@ -58,5 +84,40 @@ mod tests {
         // 48 kbit/s ≈ 6 KB/s; allow for headers and the encoder's discretion.
         assert!((4_000..9_000).contains(&bytes.len()), "{}", bytes.len());
         assert_eq!(bytes[0], 0xFF, "no MP3 sync word");
+    }
+
+    /// One frame of `1.0` per call; records the voice of every call.
+    struct Stub(Mutex<Vec<String>>);
+
+    impl Synthesizer for Stub {
+        fn stream(&self, _spoken: &str, voice: &str) -> anyhow::Result<Pcm> {
+            self.0.lock().push(voice.to_owned());
+            Ok(Box::new(std::iter::once(Ok(vec![1.0; 1920]))))
+        }
+    }
+
+    #[test]
+    fn dialogue_switches_voice_per_turn_and_joins_with_350_ms_silences() {
+        let stub = Stub(Mutex::new(Vec::new()));
+        let turns = [
+            ("alba".to_owned(), "Hello.".to_owned()),
+            ("peter_yearsley".to_owned(), "Hi.".to_owned()),
+            ("alba".to_owned(), "Bye.".to_owned()),
+        ];
+        let pcm = dialogue(&stub, &turns).unwrap();
+        let gap = 24_000 * 350 / 1000;
+        assert_eq!(pcm.len(), 3 * 1920 + 2 * gap);
+        // Speech, silence, speech, silence, speech — in that order.
+        assert!(pcm[..1920].iter().all(|s| *s == 1.0));
+        assert!(pcm[1920..1920 + gap].iter().all(|s| *s == 0.0));
+        assert!(pcm[1920 + gap..2 * 1920 + gap].iter().all(|s| *s == 1.0));
+        assert!(pcm[pcm.len() - 1920..].iter().all(|s| *s == 1.0));
+        assert_eq!(
+            *stub.0.lock(),
+            ["alba", "peter_yearsley", "alba"],
+            "one synthesis per turn, in the turn's voice"
+        );
+        // One turn: no silence at all.
+        assert_eq!(dialogue(&stub, &turns[..1]).unwrap().len(), 1920);
     }
 }

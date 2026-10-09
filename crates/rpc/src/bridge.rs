@@ -6,6 +6,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use a2a::A2aChanged;
+use agent::ask::NotebookAsk;
 use agent::{
     AgentEvent, CommunicationChanged, EndlessProgress, LoginFinished, PeerDelivered,
     PeerMessageChanged,
@@ -122,6 +123,7 @@ forward!(
     KnowledgeChanged,
     DocumentChanged,
     SourceEvent,
+    NotebookAsk,
     BrowserEvent,
     LinkEvent,
     NodeEvent,
@@ -189,6 +191,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, KnowledgeChanged>(&actor).await;
     rt.subscribe::<Bridge, DocumentChanged>(&actor).await;
     rt.subscribe::<Bridge, SourceEvent>(&actor).await;
+    rt.subscribe::<Bridge, NotebookAsk>(&actor).await;
     rt.subscribe::<Bridge, BrowserEvent>(&actor).await;
     rt.subscribe::<Bridge, LinkEvent>(&actor).await;
     rt.subscribe::<Bridge, NodeEvent>(&actor).await;

@@ -399,7 +399,7 @@ fn twelve_words(s: &str) -> String {
         .join(" ")
 }
 
-/// One registry call as `session`; a tool error is this function's error.
+/// One registry call as `session`; a tool error is this function's error. Shared with `ask`/`overviews` (E2).
 pub(crate) async fn invoke(
     session: SessionId,
     name: &str,

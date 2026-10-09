@@ -322,6 +322,7 @@ dependencies = [
  "ts-rs",
  "url",
  "uuid",
+ "voice",
  "web",
  "wiremock",
 ]
