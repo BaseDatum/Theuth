@@ -642,7 +642,7 @@ mod windows_uia {
             && name(el).is_none()
             // SAFETY: live element.
             && unsafe { el.CurrentClassName() }
-                .is_ok_and(|c| c.to_string() == CHROMIUM_CONTENT_CLASS)
+                .is_ok_and(|c| CHROMIUM_CONTENT_CLASS == c)
     }
 
     fn control_type(el: &IUIAutomationElement) -> i32 {
