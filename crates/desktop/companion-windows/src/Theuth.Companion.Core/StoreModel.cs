@@ -430,6 +430,7 @@ public partial class StoreModel : INotifyPropertyChanged
     /// <summary>E5: re-read, then send; the engine's <c>false</c> is "already answered elsewhere", never retried.</summary>
     private async Task Commit(Held h)
     {
+        Committing?.Invoke(h); // 153 W153B (§6.1): the fields report dictation_correction for the text that is going out
         if (h.Action is CardAction.AskTheuth ask)
         {
             await CommitAsk(ask.Text);
@@ -746,7 +747,7 @@ public partial class StoreModel : INotifyPropertyChanged
         switch (w.Type)
         {
             case "DictationStarted": take = Ask.Dictation.Handle(new AskDictation.Event.Started(id)); break;
-            case "DictationText": take = Ask.Dictation.Handle(new AskDictation.Event.Text(id, w.Utterance ?? 0, w.Text ?? "", w.IsFinal ?? false)); break;
+            case "DictationText": take = Ask.Dictation.Handle(new AskDictation.Event.Text(id, w.Utterance ?? 0, w.DisplayText ?? "", w.IsFinal ?? false, w.Command?.IsSend == true)); break; // 153 W153B: shaped text + "send it"
             case "DictationLevel": take = Ask.Dictation.Handle(new AskDictation.Event.Level(id, w.Levels ?? new ValueList<float>())); break;
             case "DictationFinished":
                 take = Ask.Dictation.Handle(new AskDictation.Event.Finished(id, w.Reason?.Reason == "error" ? w.Reason.Message ?? "dictation failed" : null));

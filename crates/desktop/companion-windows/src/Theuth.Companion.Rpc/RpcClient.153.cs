@@ -48,7 +48,7 @@ public sealed partial class RpcClient
     // MARK: dictionary (api.rs:1639 dictionary_list · :1642 dictionary_put · :1645 dictionary_delete · :1648 dictionary_suggestion_answer)
 
     /// <summary><c>dictionary_list(scope)</c>: user + learned entries, optionally one scope.</summary>
-    public Task<ValueList<Entry>> DictionaryListAsync(EntryScope? scope = null) => CallAsync<ValueList<Entry>>("dictionary_list", scope);
+    public Task<ValueList<Entry>> DictionaryListAsync(Scope? scope = null) => CallAsync<ValueList<Entry>>("dictionary_list", scope);
 
     /// <summary><c>dictionary_put(entry)</c> → the stored entry (upsert by canonical + scope; an empty id gets a uuid).</summary>
     public Task<Entry> DictionaryPutAsync(Entry entry) => CallAsync<Entry>("dictionary_put", entry);
@@ -70,7 +70,7 @@ public sealed partial class RpcClient
         CallRawAsync("set_input_devices", new object?[] { names.ToArray() });
 
     /// <summary><c>set_shape(surface, preset)</c>: persist <c>voice.shape.&lt;surface&gt;</c> (153 §4.5).</summary>
-    public Task SetShapeAsync(Surface surface, Preset preset) => CallRawAsync("set_shape", surface.Word(), preset.Word());
+    public Task SetShapeAsync(Surface surface, ShapePreset preset) => CallRawAsync("set_shape", surface.Word(), preset.Word());
 
     /// <summary><c>set_end_phrases(phrases)</c>: persist <c>voice.end_commands</c> (153 §7.2).</summary>
     public Task SetEndPhrasesAsync(EndPhrases phrases) => CallRawAsync("set_end_phrases", phrases);

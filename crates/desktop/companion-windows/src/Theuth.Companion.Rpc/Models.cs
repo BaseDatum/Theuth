@@ -643,8 +643,19 @@ public sealed record DictationEvent
     /// into <see cref="Shaped"/>), raw so a newer word never throws — <see cref="WireWords153.ParseAction"/> types them.</summary>
     public ValueList<string>? Actions { get; init; }
 
-    /// <summary>What a companion field shows for this piece: <see cref="Shaped"/> when the engine sent it (even empty), else <see cref="Text"/>.</summary>
-    [JsonIgnore] public string? DisplayText => Shaped ?? Text;
+    /// <summary>153 §8.2 (<c>DictationDevice</c> through the same wire, as Swift's <c>DictationWire</c>): the device now open; null when lost.</summary>
+    public string? Device { get; init; }
+
+    /// <summary>153 §8.2: <c>changed</c> · <c>lost</c> on a <c>DictationDevice</c> item; null otherwise or for an unknown word.</summary>
+    [JsonConverter(typeof(TolerantWordConverter<DeviceState>))]
+    public DeviceState? State { get; init; }
+
+    /// <summary>
+    /// What a companion field shows for this piece — the rule the Mac clients use (H3-B1): <see cref="Shaped"/> when non-empty, else
+    /// "" when an end command was on the piece ("send it" / "scratch that" alone shape to ""), else the raw <see cref="Text"/> (an
+    /// engine before 153 sends no <c>shaped</c>; an earlier utterance re-sent with empty text empties it).
+    /// </summary>
+    [JsonIgnore] public string? DisplayText => !string.IsNullOrEmpty(Shaped) ? Shaped : Command is not null ? "" : Text;
 
     public static DictationEvent Decode(ReadOnlySpan<byte> utf8) => TheuthJson.Deserialize<DictationEvent>(utf8);
 }

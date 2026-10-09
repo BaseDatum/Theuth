@@ -42,6 +42,9 @@ public sealed class Models153Tests
         var scratched = DictationEvent.Decode("""{"type":"DictationText","id":"d1","utterance":0,"text":"","final":true,"shaped":"","command":null,"actions":[]}"""u8);
         Assert.Equal("", scratched.DisplayText);
         Assert.Null(scratched.Command);
+        // H3-B1's rule: an empty shaped without a command falls back to the raw text.
+        var bare = DictationEvent.Decode("""{"type":"DictationText","id":"d1","utterance":3,"text":".","final":true,"shaped":"","command":null,"actions":[]}"""u8);
+        Assert.Equal(".", bare.DisplayText);
     }
 
     [Fact]
@@ -144,7 +147,7 @@ public sealed class Models153Tests
     public void WireWordsAreSpelledOut()
     {
         Assert.Equal(new[] { "composer", "tui", "companion", "phone", "any_app" }, Enum.GetValues<Surface>().Select(s => s.Word()).ToArray());
-        Assert.Equal(new[] { "full", "plain", "off" }, Enum.GetValues<Preset>().Select(p => p.Word()).ToArray());
+        Assert.Equal(new[] { "full", "plain", "off" }, Enum.GetValues<ShapePreset>().Select(p => p.Word()).ToArray());
         Assert.Equal(new[] { "add", "not_now", "never" }, Enum.GetValues<SuggestionAnswer>().Select(a => a.Word()).ToArray());
         // The shared converter agrees with the spelled-out words (DictationOpts.Surface goes through it).
         foreach (var s in Enum.GetValues<Surface>()) Assert.Equal($"\"{s.Word()}\"", TheuthJson.Serialize(s));
@@ -209,10 +212,10 @@ public sealed class Models153Tests
         var ok = TheuthJson.Deserialize<PolishReply>("""{"text":"Ship it tonight.","model":"openai/gpt-5.6-mini","ms":812,"refused":null}""");
         Assert.Equal(("Ship it tonight.", "openai/gpt-5.6-mini", 812u), (ok.Text, ok.Model, ok.Ms));
         var m = TheuthJson.Deserialize<ModelInfo>("""{"id":"openai/gpt-5.6-mini","name":"GPT-5.6 mini","provider":"openai","context":400000,"reasoning":true,"image":true,"efforts":["low"],"budget_min":null}""");
-        Assert.Equal(("openai/gpt-5.6-mini", "GPT-5.6 mini", "openai", 400000u), (m.Id, m.Name, m.Provider, m.Context));
+        Assert.Equal(("openai/gpt-5.6-mini", "GPT-5.6 mini", "openai"), (m.Id, m.Name, m.Provider));
     }
 
-    // MARK: dictionary round trip (Entry, EntryScope, EntryVariant)
+    // MARK: dictionary round trip (Entry, Scope, Variant)
 
     [Fact]
     public void EntriesRoundTripVerbatimIncludingUnknownWords()
@@ -221,18 +224,18 @@ public sealed class Models153Tests
         Assert.Equal(learned, TheuthJson.Serialize(TheuthJson.Deserialize<Entry>(learned)));
         const string future = """{"id":"e2","canonical":"k8s","kind":"acronym","spoken":["kates"],"variants":[],"scope":{"scope":"app","app":"Code.exe"},"source":"synced","tags":["keep_case"]}""";
         var f = TheuthJson.Deserialize<Entry>(future);
-        Assert.Equal(("acronym", "synced", "app", "Code.exe"), (f.Kind, f.Source, f.Scope.Scope, f.Scope.App));
+        Assert.Equal(("acronym", "synced", "app", "Code.exe"), (f.Kind, f.Source, f.Scope.Kind, f.Scope.App));
         Assert.Equal(future, TheuthJson.Serialize(f));
     }
 
     [Fact]
     public void ANewUserEntryWritesEveryField()
     {
-        var e = new Entry { Canonical = "GitHub", Spoken = ValueList.Of("git hub"), Variants = ValueList.Of(new EntryVariant { Heard = "get hub" }) };
+        var e = new Entry { Canonical = "GitHub", Spoken = ValueList.Of("git hub"), Variants = ValueList.Of(new Variant { Heard = "get hub" }) };
         Assert.Equal("""{"id":"","canonical":"GitHub","kind":"term","spoken":["git hub"],"variants":[{"heard":"get hub","metaphone":["",""],"seen":0,"last_ms":0}],"scope":{"scope":"global"},"source":"user","tags":[]}""",
             TheuthJson.Serialize(e));
-        Assert.Equal("""{"scope":"surface","surface":"any_app"}""", TheuthJson.Serialize(EntryScope.ForSurface(Surface.AnyApp)));
-        Assert.Equal("""{"scope":"app","app":"slack.exe"}""", TheuthJson.Serialize(EntryScope.ForApp("slack.exe")));
+        Assert.Equal("""{"scope":"surface","surface":"any_app"}""", TheuthJson.Serialize(Scope.ForSurface(Surface.AnyApp)));
+        Assert.Equal("""{"scope":"app","app":"slack.exe"}""", TheuthJson.Serialize(Scope.ForApp("slack.exe")));
     }
 
     [Fact]

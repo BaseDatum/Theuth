@@ -37,6 +37,25 @@ internal sealed class SettingsModel
     {
         this.store = store;
         Value = CompanionSettings.Load(store);
+        Dictation = DictationSettings.Load(store);
+    }
+
+    /// <summary>153 W153B: Settings › Dictation's companion-local values (own keys in the same store, the PointSettings pattern).</summary>
+    public DictationSettings Dictation { get; private set; }
+
+    /// <summary>Raised after <see cref="UpdateDictation"/> saved a change.</summary>
+    public event Action? DictationChanged;
+
+    /// <summary>Apply <paramref name="edit"/> to a copy of <see cref="Dictation"/>; when it changed anything, persist and notify.</summary>
+    public void UpdateDictation(Action<DictationSettings> edit)
+    {
+        var next = Dictation.Clone();
+        edit(next);
+        if (next.Equals(Dictation)) return;
+        Dictation = next;
+        try { next.Save(store); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log.Write($"settings: dictation save failed: {e.Message}"); }
+        DictationChanged?.Invoke();
     }
 
     public KeyTable Keys => Value.Keys;

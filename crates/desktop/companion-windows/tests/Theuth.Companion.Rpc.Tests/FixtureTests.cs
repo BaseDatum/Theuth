@@ -178,6 +178,20 @@ public sealed class FixtureTests
     private static readonly Dictionary<string, Func<byte[], object>> Shapes = new(StringComparer.Ordinal)
     {
         ["agents_list"] = b => TheuthJson.Deserialize<ValueList<AgentSummary>>(b),
+        // 153 (W153B): the cross-platform fixtures from the Mac contract wave, now in the shared directory (Fixture153Tests asserts the values).
+        ["153-dictation_events"] = b => TheuthJson.Deserialize<ValueList<JsonValue>>(b).Select(e => WireEvent.Decode(TheuthJson.Serialize(e))).ToList(),
+        ["153-dictation_history"] = b => TheuthJson.Deserialize<ValueList<HistoryRow>>(b),
+        ["153-dictation_opts"] = b => TheuthJson.Deserialize<DictationOpts>(b),
+        ["153-dictation_opts_defaults"] = b => TheuthJson.Deserialize<DictationOpts>(b),
+        ["153-dictation_status"] = b => TheuthJson.Deserialize<DictationState>(b),
+        ["153-dictation_timings"] = b => TheuthJson.Deserialize<DictationTimings>(b),
+        ["153-dictionary_list"] = b => TheuthJson.Deserialize<ValueList<Entry>>(b),
+        ["153-end_phrases"] = b => TheuthJson.Deserialize<EndPhrases>(b),
+        ["153-input_devices"] = b => TheuthJson.Deserialize<ValueList<InputDevice>>(b),
+        ["153-model_info"] = b => TheuthJson.Deserialize<ModelInfo>(b),
+        ["153-polish_reply"] = b => TheuthJson.Deserialize<PolishReply>(b),
+        ["153-polish_reply_refused"] = b => TheuthJson.Deserialize<PolishReply>(b),
+        ["153-voice_status"] = b => TheuthJson.Deserialize<VoiceStatus>(b),
         ["approval_requested"] = b => WireEvent.Decode(b),
         ["approval_resolved"] = b => WireEvent.Decode(b),
         ["ask_requested"] = b => WireEvent.Decode(b),
@@ -195,6 +209,7 @@ public sealed class FixtureTests
         // 149 C's shared fixtures (Fixture149Tests reads them in detail).
         ["attention_item_149_context"] = b => TheuthJson.Deserialize<AttentionItem>(b),
         ["attention_item_149_no_context"] = b => TheuthJson.Deserialize<AttentionItem>(b),
+        ["attention_item_155_alert"] = b => TheuthJson.Deserialize<AttentionItem>(b), // 155 W3's fixture on main (the C# record ignores `alert` until the 155 Windows side mirrors it)
         ["packet_149_if_wrong"] = b => TheuthJson.Deserialize<Packet>(b),
         ["list_sessions_149"] = b => TheuthJson.Deserialize<ValueList<SessionSummary>>(b),
         ["sessions_status_149"] = b => TheuthJson.Deserialize<SessionsStatus>(b),

@@ -227,6 +227,21 @@ internal sealed partial class AskBarWindow : ToolWindow, IAskBarSurface
     }
 
     /// <summary>The model this window renders (set once by <see cref="AskBarInstall"/>; the model needs the surface first).</summary>
+    /// <summary>153 W153B probe evidence: the bar's content rendered to a PNG (RenderTargetBitmap — independent of the desktop's capture).</summary>
+    public async Task<bool> CapturePng(string path)
+    {
+        try
+        {
+            await Ui.XamlPng.Write(root, path);
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.Write($"ask bar: capture {path} failed: {e.GetType().Name}: {e.Message}");
+            return false;
+        }
+    }
+
     public void Bind(AskBarModel m)
     {
         model = m;

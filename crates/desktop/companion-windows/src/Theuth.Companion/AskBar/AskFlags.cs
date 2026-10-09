@@ -9,6 +9,8 @@ namespace Theuth.Companion.AskBar;
 /// system synthesizer), <c>--ask</c> (open the Ask bar at launch), <c>--mic-probe N</c> (capture the default endpoint
 /// for N s and log the RMS — C8), <c>--mic-mix-format</c> (capture in the device's mix format and resample in-process),
 /// <c>--ask-replay</c> (render the receipt row from a recorded <c>TextDelta</c>/<c>TurnFinished</c> stream).
+/// 153 W153B: <c>--ask-fixture shaped|send-it|suggestion|all</c> (with <c>--ask-probe N</c>): recorded <c>Dictation*</c> /
+/// <c>DictionarySuggestion</c> items through the Store as if dictated (<see cref="AskFixtures"/>).
 /// </summary>
 internal static class AskFlags
 {
@@ -21,6 +23,20 @@ internal static class AskFlags
     public static double? MicProbe { get; } = Seconds("--mic-probe");
     public static bool MicMixFormat { get; } = Args.Contains("--mic-mix-format");
     public static bool Replay { get; } = Args.Contains("--ask-replay");
+    public static string? Fixture { get; } = Value("--ask-fixture");
+
+    /// <summary>153 W153B: <c>--synthetic-speech "…" --ask-press</c> dictates the synthesized speech inside a simulated voice press (the
+    /// real engine's shaped text and a spoken "send it" land through the voice path and send).</summary>
+    public static bool Press { get; } = Args.Contains("--ask-press");
+
+    /// <summary>153 W153B: <c>--ask-live sendit|learn</c> (with <c>--ask-probe N</c>) — built-in phrases through the real engine inside a voice press.</summary>
+    public static string? Live { get; } = Value("--ask-live");
+
+    /// <summary>153 W153B: with <c>--settings dictation</c>, render the Settings › Dictation page to <c>%TEMP%\153-w153b-settings-dictation.png</c> once it loaded.</summary>
+    public static bool DictationShot { get; } = Args.Contains("--dictation-shot");
+
+    /// <summary>Where the 153 probes put their PNGs (<c>w153c-gate.ps1 pngs</c> / <c>b64</c> read them there).</summary>
+    public static string Png(string name) => Path.Combine(Path.GetTempPath(), $"153-w153b-{name}.png");
 
     /// <summary>A probe run: the hotkey and the microphone are inert (Swift <c>AskFlags.automated</c>).</summary>
     public static bool Automated => Probe is not null || MicProbe is not null || Replay;
