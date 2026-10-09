@@ -185,7 +185,7 @@ struct AskDictationHoldTests {
                     if let id = dictation.id { rpc.append("stop \(id)") }
                     dictation = AskDictation(); stopWanted = false
                     status = why
-                case .tap, .setText: break
+                case .tap, .setText, .openMic, .discardMic, .sendNow: break
                 }
             }
         }

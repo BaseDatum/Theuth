@@ -1310,7 +1310,7 @@ const HARNESS_SKILL: &str = include_str!("../harness.md");
 /// Creates the data-dir skeleton on first run. Existing files are never
 /// overwritten, except `skills/harness.md`, `skills/visualize.md`,
 /// `skills/pdf.md`, `skills/loops.md`, `skills/routines.md`, `skills/apps.md`,
-/// `skills/board.md`, `skills/decide.md` and `skills/double.md`, which the binary owns and rewrites so
+/// `skills/board.md`, `skills/decide.md`, `skills/double.md` and `skills/native-apps.md`, which the binary owns and rewrites so
 /// they always describe the running version. 136: `skills/dreaming.md`,
 /// `sensors/dreaming.py` (binary-owned) and `schedules/dreaming.md` (once)
 /// are written by `dreaming::DreamingPlugin::start`, which reads
@@ -1330,6 +1330,7 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
         ("board.md", document::tools::BOARD_SKILL.to_owned()),
         ("decide.md", decision::tool::DECIDE_SKILL.to_owned()),
         ("double.md", double::tool::DOUBLE_SKILL.to_owned()),
+        ("native-apps.md", computer::NATIVE_APPS_SKILL.to_owned()),
     ] {
         let path = skills.join(name);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {

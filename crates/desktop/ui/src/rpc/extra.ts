@@ -240,11 +240,3 @@ export type ModelState =
 
 /** `voice::FinishReason` (43 §4.4): why synthesis ended (`#[serde(tag = "reason", rename_all = "snake_case")]`). */
 export type FinishReason = { reason: 'done' } | { reason: 'stopped' } | { reason: 'error'; message: string }
-
-/** `voice_status()` (43 §4.3); `speaking` is the utterance in flight, a `SpeechId` (uuid string). */
-export type VoiceStatus = {
-  model: ModelState
-  voice: string
-  voices: string[]
-  speaking: string | null
-}

@@ -1,0 +1,40 @@
+[
+  {
+    "id": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e21",
+    "started_ms": 1791448800000,
+    "finished_ms": 1791448803500,
+    "surface": "any_app",
+    "destination": "any_app:com.apple.Notes",
+    "app": "com.apple.Notes",
+    "raw": "hi dana comma the deploy is done period",
+    "shaped": "Hi Dana, the deploy is done.",
+    "polished": "Hi Dana, the deploy is done.",
+    "delivered": "Hi Dana, the deploy is done.",
+    "press_ms": 42,
+    "first_partial_ms": 310,
+    "first_final_ms": 890,
+    "final_ms": 1200,
+    "reason": "done",
+    "audio_bytes": 96000,
+    "has_audio": true
+  },
+  {
+    "id": "0192c5e0-7a1b-7c2d-9e3f-4a5b6c7d8e22",
+    "started_ms": 1791448700000,
+    "finished_ms": null,
+    "surface": "companion",
+    "destination": "agent_prompt",
+    "app": null,
+    "raw": "",
+    "shaped": "",
+    "polished": null,
+    "delivered": null,
+    "press_ms": null,
+    "first_partial_ms": null,
+    "first_final_ms": null,
+    "final_ms": null,
+    "reason": "error:microphone: no audio from AirPods Pro",
+    "audio_bytes": 0,
+    "has_audio": false
+  }
+]

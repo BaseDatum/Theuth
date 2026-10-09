@@ -1,0 +1,10 @@
+[
+  {
+    "name": "AirPods Pro",
+    "default": false
+  },
+  {
+    "name": "MacBook Pro Microphone",
+    "default": true
+  }
+]

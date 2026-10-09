@@ -45,6 +45,7 @@ use agent::{
 use agent::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use agent::{EndlessConfig, MemoryMode, SessionMemory, ViewLine};
 use agent::{GetFavoriteModels, SetModelFavorite};
+use agent::{GetPolishModel, Polish, PolishReply, Rewrite, SetPolishModel};
 use app::{
     AppDoc, AppToolResult, Apps, CallArgs, CallStatusOf, CallTool, CloseApp, GetApp, PublishFromUi,
 };
@@ -457,6 +458,12 @@ pub trait Api {
     /// Persist `agent.title_model`; `None` clears it (titles use the session's model).
     #[method(name = "set_title_model")]
     async fn set_title_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
+    /// The live polish model (`voice.polish_model`, 153 §9.2), if set.
+    #[method(name = "polish_model")]
+    async fn polish_model(&self) -> RpcResult<Option<ModelInfo>>;
+    /// Persist `voice.polish_model`; `None` clears it (polish uses the title model, then the session's).
+    #[method(name = "set_polish_model")]
+    async fn set_polish_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>>;
     /// The live vision fallback model (`agent.vision_model`), if set (52 §3.1).
     #[method(name = "vision_model")]
     async fn vision_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -1582,8 +1589,14 @@ pub trait Api {
     /// `dictation_audio`; the dictation stops when that connection closes.
     /// Other error strings: `already dictating`, `voice is disabled`, a
     /// missing/failed model (with the expected path), a mic open failure.
+    /// `opts` (153 §14.1): surface, destination, app profile, slash commands, press offset;
+    /// `None` = today's Composer dictation.
     #[method(name = "dictation_start", with_extensions)]
-    async fn dictation_start(&self, sample_rate: Option<u32>) -> RpcResult<voice::DictationId>;
+    async fn dictation_start(
+        &self,
+        sample_rate: Option<u32>,
+        opts: Option<voice::DictationOpts>,
+    ) -> RpcResult<voice::DictationId>;
     /// Feed remote dictation `id`: `pcm` is base64 of little-endian mono i16
     /// samples at the rate given to `dictation_start`, ~100 ms per call.
     /// `Err` when `id` is not a running remote dictation or `pcm` is not
@@ -1600,6 +1613,75 @@ pub trait Api {
     /// relay peers.
     #[method(name = "dictation_status", with_extensions)]
     async fn dictation_status(&self) -> RpcResult<voice::DictationState>;
+    /// 153 §6.1: the surface sent `sent_text` after dictation `id`; the engine diffs it
+    /// against what it delivered and learns single-word corrections. Any authenticated peer.
+    #[method(name = "dictation_correction", with_extensions)]
+    async fn dictation_correction(
+        &self,
+        id: voice::DictationId,
+        sent_text: String,
+    ) -> RpcResult<()>;
+    /// 153 §6.5: the newest `limit` dictation rows (raw/shaped/polished). Local peers only.
+    #[method(name = "dictation_history", with_extensions)]
+    async fn dictation_history(&self, limit: Option<u32>) -> RpcResult<Vec<voice::HistoryRow>>;
+    /// 153 §6.7: forget one row (and its audio), or everything when `None`. Local peers only.
+    #[method(name = "dictation_history_forget", with_extensions)]
+    async fn dictation_history_forget(&self, id: Option<voice::DictationId>) -> RpcResult<()>;
+    /// 153 §6.4: the dictation's audio (one utterance, or all) as base64 i16 16 kHz;
+    /// `Err("no audio")` when evicted. Local peers only.
+    #[method(name = "dictation_audio_get", with_extensions)]
+    async fn dictation_audio_get(
+        &self,
+        id: voice::DictationId,
+        utterance: Option<u32>,
+    ) -> RpcResult<String>;
+    /// 153 §5.6: user + learned dictionary entries, optionally one scope.
+    #[method(name = "dictionary_list")]
+    async fn dictionary_list(&self, scope: Option<voice::Scope>) -> RpcResult<Vec<voice::Entry>>;
+    /// 153 §5.6: upsert by canonical + scope; replies with the stored entry.
+    #[method(name = "dictionary_put")]
+    async fn dictionary_put(&self, entry: voice::Entry) -> RpcResult<voice::Entry>;
+    /// 153 §5.6: delete one entry; `false` when unknown.
+    #[method(name = "dictionary_delete")]
+    async fn dictionary_delete(&self, id: voice::EntryId) -> RpcResult<bool>;
+    /// 153 §6.3 step 4: answer a `DictionarySuggestion` event.
+    #[method(name = "dictionary_suggestion_answer")]
+    async fn dictionary_suggestion_answer(
+        &self,
+        id: voice::SuggestionId,
+        answer: voice::SuggestionAnswer,
+    ) -> RpcResult<()>;
+    /// 153 §8.1: every input device the host enumerates, the default flagged.
+    #[method(name = "list_input_devices")]
+    async fn list_input_devices(&self) -> RpcResult<Vec<voice::InputDevice>>;
+    /// 153 §8.1: persist `voice.input_devices` (ordered; `[]` = system default only).
+    #[method(name = "set_input_devices")]
+    async fn set_input_devices(&self, names: Vec<String>) -> RpcResult<()>;
+    /// 153 §4.5: persist `voice.shape.<surface>`.
+    #[method(name = "set_shape")]
+    async fn set_shape(&self, surface: voice::Surface, preset: voice::Preset) -> RpcResult<()>;
+    /// 153 §7.2: persist `voice.end_commands`.
+    #[method(name = "set_end_phrases")]
+    async fn set_end_phrases(&self, phrases: voice::EndPhrases) -> RpcResult<()>;
+    /// 153 §9: polish `text` for a human reader at `destination`; `AgentPrompt` is refused.
+    /// Fails closed: `text: None` + `refused` means deliver the shaped text.
+    #[method(name = "polish")]
+    async fn polish(
+        &self,
+        text: String,
+        destination: voice::Destination,
+        session: Option<SessionId>,
+    ) -> RpcResult<PolishReply>;
+    /// 153 §13.6: rewrite `selection` per the spoken `instruction` in `app`; `thread` carries
+    /// earlier (instruction, result) pairs of the same selection.
+    #[method(name = "rewrite")]
+    async fn rewrite(
+        &self,
+        instruction: String,
+        selection: String,
+        app: voice::AppProfile,
+        thread: Option<Vec<(String, String)>>,
+    ) -> RpcResult<PolishReply>;
     /// Start a live spoken conversation with `session` (76 §5.1); events arrive
     /// as `TalkEvent` on `subscribe_events`. Local peers pass `sink: "device"`
     /// and `sample_rate: null` (the daemon's speaker and mic); a relay peer must
@@ -2520,6 +2602,17 @@ impl Server {
     fn autoresearch_config(&self) -> autoresearch::AutoresearchConfig {
         self.rt.section("autoresearch").unwrap_or_default()
     }
+
+    /// 153 §14.3: persist `voice.<key>` (one or two levels; the value is YAML flow syntax).
+    fn write_voice_config(&self, key: &[&str], value: &str) -> RpcResult<()> {
+        let path = self.rt.data_dir.join("config.yaml");
+        match key {
+            [k] => runtime::write_config_value(&path, "voice", k, value),
+            [sub, k] => runtime::write_nested_config_value(&path, "voice", sub, k, value),
+            _ => unreachable!("one or two key levels"),
+        }
+        .map_err(|e| failed(format!("config.yaml: {e}")))
+    }
 }
 
 impl Server {
@@ -2777,6 +2870,17 @@ fn dictation() -> RpcResult<ActorRef<voice::Dictation>> {
         NOT_RUNNING => ErrorObjectOwned::owned(NOT_RUNNING, "voice is disabled", None::<()>),
         _ => e,
     })
+}
+
+/// The 153 history store (§6.5): local peers only, like the daemon mic
+/// (`dictation_start`); `ASK_FAILED` "history disabled" when it is off.
+async fn history_store(ext: &Extensions) -> RpcResult<voice::Store> {
+    if peer(ext)?.remote() {
+        return Err(failed("dictation history is on the harness host"));
+    }
+    send(&dictation()?, voice::HistoryStore)
+        .await?
+        .ok_or_else(|| failed("history disabled"))
 }
 
 /// The talk actor; absent when `talk.enabled: false` or the plugin is not loaded.
@@ -3913,6 +4017,14 @@ impl ApiServer for Server {
 
     async fn set_title_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetTitleModel { model }).await
+    }
+
+    async fn polish_model(&self) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, GetPolishModel).await
+    }
+
+    async fn set_polish_model(&self, model: Option<String>) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, SetPolishModel { model }).await
     }
 
     async fn vision_model(&self) -> RpcResult<Option<ModelInfo>> {
@@ -6299,7 +6411,12 @@ impl ApiServer for Server {
     }
 
     async fn voice_status(&self) -> RpcResult<VoiceStatus> {
-        send(&voice()?, voice::Status).await
+        let mut status = send(&voice()?, voice::Status).await?;
+        // The live list (`set_input_devices`), not the one read at startup.
+        if let Ok(d) = dictation() {
+            status.input_devices = send(&d, voice::InputDevicePrefs).await?;
+        }
+        Ok(status)
     }
 
     async fn transcribe(&self, path: PathBuf) -> RpcResult<voice::Transcript> {
@@ -6321,6 +6438,7 @@ impl ApiServer for Server {
         &self,
         ext: &Extensions,
         sample_rate: Option<u32>,
+        opts: Option<voice::DictationOpts>,
     ) -> RpcResult<voice::DictationId> {
         let peer = peer(ext)?;
         let source = match sample_rate {
@@ -6333,7 +6451,14 @@ impl ApiServer for Server {
             Some(sample_rate) => voice::AudioSource::Remote { sample_rate },
         };
         let actor = dictation()?;
-        let id = send(&actor, voice::StartDictation { source }).await?;
+        let id = send(
+            &actor,
+            voice::StartDictation {
+                source,
+                opts: opts.unwrap_or_default(),
+            },
+        )
+        .await?;
         if source != voice::AudioSource::Mic {
             // A dropped connection must not hold the one-dictation slot.
             tokio::spawn(async move {
@@ -6374,6 +6499,167 @@ impl ApiServer for Server {
     async fn dictation_status(&self, ext: &Extensions) -> RpcResult<voice::DictationState> {
         peer(ext)?;
         send(&dictation()?, voice::DictationStatus).await
+    }
+
+    // ---- 153 dictation history / dictionary (A4 fills the bodies) ----------------------------
+
+    async fn dictation_correction(
+        &self,
+        ext: &Extensions,
+        id: voice::DictationId,
+        sent_text: String,
+    ) -> RpcResult<()> {
+        peer(ext)?;
+        send(&dictation()?, voice::DictationCorrection { id, sent_text }).await
+    }
+
+    async fn dictation_history(
+        &self,
+        ext: &Extensions,
+        limit: Option<u32>,
+    ) -> RpcResult<Vec<voice::HistoryRow>> {
+        let store = history_store(ext).await?;
+        store
+            .list(limit.unwrap_or(50))
+            .await
+            .map_err(|e| failed(format!("{e:#}")))
+    }
+
+    async fn dictation_history_forget(
+        &self,
+        ext: &Extensions,
+        id: Option<voice::DictationId>,
+    ) -> RpcResult<()> {
+        let store = history_store(ext).await?;
+        store.forget(id).await.map_err(|e| failed(format!("{e:#}")))
+    }
+
+    async fn dictation_audio_get(
+        &self,
+        ext: &Extensions,
+        id: voice::DictationId,
+        utterance: Option<u32>,
+    ) -> RpcResult<String> {
+        let store = history_store(ext).await?;
+        let pcm = store
+            .audio(id, utterance)
+            .await
+            .map_err(|e| failed(format!("{e:#}")))?;
+        let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    async fn dictionary_list(&self, scope: Option<voice::Scope>) -> RpcResult<Vec<voice::Entry>> {
+        match send(&dictation()?, voice::DictionaryOp::List(scope)).await? {
+            voice::DictionaryReply::Entries(e) => Ok(e),
+            voice::DictionaryReply::Loading => Err(failed("dictionary loading")),
+            other => Err(failed(format!("unexpected dictionary reply {other:?}"))),
+        }
+    }
+
+    async fn dictionary_put(&self, entry: voice::Entry) -> RpcResult<voice::Entry> {
+        match send(&dictation()?, voice::DictionaryOp::Put(entry)).await? {
+            voice::DictionaryReply::Entry(e) => Ok(e),
+            voice::DictionaryReply::Loading => Err(failed("dictionary loading")),
+            other => Err(failed(format!("unexpected dictionary reply {other:?}"))),
+        }
+    }
+
+    async fn dictionary_delete(&self, id: voice::EntryId) -> RpcResult<bool> {
+        match send(&dictation()?, voice::DictionaryOp::Delete(id)).await? {
+            voice::DictionaryReply::Deleted(d) => Ok(d),
+            voice::DictionaryReply::Loading => Err(failed("dictionary loading")),
+            other => Err(failed(format!("unexpected dictionary reply {other:?}"))),
+        }
+    }
+
+    async fn dictionary_suggestion_answer(
+        &self,
+        id: voice::SuggestionId,
+        answer: voice::SuggestionAnswer,
+    ) -> RpcResult<()> {
+        send(&dictation()?, voice::AnswerSuggestion { id, answer }).await
+    }
+
+    async fn list_input_devices(&self) -> RpcResult<Vec<voice::InputDevice>> {
+        // Host enumeration is a blocking call into the audio backend.
+        tokio::task::spawn_blocking(voice::mic::list_input_devices)
+            .await
+            .map_err(|e| failed(format!("device list: {e}")))
+    }
+
+    async fn set_input_devices(&self, names: Vec<String>) -> RpcResult<()> {
+        let value = serde_json::to_string(&names).map_err(|e| failed(e.to_string()))?;
+        self.write_voice_config(&["input_devices"], &value)?;
+        send(&dictation()?, voice::Setting::InputDevices(names)).await
+    }
+
+    async fn set_shape(&self, surface: voice::Surface, preset: voice::Preset) -> RpcResult<()> {
+        let key = serde_json::to_value(surface)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .ok_or_else(|| failed("bad surface"))?;
+        let value = serde_json::to_value(preset)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .ok_or_else(|| failed("bad preset"))?;
+        self.write_voice_config(&["shape", &key], &value)?;
+        send(&dictation()?, voice::Setting::Shape(surface, preset)).await
+    }
+
+    async fn set_end_phrases(&self, phrases: voice::EndPhrases) -> RpcResult<()> {
+        let json = |v: serde_json::Value| v.to_string();
+        self.write_voice_config(
+            &["end_commands", "send"],
+            &json(phrases.send.clone().into()),
+        )?;
+        self.write_voice_config(
+            &["end_commands", "scratch"],
+            &json(phrases.scratch.clone().into()),
+        )?;
+        self.write_voice_config(
+            &["end_commands", "literal"],
+            &json(phrases.literal.clone().into()),
+        )?;
+        send(&dictation()?, voice::Setting::EndPhrases(phrases)).await
+    }
+
+    // ---- 153 polish / rewrite (A5 fills the bodies) ------------------------------------------
+
+    async fn polish(
+        &self,
+        text: String,
+        destination: voice::Destination,
+        session: Option<SessionId>,
+    ) -> RpcResult<PolishReply> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            Polish {
+                text,
+                destination,
+                session,
+            },
+        )
+        .await
+    }
+
+    async fn rewrite(
+        &self,
+        instruction: String,
+        selection: String,
+        app: voice::AppProfile,
+        thread: Option<Vec<(String, String)>>,
+    ) -> RpcResult<PolishReply> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            Rewrite {
+                instruction,
+                selection,
+                app,
+                thread,
+            },
+        )
+        .await
     }
 
     async fn talk_start(
