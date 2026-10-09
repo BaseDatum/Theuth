@@ -411,6 +411,7 @@ internal sealed class PointController : IDisposable
         live = text;
         Log.Write($"point: sent to desk {target} ({body.Length} chars, {files.Count} files) id={clientId}");
         island.SetVoice(View("working"));
+        AuditDictation("send");
     }
 
     private Task Yield()
@@ -515,6 +516,34 @@ internal sealed class PointController : IDisposable
             island.SetVoice(null);
         }
         Log.Write($"point: discard ({reason})");
+        AuditDictation($"discard ({reason})");
+    }
+
+    /// <summary>
+    /// 149 voice-key fix, the permanent proof line (d): ~1.2 s after a gesture ends, ask the engine what is running —
+    /// <c>point: dictation_status after … → active=none</c> is the invariant holding; an id there is a leak to chase.
+    /// </summary>
+    private void AuditDictation(string after)
+    {
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(1200);
+            string verdict;
+            try
+            {
+                var raw = await store.Client.CallRawAsync("dictation_status");
+                string? active = null;
+                try
+                {
+                    using var doc = JsonDocument.Parse(raw);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("active", out var a) && a.ValueKind == JsonValueKind.String) active = a.GetString();
+                }
+                catch (JsonException) { }
+                verdict = active is null ? "active=none" : $"active={active} (LEAK: a dictation is still running)";
+            }
+            catch (Exception e) { verdict = $"unavailable ({Why(e)})"; }
+            Log.Write($"point: dictation_status after {after} → {verdict}");
+        });
     }
 
     private void Conceal()
