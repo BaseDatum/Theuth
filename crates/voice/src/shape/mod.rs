@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::dictionary::Dictionary;
+use crate::dictionary::{Dictionary, Kind};
 use crate::{AppProfile, Surface};
 
 pub mod end;
@@ -200,9 +200,10 @@ pub struct Shaper<'a> {
 }
 
 impl<'a> Shaper<'a> {
-    /// Resolved once per dictation at `StartDictation` (§4.6). TLD / extension /
-    /// mention / path terms come from the dictionary's tagged user and learned
-    /// entries plus the built-in lists.
+    /// Resolved once per dictation at `StartDictation` (§4.6). TLD / extension
+    /// terms are the dictionary's `Path` pairs tagged `tld` / `ext` (packaged + user +
+    /// learned) on top of the built-in lists; mention terms are its `mention`-tagged
+    /// user/learned entries.
     pub fn new(
         cfg: ShapeConfig,
         phrases: &'a EndPhrases,
@@ -216,6 +217,12 @@ impl<'a> Shaper<'a> {
                 .map(|e| e.canonical)
                 .collect()
         };
+        let paths = |tag: &str| -> Vec<String> {
+            dict.pairs(Kind::Path)
+                .filter(|e| e.tags.iter().any(|t| t == tag))
+                .map(|e| e.canonical.trim_start_matches('.').to_string())
+                .collect()
+        };
         Self {
             cfg,
             phrases,
@@ -224,8 +231,8 @@ impl<'a> Shaper<'a> {
             surface: Surface::Composer,
             commands: app.map(|a| a.commands.clone()).unwrap_or_default(),
             mentions: tagged("mention"),
-            tlds: tagged("tld"),
-            exts: tagged("ext"),
+            tlds: paths("tld"),
+            exts: paths("ext"),
         }
     }
 
@@ -293,8 +300,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) exts: &'a [String],
 }
 
-// ponytail: built-in lists cover the common cases; §5's packaged TLD/extension lists arrive through
-// the dictionary's tags once A2 exposes them — add a `Dictionary::tagged(tag)` and drop these.
+// The packaged `Path` pairs (§5.2) are the talon lists: 6 TLDs, 35 extensions — no `dev`,
+// `io`, `rs`, `ts`. Table rows 5/7 (`theuth.dev`, `main.rs`) need these on top of them.
 const TLDS: &[&str] = &[
     "com", "org", "net", "io", "dev", "ai", "co", "app", "sh", "me", "us", "uk", "de", "fr", "eu",
     "edu", "gov", "info", "xyz", "cloud", "tech", "rs", "ch", "nl", "se", "no", "jp", "au", "ca",
