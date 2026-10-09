@@ -164,9 +164,9 @@ pub struct Correction {
     pub sent_text: String,
 }
 
-/// `dictionary_suggestion_answer` (153 §6.3 step 4). `Add` writes a learned
-/// entry with the heard variant, `Never` a negative, `NotNow` only the store's
-/// cooldown. Errors: "unknown suggestion".
+/// `dictionary_suggestion_answer` (153 §6.3 step 4): forwarded to the history
+/// store, which writes the learned entry (`Add`) or the negative (`Never`) into
+/// the live dictionary and its own state. Errors: "unknown suggestion".
 #[derive(Clone, Copy, Debug)]
 pub struct AnswerSuggestion {
     /// The suggestion the card showed.
@@ -200,6 +200,8 @@ pub enum DictionaryReply {
     Deleted(bool),
     /// `Negative`.
     Done,
+    /// The packaged index is still building; retry.
+    Loading,
 }
 
 /// A `voice.*` key changed through its RPC; the next dictation uses it
@@ -326,6 +328,9 @@ struct Settings {
 /// `tell` from the load task.
 struct Loaded(Result<Engine, String>);
 
+/// `tell` from the dictionary load.
+struct DictionaryLoaded(Dictionary);
+
 /// `tell` from the standby timer; dropped if a newer standby took over.
 struct StandbyExpired(u64);
 
@@ -396,7 +401,8 @@ pub struct Dictation {
     /// The history store and the dictionary were opened (once, on first use).
     stores_opened: bool,
     store: Option<Store>,
-    dictionary: Dictionary,
+    /// `None` until [`DictionaryLoaded`] lands (the packaged index builds off the mailbox).
+    dictionary: Option<Dictionary>,
     /// Read-only copy handed to each dictation; rebuilt after every change.
     snapshot: Arc<Dictionary>,
     standby: Option<Standby>,
@@ -427,7 +433,7 @@ impl Dictation {
             opener: Arc::new(Capture::open_on),
             stores_opened: false,
             store: None,
-            dictionary: Dictionary::default(),
+            dictionary: None,
             snapshot: Arc::new(Dictionary::default()),
             standby: None,
             standby_generation: 0,
@@ -440,9 +446,10 @@ impl Dictation {
         self.rt.publish(VoiceEvent::DictationModel { state }).await;
     }
 
-    /// Open the history store and load the dictionary, once (153 §5/§6); a
-    /// failure logs and leaves that half off — dictation itself never waits on it.
-    async fn open_stores(&mut self) {
+    /// Open the history store and start the dictionary load, once (153 §5/§6);
+    /// the dictionary (a ≈4 s index build in debug) lands as [`DictionaryLoaded`]
+    /// so the mailbox never waits on it; a failure logs and leaves that half off.
+    async fn open_stores(&mut self, me: ActorRef<Self>) {
         if self.stores_opened {
             return;
         }
@@ -455,15 +462,17 @@ impl Dictation {
                 Err(e) => tracing::warn!("voice: history store: {e:#}"),
             }
         }
-        let dir = data_dir.clone();
-        match tokio::task::spawn_blocking(move || Dictionary::load(&dir)).await {
-            Ok(Ok(d)) => {
-                self.dictionary = d;
-                self.snapshot = self.dictionary.snapshot();
+        tokio::spawn(async move {
+            let t = Instant::now();
+            match tokio::task::spawn_blocking(move || Dictionary::load(&data_dir)).await {
+                Ok(Ok(d)) => {
+                    tracing::info!("voice: dictionary loaded in {:?}", t.elapsed());
+                    let _ = me.tell(DictionaryLoaded(d)).await;
+                }
+                Ok(Err(e)) => tracing::warn!("voice: dictionary: {e:#}"),
+                Err(e) => tracing::warn!("voice: dictionary load panicked: {e}"),
             }
-            Ok(Err(e)) => tracing::warn!("voice: dictionary: {e:#}"),
-            Err(e) => tracing::warn!("voice: dictionary load panicked: {e}"),
-        }
+        });
     }
 
     /// Load off the runtime unless loaded or loading; the result comes back as [`Loaded`].
@@ -746,7 +755,7 @@ fn unix_ms() -> u64 {
 impl Message<Prewarm> for Dictation {
     type Reply = ModelState;
     async fn handle(&mut self, _: Prewarm, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.open_stores().await;
+        self.open_stores(ctx.actor_ref().clone()).await;
         self.load(ctx.actor_ref().clone()).await;
         self.model.clone()
     }
@@ -783,10 +792,10 @@ impl Message<StartDictation> for Dictation {
             );
             tx.send(Err("talking".into()));
         } else if self.model == ModelState::Ready {
-            self.open_stores().await;
+            self.open_stores(me.clone()).await;
             tx.send(self.start(me, m.source, m.opts));
         } else {
-            self.open_stores().await;
+            self.open_stores(me.clone()).await;
             self.load(me).await;
             self.waiters.push(Waiter::Start(m.source, m.opts, tx));
         }
@@ -889,8 +898,8 @@ impl Message<DictationStatus> for Dictation {
 
 impl Message<Correction> for Dictation {
     type Reply = Result<(), String>;
-    async fn handle(&mut self, m: Correction, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.open_stores().await;
+    async fn handle(&mut self, m: Correction, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.open_stores(ctx.actor_ref().clone()).await;
         let Some(store) = self.store.clone().filter(|_| self.cfg.history.learn) else {
             return Ok(());
         };
@@ -924,12 +933,15 @@ impl Message<AnswerSuggestion> for Dictation {
         let Some(store) = self.store.clone() else {
             return Err("unknown suggestion".into());
         };
+        let Some(dict) = self.dictionary.as_mut() else {
+            return Err("dictionary loading".into());
+        };
         store
-            .answer(m.id, m.answer, &mut self.dictionary)
+            .answer(m.id, m.answer, dict)
             .await
             .map_err(|e| format!("{e:#}"))?;
         if m.answer != Answer::NotNow {
-            self.snapshot = self.dictionary.snapshot();
+            self.snapshot = dict.snapshot();
         }
         Ok(())
     }
@@ -937,21 +949,36 @@ impl Message<AnswerSuggestion> for Dictation {
 
 impl Message<DictionaryOp> for Dictation {
     type Reply = DictionaryReply;
-    async fn handle(&mut self, m: DictionaryOp, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.open_stores().await;
+    async fn handle(
+        &mut self,
+        m: DictionaryOp,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.open_stores(ctx.actor_ref().clone()).await;
+        let Some(dict) = self.dictionary.as_mut() else {
+            return DictionaryReply::Loading;
+        };
         let reply = match m {
             DictionaryOp::List(scope) => {
-                return DictionaryReply::Entries(self.dictionary.list(scope.as_ref()));
+                return DictionaryReply::Entries(dict.list(scope.as_ref()));
             }
-            DictionaryOp::Put(entry) => DictionaryReply::Entry(self.dictionary.put(entry)),
-            DictionaryOp::Delete(id) => DictionaryReply::Deleted(self.dictionary.delete(&id)),
+            DictionaryOp::Put(entry) => DictionaryReply::Entry(dict.put(entry)),
+            DictionaryOp::Delete(id) => DictionaryReply::Deleted(dict.delete(&id)),
             DictionaryOp::Negative(n) => {
-                self.dictionary.negative(n);
+                dict.negative(n);
                 DictionaryReply::Done
             }
         };
-        self.snapshot = self.dictionary.snapshot();
+        self.snapshot = dict.snapshot();
         reply
+    }
+}
+
+impl Message<DictionaryLoaded> for Dictation {
+    type Reply = ();
+    async fn handle(&mut self, m: DictionaryLoaded, _: &mut Context<Self, Self::Reply>) {
+        self.snapshot = m.0.snapshot();
+        self.dictionary = Some(m.0);
     }
 }
 
@@ -988,8 +1015,12 @@ impl Message<InputDevicePrefs> for Dictation {
 
 impl Message<HistoryStore> for Dictation {
     type Reply = Option<Store>;
-    async fn handle(&mut self, _: HistoryStore, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.open_stores().await;
+    async fn handle(
+        &mut self,
+        _: HistoryStore,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.open_stores(ctx.actor_ref().clone()).await;
         self.store.clone()
     }
 }
@@ -1136,6 +1167,7 @@ fn ms(d: Duration) -> u32 {
 }
 
 /// §4.6's `ShaperOwned`: what one dictation shapes with, owned so the task can move.
+/// `with_mentions` stays empty: `DictationOpts` (frozen) carries no agent names.
 struct ShaperOwned {
     cfg: ShapeConfig,
     phrases: EndPhrases,
