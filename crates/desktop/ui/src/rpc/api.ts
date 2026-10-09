@@ -76,6 +76,8 @@ import type { McpServer } from '@/rpc/bindings/McpServer'
 import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefId } from '@/rpc/bindings/BriefId'
 import type { EditOp } from '@/rpc/bindings/EditOp'
+import type { Enrolled } from '@/rpc/bindings/Enrolled'
+import type { EnrollTarget } from '@/rpc/bindings/EnrollTarget'
 import type { EscalateModel } from '@/rpc/bindings/EscalateModel'
 import type { CachedBrief } from '@/rpc/bindings/CachedBrief'
 import type { CachedBriefPut } from '@/rpc/bindings/CachedBriefPut'
@@ -785,6 +787,8 @@ export interface Api {
   meeting_segment_audio(id: MeetingId, track: Track, t0_ms: number, t1_ms: number): Promise<string>
   /** Remove an enrolled profile; transcripts keep the name. */
   meeting_speaker_delete(profile: ProfileId): Promise<null>
+  /** 156: a voiceprint from the speech of `segments` (one track): a new profile, or folded into an enrolled one. */
+  meeting_speaker_enroll(id: MeetingId, segments: number[], target: EnrollTarget): Promise<Enrolled>
   /** Enrolled speaker profiles, embedding omitted. */
   meeting_speakers(): Promise<Profile[]>
   /** Replies once the devices are open; `consent` must be `true`. */
@@ -1363,6 +1367,7 @@ export const METHODS = [
   'meeting_resume',
   'meeting_segment_audio',
   'meeting_speaker_delete',
+  'meeting_speaker_enroll',
   'meeting_speakers',
   'meeting_start',
   'meeting_status',
