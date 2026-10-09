@@ -449,12 +449,25 @@ fn src_ext(source: Source) -> &'static str {
 }
 
 /// `name` as a draft file name, or `None` when it could not be a plain basename
-/// (150 §D1): a separator, NUL, a leading `.` (covers `..`), empty, or over 200 bytes.
+/// on every platform (150 §D1): empty, over 200 bytes, a leading `.` (covers
+/// `..`), a trailing `.` or space, a separator or any of `: < > " | ? *` (on
+/// Windows `C:x` escapes the directory and `x:stream` is an NTFS stream),
+/// control characters, or a reserved device stem (`CON`, `nul.html`, `Com1.txt`).
 fn safe_draft_name(name: &str) -> Option<&str> {
+    const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    let device = DEVICES.contains(&stem.as_str())
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0');
     let ok = !name.is_empty()
         && name.len() <= 200
         && !name.starts_with('.')
-        && !name.contains(['/', '\\', '\0']);
+        && !name.ends_with(['.', ' '])
+        && !name.contains(['/', '\\', ':', '<', '>', '"', '|', '?', '*'])
+        && !name.chars().any(|c| c.is_control())
+        && !device;
     ok.then_some(name)
 }
 
@@ -2745,44 +2758,109 @@ mod tests {
     async fn draft_names_never_escape_the_drafts_dir() {
         let (s, d) = open().await;
         let sess = SessionId::new();
-        for (i, name) in ["../../evil.html", "a/b.html", ".hidden.html", "..", "x"]
-            .into_iter()
-            .enumerate()
-        {
-            let text = format!("<p>{name}</p>");
+        let names = [
+            "../../evil.html",
+            "a/b.html",
+            ".hidden.html",
+            "..",
+            "x",
+            // Windows: a drive-relative prefix, an NTFS stream, device stems, trailing dot.
+            "C:evil.html",
+            "x.html:stream",
+            "nul.html",
+            "Com1.txt",
+            "trail.html.",
+            "a<b>.html",
+            "tab\t.html",
+        ];
+        for (i, name) in names.into_iter().enumerate() {
+            let text = format!("<p>{i}</p>");
             let r = s.show(sess, format!("c{i}"), content(name, &text)).await;
-            let expected = s.drafts_dir(sess).join(format!(
-                "draft-{}.{}",
-                &sha16(text.as_bytes())[..8],
-                if name.ends_with(".html") {
-                    "html"
-                } else {
-                    "txt"
-                }
-            ));
+            let ext = kind::ext(name)
+                .filter(|e| !e.is_empty() && e.bytes().all(|b| b.is_ascii_alphanumeric()))
+                .unwrap_or_else(|| "txt".to_owned());
+            let expected = s
+                .drafts_dir(sess)
+                .join(format!("draft-{}.{ext}", &sha16(text.as_bytes())[..8]));
             assert_eq!(std::fs::read_to_string(&expected).unwrap(), text, "{name}");
             if kind::ext(name).is_some() {
                 let shown = r.unwrap();
-                assert_eq!(shown.receipt.file.as_deref(), Some(expected.as_path()));
+                // A download (`x.html:stream`, `trail.html.` have no text kind) names no file.
+                let want = (shown.artifact.kind != Kind::File).then_some(expected.as_path());
+                assert_eq!(shown.receipt.file.as_deref(), want, "{name}");
             } else {
                 assert!(r.unwrap_err().contains("saved at "));
             }
         }
-        for stray in ["evil.html", "b.html", ".hidden.html", "x"] {
+        for stray in [
+            "evil.html",
+            "b.html",
+            ".hidden.html",
+            "x",
+            "C:evil.html",
+            "nul.html",
+            "Com1.txt",
+        ] {
             assert!(!d.path().join(stray).exists(), "{stray}");
             assert!(!s.dir.join(stray).exists(), "{stray}");
+            assert!(!s.drafts_dir(sess).join(stray).exists(), "{stray}");
         }
         assert!(!d.path().parent().unwrap().join("evil.html").exists());
-        let names: Vec<String> = std::fs::read_dir(s.drafts_dir(sess))
+        let written: Vec<String> = std::fs::read_dir(s.drafts_dir(sess))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names.len(), 5);
-        assert!(names.iter().all(|n| n.starts_with("draft-")), "{names:?}");
-        assert!(safe_draft_name("report.html").is_some());
-        assert!(safe_draft_name(&"x".repeat(201)).is_none());
-        assert!(safe_draft_name("a\0.html").is_none());
-        assert!(safe_draft_name("a\\b.html").is_none());
+        assert_eq!(written.len(), names.len());
+        assert!(
+            written.iter().all(|n| n.starts_with("draft-")),
+            "{written:?}"
+        );
+    }
+
+    /// 150 §D1 (R1): a draft name must be a plain basename on every platform, Windows included.
+    #[test]
+    fn safe_draft_names_reject_unsafe_on_every_platform() {
+        for ok in [
+            "report.html",
+            "a b.md",
+            "console.txt",
+            "COM10.txt",
+            "lpt.txt",
+            "nulx.md",
+        ] {
+            assert_eq!(safe_draft_name(ok), Some(ok));
+        }
+        let long = "x".repeat(201);
+        for bad in [
+            "",
+            long.as_str(),
+            ".hidden.html",
+            "..",
+            "a/b.html",
+            "a\\b.html",
+            "a\0.html",
+            "C:evil.html",
+            "x.html:stream",
+            "a<b.html",
+            "a>b.html",
+            "a\"b.html",
+            "a|b.html",
+            "a?b.html",
+            "a*b.html",
+            "tab\t.html",
+            "del\u{7f}.html",
+            "trail.",
+            "trail ",
+            "CON",
+            "con",
+            "nul.html",
+            "Com1.txt",
+            "LPT9.md",
+            "aux.pdf",
+            "PRN",
+        ] {
+            assert_eq!(safe_draft_name(bad), None, "{bad:?}");
+        }
     }
 
     /// 150 §D1b: a markdown file under a `.pdf` name is compiled like `content`.

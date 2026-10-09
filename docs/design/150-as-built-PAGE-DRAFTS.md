@@ -23,10 +23,12 @@ a `show` carrying `name` + `edits`, or `check`, renders as the usual "showing x.
   durable store, the private tree's scratch `artifacts/drafts/…` for a private session (gone with the tree).
   `State::delete_session` removes `drafts/<session>/` first (missing dir = no-op, other errors logged).
   `State::sweep` only touches files directly in the store dir, so `drafts/` is never swept.
-- `draft_file(name, source, content)`: the name itself when it is a plain basename with an extension
-  (`safe_draft_name`: non-empty, ≤ 200 bytes, no `/`, `\`, NUL, no leading `.` — which covers `..`), else
-  `draft-<sha8>.<ext|txt>` (`ext` only when alphanumeric). A `.pdf` name gets `.md`/`.typ` appended per `source`
-  (`report.pdf.md`). `name` can never escape `drafts/<session>/`.
+- `draft_file(name, source, content)`: the name itself when it is a plain basename with an extension on every
+  platform (`safe_draft_name`: non-empty, ≤ 200 bytes, no leading `.` — which covers `..` — no trailing `.` or
+  space, none of `/ \ : < > " | ? *`, no control characters, and not a Windows device stem `CON PRN AUX NUL
+  COM1–9 LPT1–9` with or without an extension — `nul.html`, `Com1.txt`; on Windows `C:x` would replace the base
+  dir and `x:stream` write an NTFS stream), else `draft-<sha8>.<ext|txt>` (`ext` only when alphanumeric). A `.pdf`
+  name gets `.md`/`.typ` appended per `source` (`report.pdf.md`). `name` can never escape `drafts/<session>/`.
 - `State::save_draft` writes `.<file>.<pid>.<seq>.part` then renames: atomic, last writer wins.
 - Written by: `show{content}` as soon as the name is known and before the size/extension/inlining/compile/check/blob
   steps; `show{name, edits}` with the edited text; `page_preview{html}`. A successful `show{path}` of a text kind
@@ -153,8 +155,8 @@ In order, on this worktree (`mbx`, stable 1.96.1):
 1. `rustfmt --edition 2024` on the nine changed `.rs` files — only the edited regions changed.
 2. `BUILD_LABEL=150-drafts build-lock mbx test -p artifact -p surface -p rpc --no-run` — EXIT 0.
 3. `mbx test -p artifact -p surface -p rpc` (bare, same set) — EXIT 0:
-   artifact lib 83 passed · `tests/document.rs` 1 · `tests/read.rs` 7 · rpc lib 56 · `tests/prompts.rs` 1 ·
-   surface lib 97 · doc-tests 0/0/0; 0 failed.
+   artifact lib 84 passed · `tests/document.rs` 1 · `tests/read.rs` 7 · rpc lib 56 · `tests/prompts.rs` 1 ·
+   surface lib 97 · doc-tests 0/0/0; 0 failed (re-run after R1 — Windows-safe draft names — with the same result).
 4. `BUILD_LABEL=150-drafts build-lock mbx clippy -p artifact -p surface -p rpc --all-targets -- -D warnings` — EXIT 0,
    zero warnings (none pre-existing in these crates either).
 
