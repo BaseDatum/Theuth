@@ -239,3 +239,167 @@ is step-typed and ends in one ✓/✗ line; a pending approval appears in the ca
 - **Chord protection.** A modifier-only chord whose hold saw another key is not a release (A:L172); repeats never toggle (the 149f `VoiceKeyGate`
   already filters auto-repeat, `docs/design/149-as-built-voice-key-fix.md:82-88`).
 - **Composer and TUI** keep Ctrl+D / Esc; **"send it"** is the only spoken way out (§7).
+
+## 4. The shaping layer `voice::shape`
+
+A pure module in `crates/voice` (`VOICE/shape/{mod,punct,literal,dictionary,end,tests}.rs`), no I/O, no clock, no actor; the dictation task
+calls it once per piece. Techniques after A:L60-71 (order, spacing classes, context gates, clean-up of the model's own punctuation,
+terminal-autocomplete spacing), written from scratch.
+
+### 4.1 Contract (frozen; §14 repeats the types)
+```rust
+/// Per-surface switches; resolved once at `StartDictation` from `voice.shape.<surface>` (§4.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ShapeConfig { pub punctuation: bool, pub literals: bool, pub numbers: bool, pub dictionary: bool,
+                         pub end_commands: bool, pub terminal_spacing: bool }
+/// What the surface receives beside the raw text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Shaped { pub text: String, pub command: Option<EndCommand>, pub actions: Vec<Action>,
+                    /// Ranges of `text` the dictionary rewrote (for the muted/underline render and §6's diff).
+                    pub replaced: Vec<Replaced> }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum EndCommand { /// "send it": armed; `near_miss` when accepted by tolerance at the final.
+                      Send { near_miss: bool }, /// "scratch that": drop the previous closed utterance.
+                      ScratchThat }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Action { NewLine, NewParagraph, Tab }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Replaced { pub start: usize, pub end: usize, pub heard: String, pub rule: RuleId }
+/// Spoken end phrases, configurable (§7); `literal` escapes the next phrase.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EndPhrases { pub send: Vec<String>, pub scratch: Vec<String>, pub literal: String }
+
+pub struct Shaper<'a> { cfg: ShapeConfig, phrases: &'a EndPhrases, dict: &'a Dictionary, app: Option<&'a AppProfile> }
+impl Shaper<'_> {
+    /// `prev`: the surface's text before this utterance (context for the first token); `raw`: the model's text so far;
+    /// `is_final`: the VAD closed it. Deterministic; `shape(.., raw, true)` is the text delivered.
+    pub fn shape(&self, prev: &str, raw: &str, is_final: bool) -> Shaped;
+}
+```
+`Dictionary` is §5's matcher (read-only snapshot, `Arc`); `AppProfile` is §13's per-app row (bundle id / exe, `terminal: bool`, polish). The
+function never panics on any UTF-8 input and is `O(tokens × rules)`; the dictionary stage is the only one that may cost more than a few µs
+(§5.4 bounds it).
+
+### 4.2 Stages, in order (each one a function over the token list; off switches skip the stage)
+1. **Tokenise** the raw text into words and the model's own punctuation marks (kept as separate tokens with an `asr: true` flag). The
+   model's casing is kept.
+2. **Spoken punctuation** (`punctuation`). A phrase → symbol table with a *spacing class* per symbol: right-attached `, . ? ! : ;` ("comma",
+   "period"/"full stop", "question mark", "exclamation mark"/"bang", "colon", "semicolon"); left-attached openers `( [ { " “ $ €`; right-attached
+   closers `) ] } " ”`; spaced operators `+ = & | < > —` ("plus", "equals", "ampersand", "pipe", "less than", "greater than", "em dash");
+   tight joiners `- _ / . @ # ~ ` ("dash"/"hyphen", "underscore", "slash", "dot"/"point", "at sign", "hash"/"pound", "tilde", "backtick").
+   Actions "new line", "new paragraph", "tab" become `Action`s and a `\n` / `\n\n` / `\t` in `text` (W-j). "literal ‹phrase›" writes the phrase.
+3. **Context gates** on the ambiguous words — the rule that makes "dot" safe in prose:
+   - "dot"/"point" → `.` only when the left token is alphanumeric and the right token is a known TLD or file extension (from the packaged
+     lists, §5), or a version/number continues (`two point five`), or the right token is a lowercase identifier ≤ 24 chars with no space
+     before the next punctuation (`deploy dot S H` → `deploy.sh` via the spelled-letters rule below). Otherwise the word stays.
+   - "slash" → `/` only in path context: left or right token is path-like (`~`, `.`, `..`, a known command, a dictionary term tagged `path`,
+     or already contains `/`), or the utterance starts with "slash ‹known command›" (stage 4). "forward slash" always converts; "back slash" → `\`.
+   - "dash"/"hyphen" → `-` between two alphanumerics with no pause token between; "dash dash ‹words›" → `--‹words-joined›` (stage 4).
+   - "underscore" → `_` joins its neighbours; "double underscore" → `__`.
+   - operators ("plus", "equals", "minus", "times") → symbols only when both neighbours are short operands (digits, single letters, identifiers
+     ≤ 12 chars); "two plus two equals four" → `2 + 2 = 4`; "the plus side" stays prose.
+   - Spelled letters: a run of ≥ 2 single uppercase letters as the model writes them (`S H`, `T D T`) joins to `SH`, `TDT`; lowercase after
+     "dot" (`sh`).
+4. **Literal formatter** (`literals`): `/commands` — "slash ‹token›" at the utterance start or after a lead-in ("type", "run", "send") when
+   `token` is in the surface's command list (`DictationOpts.commands`, the Composer's slash menu; the TUI's; `AppProfile.commands` for a
+   terminal agent) → `/token`, else stays; `@mentions` — "at ‹name›" when `name` is an agent name (`agents_list`) or a dictionary term tagged
+   `mention` → `@name`, possessives kept ("at theuth's" stays); paths — `~`, `.`, `..` + "slash" chains join without spaces; flags — after `--`
+   or `-` the next 1–3 lowercase words join with `-` until a pause token, a function word ("and", "then", "to") or punctuation; identifiers —
+   "camel case ‹words›" → `fooBar`, "snake case" → `foo_bar`, "kebab case" → `foo-bar`, "pascal case" → `FooBar`, "constant case" → `FOO_BAR`,
+   "all caps" → `FOO BAR`, "dotted" → `foo.bar`; the formatter consumes words until a pause token or ≤ 4 words.
+5. **Numbers** (`numbers`): cardinals/ordinals ≤ 6 digits ("twenty three" → `23`, "third" stays unless preceded by "number"), "point"
+   between number words → decimal, times ("six pm" → `6 pm` unchanged; "eighteen hundred" stays), units untouched. Inverse text
+   normalisation beyond this is not in scope (the datasets sheet §5 names NeMo ITN as a later port).
+6. **Model-punctuation clean-up**: an `asr: true` mark adjacent to a converted symbol of the same class is dropped (no `, ,`); a trailing
+   model period after an action or an end phrase is dropped; the existing leading-mark trim stays in `piece()` (`VOICE/live.rs:221-233`).
+7. **Dictionary replacements** (`dictionary`, §5): over word n-grams 1–3, longest match first; a rule never re-expands a completed occurrence of
+   its own output (Git → GitHub never gives GitHubHub — A:L90's guard, implemented as "skip spans produced by this rule in this pass");
+   `Replaced` spans recorded.
+8. **End-command detection** (`end_commands`, §7): the trailing ≤ 3 tokens against `EndPhrases`; "literal send it" writes the words.
+9. **Terminal-autocomplete spacing** (`terminal_spacing`): when the surface is the TUI or an any-app `AppProfile.terminal`, a final utterance
+   ending in a `/command` or `@mention` gets no trailing space (so the CLI's completion menu stays open — A:L71); otherwise the splice adds
+   its usual separator (`UI/lib/dictation.ts:49-51`).
+
+### 4.3 Examples table (the unit-test fixture, `VOICE/shape/tests.rs`; surface Composer unless noted)
+| # | Spoken (model text) | Written (`shaped.text`) | Stage / gate |
+|---|---|---|---|
+| 1 | `Hi Dana comma the deploy is done period` | `Hi Dana, the deploy is done.` | 2 right-attached |
+| 2 | `open paren see below close paren` | `(see below)` | 2 openers/closers |
+| 3 | `the plus side of this` | `the plus side of this` | 3 operator gate fails (prose) |
+| 4 | `two plus two equals four` | `2 + 2 = 4` | 3 operands short, 5 numbers |
+| 5 | `send it to theuth dot dev` | `send it to theuth.dev` | 3 "dot" + TLD |
+| 6 | `connect the dots here` | `connect the dots here` | 3 no gate ("dots" is not the word) |
+| 7 | `deploy dot S H` | `deploy.sh` | 3 spelled letters + extension |
+| 8 | `version two point five` | `version 2.5` | 3 "point" in a number |
+| 9 | `slash commit` | `/commit` | 4 known command at start |
+| 10 | `I'll slash the budget` | `I'll slash the budget` | 3 no path context |
+| 11 | `tilde slash develop slash theuth` | `~/develop/theuth` | 3 path chain |
+| 12 | `dash dash dry run flag on deploy dot S H` | `--dry-run flag on deploy.sh` | 4 flags (2 words joined), 3 |
+| 13 | `dash V` | `-V` | 4 short flag |
+| 14 | `a well dash known bug` | `a well-known bug` | 3 dash between alphanumerics |
+| 15 | `snake case max open secs` | `max_open_secs` | 4 identifier |
+| 16 | `camel case on text delta` | `onTextDelta` | 4 identifier |
+| 17 | `pascal case answer card` | `AnswerCard` | 4 identifier |
+| 18 | `underscore underscore init underscore underscore` | `__init__` | 3 underscore joiner |
+| 19 | `at theuth can you check` | `@theuth can you check` | 4 mention (agent name) |
+| 20 | `at theuth's desk` | `at theuth's desk` | 4 possessive guard |
+| 21 | `new line thanks comma Sky` | `\nThanks, Sky` | 2 action + sentence case after `\n` |
+| 22 | `first paragraph new paragraph second` | `first paragraph\n\nsecond` | 2 action |
+| 23 | `twenty three files` | `23 files` | 5 numbers |
+| 24 | `the third option` | `the third option` | 5 ordinals stay |
+| 25 | `literal send it` | `send it` | 8 escape |
+| 26 | `ship it tonight send it` | `ship it tonight` + `command: Send` | 8 end command |
+| 27 | `ship it tonight sent it` (final) | `ship it tonight` + `Send { near_miss: true }` | 8 tolerance len/5 after arming on a partial |
+| 28 | `hello, comma world` | `hello, world` | 6 clean-up (model comma beside spoken comma) |
+| 29 | `parakeet tee dee tee model` | `Parakeet TDT model` | 7 dictionary (learned) |
+| 30 | `git hub actions` | `GitHub actions` | 7 dictionary (packaged); 7 guard: a second pass leaves `GitHub` |
+| 31 | `slash compact` (TUI, final) | `/compact` with no trailing space | 9 terminal spacing |
+| 32 | `pipe grep voice` (any-app terminal) | `| grep voice` | 2 spaced operator in a terminal profile |
+| 33 | `` backtick cargo test backtick `` | `` `cargo test` `` | 2 tight joiner pair |
+| 34 | `hash one five three` | `#153` | 2 hash + 5 numbers |
+| 35 | `so yeah period` (partial) | `so yeah.` | W-a: identical on partial and final here; #27 differs |
+
+### 4.4 Partial vs final (W-a, writer's call)
+Shaping runs on **every** piece. A partial is muted text the user cannot edit (54 §0.7); its shaped form may change at the final (#27, or
+"dot" resolving when the TLD arrives) and every client already replaces the whole utterance per event (`UI/lib/dictation.ts:73-76`,
+`COMP/CompanionCore/AskVoice.swift:118`, `crates/tui/src/dictation.rs:87`). Rules that need the *next* token (dot/slash gates, flag joins)
+resolve conservatively on a partial (leave the word) and finally at `is_final`. End-command detection must run on partials (D5: arming,
+§7). Delivery into other apps happens only on finals (§3.2), so nothing is ever typed and retracted.
+
+### 4.5 Per-surface config and where it lives
+```yaml
+voice:
+  shape:            # preset per surface: full | plain | off   (plain = punctuation + literals + numbers, no dictionary/end commands)
+    composer: full
+    tui: full
+    companion: full
+    phone: full
+    any_app: full
+  end_commands:
+    send: ["send it"]
+    scratch: ["scratch that"]
+    literal: "literal"
+```
+Written by `set_shape(surface, preset)` through `runtime::write_nested_config_value(path, "voice", "shape", surface, preset)`
+(`crates/runtime/src/lib.rs:142-148`); read into `VoiceConfig.shape: ShapePresets` (`#[serde(default)]`, `VOICE/lib.rs:424-448` gains the
+field). `Surface` travels in `DictationOpts` at `dictation_start` (W-c); `None` → `Composer` (today's callers change nothing). The TUI
+passes `Tui`, the companion `Companion` for its fields, `AnyApp` with the `AppProfile` for §13, the phone webview `Phone`.
+
+### 4.6 Where the actor applies it
+`Task` (`VOICE/dictation.rs:537-543`) gains `shaper: ShaperOwned` (config + `Arc<Dictionary>` snapshot + `EndPhrases` + optional
+`AppProfile`) resolved in `begin` (`:231-309`) from the `StartDictation.opts`; `Task::texts` (`:625-633`) becomes: for each `live::Text`,
+`let s = self.shaper.shape(&self.prev_text, &t.text, t.is_final)`, then `Progress::Text { utterance, text: t.text, shaped: s.text, command:
+s.command, is_final }` (`:142-146` gains the fields); `Report` → `VoiceEvent::DictationText` (`:512-521`) carries them. `prev_text` is the
+finals so far joined (the task has them; the surface's `before` is not known to the engine — the first token of a dictation is shaped as
+sentence start). "scratch that" is executed by the actor: the previous closed utterance is re-sent as `DictationText { text: "", shaped: "",
+final: true }` so every client's per-utterance replace empties it, and §6's history marks it. The dictionary snapshot is taken per dictation;
+a user entry added mid-dictation applies from the next one.
+
+### 4.7 Unit-test list (`cargo test -p voice shape::`)
+`examples_table_rows_1_to_35` (one `#[test]` per row via a table macro); `spacing_classes_never_double_space`; `dot_gate_tld_list_and_extensions`;
+`slash_gate_needs_path_context`; `flag_join_stops_at_function_word`; `identifier_formatters_consume_at_most_four_words`; `numbers_cap_six_digits`;
+`model_punctuation_cleanup_only_adjacent`; `dictionary_self_expansion_guard`; `end_command_arms_on_partial_and_sticks`; `near_miss_tolerance_len_over_5_min_5_chars`
+("end" never passes as "send"); `literal_escapes_end_phrase_and_symbol`; `terminal_spacing_only_on_terminal_surfaces`; `partial_then_final_is_idempotent_on_plain_prose`;
+`shape_is_total_over_fuzzed_utf8` (proptest, 10 k cases, no panic); `presets_full_plain_off_resolve`; `scratch_that_drops_previous_final_only`.
