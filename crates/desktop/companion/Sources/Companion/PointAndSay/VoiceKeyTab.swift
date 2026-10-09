@@ -11,12 +11,14 @@ struct VoiceKeyTab: View {
     @AppStorage(VoiceKeySettings.accessibilityKey, store: Settings.defaults) private var accessibility = true
     @AppStorage(VoiceKeySettings.annotateMouseKey, store: Settings.defaults) private var annotateMouse = false
     @AppStorage(SpokenReplies.voiceKeyKey, store: Settings.defaults) private var speak = false // 149s S1: opt-in
+    @AppStorage(ModeKeySettings.gestureKey(.ask), store: Settings.defaults) private var gesture = ModeKeySettings.Gesture.holdLock.rawValue // 153 §12.6
 
     var body: some View {
         Form {
             Toggle("Voice key", isOn: $enabled).onChange(of: enabled) { _, _ in PointController.hotkeyChanged() }
             KeyRow(binding: model.keys.binding(.voiceKey), model: model).disabled(!enabled)
-            caption("Hold to talk, release to send; tap twice to lock hands-free, tap again to send; ⎋ cancels. The companion owns the key while it runs — the main app's own binding stands down.")
+            caption("Hold to talk, release to send; ⎋ cancels. The companion owns the key while it runs — the main app's own binding stands down. Pressing the command key while this one is held switches the gesture to command mode.")
+            GesturePicker(gesture: $gesture)
             Divider()
             Toggle("Include the screen", isOn: $includeScreen)
             Toggle("Read what the pointer touched", isOn: $accessibility).disabled(!includeScreen)
