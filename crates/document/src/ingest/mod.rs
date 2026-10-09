@@ -112,6 +112,12 @@ pub struct NotebooksConfig {
     pub youtube_ytdlp: Option<String>,
     /// Registered MCP tool names for Confluence / Jira.
     pub mcp: McpTools,
+    /// §4.3 (E1): `provider/model` for the insight side calls; `None` = `agent.title_model` → the session model.
+    pub insight_model: Option<String>,
+    /// One Dense summary per source at the end of ingest.
+    pub insight_default: bool,
+    /// How much of the source the insight call reads (tokens ≈ chars / 4).
+    pub insight_input_tokens: u32,
 }
 
 impl Default for NotebooksConfig {
@@ -124,6 +130,9 @@ impl Default for NotebooksConfig {
             youtube_langs: vec!["en".into()],
             youtube_ytdlp: None,
             mcp: McpTools::default(),
+            insight_model: None,
+            insight_default: true,
+            insight_input_tokens: 24_000,
         }
     }
 }

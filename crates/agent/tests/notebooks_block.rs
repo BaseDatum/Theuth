@@ -1,6 +1,9 @@
 //! 144 §5.3: the `<notebook>` block — shape, budget ordering, truncation notices, the allow-list sentence —
 //! and the two things a bound session changes in the system prompt (nothing, outside one).
 
+use std::collections::HashMap;
+
+use agent::notebook_context::{Level, Pins, estimate_of, plan};
 use agent::notebooks::{Budget, Item, PROMPT, fallback_title, prompt_blocks, provenance, render};
 use runtime::SessionId;
 
@@ -59,7 +62,14 @@ fn block_shape_order_and_allow_list() {
         context_budget_tokens: 40_000,
         description_tokens: 2_000,
     };
-    let got = render("NB", "DR verification", "Verify the DR plan.", items, b);
+    let got = render(
+        "NB",
+        "DR verification",
+        "Verify the DR plan.",
+        items,
+        &Pins::new(),
+        b,
+    );
     let want = "<notebook id=\"NB\" title=\"DR verification\">\n\
 <description>Verify the DR plan.</description>\n\
 <item kind=\"source\" id=\"S1\" title=\"Runbook v7\" origin=\"file · 2 pages\" level=\"full\" status=\"available\">\n\
@@ -68,7 +78,7 @@ fn block_shape_order_and_allow_list() {
 <!-- a -->\n# Drill timeline\n\n<!-- b -->\nT+0 failover</item>\n\
 <item kind=\"session\" id=\"01SESSION\" title=\"Earlier chat\" level=\"mention\" status=\"available\">\n\
 mention only: read with session_read(\"01SESSION\")</item>\n\
-You may cite only these ids: S1, 01SESSION, N1 (and the blocks inside them).\n\
+You may cite only these ids: S1, N1, 01SESSION (and the blocks inside them).\n\
 </notebook>";
     assert_eq!(got, want);
 }
@@ -90,7 +100,7 @@ fn budget_truncates_the_first_overflow_at_a_block_and_mentions_the_rest() {
         context_budget_tokens: 32,
         description_tokens: 2_000,
     };
-    let got = render("NB", "t", "", items, b);
+    let got = render("NB", "t", "", items, &Pins::new(), b);
     let order: Vec<usize> = ["id=\"NEW\"", "id=\"MID\"", "id=\"OLD\""]
         .iter()
         .map(|k| got.find(k).unwrap())
@@ -119,15 +129,105 @@ fn description_is_capped_with_a_notice_and_an_empty_notebook_says_so() {
         context_budget_tokens: 40_000,
         description_tokens: 4,
     };
-    let got = render("NB", "t", "0123456789abcdefghij", Vec::new(), b);
+    let got = render(
+        "NB",
+        "t",
+        "0123456789abcdefghij",
+        Vec::new(),
+        &Pins::new(),
+        b,
+    );
     assert!(got.contains(
         "<description>0123456789abcdef\n[truncated: 4 of 5 tokens shown; the rest with doc_read(\"notebook:NB\")]</description>"
     ));
-    assert!(
-        got.contains(
-            "Nothing in context — you see only the description; there are no ids to cite."
-        )
+    assert!(got.contains("nothing in context — the agent sees only the description"));
+}
+
+/// 144 §5.1–5.3 (E1): pinned levels, the default `summary` for a source with insights, `off` items
+/// absent from the block and the allow-list, order full → summary → mention, and the estimate's numbers
+/// equal to what the block injects (one planner).
+#[test]
+fn dial_levels_render_in_order_off_is_not_citable_and_the_estimate_matches() {
+    let insights = "<!-- s1 -->\n# Runbook\n\n<!-- s2 -->\nStep one, step two.\n\n<!-- s3 -->\n## Insights\n\n<!-- s4 -->\n### Dense summary · m · 2026-10-09\n\n<!-- s5 -->\nTwo steps.";
+    let items = vec![
+        item("source", "WITH", "With insights", Some(insights), 40),
+        item(
+            "source",
+            "RAW",
+            "Raw source",
+            Some("<!-- r1 -->\n# Raw\n\n<!-- r2 -->\nBody"),
+            30,
+        ),
+        item(
+            "note",
+            "NOTE",
+            "A note",
+            Some("<!-- n1 -->\n# A note\n\n<!-- n2 -->\nText"),
+            20,
+        ),
+        item("note", "OFF", "Hidden", Some("<!-- o1 -->\nsecret"), 50),
+        item("session", "SESS", "Chat", None, 10),
+    ];
+    let mut pins = Pins::new();
+    pins.insert("OFF".into(), Level::Off);
+    pins.insert("NOTE".into(), Level::Mention);
+    pins.insert("SESS".into(), Level::Full); // clamped to mention
+    let b = Budget {
+        context_budget_tokens: 40_000,
+        description_tokens: 2_000,
+    };
+    let got = render("NB", "t", "d", items.clone(), &pins, b);
+    let want = "<notebook id=\"NB\" title=\"t\">\n\
+<description>d</description>\n\
+<item kind=\"source\" id=\"RAW\" title=\"Raw source\" origin=\"file · 2 pages\" level=\"full\" status=\"available\">\n\
+<!-- r1 -->\n# Raw\n\n<!-- r2 -->\nBody</item>\n\
+<item kind=\"source\" id=\"WITH\" title=\"With insights\" origin=\"file · 2 pages\" level=\"summary\" status=\"available\">\n\
+mention only: 17 words; read with doc_read(\"source:WITH\") if needed\n\
+<!-- s3 -->\n## Insights\n\n<!-- s4 -->\n### Dense summary · m · 2026-10-09\n\n<!-- s5 -->\nTwo steps.</item>\n\
+<item kind=\"note\" id=\"NOTE\" title=\"A note\" level=\"mention\" status=\"available\">\n\
+mention only: 4 words; read with doc_read(\"NOTE\") if needed</item>\n\
+<item kind=\"session\" id=\"SESS\" title=\"Chat\" level=\"mention\" status=\"available\">\n\
+mention only: read with session_read(\"SESS\")</item>\n\
+You may cite only these ids: RAW, WITH, NOTE, SESS (and the blocks inside them).\n\
+</notebook>";
+    assert_eq!(got, want);
+
+    // The same planner feeds the estimate: tokens per item are the injected text's chars / 4.
+    let placed = plan(&items, &pins, 40_000);
+    let est = estimate_of(&placed, 40_000);
+    let by_id: HashMap<&str, _> = est.items.iter().map(|i| (i.id.as_str(), i)).collect();
+    assert_eq!(est.items.len(), 5);
+    assert_eq!(
+        (est.omitted, est.empty, est.budget_tokens),
+        (1, false, 40_000)
     );
+    assert_eq!(by_id["OFF"].tokens, 0);
+    assert!(by_id["OFF"].pinned && by_id["NOTE"].pinned && by_id["SESS"].pinned);
+    assert!(!by_id["RAW"].pinned && !by_id["WITH"].pinned);
+    assert_eq!(
+        by_id["RAW"].tokens,
+        agent::notebooks::tokens("<!-- r1 -->\n# Raw\n\n<!-- r2 -->\nBody")
+    );
+    assert_eq!(
+        est.total_tokens,
+        placed
+            .iter()
+            .map(|p| agent::notebooks::tokens(&p.text))
+            .sum::<u32>()
+    );
+    // Every injected id of the block is in the estimate as not-off, and OFF is nowhere in the block.
+    for id in ["RAW", "WITH", "NOTE", "SESS"] {
+        assert!(got.contains(&format!("id=\"{id}\"")));
+        assert_ne!(by_id[id].level, Level::Off);
+    }
+    assert!(!got.contains("OFF") && !got.contains("secret"));
+
+    // Every item off: the sentence, no allow-list.
+    let all_off: Pins = items.iter().map(|i| (i.id.clone(), Level::Off)).collect();
+    let got = render("NB", "t", "d", items.clone(), &all_off, b);
+    assert!(got.contains("nothing in context — the agent sees only the description"));
+    assert!(!got.contains("You may cite"));
+    assert!(estimate_of(&plan(&items, &all_off, 40_000), 40_000).empty);
 }
 
 #[test]

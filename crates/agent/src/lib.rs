@@ -42,6 +42,7 @@ pub mod endless;
 pub mod endless_ext;
 pub mod frame;
 pub mod loop_;
+pub mod notebook_context;
 pub mod notebooks;
 pub mod peers;
 pub mod project;
@@ -3434,6 +3435,8 @@ impl runtime::Plugin for AgentPlugin {
     }
 
     async fn start(self: Box<Self>, rt: &runtime::Runtime) -> anyhow::Result<()> {
+        // 144 §13.2 (E1): `notebook_context_set` / `notebook_context_estimate` ride the agent's store.
+        notebook_context::register(rt);
         supervisor::start(rt).await
     }
 }

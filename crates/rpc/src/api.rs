@@ -1175,6 +1175,56 @@ pub trait Api {
         turn: u32,
         note: document::DocId,
     ) -> RpcResult<()>;
+    /// 144 §5.1 (wave 2): pin a notebook item's dial level for `session` (`session_context`). Owner only.
+    #[method(name = "notebook_context_set", with_extensions)]
+    async fn notebook_context_set(
+        &self,
+        session: SessionId,
+        item: String,
+        kind: document::ItemKind,
+        level: document::ContextLevel,
+    ) -> RpcResult<()>;
+    /// Back to the default rule for `item` in `session`. Owner only.
+    #[method(name = "notebook_context_clear", with_extensions)]
+    async fn notebook_context_clear(&self, session: SessionId, item: String) -> RpcResult<()>;
+    /// Pin every live item of `notebook` (of `kind` when given) at `level` for `session`. Owner only.
+    #[method(name = "notebook_context_set_all", with_extensions)]
+    async fn notebook_context_set_all(
+        &self,
+        session: SessionId,
+        notebook: document::DocId,
+        kind: Option<document::ItemKind>,
+        level: document::ContextLevel,
+    ) -> RpcResult<()>;
+    /// 144 §5.2: what the next turn's `<notebook>` block carries — per item the effective level, pinned or
+    /// not, tokens and status; the total against `notebooks.context_budget_tokens`. Read-only, no model call;
+    /// `session: None` = a new thread (the default rule alone). Owner only.
+    #[method(name = "notebook_context_estimate", with_extensions)]
+    async fn notebook_context_estimate(
+        &self,
+        notebook: document::DocId,
+        session: Option<SessionId>,
+    ) -> RpcResult<document::ContextEstimate>;
+    /// 144 §4.3: one more insight section on a source — a builtin (`key_insights` | `toc` | `open_questions`)
+    /// or a `notebook_insight: true` skill; answers the `###` heading's block id. Hub only; owner only.
+    #[method(name = "insight_run", with_extensions)]
+    async fn insight_run(
+        &self,
+        source: document::DocId,
+        instruction: document::InsightInstruction,
+    ) -> RpcResult<document::InsightRun>;
+    /// Promote an insight section to a note titled `<insight> — <source>` with the provenance trailer, filed in
+    /// `notebook` (or in every live notebook holding the source). Hub only; owner only.
+    #[method(name = "insight_promote", with_extensions)]
+    async fn insight_promote(
+        &self,
+        source: document::DocId,
+        block: String,
+        notebook: Option<document::DocId>,
+    ) -> RpcResult<document::DocId>;
+    /// The three builtins, then the skills whose front matter has `notebook_insight: true`.
+    #[method(name = "insight_skills")]
+    async fn insight_skills(&self) -> RpcResult<Vec<String>>;
     /// Row counts and freshness of the code index for `root` (default: the
     /// git top-level of the process cwd; design doc 60 §10). Opens the
     /// index without reconciling it.
@@ -2359,6 +2409,7 @@ impl Server {
     /// A server with no event feed: for in-process callers (the TUI), which
     /// subscribe to the bus themselves. `serve` builds the real one.
     pub fn new(rt: Runtime) -> Self {
+        install_insight_hooks(&rt);
         Self {
             events: broadcast::channel(1).0,
             rt,
@@ -2819,6 +2870,47 @@ fn nb_result<T>(r: anyhow::Result<T>) -> RpcResult<T> {
         }
         document::DocError::Other(msg) => failed(msg),
     })
+}
+
+/// 144 §4.3 (E1): the insight job's model call and skill lookup live in `agent`; the document crate
+/// cannot name the agent actor, so this crate — which knows both ends — installs the two closures once
+/// (the pattern of `codeindex::map::generator::install_side_caller`). Looked up per call.
+fn install_insight_hooks(rt: &Runtime) {
+    use document::ingest::insights::{Hooks, InsightReply, install};
+    let dir = agent::skills::dir(&rt.data_dir);
+    install(Hooks {
+        side_call: Arc::new(|call| {
+            Box::pin(async move {
+                let agents =
+                    lookup::<Agents>(agent::AGENT_ACTOR).map_err(|e| e.message().to_owned())?;
+                let notebooks: Vec<String> =
+                    call.notebooks.iter().map(ToString::to_string).collect();
+                agent::notebook_context::insight_side_call(
+                    &agents,
+                    call.session,
+                    &notebooks,
+                    call.model,
+                    call.system,
+                    call.user,
+                    call.budget,
+                )
+                .await
+                .map(|r| InsightReply {
+                    text: r.text,
+                    model: r.model,
+                })
+            })
+        }),
+        skill: Arc::new(move |name| agent::notebook_context::insight_skill(&dir, name)),
+    });
+}
+
+/// A `ContextLevel` as its wire word (`off | mention | summary | full`) — what the agent's store keeps.
+fn level_str(level: document::ContextLevel) -> String {
+    serde_json::to_value(level)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 /// 144 §8 (W3 R1): `Notebook.chats` from the agent store (`sessions.notebook`); the document crate holds no
@@ -5394,6 +5486,128 @@ impl ApiServer for Server {
         owner(ext)?;
         let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
         nb_result(agent::notebooks::promote_answer(&agents, session, turn, note.to_string()).await)
+    }
+
+    async fn notebook_context_set(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        item: String,
+        kind: document::ItemKind,
+        level: document::ContextLevel,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(
+            agent::notebook_context::context_set(
+                &agents,
+                session,
+                item,
+                kind.as_str().to_owned(),
+                level_str(level),
+            )
+            .await,
+        )
+    }
+
+    async fn notebook_context_clear(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        item: String,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(agent::notebook_context::context_clear(&agents, session, item).await)
+    }
+
+    async fn notebook_context_set_all(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        notebook: document::DocId,
+        kind: Option<document::ItemKind>,
+        level: document::ContextLevel,
+    ) -> RpcResult<()> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        nb_result(
+            agent::notebook_context::context_set_all(
+                &agents,
+                session,
+                notebook.to_string(),
+                kind.map(|k| k.as_str().to_owned()),
+                level_str(level),
+            )
+            .await,
+        )
+    }
+
+    async fn notebook_context_estimate(
+        &self,
+        ext: &Extensions,
+        notebook: document::DocId,
+        session: Option<SessionId>,
+    ) -> RpcResult<document::ContextEstimate> {
+        owner(ext)?;
+        let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
+        let budget = agent::notebooks::Budget::from_runtime(&self.rt);
+        let est = nb_result(
+            agent::notebook_context::estimate(&agents, session, &notebook.to_string(), budget)
+                .await,
+        )?;
+        // The agent's estimate serialises to the contract's shape (string kinds, lowercase levels).
+        serde_json::to_value(&est)
+            .and_then(serde_json::from_value)
+            .map_err(|e| ErrorObjectOwned::owned(ASK_FAILED, e.to_string(), None::<()>))
+    }
+
+    async fn insight_run(
+        &self,
+        ext: &Extensions,
+        source: document::DocId,
+        instruction: document::InsightInstruction,
+    ) -> RpcResult<document::InsightRun> {
+        owner(ext)?;
+        let r = nb_result(
+            document::ingest::insights::insight_run(
+                &documents()?,
+                source.clone(),
+                instruction.clone(),
+                None,
+            )
+            .await,
+        );
+        doc_forward(ext, "insight_run", (&source, &instruction), r).await
+    }
+
+    async fn insight_promote(
+        &self,
+        ext: &Extensions,
+        source: document::DocId,
+        block: String,
+        notebook: Option<document::DocId>,
+    ) -> RpcResult<document::DocId> {
+        owner(ext)?;
+        let r = nb_result(
+            document::ingest::insights::insight_promote(
+                &documents()?,
+                source.clone(),
+                block.clone(),
+                notebook.clone(),
+                document::Principal::Owner { device: None },
+            )
+            .await,
+        );
+        doc_forward(ext, "insight_promote", (&source, &block, &notebook), r).await
+    }
+
+    async fn insight_skills(&self) -> RpcResult<Vec<String>> {
+        let mut out = document::ingest::insights::builtin_names();
+        out.extend(agent::notebook_context::insight_skills(
+            &agent::skills::dir(&self.rt.data_dir),
+        ));
+        Ok(out)
     }
 
     async fn doc_snapshots(&self, doc: document::DocId) -> RpcResult<Vec<document::SnapshotInfo>> {

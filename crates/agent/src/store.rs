@@ -3096,6 +3096,56 @@ impl Store {
             .collect())
     }
 
+    /// 144 §5.1 (E1): pin `item`'s dial level for `session` (`session_context`, owner-only, never captured).
+    pub async fn context_set(
+        &self,
+        session: SessionId,
+        item: &str,
+        kind: &str,
+        level: &str,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT INTO session_context (session, item, kind, level, hlc) VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(session, item) DO UPDATE SET kind = excluded.kind, level = excluded.level, \
+             hlc = excluded.hlc",
+        )
+        .bind(session.to_string())
+        .bind(item)
+        .bind(kind)
+        .bind(level)
+        .bind(chrono::Utc::now().timestamp_millis())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 144 §5.1 (E1): forget the pin — the item goes back to the default rule.
+    pub async fn context_clear(&self, session: SessionId, item: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM session_context WHERE session = ? AND item = ?")
+            .bind(session.to_string())
+            .bind(item)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 144 §5.1 (E1): every pinned `(item, kind, level)` of `session`.
+    pub async fn context_get(
+        &self,
+        session: SessionId,
+    ) -> anyhow::Result<Vec<(String, String, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT item, kind, level FROM session_context WHERE session = ? ORDER BY hlc, item",
+        )
+        .bind(session.to_string())
+        .fetch_all(&self.read)
+        .await?)
+    }
+
     /// The style row of project `name`, if any (51 §3 as-built).
     pub async fn project_style(&self, name: &str) -> anyhow::Result<Option<ProjectStyle>> {
         Ok(

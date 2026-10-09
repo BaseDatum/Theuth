@@ -348,8 +348,8 @@ pub enum ContextStatus {
     Omitted,
 }
 
-/// One item of the pre-turn estimate (144 §5.2). TS name `NotebookContextItem`: `agent::ContextItem`
-/// already owns `ContextItem.ts`.
+/// One item of the pre-turn estimate (144 §5.2, wave-2 contract §1). TS name `NotebookContextItem`:
+/// `agent::ContextItem` already owns `ContextItem.ts`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(
     feature = "ts",
@@ -357,30 +357,60 @@ pub enum ContextStatus {
     ts(export, rename = "NotebookContextItem")
 )]
 pub struct ContextItem {
-    /// What `item` is.
-    pub kind: ItemKind,
     /// The item id.
-    pub item: String,
-    /// The dial position for this thread.
+    pub id: String,
+    /// What `id` is.
+    pub kind: ItemKind,
+    /// Display title (a source's card title, a note's first heading, a chat's title).
+    pub title: String,
+    /// The effective level used at the next turn.
     pub level: ContextLevel,
+    /// `true` when the user/agent set it (a `session_context` row); `false` = the default rule.
+    pub pinned: bool,
+    /// Tokens this item contributes at `level` (chars / 4 on the hub).
+    pub tokens: u32,
     /// What the budget did to it.
     pub status: ContextStatus,
-    /// Tokens it costs at `level`.
-    pub tokens: u32,
 }
 
-/// The pre-turn estimate (144 §5.2).
+/// The pre-turn estimate (144 §5.2, wave-2 contract §1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ContextEstimate {
-    /// Every item of the notebook with its level and fate.
+    /// Every item of the notebook with its level and fate, in injection order (full, summary, mention, off;
+    /// newest first within a level).
     pub items: Vec<ContextItem>,
     /// Tokens the injection will cost.
-    pub tokens: u32,
+    pub total_tokens: u32,
     /// The budget (`notebooks.context_budget_tokens`).
-    pub budget: u32,
-    /// Items left out.
+    pub budget_tokens: u32,
+    /// Items left out: `off` or cut by the budget.
     pub omitted: u32,
+    /// Every item `off` (or no items): the block carries the "nothing in context" sentence.
+    pub empty: bool,
+}
+
+/// What `insight_run` should produce (144 §4.3): exactly one of a builtin (`key_insights` | `toc` |
+/// `open_questions`) or a skill whose front matter has `notebook_insight: true`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct InsightInstruction {
+    /// A builtin's name.
+    #[serde(default)]
+    pub builtin: Option<String>,
+    /// A skill's name.
+    #[serde(default)]
+    pub skill: Option<String>,
+}
+
+/// `insight_run` reply: the first block id of the appended `###` section.
+#[derive(
+    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct InsightRun {
+    /// The `### <name> · <model> · <date>` heading block.
+    pub block: String,
 }
 
 /// The target kind of a `theuth://` citation (144 §6.1).
