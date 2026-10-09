@@ -226,8 +226,7 @@ struct Strip: View {
             if !ui.isDetached, !ui.boxFocused, ui.stopHoldStarted == nil, let m = chord(.islandMute), let st = chord(.islandStop) {
                 Hint(m, "mute"); Hint(st, "stop")
             }
-            RoundButton(icon: ui.eyeHidden ? "eye.slash" : "eye",
-                        label: ui.eyeHidden ? "Hidden from screen sharing (best effort)" : "Visible in screen sharing") {
+            RoundButton(icon: EyeGlyph.symbol(ui.eyeHidden), label: EyeGlyph.label(ui.eyeHidden), tint: EyeGlyph.tint(ui.eyeHidden)) {
                 ui.eyeHidden.toggle()
             }.islandRect("eye", ui)
             RoundButton(icon: "ellipsis", label: "Pause or stop") { ui.menuOpen.toggle() }.islandRect("menu", ui)
@@ -477,11 +476,23 @@ struct StripButton: View {
 struct RoundButton: View {
     let icon: String
     let label: String
+    var tint: Color? = nil
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Image(systemName: icon).font(.callout).foregroundColor(.secondary).frame(width: 26, height: 26).contentShape(Circle())
+            Image(systemName: icon).font(.callout).foregroundColor(tint ?? .secondary).frame(width: 26, height: 26).contentShape(Circle())
         }.buttonStyle(.plain).help(label).accessibilityLabel(label)
+    }
+}
+
+/// 149i addendum E: the eye says at a glance whether screen-share viewers can see the island — an orange filled eye while
+/// VISIBLE (`sharingType .readOnly`: caution, people can see it), a green slashed eye while HIDDEN (`.none`: safe). System
+/// colours, the glyph alone tinted; the same glyph, tint and label wherever the state is shown (strip, Settings › Island).
+enum EyeGlyph {
+    static func symbol(_ hidden: Bool) -> String { hidden ? "eye.slash.fill" : "eye.fill" }
+    static func tint(_ hidden: Bool) -> Color { Color(nsColor: hidden ? .systemGreen : .systemOrange) }
+    static func label(_ hidden: Bool) -> String {
+        hidden ? "Hidden from screen sharing (best effort)" : "Visible in screen sharing — viewers can see the island"
     }
 }
 

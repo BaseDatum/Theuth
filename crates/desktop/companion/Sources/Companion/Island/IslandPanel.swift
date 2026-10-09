@@ -509,9 +509,15 @@ struct IslandSettingsTab: View {
                 .onChange(of: alwaysShow) { _, v in controller?.setAlwaysShow(v) ?? (IslandSettings.alwaysShow = v) }
             Text("Off: the island appears while a meeting is live and goes when it ends. On: the idle pill stays; a click opens Meetings.")
                 .font(.caption).foregroundStyle(.secondary)
-            Toggle("Hide from screen sharing (best effort)", isOn: $eyeHidden)
-                .onChange(of: eyeHidden) { _, v in if let c = controller { c.ui.eyeHidden = v } else { IslandSettings.eyeHidden = v } }
-            Text("Sets the legacy “no sharing” flag on every companion panel. Apple documents it as no longer honoured by modern capture; the ⌥⇧E eye toggles it while a meeting is live.")
+            Toggle(isOn: $eyeHidden) {
+                HStack(spacing: 6) {
+                    Image(systemName: EyeGlyph.symbol(eyeHidden)).foregroundStyle(EyeGlyph.tint(eyeHidden)).accessibilityHidden(true)
+                    Text("Hide from screen sharing (best effort)")
+                }
+            }
+            .help(EyeGlyph.label(eyeHidden)).accessibilityLabel(EyeGlyph.label(eyeHidden))
+            .onChange(of: eyeHidden) { _, v in if let c = controller { c.ui.eyeHidden = v } else { IslandSettings.eyeHidden = v } }
+            Text("Sets the legacy “no sharing” flag on every companion panel. Apple documents it as no longer honoured by modern capture; the ⌥⇧E eye toggles it while a meeting is live. Orange filled eye: viewers can see the island. Green slashed eye: hidden.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Reset position on this display") { controller?.snapBack(); frames = IslandSettings.frames.count }

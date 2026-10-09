@@ -58,8 +58,10 @@ extension IslandController {
             // The eye: the click must land on the same path the ⌥⇧E hotkey takes (`ui.eyeHidden.toggle()` → `setEye` → its
             // "eye hidden=… → sharingType=…" log line); the owner saw the hotkey work and the click not.
             let eye = ui.eyeHidden
+            await shot(eye ? "eye-hidden" : "eye-visible") // addendum E: the tinted glyph in this state
             let mark = (try? Data(contentsOf: IslandLog.file))?.count ?? 0
             await click("eye")
+            await shot(ui.eyeHidden ? "eye-hidden" : "eye-visible")
             let want: NSWindow.SharingType = (ui.eyeHidden && !Flags.shareable) ? .none : .readOnly
             let logged = String(decoding: ((try? Data(contentsOf: IslandLog.file)) ?? Data()).dropFirst(mark), as: UTF8.self)
             let line = "eye hidden=\(!eye) → sharingType=\(want.rawValue)"
@@ -84,9 +86,11 @@ extension IslandController {
             // area wants an enter and movement inside before SwiftUI's `onHover` flips; a human wiggles, so up to three sweeps.
             if let r = rect("topic:t1") {
                 for attempt in 1...3 where rect("dismiss:t1") == nil {
+                    // Leave the window first: a tracking area whose pointer never left sends no new enter.
+                    post(.mouseMoved, at: park); await sleep(0.3)
                     for i in 0...8 { post(.mouseMoved, at: NSPoint(x: r.minX - 10 + CGFloat(i) * (r.width / 2 + 10) / 8, y: r.midY)); await sleep(0.04) }
                     await sleep(0.7)
-                    if rect("dismiss:t1") == nil { IslandLog.write("probe hover topic:t1: no dismiss after sweep \(attempt)"); post(.mouseMoved, at: NSPoint(x: r.minX - 40, y: r.midY)); await sleep(0.3) }
+                    if rect("dismiss:t1") == nil { IslandLog.write("probe hover topic:t1: no dismiss after sweep \(attempt)") }
                 }
             }
             logRects(["dismiss:t1"])

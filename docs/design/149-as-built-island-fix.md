@@ -123,7 +123,22 @@ PNGs (window captures of the probe's own window): `/tmp/149i-clicks-start.png` (
 `-snapped.png`; `/tmp/149i-clicks-nonotch-*.png` the same on the fallback anchor; `/tmp/149i-stop-start.png` /
 `-after.png` (the latter is `screencapture`'s empty result of a window that is no longer on screen); `/tmp/149i-open-no-hover-start.png`;
 the fixture probes `/tmp/149i-island-closed.png` (collapsed pill over the pretended notch), `-open.png` (the strip + pane at once),
-`-detached.png`, `-nonotch.png` (open under the menu bar on the notchless display).
+`-detached.png`, `-nonotch.png` (open under the menu bar on the notchless display); `/tmp/149i-eye-visible.png` /
+`/tmp/149i-eye-hidden.png` (§E, one open-state capture per eye state, taken around the eye click).
+
+## §E — the eye's tint says at a glance whether screen-share viewers can see the island
+Owner, 16:06: "make it obvious at a glance that if you're screen sharing they can see your notch window." Ruling: VISIBLE to
+screen sharing (`sharingType .readOnly`) = `eye.fill` tinted `Color(nsColor: .systemOrange)` — caution, people can see it; HIDDEN
+(`.none`) = `eye.slash.fill` tinted `Color(nsColor: .systemGreen)` — safe. Labels (`.help` + accessibility): "Visible in screen
+sharing — viewers can see the island" / "Hidden from screen sharing (best effort)".
+- `Island/IslandViews.swift` `EyeGlyph` (symbol · tint · label, one source for every surface); `RoundButton` gained an optional
+  `tint` (the glyph alone is tinted, nothing else); the strip's eye uses it.
+- `Island/IslandPanel.swift` `IslandSettingsTab`: the "Hide from screen sharing" toggle's label carries the same tinted glyph and
+  the same help/accessibility label; the caption explains the two tints.
+- Not shown elsewhere: the ⋮ menu has no eye row (the eye sits beside ⋮ on the strip), and the Legend lists the ⌥⇧E key row by
+  text only — nothing to tint there.
+- System colours only; no hex (grep stays empty). The state follows `ui.eyeHidden` — under a `--shareable` probe `sharingType`
+  stays `.readOnly` by design, so the probe's `-hidden.png` shows the green glyph while the capture could still see the window.
 
 ## Gates (all `env BUILD_LABEL=149i build-lock …`)
 - `bash crates/desktop/companion/test.sh` — **192 tests in 30 suites passed** (`/tmp/149i-test.log`; 190 + `IslandModelTests`
@@ -139,10 +154,11 @@ the fixture probes `/tmp/149i-island-closed.png` (collapsed pill over the preten
 ## Deviations
 - The probe writes to the shared `Settings.defaults` suite (the owner's) for the eye default and the frame memory while it runs —
   as the W3 probes did — and restores both before quitting (`settings restored (eyeHidden=… frames=…)` in the log).
-- The synthetic hover for the topic's dismiss × is a 9-step pointer sweep retried up to three times (`probe hover topic:t1: no
-  dismiss after sweep N` logs a retry); a single jump, and once even a single sweep, flipped SwiftUI's `onHover` only sometimes
-  (probe-only flakiness of the tracking area after the ⋮ menu re-created the topic buttons; a real mouse wiggles — the E key
-  dismisses too).
+- The synthetic hover for the topic's dismiss × first leaves the window (the park point), then sweeps 9 steps into the pill, up to
+  three times (`probe hover topic:t1: no dismiss after sweep N`). A single jump, or a sweep without leaving first, flipped
+  SwiftUI's `onHover` only sometimes (once not in three sweeps): the tracking area of a topic button re-created under a pointer
+  that never left (the ⋮ menu's stop sat where the topics return) sends no new enter. Probe-only; a real mouse wiggles and
+  leaves; the E key dismisses too. Final bundle runs after the change: `clicks` 3/3 × 16/16, `clicks-nonotch` 2/2 × 16/16.
 - The probe posts `mouseMoved` to park the pointer away from the island and to restore it afterwards; those two moves are not at
   the probe's window (the brief asked for the park).
 - `escape()` no longer closes the pane; with no hover close there is nothing for it to undo. Keys otherwise unchanged (D4).
