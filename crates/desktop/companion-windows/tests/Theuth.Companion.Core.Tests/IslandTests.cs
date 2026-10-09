@@ -91,10 +91,14 @@ public sealed class IslandModelTests
         var store = new SettingsStore();
         m.AlwaysShow = true;
         m.Save(store);
+        m.HiddenFromCapture = false;
+        m.Save(store);
         var back = new IslandModel();
         back.Load(store);
         Assert.Equal(m.FramesJson, back.FramesJson);
         Assert.True(back.AlwaysShow);
+        Assert.False(back.HiddenFromCapture);
+        Assert.True(new IslandModel().HiddenFromCapture); // the default: hidden
         back.ResetAll();
         back.Save(store);
         Assert.False(store.Contains(IslandModel.FramesKey));

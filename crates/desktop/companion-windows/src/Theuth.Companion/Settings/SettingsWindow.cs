@@ -62,7 +62,7 @@ internal sealed class SettingsController
 /// </summary>
 internal sealed partial class SettingsWindow : Window
 {
-    public static readonly string[] Pages = { "rail", "keys", "notifications", "undo", "login", "engine" };
+    public static readonly string[] Pages = { "rail", "island", "voice", "keys", "notifications", "undo", "login", "engine" }; // 149 WW3: island, voice
 
     private readonly Store store;
     private readonly Notifier notifier;
@@ -93,7 +93,7 @@ internal sealed partial class SettingsWindow : Window
         nav.IsPaneToggleButtonVisible = false;
         nav.Content = host;
         AutomationProperties.SetAutomationId(nav, "settings");
-        foreach (var (key, title) in new[] { ("rail", "Rail"), ("keys", "Keys"), ("notifications", "Notifications"), ("undo", "Undo delay"), ("login", "Launch at login"), ("engine", "Engine") })
+        foreach (var (key, title) in new[] { ("rail", "Rail"), ("island", "Island"), ("voice", "Voice key"), ("keys", "Keys"), ("notifications", "Notifications"), ("undo", "Undo delay"), ("login", "Launch at login"), ("engine", "Engine") })
         {
             var item = new NavigationViewItem { Content = title, Tag = key };
             AutomationProperties.SetAutomationId(item, $"settings-{key}");
@@ -181,6 +181,8 @@ internal sealed partial class SettingsWindow : Window
             switch (key)
             {
                 case "rail": Rail(page); break;
+                case "island": Island(page); break; // 149 WW3
+                case "voice": VoiceKey(page); break; // 149 WW3
                 case "keys": Keys(page); break;
                 case "notifications": Notifications(page); break;
                 case "undo": Undo(page); break;

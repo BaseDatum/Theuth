@@ -94,6 +94,10 @@ internal sealed partial class IslandWindow : ToolWindow
     private DateTimeOffset lastGripPress;
     private bool wantsKey;
     private bool hiddenFromCapture;
+    private Rectangle? micBar, sysBar;
+    private float micLevel, sysLevel;
+    private string? oracleMode;
+    private DateTimeOffset verdictAt;
 
     public IslandWindow(DispatcherQueue dispatcher, IslandModel model, Action<IslandAction> act, Action save)
         : base("theuth island", WINDOW_EX_STYLE.WS_EX_NOACTIVATE, excludeFromCapture: !Flags.Shareable)
@@ -254,9 +258,29 @@ internal sealed partial class IslandWindow : ToolWindow
 
     public void Update(MeetingSnapshot s)
     {
+        if ((s.Oracle.Count > 0 ? s.Oracle[^1] : null) != (snapshot.Oracle.Count > 0 ? snapshot.Oracle[^1] : null)) verdictAt = DateTimeOffset.Now;
         snapshot = s;
         if (s.State == "Recording" && IsShown) clockTimer.Start(); else clockTimer.Stop();
         Render();
+    }
+
+    /// <summary>The meters (<c>MeetingEvent::Level</c>, ~6/s): the two bars resize in place, no re-render.</summary>
+    public void SetLevels(float mic, float system)
+    {
+        micLevel = mic;
+        sysLevel = system;
+        if (micBar is { } m) m.Height = MeterHeight(mic);
+        if (sysBar is { } s) s.Height = MeterHeight(system);
+    }
+
+    private static double MeterHeight(float rms) => 3 + Math.Round(11 * Math.Clamp(Math.Sqrt(Math.Max(0, rms)) * 1.6, 0, 1));
+
+    /// <summary>The oracle chip's mode word (<c>decision_mode('meeting').effective</c>, every 30 s); null/"off" hides the chip unless a verdict is live.</summary>
+    public void SetOracleMode(string? mode)
+    {
+        if (oracleMode == mode) return;
+        oracleMode = mode;
+        if (voice is null && IsShown) Render();
     }
 
     /// <summary>Point-and-say's voice mode; null returns the island to its meeting content.</summary>
@@ -467,6 +491,8 @@ internal sealed partial class IslandWindow : ToolWindow
         body.Children.Clear();
         request = null;
         clock = null;
+        micBar = null;
+        sysBar = null;
         if (voice is { } v) RenderVoice(v);
         else if (model.Mode == IslandMode.Closed) RenderPill();
         else RenderOpen();
@@ -507,6 +533,46 @@ internal sealed partial class IslandWindow : ToolWindow
 
     private StackPanel Row(double spacing = 8) => new() { Orientation = Orientation.Horizontal, Spacing = spacing, VerticalAlignment = VerticalAlignment.Center };
 
+    /// <summary>The meters: mic (faience) and system (sand) bars, 3 epx wide, 3–14 epx tall, bottom-aligned.</summary>
+    private StackPanel Meters()
+    {
+        var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center, Height = 14 };
+        AutomationProperties.SetAutomationId(p, "island-meters");
+        micBar = new Rectangle { Width = 3, Height = MeterHeight(micLevel), RadiusX = 1.5, RadiusY = 1.5, Fill = Palette.Brush(Palette.Faience, ElementTheme.Dark), VerticalAlignment = VerticalAlignment.Bottom };
+        sysBar = new Rectangle { Width = 3, Height = MeterHeight(sysLevel), RadiusX = 1.5, RadiusY = 1.5, Fill = Palette.Brush(Palette.Sand, ElementTheme.Dark), VerticalAlignment = VerticalAlignment.Bottom };
+        p.Children.Add(micBar);
+        p.Children.Add(sysBar);
+        return p;
+    }
+
+    /// <summary>The oracle chip (<c>Island.tsx OracleChip</c>): the effective mode word + <c>deciding</c> · <c>skip</c> · <c>brief</c> · <c>→ model</c>; nothing when off and quiet.</summary>
+    private Border? OracleChip()
+    {
+        var s = snapshot;
+        var last = s.Oracle.Count > 0 ? s.Oracle[^1] : null;
+        string effective = oracleMode ?? "off";
+        if (effective == "off" && s.Deciding is null && last is null) return null;
+        string? verdict = s.Deciding is not null ? "deciding" : last is not null && DateTimeOffset.Now - verdictAt < TimeSpan.FromSeconds(6)
+            ? last.Disposition == "skip" ? "skip" : last.Disposition == "brief" ? "brief" : "→ model" : null;
+        var row = Row(4);
+        if (effective != "off") row.Children.Add(Text(effective.ToUpperInvariant(), 10, Palette.Sand));
+        if (verdict is not null) row.Children.Add(Text(verdict, 10.5, s.Deciding is not null ? Palette.Gold : Palette.Ink2));
+        var chip = new Border
+        {
+            Background = Palette.Tint(Palette.Ink, ElementTheme.Dark, 0.1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(6, 0, 6, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = row,
+        };
+        ToolTipService.SetToolTip(chip, MeetingReducer.OracleSummary(s.Oracle) ?? $"decision oracle {effective}");
+        AutomationProperties.SetAutomationId(chip, "island-oracle");
+        return chip;
+    }
+
+    /// <summary>The pill's title/speaker word: the newest line's speaker (<c>Speaker 2</c> · <c>me</c>).</summary>
+    private static string? SpeakerWord(MeetingSnapshot s) => s.Lines.Count > 0 ? s.Lines[^1].Who.TrimEnd(':') : null;
+
     private void RenderPill()
     {
         shell.CornerRadius = new CornerRadius(18);
@@ -515,6 +581,8 @@ internal sealed partial class IslandWindow : ToolWindow
         row.Height = PillHeight - 2;
         AutomationProperties.SetAutomationId(row, "island-pill");
         var s = snapshot;
+        if (s.Meeting is not null) row.Children.Add(Meters());
+        if (SpeakerWord(s) is { } who) row.Children.Add(Text(who, 12, Palette.Ink2));
         if (s.State == "Recording") row.Children.Add(Dot(Palette.Carnelian));
         else if (s.State == "Paused") row.Children.Add(Dot(Palette.Sand));
         else row.Children.Add(Dot(Palette.Faience, 6));
@@ -553,10 +621,12 @@ internal sealed partial class IslandWindow : ToolWindow
         var grip = new Border { Width = GripWidth, Height = 20, Child = Text("⋮⋮", 12, Palette.Sand), VerticalAlignment = VerticalAlignment.Center };
         ToolTipService.SetToolTip(grip, "Drag to move · double-click to snap back");
         strip.Children.Add(grip);
+        if (s.Meeting is not null) strip.Children.Add(Meters());
         strip.Children.Add(Dot(s.State == "Recording" ? Palette.Carnelian : Palette.Sand));
         clock = Text(s.Meeting is null ? "no meeting" : IslandModel.Clock(s.Elapsed(DateTimeOffset.Now)), 13, Palette.Ink, FontWeights.SemiBold);
         AutomationProperties.SetAutomationId(clock, "island-clock");
         strip.Children.Add(clock);
+        if (OracleChip() is { } oracle) strip.Children.Add(oracle);
         foreach (var d in s.Degraded.Take(2)) strip.Children.Add(Badge(Degraded(d), Palette.Gold));
         if (s.Listening) strip.Children.Add(Badge("listening…", Palette.Faience));
         else if (s.ApprovalWaiting) strip.Children.Add(Badge("approval waiting", Palette.Gold));

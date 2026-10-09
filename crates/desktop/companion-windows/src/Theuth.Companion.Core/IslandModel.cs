@@ -59,6 +59,9 @@ public sealed class IslandModel
     /// <summary>Settings › Island "Always show": the closed pill stays when nothing is live.</summary>
     public bool AlwaysShow { get; set; }
 
+    /// <summary>Settings › Island eye default: the companion's own windows are excluded from capture (<c>WDA_EXCLUDEFROMCAPTURE</c>).</summary>
+    public bool HiddenFromCapture { get; set; } = true;
+
     /// <summary>Pinned by a click: hover-out does not close it.</summary>
     public bool Pinned { get; set; }
 
@@ -180,6 +183,8 @@ public sealed class IslandModel
 
     public const string AlwaysShowKey = "islandAlwaysShow";
 
+    public const string HiddenFromCaptureKey = "islandHiddenFromCapture";
+
     public string FramesJson
     {
         get
@@ -227,12 +232,14 @@ public sealed class IslandModel
     {
         LoadFrames(d.String(FramesKey));
         AlwaysShow = d.Bool(AlwaysShowKey);
+        if (d.Contains(HiddenFromCaptureKey)) HiddenFromCapture = d.Bool(HiddenFromCaptureKey);
     }
 
     public void Save(SettingsStore d)
     {
         if (frames.Count == 0) d.Remove(FramesKey); else d.Set(FramesKey, FramesJson);
         d.Set(AlwaysShowKey, AlwaysShow);
+        d.Set(HiddenFromCaptureKey, HiddenFromCapture);
         d.Flush();
     }
 
