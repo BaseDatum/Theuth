@@ -1,4 +1,4 @@
-import { stripRows } from '@/lib/session-tree'
+import { observedLabel, stripRows } from '@/lib/session-tree'
 import type { AgentInfo, AgentState } from '@/rpc/extra'
 
 /** How long a session that stopped being live stays listed (fading) before it drops out (100 D2). */
@@ -12,6 +12,10 @@ export const liveRows = (children: Readonly<Record<string, AgentInfo>>): AgentIn
 
 /** The sidebar tree's phrasing of a row's state. */
 export const stateText = (s: AgentState): string => (s.state === 'awaiting' ? `awaiting ${s.from}` : s.state === 'approval' ? `approval: ${s.tool}` : s.state)
+
+/** A strip dot's title (composer strip, org-chart card): `name · state[ · model]`; a watch-only child (141 §9.2c) reads `watching · <harness state>`. */
+export const dotLabel = (row: AgentInfo): string =>
+  `${row.name} · ${row.observed ? `watching · ${observedLabel[row.observed.state]}` : stateText(row.state)}${row.model ? ` · ${row.model}` : ''}`
 
 /** What a list shows: `ids` in first-seen order; `leaving` maps the ids no longer live to the clock when they left. */
 export type Lingering = { ids: string[]; leaving: Record<string, number> }

@@ -98,6 +98,52 @@ pub(crate) fn with_test_registry<F: Future>(body: F) -> F::Output {
         .expect("test runtime")
         .block_on(body)
 }
+
+/// A test scratch directory under `$TMPDIR`, `theuth-<tag>-<uuid>`, removed
+/// on drop — on a passing test and on a panic alike (141 R3 T15 / R4: leaked
+/// `theuth-*` test dirs filled the shared machine's disk). Bind it before
+/// anything that uses the path, so it drops last.
+#[cfg(test)]
+pub(crate) struct TestDir(pub(crate) std::path::PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    pub(crate) fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("theuth-{tag}-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// 141 R3 T15: the guard deletes its dir on drop — also mid-panic, since
+/// unwinding drops the test's locals.
+#[cfg(test)]
+#[test]
+fn scratch_is_removed_on_drop() {
+    let path = {
+        let s = TestDir::new("scratch-check");
+        std::fs::write(s.0.join("x"), b"x").unwrap();
+        assert!(s.0.is_dir());
+        s.0.clone()
+    };
+    assert!(!path.exists(), "{path:?}");
+    let path = std::panic::catch_unwind(|| {
+        let s = TestDir::new("scratch-panic");
+        let p = s.0.clone();
+        std::panic::panic_any(p);
+    })
+    .unwrap_err()
+    .downcast::<std::path::PathBuf>()
+    .unwrap();
+    assert!(!path.exists(), "{path:?}");
+}
 pub mod cost;
 pub mod lifecycle;
 pub mod private;
@@ -708,6 +754,18 @@ pub struct SetSubagentModel {
 /// `ask` → `Option<ModelInfo>`: the live subagent default model, if set.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetSubagentModel;
+
+/// `ask` → `Result<ModelInfo, String>` (148 R4): resolve `model` through the
+/// catalog AND refuse a provider without credentials, exactly as
+/// [`SetSubagentModel`] validates ("provider `x` has no credentials"). No
+/// side effects: the roster validates `roster.theuth_model` and an agent
+/// file's `model:` with it. An unknown id under a keyed provider still
+/// resolves (pass-through), as everywhere else.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolveModel {
+    /// `provider/model` or a bare model id.
+    pub model: String,
+}
 
 /// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
 /// finished frame (design doc 10 §5.2). `Err("turn in flight")` while a turn

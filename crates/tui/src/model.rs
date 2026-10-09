@@ -12101,8 +12101,19 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
         (_, Some(t)) => ago(now - t),
         _ => String::new(),
     };
-    // Glyph, name, state, gaps, age and the box take ~44 columns; the detail gets the rest.
-    let room = usize::from(width).saturating_sub(44).max(16);
+    let active = match crate::broadcast::age(a.info.activity.last_active) {
+        s if s.is_empty() => s,
+        s => format!(" ·{s}"),
+    };
+    let tail = format!(
+        "  {age}{}{active}",
+        crate::broadcast::counts(&a.info.activity)
+    );
+    // Glyph, name, state and their gaps take 27 columns, the picker frame 7; the detail gets
+    // what is left after the measured tail (141 R4 T13b: an estimate let long ages overflow).
+    let room = usize::from(width)
+        .saturating_sub(34 + crate::search::cells(&tail))
+        .max(16);
     let detail = match (&a.info.observed, &a.info.state) {
         (Some(o), _) => {
             let mut d = match o.detail["lastIntent"].as_str() {
@@ -12125,15 +12136,8 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
         (None, AgentState::Error) => a.error.clone().unwrap_or_else(|| a.info.last.clone()),
         (None, AgentState::Cancelled | AgentState::Idle) => a.info.last.clone(),
     };
-    let detail: String = detail.chars().take(room).collect();
-    let active = match crate::broadcast::age(a.info.activity.last_active) {
-        s if s.is_empty() => s,
-        s => format!(" ·{s}"),
-    };
-    format!(
-        "{glyph} {name:<14} {word:<9} {detail:<room$}  {age}{}{active}",
-        crate::broadcast::counts(&a.info.activity),
-    )
+    let detail = crate::search::fit(&detail, room);
+    format!("{glyph} {name:<14} {word:<9} {detail:<room$}{tail}")
 }
 
 /// Row glyph of a watch-only child (141 §10.1).
@@ -12415,12 +12419,13 @@ impl Model {
 
     /// One `/agents` picker or board line: [`agent_row`] plus the child's
     /// cost tag (141 R3 T13: watch rows carry their money like the desktop).
+    /// The tag is measured first and the row fitted to the rest (R4 T13b), so
+    /// the detail is what gets cut, never the money.
     pub fn board_row(&self, a: &AgentRow, width: u16) -> String {
-        format!(
-            "{}{}",
-            agent_row(a, self.spinner(), width),
-            self.child_cost_tag(a.info.id)
-        )
+        let tag = self.child_cost_tag(a.info.id);
+        let fit =
+            width.saturating_sub(u16::try_from(crate::search::cells(&tag)).unwrap_or(u16::MAX));
+        format!("{}{tag}", agent_row(a, self.spinner(), fit))
     }
 
     /// A direct child's inclusive total for its `/agents` row: `  ·  $0.123`
@@ -13975,6 +13980,89 @@ mod tests {
             row.starts_with("◎   ↳ ReadA.b") && row.contains("watch · opencode"),
             "{row}"
         );
+    }
+
+    /// 141 R4 T13b: the cost tag is whole at every width — the detail is what
+    /// gets cut (`…`), even with a long age and an activity suffix; a native
+    /// row (no tag) is the plain `agent_row`.
+    #[test]
+    fn watch_rows_keep_the_cost_tag_whole_at_every_width() {
+        let mut m = Model::default();
+        let root = SessionId::new();
+        m.session = Some(root);
+        let (child, native) = (SessionId::new(), SessionId::new());
+        m.apply_agent(AgentEvent::ObservedChildChanged {
+            parent: root,
+            child,
+            name: "NapA".into(),
+            model: Some("anthropic/claude-fable-5-1".into()),
+            observed: observed(
+                ObservedSource::OmpTask,
+                ObservedState::Running,
+                false,
+                Some("Reading first line"),
+            ),
+        });
+        m.apply_agent(AgentEvent::SubagentSpawned {
+            parent: root,
+            child: native,
+            name: "worker".into(),
+            cap: None,
+        });
+        let now = chrono::Utc::now();
+        for id in [child, native] {
+            let a = m.agents.get_mut(&id).unwrap();
+            a.info.started_at = Some(now - chrono::Duration::seconds(92));
+            a.info.activity.last_active = Some(now - chrono::Duration::seconds(5));
+        }
+        let child_cost = |nanos| agent::ChildCost {
+            session: child,
+            name: Some("NapA".into()),
+            deleted: false,
+            total: CostBucket {
+                calls: 1,
+                dispatched: 1,
+                returned: vec![Money {
+                    currency: "USD".into(),
+                    nanos,
+                }],
+                ..Default::default()
+            },
+            scope: CostScope::Observed,
+        };
+        m.apply(UiEvent::Cost(
+            root,
+            SessionCost {
+                session: root,
+                revision: 1,
+                history_coverage: Coverage::Complete,
+                scope: CostScope::Native,
+                direct: CostBucket::default(),
+                descendants: CostBucket::default(),
+                total: CostBucket::default(),
+                children: vec![child_cost(264_548_000)],
+                remote_meter_gaps: 0,
+                delta_suspected: false,
+                remote_tokens: Vec::new(),
+            },
+        ));
+        for width in [80u16, 140, 200] {
+            let row = m.board_row(&m.agents[&child], width);
+            // Whole tag, and the row fits inside the picker frame (border, padding, cursor).
+            assert!(row.ends_with("  ·  $0.265"), "{width}: {row}");
+            assert!(
+                crate::search::cells(&row) + 7 <= usize::from(width),
+                "{width}: {} cells: {row}",
+                crate::search::cells(&row)
+            );
+            assert!(row.contains("1m3") && row.contains(" ·"), "{width}: {row}");
+            // The model joins the detail only when there is room after the tag.
+            assert_eq!(row.contains("claude-fable"), width >= 140, "{width}: {row}");
+            assert_eq!(row.contains('…'), width == 80, "{width}: {row}");
+            let plain = m.board_row(&m.agents[&native], width);
+            assert_eq!(plain, agent_row(&m.agents[&native], m.spinner(), width));
+            assert!(!plain.contains('$'), "{width}: {plain}");
+        }
     }
 
     #[test]

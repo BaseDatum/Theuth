@@ -2210,6 +2210,8 @@ pub(crate) mod tests {
         pub(crate) events: Arc<Mutex<Vec<JobEvent>>>,
         /// Every [`crate::ReminderEvent`] published on this fixture's bus.
         pub(crate) reminder_events: Arc<Mutex<Vec<crate::ReminderEvent>>>,
+        /// Removes `dir` on drop; last field so it drops last.
+        _guard: crate::TestDir,
     }
 
     #[derive(kameo::Actor)]
@@ -2233,8 +2235,8 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn fixture(grace: Duration, timeout: Duration) -> Fx {
-        let dir = std::env::temp_dir().join(format!("theuth-jobs-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let guard = crate::TestDir::new("jobs");
+        let dir = guard.0.clone();
         let rt = Runtime::new(figment::Figment::new(), dir.clone());
         let events = Arc::new(Mutex::new(Vec::new()));
         let rec = Recorder::spawn_with_mailbox(
@@ -2257,6 +2259,7 @@ pub(crate) mod tests {
             dir,
             events,
             reminder_events,
+            _guard: guard,
         }
     }
 

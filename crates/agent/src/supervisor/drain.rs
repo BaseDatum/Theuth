@@ -455,7 +455,7 @@ mod tests {
     /// it finished, as the newest turn's state — until a newer turn starts.
     #[tokio::test]
     async fn resume_state_reports_relaunched_turn() {
-        let a = agents_with(false).await;
+        let (_scratch, a) = agents_with(false).await;
         let (sid, turn) = (SessionId::new(), TurnId::new());
         a.store
             .create_session(sid, "m", None, None, None)
