@@ -1,0 +1,11 @@
+{
+  "id": "anthropic/claude-haiku",
+  "name": "Claude Haiku",
+  "provider": "anthropic",
+  "context": 200000,
+  "reasoning": false,
+  "image": true,
+  "efforts": [],
+  "budget_min": null,
+  "budget_max": null
+}

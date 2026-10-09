@@ -1,0 +1,23 @@
+{
+  "surface": "any_app",
+  "destination": {
+    "kind": "any_app",
+    "app": "com.apple.Terminal"
+  },
+  "app": {
+    "id": "com.apple.Terminal",
+    "name": "Terminal",
+    "terminal": true,
+    "polish": false,
+    "learn": false,
+    "polish_prompt": null,
+    "rewrite_prompt": null,
+    "commands": [
+      "/clear"
+    ]
+  },
+  "commands": [
+    "/clear"
+  ],
+  "press_ago_ms": 42
+}
