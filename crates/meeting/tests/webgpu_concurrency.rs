@@ -167,6 +167,13 @@ fn three_webgpu_sessions_run_concurrently_and_one_drops_mid_run() -> anyhow::Res
                 Err(_) => errors.push(format!("{name}: thread panicked")),
             }
         }
+        let (waits, total, max) = models::onnx::gpu_wait_stats();
+        eprintln!(
+            "run lock: {waits} acquisitions, waited {:?} total, mean {:?}, max {:?}",
+            total,
+            total.checked_div(waits.max(1) as u32).unwrap_or_default(),
+            max
+        );
         assert!(
             errors.is_empty(),
             "WebGPU runs failed:\n{}",
