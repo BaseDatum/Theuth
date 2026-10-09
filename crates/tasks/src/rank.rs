@@ -33,12 +33,17 @@ mod tests {
         assert_eq!(project_score(Some("docs"), &order()), 0);
         assert_eq!(project_score(Some("sre"), &order()), 2);
         assert_eq!(project_score(Some("web"), &order()), 1);
-        assert!(rank(Priority::Low, Some("web"), &order()) > rank(Priority::Urgent, None, &order()));
+        assert!(
+            rank(Priority::Low, Some("web"), &order()) > rank(Priority::Urgent, None, &order())
+        );
     }
 
     #[test]
     fn project_step_dominates_priority() {
-        assert!(rank(Priority::Low, Some("sre"), &order()) > rank(Priority::Urgent, Some("web"), &order()));
+        assert!(
+            rank(Priority::Low, Some("sre"), &order())
+                > rank(Priority::Urgent, Some("web"), &order())
+        );
         assert_eq!(rank(Priority::Medium, Some("sre"), &order()), 205);
     }
 

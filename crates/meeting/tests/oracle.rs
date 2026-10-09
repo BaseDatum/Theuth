@@ -73,6 +73,8 @@ fn fake_side(reply: &'static str, seen: Arc<Mutex<Vec<SideCall>>>) -> Arc<decisi
                 input_tokens: Some(10),
                 output_tokens: Some(5),
                 latency: Duration::from_millis(3),
+                cost_nanos: None,
+                request_id: None,
             })
         })
     })

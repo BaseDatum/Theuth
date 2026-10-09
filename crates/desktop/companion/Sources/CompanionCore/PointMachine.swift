@@ -1,8 +1,8 @@
 import Foundation
 import TheuthKit
 
-// 149 W2 fills `step` (design 149 §3.7): the one-to-one port of `crates/desktop/src/point/machine.rs:6-69` with
-// its 17 tests. C fixes the shapes and the 96 §4.1 constants.
+// The one-to-one port of `crates/desktop/src/point/machine.rs:6-144` (design 149 §3.7, D12); the 16 behavioural tests
+// live in `PointMachineTests`. C fixed the shapes and the 96 §4.1 constants.
 
 /// The voice key's gesture machine — hold to talk, double-tap to lock — as a pure reducer over the hotkey's
 /// pressed/released stream, Esc, the panel's replies and timer ticks. No clock, no I/O: the controller owns the
@@ -53,8 +53,53 @@ public enum PointMachine {
     /// One transition. `refused` is the standing reason (a live meeting leases the mic), answered instead of
     /// `.start` on a press from `.idle`/`.replying`.
     public static func step(_ s: State, _ e: Event, now: UInt64, refused: String?) -> (State, [Effect]) {
-        fatalError("149 W2")
+        switch (s, e) {
+        case (.idle, .pressed), (.replying, .pressed):
+            if let refused { return (s, [.refuse(reason: refused)]) }
+            return (.armed(t0: now), [.start])
+        case (.armed(let t0), .released):
+            return elapsed(now, t0) >= holdMs ? send(t0, now, "release") : (.tap1(t0: t0, released: now), [])
+        case (.armed(let t0), .tick) where elapsed(now, t0) >= holdMs:
+            return (.holding(t0: t0), [])
+        case (.holding(let t0), .released):
+            return send(t0, now, "release")
+        case (.armed, .esc), (.holding, .esc), (.locked, .esc):
+            return discard("esc", hint)
+        case (.tap1, .esc), (.sending, .esc):
+            return discard("esc", nil)
+        case (.armed, .cancel), (.holding, .cancel), (.tap1, .cancel), (.locked, .cancel):
+            return discard("cancel", nil)
+        case (.tap1(let t0, let released), .pressed):
+            if elapsed(now, released) <= doubleTapMs { return (.locked(t0: t0), [.showLock]) }
+            // The tick that should have closed the window has not landed yet: close it and treat this press as a
+            // fresh gesture rather than swallow it.
+            return (.armed(t0: now), [.discard(reason: "double-tap-missed", hint: hint), .start])
+        case (.tap1(_, let released), .tick) where elapsed(now, released) > doubleTapMs:
+            return discard("double-tap-missed", hint)
+        case (.locked(let t0), .pressed):
+            return send(t0, now, "tap")
+        case (.sending, .panelDone):
+            return (.replying, [])
+        case (.sending, .cancel):
+            return (.idle, [])
+        case (.replying, .esc), (.replying, .panelDone), (.replying, .cancel):
+            return (.idle, [.conceal])
+        default:
+            return (s, [])
+        }
     }
+
+    /// A note ends: send it, or discard one shorter than `minNoteMs`.
+    private static func send(_ t0: UInt64, _ now: UInt64, _ reason: String) -> (State, [Effect]) {
+        elapsed(now, t0) < minNoteMs ? discard("short", hint) : (.sending(t0: t0), [.stop(reason: reason)])
+    }
+
+    private static func discard(_ reason: String, _ hint: String?) -> (State, [Effect]) {
+        (.idle, [.discard(reason: reason, hint: hint)])
+    }
+
+    /// `saturating_sub`: a late clock never underflows.
+    private static func elapsed(_ now: UInt64, _ since: UInt64) -> UInt64 { now > since ? now - since : 0 }
 }
 
 /// 149 W2: what the Store publishes while a gesture is live (`Store.point`); nil while idle.

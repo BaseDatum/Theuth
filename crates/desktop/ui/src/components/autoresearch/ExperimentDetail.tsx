@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { UnifiedDiff } from '@/components/attention/UnifiedDiff'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -7,7 +8,8 @@ import type { BenchSample } from '@/rpc/bindings/BenchSample'
 import type { ExperimentDetail as Detail } from '@/rpc/bindings/ExperimentDetail'
 import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
 import { VerdictBadge } from './RunTable'
-import { clock, duration, metric, pct, reviewWord, rowDuration, shortSha, usd } from './model'
+import { Delta } from './StudyList'
+import { clock, duration, metric, reviewWord, rowDuration, shortSha, usd } from './model'
 import { useControl, useExperiment } from './queries'
 
 /**
@@ -51,6 +53,7 @@ function Body({ d, study }: { d: Detail; study: StudyDetail }) {
   const reverted = r.state === 'rejected_by_review'
   const live = study.info.state.state === 'running' || study.info.state.state === 'paused'
   const review = r.review ? reviewWord(r.review) : null
+  const direction = study.info.metric.direction
   return (
     <div className="flex flex-col gap-5 text-[13px]">
       <section>
@@ -59,7 +62,7 @@ function Body({ d, study }: { d: Detail; study: StudyDetail }) {
         </p>
         {d.hypothesis && <p className="mt-1 text-fg-secondary">{d.hypothesis}</p>}
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-fg-secondary sm:grid-cols-4">
-          <Stat label="Δ vs incumbent" value={pct(r.delta_pct)} className={r.state === 'kept' ? 'text-success' : undefined} />
+          <Stat label="Δ vs incumbent" value={<Delta direction={direction} delta_pct={r.delta_pct} muted={r.state !== 'kept'} />} />
           <Stat label="samples" value={String(r.n_samples)} />
           <Stat label="took" value={r.finished_at ? duration(rowDuration(r)) : 'running'} />
           <Stat label="cost" value={usd(r.cost_usd)} />
@@ -144,7 +147,7 @@ function Body({ d, study }: { d: Detail; study: StudyDetail }) {
                 <span className="tabular-nums text-fg-secondary">
                   {metric(c.before, '')} → {metric(c.after, '')}
                 </span>
-                <span className={cn('w-16 text-right tabular-nums', c.delta_pct === null ? 'text-fg-tertiary' : c.delta_pct < 0 ? 'text-success' : c.delta_pct > 0 ? 'text-danger' : 'text-fg-tertiary')}>{pct(c.delta_pct)}</span>
+                <Delta direction={direction} delta_pct={c.delta_pct} className="w-16 text-right" />
               </li>
             ))}
           </ul>
@@ -183,7 +186,7 @@ function SampleRow({ s, unit }: { s: BenchSample; unit: string }) {
   )
 }
 
-function Stat({ label, value, className }: { label: string; value: string; className?: string }) {
+function Stat({ label, value, className }: { label: string; value: ReactNode; className?: string }) {
   return (
     <div>
       <dt className="text-[11px] text-fg-tertiary">{label}</dt>

@@ -94,12 +94,13 @@ use crate::{
     Loaded, Login, LoginFinished, LoginInfo, Logout, MarkDesk, ModelInfo, NewRootSession,
     NewSession, PinSession, PinTitle, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate,
     RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    ResetRuntime, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
-    SessionContextBreakdown, SessionRead, SessionSummary, SetCompactStyle, SetCompaction,
-    SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle,
-    SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel,
-    ShowPrompt, SideCall, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS,
-    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
+    ResetRuntime, ResolveModel, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
+    SessionContextBreakdown, SessionModel, SessionRead, SessionSummary, SetCompactStyle,
+    SetCompaction, SetDeskModel, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds,
+    SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel,
+    SetToolset, SetVisionModel, ShowPrompt, SideCall, SideCallable, SideReply, SkillBody,
+    SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS, TALK_PARK_CAP_MS, TalkLive, TrimAssistant,
+    Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{
     AdvisorConfig, DurableStore, ObservedState, SessionCostQuery, SessionKind, SpendReportQuery,
@@ -125,6 +126,7 @@ mod drain;
 mod resume;
 pub mod transfer; // 139 W2
 mod waits;
+pub use acp_resume::LastBootPass; // 146 D4
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
 pub use resume::{OpenTurn, ResumeTurn, TakeoverPending};
 pub use transfer::{DrainSession, SessionDrainReport}; // 139 C
@@ -146,9 +148,13 @@ pub struct Agents {
     compact_style: Arc<RwLock<CompactStyle>>,
     /// Live title model (07 §15); `None` = each session's own model. Shared with every session.
     title_model: Arc<RwLock<Option<Resolved>>>,
-    /// Live preferred subagent model (`agent.subagents.model`); `None` = `agent.model`.
+    /// Live subagent default model (`agent.subagents.model`); `None` = `agent.model`.
     /// Children spawned without `model` use it; the system prompt names it. Shared with every session.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
+    /// 148 E2: desk session → its agent's configured model ([`SetDeskModel`]);
+    /// `None` = the agent has none. A native child of a desk starts on it
+    /// before `subagent_model` and `default_model`.
+    desk_models: HashMap<SessionId, Option<String>>,
     /// Live vision fallback model (52 §3.1); `None` = no fallback. Shared with
     /// every native session once the loop consults it; snapshot, never hold
     /// the lock across an await.
@@ -174,6 +180,10 @@ pub struct Agents {
     sessions: HashMap<SessionId, Live>,
     /// Sessions with a turn in flight (from `TurnStarted`/`TurnFinished`).
     running: HashSet<SessionId>,
+    /// 146: the boot pass's ACP respawn queue and counts, until settled.
+    boot: Option<acp_resume::Boot>,
+    /// 146 D4: the last `BootPass` published, for a late `LastBootPass` ask.
+    last_boot: Option<crate::durability::BootPass>,
     /// 139 D16: sessions mid-release-drain → the drain's reason; `route`
     /// refuses their inputs (`transfer::draining_error`) until the demote
     /// lands or the hold expires (`transfer::ClearDraining`).
@@ -888,9 +898,15 @@ impl Agents {
                     .unwrap_or_else(|p| p.into_inner())
                     .as_ref()
                     .map(|r| r.id.clone());
+                let desk_model = parent
+                    .and_then(|(p, _)| self.desk_models.get(&p))
+                    .and_then(|m| m.as_deref());
                 let (model, effort) = match parent {
+                    // 148 E2: an explicit pick, then the desk agent's model
+                    // when the parent is a desk, then the subagent default.
                     Some(_) => (
                         pick.0
+                            .or(desk_model)
                             .or(preferred.as_deref())
                             .unwrap_or(&self.default_model),
                         pick.1
@@ -906,6 +922,17 @@ impl Agents {
                     ),
                 };
                 let model = self.resolve_model(model);
+                // 148 R1 F6: an inherited default effort (not a pick) that the
+                // chosen model does not take would 400 the first call: drop it,
+                // as `set_model` does for an in-session switch.
+                let effort = effort.filter(|e| {
+                    pick.1.is_some()
+                        || model
+                            .0
+                            .model
+                            .as_ref()
+                            .is_none_or(|m| m.validate_effort(e).is_ok())
+                });
                 store
                     .create_session(
                         id,
@@ -1323,6 +1350,12 @@ impl Agents {
         };
         let sent = match routed {
             Ok((_, actor)) => {
+                // 146 D9: the harness owes work from this hand-off on
+                // (journaled before the tell: a crash in between reads as
+                // an owed prompt, which the respawn re-prompts).
+                if let LiveActor::Acp(_) = &actor {
+                    self.acp_journal_open(sid, "input", &text, None).await;
+                }
                 actor
                     .tell_input(UserInput {
                         id,
@@ -1859,6 +1892,11 @@ impl Agents {
         if let Some(q) = self.queued.get_mut(&to) {
             q.held.push(Held::Peer(Box::new(input)));
             return Ok(());
+        }
+        // 146 D9: the harness owes work from this hand-off on.
+        if let LiveActor::Acp(_) = &actor {
+            self.acp_journal_open(to, "peer", &input.record.text, Some(&input.record.from))
+                .await;
         }
         self.offer_peer(actor, to, input);
         Ok(())
@@ -2432,6 +2470,10 @@ impl Message<AgentEvent> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, ev: AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
+        self.acp_journal_event(&ev).await; // 146 D9
+        if self.boot.is_some() {
+            self.boot_child_event(&ev).await; // 146 D2
+        }
         match ev {
             // 109 LIVE: a turn resumed after a restart (`Turn::resume`)
             // publishes `TurnResumed`, never `TurnStarted`; for liveness it is
@@ -2559,18 +2601,28 @@ impl Message<ActivityRegistered> for Agents {
     async fn handle(&mut self, _: ActivityRegistered, _: &mut Context<Self, Self::Reply>) {
         self.ledger.certify();
         self.rearm_reminders_for(None).await;
+        // 146 D5: one `open_turns(Here)` for the whole pass.
+        let open = self.open_here().await;
         // 109 §4.6 step 10, in this order: no `ResumeTurn` before the reaper.
-        let reaped = crate::durability::jobs::reap_jobs(&self.store).await;
+        let reaped = crate::durability::jobs::reap_jobs_in(&self.store, &open).await;
         if reaped != crate::durability::jobs::ReapReport::default() {
             tracing::info!("109: reaper: {reaped:?}");
         }
-        self.rebuild_waits().await;
-        self.resume_scan().await;
-        self.respawn_acp_children().await; // 109 W4 §7.3
+        self.rebuild_waits(&open).await;
+        // 146 D9: one list, one pass — an ACP child's open turn (it owed a
+        // prompt when the engine died) is the respawn's, a native one the
+        // resume's.
+        let (acp_open, native) = self.split_acp_turns(&open).await;
+        self.resume_scan(&native).await;
+        let resuming = match self.cfg.durability.resume {
+            crate::durability::ResumeMode::Auto => native.len() as u32,
+            _ => 0,
+        };
+        self.respawn_acp_children(resuming, acp_open).await; // 109 W4 §7.3, 146 D1–D4, D9
         // 141 §7.8: watch-only children of a harness that did not come back.
         self.mark_observed_lost().await;
         // 109 §7.2: the spared child results, after the open turns are queued.
-        self.deliver_spared_results().await;
+        self.deliver_spared_results(&open).await;
     }
 }
 
@@ -3928,11 +3980,7 @@ impl Message<SideCall> for Agents {
 
     async fn handle(&mut self, m: SideCall, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
-        let actor = match self.sessions.get(&m.session).map(|l| &l.actor) {
-            Some(LiveActor::Native(a)) => Ok(a.clone()),
-            Some(LiveActor::Acp(_)) => Err("session runs on an external harness".to_owned()),
-            None => Err(format!("no live session {}", m.session)),
-        };
+        let actor = self.side_target(m.session);
         tokio::spawn(async move {
             let out = match actor {
                 Ok(a) => a.ask(m).await.map_err(|e| e.to_string()),
@@ -3946,6 +3994,53 @@ impl Message<SideCall> for Agents {
     }
 }
 
+impl Agents {
+    /// Resolve `id` through the catalog and refuse a provider without
+    /// credentials — the check behind [`SetSubagentModel`] and [`ResolveModel`]
+    /// (148 R4). An unknown id under a keyed provider passes through.
+    fn resolve_keyed(&self, id: &str) -> Result<Resolved, String> {
+        let r = self.catalog.resolve(id, &*self.configured)?;
+        if let Some(p) = &r.provider
+            && !(self.configured)(Catalog::adapter(p))
+        {
+            return Err(format!("provider `{p}` has no credentials"));
+        }
+        Ok(r)
+    }
+}
+
+impl Message<ResolveModel> for Agents {
+    type Reply = Result<ModelInfo, String>;
+
+    async fn handle(
+        &mut self,
+        m: ResolveModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<ModelInfo, String> {
+        self.resolve_keyed(&m.model).map(|r| ModelInfo::from(&r))
+    }
+}
+
+impl Message<SideCallable> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: SideCallable, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.side_target(m.session).map(drop)
+    }
+}
+
+impl Agents {
+    /// The native session actor a [`SideCall`] for `session` runs on, or the
+    /// text it fails with (an ACP session has no model of ours).
+    fn side_target(&self, session: SessionId) -> Result<ActorRef<Session>, String> {
+        match self.sessions.get(&session).map(|l| &l.actor) {
+            Some(LiveActor::Native(a)) => Ok(a.clone()),
+            Some(LiveActor::Acp(_)) => Err("session runs on an external harness".to_owned()),
+            None => Err(format!("no live session {session}")),
+        }
+    }
+}
+
 impl Message<SetSubagentModel> for Agents {
     type Reply = Result<Option<ModelInfo>, String>;
 
@@ -3955,15 +4050,7 @@ impl Message<SetSubagentModel> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<Option<ModelInfo>, String> {
         let resolved = match &m.model {
-            Some(id) => {
-                let r = self.catalog.resolve(id, &*self.configured)?;
-                if let Some(p) = &r.provider
-                    && !(self.configured)(Catalog::adapter(p))
-                {
-                    return Err(format!("provider `{p}` has no credentials"));
-                }
-                Some(r)
-            }
+            Some(id) => Some(self.resolve_keyed(id)?),
             None => None,
         };
         let info = resolved.as_ref().map(ModelInfo::from);
@@ -3999,7 +4086,7 @@ impl Message<GetSubagentModel> for Agents {
 }
 
 impl Agents {
-    /// The preferred subagent model's id for the system prompt, if set.
+    /// The subagent default model's id for the system prompt, if set.
     fn subagent_model_id(&self) -> Option<String> {
         self.subagent_model
             .read()
@@ -7437,10 +7524,39 @@ impl Message<MarkDesk> for Agents {
         m: MarkDesk,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
+        // 148 R1 F5: a put-away desk is no desk; its model entry goes with it.
+        if m.agent.is_none() {
+            self.desk_models.remove(&m.session);
+        }
         self.store_for(m.session)
             .set_desk(m.session, m.agent.as_deref())
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+impl Message<SessionModel> for Agents {
+    type Reply = Option<String>;
+
+    async fn handle(
+        &mut self,
+        m: SessionModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<String> {
+        self.store_for(m.0)
+            .session(m.0)
+            .await
+            .ok()
+            .flatten()
+            .map(|row| row.model)
+    }
+}
+
+impl Message<SetDeskModel> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetDeskModel, _: &mut Context<Self, Self::Reply>) {
+        self.desk_models.insert(m.session, m.model);
     }
 }
 
@@ -7527,6 +7643,7 @@ impl Message<DeleteSession> for Agents {
             self.owned_children.remove(id);
             self.caps.remove(id);
             self.remote_parent.remove(id);
+            self.desk_models.remove(id);
             if let Some(live) = self.sessions.remove(id) {
                 live.actor.kill().await;
             }
@@ -7741,10 +7858,11 @@ impl Agents {
 }
 
 impl Agents {
-    /// 82 §2: switch `m.session` now; only a manual pick also becomes the
-    /// default for new sessions (`agent.model` in config.yaml, announced as
-    /// `DefaultModelChanged`). A programmatic switch with no session is a
-    /// no-op beyond resolving the id.
+    /// 148 R1: with a session, switch that session only — whatever `manual`
+    /// says, the default for new sessions is untouched. With no session, a
+    /// manual pick sets the default (`agent.model` in config.yaml, announced as
+    /// `DefaultModelChanged`): the Settings path. A programmatic call with no
+    /// session is a no-op beyond resolving the id.
     async fn set_model(&mut self, m: SetModel) -> Result<ModelInfo, String> {
         let resolved = self.catalog.resolve(&m.model, &*self.configured)?;
         if let Some(id) = m.session {
@@ -7780,7 +7898,7 @@ impl Agents {
                 self.apply_effort(id, &actor, None).await;
             }
         }
-        if m.manual {
+        if m.session.is_none() && m.manual {
             self.default_model = resolved.id.clone();
             // ponytail: writes <data_dir>/config.yaml; a `--config <other>` file is not written back.
             let path = self.rt.data_dir.join("config.yaml");
@@ -7840,10 +7958,11 @@ impl Message<GetDefaultEffort> for Agents {
 }
 
 impl Agents {
-    /// 83 §2: switch `m.session` now; only a manual pick also becomes the
-    /// default for new sessions (`agent.effort` in config.yaml, announced as
-    /// `DefaultEffortChanged`). A programmatic change with no session is a
-    /// no-op beyond validating the value.
+    /// 148 R1: with a session, switch that session only — whatever `manual`
+    /// says. With no session, a manual change sets the default
+    /// (`agent.effort` in config.yaml, announced as `DefaultEffortChanged`):
+    /// the Settings path. A programmatic change with no session is a no-op
+    /// beyond validating the value.
     async fn set_effort(&mut self, m: SetEffort) -> Result<(), String> {
         let target = match m.session {
             Some(id) => {
@@ -7872,7 +7991,7 @@ impl Agents {
             let actor = self.actor(id).await?.native()?.clone();
             self.apply_effort(id, &actor, m.effort.clone()).await;
         }
-        if m.manual {
+        if m.session.is_none() && m.manual {
             self.default_effort = m.effort.clone();
             // Quoted so a bare budget (`"8000"`) stays a YAML string; `~` clears.
             let value = m
@@ -7974,22 +8093,41 @@ impl Message<SetHarnessOption> for Agents {
     }
 }
 
-/// `ask` → `Result<(), String>` (75 §10): put a stopped ACP child back in
-/// its harness context — a new harness process opened with `session/load`
-/// on the row's stored ACP session id, its skills written back into the cwd,
-/// no prompt. A live actor for the session is stopped first (its process
+/// `ask` → `Result<ChildResumed, String>` (75 §10, 146 D8): put a stopped
+/// ACP child back in its harness context — a new harness process opened with
+/// `session/load` on the row's stored ACP session id, its skills written
+/// back into the cwd — through the same [`Agents::relaunch_acp_child`] the
+/// boot pass uses. A child that was mid-prompt when it died (its last row a
+/// prompt / dangling `ToolCall`, `Store::midprompt`) gets the respawn prompt
+/// and continues its work (`Prompted`); a cancelled or idle one is only
+/// reconnected (`Idle`; the 75 §10 cancelled note when its last turn was
+/// cancelled). A live actor for the session is stopped first (its process
 /// group dies with the connection: the 06 §8.3 orphan), so the next
 /// `send_message` goes to the new process. Refused for a native session, a
 /// remote node's session (its ACP session belongs to another engine) and a
-/// row without a stored harness session id.
+/// row without a stored harness session id. Explicit user intent: the
+/// parent's state is not a gate here (unlike the boot pass).
 #[derive(Clone, Copy, Debug)]
 pub struct ResumeChild {
     /// An ACP child.
     pub session: SessionId,
 }
 
+/// What [`ResumeChild`] did (146 D8): the toast's two sentences.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ChildResumed {
+    /// The harness is back and was prompted to continue its interrupted task.
+    Prompted,
+    /// The harness is back in its context; it was idle, nothing to continue.
+    Idle,
+}
+
 impl Message<ResumeChild> for Agents {
-    type Reply = Result<(), String>;
+    type Reply = Result<ChildResumed, String>;
 
     async fn handle(&mut self, m: ResumeChild, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let row = self.stored(m.session).await?;
@@ -8036,19 +8174,28 @@ impl Message<ResumeChild> for Agents {
             let _ = a.tell(crate::acp_child::Shutdown).await;
             a.wait_for_shutdown().await;
         }
-        self.running.remove(&m.session);
-        let (_, actor) = self
-            .session(Some(m.session), None, None, (None, None))
-            .await
-            .map_err(|e| e.to_string())?;
-        if cancelled && let LiveActor::Acp(a) = &actor {
-            let _ = a
-                .tell(crate::acp_child::Note(
-                    crate::acp_child::CANCELLED_NOTE.to_owned(),
-                ))
-                .await;
-        }
-        Ok(())
+        // 146 D8: a child killed mid-prompt (an engine restart, a crashed
+        // harness) continues its task; the button must not "do nothing".
+        let midprompt = !cancelled
+            && self
+                .store
+                .midprompt(m.session)
+                .await
+                .map_err(|e| e.to_string())?;
+        let first = if cancelled {
+            acp_resume::Continue::Cancelled
+        } else if midprompt {
+            acp_resume::Continue::Prompt
+        } else {
+            acp_resume::Continue::Idle
+        };
+        self.relaunch_acp_child(m.session, first).await?;
+        tracing::info!(session = %m.session, ?first, "146: resume_child");
+        Ok(if midprompt {
+            ChildResumed::Prompted
+        } else {
+            ChildResumed::Idle
+        })
     }
 }
 
@@ -8645,7 +8792,7 @@ pub(crate) struct Auth {
 
 impl Auth {
     /// No vault, no logins, no gateways; `dir` holds the (empty) OAuth store.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn stub(dir: &Path) -> Self {
         Self {
             vault: None,
@@ -9182,6 +9329,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             title_model: Arc::new(RwLock::new(title_model)),
             subagent_model: Arc::new(RwLock::new(subagent_model)),
+            desk_models: HashMap::new(),
             vision_model: Arc::new(RwLock::new(vision_model)),
             escalate_model: Arc::new(RwLock::new(escalate_model)),
             vision_error,
@@ -9194,6 +9342,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             endless: endless.clone(),
             sessions: HashMap::new(),
             running: HashSet::new(),
+            boot: None,
+            last_boot: None,
             draining_sessions: HashMap::new(),
             pending_takeovers: HashMap::new(),
             communication: communication.clone(),
@@ -9917,10 +10067,18 @@ impl Message<CreateSession> for Agents {
         // private byte exists.
         if let Some(reg) = Self::registry()? {
             // A handler `Err` (missing owners) is lifted into `HandlerError`.
-            reg.ask(ParticipantsReady).await.map_err(|e| match e {
-                SendError::HandlerError(missing) => format!("private mode unavailable: {missing}"),
-                e => format!("private mode unavailable: {e}"),
-            })?;
+            match reg.ask(ParticipantsReady).await {
+                Ok(()) => {}
+                Err(SendError::HandlerError(missing)) => {
+                    return Err(format!("private mode unavailable: {missing}"));
+                }
+                // Test-only race guard: `registry()` found ANOTHER test's live
+                // registry (one global name per test binary) and it stopped
+                // before this ask — the same "no registry" rule `registry()`
+                // applies under cfg(test) when none is found.
+                Err(_) if cfg!(test) => {}
+                Err(e) => return Err(format!("private mode unavailable: {e}")),
+            }
         }
         let store = Store::open_memory().await.map_err(|e| format!("{e:#}"))?;
         let root = SessionId::new();
@@ -10170,6 +10328,115 @@ impl Agents {
     pub(crate) fn test_auth(&self) -> &Auth {
         &self.auth
     }
+}
+
+/// An `Agents` value (no actor, no tool registry) over `rt.data_dir`: the
+/// store at `sessions.sqlite`, the catalog from `models.json`, one native and
+/// one external child slot per tree. Session actors it spawns are real; with
+/// no registry their turns end as `error` before any model is called. The
+/// in-crate tests' rig, shared with other crates' tests under `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication: bool) -> Agents {
+    let dir = rt.data_dir.clone();
+    std::fs::create_dir_all(&dir).unwrap();
+    // One native and one external child slot per tree: a second spawn queues.
+    let mut cfg = AgentConfig::default();
+    cfg.subagents.max_concurrent = 1;
+    cfg.subagents.max_concurrent_external = 1;
+    let cfg = Arc::new(cfg);
+    let engine = engine.map(|e| mesh::EngineId(e.to_owned()));
+    let store = Store::open(&dir.join("sessions.sqlite"), engine)
+        .await
+        .unwrap();
+    let client = Client::new().unwrap();
+    let auth = Auth::stub(&dir);
+    let catalog = Arc::new(Catalog::load(&dir));
+    let endless = Endless::new(
+        store.clone(),
+        rt.clone(),
+        client.clone(),
+        auth.clone(),
+        catalog.clone(),
+        cfg.endless.clone(),
+        cfg.title_model.clone(),
+    );
+    Agents {
+        rt,
+        default_model: cfg.model.clone(),
+        default_effort: None,
+        favorite_models: Vec::new(),
+        cfg,
+        compact_style: Arc::default(),
+        title_model: Arc::default(),
+        subagent_model: Arc::default(),
+        vision_model: Arc::default(),
+        escalate_model: Arc::default(),
+        vision_error: None,
+        catalog,
+        pool: None,
+        configured: Arc::new(|_: &str| false),
+        store,
+        client,
+        auth,
+        endless,
+        sessions: HashMap::new(),
+        desk_models: HashMap::new(),
+        running: HashSet::new(),
+        boot: None,
+        last_boot: None,
+        draining_sessions: HashMap::new(),
+        pending_takeovers: HashMap::new(),
+        communication: SharedPolicy::new(Policy::new(communication, "config")),
+        network: network::NetworkState::default(),
+        waits: HashMap::new(),
+        bound: HashMap::new(),
+        turn_text: HashMap::new(),
+        delivered: HashMap::new(),
+        enqueued: HashSet::new(),
+        pools: HashMap::new(),
+        child_turns: HashMap::new(),
+        queued: HashMap::new(),
+        undelivered: HashMap::new(),
+        timed_out: HashSet::new(),
+        caps: HashMap::new(),
+        remote_parent: HashMap::new(),
+        owned_children: HashMap::new(),
+        last_stop: HashMap::new(),
+        last_input: HashMap::new(),
+        seen: HashMap::new(),
+        talk: HashMap::new(),
+        approvals: HashMap::new(),
+        search: Arc::default(),
+        nodes: Nodes::default(),
+        ledger: Ledger::default(),
+        private: HashMap::new(),
+        private_member: HashMap::new(),
+        closing: HashSet::new(),
+        generation: 0,
+        durable_resources: SessionResources::durable_arc(&dir),
+        // Short enough for a test to outwait it (`resume_rebinds_and_cancels_old_watcher`).
+        private_grace: Duration::from_millis(200),
+        transport: None,
+        identity: None,
+        advisors: HashSet::new(),
+        advisor_cfg: AdvisorConfig::default(),
+    }
+}
+
+/// 148 R1 (`test-support`): [`bare_agents`] with `configured` deciding which
+/// providers count as keyed, spawned and registered as [`AGENT_ACTOR`] so a
+/// dependent crate's tests (the roster's desks) can talk to a live engine
+/// that never calls a model. `Err` when an actor already holds the name.
+#[cfg(feature = "test-support")]
+pub async fn spawn_test_agents(
+    rt: Runtime,
+    configured: impl Fn(&str) -> bool + Send + Sync + 'static,
+) -> Result<ActorRef<Agents>, String> {
+    let mut a = bare_agents(rt, None, false).await;
+    a.configured = Arc::new(configured);
+    let agents = Agents::spawn(a);
+    agents.register(AGENT_ACTOR).map_err(|e| e.to_string())?;
+    Ok(agents)
 }
 
 #[cfg(test)]
@@ -10942,22 +11209,22 @@ pub(crate) mod tests {
             check_files(&[big]).unwrap_err(),
             "attachment big.jpg: 5.0 MB exceeds 5 MB"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// An `Agents` value (no actor, no tool registry) over a temp store: the
     /// supervisor's own sequencing runs inline and its ledger is readable.
     /// Session actors it spawns are real; with no registry their turns end
     /// as `error` before any model is called.
-    async fn agents() -> Agents {
+    async fn agents() -> (crate::TestDir, Agents) {
         agents_with(false).await
     }
 
     /// [`agents`] with `agent.communication` preset. Shared with the network
     /// module's tests, which drive the same value through its hooks.
-    pub(crate) async fn agents_with(communication: bool) -> Agents {
-        let dir = std::env::temp_dir().join(format!("theuth-agents-{}", uuid::Uuid::now_v7()));
-        agents_on(dir, None, communication).await
+    pub(crate) async fn agents_with(communication: bool) -> (crate::TestDir, Agents) {
+        let scratch = crate::TestDir::new("agents");
+        let a = agents_on(scratch.0.clone(), None, communication).await;
+        (scratch, a)
     }
 
     /// [`agents_with`] over `dir`'s store opened as mesh engine `engine`
@@ -10968,86 +11235,8 @@ pub(crate) mod tests {
         communication: bool,
     ) -> Agents {
         std::fs::create_dir_all(&dir).unwrap();
-        // One native and one external child slot per tree: a second spawn queues.
-        let mut cfg = AgentConfig::default();
-        cfg.subagents.max_concurrent = 1;
-        cfg.subagents.max_concurrent_external = 1;
-        let cfg = Arc::new(cfg);
-        let engine = engine.map(|e| mesh::EngineId(e.to_owned()));
-        let rt = Runtime::new(figment::Figment::new(), dir.clone());
-        let store = Store::open(&dir.join("sessions.sqlite"), engine)
-            .await
-            .unwrap();
-        let client = Client::new().unwrap();
-        let auth = Auth::stub(&dir);
-        let catalog = Arc::new(Catalog::load(&dir));
-        let endless = Endless::new(
-            store.clone(),
-            rt.clone(),
-            client.clone(),
-            auth.clone(),
-            catalog.clone(),
-            cfg.endless.clone(),
-            cfg.title_model.clone(),
-        );
-        Agents {
-            rt,
-            default_model: cfg.model.clone(),
-            default_effort: None,
-            favorite_models: Vec::new(),
-            cfg,
-            compact_style: Arc::default(),
-            title_model: Arc::default(),
-            subagent_model: Arc::default(),
-            vision_model: Arc::default(),
-            escalate_model: Arc::default(),
-            vision_error: None,
-            catalog,
-            pool: None,
-            configured: Arc::new(|_: &str| false),
-            store,
-            client,
-            auth,
-            endless,
-            sessions: HashMap::new(),
-            running: HashSet::new(),
-            draining_sessions: HashMap::new(),
-            pending_takeovers: HashMap::new(),
-            communication: SharedPolicy::new(Policy::new(communication, "config")),
-            network: network::NetworkState::default(),
-            waits: HashMap::new(),
-            bound: HashMap::new(),
-            turn_text: HashMap::new(),
-            delivered: HashMap::new(),
-            enqueued: HashSet::new(),
-            pools: HashMap::new(),
-            child_turns: HashMap::new(),
-            queued: HashMap::new(),
-            undelivered: HashMap::new(),
-            timed_out: HashSet::new(),
-            caps: HashMap::new(),
-            remote_parent: HashMap::new(),
-            owned_children: HashMap::new(),
-            last_stop: HashMap::new(),
-            last_input: HashMap::new(),
-            seen: HashMap::new(),
-            talk: HashMap::new(),
-            approvals: HashMap::new(),
-            search: Arc::default(),
-            nodes: Nodes::default(),
-            ledger: Ledger::default(),
-            private: HashMap::new(),
-            private_member: HashMap::new(),
-            closing: HashSet::new(),
-            generation: 0,
-            durable_resources: SessionResources::durable_arc(&dir),
-            // Short enough for a test to outwait it (`resume_rebinds_and_cancels_old_watcher`).
-            private_grace: Duration::from_millis(200),
-            transport: None,
-            identity: None,
-            advisors: HashSet::new(),
-            advisor_cfg: AdvisorConfig::default(),
-        }
+        let rt = Runtime::new(figment::Figment::new(), dir);
+        bare_agents(rt, engine, communication).await
     }
 
     /// A catalog with an image-capable `testvis/eyes`, a text-only
@@ -11120,7 +11309,7 @@ pub(crate) mod tests {
     /// `None` clears both. A startup diagnostic is cleared by a successful set.
     #[tokio::test]
     async fn set_vision_model_persists_before_swapping() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.vision_error = Some("stale".into());
@@ -11160,7 +11349,6 @@ pub(crate) mod tests {
         assert_eq!(live(&a), None);
         let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
         assert!(yaml.contains("  vision_model: \n"), "{yaml}");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 57 §0.9: the setter refuses an id that is not a catalog entry (or is
@@ -11170,7 +11358,7 @@ pub(crate) mod tests {
     /// session's model) — and `None` clears the slot.
     #[tokio::test]
     async fn set_escalate_model_validates_and_reports_effective() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testvis" || ns == "othervis");
@@ -11218,7 +11406,6 @@ pub(crate) mod tests {
         let g = a.escalate_model();
         assert!(g.model.is_none());
         assert_eq!(g.effective.map(|m| m.id).as_deref(), Some("testvis/eyes"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `agent.escalate_model` reads and writes like its siblings; absent = unset.
@@ -11235,14 +11422,16 @@ pub(crate) mod tests {
         assert_eq!(cfg.escalate_model, None);
     }
 
-    /// 82 §2: only a manual pick becomes the default (`default_model`,
-    /// `agent.model` in config.yaml, `DefaultModelChanged`); a programmatic
-    /// switch changes the named session alone, and with no session nothing.
-    /// A new session without a model of its own starts on the default; one
-    /// opened with `CreateSessionOptions.model` (a meeting) leaves it alone.
+    /// 148 R1: a pick with a session switches that session alone, manual or
+    /// not — `default_model`, `agent.model` in config.yaml and
+    /// `DefaultModelChanged` stay put. Only a manual pick with no session (the
+    /// Settings path) sets the default; a programmatic one with no session
+    /// resolves and nothing else. A new session without a model of its own
+    /// starts on the default; one opened with `CreateSessionOptions.model`
+    /// (a meeting, a draft pick) leaves it alone.
     #[tokio::test]
-    async fn only_a_manual_pick_becomes_the_default() {
-        let mut a = agents().await;
+    async fn only_a_settings_pick_becomes_the_default() {
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testvis");
@@ -11270,7 +11459,7 @@ pub(crate) mod tests {
         assert_eq!(a.default_model, at_start);
         assert!(!yaml.exists());
 
-        // The picker: the session and the default move together, announced.
+        // (a) The in-chat picker: the session moves, the default does not.
         let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let sink = Sink::spawn_with_mailbox(Sink(Arc::clone(&seen)), runtime::subscriber_mailbox());
         a.rt.subscribe::<Sink, AgentEvent>(&sink).await;
@@ -11283,10 +11472,36 @@ pub(crate) mod tests {
         .unwrap();
         let row = a.store.session(root).await.unwrap().unwrap();
         assert_eq!(row.model, "testvis/eyes");
+        assert_eq!(a.default_model, at_start);
+        assert!(!yaml.exists());
+        // The bus is a `tell`; a round trip through the sink orders us after it.
+        let _ = sink
+            .ask(AgentEvent::TitleChanged {
+                session: root,
+                title: String::new(),
+                tags: Vec::new(),
+            })
+            .await;
+        assert!(
+            !seen
+                .lock()
+                .iter()
+                .any(|e| matches!(e, AgentEvent::DefaultModelChanged { .. })),
+            "{:?}",
+            seen.lock()
+        );
+
+        // (b) Settings: no session, manual — the default, config.yaml, the event.
+        a.set_model(SetModel {
+            session: None,
+            model: "testvis/eyes".into(),
+            manual: true,
+        })
+        .await
+        .unwrap();
         assert_eq!(a.default_model, "testvis/eyes");
         let written = std::fs::read_to_string(&yaml).unwrap();
         assert!(written.contains("  model: testvis/eyes\n"), "{written}");
-        // The bus is a `tell`; a round trip through the sink orders us after it.
         let _ = sink
             .ask(AgentEvent::TitleChanged {
                 session: root,
@@ -11331,16 +11546,15 @@ pub(crate) mod tests {
         assert_eq!(agents.ask(GetDefaultModel).await.unwrap(), "testvis/eyes");
         let written = std::fs::read_to_string(&yaml).unwrap();
         assert!(written.contains("  model: testvis/eyes\n"), "{written}");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// 83 §2: only a manual pick becomes the default effort (`default_effort`,
-    /// `agent.effort` in config.yaml, `DefaultEffortChanged`); a programmatic
-    /// change sets the named session's row alone, and with no session nothing.
-    /// A new session starts on the default.
+    /// 148 R1: an effort pick with a session changes that session's row
+    /// alone, manual or not; only a manual change with no session (Settings)
+    /// sets `default_effort`, `agent.effort` in config.yaml and announces
+    /// `DefaultEffortChanged`. A new session starts on the default.
     #[tokio::test]
-    async fn only_a_manual_effort_becomes_the_default() {
-        let mut a = agents().await;
+    async fn only_a_settings_effort_becomes_the_default() {
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         let yaml = dir.join("config.yaml");
         assert_eq!(a.default_effort, None);
@@ -11366,16 +11580,29 @@ pub(crate) mod tests {
         assert_eq!(a.default_effort, None);
         assert!(!yaml.exists());
 
-        // The picker: the session and the default move together, announced.
+        // (a) The in-chat picker: the session moves, the default does not.
         a.set_effort(SetEffort {
             session: Some(root),
+            effort: Some("medium".into()),
+            manual: true,
+        })
+        .await
+        .unwrap();
+        let row = a.store.session(root).await.unwrap().unwrap();
+        assert_eq!(row.effort.as_deref(), Some("medium"));
+        assert_eq!(a.default_effort, None);
+        assert!(!yaml.exists());
+
+        // (b) Settings: no session, manual — the default, config.yaml, the event.
+        a.set_effort(SetEffort {
+            session: None,
             effort: Some("high".into()),
             manual: true,
         })
         .await
         .unwrap();
         let row = a.store.session(root).await.unwrap().unwrap();
-        assert_eq!(row.effort.as_deref(), Some("high"));
+        assert_eq!(row.effort.as_deref(), Some("medium"));
         assert_eq!(a.default_effort.as_deref(), Some("high"));
         let written = std::fs::read_to_string(&yaml).unwrap();
         assert!(written.contains("  effort: \"high\"\n"), "{written}");
@@ -11413,6 +11640,178 @@ pub(crate) mod tests {
             agents.ask(GetDefaultEffort).await.unwrap(),
             Some("high".to_owned())
         );
+    }
+
+    /// 148 E2: a native child of a desk starts on the desk agent's configured
+    /// model ([`SetDeskModel`]) unless the spawn names one; a desk without a
+    /// model, and any non-desk parent, fall through to `agent.subagents.model`
+    /// and then the default.
+    #[tokio::test]
+    async fn a_desk_child_starts_on_the_desk_agents_model() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let default = a.default_model.clone();
+        async fn child_of(a: &mut Agents, parent: SessionId, pick: Option<&str>) -> String {
+            let child = SessionId::new();
+            a.session(Some(child), Some((parent, "kid")), None, (pick, None))
+                .await
+                .unwrap();
+            a.store.session(child).await.unwrap().unwrap().model
+        }
+
+        let (desk, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.desk_models.insert(desk, Some("testvis/eyes".into()));
+        assert_eq!(child_of(&mut a, desk, None).await, "testvis/eyes");
+        // An explicit pick wins.
+        assert_eq!(
+            child_of(&mut a, desk, Some("testvis/blind")).await,
+            "testvis/blind"
+        );
+
+        // A desk without a model: the subagent default, then the default.
+        let (bare, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        a.desk_models.insert(bare, None);
+        assert_eq!(child_of(&mut a, bare, None).await, default);
+        let blind = a.catalog.resolve("testvis/blind", &*a.configured).unwrap();
+        *a.subagent_model.write().unwrap_or_else(|p| p.into_inner()) = Some(blind);
+        assert_eq!(child_of(&mut a, bare, None).await, "testvis/blind");
+        // A non-desk parent never sees a desk model.
+        let (plain, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        assert_eq!(child_of(&mut a, plain, None).await, "testvis/blind");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `ask` → the desk sessions with a model entry (test-only inspection).
+    #[derive(Clone, Copy, Debug)]
+    struct DeskModelKeys;
+
+    impl Message<DeskModelKeys> for Agents {
+        type Reply = Vec<SessionId>;
+
+        async fn handle(
+            &mut self,
+            _: DeskModelKeys,
+            _: &mut Context<Self, Self::Reply>,
+        ) -> Vec<SessionId> {
+            self.desk_models.keys().copied().collect()
+        }
+    }
+
+    /// 148 R1 F5: a desk's model entry leaves with the desk — on a put-away
+    /// (`MarkDesk { agent: None }`) and on `DeleteSession`.
+    #[tokio::test]
+    async fn desk_models_leave_with_the_desk() {
+        let (_scratch, a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        let agents = Agents::spawn(a);
+        let open = |agents: &ActorRef<Agents>| {
+            let agents = agents.clone();
+            async move {
+                let s = agents
+                    .ask(CreateSession {
+                        options: CreateSessionOptions::default(),
+                        peer: None,
+                    })
+                    .await
+                    .unwrap()
+                    .session;
+                agents
+                    .ask(MarkDesk {
+                        session: s,
+                        agent: Some("ops".into()),
+                    })
+                    .await
+                    .unwrap();
+                agents
+                    .ask(SetDeskModel {
+                        session: s,
+                        model: Some("x/y".into()),
+                    })
+                    .await
+                    .unwrap();
+                s
+            }
+        };
+        let put_away = open(&agents).await;
+        agents
+            .ask(MarkDesk {
+                session: put_away,
+                agent: None,
+            })
+            .await
+            .unwrap();
+        let deleted = open(&agents).await;
+        agents
+            .ask(DeleteSession { session: deleted })
+            .await
+            .unwrap();
+        let kept = open(&agents).await;
+        assert_eq!(agents.ask(DeskModelKeys).await.unwrap(), vec![kept]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 148 R4: `ResolveModel` refuses a provider without credentials with
+    /// `SetSubagentModel`'s words, accepts a keyed one (canonical id), lets an
+    /// unknown id under a keyed provider pass through, and moves nothing.
+    #[tokio::test]
+    async fn resolve_model_checks_credentials_without_side_effects() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        let default = a.default_model.clone();
+        assert_eq!(
+            a.resolve_keyed("nope/none").unwrap_err(),
+            "provider `nope` has no credentials"
+        );
+        assert_eq!(
+            a.resolve_keyed("othervis/eyes").unwrap_err(),
+            "provider `othervis` has no credentials"
+        );
+        assert_eq!(a.resolve_keyed("testvis/eyes").unwrap().id, "testvis/eyes");
+        assert_eq!(
+            a.resolve_keyed("testvis/unlisted").unwrap().id,
+            "testvis/unlisted"
+        );
+        assert_eq!(a.default_model, default);
+        assert!(!dir.join("config.yaml").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 148 R1 F6: a new session with its own model inherits the default
+    /// effort only when that model takes it; a model without reasoning
+    /// options drops it (its own default applies), an unknown pass-through
+    /// id keeps it, and an explicit effort pick is never second-guessed here.
+    #[tokio::test]
+    async fn an_inherited_default_effort_the_model_rejects_is_dropped() {
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        a.catalog = Arc::new(vision_catalog(&dir));
+        a.configured = Arc::new(|ns: &str| ns == "testvis");
+        a.default_effort = Some("high".into());
+        async fn row_effort(a: &Agents, id: SessionId) -> Option<String> {
+            a.store.session(id).await.unwrap().unwrap().effort
+        }
+        // `blind` takes no effort: the inherited default is dropped.
+        let (blind, _) = a
+            .session(None, None, None, (Some("testvis/blind"), None))
+            .await
+            .unwrap();
+        assert_eq!(row_effort(&a, blind).await, None);
+        // A pass-through id cannot be checked: the default is kept.
+        let (raw, _) = a
+            .session(None, None, None, (Some("nowhere/model"), None))
+            .await
+            .unwrap();
+        assert_eq!(row_effort(&a, raw).await.as_deref(), Some("high"));
+        // An explicit pick is the caller's (validated upstream).
+        let (picked, _) = a
+            .session(None, None, None, (Some("testvis/blind"), Some("low")))
+            .await
+            .unwrap();
+        assert_eq!(row_effort(&a, picked).await.as_deref(), Some("low"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -11429,7 +11828,7 @@ pub(crate) mod tests {
     /// bare id — `provider/model` passes through) leaves the file alone.
     #[tokio::test]
     async fn favorites_persist_as_one_flow_sequence_line() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let dir = a.rt.data_dir.clone();
         a.catalog = Arc::new(vision_catalog(&dir));
         a.configured = Arc::new(|ns: &str| ns == "testvis");
@@ -11573,7 +11972,7 @@ pub(crate) mod tests {
     /// ancestor's opt-out instead of routing as an unknown root.
     #[tokio::test]
     async fn topology_is_mirrored_and_reloaded_root_first() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -11598,7 +11997,7 @@ pub(crate) mod tests {
     /// guessed UUID with no row fails the same way and creates nothing.
     #[tokio::test]
     async fn cross_root_and_unknown_addresses_are_one_answer() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (me, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let (other, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let rev = a.store.context_revision(other).await.unwrap();
@@ -11658,7 +12057,7 @@ pub(crate) mod tests {
     /// remote alias) or the same refusal a single send would get, in order.
     #[tokio::test]
     async fn resolve_all_is_canonical_and_ordered() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -11688,7 +12087,7 @@ pub(crate) mod tests {
     /// and its activity; a cold child reads `stored`.
     #[tokio::test]
     async fn same_tree_rows_carry_title_and_activity() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         a.store.set_title(root, "deploy checklist").await.unwrap();
         let child = SessionId::new();
@@ -11772,7 +12171,7 @@ pub(crate) mod tests {
     /// accepted row durably, and the same wait cannot be resolved again.
     #[tokio::test]
     async fn waits_are_exact_and_expire_on_disable() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -11828,7 +12227,7 @@ pub(crate) mod tests {
     /// is still released in the ledger).
     #[tokio::test]
     async fn child_results_are_durably_deduplicated_and_respect_off() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (p, _) = in_turn(&mut a).await;
         let child = SessionId::new();
         a.session(Some(child), Some((p, "kid")), None, (None, None))
@@ -11936,7 +12335,7 @@ pub(crate) mod tests {
     /// starts: its ticket is released, nothing is routed.
     #[tokio::test]
     async fn scope_cancel_stops_owned_children_and_drops_their_results() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (p, _) = in_turn(&mut a).await;
         let scope = Uuid::now_v7();
         let owned = kid(&mut a, p, "owned").await;
@@ -12023,7 +12422,7 @@ pub(crate) mod tests {
     /// input; only the parent's own answered request suppresses that.
     #[tokio::test]
     async fn bound_reply_goes_to_the_requester_and_the_parent_keeps_its_result() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (p, _) = in_turn(&mut a).await;
         let child = kid(&mut a, p, "kid").await;
         let sibling = kid(&mut a, p, "sib").await;
@@ -12121,7 +12520,7 @@ pub(crate) mod tests {
     /// retired without a second delivery.
     #[tokio::test]
     async fn results_are_pending_input_before_their_source_is_released() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (p, t) = in_turn(&mut a).await;
         let child = SessionId::new();
         a.session(Some(child), Some((p, "kid")), None, (None, None))
@@ -12212,7 +12611,7 @@ pub(crate) mod tests {
     /// the job keeps running; one for a retired op injects nothing.
     #[tokio::test]
     async fn idle_notice_injects_only_for_a_live_op() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let sink = Sink::spawn_with_mailbox(Sink(Arc::clone(&seen)), runtime::subscriber_mailbox());
         a.rt.subscribe::<Sink, AgentEvent>(&sink).await;
@@ -12284,7 +12683,7 @@ pub(crate) mod tests {
     /// An input no runner ever held (rejected attachment) leaves nothing pending.
     #[tokio::test]
     async fn routing_failure_releases_the_ticket() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (p, _) = in_turn(&mut a).await;
         let r = a
             .input(
@@ -12304,7 +12703,7 @@ pub(crate) mod tests {
     /// a fresh id routes again.
     #[tokio::test]
     async fn retried_input_id_routes_once() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (p, _) = in_turn(&mut a).await;
         let id = InputId::new();
         let sid = a
@@ -12330,7 +12729,7 @@ pub(crate) mod tests {
     /// registered in this harness.)
     #[tokio::test]
     async fn activity_counts_a_pty_on_an_idle_root() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let counts = HashMap::from([(root, (0u16, 1u16))]);
         let act = a.assemble_activity(&[root], &counts).await;
@@ -12349,7 +12748,7 @@ pub(crate) mod tests {
     /// `approval`, gone once it resolves, and on the wire as a plain number.
     #[tokio::test]
     async fn activity_waiting_since_follows_the_pending_approval() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         a.approvals.insert(
             root,
@@ -12383,7 +12782,7 @@ pub(crate) mod tests {
     /// child included (its `last_active` from the store) — and nothing else.
     #[tokio::test]
     async fn activity_of_returns_rows_for_the_asked_ids() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -12406,7 +12805,7 @@ pub(crate) mod tests {
     /// while it has an actor or a job; a live child counts toward its root.
     #[tokio::test]
     async fn list_activity_keeps_cold_roots_and_drops_cold_children() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let (cold_root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let cold_child = SessionId::new();
@@ -12441,7 +12840,7 @@ pub(crate) mod tests {
     /// child is `running` while its idle root is not.
     #[tokio::test]
     async fn list_sessions_stamps_running() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -12457,7 +12856,7 @@ pub(crate) mod tests {
     /// swept in; a dry run fills `before` and routes nothing.
     #[tokio::test]
     async fn broadcast_running_selects_roots_and_dry_run_sends_nothing() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         // An idle root: live, but not `Running`.
         a.session(None, None, None, (None, None)).await.unwrap();
@@ -12497,7 +12896,7 @@ pub(crate) mod tests {
     /// stops early. Above the cap nothing is sent at all.
     #[tokio::test]
     async fn broadcast_rows_queue_start_fail_and_cap() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (busy, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let (idle, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let unknown = SessionId::new();
@@ -12546,7 +12945,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn mutation_reply_precedes_search_staleness() {
         use ::search::PageState;
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let store = a.store.clone();
         let agents = Agents::spawn(a);
         let id = SessionId::new();
@@ -12635,7 +13034,7 @@ pub(crate) mod tests {
     /// live config and refuses out-of-range values.
     #[tokio::test]
     async fn endless_settings_round_trip_and_validate() {
-        let a = agents_with(false).await;
+        let (_scratch, a) = agents_with(false).await;
         let dir = a.rt.data_dir.clone();
         let agents = Agents::spawn(a);
         let before = agents.ask(GetEndlessSettings).await.unwrap();
@@ -12699,7 +13098,8 @@ pub(crate) mod tests {
     /// is range-checked. The tree itself is the service's (W1).
     #[tokio::test]
     async fn memory_mode_is_created_queried_and_switched() {
-        let agents = Agents::spawn(agents_with(false).await);
+        let (_scratch, a) = agents_with(false).await;
+        let agents = Agents::spawn(a);
         let open = |memory| {
             agents.ask(CreateSession {
                 options: crate::CreateSessionOptions {
@@ -12799,7 +13199,7 @@ pub(crate) mod tests {
     /// and effort like a local subagent; a plain create carries neither.
     #[tokio::test]
     async fn remote_root_gets_cap_and_effort() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let remote = RemoteParent {
             session: "parent-1".into(),
             engine: Some("Ab3dEf9h".into()),
@@ -12883,7 +13283,8 @@ pub(crate) mod tests {
     /// and present in `PrivateTrees`, and its state reads through its own store.
     #[tokio::test]
     async fn private_root_is_owned_and_unlisted() {
-        let agents = Agents::spawn(agents().await);
+        let (_scratch, a) = agents().await;
+        let agents = Agents::spawn(a);
         let private = |view: Option<&str>| CreateSessionOptions {
             retention: Retention::Private,
             project: None,
@@ -12973,7 +13374,7 @@ pub(crate) mod tests {
     /// fails `Authorize` closed, and input to its id recreates nothing durable.
     #[tokio::test]
     async fn leave_revokes_and_never_recreates() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let store = a.store.clone();
         let agents = Agents::spawn(a);
         let open = open_private(&agents, 7, CancellationToken::new()).await;
@@ -13040,7 +13441,8 @@ pub(crate) mod tests {
     /// owner's does after the grace.
     #[tokio::test]
     async fn resume_rebinds_and_cancels_old_watcher() {
-        let agents = Agents::spawn(agents().await);
+        let (_scratch, a) = agents().await;
+        let agents = Agents::spawn(a);
         let old_closed = CancellationToken::new();
         let open = open_private(&agents, 7, old_closed.clone()).await;
         let (root, secret) = (open.root, open.lease_secret.unwrap());
@@ -13385,7 +13787,7 @@ pub(crate) mod tests {
     /// durability-resumed turn is still metered before its first call.
     #[tokio::test]
     async fn budget_survives_a_rebuild_from_the_store() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let store = a.store.clone();
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let agents = Agents::spawn(a);
@@ -13435,7 +13837,7 @@ pub(crate) mod tests {
     /// the directory carries this engine's name on every row.
     #[tokio::test]
     async fn a_lone_engine_delivers_locally_as_before() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = SessionId::new();
         a.session(Some(child), Some((root, "kid")), None, (None, None))
@@ -13479,7 +13881,7 @@ pub(crate) mod tests {
     /// §5.4) for a watch-only row with the watch-only text.
     #[tokio::test]
     async fn resume_child_refuses_native_node_and_unstored() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let store = a.store.clone();
         let agents = Agents::spawn(a);
         let native = SessionId::new();
@@ -13528,7 +13930,7 @@ pub(crate) mod tests {
     /// longer exists does not block the resume (75 §4).
     #[tokio::test]
     async fn resume_child_replaces_the_live_actor() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let store = a.store.clone();
         let dir = a.rt.data_dir.clone();
         acp::save(
@@ -13585,6 +13987,83 @@ pub(crate) mod tests {
             agents.ask(UnloadSession { session: child }).await.unwrap(),
             "exactly one new live entry for the session"
         );
+    }
+
+    /// 146 D8: `resume_child` on a child that died mid-prompt (last row a
+    /// prompt / dangling `ToolCall`) takes the boot respawn's path — the new
+    /// actor is told `Respawn`, so its first turn is the continue prompt (here
+    /// the harness binary is missing, so that turn is the `fail` turn whose
+    /// `TurnStarted` text is the respawn marker) — and answers `Prompted`; an
+    /// idle child (last row assistant text) is only reconnected (`Idle`, no
+    /// turn); a child whose last turn was cancelled is `Idle` too, whatever
+    /// its last row.
+    #[tokio::test]
+    async fn resume_child_prompts_a_midprompt_child() {
+        let (_scratch, mut a) = agents().await;
+        let store = a.store.clone();
+        let dir = a.rt.data_dir.clone();
+        acp::save(
+            &dir,
+            &serde_yaml::from_str("omp:\n  command: /nonexistent/theuth-test-harness\n").unwrap(),
+        )
+        .unwrap();
+        let (mid, idle, cancelled) = (SessionId::new(), SessionId::new(), SessionId::new());
+        for id in [mid, idle, cancelled] {
+            store
+                .create_session(id, "omp", None, None, None)
+                .await
+                .unwrap();
+            store.set_acp(id, "omp", Some(&dir), &[]).await.unwrap();
+            store.set_acp_session(id, "s1").await.unwrap();
+            store
+                .append(id, &genai::chat::ChatMessage::user("go"))
+                .await
+                .unwrap();
+        }
+        store
+            .append(idle, &genai::chat::ChatMessage::assistant("done"))
+            .await
+            .unwrap();
+        a.last_stop
+            .insert(cancelled, ("cancelled".into(), chrono::Utc::now()));
+        let mut events = tap(&a.rt).await;
+        let agents = Agents::spawn(a);
+
+        assert_eq!(
+            agents.ask(ResumeChild { session: mid }).await.unwrap(),
+            ChildResumed::Prompted
+        );
+        let started = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(AgentEvent::TurnStarted { session, text, .. }) = events.recv().await
+                    && session == mid
+                {
+                    break text;
+                }
+            }
+        })
+        .await
+        .expect("the respawn prompt opens a turn on the child");
+        assert_eq!(started, "<runtime>respawn after a theuth restart</runtime>");
+
+        assert_eq!(
+            agents.ask(ResumeChild { session: idle }).await.unwrap(),
+            ChildResumed::Idle
+        );
+        assert_eq!(
+            agents
+                .ask(ResumeChild { session: cancelled })
+                .await
+                .unwrap(),
+            ChildResumed::Idle
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while let Ok(e) = events.try_recv() {
+            assert!(
+                !matches!(e, AgentEvent::TurnStarted { session, .. } if session == idle || session == cancelled),
+                "an idle or cancelled child is not prompted: {e:?}"
+            );
+        }
     }
 
     // ----- spawn permit queue (01 §2.6, spawnstall 2026-10-07) -----
@@ -13722,7 +14201,8 @@ pub(crate) mod tests {
     /// with nothing routed into the queued child and no permit left.
     #[tokio::test]
     async fn second_spawn_queues_and_tells_the_parent() {
-        let (agents, p) = rooted(agents().await).await;
+        let (_scratch, a) = agents().await;
+        let (agents, p) = rooted(a).await;
         let (_, x, queued) = agents.ask(spawn(p, "x", "first")).await.unwrap();
         assert!(queued.is_none(), "a free slot: started");
         let (_, y, queued) = agents.ask(spawn(p, "y", "second")).await.unwrap();
@@ -13756,7 +14236,7 @@ pub(crate) mod tests {
     /// takes the permit the instant it frees (a race the test must not pin).
     #[tokio::test]
     async fn held_message_follows_the_brief() {
-        let a = agents_with(true).await;
+        let (_scratch, a) = agents_with(true).await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
@@ -13810,7 +14290,7 @@ pub(crate) mod tests {
     /// slot frees it stays free.
     #[tokio::test]
     async fn stopped_queued_child_never_starts() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
@@ -13856,7 +14336,7 @@ pub(crate) mod tests {
     /// (ledger untouched, still running, actor alive); `Tree` stops both.
     #[tokio::test]
     async fn root_cancel_spares_running_children_tree_cancel_does_not() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         let (_, x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
@@ -13918,7 +14398,7 @@ pub(crate) mod tests {
     /// sibling untouched.
     #[tokio::test]
     async fn human_input_promotes_a_queued_child() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         let (_, _x, _) = agents.ask(spawn(p, "x", "first")).await.unwrap();
@@ -14023,7 +14503,7 @@ pub(crate) mod tests {
     /// turn whose text holds both envelopes in arrival order.
     #[tokio::test]
     async fn closed_window_parks_and_opening_coalesces() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         set_talk(&agents, p, false).await;
@@ -14055,7 +14535,7 @@ pub(crate) mod tests {
     /// turn; 500 ms apart they get one each.
     #[tokio::test]
     async fn open_window_coalesces_within_the_window_only() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         set_talk(&agents, p, true).await;
@@ -14090,7 +14570,7 @@ pub(crate) mod tests {
     /// 145 A3: the cap releases a parked input with the window still closed.
     #[tokio::test]
     async fn cap_releases_parked_input_while_closed() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         set_talk(&agents, p, false).await;
@@ -14109,7 +14589,7 @@ pub(crate) mod tests {
     /// since the test model fails at once).
     #[tokio::test]
     async fn human_input_releases_parked_items_as_steers() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         set_talk(&agents, p, false).await;
@@ -14133,7 +14613,7 @@ pub(crate) mod tests {
     /// 145 A6: the talk ending releases parked items and forgets the session.
     #[tokio::test]
     async fn talk_ending_releases_parked_items() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut rx = tap(&a.rt).await;
         let (agents, p) = rooted(a).await;
         set_talk(&agents, p, false).await;
@@ -14182,7 +14662,7 @@ pub(crate) mod tests {
     /// starts.
     #[tokio::test]
     async fn native_and_external_pools_are_separate() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
         let (agents, p) = rooted(a).await;
         let (_, _x, _) = agents.ask(spawn(p, "x", "native")).await.unwrap();
@@ -14226,7 +14706,7 @@ pub(crate) mod tests {
     /// releases the external permit with the turn.
     #[tokio::test]
     async fn harness_exit_releases_the_external_permit() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
         let rt = a.rt.clone();
         let (agents, p) = rooted(a).await;
@@ -14276,7 +14756,7 @@ pub(crate) mod tests {
     /// harness's state; a repeat announce is the same row.
     #[tokio::test]
     async fn observed_rows_are_refused_as_targets_and_listed_watch_only() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let acp = SessionId::new();
         a.store
@@ -14344,7 +14824,7 @@ pub(crate) mod tests {
     /// id. The parent's turn is untouched.
     #[tokio::test]
     async fn cancel_of_an_observed_child_is_forwarded_to_its_harness() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
         let rt = a.rt.clone();
         let (agents, p) = rooted(a).await;
@@ -14409,7 +14889,7 @@ pub(crate) mod tests {
     /// bounded turns' permits from B's native pool, never A's.
     #[tokio::test]
     async fn pools_are_per_orchestrator_tree() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let (p1, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let (p2, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let agents = Agents::spawn(a);
@@ -14448,7 +14928,7 @@ pub(crate) mod tests {
     /// so a prompt that never returns cannot keep the child running forever.
     #[tokio::test]
     async fn follow_up_acp_turns_get_the_runtime_timer() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
         let rt = a.rt.clone();
         let (agents, p) = rooted(a).await;
@@ -14495,7 +14975,7 @@ pub(crate) mod tests {
     /// `Running` (with a start time) until its `TurnFinished`.
     #[tokio::test]
     async fn resumed_child_turn_counts_as_running() {
-        let mut a = agents().await;
+        let (_scratch, mut a) = agents().await;
         let rt = a.rt.clone();
         let (root, _) = a.session(None, None, None, (None, None)).await.unwrap();
         let child = kid(&mut a, root, "kid").await;
@@ -14541,7 +15021,7 @@ pub(crate) mod tests {
     /// harness, which no test can dial, so the actor is told directly here.)
     #[tokio::test]
     async fn respawned_acp_child_counts_as_running() {
-        let a = agents().await;
+        let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
         let rt = a.rt.clone();
         let (agents, p) = rooted(a).await;
@@ -14605,7 +15085,7 @@ pub(crate) mod tests {
     /// delivered then, once the quota has room.
     #[tokio::test]
     async fn refused_child_result_is_visible_and_retried_once() {
-        let mut a = agents_with(true).await;
+        let (_scratch, mut a) = agents_with(true).await;
         let mut rx = tap(&a.rt).await;
         let (p, _) = in_turn(&mut a).await;
         let child = kid(&mut a, p, "worker").await;

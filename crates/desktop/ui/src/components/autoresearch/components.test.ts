@@ -2,10 +2,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type ReactElement, createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
+import type * as Router from '@tanstack/react-router'
 import type * as Rpc from '@/lib/rpc'
 import { RunTable } from './RunTable'
 import { StudyChart } from './StudyChart'
 import { StatePill } from './StudyList'
+import { Finished } from './Finished'
 import { Bars, Controls, Current } from './StudyView'
 import { studies } from './fixtures'
 import { budgetBars } from './model'
@@ -13,6 +15,11 @@ import { budgetBars } from './model'
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({ 'autoresearch.control': async () => ({}) }),
+}))
+// `Finished` links the report document; a static paint has no router.
+vi.mock('@tanstack/react-router', async (original) => ({
+  ...(await original<typeof Router>()),
+  Link: ({ children }: { children?: unknown }) => createElement('a', { href: '#' }, children as never),
 }))
 
 const all = studies()
@@ -111,7 +118,7 @@ test('current experiment: chips from the progress event, the idea once the row e
 
 test('run table: newest first, verdict badges, deviation marker, σ× and Δ columns', () => {
   const s = by('sort-speed')
-  const html = paint(createElement(RunTable, { rows: s.rows, metricName: 'time_ms', pending: false, active: 14, onPick: () => {} }))
+  const html = paint(createElement(RunTable, { rows: s.rows, metricName: 'time_ms', direction: 'lower', pending: false, active: 14, onPick: () => {} }))
   const order = [...html.matchAll(/<tr[^>]*><td[^>]*>(\d+)<\/td>/g)].map((m) => Number(m[1]))
   expect(order[0]).toBe(35)
   expect(order.at(-1)).toBe(1)
@@ -125,12 +132,24 @@ test('run table: newest first, verdict badges, deviation marker, σ× and Δ col
   expect(html).toContain('aria-current="true"')
   expect(html).toContain('3.1σ')
   expect(html).toContain('−3.3 %')
+  // One Δ convention: a kept lower-is-better row is a negative, success-coloured number with the word on hover.
+  expect(html).toMatch(/class="tabular-nums text-success[^"]*" title="better — lower is better">−/)
   expect(count(html, /aria-pressed="true"/g)).toBe(1)
 })
 
 test('run table: empty and pending states', () => {
-  expect(paint(createElement(RunTable, { rows: [], metricName: 'time_ms', pending: false, active: null, onPick: () => {} }))).toContain('No experiments yet.')
-  expect(paint(createElement(RunTable, { rows: undefined, metricName: 'time_ms', pending: true, active: null, onPick: () => {} }))).not.toContain('No experiments yet.')
+  expect(paint(createElement(RunTable, { rows: [], metricName: 'time_ms', direction: 'lower', pending: false, active: null, onPick: () => {} }))).toContain('No experiments yet.')
+  expect(paint(createElement(RunTable, { rows: undefined, metricName: 'time_ms', direction: 'lower', pending: true, active: null, onPick: () => {} }))).not.toContain('No experiments yet.')
+})
+
+test('finished: the headline reads the raw Δ with the direction word; the holdout is finalize’s line when the series has only the base (140 §13 Revision 2)', () => {
+  const s = by('lexer-tokens')
+  const base = { ...s.detail, series: { ...s.detail.series, holdout: s.detail.series.holdout.filter((h) => h.n === 0) }, final_holdout: '61.0 → 49.7 (−18.5 %)' }
+  const html = paint(createElement(Finished, { detail: base }))
+  expect(html).toMatch(/time_ms [\d.,]+ → [\d.,]+ ms \(−[\d.]+ %, better\) · holdout 61\.0 → 49\.7 \(−18\.5 %\)/)
+  const none = paint(createElement(Finished, { detail: { ...base, final_holdout: null } }))
+  expect(none).not.toContain('holdout')
+  expect(none).not.toContain('→ 61')
 })
 
 test('budget bars: the fill turns warning near the cap and danger at it', () => {

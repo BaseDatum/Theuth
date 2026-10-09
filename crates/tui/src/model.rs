@@ -350,6 +350,9 @@ pub enum Command {
         text: String,
         /// Attached image files (17 §2).
         files: Vec<PathBuf>,
+        /// `session: None` only (148 R1): the draft's pending model/effort; the
+        /// session is opened with `create_session(draft)` first, never the default.
+        draft: Option<CreateSessionOptions>,
     },
     /// `steer`: queued until the current tool batch ends. `interject`: `cancel`
     /// first (one task, so the order holds), and the queued text starts the next turn now.
@@ -528,17 +531,19 @@ pub enum Command {
         /// Echoed in the reply so a superseded request is inert.
         generation: u64,
     },
-    /// `set_model`.
+    /// `set_model`: the shown session only (148 R1); with no session yet the
+    /// pick is the draft's (`Model::draft`), no command.
     SetModel {
-        /// Session to switch now (`None`: only the default).
-        session: Option<SessionId>,
+        /// Session to switch now.
+        session: SessionId,
         /// `provider/model` id.
         model: String,
     },
-    /// `set_effort`.
+    /// `set_effort`: the shown session only (148 R1); with no session yet the
+    /// pick is the draft's (`Model::draft`), no command.
     SetEffort {
-        /// Session to switch from its next turn (`None`: only the default).
-        session: Option<SessionId>,
+        /// Session to switch from its next turn.
+        session: SessionId,
         /// Effort keyword or token budget; `None` clears it (provider default).
         effort: Option<String>,
     },
@@ -591,7 +596,7 @@ pub enum Command {
         /// Root session, for the re-list.
         session: Option<SessionId>,
     },
-    /// `set_mcp_hidden`, then `list_mcp`. Without a session yet, `new_session`
+    /// `set_mcp_hidden`, then `list_mcp`. Without a session yet, one is created
     /// first: the hide must exist before the first turn lists tools.
     SetHidden {
         /// Root session; `None` = create it.
@@ -600,6 +605,8 @@ pub enum Command {
         tools: Vec<String>,
         /// `true` hides.
         hidden: bool,
+        /// `session: None` only (148 R1): the draft's pending model/effort for the created session.
+        draft: Option<CreateSessionOptions>,
     },
     /// `set_approvals`.
     SetApprovals {
@@ -630,6 +637,8 @@ pub enum Command {
         name: String,
         /// The user's words after the name.
         args: String,
+        /// `session: None` only (148 R1): the draft's pending model/effort for the started session.
+        draft: Option<CreateSessionOptions>,
     },
     /// `knowledge_list` (first 50 by id).
     KnowledgeList,
@@ -875,9 +884,15 @@ pub enum Command {
     /// `dictation_stop(id)`: close the mic; `DictationFinished` follows on the bus.
     DictationStop(voice::DictationId),
     /// `talk_start(session, "device", null)`: a live spoken conversation (76 §5.1);
-    /// `None` = no session yet: one is created first (`SessionOpened`), as the desktop's
-    /// Talk entry does. The reply is [`UiEvent::TalkStarting`] or [`UiEvent::TalkFailed`].
-    TalkStart(Option<SessionId>),
+    /// `session: None` = no session yet: one is created first (`SessionOpened`), as the desktop's
+    /// Talk entry does, on the draft's pending model/effort when there is one (148 R1).
+    /// The reply is [`UiEvent::TalkStarting`] or [`UiEvent::TalkFailed`].
+    TalkStart {
+        /// The shown session.
+        session: Option<SessionId>,
+        /// `session: None` only: the draft's options.
+        draft: Option<CreateSessionOptions>,
+    },
     /// `talk_stop(id)`; `TalkFinished` follows on the bus.
     TalkStop(talk::TalkId),
     /// `cancel(session, "tree")`: the turn and every running descendant (133 §5).
@@ -1983,7 +1998,7 @@ pub fn window(len: usize, cursor: usize, max: usize) -> Range<usize> {
 /// Where a `/model` / `/effort` pick goes (125 §7.2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PickTarget {
-    /// `set_model` / `set_effort`: the shown session (and the default).
+    /// `set_model` / `set_effort`: the shown session, or the draft's pick before one exists (148 R1).
     #[default]
     Session,
     /// `set_advisor`: the shown session's advisor.
@@ -3489,12 +3504,18 @@ pub struct Model {
     pub frame: usize,
     /// Usage of the last finished turn of the shown session.
     pub usage: Option<Usage>,
-    /// Model of the shown session (`TurnStarted.model`; `default_model` before that).
-    /// For an ACP child this is the harness name (`omp`).
+    /// Model of the shown session (`TurnStarted.model`; before that the
+    /// draft's pick, else `default_model`). For an ACP child this is the
+    /// harness name (`omp`).
     pub model_id: String,
     /// The engine's default for new sessions (`Info.default_model`, then
     /// `DefaultModelChanged`, 82 §3): what the header shows after `/new`.
+    /// Only the engine moves it (148 R1): a pick here never becomes the default.
     pub default_model: String,
+    /// 148 R1: `/model` / `/effort` picked before the first send. The next
+    /// session this view opens is created with these options (never the
+    /// default); the header shows them meanwhile. Cleared once a session is adopted.
+    pub draft: Option<CreateSessionOptions>,
     /// The engine's starred models (`Info.favorite_models`, then
     /// `FavoriteModelsChanged` / the `set_model_favorite` reply, 127 §3), in
     /// starring order; `/model` lists them first.
@@ -4924,6 +4945,8 @@ impl Model {
             }
             UiEvent::SessionCreated(id) => {
                 self.awaiting_session = false;
+                // The draft's picks rode on the creation (148 R1); they are this session's now.
+                self.draft = None;
                 if self.session.is_none() {
                     self.session = Some(id);
                     // The global default was shown; now this session's own view.
@@ -5791,12 +5814,15 @@ impl Model {
             return None;
         }
         // Waiting for the start reply, or for the session a `Send` is creating
-        // (`TalkStart(None)` would create a second one): no-op.
+        // (`TalkStart { session: None }` would create a second one): no-op.
         if self.talk_pending || (self.session.is_none() && self.awaiting_session) {
             return None;
         }
         self.talk_pending = true;
-        Some(Command::TalkStart(self.session))
+        Some(Command::TalkStart {
+            session: self.session,
+            draft: self.draft_options(),
+        })
     }
 
     /// Esc in the talk view (76 §5.2): while the agent is thinking, working,
@@ -6011,9 +6037,10 @@ impl Model {
                 }
                 return;
             }
-            // 82 §3: global; the draft header (no session open) follows it.
+            // 82 §3: global; the draft header (no session open) follows it
+            // unless the draft picked its own model (148 R1).
             AgentEvent::DefaultModelChanged { model } => {
-                if self.session.is_none() {
+                if self.session.is_none() && self.draft.as_ref().is_none_or(|d| d.model.is_none()) {
                     self.model_id = model.clone();
                 }
                 self.default_model = model;
@@ -6024,9 +6051,11 @@ impl Model {
                 self.set_favorites(models);
                 return;
             }
-            // 83 §3: global; the draft header (no session open) follows it.
+            // 83 §3: global; the draft header (no session open) follows it
+            // unless the draft picked its own effort (148 R1).
             AgentEvent::DefaultEffortChanged { effort } => {
-                if self.session.is_none() {
+                if self.session.is_none() && self.draft.as_ref().is_none_or(|d| d.effort.is_none())
+                {
                     self.effort = effort.clone();
                 }
                 self.default_effort = effort;
@@ -6855,13 +6884,7 @@ impl Model {
                 }
             }
             "/model" if arg.is_empty() => send(tx, Command::ListModels),
-            "/model" => send(
-                tx,
-                Command::SetModel {
-                    session: self.session,
-                    model: arg.to_owned(),
-                },
-            ),
+            "/model" => self.pick_model(arg.to_owned(), tx),
             "/title" if arg.is_empty() => send(tx, Command::GetTitleModel),
             "/title" => send(
                 tx,
@@ -7158,6 +7181,7 @@ impl Model {
                         session,
                         text,
                         files,
+                        draft: self.draft_options(),
                     },
                 );
             }
@@ -7852,16 +7876,56 @@ impl Model {
         }
     }
 
-    /// `SetEffort` for the root session (and the default); the reply announces it.
+    /// `/model <id>` or a picker pick (148 R1): `SetModel` for the shown
+    /// session only; with none yet the draft's model, shown in the header and
+    /// chained into the effort picker as the engine's reply would be.
+    fn pick_model(&mut self, model: String, tx: &UnboundedSender<Command>) {
+        match self.session {
+            Some(session) => send(tx, Command::SetModel { session, model }),
+            None => {
+                let efforts = self
+                    .catalog
+                    .as_ref()
+                    .and_then(|c| c.closest(&model))
+                    .map(|m| m.efforts())
+                    .unwrap_or_default();
+                self.entries
+                    .push(Entry::Info(format!("model → {model} (next session)")));
+                self.model_id = model.clone();
+                self.draft.get_or_insert_default().model = Some(model);
+                if !efforts.is_empty() {
+                    self.open_efforts(efforts, PickTarget::Session);
+                }
+            }
+        }
+    }
+
+    /// `/effort <v>` or the picker (148 R1): `SetEffort` for the shown session
+    /// only (the reply announces it); with none yet the draft's effort
+    /// (`None` = the engine default again).
     fn set_effort(&mut self, effort: Option<String>, tx: &UnboundedSender<Command>) {
-        self.awaiting_effort = true;
-        send(
-            tx,
-            Command::SetEffort {
-                session: self.session,
-                effort,
-            },
-        );
+        match self.session {
+            Some(session) => {
+                self.awaiting_effort = true;
+                send(tx, Command::SetEffort { session, effort });
+            }
+            None => {
+                self.entries.push(Entry::Info(match &effort {
+                    Some(e) => format!("effort: {e} (next session)"),
+                    None => "effort cleared (next session)".to_owned(),
+                }));
+                self.effort = effort.clone().or_else(|| self.default_effort.clone());
+                self.draft.get_or_insert_default().effort = effort;
+            }
+        }
+    }
+
+    /// The draft's options for a command that opens the session (148 R1):
+    /// `Some` only while a pick is pending and no session is shown.
+    fn draft_options(&self) -> Option<CreateSessionOptions> {
+        self.draft
+            .clone()
+            .filter(|d| self.session.is_none() && (d.model.is_some() || d.effort.is_some()))
     }
 
     /// `/approvals [on|off] [always]`: bare shows the state; `always` switches
@@ -9412,14 +9476,8 @@ impl Model {
                     home = true;
                 }
                 (Some((false, Some(model))), PickTarget::Session) => {
-                    send(
-                        tx,
-                        Command::SetModel {
-                            session: self.session,
-                            model,
-                        },
-                    );
                     self.menu = None;
+                    self.pick_model(model, tx);
                 }
                 // 125 §7.2: a model or `Off` goes to `set_advisor`.
                 (Some((false, model)), PickTarget::Advisor) => {
@@ -10053,6 +10111,7 @@ impl Model {
                 session: self.session,
                 name,
                 args,
+                draft: self.draft_options(),
             },
         );
     }
@@ -10081,7 +10140,7 @@ impl Model {
         enum Act {
             Move(usize),
             Expand(String, bool),
-            Send(Command),
+            Send(Box<Command>),
             Pending(Option<Target>),
             Close,
             Nothing,
@@ -10098,19 +10157,21 @@ impl Model {
         let row = rows.get(cursor);
         let set_gate = |row: &Row<'_>, gate: Option<Gate>| {
             let t = row.target();
-            Act::Send(Command::SetGate {
+            Act::Send(Box::new(Command::SetGate {
                 server: t.server,
                 tool: t.tool,
                 gate,
                 session,
-            })
+            }))
         };
+        let draft = self.draft_options();
         let set_hidden = |row: &Row<'_>, hidden: bool| {
-            Act::Send(Command::SetHidden {
+            Act::Send(Box::new(Command::SetHidden {
                 session,
                 tools: row.tool_names(),
                 hidden,
-            })
+                draft: draft.clone(),
+            }))
         };
         // The scope prompt after ⏎ on an `on` row: the target is the row the
         // cursor was on, re-found by name (a refresh may have moved it).
@@ -10128,14 +10189,14 @@ impl Model {
                 (KeyCode::Up, _) => Act::Move(cursor.saturating_sub(1)),
                 (KeyCode::Down, _) => Act::Move((cursor + 1).min(rows.len().saturating_sub(1))),
                 (KeyCode::Esc, _) => Act::Close,
-                (KeyCode::Char('s'), _) => Act::Send(Command::SyncMcp),
+                (KeyCode::Char('s'), _) => Act::Send(Box::new(Command::SyncMcp)),
                 (KeyCode::Right, Some(Row::Server(s))) => Act::Expand(s.name.clone(), true),
                 (KeyCode::Left, Some(Row::Server(s) | Row::Tool(s, _))) => {
                     Act::Expand(s.name.clone(), false)
                 }
                 (KeyCode::Char('l'), Some(Row::Server(s))) => match s.auth {
-                    McpAuth::Required => Act::Send(Command::Login(s.name.clone())),
-                    McpAuth::LoggedIn => Act::Send(Command::Logout(s.name.clone())),
+                    McpAuth::Required => Act::Send(Box::new(Command::Login(s.name.clone()))),
+                    McpAuth::LoggedIn => Act::Send(Box::new(Command::Logout(s.name.clone()))),
                     McpAuth::None => Act::Nothing,
                 },
                 // ⏎: turn on undoes whichever switch is off; turn off asks for the scope.
@@ -10183,7 +10244,7 @@ impl Model {
             }
             Act::Send(cmd) => {
                 *pending = None;
-                send(tx, cmd);
+                send(tx, *cmd);
             }
             Act::Pending(p) => *pending = p,
             Act::Close => self.menu = None,
@@ -12040,8 +12101,19 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
         (_, Some(t)) => ago(now - t),
         _ => String::new(),
     };
-    // Glyph, name, state, gaps, age and the box take ~44 columns; the detail gets the rest.
-    let room = usize::from(width).saturating_sub(44).max(16);
+    let active = match crate::broadcast::age(a.info.activity.last_active) {
+        s if s.is_empty() => s,
+        s => format!(" ·{s}"),
+    };
+    let tail = format!(
+        "  {age}{}{active}",
+        crate::broadcast::counts(&a.info.activity)
+    );
+    // Glyph, name, state and their gaps take 27 columns, the picker frame 7; the detail gets
+    // what is left after the measured tail (141 R4 T13b: an estimate let long ages overflow).
+    let room = usize::from(width)
+        .saturating_sub(34 + crate::search::cells(&tail))
+        .max(16);
     let detail = match (&a.info.observed, &a.info.state) {
         (Some(o), _) => {
             let mut d = match o.detail["lastIntent"].as_str() {
@@ -12064,15 +12136,8 @@ pub fn agent_row(a: &AgentRow, spinner: &str, width: u16) -> String {
         (None, AgentState::Error) => a.error.clone().unwrap_or_else(|| a.info.last.clone()),
         (None, AgentState::Cancelled | AgentState::Idle) => a.info.last.clone(),
     };
-    let detail: String = detail.chars().take(room).collect();
-    let active = match crate::broadcast::age(a.info.activity.last_active) {
-        s if s.is_empty() => s,
-        s => format!(" ·{s}"),
-    };
-    format!(
-        "{glyph} {name:<14} {word:<9} {detail:<room$}  {age}{}{active}",
-        crate::broadcast::counts(&a.info.activity),
-    )
+    let detail = crate::search::fit(&detail, room);
+    format!("{glyph} {name:<14} {word:<9} {detail:<room$}{tail}")
 }
 
 /// Row glyph of a watch-only child (141 §10.1).
@@ -12354,12 +12419,13 @@ impl Model {
 
     /// One `/agents` picker or board line: [`agent_row`] plus the child's
     /// cost tag (141 R3 T13: watch rows carry their money like the desktop).
+    /// The tag is measured first and the row fitted to the rest (R4 T13b), so
+    /// the detail is what gets cut, never the money.
     pub fn board_row(&self, a: &AgentRow, width: u16) -> String {
-        format!(
-            "{}{}",
-            agent_row(a, self.spinner(), width),
-            self.child_cost_tag(a.info.id)
-        )
+        let tag = self.child_cost_tag(a.info.id);
+        let fit =
+            width.saturating_sub(u16::try_from(crate::search::cells(&tag)).unwrap_or(u16::MAX));
+        format!("{}{tag}", agent_row(a, self.spinner(), fit))
     }
 
     /// A direct child's inclusive total for its `/agents` row: `  ·  $0.123`
@@ -12801,7 +12867,7 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(Command::DictationStart)));
     }
 
-    /// 76 §0.12: `/talk` with no session asks for one (`TalkStart(None)`),
+    /// 76 §0.12: `/talk` with no session asks for one (`TalkStart { session: None }`),
     /// a second press waits, `TalkStarting` opens the view and unfocuses the
     /// editor, Esc leaves the view with the talk on (status shows it), `/talk`
     /// re-enters, Ctrl+T stops; a stranger's `TalkFinished` is ignored, ours
@@ -12812,7 +12878,13 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let mut m = Model::default();
         m.submit("/talk", &tx);
-        assert!(matches!(rx.try_recv(), Ok(Command::TalkStart(None))));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::TalkStart {
+                session: None,
+                draft: None
+            })
+        ));
         assert!(m.toggle_talk(false).is_none());
         let root = SessionId::new();
         m.apply(UiEvent::SessionOpened(SessionOpen {
@@ -12860,7 +12932,9 @@ mod tests {
         assert!(matches!(m.entries.last(), Some(Entry::Error(s)) if s == "talk: mic"));
         m.apply(UiEvent::TalkFailed("talk is disabled".into()));
         assert!(!m.talk_pending);
-        assert!(matches!(m.toggle_talk(false), Some(Command::TalkStart(Some(s))) if s == root));
+        assert!(
+            matches!(m.toggle_talk(false), Some(Command::TalkStart { session: Some(s), .. }) if s == root)
+        );
     }
 
     /// An inventory: a user message with two images, an assistant call
@@ -13908,6 +13982,89 @@ mod tests {
         );
     }
 
+    /// 141 R4 T13b: the cost tag is whole at every width — the detail is what
+    /// gets cut (`…`), even with a long age and an activity suffix; a native
+    /// row (no tag) is the plain `agent_row`.
+    #[test]
+    fn watch_rows_keep_the_cost_tag_whole_at_every_width() {
+        let mut m = Model::default();
+        let root = SessionId::new();
+        m.session = Some(root);
+        let (child, native) = (SessionId::new(), SessionId::new());
+        m.apply_agent(AgentEvent::ObservedChildChanged {
+            parent: root,
+            child,
+            name: "NapA".into(),
+            model: Some("anthropic/claude-fable-5-1".into()),
+            observed: observed(
+                ObservedSource::OmpTask,
+                ObservedState::Running,
+                false,
+                Some("Reading first line"),
+            ),
+        });
+        m.apply_agent(AgentEvent::SubagentSpawned {
+            parent: root,
+            child: native,
+            name: "worker".into(),
+            cap: None,
+        });
+        let now = chrono::Utc::now();
+        for id in [child, native] {
+            let a = m.agents.get_mut(&id).unwrap();
+            a.info.started_at = Some(now - chrono::Duration::seconds(92));
+            a.info.activity.last_active = Some(now - chrono::Duration::seconds(5));
+        }
+        let child_cost = |nanos| agent::ChildCost {
+            session: child,
+            name: Some("NapA".into()),
+            deleted: false,
+            total: CostBucket {
+                calls: 1,
+                dispatched: 1,
+                returned: vec![Money {
+                    currency: "USD".into(),
+                    nanos,
+                }],
+                ..Default::default()
+            },
+            scope: CostScope::Observed,
+        };
+        m.apply(UiEvent::Cost(
+            root,
+            SessionCost {
+                session: root,
+                revision: 1,
+                history_coverage: Coverage::Complete,
+                scope: CostScope::Native,
+                direct: CostBucket::default(),
+                descendants: CostBucket::default(),
+                total: CostBucket::default(),
+                children: vec![child_cost(264_548_000)],
+                remote_meter_gaps: 0,
+                delta_suspected: false,
+                remote_tokens: Vec::new(),
+            },
+        ));
+        for width in [80u16, 140, 200] {
+            let row = m.board_row(&m.agents[&child], width);
+            // Whole tag, and the row fits inside the picker frame (border, padding, cursor).
+            assert!(row.ends_with("  ·  $0.265"), "{width}: {row}");
+            assert!(
+                crate::search::cells(&row) + 7 <= usize::from(width),
+                "{width}: {} cells: {row}",
+                crate::search::cells(&row)
+            );
+            assert!(row.contains("1m3") && row.contains(" ·"), "{width}: {row}");
+            // The model joins the detail only when there is room after the tag.
+            assert_eq!(row.contains("claude-fable"), width >= 140, "{width}: {row}");
+            assert_eq!(row.contains('…'), width == 80, "{width}: {row}");
+            let plain = m.board_row(&m.agents[&native], width);
+            assert_eq!(plain, agent_row(&m.agents[&native], m.spinner(), width));
+            assert!(!plain.contains('$'), "{width}: {plain}");
+        }
+    }
+
     #[test]
     fn mesh_devices_command_mirrors_the_cli() {
         let (tx, mut rx) = unbounded_channel();
@@ -14528,7 +14685,7 @@ mod tests {
         m.menu_key(KeyCode::Char('s'), "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetHidden { session, tools, hidden: true }) if session == Some(sid) && tools == ["read"]
+            Ok(Command::SetHidden { session, tools, hidden: true, .. }) if session == Some(sid) && tools == ["read"]
         ));
         assert!(matches!(&m.menu, Some(Menu::Mcp { pending: None, .. })));
 
@@ -15816,11 +15973,15 @@ mod tests {
     #[test]
     fn effort_sets_clears_and_picks() {
         let (tx, mut rx) = unbounded_channel();
-        let mut m = Model::default();
+        let s = SessionId::new();
+        let mut m = Model {
+            session: Some(s),
+            ..Model::default()
+        };
         m.submit("/effort high", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetEffort { session: None, effort: Some(e) }) if e == "high"
+            Ok(Command::SetEffort { session, effort: Some(e) }) if session == s && e == "high"
         ));
         m.submit("/effort clear", &tx);
         assert!(matches!(
@@ -15870,6 +16031,168 @@ mod tests {
         m.reset();
         assert_eq!(m.effort.as_deref(), Some("medium"));
         assert_eq!(m.default_effort.as_deref(), Some("medium"));
+    }
+
+    /// 148 R1: `/model` and `/effort` before the first send are the draft's
+    /// picks — no `set_model`/`set_effort` (the default is untouched), the
+    /// header shows them over a changing default, and the first send carries
+    /// them as the created session's options. The created session clears
+    /// them; `/new` starts the next draft on the default again.
+    #[test]
+    fn draft_picks_ride_on_the_created_session() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("openai/gpt-5.4".into(), true);
+        m.submit("/model anthropic/claude-sonnet-4-5", &tx);
+        m.submit("/effort high", &tx);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(m.model_id, "anthropic/claude-sonnet-4-5");
+        assert_eq!(m.effort.as_deref(), Some("high"));
+        m.apply(UiEvent::Agent(AgentEvent::DefaultModelChanged {
+            model: "google/gemini-2.5-pro".into(),
+        }));
+        m.apply(UiEvent::Agent(AgentEvent::DefaultEffortChanged {
+            effort: Some("low".into()),
+        }));
+        assert_eq!(m.model_id, "anthropic/claude-sonnet-4-5");
+        assert_eq!(m.effort.as_deref(), Some("high"));
+        assert_eq!(m.default_model, "google/gemini-2.5-pro");
+        m.submit("hello", &tx);
+        let Ok(Command::Send {
+            session: None,
+            draft: Some(draft),
+            ..
+        }) = rx.try_recv()
+        else {
+            panic!("no draft send");
+        };
+        assert_eq!(draft.model.as_deref(), Some("anthropic/claude-sonnet-4-5"));
+        assert_eq!(draft.effort.as_deref(), Some("high"));
+        let s = SessionId::new();
+        m.apply(UiEvent::SessionCreated(s));
+        assert_eq!(m.session, Some(s));
+        assert!(m.draft.is_none());
+        // In the session the same commands switch that session only.
+        m.submit("/model openai/gpt-5.4", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetModel { session, model }) if session == s && model == "openai/gpt-5.4"
+        ));
+        m.submit("/new", &tx);
+        assert_eq!(m.model_id, "google/gemini-2.5-pro");
+        assert_eq!(m.effort.as_deref(), Some("low"));
+        // `/effort clear` alone is not a pending pick: the send creates on the engine side.
+        m.submit("/effort clear", &tx);
+        m.submit("hello again", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::Send {
+                session: None,
+                draft: None,
+                ..
+            })
+        ));
+    }
+
+    /// 148 R1: the other session-creating entries — `/talk`, the MCP menu's
+    /// `s` scope and `/<skill>` — carry the draft's picks the same way the
+    /// first send does; without a pick their `draft` is `None`.
+    #[test]
+    fn draft_picks_ride_on_talk_mcp_and_skill_entries() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::new("openai/gpt-5.4".into(), true);
+        let server = || McpServer {
+            name: "fs".into(),
+            connected: true,
+            repo: None,
+            auth: McpAuth::None,
+            gate: Some(Gate::Destructive),
+            tools: vec![McpToolInfo {
+                name: "read".into(),
+                description: String::new(),
+                gate: None,
+                risk: tools::Risk::Mutating,
+                action: PolicyAction::Ask,
+                registered: Some("read".into()),
+                hidden: false,
+            }],
+        };
+        m.apply(UiEvent::Skills(vec![SkillMeta {
+            name: "caveman".into(),
+            description: "caveman skill".into(),
+            path: "/skills/caveman.md".into(),
+            always: false,
+            repo: None,
+        }]));
+        let picked = |d: &Option<CreateSessionOptions>| {
+            let d = d.as_ref().expect("draft");
+            d.model.as_deref() == Some("anthropic/claude-sonnet-4-5")
+                && d.effort.as_deref() == Some("high")
+        };
+        m.submit("/model anthropic/claude-sonnet-4-5", &tx);
+        m.submit("/effort high", &tx);
+        assert!(rx.try_recv().is_err());
+
+        // `/talk` with no session: the created session starts on the picks.
+        m.submit("/talk", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::TalkStart { session: None, draft }) if picked(&draft)
+        ));
+        // MCP menu, ⏎ then `s` with no session: the hide creates it on the picks.
+        m.submit("/mcp", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListMcp(None))));
+        m.apply(UiEvent::Mcp(vec![server()]));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHidden { session: None, hidden: true, draft, .. }) if picked(&draft)
+        ));
+        // `/<skill>` with no session.
+        m.submit("/caveman lite", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::UseSkill { session: None, name, draft, .. }) if name == "caveman" && picked(&draft)
+        ));
+        let s = SessionId::new();
+        m.apply(UiEvent::SessionCreated(s));
+        assert_eq!(m.session, Some(s));
+        assert!(m.draft.is_none());
+
+        // A fresh draft with no pick: the same entries create on the engine side.
+        m.submit("/new", &tx);
+        assert!(m.draft.is_none());
+        m.submit("/talk", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::TalkStart {
+                session: None,
+                draft: None
+            })
+        ));
+        m.submit("/mcp", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::ListMcp(None))));
+        m.apply(UiEvent::Mcp(vec![server()]));
+        m.menu_key(KeyCode::Enter, "", &tx);
+        m.menu_key(KeyCode::Char('s'), "", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SetHidden {
+                session: None,
+                hidden: true,
+                draft: None,
+                ..
+            })
+        ));
+        m.submit("/caveman lite", &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::UseSkill {
+                session: None,
+                draft: None,
+                ..
+            })
+        ));
     }
 
     /// 75 §8: on an ACP session `/model` lists the harness's options,
@@ -16771,7 +17094,7 @@ mod tests {
         m.submit("/caveman lite", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::UseSkill { session: Some(id), name, args }) if id == s && name == "caveman" && args == "lite"
+            Ok(Command::UseSkill { session: Some(id), name, args, .. }) if id == s && name == "caveman" && args == "lite"
         ));
         // An unknown word is message text, not an error — as is a path even before the index arrives.
         m.submit("/nonesuch", &tx);
@@ -18916,17 +19239,22 @@ mod tests {
         m.menu_key(KeyCode::Enter, "", &tx);
         m.menu_key(KeyCode::Down, "", &tx);
         m.menu_key(KeyCode::Enter, "", &tx);
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(Command::SetModel { session: None, model }) if model == "anthropic/claude-sonnet-4-5"
-        ));
+        // No session yet (148 R1): the pick is the draft's, shown in the header; no command.
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            m.draft.as_ref().and_then(|d| d.model.as_deref()),
+            Some("anthropic/claude-sonnet-4-5")
+        );
+        assert_eq!(m.model_id, "anthropic/claude-sonnet-4-5");
         assert!(m.menu.is_none());
     }
 
     #[test]
     fn models_picker_search_covers_all_models_and_returns_to_the_level() {
         let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
         let mut m = Model {
+            session: Some(s),
             model_id: "openai/o3-pro".into(),
             ..Model::default()
         };
@@ -18983,7 +19311,7 @@ mod tests {
         m.menu_key(KeyCode::Enter, "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetModel { session: None, model }) if model == "cursor/gpt-5.4"
+            Ok(Command::SetModel { session, model }) if session == s && model == "cursor/gpt-5.4"
         ));
         assert!(m.menu.is_none());
     }
@@ -19138,7 +19466,9 @@ mod tests {
     #[test]
     fn models_picker_lists_favorites_first_and_tab_toggles_them() {
         let (tx, mut rx) = unbounded_channel();
+        let s = SessionId::new();
         let mut m = Model {
+            session: Some(s),
             model_id: "openai/gpt-5.4".into(),
             favorite_models: vec![
                 "google/gemini-2.5-pro".into(),
@@ -19204,7 +19534,7 @@ mod tests {
         m.menu_key(KeyCode::Enter, "", &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::SetModel { session: None, model }) if model == "anthropic/claude-opus-4-1"
+            Ok(Command::SetModel { session, model }) if session == s && model == "anthropic/claude-opus-4-1"
         ));
         assert!(m.menu.is_none());
         // The command reply applies the list too, and a shrinking list clamps an open cursor.

@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.askBar.toggle()
         }
         installW1(rail: rail, attention: panel) // 149 W1: agents panel + hotkey, rail pills' clicks, the W1 probes (W1Install.swift)
-        // 149 W2: pointAndSay.install()
+        installPointAndSay() // 149 W2: the voice key (PointAndSay/PointController.swift)
         island.install() // 149 W3
         store.onLegend = { [weak self] in self?.showLegend() }
         store.onSettings = { NotificationsInstaller.shared?.settings.show(activate: true) }

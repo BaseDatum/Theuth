@@ -40,6 +40,7 @@ pub mod registry;
 pub mod reminder;
 pub mod resources;
 mod schema;
+pub mod seat;
 pub mod secrets;
 pub mod shell;
 
@@ -90,6 +91,7 @@ pub use reminder::{
 };
 pub use resources::{CloseAck, CloseTree, TreeOpened};
 pub use resources::{Retention, SessionResources};
+pub use seat::Seat;
 /// 145 §0.5: the cancellation token every [`ToolCx`] carries, re-exported so
 /// crates that build a `ToolCx` need no `tokio-util` dependency of their own.
 pub use tokio_util::sync::CancellationToken;
@@ -604,4 +606,33 @@ fn prompt_block(data_dir: &std::path::Path) -> String {
          a call above it is `denied: subagent is capped`. \
          Remote servers that answer 401 need the user to log in (`l` on the server in /mcp); you cannot."
     )
+}
+
+/// A test scratch directory under `$TMPDIR`, `theuth-<tag>-<uuid>`, removed
+/// on drop — on a passing test and on a panic alike (141 R4: leaked
+/// `theuth-*` test dirs filled the shared machine's disk). Bind it before
+/// anything that uses the path, so it drops last.
+#[cfg(test)]
+pub(crate) struct TestDir(pub(crate) std::path::PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    /// An uncreated `theuth-<tag>-<uuid>` path (for a scratch file); dropped
+    /// like the directory form.
+    pub(crate) fn path(tag: &str) -> Self {
+        Self(std::env::temp_dir().join(format!("theuth-{tag}-{}", uuid::Uuid::new_v4())))
+    }
+
+    pub(crate) fn new(tag: &str) -> Self {
+        let s = Self::path(tag);
+        std::fs::create_dir_all(&s.0).unwrap();
+        s
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0).or_else(|_| std::fs::remove_file(&self.0));
+    }
 }

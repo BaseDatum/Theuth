@@ -11,7 +11,10 @@ use std::{
 use sandbox::{
     Progress,
     types::VmConfig,
-    vm::{self, ImageRef, Init, Mount, NetPolicy, ResourceChange, VmHandle, VmRuntime, VmSpec, VmStatus},
+    vm::{
+        self, ImageRef, Init, Mount, NetPolicy, ResourceChange, VmHandle, VmRuntime, VmSpec,
+        VmStatus,
+    },
 };
 
 const IMAGE: &str = "theuth-vm:dev";
@@ -19,7 +22,9 @@ const IMAGE: &str = "theuth-vm:dev";
 fn spec(name: &str, max_memory_mib: u32) -> VmSpec {
     VmSpec {
         name: name.into(),
-        image: ImageRef::Oci { r#ref: IMAGE.into() },
+        image: ImageRef::Oci {
+            r#ref: IMAGE.into(),
+        },
         cpus: 1,
         max_cpus: 2,
         memory_mib: 1024,
@@ -68,19 +73,39 @@ async fn main() -> anyhow::Result<()> {
     // The smoke's sequence on f2-a: live resize, an impossible ceiling for the next start,
     // a share change, stop, start (= stop → disk snapshot → remove → boot from the snapshot).
     let r = rt
-        .resize(&a, ResourceChange { cpus: Some(2), memory_mib: Some(1536), ..Default::default() })
+        .resize(
+            &a,
+            ResourceChange {
+                cpus: Some(2),
+                memory_mib: Some(1536),
+                ..Default::default()
+            },
+        )
         .await?;
     println!("2a resize live → {:?}", r.status);
     let r = rt
-        .resize(&a, ResourceChange { max_memory_mib: Some(host_mib), ..Default::default() })
+        .resize(
+            &a,
+            ResourceChange {
+                max_memory_mib: Some(host_mib),
+                ..Default::default()
+            },
+        )
         .await?;
-    println!("2b resize max_memory {host_mib} → restart_required {}", r.restart_required);
+    println!(
+        "2b resize max_memory {host_mib} → restart_required {}",
+        r.restart_required
+    );
     let share = std::env::temp_dir().join("f2-share");
     std::fs::create_dir_all(&share)?;
     let p = rt
         .set_mounts(
             &a,
-            &[Mount { host: share.clone(), guest: "/shared/f2".into(), readonly: false }],
+            &[Mount {
+                host: share.clone(),
+                guest: "/shared/f2".into(),
+                readonly: false,
+            }],
         )
         .await?;
     println!("2c set_mounts → restart_required {}", p.restart_required);
@@ -114,8 +139,14 @@ async fn main() -> anyhow::Result<()> {
         let id = rt.snapshot(c, "f2-clean", false, &out).await?;
         let listed = rt.snapshots(c).await?;
         let seen = listed.iter().any(|s| s.id == id);
-        println!("4 snapshot {} listed by runtime.snapshots: {seen} ({} total)", id.0, listed.len());
-        let ls = std::process::Command::new("msb").args(["snapshot", "ls"]).output()?;
+        println!(
+            "4 snapshot {} listed by runtime.snapshots: {seen} ({} total)",
+            id.0,
+            listed.len()
+        );
+        let ls = std::process::Command::new("msb")
+            .args(["snapshot", "ls"])
+            .output()?;
         let ls = String::from_utf8_lossy(&ls.stdout);
         println!("5 msb snapshot ls sees it: {}", ls.contains("f2-clean"));
         if !seen || !ls.contains("f2-clean") {

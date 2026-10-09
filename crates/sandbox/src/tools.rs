@@ -17,7 +17,9 @@ use serde::Deserialize;
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
 
 use crate::actor::{self, SandboxActor};
-use crate::types::{GuestConfig, SandboxConfig, SandboxCreate, SandboxEvent, SandboxInfo, SandboxState};
+use crate::types::{
+    GuestConfig, SandboxConfig, SandboxCreate, SandboxEvent, SandboxInfo, SandboxState,
+};
 use crate::vm::{Mount, ResourceChange, RuntimeState, SnapshotId};
 
 /// The host block (design §4.6), one paragraph.
@@ -63,19 +65,33 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, rt: Runtime, cfg: SandboxCon
     let _ = reg.ask(RegisterTool(Arc::new(ListTool(s.clone())))).await;
     let _ = reg.ask(RegisterTool(Arc::new(CreateTool(s.clone())))).await;
     if vm {
-        let _ = reg.ask(RegisterTool(Arc::new(InstallRuntimeTool(s.clone())))).await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(InstallRuntimeTool(s.clone()))))
+            .await;
         let _ = reg.ask(RegisterTool(Arc::new(StartTool(s.clone())))).await;
         let _ = reg.ask(RegisterTool(Arc::new(StopTool(s.clone())))).await;
         let _ = reg.ask(RegisterTool(Arc::new(PauseTool(s.clone())))).await;
         let _ = reg.ask(RegisterTool(Arc::new(ResumeTool(s.clone())))).await;
         let _ = reg.ask(RegisterTool(Arc::new(ResizeTool(s.clone())))).await;
         let _ = reg.ask(RegisterTool(Arc::new(ShareTool(s.clone())))).await;
-        let _ = reg.ask(RegisterTool(Arc::new(UnshareTool(s.clone())))).await;
-        let _ = reg.ask(RegisterTool(Arc::new(SnapshotTool(s.clone())))).await;
-        let _ = reg.ask(RegisterTool(Arc::new(RestoreTool(s.clone())))).await;
-        let _ = reg.ask(RegisterTool(Arc::new(DestroyTool(s.clone())))).await;
-        let _ = reg.ask(RegisterTool(Arc::new(DesktopTool(s.clone())))).await;
-        let _ = reg.ask(RegisterTool(Arc::new(TakeoverTool(s.clone())))).await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(UnshareTool(s.clone()))))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(SnapshotTool(s.clone()))))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(RestoreTool(s.clone()))))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(DestroyTool(s.clone()))))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(DesktopTool(s.clone()))))
+            .await;
+        let _ = reg
+            .ask(RegisterTool(Arc::new(TakeoverTool(s.clone()))))
+            .await;
         let _ = reg
             .ask(RegisterPrompt {
                 plugin: "sandbox",
@@ -117,7 +133,10 @@ pub fn info_lines(i: &SandboxInfo) -> String {
         format!("name: {}", i.name),
         format!("backend: {}", i.backend),
         format!("state: {}", actor::state_str(&i.state)),
-        format!("engine: {}", i.engine.as_deref().unwrap_or("not paired yet")),
+        format!(
+            "engine: {}",
+            i.engine.as_deref().unwrap_or("not paired yet")
+        ),
     ];
     if let Some(vm) = &i.vm {
         let r = vm.resources;
@@ -181,7 +200,11 @@ pub fn info_lines(i: &SandboxInfo) -> String {
         if !vm.snapshots.is_empty() {
             lines.push(format!(
                 "snapshots: {}",
-                vm.snapshots.iter().map(|s| s.id.0.as_str()).collect::<Vec<_>>().join(", ")
+                vm.snapshots
+                    .iter()
+                    .map(|s| s.id.0.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     }
@@ -227,10 +250,17 @@ fn one_line(i: &SandboxInfo, reachable: Option<bool>) -> String {
             if vm.shares.is_empty() {
                 "-".to_owned()
             } else {
-                vm.shares.iter().map(|m| m.guest.as_str()).collect::<Vec<_>>().join(",")
+                vm.shares
+                    .iter()
+                    .map(|m| m.guest.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
             }
         ));
-        s.push_str(&format!(" desktop={}", if vm.desktop.is_some() { "yes" } else { "no" }));
+        s.push_str(&format!(
+            " desktop={}",
+            if vm.desktop.is_some() { "yes" } else { "no" }
+        ));
         if vm.pending.shares || vm.pending.ports || vm.pending.resources {
             s.push_str(" pending=restart");
         }
@@ -287,7 +317,8 @@ impl Tool for CreateTool {
         if !args.wait.unwrap_or(true) {
             return Ok(out_info(&first));
         }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(self.0.cfg.create_timeout_secs);
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_secs(self.0.cfg.create_timeout_secs);
         let mut last = first;
         while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -296,7 +327,9 @@ impl Tool for CreateTool {
                 Err(e) => return Ok(ToolOutput::err(format!("sandbox: {e}"))),
             };
             let Some(i) = list.into_iter().find(|i| i.name == name) else {
-                return Ok(ToolOutput::err(format!("{name}: record disappeared during bring-up")));
+                return Ok(ToolOutput::err(format!(
+                    "{name}: record disappeared during bring-up"
+                )));
             };
             last = i;
             match &last.state {
@@ -357,7 +390,9 @@ impl Tool for InstallRuntimeTool {
         } = &pf.runtime
             && pf.blockers.iter().all(|b| !b.installable)
         {
-            return Ok(ToolOutput::err(format!("runtime already set up ({version})")));
+            return Ok(ToolOutput::err(format!(
+                "runtime already set up ({version})"
+            )));
         }
         if pf.blockers.iter().any(|b| !b.installable) {
             return Ok(ToolOutput::err(actor::blockers_text(&pf.blockers)));
@@ -398,7 +433,12 @@ impl Tool for ListTool {
             Err(e) => return Ok(ToolOutput::err(format!("sandbox: {e}"))),
         };
         let peers = match mesh::actor() {
-            Some(m) => m.ask(mesh::Status).await.ok().map(|s| s.peers).unwrap_or_default(),
+            Some(m) => m
+                .ask(mesh::Status)
+                .await
+                .ok()
+                .map(|s| s.peers)
+                .unwrap_or_default(),
             None => Vec::new(),
         };
         if list.is_empty() {
@@ -459,9 +499,24 @@ macro_rules! name_tool {
     };
 }
 
-name_tool!(StartTool, "sandbox_start", Start, "Boot a stopped or crashed sandbox VM; pending shares, ports and ceilings apply. Returns its new state.");
-name_tool!(PauseTool, "sandbox_pause", Pause, "Pause a running sandbox VM (RAM kept; its engine becomes unreachable until resumed).");
-name_tool!(ResumeTool, "sandbox_resume", Resume, "Resume a paused sandbox VM.");
+name_tool!(
+    StartTool,
+    "sandbox_start",
+    Start,
+    "Boot a stopped or crashed sandbox VM; pending shares, ports and ceilings apply. Returns its new state."
+);
+name_tool!(
+    PauseTool,
+    "sandbox_pause",
+    Pause,
+    "Pause a running sandbox VM (RAM kept; its engine becomes unreachable until resumed)."
+);
+name_tool!(
+    ResumeTool,
+    "sandbox_resume",
+    Resume,
+    "Resume a paused sandbox VM."
+);
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StopArgs {
@@ -554,7 +609,15 @@ impl Tool for ResizeTool {
             max_memory_mib: a.max_memory_mib,
             root_disk_mib: a.root_disk_mib,
         };
-        match ask(&actor, actor::Resize { name: a.name, change }).await {
+        match ask(
+            &actor,
+            actor::Resize {
+                name: a.name,
+                change,
+            },
+        )
+        .await
+        {
             Ok(o) => {
                 let mut text = format!(
                     "applied now: {}\nwaits for restart: {}\nstatus: {:?}\nrestart_required: {}",
@@ -676,13 +739,19 @@ impl Tool for UnshareTool {
         let before = shares.len();
         shares.retain(|m| m.guest != a.guest);
         if shares.len() == before {
-            return Ok(ToolOutput::err(format!("{}: no share at {}", a.name, a.guest)));
+            return Ok(ToolOutput::err(format!(
+                "{}: no share at {}",
+                a.name, a.guest
+            )));
         }
         set_shares(&actor, &a.name, shares).await
     }
 }
 
-async fn current_shares(actor: &ActorRef<SandboxActor>, name: &str) -> Result<Vec<Mount>, ToolOutput> {
+async fn current_shares(
+    actor: &ActorRef<SandboxActor>,
+    name: &str,
+) -> Result<Vec<Mount>, ToolOutput> {
     let list = actor
         .ask(actor::List)
         .await
@@ -691,13 +760,20 @@ async fn current_shares(actor: &ActorRef<SandboxActor>, name: &str) -> Result<Ve
         .into_iter()
         .find(|i| i.name == name)
         .ok_or_else(|| ToolOutput::err(format!("no sandbox named {name}")))?;
-    let vm = i
-        .vm
-        .ok_or_else(|| ToolOutput::err(format!("{name} is a {} engine, not a sandbox VM", i.backend)))?;
+    let vm = i.vm.ok_or_else(|| {
+        ToolOutput::err(format!(
+            "{name} is a {} engine, not a sandbox VM",
+            i.backend
+        ))
+    })?;
     Ok(vm.shares)
 }
 
-async fn set_shares(actor: &ActorRef<SandboxActor>, name: &str, shares: Vec<Mount>) -> anyhow::Result<ToolOutput> {
+async fn set_shares(
+    actor: &ActorRef<SandboxActor>,
+    name: &str,
+    shares: Vec<Mount>,
+) -> anyhow::Result<ToolOutput> {
     match ask(
         actor,
         actor::SetShares {
@@ -714,12 +790,24 @@ async fn set_shares(actor: &ActorRef<SandboxActor>, name: &str, shares: Vec<Moun
             } else {
                 shares
                     .iter()
-                    .map(|m| format!("{} -> {}{}", m.host.display(), m.guest, if m.readonly { " (ro)" } else { "" }))
+                    .map(|m| {
+                        format!(
+                            "{} -> {}{}",
+                            m.host.display(),
+                            m.guest,
+                            if m.readonly { " (ro)" } else { "" }
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             };
-            let mut o = ToolOutput::ok(format!("shares:\n{list}\nrestart_required: {}", p.restart_required));
-            o.structured = Some(serde_json::json!({ "shares": shares, "restart_required": p.restart_required }));
+            let mut o = ToolOutput::ok(format!(
+                "shares:\n{list}\nrestart_required: {}",
+                p.restart_required
+            ));
+            o.structured = Some(
+                serde_json::json!({ "shares": shares, "restart_required": p.restart_required }),
+            );
             Ok(o)
         }
         Err(e) => Ok(e),
@@ -855,7 +943,10 @@ impl Tool for DestroyTool {
         )
         .await
         {
-            Ok(()) => Ok(ToolOutput::ok(format!("{} destroyed; its engine was removed from the mesh", a.name))),
+            Ok(()) => Ok(ToolOutput::ok(format!(
+                "{} destroyed; its engine was removed from the mesh",
+                a.name
+            ))),
             Err(e) => Ok(e),
         }
     }
@@ -888,7 +979,11 @@ impl Tool for DesktopTool {
         let Some(i) = list.into_iter().find(|i| i.name == a.name) else {
             return Ok(ToolOutput::err(format!("no sandbox named {}", a.name)));
         };
-        let Some(port) = i.vm.as_ref().and_then(|v| v.desktop.as_ref()).and_then(|d| d.host_port) else {
+        let Some(port) =
+            i.vm.as_ref()
+                .and_then(|v| v.desktop.as_ref())
+                .and_then(|d| d.host_port)
+        else {
             return Ok(ToolOutput::err(format!("{} has no desktop", a.name)));
         };
         self.0
@@ -933,10 +1028,22 @@ impl Tool for TakeoverTool {
             Ok(a) => a,
             Err(e) => return Ok(e),
         };
-        match ask(&actor, actor::Takeover { name: a.name, on: a.on }).await {
+        match ask(
+            &actor,
+            actor::Takeover {
+                name: a.name,
+                on: a.on,
+            },
+        )
+        .await
+        {
             Ok(n) => Ok(ToolOutput::ok(format!(
                 "{n} session(s) told: {}",
-                if a.on { "desktop taken over by the user" } else { "desktop handed back" }
+                if a.on {
+                    "desktop taken over by the user"
+                } else {
+                    "desktop handed back"
+                }
             ))),
             Err(e) => Ok(e),
         }
@@ -973,7 +1080,11 @@ impl Tool for GuestTakeoverTool {
         let n = crate::takeover::steer(&self.rt, &a.name, "", a.on).await;
         Ok(ToolOutput::ok(format!(
             "{n} session(s) told: {}",
-            if a.on { "desktop taken over by the user" } else { "desktop handed back" }
+            if a.on {
+                "desktop taken over by the user"
+            } else {
+                "desktop handed back"
+            }
         )))
     }
 }

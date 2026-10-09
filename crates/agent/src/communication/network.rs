@@ -3095,7 +3095,7 @@ mod tests {
     /// continuation turn's text.
     #[tokio::test]
     async fn private_turns_never_fill_or_settle_an_exported_task() {
-        let mut a = crate::supervisor::tests::agents_with(true).await;
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
         let (session, task, _) = exported_task(&mut a, "peer:lab").await;
         let rs = task.request_scope;
         let status = |a: &Agents| {
@@ -3188,7 +3188,7 @@ mod tests {
     /// turn of the exported session itself sets the candidate.
     #[tokio::test]
     async fn owned_child_turns_are_work_not_results() {
-        let mut a = crate::supervisor::tests::agents_with(true).await;
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
         let (session, task, _) = exported_task(&mut a, "peer:lab").await;
         let rs = task.request_scope;
         let child = SessionId::new();
@@ -3228,7 +3228,7 @@ mod tests {
     /// scope: a result landing after the task ended is never unscoped.
     #[tokio::test]
     async fn late_results_of_a_cancelled_or_ended_task_start_no_turn() {
-        let mut a = crate::supervisor::tests::agents_with(true).await;
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
         let (session, task, _) = exported_task(&mut a, "peer:lab").await;
         let rs = task.request_scope;
         let status = |a: &Agents| {
@@ -3337,7 +3337,7 @@ mod tests {
     /// by then; a task with no remembered admission cannot start at all.
     #[tokio::test]
     async fn queued_tasks_keep_their_admitted_epoch_and_never_start_under_a_newer_one() {
-        let mut a = crate::supervisor::tests::agents_with(true).await;
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
         let principal = format!("peer:{}", Uuid::now_v7());
         let (session, active, _) = exported_task(&mut a, &principal).await;
         let task = |a: &Agents, id: &'static str| {
@@ -3421,7 +3421,7 @@ mod tests {
     /// the task's exchange as its ticket out.
     #[tokio::test]
     async fn inbound_only_peer_can_be_asked_on_its_own_task() {
-        let mut a = crate::supervisor::tests::agents_with(true).await;
+        let (_scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
         let binding = Uuid::now_v7();
         let principal = format!("peer:{binding}");
         let (session, task, receipt) = exported_task(&mut a, &principal).await;

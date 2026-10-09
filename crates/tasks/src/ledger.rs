@@ -1231,7 +1231,9 @@ impl Ledger {
             match options.get(n as usize) {
                 Some(o) if !options.is_empty() => next_move = Some((n, o.label.clone())),
                 _ if options.is_empty() => {
-                    return Err("`next`: this review offered no next moves; approve without it".into());
+                    return Err(
+                        "`next`: this review offered no next moves; approve without it".into(),
+                    );
                 }
                 _ => {
                     return Err(format!(
@@ -1831,7 +1833,10 @@ impl Ledger {
             let (pending, head) = match p.kind {
                 packet::PacketKind::Decision => (
                     t.blockers.contains(&p.key),
-                    packet::head_sentence(p.question.as_deref().unwrap_or_default(), packet::ROW_BUDGET),
+                    packet::head_sentence(
+                        p.question.as_deref().unwrap_or_default(),
+                        packet::ROW_BUDGET,
+                    ),
                 ),
                 packet::PacketKind::Review => (
                     t.state == TaskState::Review,
@@ -1996,10 +2001,7 @@ impl Ledger {
                 task.as_ref().map_or(Priority::Medium.weight(), |t| {
                     crate::rank::rank(t.priority, t.project.as_deref(), &self.cfg.project_order)
                 }),
-                matches!(
-                    w.reason,
-                    WakeReason::Answer | WakeReason::BlockersResolved
-                ),
+                matches!(w.reason, WakeReason::Answer | WakeReason::BlockersResolved),
             );
             if picked.get(&w.agent).is_some_and(|(k, _)| *k >= key) {
                 continue;
@@ -2704,7 +2706,10 @@ pub(crate) mod tests {
             "stored"
         );
         let ev = r.ledger.events(&t.id).await.unwrap();
-        assert!(ev.iter().any(|e| e.field == "priority" && e.after.as_deref() == Some("urgent")));
+        assert!(
+            ev.iter()
+                .any(|e| e.field == "priority" && e.after.as_deref() == Some("urgent"))
+        );
         let mut input = TaskCreate {
             state: TaskState::Todo,
             title: "hot".into(),
@@ -2727,7 +2732,12 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(e, PRIORITY_IS_THE_USERS);
         input.priority = None;
-        assert!(r.ledger.create(input.clone(), "agent:ops", None, WakeReason::Assigned).await.is_ok());
+        assert!(
+            r.ledger
+                .create(input.clone(), "agent:ops", None, WakeReason::Assigned)
+                .await
+                .is_ok()
+        );
         input.priority = Some(Priority::Low);
         let t = r
             .ledger
@@ -2947,7 +2957,15 @@ pub(crate) mod tests {
         // backlog → todo wakes the owner `assigned` (the note is a comment: its own wake); the note lands in the thread
         let t = r
             .ledger
-            .move_to(&t.id, TaskState::Todo, Some("go ahead"), None, None, "user", None)
+            .move_to(
+                &t.id,
+                TaskState::Todo,
+                Some("go ahead"),
+                None,
+                None,
+                "user",
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(t.state, TaskState::Todo);
@@ -4932,7 +4950,15 @@ pub(crate) mod tests {
         // the user's unblock clears both system blockers and lands in todo with a `resumed` wake
         let u = r
             .ledger
-            .move_to(&t.id, TaskState::Todo, Some("go again"), None, None, "user", None)
+            .move_to(
+                &t.id,
+                TaskState::Todo,
+                Some("go again"),
+                None,
+                None,
+                "user",
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -5919,16 +5945,31 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert_eq!(e, already_waiting(&d1));
-        assert!(e.starts_with(&format!("{d1} is already waiting on the user")), "{e}");
-        assert_eq!(r.thread.0.lock().unwrap()[&doc].len(), before, "no thread line");
+        assert!(
+            e.starts_with(&format!("{d1} is already waiting on the user")),
+            "{e}"
+        );
+        assert_eq!(
+            r.thread.0.lock().unwrap()[&doc].len(),
+            before,
+            "no thread line"
+        );
         assert_eq!(r.ledger.wakes().await.unwrap().len(), wakes, "no wake");
-        assert_eq!(r.ledger.get(&t.id).await.unwrap().blockers, vec![d1.clone()]);
+        assert_eq!(
+            r.ledger.get(&t.id).await.unwrap().blockers,
+            vec![d1.clone()]
+        );
         // answered → a new one is fine again
         r.ledger
             .answer_decision(&d1, "spend", "user", None)
             .await
             .unwrap();
-        assert!(r.ledger.escalate(&t.id, ask(), "agent:lead", None).await.is_ok());
+        assert!(
+            r.ledger
+                .escalate(&t.id, ask(), "agent:lead", None)
+                .await
+                .is_ok()
+        );
 
         // another actor's forward of ops's own packet is not a duplicate
         let mut r = rig().await;
@@ -5957,7 +5998,9 @@ pub(crate) mod tests {
         let doc = t.thread.clone().unwrap();
         let blocks = r.thread.0.lock().unwrap()[&doc].clone();
         assert!(
-            blocks.iter().any(|b| b.contains("\n\nIf wrong: high, autopay charges real cards\n\nOptions:")),
+            blocks
+                .iter()
+                .any(|b| b.contains("\n\nIf wrong: high, autopay charges real cards\n\nOptions:")),
             "{blocks:?}"
         );
         // ops's own task is already waiting on the user through lead's forward:
@@ -5972,11 +6015,25 @@ pub(crate) mod tests {
         // D5 tool: what waits on the user, per line
         let w = r.ledger.waiting_on_user("agent:lead").await.unwrap();
         assert_eq!(w.len(), 1);
-        assert_eq!((w[0].key.as_str(), w[0].kind), (d2.as_str(), packet::PacketKind::Decision));
+        assert_eq!(
+            (w[0].key.as_str(), w[0].kind),
+            (d2.as_str(), packet::PacketKind::Decision)
+        );
         assert_eq!(w[0].head, "approve PR 42?");
         assert_eq!(w[0].title, "fix deploy");
-        assert_eq!(r.ledger.waiting_on_user("agent:ops").await.unwrap().len(), 1, "ops owns it");
-        assert!(r.ledger.waiting_on_user("agent:other").await.unwrap().is_empty(), "not their line");
+        assert_eq!(
+            r.ledger.waiting_on_user("agent:ops").await.unwrap().len(),
+            1,
+            "ops owns it"
+        );
+        assert!(
+            r.ledger
+                .waiting_on_user("agent:other")
+                .await
+                .unwrap()
+                .is_empty(),
+            "not their line"
+        );
         assert_eq!(r.ledger.waiting_on_user("user").await.unwrap().len(), 1);
     }
 
@@ -6018,7 +6075,14 @@ pub(crate) mod tests {
         let opts = |n: usize| -> Vec<packet::PacketOption> {
             (0..n)
                 .map(|i| packet::PacketOption {
-                    label: ["Merge and continue to X", "Revise Y first", "Park it", "Ship", "Five"][i].into(),
+                    label: [
+                        "Merge and continue to X",
+                        "Revise Y first",
+                        "Park it",
+                        "Ship",
+                        "Five",
+                    ][i]
+                        .into(),
                     description: None,
                 })
                 .collect()
@@ -6056,7 +6120,11 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(e.contains("3 moves") && e.contains("0..2"), "{e}");
-        assert_eq!(r.ledger.get(&t.id).await.unwrap().state, TaskState::Review, "nothing written");
+        assert_eq!(
+            r.ledger.get(&t.id).await.unwrap().state,
+            TaskState::Review,
+            "nothing written"
+        );
         let t2 = r
             .ledger
             .move_to(&t.id, TaskState::Done, None, None, Some(1), "user", None)
@@ -6066,12 +6134,16 @@ pub(crate) mod tests {
         let doc = t.thread.clone().unwrap();
         let blocks = r.thread.0.lock().unwrap()[&doc].clone();
         assert!(
-            blocks.iter().any(|b| b.ends_with("**next** (2) Revise Y first")),
+            blocks
+                .iter()
+                .any(|b| b.ends_with("**next** (2) Revise Y first")),
             "{blocks:?}"
         );
         let w = r.ledger.wakes().await.unwrap();
         assert!(
-            w.iter().any(|w| w.agent == "lead" && w.reason == WakeReason::Answer && w.task.as_ref() == Some(&t.id)),
+            w.iter().any(|w| w.agent == "lead"
+                && w.reason == WakeReason::Answer
+                && w.task.as_ref() == Some(&t.id)),
             "{w:?}"
         );
         // no options → `next` is refused
@@ -6122,7 +6194,11 @@ pub(crate) mod tests {
             .unwrap();
         let d = r.ledger.dispatch().await.unwrap();
         assert_eq!(d.len(), 1);
-        assert_eq!(d[0].wake.task.as_ref(), Some(&ranked.id), "project order beats age and priority");
+        assert_eq!(
+            d[0].wake.task.as_ref(),
+            Some(&ranked.id),
+            "project order beats age and priority"
+        );
         r.ledger.finish_wake(&d[0].wake).await.unwrap();
         // equal rank: an `answer` wake on a newer task beats the older `assigned`
         input.project = None;

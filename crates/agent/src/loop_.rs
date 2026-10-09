@@ -721,7 +721,7 @@ struct Shared {
     /// Tier-2 model of the decision oracle (57 §0.9); `None` = the title model,
     /// then the session's model. Shared with the supervisor.
     escalate_model: Arc<RwLock<Option<Resolved>>>,
-    /// Preferred subagent model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
+    /// Subagent default model (`agent.subagents.model`); named in the system prompt. Shared with the supervisor.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
     /// 136 §2.2: the session's money cap from [`SetBudgetNow`] (persisted on
     /// the session row by the supervisor, loaded by [`Session::with_budget`]
@@ -2520,7 +2520,8 @@ struct Turn {
     hint_since: usize,
     /// Tool calls dispatched this turn, the harvest trigger (10 §5.2).
     calls: u32,
-    /// Process working directory, resolved once per turn.
+    /// The session's seated working directory (140 F4E), else the process
+    /// cwd; resolved once per turn.
     cwd: PathBuf,
     /// The `max_tool_rounds` landing call is in flight: tool calls are refused (36 §5).
     landing: bool,
@@ -2829,19 +2830,22 @@ impl Reserved {
 
     /// Settle with `usage` (what the stream's `End` carried; `None` for a
     /// failed or cancelled attempt) and tell every affected owner its usage
-    /// revision moved.
+    /// revision moved. Returns the priced money (returned, else estimated).
     async fn settle(
         mut self,
         status: CallStatus,
         usage: Option<&genai::chat::Usage>,
         model: &Resolved,
-    ) {
-        let Some(call) = self.call.take() else { return };
+    ) -> Option<Money> {
         let mut obs = observe(usage, model);
         if status != CallStatus::Settled {
             obs.unknown_reason = Some(status.to_string());
         }
-        settle(&self.store, &self.rt, &call, status, obs).await;
+        let priced = obs.returned.as_ref().or(obs.estimated.as_ref()).cloned();
+        if let Some(call) = self.call.take() {
+            settle(&self.store, &self.rt, &call, status, obs).await;
+        }
+        priced
     }
 }
 
@@ -3192,6 +3196,7 @@ impl Turn {
         cancel: CancellationToken,
         state: SessionState,
     ) -> Self {
+        let cwd = tools::seat::cwd(shared.id).unwrap_or_default();
         Self {
             since: state.history.len(),
             hint_since: state.history.len(),
@@ -3209,7 +3214,7 @@ impl Turn {
             repl: None,
             input_text: String::new(),
             calls: 0,
-            cwd: std::env::current_dir().unwrap_or_default(),
+            cwd,
             landing: false,
             retries: AtomicU32::new(0),
             salvaged: 0,
@@ -4272,6 +4277,7 @@ impl Turn {
                 self.shared.advisor.load(Ordering::Relaxed),
                 self.consult.is_some(),
                 !endless,
+                &self.cwd,
             );
             // R1-D1: a native child of an endless parent opens with the parent's view.
             if self.shared.parent_view {
@@ -10295,6 +10301,9 @@ mod tests {
         );
         let cost = store.session_cost(id).await.unwrap().unwrap();
         assert_eq!(cost.direct.returned[0].nanos, 250_000_000);
+        // F1: the reply carries the priced amount and the row's request id.
+        assert_eq!(reply.cost_nanos, Some(250_000_000));
+        assert_eq!(reply.request_id.as_deref(), Some(rows[0].1.as_str()));
         assert_eq!(next_usage_changed(&mut events).await, (id, cost.revision));
 
         // The second scripted stream never sends `[DONE]`; the budget ends it.

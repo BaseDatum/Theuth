@@ -94,6 +94,52 @@ pub(crate) fn with_test_registry<F: Future>(body: F) -> F::Output {
         .expect("test runtime")
         .block_on(body)
 }
+
+/// A test scratch directory under `$TMPDIR`, `theuth-<tag>-<uuid>`, removed
+/// on drop — on a passing test and on a panic alike (141 R3 T15 / R4: leaked
+/// `theuth-*` test dirs filled the shared machine's disk). Bind it before
+/// anything that uses the path, so it drops last.
+#[cfg(test)]
+pub(crate) struct TestDir(pub(crate) std::path::PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    pub(crate) fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("theuth-{tag}-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// 141 R3 T15: the guard deletes its dir on drop — also mid-panic, since
+/// unwinding drops the test's locals.
+#[cfg(test)]
+#[test]
+fn scratch_is_removed_on_drop() {
+    let path = {
+        let s = TestDir::new("scratch-check");
+        std::fs::write(s.0.join("x"), b"x").unwrap();
+        assert!(s.0.is_dir());
+        s.0.clone()
+    };
+    assert!(!path.exists(), "{path:?}");
+    let path = std::panic::catch_unwind(|| {
+        let s = TestDir::new("scratch-panic");
+        let p = s.0.clone();
+        std::panic::panic_any(p);
+    })
+    .unwrap_err()
+    .downcast::<std::path::PathBuf>()
+    .unwrap();
+    assert!(!path.exists(), "{path:?}");
+}
 pub mod cost;
 pub mod lifecycle;
 pub mod private;
@@ -131,6 +177,8 @@ pub use lifecycle::{
     CleanupStatus, CloseAck, CloseResult, CloseTree, CreateSessionOptions, PrivateOwner,
     SessionOpen,
 };
+#[cfg(feature = "test-support")]
+pub use supervisor::spawn_test_agents;
 pub use supervisor::{
     ActivityOf, Agents, Broadcast, Identity, IdentitySource, InstallIdentitySource, ListActivity,
     RegisterNode, UnregisterNode,
@@ -688,7 +736,7 @@ pub struct EscalateModel {
 
 // 57 §2 side-call types live in `runtime` (00 §10: `decision` sits below `agent`); re-exported
 // so `agent::SideCall` etc. keep working.
-pub use runtime::side_call::{ModelRole, SideCall, SideReply};
+pub use runtime::side_call::{ModelRole, SideCall, SideCallable, SideReply};
 
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.subagents.model`
 /// and use it for every child spawned without an explicit `model`; the system
@@ -699,9 +747,21 @@ pub struct SetSubagentModel {
     pub model: Option<String>,
 }
 
-/// `ask` → `Option<ModelInfo>`: the live preferred subagent model, if set.
+/// `ask` → `Option<ModelInfo>`: the live subagent default model, if set.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetSubagentModel;
+
+/// `ask` → `Result<ModelInfo, String>` (148 R4): resolve `model` through the
+/// catalog AND refuse a provider without credentials, exactly as
+/// [`SetSubagentModel`] validates ("provider `x` has no credentials"). No
+/// side effects: the roster validates `roster.theuth_model` and an agent
+/// file's `model:` with it. An unknown id under a keyed provider still
+/// resolves (pass-through), as everywhere else.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolveModel {
+    /// `provider/model` or a bare model id.
+    pub model: String,
+}
 
 /// `ask` → `Result<knowledge::HarvestResult, String>`: harvest a session's
 /// finished frame (design doc 10 §5.2). `Err("turn in flight")` while a turn
@@ -808,6 +868,27 @@ pub struct MarkDesk {
     /// Bare agent name, or `None`.
     pub agent: Option<String>,
 }
+
+/// `ask` → `()`: the configured model of a desk session's agent (148 E2) — a
+/// hired agent's file `model:`, or `roster.theuth_model` for theuth; `None`
+/// when the agent has none. Kept in memory: a native child of the desk whose
+/// spawn names no `model` starts on it before `agent.subagents.model` and
+/// `agent.model`. The roster sends it whenever it opens a desk or the agent's
+/// model changes; the entry goes with a put-away (`MarkDesk { agent: None }`)
+/// or deleted desk.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetDeskModel {
+    /// The desk session.
+    pub session: SessionId,
+    /// Configured model id, or `None` to follow the defaults.
+    pub model: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the model id stored on `session`'s row (148 R1
+/// F4: the roster compares it with a desk's effective model before switching);
+/// `None` for an unknown session.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SessionModel(pub SessionId);
 
 /// `ask` → `Option<SessionId>`: the session marked as the bare-named agent's
 /// desk on this engine (STALE-WAKE-DESKS: one desk per agent, reused across
@@ -1432,19 +1513,20 @@ impl AgentState {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct ListModels;
 
-/// `ask` → `Result<ModelInfo, String>`. Resolves `model` (design doc 02 §1)
-/// and switches `session` (if given) for its next model call. With `manual`
-/// the id also becomes the default for new sessions (82 §2: a human picked it
-/// in a session's model picker): `agent.model` in `<data_dir>/config.yaml`
-/// is rewritten and [`AgentEvent::DefaultModelChanged`] follows. Programmatic
-/// switches (schedules, bots) pass `manual: false` and never touch the default.
+/// `ask` → `Result<ModelInfo, String>`. Resolves `model` (design doc 02 §1).
+/// With `session`, switches that session for its next model call and nothing
+/// else (148 R1: a pick inside a chat applies to that chat only, whatever
+/// `manual` says). With no session and `manual`, the id becomes the default
+/// for new sessions: `agent.model` in `<data_dir>/config.yaml` is rewritten
+/// and [`AgentEvent::DefaultModelChanged`] follows (the Settings path). With
+/// no session and `manual: false` it only resolves and reports the id.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetModel {
-    /// Session to switch; `None` changes only the default (needs `manual`).
+    /// Session to switch (that session only); `None` targets the default (needs `manual`).
     pub session: Option<SessionId>,
     /// `provider/model`, or a bare model id resolved against configured providers.
     pub model: String,
-    /// A person chose this in a model picker: make it the default too.
+    /// With no session: a person set the default in Settings.
     /// Defaults to `true` so older frontends keep their behaviour.
     #[serde(default = "yes")]
     pub manual: bool,
@@ -1459,18 +1541,18 @@ pub struct GetDefaultModel;
 /// `ask` → `Result<(), String>`: set (or clear with `None`) the reasoning
 /// effort. Validated against the session's current model via the catalog
 /// (unknown/passthrough models accept any genai keyword or integer budget).
-/// Like [`SetModel`]: switches `session` (from its next turn); with `manual`
-/// the value also becomes the default for new sessions (83 §2: a human
-/// picked it in an effort picker): `agent.effort` in `<data_dir>/config.yaml`
-/// is rewritten and [`AgentEvent::DefaultEffortChanged`] follows.
-/// Programmatic changes pass `manual: false` and never touch the default.
+/// Like [`SetModel`]: with `session`, switches that session from its next
+/// turn and nothing else (148 R1); with no session and `manual` the value
+/// becomes the default for new sessions: `agent.effort` in
+/// `<data_dir>/config.yaml` is rewritten and
+/// [`AgentEvent::DefaultEffortChanged`] follows.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetEffort {
-    /// Session to switch; `None` changes only the default (needs `manual`).
+    /// Session to switch (that session only); `None` targets the default (needs `manual`).
     pub session: Option<SessionId>,
     /// Effort keyword or token budget; `None` clears.
     pub effort: Option<String>,
-    /// A person chose this in an effort picker: make it the default too.
+    /// With no session: a person set the default in Settings.
     /// Defaults to `true` so older frontends keep their behaviour.
     #[serde(default = "yes")]
     pub manual: bool,

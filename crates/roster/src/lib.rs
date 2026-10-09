@@ -7,7 +7,7 @@
 //! Public surface consumed by other plugins:
 //! - commands on the [`ROSTER_ACTOR`] actor ([`Roster`]): [`ListAgents`],
 //!   [`GetAgent`], [`PutAgent`], [`PauseAgent`], [`ApproveAgent`], [`ProposeAgent`],
-//!   [`RoutableAgents`]
+//!   [`RoutableAgents`], [`TheuthModel`], [`SetTheuthModel`]
 //! - [`file::parse`]: `agents/<name>.md` → [`AgentFile`]
 //! - [`Desks`]: the shared read model handed to the tasks plugin
 
@@ -57,7 +57,8 @@ pub struct ListAgents;
 pub struct GetAgent(pub String);
 
 /// `ask` → `Result<(), String>`: write `agents/<name>.md` from the file
-/// (create or replace); the watcher reconciles and the record replicates.
+/// (create or replace); the watcher reconciles and the record replicates. A
+/// changed `model:` re-points the open desk (and its children) at once.
 /// `theuth` is refused.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PutAgent(pub AgentFile);
@@ -117,6 +118,25 @@ pub struct AgentOf(pub runtime::SessionId);
 /// hub lease.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OpenDesk(pub String);
+
+/// `ask` → `Option<agent::ModelInfo>`: the live `roster.theuth_model` (148
+/// E3) resolved through the catalog — what the built-in `theuth` agent's
+/// desk and its work run on. `None` when unset (the default for new sessions);
+/// an id the catalog no longer resolves answers as a bare `ModelInfo` naming
+/// itself (F7), so the row shows the stale value.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct TheuthModel;
+
+/// `ask` → `Result<Option<agent::ModelInfo>, String>`: set or clear (`None`)
+/// `roster.theuth_model` (148 E3). Validated through the catalog (an unknown
+/// or un-keyed id is refused like `agent::SetSubagentModel`), written to
+/// `config.yaml`, kept live, mirrored into the synthesised `theuth` file;
+/// an open theuth desk switches now and its native children follow.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetTheuthModel {
+    /// `provider/model`, bare id, or `None` for the default.
+    pub model: Option<String>,
+}
 
 /// `ask` → `Result<(), String>`: close the agent's current episode (67 §6.2):
 /// one journal turn, the journal file, then a fresh desk. Sent by the mesh
@@ -233,6 +253,109 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// 148 E3/F7: the agent's configured model as the canonical catalog id, or
+/// `None` when it has none — or when the id does not resolve or its provider
+/// has no credentials (`agent::ResolveModel`, 148 R4): warned, and the desk
+/// follows the default instead of opening on a model that cannot answer.
+async fn resolve_configured(
+    agents: &ActorRef<agent::Agents>,
+    name: &str,
+    configured: Option<String>,
+) -> Option<String> {
+    let m = configured?;
+    match agents.ask(agent::ResolveModel { model: m.clone() }).await {
+        Ok(info) => Some(info.id),
+        Err(e) => {
+            tracing::warn!(
+                agent = %name, model = %m,
+                "configured model not usable, the default stands in: {e}"
+            );
+            None
+        }
+    }
+}
+
+/// 148 E3: the model a desk runs on — its (resolved) configured one, else
+/// the live default for new sessions; `None` when the agent actor cannot say.
+async fn effective_model(
+    agents: &ActorRef<agent::Agents>,
+    configured: Option<String>,
+) -> Option<String> {
+    match configured {
+        Some(m) => Some(m),
+        None => agents.ask(agent::GetDefaultModel).await.ok(),
+    }
+}
+
+/// 148 F7: a stored model id the catalog no longer resolves, shown as itself
+/// (name = id, provider = the part before `/`) so a Settings row names the
+/// stale value instead of "Same as new sessions".
+fn stale_info(id: String) -> agent::ModelInfo {
+    agent::ModelInfo {
+        provider: id.split_once('/').map_or("", |(p, _)| p).to_owned(),
+        name: id.clone(),
+        id,
+        context: 0,
+        reasoning: false,
+        image: false,
+        efforts: Vec::new(),
+        budget_min: None,
+        budget_max: None,
+    }
+}
+
+/// Put a desk session on `model` — that session only (148 R1: `SetModel`
+/// with a session never touches the default). 148 F4: a session whose row
+/// already stores `model` is left alone (no session actor spawned, no
+/// `ModelChanged`, a stored effort kept). The canonical id, or `None` when
+/// the switch failed (logged).
+async fn switch_session(
+    agents: &ActorRef<agent::Agents>,
+    name: &str,
+    session: runtime::SessionId,
+    model: String,
+) -> Option<String> {
+    if agents
+        .ask(agent::SessionModel(session))
+        .await
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some(model.as_str())
+    {
+        return Some(model);
+    }
+    match agents
+        .ask(agent::SetModel {
+            session: Some(session),
+            model,
+            manual: false,
+        })
+        .await
+    {
+        Ok(info) => Some(info.id),
+        Err(e) => {
+            tracing::warn!(agent = %name, "desk model not switched: {e}");
+            None
+        }
+    }
+}
+
+/// 148 E3: validate a model id for [`SetTheuthModel`] the way
+/// `agent::SetSubagentModel` does — `agent::ResolveModel` resolves it through
+/// the catalog and refuses a provider without credentials; no side effects.
+async fn resolve_keyed(
+    agents: &ActorRef<agent::Agents>,
+    id: &str,
+) -> Result<agent::ModelInfo, String> {
+    agents
+        .ask(agent::ResolveModel {
+            model: id.to_owned(),
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
 impl Roster {
     async fn load(
         rt: Runtime,
@@ -281,6 +404,10 @@ impl Roster {
     async fn reconcile(&mut self) {
         let before = self.shared.files();
         let mut files = BTreeMap::new();
+        // 148 E2: open desks whose file `model:` changed on disk (an edit
+        // the watcher saw). `PutAgent` updates the read model before this
+        // runs, so it applies its own change (F1).
+        let mut remodelled = Vec::new();
         for (stem, parsed) in file::load_dir(&self.dir) {
             if let Err(e) = AgentName::new(&stem) {
                 tracing::warn!("{}/{stem}.md ignored: {e}", self.dir.display());
@@ -304,13 +431,11 @@ impl Roster {
                         if let Err(e) = self.store.upsert_agent(f, mtime).await {
                             tracing::warn!(agent = %stem, "agents row not written: {e:#}");
                         }
-                        push_charter(
-                            before
-                                .get(&stem)
-                                .and_then(|p| p.as_ref().ok())
-                                .map(|f| f.body.as_str()),
-                            f,
-                        );
+                        let old = before.get(&stem).and_then(|p| p.as_ref().ok());
+                        if old.is_some_and(|o| o.model != f.model) {
+                            remodelled.push((stem.clone(), f.model.clone()));
+                        }
+                        push_charter(old.map(|f| f.body.as_str()), f);
                     }
                     Err(e) => tracing::warn!("{}/{stem}.md: {e}", self.dir.display()),
                 }
@@ -322,9 +447,14 @@ impl Roster {
                 tracing::warn!(agent = %gone, "agents row not removed: {e:#}");
             }
         }
-        self.shared
-            .set_files(files, file::default_agent(&self.rt.data_dir));
+        self.shared.set_files(
+            files,
+            file::default_agent(&self.rt.data_dir, self.cfg.theuth_model.clone()),
+        );
         self.sync_desks().await;
+        for (name, model) in remodelled {
+            self.apply_desk_model(&name, model).await;
+        }
     }
 
     /// Agents whose desk opens eagerly: every valid, unpaused, approved file
@@ -389,13 +519,16 @@ impl Roster {
             .flatten();
         // 137 D12: the file's `memory:`, else `agent.endless.default_desk`.
         let wanted = self.desk_mode(f);
+        // 148 F7: a `model:` the catalog no longer resolves does not keep
+        // the desk shut — the default stands in (warned).
+        let configured = resolve_configured(&agents, name, f.model.clone()).await;
         let session = match existing {
             Some(s) => s,
             None => {
                 let open = agents
                     .ask(agent::CreateSession {
                         options: agent::CreateSessionOptions {
-                            model: f.model.clone(),
+                            model: configured.clone(),
                             memory: Some(wanted),
                             ..Default::default()
                         },
@@ -430,6 +563,20 @@ impl Roster {
                 session
             }
         };
+        // 148 E2: the agent's configured model — a native child of the desk
+        // that names none starts on it (a hired agent's `model:`, theuth's
+        // live `roster.theuth_model`). Re-sent on every (re)open: Agents
+        // drops the entry when a desk is put away.
+        if let Err(e) = agents
+            .ask(agent::SetDeskModel {
+                session,
+                model: configured.clone(),
+            })
+            .await
+        {
+            tracing::warn!(agent = %name, "desk model not recorded: {e}");
+        }
+        let mut model = configured.clone();
         if existing.is_some() {
             // A desk put away by an earlier build was archived; it is the desk again.
             let _ = agents
@@ -441,6 +588,13 @@ impl Roster {
             // Whatever turn claimed wakes on it died with the last process.
             if let Some(t) = tasks::actor() {
                 let _ = t.tell(tasks::ReleaseClaims(session.to_string())).await;
+            }
+            // 148 E3/F4: a reopened desk runs on its effective model — the
+            // configured one, else the live default; `switch_session` leaves
+            // a row already storing it alone. A fresh session was created
+            // with it above.
+            if let Some(m) = effective_model(&agents, configured).await {
+                model = switch_session(&agents, name, session, m).await.or(model);
             }
         }
         if let Err(e) = agents
@@ -504,7 +658,7 @@ impl Roster {
                 last_active_ms: now,
                 working: false,
                 primed: false,
-                model: f.model.clone(),
+                model,
                 serving: None,
                 memory,
                 pending_memory: (memory != wanted).then_some(wanted),
@@ -521,6 +675,58 @@ impl Roster {
         } else {
             agent::MemoryMode::Epochs
         })
+    }
+
+    /// 148 E3: `roster.theuth_model` := `model` (a canonical id, or `None`
+    /// for the default): written to `config.yaml` (best-effort, like
+    /// `agent::SetSubagentModel`: a failure is logged and the live value
+    /// still changes; an empty value reads back as `None`), kept live,
+    /// mirrored into the synthesised `theuth` file, applied to its open desk.
+    async fn set_theuth_model(&mut self, model: Option<String>) {
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_config_value(
+            &path,
+            "roster",
+            "theuth_model",
+            model.as_deref().unwrap_or_default(),
+        ) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        self.cfg.theuth_model = model.clone();
+        self.shared
+            .set_theuth(file::default_agent(&self.rt.data_dir, model.clone()));
+        self.apply_desk_model(AgentName::DEFAULT, model).await;
+    }
+
+    /// 148 E2/E3: the agent's configured model changed (theuth's live value,
+    /// a hired agent's `model:` through [`PutAgent`] or an on-disk edit):
+    /// tell Agents (its native children start on it) and put the open desk
+    /// on its effective model — the configured one, else the live default
+    /// (`switch_session` skips a row already storing it). No-op without an
+    /// open desk.
+    async fn apply_desk_model(&mut self, name: &str, configured: Option<String>) {
+        let Some(session) = self.desks.get(name).map(|d| d.session) else {
+            return;
+        };
+        let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+            return;
+        };
+        let configured = resolve_configured(&agents, name, configured).await;
+        if let Err(e) = agents
+            .ask(agent::SetDeskModel {
+                session,
+                model: configured.clone(),
+            })
+            .await
+        {
+            tracing::warn!(agent = %name, "desk model not recorded: {e}");
+        }
+        if let Some(m) = effective_model(&agents, configured).await
+            && let Some(id) = switch_session(&agents, name, session, m).await
+            && let Some(d) = self.desks.get_mut(name)
+        {
+            d.model = Some(id);
+        }
     }
 
     /// 137 R1-D7 / D14: switch the desk session to its pending mode if it is
@@ -1540,6 +1746,28 @@ impl Message<agent::AgentEvent> for Roster {
                     s.children.insert(child);
                 }
             }
+            // 148 E3: desks without a configured model (theuth with
+            // `roster.theuth_model` unset, hired agents without `model:`)
+            // follow the default for new sessions — each switched
+            // session-only.
+            E::DefaultModelChanged { model } => {
+                let following: Vec<(String, runtime::SessionId)> = self
+                    .desks
+                    .iter()
+                    .filter(|(n, _)| self.shared.file(n).is_some_and(|f| f.model.is_none()))
+                    .map(|(n, d)| (n.clone(), d.session))
+                    .collect();
+                let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+                    return;
+                };
+                for (name, session) in following {
+                    if let Some(id) = switch_session(&agents, &name, session, model.clone()).await
+                        && let Some(d) = self.desks.get_mut(&name)
+                    {
+                        d.model = Some(id);
+                    }
+                }
+            }
             // 67 §6.4: the session's spend moved.
             E::ModelUsageChanged { session, .. } => self.charge(session).await,
             // The thread ended under the desk: the episode is over, no journal possible.
@@ -1765,18 +1993,75 @@ impl Message<OpenDesk> for Roster {
     }
 }
 
+impl Message<TheuthModel> for Roster {
+    type Reply = Option<agent::ModelInfo>;
+
+    /// The stored id resolved through the catalog (no session, not manual:
+    /// 148 E1). 148 F7: an id that no longer resolves — or no agent actor to
+    /// ask — answers as itself ([`stale_info`]) so the row shows the stale
+    /// value rather than "Same as new sessions".
+    async fn handle(&mut self, _: TheuthModel, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let id = self.cfg.theuth_model.clone()?;
+        let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR) else {
+            return Some(stale_info(id));
+        };
+        let resolved = agents
+            .ask(agent::SetModel {
+                session: None,
+                model: id.clone(),
+                manual: false,
+            })
+            .await;
+        Some(resolved.unwrap_or_else(|_| stale_info(id)))
+    }
+}
+
+impl Message<SetTheuthModel> for Roster {
+    type Reply = Result<Option<agent::ModelInfo>, String>;
+
+    /// 148 E3: validate (a set needs the agent actor), then [`Roster::set_theuth_model`].
+    async fn handle(
+        &mut self,
+        m: SetTheuthModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let info = match m.model {
+            Some(id) => {
+                let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    .ok()
+                    .flatten()
+                    .ok_or_else(|| "agent actor not running".to_owned())?;
+                Some(resolve_keyed(&agents, &id).await?)
+            }
+            None => None,
+        };
+        self.set_theuth_model(info.as_ref().map(|i| i.id.clone()))
+            .await;
+        Ok(info)
+    }
+}
+
 impl Message<PutAgent> for Roster {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: PutAgent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if m.0.name.is_default() {
             return Err(
-                "theuth is the built-in default agent: edit prompt.md, not the roster".into(),
+                "theuth is the built-in default agent: edit prompt.md, not the roster; \
+                        its model is set in Settings"
+                    .into(),
             );
         }
         // Validate through the parser so the file on disk is always readable.
         file::parse(m.0.name.as_str(), &file::render(&m.0))?;
+        // 148 F1: `write_file` updates the read model, so the reconcile below
+        // cannot see the `model:` change — apply it here.
+        let old_model = self.shared.file(m.0.name.as_str()).and_then(|f| f.model);
         self.write_file(&m.0).await?;
+        if old_model != m.0.model {
+            self.apply_desk_model(m.0.name.as_str(), m.0.model.clone())
+                .await;
+        }
         let _ = ctx.actor_ref().tell(Reconcile).await;
         Ok(())
     }
@@ -2432,6 +2717,12 @@ mod tests {
 
     async fn roster(data_dir: &std::path::Path) -> Roster {
         let rt = Runtime::new(figment::Figment::new(), data_dir.to_path_buf());
+        roster_on(rt, data_dir).await
+    }
+
+    /// A `Roster` over `data_dir` on a caller's runtime (shared with a test
+    /// engine, so events route between them).
+    async fn roster_on(rt: Runtime, data_dir: &std::path::Path) -> Roster {
         let store = store::Store::open(&data_dir.join(DB)).await.unwrap();
         Roster::load(
             rt,
@@ -2441,6 +2732,35 @@ mod tests {
             Arc::new(Shared::default()),
         )
         .await
+    }
+
+    /// Held by the test that registers a live engine as `AGENT_ACTOR`
+    /// (process-global) and by every test whose assertions depend on there
+    /// being none (the agent crate's `REGISTRY_TEST_LOCK` pattern).
+    static AGENT_RIG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Run `body` under [`AGENT_RIG`]: the lock is taken before the runtime
+    /// is built and released after it is dropped, so a registered engine is
+    /// dead before the next gated test looks the name up.
+    fn with_engine_lock<F: Future>(body: F) -> F::Output {
+        let _lock = AGENT_RIG.lock().unwrap_or_else(|p| p.into_inner());
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime")
+            .block_on(body)
+    }
+
+    /// Poll `ok` (every 50 ms, up to 10 s) until it holds; events ride the
+    /// runtime bus asynchronously.
+    async fn eventually(what: &str, mut ok: impl AsyncFnMut() -> bool) {
+        for _ in 0..200 {
+            if ok().await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("{what}: not within 10s");
     }
 
     #[tokio::test]
@@ -2480,6 +2800,361 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
     }
 
+    /// 148 E3: `roster.theuth_model` is set and cleared live, persisted to
+    /// config.yaml (an empty value reads back as `None`), and reaches the
+    /// synthesised file that `ListAgents` / `GetAgent` answer with. PutAgent
+    /// still refuses theuth: the model has one setter.
+    #[tokio::test]
+    async fn theuth_model_is_live_persisted_and_listed() {
+        let data = tmp("theuth-model");
+        let read = |data: &std::path::Path| -> RosterConfig {
+            use figment::providers::Format;
+            figment::Figment::new()
+                .merge(figment::providers::Yaml::file(data.join("config.yaml")))
+                .extract_inner("roster")
+                .unwrap()
+        };
+        let mut r = roster(&data).await;
+        assert!(r.shared.theuth().unwrap().model.is_none());
+        r.set_theuth_model(Some("testvis/eyes".into())).await;
+        assert_eq!(r.cfg.theuth_model.as_deref(), Some("testvis/eyes"));
+        assert_eq!(read(&data).theuth_model.as_deref(), Some("testvis/eyes"));
+        let actor = Roster::spawn(r);
+        let listed = actor.ask(ListAgents).await.unwrap();
+        assert!(listed[0].file.name.is_default());
+        assert_eq!(listed[0].file.model.as_deref(), Some("testvis/eyes"));
+        assert_eq!(
+            actor
+                .ask(GetAgent("theuth".into()))
+                .await
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("testvis/eyes")
+        );
+        // Clearing needs no catalog; the empty value reads back as None.
+        assert!(
+            actor
+                .ask(SetTheuthModel { model: None })
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let yaml = std::fs::read_to_string(data.join("config.yaml")).unwrap();
+        assert!(yaml.contains("theuth_model:"), "{yaml}");
+        assert!(read(&data).theuth_model.is_none(), "{yaml}");
+        assert!(actor.ask(TheuthModel).await.unwrap().is_none());
+        assert!(actor.ask(ListAgents).await.unwrap()[0].file.model.is_none());
+        let err = actor
+            .ask(PutAgent(file::default_agent(&data, Some("x/y".into()))))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("built-in default agent"), "{err}");
+        actor.kill();
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// 148 F7a: a stored `roster.theuth_model` that no longer resolves (here:
+    /// no agent actor to resolve it) still answers [`TheuthModel`] as itself,
+    /// so the Settings row shows the stale id, not "Same as new sessions".
+    #[test]
+    fn theuth_model_unresolved_shows_as_itself() {
+        with_engine_lock(async {
+            let data = tmp("theuth-stale");
+            let mut r = roster(&data).await;
+            r.set_theuth_model(Some("gone/old-model".into())).await;
+            let actor = Roster::spawn(r);
+            let info = actor.ask(TheuthModel).await.unwrap().unwrap();
+            assert_eq!(info.id, "gone/old-model");
+            assert_eq!(info.name, "gone/old-model");
+            assert_eq!(info.provider, "gone");
+            assert!(info.efforts.is_empty() && info.context == 0);
+            assert_eq!(stale_info("bare".into()).provider, "");
+            actor.kill();
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 148 F1: `PutAgent` updates the read model as it writes, so the
+    /// reconcile it queues sees no `model:` change — the handler applies the
+    /// change itself (`old_model != new`). The premise, provable without an
+    /// agent actor: right after the write the read model already holds the
+    /// new model and a reconcile finds nothing to diff.
+    #[tokio::test]
+    async fn put_agent_model_change_is_in_the_read_model_before_reconcile() {
+        let data = tmp("put-model");
+        let mut r = roster(&data).await;
+        let qa = |model: &str| {
+            file::parse(
+                "qa",
+                &format!("---\ntitle: QA\nmodel: {model}\n---\nTest everything.\n"),
+            )
+            .unwrap()
+        };
+        r.write_file(&qa("testvis/eyes")).await.unwrap();
+        r.reconcile().await;
+        let old_model = r.shared.file("qa").and_then(|f| f.model);
+        assert_eq!(old_model.as_deref(), Some("testvis/eyes"));
+        r.write_file(&qa("testvis/blind")).await.unwrap();
+        let before = r.shared.files();
+        assert_eq!(
+            before["qa"].as_ref().unwrap().model.as_deref(),
+            Some("testvis/blind"),
+            "the read model moved with the write: reconcile's diff is empty"
+        );
+        r.reconcile().await;
+        assert_eq!(r.shared.files(), before);
+        assert_ne!(old_model, r.shared.file("qa").and_then(|f| f.model));
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// Collects every `AgentEvent` the bus delivers.
+    #[derive(kameo::Actor)]
+    struct Sink {
+        tx: tokio::sync::mpsc::UnboundedSender<agent::AgentEvent>,
+    }
+
+    impl Message<agent::AgentEvent> for Sink {
+        type Reply = ();
+
+        async fn handle(&mut self, ev: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
+            let _ = self.tx.send(ev);
+        }
+    }
+
+    /// `agent.model` := `model` through the Settings path.
+    async fn set_default(agents: &ActorRef<agent::Agents>, model: &str) {
+        agents
+            .ask(agent::SetModel {
+                session: None,
+                model: model.to_owned(),
+                manual: true,
+            })
+            .await
+            .unwrap();
+    }
+
+    /// The model id stored on the session's row.
+    async fn stored(agents: &ActorRef<agent::Agents>, session: runtime::SessionId) -> String {
+        agents
+            .ask(agent::SessionModel(session))
+            .await
+            .unwrap()
+            .expect("known session")
+    }
+
+    /// The session marked as `name`'s desk.
+    async fn desk_of(agents: &ActorRef<agent::Agents>, name: &str) -> Option<runtime::SessionId> {
+        agents
+            .ask(agent::DeskSession(name.to_owned()))
+            .await
+            .unwrap()
+    }
+
+    /// Publish a marker and count the `ModelChanged` events delivered before
+    /// it: the bus is FIFO per subscriber, so everything published earlier
+    /// has landed once the marker has. Only while no `Roster` actor is
+    /// subscribed (it would follow the marker as a default).
+    async fn model_changes_before_marker(
+        rt: &Runtime,
+        events: &mut tokio::sync::mpsc::UnboundedReceiver<agent::AgentEvent>,
+    ) -> usize {
+        rt.publish(agent::AgentEvent::DefaultModelChanged {
+            model: "marker".into(),
+        })
+        .await;
+        let mut n = 0;
+        loop {
+            match events.recv().await.unwrap() {
+                agent::AgentEvent::DefaultModelChanged { model } if model == "marker" => return n,
+                agent::AgentEvent::ModelChanged { .. } => n += 1,
+                _ => {}
+            }
+        }
+    }
+
+    /// 148 F8, against a live model-less engine (`agent::spawn_test_agents`):
+    /// (iii) a reopened desk is switched only when its row's model differs
+    /// from the effective one (no `ModelChanged` otherwise); (i)
+    /// `SetTheuthModel` re-points theuth's open desk and leaves the default
+    /// alone; (v) an unresolvable configured id shows as itself and the desk
+    /// follows the default; (ii) `DefaultModelChanged` follows for desks
+    /// without a model and leaves a configured one alone; (iv) a `PutAgent`
+    /// model change re-points the open desk at once; (v) a hired agent whose
+    /// `model:` does not resolve still gets a desk, on the default.
+    #[test]
+    fn desks_follow_configured_and_default_models_on_a_live_engine() {
+        with_engine_lock(async {
+            let data = tmp("rig");
+            // `eyes` under two providers: the bare id is ambiguous — the one
+            // way a catalog resolve fails (unknown `provider/model` passes through).
+            std::fs::write(
+                data.join("models.json"),
+                r#"{"testvis":{"id":"testvis","name":"Test Vision","models":{
+                    "eyes":{"id":"eyes","name":"eyes","limit":{"context":100000,"output":4096}},
+                    "blind":{"id":"blind","name":"blind","limit":{"context":100000,"output":4096}}}},
+                   "othervis":{"id":"othervis","name":"Other","models":{
+                    "eyes":{"id":"eyes","name":"eyes","limit":{"context":100000,"output":4096}}}}}"#,
+            )
+            .unwrap();
+            let dir = data.join(file::DIR);
+            std::fs::write(
+                dir.join("fixed.md"),
+                "---\nmodel: testvis/eyes\n---\nFixed.\n",
+            )
+            .unwrap();
+            std::fs::write(dir.join("free.md"), "Free.\n").unwrap();
+            let rt = Runtime::new(figment::Figment::new(), data.clone());
+            // `nope` is not a keyed provider (148 R4 Z2-C); everything else is.
+            let agents = agent::spawn_test_agents(rt.clone(), |ns: &str| ns != "nope")
+                .await
+                .unwrap();
+            set_default(&agents, "testvis/blind").await;
+            let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+            let sink = Sink::spawn(Sink { tx });
+            rt.subscribe::<Sink, agent::AgentEvent>(&sink).await;
+
+            // Boot 1: fresh desks, created on their effective models.
+            let r1 = roster_on(rt.clone(), &data).await;
+            let fixed = desk_of(&agents, "fixed").await.expect("fixed desk opened");
+            let free = desk_of(&agents, "free").await.expect("free desk opened");
+            assert_eq!(stored(&agents, fixed).await, "testvis/eyes");
+            assert_eq!(stored(&agents, free).await, "testvis/blind");
+            drop(r1);
+            let _ = model_changes_before_marker(&rt, &mut events).await;
+
+            // (iii) Boot 2: both rows already store their effective model — no switch.
+            let r2 = roster_on(rt.clone(), &data).await;
+            assert_eq!(
+                desk_of(&agents, "fixed").await,
+                Some(fixed),
+                "the desk is reopened, not recreated"
+            );
+            assert_eq!(
+                model_changes_before_marker(&rt, &mut events).await,
+                0,
+                "equal stored/effective: no ModelChanged"
+            );
+            drop(r2);
+
+            // (iii) Boot 3 after the default moved: only the desk without a model is switched.
+            set_default(&agents, "othervis/eyes").await;
+            let mut r = roster_on(rt.clone(), &data).await;
+            assert_eq!(stored(&agents, free).await, "othervis/eyes");
+            assert_eq!(stored(&agents, fixed).await, "testvis/eyes");
+            assert_eq!(r.desks["free"].model.as_deref(), Some("othervis/eyes"));
+            assert_eq!(model_changes_before_marker(&rt, &mut events).await, 1);
+
+            // (i) theuth's desk opens on the default; SetTheuthModel re-points it, default untouched.
+            let theuth = r.desk_or_open("theuth").await.unwrap();
+            assert_eq!(stored(&agents, theuth).await, "othervis/eyes");
+            r.set_theuth_model(Some("testvis/eyes".into())).await;
+            assert_eq!(stored(&agents, theuth).await, "testvis/eyes");
+            assert_eq!(
+                agents.ask(agent::GetDefaultModel).await.unwrap(),
+                "othervis/eyes"
+            );
+            r.set_theuth_model(None).await;
+            assert_eq!(
+                stored(&agents, theuth).await,
+                "othervis/eyes",
+                "cleared: back on the default"
+            );
+
+            // (v) A stored theuth model that no longer resolves (set directly:
+            // SetTheuthModel would refuse it) leaves the desk on the default;
+            // so does one whose provider has no credentials (148 R4 Z2-C),
+            // and TheuthModel still answers the raw id.
+            r.set_theuth_model(Some("eyes".into())).await;
+            assert_eq!(stored(&agents, theuth).await, "othervis/eyes");
+            r.set_theuth_model(Some("nope/none".into())).await;
+            assert_eq!(stored(&agents, theuth).await, "othervis/eyes");
+            let actor = Roster::spawn(r);
+            let info = actor.ask(TheuthModel).await.unwrap().unwrap();
+            assert_eq!(
+                (info.id.as_str(), info.provider.as_str()),
+                ("nope/none", "nope")
+            );
+            actor.ask(SetTheuthModel { model: None }).await.unwrap();
+
+            // (ii) DefaultModelChanged: desks without a model follow; `fixed` keeps its own.
+            rt.subscribe::<Roster, agent::AgentEvent>(&actor).await;
+            set_default(&agents, "testvis/blind").await;
+            eventually("free follows the default", async || {
+                stored(&agents, free).await == "testvis/blind"
+            })
+            .await;
+            eventually("theuth follows the default", async || {
+                stored(&agents, theuth).await == "testvis/blind"
+            })
+            .await;
+            assert_eq!(stored(&agents, fixed).await, "testvis/eyes");
+
+            // (iv) PutAgent with a new `model:` re-points the open desk before replying…
+            let free_file = file::parse("free", "---\nmodel: othervis/eyes\n---\nFree.\n").unwrap();
+            actor.ask(PutAgent(free_file)).await.unwrap();
+            assert_eq!(stored(&agents, free).await, "othervis/eyes");
+            // …and the desk no longer follows the default.
+            set_default(&agents, "testvis/eyes").await;
+            eventually("theuth follows the default", async || {
+                stored(&agents, theuth).await == "testvis/eyes"
+            })
+            .await;
+            // A reply from the actor proves the event handler has finished.
+            let _ = actor.ask(ListAgents).await.unwrap();
+            assert_eq!(
+                stored(&agents, free).await,
+                "othervis/eyes",
+                "configured: left alone"
+            );
+
+            // (v) A hired agent whose `model:` does not resolve still gets a desk, on the default.
+            let stale = file::parse("stale", "---\nmodel: eyes\n---\nStale.\n").unwrap();
+            actor.ask(PutAgent(stale)).await.unwrap();
+            eventually("stale desk opens", async || {
+                desk_of(&agents, "stale").await.is_some()
+            })
+            .await;
+            let stale = desk_of(&agents, "stale").await.unwrap();
+            assert_eq!(stored(&agents, stale).await, "testvis/eyes");
+
+            // (vi) 148 R4 Z2-C: a provider without credentials resolves in the
+            // catalog but cannot answer — the desk opens on the default (the
+            // warn path), SetTheuthModel refuses the id, and a stored theuth
+            // id still reads back as itself.
+            let unkeyed = file::parse("unkeyed", "---\nmodel: nope/none\n---\nUnkeyed.\n").unwrap();
+            actor.ask(PutAgent(unkeyed)).await.unwrap();
+            eventually("unkeyed desk opens", async || {
+                desk_of(&agents, "unkeyed").await.is_some()
+            })
+            .await;
+            let unkeyed = desk_of(&agents, "unkeyed").await.unwrap();
+            assert_eq!(stored(&agents, unkeyed).await, "testvis/eyes");
+            // SetTheuthModel refuses it with the engine's words.
+            let refused = actor
+                .ask(SetTheuthModel {
+                    model: Some("nope/none".into()),
+                })
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                refused.contains("provider `nope` has no credentials"),
+                "{refused}"
+            );
+
+            actor.kill();
+            sink.kill();
+            agents.kill();
+            kameo::registry::ACTOR_REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(agent::AGENT_ACTOR);
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
     /// 67 decision 5: with no `agents/*.md` nothing wants a desk — theuth's is
     /// allowed to stay open once a wake opened it, never opened eagerly.
     #[tokio::test]
@@ -2513,99 +3188,103 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
     }
 
-    #[tokio::test]
-    async fn desk_or_open_returns_the_open_desk_and_names_its_refusals() {
-        let data = tmp("open-desk");
-        std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
-        std::fs::write(
-            data.join(file::DIR).join("nap.md"),
-            "---\npaused: true\n---\nNap.\n",
-        )
-        .unwrap();
-        let mut r = roster(&data).await;
-        r.reconcile().await;
-        assert_eq!(r.desk_or_open("nobody").await, Err("no such agent".into()));
-        assert_eq!(r.desk_or_open("nap").await, Err("agent is paused".into()));
-        // no agent actor in this test: the open is attempted and reported, not silently swallowed
-        assert!(
-            r.desk_or_open("theuth")
-                .await
-                .unwrap_err()
-                .contains("not opened")
-        );
-        let session = runtime::SessionId::new();
-        r.desks.insert(
-            "ops".into(),
-            desk::Desk {
-                session,
-                episode: String::new(),
-                last_active_ms: 0,
-                working: false,
-                primed: false,
-                model: None,
-                serving: None,
-                memory: agent::MemoryMode::Epochs,
-                pending_memory: None,
-            },
-        );
-        assert_eq!(r.desk_or_open("ops").await, Ok(session));
-        r.lease.holding = false;
-        assert_eq!(
-            r.desk_or_open("ops").await,
-            Ok(session),
-            "an open desk is returned regardless"
-        );
-        assert!(
-            r.desk_or_open("theuth")
-                .await
-                .unwrap_err()
-                .contains("lease")
-        );
-        let _ = std::fs::remove_dir_all(&data);
+    #[test]
+    fn desk_or_open_returns_the_open_desk_and_names_its_refusals() {
+        with_engine_lock(async {
+            let data = tmp("open-desk");
+            std::fs::write(data.join(file::DIR).join("ops.md"), "Ops.\n").unwrap();
+            std::fs::write(
+                data.join(file::DIR).join("nap.md"),
+                "---\npaused: true\n---\nNap.\n",
+            )
+            .unwrap();
+            let mut r = roster(&data).await;
+            r.reconcile().await;
+            assert_eq!(r.desk_or_open("nobody").await, Err("no such agent".into()));
+            assert_eq!(r.desk_or_open("nap").await, Err("agent is paused".into()));
+            // no agent actor in this test: the open is attempted and reported, not silently swallowed
+            assert!(
+                r.desk_or_open("theuth")
+                    .await
+                    .unwrap_err()
+                    .contains("not opened")
+            );
+            let session = runtime::SessionId::new();
+            r.desks.insert(
+                "ops".into(),
+                desk::Desk {
+                    session,
+                    episode: String::new(),
+                    last_active_ms: 0,
+                    working: false,
+                    primed: false,
+                    model: None,
+                    serving: None,
+                    memory: agent::MemoryMode::Epochs,
+                    pending_memory: None,
+                },
+            );
+            assert_eq!(r.desk_or_open("ops").await, Ok(session));
+            r.lease.holding = false;
+            assert_eq!(
+                r.desk_or_open("ops").await,
+                Ok(session),
+                "an open desk is returned regardless"
+            );
+            assert!(
+                r.desk_or_open("theuth")
+                    .await
+                    .unwrap_err()
+                    .contains("lease")
+            );
+            let _ = std::fs::remove_dir_all(&data);
+        });
     }
 
     /// STALE-WAKE-DESKS 3: the mesh's own teardown emits `Lease { holder: None }`
     /// after `rt.shutdown` fired; the roster must not read it as "hub lease
     /// elsewhere". Before shutdown the same event is a real loss.
-    #[tokio::test]
-    async fn lease_events_are_ignored_during_shutdown() {
-        let data = tmp("shutdown-lease");
-        let mut r = roster(&data).await;
-        r.lease.set_self("me".into());
-        assert!(r.lease.holding);
-        let release = mesh::LeaseState {
-            holder: None,
-            since_ms: 0,
-            reason: "release".into(),
-        };
-        // Not shutting down: the loss is applied.
-        let actor = Roster::spawn(r);
-        actor
-            .tell(mesh::MeshEvent::Lease(release.clone()))
-            .await
-            .unwrap();
-        let err = actor
-            .ask(OpenDesk("theuth".into()))
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("hub lease"), "{err}");
-        actor.kill();
-        // Shutting down: the same event changes nothing — the desks stay mapped for the next start.
-        let mut r = roster(&data).await;
-        r.lease.set_self("me".into());
-        r.rt.shutdown.cancel();
-        assert!(!r.lease_event_applies());
-        let actor = Roster::spawn(r);
-        actor.tell(mesh::MeshEvent::Lease(release)).await.unwrap();
-        let err = actor
-            .ask(OpenDesk("theuth".into()))
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("not opened"), "still holding: {err}");
-        actor.kill();
-        let _ = std::fs::remove_dir_all(&data);
+    #[test]
+    fn lease_events_are_ignored_during_shutdown() {
+        with_engine_lock(async {
+            let data = tmp("shutdown-lease");
+            let mut r = roster(&data).await;
+            r.lease.set_self("me".into());
+            assert!(r.lease.holding);
+            let release = mesh::LeaseState {
+                holder: None,
+                since_ms: 0,
+                reason: "release".into(),
+            };
+            // Not shutting down: the loss is applied.
+            let actor = Roster::spawn(r);
+            actor
+                .tell(mesh::MeshEvent::Lease(release.clone()))
+                .await
+                .unwrap();
+            let err = actor
+                .ask(OpenDesk("theuth".into()))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("hub lease"), "{err}");
+            actor.kill();
+            // Shutting down: the same event changes nothing — the desks stay mapped for the next start.
+            let mut r = roster(&data).await;
+            r.lease.set_self("me".into());
+            r.rt.shutdown.cancel();
+            assert!(!r.lease_event_applies());
+            let actor = Roster::spawn(r);
+            actor.tell(mesh::MeshEvent::Lease(release)).await.unwrap();
+            let err = actor
+                .ask(OpenDesk("theuth".into()))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("not opened"), "still holding: {err}");
+            actor.kill();
+            let _ = std::fs::remove_dir_all(&data);
+        });
     }
 
     #[test]
@@ -2621,7 +3300,7 @@ mod tests {
         files.insert("mkt".into(), file::parse("mkt", "Marketing."));
         s.set_files(
             files,
-            file::default_agent(std::path::Path::new("/nonexistent")),
+            file::default_agent(std::path::Path::new("/nonexistent"), None),
         );
         let (ops, theuth, user) = (
             runtime::SessionId::new(),
@@ -2779,7 +3458,7 @@ mod tests {
         );
         s.set_files(
             files,
-            file::default_agent(std::path::Path::new("/nonexistent")),
+            file::default_agent(std::path::Path::new("/nonexistent"), None),
         );
         let ops = runtime::SessionId::new();
         s.set_desk("ops", ops);

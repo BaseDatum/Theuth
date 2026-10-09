@@ -55,6 +55,12 @@ durability-mesh *ARGS:
     cargo test -p rpc --lib -- forward routed_methods answers_follow durability_wire_shapes
     if [ "${1:-}" = "smoke" ]; then shift; scripts/durability-mesh-smoke.sh "$@"; fi
 
+# 146 RESTART-CLARITY proof (P1–P6): one real engine on a scratch data dir, the real `omp`
+# harness as the child, `kill -9` + reboot. Not CI; ~8 min; needs bun, omp and free ports
+# 7960–7966; `BACKUP_DB=<.backup copy> just restart-clarity P6` times the boot query.
+restart-clarity *ARGS:
+    scripts/restart-clarity-smoke.sh {{ARGS}}
+
 clippy:
     CARGO_INCREMENTAL={{incremental}} cargo clippy --workspace --all-targets -- -D warnings
 

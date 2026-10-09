@@ -33,9 +33,13 @@ pub struct Store {
     pool: SqlitePool,
 }
 
-/// RFC 3339 now (UTC, seconds).
+/// RFC 3339 now (UTC, milliseconds). Segments cut the sample series at `opened_at` by string
+/// order (`samples` has no segment column), and a regime segment opens at a keep's first
+/// sample (§5.3 Revision 2) — at whole seconds a sub-second bench's neighbours shared the cut.
 pub fn now() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {
@@ -1030,6 +1034,17 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         Ok(r.map(Into::into))
+    }
+
+    /// The study base's measured mean: segment 0's baseline. Every "vs base" Δ (the brief's
+    /// metric line, `StudyInfo.delta_pct`, the overfit check, finalize's fallback) reads it;
+    /// a later segment's baseline is the gate's reference, not the study's (140-P2 live: a
+    /// regime segment opened at a 7356 → 3.1 ms keep made the headline read `+0 %`).
+    pub async fn base_mean(&self, slug: &str) -> Result<Option<f64>> {
+        Ok(self
+            .get_segment(slug, 0)
+            .await?
+            .and_then(|s| s.baseline_mean))
     }
 
     // ── experiments ──

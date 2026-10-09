@@ -312,9 +312,13 @@ fn parse_offset(msg: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
-/// 1-based `(line, col)` of byte `offset` in `src` (clamped to the end).
+/// 1-based `(line, col)` of byte `offset` in `src` (clamped to the end and
+/// back to a char boundary: the offset is parsed from an error message).
 fn line_col(src: &str, offset: usize) -> (u32, u32) {
-    let offset = offset.min(src.len());
+    let mut offset = offset.min(src.len());
+    while !src.is_char_boundary(offset) {
+        offset -= 1;
+    }
     let before = &src[..offset];
     let line = before.matches('\n').count() + 1;
     let col = before.rfind('\n').map_or(offset, |i| offset - i - 1) + 1;
@@ -454,6 +458,16 @@ mod tests {
     use crate::render::plain_text;
     use crate::spec::GraphGroupKind;
     use crate::{Component, mermaid_lines, parse};
+
+    #[test]
+    fn line_col_lands_on_char_boundaries() {
+        // `é` is bytes 0..2: an offset inside it steps back to 0.
+        assert_eq!(line_col("é\nx", 1), (1, 1));
+        assert_eq!(line_col("é\nx", 2), (1, 3));
+        assert_eq!(line_col("é\nx", 3), (2, 1));
+        assert_eq!(line_col("é\nx", 99), (2, 2));
+        assert_eq!(line_col("", 5), (1, 1));
+    }
 
     macro_rules! fixture {
         ($name:literal) => {
