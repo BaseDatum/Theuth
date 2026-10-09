@@ -80,13 +80,13 @@ extension Store {
                 catch { Log.write("dictation_correction failed: \(error)") }
             }
         }
-        askCard.begin(question: text)
-        askCard.phase = .thinking
+        askCard.begin(question: text, kind: .ask) // `begin` enters `.thinking` itself
         askCard.status = "thinking"
         showAnswerCard(askCard)
         do {
             let session = try await resolveDesk()
             _ = try await client.sendInput(session: session, text: text)
+            askCard.session = session // O / a typed follow-up on the card go to the desk that answered
             let id = "ask:\(UUID().uuidString)"
             ask.router.sent(on: session)
             ask.current = id
