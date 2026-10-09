@@ -209,6 +209,7 @@ public sealed class FixtureTests
         // 149 C's shared fixtures (Fixture149Tests reads them in detail).
         ["attention_item_149_context"] = b => TheuthJson.Deserialize<AttentionItem>(b),
         ["attention_item_149_no_context"] = b => TheuthJson.Deserialize<AttentionItem>(b),
+        ["attention_item_155_alert"] = b => TheuthJson.Deserialize<AttentionItem>(b), // 155 W3's fixture on main (the C# record ignores `alert` until the 155 Windows side mirrors it)
         ["packet_149_if_wrong"] = b => TheuthJson.Deserialize<Packet>(b),
         ["list_sessions_149"] = b => TheuthJson.Deserialize<ValueList<SessionSummary>>(b),
         ["sessions_status_149"] = b => TheuthJson.Deserialize<SessionsStatus>(b),

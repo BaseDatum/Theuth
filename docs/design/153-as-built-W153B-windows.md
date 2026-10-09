@@ -72,17 +72,17 @@ disarms; the field acts once, on `DictationFinished`.
 ## Verification (step 3)
 | Gate | Result |
 |---|---|
-| Mac Rpc tests (`dotnet test tests/Theuth.Companion.Rpc.Tests --blame-hang`) | **97/97** (68 before + 29: `Models153Tests` 20, `RpcClient153Tests` 3, `Fixture153Tests` 6 over the 13 cross-platform fixtures) |
-| Mac Core tests (`dotnet test tests/Theuth.Companion.Core.Tests`) | CORE_COUNT (310 at the start; + W153C's merged tests; W153B adds `AskVoiceTests` wave-B cases incl. **`SendItSkipsTheHold`**, the early-mic tap race, the speech press, and `DictationSettingsTests`); the 149 `AskVoiceMachine` cases unmodified |
-| build-B Debug x64 (`Theuth.Companion.slnx`, `Platform=x64`) | PIN 4fcbcf1e **0 err / 0 warn** (52 s); FINAL_BUILD |
+| Mac Rpc tests (`dotnet test tests/Theuth.Companion.Rpc.Tests --blame-hang`) | **111/111** (68 at the start + `Models153Tests` 20, `RpcClient153Tests` 3, `Fixture153Tests` 6, and `FixtureTests.EveryFixtureDecodes` over the 13 shared `153-*.json` fixtures + 155's `attention_item_155_alert` that main brought) |
+| Mac Core tests (`dotnet test tests/Theuth.Companion.Core.Tests`) | **387/387** (310 at the start; + W153C's merged tests; W153B adds `AskVoiceTests` wave-B cases incl. **`SendItSkipsTheHold`**, the early-mic tap race, the speech press, and `DictationSettingsTests`); the 149 `AskVoiceMachine` cases unmodified |
+| build-B Debug x64 (`Theuth.Companion.slnx`, `Platform=x64`) | PIN 4fcbcf1e **0 err / 0 warn** (52 s); merged head c3a1f896 (main f4834cf3 + PIN-C) **0 err / 0 warn** (35 s); every intermediate head 0/0 (`build-*.json`) |
 | TS bindings re-check (H-A) | main 5afea171's voice/agent/rpc types are unchanged since b7ec00b9 except behaviour (`"dictionary loading"` → `DictionaryRetry`); the generated bindings (`~/Develop/theuth-153-int/crates/desktop/ui/src/rpc/bindings`, 19:38) match every record — field names, optionality, tags (`kind`, `command`, `scope`), u64 as `ulong`, `metaphone: [string, string]` — except the two flat-dir name collisions under Open items |
 | Fixture UI round 1 (19:54, 1e92fa11) | `--ask-fixture all`: shaped partial/final in the field (UIA `Ask theuth` value "Ship it tonight" during send-it), the shaped text in the 3 s hold, then `ask sent to desk (55 chars)`; send-it: status "sending in 1.5 s…", `voice: "send it" — sent without the hold (15 chars)` 19:54:48.226 → `ask sent to desk (15 chars)` 8 ms later (no hold); the suggestion card shown (Mica Base, frame D's words) and auto-dismissed after 20 s with nothing sent; Settings › Dictation against the pre-wave-A engine shows the `-32601` answers as readable lines |
 | Fixture UI round 2 (20:33, 88f7eee8) | the six app-rendered PNGs below; the Run key back on the installed companion; desk released |
-| Live round (H-ENGINE) | LIVE_ROUND |
+| Live round (H-ENGINE) | **not run** — build-B's installed engine is 2.14.0+b0ce4aca (pre-wave-A, no WebGPU run lock); the parent made it R1 after H-ENGINE |
 
 Evidence: `~/.theuth/briefs/2026-10-09/153-windows/evidence/W153B/` — `build-*.json`, `fixture-round-{1,2}-*.txt`,
 `153-w153b-{1-shaped-live,2-shaped-hold,3-sendit-armed,4-sendit-sent,5-suggestion,6-settings-dictation}.png` (+ `-on-dark` composites),
-LIVE_EVIDENCE `README.md`.
+`README.md`.
 
 ## Deviations (each the closest faithful variant; none changes the wire)
 1. `AskVoiceMachine.OpenMicOnKeyDown` defaults **off in the machine** so the 149 `AskVoiceMachine` tests stay unmodified (§16.2); the app
@@ -108,7 +108,12 @@ LIVE_EVIDENCE `README.md`.
     bar, the card and the Settings page) and backed by UIA reads and the companion log.
 
 ## Open items
-1. **Live round** — LIVE_OPEN
+1. **Live round (R1, after H-ENGINE)** — ready to run in one desk round: `--ask-probe 40 --ask-live sendit --shareable` (built-in "Ship it
+   tonight. Send it." through the real engine inside a voice press → expect shaped text and `sent without the hold`), `--ask-probe 60 --ask-live
+   learn --shareable` (dictate, undo the hold, correct one word, send — twice → `DictionarySuggestion` → the card, PNG `8-live-suggestion`),
+   `--settings dictation --shareable --dictation-shot` (devices, polish model, dictionary, history, last dictation from the 153 engine) plus a
+   UIA change of the Companion preset / phrases checked in the companion log and `w6-gate.ps1 settings-json`. Proof 15 (correction loop) and
+   the §8.7 timings line need the 153 engine.
 2. **TS bindings name collisions (wave A, not C#):** the flat bindings dir has ONE `Kind.ts` (artifact kind) and ONE `Source.ts`
    (knowledge source); `voice::dictionary::Kind` / `Source` are overwritten, so the TS `Entry.kind` / `Entry.source` types are wrong on the
    desktop side. The C# follows the Rust source (`term|symbol|formatter|abbrev|mention|command|path`, `packaged|user|learned`).
