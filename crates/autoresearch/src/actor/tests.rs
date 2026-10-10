@@ -3020,3 +3020,6 @@ fn origin_cards_are_wrapped_for_the_desktop_classifier() {
             .starts_with("<autoresearch slug=\"a&quot;&lt;b&gt;&amp;\" event=\"failed\">\n")
     );
 }
+
+#[path = "golden.rs"]
+mod golden;
