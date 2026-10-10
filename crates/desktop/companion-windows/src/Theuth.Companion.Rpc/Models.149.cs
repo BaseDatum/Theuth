@@ -311,13 +311,48 @@ public sealed record ProcessInfo
     public bool Active { get; init; }
 }
 
-/// <summary><c>detect::Detection</c> (158 §15.1). <c>event</c> / <c>project</c> / <c>brief</c> are W2/W3's and skipped here until they fill.</summary>
+/// <summary><c>detect::Detection</c> (158 §15.1); <c>event</c> (W2), <c>project</c> and <c>brief</c> (W3) are <c>#[serde(default)]</c>.</summary>
 public sealed record Detection
 {
     [JsonRequired] public ProcessInfo App { get; init; } = new();
     [JsonRequired] public string AppId { get; init; } = "";
     public string Since { get; init; } = "";
     public ValueList<ProcessInfo> Also { get; init; } = new();
+    public EventMatch? Event { get; init; }
+    public string? Project { get; init; }
+    public ValueList<string>? Brief { get; init; }
+}
+
+/// <summary><c>calendar::Attendee</c> (158 §15.1).</summary>
+public sealed record Attendee
+{
+    [JsonRequired] public string Name { get; init; } = "";
+    public string? Email { get; init; }
+    public string? Status { get; init; }
+    public bool IsMe { get; init; }
+}
+
+/// <summary><c>calendar::EventRef</c> (158 §15.1); <c>id</c> is the transparent <c>EventId</c> string <c>source:uid:recurrence_id</c>.</summary>
+public sealed record EventRef
+{
+    [JsonRequired] public string Id { get; init; } = "";
+    public string Uid { get; init; } = "";
+    [JsonRequired] public string Title { get; init; } = "";
+    public string Start { get; init; } = "";
+    public string End { get; init; } = "";
+    public string? JoinUrl { get; init; }
+    public string? JoinHost { get; init; }
+    public Attendee? Organizer { get; init; }
+    public ValueList<Attendee> Attendees { get; init; } = new();
+    public string? Description { get; init; }
+}
+
+/// <summary><c>calendar::EventMatch</c> (158 §8.1): the shown event, its score, the rest for the <c>[▾]</c> list.</summary>
+public sealed record EventMatch
+{
+    [JsonRequired] public EventRef Event { get; init; } = new();
+    public float Score { get; init; }
+    public ValueList<EventRef> Alternatives { get; init; } = new();
 }
 
 /// <summary><c>detect::Source</c> (158 §15.1; TS <c>StartSource</c>): <c>{"kind":"manual"|"detected"|"calendar", app_id?, event?}</c>.</summary>

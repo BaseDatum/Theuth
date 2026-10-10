@@ -15,6 +15,8 @@ vi.mock('@/lib/rpc', async (original) => ({
     list_models: async () => [],
     endless_settings_get: async () => ({ default_meeting: true, model: null }),
     meeting_templates: async () => [{ slug: 'standup', name: 'Standup', description: '', sections: [], builtin: true }],
+    list_sessions: async () => [],
+    list_project_styles: async () => [],
   }),
 }))
 
@@ -43,19 +45,27 @@ test('158 R3 / A2: the form shows the one lawful sentence and no consent checkbo
   expect(start).not.toContain('disabled=""')
 })
 
-test('startOptions always sends consent: true and memory only with the switch on; template only when picked', () => {
-  expect(startOptions({ pid: 0, title: ' Standup ', context: '', model: 'm', endless: true, template: 'standup' })).toEqual({
+test('158 §9.2: the Project row sits between Context and the model row and reads Default until a project is picked', async () => {
+  const html = await render()
+  expect(html).toMatch(/Context.*role="combobox"[^>]*aria-label="Project"[^>]*>.*Default.*Session model/s)
+})
+
+test('startOptions always sends consent: true, memory only with the switch on, project and template only when picked; the rest is unchanged', () => {
+  expect(startOptions({ pid: 0, title: ' Standup ', context: '', model: 'm', endless: true, project: 'theuth', template: 'standup' })).toEqual({
     process: null,
     title: 'Standup',
     context: null,
     consent: true,
     session_model: 'm',
     memory: 'endless',
+    project: 'theuth',
     template: 'standup',
   })
-  const auto = startOptions({ pid: 42, title: '', context: 'x', model: null, endless: false, template: null })
-  expect(auto).toMatchObject({ process: 42, consent: true, memory: undefined })
-  expect(auto.template).toBeUndefined()
+  const dflt = startOptions({ pid: 42, title: '', context: 'x', model: null, endless: false, project: null, template: null })
+  expect(dflt).toMatchObject({ process: 42, consent: true, memory: undefined })
+  // Absent, not `null`: `StartMeeting.project` / `.template` are `Option<String>` with `None` = the engine's remembered / default choice.
+  expect(JSON.stringify(dflt)).not.toContain('project')
+  expect(dflt.template).toBeUndefined()
 })
 
 test('158 §11.1: the Note template row sits under the session model, Automatic by default', async () => {

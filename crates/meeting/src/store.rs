@@ -216,7 +216,7 @@ pub struct MeetingSummary {
     pub duration_ms: Option<u64>,
     /// Last state the manifest said.
     pub state: MeetingState,
-    /// 158 §9.2 (W3): the meeting's project (`meetings.project`); `None` until W3 reads the column.
+    /// 158 §9.2 (W3): the meeting's project (`meetings.project`).
     #[serde(default)]
     pub project: Option<String>,
 }
@@ -250,6 +250,7 @@ type Row = (
     String,
     Option<i64>,
     String,
+    Option<String>,
 );
 
 fn row_to_summary(r: Row) -> anyhow::Result<MeetingSummary> {
@@ -262,7 +263,7 @@ fn row_to_summary(r: Row) -> anyhow::Result<MeetingSummary> {
         process_name: r.5,
         duration_ms: r.6.map(|d| d as u64),
         state: serde_json::from_str(&r.7)?,
-        project: None,
+        project: r.8,
     })
 }
 
@@ -336,10 +337,10 @@ impl Store {
 
     async fn upsert(&self, s: &MeetingSummary) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO meetings (id, started_at, ended_at, title, session, process_name, duration_ms, state) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO meetings (id, started_at, ended_at, title, session, process_name, duration_ms, state, project) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at, title = excluded.title, \
-             duration_ms = excluded.duration_ms, state = excluded.state",
+             duration_ms = excluded.duration_ms, state = excluded.state, project = excluded.project",
         )
         .bind(s.id.to_string())
         .bind(&s.started_at)
@@ -349,6 +350,7 @@ impl Store {
         .bind(&s.process_name)
         .bind(s.duration_ms.map(|d| d as i64))
         .bind(serde_json::to_string(&s.state)?)
+        .bind(&s.project)
         .execute(&self.pool)
         .await
         .context("upsert meeting")?;
@@ -364,14 +366,44 @@ impl Store {
 
     /// Newest first.
     pub async fn list(&self, limit: u32) -> anyhow::Result<Vec<MeetingSummary>> {
+        self.list_in(limit, None).await
+    }
+
+    /// Newest first; `project` narrows to one project (158 §9.2).
+    pub async fn list_in(
+        &self,
+        limit: u32,
+        project: Option<&str>,
+    ) -> anyhow::Result<Vec<MeetingSummary>> {
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, started_at, ended_at, title, session, process_name, duration_ms, state \
-             FROM meetings ORDER BY started_at DESC LIMIT ?",
+            "SELECT id, started_at, ended_at, title, session, process_name, duration_ms, state, project \
+             FROM meetings WHERE (? IS NULL OR project = ?) ORDER BY started_at DESC LIMIT ?",
         )
+        .bind(project)
+        .bind(project)
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await
         .context("list meetings")?;
+        rows.into_iter().map(row_to_summary).collect()
+    }
+
+    /// 158 §9.4: the last `limit` `Done` meetings of `project`, newest first.
+    pub async fn done_in_project(
+        &self,
+        project: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<MeetingSummary>> {
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, started_at, ended_at, title, session, process_name, duration_ms, state, project \
+             FROM meetings WHERE project = ? AND state = ? ORDER BY started_at DESC LIMIT ?",
+        )
+        .bind(project)
+        .bind(serde_json::to_string(&MeetingState::Done)?)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .context("done meetings of project")?;
         rows.into_iter().map(row_to_summary).collect()
     }
 

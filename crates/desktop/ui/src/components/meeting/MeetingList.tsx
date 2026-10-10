@@ -13,11 +13,14 @@ import { SectionRow } from '@/components/nav/SectionRow'
 import { Column } from '@/components/library/Page'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
+import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { isMacDesktop, touch } from '@/lib/hotkeys'
 import { isDesktop } from '@/lib/platform'
 import { canPopout, isPopout, openPopout } from '@/lib/popout'
+import { meetingsQuery, useProjectChoices } from '@/lib/meeting-project'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
 import { type AttachRef, toRef } from '@/lib/attach'
@@ -86,9 +89,15 @@ export function MeetingTabs() {
   )
 }
 
+// Radix Select refuses '' as a value: project rows are `p:<label>`, "all" is its own value.
+const ALL = 'all'
+
 export function MeetingList() {
   const api = useApi()
-  const list = useQuery({ queryKey: queryKeys.meetings, queryFn: () => api.meeting_list(null) })
+  // 158 §9.2 (W3): the project filter — one project's meetings (`meeting_list(null, project)`) or all; per visit.
+  const [project, setProject] = useState<string | null>(null)
+  const projects = useProjectChoices()
+  const list = useQuery(meetingsQuery(api, project))
   const canRecord = useCanRecord()
   // 66 §7.8: a row's paperclip → "Attach to chat…"; rows drag onto a composer.
   const [attaching, setAttaching] = useState<AttachRef | null>(null)
@@ -96,6 +105,20 @@ export function MeetingList() {
     <div className="flex min-h-0 flex-1 flex-col">
       {attaching && <ChatPicker open onOpenChange={(o) => !o && setAttaching(null)} item={attaching} />}
       <MeetingHeader title={<MeetingTabs />}>
+        <Select value={project === null ? ALL : `p:${project}`} onValueChange={(v) => setProject(v.startsWith('p:') ? v.slice(2) : null)}>
+          <SelectTrigger size="sm" className="hidden max-w-48 md:inline-flex" aria-label="Project filter">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All projects</SelectItem>
+            {projects.map((p) => (
+              <SelectItem key={p} value={`p:${p}`}>
+                <ProjectIcon project={p} className="size-3.5" />
+                {p}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         {canRecord && (
           <Button size="sm" asChild>
             <Link to="/meetings/new">Start meeting…</Link>
@@ -107,7 +130,7 @@ export function MeetingList() {
       {/* 143 D5: the same centred column as Tools/Secrets/Notes. */}
       <Column>
         {list.isError && <Empty>{errorText(list.error)}</Empty>}
-        {list.data?.length === 0 && <Empty>No meetings yet.</Empty>}
+        {list.data?.length === 0 && <Empty>{project === null ? 'No meetings yet.' : `No meetings in ${project}.`}</Empty>}
         <ul className="divide-y divide-border-subtle">
           {list.data?.map((m) => (
             <Row key={m.id} m={m} onAttach={() => setAttaching(toRef({ kind: 'meeting', meeting: m }))} />
@@ -189,6 +212,12 @@ function Row({ m, onAttach }: { m: MeetingSummary; onAttach: () => void }) {
             .filter((s) => s !== null)
             .join(' · ')}
         </span>
+        {m.project && (
+          <span className="hidden max-w-32 shrink-0 items-center gap-1 truncate text-fg-tertiary md:inline-flex">
+            <ProjectIcon project={m.project} className="size-3" />
+            {m.project}
+          </span>
+        )}
         <span className="hidden shrink-0 text-fg-tertiary md:inline">{m.process_name}</span>
         <span className="hidden w-20 shrink-0 text-right text-fg-secondary tabular-nums md:inline">
           {m.duration_ms === null ? '—' : duration(Number(m.duration_ms))}
