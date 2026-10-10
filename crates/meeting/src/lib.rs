@@ -1232,7 +1232,6 @@ pub enum EnrollTarget {
         /// 158 §10.4: the automatic path (a suggestion's Accept) runs the quality gates (≥ 5 s,
         /// agreement, SNR, clipping) before embedding; the manual selection enrol (156) does not.
         #[serde(default)]
-        #[cfg_attr(feature = "ts", ts(optional))]
         gated: bool,
     },
     /// Fold the speech into this enrolled profile ("enhance").

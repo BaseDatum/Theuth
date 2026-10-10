@@ -68,7 +68,7 @@ export function EnrollDialog({ open, onOpenChange, count, speechMs, profiles, en
           className="flex flex-col gap-4"
           onSubmit={(e) => {
             e.preventDefault()
-            if (name.trim()) void run({ kind: 'New', name: name.trim(), entity: entity.trim() || null })
+            if (name.trim()) void run({ kind: 'New', name: name.trim(), entity: entity.trim() || null, gated: false })
           }}
         >
           <DialogHeader>
