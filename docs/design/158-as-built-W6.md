@@ -76,3 +76,9 @@ Not touched; worth a look by whoever owns `Store`.
 - `build-lock bunx vitest run` Review, settings/Meetings, rpc/api → 3 files, 12 tests passed.
 - Measurement run above (1 passed, `--ignored`).
 - `BUILD_SLOTS=1 build-lock mbx check --workspace --tests` → exit 0 (only the pre-existing `block v0.1.6` future-incompat note).
+
+## Fold of `origin/main` 5d7d4252 (fix round) at `0914355b`
+`git merge origin/main` clean, no conflicts (none of W6's files). Folded-tree gates: `build-lock mbx test -p meeting -p rpc --no-run`
+→ 0; `mbx test -p meeting -p rpc` → meeting 126 (2 ignored) + calendar 16 + note 1 + oracle 1, rpc 56 + 1 + 1, 0 failed;
+`build-lock bunx tsc --noEmit -p .` → 0; vitest Review, settings/Meetings, rpc/api, StartForm, lib/meeting-project, DetectionBanner
+→ 6 files, 27 passed; `BUILD_SLOTS=1 build-lock mbx check --workspace --tests` → exit 0 (`block v0.1.6` note only).
