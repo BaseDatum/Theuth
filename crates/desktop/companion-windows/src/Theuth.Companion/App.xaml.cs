@@ -86,6 +86,7 @@ public partial class App : Application
         ww3?.Dispose(); // 149 WW3: overlays destroyed, Esc/meeting keys released
         w3?.Dispose(); // W3: hooks off, AppNotificationManager.Unregister()
         Ui.Surfaces.Current?.Dispose(); // W2: tray icon removed, hotkeys released
+        Ui.ToolWindow.CloseAllForGood(); // 153 W153D-R3: a tool window left open cancels Exit (the answer card, the suggestion card, …)
         Store?.Close();
         Log.Write($"terminate (exit {code})");
         try { aliveMutex?.ReleaseMutex(); } catch (ApplicationException) { }

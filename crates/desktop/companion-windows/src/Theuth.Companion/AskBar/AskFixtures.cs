@@ -154,8 +154,28 @@ internal static class AskFixtures
         return score * 10 + Math.Min(9, word.Length);
     }
 
-    private static void TraceLive(Store store, AskBarInstall install, string what) =>
+    private static void TraceLive(Store store, AskBarInstall install, string what)
+    {
         AskLog.Write($"ask-live {what}: field=\"{install.Model.FieldText}\" voice={install.Model.VoiceState.Kind} held={(store.HeldNow is null ? "no" : "yes")} receipt={Describe(store.Receipt)} card={install.Suggestions?.Showing?.Typed ?? "none"}");
+        _ = LogTimings(store, what);
+    }
+
+    /// <summary>R2 (153 F2 check): the engine's own timings of the dictation that just finished — <c>stop_to_final_ms</c> is the cost of
+    /// draining the queued audio at the release.</summary>
+    private static async Task LogTimings(Store store, string what)
+    {
+        try
+        {
+            var t = (await store.Client.DictationStatusAsync()).Last;
+            AskLog.Write(t is null
+                ? $"ask-live {what} timings: none reported"
+                : $"ask-live {what} timings: press_to_first_pcm_ms={t.PressToFirstPcmMs?.ToString() ?? "-"} press_to_first_partial_ms={t.PressToFirstPartialMs?.ToString() ?? "-"} press_to_first_final_ms={t.PressToFirstFinalMs?.ToString() ?? "-"} stop_to_final_ms={t.StopToFinalMs?.ToString() ?? "-"} polish_ms={t.PolishMs?.ToString() ?? "-"} device={t.Device ?? "remote"}");
+        }
+        catch (Exception e)
+        {
+            AskLog.Write($"ask-live {what} timings: dictation_status failed ({e.GetType().Name}: {e.Message})");
+        }
+    }
 
     private static async Task SpeakPress(string text, Store store, AskBarInstall install, DispatcherQueue dispatcher, Action released)
     {
