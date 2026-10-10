@@ -97,3 +97,13 @@ signature is the one both sides use; C1 replaced the body (`pointShowCard`), B3 
   `mutating` but asks for `destructive` native calls is wanted.
 - **Not run live** (needs Sky at the keyboard): §16 row 21 ⌃⌥C → approval by voice → ✓ line; mode switch mid-hold; Composer rows 14/15 against a
   153 engine (the engine on this Mac is 2.14.0, pre-153: no `shaped`, no `dictation_status.last`).
+
+## F3 — Settings window resizable and larger (2026-10-10 01:50, Sky's report)
+Sky: the companion settings window could not be resized, and on some tabs the tab bar scrolled out of view (no way off the tab without a restart).
+Cause: `SettingsWindowController` made a `[.titled, .closable]` window with a fixed `.frame(width: 500, height: 400)` root, and the 153 tabs
+(Dictation with the Apps section, Command) are taller than 400 pt — a plain macOS `Form` does not scroll, so the content overflowed the fixed
+frame and covered the tab bar. Fix (`Settings/SettingsWindow.swift`): `.resizable` + `.miniaturizable`, `NSHostingController.sizingOptions = []`
+(SwiftUI's ideal size never resizes the window), content 640×540 on first launch, `contentMinSize` 540×420, frame autosaved under
+`theuth.companion.settings` (centered only when nothing is saved), root `.frame(minWidth:minHeight:)` instead of fixed, and `.formStyle(.grouped)`
+on the TabView so every Form tab scrolls inside the window. Gates: `swift build` ok, `./test.sh` 261 tests passed; `--probe-settings
+{dictation,command,keys,rail} --shareable` → `/tmp/153-f3/153-settings-*.png`, 640×572 windows, tab bar visible on every tab, grouped forms scroll.
