@@ -21,12 +21,18 @@ final class SettingsWindowController {
     func show(activate: Bool) {
         if window == nil {
             let view = SettingsView(model: SettingsModel.shared, notifier: notifier, store: store, doubleTap: doubleTap)
-            let w = NSWindow(contentViewController: NSHostingController(rootView: view))
+            // The window owns its size: the user resizes it and the frame is remembered; SwiftUI's ideal size
+            // never grows or shrinks it (a tall tab scrolls instead of pushing the tab bar out of the window).
+            let host = NSHostingController(rootView: view)
+            host.sizingOptions = []
+            let w = NSWindow(contentViewController: host)
             w.title = "theuth Companion"
-            w.styleMask = [.titled, .closable]
+            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             w.isReleasedWhenClosed = false
-            w.setContentSize(NSSize(width: 500, height: 400))
-            w.center()
+            w.contentMinSize = Self.minSize
+            w.setContentSize(Self.defaultSize)
+            if !w.setFrameUsingName(Self.frameName) { w.center() }
+            w.setFrameAutosaveName(Self.frameName)
             w.sharingType = Flags.shareable ? .readOnly : .none
             window = w
         }
@@ -41,6 +47,10 @@ final class SettingsWindowController {
 
     func close() { window?.orderOut(nil) }
     var frame: NSRect { window?.frame ?? .zero }
+    /// First-launch content size and the floor the user can shrink it to; the frame is saved under `frameName`.
+    static let defaultSize = NSSize(width: 640, height: 540)
+    static let minSize = NSSize(width: 540, height: 420)
+    static let frameName = "theuth.companion.settings"
     var windowNumber: Int? { window.map(\.windowNumber) }
 }
 
@@ -67,8 +77,9 @@ struct SettingsView: View {
             DictationSettingsTab().tabItem { Label("Dictation", systemImage: "text.cursor") }.tag("dictation") // 153 (B3 fills)
             CommandSettingsTab().tabItem { Label("Command", systemImage: "terminal") }.tag("command") // 153 (C1 fills)
         }
+        .formStyle(.grouped) // every tab scrolls when taller than the window; the tab bar always stays in view
         .padding(16)
-        .frame(width: 500, height: 400)
+        .frame(minWidth: SettingsWindowController.minSize.width, minHeight: SettingsWindowController.minSize.height)
     }
 
     private var rail: some View {
