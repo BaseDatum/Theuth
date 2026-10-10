@@ -198,7 +198,10 @@ export function ControlCenter({ id }: { id: string }) {
               )
             )}
             <div className={mobile ? 'contents' : 'flex min-h-0 min-w-0 flex-1'}>
-              <div className={cn('flex min-w-0 flex-col', mobile ? 'flex-none' : 'min-h-0')} style={mobile ? undefined : { flex: `${noteSplit} 1 0%` }}>
+              {/* Alone in the wrapper (no note) the centre must grow by 1, not by its share: a grow < 1 leaves free space. `overflow-clip`, not
+                  `-hidden`: at the 15 % clamp the chat composer is wider than the column, and a hidden scroll container would let a focus()
+                  scroll it sideways with no way back. */}
+              <div className={cn('flex min-w-0 flex-col', mobile ? 'flex-none' : 'min-h-0 overflow-clip')} style={mobile ? undefined : { flex: note ? `${noteSplit} 1 0%` : '1 1 0%' }}>
                 <div className={cn('flex min-w-0 flex-col', block)} style={mobile ? undefined : { flex: `${ratio} 1 0%` }}>
                   {isLive ? (
                     <LiveLog id={id} />
