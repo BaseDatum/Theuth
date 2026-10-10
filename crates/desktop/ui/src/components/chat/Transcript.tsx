@@ -199,7 +199,11 @@ export function Transcript({ session, compact = false }: { session: string; comp
   const stats = useRef({ absorbed: 0, wrote: 0, renders: 0 })
 
   const collapse = useToolRuns((s) => s.collapse)
-  const rows = useMemo(() => buildRows(entries, pending, session, children, collapse), [entries, pending, session, children, collapse])
+  const pinnedThinking = useToolRuns((s) => s.pinned)
+  const rows = useMemo(
+    () => buildRows(entries, pending, session, children, collapse, pinnedThinking),
+    [entries, pending, session, children, collapse, pinnedThinking],
+  )
   // R1.2: the library's measurement memo keys on `getItemKey`'s identity — a new one means a full pass, so it changes
   // only when the rows do (and with the width, so the pass re-estimates at the new bucket). The remembered heights
   // map is hoisted: `remember` mutates it in place; a new bucket makes a new one through `width`.

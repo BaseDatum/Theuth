@@ -351,6 +351,12 @@ pub struct TrimTurn {
 /// `ask` → whether a turn is in flight.
 pub struct IsRunning;
 
+/// `ask` → the open turn this actor entered through [`Resume`] (the path
+/// that publishes `TurnResumed`), while it runs; `None` for an ordinary
+/// turn or when idle. `Loaded.resume` reports an open turn as relaunched
+/// only when it is this one.
+pub struct ResumedTurn;
+
 /// `tell`: the session has a title (`RenameSession`); the first turn must not
 /// replace it with the input placeholder.
 pub struct Titled;
@@ -660,6 +666,8 @@ pub struct Session {
     /// What [`TurnEntered`] announced: `Some(Some(turn))` for a model turn,
     /// `Some(None)` for a compaction/harvest mini-turn, `None` when idle.
     entered: Option<Option<TurnId>>,
+    /// The turn [`Resume`] relaunched, until it hands the state back.
+    resumed: Option<TurnId>,
     /// Whether `sessions.title` is set.
     titled: bool,
     /// Effort set while a turn ran (or between turns); applied when the next turn starts.
@@ -917,6 +925,7 @@ impl Session {
             state: Some(state),
             inflight: None,
             entered: None,
+            resumed: None,
             titled,
             pending_effort: None,
             scope: TurnScope::default(),
@@ -1452,6 +1461,7 @@ impl Message<Resume> for Session {
         let turn = m.plan.turn;
         let cancel = self.shared.rt.shutdown.child_token();
         self.enter(cancel.clone(), Some(turn)).await;
+        self.resumed = Some(turn);
         let mut task = Turn::new(self.shared.clone(), Some(turn), cancel, state);
         task.resume_from = m.from;
         task.resume_lost_jobs = m.lost_jobs;
@@ -2132,6 +2142,18 @@ impl Message<IsRunning> for Session {
     }
 }
 
+impl Message<ResumedTurn> for Session {
+    type Reply = Option<TurnId>;
+
+    async fn handle(
+        &mut self,
+        _: ResumedTurn,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<TurnId> {
+        self.resumed
+    }
+}
+
 impl Message<Titled> for Session {
     type Reply = ();
 
@@ -2350,6 +2372,7 @@ impl Message<TurnDone> for Session {
     async fn handle(&mut self, TurnDone(state): TurnDone, ctx: &mut Context<Self, Self::Reply>) {
         self.state = Some(state);
         self.inflight = None;
+        self.resumed = None;
         self.scope = TurnScope::default();
         if let Some(turn) = self.entered.take() {
             continuation::notify(TurnReturned {

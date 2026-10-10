@@ -23,10 +23,14 @@ export function isDeliverable(tool: Tool): boolean {
   return DELIVERABLE_TOOLS[tool.name] === true || isBoardCreate(tool)
 }
 
+const NONE: ReadonlySet<string> = new Set()
+
 /** Entries with every maximal run of two or more tool cards (reasoning between them rides along; any other row,
  * including assistant text, ends the run) folded into one `Run`. A lone tool call stays a plain entry. A deliverable
- * (`isDeliverable`) is never in a run: it splits one, `[a, b] show [c, d]` → `[[a, b], show, [c, d]]`. */
-export function foldRuns(entries: Entry[]): (Entry | Run)[] {
+ * (`isDeliverable`) is never in a run: it splits one, `[a, b] show [c, d]` → `[[a, b], show, [c, d]]`. So does a
+ * `pinned` thinking block (`useToolRuns.pinned`, one the user opened while it streamed): the next tool call must not
+ * fold the block the reader is watching into a collapsed card. */
+export function foldRuns(entries: Entry[], pinned: ReadonlySet<string> = NONE): (Entry | Run)[] {
   const out: (Entry | Run)[] = []
   let i = 0
   while (i < entries.length) {
@@ -38,7 +42,10 @@ export function foldRuns(entries: Entry[]): (Entry | Run)[] {
     }
     let end = i + 1
     let lastTool = i
-    while (end < entries.length && ((entries[end]?.kind === 'tool' && !isDeliverable(entries[end] as Tool)) || entries[end]?.kind === 'reasoning')) {
+    while (
+      end < entries.length &&
+      ((entries[end]?.kind === 'tool' && !isDeliverable(entries[end] as Tool)) || (entries[end]?.kind === 'reasoning' && !pinned.has(entries[end]!.id)))
+    ) {
       if (entries[end]?.kind === 'tool') lastTool = end
       end++
     }
