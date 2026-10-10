@@ -102,7 +102,11 @@ pub async fn sample(
     .await?;
     let mut scanned = run.scanned;
     let primary = scanned.metrics.remove(&spec.metric.name);
-    let value = if run.exit == Some(0) && scanned.bad_number.is_none() {
+    // 159 W-m: `SPEND` is self-reported; a sample whose reported spend passes the
+    // per-experiment cap is a crash, like a bad number.
+    let cap_nanos = (spec.budget.per_experiment_usd * 1e9) as u64;
+    let over_cap = spec.budget.per_experiment_usd > 0.0 && scanned.spend_nanos > cap_nanos;
+    let value = if run.exit == Some(0) && scanned.bad_number.is_none() && !over_cap {
         primary
     } else {
         None
@@ -112,6 +116,11 @@ pub async fn sample(
         .is_none()
         .then(|| match (run.exit, &scanned.bad_number) {
             (Some(0), Some(b)) => format!("bad number {b}"),
+            (Some(0), None) if over_cap => format!(
+                "bench reported SPEND ${:.2} over per_experiment_usd ${:.2}",
+                scanned.spend_nanos as f64 / 1e9,
+                spec.budget.per_experiment_usd
+            ),
             (Some(0), None) => format!("no METRIC {} line", spec.metric.name),
             (Some(e), _) => format!("exit {e}"),
             (None, _) => "killed".to_owned(),
@@ -566,6 +575,53 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(out.value, None);
+    }
+
+    /// 159 §5.3 / W-m: `SPEND` lines sum into the sample, `CASE` v2 names are kept, a reported
+    /// spend past `per_experiment_usd` crashes the sample, and a bad `SPEND` is a bad number.
+    #[tokio::test]
+    async fn spend_sums_and_the_cap_crashes() {
+        let d = dirs();
+        let mut s = spec(
+            "echo METRIC time_ms=5; echo SPEND 0.25 judge; echo SPEND 0.5; echo CASE c1 time_ms=1 pass=1",
+            "10s",
+        );
+        s.budget.per_experiment_usd = 1.0;
+        let out = sample(&s, &bench_cfg(), req(&d, 1), &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(out.value, Some(5.0));
+        assert_eq!(out.spend_nanos, 750_000_000);
+        assert_eq!(out.cases["c1"], 1.0);
+        assert_eq!(out.case_values["c1"]["pass"], 1.0);
+        s.budget.per_experiment_usd = 0.5;
+        let out = sample(&s, &bench_cfg(), req(&d, 2), &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!((out.value, out.exit), (None, Some(0)));
+        assert!(
+            out.failure
+                .as_deref()
+                .unwrap_or("")
+                .contains("over per_experiment_usd"),
+            "{:?}",
+            out.failure
+        );
+        let out = sample(
+            &spec("echo METRIC time_ms=5; echo SPEND lots", "10s"),
+            &bench_cfg(),
+            req(&d, 3),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.value, None);
+        assert!(
+            out.failure
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("bad number SPEND")
+        );
     }
 
     #[tokio::test]

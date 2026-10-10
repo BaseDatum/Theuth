@@ -1679,6 +1679,60 @@ mod tests {
         );
     }
 
+    /// 159 §5.12 item 2: the probe fingerprint hashes the same named fields as before C — the
+    /// hash equals sha256 of the pre-C JSON spelled out here — and ignores every 159 field, so a
+    /// 151 probe stays Verified; and a 140 draft's `spec.json` carries no 159 key.
+    #[test]
+    fn fingerprints_are_unchanged_by_159_and_drafts_carry_no_159_key() {
+        let s = spec(Path::new("/x/repo"));
+        let pre_c = serde_json::json!({
+            "kind": ProbeKind::Bench,
+            "repo": s.repo.trim(),
+            "base_sha": "abc",
+            "warm": s.warm,
+            "bench": { "command": s.bench.command, "timeout": s.bench.timeout, "repeats": s.bench.repeats, "exclusive": s.bench.exclusive, "smoke": s.bench.smoke },
+            "metric_name": s.metric.name,
+            "checks_command": s.checks.as_ref().map(|c| &c.command),
+            "holdout": s.holdout.as_ref().map(|h| serde_json::json!({ "command": h.command, "repeats": h.repeats })),
+        });
+        let mut h = Sha256::new();
+        h.update(pre_c.to_string().as_bytes());
+        assert_eq!(
+            fingerprint(ProbeKind::Bench, &s, "abc"),
+            format!("{:x}", h.finalize())
+        );
+        let mut with_159 = s.clone();
+        with_159.axes.search = crate::types::Search::Front;
+        with_159.objectives = vec![crate::types::Objective::primary(&s.metric)];
+        with_159.calls = vec!["search_web".into()];
+        with_159.models.judge = Some("judge".into());
+        for kind in [ProbeKind::Bench, ProbeKind::Check, ProbeKind::Holdout] {
+            assert_eq!(
+                fingerprint(kind, &s, "abc"),
+                fingerprint(kind, &with_159, "abc")
+            );
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        write_draft(&root, &s, SessionId::new(), true, vec![]).unwrap();
+        let text = std::fs::read_to_string(draft_spec_path(&root, "toy")).unwrap();
+        for key in [
+            "axes",
+            "objectives",
+            "cases",
+            "judge",
+            "population",
+            "literature",
+            "hooks",
+            "world",
+            "suite",
+            "calls",
+            "target",
+        ] {
+            assert!(!text.contains(&format!("\"{key}\"")), "{key} in spec.json");
+        }
+    }
+
     /// Live proof Z (2026-10-09): the agent called two probes in one turn (`asyncio.gather`,
     /// two tool tasks); both raced on `probe/wt` and both failed. Probes now run one at a time.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
