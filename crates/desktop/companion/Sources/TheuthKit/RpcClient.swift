@@ -87,6 +87,9 @@ public actor RpcClient {
         guard let location = locate() else { return retryLater() }
         let t = session.webSocketTask(with: Self.request(for: location))
         task = t
+        // Default cap is 1 MiB; `list_sessions` alone passed 2 MB on a long-lived data dir, and a too-long
+        // frame fails `receive` → `lost` → a reconnect loop.
+        t.maximumMessageSize = 64 << 20
         t.resume()
         // No delegate: the first successful ping proves the upgrade.
         t.sendPing { [weak self] error in
