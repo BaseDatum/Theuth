@@ -493,7 +493,9 @@ internal sealed class IslandController : IDisposable
             {
                 action();
                 var r = Window.ScreenRect;
-                Log.Write($"prompt158: {name} — shown={Window.IsShown} mode={model.Mode} state={snapshot.State} prompt={snapshot.Prompt?.GetType().Name ?? "-"} rect=({r.left},{r.top},{r.right - r.left}x{r.bottom - r.top}) text=“{Window.RenderedText()}”");
+                string text = Window.RenderedText();
+                Log.Write($"prompt158: {name} — shown={Window.IsShown} mode={model.Mode} state={snapshot.State} prompt={snapshot.Prompt?.GetType().Name ?? "-"} rect=({r.left},{r.top},{r.right - r.left}x{r.bottom - r.top}) text=“{text}”");
+                if (text.Length > 160) Log.Write($"prompt158: {name} tail=“…{text[^160..]}”"); // the gate clips log lines at 220 chars
                 var png = Path.Combine(Path.GetTempPath(), $"158-prompt-{name}.png");
                 _ = Window.CapturePng(png).ContinueWith(x => Log.Write($"prompt158: {name} png {(x.Result ? png : "hidden")}"), TaskScheduler.Default);
             };
