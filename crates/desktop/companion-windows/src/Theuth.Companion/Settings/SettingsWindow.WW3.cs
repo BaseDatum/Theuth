@@ -28,7 +28,7 @@ internal sealed partial class SettingsWindow
         }
         var island = ww3.Island;
         Toggle(page, "Always show the closed pill", "settings-island-always", island.Model.AlwaysShow, on => island.SetAlwaysShow(on));
-        Caption(page, "Off: the island appears while a meeting is live and for 10 minutes after the last topic or brief. On: the pill stays; a click opens Meetings.");
+        Caption(page, "Off: the island appears while a meeting is live or a meeting prompt is up, and goes when they end. On: the pill stays; a click opens Meetings.");
         // Sky 16:06: the eye's exposure state at a glance, in the island's tints (Caution = viewers can see it, Success = hidden).
         var eyeState = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         AutomationProperties.SetAutomationId(eyeState, "settings-island-eye-state");

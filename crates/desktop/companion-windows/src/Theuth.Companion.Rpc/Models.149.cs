@@ -296,8 +296,61 @@ public sealed record MeetingStatus
     public bool ApprovalWaiting { get; init; }
     public MeetingSupport Supported { get; init; } = MeetingSupport.Unknown;
     public string Accelerator { get; init; } = "";
+    /// <summary>158 §4.5: the current detection prompt, for a companion connecting mid-prompt.</summary>
+    public Detection? Detection { get; init; }
 
     public bool IsLive => State.IsLive;
+}
+
+/// <summary><c>meeting::ProcessInfo</c> (the mic holder / tapped app).</summary>
+public sealed record ProcessInfo
+{
+    public uint Pid { get; init; }
+    public string Name { get; init; } = "";
+    public string? BundleId { get; init; }
+    public bool Active { get; init; }
+}
+
+/// <summary><c>detect::Detection</c> (158 §15.1). <c>event</c> / <c>project</c> / <c>brief</c> are W2/W3's and skipped here until they fill.</summary>
+public sealed record Detection
+{
+    [JsonRequired] public ProcessInfo App { get; init; } = new();
+    [JsonRequired] public string AppId { get; init; } = "";
+    public string Since { get; init; } = "";
+    public ValueList<ProcessInfo> Also { get; init; } = new();
+}
+
+/// <summary><c>detect::Source</c> (158 §15.1; TS <c>StartSource</c>): <c>{"kind":"manual"|"detected"|"calendar", app_id?, event?}</c>.</summary>
+public sealed record StartSource(string Kind, string? AppId = null, string? Event = null)
+{
+    public static StartSource Manual => new("manual");
+
+    public static StartSource Detected(string appId) => new("detected", AppId: appId);
+
+    public static StartSource Calendar(string eventId) => new("calendar", Event: eventId);
+}
+
+/// <summary><c>meeting::StartMeeting</c> (<c>meeting_start</c>): the frozen six fields plus 158's optional four; nulls are omitted on the wire.</summary>
+public sealed record StartMeeting
+{
+    public uint? Process { get; init; }
+    public string? Title { get; init; }
+    public string? Context { get; init; }
+    /// <summary>R3: the lawful line was shown; the prompt's Start always sends true.</summary>
+    public bool Consent { get; init; }
+    public string? SessionModel { get; init; }
+    public string? Memory { get; init; }
+    public StartSource? Source { get; init; }
+    public string? Event { get; init; }
+    public string? Project { get; init; }
+    public string? Template { get; init; }
+}
+
+/// <summary><c>meeting::Started</c>: the reply to <c>meeting_start</c>.</summary>
+public sealed record MeetingStarted
+{
+    [JsonRequired] public string Meeting { get; init; } = "";
+    [JsonRequired] public string Session { get; init; } = "";
 }
 
 /// <summary><c>meeting_permissions</c> (<c>meeting::Permissions</c>): <c>Granted</c> · <c>Denied</c> · <c>NotDetermined</c> per capability.</summary>

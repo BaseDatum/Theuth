@@ -46,6 +46,18 @@ internal abstract record IslandAction
     public sealed record Eye : IslandAction;
 
     public sealed record OpenMeetings : IslandAction;
+
+    /// <summary>158 §5.4: the prompt's Start → <c>meeting_start(process: pid, consent: true, source: detected)</c>.</summary>
+    public sealed record StartRecording(MeetingDetection Detection) : IslandAction;
+
+    /// <summary>158 §5.3: Not now → <c>meeting_detection_dismiss(app_id, never: false)</c>.</summary>
+    public sealed record NotNow(string AppId) : IslandAction;
+
+    /// <summary>158 §5.3: Never for &lt;App&gt; → <c>meeting_detection_dismiss(app_id, never: true)</c>.</summary>
+    public sealed record NeverForApp(string AppId) : IslandAction;
+
+    /// <summary>158 §5.2 (d): keep recording — the stop prompt goes (the engine re-asks in 30 s while the app stays off the mic).</summary>
+    public sealed record KeepRecording : IslandAction;
 }
 
 /// <summary>The voice mode / answer card the island shows while a point-and-say gesture is live (149 §3.7, D14).</summary>
@@ -386,7 +398,7 @@ internal sealed partial class IslandWindow : ToolWindow
             model.Mode, hiddenFromCapture, root.ActualTheme, oracleMode, verdictFresh, last?.BatchId, last?.Disposition, s.Deciding,
             s.Meeting, s.State, string.Join(',', s.Topics.Select(t => t.Id + "=" + t.Label)), string.Join(',', s.Tapped),
             s.Cursor, s.Briefs.Count, s.Current?.Id, s.Unseen, string.Join(',', s.Degraded), s.Listening, s.ApprovalWaiting, s.Activity,
-            s.Lines.Count > 0, s.Lines.Count > 0 && s.Lines[^1].Open, SpeakerWord(s));
+            s.Lines.Count > 0, s.Lines.Count > 0 && s.Lines[^1].Open, SpeakerWord(s), s.Prompt);
     }
 
     /// <summary>The meters (<c>MeetingEvent::Level</c>, ~6/s): the two bars resize in place, no re-render.</summary>
@@ -601,7 +613,21 @@ internal sealed partial class IslandWindow : ToolWindow
         bool inBox = request is not null && request.FocusState != FocusState.Unfocused;
         if (key.KeyCode == VirtualKeys.Escape)
         {
-            if (inBox) LeaveBox(); else { CollapseIsland("Esc"); HandBack(); }
+            // 158 §5.3: Esc on a detection prompt is "Not now" (the island's existing escape path).
+            if (inBox) LeaveBox();
+            else if (snapshot.Prompt is MeetingPrompt.Detected pd) { Log.Write("island: key Esc → not now"); act(new IslandAction.NotNow(pd.Detection.AppId)); HandBack(); }
+            else { CollapseIsland("Esc"); HandBack(); }
+            e.Handled = true;
+            return;
+        }
+        if (key.KeyCode == VirtualKeys.Return && !inBox && snapshot.Prompt is { } pr)
+        {
+            // 158 §5.3: ⏎ = Start recording on (a); ⏎ = Keep recording on (d) — the safe default; Ctrl+M (above) is Stop.
+            switch (pr)
+            {
+                case MeetingPrompt.Detected d: Log.Write("island: key Enter → start recording"); act(new IslandAction.StartRecording(d.Detection)); break;
+                case MeetingPrompt.Stop: Log.Write("island: key Enter → keep recording"); act(new IslandAction.KeepRecording()); break;
+            }
             e.Handled = true;
             return;
         }
@@ -654,6 +680,10 @@ internal sealed partial class IslandWindow : ToolWindow
                 break;
             case "d":
                 if (snapshot.Current is { } b) act(new IslandAction.Deeper(b.Id));
+                e.Handled = true;
+                break;
+            case "n" when snapshot.Prompt is MeetingPrompt.Detected nd: // 158 §5.3
+                act(new IslandAction.NeverForApp(nd.Detection.AppId));
                 e.Handled = true;
                 break;
         }
@@ -893,9 +923,83 @@ internal sealed partial class IslandWindow : ToolWindow
     {
         shell.CornerRadius = new CornerRadius(8);
         shell.Padding = new Thickness(10, 6, 10, 8);
-        RenderStrip();
         var s = snapshot;
-        RenderPane(s);
+        // 158 §5.2: (a) the detection prompt stands alone before a meeting; (d) the stop prompt sits under the live strip and pane.
+        if (s.Meeting is not null) RenderStrip();
+        switch (s.Prompt)
+        {
+            case MeetingPrompt.Detected d: RenderDetected(d.Detection, head: s.Meeting is null); break;
+            case MeetingPrompt.Stop st: RenderPane(s); RenderStopPrompt(st); break;
+            default: RenderPane(s); break;
+        }
+    }
+
+    /// <summary>
+    /// 158 §5.2 (a): <c>&lt;App&gt; is using your microphone</c> · Start recording · Not now · Never for &lt;App&gt; · the lawful line verbatim (R3).
+    /// With no meeting the head row carries the grip and the eye (there is no strip). "Never for" is a button, not a ⋮ menu: a
+    /// <c>MenuFlyout</c> hosted in a tool window fail-fasts on build-B (<c>TrayMenu.cs</c>), and the mock draws three buttons.
+    /// </summary>
+    private void RenderDetected(MeetingDetection d, bool head)
+    {
+        string app = d.App.Display;
+        var group = new StackPanel { Spacing = 6 };
+        AutomationProperties.SetAutomationId(group, "island-prompt");
+        AutomationProperties.SetName(group, $"{app} is using your microphone");
+        var title = Row(6);
+        if (head)
+        {
+            var grip = new Border { Width = GripWidth, Height = 20, Child = Theme.Icon(NativeLook.Glyph.GripperBarVertical, root.ActualTheme, NativeLook.TextTertiary, 12), VerticalAlignment = VerticalAlignment.Center };
+            ToolTipService.SetToolTip(grip, "Drag to move · double-click to snap back");
+            title.Children.Add(grip);
+        }
+        title.Children.Add(Dot(NativeLook.Critical));
+        var line = Text($"{app} is using your microphone", 14, NativeLook.TextPrimary, FontWeights.SemiBold);
+        AutomationProperties.SetAutomationId(line, "island-prompt-title");
+        title.Children.Add(line);
+        if (d.Also.Count > 0) title.Children.Add(Text($"+{d.Also.Count} more", 12, NativeLook.TextTertiary));
+        var titleGrid = new Grid();
+        titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        titleGrid.Children.Add(title);
+        if (head)
+        {
+            var eye = IconBtn(EyeGlyph(hiddenFromCapture), EyeLabel(hiddenFromCapture) + " — Alt+Shift+E", () => act(new IslandAction.Eye()), "island-eye", tint: EyeTint(hiddenFromCapture));
+            Grid.SetColumn(eye, 1);
+            titleGrid.Children.Add(eye);
+        }
+        group.Children.Add(titleGrid);
+        var buttons = Row(6);
+        var start = Btn("Start recording", "Start recording (Enter)", () => act(new IslandAction.StartRecording(d)), "island-prompt-start");
+        start.Background = Theme.Brush(NativeLook.Accent, root.ActualTheme);
+        start.Content = OnAccentText("Start recording", 12.5, FontWeights.SemiBold);
+        buttons.Children.Add(start);
+        buttons.Children.Add(Btn("Not now", "Not now — ask again in 10 minutes (Esc)", () => act(new IslandAction.NotNow(d.AppId)), "island-prompt-not-now"));
+        buttons.Children.Add(Btn($"Never for {app}", $"Never ask for {app} again (N)", () => act(new IslandAction.NeverForApp(d.AppId)), "island-prompt-never"));
+        group.Children.Add(buttons);
+        var lawful = Text("By starting the recording you acknowledge the recording is lawful.", 11.5, NativeLook.TextTertiary);
+        lawful.TextWrapping = TextWrapping.Wrap;
+        lawful.TextTrimming = TextTrimming.None;
+        AutomationProperties.SetAutomationId(lawful, "island-prompt-lawful");
+        group.Children.Add(lawful);
+        body.Children.Add(group);
+    }
+
+    /// <summary>158 §5.2 (d): <c>&lt;App&gt; stopped using your microphone N s ago</c> · Stop recording? · Stop · Keep recording (⏎ = Keep).</summary>
+    private void RenderStopPrompt(MeetingPrompt.Stop st)
+    {
+        var group = new StackPanel { Spacing = 4 };
+        AutomationProperties.SetAutomationId(group, "island-stop-prompt");
+        string ago = st.ReleasedForS >= 120 ? $"{st.ReleasedForS / 60} min ago" : $"{st.ReleasedForS} s ago";
+        var line = Text($"{st.App.Display} stopped using your microphone {ago}", 12.5, NativeLook.TextSecondary);
+        AutomationProperties.SetAutomationId(line, "island-stop-prompt-title");
+        AutomationProperties.SetName(group, line.Text);
+        group.Children.Add(line);
+        var row = Row(6);
+        row.Children.Add(Text("Stop recording?", 12.5, NativeLook.TextPrimary, FontWeights.SemiBold));
+        row.Children.Add(Btn("Stop", "Stop the meeting (Ctrl+M)", () => act(new IslandAction.Stop()), "island-stop-prompt-stop"));
+        row.Children.Add(Btn("Keep recording", "Keep recording (Enter)", () => act(new IslandAction.KeepRecording()), "island-stop-prompt-keep"));
+        group.Children.Add(row);
+        body.Children.Add(group);
     }
 
     /// <summary>The meeting strip (and its badge rows): the open island's head, and what the voice pill sits under while a meeting is live (§P).</summary>

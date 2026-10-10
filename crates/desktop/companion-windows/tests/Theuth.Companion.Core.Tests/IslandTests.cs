@@ -470,4 +470,66 @@ public sealed class MeetingReducerTests
         Assert.Equal(-1, none.Cursor);
         Assert.Null(none.LastTopicOrBriefMs);
     }
+
+    // MARK: 158 §5 — the prompt (W1W)
+
+    private static readonly MeetingProcess Zoom = new(4242, "Zoom.exe", null, true);
+    private static MeetingDetection Zoomed() => new(Zoom, "zoom.exe", "2026-10-10T10:00:00Z", Array.Empty<MeetingProcess>());
+
+    [Fact]
+    public void DetectedPromptsAndClearsByAppId()
+    {
+        var s = R(MeetingSnapshot.Empty, new MeetingChange.Detected(Zoomed()));
+        var p = Assert.IsType<MeetingPrompt.Detected>(s.Prompt);
+        Assert.Equal("zoom.exe", p.Detection.AppId);
+        Assert.Null(s.Meeting); // no meeting yet — the prompt alone shows the island
+        // Another app's clear is not ours; ours (Not now / Never / Released) ends the prompt.
+        Assert.Same(s, R(s, new MeetingChange.DetectionCleared("teams.exe", "NotNow")));
+        Assert.Null(R(s, new MeetingChange.DetectionCleared("zoom.exe", "NotNow")).Prompt);
+        Assert.Null(R(s, new MeetingChange.DetectionCleared("zoom.exe", "Never")).Prompt);
+        // Start recording → `Started` resets the slice, prompt included (the engine's `Cleared::Started` then finds nothing).
+        Assert.Null(R(s, new MeetingChange.Started("m1", "s1")).Prompt);
+    }
+
+    [Fact]
+    public void AppReleasedAsksToStopWhileLiveAndEndsWithTheRecording()
+    {
+        var s = Recording();
+        var stop = R(s, new MeetingChange.AppReleased("m1", Zoom, 30));
+        Assert.Equal(new MeetingPrompt.Stop("m1", Zoom, 30), stop.Prompt);
+        // Re-sent every 30 s: the newer count replaces the older.
+        Assert.Equal(60u, Assert.IsType<MeetingPrompt.Stop>(R(stop, new MeetingChange.AppReleased("m1", Zoom, 60)).Prompt).ReleasedForS);
+        // Another meeting's, or not live: ignored.
+        Assert.Same(s, R(s, new MeetingChange.AppReleased("m2", Zoom, 30)));
+        Assert.Null(R(R(s, new MeetingChange.State("m1", "Done", Array.Empty<string>())), new MeetingChange.AppReleased("m1", Zoom, 30)).Prompt);
+        // Stop → Stopping clears it; Paused keeps it (still live).
+        Assert.Null(R(stop, new MeetingChange.State("m1", "Stopping", Array.Empty<string>())).Prompt);
+        Assert.NotNull(R(stop, new MeetingChange.State("m1", "Paused", Array.Empty<string>())).Prompt);
+        // A detection prompt is not the meeting's: a State change leaves it.
+        var det = R(MeetingSnapshot.Empty, new MeetingChange.Detected(Zoomed()));
+        Assert.NotNull(R(det, new MeetingChange.State("m9", "Done", Array.Empty<string>())).Prompt);
+    }
+
+    [Fact]
+    public void APromptShowsAndOpensTheIslandWithoutAMeeting_AndGoesWithoutLinger()
+    {
+        var m = new IslandModel();
+        m.Present(null, "Idle", prompt: true);
+        Assert.True(m.HasPrompt);
+        Assert.True(m.ShouldShow("Idle"));
+        Assert.Equal(IslandMode.Open, m.Mode); // the prompt is content, not a pill
+        Assert.Null(m.Meeting);
+        Assert.False(m.Collapse()); // answered, not hidden
+        m.Present(null, "Idle", prompt: false);
+        Assert.False(m.ShouldShow("Idle")); // D2 no-linger: gone at once when the prompt clears
+        Assert.Equal(IslandMode.Closed, m.Mode);
+        // The stop prompt re-opens a meeting the user had collapsed, and stays open until answered.
+        m.Present("m1", "Recording");
+        Assert.True(m.Collapse());
+        m.Present("m1", "Recording", prompt: true);
+        Assert.Equal(IslandMode.Open, m.Mode);
+        Assert.False(m.Collapse());
+        m.Present("m1", "Recording", prompt: false);
+        Assert.Equal(IslandMode.Closed, m.Mode); // the per-meeting collapse memory still stands
+    }
 }

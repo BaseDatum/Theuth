@@ -59,6 +59,7 @@ internal sealed class IslandController : IDisposable
         if (Environment.GetCommandLineArgs().Contains("--island-always")) model.AlwaysShow = true;
         Hydrate();
         if (Environment.GetCommandLineArgs().Contains("--island-fixture")) Fixture();
+        else if (Environment.GetCommandLineArgs().Contains("--island-prompt")) FixturePrompt();
         Log.Write($"island: installed (frames={model.Frames.Count} always={(model.AlwaysShow ? "on" : "off")} window={Window.Hwnd})");
     }
 
@@ -153,10 +154,14 @@ internal sealed class IslandController : IDisposable
             .Select(b => new MeetingBrief(b.Id, b.Topic, b.Title, b.Bullets.ToArray(), b.Source, (long)b.AtMs, b.Parent, b.Cached)).ToArray();
         var lines = store.Live.Select(u => new MeetingLine(u.Track, (long)u.T0Ms, u.Text, u.Request, Open: false, u.Speaker)).ToArray();
         var degraded = m.Degraded.Select(d => d.Detail is null ? d.Kind : $"{d.Kind}:{d.Detail}").ToArray();
-        var s = MeetingReducer.Hydrate(m.Meeting, m.Session, m.State.Word, degraded, (long)m.ElapsedMs, m.Cursor, topics, m.ApprovalWaiting, briefs, lines, DateTimeOffset.Now);
+        // 158 §4.5: a companion connecting mid-prompt renders it from `meeting_status.detection`.
+        var detection = m.Detection is { } det ? new MeetingDetection(Process(det.App), det.AppId, det.Since, det.Also.Select(Process).ToArray()) : null;
+        var s = MeetingReducer.Hydrate(m.Meeting, m.Session, m.State.Word, degraded, (long)m.ElapsedMs, m.Cursor, topics, m.ApprovalWaiting, briefs, lines, DateTimeOffset.Now, detection);
         Apply(s, null);
-        Log.Write($"island: hydrated — state={m.State} topics={topics.Length} briefs={briefs.Length} lines={lines.Length} cursor={s.Cursor}");
+        Log.Write($"island: hydrated — state={m.State} topics={topics.Length} briefs={briefs.Length} lines={lines.Length} cursor={s.Cursor}{(detection is null ? "" : $" prompt={detection.AppId}")}");
     }
+
+    private static MeetingProcess Process(ProcessInfo p) => new(p.Pid, p.Name, p.BundleId, p.Active);
 
     private void Apply(MeetingSnapshot next, MeetingChange? change)
     {
@@ -169,9 +174,9 @@ internal sealed class IslandController : IDisposable
         }
         // Island fix D1: present the state first (open while live unless collapsed for this meeting), then render at that shape.
         var mode = model.Mode;
-        model.Present(next.Meeting, next.State);
-        if (prev.State != next.State || prev.Meeting != next.Meeting || mode != model.Mode)
-            Log.Write($"island: presented state={next.State} meeting={next.Meeting ?? "-"} mode={model.Mode}{(next.Meeting is not null && model.IsCollapsed(next.Meeting) ? " (collapsed for this meeting)" : "")}");
+        model.Present(next.Meeting, next.State, next.Prompt is not null);
+        if (prev.State != next.State || prev.Meeting != next.Meeting || mode != model.Mode || !Equals(prev.Prompt, next.Prompt))
+            Log.Write($"island: presented state={next.State} meeting={next.Meeting ?? "-"} mode={model.Mode}{(next.Meeting is not null && model.IsCollapsed(next.Meeting) ? " (collapsed for this meeting)" : "")}{(next.Prompt is null ? "" : $" prompt={next.Prompt.GetType().Name}")}");
         Window.Update(next);
         var cursor = next.Current?.Id;
         if (!fixture && cursor != cursorSent && (change is MeetingChange.Brief || prev.Cursor != next.Cursor))
@@ -297,6 +302,8 @@ internal sealed class IslandController : IDisposable
             if (a is IslandAction.Dismiss d0) Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.TopicRemoved("fixture-meeting", d0.Topic, "Dismissed"), DateTimeOffset.Now), null);
             if (a is IslandAction.Mute) Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.State("fixture-meeting", snapshot.State == "Paused" ? "Recording" : "Paused", Array.Empty<string>()), DateTimeOffset.Now), null);
             if (a is IslandAction.Stop) FixtureStop();
+            if (a is IslandAction.StartRecording) { FixtureStart(); return; }
+            if (a is IslandAction.NotNow or IslandAction.NeverForApp or IslandAction.KeepRecording) Apply(snapshot with { Prompt = null }, null);
             return;
         }
         switch (a)
@@ -316,6 +323,23 @@ internal sealed class IslandController : IDisposable
             case IslandAction.Stop: Fire(store.MeetingStopAsync(), "meeting_stop"); break;
             case IslandAction.Eye: ToggleEye(); break;
             case IslandAction.OpenMeetings: _ = Links.Open(new Uri("theuth://meetings")); break;
+            // 158 §5.4: one frozen RPC; the engine fills the defaults (model, memory, template, project) server-side.
+            case IslandAction.StartRecording sr:
+                Log.Write($"island: start recording — {sr.Detection.App.Display} (pid {sr.Detection.App.Pid}, {sr.Detection.AppId})");
+                Fire(store.MeetingStartAsync(new StartMeeting { Process = sr.Detection.App.Pid, Consent = true, Source = StartSource.Detected(sr.Detection.AppId) }), "meeting_start");
+                break;
+            // 158 §5.3: the prompt goes at once; the engine's `DetectionCleared` confirms (and a failed call is logged, not re-shown).
+            case IslandAction.NotNow nn:
+                Apply(snapshot with { Prompt = null }, null);
+                Fire(store.MeetingDetectionDismissAsync(nn.AppId, never: false), "meeting_detection_dismiss(not now)");
+                break;
+            case IslandAction.NeverForApp nv:
+                Apply(snapshot with { Prompt = null }, null);
+                Fire(store.MeetingDetectionDismissAsync(nv.AppId, never: true), "meeting_detection_dismiss(never)");
+                break;
+            case IslandAction.KeepRecording:
+                Apply(snapshot with { Prompt = null }, null); // the engine re-sends `AppReleased` every 30 s while the app stays off the mic
+                break;
         }
     }
 
@@ -434,6 +458,32 @@ internal sealed class IslandController : IDisposable
             fixtureTalk?.Stop();
             Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.State("fixture-meeting", "Done", Array.Empty<string>()), DateTimeOffset.Now), null);
             Log.Write("island: fixture state → Done");
+        };
+        t.Start();
+    }
+
+    /// <summary>The fixture's detection prompt (158 §5.2 a): <c>--island-prompt</c> shows "Zoom is using your microphone"; Start runs the fixture meeting.</summary>
+    private static readonly MeetingProcess FixtureApp = new(4242, "Zoom.exe", null, true);
+
+    private void FixturePrompt()
+    {
+        fixture = true;
+        Apply(MeetingReducer.Reduce(MeetingSnapshot.Empty, new MeetingChange.Detected(new MeetingDetection(FixtureApp, "zoom.exe", DateTimeOffset.Now.ToString("O"), Array.Empty<MeetingProcess>())), DateTimeOffset.Now), null);
+        Log.Write("island: fixture prompt applied (Zoom is using your microphone)");
+    }
+
+    /// <summary>The fixture's "Start recording": the fixture meeting, then <c>AppReleased</c> 8 s in so the stop prompt (158 §5.2 d) is proven too.</summary>
+    private void FixtureStart()
+    {
+        Fixture();
+        var t = dispatcher.CreateTimer();
+        t.Interval = TimeSpan.FromSeconds(8);
+        t.IsRepeating = false;
+        t.Tick += (_, _) =>
+        {
+            if (!MeetingReducer.Live(snapshot.State)) return;
+            Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.AppReleased("fixture-meeting", FixtureApp, 30), DateTimeOffset.Now), null);
+            Log.Write("island: fixture AppReleased (30 s) → stop prompt");
         };
         t.Start();
     }
