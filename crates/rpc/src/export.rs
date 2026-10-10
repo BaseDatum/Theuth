@@ -676,6 +676,7 @@ async fn export_bindings() {
         mcp_server::McpServerConfig,
         mcp_server::McpServerStatus,
         mcp_server::AuditLine,
+        mcp_server::McpCallResult,
         decision::Mode,
         decision::ModeInfo,
         decision::FamilyStats,

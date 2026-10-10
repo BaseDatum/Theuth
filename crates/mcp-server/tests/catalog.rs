@@ -1,12 +1,13 @@
 //! 158 §16 W5 proof: catalogue snapshot, Bearer/Origin/Host rejections, paging, the Private
-//! filter, the audit line, an HTTP round trip with rmcp's own client, stdio over a duplex.
+//! filter, the audit line, redaction, an HTTP round trip with rmcp's own client, the stdio
+//! bridge over a duplex forwarding to `mcp_server_call`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use mcp_server::{Audit, Catalog, Rpc, catalog};
+use mcp_server::{Audit, Bridge, Catalog, McpCallResult, Rpc, RpcError, catalog};
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientInfo, Implementation, Tool};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -15,16 +16,34 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
-/// A fake engine: canned replies per method, every call recorded.
+/// A fake engine: canned replies per method, every call recorded. With `catalog` set it also
+/// answers `mcp_server_call` the way the engine does — by running that catalogue.
 #[derive(Default)]
 struct Fake {
     calls: Mutex<Vec<(String, Vec<Value>)>>,
+    catalog: Mutex<Option<Catalog>>,
 }
 
 #[async_trait::async_trait]
 impl Rpc for Fake {
-    async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, String> {
+    async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
         self.calls.lock().push((method.to_owned(), params.clone()));
+        if method == "mcp_server_call" {
+            let catalog = self.catalog.lock().clone().expect("engine-side catalogue");
+            let args = match &params[1] {
+                Value::Object(m) => m.clone(),
+                _ => Default::default(),
+            };
+            let r = catalog
+                .call(
+                    params[0].as_str().unwrap(),
+                    args,
+                    params[2].as_str().unwrap(),
+                )
+                .await
+                .map_err(|e| RpcError::Call(e.message.to_string()))?;
+            return Ok(serde_json::to_value(r).unwrap());
+        }
         Ok(match method {
             "meeting_list" => {
                 let limit = params[0].as_u64().unwrap_or(100).min(120) as usize;
@@ -52,7 +71,7 @@ impl Rpc for Fake {
                 {"id": "a1", "session": "s-pub"},
                 {"id": "a2", "session": "s-priv"},
             ]),
-            "meeting_summary" => json!("# Summary\nthe api key is hunter2"),
+            "meeting_summary" => json!("# Summary\nthe api key is hunter2-secret-value"),
             "task_comment" => Value::Null,
             "meeting_transcript" => json!({
                 "meeting": "m1", "speakers": [], "diarized": true,
@@ -61,13 +80,24 @@ impl Rpc for Fake {
             "search" => {
                 json!({"groups": [{"category": "meetings", "page": {"hits": [{"meeting": {"id": "m1"}}]}}]})
             }
-            other => return Err(format!("no such method {other}")),
+            other => return Err(RpcError::Call(format!("no such method {other}"))),
         })
     }
 }
 
-fn catalog(fake: &Arc<Fake>, dir: &std::path::Path, transport: &'static str) -> Catalog {
-    Catalog::new(fake.clone(), transport, Audit::new(dir), None)
+/// A real vault (file key, in `dir`) holding one secret, `hunter2-secret-value`.
+async fn vault(dir: &std::path::Path) -> Arc<secrets::Vault> {
+    let v = secrets::Vault::open(dir, secrets::KeyStore::File)
+        .await
+        .unwrap();
+    v.set("api.key", "hunter2-secret-value", None, "test")
+        .await
+        .unwrap();
+    Arc::new(v)
+}
+
+async fn catalog(fake: &Arc<Fake>, dir: &std::path::Path, transport: &'static str) -> Catalog {
+    Catalog::new(fake.clone(), transport, Audit::new(dir), vault(dir).await)
 }
 
 fn req(name: &'static str, a: Value) -> CallToolRequestParams {
@@ -134,7 +164,9 @@ async fn paging() {
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = tokio::io::duplex(1 << 16);
     let (server, client) = tokio::join!(
-        catalog(&fake, dir.path(), "stdio").serve(tokio::io::split(a)),
+        catalog(&fake, dir.path(), "stdio")
+            .await
+            .serve(tokio::io::split(a)),
         ().serve(tokio::io::split(b)),
     );
     let (server, client) = (server.unwrap(), client.unwrap());
@@ -217,7 +249,9 @@ async fn private_sessions_are_excluded() {
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = tokio::io::duplex(1 << 16);
     let (server, client) = tokio::join!(
-        catalog(&fake, dir.path(), "stdio").serve(tokio::io::split(a)),
+        catalog(&fake, dir.path(), "stdio")
+            .await
+            .serve(tokio::io::split(a)),
         ().serve(tokio::io::split(b)),
     );
     let (server, client) = (server.unwrap(), client.unwrap());
@@ -323,7 +357,7 @@ async fn http_rejections_and_round_trip() {
     let port = mcp_server::http::serve(
         0,
         "tok".into(),
-        catalog(&fake, dir.path(), "http"),
+        catalog(&fake, dir.path(), "http").await,
         cancel.clone(),
     )
     .await
@@ -421,11 +455,13 @@ async fn http_rejections_and_round_trip() {
     let calls = fake.calls.lock().clone();
     assert!(calls.contains(&("task_comment".into(), vec![json!("t1"), json!("hi")])));
 
+    // §12.5: the vault's secret never crosses.
     let s = client
         .call_tool(req("meeting_summary", json!({"id": "m1"})))
         .await
         .unwrap();
-    assert_eq!(text(&s), "# Summary\nthe api key is hunter2");
+    assert!(!text(&s).contains("hunter2-secret-value"), "{}", text(&s));
+    assert!(text(&s).starts_with("# Summary\nthe api key is "));
 
     let audit = Audit::new(dir.path()).tail(10).unwrap();
     assert_eq!(audit.len(), 3);
@@ -447,4 +483,90 @@ async fn http_rejections_and_round_trip() {
             .is_err(),
         "listener gone"
     );
+}
+
+/// 158 §12.3/§12.5: `t mcp` on stdio is a transport. Every `call_tool` is one `mcp_server_call`
+/// on the engine, whose catalogue redacts with the vault and writes the audit line with
+/// `transport: stdio` and the stdio client's name; the bytes match the HTTP path. Unknown tool
+/// and bad arguments stay protocol errors; an engine refusal stays a tool error.
+#[tokio::test]
+async fn stdio_bridge_forwards_to_the_engine() {
+    let fake = Arc::new(Fake::default());
+    let dir = tempfile::tempdir().unwrap();
+    *fake.catalog.lock() = Some(catalog(&fake, dir.path(), "stdio").await);
+    let (a, b) = tokio::io::duplex(1 << 16);
+    let (server, client) = tokio::join!(
+        Bridge::new(fake.clone()).serve(tokio::io::split(a)),
+        Named.serve(tokio::io::split(b)),
+    );
+    let (server, client) = (server.unwrap(), client.unwrap());
+    assert_eq!(
+        client
+            .peer_info()
+            .unwrap()
+            .server_info
+            .as_ref()
+            .unwrap()
+            .name,
+        "theuth"
+    );
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 43);
+
+    let s = client
+        .call_tool(req("meeting_summary", json!({"id": "m1"})))
+        .await
+        .unwrap();
+    assert!(!text(&s).contains("hunter2-secret-value"), "{}", text(&s));
+    assert!(text(&s).starts_with("# Summary\nthe api key is "));
+    // The same call through the engine-side catalogue directly: identical bytes.
+    let direct: McpCallResult = fake
+        .catalog
+        .lock()
+        .clone()
+        .unwrap()
+        .call(
+            "meeting_summary",
+            json!({"id": "m1"}).as_object().unwrap().clone(),
+            "x",
+        )
+        .await
+        .unwrap();
+    assert_eq!(direct.text, text(&s));
+
+    let l = json(
+        &client
+            .call_tool(req("meeting_list", json!({"limit": 2})))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(l["items"].as_array().unwrap().len(), 2);
+
+    // Engine refusal → tool error; unknown tool / bad args → protocol error.
+    let r = client
+        .call_tool(req("task_get", json!({"id": "t1"})))
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true));
+    assert_eq!(text(&r), "no such method task_get");
+    assert!(client.call_tool(req("task_get", json!({}))).await.is_err());
+    assert!(client.call_tool(req("nope", json!({}))).await.is_err());
+
+    // Only `mcp_server_call` left the bridge; the real calls were made by the engine's catalogue.
+    let calls = fake.calls.lock().clone();
+    assert_eq!(calls.iter().filter(|c| c.0 == "mcp_server_call").count(), 5);
+    assert_eq!(calls[0].1[2], json!("test-client"));
+    // 5 through the bridge + the direct comparison call (client "x").
+    let audit = Audit::new(dir.path()).tail(10).unwrap();
+    assert_eq!(audit.len(), 6, "every call is audited: {audit:?}");
+    assert!(audit.iter().all(|l| l.transport == "stdio"));
+    assert_eq!(
+        audit.iter().filter(|l| l.client == "test-client").count(),
+        5
+    );
+    assert_eq!(audit[0].tool, "nope");
+    assert!(!audit[0].ok);
+    assert!(audit[5].ok);
+
+    client.cancel().await.unwrap();
+    server.waiting().await.unwrap();
 }

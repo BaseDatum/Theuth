@@ -25,7 +25,7 @@ pub mod catalog;
 pub mod http;
 
 pub use audit::Audit;
-pub use catalog::Catalog;
+pub use catalog::{Bridge, Catalog, McpCallResult};
 
 /// Config section `mcp_server` (158 §15.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -92,25 +92,34 @@ pub struct AuditLine {
     pub ms: u64,
 }
 
-/// How the catalogue reaches the engine (158 §12.3): one positional JSON-RPC call. `Err` is the
-/// text a tool returns as its error — the engine's error message, or `engine unreachable: …`.
+/// Why an engine call failed: the engine answered with an error (its message), or it could not
+/// be reached. The catalogue shows both as tool errors; the stdio bridge keeps them apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RpcError {
+    /// A JSON-RPC error object: the engine's message.
+    Call(String),
+    /// Transport failure.
+    Unreachable(String),
+}
+
+/// How the catalogue reaches the engine (158 §12.3): one positional JSON-RPC call.
 #[async_trait::async_trait]
 pub trait Rpc: Send + Sync + 'static {
     /// `method(params…)` on the engine; the result as JSON.
-    async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, String>;
+    async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, RpcError>;
 }
 
 /// Every jsonrpsee client is an [`Rpc`]: `rpc::client::Local` in the engine, `WsClient` in `t mcp`.
 #[async_trait::async_trait]
 impl<C: ClientT + Send + Sync + 'static> Rpc for C {
-    async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, String> {
+    async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
         let mut array = ArrayParams::new();
         for p in params {
-            array.insert(p).map_err(|e| e.to_string())?;
+            array.insert(p).map_err(|e| RpcError::Call(e.to_string()))?;
         }
         self.request(method, array).await.map_err(|e| match e {
-            ClientError::Call(e) => e.message().to_owned(),
-            e => format!("engine unreachable: {e}"),
+            ClientError::Call(e) => RpcError::Call(e.message().to_owned()),
+            e => RpcError::Unreachable(e.to_string()),
         })
     }
 }
@@ -173,19 +182,52 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     }) {
         return Ok(());
     }
-    let rpc = RPC
-        .get()
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("mcp server: no engine client installed (boot first)"))?;
     let token = token(rt, false).await?;
-    let vault = secrets::handle(rt).await;
-    let catalog = Catalog::new(rpc, "http", Audit::new(&rt.data_dir), vault);
+    let catalog = catalog(rt, "http").await?;
     let cancel = CancellationToken::new();
     let port = http::serve(cfg.port, token, catalog, cancel.clone()).await?;
     // Replace (and so cancel) whatever was running on another port.
     with_state(rt, |s| s.running = Some(Running { port, cancel }));
     tracing::info!(port, "mcp server listening");
     Ok(())
+}
+
+/// The catalogue for `transport`, over the engine client [`boot`] installed and the vault.
+async fn catalog(rt: &Runtime, transport: &'static str) -> anyhow::Result<Catalog> {
+    let rpc = RPC
+        .get()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("mcp server: no engine client installed (boot first)"))?;
+    let vault = secrets::handle(rt)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("secrets vault unavailable"))?;
+    Ok(Catalog::new(
+        rpc,
+        transport,
+        Audit::new(&rt.data_dir),
+        vault,
+    ))
+}
+
+/// `mcp_server_call(tool, args, client) -> McpCallResult` (158 §12.3): one catalogue call for the
+/// `t mcp` stdio bridge, run here with the vault's redaction and an audit line `transport: stdio`.
+/// `Err` = protocol error (unknown tool, bad arguments) or no engine client.
+pub async fn call(
+    rt: &Runtime,
+    tool: String,
+    args: Value,
+    client: String,
+) -> anyhow::Result<catalog::McpCallResult> {
+    let args = match args {
+        Value::Object(m) => m,
+        Value::Null => Default::default(),
+        _ => anyhow::bail!("args must be a JSON object"),
+    };
+    catalog(rt, "stdio")
+        .await?
+        .call(&tool, args, &client)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e.message))
 }
 
 /// Drop the listener and close sessions with `DELETE` semantics (rmcp ends every session when

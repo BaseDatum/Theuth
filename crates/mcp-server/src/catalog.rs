@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::audit::{Audit, args_sha256};
-use crate::{AuditLine, Rpc};
+use crate::{AuditLine, Rpc, RpcError};
 
 /// Default page size; `limit` is clamped to [`MAX_LIMIT`].
 pub const DEFAULT_LIMIT: u32 = 50;
@@ -33,14 +33,15 @@ Search first (`meeting_search`, `knowledge_search`, `brief_search`, `notebook_se
 (`meeting_summary` before `meeting_transcript`; `knowledge_get`, `doc_markdown`). Lists page: pass the \
 `next_cursor` you got back as `cursor`. Write tools change the user's data at once; there is no undo here.";
 
-/// The server: one engine client, one transport label, the audit file, the vault for redaction
-/// (`None` in `t mcp`, which has no vault handle).
+/// The server: one engine client, one transport label, the audit file, the vault for redaction.
+/// It runs only inside the engine (HTTP directly; stdio through `mcp_server_call`), so every result
+/// passes the same redaction and the same audit file.
 #[derive(Clone)]
 pub struct Catalog {
     rpc: Arc<dyn Rpc>,
     transport: &'static str,
     audit: Audit,
-    vault: Option<Arc<secrets::Vault>>,
+    vault: Arc<secrets::Vault>,
 }
 
 // ---- argument shapes -------------------------------------------------------------------------
@@ -614,7 +615,7 @@ impl Catalog {
         rpc: Arc<dyn Rpc>,
         transport: &'static str,
         audit: Audit,
-        vault: Option<Arc<secrets::Vault>>,
+        vault: Arc<secrets::Vault>,
     ) -> Self {
         Self {
             rpc,
@@ -624,8 +625,12 @@ impl Catalog {
         }
     }
 
+    /// An engine call; either failure is the tool's error text.
     async fn rpc(&self, method: &str, params: Vec<Value>) -> Result<Value, String> {
-        self.rpc.call(method, params).await
+        self.rpc.call(method, params).await.map_err(|e| match e {
+            RpcError::Call(m) => m,
+            RpcError::Unreachable(m) => format!("engine unreachable: {m}"),
+        })
     }
 
     /// Session ids with `retention == private` (158 §12.5).
@@ -1010,11 +1015,82 @@ impl From<String> for Error {
     }
 }
 
+/// What one call produced, after redaction: the tool's text and whether it is an error. This is
+/// the wire shape of `mcp_server_call` (158 §12.3): the stdio bridge turns it back into a
+/// `CallToolResult`, so stdio and HTTP return identical bytes.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct McpCallResult {
+    /// `CallToolResult.is_error`.
+    pub is_error: bool,
+    /// The one text content block.
+    pub text: String,
+}
+
+impl From<McpCallResult> for CallToolResult {
+    fn from(r: McpCallResult) -> Self {
+        let content = vec![ContentBlock::text(r.text)];
+        if r.is_error {
+            CallToolResult::error(content)
+        } else {
+            CallToolResult::success(content)
+        }
+    }
+}
+
+/// The `ServerInfo` both transports announce.
+pub fn server_info() -> ServerInfo {
+    ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        .with_server_info(Implementation::new("theuth", env!("CARGO_PKG_VERSION")))
+        .with_instructions(INSTRUCTIONS)
+}
+
+impl Catalog {
+    /// One tool call end to end: dispatch, redact, audit (`client` is the MCP `clientInfo.name`).
+    /// `Err` is a protocol error (unknown tool, bad arguments); a refused call is `is_error`.
+    pub async fn call(
+        &self,
+        name: &str,
+        arguments: serde_json::Map<String, Value>,
+        client: &str,
+    ) -> Result<McpCallResult, ErrorData> {
+        let req = CallToolRequestParams::new(name.to_owned()).with_arguments(arguments);
+        let started = Instant::now();
+        let r = self.dispatch(&req).await;
+        let line = AuditLine {
+            at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            transport: self.transport.to_owned(),
+            client: client.to_owned(),
+            tool: name.to_owned(),
+            args_sha256: args_sha256(&Value::Object(req.arguments.clone().unwrap_or_default())),
+            ok: r.is_ok(),
+            ms: started.elapsed().as_millis() as u64,
+        };
+        self.audit.append(&line);
+        match r {
+            Ok(Out::Json(mut v)) => {
+                self.vault.redact_value(&mut v);
+                Ok(McpCallResult {
+                    is_error: false,
+                    text: serde_json::to_string_pretty(&v).unwrap_or_default(),
+                })
+            }
+            Ok(Out::Text(s)) => Ok(McpCallResult {
+                is_error: false,
+                text: self.vault.redact(&s).into_owned(),
+            }),
+            Err(Error::Tool(text)) => Ok(McpCallResult {
+                is_error: true,
+                text,
+            }),
+            Err(Error::Protocol(e)) => Err(e),
+        }
+    }
+}
+
 impl ServerHandler for Catalog {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("theuth", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+        server_info()
     }
 
     async fn list_tools(
@@ -1030,37 +1106,66 @@ impl ServerHandler for Catalog {
         req: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let started = Instant::now();
-        let r = self.dispatch(&req).await;
-        let line = AuditLine {
-            at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            transport: self.transport.to_owned(),
-            client: context.client_info().map(|i| i.name).unwrap_or_default(),
-            tool: req.name.to_string(),
-            args_sha256: args_sha256(&Value::Object(req.arguments.clone().unwrap_or_default())),
-            ok: r.is_ok(),
-            ms: started.elapsed().as_millis() as u64,
-        };
-        self.audit.append(&line);
-        let result = match r {
-            Ok(Out::Json(mut v)) => {
-                if let Some(vault) = &self.vault {
-                    vault.redact_value(&mut v);
-                }
-                CallToolResult::success(vec![ContentBlock::text(
-                    serde_json::to_string_pretty(&v).unwrap_or_default(),
-                )])
-            }
-            Ok(Out::Text(s)) => {
-                let s = match &self.vault {
-                    Some(vault) => vault.redact(&s).into_owned(),
-                    None => s,
-                };
-                CallToolResult::success(vec![ContentBlock::text(s)])
-            }
-            Err(Error::Tool(text)) => CallToolResult::error(vec![ContentBlock::text(text)]),
-            Err(Error::Protocol(e)) => return Err(e),
-        };
-        Ok(result.into())
+        let client = context.client_info().map(|i| i.name).unwrap_or_default();
+        let r = self
+            .call(&req.name, req.arguments.unwrap_or_default(), &client)
+            .await?;
+        Ok(CallToolResult::from(r).into())
+    }
+}
+
+/// The stdio side of `t mcp` (158 §12.3): a transport only. `list_tools` is the static table;
+/// every `call_tool` is one `mcp_server_call` on the engine, which runs [`Catalog::call`] with
+/// the vault and the audit file — the stdio bridge never sees an unredacted byte.
+#[derive(Clone)]
+pub struct Bridge {
+    rpc: Arc<dyn Rpc>,
+}
+
+impl Bridge {
+    /// Over `rpc` (a `WsClient` to the engine).
+    pub fn new(rpc: Arc<dyn Rpc>) -> Self {
+        Self { rpc }
+    }
+}
+
+impl ServerHandler for Bridge {
+    fn get_info(&self) -> ServerInfo {
+        server_info()
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        Ok(ListToolsResult::with_all_items(tools()))
+    }
+
+    async fn call_tool(
+        &self,
+        req: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let client = context.client_info().map(|i| i.name).unwrap_or_default();
+        let v = self
+            .rpc
+            .call(
+                "mcp_server_call",
+                vec![
+                    json!(req.name),
+                    Value::Object(req.arguments.unwrap_or_default()),
+                    json!(client),
+                ],
+            )
+            .await
+            .map_err(|e| match e {
+                // The engine's protocol error (unknown tool, bad arguments), as the HTTP path reports it.
+                RpcError::Call(m) => ErrorData::invalid_params(m, None),
+                RpcError::Unreachable(m) => ErrorData::internal_error(m, None),
+            })?;
+        let r: McpCallResult = serde_json::from_value(v)
+            .map_err(|e| ErrorData::internal_error(format!("mcp_server_call reply: {e}"), None))?;
+        Ok(CallToolResult::from(r).into())
     }
 }

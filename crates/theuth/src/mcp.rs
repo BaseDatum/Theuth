@@ -167,7 +167,8 @@ impl ServerHandler for Shim {
 }
 
 /// Serve on stdio until the harness closes stdin or the engine drops: the
-/// child shim with `session`, the catalogue without.
+/// child shim with `session`; without, the catalogue bridge — every tool call
+/// is `mcp_server_call` on the engine, which redacts and audits (158 §12.5).
 pub async fn run(data_dir: &Path, listen: &str, session: Option<String>) -> anyhow::Result<()> {
     let client = crate::link_cli::connect(data_dir, listen)
         .await
@@ -176,12 +177,7 @@ pub async fn run(data_dir: &Path, listen: &str, session: Option<String>) -> anyh
     let watch = client.clone();
     match session {
         Some(session) => serve_until_gone(Shim { session, client }, watch).await,
-        None => {
-            // No vault handle outside the engine: results are the user's own RPC view.
-            let catalog =
-                mcp_server::Catalog::new(client, "stdio", mcp_server::Audit::new(data_dir), None);
-            serve_until_gone(catalog, watch).await
-        }
+        None => serve_until_gone(mcp_server::Bridge::new(client), watch).await,
     }
 }
 

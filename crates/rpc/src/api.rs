@@ -1947,6 +1947,16 @@ pub trait Api {
     /// 158 §12.5 (W5): the last `limit` audit lines, newest first.
     #[method(name = "mcp_server_audit")]
     async fn mcp_server_audit(&self, limit: u32) -> RpcResult<Vec<mcp_server::AuditLine>>;
+    /// 158 §12.3 (W5): one catalogue tool call for the `t mcp` stdio bridge, run in the engine
+    /// with the vault's redaction and an audit line `transport: stdio`; `client` is the MCP
+    /// `clientInfo.name`. Unknown tool / bad arguments → invalid params.
+    #[method(name = "mcp_server_call")]
+    async fn mcp_server_call(
+        &self,
+        tool: String,
+        args: serde_json::Value,
+        client: String,
+    ) -> RpcResult<mcp_server::McpCallResult>;
     /// `Review` → `Summarizing`: the guided summary turn; `Summarized{title}` and `State{Done}` follow.
     #[method(name = "meeting_summarize")]
     async fn meeting_summarize(&self, id: meeting::MeetingId) -> RpcResult<()>;
@@ -7606,6 +7616,23 @@ impl ApiServer for Server {
         mcp_server::audit_tail(&self.rt, limit)
             .await
             .map_err(stub_err)
+    }
+
+    async fn mcp_server_call(
+        &self,
+        tool: String,
+        args: serde_json::Value,
+        client: String,
+    ) -> RpcResult<mcp_server::McpCallResult> {
+        mcp_server::call(&self.rt, tool, args, client)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    jsonrpsee::types::error::INVALID_PARAMS_CODE,
+                    format!("{e:#}"),
+                    None::<()>,
+                )
+            })
     }
 
     async fn meeting_summarize(&self, id: meeting::MeetingId) -> RpcResult<()> {

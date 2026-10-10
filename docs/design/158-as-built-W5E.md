@@ -26,8 +26,12 @@ contract PIN 715e22d3.
 - `crates/mcp-server/src/audit.rs` — `<data_dir>/mcp/server-audit.jsonl`, `O_APPEND`, rotated to `.jsonl.1` past
   50 MB, `tail(limit)` newest first, `args_sha256` over key-sorted JSON.
 - `crates/theuth/src/mcp.rs` — `run(data_dir, listen, session: Option<String>)`: `--session` → the unchanged `Shim`;
-  none → `mcp_server::Catalog` over the same `WsClient` on `rmcp::transport::stdio()`, same audit file, transport
-  `stdio`. `crates/theuth/src/main.rs` — `Cmd::Mcp { session: Option<String> }`; the one boot hook after
+  none → `mcp_server::Bridge` over the same `WsClient` on `rmcp::transport::stdio()`: a transport only. `list_tools`
+  is the static table; each `call_tool` is one `mcp_server_call(tool, args, client)` RPC, which runs `Catalog::call`
+  inside the engine with the vault and the audit file (`transport: stdio`) — stdio and HTTP return identical bytes.
+- `crates/rpc/src/api.rs` — new `mcp_server_call(tool: String, args: Value, client: String) -> McpCallResult
+  { is_error, text }` beside the other `mcp_server_*` methods (protocol errors → INVALID_PARAMS); `export.rs` lists
+  `McpCallResult` for the TS bindings (regenerated in phase 2). `crates/theuth/src/main.rs` — `Cmd::Mcp { session: Option<String> }`; the one boot hook after
   `start_plugins`: `mcp_server::boot(&rt, Arc::new(rpc::client::Local::new(rt.clone()))).await`.
 - `crates/theuth/Cargo.toml` — `mcp-server` dependency.
 
@@ -53,8 +57,6 @@ Write (18, A2): `meeting_edit` (`meeting_edit`), `meeting_set_project`, `meeting
 - `meeting_set_project` / `meeting_set_event` / `meeting_set_template` / `calendar_source_*` / `calendar_events` are
   wired but their RPC bodies are W2–W4 stubs in this worktree (`158 Wn: not built yet`) — they return that text as
   the tool error until those waves land. `meeting_list(project)` is carried, not applied, until W3.
-- `t mcp` (stdio) has no vault handle, so results are not redacted there; it is the user's own RPC view over the
-  user's own token, the same trust boundary as `t` itself. Audit lines from it carry `transport: stdio`.
 - Bearer check and 404 are ours (rmcp's `auth` feature is OAuth, not a static token); Host/Origin are rmcp's.
 - `boot` logs a warning instead of failing the engine when the port is busy (a second engine on the same data dir);
   `set` surfaces the bind error to the UI.
@@ -66,7 +68,8 @@ Write (18, A2): `meeting_edit` (`meeting_edit`), `meeting_set_project`, `meeting
 - rmcp 3.2.0 `server` + `transport-streamable-http-server` (`StreamableHttpService`, `LocalSessionManager`, Host/Origin
   guard, SSE) — the protocol; nothing hand-rolled.
 - hyper 1 + hyper-util `TokioIo` for HTTP/1 on the raw listener (already in the graph via jsonrpsee); no axum/tower-http.
-- jsonrpsee `ClientT` as the `Rpc` seam (`rpc::client::Local`, `WsClient`) — rejected a hand-written `Methods` wrapper.
+- jsonrpsee `ClientT` as the `Rpc` seam (`rpc::client::Local`, `WsClient`; `RpcError::{Call, Unreachable}`) — rejected a
+  hand-written `Methods` wrapper.
 - sha2 (args hash), chrono (RFC 3339), uuid v4 (token, as `rpc/lib.rs:262`), parking_lot (state mutex), tokio-util
   (`CancellationToken`), http-body-util (`Full`/`BoxBody` for the 401/404 bodies). All workspace deps already.
 - New direct deps of `crates/mcp-server`: `hyper`, `hyper-util`, `http-body-util` at the lockfile's versions (no new
@@ -86,6 +89,16 @@ Write (18, A2): `meeting_edit` (`meeting_edit`), `meeting_set_project`, `meeting
 
 ## Gates (BUILD_LABEL=158w5e, CARGO_BUILD_JOBS=4)
 
+Phase 1 close (stdio through the engine):
+- `build-lock mbx test -p mcp-server -p theuth -p rpc --no-run` → ok; `mbx test -p mcp-server -p theuth -p rpc` → all
+  green (mcp-server 3 + 5 incl. `stdio_bridge_forwards_to_the_engine`: redaction on stdio, bytes identical to a direct
+  engine-side call, audit `transport: stdio`; rpc 56 + 1 + 1; t 3).
+- `build-lock mbx clippy -p mcp-server -p theuth -p rpc` → clean.
+- Live: scratch engine, `--secret-set smoke.key`, `task_create` with the secret in the title over `t mcp`; `task_list`
+  over stdio and over HTTP both return `token {{secret:smoke.key}} inside`; audit lines `transport: stdio`.
+
+Initial build:
+
 - `build-lock mbx test -p mcp-server -p theuth --no-run` → ok; `mbx test -p mcp-server -p theuth` → mcp-server lib 3
   passed, `tests/catalog.rs` 4 passed (snapshot 43 tools / 25 read-only; paging; Private filter + error mapping;
   Bearer 401 / Host 403 / Origin 403 / loopback-Origin 200 + rmcp `StreamableHttpClientTransport` round trip with
@@ -103,4 +116,3 @@ Write (18, A2): `meeting_edit` (`meeting_edit`), `meeting_set_project`, `meeting
 ## Open items
 
 - Live proof with Claude Code (§16 W5 row) needs Sky's engine + Settings copy block — orchestrator/UI wave.
-- `t mcp` without a vault: redaction only on the HTTP path (see Deviations).
