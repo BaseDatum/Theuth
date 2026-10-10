@@ -3978,6 +3978,8 @@ impl runtime::Plugin for MeetingPlugin {
         }
         let actor = Meeting::spawn_with_mailbox(meeting, runtime::subscriber_mailbox());
         actor.register(MEETING_ACTOR)?;
+        // 158 §7.3 (W2): ICS subscriptions poll from boot, not from the first calendar RPC.
+        calendar::ensure_poll(rt);
         // 02 §0.4: turn state and approvals of the meeting session.
         rt.subscribe::<Meeting, AgentEvent>(&actor).await;
         rt.subscribe::<Meeting, ApprovalRequested>(&actor).await;

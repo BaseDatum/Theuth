@@ -67,6 +67,10 @@ Ownership added by the orchestrator at 15:04: `crates/rpc/src/bridge.rs` (`Calen
 - `build-lock mbx clippy -p meeting` (and `--tests`) → clean after one `manual_pattern_char_comparison` fix.
 - After the contract merge + bridge change: `build-lock mbx test -p meeting -p rpc --no-run` → ok; `mbx test -p meeting -p rpc`
   → meeting 75 + 15 + 1 + 1, rpc 56 + 1 + 1 passed, 0 failed; `build-lock mbx clippy -p meeting -p rpc` → clean.
+- CLOSE W2 phase 1 (after `feat/158-contract` + `feat/158-w2m` merged, `ensure_poll` at boot): `build-lock mbx test -p meeting
+  -p rpc --no-run` → ok; `mbx test -p meeting -p rpc` → meeting 75 + 15 + 1 + 1, rpc 56 + 1 + 1 passed, 0 failed;
+  `build-lock mbx clippy -p meeting -p rpc` → clean; `build-lock bash crates/desktop/companion/test.sh` → 269 tests in
+  45 suites passed.
 
 ## Deviations
 
@@ -82,9 +86,8 @@ Ownership added by the orchestrator at 15:04: `crates/rpc/src/bridge.rs` (`Calen
 
 ## Hand-offs
 
-1. `crates/meeting/src/lib.rs` `MeetingPlugin::start`: add `calendar::ensure_poll(rt)` after the actor registers, so
-   ICS polling begins at boot. Until then it starts on the first calendar RPC (Settings › Calendar open, `calendar_events`,
-   a push, `meeting_detection_set_event`).
+1. ~~`calendar::ensure_poll(rt)` at plugin start~~ — done here (`lib.rs` `MeetingPlugin::start`, after `register`): ICS
+   polling starts at boot (CLOSE W2 phase 1 made these lines mine).
 2. ~~forward `CalendarEvent`~~ — done here: `rpc/src/bridge.rs` (`forward!` + `rt.subscribe`) and `rpc/src/client.rs`
    (in-process republish). Wire shape pinned by `calendar_event_wire_shape_matches_the_companion`:
    `{"type":"EventKit","enabled":bool}` / `{"type":"SourcesChanged"}`. `export.rs` already lists `CalendarEvent` (C158).
