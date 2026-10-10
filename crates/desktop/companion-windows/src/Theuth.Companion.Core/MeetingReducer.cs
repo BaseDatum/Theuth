@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace Theuth.Companion.Core;
 
 // Design 149 §5.1 / D11: the port of UI/store/meeting.ts:156-220 (the current meeting as the island sees it) with the brief
@@ -40,8 +42,42 @@ public sealed record MeetingProcess(uint Pid, string Name, string? BundleId = nu
     public string Display => Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? Name[..^4] : Name;
 }
 
-/// <summary><c>detect::Detection</c> (158 §4.5): the prompt. <c>event</c> / <c>project</c> / <c>brief</c> come with W2/W3.</summary>
-public sealed record MeetingDetection(MeetingProcess App, string AppId, string Since, IReadOnlyList<MeetingProcess> Also);
+/// <summary><c>calendar::EventRef</c> (158 §15.1), the fields the island shows; <see cref="Attendees"/> are the other people's names (<c>is_me</c> dropped).</summary>
+public sealed record MeetingEventRef(string Id, string Title, string Start, string End, IReadOnlyList<string> Attendees)
+{
+    public DateTimeOffset? StartAt => Parse(Start);
+
+    /// <summary>158 §5.2 (b): <c>&lt;Title&gt; · &lt;hh:mm&gt;–&lt;hh:mm&gt;</c> in local time; the title alone when the times do not parse.</summary>
+    public string Line => Parse(Start) is { } a && Parse(End) is { } b ? $"{Title} · {a.ToLocalTime():HH:mm}–{b.ToLocalTime():HH:mm}" : Title;
+
+    private static DateTimeOffset? Parse(string s) => DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var t) ? t : null;
+}
+
+/// <summary><c>detect::Detection</c> (158 §4.5): the prompt; <c>event</c> (W2) and <c>project</c> / <c>brief</c> (W3) are optional.</summary>
+public sealed record MeetingDetection(MeetingProcess App, string AppId, string Since, IReadOnlyList<MeetingProcess> Also,
+    MeetingEventRef? Event = null, string? Project = null, IReadOnlyList<string>? Brief = null);
+
+/// <summary>158 §5.2 (c) / §9.4: <c>MeetingEvent::Upcoming</c> — the matched event starts within 5 min; shown alone or above the detection prompt.</summary>
+public sealed record MeetingUpcoming(MeetingEventRef Event, string? Project, IReadOnlyList<string> Brief)
+{
+    /// <summary>§9.4: island (c) clears at <c>start + 5 min</c> (or when a meeting starts).</summary>
+    public static readonly TimeSpan ShowAfterStart = TimeSpan.FromMinutes(5);
+
+    /// <summary>The mock's first line: <c>In N min · &lt;Title&gt;</c>; <c>Now · &lt;Title&gt;</c> once the start has passed.</summary>
+    public string Headline(DateTimeOffset now)
+    {
+        if (Event.StartAt is not { } at) return Event.Title;
+        int min = (int)Math.Ceiling((at - now).TotalMinutes);
+        return min <= 0 ? $"Now · {Event.Title}" : $"In {min} min · {Event.Title}";
+    }
+
+    /// <summary>The mock's source line under the bullets; null without a project (§9.4: no project, no brief).</summary>
+    public string? SourceLine => Project is not { Length: > 0 } ? null
+        : Event.Attendees.Count > 0 ? $"From the last meetings in {Project} · attendees {string.Join(", ", Event.Attendees.Take(4))}"
+        : $"From the last meetings in {Project}";
+
+    public bool Expired(DateTimeOffset now) => Event.StartAt is { } at && now > at + ShowAfterStart;
+}
 
 /// <summary>158 §5.2 / §15.4 <c>MeetingSlice.prompt</c>: the island state that is not the meeting itself.</summary>
 public abstract record MeetingPrompt
@@ -102,6 +138,9 @@ public abstract record MeetingChange
     /// <summary>158 §4.4 rule 7: the detected app released the mic for <see cref="ReleasedForS"/> — "Stop recording?". Re-sent every 30 s.</summary>
     public sealed record AppReleased(string Meeting, MeetingProcess App, uint ReleasedForS) : MeetingChange;
 
+    /// <summary>158 §9.4 (W3): a matched-or-remembered event starts within 5 min — island state (c). Re-sent by the engine's one-minute tick.</summary>
+    public sealed record Upcoming(MeetingEventRef Event, string? Project, IReadOnlyList<string>? Bullets) : MeetingChange;
+
     /// <summary><c>TurnStarted</c> → "thinking…", <c>ToolCallStarted</c> → "‹name›…", <c>TurnFinished</c> → null; only for the meeting's session.</summary>
     public sealed record Activity(string Session, string? Text) : MeetingChange;
 }
@@ -161,6 +200,15 @@ public sealed record MeetingSnapshot
 
     /// <summary>158 §5: the detection or stop prompt; the island shows while one is set (<see cref="IslandModel.ShouldShow"/>).</summary>
     public MeetingPrompt? Prompt { get; init; }
+
+    /// <summary>158 §5.2 (c): the upcoming brief; independent of <see cref="Prompt"/> (both show when both apply).</summary>
+    public MeetingUpcoming? Upcoming { get; init; }
+
+    /// <summary>The event id the user dismissed (158 §5.2 c "Dismiss"): the engine re-sends <c>Upcoming</c> each minute, so the reducer ignores that one.</summary>
+    public string? UpcomingDismissed { get; init; }
+
+    /// <summary>158 §5.1: the island shows for a prompt or an upcoming brief (<see cref="IslandModel.ShouldShow"/>).</summary>
+    public bool Prompting => Prompt is not null || Upcoming is not null;
 
     /// <summary>The brief under the cursor.</summary>
     public MeetingBrief? Current => Cursor >= 0 && Cursor < Briefs.Count ? Briefs[Cursor] : null;
@@ -285,10 +333,20 @@ public static class MeetingReducer
                 return s.Prompt is MeetingPrompt.Detected pd && pd.Detection.AppId == dc.AppId ? s with { Prompt = null } : s;
             case MeetingChange.AppReleased ar:
                 return s.Meeting == ar.Meeting && Live(s.State) ? s with { Prompt = new MeetingPrompt.Stop(ar.Meeting, ar.App, ar.ReleasedForS) } : s;
+            case MeetingChange.Upcoming up:
+                return up.Event.Id == s.UpcomingDismissed ? s : s with { Upcoming = new MeetingUpcoming(up.Event, up.Project, up.Bullets ?? Array.Empty<string>()) };
             default:
                 return s;
         }
     }
+
+    /// <summary>158 §5.2 (c) Dismiss: the upcoming brief goes and its event is not shown again (the engine keeps re-sending it until <c>start + 5 min</c>).</summary>
+    public static MeetingSnapshot DismissUpcoming(MeetingSnapshot s) =>
+        s.Upcoming is { } u ? s with { Upcoming = null, UpcomingDismissed = u.Event.Id } : s;
+
+    /// <summary>§9.4: island (c) clears at <c>start + 5 min</c>; the controller's tick calls this.</summary>
+    public static MeetingSnapshot Expire(MeetingSnapshot s, DateTimeOffset now) =>
+        s.Upcoming is { } u && u.Expired(now) ? s with { Upcoming = null } : s;
 
     /// <summary>Step the cursor (+1 newer, −1 older); stepping up eats the badge one by one, down leaves it.</summary>
     public static MeetingSnapshot Move(MeetingSnapshot s, int delta)

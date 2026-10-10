@@ -14,8 +14,8 @@ public static class MeetingWire
     {
         "Started", "State", "TopicAdded", "TopicRemoved", "Brief", "Utterance", "Listening", "ApprovalWaiting",
         "PostProgress", "ReviewReady", "Summarized", "Deleted", "OracleDeciding", "OracleDecision", "Level",
-        // 158 §4.5 (W1): the prompt events; `Detected` / `DetectionCleared` carry no `meeting`.
-        "Detected", "DetectionCleared", "AppReleased",
+        // 158 §4.5 (W1): the prompt events; `Detected` / `DetectionCleared` carry no `meeting`. §9.4 (W3): `Upcoming` neither.
+        "Detected", "DetectionCleared", "AppReleased", "Upcoming",
     };
 
     public static readonly IReadOnlySet<string> ActivityTypes = new HashSet<string>(StringComparer.Ordinal)
@@ -63,6 +63,8 @@ public static class MeetingWire
             case "DetectionCleared": return new MeetingChange.DetectionCleared(Str(e, "app_id") ?? "", Str(e, "reason") ?? "");
             case "AppReleased":
                 return e.TryGetProperty("app", out var ap) && Process(ap) is { } app ? new MeetingChange.AppReleased(meeting, app, (uint)Long(e, "released_for_s")) : null;
+            case "Upcoming":
+                return e.TryGetProperty("event", out var ev) && EventRef(ev) is { } evr ? new MeetingChange.Upcoming(evr, Str(e, "project"), Strings(e, "brief")) : null;
             case "Listening": return new MeetingChange.Listening(meeting, Bool(e, "held"));
             case "ApprovalWaiting": return new MeetingChange.ApprovalWaiting(meeting, Bool(e, "waiting"));
             case "PostProgress": return new MeetingChange.PostProgress(meeting, Str(e, "stage") ?? "", (int)Long(e, "pct"));
@@ -146,14 +148,35 @@ public static class MeetingWire
     private static MeetingProcess? Process(JsonElement p) =>
         p.ValueKind == JsonValueKind.Object && Str(p, "name") is { } name ? new MeetingProcess((uint)Long(p, "pid"), name, Str(p, "bundle_id"), Bool(p, "active")) : null;
 
-    /// <summary><c>detect::Detection</c> (158 §15.1): <c>app</c> + <c>app_id</c> required; <c>also</c> defaults empty.</summary>
+    /// <summary><c>detect::Detection</c> (158 §15.1): <c>app</c> + <c>app_id</c> required; <c>also</c> / <c>event</c> / <c>project</c> / <c>brief</c> default empty.</summary>
     private static MeetingDetection? Detection(JsonElement d)
     {
         if (d.ValueKind != JsonValueKind.Object || !d.TryGetProperty("app", out var ap) || Process(ap) is not { } app || Str(d, "app_id") is not { } appId) return null;
         var also = new List<MeetingProcess>();
         if (d.TryGetProperty("also", out var al) && al.ValueKind == JsonValueKind.Array)
             foreach (var x in al.EnumerateArray()) if (Process(x) is { } p) also.Add(p);
-        return new MeetingDetection(app, appId, Str(d, "since") ?? "", also);
+        // `event` is an `EventMatch { event, score, alternatives }`; the island shows the best one.
+        var ev = d.TryGetProperty("event", out var em) && em.ValueKind == JsonValueKind.Object && em.TryGetProperty("event", out var e0) ? EventRef(e0) : null;
+        return new MeetingDetection(app, appId, Str(d, "since") ?? "", also, ev, Str(d, "project"), Strings(d, "brief"));
+    }
+
+    /// <summary><c>calendar::EventRef</c>: <c>id</c> + <c>title</c> required; attendees → the other people's names (<c>is_me</c> dropped).</summary>
+    private static MeetingEventRef? EventRef(JsonElement e)
+    {
+        if (e.ValueKind != JsonValueKind.Object || Str(e, "id") is not { } id || Str(e, "title") is not { } title) return null;
+        var names = new List<string>();
+        if (e.TryGetProperty("attendees", out var at) && at.ValueKind == JsonValueKind.Array)
+            foreach (var a in at.EnumerateArray()) if (!Bool(a, "is_me") && Str(a, "name") is { Length: > 0 } n) names.Add(n);
+        return new MeetingEventRef(id, title, Str(e, "start") ?? "", Str(e, "end") ?? "", names);
+    }
+
+    /// <summary>A string array field, or null when absent / null (<c>Option&lt;Vec&lt;String&gt;&gt;</c>).</summary>
+    private static IReadOnlyList<string>? Strings(JsonElement e, string key)
+    {
+        if (e.ValueKind != JsonValueKind.Object || !e.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.Array) return null;
+        var xs = new List<string>();
+        foreach (var x in v.EnumerateArray()) if (x.ValueKind == JsonValueKind.String) xs.Add(x.GetString() ?? "");
+        return xs;
     }
 
     private static string? Str(JsonElement e, string key) =>

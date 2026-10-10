@@ -150,6 +150,12 @@ public sealed class Models149Tests
         Assert.Equal("""[{"process":4242,"consent":true,"source":{"kind":"detected","app_id":"zoom.exe"}}]""",
             TheuthJson.EncodeParams(new StartMeeting { Process = 4242, Consent = true, Source = StartSource.Detected("zoom.exe") }));
         Assert.Equal("""{"kind":"calendar","event":"ics:u1:"}""", TheuthJson.Serialize(StartSource.Calendar("ics:u1:")));
+        // 158 W2/W3: `detection.event` is an EventMatch, `project` the remembered project; a nullable `brief` list.
+        var m = TheuthJson.Deserialize<MeetingStatus>("""{"state":"Idle","meeting":null,"session":null,"elapsed_ms":0,"degraded":[],"supported":{"kind":"Full"},"accelerator":"","detection":{"app":{"pid":1,"name":"Zoom.exe"},"app_id":"zoom.exe","since":"","also":[],"event":{"event":{"id":"ics:weekly:","uid":"weekly","title":"Weekly sync","start":"2026-10-10T10:04:00Z","end":"2026-10-10T10:34:00Z","attendees":[{"name":"Priya Shah","is_me":false}]},"score":0.9,"alternatives":[]},"project":"theuth","brief":["a"]}}""").Detection!;
+        Assert.Equal(("ics:weekly:", "Weekly sync", "Priya Shah", 0.9f, "theuth", "a"), (m.Event!.Event.Id, m.Event.Event.Title, m.Event.Event.Attendees[0].Name, m.Event.Score, m.Project, m.Brief![0]));
+        // 158 §5.2 (c): the upcoming brief's Start — no process, the calendar source, the event and the project.
+        Assert.Equal("""[{"title":"Weekly sync","consent":true,"source":{"kind":"calendar","event":"ics:weekly:"},"event":"ics:weekly:","project":"theuth"}]""",
+            TheuthJson.EncodeParams(new StartMeeting { Title = "Weekly sync", Consent = true, Source = StartSource.Calendar("ics:weekly:"), Event = "ics:weekly:", Project = "theuth" }));
     }
 }
 

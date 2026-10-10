@@ -58,6 +58,12 @@ internal abstract record IslandAction
 
     /// <summary>158 §5.2 (d): keep recording — the stop prompt goes (the engine re-asks in 30 s while the app stays off the mic).</summary>
     public sealed record KeepRecording : IslandAction;
+
+    /// <summary>158 §5.2 (c): Start from the upcoming brief → <c>meeting_start(title, consent: true, source: calendar, event, project)</c>.</summary>
+    public sealed record StartUpcoming(MeetingUpcoming Upcoming) : IslandAction;
+
+    /// <summary>158 §5.2 (c): Dismiss — the upcoming brief goes (local; the reducer ignores the engine's re-sends of that event).</summary>
+    public sealed record DismissUpcoming : IslandAction;
 }
 
 /// <summary>The voice mode / answer card the island shows while a point-and-say gesture is live (149 §3.7, D14).</summary>
@@ -398,7 +404,7 @@ internal sealed partial class IslandWindow : ToolWindow
             model.Mode, hiddenFromCapture, root.ActualTheme, oracleMode, verdictFresh, last?.BatchId, last?.Disposition, s.Deciding,
             s.Meeting, s.State, string.Join(',', s.Topics.Select(t => t.Id + "=" + t.Label)), string.Join(',', s.Tapped),
             s.Cursor, s.Briefs.Count, s.Current?.Id, s.Unseen, string.Join(',', s.Degraded), s.Listening, s.ApprovalWaiting, s.Activity,
-            s.Lines.Count > 0, s.Lines.Count > 0 && s.Lines[^1].Open, SpeakerWord(s), s.Prompt);
+            s.Lines.Count > 0, s.Lines.Count > 0 && s.Lines[^1].Open, SpeakerWord(s), s.Prompt, s.Upcoming, s.Upcoming?.Headline(DateTimeOffset.Now));
     }
 
     /// <summary>The meters (<c>MeetingEvent::Level</c>, ~6/s): the two bars resize in place, no re-render.</summary>
@@ -616,6 +622,7 @@ internal sealed partial class IslandWindow : ToolWindow
             // 158 §5.3: Esc on a detection prompt is "Not now" (the island's existing escape path).
             if (inBox) LeaveBox();
             else if (snapshot.Prompt is MeetingPrompt.Detected pd) { Log.Write("island: key Esc → not now"); act(new IslandAction.NotNow(pd.Detection.AppId)); HandBack(); }
+            else if (snapshot.Upcoming is not null) { Log.Write("island: key Esc → dismiss upcoming"); act(new IslandAction.DismissUpcoming()); HandBack(); }
             else { CollapseIsland("Esc"); HandBack(); }
             e.Handled = true;
             return;
@@ -628,6 +635,14 @@ internal sealed partial class IslandWindow : ToolWindow
                 case MeetingPrompt.Detected d: Log.Write("island: key Enter → start recording"); act(new IslandAction.StartRecording(d.Detection)); break;
                 case MeetingPrompt.Stop: Log.Write("island: key Enter → keep recording"); act(new IslandAction.KeepRecording()); break;
             }
+            e.Handled = true;
+            return;
+        }
+        if (key.KeyCode == VirtualKeys.Return && !inBox && snapshot.Upcoming is { } up)
+        {
+            // 158 §5.2 (c): ⏎ = Start recording from the upcoming brief (when no detection prompt took it above).
+            Log.Write("island: key Enter → start recording (upcoming)");
+            act(new IslandAction.StartUpcoming(up));
             e.Handled = true;
             return;
         }
@@ -924,20 +939,101 @@ internal sealed partial class IslandWindow : ToolWindow
         shell.CornerRadius = new CornerRadius(8);
         shell.Padding = new Thickness(10, 6, 10, 8);
         var s = snapshot;
-        // 158 §5.2: (a) the detection prompt stands alone before a meeting; (d) the stop prompt sits under the live strip and pane.
+        // 158 §5.2: (c) the upcoming brief stands alone or above (a)/(b); (a)/(b) the detection prompt stands alone before a meeting;
+        // (d) the stop prompt sits under the live strip and pane.
         if (s.Meeting is not null) RenderStrip();
+        if (s.Upcoming is { } up) RenderUpcoming(up, head: s.Meeting is null);
         switch (s.Prompt)
         {
-            case MeetingPrompt.Detected d: RenderDetected(d.Detection, head: s.Meeting is null); break;
+            case MeetingPrompt.Detected d: RenderDetected(d.Detection, head: s.Meeting is null && s.Upcoming is null); break;
             case MeetingPrompt.Stop st: RenderPane(s); RenderStopPrompt(st); break;
-            default: RenderPane(s); break;
+            default: if (s.Upcoming is null) RenderPane(s); break;
         }
     }
 
+    /// <summary>The prompt's head row: the grip and the eye when there is no strip above (<paramref name="head"/>), the title row between them.</summary>
+    private Grid PromptHead(StackPanel title, bool head)
+    {
+        if (head)
+        {
+            var grip = new Border { Width = GripWidth, Height = 20, Child = Theme.Icon(NativeLook.Glyph.GripperBarVertical, root.ActualTheme, NativeLook.TextTertiary, 12), VerticalAlignment = VerticalAlignment.Center };
+            ToolTipService.SetToolTip(grip, "Drag to move · double-click to snap back");
+            title.Children.Insert(0, grip);
+        }
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(title);
+        if (head)
+        {
+            var eye = IconBtn(EyeGlyph(hiddenFromCapture), EyeLabel(hiddenFromCapture) + " — Alt+Shift+E", () => act(new IslandAction.Eye()), "island-eye", tint: EyeTint(hiddenFromCapture));
+            Grid.SetColumn(eye, 1);
+            grid.Children.Add(eye);
+        }
+        return grid;
+    }
+
+    /// <summary>158 §5.2 (b)/(c): the project chip <c>⟨ project ⟩</c>. Not a button: the project list (§9) has no island surface on Windows.</summary>
+    private Border ProjectChip(string project, string id)
+    {
+        var chip = Badge(project, NativeLook.Accent);
+        AutomationProperties.SetAutomationId(chip, id);
+        AutomationProperties.SetName(chip, $"Project {project}");
+        return chip;
+    }
+
+    /// <summary>R3: the lawful sentence, verbatim, wrapped.</summary>
+    private TextBlock Lawful(string id)
+    {
+        var lawful = Text("By starting the recording you acknowledge the recording is lawful.", 11.5, NativeLook.TextTertiary);
+        lawful.TextWrapping = TextWrapping.Wrap;
+        lawful.TextTrimming = TextTrimming.None;
+        AutomationProperties.SetAutomationId(lawful, id);
+        return lawful;
+    }
+
     /// <summary>
-    /// 158 §5.2 (a): <c>&lt;App&gt; is using your microphone</c> · Start recording · Not now · Never for &lt;App&gt; · the lawful line verbatim (R3).
-    /// With no meeting the head row carries the grip and the eye (there is no strip). "Never for" is a button, not a ⋮ menu: a
-    /// <c>MenuFlyout</c> hosted in a tool window fail-fasts on build-B (<c>TrayMenu.cs</c>), and the mock draws three buttons.
+    /// 158 §5.2 (c): <c>In N min · &lt;Title&gt;</c> + the project chip · up to three brief bullets · the source line · Start recording · Dismiss ·
+    /// the lawful line. ⏎ = Start, ⎋ = Dismiss (when no detection prompt is up).
+    /// </summary>
+    private void RenderUpcoming(MeetingUpcoming u, bool head)
+    {
+        string headline = u.Headline(DateTimeOffset.Now);
+        var group = new StackPanel { Spacing = 6 };
+        AutomationProperties.SetAutomationId(group, "island-upcoming");
+        AutomationProperties.SetName(group, headline);
+        var title = Row(6);
+        title.Children.Add(Dot(NativeLook.Accent));
+        var line = Text(headline, 14, NativeLook.TextPrimary, FontWeights.SemiBold);
+        AutomationProperties.SetAutomationId(line, "island-upcoming-title");
+        title.Children.Add(line);
+        if (u.Project is { Length: > 0 } project) title.Children.Add(ProjectChip(project, "island-upcoming-project"));
+        group.Children.Add(PromptHead(title, head));
+        foreach (var bullet in u.Brief.Take(3)) group.Children.Add(Bullet(bullet));
+        if (u.SourceLine is { } src)
+        {
+            var t = Text(src, 11.5, NativeLook.TextTertiary);
+            t.TextWrapping = TextWrapping.Wrap;
+            t.TextTrimming = TextTrimming.None;
+            AutomationProperties.SetAutomationId(t, "island-upcoming-source");
+            group.Children.Add(t);
+        }
+        var buttons = Row(6);
+        var start = Btn("Start recording", "Start recording (Enter)", () => act(new IslandAction.StartUpcoming(u)), "island-upcoming-start");
+        start.Background = Theme.Brush(NativeLook.Accent, root.ActualTheme);
+        start.Content = OnAccentText("Start recording", 12.5, FontWeights.SemiBold);
+        buttons.Children.Add(start);
+        buttons.Children.Add(Btn("Dismiss", "Dismiss this brief (Esc)", () => act(new IslandAction.DismissUpcoming()), "island-upcoming-dismiss"));
+        group.Children.Add(buttons);
+        group.Children.Add(Lawful("island-upcoming-lawful"));
+        body.Children.Add(group);
+    }
+
+    /// <summary>
+    /// 158 §5.2 (a)/(b): <c>&lt;App&gt; is using your microphone</c> · (b) <c>&lt;Title&gt; · &lt;hh:mm&gt;–&lt;hh:mm&gt;</c> + the project chip · Start
+    /// recording · Not now · Never for &lt;App&gt; · the lawful line verbatim (R3). With no meeting the head row carries the grip and the
+    /// eye (there is no strip). "Never for" is a button, not a ⋮ menu: a <c>MenuFlyout</c> hosted in a tool window fail-fasts on build-B
+    /// (<c>TrayMenu.cs</c>), and the mock draws three buttons.
     /// </summary>
     private void RenderDetected(MeetingDetection d, bool head)
     {
@@ -946,28 +1042,24 @@ internal sealed partial class IslandWindow : ToolWindow
         AutomationProperties.SetAutomationId(group, "island-prompt");
         AutomationProperties.SetName(group, $"{app} is using your microphone");
         var title = Row(6);
-        if (head)
-        {
-            var grip = new Border { Width = GripWidth, Height = 20, Child = Theme.Icon(NativeLook.Glyph.GripperBarVertical, root.ActualTheme, NativeLook.TextTertiary, 12), VerticalAlignment = VerticalAlignment.Center };
-            ToolTipService.SetToolTip(grip, "Drag to move · double-click to snap back");
-            title.Children.Add(grip);
-        }
         title.Children.Add(Dot(NativeLook.Critical));
         var line = Text($"{app} is using your microphone", 14, NativeLook.TextPrimary, FontWeights.SemiBold);
         AutomationProperties.SetAutomationId(line, "island-prompt-title");
         title.Children.Add(line);
         if (d.Also.Count > 0) title.Children.Add(Text($"+{d.Also.Count} more", 12, NativeLook.TextTertiary));
-        var titleGrid = new Grid();
-        titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        titleGrid.Children.Add(title);
-        if (head)
+        group.Children.Add(PromptHead(title, head));
+        if (d.Event is not null || d.Project is { Length: > 0 })
         {
-            var eye = IconBtn(EyeGlyph(hiddenFromCapture), EyeLabel(hiddenFromCapture) + " — Alt+Shift+E", () => act(new IslandAction.Eye()), "island-eye", tint: EyeTint(hiddenFromCapture));
-            Grid.SetColumn(eye, 1);
-            titleGrid.Children.Add(eye);
+            var ev = Row(6);
+            if (d.Event is { } e)
+            {
+                var evt = Text(e.Line, 12.5, NativeLook.TextSecondary);
+                AutomationProperties.SetAutomationId(evt, "island-prompt-event");
+                ev.Children.Add(evt);
+            }
+            if (d.Project is { Length: > 0 } project) ev.Children.Add(ProjectChip(project, "island-prompt-project"));
+            group.Children.Add(ev);
         }
-        group.Children.Add(titleGrid);
         var buttons = Row(6);
         var start = Btn("Start recording", "Start recording (Enter)", () => act(new IslandAction.StartRecording(d)), "island-prompt-start");
         start.Background = Theme.Brush(NativeLook.Accent, root.ActualTheme);
@@ -976,11 +1068,7 @@ internal sealed partial class IslandWindow : ToolWindow
         buttons.Children.Add(Btn("Not now", "Not now — ask again in 10 minutes (Esc)", () => act(new IslandAction.NotNow(d.AppId)), "island-prompt-not-now"));
         buttons.Children.Add(Btn($"Never for {app}", $"Never ask for {app} again (N)", () => act(new IslandAction.NeverForApp(d.AppId)), "island-prompt-never"));
         group.Children.Add(buttons);
-        var lawful = Text("By starting the recording you acknowledge the recording is lawful.", 11.5, NativeLook.TextTertiary);
-        lawful.TextWrapping = TextWrapping.Wrap;
-        lawful.TextTrimming = TextTrimming.None;
-        AutomationProperties.SetAutomationId(lawful, "island-prompt-lawful");
-        group.Children.Add(lawful);
+        group.Children.Add(Lawful("island-prompt-lawful"));
         body.Children.Add(group);
     }
 
@@ -1089,23 +1177,7 @@ internal sealed partial class IslandWindow : ToolWindow
             head.Children.Add(Text($"{s.Cursor + 1}/{s.Briefs.Count}", 11.5, NativeLook.TextTertiary));
             if (s.Unseen > 0) head.Children.Add(Unseen(s.Unseen));
             pane.Children.Add(head);
-            foreach (var bullet in b.Bullets.Take(3))
-            {
-                // 149 NATIVE: a drawn 4 epx bullet before the text, not a "•" character.
-                var t = Text(bullet, 12.5, NativeLook.TextSecondary);
-                t.TextWrapping = TextWrapping.Wrap;
-                t.TextTrimming = TextTrimming.None;
-                var li = new Grid { ColumnSpacing = 6 };
-                li.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                li.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                var dotEl = Dot(NativeLook.TextSecondary, 4);
-                dotEl.VerticalAlignment = VerticalAlignment.Top;
-                dotEl.Margin = new Thickness(0, 7, 0, 0);
-                li.Children.Add(dotEl);
-                Grid.SetColumn(t, 1);
-                li.Children.Add(t);
-                pane.Children.Add(li);
-            }
+            foreach (var bullet in b.Bullets.Take(3)) pane.Children.Add(Bullet(bullet));
             var nav = Row(4);
             nav.Children.Add(Btn("deeper", "Go deeper on this brief (D)", () => act(new IslandAction.Deeper(b.Id)), "island-deeper"));
             if (s.Cursor > 0) nav.Children.Add(IconBtn(NativeLook.Glyph.ChevronLeft, "Older brief", () => act(new IslandAction.Move(-1)), "island-older", "older"));
@@ -1337,6 +1409,24 @@ internal sealed partial class IslandWindow : ToolWindow
         }
         Walk(body);
         return string.Join(" · ", parts);
+    }
+
+    /// <summary>One brief bullet (the pane and 158 (c)): a drawn 4 epx dot before wrapped text — 149 NATIVE, not a "•" character.</summary>
+    private Grid Bullet(string text)
+    {
+        var t = Text(text, 12.5, NativeLook.TextSecondary);
+        t.TextWrapping = TextWrapping.Wrap;
+        t.TextTrimming = TextTrimming.None;
+        var li = new Grid { ColumnSpacing = 6 };
+        li.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        li.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var dotEl = Dot(NativeLook.TextSecondary, 4);
+        dotEl.VerticalAlignment = VerticalAlignment.Top;
+        dotEl.Margin = new Thickness(0, 7, 0, 0);
+        li.Children.Add(dotEl);
+        Grid.SetColumn(t, 1);
+        li.Children.Add(t);
+        return li;
     }
 
     private Border Badge(string text, string key)
