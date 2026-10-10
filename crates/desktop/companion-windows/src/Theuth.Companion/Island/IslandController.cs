@@ -470,6 +470,34 @@ internal sealed class IslandController : IDisposable
         fixture = true;
         Apply(MeetingReducer.Reduce(MeetingSnapshot.Empty, new MeetingChange.Detected(new MeetingDetection(FixtureApp, "zoom.exe", DateTimeOffset.Now.ToString("O"), Array.Empty<MeetingProcess>())), DateTimeOffset.Now), null);
         Log.Write("island: fixture prompt applied (Zoom is using your microphone)");
+        // `--island-prompt-auto` (the build-B gate, no one at the desk): prompt → Start (⏎ path) → fixture meeting → AppReleased → Keep → Stop → Done,
+        // logging what the island renders at each state (`prompt158:` lines) and a PNG of each under %TEMP%.
+        if (!Environment.GetCommandLineArgs().Contains("--island-prompt-auto")) return;
+        var steps = new (int At, string Name, Action Do)[]
+        {
+            (2, "detected", () => { }),
+            (3, "start", () => Act(new IslandAction.StartRecording(((MeetingPrompt.Detected)snapshot.Prompt!).Detection))),
+            (13, "stop-prompt", () => { }),
+            (14, "keep", () => Act(new IslandAction.KeepRecording())),
+            (16, "after-keep", () => { }),
+            (17, "stop", () => Act(new IslandAction.Stop())),
+            (19, "done", () => { }),
+        };
+        foreach (var (at, name, action) in steps)
+        {
+            var t = dispatcher.CreateTimer();
+            t.Interval = TimeSpan.FromSeconds(at);
+            t.IsRepeating = false;
+            t.Tick += (_, _) =>
+            {
+                action();
+                var r = Window.ScreenRect;
+                Log.Write($"prompt158: {name} — shown={Window.IsShown} mode={model.Mode} state={snapshot.State} prompt={snapshot.Prompt?.GetType().Name ?? "-"} rect=({r.left},{r.top},{r.right - r.left}x{r.bottom - r.top}) text=“{Window.RenderedText()}”");
+                var png = Path.Combine(Path.GetTempPath(), $"158-prompt-{name}.png");
+                _ = Window.CapturePng(png).ContinueWith(x => Log.Write($"prompt158: {name} png {(x.Result ? png : "hidden")}"), TaskScheduler.Default);
+            };
+            t.Start();
+        }
     }
 
     /// <summary>The fixture's "Start recording": the fixture meeting, then <c>AppReleased</c> 8 s in so the stop prompt (158 §5.2 d) is proven too.</summary>

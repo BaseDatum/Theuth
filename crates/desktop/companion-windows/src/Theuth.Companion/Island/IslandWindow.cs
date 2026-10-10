@@ -1325,6 +1325,19 @@ internal sealed partial class IslandWindow : ToolWindow
         }
     }
 
+    /// <summary>158 W1W probe: every TextBlock in the rendered tree, in order, joined by " · " — the copy the island actually shows.</summary>
+    public string RenderedText()
+    {
+        var parts = new List<string>();
+        void Walk(DependencyObject d)
+        {
+            if (d is TextBlock t && t.Text.Length > 0) parts.Add(t.Text);
+            int n = VisualTreeHelper.GetChildrenCount(d);
+            for (int i = 0; i < n; i++) Walk(VisualTreeHelper.GetChild(d, i));
+        }
+        Walk(body);
+        return string.Join(" · ", parts);
+    }
 
     private Border Badge(string text, string key)
     {
