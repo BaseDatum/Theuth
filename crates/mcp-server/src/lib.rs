@@ -70,6 +70,10 @@ pub struct McpServerStatus {
     /// Vault row `mcp.server.token`; `None` until one is generated.
     #[serde(default)]
     pub token: Option<String>,
+    /// This engine's executable (`current_exe`), so the stdio block names the right `t` and not
+    /// whatever PATH finds; `None` when the OS cannot tell.
+    #[serde(default)]
+    pub binary: Option<String>,
 }
 
 /// One line of `<data_dir>/mcp/server-audit.jsonl` (158 §12.5, W-j): args are hashed, never kept.
@@ -250,6 +254,9 @@ pub async fn status(rt: &Runtime) -> anyhow::Result<McpServerStatus> {
         running,
         url: format!("http://127.0.0.1:{}/mcp", cfg.port),
         token,
+        binary: std::env::current_exe()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
     })
 }
 

@@ -11,7 +11,14 @@ import type { McpServerStatus } from '@/rpc/bindings/McpServerStatus'
 import { Mcp, ready } from './Mcp'
 
 const TOKEN = 'a'.repeat(64)
-const status: McpServerStatus = { enabled: true, port: 7788, running: true, url: 'http://127.0.0.1:7788/mcp', token: TOKEN }
+const status: McpServerStatus = {
+  enabled: true,
+  port: 7788,
+  running: true,
+  url: 'http://127.0.0.1:7788/mcp',
+  token: TOKEN,
+  binary: '/Applications/theuth.app/Contents/MacOS/t',
+}
 const audit: McpAuditLine[] = [
   { at: '2026-10-10T12:00:00Z', transport: 'http', client: 'claude-code', tool: 'meeting_list', args_sha256: 'ab'.repeat(32), ok: true, ms: 12n },
   { at: '2026-10-10T11:59:00Z', transport: 'stdio', client: 'codex', tool: 'knowledge_get', args_sha256: 'cd'.repeat(32), ok: false, ms: 3n },
@@ -49,10 +56,12 @@ test('Codex gets config.toml: [mcp_servers.theuth] with url and the Authorizatio
   expect(parse(text)).toEqual({ mcp_servers: { theuth: { url: 'http://127.0.0.1:7788/mcp', http_headers: { Authorization: `Bearer ${TOKEN}` } } } })
 })
 
-test('stdio copies the §12.6 command block with this engine data dir', () => {
+test('stdio copies the §12.6 command block with this engine binary and data dir', () => {
   expect(JSON.parse(mcpConfig('stdio', status, '/Users/x/.theuth'))).toEqual({
-    mcpServers: { theuth: { command: 't', args: ['--data-dir', '/Users/x/.theuth', 'mcp'] } },
+    mcpServers: { theuth: { command: '/Applications/theuth.app/Contents/MacOS/t', args: ['--data-dir', '/Users/x/.theuth', 'mcp'] } },
   })
+  // No binary reported → `t` from PATH.
+  expect(JSON.parse(mcpConfig('stdio', { ...status, binary: null }, '/d')).mcpServers.theuth.command).toBe('t')
 })
 
 test('toggle, port and rotate call the RPCs with the frozen shapes', async () => {

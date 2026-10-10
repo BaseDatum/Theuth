@@ -21,7 +21,7 @@ export const MCP_SHARED_LINE =
   'What is shared: meetings, notes, knowledge, notebooks, sessions, tasks, artifacts — read and write. Private sessions are never shared.'
 
 /** Text the Copy button puts on the clipboard for `client`. A missing token is written as `<token>` so the block stays valid. */
-export function mcpConfig(client: McpClient, status: Pick<McpServerStatus, 'url' | 'token'>, dataDir: string): string {
+export function mcpConfig(client: McpClient, status: Pick<McpServerStatus, 'url' | 'token' | 'binary'>, dataDir: string): string {
   const url = status.url
   const auth = `Bearer ${status.token ?? '<token>'}`
   switch (client) {
@@ -31,8 +31,8 @@ export function mcpConfig(client: McpClient, status: Pick<McpServerStatus, 'url'
     case 'codex':
       return toml({ mcp_servers: { theuth: { url, http_headers: { Authorization: auth } } } })
     case 'stdio':
-      // ponytail: the engine does not report its binary path; `t` on PATH, the user edits if not.
-      return JSON.stringify({ mcpServers: { theuth: { command: 't', args: ['--data-dir', dataDir, 'mcp'] } } }, null, 2)
+      // The engine's own executable (`current_exe`): PATH may hold an older `t`. `t` only when the OS could not tell.
+      return JSON.stringify({ mcpServers: { theuth: { command: status.binary ?? 't', args: ['--data-dir', dataDir, 'mcp'] } } }, null, 2)
   }
 }
 
