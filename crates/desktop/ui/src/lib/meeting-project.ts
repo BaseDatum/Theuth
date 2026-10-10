@@ -3,10 +3,10 @@
 // (`null` = the engine's remembered / `meeting.project` default), the meeting page changes it with
 // `meeting_set_project`, and the list filters with `meeting_list(limit, project)`.
 
-import type { QueryClient } from '@tanstack/react-query'
+import { type QueryClient, useQuery } from '@tanstack/react-query'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { useProjectStyles } from '@/lib/project-style'
-import { queryKeys } from '@/lib/rpc'
+import { queryKeys, useApi } from '@/lib/rpc'
 import type { Api } from '@/rpc/api'
 import type { Manifest } from '@/rpc/bindings/Manifest'
 import type { MeetingId } from '@/rpc/bindings/MeetingId'
@@ -25,9 +25,11 @@ export function newProjectName(typed: string, projects: readonly string[]): stri
   return name !== '' && !projects.some((p) => p.toLowerCase() === name.toLowerCase()) ? name : ''
 }
 
-/** The labels the meeting pickers list: the sessions' projects (51 §3) plus the styled ones. */
+/** The labels the meeting pickers list: the sessions' projects (51 §3), the styled ones and the meetings' own. */
 export function useProjectChoices(): string[] {
-  return projectChoices(useProjects(), Object.keys(useProjectStyles()))
+  const api = useApi()
+  const meetings = useQuery(meetingsQuery(api, null))
+  return projectChoices(useProjects(), Object.keys(useProjectStyles()), meetings.data?.map((m) => m.project) ?? [])
 }
 
 /**

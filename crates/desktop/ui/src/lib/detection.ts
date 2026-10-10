@@ -56,9 +56,3 @@ export function reduce(s: BannerState, e: BannerAction): BannerState {
       return s
   }
 }
-
-/** `10:00–10:30` in the local zone. */
-export function timeRange(start: string, end: string): string {
-  const fmt = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  return `${fmt(start)}–${fmt(end)}`
-}

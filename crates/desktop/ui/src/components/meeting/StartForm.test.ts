@@ -17,6 +17,7 @@ vi.mock('@/lib/rpc', async (original) => ({
     meeting_templates: async () => [{ slug: 'standup', name: 'Standup', description: '', sections: [], builtin: true }],
     list_sessions: async () => [],
     list_project_styles: async () => [],
+    meeting_list: async () => [],
   }),
 }))
 
