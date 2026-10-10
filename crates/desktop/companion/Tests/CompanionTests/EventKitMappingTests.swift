@@ -6,7 +6,7 @@ import TheuthKit
 
 /// 158 §7.2 proof: `EKEvent`-like fixtures map to the contract's `CalEvent` (join link, attendees, all-day, recurrence).
 struct EventKitMappingTests {
-    private let t0 = Date(timeIntervalSince1970: 1_791_453_600) // 2026-10-10T09:00:00Z
+    private let t0 = Date(timeIntervalSince1970: 1_791_622_800) // 2026-10-10T09:00:00Z
 
     private func fixture(_ notes: String? = nil, location: String? = nil, url: URL? = nil) -> EventFields {
         var f = EventFields(uid: "ABC-123", title: "Weekly sync", start: t0, end: t0.addingTimeInterval(1800))

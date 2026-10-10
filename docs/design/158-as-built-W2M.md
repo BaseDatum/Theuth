@@ -74,4 +74,7 @@ true`; the TCC prompt then names "Theuth Companion" and the result lands in `~/.
 
 ## Gates
 
-Filled in below from the runs (see the DONE message).
+- `BUILD_LABEL=158w2m ~/.theuth/bin/build-lock swift build` (in `crates/desktop/companion`) → `Build complete!`
+  (pre-existing `NSEvent`/`Sendable` warnings in `AskBarPanel.swift` only).
+- `BUILD_LABEL=158w2m ~/.theuth/bin/build-lock ./test.sh` → `Test run with 269 tests in 45 suites passed`
+  (8 new in `EventKitMappingTests`, all three test targets).
