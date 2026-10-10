@@ -81,8 +81,12 @@ pub fn spawn(cfg: &BrowserConfig) -> Handle {
     let proxy = cfg.proxy.clone();
     let user_agent = cfg.user_agent.clone();
     let stealth = cfg.stealth;
+    // obscura_render::dom::build recurses per DOM nesting level with large
+    // frames; a 12-deep page overflowed the 2 MiB default (release build).
+    // Virtual reservation only, so size for the deepest page we expect.
     let spawned = std::thread::Builder::new()
         .name("browser".to_owned())
+        .stack_size(64 << 20)
         .spawn(move || {
             let _exit = guard;
             run(rx, proxy, user_agent, stealth);
