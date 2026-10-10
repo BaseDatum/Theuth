@@ -1,6 +1,6 @@
 # 158 as-built — W1E (engine: meeting detection, defaults, finalise-on-start)
 
-Branch `feat/158-w1e`, cut from the C158 PIN 715e22d3 (pre-gate; built on the PIN, no contract merge yet).
+Branch `feat/158-w1e`, cut from the C158 PIN 715e22d3; `feat/158-contract` ccc48db5 merged at 11a1f2ca (main not merged).
 Design: `docs/design/158-meetings-around.md` §4, §5.4, §6, D13, §15, A2.
 
 ## Built
@@ -79,8 +79,15 @@ Design: `docs/design/158-meetings-around.md` §4, §5.4, §6, D13, §15, A2.
   would delete ~120 lines — closer or a later wave.
 - Windows: a mic-only process is absent from `processes()` (render sessions), so `StartMeeting{process}` falls back to
   the prompt's `ProcessInfo`; `capture::system::spawn(pid)` still taps that pid's loopback as before.
-- `Theuth.Companion.exe` / `theuth-desktop.exe` in `DEFAULT_IGNORE` match the sensor's `<stem>.exe` lowercase id
-  case-insensitively; no change needed, noted for W1W.
+- C158 hand-off done — `DEFAULT_IGNORE` verified per OS (compared case-insensitively with `rules::app_id`):
+  theuth: `io.theuth.mac.companion` (`scripts/bundle-companion.sh:12`), `io.theuth.mac` (`tauri.conf.json:6`),
+  `Theuth.Companion.exe` (`Theuth.Companion.csproj` `AssemblyName`), `theuth-desktop.exe` / `theuth-desktop`
+  (`tauri.conf.json` `mainBinaryName`; Linux `application.name` [INFERENCE]). macOS bundle ids checked against
+  vendor MDM docs / app catalogs (Wispr Flow MDM page lists `com.electron.wispr-flow`, `com.superwhisper.macOS`,
+  `com.goodsnooze.MacWhisper`; Screen Studio / VoiceInk / Cap from their catalogs and docs); `com.apple.CoreSpeech`
+  seen live in this Mac's process list. Windows added: `Wispr Flow.exe`, `Wispr Flow Helper.exe` (Wispr support
+  docs), `Cap.exe` (Cap docs / issue 2019). Linux added: `OBS Studio` [INFERENCE: OBS's PipeWire client name].
+  Windows-only dictation (Voice Access, voice typing) is not addable by image name — they run inside system hosts.
 
 ## Libraries
 

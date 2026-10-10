@@ -43,24 +43,36 @@ impl Default for DetectConfig {
 }
 
 /// §4.3's deny-list: theuth's own processes, dictation apps, screen recorders, voice assistants.
-/// W1 completes the identifiers it verifies per OS; the engine's own pid is skipped by the sensor.
+/// Matched case-insensitively against [`rules::app_id`]: macOS bundle ids
+/// (`bundle-companion.sh`, `tauri.conf.json`, vendor MDM docs / app catalogs), Windows `<stem>.exe`
+/// (`AssemblyName`, `mainBinaryName`, vendor docs), Linux `application.name`. The engine's own pid
+/// is skipped by the sensor.
 pub const DEFAULT_IGNORE: &[&str] = &[
+    // theuth itself (§18 contradiction 2: all three processes)
     "io.theuth.mac.companion",
     "io.theuth.mac",
     "Theuth.Companion.exe",
     "theuth-desktop.exe",
+    "theuth-desktop",
+    // voice assistants
     "com.apple.CoreSpeech",
     "com.apple.Siri",
+    // dictation apps
     "com.apple.VoiceMemos",
     "com.electron.wispr-flow",
+    "Wispr Flow.exe",
+    "Wispr Flow Helper.exe",
     "com.superwhisper.macOS",
     "com.prakashjoshipax.VoiceInk",
     "com.goodsnooze.MacWhisper",
+    // screen recorders
     "com.obsproject.obs-studio",
     "obs64.exe",
+    "OBS Studio",
     "com.loom.desktop",
     "Loom.exe",
     "so.cap.desktop",
+    "Cap.exe",
     "com.timpler.screenstudio",
     "pl.maketheweb.cleanshotx",
     "com.wulkano.kap",
