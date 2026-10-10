@@ -176,3 +176,43 @@ Desk sends reach build-B's theuth desk, whose model does not resolve, so nothing
 **Settings on this engine:** `voice_settings` answers -32601 (no F1), so the page shows the fallback, the same as `153-w153b-9-settings-f1-fallback.png` from 23:17. Reading the values back from F1 waits for the final package.
 
 **Restored** after the round: the installed companion is running (`--background`), the Run key is present, `companion.json` has `launch_at_login: true`, and the desk is released at 23:56:42.
+
+## R2 — the 153-F2 tail-drop fix on the installed engine, and the F1 readback on the installed companion
+
+**Setup:**
+- build-B installed engine 2.14.0+f1a7809c: 153-F2 (main 1480afdd) plus F1, the Windows twin and the quit fix.
+- Desk lock W153B 02:13:58–02:21:10; the probe was the Debug companion at a5d9f036 (main plus v2.15.0).
+- Synthesized speech went through `dictation_start/audio/stop` inside a voice press, with **0 s of silence before the release** on every row.
+- Log: `live-round-r2-log.txt`.
+
+| Row | Phrase | Engine finals | Command | Companion | `stop_to_final_ms` (engine) · stop → Finished (companion) |
+|---|---|---|---|---|---|
+| A | "Ship it tonight. Send it." | `Ship it tonight` + `Send it` (shaped "") | send | `sent without the hold` → desk 27 ms later | not captured · 4.59 s |
+| B | "Please restart the zorblax service." ×2, corrected to Zorblax | `Please restart the Zorblack service` ×2 | — | correction sent at each send; card shown (occurrences 3), auto-dismissed | 1605 / 1586 ms · 2.09 / 2.51 s |
+| C | "Ship it tonight. Send it." | `Ship it tonight` + `Send it` | send | `sent without the hold` | 3246 ms · 3.48 s |
+| D | "Ship it tonight, send it." | `Ship it tonight` + `Send it` | send | `sent without the hold` | 2438 ms · 3.11 s |
+| E | "Ship it tonight, send it." | `Ship it tonight` + `Send it` | send | `sent without the hold` | not captured · 3.40 s |
+
+**Where the timings come from:**
+- Engine numbers are `dictation_status().last`, which the probe reads 3–4 s after the release.
+- For rows C–E that read came a few hundred ms before the dictation's own `DictationFinished`. Each read therefore returned the previous dictation's numbers, and they are attributed to it.
+- The companion column runs from the `dictation_stop` reply to `DictationFinished`.
+
+**F2 works.** In R1, "Send it" was lost with a 0 s tail; now it arrives on all four send-it rows, with `command:send`, and the field is sent without the hold.
+
+**The drain takes time on build-B.**
+- The final "Send it" lands 2.4–3.2 s after the stop by the engine's own measure (3.1–4.6 s seen by the companion). The model works through the queued audio slower than real time.
+- The 3 s hold is skipped, but the user still waits about as long before the send.
+- The learn rows, whose words come earlier, drain in about 1.6 s.
+
+**F1 readback on the installed companion** (`start-installed-args --settings dictation --shareable --dictation-shot`; PNG `153-w153b-10-settings-f1-readback-installed.png`):
+- `settings: voice_settings ok — shape companion=full composer=full tui=full phone=full any_app=full; send=[send it] scratch=[scratch that] literal=literal; input_devices=[]; polish_model=chain; history enabled=True rows=200 audio_mib=64 learn=True; standby=8s duck=off`.
+- The page shows the caption "Shown: the engine's presets, shared with the desktop, the terminal UI and the phone.", the engine's phrases, "Polish model: Chain (title model, then session)", and the history caption "the last 200 dictations and up to 64 MiB … Corrections are learned."
+- There is no "older engine" caption.
+- The page first rendered twice before the engine connection opened. Those two reads logged `voice_settings failed (rpc -32300: not connected)`, and the third render, after the connection opened, read OK.
+
+**Restored:** the installed companion was started again, the Run key reads `--background`, `companion.json` has `launch_at_login: true`, and the desk was released at 02:21:10.
+
+**Probe additions:**
+- The ask-live round now logs `ask-live … timings: … stop_to_final_ms=…` after each round.
+- `w6-gate.ps1 start-installed-args <flags>` starts the installed exe with flags.
