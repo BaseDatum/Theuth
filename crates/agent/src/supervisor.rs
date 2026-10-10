@@ -65,8 +65,8 @@ use crate::lifecycle::{
 use crate::loop_::{
     CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextBreakdownNow,
     ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
-    QueuedInputs, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn, Session, SessionState,
-    SetBudgetNow, SetCompactionOverride, SetMemoryNow, SetPendingEffort, SetTitlePin,
+    QueuedInputs, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn, ResumedTurn, Session,
+    SessionState, SetBudgetNow, SetCompactionOverride, SetMemoryNow, SetPendingEffort, SetTitlePin,
     SetToolsetOverride, SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput,
     WithdrawInput, prompt_blocks, text_of,
 };
@@ -397,6 +397,16 @@ impl LiveActor {
         match self {
             Self::Native(a) => a.ask(IsRunning).await.unwrap_or(false),
             Self::Acp(a) => a.ask(IsRunning).await.unwrap_or(false),
+        }
+    }
+
+    /// The open turn the actor relaunched through `Resume`, while it runs;
+    /// `None` for an ordinary turn. An ACP child's prompts are never
+    /// relaunched this way (146 D9: a respawn re-prompts).
+    async fn resumed_turn(&self) -> Option<TurnId> {
+        match self {
+            Self::Native(a) => a.ask(ResumedTurn).await.unwrap_or_default(),
+            Self::Acp(_) => None,
         }
     }
 
@@ -7019,15 +7029,16 @@ impl Message<LoadSession> for Agents {
             },
             None => (store.context_history(m.session).await, None),
         };
-        let (running, queued) = match &live {
+        let (running, resumed, queued) = match &live {
             Some(actor) => (
                 actor.is_running().await,
+                actor.resumed_turn().await,
                 match actor.native() {
                     Ok(a) => a.ask(QueuedInputs).await.unwrap_or_default(),
                     Err(_) => Vec::new(),
                 },
             ),
-            None => (false, Vec::new()),
+            None => (false, None, Vec::new()),
         };
         // ponytail: every row is read and rendered per page; a seq-ranged
         // query is the upgrade if a measured session makes this slow.
@@ -7204,8 +7215,10 @@ impl Message<LoadSession> for Agents {
             .ok();
         self.mirror(m.session).await;
         let communication = self.communication.0.read().state(Some(m.session)).ok();
-        // 109 W5 §10.3: the open turn's state and its partial, after everything stored.
-        let (resume, partial) = self.resume_state(m.session, running).await;
+        // 109 W5 §10.3: the open turn's state and its partial, after everything
+        // stored. `resumed` tells a relaunched open turn from one that is
+        // simply running (no banner for the latter).
+        let (resume, partial) = self.resume_state(m.session, running, resumed).await;
         let mut history = history;
         history.extend(partial);
         Loaded {

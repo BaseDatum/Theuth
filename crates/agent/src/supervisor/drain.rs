@@ -234,14 +234,18 @@ impl Agents {
     /// §10.3: `Loaded.resume` and the `HistoryEntry::Interrupted` partial
     /// of `session`'s open turn; `(None, None)` when no turn is open and the
     /// newest turn was never resumed. `running` = the live actor's
-    /// `IsRunning` (the same answer `Drain` uses): an open turn on a running
-    /// session is the relaunched one. With no open turn, the newest turn's
-    /// `resume_reports` row (§8.2) keeps the banner's counts until the next
-    /// turn starts.
+    /// `IsRunning` (the same answer `Drain` uses); `resumed` = the turn it
+    /// relaunched through `Resume`, if any. An open turn is reported while
+    /// nothing runs it here (waiting / suspended) or while it runs as the
+    /// relaunched one; an ordinary turn that is simply in flight is neither
+    /// a banner nor an interrupted partial. With no open turn, the newest
+    /// turn's `resume_reports` row (§8.2) keeps the banner's counts until
+    /// the next turn starts.
     pub(super) async fn resume_state(
         &self,
         session: SessionId,
         running: bool,
+        resumed: Option<TurnId>,
     ) -> (Option<ResumeState>, Option<HistoryEntry>) {
         // 139 §5.1 item 12 / §5.2: a display read, any owner — the row says
         // who runs the turn; `resumed` (this engine's flag) matters only when
@@ -283,6 +287,9 @@ impl Agents {
                 }
             };
         };
+        if running && resumed != Some(turn) {
+            return (None, None);
+        }
         let report = match self.store.resume_report(session, turn).await {
             Ok(row) => row.map(|r| r.report),
             Err(e) => {
@@ -388,10 +395,10 @@ mod tests {
         let sink = Sink::spawn_with_mailbox(Sink(tx), runtime::subscriber_mailbox());
         rt.subscribe::<Sink, AgentEvent>(&sink).await;
         let (sid, turn) = own_turn(&b).await;
-        let (state, _) = b.resume_state(foreign, false).await;
+        let (state, _) = b.resume_state(foreign, false, None).await;
         let state = state.unwrap();
         assert_eq!((state.owner.as_deref(), state.here), (Some("a"), false));
-        let (state, _) = b.resume_state(sid, false).await;
+        let (state, _) = b.resume_state(sid, false, None).await;
         let state = state.unwrap();
         assert_eq!((state.owner.as_deref(), state.here), (Some("b"), true));
         let agents = Agents::spawn(b);
@@ -448,9 +455,9 @@ mod tests {
         assert_eq!(again, DrainReport::default());
     }
 
-    /// `Loaded.resume` copies the caller's `running`: the same open turn
-    /// reads `resumed: false` while ask mode waits and `true` once relaunched;
-    /// no open turn → `None` either way. Once the resume settled, its
+    /// `Loaded.resume` for the same open turn: `resumed: false` while ask
+    /// mode waits (not running) and `true` once the actor relaunched that
+    /// turn; no open turn → `None` either way. Once the resume settled, its
     /// `resume_reports` row rides along — while the turn is open and, after
     /// it finished, as the newest turn's state — until a newer turn starts.
     #[tokio::test]
@@ -461,7 +468,7 @@ mod tests {
             .create_session(sid, "m", None, None, None)
             .await
             .unwrap();
-        assert!(a.resume_state(sid, true).await.0.is_none());
+        assert!(a.resume_state(sid, true, None).await.0.is_none());
         a.store
             .step(
                 sid,
@@ -472,9 +479,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let waiting = a.resume_state(sid, false).await.0.unwrap();
+        let waiting = a.resume_state(sid, false, None).await.0.unwrap();
         assert!(waiting.turn == turn && !waiting.resumed);
-        let relaunched = a.resume_state(sid, true).await.0.unwrap();
+        let relaunched = a.resume_state(sid, true, Some(turn)).await.0.unwrap();
         assert_eq!(
             relaunched,
             ResumeState {
@@ -498,7 +505,7 @@ mod tests {
             },
         };
         a.store.resume_report_put(&row).await.unwrap();
-        let settled = a.resume_state(sid, true).await.0.unwrap();
+        let settled = a.resume_state(sid, true, Some(turn)).await.0.unwrap();
         assert_eq!(
             settled,
             ResumeState {
@@ -508,7 +515,7 @@ mod tests {
         );
         // …and, once the turn finished, as the newest turn's state (not running).
         a.store.finish_turn(sid, turn, "end_turn").await.unwrap();
-        let (finished, partial) = a.resume_state(sid, false).await;
+        let (finished, partial) = a.resume_state(sid, false, None).await;
         assert!(partial.is_none());
         assert_eq!(
             finished.unwrap(),
@@ -518,18 +525,75 @@ mod tests {
                 ..relaunched
             }
         );
-        // A newer turn clears it.
+        // A newer, ordinary turn clears it: nothing while it runs, the plain
+        // waiting state (no report) once it does not.
+        let next = TurnId::new();
         a.store
             .step(
                 sid,
-                TurnId::new(),
+                next,
                 StepKind::InputAccepted,
                 None,
                 &serde_json::json!({}),
             )
             .await
             .unwrap();
-        let next = a.resume_state(sid, true).await.0.unwrap();
-        assert!(next.turn != turn && next.report.is_none());
+        assert!(a.resume_state(sid, true, None).await.0.is_none());
+        let waiting = a.resume_state(sid, false, None).await.0.unwrap();
+        assert!(waiting.turn == next && !waiting.resumed && waiting.report.is_none());
+    }
+
+    /// An ordinary turn in flight (`input_accepted`, `model_call`, a partial
+    /// row), actor running, never relaunched → no banner, no interrupted
+    /// partial: a load of a session that is simply working is not a restart.
+    #[tokio::test]
+    async fn resume_state_ignores_an_ordinary_running_turn() {
+        let (_scratch, a) = agents_with(false).await;
+        let (sid, turn) = (SessionId::new(), TurnId::new());
+        a.store
+            .create_session(sid, "m", None, None, None)
+            .await
+            .unwrap();
+        a.store
+            .step(
+                sid,
+                turn,
+                StepKind::InputAccepted,
+                None,
+                &serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        a.store
+            .step(
+                sid,
+                turn,
+                StepKind::ModelCall,
+                Some("mc1"),
+                &serde_json::json!({"request_id": "r1", "attempt": 1}),
+            )
+            .await
+            .unwrap();
+        a.store
+            .partial_upsert(
+                sid,
+                turn,
+                "mc1",
+                &genai::chat::MessageContent::from_text("half"),
+                None,
+            )
+            .await
+            .unwrap();
+        // Not running here (a crash): banner + the greyed partial, as before.
+        let (state, partial) = a.resume_state(sid, false, None).await;
+        assert!(state.is_some_and(|s| s.turn == turn && !s.resumed));
+        assert!(
+            matches!(partial, Some(HistoryEntry::Interrupted { ref text, .. }) if text == "half"),
+            "{partial:?}"
+        );
+        // Running as an ordinary turn: nothing.
+        let (state, partial) = a.resume_state(sid, true, None).await;
+        assert!(state.is_none(), "no banner: {state:?}");
+        assert!(partial.is_none(), "no interrupted partial: {partial:?}");
     }
 }
