@@ -41,7 +41,10 @@ Branch `feat/158-w1w` from the C158 PIN 715e22d3. Scope: `crates/desktop/compani
   else (§5.4); Not now / Never → `meeting_detection_dismiss(app_id, false|true)` with the prompt cleared at once (the engine's
   `DetectionCleared` then finds nothing); Keep → clears the stop prompt locally (the engine re-sends `AppReleased` every
   30 s). Hydration maps `MeetingStatus.Detection`. `--island-prompt` fixture: the Zoom prompt; Start runs the existing fixture
-  meeting and raises `AppReleased(30 s)` 8 s in, so both states are provable on build-B without audio.
+  meeting and raises `AppReleased(30 s)` 8 s in; `--island-prompt-auto` drives prompt → Start → stop prompt → Keep → Stop → Done
+  unattended, logging `prompt158:` lines (shown, mode, state, prompt, rect, the rendered TextBlocks via `IslandWindow.RenderedText`)
+  and a PNG per state under `%TEMP%\158-prompt-*.png`. Fixture timers are kept in a field: an unreferenced `DispatcherQueueTimer`
+  never fired (first probe run).
 - `Settings/SettingsWindow.WW3.cs:31`: caption no longer says "for 10 minutes after the last topic or brief" (§18 c6).
 
 ## Tests
@@ -71,5 +74,13 @@ Branch `feat/158-w1w` from the C158 PIN 715e22d3. Scope: `crates/desktop/compani
 
 ## Gates
 - `./test.sh` (portable slnf, local .NET 10): Core 496/496, Rpc 114/114 passed.
-- build-B `POST /build` action `build`, slot `158-w1w`, `Theuth.Companion.slnx`, Debug: job `20261010T134431-300` — see DONE.
-- build-B `POST /build` action `test`: see DONE.
+- build-B `POST /build` `build`, slot `158-w1w`, `Theuth.Companion.slnx`, Debug: `20261010T134431-300` (dd5fe753), `20261010T134839-302`,
+  `20261010T135241-311`, `20261010T135439-317` (59fd937a) — 0 warnings, 0 errors, WinUI app included.
+- build-B `POST /build` `test`: `20261010T134656-301` (dd5fe753) and `20261010T135618-323` (59fd937a) — Core 496/496, Rpc 114/114.
+- build-B visible run under the desk lock (owner W1W; the installed companion quit via the gate's `quit-installed` and restarted
+  with `start-installed`, pid 6300): `w6-gate.ps1 launch --island-prompt --island-prompt-auto --shareable` (jobs …-306/-307 first
+  run, …-31x/-32x final). Log, pid 10948: `detected — shown=True mode=Open state=Idle prompt=Detected rect=(685,8,550x116)
+  text="… Zoom is using your microphone · Start recording · Not now · Never for Zoom · By starting the recording you acknowledge
+  the recording is lawful."`; `island shown: … exstyle=0x08000188 [TOPMOST|TOOLWINDOW|NOACTIVATE]`; after Start: `state=Recording
+  prompt=-`; `stop-prompt — prompt=Stop rect=(…550x368) tail="… Zoom stopped using your microphone 30 s ago · Stop recording? ·
+  Stop · Keep recording"`; `keep — prompt=- rect=(…550x305)`; `done — shown=False mode=Closed state=Done` (no linger).
