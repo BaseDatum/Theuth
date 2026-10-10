@@ -18,39 +18,39 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { type Target, calendarKeys, candidateWindow, choices, eventLine, setEvent } from '@/lib/calendar'
+import { calendarKeys, candidateWindow, choices, eventLine, setEvent } from '@/lib/calendar'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { Detection } from '@/rpc/bindings/Detection'
-import type { EventRef } from '@/rpc/bindings/EventRef'
 import type { MeetingId } from '@/rpc/bindings/MeetingId'
 
 export const ASK = 'Which meeting is this?'
 
-export type EventSwitcherProps =
-  /** Before start: the current prompt; `onChanged` gets the engine's re-matched prompt after a pick. */
-  | { detection: Detection; onChanged?: (next: Detection | null) => void; className?: string }
-  /** After start: the meeting, its manifest event and `started_at` (the candidate window's centre). */
-  | { meeting: MeetingId; event: EventRef | null; startedAt: string; className?: string }
+/**
+ * Before start: `detection` (W1U's banner passes the prompt; `onChanged` gets the engine's re-matched prompt after a
+ * pick). After start: `meeting` — the manifest (`queryKeys.meeting(id)`, shared with the control centre) supplies the
+ * current event and `started_at`, the candidate window's centre. `meeting` wins when both are given.
+ */
+export type EventSwitcherProps = { detection?: Detection; meeting?: MeetingId; onChanged?: (next: Detection | null) => void; className?: string }
 
-export function EventSwitcher(props: EventSwitcherProps) {
+export function EventSwitcher({ detection, meeting, onChanged, className }: EventSwitcherProps) {
   const api = useApi()
-  const target: Target = 'detection' in props ? { detection: props.detection } : { meeting: props.meeting }
-  const before = 'detection' in props ? props : null
-  const current = 'detection' in props ? (props.detection.event?.event ?? null) : props.event
-  // The window is fixed per mount: a live `Date.now()` key would refetch on every render.
-  const [at] = useState(() => ('startedAt' in props ? Date.parse(props.startedAt) : Date.now()))
-  const [from, to] = candidateWindow(at)
+  const manifest = useQuery({ queryKey: queryKeys.meeting(meeting ?? ''), queryFn: () => api.meeting_get(meeting!), enabled: meeting !== undefined })
+  const current = meeting ? (manifest.data?.event ?? null) : (detection?.event?.event ?? null)
+  // Before start the window is fixed per mount (a live `Date.now()` key would refetch every render); after start it is the meeting's.
+  const [mounted] = useState(() => Date.now())
+  const [from, to] = candidateWindow(manifest.data ? Date.parse(manifest.data.started_at) : mounted)
   const candidates = useQuery({ queryKey: calendarKeys.events(from, to), queryFn: () => api.calendar_events(from, to) })
-  const pick = useAction((id: string | null) => setEvent(api, target, id), {
-    keys: 'meeting' in target ? [queryKeys.meeting(target.meeting), queryKeys.meetingStatus] : [queryKeys.meetingStatus],
-    onSuccess: (result) => before?.onChanged?.(result as Detection | null),
+  const pick = useAction((id: string | null) => setEvent(api, meeting ?? null, id), {
+    keys: meeting ? [queryKeys.meeting(meeting), queryKeys.meetingStatus] : [queryKeys.meetingStatus],
+    onSuccess: (result) => !meeting && onChanged?.(result as Detection | null),
   })
-  const rows = choices(before?.detection.event, candidates.data ?? [], current)
+  const rows = choices(meeting ? null : detection?.event, candidates.data ?? [], current)
+  if (!detection && !meeting) return null
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className={props.className} disabled={pick.isPending} aria-label={ASK}>
+        <Button variant="ghost" size="sm" className={className} disabled={pick.isPending} aria-label={ASK}>
           <span className="truncate">{current ? eventLine(current) : ASK}</span>
           <ChevronDown className="size-4" />
         </Button>
@@ -68,7 +68,7 @@ export function EventSwitcher(props: EventSwitcherProps) {
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled={current === null} onSelect={() => pick.mutate(null)}>
-          {before ? 'None of these' : 'No event'}
+          {meeting ? 'No event' : 'None of these'}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

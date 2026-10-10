@@ -6,8 +6,8 @@ Branch `feat/158-w2u` from the C158 contract head `ccc48db5`. UI only (`crates/d
   (`Title · 10:00–10:30`, local, `formatAt`'s day prefix when not today), `candidateWindow(at)` (§8.1: −15 min … +10 min),
   `eventkitState(on, mac, source)` (§7.2 / §7.6 state line: ICS hint off-Mac, `granted` / `denied` / else "Companion not running"
   from the `eventkit` `CalSource.state`), `choices(match, candidates, current)` (match first, then alternatives, then the
-  window's live non-all-day events, each id once; the manifest event stays on top after start), `setEvent(api, target, id)`
-  (§8.2 routing: `meeting_detection_set_event` before start, `meeting_set_event(id, …)` after; `null` clears).
+  window's live non-all-day events, each id once; the manifest event stays on top after start), `setEvent(api, meeting | null,
+  id)` (§8.2 routing: `meeting_detection_set_event` when no meeting, `meeting_set_event(id, …)` with one; `null` clears).
 - `src/components/settings/Calendar.tsx` — `ready = true`. Sections: **macOS Calendar** (switch → `calendar_settings_set
   { ...config, eventkit }`, disabled off-Mac, state line from the `eventkit` source row); **Calendar subscriptions (ICS / iCal
   secret address)** (ICS rows from `calendar_sources`: name · `synced N min ago` or the amber `last_error`; Refresh →
@@ -15,16 +15,18 @@ Branch `feat/158-w2u` from the C158 contract head `ccc48db5`. UI only (`crates/d
   field) → `addSource` (trim, `https://` / `webcal://` required, then `calendar_source_add`); the §7.6 caption and the vault
   line); **Pre-meeting briefs** (switch → `prebrief`); **Upcoming** (`calendar_events(now, now+24 h)`, cancelled dropped, start
   order, location · join host). Settings/sources/events are `useQuery`; writes are `useAction` (toast on error, invalidate).
-- `src/components/meeting/EventSwitcher.tsx` — props `{ detection, onChanged? }` (before start) or `{ meeting, event,
-  startedAt }` (after). A `DropdownMenu` whose trigger reads the current event line or "Which meeting is this?"; the content
-  is a radio list of `choices(...)` from the match plus `calendar_events(candidateWindow(at))` (`at` = now / `started_at`,
-  fixed per mount), then "None of these" (before) / "No event" (after) → `setEvent`. On success: before start, `onChanged(next
+- `src/components/meeting/EventSwitcher.tsx` — props `{ detection?: Detection; meeting?: MeetingId; onChanged?; className? }`
+  (W1U's requested shape, 15:22): `detection` before start; `meeting` after (the manifest comes from `queryKeys.meeting(id)`
+  / `meeting_get`, the cache the control centre already fills, for the current event and `started_at`). Neither → `null`.
+  A `DropdownMenu` whose trigger reads the current event line or "Which meeting is this?"; the content is a radio list of
+  `choices(...)` from the match plus `calendar_events(candidateWindow(at))` (`at` = mount time / `started_at`), then "None of
+  these" (before) / "No event" (after) → `setEvent`. On success: before start, `onChanged(next
   Detection)` and `meetingStatus` invalidated; after start, `queryKeys.meeting(id)` + `meetingStatus` invalidated.
 - Tests: `src/lib/calendar.test.ts` (lines, choices ordering/filters, `setEvent` routing before vs after start, state line),
   `src/components/settings/Calendar.test.ts` (`ready`; static render: names + sync age + amber error, EventKit state line, URL
   field is `type="password"`, the pasted secret never in the markup, vault caption, Upcoming row; `addSource` trims / refuses
   blank name and non-https; `deleteSource` confirm → RPC), `src/components/meeting/EventSwitcher.test.ts` (trigger line in all
-  four states).
+  four states, empty render without props).
 
 ## Deviations
 1. "Masked URL" rows (brief, mock): `CalSource` carries no URL and no RPC returns it (§7.3), so rows show the **name**; the URL is
@@ -36,11 +38,9 @@ Branch `feat/158-w2u` from the C158 contract head `ccc48db5`. UI only (`crates/d
 5. EventKit "Granted" line appends `pushed <time>` when `last_fetch` is set (the companion's last push) — extra, cheap.
 
 ## Hand-offs
-- **W1U** (`DetectionBanner.tsx`): render `<EventSwitcher detection={d} onChanged={setDetection} />`; the `[▾]` list and the event
-  line are both inside the trigger. If W1U keys its detection query other than `queryKeys.meetingStatus`, pass `onChanged` (the
-  switcher does not know that key).
-- **156/W2 meeting page** (not W2U's files): the header's Event chip is `<EventSwitcher meeting={id} event={manifest.event}
-  startedAt={manifest.started_at} />`.
+- **W1U** (`DetectionBanner.tsx`): `<EventSwitcher detection={d} />` as requested (no cast needed); add `onChanged` if W1U keys
+  its detection query other than `queryKeys.meetingStatus` (the switcher invalidates only that one).
+- **156/W2 meeting page** (not W2U's files): the header's Event chip is `<EventSwitcher meeting={id} />`.
 - **`lib/rpc.ts`** (not W2U's): on `CalendarEvent::SourcesChanged` (once W2 subscribes it in `bridge.rs`) invalidate
   `['calendar-sources']` and `['calendar-events']` so Settings › Calendar follows companion pushes without a Refresh.
 - **Rust W2**: the UI reads `CalSource.state` as `granted` / `denied` (the source comment's lowercase words), anything else =
