@@ -13,8 +13,8 @@ import { Mcp, ready } from './Mcp'
 const TOKEN = 'a'.repeat(64)
 const status: McpServerStatus = { enabled: true, port: 7788, running: true, url: 'http://127.0.0.1:7788/mcp', token: TOKEN }
 const audit: McpAuditLine[] = [
-  { at: '2026-10-10T12:00:00Z', transport: 'http', client: 'claude-code', tool: 'meeting_list', args_sha256: 'ab'.repeat(32), ok: true, ms: 12 },
-  { at: '2026-10-10T11:59:00Z', transport: 'stdio', client: 'codex', tool: 'knowledge_get', args_sha256: 'cd'.repeat(32), ok: false, ms: 3 },
+  { at: '2026-10-10T12:00:00Z', transport: 'http', client: 'claude-code', tool: 'meeting_list', args_sha256: 'ab'.repeat(32), ok: true, ms: 12n },
+  { at: '2026-10-10T11:59:00Z', transport: 'stdio', client: 'codex', tool: 'knowledge_get', args_sha256: 'cd'.repeat(32), ok: false, ms: 3n },
 ]
 
 const calls: [string, unknown][] = []
