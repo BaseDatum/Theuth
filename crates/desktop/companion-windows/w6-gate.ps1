@@ -138,6 +138,19 @@ switch ($Action) {
         Start-Sleep -Seconds 5
         Procs
     }
+    'start-installed-args' {
+        # R2: the INSTALLED companion with flags (e.g. --settings dictation --shareable --dictation-shot) for a readback of the installed build.
+        if (-not (Test-Path $installed)) { Say "start-installed-args: $installed missing"; break }
+        $others = @(Get-Process -Name 'Theuth.Companion' -ErrorAction SilentlyContinue)
+        if ($others.Count -gt 0) { $others | ForEach-Object { Say "start-installed-args: REFUSED - a companion runs: pid=$($_.Id) path=$($_.Path)" }; break }
+        $flags = @($Rest)
+        $p = if ($flags.Count -gt 0) { Start-Process -FilePath $installed -ArgumentList $flags -PassThru } else { Start-Process -FilePath $installed -PassThru }
+        Say "start-installed-args: $installed $($flags -join ' ') pid=$($p.Id) at $(Get-Date -Format 'HH:mm:ss.fff')"
+        Start-Sleep -Seconds 6
+        Say "start-installed-args: running=$(-not $p.HasExited)"
+        $cl = LogFile
+        if (Test-Path $cl) { Get-Content $cl -Tail 30 | ForEach-Object { Say ('  ' + (Clip $_ 220)) } }
+    }
     'launch' {
         if (-not (Test-Path $mine)) { Say "launch: no exe at $mine"; break }
         $others = @(Get-Process -Name 'Theuth.Companion' -ErrorAction SilentlyContinue)
