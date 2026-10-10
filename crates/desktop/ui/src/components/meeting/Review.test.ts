@@ -5,6 +5,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
 import type { Enrolled } from '@/rpc/bindings/Enrolled'
+import type { Manifest } from '@/rpc/bindings/Manifest'
 import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
 import type { Segment } from '@/rpc/bindings/Segment'
 import type { SpeakerSuggestion } from '@/rpc/bindings/SpeakerSuggestion'
@@ -75,8 +76,12 @@ const enrolled: Enrolled = {
   available_ms: 8000,
   transcript: { ...renamed('Priya Shah'), speakers: renamed('Priya Shah').speakers.map((s) => (s.id === 's1' ? { ...s, profile: 'p-priya' } : s)) },
 }
+// 158 §13: Review reads only `stats` from the manifest.
+const manifest = (speakers: boolean | null) => ({ id: ID, stats: speakers === null ? null : { echo_dupes: 0, mic_segments: 0, speakers } }) as unknown as Manifest
 const api = {
   meeting_transcript: vi.fn(async () => transcript),
+  meeting_get: vi.fn(async () => manifest(null)),
+  meeting_set_speakers: vi.fn(async (_id: string, speakers: boolean) => manifest(speakers)),
   meeting_suggest_speakers: vi.fn(async (): Promise<SpeakerSuggestion[]> => [priya, tom]),
   meeting_edit: vi.fn(async () => renamed('Priya Shah')),
   meeting_speaker_enroll: vi.fn(async () => enrolled),
@@ -94,7 +99,7 @@ async function render(suggestions?: SpeakerSuggestion[], readOnly = false): Prom
   if (suggestions) qc.setQueryData(queryKeys.meetingSuggestions(ID), suggestions)
   const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Review, { id: ID, readOnly }) as ReactNode }))
   paint()
-  for (const query of qc.getQueryCache().findAll({ queryKey: queryKeys.meetingTranscript(ID) })) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey })
+  for (const key of [queryKeys.meetingTranscript(ID), queryKeys.meeting(ID)]) for (const query of qc.getQueryCache().findAll({ queryKey: key })) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey })
   return { html: paint(), qc }
 }
 const press = (label: string) => {
@@ -158,4 +163,15 @@ test('Not them drops the row from the cached list without any RPC', async () => 
   expect(qc.getQueryData(queryKeys.meetingSuggestions(ID))).toEqual([tom])
   expect(api.meeting_edit).not.toHaveBeenCalled()
   expect(api.meeting_speaker_enroll).not.toHaveBeenCalled()
+})
+
+test('158 §13: the speakers question shows once per meeting outside macOS; an answer goes to meeting_set_speakers and the manifest cache', async () => {
+  const { html, qc } = await render()
+  expect(html).toContain('Did you use speakers (not headphones)')
+  press('Speakers')
+  await vi.waitFor(() => expect(qc.getQueryData(queryKeys.meeting(ID))).toEqual(manifest(true)))
+  expect(api.meeting_set_speakers).toHaveBeenCalledWith(ID, true)
+  // Answered (either way) → gone, in read-only states too.
+  api.meeting_get.mockResolvedValueOnce(manifest(false))
+  expect((await render(undefined, true)).html).not.toContain('Did you use speakers')
 })

@@ -5,7 +5,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { MeetingSettings } from '@/rpc/bindings/MeetingSettings'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
-import { DEFAULT_LIVE_TOOLS, Meetings, added } from './Meetings'
+import { DEFAULT_LIVE_TOOLS, Meetings, added, echoSummary } from './Meetings'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children?: ReactNode }) => createElement('a', null, children) }))
@@ -58,6 +58,8 @@ const api = {
   meeting_live_diarization: vi.fn(async () => true),
   set_meeting_live_diarization: vi.fn(async (on: boolean) => on),
   decision_mode: vi.fn(async () => ({ effective: 'off' })),
+  meeting_list: vi.fn(async () => [{ id: 'm1' }, { id: 'm2' }, { id: 'm3' }]),
+  meeting_get: vi.fn(async (id: string) => ({ id, stats: { m1: { echo_dupes: 3, mic_segments: 40, speakers: true }, m2: { echo_dupes: 1, mic_segments: 10, speakers: null }, m3: null }[id] })),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
@@ -115,4 +117,12 @@ test('the ignore list and live tools: Reset writes the default list; added() tri
   expect(added(['a'], ' b ')).toEqual(['a', 'b'])
   expect(added(['a'], 'a')).toEqual(['a'])
   expect(added(['a'], '  ')).toEqual(['a'])
+})
+
+test('158 §13: the Echo row (not macOS here) sums stats over the last 10 manifests; unmeasured meetings are skipped', async () => {
+  const html = await render()
+  expect(api.meeting_list).toHaveBeenCalledWith(10)
+  expect(html).toContain('Echo in your microphone')
+  expect(html).toContain('8 % of your microphone segments repeated the other side (4 of 50) over the last 2 meetings, 1 on speakers.')
+  expect(echoSummary([])).toMatch(/^No meeting measured yet/)
 })

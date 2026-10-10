@@ -838,6 +838,8 @@ export interface Api {
   meeting_set_event(id: MeetingId, event: EventId | null): Promise<Manifest>
   /** 158 §11.1 (W4): the note template, changeable until Summarize. */
   meeting_set_template(id: MeetingId, template: string): Promise<Manifest>
+  /** 158 §13 (W6): Review's once-per-meeting "Did you use speakers (not headphones)?". */
+  meeting_set_speakers(id: MeetingId, speakers: boolean): Promise<Manifest>
   /** 158 §10 (W4): speaker-name suggestions; never applies anything. */
   meeting_suggest_speakers(id: MeetingId): Promise<SpeakerSuggestion[]>
   /** 158 §11.1 (W4): every template, built-ins first. */
@@ -1456,6 +1458,7 @@ export const METHODS = [
   'meeting_segment_audio',
   'meeting_set_event',
   'meeting_set_project',
+  'meeting_set_speakers',
   'meeting_set_template',
   'meeting_settings_get',
   'meeting_settings_set',
