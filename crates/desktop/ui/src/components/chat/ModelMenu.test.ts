@@ -1,7 +1,7 @@
 import { defaultFilter } from 'cmdk'
 import { expect, test } from 'vitest'
 import type { ConfigOption } from '@/rpc/bindings/ConfigOption'
-import { dialogPlacement, harnessCurrent, harnessGroups, harnessItemValue, pinnedFilter } from './ModelMenu'
+import { dialogPlacement, harnessCurrent, harnessGroups, harnessItemValue, pinnedFilter, slashTarget } from './ModelMenu'
 
 const opt = (id: string, category: string | null, current: string, values: [string, string][]): ConfigOption => ({
   id,
@@ -62,4 +62,14 @@ test('127 §6 dialogPlacement: touch anchors the dialog to the top of the visibl
   // 125 F2: the Command root stops claiming the whole band (`h-full`) so the Advisor row stays a visible footer.
   expect(phone.picker.split(' ')).toEqual(expect.arrayContaining(['h-auto', 'min-h-0', 'flex-1']))
   expect(phone.footer.split(' ')).toContain('shrink-0')
+})
+
+test('157 D1 slashTarget: /model reaches the focused pane, any draft, and a page-own picker whatever is focused', () => {
+  expect(slashTarget('s1', 's1', false)).toBe(true)
+  expect(slashTarget('s1', 's2', false)).toBe(false)
+  expect(slashTarget('s1', null, false)).toBe(false)
+  expect(slashTarget(null, 's2', false)).toBe(true)
+  // The notebook's chat column: no split pane ever focuses its thread, so it answers on its own.
+  expect(slashTarget('s1', 's2', true)).toBe(true)
+  expect(slashTarget('s1', null, true)).toBe(true)
 })

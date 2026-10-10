@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { AppWindow, BookOpen, History as HistoryIcon, MessageSquare, MessageSquarePlus, Pencil, PenLine, Trash2 } from 'lucide-react'
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { BoardReader } from '@/components/board/BoardReader'
 import { prefillDraft } from '@/components/chat/Composer'
 import { Action, DocumentPage, ownedByMeeting, useNotebookBack } from '@/components/editor/DocumentPage'
-import { useDocument } from '@/components/editor/useDocument'
+import { type LiveDocument, useDocument } from '@/components/editor/useDocument'
 import { UndoAgentAction } from '@/components/knowledge/Document'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { ExportMenu } from '@/components/notes/ExportMenu'
@@ -64,6 +64,36 @@ function useTitle(provider: EngineProvider | null): [string, (t: string) => void
 }
 
 /**
+ * 157 D5: the title as the provider knows it, with its rename (`doc_rename`; the local result sets it first so the
+ * bar never flickers back). The note page's bar and the notebook pane's header share it.
+ */
+export function useNoteTitle(id: string, provider: EngineProvider | null): [string, (t: string) => void] {
+  const api = useApi()
+  const [title, setTitle] = useTitle(provider)
+  const rename = useMutation({
+    mutationFn: (t: string) => api.doc_rename(id, t),
+    onSuccess: (_, t) => setTitle(t),
+    onError: (e) => toast.error(e.message),
+  })
+  return [title, (t) => t !== title && rename.mutate(t)]
+}
+
+/**
+ * 157 D5: what fills a note's body — the one rule for the note page and the notebook pane. `deleted`: the provider
+ * reports `closed · deleted` (the live document gets a plain error). 71 §2.2: a board opens in its own read mode and
+ * `editing` toggles to BlockNote (a board is still a note); until `meta` lands with `doc_open` the kind is unknown,
+ * so `fallback` is an empty box rather than an editor that flips. Render `fallback ?? <Live {...live} />`.
+ */
+export function useNoteBody(live: LiveDocument, editing: boolean): { deleted: boolean; board: boolean; live: LiveDocument; fallback: ReactNode | undefined } {
+  const deleted = live.status.kind === 'closed' && live.status.reason === 'deleted'
+  const kind = live.provider?.meta?.kind
+  const board = kind === 'board' && !deleted
+  const fallback =
+    board && !editing && live.provider ? <BoardReader provider={live.provider} /> : live.provider && !kind && live.status.kind === 'connecting' ? <div /> : undefined
+  return { deleted, board, live: deleted ? { ...live, error: new Error('This note was deleted.') } : live, fallback }
+}
+
+/**
  * One note, whole: title, action bar, editor, chat. The route's page, and (156 D1) the meeting page's right pane
  * (`embedded`: no band, no back link, no window title) and the popped meeting note. With `meeting` the note is that
  * meeting's (`manifest.note`): Delete is hidden — the meeting's own Delete owns it — "Open in new window" opens the
@@ -76,7 +106,7 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
   const navigate = useNavigate()
   const target = useMemo(() => ({ doc: id }), [id])
   const live = useDocument(target)
-  const [title, setTitle] = useTitle(live.provider)
+  const [title, rename] = useNoteTitle(id, live.provider)
   const chat = useNoteChat((s) => s.notes[id] ?? EMPTY)
   const setChat = useNoteChat((s) => s.set)
   const [attaching, setAttaching] = useState(false)
@@ -106,11 +136,9 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
   // 144 §4: back to the notebook this note was opened from (or belongs to) at every width.
   const wayBack = useNotebookBack('note', id, nb)
 
-  const rename = useMutation({
-    mutationFn: (t: string) => api.doc_rename(id, t),
-    onSuccess: (_, t) => setTitle(t),
-    onError: (e) => toast.error(e.message),
-  })
+  const [editing, setEditing] = useState(false)
+  const body = useNoteBody(live, editing)
+  const { deleted, board } = body
   const del = useMutation({
     mutationFn: () => api.doc_delete(id),
     onSuccess: () => {
@@ -136,18 +164,10 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
     }
     setChat(id, { open: true })
   }
-  // A deleted note's page: the provider reports `closed · deleted` in the status line; say it plainly too.
-  const deleted = live.status.kind === 'closed' && live.status.reason === 'deleted'
   // Popped (`lib/popout.ts`): no second "new window"; the document is the one the main window edits, so both editors
   // follow each other through the document actor like two devices. The chat panel is there too (143 D8).
   const popped = isPopout()
-  // 71 §2.2: a board opens in its own read mode; **Edit** toggles to BlockNote (a board is still a note). Until
-  // `meta` lands with `doc_open` the kind is unknown, so the page shows nothing rather than an editor that flips.
   const kind = live.provider?.meta?.kind
-  const [editing, setEditing] = useState(false)
-  const board = kind === 'board' && !deleted
-  const fallback =
-    board && !editing && live.provider ? <BoardReader provider={live.provider} /> : live.provider && !kind && live.status.kind === 'connecting' ? <div /> : undefined
 
   return (
     <DocumentPage
@@ -162,7 +182,7 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
             ref={titleInput}
             value={title}
             disabled={!live.provider || deleted}
-            onCommit={(t) => t !== title && rename.mutate(t)}
+            onCommit={rename}
           />
           {!deleted && <DictationButton field={titleInput} />}
           {wayBack.chip}
@@ -189,8 +209,8 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
           {!embedded && <Action label="Chat" icon={MessageSquare} onClick={() => setChat(id, { open: !chat.open })} pressed={chat.open} />}
         </>
       }
-      live={deleted ? { ...live, error: new Error('This note was deleted.') } : live}
-      fallback={fallback}
+      live={body.live}
+      fallback={body.fallback}
       onAsk={ask}
       below={chat.open && !deleted && !embedded ? <NoteChat note={id} doc={doc} /> : null}
     >
@@ -200,8 +220,8 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
   )
 }
 
-/** Inline-editable title: Enter or blur commits, Escape reverts (59 §7.3). */
-function TitleInput({
+/** Inline-editable title: Enter or blur commits, Escape reverts (59 §7.3). Exported for the notebook pane's header (157 D6). */
+export function TitleInput({
   ref,
   value,
   disabled,

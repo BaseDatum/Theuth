@@ -14,28 +14,29 @@ import { Dial } from '@/components/sources/SourceCard'
 import { BulkRow } from '@/components/sources/SourcesColumn'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { useIsMobile } from '@/hooks/use-mobile'
 import { DRAG_TYPE, droppedRef } from '@/lib/attach'
 import { provenanceOf } from '@/lib/citations'
 import type { EstimateItem } from '@/lib/notebook-context'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
-import { canPopout, noteOpenMode, openPopout } from '@/lib/popout'
+import { canPopout, openPopout } from '@/lib/popout'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
 
 /**
  * 144 §12.1 Notes: the notebook's notes, newest added first — paper glyph, title, `edited <ago>`, an `AI · from chat ·
- * N citations kept` line for a saved answer (§8), kind badges. **+ New note** creates and adds (a desktop pops it out,
- * 143 D3); a note dragged from Library onto the column is added. Below, the Overviews (U2's `OverviewsSection`).
- * 144 §4: every link out carries `?nb` so the note page keeps the way back. Wave 2 §5.1: a dial per row, bulk in the header row.
+ * N citations kept` line for a saved answer (§8), kind badges. **+ New note** creates and adds; a note dragged from
+ * Library onto the column is added. Below, the Overviews (U2's `OverviewsSection`).
+ * 157 D4: in the columns layout the page passes `onOpen` and a row or a new note opens in the right-hand pane
+ * (`?note=`; `fresh` = just created, the title gets selected). Without it (the phone's Notes tab) a row is a link to
+ * `/notes/$id?nb` and a new note navigates there with `?new` (144 §4: every link out carries `?nb` so the note page
+ * keeps the way back). Wave 2 §5.1: a dial per row, bulk in the header row.
  */
-export function NotesColumn({ notebook }: { notebook: string }) {
+export function NotesColumn({ notebook, onOpen }: { notebook: string; onOpen?: (id: string, fresh: boolean) => void }) {
   const api = useApi()
   const nb = useNotebooksApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const mobile = useIsMobile()
   const items = useNotebookItems(notebook)
   const notes = useNotes()
   const session = useNotebookSession(notebook)
@@ -60,7 +61,7 @@ export function NotesColumn({ notebook }: { notebook: string }) {
     },
     onSuccess: (n) => {
       refresh()
-      if (noteOpenMode(mobile, canPopout()) === 'popout') void openPopout({ kind: 'note', doc: n.id, fresh: true })
+      if (onOpen) onOpen(n.id, true)
       else void navigate({ to: '/notes/$id', params: { id: n.id }, search: { new: true, nb: notebook } })
     },
     onError: (e) => toast.error(e.message),
@@ -105,6 +106,7 @@ export function NotesColumn({ notebook }: { notebook: string }) {
               id={r.id}
               notebook={notebook}
               summary={r.summary}
+              onOpen={onOpen && (() => onOpen(r.id, false))}
               context={byItem.get(r.id)}
               onRemove={() => nb.notebook_item_remove(notebook, 'note', r.id).then(refresh, (e: Error) => toast.error(e.message))}
             />
@@ -127,7 +129,7 @@ function Paper() {
   )
 }
 
-function Row({ id, notebook, summary, context, onRemove }: { id: string; notebook: string; summary: DocSummary | undefined; context: EstimateItem | undefined; onRemove: () => void }) {
+function Row({ id, notebook, summary, context, onRemove, onOpen }: { id: string; notebook: string; summary: DocSummary | undefined; context: EstimateItem | undefined; onRemove: () => void; onOpen?: () => void }) {
   const api = useApi()
   const md = useQuery({ queryKey: ['doc', 'markdown', id], queryFn: () => api.doc_markdown(id) })
   const title = summary?.title || firstLine(md.data) || 'Untitled'
@@ -137,22 +139,15 @@ function Row({ id, notebook, summary, context, onRemove }: { id: string; noteboo
     <li id={`item-${id}`} className="group flex flex-col gap-1.5 rounded-lg border border-border-subtle bg-background px-2.5 py-2">
       <div className="flex items-center gap-2.5">
         <Paper />
-        <Link to="/notes/$id" params={{ id }} search={{ nb: notebook }} className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-[12.5px] font-semibold">{title}</span>
-          <span className="flex flex-wrap items-center gap-1 text-[11px] text-fg-tertiary">
-            {saved ? (
-              <>
-                <span className="rounded-full border border-emerald-700/50 px-1.5 text-emerald-700">AI</span> from {saved} · {citationCount(md.data ?? '')} citations kept
-              </>
-            ) : (
-              summary && <span>edited {ago(new Date(Number(summary.updated_ms)).toISOString())}</span>
-            )}
-            {kind === 'meeting_note' && <span className="rounded-md bg-layer-2 px-1.5 text-fg-secondary">meeting note</span>}
-            {kind === 'board' && <span className="rounded-md bg-layer-2 px-1.5 text-fg-secondary">board</span>}
-            {context?.status === 'truncated' && <span className="rounded-full border border-amber-600/50 px-1.5 text-amber-700">truncated</span>}
-            {context?.status === 'omitted' && <span className="rounded-full border border-border-subtle px-1.5">omitted</span>}
-          </span>
-        </Link>
+        {onOpen ? (
+          <button type="button" className="flex min-w-0 flex-1 flex-col text-left" onClick={onOpen}>
+            <RowText title={title} saved={saved} md={md.data} summary={summary} kind={kind} context={context} />
+          </button>
+        ) : (
+          <Link to="/notes/$id" params={{ id }} search={{ nb: notebook }} className="flex min-w-0 flex-1 flex-col">
+            <RowText title={title} saved={saved} md={md.data} summary={summary} kind={kind} context={context} />
+          </Link>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${title}`} className="opacity-0 group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100">
@@ -173,5 +168,27 @@ function Row({ id, notebook, summary, context, onRemove }: { id: string; noteboo
       </div>
       <Dial notebook={notebook} item={id} kind="note" context={context} />
     </li>
+  )
+}
+
+/** The row's two lines: the title, then the saved-answer or edited line with the kind and context badges. */
+function RowText({ title, saved, md, summary, kind, context }: { title: string; saved: string | null; md: string | undefined; summary: DocSummary | undefined; kind: DocSummary['kind'] | undefined; context: EstimateItem | undefined }) {
+  return (
+    <>
+      <span className="truncate text-[12.5px] font-semibold">{title}</span>
+      <span className="flex flex-wrap items-center gap-1 text-[11px] text-fg-tertiary">
+        {saved ? (
+          <>
+            <span className="rounded-full border border-emerald-700/50 px-1.5 text-emerald-700">AI</span> from {saved} · {citationCount(md ?? '')} citations kept
+          </>
+        ) : (
+          summary && <span>edited {ago(new Date(Number(summary.updated_ms)).toISOString())}</span>
+        )}
+        {kind === 'meeting_note' && <span className="rounded-md bg-layer-2 px-1.5 text-fg-secondary">meeting note</span>}
+        {kind === 'board' && <span className="rounded-md bg-layer-2 px-1.5 text-fg-secondary">board</span>}
+        {context?.status === 'truncated' && <span className="rounded-full border border-amber-600/50 px-1.5 text-amber-700">truncated</span>}
+        {context?.status === 'omitted' && <span className="rounded-full border border-border-subtle px-1.5">omitted</span>}
+      </span>
+    </>
   )
 }
