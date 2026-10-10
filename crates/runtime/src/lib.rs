@@ -93,52 +93,46 @@ impl Runtime {
 }
 
 /// Set `section.key: value` in the YAML file at `path`, keeping everything
-/// else (comments included) byte-for-byte: the first `key:` line inside the
-/// `section:` block is rewritten; a block without it gets the line inserted
-/// first; no block → one is appended; a missing file is created.
+/// else (comments included) byte-for-byte.
+///
+/// Rules: `section:` is a column-0 header, optionally with a `# comment`.
+/// Only a DIRECT child `key:` line is rewritten, i.e. one at the block's child
+/// indent (the indent of the first non-blank, non-comment line in the block;
+/// 2 when there is none); deeper `key:` lines never match. A ` # comment`
+/// tail on the rewritten line is kept. A missing key is inserted right after
+/// the header at the child indent; a missing section is appended; a missing
+/// file is created. A single-line flow header (`section: {a: 1, b: 2}`) is
+/// expanded to block style first, entries kept verbatim; `null`, `~` and `{}`
+/// count as an empty block; any other inline value is `InvalidData`. The
+/// result must still parse with figment's YAML provider whenever the old
+/// text did, otherwise nothing is written.
 pub fn write_config_value(
     path: &Path,
     section: &str,
     key: &str,
     value: &str,
 ) -> std::io::Result<()> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e),
-    };
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    let Some(start) = lines
-        .iter()
-        .position(|l| l.trim_end() == format!("{section}:"))
-    else {
+    let old = read_or_empty(path)?;
+    let mut lines: Vec<String> = old.lines().map(str::to_owned).collect();
+    let Some(start) = header_in(&lines, 0..lines.len(), 0, section) else {
         if !lines.is_empty() {
             lines.push(String::new());
         }
         lines.extend([format!("{section}:"), format!("  {key}: {value}")]);
-        return std::fs::write(path, lines.join("\n") + "\n");
+        return commit(path, &old, &lines);
     };
-    let end = lines[start + 1..]
-        .iter()
-        .position(|l| l.starts_with(|c: char| !c.is_whitespace()))
-        .map_or(lines.len(), |i| start + 1 + i);
-    let prefix = format!("{key}:");
-    let indented =
-        |l: &str| l.starts_with(char::is_whitespace) && l.trim_start().starts_with(&prefix);
-    match lines[start + 1..end].iter().position(|l| indented(l)) {
-        Some(i) => {
-            let line = &mut lines[start + 1 + i];
-            let indent = line.len() - line.trim_start().len();
-            let rest = &line[indent + prefix.len()..];
-            let comment = rest.find(" #").map(|c| &rest[c..]).unwrap_or("");
-            *line = format!("{}{prefix} {value}{comment}", &line[..indent]);
-        }
-        None => lines.insert(start + 1, format!("  {key}: {value}")),
-    }
-    std::fs::write(path, lines.join("\n") + "\n")
+    expand_header(&mut lines, start, section)?;
+    let (end, child) = extent(&lines, start, 0);
+    set_key(&mut lines, start, end, child, key, value);
+    commit(path, &old, &lines)
 }
 
 /// Set `section.subsection.key: value` while preserving the rest of the YAML.
+/// Same rules as [`write_config_value`] applied at both levels: `subsection:`
+/// must be a direct child of the section, and only a direct child `key:` of
+/// the subsection (at its own child indent; section child indent + 2 when
+/// empty) is rewritten. The subsection ends at the first non-blank,
+/// non-comment line indented no deeper than the section's children.
 pub fn write_nested_config_value(
     path: &Path,
     section: &str,
@@ -146,16 +140,9 @@ pub fn write_nested_config_value(
     key: &str,
     value: &str,
 ) -> std::io::Result<()> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e),
-    };
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    let Some(section_start) = lines
-        .iter()
-        .position(|l| l.trim_end() == format!("{section}:"))
-    else {
+    let old = read_or_empty(path)?;
+    let mut lines: Vec<String> = old.lines().map(str::to_owned).collect();
+    let Some(section_start) = header_in(&lines, 0..lines.len(), 0, section) else {
         if !lines.is_empty() {
             lines.push(String::new());
         }
@@ -164,46 +151,244 @@ pub fn write_nested_config_value(
             format!("  {subsection}:"),
             format!("    {key}: {value}"),
         ]);
-        return std::fs::write(path, lines.join("\n") + "\n");
+        return commit(path, &old, &lines);
     };
-    let section_end = lines[section_start + 1..]
-        .iter()
-        .position(|l| l.starts_with(|c: char| !c.is_whitespace()))
-        .map_or(lines.len(), |i| section_start + 1 + i);
-    let subsection_line = format!("  {subsection}:");
-    let Some(subsection_start) = lines[section_start + 1..section_end]
-        .iter()
-        .position(|l| l.trim_end() == subsection_line)
-        .map(|i| section_start + 1 + i)
+    expand_header(&mut lines, section_start, section)?;
+    let (section_end, child) = extent(&lines, section_start, 0);
+    let Some(subsection_start) =
+        header_in(&lines, section_start + 1..section_end, child, subsection)
     else {
+        let pad = " ".repeat(child);
         lines.splice(
             section_start + 1..section_start + 1,
-            [subsection_line, format!("    {key}: {value}")],
+            [
+                format!("{pad}{subsection}:"),
+                format!("{pad}  {key}: {value}"),
+            ],
         );
-        return std::fs::write(path, lines.join("\n") + "\n");
+        return commit(path, &old, &lines);
     };
-    let subsection_end = lines[subsection_start + 1..section_end]
-        .iter()
-        .position(|l| {
-            let trimmed = l.trim_start();
-            !trimmed.is_empty() && !trimmed.starts_with('#') && l.len() - trimmed.len() <= 2
-        })
-        .map_or(section_end, |i| subsection_start + 1 + i);
-    let prefix = format!("{key}:");
-    match lines[subsection_start + 1..subsection_end]
-        .iter()
-        .position(|l| l.trim_start().starts_with(&prefix))
-    {
-        Some(i) => {
-            let line = &mut lines[subsection_start + 1 + i];
-            let indent = line.len() - line.trim_start().len();
-            let rest = &line[indent + prefix.len()..];
-            let comment = rest.find(" #").map(|c| &rest[c..]).unwrap_or("");
-            *line = format!("{}{prefix} {value}{comment}", &line[..indent]);
-        }
-        None => lines.insert(subsection_start + 1, format!("    {key}: {value}")),
+    expand_header(&mut lines, subsection_start, subsection)?;
+    let (subsection_end, sub_child) = extent(&lines, subsection_start, child);
+    set_key(
+        &mut lines,
+        subsection_start,
+        subsection_end,
+        sub_child,
+        key,
+        value,
+    );
+    commit(path, &old, &lines)
+}
+
+fn read_or_empty(path: &Path) -> std::io::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e),
     }
-    std::fs::write(path, lines.join("\n") + "\n")
+}
+
+fn indent_of(l: &str) -> usize {
+    l.len() - l.trim_start().len()
+}
+
+/// Neither blank nor a comment.
+fn is_content(l: &str) -> bool {
+    let t = l.trim_start();
+    !t.is_empty() && !t.starts_with('#')
+}
+
+/// Text after `name:` on `l` when `l` is a `name:` mapping key at `indent`.
+fn header_value<'a>(l: &'a str, indent: usize, name: &str) -> Option<&'a str> {
+    (indent_of(l) == indent)
+        .then(|| l.trim_start().strip_prefix(name)?.strip_prefix(':'))
+        .flatten()
+        .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
+fn header_in(
+    lines: &[String],
+    range: std::ops::Range<usize>,
+    indent: usize,
+    name: &str,
+) -> Option<usize> {
+    lines[range.clone()]
+        .iter()
+        .position(|l| header_value(l, indent, name).is_some())
+        .map(|i| range.start + i)
+}
+
+/// End of the block headed at `start` (first content line indented no deeper
+/// than `parent`) and the indent of its direct children (`parent + 2` when
+/// the block is empty).
+fn extent(lines: &[String], start: usize, parent: usize) -> (usize, usize) {
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| is_content(l) && indent_of(l) <= parent)
+        .map_or(lines.len(), |i| start + 1 + i);
+    let child = lines[start + 1..end]
+        .iter()
+        .find(|l| is_content(l))
+        .map_or(parent + 2, |l| indent_of(l));
+    (end, child)
+}
+
+/// Rewrite the direct child `key:` line of the block `start..end`, or insert
+/// one right after the header.
+fn set_key(
+    lines: &mut Vec<String>,
+    start: usize,
+    end: usize,
+    child: usize,
+    key: &str,
+    value: &str,
+) {
+    let prefix = format!("{key}:");
+    let hit = lines[start + 1..end].iter().position(|l| {
+        indent_of(l) == child
+            && l.trim_start()
+                .strip_prefix(&prefix)
+                .is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+    });
+    match hit {
+        Some(i) => {
+            let line = &mut lines[start + 1 + i];
+            let rest = &line[child + prefix.len()..];
+            let comment = rest.find(" #").map(|c| &rest[c..]).unwrap_or("");
+            *line = format!("{}{prefix} {value}{comment}", &line[..child]);
+        }
+        None => lines.insert(start + 1, format!("{}{prefix} {value}", " ".repeat(child))),
+    }
+}
+
+/// Turn an inline header value into block form: `name: {a: 1, b: 2} # c`
+/// becomes `name: # c` followed by one entry per line; `null`/`~`/`{}` become
+/// a bare `name:`. Block headers are left alone; anything else is an error.
+fn expand_header(lines: &mut Vec<String>, at: usize, name: &str) -> std::io::Result<()> {
+    let line = &lines[at];
+    let indent = indent_of(line);
+    let rest = &line[indent + name.len() + 1..];
+    let value = rest.trim_start();
+    if value.is_empty() || value.starts_with('#') {
+        return Ok(());
+    }
+    let invalid = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "config.yaml: `{name}:` holds an inline value this writer cannot edit: {value}"
+            ),
+        )
+    };
+    let (entries, tail) = if value.starts_with('{') {
+        let (body, tail) = split_flow(value).ok_or_else(invalid)?;
+        if !(tail.is_empty() || tail.trim_start().starts_with('#')) {
+            return Err(invalid());
+        }
+        let entries: Vec<String> = flow_entries(body)
+            .into_iter()
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(|e| format!("{}  {e}", " ".repeat(indent)))
+            .collect();
+        if entries
+            .iter()
+            .any(|e| !e.contains(": ") && !e.ends_with(':'))
+        {
+            return Err(invalid());
+        }
+        (entries, tail)
+    } else {
+        let (scalar, tail) = value.split_at(value.find(char::is_whitespace).unwrap_or(value.len()));
+        if !matches!(scalar, "null" | "~")
+            || !(tail.is_empty() || tail.trim_start().starts_with('#'))
+        {
+            return Err(invalid());
+        }
+        (Vec::new(), tail)
+    };
+    lines[at] = format!("{}{name}:{tail}", " ".repeat(indent));
+    lines.splice(at + 1..at + 1, entries);
+    Ok(())
+}
+
+/// Split `{…}…` into the mapping body and what follows the matching brace.
+/// `None` when the brace never closes on this line (multi-line or unbalanced)
+/// or a quote is left open.
+fn split_flow(s: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (i, c) in s.char_indices() {
+        match quote {
+            Some('"') if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None => match c {
+                '\'' | '"' => quote = Some(c),
+                '{' | '[' => depth += 1,
+                '}' | ']' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return (c == '}').then(|| (&s[1..i], &s[i + 1..]));
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+    None
+}
+
+/// Top-level comma split of a flow mapping body (brackets and quotes
+/// balanced by [`split_flow`] already).
+fn flow_entries(body: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut quote, mut escaped, mut from) = (0usize, None::<char>, false, 0);
+    for (i, c) in body.char_indices() {
+        match quote {
+            Some('"') if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None => match c {
+                '\'' | '"' => quote = Some(c),
+                '{' | '[' => depth += 1,
+                '}' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push(&body[from..i]);
+                    from = i + 1;
+                }
+                _ => {}
+            },
+        }
+    }
+    out.push(&body[from..]);
+    out
+}
+
+/// Write `lines` unless they stopped parsing as YAML while `old` still did.
+fn commit(path: &Path, old: &str, lines: &[String]) -> std::io::Result<()> {
+    use figment::{Provider as _, providers::Format as _};
+    let parses = |s: &str| {
+        figment::Figment::new()
+            .merge(figment::providers::Yaml::string(s))
+            .data()
+            .is_ok()
+    };
+    let new = lines.join("\n") + "\n";
+    if parses(old) && !parses(&new) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "config.yaml: refusing to write {} — the edit would break the YAML",
+                path.display()
+            ),
+        ));
+    }
+    std::fs::write(path, new)
 }
 
 /// Mailbox every bus subscriber must use (design doc §3: Guaranteed +
@@ -316,6 +501,197 @@ impl std::str::FromStr for InputId {
 #[cfg(test)]
 mod tests {
     use super::{write_config_value, write_nested_config_value};
+    use figment::providers::Format as _;
+    use std::path::{Path, PathBuf};
+
+    fn tmp() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("theuth-wb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("config.yaml")
+    }
+
+    /// Read `key` back the way the engine does: through figment's YAML provider.
+    fn get<T: serde::de::DeserializeOwned>(path: &Path, key: &str) -> T {
+        figment::Figment::new()
+            .merge(figment::providers::Yaml::file(path))
+            .extract_inner(key)
+            .unwrap_or_else(|e| panic!("{key}: {e}"))
+    }
+
+    fn text(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    const LIVE: &str = "agent:
+  favorite_models: [\"a/b\", \"c/d\"]
+  vision_model: openai/gpt-6.1-sol
+  max_tool_rounds: 384
+  subagents:
+    model: anthropic/claude-opus-5-5
+    max_runtime_secs: 28800
+  communication: true
+  compact_style: snap
+  title_model: anthropic/claude-haiku-5-5
+  effort: \"max\"
+  model: openai/gpt-5.6-sol
+  # subagents:
+  #   model: null              # default: agent.model
+  #   max_depth: 1
+";
+
+    #[test]
+    fn t1_direct_child_not_nested() {
+        let path = tmp();
+        std::fs::write(&path, LIVE).unwrap();
+        write_config_value(&path, "agent", "model", "x/new").unwrap();
+        assert_eq!(
+            text(&path),
+            LIVE.replace("  model: openai/gpt-5.6-sol", "  model: x/new")
+        );
+        assert_eq!(get::<String>(&path, "agent.model"), "x/new");
+        assert_eq!(
+            get::<String>(&path, "agent.subagents.model"),
+            "anthropic/claude-opus-5-5"
+        );
+    }
+
+    #[test]
+    fn t2_only_nested_key_present_inserts_direct() {
+        let path = tmp();
+        std::fs::write(
+            &path,
+            "agent:\n  subagents:\n    model: z/z\n  effort: max\n",
+        )
+        .unwrap();
+        write_config_value(&path, "agent", "model", "x/new").unwrap();
+        assert_eq!(
+            text(&path),
+            "agent:\n  model: x/new\n  subagents:\n    model: z/z\n  effort: max\n"
+        );
+        assert_eq!(get::<String>(&path, "agent.subagents.model"), "z/z");
+    }
+
+    #[test]
+    fn t3_comments_never_match_and_tail_kept() {
+        let path = tmp();
+        let before = "agent:\n  # model: a\n  #   model: null\n  model: old # inline\n";
+        std::fs::write(&path, before).unwrap();
+        write_config_value(&path, "agent", "model", "x/new").unwrap();
+        assert_eq!(
+            text(&path),
+            before.replace("model: old # inline", "model: x/new # inline")
+        );
+        assert_eq!(get::<String>(&path, "agent.model"), "x/new");
+
+        std::fs::write(&path, "agent:\n  # model: a\n  effort: max\n").unwrap();
+        write_config_value(&path, "agent", "model", "x/new").unwrap();
+        assert_eq!(
+            text(&path),
+            "agent:\n  model: x/new\n  # model: a\n  effort: max\n"
+        );
+    }
+
+    #[test]
+    fn t4_four_space_indent() {
+        let path = tmp();
+        let before =
+            "agent:\n    subagents:\n        model: deep\n    model: old\nlog:\n    level: info\n";
+        std::fs::write(&path, before).unwrap();
+        write_config_value(&path, "agent", "model", "x/new").unwrap();
+        assert_eq!(
+            text(&path),
+            before.replace("    model: old", "    model: x/new")
+        );
+        assert_eq!(get::<String>(&path, "agent.subagents.model"), "deep");
+
+        std::fs::write(&path, "agent:\n    effort: max\n").unwrap();
+        write_config_value(&path, "agent", "model", "x/new").unwrap();
+        assert_eq!(text(&path), "agent:\n    model: x/new\n    effort: max\n");
+    }
+
+    #[test]
+    fn t5_nested_direct_child_not_deeper() {
+        let path = tmp();
+        let before =
+            "agent:\n  subagents:\n    pinned:\n      model: q/q\n    model: old\n  effort: max\n";
+        std::fs::write(&path, before).unwrap();
+        write_nested_config_value(&path, "agent", "subagents", "model", "n/n").unwrap();
+        assert_eq!(
+            text(&path),
+            before.replace("    model: old", "    model: n/n")
+        );
+        assert_eq!(get::<String>(&path, "agent.subagents.pinned.model"), "q/q");
+        assert_eq!(get::<String>(&path, "agent.subagents.model"), "n/n");
+    }
+
+    #[test]
+    fn t6_nested_flow_subsection_becomes_block() {
+        let path = tmp();
+        std::fs::write(
+            &path,
+            "agent:\n  effort: max\n  subagents: {model: null, max_depth: 1} # c\n  compact_style: snap\n",
+        )
+        .unwrap();
+        write_nested_config_value(&path, "agent", "subagents", "model", "X").unwrap();
+        assert_eq!(
+            text(&path),
+            "agent:\n  effort: max\n  subagents: # c\n    model: X\n    max_depth: 1\n  compact_style: snap\n"
+        );
+        assert_eq!(get::<String>(&path, "agent.subagents.model"), "X");
+        assert_eq!(get::<u32>(&path, "agent.subagents.max_depth"), 1);
+    }
+
+    #[test]
+    fn t7_flow_section_becomes_block() {
+        let path = tmp();
+        std::fs::write(
+            &path,
+            "agent: {model: a, communication: true}\nlog:\n  level: info\n",
+        )
+        .unwrap();
+        write_config_value(&path, "agent", "model", "b").unwrap();
+        let after = text(&path);
+        assert_eq!(
+            after.matches("\nagent:").count() + usize::from(after.starts_with("agent:")),
+            1
+        );
+        assert_eq!(
+            after,
+            "agent:\n  model: b\n  communication: true\nlog:\n  level: info\n"
+        );
+        assert_eq!(get::<String>(&path, "agent.model"), "b");
+        assert!(get::<bool>(&path, "agent.communication"));
+    }
+
+    #[test]
+    fn t8_unbalanced_flow_is_invalid_data() {
+        let path = tmp();
+        let before = "agent: {model: [a, b}\n";
+        std::fs::write(&path, before).unwrap();
+        let err = write_config_value(&path, "agent", "model", "b").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(text(&path), before);
+    }
+
+    #[test]
+    fn t9_header_with_trailing_comment() {
+        let path = tmp();
+        let before = "agent:   # main\n  model: old\nlog:\n  level: info\n";
+        std::fs::write(&path, before).unwrap();
+        write_config_value(&path, "agent", "model", "x/new").unwrap();
+        assert_eq!(text(&path), before.replace("model: old", "model: x/new"));
+        assert_eq!(get::<String>(&path, "agent.model"), "x/new");
+    }
+
+    #[test]
+    fn t10_safety_net_refuses_breaking_edit() {
+        let path = tmp();
+        let before = "agent:\n  model: old\n";
+        std::fs::write(&path, before).unwrap();
+        let err = write_config_value(&path, "agent", "model", "\"unterminated").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(text(&path), before);
+    }
 
     #[test]
     fn write_back_edits_in_place_or_appends() {
