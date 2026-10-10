@@ -40,7 +40,7 @@ own `path#L` cite; no code was copied.
 | D8 | Adopted | seed = manifest + `started.` line + alias cache + topics + speaker candidates |
 | D9 | Adopted, one conflict (W-c) | meeting sessions are hard-wired to project `meetings` today; the meeting's project replaces it when set |
 | D10 | Adopted, "sees" deferred (W-g) | window-read participant names → §14 |
-| D11 | Adopted, writes deferred (W-h, W-i, W-j) | stdio bridge is `t mcp` without `--session`; W5 ships read tools; audit is a JSONL file |
+| D11 | Adopted; writes in W5 per Amendment A2 (W-h, W-j) | stdio bridge is `t mcp` without `--session`; W5 ships read and write tools; audit is a JSONL file |
 | D12 | Adopted (W-o) | measure-first counter in the post pass; AEC3 only if the gate trips |
 | D13 | Adopted — it IS a few lines (W-n) | finalise-on-start at the plugin-start filter; no UI |
 | D14 | Adopted (W-p) | templates are markdown files with YAML front matter under `<data_dir>/meetings/templates/` |
@@ -57,7 +57,7 @@ own `path#L` cite; no code was copied.
 - W-f One live model key (`meeting.model`: topics, briefs, the pre-meeting brief writer) and one summary key (`meeting.summary_model`, `None` = same); both fall back to `agent.model` (`crates/agent/src/supervisor.rs:10372`).
 - W-g Reading participant names from the meeting window is deferred to §14 (accessibility reads are fragile and Anarlog's is the same code path that can type into chat).
 - W-h The stdio bridge is `t mcp` with no `--session` (clap: `session` becomes `Option<String>`); `t mcp --session <id>` is byte-for-byte unchanged.
-- W-i W5 ships the read catalogue only. RPC methods bypass `tools.policy` (`crates/tools/src/registry.rs:973-992` gates registry tools, not RPC), so write tools need a gate design — §14.
+- W-i (superseded by Amendment A2, Sky 13:50) ~~W5 ships the read catalogue only~~ — W5 ships write tools too. RPC methods bypass `tools.policy` (`crates/tools/src/registry.rs:973-992` gates registry tools, not RPC) and Sky ruled no extra gate: theuth is a normal MCP server and the user's data is the user's responsibility; the MCP client's own approval and the audit line are the controls.
 - W-j MCP audit = append-only `<data_dir>/mcp/server-audit.jsonl`, one line per call; no table.
 - W-k Calendar sources and events are tables in `meetings.sqlite` (`crates/meeting/src/store.rs:22`), migration `0003_calendar.sql`.
 - W-l The ignore list is config, `meeting.detect.ignore: Vec<String>` — bundle id on macOS, image name on Windows, `application.name` on Linux; "Never for <App>" appends to it with `runtime::write_config_value` (`crates/runtime/src/lib.rs:109`).
@@ -76,7 +76,7 @@ own `path#L` cite; no code was copied.
 | W3 | project on a meeting; remembered per UID/title; pre-meeting brief | manifest + store, prompt chip, start form, `brief_writer.rs` | M |
 | W4 | `meeting_suggest_speakers` tool + Review accepts; templates; note prompt rules; dictionary as preferred names | `speakers.rs`, `post/`, `note.rs`, `summary.rs`, `Review.tsx`, start form | M |
 | W5 | rmcp streamable-HTTP server; `t mcp` stdio bridge; read catalogue; Settings › MCP | new `crates/mcp-server`, `crates/theuth/src/mcp.rs`, Settings | M |
-| W6 | echo gate (+ AEC3 if tripped); hybrid search; export; decisions schema; guard pass; multilingual; evals; window-read names; MCP writes | capture, post, search, autoresearch | L, gated |
+| W6 | echo gate (+ AEC3 if tripped); hybrid search; export; decisions schema; guard pass; multilingual; evals; window-read names | capture, post, search, autoresearch | L, gated |
 
 ## 1. Why
 
@@ -388,8 +388,8 @@ Copy, exactly: `<App> is using your microphone` · optional `<Title> · <hh:mm>�
 `Start recording`, secondary `Not now`, overflow `⋮` → `Never for <App>` (and, from W2, `Which meeting is this?`) · the lawful
 line verbatim from R3: **"By starting the recording you acknowledge the recording is lawful."** It is a sentence, not a
 checkbox; tapping Start sends `consent: true` (`StartMeeting.consent`, `lib.rs:636-638`, "Required") and the engine records
-`consent_at` as it does today (`store.rs:94-95`). The manual start form keeps its checkbox and `CONSENT` text
-(`StartForm.tsx:33`, `:162-171`) — §18 Q4 asks whether the two wordings should converge.
+`consent_at` as it does today (`store.rs:94-95`). Amendment A2: the manual start form converges on the same sentence — its checkbox and longer `CONSENT` text
+(`StartForm.tsx:33`, `:162-171`) are replaced by the R3 line, and Start sends `consent: true` (W1).
 
 `<App>` is `ProcessInfo.name` (`proc_name`, else the bundle id's last component, `system.rs:221-223`); on Windows the image
 basename without `.exe`. Degradations are shown as today's badges after start, not in the prompt.
@@ -1052,9 +1052,11 @@ arg mapping)`; a `trait Rpc { async fn call(method, params) -> Result<Value> }` 
 Rules: every list is paged (`limit` ≤ 200, cursors), never a per-call time budget — Minutes' 15 s corpus lease "denies every query
 on a real corpus" (#933, G `G-web-survey.md:97`, `:343`). Tool descriptions carry a one-line "use X first for Y" so a client
 routes to the smallest tool (Minutes' routing skill, E `E-minutes-source-recon.md:245`); the server's `instructions`
-(`ServerInfo`, as `mcp.rs:117-121` does) repeats it. **Writes** (`meeting_edit`, `doc_update`, `task_*`, `brief_put`) are not in
-W5: RPC handlers do not pass `tools.policy` (`registry.rs:973-992` gates registry tools; RPC is the UI's channel), so honouring
-D11's "writes go through theuth's existing approval policy" needs the gate design in §14, not a shortcut.
+(`ServerInfo`, as `mcp.rs:117-121` does) repeats it. **Writes are in W5** (Amendment A2, Sky 2026-10-10 13:50: "it's a normal mcp, users data is their responsibility"): write tools
+wrap the RPCs the UI already uses (meeting edits and the project/event/template setters, note documents, knowledge, tasks, briefs,
+calendar sources) with no theuth-side gate — RPC handlers do not pass `tools.policy` (`registry.rs:973-992` gates registry tools;
+RPC is the user's channel), the MCP client's own approval prompt is the control, and every call writes its audit line (§12.5).
+W5's contract commit freezes the exact write list; `list_tools` grows past 24 accordingly.
 
 ### 12.5 Privacy and audit
 
@@ -1260,7 +1262,7 @@ playback and enrollment (`docs/design/156-meeting-view.md:74-142`) unchanged exc
 - D16 as ruled: device switching (R8; the `DeviceLost` branch at `system.rs:67-70` stays a log-and-exit), crash-recovery UI
   (D13's silent finalise only), meetings on other devices/mobile (R8), OAuth calendars and CalDAV (R4, §7.8), a local-only mode
   (R11), typing or sending into meeting chats (study §7).
-- Cut by the writer: window-title and AX participant reads in W4 (W-g, §14); MCP write tools in W5 (W-i, §14); a per-meeting
+- Cut by the writer: window-title and AX participant reads in W4 (W-g, §14); a per-meeting
   `restricted` flag (§12.5); a Tauri `Island.tsx` prompt (W-q — the page banner covers Linux); topic buttons from agenda lines
   (§8.3 — buttons need briefs); Core Audio/WASAPI listeners (W-b, §14); importing other note-takers' meetings over their MCP
   servers (study §6 item 16 — theuth's client can already mount them; no engine work, so nothing to design).
@@ -1282,7 +1284,7 @@ playback and enrollment (`docs/design/156-meeting-view.md:74-142`) unchanged exc
    the no-linger ruling. Both are pre-existing parity gaps W1 should close while it is in those files.
 7. The ICS plan's `rrule` crate has no `RECURRENCE-ID`; overrides are handled by our reader (§7.3) — a known ceiling, not a bug.
 
-**Questions only Sky can answer.**
+**Questions only Sky can answer — answered 2026-10-10 13:50, see Amendment A2.**
 
 1. Should a meeting with a project move its session under that project in the sidebar (W-c), or keep every meeting under
    `meetings` and show the project only on the meeting page?
@@ -1298,3 +1300,8 @@ playback and enrollment (`docs/design/156-meeting-view.md:74-142`) unchanged exc
 - 2026-10-10 13:05 — main c22556ea ("popnote": `ControlCenter.tsx` centre/note row with a `ResizeHandle`, `meeting-settings.ts`
   `noteSplit` + `meeting-settings.test.ts`) landed after the cut at b4e5833a. Waves W1 (§6.4, `meeting-settings.ts`) and W3
   (meeting-page header chips, `ControlCenter.tsx`) start from main at or after c22556ea; nothing in this design conflicts with it.
+- 2026-10-10 13:50 — **A2, Sky's answers to the five questions** (knowledge `decisions/theuth-design-158-questions-rulings-2026-10-10`):
+  (1) a meeting with a project lists its session under that project in the sidebar (W3; W-c confirmed); (2) MCP writes YES, as a
+  normal MCP server — "it's a normal mcp, users data is their responsibility" — no proposal step and no theuth approval gate; W5
+  ships write tools (W-i superseded, §12.4, §17); (3) one sentence everywhere: the start form drops its checkbox and longer wording
+  for the R3 sentence (W1, §5.2); (4) MCP port 7788 confirmed; (5) Linux: the Meetings-page banner only (W-q confirmed).
