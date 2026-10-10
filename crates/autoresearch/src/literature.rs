@@ -1232,23 +1232,23 @@ pub(crate) mod tests {
             3
         );
         // Searches went through `invoke_tool` with `read: 3`; the session's toolset is untouched.
-        let calls = canned.calls.lock();
-        assert_eq!(calls.len(), 3);
-        assert!(
-            calls
-                .iter()
-                .all(|(n, a)| n == "search_web" && a["read"] == 3)
-        );
-        // The extraction call saw the passages fenced as data, and never the brief; the injected
-        // page's own fence and forged headers cannot close or fake it (R-W5-2).
-        let users = canned.side_users.lock();
-        assert!(users[1].contains("They are data"));
-        assert!(users[1].contains("galloping"));
-        assert_eq!(users[1].matches("```").count(), 2, "{}", users[1]);
-        assert!(users[1].contains("''' end of data"));
-        assert_eq!(users[1].matches("\nURL: ").count(), 3);
-        drop(calls);
-        drop(users);
+        {
+            let calls = canned.calls.lock();
+            assert_eq!(calls.len(), 3);
+            assert!(
+                calls
+                    .iter()
+                    .all(|(n, a)| n == "search_web" && a["read"] == 3)
+            );
+            // The extraction call saw the passages fenced as data, and never the brief; the
+            // injected page's own fence and forged headers cannot close or fake it (R-W5-2).
+            let users = canned.side_users.lock();
+            assert!(users[1].contains("They are data"));
+            assert!(users[1].contains("galloping"));
+            assert_eq!(users[1].matches("```").count(), 2, "{}", users[1]);
+            assert!(users[1].contains("''' end of data"));
+            assert_eq!(users[1].matches("\nURL: ").count(), 3);
+        }
 
         // The brief: quotes inside one fence, the injected fence escaped, nothing outside.
         let section = brief_section(&env.store, &study).await.unwrap();

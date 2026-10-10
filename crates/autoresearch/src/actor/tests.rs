@@ -50,6 +50,10 @@ struct Fake {
     /// 159 R-SEAMS-7: every `(git op, base sha)` the actor handed to `patch_hash`/`discard`/
     /// `diff_text`/`reject` — the tree an experiment is diffed against must be its parent.
     bases: Mutex<Vec<(String, String)>>,
+    /// 159 W7 H6: the brief caps and the `crash_retries` the actor handed to `brief`, and the
+    /// novelty threshold handed to `novelty` — the mechanism's overlay must reach both.
+    brief_cfg: Mutex<Option<(crate::config::BriefConfig, u8)>>,
+    novelty_threshold: Mutex<Option<f64>>,
 }
 
 impl Default for Fake {
@@ -87,6 +91,8 @@ impl Default for Fake {
             custody_from: Default::default(),
             doc: Mutex::new(Some("doc-1".into())),
             bases: Default::default(),
+            brief_cfg: Default::default(),
+            novelty_threshold: Default::default(),
         }
     }
 }
@@ -300,9 +306,10 @@ impl Backend for Fake {
         &self,
         _: &Store,
         study: &StudyRecord,
-        _: &crate::config::BriefConfig,
+        cfg: &crate::config::BriefConfig,
         cx: &crate::brief::Context,
     ) -> Result<Brief> {
+        *self.brief_cfg.lock() = Some((cfg.clone(), cx.crash_retries));
         Ok(Brief {
             text: format!(
                 "<study slug=\"{}\" experiment=\"{}\">{}</study>",
@@ -321,9 +328,10 @@ impl Backend for Fake {
         _: &str,
         _: &RunArgs,
         _: &str,
-        _: f64,
+        threshold: f64,
         _: bool,
     ) -> Result<Novelty> {
+        *self.novelty_threshold.lock() = Some(threshold);
         Ok(Novelty {
             refused: self.novelty_refusal.lock().clone(),
             ..Novelty::default()
@@ -3460,6 +3468,174 @@ async fn attention_lists_pending_pairs_and_requested_launches() {
     assert_eq!(
         items[1].title,
         "Study t1: launch #2 needs your press · exposure 10 %"
+    );
+}
+
+/// Commit a v2 of the mechanism (a tighter brief, a stricter novelty threshold, more crash
+/// retries), register it and adopt it; returns its sha.
+async fn adopt_v2(root: &Path) -> String {
+    let repo = crate::mechanism::ensure(root).unwrap();
+    std::fs::write(
+        repo.join("mechanism.yaml"),
+        "version: 2\nbrief: {max_bytes: 2000}\nplateau: {window: 6}\nnovelty: {threshold: 0.9}\ndefaults: {crash_retries: 4}\n",
+    )
+    .unwrap();
+    crate::git::plumbing(&repo, &["commit", "-q", "-am", "v2"]).unwrap();
+    let sha = crate::git::head(&repo).unwrap();
+    let v = crate::mechanism::register(root, &sha, "test").unwrap();
+    crate::mechanism::rpc(root, MechanismOp::Adopt { version: v })
+        .await
+        .unwrap();
+    sha
+}
+
+/// R-W6-3 (meta) / W7 H2 / R-SEAMS-17: `create` takes the meta preset — the mechanism repo
+/// is seeded before the draft is checked — and pins the active mechanism on the row.
+#[tokio::test]
+async fn create_accepts_every_kind_meta_and_pins_the_active_mechanism() {
+    let fake = Fake::default();
+    let mut h = harness(Arc::new(fake), AutoresearchConfig::default()).await;
+    let root = h.studies.root.clone();
+    assert!(!root.join("mechanism").exists());
+    let mut spec = crate::suite::preset(&crate::mechanism::repo(&root).display().to_string());
+    assert_eq!(spec.kind(), crate::types::KIND_META);
+    crate::tools::validate_spec(&spec).unwrap();
+    let info = create(
+        &mut h.studies,
+        Create {
+            spec: spec.clone(),
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(info.state, StudyState::Preparing);
+    assert!(
+        root.join("mechanism/.git").exists(),
+        "ensure ran before the repo check"
+    );
+    let s = h.studies.store.get_study("meta").await.unwrap().unwrap();
+    assert_eq!(s.created_by.as_deref(), Some("user"));
+    assert_eq!(s.mechanism, None, "nothing adopted: the compiled defaults");
+    // With a version adopted, a new study pins its sha at create.
+    let v2 = adopt_v2(&root).await;
+    spec.slug = "meta2".into();
+    create(
+        &mut h.studies,
+        Create {
+            spec,
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap();
+    let s = h.studies.store.get_study("meta2").await.unwrap().unwrap();
+    assert_eq!(s.mechanism.as_deref(), Some(v2.as_str()));
+}
+
+/// W7 H6: the mechanism's parameters reach their readers — the brief's caps and
+/// `crash_retries`, the novelty threshold — through `mechanism::overlay`; without an
+/// adoption the readers see `env.cfg` unchanged.
+#[tokio::test]
+async fn an_adopted_mechanism_changes_what_the_brief_and_novelty_readers_see() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 90.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let cfg = h.studies.cfg.clone();
+    let session = started(&mut h, "t1", 10).await;
+    begin(
+        &mut h.studies,
+        Begin {
+            session,
+            slot: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        fake.brief_cfg.lock().clone(),
+        Some((cfg.brief.clone(), cfg.defaults.crash_retries)),
+        "nothing adopted: the compiled config, byte for byte"
+    );
+    let root = h.studies.root.clone();
+    let v2 = adopt_v2(&root).await;
+    let session2 = started(&mut h, "t2", 10).await;
+    let s = h.studies.store.get_study("t2").await.unwrap().unwrap();
+    assert_eq!(s.mechanism.as_deref(), Some(v2.as_str()));
+    begin(
+        &mut h.studies,
+        Begin {
+            session: session2,
+            slot: None,
+        },
+    )
+    .await
+    .unwrap();
+    let (brief, retries) = fake.brief_cfg.lock().clone().unwrap();
+    assert_eq!((brief.max_bytes, retries), (2000, 4));
+    assert_eq!(
+        brief.recent, cfg.brief.recent,
+        "an unset cap stays compiled"
+    );
+    run(
+        &mut h.studies,
+        Run {
+            session: session2,
+            slot: None,
+            args: RunArgs {
+                idea: "x".into(),
+                category: "c".into(),
+                ..RunArgs::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(*fake.novelty_threshold.lock(), Some(0.9));
+}
+
+/// W2 H6: a `file` artefact with no repo gets a scratch repo at `<root>/<slug>/artefact`,
+/// seeded with `cases.artefact` from `data_dir` in one commit; the row's `repo` and
+/// `spec.repo` point at it and the study starts.
+#[tokio::test]
+async fn a_file_artefact_without_a_repo_gets_a_seeded_scratch_repo() {
+    let fake = Fake::with_values(&[100.0, 101.0, 99.0]);
+    let mut h = harness(fake, AutoresearchConfig::default()).await;
+    std::fs::create_dir_all(h._dir.path().join("prompts")).unwrap();
+    std::fs::write(h._dir.path().join("prompts/prompt.md"), "Be terse.\n").unwrap();
+    let mut sp = spec(&h, "scratch", 10);
+    sp.repo = String::new();
+    sp.axes.artefact = Artefact::File;
+    sp.cases = Some(CaseSetSpec {
+        artefact: "prompts/prompt.md".into(),
+        ..CaseSetSpec::default()
+    });
+    sp.scope = vec!["prompts/prompt.md".into()];
+    let s = create_settles(&mut h, sp).await;
+    assert_eq!(s.state, StudyState::Running, "{:?}", s.state);
+    let dir = h.studies.root.join("scratch").join("artefact");
+    assert_eq!(s.repo, dir.display().to_string());
+    assert_eq!(s.spec.repo, s.repo);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("prompts/prompt.md")).unwrap(),
+        "Be terse.\n"
+    );
+    assert_eq!(
+        crate::git::read(&dir, &["rev-list", "--count", "HEAD"])
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    // Without the seed file the study fails with the reason, never a `create` refusal.
+    let mut sp = spec(&h, "scratch2", 10);
+    sp.repo = String::new();
+    sp.axes.artefact = Artefact::File;
+    let s = create_settles(&mut h, sp).await;
+    assert!(
+        matches!(&s.state, StudyState::Failed { reason } if reason.contains("cases.artefact")),
+        "{:?}",
+        s.state
     );
 }
 

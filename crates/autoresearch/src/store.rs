@@ -209,6 +209,10 @@ pub struct StudyPatch {
     pub scores: Option<BTreeMap<String, f64>>,
     /// 159 W7: the pinned mechanism sha (`Some(None)` = back to compiled defaults).
     pub mechanism: Option<Option<String>>,
+    /// 159 W2 H6: the scratch repo a `file` artefact study gets at prepare (both columns).
+    pub repo: Option<String>,
+    /// The spec with its `repo` rewritten (boxed: every handler carries a `StudyPatch`).
+    pub spec: Option<Box<crate::types::StudySpec>>,
 }
 
 impl StudyPatch {
@@ -282,6 +286,12 @@ impl StudyPatch {
         }
         if let Some(v) = &self.mechanism {
             s.mechanism = v.clone();
+        }
+        if let Some(v) = &self.repo {
+            s.repo = v.clone();
+        }
+        if let Some(v) = &self.spec {
+            s.spec = (**v).clone();
         }
     }
 }
@@ -1035,6 +1045,12 @@ fn study_update(slug: &str, from: &[&str], p: &StudyPatch) -> Q {
     }
     if let Some(v) = &p.mechanism {
         q.push(", mechanism = ").push_bind(v.clone());
+    }
+    if let Some(v) = &p.repo {
+        q.push(", repo = ").push_bind(v.clone());
+    }
+    if let Some(v) = &p.spec {
+        q.push(", spec = ").push_bind(to_json(v));
     }
     q.push(" WHERE slug = ").push_bind(slug.to_owned());
     if !from.is_empty() {

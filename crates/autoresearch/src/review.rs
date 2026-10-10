@@ -468,8 +468,12 @@ pub async fn advise(
             _ => runtime::ModelRole::Session,
         },
     };
-    let system = crate::mechanism::advisor_prompt(&rt.data_dir.join(crate::DIR), None)
-        .unwrap_or_else(|| ADVISOR_SYSTEM.to_owned()); // 159:W7
+    // 159 W7 H8 / R-SEAMS-17: the configured `root:` (as finalize.rs reads it) and the
+    // study's pin, so a running study's advisor never switches on Adopt.
+    let cfg: crate::config::AutoresearchConfig = rt.section("autoresearch").unwrap_or_default();
+    let system =
+        crate::mechanism::advisor_prompt(&cfg.root(&rt.data_dir), study.mechanism.as_deref())
+            .unwrap_or_else(|| ADVISOR_SYSTEM.to_owned()); // 159:W7
     let reply = call(study, role, &system, user)
         .await
         .map_err(Error::refused)?;

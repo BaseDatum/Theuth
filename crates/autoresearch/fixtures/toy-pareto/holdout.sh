@@ -10,10 +10,13 @@ sys.path.insert(0, os.environ["TOY_PARETO_EVALUATOR"])
 from corpus import documents
 from codec import encode, decode
 
+# 159 R-W7-6: the suite runner draws the seed per outer study and passes it in the
+# environment; it is never in the repo, so a session tuned to the holdout cannot see it.
+SEED = int(os.environ.get("AUTORESEARCH_HOLDOUT_SEED", "0"))
 total_ms = 0.0
 total_bytes = 0
 for seed, count, words in ((101, 8, 900), (202, 10, 2200), (303, 6, 1500)):
-    docs = documents(seed, count, words)
+    docs = documents(seed + SEED, count, words)
     t0 = time.perf_counter()
     blobs = [encode(d) for d in docs]
     back = [decode(b) for b in blobs]
@@ -24,7 +27,7 @@ for seed, count, words in ((101, 8, 900), (202, 10, 2200), (303, 6, 1500)):
     size = sum(len(b) for b in blobs)
     total_ms += ms
     total_bytes += size
-    print(f"CASE s{seed} time_ms={ms:.3f} size_kb={size / 1024:.3f}")
+    print(f"CASE s{seed + SEED} time_ms={ms:.3f} size_kb={size / 1024:.3f}")
 print(f"METRIC time_ms={total_ms:.3f}")
 print(f"METRIC size_kb={total_bytes / 1024:.3f}")
 PY

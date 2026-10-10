@@ -1,6 +1,6 @@
 import { Link, useRouterState } from '@tanstack/react-router'
 import { Trash2 } from 'lucide-react'
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useApi } from '@/lib/rpc'
@@ -13,17 +13,28 @@ import { STATE_CLASS, delta, experimentsText, matches, sortStudies, stateLabel }
 import { useDiscardDraft, useDrafts, useStudies } from './queries'
 import { discardMessage } from './setup'
 
+/** 159 W7 H7: a meta study's inner study (`created_by: meta:<outer>/…`); the rail hides those unless asked. */
+const isInner = (s: StudyInfo) => s.created_by?.startsWith('meta:') ?? false
+
 /**
  * The rail body: the setting-up drafts first (151 D6), then every study as a row — slug, state pill, headline delta,
  * experiments n/N, the goal. ponytail: not virtualized; studies are tens, not thousands.
+ * `showInner` is the toggle's initial state (false; a test flips it).
  */
-export function StudyList({ q, active }: { q: string; active: string | undefined }) {
+export function StudyList({ q, active, showInner: initialInner = false }: { q: string; active: string | undefined; showInner?: boolean }) {
   const list = useStudies()
   const drafts = useDrafts()
-  const rows = useMemo(() => sortStudies((list.data ?? []).filter((s) => matches(s, q))), [list.data, q])
+  const [showInner, setShowInner] = useState(initialInner)
+  const inner = useMemo(() => (list.data ?? []).filter(isInner).length, [list.data])
+  const rows = useMemo(() => sortStudies((list.data ?? []).filter((s) => (showInner || !isInner(s)) && matches(s, q))), [list.data, q, showInner])
   const setting = useMemo(() => (drafts.data ?? []).filter((d) => matches({ slug: d.draft_id, goal: d.goal }, q)), [drafts.data, q])
   // The open setup chat (`/autoresearch/new?chat=<origin>`) marks its draft's row.
   const chat = useRouterState({ select: (s): string | null => (typeof s.location.search.chat === 'string' ? s.location.search.chat : null) })
+  const toggle = inner > 0 && (
+    <Button variant="ghost" size="xs" className="mx-1 my-1 text-fg-tertiary" aria-pressed={showInner} onClick={() => setShowInner((v) => !v)}>
+      {showInner ? 'Hide inner studies' : `Show ${inner} inner ${inner === 1 ? 'study' : 'studies'}`}
+    </Button>
+  )
   if (list.isPending) {
     return (
       <div className="space-y-2 p-3">
@@ -41,7 +52,14 @@ export function StudyList({ q, active }: { q: string; active: string | undefined
       </p>
     )
   }
-  if (rows.length === 0 && setting.length === 0) return <p className="p-3 text-sm text-fg-tertiary">No matches</p>
+  if (rows.length === 0 && setting.length === 0) {
+    return (
+      <>
+        <p className="p-3 text-sm text-fg-tertiary">No matches</p>
+        {toggle}
+      </>
+    )
+  }
   return (
     <nav className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1" aria-label="Studies">
       {setting.map((d) => (
@@ -50,6 +68,7 @@ export function StudyList({ q, active }: { q: string; active: string | undefined
       {rows.map((s) => (
         <Row key={s.slug} info={s} active={active === s.slug} />
       ))}
+      {toggle}
     </nav>
   )
 }

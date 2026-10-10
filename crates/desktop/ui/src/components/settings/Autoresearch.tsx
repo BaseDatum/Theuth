@@ -3,6 +3,7 @@ import { FlaskConical } from 'lucide-react'
 import { useModels } from '@/components/agents/queries'
 import { KEY, useAutoresearchApi, useAutoresearchSettings } from '@/components/autoresearch/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
+import { Mechanism } from '@/components/settings/Mechanism'
 import { Count, Empty, Row, Section, bounded, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -32,7 +33,7 @@ export function secondsOf(d: string): number | null {
   return Math.round(unit === 'ms' ? v / 1000 : unit === 's' ? v : unit === 'h' ? v * 3600 : v * 60)
 }
 
-/** Settings › Autoresearch (140 §13.1): defaults, model pickers, reviewer action, bench lock + load threshold, keep-finished days. Reads/writes `autoresearch.settings.get|set`. */
+/** Settings › Autoresearch (140 §13.1): defaults, model pickers, reviewer action, bench lock + load threshold, keep-finished days; then the W7 Mechanism section. Reads/writes `autoresearch.settings.get|set`. */
 export function Autoresearch() {
   const api = useAutoresearchApi()
   const settings = useAutoresearchSettings()
@@ -160,6 +161,8 @@ export function Autoresearch() {
           <span className="text-sm text-fg-secondary">days</span>
         </Row>
       </Section>
+
+      <Mechanism />
     </>
   )
 }

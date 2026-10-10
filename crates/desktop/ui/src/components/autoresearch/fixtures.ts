@@ -368,6 +368,7 @@ function study(args: { slug: string; goal?: string; repo?: string; state: StudyS
     stop_reason: args.stop ?? null,
     report_doc: args.report ?? null,
     kind: 'one metric',
+    created_by: null,
   }
   const detail: StudyDetail = {
     info,

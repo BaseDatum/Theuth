@@ -194,8 +194,26 @@ fn drained(fake: &Fake, step: &str) {
 /// - #10 no gain (85) → discarded
 /// - #11 no gain (85) → discarded
 /// - #12 improved (80) → kept `keep0012`; holdout 400 ×3
-#[tokio::test]
-async fn golden_ledger_140() {
+#[test]
+fn golden_ledger_140() {
+    // 159 Z: the engine runs its workers on 8 MiB stacks (crates/theuth main.rs); the scripted
+    // study's begin → brief → kinds → log → finalize chain overflows libtest's 2 MiB in a debug
+    // build, so the ledger is recorded on the same stack size the engine uses.
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(golden_ledger_140_body());
+        })
+        .expect("spawn")
+        .join()
+        .expect("the golden ledger thread panicked");
+}
+
+async fn golden_ledger_140_body() {
     let fake = Fake::with_values(&[100.0, 100.0, 100.0, 500.0, 500.0, 500.0]);
     let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
     let mut sp = spec(&h, "t1", 50);

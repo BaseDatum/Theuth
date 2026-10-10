@@ -926,7 +926,6 @@ async fn child_round(h: &H, k: u8, expect: Verdict) -> (u32, String) {
                 // "similar" to the previous slot's by design.
                 force: true,
                 reason: Some("archive test: distinct cell, same shape of edit".into()),
-                ..RunArgs::default()
             },
         },
     )

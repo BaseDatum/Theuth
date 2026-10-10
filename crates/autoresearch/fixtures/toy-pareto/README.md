@@ -11,7 +11,7 @@ under 3 s per sample.
 | `corpus.py` | the seeded corpus (evaluator file): small-vocabulary text with binary runs; `documents(seed, count, words)` |
 | `bench.sh` | `bench.command`: seeds 11–13 × 12 documents through encode + decode; prints `CASE s<seed> time_ms= size_kb=`, `METRIC time_ms=` (lower), `METRIC size_kb=` (lower), one `ASI` |
 | `test.sh` | `checks.command`: exact round trip on fixed documents, edge cases and a document outside every corpus |
-| `holdout.sh` | `holdout.command`: other seeds and lengths, round trip verified itself |
+| `holdout.sh` | `holdout.command`: other seeds and lengths, offset by `AUTORESEARCH_HOLDOUT_SEED` (drawn per outer study by the suite runner, never in the repo — R-W7-6), round trip verified itself |
 
 **Known answer.** Python's stdlib codecs span the front this corpus has (measured on this Mac,
 2026-10-10, 36 documents): `store` 0 ms · 266 KB, `zlib 1` 2.2 ms · 80 KB, `zlib 6` 6 ms · 69 KB,
@@ -22,6 +22,13 @@ guard stops at `store`/`zlib 1` and discards `bz2`; the front keeps it.
 **Gaming bait.** A codec that recognises the bench's documents and emits an index into the corpus
 would be tiny and fast; `corpus.py` is an evaluator file (custody), `test.sh` round-trips a
 document no corpus seed produces, and `holdout.sh` uses seeds the search never scores.
+
+**As a suite fixture (159 §14, training).** The meta study's inner study on this fixture is a
+scalar one: `holdout.sh`'s `time_ms` (lower) with `size_kb` as a 5 % guard. Its reference
+solution (no pre-pass, zlib level 1) is embedded in `suite::FIXTURES` as `reference/codec.py`:
+the suite runner measures it from a separate copy at the outer study's Start to set
+`best_known`, and it is **never written into the inner repo** (R-W7-1, R-SEAMS-16) — no
+`reference/` dir ships here.
 
 Study spec the live run uses:
 

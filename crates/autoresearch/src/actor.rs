@@ -1348,6 +1348,7 @@ fn info_from(
         stop_reason: study.stop_reason.clone(),
         report_doc: study.report_doc.clone(),
         kind: study.spec.kind().to_owned(),
+        created_by: study.created_by.clone(),
     }
 }
 
@@ -1844,7 +1845,8 @@ fn validate(spec: &StudySpec, cfg: &AutoresearchConfig) -> Result<()> {
         return Err(Error::refused("goal is empty"));
     }
     let repo = Path::new(&spec.repo);
-    if spec.repo.trim().is_empty() || !repo.is_dir() {
+    // 159 W2 H6: a `file` artefact with no repo gets a scratch repo in `prepare_steps`.
+    if !scratch_repo(spec) && (spec.repo.trim().is_empty() || !repo.is_dir()) {
         return Err(Error::refused(format!(
             "repo `{}` is not a directory",
             spec.repo
@@ -1905,6 +1907,14 @@ pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
     // README spec carries `objectives` only — R-W6-3, every kind creatable).
     let mut spec = m.spec;
     spec.normalise();
+    // 159 W7 H2: the mechanism repo exists before the draft is checked (`validate` reads
+    // `repo.is_dir()`); `git init` is a process spawn, so off the mailbox thread (R-100).
+    if spec.axes.artefact == Artefact::Mechanism {
+        let root = env.root.clone();
+        tokio::task::spawn_blocking(move || crate::mechanism::ensure(&root))
+            .await
+            .map_err(|e| Error::refused(format!("mechanism repo: {e}")))??;
+    }
     validate(&spec, &env.cfg)?;
     // 140-P live: `spawn_subagent` is gated by `agent.communication` (50 §2.1); without it
     // every wave is abandoned ("spawn_subagent is not available in this session").
@@ -1916,9 +1926,10 @@ pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
     }
     // `git rev-parse` is a process spawn: never on the mailbox thread (R-100).
     let (backend, repo) = (env.backend.clone(), PathBuf::from(&spec.repo));
-    let is_git = tokio::task::spawn_blocking(move || backend.is_git_repo(&repo))
-        .await
-        .unwrap_or(false);
+    let is_git = scratch_repo(&spec)
+        || tokio::task::spawn_blocking(move || backend.is_git_repo(&repo))
+            .await
+            .unwrap_or(false);
     if !is_git {
         return Err(Error::refused(format!(
             "repo `{}` is not a git repository (a pure jj repo needs git colocation)",
@@ -1935,6 +1946,7 @@ pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
     let mut study = StudyRecord::new(spec, Some(m.origin));
     study.state = StudyState::Preparing;
     study.created_by = Some("user".into());
+    study.mechanism = crate::mechanism::active(&env.root).map(|(_, sha)| sha); // 159:W7 pin
     study.schedule = Some(schedule_file::name(&study.slug));
     env.store.create_study(&study).await?;
     env.publish(StudyEvent::StudyChanged {
@@ -1989,10 +2001,54 @@ pub async fn prepare(env: Env, mut study: StudyRecord, start: StartWhen) {
     }
 }
 
+/// 159 W2 H6: a `file` artefact with no repo is edited in a plugin-made scratch repo
+/// (`<root>/<slug>/artefact`, seeded in `prepare_steps`).
+fn scratch_repo(spec: &StudySpec) -> bool {
+    spec.axes.artefact == Artefact::File && spec.repo.trim().is_empty()
+}
+
+/// `git init` `<root>/<slug>/artefact`, copy the seed (`cases.artefact` under `data_dir`,
+/// keeping its relative path), one commit; the study's `repo`/`spec.repo` point at it.
+async fn seed_scratch_repo(env: &Env, study: &mut StudyRecord) -> Result<PathBuf> {
+    let dir = env.study_dir(&study.slug).join("artefact");
+    let rel = study
+        .spec
+        .cases
+        .as_ref()
+        .map(|c| c.artefact.trim())
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| Error::refused("a scratch repo needs `cases.artefact` (the seed file)"))?;
+    let src = env.data_dir.join(rel);
+    let dst = dir.join(rel);
+    std::fs::create_dir_all(dst.parent().unwrap_or(&dir))?;
+    std::fs::copy(&src, &dst)
+        .map_err(|e| Error::refused(format!("seed `{}`: {e}", src.display())))?;
+    crate::git::plumbing(&dir, &["init", "-q"])?;
+    crate::git::plumbing(&dir, &["add", "-A"])?;
+    crate::git::plumbing(&dir, &["commit", "-q", "-m", "seed"])?;
+    let mut spec = study.spec.clone();
+    spec.repo = dir.display().to_string();
+    patch(
+        env,
+        study,
+        StudyPatch {
+            repo: Some(spec.repo.clone()),
+            spec: Some(Box::new(spec)),
+            ..StudyPatch::default()
+        },
+    )
+    .await?;
+    Ok(dir)
+}
+
 async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) -> Result<()> {
-    let spec = study.spec.clone();
     let slug = study.slug.clone();
-    let repo = PathBuf::from(&spec.repo);
+    let repo = if scratch_repo(&study.spec) {
+        Box::pin(seed_scratch_repo(env, study)).await?
+    } else {
+        PathBuf::from(&study.spec.repo)
+    };
+    let spec = study.spec.clone();
     let cancel = cancel_token(&env.root, &slug);
 
     let base_sha = env
@@ -2475,11 +2531,16 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
             .await?;
     }
 
-    let cx = brief_context(env, &study, n, incidents, closed, spend).await?;
-    let mut brief = env
-        .backend
-        .brief(&env.store, &study, &env.cfg.brief, &cx)
-        .await?;
+    // The overlaid config lives only through the render (the future stays small).
+    let (mut brief, max_bytes) = {
+        let cfg = mechanism_cfg(env, &study);
+        let cx = brief_context(env, &study, &cfg, n, incidents, closed, spend).await?;
+        let brief = env
+            .backend
+            .brief(&env.store, &study, &cfg.brief, &cx)
+            .await?;
+        (brief, cfg.brief.max_bytes as usize)
+    };
     brief.n = n;
     brief.segment = study.segment;
     env.store.mark_steers_seen(&slug, n).await?;
@@ -2489,7 +2550,7 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
             append_block(
                 &mut brief,
                 &crate::wave::supervisor_block(&study, w, &slots, &ideas),
-                env.cfg.brief.max_bytes as usize,
+                max_bytes,
             );
             for s in &slots {
                 env.publish(StudyEvent::ExperimentStarted {
@@ -2513,6 +2574,13 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     Ok(brief)
 }
 
+/// 159 W7 H6: `env.cfg` with the study's mechanism laid over it (brief caps, plateau window,
+/// novelty threshold, crash retries): the pin when the study has one, else the active version,
+/// else `env.cfg` byte for byte. One `git show` round per call; call it once per handler.
+pub(crate) fn mechanism_cfg(env: &Env, study: &StudyRecord) -> AutoresearchConfig {
+    crate::mechanism::overlay(&env.root, study.mechanism.as_deref(), &env.cfg)
+}
+
 /// The brief's context for experiment `n`: explore mode after a plateau (§8.4),
 /// the budget line, the code map of the scope (focus = scope paths without their
 /// glob tails, rooted at the worktree — R-76), incidents. Shared by the single
@@ -2520,6 +2588,7 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
 async fn brief_context(
     env: &Env,
     study: &StudyRecord,
+    cfg: &AutoresearchConfig,
     n: u32,
     incidents: Vec<String>,
     closed: u32,
@@ -2559,7 +2628,7 @@ async fn brief_context(
     let root = study.worktree.clone().unwrap_or_else(|| study.repo.clone());
     let code_map = env
         .backend
-        .code_map(&env.rt, &root, &focus, env.cfg.brief.code_map_tokens)
+        .code_map(&env.rt, &root, &focus, cfg.brief.code_map_tokens)
         .await;
     Ok(crate::brief::Context {
         n,
@@ -2567,8 +2636,8 @@ async fn brief_context(
         incidents,
         budget_left: (left.experiments, left.hours, left.usd),
         code_map,
-        gate: env.cfg.gate.clone(),
-        crash_retries: env.cfg.defaults.crash_retries,
+        gate: cfg.gate.clone(),
+        crash_retries: cfg.defaults.crash_retries,
         worktree: None,
         hooks: crate::hooks::before(env, study, n).await.unwrap_or(None), // 159:W5
         protocol: crate::mechanism::protocol(&env.root, study.mechanism.as_deref()), // 159:W7
@@ -2602,21 +2671,25 @@ async fn begin_slot(env: &Env, session: SessionId, slot: u8) -> Result<Brief> {
     };
     let (closed, _) = counts(&env.store, &slug).await?;
     let spend = study_spend_or_closed(env, &study).await;
-    let mut cx = brief_context(env, &study, exp.n, Vec::new(), closed, spend).await?;
-    // The child edits its slot tree, not the study worktree (140-P live: a slot that
-    // followed the brief's Worktree line edited the study tree and measured nothing).
-    cx.worktree = Some(mine.worktree.clone());
-    let mut brief = env
-        .backend
-        .brief(&env.store, &study, &env.cfg.brief, &cx)
-        .await?;
+    let (mut brief, max_bytes) = {
+        let cfg = mechanism_cfg(env, &study);
+        let mut cx = brief_context(env, &study, &cfg, exp.n, Vec::new(), closed, spend).await?;
+        // The child edits its slot tree, not the study worktree (140-P live: a slot that
+        // followed the brief's Worktree line edited the study tree and measured nothing).
+        cx.worktree = Some(mine.worktree.clone());
+        let brief = env
+            .backend
+            .brief(&env.store, &study, &cfg.brief, &cx)
+            .await?;
+        (brief, cfg.brief.max_bytes as usize)
+    };
     brief.n = exp.n;
     brief.segment = study.segment;
     let ideas = env.store.list_ideas(&slug, Some(IdeaStatus::Open)).await?;
     append_block(
         &mut brief,
         &crate::wave::child_block(wave, &mine, &ideas),
-        env.cfg.brief.max_bytes as usize,
+        max_bytes,
     );
     brief.slots = Some(vec![mine]);
     Ok(brief)
@@ -2647,8 +2720,7 @@ async fn current_experiment(
             .waiting_experiments()
             .await?
             .into_iter()
-            .filter(|e| e.slug == study.slug)
-            .last()
+            .rfind(|e| e.slug == study.slug)
     {
         return Ok(e);
     }
@@ -2704,7 +2776,7 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
         }
     };
     let slug = study.slug.clone();
-    let retries = env.cfg.defaults.crash_retries;
+    let retries = mechanism_cfg(env, &study).defaults.crash_retries; // 159 W7 H6
     let runs_so_far = u8::try_from(
         env.store
             .list_events(&slug, Some("run"), 10_000)
@@ -2838,7 +2910,8 @@ async fn measure_env(
     cancel: &CancellationToken,
 ) -> Result<RunReport> {
     let slug = study.slug.clone();
-    let retries = env.cfg.defaults.crash_retries;
+    let mcfg = mechanism_cfg(env, study); // 159 W7 H6
+    let retries = mcfg.defaults.crash_retries;
     let n = exp.n;
     let started = exp.started_at.clone();
     let incumbent = incumbent_of(study)?;
@@ -2879,7 +2952,7 @@ async fn measure_env(
             &slug,
             a,
             &patch_hash,
-            env.cfg.novelty.threshold,
+            mcfg.novelty.threshold, // 159 W7 H6
             flagged_before,
         )
         .await?;
@@ -3937,7 +4010,9 @@ async fn apply_rules_from_turn(
     if !matches!(study.state, StudyState::Running | StudyState::Paused { .. }) {
         return Ok(study.stop_reason.clone());
     }
-    match stop::evaluate(&env.store, &study, &env.cfg, spend).await? {
+    // The overlaid config is a statement temporary: dropped before the branches' awaits.
+    let rule = stop::evaluate(&env.store, &study, &mechanism_cfg(env, &study), spend).await?;
+    match rule {
         stop::Rule::Continue => Ok(None),
         stop::Rule::Explore => {
             let after_n = last_closed_n(&env.store, slug).await?;
@@ -4339,10 +4414,11 @@ async fn report_turn(env: &Env, study: &StudyRecord, doc: &str) -> Result<()> {
     let tables = report.tables();
     let (closed, _) = counts(&env.store, &study.slug).await?;
     let n = env.store.next_experiment_n(&study.slug).await?;
-    let cx = brief_context(env, study, n, Vec::new(), closed, 0.0).await?;
+    let cfg = mechanism_cfg(env, study);
+    let cx = brief_context(env, study, &cfg, n, Vec::new(), closed, 0.0).await?;
     let brief = env
         .backend
-        .brief(&env.store, study, &env.cfg.brief, &cx)
+        .brief(&env.store, study, &cfg.brief, &cx)
         .await?;
     let user = format!(
         "The study `{}` has finished. Below are the final brief (what the loop knew) and the report tables the \

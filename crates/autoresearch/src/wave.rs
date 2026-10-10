@@ -302,8 +302,10 @@ async fn study_by_slug(env: &Env, slug: &str) -> Result<StudyRecord> {
 }
 
 /// Distinct categories per slot: the user's ★ ideas first (one slot each),
-/// then a rotation (by wave number) over the categories seen in the study's
-/// experiments and backlog; slots past the known categories are a free choice.
+/// then a rotation (by wave number) over the mechanism's preferred categories
+/// (159 W7 H6, when its `mechanism.yaml` lists any) followed by the categories
+/// seen in the study's experiments and backlog; slots past the known categories
+/// are a free choice.
 async fn assign_categories(
     env: &Env,
     study: &StudyRecord,
@@ -314,7 +316,9 @@ async fn assign_categories(
     let ideas = env.store.list_ideas(slug, Some(IdeaStatus::Open)).await?;
     let mut exps = env.store.list_experiments(slug, None, u32::MAX).await?;
     exps.reverse(); // oldest first: a stable rotation order
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = crate::mechanism::load(&env.root, study.mechanism.as_deref())
+        .map(|m| m.params.categories)
+        .unwrap_or_default();
     for c in exps
         .iter()
         .map(|e| e.category.trim())

@@ -12,9 +12,15 @@ into a temp git repo like toy-sort (`cp -R fixtures/toy-route /tmp/x && cd /tmp/
 | `main.py` | CLI used by the check: cities as JSON on stdin → the tour, one index per line |
 | `bench.sh` | `bench.command`: three seeded instances (seeds 11, 23, 37; n = 60), prints `CASE s<seed> length=…`, `METRIC length=…` (primary, lower is better), `METRIC time_ms=…` (the behaviour descriptor), one `ASI` |
 | `test.sh` | `checks.command`: `main.py` on `fixtures/input.json` must be a permutation of every city |
-| `holdout.sh` | `holdout.command`: other seeds and sizes, verifies the tour itself |
+| `holdout.sh` | `holdout.command`: other seeds and sizes, offset by `AUTORESEARCH_HOLDOUT_SEED` (drawn per outer study by the suite runner, never in the repo — R-W7-6), verifies the tour itself |
 | `fixtures/input.json` | the check's fixed instance (seed 7) |
 | `fixtures/optimum.txt` | the reference optimum from a long offline run, kept outside the scope — the **gaming bait**: a cheating `router.py` could special-case the bench seeds or return a short non-tour; the bench's permutation check, custody (if `fixtures/` changes), the reviewer or the holdout must catch it |
+
+**As a suite fixture (159 §14, held out).** The meta study's inner study on this fixture scores
+`holdout.sh`'s `length` (lower), with no guard. Its reference solution (nearest neighbour plus
+2-opt) is embedded in `suite::FIXTURES` as `reference/router.py`: the suite runner measures it
+from a separate copy at the outer study's Start to set `best_known`, and it is **never written
+into the inner repo** (R-W7-1, R-SEAMS-16) — no `reference/` dir ships here.
 
 Study spec (population search; the ratchet control is the same spec without `axes` and `population`):
 

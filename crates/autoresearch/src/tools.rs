@@ -253,7 +253,9 @@ pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
     if spec.goal.trim().is_empty() {
         return Err("goal is empty".into());
     }
-    if spec.repo.trim().is_empty() || !Path::new(&spec.repo).is_absolute() {
+    // 159 W2 H6: a `file` artefact with no repo gets a scratch repo at prepare.
+    let scratch = spec.axes.artefact == crate::types::Artefact::File && spec.repo.trim().is_empty();
+    if !scratch && (spec.repo.trim().is_empty() || !Path::new(&spec.repo).is_absolute()) {
         return Err("repo must be an absolute path".into());
     }
     validate_axes(spec)?;
@@ -394,6 +396,17 @@ fn validate_axes(spec: &StudySpec) -> Result<(), String> {
     }
     if a.scoring == Scoring::World && spec.world.is_none() {
         return Err("a world study needs a `world` block".into());
+    }
+    // 159 W7 H11: one suite run (fixtures × seeds inner studies at $INNER_USD) must fit the cap.
+    if a.scoring == Scoring::Suite {
+        let s = crate::suite::suite_of(spec);
+        let planned = s.training.len() as f64 * f64::from(s.seeds) * crate::suite::INNER_USD;
+        if planned > spec.budget.per_experiment_usd {
+            return Err(format!(
+                "a suite run costs about ${planned:.0}, over budget.per_experiment_usd {}",
+                spec.budget.per_experiment_usd
+            ));
+        }
     }
     // 159 W3 R-W3-8: the prompt set must be in custody so a candidate cannot edit it.
     if a.scoring == Scoring::Pairwise
@@ -1981,6 +1994,47 @@ mod tests {
         assert_eq!(
             e,
             "autoresearch_probe is not available inside a study session"
+        );
+    }
+
+    /// 159 W7 H11: a suite run's planned inner spend must fit `budget.per_experiment_usd`.
+    #[test]
+    fn validate_spec_refuses_a_suite_run_over_the_per_experiment_cap() {
+        let mut spec = crate::suite::preset("/x/mechanism");
+        validate_spec(&spec).unwrap();
+        spec.budget.per_experiment_usd = 10.0;
+        let e = validate_spec(&spec).unwrap_err();
+        assert!(
+            e.contains("costs about $16") && e.contains("per_experiment_usd 10"),
+            "{e}"
+        );
+    }
+
+    /// 159 W2 H6: a `file` artefact without a repo is a scratch-repo study, not a refusal.
+    #[test]
+    fn validate_spec_takes_a_file_artefact_without_a_repo() {
+        let mut spec = StudySpec {
+            slug: "p".into(),
+            goal: "g".into(),
+            repo: String::new(),
+            axes: crate::types::Axes {
+                scoring: Scoring::Cases,
+                artefact: Artefact::File,
+                ..Default::default()
+            },
+            cases: Some(CaseSetSpec {
+                source: CaseSource::File,
+                path: "/abs/cases.jsonl".into(),
+                artefact: "prompt.md".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        validate_spec(&spec).unwrap();
+        spec.axes.artefact = Default::default();
+        assert_eq!(
+            validate_spec(&spec).unwrap_err(),
+            "repo must be an absolute path"
         );
     }
 }

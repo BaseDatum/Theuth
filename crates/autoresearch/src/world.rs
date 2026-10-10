@@ -2529,7 +2529,7 @@ mod tests {
             "{} ({wins} windows)",
             e.line
         );
-        assert!(wins >= 2 && wins <= 14, "{wins}");
+        assert!((2..=14).contains(&wins), "{wins}");
         assert!(
             e.gate
                 .as_ref()

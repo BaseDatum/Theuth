@@ -565,6 +565,13 @@ pub fn view(root: &Path, draft_id: &str, started: bool) -> Result<DraftView> {
 /// [`view`] on an already-read draft.
 pub fn view_of(root: &Path, d: Draft, started: bool) -> DraftView {
     let spec = &d.spec;
+    // 159 W7 H2: a meta draft's repo is `<root>/mechanism`, seeded on first sight so the
+    // panel's base/dirty probe below finds a git repo.
+    if spec.axes.artefact == crate::types::Artefact::Mechanism
+        && let Err(e) = crate::mechanism::ensure(root)
+    {
+        tracing::warn!("mechanism repo not seeded: {e}");
+    }
     let repo = Path::new(spec.repo.trim());
     let (base_sha, dirty) = if non_empty(&spec.repo) && git::is_git_repo(repo) {
         match git::resolve_base(repo, &spec.base, true) {

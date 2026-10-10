@@ -86,8 +86,44 @@ pub struct Fixture {
     pub scope: &'static str,
     /// The inner study's goal.
     pub goal: &'static str,
+    /// The holdout's `METRIC <name>=` the inner study minimises (lower is better), and its unit.
+    pub metric: &'static str,
+    /// The inner study's one secondary guard `(name, max_regression)`, when the bench prints one.
+    pub guard: Option<(&'static str, &'static str)>,
     /// `(path, text, executable)`.
     pub files: &'static [(&'static str, &'static str, bool)],
+}
+
+impl Fixture {
+    /// The metric's unit for the inner spec.
+    fn unit(&self) -> &'static str {
+        if self.metric == "time_ms" { "ms" } else { "" }
+    }
+
+    /// The files an inner session may not touch and custody hashes: everything but the scope,
+    /// `main.py`, `.gitignore` and `reference/*`; a nested file names its top directory
+    /// (`fixtures/`), so the list is `[bench.sh, test.sh, holdout.sh, fixtures/]` for the §14
+    /// shape and `[.., corpus.py]` for toy-pareto.
+    fn evaluator_paths(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (p, ..) in self.files {
+            if *p == self.scope
+                || *p == "main.py"
+                || *p == ".gitignore"
+                || p.starts_with("reference/")
+            {
+                continue;
+            }
+            let entry = match p.split_once('/') {
+                Some((dir, _)) => format!("{dir}/"),
+                None => (*p).to_owned(),
+            };
+            if !out.contains(&entry) {
+                out.push(entry);
+            }
+        }
+        out
+    }
 }
 
 macro_rules! fixture_files {
@@ -135,15 +171,17 @@ print(f"METRIC time_ms={total:.3f}")
 PY
 "#;
 
-/// The fixtures this build can materialise. toy-pareto (W1) and toy-route (W4) are not in
-/// this tree; Z adds their rows (as-built W7, Hand-offs). toy-sort ships no `reference/`, so
-/// its reference (`sorted`) is embedded here. `reference/*` entries feed `best_known` only
-/// and are never written into an inner repo (R-W7-1).
+/// The fixtures this build can materialise (§14: the four training and three held-out). toy-sort,
+/// toy-pareto and toy-route ship no `reference/` dir, so their references are embedded here.
+/// `reference/*` entries feed `best_known` only and are never written into an inner repo
+/// (R-W7-1, R-SEAMS-16).
 pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "toy-sort",
         scope: "sorter.py",
         goal: "Make sorting faster without changing output.",
+        metric: "time_ms",
+        guard: Some(("peak_kb", "50%")),
         files: &[
             (
                 "bench.sh",
@@ -188,6 +226,8 @@ pub const FIXTURES: &[Fixture] = &[
         name: "toy-dedupe",
         scope: "dedupe.py",
         goal: "Make `dedupe` faster without changing output.",
+        metric: "time_ms",
+        guard: Some(("peak_kb", "50%")),
         files: fixture_files!(
             "toy-dedupe",
             "dedupe.py",
@@ -212,6 +252,8 @@ pub const FIXTURES: &[Fixture] = &[
         name: "toy-wordfreq",
         scope: "wordfreq.py",
         goal: "Make `top` faster without changing output.",
+        metric: "time_ms",
+        guard: Some(("peak_kb", "50%")),
         files: fixture_files!(
             "toy-wordfreq",
             "wordfreq.py",
@@ -236,6 +278,8 @@ pub const FIXTURES: &[Fixture] = &[
         name: "toy-json",
         scope: "jsonparse.py",
         goal: "Make `parse` faster without changing output.",
+        metric: "time_ms",
+        guard: Some(("peak_kb", "50%")),
         files: fixture_files!(
             "toy-json",
             "jsonparse.py",
@@ -260,6 +304,8 @@ pub const FIXTURES: &[Fixture] = &[
         name: "toy-lru",
         scope: "lru.py",
         goal: "Make `replay` faster without changing output.",
+        metric: "time_ms",
+        guard: Some(("peak_kb", "50%")),
         files: fixture_files!(
             "toy-lru",
             "lru.py",
@@ -276,6 +322,121 @@ pub const FIXTURES: &[Fixture] = &[
             (
                 "reference/lru.py",
                 include_str!("../fixtures/toy-lru/reference/lru.py"),
+                false
+            )
+        ),
+    },
+    // W1's fixture, scored as a scalar inner study on its primary `time_ms` with the README's
+    // `size_kb` as the guard (a 5 % size regression is allowed): the reference is the fastest
+    // stdlib codec inside that guard, zlib level 1 with no pre-pass (README: 2.2 ms · 80 KB
+    // against the start's 52 ms · 79 KB). No `main.py`, `corpus.py` is the evaluator file.
+    Fixture {
+        name: "toy-pareto",
+        scope: "codec.py",
+        goal: "Make the codec faster without growing its output by more than 5 %; round trips stay exact.",
+        metric: "time_ms",
+        guard: Some(("size_kb", "5%")),
+        files: &[
+            (
+                "bench.sh",
+                include_str!("../fixtures/toy-pareto/bench.sh"),
+                true,
+            ),
+            (
+                "test.sh",
+                include_str!("../fixtures/toy-pareto/test.sh"),
+                true,
+            ),
+            (
+                "holdout.sh",
+                include_str!("../fixtures/toy-pareto/holdout.sh"),
+                true,
+            ),
+            (".gitignore", "__pycache__/\n", false),
+            (
+                "codec.py",
+                include_str!("../fixtures/toy-pareto/codec.py"),
+                false,
+            ),
+            (
+                "corpus.py",
+                include_str!("../fixtures/toy-pareto/corpus.py"),
+                false,
+            ),
+            (
+                "reference/codec.py",
+                "\"\"\"Reference: no pre-pass, zlib level 1 — the fastest stdlib codec within the size guard.\"\"\"\n\
+                 \n\
+                 import zlib\n\
+                 \n\
+                 MAGIC = b\"RL1\"\n\
+                 \n\
+                 \n\
+                 def encode(data: bytes) -> bytes:\n\
+                 \x20   return MAGIC + zlib.compress(data, 1)\n\
+                 \n\
+                 \n\
+                 def decode(blob: bytes) -> bytes:\n\
+                 \x20   if not blob.startswith(MAGIC):\n\
+                 \x20       raise ValueError(\"bad magic\")\n\
+                 \x20   return zlib.decompress(blob[len(MAGIC):])\n",
+                false,
+            ),
+        ],
+    },
+    // W4's fixture: the holdout's `METRIC length=` (mean tour length, lower) is the inner metric;
+    // the reference is nearest neighbour polished by 2-opt to a local optimum.
+    Fixture {
+        name: "toy-route",
+        scope: "router.py",
+        goal: "Shorter tours (the holdout's mean length) without returning a non-tour.",
+        metric: "length",
+        guard: None,
+        files: fixture_files!(
+            "toy-route",
+            "router.py",
+            (
+                "fixtures/input.json",
+                include_str!("../fixtures/toy-route/fixtures/input.json"),
+                false
+            ),
+            (
+                "fixtures/optimum.txt",
+                include_str!("../fixtures/toy-route/fixtures/optimum.txt"),
+                false
+            ),
+            (
+                "reference/router.py",
+                "\"\"\"Reference: nearest neighbour from city 0, then 2-opt until no exchange shortens the tour.\"\"\"\n\
+                 \n\
+                 import math\n\
+                 \n\
+                 \n\
+                 def solve(cities):\n\
+                 \x20   n = len(cities)\n\
+                 \x20   if n == 0:\n\
+                 \x20       return []\n\
+                 \x20   left = set(range(1, n))\n\
+                 \x20   tour = [0]\n\
+                 \x20   while left:\n\
+                 \x20       x, y = cities[tour[-1]]\n\
+                 \x20       nxt = min(left, key=lambda j: (cities[j][0] - x) ** 2 + (cities[j][1] - y) ** 2)\n\
+                 \x20       left.remove(nxt)\n\
+                 \x20       tour.append(nxt)\n\
+                 \n\
+                 \x20   def d(a, b):\n\
+                 \x20       return math.dist(cities[a], cities[b])\n\
+                 \n\
+                 \x20   improved = True\n\
+                 \x20   while improved:\n\
+                 \x20       improved = False\n\
+                 \x20       for i in range(n - 1):\n\
+                 \x20           for j in range(i + 2, n if i > 0 else n - 1):\n\
+                 \x20               a, b, c, e = tour[i], tour[i + 1], tour[j], tour[(j + 1) % n]\n\
+                 \x20               if d(a, c) + d(b, e) < d(a, b) + d(c, e) - 1e-9:\n\
+                 \x20                   tour[i + 1 : j + 1] = reversed(tour[i + 1 : j + 1])\n\
+                 \x20                   improved = True\n\
+                 \x20   return tour\n",
                 false
             )
         ),
@@ -563,21 +724,26 @@ fn inner_spec(
     outer: &StudySpec,
     hseed: u32,
 ) -> StudySpec {
+    let evaluator_paths = f.evaluator_paths();
     StudySpec {
         slug: slug.to_owned(),
         goal: f.goal.to_owned(),
         repo: repo.display().to_string(),
         metric: MetricSpec {
-            name: "time_ms".into(),
-            unit: "ms".into(),
+            name: f.metric.into(),
+            unit: f.unit().into(),
             direction: Direction::Lower,
             min_effect: "1%".into(),
         },
-        secondary_guards: vec![Guard {
-            name: "peak_kb".into(),
-            max_regression: "50%".into(),
-            direction: Direction::Lower,
-        }],
+        secondary_guards: f
+            .guard
+            .map(|(name, max_regression)| Guard {
+                name: name.into(),
+                max_regression: max_regression.into(),
+                direction: Direction::Lower,
+            })
+            .into_iter()
+            .collect(),
         bench: BenchSpec {
             command: "bash bench.sh".into(),
             timeout: "60s".into(),
@@ -595,21 +761,17 @@ fn inner_spec(
             every: 1,
             repeats: None,
         }),
-        evaluator_paths: ["bench.sh", "test.sh", "holdout.sh", "fixtures/"]
+        // Every evaluator path is off limits too (custody, 140 §5.3); `main.py` is the check's CLI.
+        off_limits: evaluator_paths
             .iter()
-            .map(|s| (*s).to_owned())
+            .map(|p| match p.strip_suffix('/') {
+                Some(dir) => format!("{dir}/**"),
+                None => p.clone(),
+            })
+            .chain(std::iter::once("main.py".to_owned()))
             .collect(),
+        evaluator_paths,
         scope: vec![f.scope.to_owned()],
-        off_limits: [
-            "fixtures/**",
-            "test.sh",
-            "bench.sh",
-            "holdout.sh",
-            "main.py",
-        ]
-        .iter()
-        .map(|s| (*s).to_owned())
-        .collect(),
         budget: BudgetSpec {
             usd: INNER_USD,
             per_experiment_usd: INNER_PER_EXPERIMENT_USD,
@@ -639,7 +801,7 @@ pub struct Inner {
     pub fixture: String,
     /// Its seed (replicate).
     pub seed: u32,
-    /// Base holdout mean (`time_ms`).
+    /// Base holdout mean (the fixture's metric).
     pub base: Option<f64>,
     /// Final incumbent's holdout mean.
     pub last: Option<f64>,
@@ -915,7 +1077,7 @@ async fn best_known(
             .await;
         match run {
             Ok(r) if r.exit == Some(0) => {
-                if let Some(v) = r.scanned.metrics.get("time_ms") {
+                if let Some(v) = r.scanned.metrics.get(f.metric) {
                     known.insert(name.clone(), *v);
                 }
             }
@@ -1218,10 +1380,24 @@ pub async fn step(
         max_case_regression: MAX_CASE_REGRESSION,
         min_pairs: 2,
     };
-    let (paired, decision) = {
+    let (paired, mut decision) = {
         let g = GATE.read().unwrap_or_else(|e| e.into_inner());
         ((g.paired)(&pairs), (g.decide)(&pairs, &pcfg))
     };
+    // 159 R-SEAMS-15 / R-W7-3: a suite has 6–8 pairs, under `evalcore::gate::PAIRS_FOR_T`, so
+    // `decide` alone is the margin rule; every keep here also needs the paired t.
+    if decision == Decision::Accept
+        && let Some(p) = paired
+        && p.t < p.critical
+    {
+        decision = Decision::Reject(format!(
+            "paired t {:.2} below c_{} = {:.2} (mean Δ {:+.3}, sd {:.3})",
+            p.t, p.n, p.critical, p.mean, p.sd
+        ));
+    }
+    if let Decision::Reject(why) = &decision {
+        tracing::info!(slug = %study.slug, n = pairs.len(), "suite candidate not kept: {why}");
+    }
     let delta = cand_mean - ref_mean;
     let delta_pct = if ref_mean.abs() > 1e-12 {
         delta / ref_mean.abs() * 100.0
@@ -1724,12 +1900,74 @@ mod tests {
             for name in ["bench.sh", "test.sh", "holdout.sh"] {
                 assert!(dir.join(name).exists());
             }
+            // The reference solution passes the fixture's own holdout (its correctness check
+            // included) on a non-default seed and prints the metric `best_known` reads.
+            let reference = f
+                .files
+                .iter()
+                .find(|(p, ..)| *p == format!("reference/{}", f.scope))
+                .unwrap()
+                .1;
+            let copy = d.path().join("reference").join(f.name);
+            materialise(f, &copy).unwrap();
+            std::fs::write(copy.join(f.scope), reference).unwrap();
+            let out = std::process::Command::new("bash")
+                .arg("holdout.sh")
+                .current_dir(&copy)
+                .env("AUTORESEARCH_HOLDOUT_SEED", "17")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}: {}",
+                f.name,
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let metric = format!("METRIC {}=", f.metric);
+            assert!(
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .any(|l| l.starts_with(&metric)),
+                "{}: no {metric} line",
+                f.name
+            );
         }
-        assert_eq!(
-            fixture("toy-pareto").map(|f| f.name),
-            None,
-            "W1's fixture is a hand-off row"
+        // H5 / R-SEAMS-16: W1's and W4's fixtures are rows now, so the §14 suite is complete.
+        for name in TRAINING.iter().chain(HELD_OUT.iter()) {
+            assert!(fixture(name).is_some(), "{name}");
+        }
+        assert_eq!(FIXTURES.len(), TRAINING.len() + HELD_OUT.len());
+        // toy-pareto has no `fixtures/`; its evaluator file is `corpus.py`, and its guard is the
+        // README's second objective.
+        let pareto = inner_spec(
+            fixture("toy-pareto").unwrap(),
+            "x",
+            d.path(),
+            &suite_of(&preset("/x")),
+            &preset("/x"),
+            1,
         );
+        assert_eq!(
+            pareto.evaluator_paths,
+            vec!["bench.sh", "test.sh", "holdout.sh", "corpus.py"]
+        );
+        assert!(pareto.off_limits.iter().any(|p| p == "corpus.py"));
+        assert_eq!(pareto.secondary_guards[0].name, "size_kb");
+        crate::tools::validate_spec(&pareto).unwrap();
+        let route = inner_spec(
+            fixture("toy-route").unwrap(),
+            "x",
+            d.path(),
+            &suite_of(&preset("/x")),
+            &preset("/x"),
+            1,
+        );
+        assert_eq!(
+            (route.metric.name.as_str(), route.metric.unit.as_str()),
+            ("length", "")
+        );
+        assert!(route.secondary_guards.is_empty());
+        crate::tools::validate_spec(&route).unwrap();
         // Custody: every fixture file the inner session could game is an evaluator path and
         // off limits, so an inner keep that edits one is refused (140 §5.3); the holdout seed
         // is in the command the plugin runs, not in any file of the repo.
@@ -2590,9 +2828,11 @@ mod tests {
         let env = h.studies.env();
         let study = StudyRecord::new(preset("/x/mechanism"), None);
         let cfg = crate::actor::gate_cfg(&env.cfg, &study.spec).unwrap();
+        // Three pairs with equal deltas (sd 0 → t = ±99 in the fake): the paired t cannot be
+        // what rejects here (R-SEAMS-15 adds it to every accept).
         let cand = vec![s(
             "exp:3",
-            &[("a/1", 0.6), ("a/2", 0.7), ("b/1", 0.5)],
+            &[("a/1", 0.6), ("a/2", 0.6), ("b/1", 0.6)],
             SampleRole::Candidate,
             3,
         )];
@@ -2621,7 +2861,7 @@ mod tests {
                 incumbent_sample: true
             }
         );
-        // Fresh: decide. Mean d = 0.1 ≥ 0.02, no regression → Improved with the paired t.
+        // Fresh: decide. Mean d = 0.1 ≥ 0.02, no regression, t ≥ c → Improved with the paired t.
         let GateStep::Decide {
             verdict,
             delta,
@@ -2666,5 +2906,51 @@ mod tests {
             panic!()
         };
         assert_eq!((verdict, detail.unwrap().n), (Verdict::NoGain, 0));
+    }
+
+    /// R-SEAMS-15 / R-W7-3: six pairs with deltas (+0.3, −0.2, +0.1, −0.1, +0.05, 0.0) pass
+    /// the margin rule (mean +0.025 ≥ 0.02, no case under −0.25) but t ≈ 0.36 is far under
+    /// c_6; a suite keep needs the paired t at every n ≥ 2, never the margin alone.
+    #[tokio::test]
+    async fn a_margin_only_accept_is_no_gain_without_the_paired_t() {
+        set_gate(fake_gate());
+        let h = harness(Arc::new(Double::default())).await;
+        let env = h.studies.env();
+        let study = StudyRecord::new(preset("/x/mechanism"), None);
+        let cfg = crate::actor::gate_cfg(&env.cfg, &study.spec).unwrap();
+        let ids = ["a/1", "a/2", "b/1", "b/2", "c/1", "c/2"];
+        let deltas = [0.3, -0.2, 0.1, -0.1, 0.05, 0.0];
+        let refs = vec![s("base", &ids.map(|id| (id, 0.5)), SampleRole::Baseline, 0)];
+        let cand: Vec<(&str, f64)> = ids
+            .iter()
+            .zip(deltas)
+            .map(|(id, d)| (*id, 0.5 + d))
+            .collect();
+        let cand = vec![s("exp:1", &cand, SampleRole::Candidate, 1)];
+        let input = GateInput {
+            candidate: vec![0.525],
+            incumbent: vec![0.5],
+            sigma: 0.0,
+            largest_accepted_delta: None,
+            incumbent_age: 0,
+            keep_simpler: false,
+            secondaries: vec![],
+        };
+        let GateStep::Decide {
+            verdict, detail, ..
+        } = step(&env, &study, &cfg, &input, &cand, &refs)
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        let d = detail.unwrap();
+        assert_eq!(
+            (verdict, d.rule, d.n),
+            (Verdict::NoGain, GateRule::Paired, 6)
+        );
+        let t = d.stat.unwrap();
+        assert!((t - 0.3554).abs() < 1e-3, "t = {t}");
+        assert_eq!(d.threshold, Some(2.0));
     }
 }

@@ -2054,6 +2054,10 @@ wire! {
         pub report_doc: Option<String>,
         /// 159 §5.7: the kind word of §3 (`one metric`, `several objectives`, …).
         pub kind: String,
+        /// 159 W7 H7: who created it — `user`, or `meta:<outer>/…` for a meta study's inner
+        /// study (the list hides those unless asked).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub created_by: Option<String>,
     }
 }
 
