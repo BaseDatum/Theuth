@@ -1,6 +1,5 @@
 import { expect, test, vi } from 'vitest'
 import type { CalEvent } from '@/rpc/bindings/CalEvent'
-import type { Detection } from '@/rpc/bindings/Detection'
 import type { EventRef } from '@/rpc/bindings/EventRef'
 import { choices, eventLine, eventkitState, setEvent } from './calendar'
 
@@ -29,15 +28,14 @@ test('choices: match first (shown event, then alternatives), then the window min
   expect(choices(null, window, gone, NOW).map((c) => c.id)).toEqual(['g', 's', 'o'])
 })
 
-test('setEvent routes: before start → meeting_detection_set_event(event); after start → meeting_set_event(id, event); null clears either', async () => {
+test('setEvent routes: no meeting (before start) → meeting_detection_set_event(event); a meeting id → meeting_set_event(id, event); null clears either', async () => {
   const api = { meeting_detection_set_event: vi.fn(async () => null), meeting_set_event: vi.fn(async () => ({}) as never) }
-  const detection = { app_id: 'us.zoom.xos' } as Detection
-  await setEvent(api, { detection }, 's:uid:')
-  await setEvent(api, { detection }, null)
+  await setEvent(api, null, 's:uid:')
+  await setEvent(api, null, null)
   expect(api.meeting_detection_set_event.mock.calls).toEqual([['s:uid:'], [null]])
   expect(api.meeting_set_event).not.toHaveBeenCalled()
-  await setEvent(api, { meeting: 'm1' }, 'd:uid:')
-  await setEvent(api, { meeting: 'm1' }, null)
+  await setEvent(api, 'm1', 'd:uid:')
+  await setEvent(api, 'm1', null)
   expect(api.meeting_set_event.mock.calls).toEqual([
     ['m1', 'd:uid:'],
     ['m1', null],

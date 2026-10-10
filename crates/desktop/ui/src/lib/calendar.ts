@@ -74,16 +74,13 @@ export function choices(match: EventMatch | null | undefined, candidates: readon
   return out
 }
 
-/** Where a pick goes: the current detection prompt (before start) or a meeting (after). */
-export type Target = { detection: Detection } | { meeting: MeetingId }
-
 /** The api slice {@link setEvent} needs. */
 export type SetEventApi = {
   meeting_detection_set_event(event: string | null): Promise<Detection | null>
   meeting_set_event(id: MeetingId, event: string | null): Promise<Manifest>
 }
 
-/** §8.2: `meeting_detection_set_event` before start, `meeting_set_event(id, …)` after; `null` clears ("None of these"). */
-export function setEvent(api: SetEventApi, target: Target, event: string | null): Promise<Detection | Manifest | null> {
-  return 'meeting' in target ? api.meeting_set_event(target.meeting, event) : api.meeting_detection_set_event(event)
+/** §8.2: before start (`meeting` null) `meeting_detection_set_event`; after start `meeting_set_event(id, …)`. `null` clears. */
+export function setEvent(api: SetEventApi, meeting: MeetingId | null, event: string | null): Promise<Detection | Manifest | null> {
+  return meeting ? api.meeting_set_event(meeting, event) : api.meeting_detection_set_event(event)
 }
