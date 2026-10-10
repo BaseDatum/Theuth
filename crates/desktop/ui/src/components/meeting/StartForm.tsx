@@ -1,7 +1,8 @@
 // 53 §4.1 / 03 §3: the start form — source picker (System audio by default, or one app; apps playing
-// audio first), title, a dictated context box, the consent checkbox (decision 14), the session's
-// model (the chat header's picker; remembered in `meeting-settings`), the permissions row.
-// `Start` → `meeting_start` → the control center.
+// audio first), title, a dictated context box, the one lawful sentence (158 R3, Amendment A2: no checkbox;
+// Start sends `consent: true`), the project (158 §9.2: a combobox; "Default" leaves the engine's remembered /
+// `meeting.project` choice), the session's model (the chat header's picker; remembered in `meeting-settings`),
+// the permissions row. `Start` → `meeting_start` → the control center.
 
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -11,15 +12,16 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { useFavorites } from '@/components/chat/ModelMenu'
 import { ModelPicker } from '@/components/chat/ModelPicker'
+import { ProjectChip } from '@/components/meeting/ProjectChip'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { LAWFUL } from '@/lib/detection'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { PermissionState } from '@/rpc/bindings/PermissionState'
@@ -29,20 +31,23 @@ import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
 /** The picker's "System audio" row; `meeting_start` gets `process: null`. */
 const SYSTEM = 0
 const PRIVACY = 'x-apple.systempreferences:com.apple.preference.security'
-/** 53 decision 14, verbatim. */
-export const CONSENT = 'I acknowledge I understand the law and this recording is legal.'
 
-/** What `Start` sends (137 R1-D6 adds `memory`: `'endless'` with the ∞ switch on, else `null` = the engine's `default_meeting`). */
-export function startOptions(form: { pid: number; title: string; context: string; consent: boolean; model: string | null; endless: boolean }): StartMeeting {
+/** What `Start` sends (137 R1-D6 adds `memory`: `'endless'` with the ∞ switch on, else `null` = the engine's `default_meeting`; 158 R3: `consent` is always `true` — the sentence was shown; 158 §9.2: `project` only when picked — absent = remembered or `meeting.project`; 158 §11.1: `template` only when picked, else the engine resolves remembered → `meeting.template`). */
+export function startOptions(form: { pid: number; title: string; context: string; model: string | null; endless: boolean; project: string | null; template?: string | null }): StartMeeting {
   return {
     process: form.pid === SYSTEM ? null : form.pid,
     title: form.title.trim() || null,
     context: form.context.trim() || null,
-    consent: form.consent,
+    consent: true,
     session_model: form.model,
     memory: form.endless ? 'endless' : undefined,
+    project: form.project ?? undefined,
+    template: form.template ?? undefined,
   }
 }
+
+// Radix Select refuses '' as a value: "let the engine decide" is its own row.
+const AUTO = 'auto'
 
 export function StartForm() {
   const api = useApi()
@@ -54,7 +59,7 @@ export function StartForm() {
   const [pid, setPid] = useState(SYSTEM)
   const [title, setTitle] = useState('')
   const [context, setContext] = useState('')
-  const [consent, setConsent] = useState(false)
+  const [project, setProject] = useState<string | null>(null)
   const saved = useMeetingSettings((s) => s.model)
   const model = saved ?? info?.default_model
   const [pickModel, setPickModel] = useState(false)
@@ -66,8 +71,12 @@ export function StartForm() {
   const [endless, setEndless] = useState<boolean | null>(null)
   const endlessOn = endless ?? endlessSettings.data?.default_meeting ?? false
 
+  // 158 §11.1: the note template; `null` = not picked here (remembered per event, else `meeting.template`).
+  const templates = useQuery({ queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
+  const [template, setTemplate] = useState<string | null>(null)
+
   const start = useAction(
-    (_: void) => api.meeting_start(startOptions({ pid, title, context, consent, model: saved, endless: endlessOn })),
+    (_: void) => api.meeting_start(startOptions({ pid, title, context, model: saved, endless: endlessOn, project, template })),
     {
       keys: [queryKeys.meetings, queryKeys.meetingStatus],
       onSuccess: (started) => void navigate({ to: '/meetings/$id', params: { id: started.meeting } }),
@@ -111,6 +120,9 @@ export function StartForm() {
           </div>
           <Textarea rows={3} className="mt-2" value={context} onChange={(e) => setContext(e.target.value)} />
         </div>
+        <Row label="Project" description="Groups the meeting and its chat with the project's sessions. Default = the project remembered for this calendar series, else Settings › Meetings.">
+          <ProjectChip value={project} onChange={setProject} empty="Default" className="w-64 justify-between" />
+        </Row>
         <Row
           label="Session model"
           description="The meeting's own chat session runs on it; a fast, inexpensive model is the sensible choice here."
@@ -137,6 +149,21 @@ export function StartForm() {
             </PopoverContent>
           </Popover>
         </Row>
+        <Row label="Note template" description="The headings the summary is written under. Automatic: the one remembered for this calendar event, else the default from Settings › Meetings.">
+          <Select value={template ?? AUTO} onValueChange={(v) => setTemplate(v === AUTO ? null : v)}>
+            <SelectTrigger className="w-64" aria-label="Note template">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={AUTO}>Automatic</SelectItem>
+              {templates.data?.map((t) => (
+                <SelectItem key={t.slug} value={t.slug}>
+                  {t.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Row>
         <Row
           label={
             <span className="flex items-center gap-2">
@@ -152,19 +179,9 @@ export function StartForm() {
         </Row>
         <Permission label="Microphone" state={perms.data?.microphone} pane="Privacy_Microphone" />
         <Permission label="System audio recording" state={perms.data?.audio_capture} pane="Privacy_AudioCapture" />
-        <div className="py-4">
-          <Label className="items-start gap-3 leading-5">
-            <input
-              type="checkbox"
-              className="mt-0.5 size-4 shrink-0 accent-fg-accent"
-              checked={consent}
-              onChange={(e) => setConsent(e.target.checked)}
-            />
-            <span className="font-normal">{CONSENT}</span>
-          </Label>
-        </div>
+        <p className="py-4 text-sm text-fg-secondary">{LAWFUL}</p>
         <div className="flex justify-end">
-          <Button disabled={!consent || disabled || start.isPending} onClick={() => start.mutate()}>
+          <Button disabled={disabled || start.isPending} onClick={() => start.mutate()}>
             {start.isPending && <LoaderCircle className="animate-spin" />} Start
           </Button>
         </div>

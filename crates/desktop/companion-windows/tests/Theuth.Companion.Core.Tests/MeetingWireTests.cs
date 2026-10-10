@@ -45,9 +45,39 @@ public sealed class MeetingWireTests
         Assert.Equal(new MeetingChange.Activity("s1", null), D("""{"type":"TurnFinished","session":"s1","turn":"t","stop_reason":"end_turn","context":1}"""));
         var lv = Assert.IsType<MeetingChange.Level>(D("""{"type":"Level","meeting":"m1","mic_rms":0.1,"system_rms":0.2}"""));
         Assert.Equal((0.1f, 0.2f), (lv.MicRms, lv.SystemRms));
-        Assert.Null(D("""{"type":"Summarized","meeting":"m1","title":"Standup"}""")); // nothing for the island (the slice keeps its state)
+        Assert.Equal(new MeetingChange.Summarized("m1", "Standup"), D("""{"type":"Summarized","meeting":"m1","title":"Standup"}""")); // 158 §18 c6
         Assert.Null(D("""{"type":"AttentionChanged"}"""));
         Assert.Null(MeetingWire.Decode("Brief", "not json"u8));
+    }
+
+    [Fact]
+    public void DecodesThePromptEvents() // 158 §4.5 / §15.1
+    {
+        var zoom = new MeetingProcess(4242, "Zoom.exe", null, true);
+        var det = Assert.IsType<MeetingChange.Detected>(D("""{"type":"Detected","app":{"pid":4242,"name":"Zoom.exe","bundle_id":null,"active":true},"app_id":"zoom.exe","since":"2026-10-10T10:00:00Z","also":[{"pid":7,"name":"Teams.exe","bundle_id":null,"active":false}],"event":null,"project":null,"brief":null}"""));
+        Assert.Equal((zoom, "zoom.exe", "2026-10-10T10:00:00Z", "Zoom"), (det.Detection.App, det.Detection.AppId, det.Detection.Since, det.Detection.App.Display));
+        Assert.Equal(new[] { new MeetingProcess(7, "Teams.exe") }, det.Detection.Also);
+        // `also` / `event` / `project` / `brief` are `#[serde(default)]`: absent is fine; a missing `app` or `app_id` is malformed.
+        Assert.Empty(Assert.IsType<MeetingChange.Detected>(D("""{"type":"Detected","app":{"pid":1,"name":"x"},"app_id":"x","since":""}""")).Detection.Also);
+        Assert.Null(D("""{"type":"Detected","app_id":"x","since":""}"""));
+        Assert.Equal(new MeetingChange.DetectionCleared("zoom.exe", "NotNow"), D("""{"type":"DetectionCleared","app_id":"zoom.exe","reason":"NotNow"}"""));
+        Assert.Equal(new MeetingChange.AppReleased("m1", zoom, 30), D("""{"type":"AppReleased","meeting":"m1","app":{"pid":4242,"name":"Zoom.exe","bundle_id":null,"active":true},"released_for_s":30}"""));
+        // 158 §9.4 (W3): `Upcoming` → island (c); `event` is an EventRef (not a match), attendees keep the others' names only.
+        var up = Assert.IsType<MeetingChange.Upcoming>(D("""{"type":"Upcoming","event":{"id":"ics:weekly:","uid":"weekly","title":"Weekly sync","start":"2026-10-10T10:04:00Z","end":"2026-10-10T10:34:00Z","join_url":null,"join_host":null,"organizer":{"name":"Dana","email":null,"status":null,"is_me":false},"attendees":[{"name":"Sky","is_me":true},{"name":"Priya Shah","email":"p@x","status":"ACCEPTED","is_me":false}],"description":"Agenda: DR runbook"},"project":"theuth","brief":["Open: SRE-2386 owner still unassigned"]}"""));
+        Assert.Equal(("ics:weekly:", "Weekly sync", "2026-10-10T10:04:00Z", "theuth", "Agenda: DR runbook"), (up.Event.Id, up.Event.Title, up.Event.Start, up.Project, up.Event.Description));
+        Assert.Equal(new[] { "Priya Shah" }, up.Event.Attendees);
+        Assert.Equal(new[] { "Open: SRE-2386 owner still unassigned" }, up.Bullets);
+        Assert.Null(Assert.IsType<MeetingChange.Upcoming>(D("""{"type":"Upcoming","event":{"id":"e1","title":"t"},"project":null,"brief":null}""")).Bullets);
+        Assert.Null(D("""{"type":"Upcoming","event":{"id":"e1"},"project":null,"brief":null}""")); // no title: malformed
+        Assert.Null(D("""{"type":"Upcoming","project":null,"brief":null}"""));
+        // (b): a `Detected` with W2's match and W3's project/brief — the island shows the best event, the chip and the bullets.
+        var matched = Assert.IsType<MeetingChange.Detected>(D("""{"type":"Detected","app":{"pid":4242,"name":"Zoom.exe"},"app_id":"zoom.exe","since":"","also":[],"event":{"event":{"id":"ics:weekly:","title":"Weekly sync","start":"2026-10-10T10:04:00Z","end":"2026-10-10T10:34:00Z","attendees":[]},"score":0.9,"alternatives":[]},"project":"theuth","brief":["a","b"]}""")).Detection;
+        Assert.Equal(("ics:weekly:", "theuth", 2), (matched.Event!.Id, matched.Project, matched.Brief!.Count));
+        var now = new DateTimeOffset(2026, 10, 10, 10, 0, 20, TimeSpan.Zero);
+        var mid = MeetingWire.Hydrate(JsonDocument.Parse("""{"state":"Idle","meeting":null,"session":null,"elapsed_ms":0,"degraded":[],"supported":{"kind":"Full"},"detection":{"app":{"pid":4242,"name":"Zoom.exe","bundle_id":null,"active":true},"app_id":"zoom.exe","since":"2026-10-10T10:00:00Z","also":[]}}""").RootElement, null, null, now);
+        var p = Assert.IsType<MeetingPrompt.Detected>(mid.Prompt);
+        Assert.Equal((zoom, "zoom.exe", 0), (p.Detection.App, p.Detection.AppId, p.Detection.Also.Count));
+        Assert.Null(mid.Meeting);
     }
 
     [Fact]

@@ -803,6 +803,180 @@ public struct MeetingProcess: Codable, Equatable, Sendable {
     public var active: Bool
 }
 
+// MARK: 158 — detection and calendar (crates/meeting/src/detect/mod.rs, calendar/mod.rs; C158 contract, W1/W2 fill)
+
+/// `Cleared` (158 §4.4): why a detection prompt went away.
+public enum DetectionCleared: String, Codable, Sendable { case notNow = "NotNow", never = "Never", released = "Released", started = "Started" }
+
+/// `Attendee` (158 §8.3).
+public struct Attendee: Codable, Equatable, Sendable {
+    public var name: String
+    public var email: String?
+    public var status: String?
+    public var isMe: Bool
+    public init(name: String, email: String? = nil, status: String? = nil, isMe: Bool = false) {
+        self.name = name; self.email = email; self.status = status; self.isMe = isMe
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        email = try c.decodeIfPresent(String.self, forKey: .email)
+        status = try c.decodeIfPresent(String.self, forKey: .status)
+        isMe = try c.decodeIfPresent(Bool.self, forKey: .isMe) ?? false
+    }
+}
+
+/// `EventRef` (158 §8.3): the event a prompt or a manifest is tied to; `id` is `source:uid:recurrence_id`.
+public struct EventRef: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var uid: String
+    public var title: String
+    public var start: String
+    public var end: String
+    public var joinUrl: String?
+    public var joinHost: String?
+    public var organizer: Attendee?
+    public var attendees: [Attendee]
+    public var description: String?
+    public init(id: String, uid: String, title: String, start: String, end: String, joinUrl: String? = nil, joinHost: String? = nil,
+                organizer: Attendee? = nil, attendees: [Attendee] = [], description: String? = nil) {
+        self.id = id; self.uid = uid; self.title = title; self.start = start; self.end = end; self.joinUrl = joinUrl
+        self.joinHost = joinHost; self.organizer = organizer; self.attendees = attendees; self.description = description
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        uid = try c.decode(String.self, forKey: .uid)
+        title = try c.decode(String.self, forKey: .title)
+        start = try c.decode(String.self, forKey: .start)
+        end = try c.decode(String.self, forKey: .end)
+        joinUrl = try c.decodeIfPresent(String.self, forKey: .joinUrl)
+        joinHost = try c.decodeIfPresent(String.self, forKey: .joinHost)
+        organizer = try c.decodeIfPresent(Attendee.self, forKey: .organizer)
+        attendees = try c.decodeIfPresent([Attendee].self, forKey: .attendees) ?? []
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+    }
+}
+
+/// `EventMatch` (158 §8.1): the shown event, its score, the other candidates for the `[▾]` list.
+public struct EventMatch: Codable, Equatable, Sendable {
+    public var event: EventRef
+    public var score: Float
+    public var alternatives: [EventRef]
+    public init(event: EventRef, score: Float, alternatives: [EventRef] = []) {
+        self.event = event; self.score = score; self.alternatives = alternatives
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        event = try c.decode(EventRef.self, forKey: .event)
+        score = try c.decode(Float.self, forKey: .score)
+        alternatives = try c.decodeIfPresent([EventRef].self, forKey: .alternatives) ?? []
+    }
+}
+
+/// `Detection` (158 §4.5): the prompt — `meeting_detection`, `MeetingStatus.detection`, `MeetingEvent.detected`.
+public struct Detection: Codable, Equatable, Sendable {
+    public var app: MeetingProcess
+    public var appId: String
+    public var since: String
+    public var also: [MeetingProcess]
+    public var event: EventMatch?
+    public var project: String?
+    public var brief: [String]?
+    public init(app: MeetingProcess, appId: String, since: String, also: [MeetingProcess] = [], event: EventMatch? = nil,
+                project: String? = nil, brief: [String]? = nil) {
+        self.app = app; self.appId = appId; self.since = since; self.also = also; self.event = event; self.project = project; self.brief = brief
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        app = try c.decode(MeetingProcess.self, forKey: .app)
+        appId = try c.decode(String.self, forKey: .appId)
+        since = try c.decode(String.self, forKey: .since)
+        also = try c.decodeIfPresent([MeetingProcess].self, forKey: .also) ?? []
+        event = try c.decodeIfPresent(EventMatch.self, forKey: .event)
+        project = try c.decodeIfPresent(String.self, forKey: .project)
+        brief = try c.decodeIfPresent([String].self, forKey: .brief)
+    }
+}
+
+/// `CalEvent` (158 §7.4): one event-store row; what `calendar_push` sends (W2 fills from EventKit).
+public struct CalEvent: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var source: String
+    public var uid: String
+    public var title: String
+    public var start: String
+    public var end: String
+    public var joinUrl: String?
+    public var joinHost: String?
+    public var organizer: Attendee?
+    public var attendees: [Attendee]
+    public var description: String?
+    public var allDay: Bool
+    public var tz: String?
+    public var cancelled: Bool
+    public var sequence: UInt32
+    public var location: String?
+    public var recurrenceId: String?
+    public init(id: String, source: String, uid: String, title: String, start: String, end: String, joinUrl: String? = nil,
+                joinHost: String? = nil, organizer: Attendee? = nil, attendees: [Attendee] = [], description: String? = nil,
+                allDay: Bool = false, tz: String? = nil, cancelled: Bool = false, sequence: UInt32 = 0, location: String? = nil,
+                recurrenceId: String? = nil) {
+        self.id = id; self.source = source; self.uid = uid; self.title = title; self.start = start; self.end = end
+        self.joinUrl = joinUrl; self.joinHost = joinHost; self.organizer = organizer; self.attendees = attendees
+        self.description = description; self.allDay = allDay; self.tz = tz; self.cancelled = cancelled; self.sequence = sequence
+        self.location = location; self.recurrenceId = recurrenceId
+    }
+}
+
+/// `StartMeeting` (crates/meeting/src/lib.rs): the frozen six fields plus 158's optional four; `nil`s are omitted.
+public struct StartMeeting: Codable, Equatable, Sendable {
+    public var process: UInt32?
+    public var title: String?
+    public var context: String?
+    public var consent: Bool
+    public var sessionModel: String?
+    public var memory: String?
+    /// 158: `{"kind":"detected","app_id":…}` etc.; `nil` = manual.
+    public var source: StartSource?
+    public var event: String?
+    public var project: String?
+    public var template: String?
+    public init(process: UInt32? = nil, title: String? = nil, context: String? = nil, consent: Bool, sessionModel: String? = nil,
+                memory: String? = nil, source: StartSource? = nil, event: String? = nil, project: String? = nil, template: String? = nil) {
+        self.process = process; self.title = title; self.context = context; self.consent = consent; self.sessionModel = sessionModel
+        self.memory = memory; self.source = source; self.event = event; self.project = project; self.template = template
+    }
+}
+
+/// `detect::Source` (158 §15.1, TS `StartSource`): `#[serde(tag = "kind", rename_all = "snake_case")]`.
+public enum StartSource: Codable, Equatable, Sendable {
+    case manual
+    case detected(appId: String)
+    case calendar(event: String)
+
+    private enum Keys: String, CodingKey { case kind, appId, event }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        switch try c.decode(String.self, forKey: .kind) {
+        case "manual": self = .manual
+        case "detected": self = .detected(appId: try c.decode(String.self, forKey: .appId))
+        case "calendar": self = .calendar(event: try c.decode(String.self, forKey: .event))
+        case let s: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown start source \(s)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        switch self {
+        case .manual: try c.encode("manual", forKey: .kind)
+        case .detected(let appId): try c.encode("detected", forKey: .kind); try c.encode(appId, forKey: .appId)
+        case .calendar(let event): try c.encode("calendar", forKey: .kind); try c.encode(event, forKey: .event)
+        }
+    }
+}
+
 /// The oracle's verdict (crates/meeting/src/oracle.rs:89); the island flashes `batchId`, the rest is not read.
 public struct OracleDecision: Codable, Equatable, Sendable {
     public var batchId: String
@@ -828,13 +1002,15 @@ public struct MeetingStatus: Codable, Equatable, Sendable {
     public var approvalWaiting: Bool
     public var supported: MeetingSupport?
     public var accelerator: String
+    /// 158 §4.5: the current detection prompt, for a companion connecting mid-prompt.
+    public var detection: Detection?
 
     public init(state: MeetingState = .idle, meeting: String? = nil, session: String? = nil, elapsedMs: UInt64 = 0,
                 degraded: [Degradation] = [], cursor: String? = nil, topics: [Topic] = [], approvalWaiting: Bool = false,
-                supported: MeetingSupport? = nil, accelerator: String = "") {
+                supported: MeetingSupport? = nil, accelerator: String = "", detection: Detection? = nil) {
         self.state = state; self.meeting = meeting; self.session = session; self.elapsedMs = elapsedMs
         self.degraded = degraded; self.cursor = cursor; self.topics = topics; self.approvalWaiting = approvalWaiting
-        self.supported = supported; self.accelerator = accelerator
+        self.supported = supported; self.accelerator = accelerator; self.detection = detection
     }
 
     public init(from decoder: Decoder) throws {
@@ -849,6 +1025,7 @@ public struct MeetingStatus: Codable, Equatable, Sendable {
         approvalWaiting = try c.decodeIfPresent(Bool.self, forKey: .approvalWaiting) ?? false
         supported = try c.decodeIfPresent(MeetingSupport.self, forKey: .supported)
         accelerator = try c.decodeIfPresent(String.self, forKey: .accelerator) ?? ""
+        detection = try c.decodeIfPresent(Detection.self, forKey: .detection)
     }
 }
 
@@ -871,10 +1048,19 @@ public enum MeetingEvent: Equatable, Sendable {
     case deleted(meeting: String)
     case oracleDeciding(meeting: String, batchId: String)
     case oracleDecision(meeting: String, decision: OracleDecision)
+    /// 158 §4.5: an eligible app has held the mic ≥ 15 s — the prompt. No `meeting` yet.
+    case detected(Detection)
+    /// 158 §4.5: the prompt went away. No `meeting`.
+    case detectionCleared(appId: String, reason: DetectionCleared)
+    /// 158 §4.4 rule 7: the detected app released the mic for `releasedForS` — "Stop recording?".
+    case appReleased(meeting: String, app: MeetingProcess, releasedForS: UInt32)
+    /// 158 §9.4: a matched-or-remembered event within 5 minutes — island state (c). No `meeting`.
+    case upcoming(event: EventRef, project: String?, brief: [String]?)
 
     public static let types: Set<String> = [
         "Started", "State", "Level", "Utterance", "TopicAdded", "TopicRemoved", "Brief", "Listening", "ApprovalWaiting",
         "PostProgress", "ReviewReady", "Summarized", "Deleted", "OracleDeciding", "OracleDecision",
+        "Detected", "DetectionCleared", "AppReleased", "Upcoming",
     ]
 
     /// Every field of every variant but the two topic ones, optional (`topic` is an object in `TopicAdded` and an
@@ -890,13 +1076,30 @@ public enum MeetingEvent: Equatable, Sendable {
         let held: Bool?, waiting: Bool?
         let stage: PostStage?, pct: UInt8?
         let title: String?, batchId: String?, decision: OracleDecision?
+        let app: MeetingProcess?, releasedForS: UInt32?
     }
     private struct TopicAddedRaw: Decodable { let topic: Topic }
     private struct TopicRemovedRaw: Decodable { let topic: String; let why: TopicGone }
+    private struct DetectionClearedRaw: Decodable { let appId: String; let reason: DetectionCleared }
+    private struct UpcomingRaw: Decodable { let event: EventRef; let project: String?; let brief: [String]? }
     private struct Missing: Error, CustomStringConvertible { let description: String }
+    private struct TypeOnly: Decodable { let type: String }
 
     public static func decode(_ data: Data) throws -> MeetingEvent? {
         let d = TheuthJSON.decoder
+        // 158: the pre-meeting events carry no `meeting` and `brief` is a string list there, so they
+        // decode from their own shapes before `Raw` (whose `brief` is a `Brief`).
+        switch try d.decode(TypeOnly.self, from: data).type {
+        case "Detected":
+            return .detected(try d.decode(Detection.self, from: data))
+        case "DetectionCleared":
+            let c = try d.decode(DetectionClearedRaw.self, from: data)
+            return .detectionCleared(appId: c.appId, reason: c.reason)
+        case "Upcoming":
+            let u = try d.decode(UpcomingRaw.self, from: data)
+            return .upcoming(event: u.event, project: u.project, brief: u.brief)
+        default: break
+        }
         let r = try d.decode(Raw.self, from: data)
         guard Self.types.contains(r.type) else { return nil }
         func need<T>(_ v: T?, _ key: String) throws -> T {
@@ -936,6 +1139,8 @@ public enum MeetingEvent: Equatable, Sendable {
             return .deleted(meeting: meeting)
         case "OracleDeciding":
             return .oracleDeciding(meeting: meeting, batchId: try need(r.batchId, "batch_id"))
+        case "AppReleased":
+            return .appReleased(meeting: meeting, app: try need(r.app, "app"), releasedForS: try need(r.releasedForS, "released_for_s"))
         default:
             return .oracleDecision(meeting: meeting, decision: try need(r.decision, "decision"))
         }

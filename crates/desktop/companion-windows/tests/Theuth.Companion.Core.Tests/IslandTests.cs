@@ -470,4 +470,156 @@ public sealed class MeetingReducerTests
         Assert.Equal(-1, none.Cursor);
         Assert.Null(none.LastTopicOrBriefMs);
     }
+
+    // MARK: 158 §5 — the prompt (W1W)
+
+    private static readonly MeetingProcess Zoom = new(4242, "Zoom.exe", null, true);
+    private static MeetingDetection Zoomed() => new(Zoom, "zoom.exe", "2026-10-10T10:00:00Z", Array.Empty<MeetingProcess>());
+
+    [Fact]
+    public void DetectedPromptsAndClearsByAppId()
+    {
+        var s = R(MeetingSnapshot.Empty, new MeetingChange.Detected(Zoomed()));
+        var p = Assert.IsType<MeetingPrompt.Detected>(s.Prompt);
+        Assert.Equal("zoom.exe", p.Detection.AppId);
+        Assert.Null(s.Meeting); // no meeting yet — the prompt alone shows the island
+        // Another app's clear is not ours; ours (Not now / Never / Released) ends the prompt.
+        Assert.Same(s, R(s, new MeetingChange.DetectionCleared("teams.exe", "NotNow")));
+        Assert.Null(R(s, new MeetingChange.DetectionCleared("zoom.exe", "NotNow")).Prompt);
+        Assert.Null(R(s, new MeetingChange.DetectionCleared("zoom.exe", "Never")).Prompt);
+        // Start recording → `Started` resets the slice, prompt included (the engine's `Cleared::Started` then finds nothing).
+        Assert.Null(R(s, new MeetingChange.Started("m1", "s1")).Prompt);
+    }
+
+    [Fact]
+    public void AppReleasedAsksToStopWhileLiveAndEndsWithTheRecording()
+    {
+        var s = Recording();
+        var stop = R(s, new MeetingChange.AppReleased("m1", Zoom, 30));
+        Assert.Equal(new MeetingPrompt.Stop("m1", Zoom, 30), stop.Prompt);
+        // Re-sent every 30 s: the newer count replaces the older.
+        Assert.Equal(60u, Assert.IsType<MeetingPrompt.Stop>(R(stop, new MeetingChange.AppReleased("m1", Zoom, 60)).Prompt).ReleasedForS);
+        // Another meeting's, or not live: ignored.
+        Assert.Same(s, R(s, new MeetingChange.AppReleased("m2", Zoom, 30)));
+        Assert.Null(R(R(s, new MeetingChange.State("m1", "Done", Array.Empty<string>())), new MeetingChange.AppReleased("m1", Zoom, 30)).Prompt);
+        // Stop → Stopping clears it; Paused keeps it (still live).
+        Assert.Null(R(stop, new MeetingChange.State("m1", "Stopping", Array.Empty<string>())).Prompt);
+        Assert.NotNull(R(stop, new MeetingChange.State("m1", "Paused", Array.Empty<string>())).Prompt);
+        // A detection prompt is not the meeting's: a State change leaves it.
+        var det = R(MeetingSnapshot.Empty, new MeetingChange.Detected(Zoomed()));
+        Assert.NotNull(R(det, new MeetingChange.State("m9", "Done", Array.Empty<string>())).Prompt);
+    }
+
+    // MARK: 158 §5.2 (c) / §9.4 — the upcoming brief and the project chip (W3W)
+
+    private static readonly MeetingEventRef Weekly = new("ics:weekly:", "Weekly sync", "2026-10-10T10:04:00Z", "2026-10-10T10:34:00Z", new[] { "Priya Shah", "Tom Okafor" });
+    private static readonly DateTimeOffset T10 = new(2026, 10, 10, 10, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void UpcomingShowsAloneOrAboveTheDetectionAndClearsAtStartPlusFiveOrOnStart()
+    {
+        var up = new MeetingChange.Upcoming(Weekly, "theuth", new[] { "Last time: cutover moved to Nov 3" });
+        var s = MeetingReducer.Reduce(MeetingSnapshot.Empty, up, T10);
+        var u = Assert.IsType<MeetingUpcoming>(s.Upcoming);
+        Assert.Equal(("ics:weekly:", "theuth", 1), (u.Event.Id, u.Project, u.Brief.Count));
+        Assert.True(s.Prompting);
+        Assert.Null(s.Prompt);
+        // Both apply (different events): the detection prompt arrives and the upcoming brief stays above it; its clear leaves the brief.
+        var both = R(s, new MeetingChange.Detected(Zoomed()));
+        Assert.NotNull(both.Prompt);
+        Assert.Same(u, both.Upcoming);
+        Assert.False(both.UpcomingMerged);
+        Assert.Same(u, R(both, new MeetingChange.DetectionCleared("zoom.exe", "NotNow")).Upcoming);
+        // A re-send with `brief: null` keeps the bullets it had (an empty brief never replaces a non-empty one); a newer event replaces.
+        Assert.Equal(u.Brief, MeetingReducer.Reduce(s, new MeetingChange.Upcoming(Weekly, null, null), T10).Upcoming!.Brief);
+        Assert.Equal("ics:other:", MeetingReducer.Reduce(s, new MeetingChange.Upcoming(Weekly with { Id = "ics:other:" }, null, null), T10).Upcoming!.Event.Id);
+        Assert.Empty(MeetingReducer.Reduce(s, new MeetingChange.Upcoming(Weekly with { Id = "ics:other:" }, null, null), T10).Upcoming!.Brief);
+        // Never beside a live meeting: ignored while live, cleared when the meeting goes live.
+        var live = Recording();
+        Assert.Same(live, MeetingReducer.Reduce(live, up, T10));
+        Assert.Null(R(s, new MeetingChange.State("m1", "Recording", Array.Empty<string>())).Upcoming);
+        Assert.NotNull(R(s, new MeetingChange.State("m1", "Done", Array.Empty<string>())).Upcoming);
+        // §9.4: clears at start + 5 min, not before; a meeting starting empties the slice.
+        Assert.Same(s, MeetingReducer.Expire(s, T10 + TimeSpan.FromMinutes(9)));
+        Assert.Null(MeetingReducer.Expire(s, T10 + TimeSpan.FromMinutes(9) + TimeSpan.FromSeconds(1)).Upcoming);
+        Assert.Null(R(s, new MeetingChange.Started("m1", "s1")).Upcoming);
+        Assert.False(R(s, new MeetingChange.Started("m1", "s1")).Prompting);
+    }
+
+    [Fact]
+    public void DismissedUpcomingIgnoresTheEnginesResends()
+    {
+        var up = new MeetingChange.Upcoming(Weekly, "theuth", Array.Empty<string>());
+        var s = MeetingReducer.DismissUpcoming(MeetingReducer.Reduce(MeetingSnapshot.Empty, up, T10));
+        Assert.Null(s.Upcoming);
+        Assert.Equal("ics:weekly:", s.UpcomingDismissed);
+        Assert.Same(s, MeetingReducer.Reduce(s, up, T10)); // the one-minute tick re-sends it: ignored
+        Assert.NotNull(MeetingReducer.Reduce(s, new MeetingChange.Upcoming(Weekly with { Id = "ics:next:" }, null, null), T10).Upcoming); // another event shows
+        Assert.Same(MeetingSnapshot.Empty, MeetingReducer.DismissUpcoming(MeetingSnapshot.Empty)); // nothing to dismiss
+    }
+
+    [Fact]
+    public void ADetectionOfTheSameEventMergesTheUpcomingIntoOnePane()
+    {
+        var s = MeetingReducer.Reduce(MeetingSnapshot.Empty, new MeetingChange.Upcoming(Weekly, "theuth", new[] { "Open: SRE-2386 owner still unassigned" }), T10);
+        // The engine's `Detected` names the same event, no brief / project of its own: the prompt shows the upcoming's bullets and chip.
+        var merged = R(s, new MeetingChange.Detected(Zoomed() with { Event = Weekly }));
+        Assert.True(merged.UpcomingMerged);
+        Assert.NotNull(merged.Upcoming); // kept: Not now on the prompt leaves the card standing alone again
+        var shown = merged.DetectedShown!;
+        Assert.Equal(("theuth", "Open: SRE-2386 owner still unassigned"), (shown.Project, Assert.Single(shown.Brief!)));
+        Assert.Equal(("zoom.exe", "ics:weekly:"), (shown.AppId, shown.Event!.Id));
+        Assert.False(R(merged, new MeetingChange.DetectionCleared("zoom.exe", "NotNow")).UpcomingMerged);
+        // The detection's own non-empty brief / project win; an empty one does not replace the upcoming's.
+        var own = R(s, new MeetingChange.Detected(Zoomed() with { Event = Weekly, Project = "ops", Brief = new[] { "own" } })).DetectedShown!;
+        Assert.Equal(("ops", "own"), (own.Project, Assert.Single(own.Brief!)));
+        var empty = R(s, new MeetingChange.Detected(Zoomed() with { Event = Weekly, Brief = Array.Empty<string>() })).DetectedShown!;
+        Assert.Equal("Open: SRE-2386 owner still unassigned", Assert.Single(empty.Brief!));
+        // Unmerged: the detection is shown as it came.
+        var plain = R(s, new MeetingChange.Detected(Zoomed()));
+        Assert.Null(plain.DetectedShown!.Brief);
+        Assert.Null(MeetingSnapshot.Empty.DetectedShown);
+    }
+
+    [Fact]
+    public void UpcomingCopyAndTheEventLine()
+    {
+        var u = new MeetingUpcoming(Weekly, "theuth", Array.Empty<string>());
+        Assert.Equal("In 4 min · Weekly sync", u.Headline(T10));
+        Assert.Equal("In 1 min · Weekly sync", u.Headline(T10 + TimeSpan.FromSeconds(3 * 60 + 30))); // ceil: 30 s left is still "1 min"
+        Assert.Equal("Now · Weekly sync", u.Headline(T10 + TimeSpan.FromMinutes(6)));
+        Assert.Equal("From the last meetings in theuth · attendees Priya Shah, Tom Okafor", u.SourceLine);
+        Assert.Equal("From the last meetings in theuth", (u with { Event = Weekly with { Attendees = Array.Empty<string>() } }).SourceLine);
+        Assert.Null((u with { Project = null }).SourceLine); // §9.4: no project, no brief source
+        Assert.False(u.Expired(T10 + TimeSpan.FromMinutes(9)));
+        Assert.True(u.Expired(T10 + TimeSpan.FromMinutes(10)));
+        // (b): "<Title> · <hh:mm>–<hh:mm>" in local time; the title alone when the times do not parse.
+        var local = Weekly.StartAt!.Value.ToLocalTime();
+        Assert.Equal($"Weekly sync · {local:HH:mm}–{local + TimeSpan.FromMinutes(30):HH:mm}", Weekly.Line);
+        Assert.Equal("Weekly sync", (Weekly with { Start = "soon", End = "" }).Line);
+        Assert.Equal("Weekly sync", new MeetingUpcoming(Weekly with { Start = "" }, null, Array.Empty<string>()).Headline(T10));
+    }
+
+    [Fact]
+    public void APromptShowsAndOpensTheIslandWithoutAMeeting_AndGoesWithoutLinger()
+    {
+        var m = new IslandModel();
+        m.Present(null, "Idle", prompt: true);
+        Assert.True(m.HasPrompt);
+        Assert.True(m.ShouldShow("Idle"));
+        Assert.Equal(IslandMode.Open, m.Mode); // the prompt is content, not a pill
+        Assert.Null(m.Meeting);
+        Assert.False(m.Collapse()); // answered, not hidden
+        m.Present(null, "Idle", prompt: false);
+        Assert.False(m.ShouldShow("Idle")); // D2 no-linger: gone at once when the prompt clears
+        Assert.Equal(IslandMode.Closed, m.Mode);
+        // The stop prompt re-opens a meeting the user had collapsed, and stays open until answered.
+        m.Present("m1", "Recording");
+        Assert.True(m.Collapse());
+        m.Present("m1", "Recording", prompt: true);
+        Assert.Equal(IslandMode.Open, m.Mode);
+        Assert.False(m.Collapse());
+        m.Present("m1", "Recording", prompt: false);
+        Assert.Equal(IslandMode.Closed, m.Mode); // the per-meeting collapse memory still stands
+    }
 }

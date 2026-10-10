@@ -45,6 +45,23 @@ fn main() {
         }
         Err(e) => println!("processes: ERROR {e:#}"),
     }
+    // 158 §4.7: the mic sensor beside the output picker.
+    let t = Instant::now();
+    match meeting::detect::sensor::mic_holders() {
+        Ok(list) => {
+            println!("mic holders ({} in {:?}):", list.len(), t.elapsed());
+            for p in list {
+                println!(
+                    "  {:>7}  {}  {}  [{}]",
+                    p.pid,
+                    p.name,
+                    p.bundle_id.as_deref().unwrap_or(""),
+                    meeting::detect::rules::app_id(&p)
+                );
+            }
+        }
+        Err(e) => println!("mic holders: ERROR {e:#}"),
+    }
 
     let stop = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(false));

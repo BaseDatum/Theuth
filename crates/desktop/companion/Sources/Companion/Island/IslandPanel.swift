@@ -116,7 +116,7 @@ final class IslandController {
     /// not-live pill); the pill layout appears only live-and-collapsed or as the idle wordmark with "Always show" on.
     private func applyLayout() {
         guard shown, !ui.isDetached, dragPoll == nil else { return }
-        let want = IslandModel.attached(live: IslandModel.live(seen), collapsed: model.collapsed)
+        let want = IslandModel.attached(live: IslandModel.live(seen), collapsed: model.collapsed, prompt: seen.prompt != nil)
         guard ui.state != want else { return }
         ui.state = want
         if want == .closed { ui.menuOpen = false }
@@ -161,7 +161,7 @@ final class IslandController {
     private func startTick() {
         guard tick == nil else { return }
         tick = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.ui.now = Date() }
+            Task { @MainActor in self?.ui.now = Date(); self?.store.meetingTick() }
         }
         oracleTimer?.invalidate()
         oracleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -336,6 +336,11 @@ final class IslandController {
 
     private func handle(_ e: NSEvent) -> Bool {
         let press = LegendController.press(e)
+        let s = store.meeting ?? .empty
+        // 158 §5.3: N inside the prompt's ⋮ menu = Never for <App>.
+        if ui.menuOpen, press.chars.lowercased() == "n", press.modifiers.isEmpty, case .detected(let d)? = s.prompt {
+            ui.menuOpen = false; store.meetingNever(d); return true
+        }
         guard let action = SettingsModel.shared.keys.action(for: press.chord, in: .island) else { return false }
         // §N: J/K/↑/↓ cycle the briefs (wrapping) — in the box J/K type, the arrows cycle only while it is empty.
         if action == .islandNext || action == .islandPrevious {
@@ -345,7 +350,6 @@ final class IslandController {
         }
         // While the box has focus single keys type; only ⏎ and ⎋ act (KeyGrammar's rule).
         if ui.boxFocused, action != .islandSend, action != .islandEscape { return false }
-        let s = store.meeting ?? .empty
         switch action {
         case .islandMute:
             s.state == .paused ? store.meetingResume() : store.meetingPause()
@@ -364,7 +368,13 @@ final class IslandController {
         case .islandDeeper:
             if let b = s.current { store.meetingDeeper(b.id) }
         case .islandSend:
-            return false // the TextField's onSubmit sends
+            // 158 §5.3: ⏎ = Start recording (the default button) / Keep recording (the safe default); else the TextField's onSubmit sends.
+            switch s.prompt {
+            case .detected(let d)? where !ui.boxFocused: store.meetingStartDetected(d)
+            case .upcoming(let e, let p, _)? where !ui.boxFocused: store.meetingStartUpcoming(e, project: p)
+            case .stop? where !ui.boxFocused: store.meetingKeepRecording()
+            default: return false
+            }
         case .islandEscape:
             escape()
         default:
@@ -373,11 +383,14 @@ final class IslandController {
         return true
     }
 
-    /// ⎋: leave the box (the island stays key, §N) → undo a stop hold → close the ⋮ menu and hand key back to the previous app.
+    /// ⎋: leave the box (the island stays key, §N) → undo a stop hold → close the ⋮ menu, answer a detection prompt "Not now"
+    /// or the Upcoming brief "Dismiss" (158 §5.3) and hand key back to the previous app.
     private func escape() {
         if ui.boxFocused { ui.blurTick += 1; return }
         if ui.stopHoldStarted != nil { ui.stopHoldStarted = nil; stopTimer?.invalidate(); return }
         ui.menuOpen = false
+        if case .detected(let d)? = store.meeting?.prompt { store.meetingNotNow(d) }
+        if case .upcoming? = store.meeting?.prompt { store.meetingDismissUpcoming() }
         resignKey()
     }
 
@@ -418,7 +431,7 @@ final class IslandController {
         fakeNotch = !forceNoNotch && NSScreen.screens.allSatisfy { IslandGeometry.notch(of: $0) == nil }
         if fakeNotch { IslandLog.write("probe: no screen has a notch — a 200 × 37 notch is pretended at the top centre") }
         guard let s = screen else { return IslandLog.write("probe: no screen") }
-        if which.hasPrefix("clicks") || which.hasPrefix("stop") || which.hasPrefix("open-no-hover") {
+        if which.hasPrefix("clicks") || which.hasPrefix("stop") || which.hasPrefix("open-no-hover") || which.hasPrefix("prompt") || which.hasPrefix("upcoming") {
             Task { await runInputProbe(which) }
             return
         }

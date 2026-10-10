@@ -148,16 +148,26 @@ struct OpenIsland: View {
                 // notch is black; its wings sit in the menu bar beside it) — the pane below is material like every surface.
                 Color.black.frame(height: a.rect.height) // native: the hardware notch is black
             }
-            Strip(ui: ui, store: store, slice: s)
-                .background(DragGrip(ui: ui))
-            if let b = s.current {
+            if case .detected(let d)? = s.prompt {
+                PromptView(ui: ui, store: store, detection: d)
+            } else if case .upcoming(let e, let p, let b)? = s.prompt {
+                UpcomingView(ui: ui, store: store, event: e, project: p, brief: b)
+            } else {
+                Strip(ui: ui, store: store, slice: s)
+                    .background(DragGrip(ui: ui))
+                if case .stop(let app, let secs)? = s.prompt {
+                    Divider()
+                    StopRow(ui: ui, store: store, app: app, releasedForS: secs)
+                }
+                if let b = s.current {
+                    Divider()
+                    BriefPane(ui: ui, store: store, slice: s, brief: b)
+                }
                 Divider()
-                BriefPane(ui: ui, store: store, slice: s, brief: b)
+                TranscriptRow(ui: ui, slice: s)
+                Divider()
+                RequestBox(ui: ui, store: store)
             }
-            Divider()
-            TranscriptRow(ui: ui, slice: s)
-            Divider()
-            RequestBox(ui: ui, store: store)
         }
         .frame(width: width)
         // Detached, `DetachedIsland` draws the one material behind the grip and the pane (two stacked would seam).
@@ -180,6 +190,156 @@ struct DetachedIsland: View {
         }
         .frame(width: IslandLayout.detachedWidth)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Type.cardRadius, style: .continuous))
+    }
+}
+
+/// 158 §5.2 (a)/(b) — the detection prompt in the open pane: `<App> is using your microphone`, the event line + project chip
+/// when W2/W3 filled them, Start recording · Not now, ⋮ → Never for <App>, and the lawful sentence (R3). No clock timeout.
+struct PromptView: View {
+    @ObservedObject var ui: IslandUI
+    @ObservedObject var store: Store
+    let detection: Detection
+
+    static let lawful = "By starting the recording you acknowledge the recording is lawful."
+
+    var body: some View {
+        let app = detection.app.name
+        let headline = "\(app) is using your microphone"
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                DragGrip(ui: ui).frame(width: 18, height: 26).islandRect("grip", ui)
+                Circle().fill(Color.accentColor).frame(width: 7, height: 7).overlay(Circle().stroke(Color.accentColor.opacity(0.3), lineWidth: 3)).accessibilityHidden(true)
+                Text(headline).font(.callout.weight(.semibold)).lineLimit(1)
+                Spacer(minLength: 0)
+                RoundButton(icon: EyeGlyph.symbol(ui.eyeHidden), label: EyeGlyph.label(ui.eyeHidden), tint: EyeGlyph.tint(ui.eyeHidden)) {
+                    ui.eyeHidden.toggle()
+                }.islandRect("eye", ui)
+                RoundButton(icon: "ellipsis", label: "More: never for \(app)") { ui.menuOpen.toggle() }.islandRect("menu", ui)
+            }
+            if detection.event != nil || detection.project != nil {
+                HStack(spacing: 8) {
+                    if let e = detection.event?.event { Text(MeetingReducer.eventLine(e)).font(.subheadline).foregroundColor(.secondary).lineLimit(1) }
+                    if let p = detection.project { ProjectChip(ui: ui, project: p) }
+                }.padding(.leading, 24)
+            }
+            if let b = detection.brief, !b.isEmpty { BriefBullets(bullets: b).padding(.leading, 24) } // §5.2 (c) above (b): both apply
+            HStack(spacing: 8) {
+                if ui.menuOpen {
+                    PromptButton("Never for \(app)") { ui.menuOpen = false; store.meetingNever(detection) }.islandRect("never", ui)
+                    StripButton(nil, icon: "xmark") { ui.menuOpen = false }.islandRect("menu-close", ui)
+                } else {
+                    PromptButton("Start recording", primary: true) { store.meetingStartDetected(detection) }.islandRect("start", ui)
+                    PromptButton("Not now") { store.meetingNotNow(detection) }.islandRect("not-now", ui)
+                }
+            }.padding(.leading, 24)
+            Text(Self.lawful).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true).padding(.leading, 24)
+        }
+        .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
+        .accessibilityElement(children: .contain).accessibilityLabel(headline)
+        .islandRect("prompt", ui)
+    }
+}
+
+/// 158 §5.2 (c) — the pre-meeting brief: `In N min · <Title>` + project chip, the brief's bullets, `From the last meetings in
+/// <project> · attendees …`, Start recording · Dismiss, the lawful sentence (R3). Clears at start + 5 min (`MeetingReducer.tick`).
+struct UpcomingView: View {
+    @ObservedObject var ui: IslandUI
+    @ObservedObject var store: Store
+    let event: EventRef
+    let project: String?
+    let brief: [String]
+
+    var body: some View {
+        let headline = MeetingReducer.upcomingLine(event, now: ui.now)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                DragGrip(ui: ui).frame(width: 18, height: 26).islandRect("grip", ui)
+                Image(systemName: "clock").font(.caption.weight(.semibold)).foregroundColor(.accentColor).accessibilityHidden(true)
+                Text(headline).font(.callout.weight(.semibold)).lineLimit(1)
+                Spacer(minLength: 0)
+                if let p = project { ProjectChip(ui: ui, project: p) }
+                RoundButton(icon: EyeGlyph.symbol(ui.eyeHidden), label: EyeGlyph.label(ui.eyeHidden), tint: EyeGlyph.tint(ui.eyeHidden)) {
+                    ui.eyeHidden.toggle()
+                }.islandRect("eye", ui)
+            }
+            if !brief.isEmpty { BriefBullets(bullets: brief).padding(.leading, 24) }
+            if let src = MeetingReducer.upcomingSource(project: project, attendees: event.attendees) {
+                Text(src).font(.caption).foregroundColor(.secondary).lineLimit(2).padding(.leading, 24)
+            }
+            HStack(spacing: 8) {
+                PromptButton("Start recording", primary: true) { store.meetingStartUpcoming(event, project: project) }.islandRect("start", ui)
+                PromptButton("Dismiss") { store.meetingDismissUpcoming() }.islandRect("dismiss", ui)
+            }.padding(.leading, 24)
+            Text(PromptView.lawful).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true).padding(.leading, 24)
+        }
+        .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
+        .accessibilityElement(children: .contain).accessibilityLabel(headline)
+        .islandRect("upcoming", ui)
+    }
+}
+
+/// The prompt's project chip (`⟨ theuth ⟩`, §5.2 b/c).
+struct ProjectChip: View {
+    @ObservedObject var ui: IslandUI
+    let project: String
+    var body: some View {
+        Text(project).font(.caption).padding(.horizontal, 8).frame(height: 20).background(Capsule().fill(Color.primary.opacity(0.08)))
+            .lineLimit(1).accessibilityLabel("Project \(project)").islandRect("project", ui)
+    }
+}
+
+/// The pre-meeting brief's bullets (≤ 3 by §9.4; drawn as sent).
+struct BriefBullets: View {
+    let bullets: [String]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(bullets.enumerated()), id: \.offset) { _, b in
+                Text("• \(b)").font(.subheadline).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// 158 §5.2 (d) — under the live strip after `AppReleased`: `<App> stopped using your microphone N s ago` · Stop recording? ·
+/// Stop / Keep recording. Nothing stops by itself (D4).
+struct StopRow: View {
+    @ObservedObject var ui: IslandUI
+    @ObservedObject var store: Store
+    let app: MeetingProcess
+    let releasedForS: UInt32
+
+    var body: some View {
+        let line = "\(app.name) stopped using your microphone \(releasedForS) s ago"
+        VStack(alignment: .leading, spacing: 6) {
+            Text(line).font(.callout).foregroundColor(.secondary).lineLimit(1)
+            HStack(spacing: 8) {
+                Text("Stop recording?").font(.callout.weight(.semibold))
+                Spacer(minLength: 0)
+                PromptButton("Stop") { store.meetingStop() }.islandRect("stop-now", ui)
+                PromptButton("Keep recording", primary: true) { store.meetingKeepRecording() }.islandRect("keep", ui)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .accessibilityElement(children: .contain).accessibilityLabel(line)
+        .islandRect("stop-row", ui)
+    }
+}
+
+/// The prompt's answers: the primary is an accent capsule (a non-key panel draws `.borderedProminent` grey), the rest the
+/// strip's capsule. The title is the accessibility label.
+struct PromptButton: View {
+    let title: String
+    var primary = false
+    let action: () -> Void
+    init(_ title: String, primary: Bool = false, action: @escaping () -> Void) { self.title = title; self.primary = primary; self.action = action }
+    var body: some View {
+        Button(action: action) {
+            Text(title).font(.subheadline.weight(primary ? .semibold : .regular))
+                .foregroundStyle(primary ? Color.white : Color.primary)
+                .padding(.horizontal, 12).frame(height: 26)
+                .background(Capsule().fill(primary ? Color.accentColor : Color.primary.opacity(0.08)))
+                .contentShape(Capsule())
+        }.buttonStyle(.plain)
     }
 }
 

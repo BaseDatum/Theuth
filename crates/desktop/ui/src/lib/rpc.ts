@@ -107,6 +107,10 @@ export const queryKeys = {
   meetingTranscript: (id: string) => ['meeting-transcript', id] as const,
   meetingSummary: (id: string) => ['meeting-summary', id] as const,
   meetingSpeakers: ['meeting-speakers'] as const,
+  /** `meeting_templates()` (158 §11.1): Settings › Meetings' Template select and Templates list, the start form's select. */
+  meetingTemplates: ['meeting-templates'] as const,
+  /** `meeting_suggest_speakers(id)` (158 §10.3): fetched only when Review's *Suggest names* asks; Accept/Not them edit the cached list. */
+  meetingSuggestions: (id: string) => ['meeting-suggestions', id] as const,
   /** `search_settings_get()` (16 §8): Settings › Search providers and defaults. */
   searchSettings: ['search-settings'] as const,
   /** `search_status()` (16 §8): per-engine health from the last calls. */
@@ -280,6 +284,12 @@ export function useInvalidateOn(): void {
       on('TopicRemoved', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
       on('Brief', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
       on('BriefChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.briefs })),
+      // 158 §7.6 (W2): a source was added, removed, refreshed or errored, or a push landed — Settings › Calendar's
+      // rows and every Upcoming / `[▾]` list re-read.
+      on('SourcesChanged', () => {
+        void qc.invalidateQueries({ queryKey: ['calendar-sources'] })
+        void qc.invalidateQueries({ queryKey: ['calendar-events'] })
+      }),
       // 79 §4.4: VM rows are patched in place; the bring-up log per name; `OpenDesktop` (the `sandbox_desktop` tool) pops
       // the window out of the main shell only — pop-outs receive the same stream. `Changed` is also a `ScheduleEvent`.
       on('Changed', (e) => {

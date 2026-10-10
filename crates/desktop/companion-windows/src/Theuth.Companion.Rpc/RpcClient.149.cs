@@ -103,6 +103,17 @@ public sealed partial class RpcClient
     /// <summary><c>meeting_permissions()</c>: microphone / audio-capture permission words.</summary>
     public Task<MeetingPermissions> MeetingPermissionsAsync() => CallAsync<MeetingPermissions>("meeting_permissions");
 
+    // MARK: 158 §5.4 / §15.2 — the island prompt (meeting_start exists; meeting_detection* are W1's)
+
+    /// <summary><c>meeting_start(StartMeeting)</c>: the prompt's "Start recording" sends <c>process</c>, <c>consent: true</c>, <c>source: detected</c>; the engine fills the defaults.</summary>
+    public Task<MeetingStarted> MeetingStartAsync(StartMeeting start) => CallAsync<MeetingStarted>("meeting_start", start);
+
+    /// <summary><c>meeting_detection()</c>: the current prompt, or null.</summary>
+    public Task<Detection?> MeetingDetectionAsync() => CallOrNullAsync<Detection>("meeting_detection");
+
+    /// <summary><c>meeting_detection_dismiss(app_id, never)</c>: "Not now" (10-minute cooldown) or "Never for &lt;App&gt;" (joins <c>meeting.detect.ignore</c>).</summary>
+    public Task MeetingDetectionDismissAsync(string appId, bool never) => CallRawAsync("meeting_detection_dismiss", appId, never);
+
     // MARK: briefs and speech (api.rs:1912 brief_get · :1895 brief_search · :1467 speak · :1470 stop_speaking)
 
     /// <summary><c>brief_get(id)</c>: one cached brief.</summary>

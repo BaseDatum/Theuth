@@ -61,9 +61,9 @@ const enrolled = (speech_ms: number, available_ms: number, samples: number): Enr
 })
 
 test('enrolledToast wording for New and Existing, with the cap note only when the engine used less than offered', () => {
-  expect(enrolledToast(enrolled(12_000, 12_000, 1), { kind: 'New', name: 'Dana', entity: null })).toBe('Enrolled Dana from 12 s of speech')
+  expect(enrolledToast(enrolled(12_000, 12_000, 1), { kind: 'New', name: 'Dana', entity: null, gated: false })).toBe('Enrolled Dana from 12 s of speech')
   expect(enrolledToast(enrolled(12_400, 12_400, 4), { kind: 'Existing', profile: 'p1' })).toBe('Added 12 s to Dana (4 samples)')
-  expect(enrolledToast(enrolled(30_000, 74_000, 1), { kind: 'New', name: 'Dana', entity: null })).toBe('Enrolled Dana from 30 s of speech (using 30 s of 74 s)')
+  expect(enrolledToast(enrolled(30_000, 74_000, 1), { kind: 'New', name: 'Dana', entity: null, gated: false })).toBe('Enrolled Dana from 30 s of speech (using 30 s of 74 s)')
   expect(secondsText(840)).toBe('0.8 s')
   expect(secondsText(23_400)).toBe('23 s')
 })

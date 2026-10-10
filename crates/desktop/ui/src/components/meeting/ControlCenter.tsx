@@ -11,14 +11,16 @@
 // D5), the briefs are a full-height resizable column on the left in every state (`BriefColumn`, D3), and the note
 // is the full `NoteView` (D1). `lifecycle` is the pure state → strip mapping.
 
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ArrowUp, Check, ChevronRight, LoaderCircle, PanelLeft, Zap } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Divider } from '@/components/chat/Panes'
 import { BriefColumn, hhmmss, useBriefs } from '@/components/meeting/BriefColumn'
+import { EventSwitcher } from '@/components/meeting/EventSwitcher'
 import { MeetingActions } from '@/components/meeting/MeetingActions'
 import { MeetingHeader, duration, stateLabel } from '@/components/meeting/MeetingList'
+import { ProjectChip } from '@/components/meeting/ProjectChip'
 import { MeetingNote } from '@/components/meeting/Note'
 import { Review } from '@/components/meeting/Review'
 import { Summary } from '@/components/meeting/Summary'
@@ -27,6 +29,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ResizeHandle } from '@/components/ui/resize-handle'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { changeProject } from '@/lib/meeting-project'
 import { MAX_BRIEF_WIDTH, MIN_BRIEF_WIDTH, noteSplitAt, useMeetingSettings } from '@/lib/meeting-settings'
 import { PX_STEP, RATIO_MAX, RATIO_MIN, RATIO_STEP } from '@/lib/resize-drag'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -92,6 +95,7 @@ const degradationText = (d: Degradation): string =>
 
 export function ControlCenter({ id }: { id: string }) {
   const api = useApi()
+  const qc = useQueryClient()
   const store = useMeeting()
   const isLive = store.meeting === id && live(store.state)
   const manifest = useQuery({ queryKey: queryKeys.meeting(id), queryFn: () => api.meeting_get(id) })
@@ -104,6 +108,8 @@ export function ControlCenter({ id }: { id: string }) {
   const cycle = lifecycle(state, progress?.stage ?? null, manifest.data?.failure ?? null, manifest.data?.ended_at != null)
   const retry = useAction(() => api.meeting_post_retry(id), { keys: [queryKeys.meeting(id)] })
   const summarize = useAction(() => api.meeting_summarize(id), { keys: [queryKeys.meeting(id)] })
+  // 158 §9.2 (W3): the header chip; the engine re-projects the meeting's session too, so the sidebar re-reads.
+  const setProject = useAction((project: string | null) => changeProject(api, qc, id, project), { keys: [queryKeys.meetings, queryKeys.sessions] })
   const note = manifest.data?.note ?? null
   const mobile = useIsMobile()
   const transcript = hasTranscript(cycle)
@@ -135,6 +141,10 @@ export function ControlCenter({ id }: { id: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <MeetingHeader title={title}>
+        <EventSwitcher meeting={id} className="hidden max-w-64 md:inline-flex" />
+        {manifest.data && (
+          <ProjectChip value={manifest.data.project} onChange={(p) => setProject.mutate(p)} empty="No project" variant="ghost" disabled={setProject.isPending} className="hidden max-w-48 md:inline-flex" />
+        )}
         {state && !isLive && <span className="shrink-0 text-[12px] text-fg-tertiary">{stateLabel(state)}</span>}
         {isLive && oracleSummary(store.oracle) && (
           <span className="hidden items-center gap-1 text-[12px] text-fg-tertiary md:flex" title="decision oracle this meeting (57 §3.4): skipped turns, briefs published, escalated, shadow agreement">

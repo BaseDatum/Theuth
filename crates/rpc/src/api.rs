@@ -1744,9 +1744,14 @@ pub trait Api {
     /// The current meeting's state, ids, elapsed recording time and degradations.
     #[method(name = "meeting_status")]
     async fn meeting_status(&self) -> RpcResult<meeting::Status>;
-    /// Recorded meetings, newest first (`limit` default 100).
+    /// Recorded meetings, newest first (`limit` default 100); 158 §9.2: `project` filters
+    /// to one project.
     #[method(name = "meeting_list")]
-    async fn meeting_list(&self, limit: Option<u32>) -> RpcResult<Vec<meeting::MeetingSummary>>;
+    async fn meeting_list(
+        &self,
+        limit: Option<u32>,
+        project: Option<String>,
+    ) -> RpcResult<Vec<meeting::MeetingSummary>>;
     /// One meeting's manifest.
     #[method(name = "meeting_get")]
     async fn meeting_get(&self, id: meeting::MeetingId) -> RpcResult<meeting::Manifest>;
@@ -1825,6 +1830,136 @@ pub trait Api {
     /// running meeting keeps its mode. A failed config write changes nothing.
     #[method(name = "set_meeting_live_diarization")]
     async fn set_meeting_live_diarization(&self, on: bool) -> RpcResult<bool>;
+    // 158 §15.2 — contract methods (C158). Each body is one call into the owning wave's
+    // module; the stubs answer inertly until the wave lands.
+    /// 158 §4.5 (W1): the current detection prompt, `null` when none.
+    #[method(name = "meeting_detection")]
+    async fn meeting_detection(&self) -> RpcResult<Option<meeting::Detection>>;
+    /// 158 §4.4 (W1): "Not now" (10-minute cooldown) or, with `never`, "Never for <App>"
+    /// (appends to `meeting.detect.ignore`).
+    #[method(name = "meeting_detection_dismiss")]
+    async fn meeting_detection_dismiss(&self, app_id: String, never: bool) -> RpcResult<()>;
+    /// 158 §8.2 (W2): pick (or clear, `null`) the event of the current prompt; the re-rendered prompt.
+    #[method(name = "meeting_detection_set_event")]
+    async fn meeting_detection_set_event(
+        &self,
+        event: Option<meeting::EventId>,
+    ) -> RpcResult<Option<meeting::Detection>>;
+    /// 158 §6.2 (W1): the user-facing `meeting:` block.
+    #[method(name = "meeting_settings_get")]
+    async fn meeting_settings_get(&self) -> RpcResult<meeting::MeetingSettings>;
+    /// 158 §6.2 (W1): persist the whole block to config.yaml and apply it from the next start;
+    /// a failed write changes nothing.
+    #[method(name = "meeting_settings_set")]
+    async fn meeting_settings_set(
+        &self,
+        settings: meeting::MeetingSettings,
+    ) -> RpcResult<meeting::MeetingSettings>;
+    /// 158 §9.2 (W3): set or clear a meeting's project (manifest, index, sidebar, memory rows).
+    #[method(name = "meeting_set_project")]
+    async fn meeting_set_project(
+        &self,
+        id: meeting::MeetingId,
+        project: Option<String>,
+    ) -> RpcResult<meeting::Manifest>;
+    /// 158 §8.2 (W2): set or clear a meeting's calendar event, any state; a steer while live.
+    #[method(name = "meeting_set_event")]
+    async fn meeting_set_event(
+        &self,
+        id: meeting::MeetingId,
+        event: Option<meeting::EventId>,
+    ) -> RpcResult<meeting::Manifest>;
+    /// 158 §11.1 (W4): the note template, changeable until Summarize.
+    #[method(name = "meeting_set_template")]
+    async fn meeting_set_template(
+        &self,
+        id: meeting::MeetingId,
+        template: String,
+    ) -> RpcResult<meeting::Manifest>;
+    /// 158 §10 (W4): speaker-name suggestions for a reviewed meeting; never applies anything.
+    #[method(name = "meeting_suggest_speakers")]
+    async fn meeting_suggest_speakers(
+        &self,
+        id: meeting::MeetingId,
+    ) -> RpcResult<Vec<meeting::Suggestion>>;
+    /// 158 §11.1 (W4): every template, built-ins first.
+    #[method(name = "meeting_templates")]
+    async fn meeting_templates(&self) -> RpcResult<Vec<meeting::Template>>;
+    /// 158 §11.1 (W4): write `<slug>.md` (markdown + YAML front matter) and return it parsed.
+    #[method(name = "meeting_template_put")]
+    async fn meeting_template_put(
+        &self,
+        slug: String,
+        body: String,
+    ) -> RpcResult<meeting::Template>;
+    /// 158 §11.1 (W4): delete a user template; refused for built-ins.
+    #[method(name = "meeting_template_delete")]
+    async fn meeting_template_delete(&self, slug: String) -> RpcResult<()>;
+    /// 158 §11.1 (W4): restore a built-in's shipped body over the user's edits; refused for user templates.
+    #[method(name = "meeting_template_reset")]
+    async fn meeting_template_reset(&self, slug: String) -> RpcResult<meeting::Template>;
+    /// 158 §7.4 (W2): every calendar source.
+    #[method(name = "calendar_sources")]
+    async fn calendar_sources(&self) -> RpcResult<Vec<meeting::CalSource>>;
+    /// 158 §7.3 (W2): add an ICS subscription; the URL goes to the vault as `calendar.ics.<id>`.
+    #[method(name = "calendar_source_add")]
+    async fn calendar_source_add(&self, name: String, url: String)
+    -> RpcResult<meeting::CalSource>;
+    /// 158 §7.4 (W2): delete a source and its events (and vault row).
+    #[method(name = "calendar_source_delete")]
+    async fn calendar_source_delete(&self, id: String) -> RpcResult<()>;
+    /// 158 §7.3 (W2): fetch now; the row with `last_fetch` / `last_error`.
+    #[method(name = "calendar_source_refresh")]
+    async fn calendar_source_refresh(&self, id: String) -> RpcResult<meeting::CalSource>;
+    /// 158 §7.2 (W2), companion only (`x-theuth-client: companion`): replace `source`'s rows
+    /// inside `window` (RFC 3339 pair) with `events`; the rows written.
+    #[method(name = "calendar_push", with_extensions)]
+    async fn calendar_push(
+        &self,
+        source: String,
+        window: (String, String),
+        events: Vec<meeting::CalEvent>,
+    ) -> RpcResult<u32>;
+    /// 158 §7.2 (W2), companion only: the EventKit state line (`granted` / `denied` / …).
+    #[method(name = "calendar_source_state", with_extensions)]
+    async fn calendar_source_state(&self, source: String, state: String) -> RpcResult<()>;
+    /// 158 §7.4 (W2): events overlapping `[from, to]` (RFC 3339), start ascending.
+    #[method(name = "calendar_events")]
+    async fn calendar_events(&self, from: String, to: String) -> RpcResult<Vec<meeting::CalEvent>>;
+    /// 158 §7.6 (W2): the `meeting.calendar` block.
+    #[method(name = "calendar_settings_get")]
+    async fn calendar_settings_get(&self) -> RpcResult<meeting::CalendarConfig>;
+    /// 158 §7.6 (W2): persist and apply the `meeting.calendar` block.
+    #[method(name = "calendar_settings_set")]
+    async fn calendar_settings_set(
+        &self,
+        config: meeting::CalendarConfig,
+    ) -> RpcResult<meeting::CalendarConfig>;
+    /// 158 §12.6 (W5): the MCP server's config, whether it is listening, URL and token.
+    #[method(name = "mcp_server_get")]
+    async fn mcp_server_get(&self) -> RpcResult<mcp_server::McpServerStatus>;
+    /// 158 §12.2 (W5): persist `mcp_server` and bind or drop the listener live.
+    #[method(name = "mcp_server_set")]
+    async fn mcp_server_set(
+        &self,
+        config: mcp_server::McpServerConfig,
+    ) -> RpcResult<mcp_server::McpServerStatus>;
+    /// 158 §12.2 (W5): a fresh token into the vault; every open MCP session ends.
+    #[method(name = "mcp_server_rotate_token")]
+    async fn mcp_server_rotate_token(&self) -> RpcResult<()>;
+    /// 158 §12.5 (W5): the last `limit` audit lines, newest first.
+    #[method(name = "mcp_server_audit")]
+    async fn mcp_server_audit(&self, limit: u32) -> RpcResult<Vec<mcp_server::AuditLine>>;
+    /// 158 §12.3 (W5): one catalogue tool call for the `t mcp` stdio bridge, run in the engine
+    /// with the vault's redaction and an audit line `transport: stdio`; `client` is the MCP
+    /// `clientInfo.name`. Unknown tool / bad arguments → invalid params.
+    #[method(name = "mcp_server_call")]
+    async fn mcp_server_call(
+        &self,
+        tool: String,
+        args: serde_json::Value,
+        client: String,
+    ) -> RpcResult<mcp_server::McpCallResult>;
     /// `Review` → `Summarizing`: the guided summary turn; `Summarized{title}` and `State{Done}` follow.
     #[method(name = "meeting_summarize")]
     async fn meeting_summarize(&self, id: meeting::MeetingId) -> RpcResult<()>;
@@ -3277,6 +3412,17 @@ pub(crate) fn save_blob(bytes: &[u8], ext: &str, data_dir: &Path) -> std::io::Re
 /// An `ASK_FAILED` (`-32000`) error with `msg`.
 pub(crate) fn failed(msg: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(ASK_FAILED, msg.into(), None::<()>)
+}
+
+/// 158 §15.2: a wave module's `anyhow` error as `ASK_FAILED` (the stubs' "not built yet" too).
+fn stub_err(e: anyhow::Error) -> ErrorObjectOwned {
+    failed(format!("{e:#}"))
+}
+
+/// 158 §7.2: the connection's `x-theuth-client` value for companion-only methods; `None` when
+/// the call did not come over the socket (the in-process TUI).
+fn client_of(ext: &Extensions) -> Option<&'static str> {
+    ext.get::<crate::Client>().map(|c| c.0)
 }
 
 /// Largest decoded image `put_attachment` accepts (17 §1: Anthropic's 5 MB); an
@@ -6829,8 +6975,12 @@ impl ApiServer for Server {
         send(&meeting()?, meeting::MeetingStatus).await
     }
 
-    async fn meeting_list(&self, limit: Option<u32>) -> RpcResult<Vec<meeting::MeetingSummary>> {
-        send(&meeting()?, meeting::ListMeetings { limit }).await
+    async fn meeting_list(
+        &self,
+        limit: Option<u32>,
+        project: Option<String>,
+    ) -> RpcResult<Vec<meeting::MeetingSummary>> {
+        send(&meeting()?, meeting::ListMeetings { limit, project }).await
     }
 
     async fn meeting_get(&self, id: meeting::MeetingId) -> RpcResult<meeting::Manifest> {
@@ -7385,6 +7535,219 @@ impl ApiServer for Server {
 
     async fn set_meeting_live_diarization(&self, on: bool) -> RpcResult<bool> {
         send(&meeting()?, meeting::SetLiveDiarization { on }).await
+    }
+
+    // 158 §15.2 — contract methods (C158): one delegate call each, `anyhow` → `ASK_FAILED`.
+
+    async fn meeting_detection(&self) -> RpcResult<Option<meeting::Detection>> {
+        meeting::detect::rpc_detection(&self.rt)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_detection_dismiss(&self, app_id: String, never: bool) -> RpcResult<()> {
+        meeting::detect::rpc_detection_dismiss(&self.rt, app_id, never)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_detection_set_event(
+        &self,
+        event: Option<meeting::EventId>,
+    ) -> RpcResult<Option<meeting::Detection>> {
+        meeting::calendar::rpc_detection_set_event(&self.rt, event)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_settings_get(&self) -> RpcResult<meeting::MeetingSettings> {
+        meeting::rpc_settings_get(&self.rt).await.map_err(stub_err)
+    }
+
+    async fn meeting_settings_set(
+        &self,
+        settings: meeting::MeetingSettings,
+    ) -> RpcResult<meeting::MeetingSettings> {
+        meeting::rpc_settings_set(&self.rt, settings)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_set_project(
+        &self,
+        id: meeting::MeetingId,
+        project: Option<String>,
+    ) -> RpcResult<meeting::Manifest> {
+        meeting::calendar::prebrief::rpc_set_project(&self.rt, id, project)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_set_event(
+        &self,
+        id: meeting::MeetingId,
+        event: Option<meeting::EventId>,
+    ) -> RpcResult<meeting::Manifest> {
+        meeting::calendar::rpc_set_event(&self.rt, id, event)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_set_template(
+        &self,
+        id: meeting::MeetingId,
+        template: String,
+    ) -> RpcResult<meeting::Manifest> {
+        meeting::templates::rpc_set_template(&self.rt, id, template)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_suggest_speakers(
+        &self,
+        id: meeting::MeetingId,
+    ) -> RpcResult<Vec<meeting::Suggestion>> {
+        meeting::post::suggest::rpc_suggest(&self.rt, id)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_templates(&self) -> RpcResult<Vec<meeting::Template>> {
+        meeting::templates::rpc_templates(&self.rt)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_template_put(
+        &self,
+        slug: String,
+        body: String,
+    ) -> RpcResult<meeting::Template> {
+        meeting::templates::rpc_template_put(&self.rt, slug, body)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_template_delete(&self, slug: String) -> RpcResult<()> {
+        meeting::templates::rpc_template_delete(&self.rt, slug)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_template_reset(&self, slug: String) -> RpcResult<meeting::Template> {
+        meeting::templates::rpc_template_reset(&self.rt, slug)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn calendar_sources(&self) -> RpcResult<Vec<meeting::CalSource>> {
+        meeting::calendar::rpc_sources(&self.rt)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn calendar_source_add(
+        &self,
+        name: String,
+        url: String,
+    ) -> RpcResult<meeting::CalSource> {
+        meeting::calendar::rpc_source_add(&self.rt, name, url)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn calendar_source_delete(&self, id: String) -> RpcResult<()> {
+        meeting::calendar::rpc_source_delete(&self.rt, id)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn calendar_source_refresh(&self, id: String) -> RpcResult<meeting::CalSource> {
+        meeting::calendar::rpc_source_refresh(&self.rt, id)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn calendar_push(
+        &self,
+        ext: &Extensions,
+        source: String,
+        window: (String, String),
+        events: Vec<meeting::CalEvent>,
+    ) -> RpcResult<u32> {
+        meeting::calendar::rpc_push(&self.rt, client_of(ext), source, window, events)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn calendar_source_state(
+        &self,
+        ext: &Extensions,
+        source: String,
+        state: String,
+    ) -> RpcResult<()> {
+        meeting::calendar::rpc_source_state(&self.rt, client_of(ext), source, state)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn calendar_events(&self, from: String, to: String) -> RpcResult<Vec<meeting::CalEvent>> {
+        meeting::calendar::rpc_events(&self.rt, from, to)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn calendar_settings_get(&self) -> RpcResult<meeting::CalendarConfig> {
+        meeting::calendar::rpc_settings_get(&self.rt)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn calendar_settings_set(
+        &self,
+        config: meeting::CalendarConfig,
+    ) -> RpcResult<meeting::CalendarConfig> {
+        meeting::calendar::rpc_settings_set(&self.rt, config)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn mcp_server_get(&self) -> RpcResult<mcp_server::McpServerStatus> {
+        mcp_server::status(&self.rt).await.map_err(stub_err)
+    }
+
+    async fn mcp_server_set(
+        &self,
+        config: mcp_server::McpServerConfig,
+    ) -> RpcResult<mcp_server::McpServerStatus> {
+        mcp_server::set(&self.rt, config).await.map_err(stub_err)
+    }
+
+    async fn mcp_server_rotate_token(&self) -> RpcResult<()> {
+        mcp_server::rotate_token(&self.rt).await.map_err(stub_err)
+    }
+
+    async fn mcp_server_audit(&self, limit: u32) -> RpcResult<Vec<mcp_server::AuditLine>> {
+        mcp_server::audit_tail(&self.rt, limit)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn mcp_server_call(
+        &self,
+        tool: String,
+        args: serde_json::Value,
+        client: String,
+    ) -> RpcResult<mcp_server::McpCallResult> {
+        mcp_server::call(&self.rt, tool, args, client)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    jsonrpsee::types::error::INVALID_PARAMS_CODE,
+                    format!("{e:#}"),
+                    None::<()>,
+                )
+            })
     }
 
     async fn meeting_summarize(&self, id: meeting::MeetingId) -> RpcResult<()> {

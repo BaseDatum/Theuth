@@ -1,0 +1,48 @@
+[package]
+name = "mcp-server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "theuth as an MCP server: rmcp streamable HTTP on loopback with a vault token, one catalogue shared with the `t mcp` stdio bridge, a JSONL audit (design doc 158 §12)"
+
+[dependencies]
+runtime = { workspace = true }
+secrets = { workspace = true }  # vault row `mcp.server.token`, `Vault::redact_value` over results
+# Argument schemas of the write tools are the RPCs' own payload types (158 §12.4: thin calls).
+meeting = { workspace = true }
+tasks = { workspace = true }
+knowledge = { workspace = true }
+document = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+parking_lot = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+# The `Rpc` seam is jsonrpsee's `ClientT`: `rpc::client::Local` in the engine, `WsClient` in `t mcp`.
+jsonrpsee = { workspace = true, features = ["client-core"] }
+# 158 §12.2: `server` + `transport-streamable-http-server` come from the workspace line.
+rmcp = { workspace = true }
+# HTTP/1 on a raw `TcpListener`, no framework (158 §12.2); versions already in the graph.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http = { workspace = true }
+http-body-util = "0.1"
+bytes = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest", "transport-io"] }
+tempfile = "3"
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts"]
+
+[lints]
+workspace = true

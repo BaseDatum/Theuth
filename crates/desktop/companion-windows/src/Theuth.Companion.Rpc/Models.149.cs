@@ -296,8 +296,96 @@ public sealed record MeetingStatus
     public bool ApprovalWaiting { get; init; }
     public MeetingSupport Supported { get; init; } = MeetingSupport.Unknown;
     public string Accelerator { get; init; } = "";
+    /// <summary>158 §4.5: the current detection prompt, for a companion connecting mid-prompt.</summary>
+    public Detection? Detection { get; init; }
 
     public bool IsLive => State.IsLive;
+}
+
+/// <summary><c>meeting::ProcessInfo</c> (the mic holder / tapped app).</summary>
+public sealed record ProcessInfo
+{
+    public uint Pid { get; init; }
+    public string Name { get; init; } = "";
+    public string? BundleId { get; init; }
+    public bool Active { get; init; }
+}
+
+/// <summary><c>detect::Detection</c> (158 §15.1); <c>event</c> (W2), <c>project</c> and <c>brief</c> (W3) are <c>#[serde(default)]</c>.</summary>
+public sealed record Detection
+{
+    [JsonRequired] public ProcessInfo App { get; init; } = new();
+    [JsonRequired] public string AppId { get; init; } = "";
+    public string Since { get; init; } = "";
+    public ValueList<ProcessInfo> Also { get; init; } = new();
+    public EventMatch? Event { get; init; }
+    public string? Project { get; init; }
+    public ValueList<string>? Brief { get; init; }
+}
+
+/// <summary><c>calendar::Attendee</c> (158 §15.1).</summary>
+public sealed record Attendee
+{
+    [JsonRequired] public string Name { get; init; } = "";
+    public string? Email { get; init; }
+    public string? Status { get; init; }
+    public bool IsMe { get; init; }
+}
+
+/// <summary><c>calendar::EventRef</c> (158 §15.1); <c>id</c> is the transparent <c>EventId</c> string <c>source:uid:recurrence_id</c>.</summary>
+public sealed record EventRef
+{
+    [JsonRequired] public string Id { get; init; } = "";
+    public string Uid { get; init; } = "";
+    [JsonRequired] public string Title { get; init; } = "";
+    public string Start { get; init; } = "";
+    public string End { get; init; } = "";
+    public string? JoinUrl { get; init; }
+    public string? JoinHost { get; init; }
+    public Attendee? Organizer { get; init; }
+    public ValueList<Attendee> Attendees { get; init; } = new();
+    public string? Description { get; init; }
+}
+
+/// <summary><c>calendar::EventMatch</c> (158 §8.1): the shown event, its score, the rest for the <c>[▾]</c> list.</summary>
+public sealed record EventMatch
+{
+    [JsonRequired] public EventRef Event { get; init; } = new();
+    public float Score { get; init; }
+    public ValueList<EventRef> Alternatives { get; init; } = new();
+}
+
+/// <summary><c>detect::Source</c> (158 §15.1; TS <c>StartSource</c>): <c>{"kind":"manual"|"detected"|"calendar", app_id?, event?}</c>.</summary>
+public sealed record StartSource(string Kind, string? AppId = null, string? Event = null)
+{
+    public static StartSource Manual => new("manual");
+
+    public static StartSource Detected(string appId) => new("detected", AppId: appId);
+
+    public static StartSource Calendar(string eventId) => new("calendar", Event: eventId);
+}
+
+/// <summary><c>meeting::StartMeeting</c> (<c>meeting_start</c>): the frozen six fields plus 158's optional four; nulls are omitted on the wire.</summary>
+public sealed record StartMeeting
+{
+    public uint? Process { get; init; }
+    public string? Title { get; init; }
+    public string? Context { get; init; }
+    /// <summary>R3: the lawful line was shown; the prompt's Start always sends true.</summary>
+    public bool Consent { get; init; }
+    public string? SessionModel { get; init; }
+    public string? Memory { get; init; }
+    public StartSource? Source { get; init; }
+    public string? Event { get; init; }
+    public string? Project { get; init; }
+    public string? Template { get; init; }
+}
+
+/// <summary><c>meeting::Started</c>: the reply to <c>meeting_start</c>.</summary>
+public sealed record MeetingStarted
+{
+    [JsonRequired] public string Meeting { get; init; } = "";
+    [JsonRequired] public string Session { get; init; } = "";
 }
 
 /// <summary><c>meeting_permissions</c> (<c>meeting::Permissions</c>): <c>Granted</c> · <c>Denied</c> · <c>NotDetermined</c> per capability.</summary>

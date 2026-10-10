@@ -119,6 +119,8 @@ pub fn disjoint(spans: &[(u64, u64)]) -> Vec<(u64, u64)> {
 }
 
 /// Transcribe the speech in `pcm` (16 kHz); `progress(done, total)` after each utterance.
+/// The user's dictionary (158 §11.3) is applied on the way out when the plugin attached a
+/// data dir ([`crate::templates::data_dir`]).
 pub fn words(
     engine: &Engine,
     pcm: &[f32],
@@ -142,12 +144,120 @@ pub fn words(
         }
         progress(i + 1, spans.len());
     }
-    Ok(out)
+    Ok(
+        match crate::templates::data_dir().map(voice::Dictionary::load) {
+            Some(Ok(d)) => apply_dictionary(out, &d),
+            Some(Err(e)) => {
+                tracing::warn!("dictionary: {e:#}");
+                out
+            }
+            None => out,
+        },
+    )
+}
+
+/// 158 §11.3: `Dictionary::lookup` on each bigram, then each word; a hit from a **user** entry
+/// (`ACCEPT_KNOWN` 0.70 applies to those) replaces the heard text with `canonical`, trailing
+/// punctuation kept; a bigram hit merges the two words' times. Learned entries stay
+/// dictation's; packaged ones never rewrite a meeting.
+pub fn apply_dictionary(words: Vec<Word>, d: &voice::Dictionary) -> Vec<Word> {
+    let user = |m: &voice::Match| {
+        d.get(&m.entry)
+            .is_some_and(|e| e.source == voice::Source::User)
+    };
+    let split = |text: &str| -> (String, String) {
+        let core = text.trim_end_matches(|c: char| c.is_ascii_punctuation() && c != '\'');
+        (core.to_owned(), text[core.len()..].to_owned())
+    };
+    let mut out: Vec<Word> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        let (core, punct) = split(&words[i].text);
+        if let Some(next) = words.get(i + 1) {
+            let (core2, punct2) = split(&next.text);
+            if punct.is_empty()
+                && let Some(m) = d.lookup(&format!("{core} {core2}"))
+                && m.tokens == 2
+                && user(&m)
+            {
+                out.push(Word {
+                    text: format!("{}{punct2}", m.canonical),
+                    t0_ms: words[i].t0_ms,
+                    t1_ms: next.t1_ms,
+                });
+                i += 2;
+                continue;
+            }
+        }
+        let text = match d.lookup(&core) {
+            Some(m) if user(&m) => format!("{}{punct}", m.canonical),
+            _ => words[i].text.clone(),
+        };
+        out.push(Word {
+            text,
+            t0_ms: words[i].t0_ms,
+            t1_ms: words[i].t1_ms,
+        });
+        i += 1;
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 158 §11.4: `gida` → `GIDA` from a user `Term`; a learned entry does not fire; a common
+    /// word below 0.70 is untouched; a bigram hit merges the two words and keeps the punctuation.
+    #[test]
+    fn dictionary_pass_rewrites_user_terms_only() {
+        use voice::{Entry, EntryId, Kind, Scope, Source, Variant};
+        let entry = |canonical: &str, heard: &str, source| Entry {
+            id: EntryId(format!("{source:?}-{canonical}")),
+            canonical: canonical.into(),
+            kind: Kind::Term,
+            spoken: Vec::new(),
+            variants: vec![Variant {
+                heard: heard.into(),
+                metaphone: (String::new(), String::new()),
+                seen: 1,
+                last_ms: 0,
+            }],
+            scope: Scope::Global,
+            source,
+            tags: Vec::new(),
+        };
+        let mut d = voice::Dictionary::default();
+        d.put(entry("GIDA", "gida", Source::User));
+        d.put(entry("Kubeflow", "cube flow", Source::Learned));
+        d.put(entry("Dana Whitfield", "dana whitfield", Source::User));
+        let word = |text: &str, t0: u64| Word {
+            text: text.into(),
+            t0_ms: t0,
+            t1_ms: t0 + 400,
+        };
+        let words = vec![
+            word("so", 0),
+            word("gida,", 500),
+            word("cube", 1_000),
+            word("flow", 1_500),
+            word("good", 2_000),
+            word("dana", 2_500),
+            word("whitfield.", 3_000),
+        ];
+        let got = apply_dictionary(words, &d);
+        let texts: Vec<&str> = got.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            ["so", "GIDA,", "cube", "flow", "good", "Dana Whitfield."]
+        );
+        assert_eq!(
+            (got[5].t0_ms, got[5].t1_ms),
+            (2_500, 3_400),
+            "bigram merges the times"
+        );
+        assert_eq!((got[1].t0_ms, got[1].t1_ms), (500, 900));
+    }
 
     #[test]
     fn disjoint_trims_overlapping_prerolls_and_drops_swallowed_spans() {

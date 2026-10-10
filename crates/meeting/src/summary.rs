@@ -13,12 +13,14 @@ use kameo::actor::ActorRef;
 use runtime::{Runtime, SessionId};
 
 use crate::store::{Manifest, SUMMARY, Store};
+use crate::templates::{self, Template};
 use crate::{MeetingEvent, MeetingState, note};
 
 /// The form's marker: [`finished_turn`] finds the summary turn in the history by it.
 pub const SUMMARY_HEAD: &str = "[meeting summary]";
 
-/// Sent as one user input after `Reviewed` — meetings without a note (recorded before 59 step 5).
+/// The pre-158 fixed form for meetings without a note; kept as the fixture text tests send
+/// (`holds_summary` keys on [`SUMMARY_HEAD`]). The turn itself sends [`form`].
 pub const SUMMARY_FORM: &str = "[meeting summary] The meeting has ended and the transcript was \
 reviewed. Use `meeting_read` (all of it, in pieces) and `meeting_speakers`, then write the summary \
 as markdown: a `#` title line (at most 8 words), then **Topics** (what was discussed, in order, one \
@@ -26,11 +28,28 @@ line each), **Decisions** (with who), **Action items** (owner — item — due i
 questions**, **Numbers and names said aloud**. Improvise sections if the meeting calls for it; keep \
 it under 400 words. Reply with the markdown only.";
 
-/// The form for `m`: the note contract when it has one, else [`SUMMARY_FORM`].
+/// The form for a meeting without a note (recorded before 59 step 5), compiled from its
+/// template (158 §11.1) with the rules block (§11.2).
+pub fn form(t: &Template, duration_ms: Option<u64>, preferred: &[String]) -> String {
+    format!(
+        "{SUMMARY_HEAD} The meeting has ended and the transcript was reviewed. Use `meeting_read` \
+         (all of it, in pieces) and `meeting_speakers`, then write the summary as markdown: a `#` \
+         title line (at most 8 words), then these sections, each as a `## ` heading followed by its \
+         content: {}. Reply with the markdown only.\n\n{}",
+        note::sections(t),
+        note::rules(t, duration_ms, preferred)
+    )
+}
+
+/// The form for `m`: its template (`Manifest.template`, the file under
+/// `<data_dir>/meetings/templates/` else the shipped body) compiled into the note contract when
+/// it has a note, else [`form`]; both carry the dictionary's preferred spellings.
 pub fn form_for(m: &Manifest) -> String {
+    let t = templates::load(templates::dir().as_deref(), &m.template);
+    let preferred = note::preferred_names(templates::data_dir());
     match &m.note {
-        Some(doc) => crate::note::summary_form(doc),
-        None => SUMMARY_FORM.to_owned(),
+        Some(doc) => note::summary_form(doc, &t, m.duration_ms, &preferred),
+        None => form(&t, m.duration_ms, &preferred),
     }
 }
 
@@ -236,6 +255,36 @@ mod tests {
         assert_eq!(title_of("Just prose.\nMore."), "Just prose.");
         assert_eq!(title_of("   "), "Meeting summary");
         assert!(SUMMARY_FORM.starts_with(SUMMARY_HEAD));
+    }
+
+    /// §11.4: the no-note form compiles too — head, template sections, rules; `form_for` picks
+    /// by `Manifest.note` and falls back to the shipped `meeting` body without a data dir.
+    #[test]
+    fn no_note_form_compiles_the_template() {
+        let t = templates::load(None, "standup");
+        let f = form(&t, Some(5 * 60_000), &["GIDA".into()]);
+        assert!(f.starts_with(SUMMARY_HEAD));
+        assert!(f.contains("`## Done since last time` (one line per person, by name or label)"));
+        assert!(f.contains("\n7. ") && f.contains("at most 120 words"));
+        assert!(f.contains("Preferred spellings: GIDA"));
+        let mut m = Manifest::new(
+            crate::MeetingId::new(),
+            crate::ProcessInfo {
+                pid: 1,
+                name: "zoom".into(),
+                bundle_id: None,
+                active: false,
+            },
+            "2026-10-10T10:00:00Z".into(),
+        );
+        m.duration_ms = Some(90 * 60_000);
+        let f = form_for(&m);
+        assert!(f.contains("`## Numbers and names said aloud`") && f.contains("at most 400 words"));
+        assert!(!f.contains("doc_insert"));
+        m.note = Some(document::DocId::from_uuid(uuid::Uuid::nil()));
+        m.template = "one-on-one".into();
+        let f = form_for(&m);
+        assert!(f.contains("doc_insert") && f.contains("`## Follow-ups for next time`"));
     }
 
     #[test]

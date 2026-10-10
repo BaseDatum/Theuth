@@ -69,6 +69,13 @@ pub struct HeadInput {
     pub outstanding: Vec<String>,
     /// 137 R1-D6: the summary tree's view, with the mode on.
     pub earlier: Option<Earlier>,
+    /// 158 §11.3: the dictionary's preferred spellings (user + learned terms), ≤ 40.
+    pub preferred: Vec<String>,
+}
+
+/// [`crate::note::preferred_names`] from the attached data dir (`templates::attach`).
+fn preferred() -> Vec<String> {
+    crate::note::preferred_names(crate::templates::data_dir())
 }
 
 /// The head at `start_task`: nothing heard yet.
@@ -87,6 +94,7 @@ pub fn initial(manifest: &Manifest, session_title: &str, earlier: Option<Earlier
         briefs: Vec::new(),
         outstanding: Vec::new(),
         earlier,
+        preferred: preferred(),
     }
 }
 
@@ -141,6 +149,7 @@ pub fn of(rec: &Recording, now: DateTime<Utc>, earlier: Option<Earlier>) -> Head
         briefs,
         outstanding,
         earlier,
+        preferred: preferred(),
     }
 }
 
@@ -173,6 +182,9 @@ pub fn render(input: &HeadInput) -> String {
         session::hms(input.elapsed_ms)
     );
     let _ = writeln!(out, "Speakers heard: {}", list(&input.speakers));
+    if !input.preferred.is_empty() {
+        let _ = writeln!(out, "Preferred spellings: {}", input.preferred.join(", "));
+    }
     out.push_str("\nLive topics:");
     if input.live.is_empty() {
         out.push_str(" none\n");
@@ -301,6 +313,7 @@ mod tests {
             ],
             outstanding: vec!["spoken request: what did we promise sales".into()],
             earlier: None,
+            preferred: Vec::new(),
         }
     }
 
@@ -458,6 +471,22 @@ Do not re-offer a live or dismissed topic; reply with no text unless asked.";
         let head = render(&input());
         assert_eq!(head, expected);
         assert!(head.len() < 1_500, "{}", head.len());
+    }
+
+    /// 158 §11.3: the preferred-spellings line sits under the speakers and is absent when empty.
+    #[test]
+    fn preferred_spellings_follow_the_speakers_line() {
+        let head = render(&HeadInput {
+            preferred: vec!["GIDA".into(), "SRE-2386".into()],
+            ..input()
+        });
+        assert!(
+            head.contains(
+                "Speakers heard: me, Speaker 1, Speaker 2\nPreferred spellings: GIDA, SRE-2386\n"
+            ),
+            "{head}"
+        );
+        assert!(!render(&input()).contains("Preferred spellings"));
     }
 
     #[test]

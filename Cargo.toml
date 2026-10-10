@@ -62,6 +62,7 @@ update = { path = "crates/update" }  # self-update from the release bucket (39)
 voice = { path = "crates/voice" }  # read replies aloud: Pocket TTS in-process (43)
 talk = { path = "crates/talk" }  # live, interruptible spoken conversation over voice's devices and models (76)
 meeting = { path = "crates/meeting" }  # meeting recorder: process tap + VPIO mic, three Opus tracks (53)
+mcp-server = { path = "crates/mcp-server" }  # theuth as an MCP server: rmcp streamable HTTP on 127.0.0.1:7788, stdio via `t mcp` (158 §12)
 decision = { path = "crates/decision" }  # local typed-probability oracle + selective gate (57)
 double = { path = "crates/double" }  # the owner's double: decision model + autonomy ladder (126)
 dreaming = { path = "crates/dreaming" }  # nightly own-context routine: knowledge tidy, cases, gated skill edits (136)
@@ -201,7 +202,9 @@ aws-config = "1"
 aws-types = "1"
 brush-core = "0.5"
 brush-builtins = "0.2"
-rmcp = { version = "3", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
+# Client features for crates/tools; `server` + `transport-streamable-http-server` for crates/mcp-server (158 §12.2)
+# and the `t mcp` shim (crates/theuth adds `transport-io`). Features unify workspace-wide anyway.
+rmcp = { version = "3", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest", "server", "transport-streamable-http-server"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "chrono", "uuid"] }
 # Notebooks (design doc 144 §7.1): the `vec0` virtual table beside `nb_blocks` FTS5 in `documents/index.sqlite`.
 # Static: the crate compiles sqlite-vec.c and exposes `sqlite3_vec_init`, registered once per process through

@@ -5,10 +5,13 @@
 // (`meeting_speaker_enroll`); in Review the same selection also relabels/merges, a word click splits and a text
 // click fixes it. Every edit is one RPC whose answer replaces the cached transcript. `readOnly` (Summarizing,
 // Done) keeps playback, selection and enrollment but drops the edit handlers, so edits never race the summary
-// turn. "Done reviewing"/"Summarize" live in the page header (`MeetingActions`), not here.
+// turn. "Done reviewing"/"Summarize" live in the page header (`MeetingActions`), not here. 158 §10.3: *Suggest names*
+// asks `meeting_suggest_speakers` once and shows one row per label (name, confidence bar, evidence); Accept renames
+// and, without a linked profile, enrolls the label's speech — the engine's quality gates (§10.4) decide; a refusal
+// keeps the name and says why. Nothing happens without a click (R6).
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Volume2 } from 'lucide-react'
+import { LoaderCircle, Volume2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Empty, errorText, useAction } from '@/components/settings/shared'
@@ -27,6 +30,7 @@ import type { Enrolled } from '@/rpc/bindings/Enrolled'
 import type { MeetingTranscript } from '@/rpc/bindings/MeetingTranscript'
 import type { Segment } from '@/rpc/bindings/Segment'
 import type { SpeakerLabel } from '@/rpc/bindings/SpeakerLabel'
+import type { SpeakerSuggestion } from '@/rpc/bindings/SpeakerSuggestion'
 import { EnrollDialog } from './EnrollDialog'
 import { SegmentMenu } from './SegmentMenu'
 
@@ -46,7 +50,37 @@ export function Review({ id, readOnly = false }: { id: string; readOnly?: boolea
   const edit = useAction((ops: EditOp[]) => api.meeting_edit(id, ops), {
     onSuccess: (t) => qc.setQueryData(queryKeys.meetingTranscript(id), t),
   })
+  // Cached, never fetched on its own: the button refetches; Accept/Not them drop rows from the cached list.
+  const suggestions = useQuery({ queryKey: queryKeys.meetingSuggestions(id), queryFn: () => api.meeting_suggest_speakers(id), enabled: false, staleTime: Infinity })
+  const suggest = () =>
+    void suggestions.refetch().then((r) => {
+      if (r.error) toast.error(errorText(r.error))
+      else if (r.data?.length === 0) toast.message('No name suggestions for this meeting')
+    })
+  const hide = (label: string) => qc.setQueryData(queryKeys.meetingSuggestions(id), (list?: SpeakerSuggestion[]) => list?.filter((s) => s.label !== label))
+  const accept = useAction(
+    async (s: SpeakerSuggestion) => {
+      const t = await api.meeting_edit(id, [{ op: 'Rename', speaker: s.label, name: s.name }])
+      qc.setQueryData(queryKeys.meetingTranscript(id), t)
+      hide(s.label)
+      // A voiceprint match is linked by the rename itself; a Warning carries no voice to enroll.
+      if (s.profile || s.source === 'Warning') return
+      // 158 §10.4: the automatic path runs the engine's quality gates; a refusal keeps the name.
+      const target: EnrollTarget = { kind: 'New', name: s.name, entity: null, gated: true }
+      try {
+        // Every segment of the label, one track by construction; the engine keeps the first ≤ 30 s (`ENROLL_MAX_MS`).
+        const r = await api.meeting_speaker_enroll(id, t.segments.filter((g) => g.speaker === s.label).map((g) => g.id), target)
+        qc.setQueryData(queryKeys.meetingTranscript(id), r.transcript)
+        void qc.invalidateQueries({ queryKey: queryKeys.meetingSpeakers })
+        toast.success(enrolledToast(r, target))
+      } catch (e) {
+        toast.message(`${s.name} named; voice not enrolled`, { description: errorText(e) })
+      }
+    },
+  )
   const t = transcript.data
+  const names = new Map(t?.speakers.map((s) => [s.id, s.name]))
+  const rows = suggestions.data?.filter((s) => s.label !== 'me' && names.has(s.label) && names.get(s.label) !== s.name) ?? []
   return (
     <div className="flex flex-col gap-4 py-2">
       {transcript.isError && <Empty>{errorText(transcript.error)}</Empty>}
@@ -58,11 +92,51 @@ export function Review({ id, readOnly = false }: { id: string; readOnly?: boolea
               {t.speakers.map((s) => (
                 <SpeakerChip key={s.id} label={s} onEdit={(op) => edit.mutate([op])} />
               ))}
+              <Button size="sm" variant="outline" className="self-center" disabled={suggestions.isFetching} onClick={suggest}>
+                {suggestions.isFetching && <LoaderCircle className="animate-spin" />} Suggest names
+              </Button>
+            </div>
+          )}
+          {!readOnly && rows.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {rows.map((s) => (
+                <SuggestionRow key={s.label} suggestion={s} speaker={names.get(s.label)!} busy={accept.isPending} onAccept={() => accept.mutate(s)} onDismiss={() => hide(s.label)} />
+              ))}
+              <p className="text-[12px] text-fg-tertiary">
+                Suggested from calendar attendees, transcript cues and voiceprints. Nothing changes until you accept; accepting can enroll the voice when the sample passes the quality gates.
+              </p>
             </div>
           )}
           <SegmentList id={id} transcript={t} onEdit={readOnly ? undefined : (ops) => edit.mutate(ops)} />
         </>
       )}
+    </div>
+  )
+}
+
+/** §10.3: `Speaker 2 → Priya Shah · 0.84`, the confidence bar, the evidence line, Accept / Not them. */
+function SuggestionRow({ suggestion: s, speaker, busy, onAccept, onDismiss }: { suggestion: SpeakerSuggestion; speaker: string; busy: boolean; onAccept: () => void; onDismiss: () => void }) {
+  const pct = Math.round(Math.min(1, Math.max(0, s.confidence)) * 100)
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-border-subtle p-2 text-[13px]">
+      <div className="flex items-center gap-2">
+        <span className={chipClass(s.label)}>{speaker}</span>
+        <span className="text-fg-tertiary">{'\u2192'}</span>
+        <b className="font-medium">{s.name}</b>
+        <span className="ml-auto tabular-nums text-fg-tertiary">{(pct / 100).toFixed(2)}</span>
+      </div>
+      <div className="h-1 overflow-hidden rounded bg-accent" role="meter" aria-label="Confidence" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+        <div className="h-full bg-fg-accent" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="text-fg-secondary">{s.evidence}</div>
+      <div className="flex gap-1">
+        <Button size="xs" aria-label={`Accept ${s.name} for ${speaker}`} disabled={busy} onClick={onAccept}>
+          Accept
+        </Button>
+        <Button size="xs" variant="ghost" aria-label={`Not ${s.name}`} disabled={busy} onClick={onDismiss}>
+          Not them
+        </Button>
+      </div>
     </div>
   )
 }

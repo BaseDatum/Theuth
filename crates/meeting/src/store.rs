@@ -10,6 +10,7 @@ use runtime::SessionId;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
+use crate::calendar::EventRef;
 use crate::transcript::{self, Transcript};
 use crate::{DIR, Degradation, MeetingId, MeetingState, ProcessInfo};
 
@@ -116,6 +117,33 @@ pub struct Manifest {
     /// The meeting's note (59 §7.4), created at start; `None` for meetings recorded before notes existed.
     #[serde(default)]
     pub note: Option<document::DocId>,
+    /// 158 §8.3 (W2): the matched calendar event, persisted because the calendar row rotates out.
+    #[serde(default)]
+    pub event: Option<EventRef>,
+    /// 158 §9.2 (W3): the meeting's project; `None` = the `meetings` label as before.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// 158 §11.1 (W4): the note template slug; `meeting` reproduces today's headings.
+    #[serde(default = "default_template")]
+    pub template: String,
+    /// 158 §13 (W6): the echo counter from the post pass.
+    #[serde(default)]
+    pub stats: Option<Stats>,
+}
+
+fn default_template() -> String {
+    crate::templates::DEFAULT.to_owned()
+}
+
+/// 158 §13 (W6): mic segments whose text duplicates a system segment within 2 s — the
+/// measure-first echo gate (D12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "MeetingStats"))]
+pub struct Stats {
+    /// Duplicated mic segments.
+    pub echo_dupes: u32,
+    /// Mic segments counted.
+    pub mic_segments: u32,
 }
 
 impl Manifest {
@@ -146,6 +174,10 @@ impl Manifest {
                 })
                 .collect(),
             note: None,
+            event: None,
+            project: None,
+            template: default_template(),
+            stats: None,
         }
     }
 
@@ -159,6 +191,7 @@ impl Manifest {
             process_name: self.process.name.clone(),
             duration_ms: self.duration_ms,
             state: self.state,
+            project: self.project.clone(),
         }
     }
 }
@@ -183,6 +216,9 @@ pub struct MeetingSummary {
     pub duration_ms: Option<u64>,
     /// Last state the manifest said.
     pub state: MeetingState,
+    /// 158 §9.2 (W3): the meeting's project (`meetings.project`).
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// One `meeting_search` hit (04 §5).
@@ -214,6 +250,7 @@ type Row = (
     String,
     Option<i64>,
     String,
+    Option<String>,
 );
 
 fn row_to_summary(r: Row) -> anyhow::Result<MeetingSummary> {
@@ -226,6 +263,7 @@ fn row_to_summary(r: Row) -> anyhow::Result<MeetingSummary> {
         process_name: r.5,
         duration_ms: r.6.map(|d| d as u64),
         state: serde_json::from_str(&r.7)?,
+        project: r.8,
     })
 }
 
@@ -264,6 +302,11 @@ impl Store {
         Ok(store)
     }
 
+    /// The index pool, for the 158 calendar tables (`calendar::store`, migration 0003).
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     /// `<data_dir>/meetings/<id>/`.
     pub fn meeting_dir(&self, id: MeetingId) -> PathBuf {
         self.dir.join(id.to_string())
@@ -294,10 +337,10 @@ impl Store {
 
     async fn upsert(&self, s: &MeetingSummary) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO meetings (id, started_at, ended_at, title, session, process_name, duration_ms, state) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO meetings (id, started_at, ended_at, title, session, process_name, duration_ms, state, project) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at, title = excluded.title, \
-             duration_ms = excluded.duration_ms, state = excluded.state",
+             duration_ms = excluded.duration_ms, state = excluded.state, project = excluded.project",
         )
         .bind(s.id.to_string())
         .bind(&s.started_at)
@@ -307,6 +350,7 @@ impl Store {
         .bind(&s.process_name)
         .bind(s.duration_ms.map(|d| d as i64))
         .bind(serde_json::to_string(&s.state)?)
+        .bind(&s.project)
         .execute(&self.pool)
         .await
         .context("upsert meeting")?;
@@ -322,14 +366,44 @@ impl Store {
 
     /// Newest first.
     pub async fn list(&self, limit: u32) -> anyhow::Result<Vec<MeetingSummary>> {
+        self.list_in(limit, None).await
+    }
+
+    /// Newest first; `project` narrows to one project (158 §9.2).
+    pub async fn list_in(
+        &self,
+        limit: u32,
+        project: Option<&str>,
+    ) -> anyhow::Result<Vec<MeetingSummary>> {
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, started_at, ended_at, title, session, process_name, duration_ms, state \
-             FROM meetings ORDER BY started_at DESC LIMIT ?",
+            "SELECT id, started_at, ended_at, title, session, process_name, duration_ms, state, project \
+             FROM meetings WHERE (? IS NULL OR project = ?) ORDER BY started_at DESC LIMIT ?",
         )
+        .bind(project)
+        .bind(project)
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await
         .context("list meetings")?;
+        rows.into_iter().map(row_to_summary).collect()
+    }
+
+    /// 158 §9.4: the last `limit` `Done` meetings of `project`, newest first.
+    pub async fn done_in_project(
+        &self,
+        project: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<MeetingSummary>> {
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, started_at, ended_at, title, session, process_name, duration_ms, state, project \
+             FROM meetings WHERE project = ? AND state = ? ORDER BY started_at DESC LIMIT ?",
+        )
+        .bind(project)
+        .bind(serde_json::to_string(&MeetingState::Done)?)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .context("done meetings of project")?;
         rows.into_iter().map(row_to_summary).collect()
     }
 

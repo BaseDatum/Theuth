@@ -19,6 +19,14 @@ extension IslandController {
         }
         func sleep(_ s: Double) async { try? await Task.sleep(for: .seconds(s)) }
         IslandLog.write("probe \(which): AXIsProcessTrusted=\(trusted) shareable=\(Flags.shareable) screens=\(NSScreen.screens.map { "\($0.localizedName) \($0.frame)" }) pointer=\(pointer) number=\(window.windowNumber)")
+        if which.hasPrefix("prompt") {
+            await runPromptProbe(which, trusted: trusted, check: check)
+            return await finish(which, pass: pass, fail: fail, eye: savedEye, frames: savedFrames, pointer: pointer)
+        }
+        if which.hasPrefix("upcoming") {
+            await runUpcomingProbe(which, trusted: trusted, check: check)
+            return await finish(which, pass: pass, fail: fail, eye: savedEye, frames: savedFrames, pointer: pointer)
+        }
 
         // The pointer is parked far from the island first: the open layout must not depend on hover.
         guard let s = screen else { return IslandLog.write("probe \(which): no screen") }
@@ -190,6 +198,125 @@ extension IslandController {
             }
         }
         await finish(which, pass: pass, fail: fail, eye: savedEye, frames: savedFrames, pointer: pointer)
+    }
+
+    /// 158 W1 — `--probe-island prompt`: the wire's `Detected` through the real decoder → island states A (no event) and B
+    /// (event + project), each answer clicked (Start / Not now / ⋮ → Never) and asserted on the suppressed RPC label; then a
+    /// recording + `AppReleased` → state D, Keep (local, re-sends muted) and Stop. Nothing is sent (`AskFlags.automated`).
+    private func runPromptProbe(_ which: String, trusted: Bool, check: (String, Bool, @autoclosure () -> String) -> Void) async {
+        func sleep(_ s: Double) async { try? await Task.sleep(for: .seconds(s)) }
+        let detected = #"{"type":"Detected","app":{"pid":4242,"name":"Zoom","bundle_id":"us.zoom.xos","active":true},"app_id":"us.zoom.xos","since":"2026-10-10T10:00:00Z","also":[]}"#
+        let withEvent = #"{"type":"Detected","app":{"pid":4242,"name":"Zoom","bundle_id":"us.zoom.xos","active":true},"app_id":"us.zoom.xos","since":"2026-10-10T10:00:00Z","also":[],"event":{"event":{"id":"ek:u1:","uid":"u1","title":"Weekly product sync","start":"2026-10-10T10:00:00Z","end":"2026-10-10T10:30:00Z"},"score":0.9},"project":"theuth"}"#
+        func feed(_ json: String) { store.meetingObserve(Data(json.utf8)); IslandLog.write("probe \(which): fed \(json.prefix(60))…") }
+        func isDetected() -> Bool { if case .detected? = store.meeting?.prompt { return true } else { return false } }
+
+        feed(detected); await sleep(1.5)
+        check("detected shows the open prompt", shown && ui.isOpen && isDetected() && ui.rects["start"] != nil && ui.rects["not-now"] != nil,
+              "shown=\(shown) state=\(ui.state) prompt=\(String(describing: store.meeting?.prompt)) rects=\(Array(ui.rects.keys).sorted())")
+        logProbeState(which)
+        await shot("\(which)-a-detected")
+        logRects(["start", "not-now", "menu", "eye", "prompt"])
+        guard trusted else {
+            check("synthetic input", false, "NOT PROVABLE: CGEventPost needs Accessibility, which this probe bundle lacks")
+            return
+        }
+        // Start recording → `meeting_start` with the pid, source Detected and consent; the prompt is gone at once.
+        await click("start")
+        check("start click", store.meetingActs.contains("meeting_start(pid=4242, source=detected:us.zoom.xos, consent=true)") && !isDetected(),
+              "acts=\(store.meetingActs) prompt=\(String(describing: store.meeting?.prompt))")
+        await sleep(0.6)
+        check("prompt gone hides the island", !shown, "shown=\(shown) visible=\(window.isVisible)")
+        // Not now → dismiss(never: false).
+        feed(detected); await sleep(1.2)
+        await click("not-now")
+        check("not now click", store.meetingActs.contains("meeting_detection_dismiss(us.zoom.xos, never=false)") && !isDetected(), "acts=\(store.meetingActs)")
+        // State B, then ⋮ → Never for Zoom → dismiss(never: true).
+        feed(withEvent); await sleep(1.2)
+        check("event line + project chip", ui.rects["project"] != nil && store.meeting?.prompt == .detected(try! TheuthJSON.decoder.decode(Detection.self, from: Data(withEvent.utf8))),
+              "rects=\(Array(ui.rects.keys).sorted())")
+        await shot("\(which)-b-event")
+        await click("menu")
+        check("menu click", ui.menuOpen && ui.rects["never"] != nil, "menuOpen=\(ui.menuOpen) rects=\(Array(ui.rects.keys).sorted())")
+        await shot("\(which)-b-menu")
+        await click("never")
+        check("never click", store.meetingActs.contains("meeting_detection_dismiss(us.zoom.xos, never=true)") && !isDetected() && !ui.menuOpen,
+              "acts=\(store.meetingActs) menuOpen=\(ui.menuOpen)")
+        // State D: a recording, then the app released the mic for 30 s.
+        var slice = IslandFixture.slice()
+        slice.meeting = "probe-meeting"
+        store.meeting = slice
+        await sleep(1)
+        let released = #"{"type":"AppReleased","meeting":"probe-meeting","app":{"pid":4242,"name":"Zoom","bundle_id":"us.zoom.xos","active":false},"released_for_s":30}"#
+        feed(released); await sleep(1)
+        let asks: Bool = { if case .stop(let app, 30)? = store.meeting?.prompt, app.pid == 4242, app.name == "Zoom" { return true } else { return false } }()
+        check("app released asks", asks && ui.isOpen && ui.rects["keep"] != nil,
+              "prompt=\(String(describing: store.meeting?.prompt)) state=\(ui.state) rects=\(Array(ui.rects.keys).sorted())")
+        await shot("\(which)-d-stop")
+        logRects(["stop-now", "keep", "stop-row"])
+        await click("keep")
+        check("keep click", store.meeting?.prompt == nil && store.meeting?.keptReleasedForS == 30 && store.meeting?.isLive == true,
+              "prompt=\(String(describing: store.meeting?.prompt)) kept=\(String(describing: store.meeting?.keptReleasedForS))")
+        feed(released.replacingOccurrences(of: "\"released_for_s\":30", with: "\"released_for_s\":60")); await sleep(0.5)
+        check("re-send after keep is muted", store.meeting?.prompt == nil, "prompt=\(String(describing: store.meeting?.prompt))")
+        feed(released); await sleep(1)
+        check("a fresh release asks again", ui.rects["stop-now"] != nil && store.meeting?.prompt != nil, "prompt=\(String(describing: store.meeting?.prompt))")
+        await click("stop-now")
+        check("stop click", store.meetingActs.contains("meeting_stop"), "acts=\(store.meetingActs)")
+    }
+
+    /// 158 W3 — `--probe-island upcoming`: the wire's `Upcoming` through the real decoder → island state C (headline, bullets,
+    /// source line, project chip), Start clicked (asserted on the suppressed `meeting_start` label, source Calendar), Dismiss
+    /// (local; the minute re-send muted), a different event shows again, then `Detected` for that event carries the brief into
+    /// state B (§5.2 c "above b"), and an expired `Upcoming` (start + 6 min) is refused. Nothing is sent (`AskFlags.automated`).
+    private func runUpcomingProbe(_ which: String, trusted: Bool, check: (String, Bool, @autoclosure () -> String) -> Void) async {
+        func sleep(_ s: Double) async { try? await Task.sleep(for: .seconds(s)) }
+        let iso = ISO8601DateFormatter()
+        func upcoming(id: String, startIn: TimeInterval, brief: Bool = true) -> String {
+            let start = iso.string(from: Date().addingTimeInterval(startIn)), end = iso.string(from: Date().addingTimeInterval(startIn + 1800))
+            let bullets = brief ? #"["Last week: shipped the island fix; agreed to move detection to the engine","Open: Tom owes the Windows capture numbers (due Friday)","Priya asked twice about calendar privacy — what reaches the model"]"# : "null"
+            return #"{"type":"Upcoming","event":{"id":"\#(id)","uid":"\#(id)","title":"Weekly product sync","start":"\#(start)","end":"\#(end)","attendees":[{"name":"Sky Moore","is_me":true},{"name":"Priya Shah"},{"name":"Tom Okafor"}]},"project":"theuth","brief":\#(bullets)}"#
+        }
+        func feed(_ json: String) { store.meetingObserve(Data(json.utf8)); IslandLog.write("probe \(which): fed \(json.prefix(60))…") }
+        func upcomingId() -> String? { if case .upcoming(let e, _, _)? = store.meeting?.prompt { return e.id } else { return nil } }
+
+        feed(upcoming(id: "ek:u1:", startIn: 4 * 60 + 30)); await sleep(1.5)
+        check("upcoming shows state C", shown && ui.isOpen && upcomingId() == "ek:u1:" && ui.rects["start"] != nil && ui.rects["dismiss"] != nil && ui.rects["project"] != nil,
+              "shown=\(shown) state=\(ui.state) prompt=\(String(describing: store.meeting?.prompt)) rects=\(Array(ui.rects.keys).sorted())")
+        logProbeState(which)
+        await shot("\(which)-c-brief")
+        logRects(["start", "dismiss", "project", "eye", "upcoming"])
+        guard trusted else {
+            check("synthetic input", false, "NOT PROVABLE: CGEventPost needs Accessibility, which this probe bundle lacks")
+            return
+        }
+        // Start recording → `meeting_start` with source Calendar, the event, the project and consent; the prompt is gone at once.
+        await click("start")
+        check("start click", store.meetingActs.contains("meeting_start(source=calendar:ek:u1:, consent=true)") && store.meeting?.prompt == nil,
+              "acts=\(store.meetingActs) prompt=\(String(describing: store.meeting?.prompt))")
+        await sleep(0.6)
+        check("prompt gone hides the island", !shown, "shown=\(shown) visible=\(window.isVisible)")
+        // Dismiss → local; the engine's minute re-send of the same event stays muted; another event shows again.
+        feed(upcoming(id: "ek:u1:", startIn: 4 * 60)); await sleep(1.2)
+        await click("dismiss")
+        check("dismiss click", store.meeting?.prompt == nil && store.meeting?.dismissedUpcoming == "ek:u1:", "prompt=\(String(describing: store.meeting?.prompt)) dismissed=\(String(describing: store.meeting?.dismissedUpcoming))")
+        feed(upcoming(id: "ek:u1:", startIn: 3 * 60)); await sleep(0.5)
+        check("re-send after dismiss is muted", store.meeting?.prompt == nil, "prompt=\(String(describing: store.meeting?.prompt))")
+        feed(upcoming(id: "ek:u2:", startIn: 2 * 60, brief: false)); await sleep(1.2)
+        check("another event shows (no bullets)", upcomingId() == "ek:u2:" && ui.rects["start"] != nil, "prompt=\(String(describing: store.meeting?.prompt))")
+        await shot("\(which)-c-nobrief")
+        // Both apply: Detected for the same event takes the pane and carries the brief (re-sent with bullets) into state B.
+        let detected = #"{"type":"Detected","app":{"pid":4242,"name":"Zoom","bundle_id":"us.zoom.xos","active":true},"app_id":"us.zoom.xos","since":"2026-10-10T10:00:00Z","also":[],"event":{"event":{"id":"ek:u2:","uid":"ek:u2:","title":"Weekly product sync","start":"2026-10-10T10:00:00Z","end":"2026-10-10T10:30:00Z"},"score":0.9}}"#
+        feed(detected); await sleep(0.5)
+        feed(upcoming(id: "ek:u2:", startIn: 2 * 60)); await sleep(1.2)
+        let both: Bool = { if case .detected(let d)? = store.meeting?.prompt { return d.brief?.count == 3 && d.project == "theuth" } else { return false } }()
+        check("detected + upcoming merge into B with the brief", both && ui.rects["project"] != nil && ui.rects["not-now"] != nil,
+              "prompt=\(String(describing: store.meeting?.prompt)) rects=\(Array(ui.rects.keys).sorted())")
+        await shot("\(which)-b-with-brief")
+        await click("not-now")
+        check("not now clears", store.meeting?.prompt == nil, "prompt=\(String(describing: store.meeting?.prompt))")
+        // Past start + 5 min: refused.
+        feed(upcoming(id: "ek:u3:", startIn: -6 * 60)); await sleep(0.5)
+        check("expired upcoming is refused", store.meeting?.prompt == nil && !shown, "prompt=\(String(describing: store.meeting?.prompt)) shown=\(shown)")
     }
 
     private func finish(_ which: String, pass: Int, fail: Int, eye: Bool, frames: [String: CGRect], pointer: NSPoint) async {

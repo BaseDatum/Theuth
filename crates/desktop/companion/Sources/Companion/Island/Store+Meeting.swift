@@ -58,6 +58,47 @@ extension Store {
     func meetingResume() { meetingAct("meeting_resume") { try await $0.meetingResume() } }
     func meetingStop() { meetingAct("meeting_stop") { try await $0.meetingStop() } }
 
+    // 158 §5.4 — the prompt's answers. Each clears the prompt at once (the engine's `DetectionCleared`/`Started` confirm it);
+    // Start sends the one frozen RPC with the detected pid, `consent: true` (the lawful line was shown) and what W2/W3 filled.
+    func meetingStartDetected(_ d: Detection) {
+        meeting?.prompt = nil
+        let start = StartMeeting(process: d.app.pid, title: d.event?.event.title, context: d.event?.event.description.map { String($0.prefix(1_000)) },
+                                 consent: true, source: .detected(appId: d.appId), event: d.event?.event.id, project: d.project)
+        meetingAct("meeting_start(pid=\(d.app.pid), source=detected:\(d.appId), consent=true)") { _ = try await $0.meetingStart(start) }
+    }
+
+    func meetingNotNow(_ d: Detection) {
+        meeting?.prompt = nil
+        meetingAct("meeting_detection_dismiss(\(d.appId), never=false)") { try await $0.meetingDetectionDismiss(appId: d.appId, never: false) }
+    }
+
+    func meetingNever(_ d: Detection) {
+        meeting?.prompt = nil
+        meetingAct("meeting_detection_dismiss(\(d.appId), never=true)") { try await $0.meetingDetectionDismiss(appId: d.appId, never: true) }
+    }
+
+    /// "Keep recording": local only — no RPC exists; `MeetingReducer.keepRecording` mutes the engine's re-sends.
+    func meetingKeepRecording() { meeting = meeting.map(MeetingReducer.keepRecording) }
+
+    /// 158 §5.2 (c) Start recording: no detected app (the engine taps system audio), source Calendar, title/context/event from
+    /// the event, the remembered project, `consent: true` (the lawful line was shown).
+    func meetingStartUpcoming(_ e: EventRef, project: String?) {
+        meeting?.prompt = nil
+        let start = StartMeeting(title: e.title, context: e.description.map { String($0.prefix(1_000)) }, consent: true,
+                                 source: .calendar(event: e.id), event: e.id, project: project)
+        meetingAct("meeting_start(source=calendar:\(e.id), consent=true)") { _ = try await $0.meetingStart(start) }
+    }
+
+    /// "Dismiss" on the Upcoming brief: local only (no RPC); the engine's minute re-sends of that event are muted.
+    func meetingDismissUpcoming() { meeting = meeting.map(MeetingReducer.dismissUpcoming) }
+
+    /// Once a second while the island is shown: the Upcoming brief clears at start + 5 min (§9.4).
+    func meetingTick(now: Date = Date()) {
+        guard let s = meeting else { return }
+        let n = MeetingReducer.tick(s, now: now)
+        if n != s { meeting = n }
+    }
+
     /// Step the brief cursor — the pane's chevrons clamp, the J/K/↑/↓ keys `wrap` (149i §N); one path, the island controller
     /// mirrors every cursor change with `meeting_cursor` and moves the focused topic to the shown brief's.
     func meetingMove(_ delta: Int, wrap: Bool = false) {
@@ -94,7 +135,7 @@ enum IslandLog {
 
 /// `--probe-island <closed|open|detached|nonotch>`: a fixture meeting (two topics + a brief), the island shown in that
 /// state for N s (`--probe-seconds`, default 6) without key, a saved frame restored from this display's UUID and an
-/// off-screen one rejected; quit 0. `--probe-island <clicks|stop|open-no-hover>[-nonotch]` (149i, `IslandProbe.swift`): synthetic
+/// off-screen one rejected; quit 0. `--probe-island <clicks|stop|open-no-hover|prompt|upcoming>[-nonotch]` (149i/158, `IslandProbe.swift`): synthetic
 /// input against the probe's own island. `--probe-eye`: the island up with `sharingType = .none` for the shell's capture
 /// test (§9/§10). All `--shareable`-aware, all log to `/tmp/149-W3-island.log` or `--probe-log <path>`.
 extension Flags {

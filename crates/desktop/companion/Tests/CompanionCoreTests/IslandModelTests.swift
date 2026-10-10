@@ -36,6 +36,20 @@ struct IslandModelTests {
         #expect(IslandModel.attached(live: false, collapsed: false) == .closed) // the idle wordmark ("Always show")
     }
 
+    // 158 §5.1: a prompt shows the island on its own and always opens the pane — it has buttons to answer.
+    @Test func promptShowsAndOpensWithoutAMeeting() {
+        let proc = MeetingProcess(pid: 7, name: "Zoom", bundleId: nil, active: true)
+        var s = MeetingSlice.empty
+        s.prompt = .detected(Detection(app: proc, appId: "us.zoom.xos", since: "t"))
+        #expect(!IslandModel.live(s) && IslandModel.visible(s, alwaysShow: false))
+        #expect(IslandModel.attached(live: false, collapsed: false, prompt: true) == .open)
+        #expect(IslandModel.attached(live: true, collapsed: true, prompt: true) == .open) // "Stop recording?" reopens a collapsed island
+        s.prompt = .upcoming(event: EventRef(id: "e", uid: "u", title: "Sync", start: "x", end: "y"), project: nil, brief: [])
+        #expect(!IslandModel.live(s) && IslandModel.visible(s, alwaysShow: false)) // (c) too, before any mic hold
+        s.prompt = nil
+        #expect(!IslandModel.visible(s, alwaysShow: false)) // no linger once it clears
+    }
+
     @Test func briefKeysCycleOutsideTheBoxAndOnlyArrowsInAnEmptyBox() {
         // 149i §N: J/K and ↑/↓ cycle while the box is not focused; in the box J/K type (never cycle), ↑/↓ cycle only when empty.
         #expect(IslandModel.cyclesBrief(arrow: false, boxFocused: false, textEmpty: false))

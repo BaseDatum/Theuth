@@ -23,6 +23,7 @@ internal sealed class IslandController : IDisposable
     private readonly IslandModel model = new();
     private readonly DispatcherQueueTimer oracleTimer;
     private readonly DispatcherQueueTimer engineLost;
+    private readonly DispatcherQueueTimer upcomingTimer;
     private DateTimeOffset? lostSince;
     private DispatcherQueueTimer? fixtureTimer;
     private PointSettings point;
@@ -51,6 +52,11 @@ internal sealed class IslandController : IDisposable
         engineLost = dispatcher.CreateTimer();
         engineLost.IsRepeating = false;
         engineLost.Tick += (_, _) => EngineLost();
+        // 158 §9.4: while an upcoming brief is up, the "In N min" headline ticks and the card clears at start + 5 min.
+        upcomingTimer = dispatcher.CreateTimer();
+        upcomingTimer.Interval = TimeSpan.FromSeconds(20);
+        upcomingTimer.IsRepeating = true;
+        upcomingTimer.Tick += (_, _) => { if (!disposed) Apply(MeetingReducer.Expire(snapshot, DateTimeOffset.Now), null); };
         store.EventReceived += OnEvent;
         store.MeetingRefetched += Hydrate;
         store.GlobalKeyPressed += OnGlobalDown;
@@ -59,6 +65,8 @@ internal sealed class IslandController : IDisposable
         if (Environment.GetCommandLineArgs().Contains("--island-always")) model.AlwaysShow = true;
         Hydrate();
         if (Environment.GetCommandLineArgs().Contains("--island-fixture")) Fixture();
+        else if (Environment.GetCommandLineArgs().Contains("--island-prompt")) FixturePrompt();
+        else if (Environment.GetCommandLineArgs().Contains("--island-upcoming")) FixtureUpcoming();
         Log.Write($"island: installed (frames={model.Frames.Count} always={(model.AlwaysShow ? "on" : "off")} window={Window.Hwnd})");
     }
 
@@ -153,10 +161,18 @@ internal sealed class IslandController : IDisposable
             .Select(b => new MeetingBrief(b.Id, b.Topic, b.Title, b.Bullets.ToArray(), b.Source, (long)b.AtMs, b.Parent, b.Cached)).ToArray();
         var lines = store.Live.Select(u => new MeetingLine(u.Track, (long)u.T0Ms, u.Text, u.Request, Open: false, u.Speaker)).ToArray();
         var degraded = m.Degraded.Select(d => d.Detail is null ? d.Kind : $"{d.Kind}:{d.Detail}").ToArray();
-        var s = MeetingReducer.Hydrate(m.Meeting, m.Session, m.State.Word, degraded, (long)m.ElapsedMs, m.Cursor, topics, m.ApprovalWaiting, briefs, lines, DateTimeOffset.Now);
+        // 158 §4.5: a companion connecting mid-prompt renders it from `meeting_status.detection` (event / project / brief included).
+        var detection = m.Detection is { } det
+            ? new MeetingDetection(Process(det.App), det.AppId, det.Since, det.Also.Select(Process).ToArray(), det.Event is { } em ? Event(em.Event) : null, det.Project, det.Brief)
+            : null;
+        var s = MeetingReducer.Hydrate(m.Meeting, m.Session, m.State.Word, degraded, (long)m.ElapsedMs, m.Cursor, topics, m.ApprovalWaiting, briefs, lines, DateTimeOffset.Now, detection);
         Apply(s, null);
-        Log.Write($"island: hydrated — state={m.State} topics={topics.Length} briefs={briefs.Length} lines={lines.Length} cursor={s.Cursor}");
+        Log.Write($"island: hydrated — state={m.State} topics={topics.Length} briefs={briefs.Length} lines={lines.Length} cursor={s.Cursor}{(detection is null ? "" : $" prompt={detection.AppId}")}");
     }
+
+    private static MeetingProcess Process(ProcessInfo p) => new(p.Pid, p.Name, p.BundleId, p.Active);
+
+    private static MeetingEventRef Event(EventRef e) => new(e.Id, e.Title, e.Start, e.End, e.Attendees.Where(a => !a.IsMe && a.Name.Length > 0).Select(a => a.Name).ToArray(), e.Description);
 
     private void Apply(MeetingSnapshot next, MeetingChange? change)
     {
@@ -169,9 +185,9 @@ internal sealed class IslandController : IDisposable
         }
         // Island fix D1: present the state first (open while live unless collapsed for this meeting), then render at that shape.
         var mode = model.Mode;
-        model.Present(next.Meeting, next.State);
-        if (prev.State != next.State || prev.Meeting != next.Meeting || mode != model.Mode)
-            Log.Write($"island: presented state={next.State} meeting={next.Meeting ?? "-"} mode={model.Mode}{(next.Meeting is not null && model.IsCollapsed(next.Meeting) ? " (collapsed for this meeting)" : "")}");
+        model.Present(next.Meeting, next.State, next.Prompting);
+        if (prev.State != next.State || prev.Meeting != next.Meeting || mode != model.Mode || !Equals(prev.Prompt, next.Prompt) || !Equals(prev.Upcoming, next.Upcoming))
+            Log.Write($"island: presented state={next.State} meeting={next.Meeting ?? "-"} mode={model.Mode}{(next.Meeting is not null && model.IsCollapsed(next.Meeting) ? " (collapsed for this meeting)" : "")}{(next.Prompt is null ? "" : $" prompt={next.Prompt.GetType().Name}")}{(next.Upcoming is null ? "" : $" upcoming={next.Upcoming.Event.Id}")}");
         Window.Update(next);
         var cursor = next.Current?.Id;
         if (!fixture && cursor != cursorSent && (change is MeetingChange.Brief || prev.Cursor != next.Cursor))
@@ -220,6 +236,8 @@ internal sealed class IslandController : IDisposable
         }
         if (snapshot.Meeting is not null && MeetingReducer.Live(snapshot.State) && !fixture) { if (!oracleTimer.IsRunning) { oracleTimer.Start(); PollOracle(); } }
         else oracleTimer.Stop();
+        if (snapshot.Upcoming is not null) { if (!upcomingTimer.IsRunning) upcomingTimer.Start(); }
+        else upcomingTimer.Stop();
     }
 
     /// <summary>The engine connection stayed closed for <see cref="IslandModel.EngineLostGrace"/>: a live meeting ends on the island (a reconnect hydrates it back).</summary>
@@ -297,6 +315,9 @@ internal sealed class IslandController : IDisposable
             if (a is IslandAction.Dismiss d0) Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.TopicRemoved("fixture-meeting", d0.Topic, "Dismissed"), DateTimeOffset.Now), null);
             if (a is IslandAction.Mute) Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.State("fixture-meeting", snapshot.State == "Paused" ? "Recording" : "Paused", Array.Empty<string>()), DateTimeOffset.Now), null);
             if (a is IslandAction.Stop) FixtureStop();
+            if (a is IslandAction.StartRecording or IslandAction.StartUpcoming) { FixtureStart(); return; }
+            if (a is IslandAction.NotNow or IslandAction.NeverForApp or IslandAction.KeepRecording) Apply(snapshot with { Prompt = null }, null);
+            if (a is IslandAction.DismissUpcoming) Apply(MeetingReducer.DismissUpcoming(snapshot), null);
             return;
         }
         switch (a)
@@ -316,6 +337,41 @@ internal sealed class IslandController : IDisposable
             case IslandAction.Stop: Fire(store.MeetingStopAsync(), "meeting_stop"); break;
             case IslandAction.Eye: ToggleEye(); break;
             case IslandAction.OpenMeetings: _ = Links.Open(new Uri("theuth://meetings")); break;
+            // 158 §5.4: one frozen RPC; the engine fills the defaults (model, memory, template) server-side; the event and the
+            // remembered project ride along when the prompt carried them (W2/W3).
+            case IslandAction.StartRecording sr:
+                Log.Write($"island: start recording — {sr.Detection.App.Display} (pid {sr.Detection.App.Pid}, {sr.Detection.AppId}){(sr.Detection.Event is { } ev1 ? $" event={ev1.Id}" : "")}{(sr.Detection.Project is { } pr1 ? $" project={pr1}" : "")}");
+                Fire(store.MeetingStartAsync(new StartMeeting
+                {
+                    Process = sr.Detection.App.Pid, Consent = true, Source = StartSource.Detected(sr.Detection.AppId),
+                    Event = sr.Detection.Event?.Id, Project = sr.Detection.Project,
+                }), "meeting_start");
+                break;
+            // 158 §5.2 (c) / §5.4: Start from the upcoming brief — no mic holder yet, so no `process`; the calendar event is the source,
+            // its title and description (first 1 000 chars) the title and context.
+            case IslandAction.StartUpcoming su:
+                Log.Write($"island: start recording — upcoming {su.Upcoming.Event.Id} “{su.Upcoming.Event.Title}”{(su.Upcoming.Project is { } pr2 ? $" project={pr2}" : "")}");
+                Fire(store.MeetingStartAsync(new StartMeeting
+                {
+                    Title = su.Upcoming.Event.Title, Context = su.Upcoming.Event.Description is { Length: > 0 } ctx ? (ctx.Length > 1000 ? ctx[..1000] : ctx) : null,
+                    Consent = true, Source = StartSource.Calendar(su.Upcoming.Event.Id), Event = su.Upcoming.Event.Id, Project = su.Upcoming.Project,
+                }), "meeting_start");
+                break;
+            case IslandAction.DismissUpcoming:
+                Apply(MeetingReducer.DismissUpcoming(snapshot), null); // local: there is no RPC for it; the reducer ignores the engine's re-sends of this event
+                break;
+            // 158 §5.3: the prompt goes at once; the engine's `DetectionCleared` confirms (and a failed call is logged, not re-shown).
+            case IslandAction.NotNow nn:
+                Apply(snapshot with { Prompt = null }, null);
+                Fire(store.MeetingDetectionDismissAsync(nn.AppId, never: false), "meeting_detection_dismiss(not now)");
+                break;
+            case IslandAction.NeverForApp nv:
+                Apply(snapshot with { Prompt = null }, null);
+                Fire(store.MeetingDetectionDismissAsync(nv.AppId, never: true), "meeting_detection_dismiss(never)");
+                break;
+            case IslandAction.KeepRecording:
+                Apply(snapshot with { Prompt = null }, null); // the engine re-sends `AppReleased` every 30 s while the app stays off the mic
+                break;
         }
     }
 
@@ -438,11 +494,114 @@ internal sealed class IslandController : IDisposable
         t.Start();
     }
 
+    /// <summary>The fixture's detection prompt (158 §5.2 a): <c>--island-prompt</c> shows "Zoom is using your microphone"; Start runs the fixture meeting.</summary>
+    private static readonly MeetingProcess FixtureApp = new(4242, "Zoom.exe", null, true);
+
+    private void FixturePrompt()
+    {
+        fixture = true;
+        Apply(MeetingReducer.Reduce(MeetingSnapshot.Empty, new MeetingChange.Detected(new MeetingDetection(FixtureApp, "zoom.exe", DateTimeOffset.Now.ToString("O"), Array.Empty<MeetingProcess>())), DateTimeOffset.Now), null);
+        Log.Write("island: fixture prompt applied (Zoom is using your microphone)");
+        // `--island-prompt-auto` (the build-B gate, no one at the desk): prompt → Start (⏎ path) → fixture meeting → AppReleased → Keep → Stop → Done,
+        // logging what the island renders at each state (`prompt158:` lines) and a PNG of each under %TEMP%.
+        if (!Environment.GetCommandLineArgs().Contains("--island-prompt-auto")) return;
+        FixtureSteps("prompt", new (int, string, Action)[]
+        {
+            (2, "detected", () => { }),
+            (3, "start", () => Act(new IslandAction.StartRecording(((MeetingPrompt.Detected)snapshot.Prompt!).Detection))),
+            (13, "stop-prompt", () => { }),
+            (14, "keep", () => Act(new IslandAction.KeepRecording())),
+            (16, "after-keep", () => { }),
+            (17, "stop", () => Act(new IslandAction.Stop())),
+            (19, "done", () => { }),
+        });
+    }
+
+    /// <summary>
+    /// 158 §5.2 (c) (W3W): <c>--island-upcoming</c> shows the upcoming brief for a fixture event 4 min out ("In 4 min · Weekly product sync",
+    /// three bullets, the project chip, the source line). <c>--island-upcoming-auto</c>: (c) alone → a detection of the SAME event merges
+    /// into one pane (bullets + chip on the prompt) → Not now leaves (c) alone again → a detection of ANOTHER event shows (c) above (b)
+    /// → Dismiss leaves (b) with its event row and chip → the engine's re-send is ignored → Not now → gone; <c>upcoming158:</c> log lines
+    /// and a PNG per state under %TEMP%.
+    /// </summary>
+    private void FixtureUpcoming()
+    {
+        fixture = true;
+        var now = DateTimeOffset.Now;
+        var ev = new MeetingEventRef("fixture:weekly:", "Weekly product sync", (now + TimeSpan.FromMinutes(4)).ToUniversalTime().ToString("O"),
+            (now + TimeSpan.FromMinutes(34)).ToUniversalTime().ToString("O"), new[] { "Priya Shah", "Tom Okafor" });
+        var bullets = new[]
+        {
+            "Last week: shipped the island fix; agreed to move detection to the engine",
+            "Open: Tom owes the Windows capture numbers (due Friday)",
+            "Priya asked twice about calendar privacy — what reaches the model",
+        };
+        Apply(MeetingReducer.Reduce(MeetingSnapshot.Empty, new MeetingChange.Upcoming(ev, "theuth", bullets), now), null);
+        Log.Write("island: fixture upcoming applied (In 4 min · Weekly product sync)");
+        if (!Environment.GetCommandLineArgs().Contains("--island-upcoming-auto")) return;
+        var other = ev with { Id = "fixture:standup:", Title = "Daily standup", Attendees = Array.Empty<string>() };
+        MeetingChange.Detected Zoom(MeetingEventRef e) => new(new MeetingDetection(FixtureApp, "zoom.exe", DateTimeOffset.Now.ToString("O"), Array.Empty<MeetingProcess>(), e, null, null));
+        FixtureSteps("upcoming", new (int, string, Action)[]
+        {
+            (2, "upcoming", () => { }),
+            (3, "merged", () => Apply(MeetingReducer.Reduce(snapshot, Zoom(ev), DateTimeOffset.Now), null)),
+            (5, "unmerged", () => Act(new IslandAction.NotNow("zoom.exe"))),
+            (6, "both", () => Apply(MeetingReducer.Reduce(snapshot, Zoom(other), DateTimeOffset.Now), null)),
+            (8, "dismissed", () => Act(new IslandAction.DismissUpcoming())),
+            (9, "resent-ignored", () => Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.Upcoming(ev, "theuth", bullets), DateTimeOffset.Now), null)),
+            (10, "not-now", () => Act(new IslandAction.NotNow("zoom.exe"))),
+            (12, "gone", () => { }),
+        });
+    }
+
+    /// <summary>The unattended gate's step runner: at each second mark run the step, then log what the island renders and capture a PNG.</summary>
+    private void FixtureSteps(string tag, (int At, string Name, Action Do)[] steps)
+    {
+        foreach (var (at, name, action) in steps)
+        {
+            var t = dispatcher.CreateTimer();
+            fixtureTimers.Add(t); // referenced for the controller's lifetime: an unreferenced DispatcherQueueTimer never fires once collected
+            t.Interval = TimeSpan.FromSeconds(at);
+            t.IsRepeating = false;
+            t.Tick += (_, _) =>
+            {
+                action();
+                var r = Window.ScreenRect;
+                string text = Window.RenderedText();
+                Log.Write($"{tag}158: {name} — shown={Window.IsShown} mode={model.Mode} state={snapshot.State} prompt={snapshot.Prompt?.GetType().Name ?? "-"} upcoming={snapshot.Upcoming?.Event.Id ?? "-"} rect=({r.left},{r.top},{r.right - r.left}x{r.bottom - r.top}) text=“{text}”");
+                if (text.Length > 160) Log.Write($"{tag}158: {name} tail=“…{text[^160..]}”"); // the gate clips log lines at 220 chars
+                var png = Path.Combine(Path.GetTempPath(), $"158-{tag}-{name}.png");
+                _ = Window.CapturePng(png).ContinueWith(x => Log.Write($"{tag}158: {name} png {(x.Result ? png : "hidden")}"), TaskScheduler.Default);
+            };
+            t.Start();
+        }
+    }
+
+    /// <summary>The fixture's "Start recording": the fixture meeting, then <c>AppReleased</c> 8 s in so the stop prompt (158 §5.2 d) is proven too.</summary>
+    private void FixtureStart()
+    {
+        Fixture();
+        var t = dispatcher.CreateTimer();
+        fixtureTimers.Add(t);
+        t.Interval = TimeSpan.FromSeconds(8);
+        t.IsRepeating = false;
+        t.Tick += (_, _) =>
+        {
+            if (!MeetingReducer.Live(snapshot.State)) return;
+            Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.AppReleased("fixture-meeting", FixtureApp, 30), DateTimeOffset.Now), null);
+            Log.Write("island: fixture AppReleased (30 s) → stop prompt");
+        };
+        t.Start();
+    }
+
+    private readonly List<DispatcherQueueTimer> fixtureTimers = new();
+
     public void Dispose()
     {
         if (disposed) return;
         disposed = true;
         oracleTimer.Stop();
+        upcomingTimer.Stop();
         engineLost.Stop();
         fixtureTimer?.Stop();
         fixtureTalk?.Stop();
