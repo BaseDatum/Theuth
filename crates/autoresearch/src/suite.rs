@@ -98,33 +98,85 @@ macro_rules! fixture_files {
     };
 }
 
+/// toy-sort's holdout with the seed offset of R-W7-6 (the fixture dir is C's; the same text is
+/// handed off for `fixtures/toy-sort/holdout.sh`). Identical to the shipped script at seed 0.
+const TOY_SORT_HOLDOUT: &str = r#"#!/bin/bash
+# The holdout (140 §5.4): the same objective on sizes and seeds the search never
+# scores, with a correctness check of its own (a cheat that returns the input
+# unsorted is caught here even if the benchmark never looks).
+set -euo pipefail
+cd "${AUTORESEARCH_WORKTREE:-$PWD}"
+exec python3 - <<'PY'
+import os, random, sys, time
+from sorter import sort
+
+# 159 R-W7-6: the suite runner draws the seed per outer study and passes it in the
+# environment; it is never in the repo, so a session tuned to the holdout cannot see it.
+SEED = int(os.environ.get("AUTORESEARCH_HOLDOUT_SEED", "0"))
+total = 0.0
+for n, seed in ((2500, 101), (6000, 202), (10000, 303), (7000, 404)):
+    rng = random.Random(seed + SEED)
+    xs = [rng.randrange(-10**9, 10**9) for _ in range(n)]
+    t0 = time.perf_counter()
+    out = sort(xs)
+    ms = (time.perf_counter() - t0) * 1000.0
+    if out != sorted(xs):
+        print(f"holdout: wrong output for n={n} seed={seed}", file=sys.stderr)
+        sys.exit(1)
+    total += ms
+    print(f"CASE n{n}s{seed + SEED} time_ms={ms:.3f}")
+print(f"METRIC time_ms={total:.3f}")
+PY
+"#;
+
 /// The fixtures this build can materialise. toy-pareto (W1) and toy-route (W4) are not in
 /// this tree; Z adds their rows (as-built W7, Hand-offs). toy-sort ships no `reference/`, so
-/// its reference (`sorted`) is embedded here.
+/// its reference (`sorted`) is embedded here. `reference/*` entries feed `best_known` only
+/// and are never written into an inner repo (R-W7-1).
 pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "toy-sort",
         scope: "sorter.py",
         goal: "Make sorting faster without changing output.",
-        files: fixture_files!(
-            "toy-sort",
-            "sorter.py",
+        files: &[
+            (
+                "bench.sh",
+                include_str!("../fixtures/toy-sort/bench.sh"),
+                true,
+            ),
+            (
+                "test.sh",
+                include_str!("../fixtures/toy-sort/test.sh"),
+                true,
+            ),
+            ("holdout.sh", TOY_SORT_HOLDOUT, true),
+            (
+                "main.py",
+                include_str!("../fixtures/toy-sort/main.py"),
+                false,
+            ),
+            (".gitignore", "__pycache__/\n", false),
+            (
+                "sorter.py",
+                include_str!("../fixtures/toy-sort/sorter.py"),
+                false,
+            ),
             (
                 "fixtures/input.txt",
                 include_str!("../fixtures/toy-sort/fixtures/input.txt"),
-                false
+                false,
             ),
             (
                 "fixtures/expected.txt",
                 include_str!("../fixtures/toy-sort/fixtures/expected.txt"),
-                false
+                false,
             ),
             (
                 "reference/sorter.py",
                 "def sort(xs):\n    return sorted(xs)\n",
-                false
-            )
-        ),
+                false,
+            ),
+        ],
     },
     Fixture {
         name: "toy-dedupe",
@@ -229,10 +281,16 @@ pub fn fixture(name: &str) -> Option<&'static Fixture> {
     FIXTURES.iter().find(|f| f.name == name)
 }
 
-/// Write `f` under `dir` and commit it as the base of a fresh git repo.
+/// Write `f` under `dir` and commit it as the base of a fresh git repo. The `reference/`
+/// entries stay out (R-W7-1): an inner session reads its worktree, and the answer key would
+/// make "copy the reference" the first outer keep. `best_known` applies the reference itself.
 pub fn materialise(f: &Fixture, dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir)?;
-    for (path, text, exec) in f.files {
+    for (path, text, exec) in f
+        .files
+        .iter()
+        .filter(|(p, ..)| !p.starts_with("reference/"))
+    {
         let p = dir.join(path);
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
@@ -489,8 +547,16 @@ fn inner_slug(outer: &str, n: u32, role: SampleRole, k: u32, fixture: &str, seed
     format!("{}{tail}", head.trim_end_matches('-'))
 }
 
-/// The inner spec: the fixture's README spec with the §12 budget and the outer executor.
-fn inner_spec(f: &Fixture, slug: &str, repo: &Path, suite: &Suite, outer: &StudySpec) -> StudySpec {
+/// The inner spec: the fixture's README spec with the §12 budget, the outer executor and the
+/// outer study's holdout seed.
+fn inner_spec(
+    f: &Fixture,
+    slug: &str,
+    repo: &Path,
+    suite: &Suite,
+    outer: &StudySpec,
+    hseed: u32,
+) -> StudySpec {
     StudySpec {
         slug: slug.to_owned(),
         goal: f.goal.to_owned(),
@@ -517,25 +583,19 @@ fn inner_spec(f: &Fixture, slug: &str, repo: &Path, suite: &Suite, outer: &Study
             command: "bash test.sh".into(),
             timeout: "30s".into(),
         }),
+        // R-W7-6: the seed is in the command the plugin runs (the ledger), not in the repo.
         holdout: Some(HoldoutSpec {
-            command: "bash holdout.sh".into(),
+            command: format!("AUTORESEARCH_HOLDOUT_SEED={hseed} bash holdout.sh"),
             every: 1,
             repeats: None,
         }),
-        evaluator_paths: [
-            "bench.sh",
-            "test.sh",
-            "holdout.sh",
-            "fixtures/",
-            "reference/",
-        ]
-        .iter()
-        .map(|s| (*s).to_owned())
-        .collect(),
+        evaluator_paths: ["bench.sh", "test.sh", "holdout.sh", "fixtures/"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect(),
         scope: vec![f.scope.to_owned()],
         off_limits: [
             "fixtures/**",
-            "reference/**",
             "test.sh",
             "bench.sh",
             "holdout.sh",
@@ -715,6 +775,14 @@ fn prepare_boxed(env: Env, study: StudyRecord) -> Pin<Box<dyn Future<Output = ()
     Box::pin(crate::actor::prepare(env, study, StartWhen::Now))
 }
 
+/// `actor::control_env` the same way (`StopNow` reaches the measure path and [`sample`]).
+fn control_boxed(
+    env: Env,
+    m: crate::types::Control,
+) -> Pin<Box<dyn Future<Output = Result<crate::types::StudyInfo>> + Send>> {
+    Box::pin(async move { crate::actor::control_env(&env, m).await })
+}
+
 /// Wait for `slug` to reach a terminal state; `Err` when cancelled or past the inner budget's
 /// hours plus slack.
 async fn wait_terminal(env: &Env, slug: &str, cancel: &CancellationToken) -> Result<StudyRecord> {
@@ -749,13 +817,56 @@ fn mechanism_sha(study: &StudyRecord, req: &SampleRequest<'_>) -> Result<String>
     Ok(req.tree_sha.to_owned())
 }
 
+/// The outer study's holdout seed (R-W7-6): drawn once per outer study, kept in
+/// `suite/holdout_seed` (never in any inner repo) and passed to every inner holdout and to the
+/// reference measurement as `AUTORESEARCH_HOLDOUT_SEED`, so every tree is scored on the same
+/// held-out inputs and no fixture file names them.
+pub fn holdout_seed(dir: &Path) -> u32 {
+    let path = dir.join("holdout_seed");
+    if let Some(s) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+    {
+        return s;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    // 1..=999_999: never 0, which the scripts read as "the shipped seeds".
+    let seed = nanos % 999_999 + 1;
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(&path, seed.to_string());
+    seed
+}
+
+/// `stop_now` on an inner study the sample gives up on (cancelled, over its hours, failed to
+/// score): a finished or failed study is left alone; errors are logged, never fatal.
+async fn stop_now(env: &Env, slug: &str) {
+    match env.store.get_study(slug).await {
+        Ok(Some(s)) if !crate::actor::is_terminal(&s.state) => {
+            let m = crate::types::Control {
+                slug: slug.to_owned(),
+                op: crate::types::ControlOp::StopNow,
+                by: crate::types::By::Plugin,
+            };
+            if let Err(e) = control_boxed(env.clone(), m).await {
+                tracing::warn!(%slug, "inner study not stopped: {e}");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(%slug, "inner study not read: {e}"),
+    }
+}
+
 /// `best_known` per fixture: the reference solution's holdout on this machine, measured once
-/// per outer study (cached in `suite/best_known.json`) through `plugin_command`.
+/// per outer study (cached in `suite/best_known.json`) through `plugin_command`, on the same
+/// holdout seed the inner studies get.
 async fn best_known(
     env: &Env,
     study: &StudyRecord,
     names: &[String],
     dir: &Path,
+    hseed: u32,
 ) -> BTreeMap<String, f64> {
     let cache = dir.join("best_known.json");
     let mut known: BTreeMap<String, f64> = std::fs::read(&cache)
@@ -787,10 +898,13 @@ async fn best_known(
                 &format!("reference-{name}"),
                 &format!("bash {}", copy.join("holdout.sh").display()),
                 REFERENCE_TIMEOUT,
-                &[(
-                    "AUTORESEARCH_WORKTREE".to_owned(),
-                    copy.display().to_string(),
-                )],
+                &[
+                    (
+                        "AUTORESEARCH_WORKTREE".to_owned(),
+                        copy.display().to_string(),
+                    ),
+                    ("AUTORESEARCH_HOLDOUT_SEED".to_owned(), hseed.to_string()),
+                ],
             )
             .await;
         match run {
@@ -835,9 +949,21 @@ pub async fn sample(
     if !missing.is_empty() {
         tracing::warn!(slug = %study.slug, ?missing, "suite fixtures not in this build; skipped");
     }
+    // R-W7-2: the inner spend of one outer sample is bounded by `per_experiment_usd` before
+    // anything starts (the setup panel caps `seeds`, a hand-written spec may not).
+    let planned = (names.len() - missing.len()) as f64 * f64::from(suite.seeds) * INNER_USD;
+    if planned > study.spec.budget.per_experiment_usd {
+        return Err(Error::refused(format!(
+            "a suite run of {} fixtures × {} seeds × ${INNER_USD} = ${planned:.0} is over budget.per_experiment_usd ${}; fewer seeds or a larger cap",
+            names.len() - missing.len(),
+            suite.seeds,
+            study.spec.budget.per_experiment_usd
+        )));
+    }
     let sha = mechanism_sha(study, &req)?;
     let dir = crate::study_dir(&env.root, &study.slug).join("suite");
-    let best = best_known(env, study, names, &dir).await;
+    let hseed = holdout_seed(&dir);
+    let best = best_known(env, study, names, &dir, hseed).await;
     let run_dir = dir.join(format!(
         "{}-{}-{}",
         req.n,
@@ -851,9 +977,11 @@ pub async fn sample(
         req.k
     ));
 
-    // Start and wait, at most INNER_CONCURRENCY in flight; one failure to start is one
-    // missing case, not a crashed sample.
+    // Start and wait, at most INNER_CONCURRENCY in flight. Every inner study started is
+    // remembered: whatever happens to this sample, each one is stopped if still running and
+    // its spend lands in the sample row (R-W7-2).
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(INNER_CONCURRENCY));
+    let started_slugs = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
     let mut set = tokio::task::JoinSet::new();
     for name in names {
         let Some(f) = fixture(name) else { continue };
@@ -865,19 +993,24 @@ pub async fn sample(
                 i += 1;
             }
             let repo = run_dir.join(format!("{}-s{seed}", f.name));
-            let (env, outer, suite, sha, sem, cancel) = (
+            let (env, outer, suite, sha, sem, cancel, started_slugs) = (
                 env.clone(),
                 study.clone(),
                 suite.clone(),
                 sha.clone(),
                 sem.clone(),
                 cancel.clone(),
+                started_slugs.clone(),
             );
             set.spawn(async move {
                 let _permit = sem.acquire().await;
                 let started = async {
+                    if cancel.is_cancelled() {
+                        return Err(Error::refused("cancelled before the inner study started"));
+                    }
                     materialise(f, &repo)?;
-                    let spec = inner_spec(f, &slug, &repo, &suite, &outer.spec);
+                    let spec = inner_spec(f, &slug, &repo, &suite, &outer.spec, hseed);
+                    started_slugs.lock().push(slug.clone());
                     start_inner(&env, spec, created_by(&outer.slug, f.name, seed), &sha).await
                 }
                 .await;
@@ -885,37 +1018,64 @@ pub async fn sample(
                     Ok(_) => wait_terminal(&env, &slug, &cancel).await,
                     Err(e) => Err(e),
                 };
+                if r.is_err() {
+                    stop_now(&env, &slug).await;
+                }
                 (f.name, seed, slug, r)
             });
         }
     }
     let mut inner: Vec<Inner> = Vec::new();
-    let mut cancelled = false;
     while let Some(joined) = set.join_next().await {
         let Ok((fixture_name, seed, slug, r)) = joined else {
             continue;
         };
-        match r {
-            Ok(rec) => {
-                let mut sc = score_inner(&env.store, &rec, best.get(fixture_name).copied()).await?;
-                sc.spend_usd = crate::actor::study_spend(env, &rec).await.unwrap_or(0.0);
-                inner.push(sc);
-            }
+        let scored = match r {
+            Ok(rec) => score_inner(&env.store, &rec, best.get(fixture_name).copied()).await,
+            Err(e) => Err(e),
+        };
+        inner.push(match scored {
+            Ok(sc) => sc,
             Err(e) => {
-                cancelled |= cancel.is_cancelled();
                 tracing::warn!(%slug, "inner study did not score: {e}");
-                inner.push(Inner {
+                Inner {
                     slug,
                     fixture: fixture_name.to_owned(),
                     seed,
                     state: "failed".into(),
                     ..Inner::default()
-                });
+                }
             }
+        });
+    }
+    // Spend of every inner study this sample started, scored or not.
+    let started_slugs = started_slugs.lock().clone();
+    for i in &mut inner {
+        if let Ok(Some(rec)) = env.store.get_study(&i.slug).await {
+            i.spend_usd = crate::actor::study_spend(env, &rec).await.unwrap_or(0.0);
         }
     }
-    if cancelled {
-        return Err(Error::refused("cancelled while inner studies ran"));
+    let spend_usd: f64 = inner
+        .iter()
+        .filter(|i| started_slugs.contains(&i.slug))
+        .map(|i| i.spend_usd)
+        .sum();
+    let spend_nanos = (spend_usd * 1e9).round().max(0.0) as u64;
+    if cancel.is_cancelled() {
+        // Interrupted: the row still carries what the inner studies spent.
+        return Ok(Sample {
+            n: req.n,
+            k: req.k,
+            tree_sha: req.tree_sha.to_owned(),
+            role: Some(req.role),
+            lost: true,
+            wall_ms: started.elapsed().as_millis() as u64,
+            failure: Some("cancelled while inner studies ran".into()),
+            at: crate::store::now(),
+            asi: BTreeMap::from([("mechanism".to_owned(), sha)]),
+            spend_nanos,
+            ..Sample::default()
+        });
     }
     inner.sort_by(|a, b| (&a.fixture, a.seed).cmp(&(&b.fixture, b.seed)));
 
@@ -939,7 +1099,6 @@ pub async fn sample(
         cases.insert(id, s);
     }
     let value = mean(&cases.values().copied().collect::<Vec<_>>());
-    let spend_usd: f64 = inner.iter().map(|i| i.spend_usd).sum();
     env.store
         .append_event(
             &study.slug,
@@ -971,7 +1130,7 @@ pub async fn sample(
             .is_none()
             .then(|| "no inner study produced a holdout score".to_owned()),
         at: crate::store::now(),
-        spend_nanos: (spend_usd * 1e9).round().max(0.0) as u64,
+        spend_nanos,
         ..Sample::default()
     })
 }
@@ -1523,8 +1682,11 @@ mod tests {
         );
     }
 
+    /// R-W7-1 and R-W7-6: an inner repo carries the fixture but never `reference/`; every
+    /// fixture has a reference for `best_known`; the holdout reads its seed from the
+    /// environment, so two outer studies score on different held-out inputs.
     #[test]
-    fn every_embedded_fixture_materialises_and_its_reference_is_the_scope_file() {
+    fn inner_repos_carry_no_answer_key_and_the_holdout_seed_lives_outside_them() {
         let d = tempfile::tempdir().unwrap();
         for f in FIXTURES {
             let dir = d.path().join(f.name);
@@ -1532,10 +1694,27 @@ mod tests {
             assert!(dir.join(".git").exists());
             assert!(dir.join(f.scope).exists());
             assert!(
-                dir.join("reference").join(f.scope).exists(),
-                "{} has a reference",
+                !dir.join("reference").exists(),
+                "{}: the answer key is not in the inner repo",
                 f.name
             );
+            assert!(
+                crate::git::read(&dir, &["ls-files"])
+                    .unwrap()
+                    .lines()
+                    .all(|l| !l.starts_with("reference/")),
+                "{}: nor in its history",
+                f.name
+            );
+            assert!(
+                f.files
+                    .iter()
+                    .any(|(p, ..)| *p == format!("reference/{}", f.scope)),
+                "{} has a reference for best_known",
+                f.name
+            );
+            let holdout = f.files.iter().find(|(p, ..)| *p == "holdout.sh").unwrap().1;
+            assert!(holdout.contains("AUTORESEARCH_HOLDOUT_SEED"), "{}", f.name);
             for name in ["bench.sh", "test.sh", "holdout.sh"] {
                 assert!(dir.join(name).exists());
             }
@@ -1546,21 +1725,59 @@ mod tests {
             "W1's fixture is a hand-off row"
         );
         // Custody: every fixture file the inner session could game is an evaluator path and
-        // off limits, so an inner keep that edits one is refused (140 §5.3).
+        // off limits, so an inner keep that edits one is refused (140 §5.3); the holdout seed
+        // is in the command the plugin runs, not in any file of the repo.
         let f = fixture("toy-lru").unwrap();
-        let spec = inner_spec(f, "x", d.path(), &suite_of(&preset("/x")), &preset("/x"));
-        for p in [
-            "bench.sh",
-            "test.sh",
-            "holdout.sh",
-            "fixtures/",
-            "reference/",
-        ] {
+        let spec = inner_spec(
+            f,
+            "x",
+            d.path(),
+            &suite_of(&preset("/x")),
+            &preset("/x"),
+            4242,
+        );
+        for p in ["bench.sh", "test.sh", "holdout.sh", "fixtures/"] {
             assert!(spec.evaluator_paths.iter().any(|e| e == p), "{p}");
         }
-        assert!(spec.off_limits.iter().any(|o| o == "reference/**"));
+        assert!(!spec.evaluator_paths.iter().any(|e| e.contains("reference")));
+        assert_eq!(
+            spec.holdout.as_ref().unwrap().command,
+            "AUTORESEARCH_HOLDOUT_SEED=4242 bash holdout.sh"
+        );
         assert_eq!(spec.scope, vec!["lru.py"]);
         crate::tools::validate_spec(&spec).unwrap();
+        // The seed is drawn once per outer study and reread.
+        let s1 = holdout_seed(d.path());
+        assert!(s1 > 0 && s1 == holdout_seed(d.path()));
+        // Two seeds, two different held-out inputs (python3, as every fixture run here).
+        let run = |seed: &str| {
+            let out = std::process::Command::new("bash")
+                .arg("holdout.sh")
+                .current_dir(d.path().join("toy-dedupe"))
+                .env("AUTORESEARCH_HOLDOUT_SEED", seed)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|l| l.starts_with("CASE "))
+                .map(|l| l.split(' ').nth(1).unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let (a, b) = (run("0"), run("17"));
+        assert_eq!(a.len(), 4);
+        assert_ne!(a, b, "a different seed is a different holdout");
+        assert!(
+            b.iter().all(|c| c.ends_with("118")
+                || c.ends_with("219")
+                || c.ends_with("320")
+                || c.ends_with("421")),
+            "{b:?}"
+        );
     }
 
     // ───────────────────────── the double and the harness ─────────────────────────
@@ -2195,6 +2412,151 @@ mod tests {
         assert_eq!(info.versions[0].version, 2);
         assert_eq!(info.versions[0].sha, outer.incumbent_sha.unwrap());
         assert_eq!(info.active, None, "adoption is a press, not the finish");
+    }
+
+    /// A stored outer meta study and a candidate sample request on it.
+    async fn outer_for_sample(h: &Harness, seeds: u32, inner_experiments: u32) -> StudyRecord {
+        let env = h.studies.env();
+        let repo = crate::mechanism::ensure(&env.root).unwrap();
+        let mut spec = preset(&repo.display().to_string());
+        setup_set(&mut spec, "suite.training", "toy-dedupe").unwrap();
+        setup_set(&mut spec, "suite.held_out", "toy-lru").unwrap();
+        spec.suite.as_mut().unwrap().seeds = seeds;
+        spec.suite.as_mut().unwrap().inner_experiments = inner_experiments;
+        let mut study = StudyRecord::new(spec, None);
+        study.state = StudyState::Running;
+        study.base_sha = Some("base0000".into());
+        study.incumbent_sha = Some("base0000".into());
+        env.store.create_study(&study).await.unwrap();
+        study
+    }
+
+    /// R-W7-2: a suite run whose inner budget exceeds `per_experiment_usd` is refused before
+    /// any inner study exists.
+    #[tokio::test]
+    async fn a_suite_run_over_the_per_experiment_cap_starts_nothing() {
+        let h = harness(Arc::new(Double::default())).await;
+        let env = h.studies.env();
+        let study = outer_for_sample(&h, 50, 8).await; // 1 fixture × 50 seeds × $2 = $100 > $20
+        let dir = h._dir.path().join("wt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let req = SampleRequest {
+            slug: "meta",
+            n: 1,
+            k: 0,
+            tree_sha: "exp:1",
+            role: SampleRole::Candidate,
+            worktree: &dir,
+            evaluator: &dir,
+            runs_dir: &dir,
+        };
+        let e = sample(&env, &study, req, &CancellationToken::new())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("over budget.per_experiment_usd"), "{e}");
+        assert!(
+            env.store
+                .list_studies()
+                .await
+                .unwrap()
+                .iter()
+                .all(|s| !is_inner(s)),
+            "no inner study was created"
+        );
+    }
+
+    /// R-W7-2: a cancelled suite sample stops the inner studies it started and still returns
+    /// a (lost) row carrying what they spent, so the outer money stop sees it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_cancelled_suite_sample_stops_its_inner_studies_and_reports_their_spend() {
+        let double = Arc::new(Double::default());
+        let h = harness(double.clone()).await;
+        let env = h.studies.env();
+        // 40 inner experiments each: far more than the scheduler can finish before the cancel.
+        let study = outer_for_sample(&h, 2, 40).await;
+        let stop = Arc::new(AtomicBool::new(false));
+        let sched = tokio::spawn(fake_scheduler(env.clone(), stop.clone()));
+        let cancel = CancellationToken::new();
+        let canceller = {
+            let (cancel, env) = (cancel.clone(), env.clone());
+            tokio::spawn(async move {
+                // Cancel once both inner studies run and have closed an experiment.
+                for _ in 0..500 {
+                    let inner: Vec<StudyRecord> = env
+                        .store
+                        .list_studies()
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .filter(is_inner)
+                        .collect();
+                    let mut closed = 0;
+                    for s in &inner {
+                        closed += env
+                            .store
+                            .list_experiments(&s.slug, None, u32::MAX)
+                            .await
+                            .unwrap()
+                            .iter()
+                            .filter(|e| e.state == ExperimentState::Kept)
+                            .count();
+                    }
+                    if inner.len() == 2 && closed >= 2 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                cancel.cancel();
+            })
+        };
+        let dir = h._dir.path().join("wt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let req = SampleRequest {
+            slug: "meta",
+            n: 1,
+            k: 0,
+            tree_sha: "exp:1",
+            role: SampleRole::Candidate,
+            worktree: &dir,
+            evaluator: &dir,
+            runs_dir: &dir,
+        };
+        let s = sample(&env, &study, req, &cancel).await.unwrap();
+        canceller.await.unwrap();
+        stop.store(true, Ordering::SeqCst);
+        sched.await.unwrap();
+        assert!(s.lost && s.value.is_none() && s.exit.is_none(), "{s:?}");
+        assert!(s.spend_nanos > 0, "the inner spend is on the row: {s:?}");
+        let inner: Vec<StudyRecord> = env
+            .store
+            .list_studies()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(is_inner)
+            .collect();
+        assert_eq!(inner.len(), 2);
+        for s in &inner {
+            assert!(
+                !matches!(
+                    s.state,
+                    StudyState::Running | StudyState::Preparing | StudyState::Paused { .. }
+                ),
+                "{} was stopped: {:?}",
+                s.slug,
+                s.state
+            );
+        }
+        assert_eq!(
+            env.store
+                .list_events("meta", Some("suite"), 1)
+                .await
+                .unwrap()
+                .len(),
+            0,
+            "no suite event for a lost sample"
+        );
     }
 
     #[tokio::test]

@@ -5,9 +5,13 @@
 set -euo pipefail
 cd "${AUTORESEARCH_WORKTREE:-$PWD}"
 exec python3 - <<'PY'
-import random, sys, time
+import os, random, sys, time
 from collections import OrderedDict
 from lru import replay
+
+# 159 R-W7-6: the suite runner draws the seed per outer study and passes it in the
+# environment; it is never in the repo, so a session tuned to the holdout cannot see it.
+SEED = int(os.environ.get("AUTORESEARCH_HOLDOUT_SEED", "0"))
 
 def truth(trace, capacity):
     cache, hits = OrderedDict(), 0
@@ -23,7 +27,7 @@ def truth(trace, capacity):
 
 total = 0.0
 for n, keys, cap, seed in ((15000, 1000, 400, 101), (30000, 2500, 900, 202), (50000, 5000, 1500, 303), (25000, 300, 250, 404)):
-    rng = random.Random(seed)
+    rng = random.Random(seed + SEED)
     trace = [int(rng.paretovariate(0.9)) % keys for _ in range(n)]
     t0 = time.perf_counter()
     hits = replay(trace, cap)
@@ -32,6 +36,6 @@ for n, keys, cap, seed in ((15000, 1000, 400, 101), (30000, 2500, 900, 202), (50
         print(f"holdout: wrong hit count for n={n} seed={seed}", file=sys.stderr)
         sys.exit(1)
     total += ms
-    print(f"CASE n{n}s{seed} time_ms={ms:.3f}")
+    print(f"CASE n{n}s{seed + SEED} time_ms={ms:.3f}")
 print(f"METRIC time_ms={total:.3f}")
 PY

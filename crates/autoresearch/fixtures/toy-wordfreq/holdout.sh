@@ -4,13 +4,17 @@
 set -euo pipefail
 cd "${AUTORESEARCH_WORKTREE:-$PWD}"
 exec python3 - <<'PY'
-import random, sys, time
+import os, random, sys, time
 from collections import Counter
 from wordfreq import top
 
+# 159 R-W7-6: the suite runner draws the seed per outer study and passes it in the
+# environment; it is never in the repo, so a session tuned to the holdout cannot see it.
+SEED = int(os.environ.get("AUTORESEARCH_HOLDOUT_SEED", "0"))
+
 total = 0.0
 for n, v, k, seed in ((15000, 300, 20, 101), (30000, 900, 50, 202), (50000, 1500, 100, 303), (25000, 100, 10, 404)):
-    rng = random.Random(seed)
+    rng = random.Random(seed + SEED)
     words = [f"u{int(rng.paretovariate(1.1)) % v}" for _ in range(n)]
     t0 = time.perf_counter()
     out = top(words, k)
@@ -20,6 +24,6 @@ for n, v, k, seed in ((15000, 300, 20, 101), (30000, 900, 50, 202), (50000, 1500
         print(f"holdout: wrong output for n={n} seed={seed}", file=sys.stderr)
         sys.exit(1)
     total += ms
-    print(f"CASE n{n}s{seed} time_ms={ms:.3f}")
+    print(f"CASE n{n}s{seed + SEED} time_ms={ms:.3f}")
 print(f"METRIC time_ms={total:.3f}")
 PY

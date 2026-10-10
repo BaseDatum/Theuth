@@ -4,8 +4,12 @@
 set -euo pipefail
 cd "${AUTORESEARCH_WORKTREE:-$PWD}"
 exec python3 - <<'PY'
-import json, random, sys, time
+import json, os, random, sys, time
 from jsonparse import parse
+
+# 159 R-W7-6: the suite runner draws the seed per outer study and passes it in the
+# environment; it is never in the repo, so a session tuned to the holdout cannot see it.
+SEED = int(os.environ.get("AUTORESEARCH_HOLDOUT_SEED", "0"))
 
 
 def doc(rng, n):
@@ -25,7 +29,7 @@ def doc(rng, n):
 
 total = 0.0
 for n, seed in ((100, 101), (250, 202), (400, 303), (200, 404)):
-    text = doc(random.Random(seed), n)
+    text = doc(random.Random(seed + SEED), n)
     t0 = time.perf_counter()
     out = parse(text)
     ms = (time.perf_counter() - t0) * 1000.0
@@ -33,6 +37,6 @@ for n, seed in ((100, 101), (250, 202), (400, 303), (200, 404)):
         print(f"holdout: wrong output for n={n} seed={seed}", file=sys.stderr)
         sys.exit(1)
     total += ms
-    print(f"CASE n{n}s{seed} time_ms={ms:.3f}")
+    print(f"CASE n{n}s{seed + SEED} time_ms={ms:.3f}")
 print(f"METRIC time_ms={total:.3f}")
 PY
