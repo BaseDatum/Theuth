@@ -22,7 +22,7 @@ use crate::finalize::Headline;
 use crate::refs::{self, RefKind};
 use crate::runner::SampleRequest;
 use crate::setup::SetupRow;
-use crate::store::{ExperimentRecord, Store, StudyRecord, now};
+use crate::store::{ExperimentRecord, Store, StudyPatch, StudyRecord, now};
 use crate::types::*;
 use crate::wave::Promotion;
 use crate::{git, schedule_file};
@@ -624,6 +624,7 @@ fn island_of_slot(cfg: &Cfg, slot: Option<u8>) -> u8 {
 /// `count` scored samples of `sha` in a scratch worktree (removed afterwards), rows under
 /// experiment `n` with sample indices from `k0`. Elite re-measures and the extra confirm
 /// samples of an archive decision come through here.
+#[allow(clippy::too_many_arguments)]
 async fn sample_tree(
     env: &Env,
     study: &StudyRecord,
@@ -632,6 +633,7 @@ async fn sample_tree(
     k0: u32,
     count: u32,
     role: SampleRole,
+    cancel: &CancellationToken,
 ) -> Result<Vec<Sample>> {
     let repo = actor::worktree_of(study)?;
     let dir = env
@@ -642,7 +644,7 @@ async fn sample_tree(
         env.backend.worktree_remove(&repo, &dir)?;
     }
     env.backend.worktree_add_detached(&repo, &dir, sha)?;
-    let r = sample_in(env, study, &dir, sha, n, k0, count, role).await;
+    let r = sample_in(env, study, &dir, sha, n, k0, count, role, cancel).await;
     if let Err(e) = env.backend.worktree_remove(&repo, &dir) {
         tracing::warn!(slug = %study.slug, "scratch worktree not removed: {e}");
     }
@@ -659,12 +661,15 @@ async fn sample_in(
     k0: u32,
     count: u32,
     role: SampleRole,
+    cancel: &CancellationToken,
 ) -> Result<Vec<Sample>> {
     let slug = study.slug.as_str();
     let evaluator = env.evaluator_dir(slug, study.segment);
     let runs = env.runs_dir(slug, n);
     std::fs::create_dir_all(&runs)?;
-    let cancel = CancellationToken::new();
+    if cancel.is_cancelled() {
+        return Err(Error::refused("the study is stopping"));
+    }
     let mut out = Vec::with_capacity(count as usize);
     for k in k0..k0 + count {
         let req = SampleRequest {
@@ -677,7 +682,7 @@ async fn sample_in(
             evaluator: &evaluator,
             runs_dir: &runs,
         };
-        out.push(actor::scored_sample(env, &study.spec, req, &cancel, None).await?);
+        out.push(actor::scored_sample(env, &study.spec, req, cancel, None).await?);
     }
     Ok(out)
 }
@@ -716,7 +721,18 @@ pub async fn parent_of(env: &Env, study: &StudyRecord, slot: Option<u8>) -> Resu
         .max()
         .unwrap_or(0);
     if n.saturating_sub(newest) > cfg.remeasure_after {
-        sample_tree(env, study, &elite.sha, n, 90, 1, SampleRole::Incumbent).await?;
+        let cancel = actor::cancel_token(&env.root, &study.slug);
+        sample_tree(
+            env,
+            study,
+            &elite.sha,
+            n,
+            90,
+            1,
+            SampleRole::Incumbent,
+            &cancel,
+        )
+        .await?;
     }
     Ok(elite.sha)
 }
@@ -724,14 +740,22 @@ pub async fn parent_of(env: &Env, study: &StudyRecord, slot: Option<u8>) -> Resu
 // ───────────────────────────── settle and promote ─────────────────────────────
 
 /// What the gate says about `candidate` against `reference` on the samples so far (the 140 gate
-/// for scalar studies): `Some((beats, why))` when decided, `None` when it asks for more.
+/// for scalar studies). `Suspicious` is not an acceptance: no reviewer runs at archive
+/// acceptance (W4-f), so a jump the gate flags stays out until one does.
+enum Gate {
+    /// Decided: `(beats, why)`.
+    Decided(bool, String),
+    /// More samples: `incumbent_sample` = one of the reference too.
+    More { incumbent_sample: bool },
+}
+
 fn gate_once(
     env: &Env,
     gcfg: &GateCfg,
     sigma: f64,
     candidate: &[Sample],
     reference: &[Sample],
-) -> Option<(bool, String)> {
+) -> Gate {
     let input = GateInput {
         candidate: actor::clean_values(candidate),
         incumbent: actor::bench_values(reference),
@@ -742,16 +766,22 @@ fn gate_once(
         secondaries: actor::secondary_means(candidate, reference),
     };
     match env.backend.gate_step(gcfg, &input) {
-        GateStep::Decide { verdict, z, .. } => Some((
+        GateStep::Decide {
+            verdict: Verdict::Suspicious,
+            ..
+        } => Gate::Decided(false, "suspicious; not reviewed".into()),
+        GateStep::Decide { verdict, z, .. } => Gate::Decided(
             verdict.is_keep_candidate(),
             format!(
                 "{}{}",
                 verdict.tag(),
                 z.map(|z| format!(" z {z:.2}")).unwrap_or_default()
             ),
-        )),
-        GateStep::Wait { .. } => Some((false, "waiting".into())),
-        GateStep::Confirm { .. } => None,
+        ),
+        GateStep::Wait { .. } => Gate::Decided(false, "waiting".into()),
+        GateStep::Confirm {
+            incumbent_sample, ..
+        } => Gate::More { incumbent_sample },
     }
 }
 
@@ -762,6 +792,7 @@ async fn materialise(
     env: &Env,
     study: &StudyRecord,
     exp: &ExperimentRecord,
+    cancel: &CancellationToken,
 ) -> Result<std::result::Result<(String, PathBuf), String>> {
     let slug = study.slug.as_str();
     let repo = actor::worktree_of(study)?;
@@ -800,7 +831,7 @@ async fn materialise(
         };
         let (exit, _, _) = env
             .backend
-            .command(&c.command, timeout, req, &CancellationToken::new())
+            .command(&c.command, timeout, req, cancel)
             .await?;
         if exit != Some(0) {
             env.backend.worktree_remove(&repo, &dir).ok();
@@ -821,23 +852,38 @@ async fn materialise(
 pub async fn settle(
     env: &Env,
     study: &StudyRecord,
+    before: &Archive,
     a: &mut Archive,
     exp: &mut ExperimentRecord,
+    cancel: &CancellationToken,
 ) -> Result<Outcome> {
     let cfg = study_cfg(env, study);
     let gcfg = actor::gate_cfg(&env.cfg, &study.spec)?;
     let slug = study.slug.as_str();
     let sigma = study.sigma.unwrap_or(0.0);
-    // The same tree may hold a cell on several islands (the seeded base): the slot's island first.
+    // The parent cell as it was when the wave was cut (`before`: an elite replaced earlier in
+    // this settle still names it). The same tree may hold a cell on several islands (the seeded
+    // base): the slot's island first.
     let island = island_of_slot(&cfg, exp.slot);
-    exp.parent_ref = a
+    exp.parent_ref = before
         .cells
         .iter()
         .filter(|c| c.sha == exp.parent_sha)
         .min_by_key(|c| c.island != island)
         .map(|c| refs::name(slug, RefKind::Cell, &c.key));
     let parent_samples = env.store.samples_of_tree(slug, &exp.parent_sha).await?;
-    let outcome = settle_inner(env, study, &cfg, &gcfg, sigma, a, exp, &parent_samples).await?;
+    let outcome = settle_inner(
+        env,
+        study,
+        &cfg,
+        &gcfg,
+        sigma,
+        a,
+        exp,
+        &parent_samples,
+        cancel,
+    )
+    .await?;
     let wave = exp.wave.unwrap_or(0);
     match &outcome {
         Outcome::Entered | Outcome::Replaced { .. } => {
@@ -902,6 +948,7 @@ async fn settle_inner(
     a: &mut Archive,
     exp: &mut ExperimentRecord,
     parent_samples: &[Sample],
+    cancel: &CancellationToken,
 ) -> Result<Outcome> {
     let slug = study.slug.as_str();
     let qualifies = match (exp.state, exp.verdict.as_ref()) {
@@ -934,6 +981,17 @@ async fn settle_inner(
         &samples,
         &base_cases(&env.store, study, cfg).await?,
     );
+    // A descriptor no sample reports is a refusal, not bin 0: the bench forgot its METRIC line.
+    if let Some(d) = cfg
+        .descriptors
+        .iter()
+        .find(|d| !descriptor.contains_key(&d.label()))
+    {
+        return Ok(Outcome::Rejected(format!(
+            "descriptor `{}` not reported",
+            d.label()
+        )));
+    }
     let island = island_of_slot(cfg, exp.slot);
     let key = cell_key(island, &bins_of(cfg, &descriptor));
     let holder = a.get(&key).cloned();
@@ -945,19 +1003,40 @@ async fn settle_inner(
     let repo = actor::worktree_of(study)?;
     match &holder {
         Some(h) => {
-            let reference = env.store.samples_of_tree(slug, &h.sha).await?;
+            let mut reference = env.store.samples_of_tree(slug, &h.sha).await?;
             let mut k = 50u32;
+            let mut k_ref = 80u32;
             let mut rounds = 0u32;
             let (ok, why) = loop {
-                if let Some(d) = gate_once(env, gcfg, sigma, &samples, &reference) {
-                    break d;
-                }
+                let incumbent_sample = match gate_once(env, gcfg, sigma, &samples, &reference) {
+                    Gate::Decided(ok, why) => break (ok, why),
+                    Gate::More { incumbent_sample } => incumbent_sample,
+                };
                 if rounds > u32::from(gcfg.confirm_runs) {
                     break (false, "gate undecided".to_owned());
                 }
                 rounds += 1;
+                // R-25 for elites: a holder judged on one lucky draw gets a fresh sample when the
+                // gate asks for the reference, not only when it is picked as a parent.
+                if incumbent_sample {
+                    reference.extend(
+                        sample_tree(
+                            env,
+                            study,
+                            &h.sha,
+                            exp.n,
+                            k_ref,
+                            1,
+                            SampleRole::Incumbent,
+                            cancel,
+                        )
+                        .await?,
+                    );
+                    k_ref += 1;
+                    continue;
+                }
                 if tree.is_none() {
-                    match materialise(env, study, exp).await? {
+                    match materialise(env, study, exp, cancel).await? {
                         Ok(t) => tree = Some(t),
                         Err(why) => break (false, why),
                     }
@@ -965,7 +1044,18 @@ async fn settle_inner(
                 let (sha, dir) = tree.as_ref().expect("materialised");
                 let more = u32::from(gcfg.confirm_runs).max(1);
                 samples.extend(
-                    sample_in(env, study, dir, sha, exp.n, k, more, SampleRole::Candidate).await?,
+                    sample_in(
+                        env,
+                        study,
+                        dir,
+                        sha,
+                        exp.n,
+                        k,
+                        more,
+                        SampleRole::Candidate,
+                        cancel,
+                    )
+                    .await?,
                 );
                 k += more;
             };
@@ -997,16 +1087,18 @@ async fn settle_inner(
     }
     let (sha, dir) = match tree {
         Some(t) => t,
-        None => match materialise(env, study, exp).await? {
+        None => match materialise(env, study, exp, cancel).await? {
             Ok(t) => t,
             Err(why) => return Ok(Outcome::Rejected(why)),
         },
     };
     env.backend.worktree_remove(&repo, &dir).ok();
     if exp.state != ExperimentState::Kept {
-        // A stepping stone: the discarded slot's tree is now a commit; its samples follow it.
+        // A stepping stone: the discarded slot's tree is now a commit and its samples follow it,
+        // but the gate's word stands — `state`/`verdict` stay as measured, so no 140 reader
+        // (plateau, explore, the brief's keeps) counts it as a keep. The archive event and the
+        // row's line say it entered.
         actor::retag_samples(&env.store, slug, exp.n, &sha).await?;
-        exp.state = ExperimentState::Kept;
         exp.commit_sha = Some(sha.clone());
     }
     let child = Elite {
@@ -1053,13 +1145,22 @@ pub async fn promote(env: &Env, study: &StudyRecord, wave: u32) -> Result<Promot
         seed(env, &repo, &study, &cfg, &mut a).await?;
     }
     let before = a.clone();
+    let cancel = actor::cancel_token(&env.root, slug);
     let mut promotion = Promotion::default();
     for mut exp in exps {
         if exp.state.is_open() {
             abandon(env, exp).await?;
             continue;
         }
-        if settle(env, &study, &mut a, &mut exp).await?.accepted() {
+        // A Stop-now during the settle: the remaining slots keep the gate's word and are not
+        // archived; the wave still closes below so wave.rs's settle never loops on it.
+        if cancel.is_cancelled() {
+            break;
+        }
+        if settle(env, &study, &before, &mut a, &mut exp, &cancel)
+            .await?
+            .accepted()
+        {
             promotion.promoted.push(exp.n);
         }
     }
@@ -1074,7 +1175,10 @@ pub async fn promote(env: &Env, study: &StudyRecord, wave: u32) -> Result<Promot
                     // On the samples both trees already have: an undecided gate is no migration.
                     let cand = env.store.samples_of_tree(slug, &offered.sha).await?;
                     let reference = env.store.samples_of_tree(slug, &h.sha).await?;
-                    gate_once(env, &gcfg, sigma, &cand, &reference).is_some_and(|(ok, _)| ok)
+                    matches!(
+                        gate_once(env, &gcfg, sigma, &cand, &reference),
+                        Gate::Decided(true, _)
+                    )
                 }
             };
             if ok {
@@ -1090,13 +1194,23 @@ pub async fn promote(env: &Env, study: &StudyRecord, wave: u32) -> Result<Promot
             }
         }
     }
-    // The champion: the study branch and the incumbent point at it.
+    // The champion: the study branch and the incumbent point at it. The incumbent mean is the
+    // champion's mean over every sample it has (re-measures included), not its archive score.
+    let mut patch = StudyPatch::default();
     if let Some(champ) = a.champion(direction).cloned()
         && study.incumbent_sha.as_deref() != Some(champ.sha.as_str())
     {
         git::reset_clean(&repo, &champ.sha)?;
-        study.incumbent_sha = Some(champ.sha.clone());
-        study.incumbent_mean = Some(champ.score);
+        let (_, values) = tree_values(&env.store, slug, &champ.sha).await?;
+        let m = if values.is_empty() {
+            champ.score
+        } else {
+            mean(&values)
+        };
+        patch.incumbent_sha = Some(champ.sha.clone());
+        patch.incumbent_mean = Some(Some(m));
+        study.incumbent_sha = Some(champ.sha);
+        study.incumbent_mean = Some(m);
     }
     save(env, &repo, &study, &before, &a).await?;
     for k in 1..=study.spec.parallel.max(2) {
@@ -1107,8 +1221,10 @@ pub async fn promote(env: &Env, study: &StudyRecord, wave: u32) -> Result<Promot
             tracing::warn!(%slug, k, "candidate worktree not removed: {e}");
         }
     }
-    study.sigma = Some(actor::segment_sigma(env, &study).await?);
-    env.store.update_study(&study).await?;
+    // Only the columns this promotion owns: the settle took minutes and other sessions wrote
+    // the playbook, a pause or a stop meanwhile (R-W4-2).
+    patch.sigma = Some(Some(actor::segment_sigma(env, &study).await?));
+    env.store.patch_study(slug, &patch).await?;
     promotion.incumbent = study.incumbent_sha.clone();
     env.store
         .append_event(

@@ -423,11 +423,12 @@ fn gate_beats(
     }
 }
 
-/// 159 §9 Guard P1: a null population (every child's true effect 0) over 200 experiments; the
-/// re-measured champion — the same sequential gate as a ratchet keep, on fresh samples of the
-/// champion against fresh samples of the base — clears in ≤ 1 % of runs. Returns whether this
-/// run's champion cleared.
-fn null_run(seed: u64) -> bool {
+/// 159 §9 Guard P1: a null population (every child's true effect 0) over 200 experiments, then
+/// the champion re-measured the way finalize's `confirm` does it — `repeats` fresh samples per
+/// side, σ pooled from those two trees — and judged (a) as the headline prints today, a gain
+/// past the ±1.96 σ CI, and (b) by the R-W4-1 rule, `(base − final) / (σ √(1/nb + 1/nf)) ≥
+/// t_quantile(nb + nf − 2, 0.99)`. Returns `(ci_gain, confirmed)` for this run.
+fn null_run(seed: u64) -> (bool, bool) {
     let cfg = sim_cfg();
     let mut rng = Rng(seed);
     let base_true = 100.0;
@@ -476,36 +477,145 @@ fn null_run(seed: u64) -> bool {
         "the archive's champion is a lucky draw: {}",
         champ.score
     );
-    trees
-        .0
-        .insert("fresh-champ".into(), vec![base_true + rng.normal()]);
-    trees.0.insert(
-        "fresh-base".into(),
-        (0..3).map(|_| base_true + rng.normal()).collect(),
-    );
-    gate_beats(
-        &cfg,
-        &mut rng,
-        &mut trees,
-        "fresh-champ",
-        base_true,
-        "fresh-base",
-        base_true,
-    )
+    let repeats = 3;
+    let b: Vec<f64> = (0..repeats).map(|_| base_true + rng.normal()).collect();
+    let f: Vec<f64> = (0..repeats).map(|_| base_true + rng.normal()).collect();
+    let (nb, nf) = (b.len(), f.len());
+    let sigma = gate::pooled_sigma(&[b.clone(), f.clone()]);
+    let se = sigma * (1.0 / nb as f64 + 1.0 / nf as f64).sqrt();
+    let t = (mean(&b) - mean(&f)) / se;
+    (t > 1.96, t >= t_quantile(nb + nf - 2, 0.99))
 }
 
-/// W4-c: the design asks ≤ 1 %. One clean sequential comparison with the production gate
-/// (z = 2.0, z_fast = 3.5, z_discard = 1.0, confirm_runs = 2) has a null keep rate of
-/// ≈ 1.6–1.9 % (Monte Carlo, 200 000 trials with σ known); the 140 null simulation's ≤ 1 % is a
-/// property of the dependent ratchet sequence (a lucky incumbent reads the next candidates low).
-/// The re-measure brings the archive's claim from "almost always" (the champion is the best of
-/// ~200 null draws) down to the gate's own rate; the bound asserted here is that rate.
+/// Student t upper quantile: the smallest `t` with `P(T_dof ≤ t) ≥ p` (bisection on the
+/// regularised incomplete beta). The sim's stand-in for `evalcore::gate::t_quantile` (W2).
+fn t_quantile(dof: usize, p: f64) -> f64 {
+    let nu = dof as f64;
+    let cdf = |t: f64| 1.0 - 0.5 * beta_inc(nu / 2.0, 0.5, nu / (nu + t * t));
+    let (mut lo, mut hi) = (0.0, 100.0);
+    for _ in 0..200 {
+        let mid = (lo + hi) / 2.0;
+        if cdf(mid) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo + hi) / 2.0
+}
+
+/// Regularised incomplete beta `I_x(a, b)` (Lentz continued fraction).
+fn beta_inc(a: f64, b: f64, x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let front =
+        (ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln()).exp();
+    let cf = |a: f64, b: f64, x: f64| {
+        let tiny = 1e-300;
+        let mut c = 1.0;
+        let mut d = 1.0 - (a + b) * x / (a + 1.0);
+        d = 1.0 / if d.abs() < tiny { tiny } else { d };
+        let mut h = d;
+        for m in 1..300 {
+            let m = m as f64;
+            let m2 = 2.0 * m;
+            let aa = m * (b - m) * x / ((a + m2 - 1.0) * (a + m2));
+            d = 1.0 + aa * d;
+            d = 1.0 / if d.abs() < tiny { tiny } else { d };
+            c = 1.0 + aa / c;
+            if c.abs() < tiny {
+                c = tiny;
+            }
+            h *= d * c;
+            let aa = -(a + m) * (a + b + m) * x / ((a + m2) * (a + m2 + 1.0));
+            d = 1.0 + aa * d;
+            d = 1.0 / if d.abs() < tiny { tiny } else { d };
+            c = 1.0 + aa / c;
+            if c.abs() < tiny {
+                c = tiny;
+            }
+            let del = d * c;
+            h *= del;
+            if (del - 1.0).abs() < 1e-14 {
+                break;
+            }
+        }
+        h
+    };
+    if x < (a + 1.0) / (a + b + 2.0) {
+        front * cf(a, b, x) / a
+    } else {
+        1.0 - front * cf(b, a, 1.0 - x) / b
+    }
+}
+
+/// Lanczos `ln Γ` (Numerical Recipes `gammln`).
+fn ln_gamma(x: f64) -> f64 {
+    const COF: [f64; 6] = [
+        76.180_091_729_471_46,
+        -86.505_320_329_416_77,
+        24.014_098_240_830_91,
+        -1.231_739_572_450_155,
+        0.120_865_097_386_617_9e-2,
+        -0.539_523_938_495_3e-5,
+    ];
+    let tmp = x + 5.5;
+    let tmp = tmp - (x + 0.5) * tmp.ln();
+    let mut ser = 1.000_000_000_190_015;
+    let mut y = x;
+    for c in COF {
+        y += 1.0;
+        ser += c / y;
+    }
+    -tmp + (2.506_628_274_631_000_5 * ser / x).ln()
+}
+
 #[test]
-fn null_population_champion_clears_the_gate_at_the_gates_own_rate() {
-    let runs = 400usize;
-    let cleared = (0..runs as u64).filter(|s| null_run(5000 + s)).count();
-    eprintln!("null champion cleared {cleared} / {runs}");
-    assert!(cleared * 100 <= runs * 2, "{cleared} / {runs}");
+fn t_quantile_matches_the_table() {
+    assert!(
+        (t_quantile(4, 0.99) - 3.747).abs() < 0.01,
+        "{}",
+        t_quantile(4, 0.99)
+    );
+    assert!(
+        (t_quantile(10, 0.99) - 2.764).abs() < 0.01,
+        "{}",
+        t_quantile(10, 0.99)
+    );
+    assert!(
+        (t_quantile(30, 0.99) - 2.457).abs() < 0.01,
+        "{}",
+        t_quantile(30, 0.99)
+    );
+    assert!(
+        (t_quantile(4, 0.975) - 2.776).abs() < 0.01,
+        "{}",
+        t_quantile(4, 0.975)
+    );
+}
+
+/// R-W4-1: the champion's claim on finalize's fresh samples (`repeats` = 3 per side, 4 dof). As
+/// the headline prints today (a gain past the ±1.96 σ CI, no decision) the null claim rate is
+/// well above 1 %; with the t rule of Hand-off H4 (`t ≥ t_quantile(nb + nf − 2, 0.99)` ≈ 3.75 at
+/// 4 dof) it is ≤ 1 %.
+#[test]
+fn null_population_champion_confirmed_at_most_one_percent_under_the_t_rule() {
+    let runs = 1000usize;
+    let (ci_gain, confirmed) = (0..runs as u64)
+        .map(|s| null_run(5000 + s))
+        .fold((0usize, 0usize), |(c, t), (a, b)| {
+            (c + a as usize, t + b as usize)
+        });
+    eprintln!("null champion: CI gain {ci_gain} / {runs}, confirmed (t rule) {confirmed} / {runs}");
+    assert!(
+        ci_gain * 100 > runs,
+        "the CI alone is not a guard: {ci_gain} / {runs}"
+    );
+    assert!(confirmed * 100 <= runs, "{confirmed} / {runs}");
 }
 
 /// The deceptive landscape (159 §9 Guard P2): three behaviours — the base (mean 100, fast),
@@ -644,6 +754,8 @@ fn deceptive_landscape_archive_reaches_the_optimum_the_ratchet_does_not() {
 struct Bench {
     values: Mutex<VecDeque<(f64, f64)>>,
     commands: Mutex<Vec<String>>,
+    /// R-W4-2: another session's `experiment_notes` landing while a settle runs its checks.
+    notes_during_checks: Mutex<Option<(Store, String, String)>>,
 }
 
 impl Bench {
@@ -686,6 +798,14 @@ impl Backend for Bench {
         _: &CancellationToken,
     ) -> Result<(Option<i32>, String, u64)> {
         self.commands.lock().push(command.to_owned());
+        let notes = self.notes_during_checks.lock().take();
+        if let Some((store, slug, text)) = notes {
+            let p = StudyPatch {
+                playbook: Some(text),
+                ..StudyPatch::default()
+            };
+            store.patch_study(&slug, &p).await?;
+        }
         Ok((Some(0), String::new(), 1))
     }
     async fn review(
@@ -862,7 +982,13 @@ async fn child_round(h: &H, k: u8, expect: Verdict) -> (u32, String) {
     assert!(brief.text.contains("<archive>"), "{}", brief.text);
     let mine = &brief.slots.as_ref().unwrap()[0];
     assert_eq!(mine.k, k);
-    append(&mine.worktree, "router.py", &format!("\n# slot {k} idea\n"));
+    // Unique per experiment: a wave-2 slot cut from the base would otherwise repeat wave 1's
+    // patch and be refused as a duplicate of a dead end.
+    append(
+        &mine.worktree,
+        "router.py",
+        &format!("\n# slot {k} idea #{}\n", mine.n),
+    );
     let r = actor::run_env(
         &env,
         Run {
@@ -872,6 +998,10 @@ async fn child_round(h: &H, k: u8, expect: Verdict) -> (u32, String) {
                 idea: format!("idea of slot {k}"),
                 category: format!("c{k}"),
                 hypothesis: "h".into(),
+                // The archive, not novelty, is under test: a one-line comment per slot is
+                // "similar" to the previous slot's by design.
+                force: true,
+                reason: Some("archive test: distinct cell, same shape of edit".into()),
                 ..RunArgs::default()
             },
         },
@@ -978,7 +1108,18 @@ async fn a_wave_settles_into_cells_moves_the_champion_and_cuts_the_next_wave_fro
 
     // The replacement of wave promotion.
     let checks_before = bench.commands.lock().len();
+    // R-W4-2: slot 2's session writes notes while the settle runs the stepping stone's checks.
+    *bench.notes_during_checks.lock() = Some((
+        env.store.clone(),
+        SLUG.to_owned(),
+        "notes written during the settle".to_owned(),
+    ));
     let p = promote(&env, &study(&h).await, 1).await.unwrap();
+    assert_eq!(
+        study(&h).await.playbook,
+        "notes written during the settle",
+        "the promotion patches its own columns and keeps the notes another session wrote"
+    );
     assert_eq!(
         p.promoted,
         vec![n1, n2],
@@ -1021,9 +1162,9 @@ async fn a_wave_settles_into_cells_moves_the_champion_and_cuts_the_next_wave_fro
         e1.line
     );
     assert_eq!(
-        e2.state,
-        ExperimentState::Kept,
-        "the stepping stone is now an elite"
+        (e2.state, e2.verdict.clone()),
+        (ExperimentState::Discarded, Some(Verdict::Worse)),
+        "the stepping stone keeps the gate's word (R-W4-4): no 140 reader counts it as a keep"
     );
     let c2 = e2.commit_sha.clone().expect("materialised");
     assert_ne!(c2, base);
@@ -1213,4 +1354,163 @@ async fn a_stale_elite_picked_as_parent_is_re_measured_first() {
         4
     );
     let _ = &mut h;
+}
+
+/// Records the wave as promoted so the frozen 140 `promote_env` does nothing when the last slot
+/// logs (stands in for Hand-off H1; see `a_wave_settles_…`).
+async fn stand_in_promoted(env: &Env, wave: u32, incumbent: &str) {
+    env.store
+        .append_event(
+            SLUG,
+            crate::wave::EVENT_PROMOTED,
+            &serde_json::json!({ "wave": wave, "promoted": [], "incumbent": incumbent, "stand_in": "159 W4 hand-off" }),
+        )
+        .await
+        .unwrap();
+}
+
+/// R-W4-3, R-W4-4, R-W4-5 with noise (σ ≈ 10 from the baseline). Wave 1 files two stepping
+/// stones (`worse`, one sample each). Wave 2 challenges both: the gate first asks for a sample
+/// of the one-sample holder (R-25) and the settle takes it on the holder's tree; slot 1's
+/// challenger then reads 12 σ better than its holder — `suspicious`, rejected unreviewed; slot
+/// 2's reads 6.9 σ better — `improved`, replaces its holder, and stays `discarded`/`worse` as the
+/// measure loop said while its commit and the archive carry the entry.
+#[tokio::test]
+async fn a_challenged_one_sample_elite_is_re_measured_and_suspicious_jumps_stay_out() {
+    let bench = Bench::with(&[
+        // baseline ×3 (σ = 10)
+        (7450.0, 1.0),
+        (7460.0, 1.0),
+        (7440.0, 1.0),
+        // wave 1: slot 1 worse, slow (→ i0:1); slot 2 worse, slower (→ i1:1)
+        (7600.0, 50.0),
+        (7600.0, 200.0),
+        // wave 2: slot 1 no gain vs the champion (→ i0:1); slot 2 worse vs the champion (→ i1:1)
+        (7450.0, 50.0),
+        (7520.0, 200.0),
+        // settle of wave-2 slot 1: holder #1 re-measured (R-25), then its two confirm samples
+        (7600.0, 50.0),
+        (7450.0, 50.0),
+        (7450.0, 50.0),
+        // settle of wave-2 slot 2: holder #2 re-measured, the gate decides at one sample
+        (7610.0, 200.0),
+    ]);
+    let mut h = harness(bench.clone(), 2).await;
+    let env = h.studies.env();
+    let base = study(&h).await.incumbent_sha.unwrap();
+    assert!((study(&h).await.sigma.unwrap() - 10.0).abs() < 1e-9);
+
+    actor::begin_env(
+        &env,
+        Begin {
+            session: h.session,
+            slot: None,
+        },
+    )
+    .await
+    .unwrap();
+    let (n1, _) = child_round(&h, 1, Verdict::Worse).await;
+    stand_in_promoted(&env, 1, &base).await;
+    let (n2, _) = child_round(&h, 2, Verdict::Worse).await;
+    let p = promote(&env, &study(&h).await, 1).await.unwrap();
+    assert_eq!(p.promoted, vec![n1, n2], "two stepping stones");
+    assert_eq!(
+        p.incumbent.as_deref(),
+        Some(base.as_str()),
+        "the champion is still the base"
+    );
+    let c1 = env
+        .store
+        .get_experiment(SLUG, n1)
+        .await
+        .unwrap()
+        .unwrap()
+        .commit_sha
+        .unwrap();
+    let c2 = env
+        .store
+        .get_experiment(SLUG, n2)
+        .await
+        .unwrap()
+        .unwrap()
+        .commit_sha
+        .unwrap();
+    assert_eq!(env.store.samples_of_tree(SLUG, &c1).await.unwrap().len(), 1);
+
+    actor::begin_env(
+        &env,
+        Begin {
+            session: h.session,
+            slot: None,
+        },
+    )
+    .await
+    .unwrap();
+    let (n3, _) = child_round(&h, 1, Verdict::NoGain).await;
+    stand_in_promoted(&env, 2, &base).await;
+    let (n4, _) = child_round(&h, 2, Verdict::Worse).await;
+    let p = promote(&env, &study(&h).await, 2).await.unwrap();
+    assert_eq!(p.promoted, vec![n4]);
+    assert!(
+        bench.values.lock().is_empty(),
+        "every scripted sample was spent in the scripted order"
+    );
+
+    // R-W4-3: both one-sample holders got a fresh Incumbent sample on their own tree.
+    for (c, n) in [(&c1, n3), (&c2, n4)] {
+        let s = env.store.samples_of_tree(SLUG, c).await.unwrap();
+        let re: Vec<&Sample> = s
+            .iter()
+            .filter(|x| x.role == Some(SampleRole::Incumbent))
+            .collect();
+        assert_eq!(re.len(), 1, "{c}: {s:?}");
+        assert_eq!((re[0].n, re[0].k), (n, 80));
+    }
+    // R-W4-5: the 12 σ jump is suspicious and stays out; its holder keeps the cell.
+    let e3 = env.store.get_experiment(SLUG, n3).await.unwrap().unwrap();
+    assert!(e3.line.contains("suspicious; not reviewed"), "{}", e3.line);
+    assert_eq!(e3.state, ExperimentState::Discarded);
+    let rows = env.store.archive_list(SLUG, Some("cell")).await.unwrap();
+    let by_key = |k: &str| rows.iter().find(|r| r.key == k).unwrap();
+    assert_eq!(by_key("i0:1").n, n1);
+    // R-W4-4: the replacement is archived with its commit, the gate's word stands on the row.
+    let e4 = env.store.get_experiment(SLUG, n4).await.unwrap().unwrap();
+    assert!(
+        e4.line.starts_with(&format!("replaced #{n2} in its cell")),
+        "{}",
+        e4.line
+    );
+    assert_eq!(
+        (e4.state, e4.verdict.clone()),
+        (ExperimentState::Discarded, Some(Verdict::Worse))
+    );
+    let c4 = e4.commit_sha.clone().expect("materialised");
+    assert_eq!(by_key("i1:1").n, n4);
+    assert_eq!(by_key("i1:1").sha, c4);
+    assert_eq!(
+        refs::list(&repo_of(&h).await, SLUG, RefKind::Cell)
+            .unwrap()
+            .iter()
+            .find(|(k, _)| k == "i1:1")
+            .unwrap()
+            .1,
+        c4
+    );
+    // The replaced elite's commit counted as a challenger's extra samples never: #2's tree has
+    // its slot sample and the re-measure only.
+    assert_eq!(env.store.samples_of_tree(SLUG, &c2).await.unwrap().len(), 2);
+    let kept = env
+        .store
+        .list_experiments(SLUG, None, u32::MAX)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.state == ExperimentState::Kept)
+        .count();
+    assert_eq!(kept, 0, "stepping stones and replacements are not keeps");
+    let _ = &mut h;
+}
+
+async fn repo_of(h: &H) -> PathBuf {
+    actor::worktree_of(&study(h).await).unwrap()
 }
