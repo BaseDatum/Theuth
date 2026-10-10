@@ -652,3 +652,164 @@ quirks; it would be a second credential type beside the URL. OAuth needs client 
 loop — what Anarlog outsources to a hosted relay (Nango, C `C-anarlog-surface-recon.md:368-373`; study §7 "do not borrow").
 The ICS secret address gives the same read-only view with one GET; EventKit covers the accounts a Mac user already added. If a
 provider turns off secret addresses, the slot for OAuth is `cal_sources.kind = 'oauth'` and a fetcher beside `ics.rs`.
+
+## 8. Matching and seeding
+
+### 8.1 Candidates and score (D7)
+
+Candidates: `cal_events` rows with `cancelled = 0`, `all_day = 0`, `start − 10 min ≤ now ≤ end + 15 min`. Each gets
+`score = time + host + title + rsvp`, where:
+
+| Term | Rule | Range |
+|---|---|---|
+| `time` | `1.0` while `start ≤ now ≤ end`; before start `1 − (start − now)/10 min`; after end `1 − (now − end)/15 min` | 0…1 |
+| `host` | `+0.6` when `join_host` maps to the detected `AppId`; `−0.3` when it maps to a *different* known app; `0` when unknown or no link | −0.3…0.6 |
+| `title` | `+0.3 × Jaccard(tokens(event.title), tokens(window title))` when a window title is readable (below); else `0` | 0…0.3 |
+| `rsvp` | the `is_me` attendee: `ACCEPTED/TENTATIVE` `+0.2`, `DECLINED` `−0.2`, else `0` | −0.2…0.2 |
+
+Host map (OpenWhispr's host rules, D `D-openwhispr-source-recon.md:202`, keyed by our `AppId`s): `zoom.us` ↔ `us.zoom.xos` /
+`zoom.exe`; `meet.google.com` ↔ any browser (`com.google.Chrome`, `com.apple.Safari`, `org.mozilla.firefox`, `company.thebrowser.Browser`,
+`chrome.exe`, `msedge.exe`, `firefox.exe`); `teams.microsoft.com`, `teams.live.com` ↔ `com.microsoft.teams2` / `ms-teams.exe`;
+`*.webex.com` ↔ `Cisco-Systems.Spark` / `webexmta.exe`; `facetime.apple.com` ↔ `com.apple.FaceTime`. A browser is "any browser",
+so a Meet event scores `+0.6` for Chrome and `−0.3` for Zoom.
+
+Window title: Windows `GetWindowText` on the holder's top-level windows (cheap, no permission). macOS `kCGWindowName` needs Screen
+Recording permission since 10.15; theuth reads it only if that permission is already granted (never prompts for it) — so on most
+Macs `title = 0`, and the design does not depend on it.
+
+**Decision.** Let `best` and `second` be the top two scores. Show `best` in the prompt when `best ≥ 0.8` and `best − second ≥
+0.25` (or there is no second). Otherwise the prompt shows no event line and the `[▾]` list opens with the window's candidates
+ordered by score and no preselection ("Which meeting is this?"). A lone candidate with `time ≥ 0.5` is shown. Nothing below
+`0.5` is ever preselected.
+
+**Examples** (Mac, now 10:02):
+
+1. Zoom holds the mic; "Weekly sync 10:00–10:30" has a zoom.us link, accepted → `1.0 + 0.6 + 0 + 0.2 = 1.8`; shown.
+2. Chrome holds the mic; "Design review 10:00–10:30" (Meet) and "Weekly sync 10:00–10:30" (Zoom) → `1.8` vs `0.9`; margin `0.9`;
+   Design review shown.
+3. Zoom holds the mic at 10:28; "Standup 10:00–10:30" (Zoom, `1.6`) and "1:1 10:30–11:00" (Zoom, `time = 1 − 2/10 = 0.8`, `1.4`)
+   → margin `0.2 < 0.25`; list, no preselection.
+4. Teams holds the mic; only a Meet event in the window → `1.0 − 0.3 = 0.7 < 0.8`; list with that one row, unselected.
+5. No events → prompt (a) from §5.2; the match is simply `None`.
+
+### 8.2 Ambiguity, and changing the event
+
+- Before start: the `[▾]` list (§5.2 b) → `meeting_detection_set_event(event: Option<EventId>)`; the prompt re-renders; the
+  project chip follows the memory for the chosen event (§9.3). "None of these" clears the match for this detection.
+- After start: the meeting page header (156's 44 px row, `docs/design/156-meeting-view.md:41`) gets an **Event** chip beside the
+  project chip → `meeting_set_event(id, event: Option<EventId>)`. The engine updates `manifest.event`, sets `title` if it was
+  empty, adds attendee aliases, and delivers one steer line `[meeting hh:mm:ss] event: <title> · attendees: …` through the
+  existing `session::deliver` path (`session.rs:163-195`) so the model learns the correction mid-meeting.
+- Review/Done: the chip still works (speaker suggestions, §10, read `manifest.event.attendees`); no steer.
+
+### 8.3 The seed (D8)
+
+What a matched event contributes, and where each piece lands:
+
+| Piece | Lands in | Mechanism |
+|---|---|---|
+| title | `StartMeeting.title` when the user typed none → `Manifest.title` (`store.rs:82-83`); the session is still renamed `Meeting <date>` and pinned (`lib.rs:1973-1991`) | existing |
+| description / agenda (first 1 000 chars) + "Attendees: A, B, C (organizer: A)" | `StartMeeting.context` → `Manifest.context` → the `started.` line (`session.rs:99-103`) | existing |
+| the whole event | `Manifest.event: Option<EventRef>` (title, start, end, join_host, organizer, attendees `{name, email, is_me}`, description) — persisted because the calendar row rotates out of the window in 14 days | new field |
+| attendee names + title tokens | the alias scan at start already scans `title + " " + context` (`lib.rs:2264-2282`); with attendees in `context`, cached briefs about people and topics surface at 00:00 as `Cache` topics | existing path, richer input |
+| agenda lines (`-`, `•`, `1.`) | an `## Agenda` section in the compaction head (`head.rs:75`, `:165`) — re-pushed on every change as today (`lib.rs:1992-2000`) | new head section |
+| attendee names | aliases on the pre-meeting brief row (§9.4) via `brief_put` (`cache.rs:53-67`) | existing tool |
+| attendees minus `is_me` | speaker candidates for §10 | read from the manifest |
+
+**Refinement of D8's "candidate topics (agenda lines)".** Topic buttons must carry a brief (`Topics::insert` takes `title,
+bullets`, `topics.rs:215`; `admit` only checks the label, `:200-203`); agenda lines have none. They go to the head where the model
+sees them and calls `meeting_topic` when it has something factual to add (`tools.rs:26-57`) — no empty buttons.
+
+### 8.4 Tests
+
+`calendar/matcher.rs` unit tests over the §7.7 fixtures plus a fake clock: the five examples above as asserts on `(best, shown,
+list)`; a cancelled event never matches; an all-day event never matches; a declined event drops below threshold against an
+accepted one; `−10/+15` window edges at exactly 0 (`time = 0`). Seed tests in `lib.rs`: a start with `event` produces a manifest
+with `event`, a `started.` line containing the attendees, and `cached_topics` for an alias that matches an attendee name (uses
+the existing `Cache` test fixture).
+
+## 9. Projects as the meeting series
+
+### 9.1 What a project is in theuth today
+
+A project is a **free string label with optional style**, not an entity:
+
+- `sessions.project: Option<String>` on the session row (`crates/agent/src/store.rs:401-402`), the root's value mirrored onto
+  children ("Effective project label (51 §3)", `crates/agent/src/lib.rs:1232-1234`); `SetSessionProject` (`lib.rs:2207`), RPC
+  `set_session_project` (`api.rs:593-598`), event `SessionMetadataChanged { project }` (`lib.rs:3073-3076`).
+- `projects(name TEXT PRIMARY KEY, icon, color, updated_at)` holds **style only** — "rows only for styled projects; the label is
+  `sessions.project`" (`crates/agent/migrations/0018_project_style.sql:1-10`); `list_project_styles`, `set_project_style`
+  (`api.rs:601-607`); icon/colour allow-lists (`crates/agent/src/project.rs:33`, `:64`).
+- The same label on tasks (`Task.project`, "the session project", `crates/tasks/src/types.rs:220-221`), notebooks
+  (`crates/document/src/notebook.rs:99`; `notebook_update(…, project)` where `""` clears, `api.rs:1096-1102`), routines
+  (`crates/schedule/src/file.rs:398-400`, "absent = inferred from cwd"), and the CLI (`crates/theuth/src/main.rs:350-353`).
+- Meeting sessions are created with `project: Some("meetings")` (`crates/meeting/src/lib.rs:1933-1944`) — a pseudo-project
+  that groups every meeting under one sidebar label today.
+- There is no "list projects" RPC; clients derive the set from sessions plus `list_project_styles`.
+
+### 9.2 The meeting ↔ project field and RPCs (W-c)
+
+- `Manifest.project: Option<String>` (new, `#[serde(default)]`); `meetings` index gains `project TEXT` (migration
+  `0003_calendar.sql`, `ALTER TABLE`); `MeetingSummary.project` (`store.rs:169-186`) so the list can filter.
+- Set at start: `StartMeeting.project` (new, optional) — from the prompt chip, the page banner, or the start form's new
+  "Project" combobox. Set later: `meeting_set_project(id, project: Option<String>)` — header chip on the meeting page, any state.
+- **W-c:** the session is created with `project: manifest.project.clone().or(Some("meetings"))`. A meeting with a project
+  appears under that project in the sidebar like any session; a meeting without one stays under `meetings` as today.
+  `meeting_set_project` also sends `agent::SetSessionProject` so the sidebar follows. §18 Q1 asks Sky to confirm this over the
+  alternative (keep `meetings`, project as a meeting-only field).
+- `meeting_list(limit)` (`api.rs:1748`) gains an optional `project` filter; the Meetings page gets a project filter chip.
+
+### 9.3 Remembering per recurring UID and per title (D9)
+
+`cal_project_memory(key, project, updated_at)` (§7.4):
+
+- `uid:<uid>` — EventKit `calendarItemExternalIdentifier` / ICS `UID` (the recurring series, not the instance). Written whenever a
+  meeting with a matched event gets a project (start or `meeting_set_project`).
+- `title:<norm>` — `norm` = lowercase, strip punctuation, digits and month/weekday words (the `CALENDAR` list in
+  `oracle.rs:381-382` is the same idea), collapse spaces. Written at the same moments; also for meetings with no event (from
+  `Manifest.title`).
+- Lookup order in the matcher: `uid` → `title` → `meeting.project` default → `None`. The result is `Detected.project` and the
+  chip's preselection; the user can change it before or after start.
+- Clearing a project on a meeting (`None`) deletes the memory rows it wrote, so a wrong guess is not sticky.
+
+### 9.4 The pre-meeting brief (D9)
+
+**Inputs.** The last 3 `Done` meetings of the project (`meetings WHERE project = ? AND state = 'Done' ORDER BY started_at DESC
+LIMIT 3`); from each, the **Decisions**, **Action items**, **Open questions** sections of `summary.md` (`meeting_summary`,
+`api.rs:1835`) or of the note (`manifest.note`, read with `doc_read`) — the summary form writes exactly those headings
+(`note.rs:28-31`; `summary.rs:22-27`), so a heading split is enough, no model call. Plus the event: title, start, description,
+organizer, attendee names. Plus knowledge first: `knowledge_search` over the attendee names and the title's proper nouns
+(the tool is already in the live allowlist, `lib.rs:598-599`).
+
+**The writer turn.** A **Private** root session (`tools::Retention::Private`: "in-memory store, scratch files; nothing survives
+the close", `crates/tools/src/resources.rs:22-23`) created with `agent::CreateSession`, `model = meeting.model`, `SetToolset`
+(`docs/design/meetings/06-live-toolset.md:30-38`) to `{knowledge_search, knowledge_get, meeting_read, meeting_search,
+meeting_list, brief_search, brief_put}` (all registered at plugin start, `tools.rs:1-7`, `:258`, `:341`, `:461`, `:573`, `:649`),
+`runtime: false`, `hint_limit: Some(0)`. One turn:
+
+> You are preparing the user for "<title>" at <hh:mm> with <attendees>. Facts only — never what the user should say. From the
+> project's last meetings (excerpts below) and knowledge, write at most 3 bullets (≤ 20 words each): decisions carried over,
+> open items with owners, numbers and dates that matter. Then call `brief_put` with `title` = "<title>", `aliases` =
+> [<event short label ≤ 4 words>, <attendee first names>], `tags` = ["pre-meeting", "<project>"]. Reply with the bullets only.
+
+"Briefs = facts about the thing, NOT what to say" is Sky's standing rule (`158-input-wth-meeting-decisions.md:25`;
+`docs/design/53-meetings.md:16-18`). Timeout 45 s and ≤ 3 bullets follow Anarlog's "20-second brief" bounds (C
+`C-anarlog-surface-recon.md:336-343`); the session is closed after the reply (Private → nothing persists but the brief row).
+
+**When it shows.** A one-minute calendar tick in the detection engine (§4) emits `Upcoming { event, project, brief }` for a
+matched-or-remembered event with `start − now ≤ 5 min` → island state (c) (§5.2). Generation starts at `start − 15 min` so the
+brief is ready by `−5`. A `Detected` prompt whose match has a cached brief carries it in `Detected.brief`. Island (c) clears at
+`start + 5 min` or when a meeting starts (Anarlog shows theirs until event end or start + 5, C `:336-343`).
+
+**Caching.** `cal_prebrief(event_id PK, generated_at, bullets json, brief BriefId, sources json)` in `meetings.sqlite`.
+Invalidated when the event's `sequence` or `description` changes, or when a new meeting of the project reaches `Done`. One
+generation per event instance.
+
+**Cost.** Per event: ≤ 3 summaries × ≤ 400 words + knowledge hints ≈ 3–5 k tokens in, ≈ 150 out, on `meeting.model`. Off with
+`meeting.calendar.prebrief = false`. Events with no resolved project get no brief in W3; ranking past meetings by shared
+attendees (Anarlog's series > title + people > people, C `C-anarlog-surface-recon.md:328-331`) is the §14 extension.
+
+**Reuse.** The brief is a `briefs.sqlite` row via `brief_put` (`cache.rs:53-67`, `source: "session:<id>"`). At meeting start
+the alias scan (`lib.rs:2264-2282`) finds it by the event label or an attendee name and shows it as a `Cache` topic at 00:00 —
+so the same brief is on the island before and during the meeting with no second model call. `brief_search` finds it in later
+meetings of the series too (`docs/design/meetings/05-brief-cache.md:173-175`, aliases weighted 10).
