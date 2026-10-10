@@ -122,7 +122,7 @@ pub fn cumulate(obs: &[ObservationRow], arm: &str) -> ArmStat {
         if let Some(m) = o.raw.as_object() {
             for (k, v) in m {
                 if let Some(x) = v.as_f64()
-                    && !matches!(k.as_str(), "units" | "mean" | "var")
+                    && !matches!(k.as_str(), "units" | "mean" | "var" | TOTAL)
                 {
                     let e = extras.entry(k.clone()).or_default();
                     e.0 += x * u as f64;
@@ -183,18 +183,22 @@ pub enum Outcome {
 }
 
 /// The look and the call on `obs` (every window so far) under `w`, with `tau` in metric units
-/// and the guards as `gate_cfg` lists them. `total` is production's whole traffic when the
-/// source reports it.
+/// and the guards as `gate_cfg` lists them. Production's whole traffic, when the source reports
+/// it, is the control rows' `raw.total`, summed over the windows.
 pub fn judge(
     obs: &[ObservationRow],
     direction: Direction,
     w: &WorldSpec,
     tau: f64,
     guards: &[(String, Effect, Direction)],
-    total: Option<u64>,
 ) -> (Look, Outcome) {
     let ctrl = cumulate(obs, CONTROL);
     let cand = cumulate(obs, CANDIDATE);
+    let total: Option<u64> = obs
+        .iter()
+        .filter(|o| o.arm == CONTROL)
+        .map(|o| o.raw.get(TOTAL).and_then(|t| t.as_f64()).map(|t| t as u64))
+        .sum();
     let windows = obs.iter().map(|o| o.win).max().unwrap_or(0);
     let raw = cand.mean - ctrl.mean;
     let delta = match direction {
@@ -545,13 +549,13 @@ pub fn parse_tool(v: &serde_json::Value, t: &crate::types::MeasureTool) -> Read 
         let Some(arm) = o.pointer(&t.arm).and_then(|a| a.as_str()) else {
             continue;
         };
+        if arm == TOTAL {
+            read.total = num(o, &t.units).map(|u| u as u64);
+            continue;
+        }
         let (Some(units), Some(mean)) = (num(o, &t.units), num(o, &t.mean)) else {
             continue;
         };
-        if arm == TOTAL {
-            read.total = Some(units as u64);
-            continue;
-        }
         let extras = o
             .as_object()
             .map(|m| {
@@ -730,7 +734,9 @@ async fn settle_launch(env: Env, study: StudyRecord, n: u32, token: String) {
                 }
                 return;
             }
-            Ok(Some(e)) if e.state == ExperimentState::Measuring => {}
+            // `measuring` until `finish_measure` writes the row (`open` only when a failed run
+            // handed it back; then the run is tried again or the turn closes it).
+            Ok(Some(e)) if e.state.is_dangling() => {}
             Ok(Some(_)) | Ok(None) => return,
             Err(err) => {
                 tracing::warn!(slug = %study.slug, n, "launch request: {err}");
@@ -1142,6 +1148,9 @@ async fn window_end(
         for (k, v) in &a.extras {
             raw.insert(k.clone(), (*v).into());
         }
+        if let Some(t) = read.total.filter(|_| arm == CONTROL) {
+            raw.insert(TOTAL.into(), (t as f64).into());
+        }
         env.store
             .observations_insert(&ObservationRow {
                 id: 0,
@@ -1171,7 +1180,6 @@ async fn window_end(
         w,
         tau_of(spec, w, base),
         &guards,
-        read.total,
     );
     let (ctrl, cand) = &look.arms;
     exp.gate = Some(GateDecision {
@@ -1476,7 +1484,7 @@ fn lambdas(spec: &StudySpec, w: &WorldSpec, obs: &[ObservationRow], base: f64) -
     (1..=last)
         .map(|k| {
             let upto: Vec<ObservationRow> = obs.iter().filter(|o| o.win <= k).cloned().collect();
-            judge(&upto, spec.metric.direction, w, tau, &[], None).0.lambda
+            judge(&upto, spec.metric.direction, w, tau, &[]).0.lambda
         })
         .collect()
 }
@@ -1575,12 +1583,25 @@ pub async fn brief_section(store: &Store, study: &StudyRecord) -> Result<String>
     Ok(s)
 }
 
-/// Finalize's headline: base mean (the first windows' control arm, else the ledger baseline)
-/// against the last kept candidate's cumulated mean; no confirmation samples are spent.
+/// Finalize's headline: the base mean (the ledger baseline, else the first launch's control
+/// arm — production before any keep) against the last kept candidate's cumulated mean; no
+/// confirmation samples are spent.
 pub async fn headline(store: &Store, study: &StudyRecord) -> Result<Option<Headline>> {
+    let all = store.observations_list(&study.slug, None).await?;
+    let first_control = all
+        .iter()
+        .map(|o| o.n)
+        .min()
+        .map(|n| {
+            let first: Vec<ObservationRow> = all.iter().filter(|o| o.n == n).cloned().collect();
+            cumulate(&first, CONTROL)
+        })
+        .filter(|c| c.units > 0)
+        .map(|c| c.mean);
     let base = store
         .base_mean(&study.slug)
         .await?
+        .or(first_control)
         .or(study.incumbent_mean)
         .unwrap_or(0.0);
     let kept: Vec<ExperimentRecord> = store
@@ -1802,5 +1823,581 @@ pub fn setup_set(spec: &mut StudySpec, leaf: &str, v: &str) -> std::result::Resu
 
 #[cfg(test)]
 mod tests {
+    //! P (159 §11 Guard): the peeking simulation against the mSPRT, the ratio check, a harmful
+    //! candidate, an engine restart; T: toy-world driven end to end through the production
+    //! `Backend` (real git, real `python3`), three launches.
+
+    use std::sync::Arc;
+
     use super::*;
+    use crate::config::{AgentDefaults, AutoresearchConfig};
+    use crate::types::{Axes, BenchSpec, BudgetSpec, CommandSpec, Guard, MetricSpec, Scoring};
+
+    /// xorshift + Box–Muller, as gate.rs's simulation.
+    struct Rng(u64);
+    impl Rng {
+        fn next_u(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+        fn normal(&mut self) -> f64 {
+            let (u1, u2) = (self.next_u().max(1e-12), self.next_u());
+            (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+        }
+    }
+
+    fn obs(n: u32, arm: &str, win: u32, units: u32, mean: f64, var: f64) -> ObservationRow {
+        ObservationRow {
+            id: 0,
+            slug: "w".into(),
+            n,
+            arm: arm.into(),
+            win,
+            start_at: String::new(),
+            end_at: String::new(),
+            units,
+            mean: Some(mean),
+            var: Some(var),
+            raw: serde_json::json!({ "units": units, "mean": mean, "var": var }),
+            at: String::new(),
+        }
+    }
+
+    /// One study of `windows` looks: Bernoulli arms at `p` and `p + effect`, `units` per arm
+    /// per window; the first non-`Continue` outcome and its window.
+    fn simulate(rng: &mut Rng, w: &WorldSpec, p: f64, effect: f64, units: u32, tau: f64) -> (Outcome, u32) {
+        let mut rows = Vec::new();
+        for win in 1..=w.max_windows {
+            for (arm, pa) in [(CONTROL, p), (CANDIDATE, p + effect)] {
+                let var = pa * (1.0 - pa);
+                let mean = pa + rng.normal() * (var / f64::from(units)).sqrt();
+                rows.push(obs(1, arm, win, units, mean, var));
+            }
+            let (_, o) = judge(&rows, Direction::Higher, w, tau, &[]);
+            if o != Outcome::Continue {
+                return (o, win);
+            }
+        }
+        (Outcome::Inconclusive, w.max_windows)
+    }
+
+    /// 159 §11 Guard P: null effect, Λ checked after each of 14 windows, 10,000 runs: at most 1 %
+    /// keeps (the mSPRT stays valid under peeking; a fixed-level test looked at 14 times would not).
+    #[test]
+    fn peeking_null_keeps_at_most_one_percent() {
+        let w = WorldSpec::default();
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        let (mut keeps, mut harms) = (0, 0);
+        for _ in 0..10_000 {
+            match simulate(&mut rng, &w, 0.04, 0.0, 1000, 0.004).0 {
+                Outcome::Keep => keeps += 1,
+                Outcome::Harm => harms += 1,
+                _ => {}
+            }
+        }
+        assert!(keeps <= 100, "{keeps} null keeps in 10,000 (> 1 %)");
+        assert!(harms <= 500, "{harms} null harms in 10,000 (> 5 %)");
+    }
+
+    /// Power: the fixture's good copy (+0.019 on 0.040, about +48 %) at the fixture's traffic
+    /// (500 units per arm per window) is kept within 14 windows in at least 85 % of studies.
+    #[test]
+    fn true_improvement_is_kept_within_max_windows() {
+        let w = WorldSpec::default();
+        let mut rng = Rng(42);
+        let kept = (0..500)
+            .filter(|_| simulate(&mut rng, &w, 0.04, 0.019, 500, 0.01).0 == Outcome::Keep)
+            .count();
+        assert!(kept >= 425, "{kept} of 500 kept");
+    }
+
+    /// 159 §11 Guard P: a harmful candidate (conversion halved, 2,000 units per arm per window)
+    /// is always rolled back as harm, within 3 windows in at least 95 % of studies and never
+    /// past the fourth.
+    #[test]
+    fn harmful_candidate_rolled_back_within_three_windows() {
+        let w = WorldSpec::default();
+        let mut rng = Rng(7);
+        let mut early = 0;
+        for _ in 0..200 {
+            let (o, win) = simulate(&mut rng, &w, 0.04, -0.02, 2000, 0.01);
+            assert_eq!(o, Outcome::Harm, "window {win}");
+            assert!(win <= 4, "harm called only at window {win}");
+            early += u32::from(win <= 3);
+        }
+        assert!(early >= 190, "{early} of 200 within 3 windows");
+    }
+
+    /// 159 §11 Ratio check: a deploy that ignores the split is a crash, as is measured exposure
+    /// above the cap when the source reports the total.
+    #[test]
+    fn ratio_mismatch_and_exposure_are_crashes() {
+        let w = WorldSpec::default();
+        let rows = vec![
+            obs(1, CONTROL, 1, 1000, 0.04, 0.0384),
+            obs(1, CANDIDATE, 1, 1300, 0.04, 0.0384),
+        ];
+        let (look, o) = judge(&rows, Direction::Higher, &w, 0.004, &[]);
+        assert!(matches!(o, Outcome::Ratio(_)), "{o:?}");
+        assert!(look.ratio_p < 1e-9);
+        let mut fair = vec![
+            obs(1, CONTROL, 1, 1000, 0.04, 0.0384),
+            obs(1, CANDIDATE, 1, 1010, 0.04, 0.0384),
+        ];
+        assert_eq!(judge(&fair, Direction::Higher, &w, 0.004, &[]).1, Outcome::Continue);
+        fair[0].raw["total"] = 10_000.into();
+        let (_, over) = judge(&fair, Direction::Higher, &w, 0.004, &[]);
+        assert!(matches!(&over, Outcome::Ratio(r) if r.contains("exposure")), "{over:?}");
+        fair[0].raw["total"] = 100_000.into();
+        assert_eq!(judge(&fair, Direction::Higher, &w, 0.004, &[]).1, Outcome::Continue);
+        // The cap is judged on traffic summed over windows, not one window's total.
+        fair.push(obs(1, CONTROL, 2, 1000, 0.04, 0.0384));
+        fair.push(obs(1, CANDIDATE, 2, 1010, 0.04, 0.0384));
+        fair[2].raw["total"] = 20_000.into();
+        assert_eq!(judge(&fair, Direction::Higher, &w, 0.004, &[]).1, Outcome::Continue);
+    }
+
+    /// A guard metric past its limit closes the launch before the keep test; the primary's
+    /// direction is honoured (lower-is-better flips Δ̂).
+    #[test]
+    fn guards_and_direction() {
+        let w = WorldSpec::default();
+        let mut c = obs(1, CONTROL, 1, 1000, 0.04, 0.0384);
+        c.raw["bounce"] = 0.50.into();
+        let mut k = obs(1, CANDIDATE, 1, 1000, 0.06, 0.0564);
+        k.raw["bounce"] = 0.60.into();
+        let guards = vec![("bounce".to_owned(), Effect::Relative(0.05), Direction::Lower)];
+        let (look, o) = judge(&[c.clone(), k.clone()], Direction::Higher, &w, 0.004, &guards);
+        assert_eq!(o, Outcome::Guard("bounce".into()));
+        assert_eq!(look.breaches, vec!["bounce".to_owned()]);
+        let (lower, _) = judge(&[c, k], Direction::Lower, &w, 0.004, &[]);
+        assert!(lower.delta < 0.0 && (lower.delta + 0.02).abs() < 1e-12);
+    }
+
+    #[test]
+    fn lambda_and_cumulate() {
+        assert_eq!(lambda(0.0, 0.0, 1.0), 1.0);
+        assert!(lambda(0.0, 1.0, 1.0) < 1.0, "no effect: Λ below 1");
+        assert!(lambda(3.0, 1.0, 1.0) > lambda(1.0, 1.0, 1.0));
+        assert!((ratio_p(500, 500) - 1.0).abs() < 1e-6);
+        assert!(ratio_p(500, 700) < 1e-6);
+        let rows = vec![
+            obs(1, CONTROL, 1, 100, 0.1, 0.09),
+            obs(1, CONTROL, 2, 300, 0.3, 0.21),
+            obs(1, CANDIDATE, 1, 10, 0.5, 0.25),
+        ];
+        let s = cumulate(&rows, CONTROL);
+        assert_eq!(s.units, 400);
+        assert!((s.mean - 0.25).abs() < 1e-12);
+        assert!((s.var_of_mean - (100.0 * 0.09 + 300.0 * 0.21) / 160_000.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn parse_arms_and_tool_pointers() {
+        let mut cv: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
+        cv.insert("control".into(), [("units", 812.0), ("mean", 0.0412), ("var", 0.0395), ("bounce", 0.5)].into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
+        cv.insert("total".into(), [("units", 10_000.0)].into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
+        let r = parse_arms(&cv);
+        assert_eq!(r.total, Some(10_000));
+        let c = &r.arms["control"];
+        assert_eq!((c.units, c.mean, c.var), (812, 0.0412, 0.0395));
+        assert_eq!(c.extras.get("bounce"), Some(&0.5));
+        let t = crate::types::MeasureTool {
+            name: "analytics".into(),
+            args: serde_json::json!({}),
+            arms: "/data/arms".into(),
+            arm: "/name".into(),
+            units: "/n".into(),
+            mean: "/rate".into(),
+            var: "/variance".into(),
+        };
+        let v = serde_json::json!({ "data": { "arms": [
+            { "name": "control", "n": 500, "rate": 0.04, "variance": 0.038, "bounce": 0.5 },
+            { "name": "candidate", "n": 510, "rate": 0.05, "variance": 0.047 },
+            { "name": "total", "n": 20000 }
+        ] } });
+        let r = parse_tool(&v, &t);
+        assert_eq!(r.total, Some(20_000));
+        assert_eq!(r.arms["candidate"].units, 510);
+        assert_eq!(r.arms["control"].extras.get("bounce"), Some(&0.5));
+        assert!(parse_tool(&serde_json::json!({}), &t).failure.is_some());
+    }
+
+    #[test]
+    fn setup_rows_round_trip_and_card_line() {
+        let mut spec = StudySpec::default();
+        setup_set(&mut spec, "world.deploy", "bash deploy.sh").unwrap();
+        setup_set(&mut spec, "world.exposure.max_fraction", "20").unwrap();
+        setup_set(&mut spec, "world.window", "12h").unwrap();
+        setup_set(&mut spec, "world.min_windows", "3").unwrap();
+        setup_set(&mut spec, "world.max_windows", "2").unwrap();
+        assert!(setup_set(&mut spec, "world.alpha", "1.5").is_err());
+        assert!(setup_set(&mut spec, "world.window", "soon").is_err());
+        assert!(setup_set(&mut spec, "world.nope", "x").is_err());
+        let w = spec.world.as_ref().unwrap();
+        assert_eq!((w.exposure.max_fraction, w.min_windows, w.max_windows), (0.2, 3, 3));
+        assert_eq!(setup_value(&spec, "deploy"), "bash deploy.sh");
+        assert!(setup_value(&spec, "windows").starts_with("12h · 3–3 windows"));
+        assert_eq!(setup_value(&spec, "measure"), "");
+        spec.scope = vec!["landing/copy.md".into()];
+        spec.world.as_mut().unwrap().rollback = "bash rollback.sh".into();
+        assert_eq!(
+            card_line(&spec),
+            "Test `landing/copy.md` on 20 % of traffic in two arms; every launch needs your press; 12h windows (3–3); rollback `bash rollback.sh`."
+        );
+        // The spec round-trips through JSON with the block's defaults filled.
+        let json = serde_json::to_string(&spec).unwrap();
+        let back: StudySpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.world, spec.world);
+        let bare: WorldSpec = serde_json::from_str("{}").unwrap();
+        assert_eq!((bare.min_units, bare.max_windows, bare.alpha), (500, 14, 0.01));
+    }
+
+    // ───────── the engine: a real store, real git, the production backend ─────────
+
+    const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/toy-world");
+    const GOOD_COPY: &str = "# Ship your docs today\n\nSave hours: free for small teams, trusted by 2,000 customers.\n\n[Start writing](#signup)\n";
+
+    fn sh(cwd: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new(args[0])
+            .args(&args[1..])
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@x")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@x")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            let dest = to.join(e.file_name());
+            if e.file_type().unwrap().is_dir() {
+                copy_dir(&e.path(), &dest);
+            } else {
+                std::fs::copy(e.path(), dest).unwrap();
+            }
+        }
+    }
+
+    fn spec(slug: &str, repo: &Path, traffic: u32) -> StudySpec {
+        StudySpec {
+            slug: slug.into(),
+            goal: "more conversion".into(),
+            repo: repo.display().to_string(),
+            metric: MetricSpec {
+                name: "conversion".into(),
+                unit: "rate".into(),
+                direction: Direction::Higher,
+                min_effect: "25%".into(),
+            },
+            secondary_guards: vec![Guard {
+                name: "bounce".into(),
+                max_regression: "20%".into(),
+                direction: Direction::Lower,
+            }],
+            axes: Axes {
+                scoring: Scoring::World,
+                ..Axes::default()
+            },
+            world: Some(WorldSpec {
+                deploy: "bash deploy.sh".into(),
+                rollback: "bash rollback.sh".into(),
+                measure: format!("TOY_WORLD_TRAFFIC={traffic} bash measure.sh"),
+                window: "1h".into(),
+                min_units: 400,
+                min_windows: 2,
+                max_windows: 14,
+                ..WorldSpec::default()
+            }),
+            bench: BenchSpec {
+                repeats: 1,
+                ..BenchSpec::default()
+            },
+            checks: Some(CommandSpec {
+                command: "bash test.sh".into(),
+                ..CommandSpec::default()
+            }),
+            evaluator_paths: ["deploy.sh", "rollback.sh", "measure.sh", "test.sh", "world.py"]
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+            scope: vec!["landing/copy.md".into()],
+            budget: BudgetSpec {
+                experiments: 8,
+                hours: 336.0,
+                ..BudgetSpec::default()
+            },
+            ..StudySpec::default()
+        }
+    }
+
+    struct World {
+        slug: &'static str,
+        _dir: tempfile::TempDir,
+        env: Env,
+        study: StudyRecord,
+        worktree: PathBuf,
+        state: PathBuf,
+    }
+
+    /// A toy-world repo, its study worktree and custody copies, a `running` study with the
+    /// base as incumbent — what `create` leaves behind, without the actor.
+    async fn world(slug: &str, traffic: u32) -> World {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        copy_dir(Path::new(FIXTURE), &repo);
+        sh(&repo, &["git", "init", "-q", "-b", "main"]);
+        sh(&repo, &["git", "add", "-A"]);
+        sh(&repo, &["git", "commit", "-q", "-m", "base"]);
+        let base = sh(&repo, &["git", "rev-parse", "HEAD"]);
+        let root = dir.path().join("autoresearch");
+        let store = Store::open(&root).await.unwrap();
+        let env = Env {
+            data_dir: dir.path().to_path_buf(),
+            root: root.clone(),
+            cfg: AutoresearchConfig::default(),
+            agent: AgentDefaults::default(),
+            rt: runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf()),
+            store,
+            backend: Arc::new(actor::Real),
+        };
+        let sp = spec(slug, &repo, traffic);
+        let study_dir = root.join(slug);
+        let worktree = study_dir.join("worktree");
+        crate::git::worktree_add(&repo, &sp, &worktree, &base).unwrap();
+        let evaluator = study_dir.join("evaluator").join("0");
+        std::fs::create_dir_all(&evaluator).unwrap();
+        for p in &sp.evaluator_paths {
+            std::fs::copy(repo.join(p), evaluator.join(p)).unwrap();
+        }
+        let mut study = StudyRecord::new(sp, Some(SessionId::new()));
+        study.state = StudyState::Running;
+        study.base_sha = Some(base.clone());
+        study.incumbent_sha = Some(base);
+        study.incumbent_mean = Some(0.04);
+        study.worktree = Some(worktree.display().to_string());
+        study.branch = Some(crate::git::study_branch(slug));
+        env.store.create_study(&study).await.unwrap();
+        World {
+            slug: Box::leak(slug.to_owned().into_boxed_str()),
+            _dir: dir,
+            env,
+            study,
+            worktree,
+            state: study_dir.join("world-state").join("state.json"),
+        }
+    }
+
+    impl World {
+        async fn reload(&mut self) {
+            self.study = self.env.store.get_study(self.slug).await.unwrap().unwrap();
+        }
+        async fn exp(&self, n: u32) -> ExperimentRecord {
+            self.env.store.get_experiment(self.slug, n).await.unwrap().unwrap()
+        }
+        fn live_arms(&self) -> Vec<String> {
+            let s: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&self.state).unwrap_or("{}".into())).unwrap();
+            s["arms"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default()
+        }
+        /// The launch fire as the measure loop leaves it: the candidate in the tree, one
+        /// `measured` row with `Verdict::Pending`, then `request` with a known token.
+        async fn fire(&mut self, n: u32, copy: &str, idea: &str) {
+            self.reload().await;
+            std::fs::write(self.worktree.join("landing/copy.md"), copy).unwrap();
+            let mut e = ExperimentRecord::open(self.slug, n, 0, self.study.incumbent_sha.as_deref().unwrap());
+            e.idea = idea.into();
+            e.hypothesis = format!("{idea} lifts conversion");
+            self.env.store.insert_experiment(&e).await.unwrap();
+            // `step` through the actor's dispatch: the launch row and the Wait.
+            let s = Sample { n, ..Sample::default() };
+            let cfg = actor::gate_cfg(&self.env.cfg, &self.study.spec).unwrap();
+            let input = GateInput {
+                candidate: vec![0.04],
+                incumbent: vec![0.04],
+                sigma: 0.0,
+                largest_accepted_delta: None,
+                incumbent_age: 0,
+                keep_simpler: false,
+                secondaries: vec![],
+            };
+            let got = step(&self.env, &self.study, &cfg, &input, &[s], &[]).await.unwrap();
+            assert!(matches!(&got, GateStep::Wait { until, .. } if until == APPROVAL), "{got:?}");
+            e.state = ExperimentState::Measured;
+            e.verdict = Some(Verdict::Pending { until: APPROVAL.into() });
+            self.env.store.update_experiment(&e).await.unwrap();
+            // `settle_launch` flips the measured row to waiting within a few polls.
+            for _ in 0..100 {
+                if self.exp(n).await.state == ExperimentState::Waiting {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let e = self.exp(n).await;
+            assert_eq!(e.state, ExperimentState::Waiting, "#{n}: {}", e.line);
+            assert_eq!(e.wait.as_ref().map(|w| (w.why, w.until.as_str())), Some((WaitWhy::Approval, APPROVAL)));
+            // A known token for the press (the real one went to the card).
+            let mut l = self.env.store.launches_get(self.slug, n).await.unwrap().unwrap();
+            assert_eq!(l.state, "requested");
+            l.token_hash = sha256_hex("tok");
+            self.env.store.launches_put(&l).await.unwrap();
+            self.reload().await;
+            assert_eq!(self.study.state, StudyState::Paused { reason: PauseReason::LaunchApproval { n } });
+            assert!(explains_disabled(&self.env.store, self.slug).await.unwrap());
+        }
+        /// Windows until the experiment closes; returns how many.
+        async fn run_windows(&mut self, n: u32) -> u32 {
+            let mut wins = 0;
+            while self.exp(n).await.state == ExperimentState::Waiting && wins < 20 {
+                wins += 1;
+                resume(&self.env, self.slug, n).await.unwrap();
+            }
+            self.reload().await;
+            wins
+        }
+    }
+
+    /// 159 §11 T on toy-world (no model, no press button: `launch` is the press): a true
+    /// improvement is kept, a null copy ends inconclusive and is rolled back, a refusal closes
+    /// the experiment — both arms rolled back on every close, the incumbent moved by the keep.
+    #[tokio::test]
+    async fn toy_world_three_launches() {
+        let mut w = world("tw1", 40_000).await;
+        // Baseline through `sample`: production as it is (the control arm on all traffic).
+        let runs = w.env.root.join("tw1/runs/0");
+        let evaluator = w.env.root.join("tw1/evaluator/0");
+        let base_sha = w.study.incumbent_sha.clone().unwrap();
+        let s = sample(
+            &w.env,
+            &w.study,
+            SampleRequest { slug: "tw1", n: 0, k: 1, tree_sha: &base_sha, role: crate::types::SampleRole::Baseline, worktree: &w.worktree, evaluator: &evaluator, runs_dir: &runs },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(s.value.is_some_and(|v| (0.02..0.07).contains(&v)), "{s:?}");
+        assert!(s.secondaries.contains_key("bounce"));
+
+        // Launch 1: urgency + benefit + social, a true +0.019.
+        w.fire(1, GOOD_COPY, "urgency and benefit").await;
+        assert!(launch(&w.env, "tw1", 1, "wrong", true).await.is_err(), "a wrong token is refused");
+        let info = launch(&w.env, "tw1", 1, "tok", true).await.unwrap();
+        assert_eq!(info.state, StudyState::Running, "approved: running again, file disabled");
+        let e = w.exp(1).await;
+        assert_eq!(e.state, ExperimentState::Waiting);
+        assert_eq!(e.wait.as_ref().map(|i| i.why), Some(WaitWhy::Window));
+        assert_eq!(w.env.store.launches_get("tw1", 1).await.unwrap().unwrap().state, "deployed");
+        assert_eq!(w.live_arms(), vec!["candidate".to_owned(), "control".to_owned()]);
+        assert!(armed() >= 1, "a window timer is armed");
+        assert!(explains_disabled(&w.env.store, "tw1").await.unwrap());
+        let wins = w.run_windows(1).await;
+        let e = w.exp(1).await;
+        assert_eq!(e.state, ExperimentState::Kept, "{} ({wins} windows)", e.line);
+        assert!(wins >= 2 && wins <= 14, "{wins}");
+        assert!(e.gate.as_ref().is_some_and(|g| g.rule == GateRule::Msprt && g.stat.unwrap() >= 100.0), "{:?}", e.gate);
+        let obs = w.env.store.observations_list("tw1", Some(1)).await.unwrap();
+        assert_eq!(obs.len() as u32, wins * 2, "one row per arm per window");
+        assert!(w.live_arms().is_empty(), "both arms rolled back");
+        assert_eq!(w.env.store.launches_get("tw1", 1).await.unwrap().unwrap().state, "rolled_back");
+        assert_ne!(w.study.incumbent_sha.as_deref(), Some(base_sha.as_str()), "the keep moved the incumbent");
+        assert_eq!(w.study.incumbent_sha, e.commit_sha);
+        assert_eq!(sh(&w.worktree, &["git", "rev-parse", "HEAD"]), e.commit_sha.clone().unwrap());
+        assert!(!w.env.root.join("tw1/arms/control").exists());
+        let view = view(&w.env.store, &w.study).await.unwrap();
+        match view {
+            KindView::World { windows, launch, lambda } => {
+                assert_eq!(windows.len() as u32, wins * 2);
+                assert_eq!(launch.map(|l| l.state), Some("rolled_back".to_owned()));
+                assert_eq!(lambda.len() as u32, wins);
+                assert!(lambda.last().unwrap() >= &100.0);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // Launch 2: the same copy with no feature change — a null — ends inconclusive.
+        let null = format!("{GOOD_COPY}\nWrite once, publish everywhere.\n");
+        w.fire(2, &null, "a second sentence").await;
+        launch(&w.env, "tw1", 2, "tok", true).await.unwrap();
+        let wins = w.run_windows(2).await;
+        let e = w.exp(2).await;
+        assert_eq!(e.state, ExperimentState::Discarded, "{}", e.line);
+        assert_eq!(wins, 14);
+        assert!(e.line.starts_with("inconclusive after 14 windows"), "{}", e.line);
+        assert!(w.live_arms().is_empty());
+        assert_eq!(w.study.incumbent_sha, w.exp(1).await.commit_sha, "a null moves nothing");
+        assert_eq!(sh(&w.worktree, &["git", "status", "--porcelain"]), "", "the candidate was reverted");
+
+        // Launch 3: refused at the card.
+        w.fire(3, "# Ship now\n\nShort.\n", "terse").await;
+        let info = launch(&w.env, "tw1", 3, "tok", false).await.unwrap();
+        assert_eq!(info.state, StudyState::Running);
+        let e = w.exp(3).await;
+        assert_eq!((e.state, e.line.as_str()), (ExperimentState::Discarded, "refused at launch"));
+        assert_eq!(w.env.store.launches_get("tw1", 3).await.unwrap().unwrap().state, "refused");
+        assert!(w.live_arms().is_empty());
+        assert!(launch(&w.env, "tw1", 3, "tok", true).await.is_err(), "a second press is refused");
+        assert!(!explains_disabled(&w.env.store, "tw1").await.unwrap());
+        let h = headline(&w.env.store, &w.study).await.unwrap().unwrap();
+        assert!(h.final_mean > h.base_mean && h.text.contains("1 launch kept"), "{}", h.text);
+        let brief = brief_section(&w.env.store, &w.study).await.unwrap();
+        assert!(brief.contains("## World study") && brief.contains("#1: launch rolled_back"), "{brief}");
+    }
+
+    /// 159 §11 Guard P: a deploy that ignores the split (the candidate grabs all traffic through
+    /// the bait file) crashes on the ratio check at the first window and pauses the study.
+    #[tokio::test]
+    async fn ratio_failure_pauses_the_study() {
+        let mut w = world("tw2", 40_000).await;
+        std::fs::write(w.worktree.join("landing/traffic.txt"), "1.0\n").unwrap();
+        w.fire(1, GOOD_COPY, "grab traffic").await;
+        launch(&w.env, "tw2", 1, "tok", true).await.unwrap();
+        let wins = w.run_windows(1).await;
+        let e = w.exp(1).await;
+        assert_eq!((wins, e.state), (1, ExperimentState::Crashed), "{}", e.line);
+        assert!(e.line.contains("sample ratio mismatch"), "{}", e.line);
+        assert!(w.live_arms().is_empty(), "rolled back");
+        assert!(matches!(w.study.state, StudyState::Paused { reason: PauseReason::Other { .. } }), "{:?}", w.study.state);
+    }
+
+    /// 159 §11 Guard P: an engine restart mid-window re-arms the timer from `experiments.wait`
+    /// and loses no observation.
+    #[tokio::test]
+    async fn restart_rearms_the_timer_and_keeps_observations() {
+        let w = world("tw3", 40_000).await;
+        let mut e = ExperimentRecord::open("tw3", 1, 0, w.study.incumbent_sha.as_deref().unwrap());
+        e.state = ExperimentState::Waiting;
+        let until = fmt_at(chrono::Utc::now() + chrono::Duration::hours(1));
+        e.wait = Some(WaitInfo { until: until.clone(), why: WaitWhy::Window, windows: 1 });
+        w.env.store.insert_experiment(&e).await.unwrap();
+        for mut o in [obs(1, CONTROL, 1, 500, 0.04, 0.038), obs(1, CANDIDATE, 1, 500, 0.05, 0.047)] {
+            o.slug = "tw3".into();
+            w.env.store.observations_insert(&o).await.unwrap();
+        }
+        let before = armed();
+        assert_eq!(rearm(&w.env).await.unwrap(), 1);
+        assert_eq!(armed(), before + 1);
+        // Re-arming twice replaces, never doubles.
+        assert_eq!(rearm(&w.env).await.unwrap(), 1);
+        assert_eq!(armed(), before + 1);
+        let e = w.env.store.get_experiment("tw3", 1).await.unwrap().unwrap();
+        assert_eq!((e.state, e.wait.as_ref().map(|i| i.until.clone())), (ExperimentState::Waiting, Some(until)));
+        assert_eq!(w.env.store.observations_list("tw3", Some(1)).await.unwrap().len(), 2);
+        disarm("tw3", 1);
+        assert_eq!(armed(), before);
+        // An approval wait arms nothing (the press, not a clock, ends it).
+        let mut a = ExperimentRecord::open("tw3", 2, 0, "x");
+        a.state = ExperimentState::Waiting;
+        a.wait = Some(WaitInfo::default());
+        w.env.store.insert_experiment(&a).await.unwrap();
+        assert_eq!(rearm(&w.env).await.unwrap(), 1);
+        disarm("tw3", 1);
+    }
 }
