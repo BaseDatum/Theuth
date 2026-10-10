@@ -1,0 +1,5 @@
+[tools]
+# Matches rust-toolchain.toml (channel = "stable"); mr_boxington makes mise run
+# Cargo through mbx. Remove the file to undo the mbx setup for this project.
+rust = { version = "stable", mr_boxington = true }
+mr-boxington = "latest"

@@ -782,9 +782,14 @@ final class PointController {
     /// shortcut's name, else the `purpose`, else the tool name.
     static func target(of a: ApprovalRequested) -> String {
         let args = a.args
-        let s = args["command"]?.string ?? args["cmd"]?.string ?? args["script"]?.string ?? args["name"]?.string
-            ?? args["purpose"]?.string ?? args["path"]?.string ?? a.tool
-        let line = s.split(whereSeparator: \.isNewline).first.map(String.init) ?? s
+        // A loop, not a `??` chain: seven optional coalesces in one expression time out the type checker.
+        let keys: [String] = ["command", "cmd", "script", "name", "purpose", "path"]
+        var s: String = a.tool
+        for key in keys {
+            if let v = args[key]?.string { s = v; break }
+        }
+        let first: Substring? = s.split(whereSeparator: { (c: Character) -> Bool in c.isNewline }).first
+        let line: String = first.map { String($0) } ?? s
         return line.count > 80 ? String(line.prefix(79)) + "…" : line
     }
 
