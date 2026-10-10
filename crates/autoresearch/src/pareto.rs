@@ -932,6 +932,18 @@ pub async fn settle(env: &Env, study: &StudyRecord, _exp: &ExperimentRecord) -> 
     sync(&env.store, study, &f).await
 }
 
+/// `experiments.parent_ref` for a parent sha: the mirrored archive row's ref (`parent_of` mirrors
+/// the front before the row is inserted); `None` for a tree that is not a front member. For the
+/// one-line `begin_env` hand-off (as-built W1, H4).
+pub async fn parent_ref(store: &Store, slug: &str, parent_sha: &str) -> Result<Option<String>> {
+    Ok(store
+        .archive_list(slug, Some(KIND))
+        .await?
+        .into_iter()
+        .find(|r| r.sha == parent_sha)
+        .map(|r| r.ref_name))
+}
+
 /// `KindView::Front` for the Study view.
 pub async fn view(store: &Store, study: &StudyRecord) -> Result<KindView> {
     let f = front(store, study, DEFAULT_Z).await?;
