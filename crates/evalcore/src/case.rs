@@ -84,8 +84,10 @@ impl Default for Shares {
     }
 }
 
-/// The stable split: bucket = `sha256(seed ‖ id)` first eight bytes mod 100; `< train` → train,
-/// `< train + val` → val, else holdout. A synthetic case is always train.
+/// The stable split: bucket = `sha256(seed ‖ id)` first eight bytes mod 100; `< val` → val,
+/// `< val + train` → train, else holdout. Val comes first so dreaming's two-way split (seed
+/// `"136"`, `bucket < 34 → val`) is this function with `Shares { train: 66, val: 34, holdout: 0 }`,
+/// bit for bit (159 W2-a). A synthetic case is always train.
 pub fn split(seed: &str, id: &str, shares: Shares, synthetic: bool) -> Split {
     if synthetic {
         return Split::Train;
@@ -96,10 +98,10 @@ pub fn split(seed: &str, id: &str, shares: Shares, synthetic: bool) -> Split {
     let d = h.finalize();
     let bucket = u64::from_be_bytes(d[..8].try_into().expect("8 bytes")) % 100;
     let bucket = bucket as u8;
-    if bucket < shares.train {
-        Split::Train
-    } else if bucket < shares.train.saturating_add(shares.val) {
+    if bucket < shares.val {
         Split::Val
+    } else if bucket < shares.val.saturating_add(shares.train) {
+        Split::Train
     } else {
         Split::Holdout
     }
