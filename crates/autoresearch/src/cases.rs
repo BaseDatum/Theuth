@@ -18,7 +18,7 @@
 //!   holdout input or ideal is refused before any call; the case set is snapshotted into
 //!   custody at the first sample and never re-read from the source.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,6 +51,9 @@ pub const TRAIN_SHOWN: u32 = 16;
 pub const BRIEF_CASES: usize = 8;
 /// Val pairs a decision needs (§7 rule 4); Start refuses fewer val cases.
 pub const MIN_VAL: usize = 10;
+/// Most target calls per case per sample (R-W2-2: `repeats` bounds the sample's call count,
+/// which the per-experiment cap then bounds in money).
+pub const MAX_REPEATS: u8 = 5;
 /// The leakage window: a candidate sharing this many consecutive words with a val or holdout
 /// input or ideal is refused (§7 Guard).
 pub const LEAK_WORDS: usize = 8;
@@ -132,6 +135,43 @@ pub fn parse_cases(text: &str) -> std::result::Result<Vec<Case>, String> {
         out.push(c);
     }
     Ok(out)
+}
+
+/// The repo-relative scripts the set's `command` checks name (R-W2-3): every whitespace token
+/// that is a relative path with a directory part or a script extension — `./score.sh`,
+/// `python3 tools/score.py` → `score.sh`, `tools/score.py`; program names (`python3`, `bash`)
+/// and flags are not scripts. Sorted, deduplicated.
+pub fn command_scripts(cases: &[Case]) -> Vec<String> {
+    const EXT: [&str; 10] = [
+        "sh", "bash", "zsh", "py", "rb", "js", "mjs", "ts", "pl", "lua",
+    ];
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    for c in cases {
+        let Some(evalcore::Check::Command(cmd)) = &c.check else {
+            continue;
+        };
+        for token in cmd.split_whitespace() {
+            let mut t = token;
+            while let Some(rest) = t.strip_prefix("./") {
+                t = rest;
+            }
+            if t.is_empty() || t.starts_with('/') || t.starts_with('-') || t.starts_with('$') {
+                continue;
+            }
+            let p = Path::new(t);
+            let normal = p
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)));
+            let script = p.components().count() > 1
+                || p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| EXT.contains(&e));
+            if normal && script {
+                out.insert(t.to_owned());
+            }
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// A dreaming case line, as much of it as a skill study reads (159 §13.4): `context` is the
@@ -257,6 +297,38 @@ pub async fn case_set(
     };
     let shares = shares(cs).map_err(Error::refused)?;
     let cases = parse_cases(&text).map_err(Error::refused)?;
+    // R-W2-3: every script a `command` check names is copied into custody beside the snapshot
+    // (the checker's cwd) the first time it is missing there, or the set is refused — like
+    // `custody::take` for the bench's tokens. Runs whether the snapshot was written here or
+    // copied by `custody::take` as an evaluator path.
+    let evaluator = env.evaluator_dir(&study.slug, study.segment);
+    let mut hashes = Vec::new();
+    for rel in command_scripts(&cases) {
+        let dst = evaluator.join(&rel);
+        if dst.is_file() {
+            continue;
+        }
+        let src = worktree.join(&rel);
+        if !src.is_file() {
+            return Err(Error::refused(format!(
+                "a case's command check names `{rel}`, which is not a file in the repo"
+            )));
+        }
+        if let Some(d) = dst.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::copy(&src, &dst)?;
+        hashes.push((
+            format!("{}{rel}", crate::custody::CUSTODY_ONLY),
+            crate::custody::sha256_file(&dst)?,
+        ));
+    }
+    if !hashes.is_empty()
+        && let Some(mut seg) = env.store.get_segment(&study.slug, study.segment).await?
+    {
+        seg.custody.extend(hashes);
+        env.store.put_segment(&seg).await?;
+    }
     Ok(cases
         .into_iter()
         .map(|c| {
@@ -287,23 +359,92 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The first [`LEAK_WORDS`]-word sequence `artefact` shares with any `protected` text, as the
-/// words joined by spaces; `None` when it shares none.
-pub fn leak<'a>(artefact: &str, protected: impl Iterator<Item = &'a str>) -> Option<String> {
-    let mut grams: HashSet<Vec<String>> = HashSet::new();
-    for p in protected {
+/// Distinct protected answers or input tails pasted into the artefact that count as memorising
+/// the set (R-W2-1): three, because a train example may coincide with a val date once or twice.
+pub const LEAK_PASTED: usize = 3;
+/// Shortest ideal or input tail the paste rule looks for; shorter strings match by accident.
+const LEAK_MIN_CHARS: usize = 6;
+
+/// The protected content of the val and holdout cases: their inputs and ideals.
+pub struct Protected<'a> {
+    /// Val and holdout inputs.
+    pub inputs: Vec<&'a str>,
+    /// Val and holdout ideals.
+    pub ideals: Vec<&'a str>,
+}
+
+/// The longest common prefix of `texts` when there are at least two; the template boilerplate
+/// a case file repeats in front of every input (`Normalise this date to ISO 8601: `).
+fn common_prefix<'a>(texts: &[&'a str]) -> &'a str {
+    let Some(first) = texts.first() else {
+        return "";
+    };
+    if texts.len() < 2 {
+        return "";
+    }
+    let mut end = first.len();
+    for t in &texts[1..] {
+        end = first
+            .char_indices()
+            .zip(t.chars())
+            .take_while(|((_, a), b)| a == b)
+            .last()
+            .map_or(0, |((i, a), _)| i + a.len_utf8())
+            .min(end);
+    }
+    &first[..end]
+}
+
+/// Why a candidate is refused before any call (§7 Guard, R-W2-1), or `None`:
+/// 1. it shares an 8-word run with a val or holdout input or ideal — runs that occur in two or
+///    more protected texts are the file's boilerplate and do not count (R-W2-8);
+/// 2. it contains [`LEAK_PASTED`] or more distinct val/holdout ideals (≥ 6 chars);
+/// 3. it contains [`LEAK_PASTED`] or more distinct val/holdout inputs with the file's common
+///    prefix stripped (≥ 6 chars) — the answers-only paste `22 March 2012 is 2012-03-22; …`.
+pub fn leak(artefact: &str, protected: &Protected<'_>) -> Option<String> {
+    // 1. n-grams, minus the boilerplate.
+    let mut seen: HashMap<Vec<String>, u32> = HashMap::new();
+    for p in protected.inputs.iter().chain(&protected.ideals) {
         let w = words(p);
+        let mut mine: HashSet<&[String]> = HashSet::new();
         for g in w.windows(LEAK_WORDS) {
-            grams.insert(g.to_vec());
+            if mine.insert(g) {
+                *seen.entry(g.to_vec()).or_insert(0) += 1;
+            }
         }
     }
-    if grams.is_empty() {
-        return None;
-    }
-    words(artefact)
+    let aw = words(artefact);
+    if let Some(g) = aw
         .windows(LEAK_WORDS)
-        .find(|g| grams.contains(*g))
-        .map(|g| g.join(" "))
+        .find(|g| seen.get(*g).is_some_and(|n| *n == 1))
+    {
+        return Some(format!(
+            "repeats {LEAK_WORDS} words of a val or holdout case (\"{}\")",
+            g.join(" ")
+        ));
+    }
+    // 2. and 3. pasted answers or input tails.
+    let lower = artefact.to_lowercase();
+    let hits = |texts: &[&str], strip: &str| -> usize {
+        let mut distinct: HashSet<String> = HashSet::new();
+        for t in texts {
+            let tail = t.strip_prefix(strip).unwrap_or(t).trim().to_lowercase();
+            if tail.chars().count() >= LEAK_MIN_CHARS && lower.contains(&tail) {
+                distinct.insert(tail);
+            }
+        }
+        distinct.len()
+    };
+    let ideals = hits(&protected.ideals, "");
+    if ideals >= LEAK_PASTED {
+        return Some(format!("contains {ideals} val or holdout answers"));
+    }
+    let prefix = common_prefix(&protected.inputs);
+    let inputs = hits(&protected.inputs, prefix);
+    if inputs >= LEAK_PASTED {
+        return Some(format!("contains {inputs} val or holdout inputs"));
+    }
+    None
 }
 
 // ───────────────────────────── the runner ─────────────────────────────
@@ -343,40 +484,74 @@ pub fn judge_model(env: &Env, spec: &StudySpec) -> String {
         })
 }
 
-/// A model behind `Backend::side_call`, charged to the study session; it sums what the
-/// provider reported so the sample carries tokens and cost per case.
+/// A model behind `Backend::side_call`, charged to the study session. Target and judge share
+/// one [`Spent`] so the sample carries tokens and cost, and so the per-experiment cap is
+/// checked on every call (R-W2-2): the first call that takes the sample past
+/// `budget.per_experiment_usd` is the last one — the sample crashes instead of failing open.
 struct StudyModel {
     env: Arc<Env>,
     study: Arc<StudyRecord>,
     model: String,
-    spent: Mutex<Spent>,
+    spent: Arc<Mutex<Spent>>,
+    /// USD nanos; `None` = no cap.
+    cap_nanos: Option<u64>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
 struct Spent {
     tokens_in: u64,
     tokens_out: u64,
     cost_nanos: u64,
 }
 
+impl Spent {
+    /// Add one reply; `Err` once the sum passes `cap_nanos` (W-m: reported spend over the
+    /// per-experiment cap is a crash).
+    fn charge(
+        &mut self,
+        reply: &runtime::SideReply,
+        cap_nanos: Option<u64>,
+    ) -> std::result::Result<(), String> {
+        self.tokens_in += u64::from(reply.input_tokens.unwrap_or(0));
+        self.tokens_out += u64::from(reply.output_tokens.unwrap_or(0));
+        self.cost_nanos += reply.cost_nanos.unwrap_or(0);
+        match cap_nanos {
+            Some(cap) if self.cost_nanos > cap => Err(format!(
+                "spend ${:.3} over per_experiment_usd ${:.3}",
+                self.cost_nanos as f64 / 1e9,
+                cap as f64 / 1e9
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
 impl StudyModel {
-    fn new(env: &Arc<Env>, study: &Arc<StudyRecord>, model: String) -> Arc<Self> {
+    fn new(
+        env: &Arc<Env>,
+        study: &Arc<StudyRecord>,
+        model: String,
+        spent: &Arc<Mutex<Spent>>,
+        cap_nanos: Option<u64>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             env: env.clone(),
             study: study.clone(),
             model,
-            spent: Mutex::new(Spent::default()),
+            spent: spent.clone(),
+            cap_nanos,
         })
-    }
-
-    fn take(&self) -> Spent {
-        std::mem::take(&mut *self.spent.lock())
     }
 }
 
 #[async_trait::async_trait]
 impl Model for StudyModel {
     async fn call(&self, system: &str, user: String) -> std::result::Result<String, String> {
+        if let Some(cap) = self.cap_nanos
+            && self.spent.lock().cost_nanos > cap
+        {
+            return Err("the sample is over per_experiment_usd".to_owned());
+        }
         let reply = self
             .env
             .backend
@@ -389,10 +564,7 @@ impl Model for StudyModel {
             )
             .await
             .map_err(|e| e.to_string())?;
-        let mut s = self.spent.lock();
-        s.tokens_in += u64::from(reply.input_tokens.unwrap_or(0));
-        s.tokens_out += u64::from(reply.output_tokens.unwrap_or(0));
-        s.cost_nanos += reply.cost_nanos.unwrap_or(0);
+        self.spent.lock().charge(&reply, self.cap_nanos)?;
         Ok(reply.text)
     }
 }
@@ -497,20 +669,26 @@ pub async fn sample(
         .filter(|(_, s)| *s != Split::Train)
         .partition(|(_, s)| *s == Split::Val);
     if req.role == SampleRole::Candidate
-        && let Some(words) = leak(
+        && let Some(why) = leak(
             &artefact,
-            val.iter()
-                .chain(holdout.iter())
-                .flat_map(|(c, _)| std::iter::once(c.input.as_str()).chain(c.ideal.as_deref())),
+            &Protected {
+                inputs: val
+                    .iter()
+                    .chain(&holdout)
+                    .map(|(c, _)| c.input.as_str())
+                    .collect(),
+                ideals: val
+                    .iter()
+                    .chain(&holdout)
+                    .filter_map(|(c, _)| c.ideal.as_deref())
+                    .collect(),
+            },
         )
     {
         return Ok(crash(
             &req,
             &log,
-            format!(
-                "refused: the artefact repeats {LEAK_WORDS} words of a val or holdout case (\"{words}\"); \
-                 the eval set is not for pasting"
-            ),
+            format!("refused: the artefact {why}; the val and holdout cases are not for pasting"),
             started,
         ));
     }
@@ -547,41 +725,76 @@ pub async fn sample(
             started,
         ));
     }
+    if cs.repeats > MAX_REPEATS {
+        return Err(Error::refused(format!(
+            "cases.repeats {} is above {MAX_REPEATS}",
+            cs.repeats
+        )));
+    }
     let env_a = Arc::new(env.clone());
     let study_a = Arc::new(study.clone());
-    let target = StudyModel::new(&env_a, &study_a, target_model(env, &study.spec));
+    let spent = Arc::new(Mutex::new(Spent::default()));
+    let cap_nanos = Some(study.spec.budget.per_experiment_usd)
+        .filter(|c| c.is_finite() && *c > 0.0)
+        .map(|c| (c * 1e9) as u64);
+    let target = StudyModel::new(
+        &env_a,
+        &study_a,
+        target_model(env, &study.spec),
+        &spent,
+        cap_nanos,
+    );
     let judge_name = judge_model(env, &study.spec);
-    let judge = StudyModel::new(&env_a, &study_a, judge_name.clone());
+    let judge = StudyModel::new(&env_a, &study_a, judge_name.clone(), &spent, cap_nanos);
     let needs_judge = chosen.iter().any(|(c, _)| c.check.is_none());
     let artefact = Arc::new(artefact);
     let template: Option<Arc<str>> = Some(cs.render.trim())
         .filter(|t| !t.is_empty())
         .map(Arc::from);
+    // R-W2-3: `command` checks run in the custody directory with the study's env and a clock.
+    let ctx = Arc::new(evalcore::run::CheckCtx {
+        cwd: Some(req.evaluator.to_path_buf()),
+        timeout: evalcore::run::CHECK_TIMEOUT,
+        env: vec![
+            ("AUTORESEARCH".to_owned(), "1".to_owned()),
+            ("AUTORESEARCH_STUDY".to_owned(), study.slug.clone()),
+            (
+                "AUTORESEARCH_EVALUATOR".to_owned(),
+                req.evaluator.display().to_string(),
+            ),
+            (
+                "AUTORESEARCH_WORKTREE".to_owned(),
+                req.worktree.display().to_string(),
+            ),
+        ],
+    });
     let repeats = cs.repeats.max(1);
     let sem = Arc::new(tokio::sync::Semaphore::new(IN_FLIGHT));
     let mut set_js: tokio::task::JoinSet<
         std::result::Result<(usize, Vec<evalcore::run::CaseScore>), String>,
     > = tokio::task::JoinSet::new();
     for (i, (case, _)) in chosen.iter().enumerate() {
-        let (sem, target, judge, artefact, template, case) = (
+        let (sem, target, judge, artefact, template, case, ctx) = (
             sem.clone(),
             target.clone(),
             judge.clone(),
             artefact.clone(),
             template.clone(),
             case.clone(),
+            ctx.clone(),
         );
         set_js.spawn(async move {
             let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
             let mut scores = Vec::with_capacity(usize::from(repeats));
             for _ in 0..repeats {
                 scores.push(
-                    evalcore::run::run_case(
+                    evalcore::run::run_case_in(
                         target.as_ref(),
                         needs_judge.then_some(judge.as_ref() as &dyn Model),
                         &artefact,
                         template.as_deref(),
                         &case,
+                        &ctx,
                     )
                     .await?,
                 );
@@ -621,15 +834,7 @@ pub async fn sample(
     }
     // Per-case spend is not attributable with calls in flight; the sample's totals are, and the
     // per-case share is the mean (ponytail: exact per-case tokens if a report objective needs them).
-    let spent_total = {
-        let t = target.take();
-        let j = judge.take();
-        Spent {
-            tokens_in: t.tokens_in + j.tokens_in,
-            tokens_out: t.tokens_out + j.tokens_out,
-            cost_nanos: t.cost_nanos + j.cost_nanos,
-        }
-    };
+    let spent_total = *spent.lock();
     let per_case = chosen.len() as u64;
     let scored: Vec<Scored> = chosen
         .into_iter()
@@ -1290,9 +1495,12 @@ pub fn setup_set(spec: &mut StudySpec, leaf: &str, v: &str) -> std::result::Resu
                     cs.split = v.to_owned();
                 }
                 "repeats" => {
-                    cs.repeats = v
+                    let n: u8 = v
                         .parse()
-                        .map_err(|_| format!("cases.repeats: a small count, got `{v}`"))?
+                        .ok()
+                        .filter(|n| (1..=MAX_REPEATS).contains(n))
+                        .ok_or_else(|| format!("cases.repeats: 1 to {MAX_REPEATS}, got `{v}`"))?;
+                    cs.repeats = n;
                 }
                 "max_cases" => {
                     cs.max_cases = v
@@ -1379,29 +1587,144 @@ mod tests {
         assert!(parse_cases("{\"id\":\"\",\"input\":\"x\"}").is_err());
     }
 
+    fn protected_fixture() -> (Vec<Case>, Vec<usize>) {
+        let cases = fixture_cases();
+        let idx: Vec<usize> = cases
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                evalcore::split("toy-prompt", &c.id, Shares::default(), false) != Split::Train
+            })
+            .map(|(i, _)| i)
+            .collect();
+        (cases, idx)
+    }
+
+    fn protected_of<'a>(cases: &'a [Case], idx: &[usize]) -> Protected<'a> {
+        Protected {
+            inputs: idx.iter().map(|&i| cases[i].input.as_str()).collect(),
+            ideals: idx
+                .iter()
+                .filter_map(|&i| cases[i].ideal.as_deref())
+                .collect(),
+        }
+    }
+
+    /// R-W2-1: the three refusal rules on the fixture's val/holdout set — an 8-word run that is
+    /// not boilerplate; three pasted answers; three pasted input tails (`22 March 2012 is
+    /// 2012-03-22; …` with no 8-gram at all). R-W2-8: quoting a train input, whose 8-grams
+    /// are the file's boilerplate plus a date, is not a leak unless it is a val/holdout date.
     #[test]
-    fn leak_finds_eight_word_runs_only() {
-        let protected = [
-            "Normalise this date to ISO 8601: 22 March 2012",
-            "2012-03-22",
-        ];
-        // Seven shared words: fine. The whole input: refused. Case and punctuation do not matter.
+    fn leak_refuses_pasted_answers_and_input_tails_but_not_boilerplate() {
+        let (cases, idx) = protected_fixture();
+        let p = protected_of(&cases, &idx);
+        let (v0, v1, v2) = (&cases[idx[0]], &cases[idx[1]], &cases[idx[2]]);
+        let tail = |c: &Case| c.input.rsplit(": ").next().unwrap().to_owned();
+        // Boilerplate alone, with one date: fine (the 8-grams are shared or unique to one case).
         assert_eq!(
             leak(
-                "normalise this date to iso 8601 22",
-                protected.iter().copied()
+                "Normalise this date to ISO 8601 and reply with the date only.",
+                &p
             ),
             None
         );
-        let hit = leak(
-            "Rules: NORMALISE this date, to ISO-8601: 22 march 2012 always.",
-            protected.iter().copied(),
+        // The whole input of one val case verbatim: its unique 8-gram is a leak.
+        let hit = leak(&format!("Example: {}", v0.input), &p).unwrap();
+        assert!(hit.contains("8 words"), "{hit}");
+        // The answers-only paste: three "tail is ideal" pairs, no 8-gram → refused by rule 3 (inputs)
+        // or rule 2 (ideals), whichever trips first.
+        let paste = format!(
+            "Examples: {} is {}; {} is {}; {} is {}.",
+            tail(v0),
+            v0.ideal.as_ref().unwrap(),
+            tail(v1),
+            v1.ideal.as_ref().unwrap(),
+            tail(v2),
+            v2.ideal.as_ref().unwrap()
         );
+        let hit = leak(&paste, &p).unwrap();
+        assert!(hit.contains("val or holdout"), "{hit}");
+        // Ideals alone, three of them: rule 2.
+        let ideals = format!(
+            "Known answers: {} {} {}",
+            v0.ideal.as_ref().unwrap(),
+            v1.ideal.as_ref().unwrap(),
+            v2.ideal.as_ref().unwrap()
+        );
+        assert!(leak(&ideals, &p).unwrap().contains("answers"));
+        // Two of them: tolerated (a train example may coincide with a val date).
+        let two = format!("e.g. {} is {}", tail(v0), v0.ideal.as_ref().unwrap());
+        assert_eq!(leak(&two, &p), None, "{two}");
+        // R-W2-8: a train input quoted as a few-shot example is not a leak.
+        let train = cases
+            .iter()
+            .find(|c| {
+                evalcore::split("toy-prompt", &c.id, Shares::default(), false) == Split::Train
+            })
+            .unwrap();
+        let few_shot = format!("For example: `{}` → an ISO date.", train.input);
+        assert_eq!(leak(&few_shot, &p), None, "{few_shot}");
         assert_eq!(
-            hit.as_deref(),
-            Some("normalise this date to iso 8601 22 march")
+            leak(
+                "anything",
+                &Protected {
+                    inputs: vec![],
+                    ideals: vec![]
+                }
+            ),
+            None
         );
-        assert_eq!(leak("anything", std::iter::empty()), None);
+        assert_eq!(common_prefix(&["ab cd", "ab ce", "ab x"]), "ab ");
+        assert_eq!(common_prefix(&["only one"]), "");
+    }
+
+    /// R-W2-2: the shared spend refuses the call that crosses the per-experiment cap.
+    #[test]
+    fn spend_charge_stops_at_the_cap() {
+        let reply = |cost: u64| runtime::SideReply {
+            text: String::new(),
+            model: String::new(),
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            latency: Duration::ZERO,
+            cost_nanos: Some(cost),
+            request_id: None,
+        };
+        let mut s = Spent::default();
+        assert!(s.charge(&reply(600_000_000), Some(1_000_000_000)).is_ok());
+        let e = s
+            .charge(&reply(600_000_000), Some(1_000_000_000))
+            .unwrap_err();
+        assert!(e.contains("$1.200 over per_experiment_usd $1.000"), "{e}");
+        assert_eq!((s.tokens_in, s.tokens_out), (20, 4));
+        assert!(s.charge(&reply(5_000_000_000), None).is_ok(), "no cap");
+        // The panel refuses more than MAX_REPEATS.
+        let mut spec = StudySpec::default();
+        assert!(setup_set(&mut spec, "cases.repeats", "6").is_err());
+        assert!(setup_set(&mut spec, "cases.repeats", "0").is_err());
+        setup_set(&mut spec, "cases.repeats", "5").unwrap();
+    }
+
+    /// R-W2-3: the scripts a `command` check names, and nothing else.
+    #[test]
+    fn command_scripts_lists_script_tokens_only() {
+        let case = |cmd: &str| Case {
+            id: cmd.into(),
+            input: "x".into(),
+            check: Some(evalcore::Check::Command(cmd.into())),
+            ..Case::default()
+        };
+        let cases = vec![
+            case("bash ./score.sh --strict"),
+            case("python3 tools/score.py $CASE_ID"),
+            case("/usr/bin/env python3 -c 'print(1)'"),
+            case("bash ./score.sh"),
+            Case {
+                check: Some(evalcore::Check::Exact("y".into())),
+                ..case("ignored.sh")
+            },
+        ];
+        assert_eq!(command_scripts(&cases), vec!["score.sh", "tools/score.py"]);
     }
 
     #[test]
@@ -1501,6 +1824,8 @@ mod tests {
     struct FakeTarget {
         by_input: HashMap<String, (String, String)>, // input → (ideal, tag)
         calls: std::sync::atomic::AtomicU32,
+        /// Per-call cost the fake reports (R-W2-2: raised to trip the per-experiment cap).
+        cost_nanos: std::sync::atomic::AtomicU64,
     }
 
     #[async_trait::async_trait]
@@ -1538,7 +1863,7 @@ mod tests {
                 input_tokens: Some(40),
                 output_tokens: Some(4),
                 latency: Duration::from_millis(1),
-                cost_nanos: Some(2_000_000),
+                cost_nanos: Some(self.cost_nanos.load(std::sync::atomic::Ordering::SeqCst)),
                 request_id: None,
             })
         }
@@ -1583,11 +1908,32 @@ mod tests {
         );
     }
 
+    /// The extra train case with a `command` check the temp repo gets (R-W2-3): an id that
+    /// hashes to train so the fixture's val/holdout counts hold, appended after the 16 train
+    /// cases that are replayed, so no sample scores it.
+    fn command_case_id() -> String {
+        (0..)
+            .map(|i| format!("cmd-{i}"))
+            .find(|id| evalcore::split("toy-prompt", id, Shares::default(), false) == Split::Train)
+            .unwrap()
+    }
+
     fn copy_fixture(repo: &Path) {
         std::fs::create_dir_all(repo).unwrap();
         for f in ["prompt.md", "cases.jsonl", "gen_cases.py", "README.md"] {
             std::fs::copy(Path::new(FIXTURE).join(f), repo.join(f)).unwrap();
         }
+        let extra = serde_json::json!({
+            "id": command_case_id(),
+            "input": "Normalise this date to ISO 8601: the end of time",
+            "check": {"kind": "command", "value": "bash ./score.sh"},
+        });
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(repo.join("cases.jsonl"))
+            .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{extra}\n").as_bytes()))
+            .unwrap();
+        std::fs::write(repo.join("score.sh"), "read a; echo 'METRIC score=1'\n").unwrap();
         git(repo, &["init", "-q", "-b", "main"]);
         git(repo, &["add", "-A"]);
         git(
@@ -1691,6 +2037,7 @@ mod tests {
                 })
                 .collect(),
             calls: Default::default(),
+            cost_nanos: std::sync::atomic::AtomicU64::new(2_000_000),
         });
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         let root = dir.path().join("autoresearch");
@@ -1740,6 +2087,19 @@ mod tests {
         assert_eq!(
             seg.custody.get("cases.jsonl").map(String::as_str),
             Some(crate::custody::sha256_file(&snap).unwrap().as_str())
+        );
+        // R-W2-3: the `command` check's script is in custody beside the snapshot, hashed.
+        assert!(root.join("toy-prompt/evaluator/0/score.sh").is_file());
+        assert!(
+            seg.custody.contains_key("custody/score.sh"),
+            "{:?}",
+            seg.custody.keys()
+        );
+        assert_eq!(
+            parse_cases(&std::fs::read_to_string(&snap).unwrap())
+                .unwrap()
+                .len(),
+            91
         );
         let base_calls = fake.calls.load(std::sync::atomic::Ordering::SeqCst);
         // 2 baseline passes × (38 val + 16 train) + 1 holdout pass × 17 = 125 target calls, no judge calls.
@@ -1873,9 +2233,17 @@ mod tests {
         .unwrap();
         never_leaks(&brief.text);
         let calls_before = fake.calls.load(std::sync::atomic::Ordering::SeqCst);
+        // The answers-only paste (R-W2-1): three val tails with their ideals, no 8-gram shared.
+        let tail_of = |s: &str| s.rsplit(": ").next().unwrap().to_owned();
         let pasted = format!(
-            "{}\nFor example: {} → {}\n",
-            GOOD_PROMPT, val_inputs[0], val_ideals[0]
+            "{}\nExamples: {} is {}; {} is {}; {} is {}.\n",
+            GOOD_PROMPT,
+            tail_of(val_inputs[0]),
+            val_ideals[0],
+            tail_of(val_inputs[1]),
+            val_ideals[1],
+            tail_of(val_inputs[2]),
+            val_ideals[2]
         );
         write_prompt(&worktree, &pasted);
         let rep = crate::actor::run(
@@ -2042,6 +2410,62 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+
+        // #5 (R-W2-2): the provider's price jumps to $0.10 a call → the sample crashes at the
+        // per-experiment cap ($1.50) after about 15 calls, not after 54; nothing is kept.
+        fake.cost_nanos
+            .store(100_000_000, std::sync::atomic::Ordering::SeqCst);
+        let calls_before = fake.calls.load(std::sync::atomic::Ordering::SeqCst);
+        crate::actor::begin(
+            &mut h,
+            Begin {
+                session,
+                slot: None,
+            },
+        )
+        .await
+        .unwrap();
+        write_prompt(&worktree, &format!("{GOOD_PROMPT}Be brief.\n"));
+        let rep = crate::actor::run(
+            &mut h,
+            Run {
+                session,
+                slot: None,
+                args: RunArgs {
+                    idea: "brevity".into(),
+                    category: "tone".into(),
+                    ..RunArgs::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(rep.verdict, Verdict::Crash, "{}", rep.line);
+        let tail = rep.tail.clone().unwrap_or_default();
+        assert!(tail.contains("over per_experiment_usd $1.500"), "{tail}");
+        let made = fake.calls.load(std::sync::atomic::Ordering::SeqCst) - calls_before;
+        assert!(
+            (15..15 + IN_FLIGHT as u32 + 1).contains(&made),
+            "{made} calls"
+        );
+        let lr = crate::actor::log(
+            &mut h,
+            Log {
+                session,
+                slot: None,
+                args: LogArgs {
+                    description: "d".into(),
+                    learned: "l".into(),
+                    decision: Decision::Auto,
+                    ..LogArgs::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(lr.applied, ExperimentState::Crashed);
+        fake.cost_nanos
+            .store(2_000_000, std::sync::atomic::Ordering::SeqCst);
 
         // The brief after the keeps: every shown train case passed; nothing from val/holdout.
         let section = brief_section(&store, &s4).await.unwrap();

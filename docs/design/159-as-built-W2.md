@@ -153,3 +153,29 @@ On this machine (`~/.theuth/dreaming/`): `cases.jsonl` holds 4 cases (3 train, 1
 ```
 
 **H8** (done locally per R1) TS bindings regenerated and copied (`BUILD_SLOTS=1 build-lock mbx test -p rpc --features ts --lib --quiet export_bindings && cp -R bindings/. crates/desktop/ui/src/rpc/bindings/`); `CaseSetSpec.ts` and `CaseSource.ts` are gitignored, so the closer regenerates them at merge. The UI reads only `KindView`/`CaseRow`/`SplitCounts`.
+
+**H9** (R-W2-4, `crates/autoresearch/src/finalize.rs`, frozen) — finalize runs `runner::sample` with `bench.command` directly, so a prompt study's changeset attribution executes the word `cases` as a program (every "alone" sample crashes, each burning `bench.timeout`), and `confirm()` returns at `kind_headline` before any holdout. The `Finalizer` has no `Env`/`Backend`, so routing through `actor::kind_sample` needs plumbing; the minimal safe diff skips attribution for engine-side scoring:
+```diff
+@@ fn changesets (finalize.rs ~L685)
+             let wt = scratch(&dir, c.k);
+-            if !wt.exists() {
++            // 159: engine-side scoring (cases, pairwise, world, suite) has no bench command to run
++            // alone; the kind's gate already measured each keep against its incumbent (R-W2-4).
++            if !wt.exists() || self.spec.axes.scoring != Scoring::Bench {
++                if self.spec.axes.scoring != Scoring::Bench {
++                    notes.push(format!("changeset {}: measured by the kind's gate only", c.k));
++                }
+                 continue;
+             }
+```
+For the holdout at finalize (§7 "holdout cases run … at finalize"): give `finalize::run_with` the `Env` (it is called from `Backend::finalize`, which the actor owns) and, in `confirm()` before `kind_headline`, call `actor::holdout(env, study, incumbent, n_final, cancel)` when `spec.holdout.is_some()`; `cases::headline` then reads that sample as the final holdout line. Until then `headline.holdout` is the last keep's holdout (empty when the final keep was not a multiple of `holdout.every`; the fixture's test uses `every: 1`).
+
+## R2 — review fixes (R-W2.md, 85dfa009 → this commit)
+
+Gates after R2: `build-lock mbx test -p evalcore -p dreaming -p autoresearch --locked --no-run` + bare → 196 / 64 / 11 passed, 0 failed (golden_ledger_140 green); `build-lock mbx clippy` on the same set clean; `cargo fmt` on the three crates, no stray files; no wire type changed (no bindings export); no UI file changed.
+
+- **R-W2-1 fixed** — `cases::leak` now takes `Protected {inputs, ideals}` and refuses on three rules: an 8-word run shared with one protected text after dropping runs present in ≥ 2 protected texts (the file's boilerplate); ≥ 3 distinct val/holdout ideals (≥ 6 chars) as substrings; ≥ 3 distinct val/holdout inputs with the set's common prefix stripped. Tests: `cases::tests::leak_refuses_pasted_answers_and_input_tails_but_not_boilerplate` (the answers-only paste `22 March 2012 is 2012-03-22; …` — no 8-gram — is refused; two pairs are tolerated; a quoted train input is not a leak, which also closes R-W2-8) and the end-to-end `#2`, which now pastes three val tails with their ideals and asserts `Crash`, `refused … val or holdout`, zero calls. Before the fix the paste passed `leak` by construction (the reviewer's point: no 8-gram).
+- **R-W2-2 fixed** — target and judge share one `Spent` with `cap_nanos = budget.per_experiment_usd`; `Spent::charge` errs on the call that crosses the cap, `StudyModel::call` refuses further calls, the `JoinSet` aborts and the sample is a crash (`case call failed: spend $x over per_experiment_usd $y`). `cases.repeats` is capped at `MAX_REPEATS = 5` in `setup_set` (1..=5) and refused in `sample`. Tests: `cases::tests::spend_charge_stops_at_the_cap` (`$1.200 over per_experiment_usd $1.000`; `repeats` 0 and 6 refused) and end-to-end `#5` (the fake's price raised to $0.10/call → `Crash` with `over per_experiment_usd $1.500` after 16–23 calls, not 54; `Crashed`). Before the fix nothing read the cap inside a sample.
+- **R-W2-3 fixed** — `evalcore::run::CheckCtx {cwd, timeout, env}` and `run_case_in` (the frozen `run_case` keeps its signature and delegates with a default context); `command_check` runs `/bin/bash -lc` through `tokio::process` with `current_dir = ctx.cwd`, `kill_on_drop`, `tokio::time::timeout` (`CHECK_TIMEOUT` 60 s), `CASE_ID`/`CASE_IDEAL` plus the context's env. `cases::sample` passes the evaluator directory as cwd with `AUTORESEARCH{,_STUDY,_EVALUATOR,_WORKTREE}`; `cases::case_set` copies every script a `command` check names (`cases::command_scripts`: relative tokens with a directory part or a script extension) into `evaluator/<segment>/` and hashes it into the segment's custody, or refuses the set when the file is missing — whether the snapshot was written by W2 or copied by `custody::take`. Tests: `evalcore::run::tests::command_checks_run_in_the_custody_dir_with_env_and_a_timeout` (a relative `./score.sh` fails without a cwd and passes with one; `$PWD` equals `AUTORESEARCH_EVALUATOR`; `sleep 5` is killed at 200 ms), `cases::tests::command_scripts_lists_script_tokens_only`, and the end-to-end test's temp repo gains a 91st train case with `bash ./score.sh` and asserts `evaluator/0/score.sh` and `custody/score.sh`. **W2-n**: evalcore now depends on `tokio` (process, time) beyond the §18.4 list; `tempfile` as a dev-dep.
+- **R-W2-4 handed off** — H9 above (finalize.rs is frozen): the exact diff that skips the "alone" bench for engine-side scoring, and the sketch for the holdout at finalize.
+- Not required for W2 (no extra RISKs), done because trivial and in W2's files: **R-W2-21** the README spec says `holdout: {every: 3, repeats: 1}`; **R-W2-8** falls out of the R-W2-1 boilerplate subtraction (tested).

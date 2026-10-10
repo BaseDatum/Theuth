@@ -48,7 +48,7 @@ axes: {scoring: cases, artefact: file}
 metric: {name: score, unit: "", direction: higher, min_effect: "0.05"}
 cases: {source: file, path: cases.jsonl, artefact: prompt.md}      # split 40/40/20, repeats 1, train_shown 16
 bench: {command: cases, repeats: 2, timeout: 600s}   # `cases` names the engine runner (no script runs); repeats = baseline passes
-holdout: {every: 3}                       # no command: the holdout split, every 3 keeps and at finalize
+holdout: {every: 3, repeats: 1}           # no command: the holdout split, one pass every 3 keeps and at finalize
 evaluator_paths: [cases.jsonl]
 scope: [prompt.md]
 off_limits: [cases.jsonl, gen_cases.py, README.md]

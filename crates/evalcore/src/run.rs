@@ -3,7 +3,10 @@
 //! `CallKind::Autoresearch` to the study session, dreaming `CallKind::Dream` to its own).
 //! Owner: W2.
 
-use std::io::Write as _;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use tokio::io::AsyncWriteExt as _;
 
 use crate::case::{Case, Check};
 use crate::judge;
@@ -33,6 +36,21 @@ pub struct CaseScore {
     pub cost_usd: f64,
 }
 
+/// Where and how a `Check::Command` runs (R-W2-3): the custody directory as its cwd, a wall
+/// clock, extra environment. [`CheckCtx::default`] is the process's cwd and [`CHECK_TIMEOUT`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CheckCtx {
+    /// `current_dir` of the checker; `None` = inherit.
+    pub cwd: Option<PathBuf>,
+    /// Wall clock per checker run; zero = [`CHECK_TIMEOUT`].
+    pub timeout: Duration,
+    /// Extra environment (`AUTORESEARCH_EVALUATOR`, …).
+    pub env: Vec<(String, String)>,
+}
+
+/// The checker's wall clock when the context names none.
+pub const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// The placeholder a `render` template must contain.
 pub const ARTEFACT_SLOT: &str = "{{artefact}}";
 
@@ -46,7 +64,8 @@ pub fn render(artefact: &str, template: Option<&str>) -> String {
 
 /// Render (system = the artefact, or `template` with `{{artefact}}`; user = the case input),
 /// call `target`, then score with the case's check or with `judge` and the 0–1 prompt. A case
-/// with neither a check nor a judge is an error, as is a judge reply without a score.
+/// with neither a check nor a judge is an error, as is a judge reply without a score. A
+/// `command` check runs in the process's cwd; see [`run_case_in`] for custody.
 pub async fn run_case(
     target: &dyn Model,
     judge: Option<&dyn Model>,
@@ -54,11 +73,31 @@ pub async fn run_case(
     template: Option<&str>,
     case: &Case,
 ) -> Result<CaseScore, String> {
+    run_case_in(
+        target,
+        judge,
+        artefact,
+        template,
+        case,
+        &CheckCtx::default(),
+    )
+    .await
+}
+
+/// [`run_case`] with a [`CheckCtx`] for `command` checks.
+pub async fn run_case_in(
+    target: &dyn Model,
+    judge: Option<&dyn Model>,
+    artefact: &str,
+    template: Option<&str>,
+    case: &Case,
+    ctx: &CheckCtx,
+) -> Result<CaseScore, String> {
     let answer = target
         .call(&render(artefact, template), case.input.clone())
         .await?;
     let (score, reason) = match (&case.check, judge) {
-        (Some(check), _) => score_check(check, &answer, case)?,
+        (Some(check), _) => score_check(check, &answer, case, ctx).await?,
         (None, Some(judge)) => {
             let reply = judge
                 .call(
@@ -80,7 +119,12 @@ pub async fn run_case(
 }
 
 /// Score an answer with a [`Check`]; the reason is the checker's one-line diff.
-pub fn score_check(check: &Check, answer: &str, case: &Case) -> Result<(f64, String), String> {
+pub async fn score_check(
+    check: &Check,
+    answer: &str,
+    case: &Case,
+    ctx: &CheckCtx,
+) -> Result<(f64, String), String> {
     let got = answer.trim();
     Ok(match check {
         Check::Exact(want) => {
@@ -114,44 +158,70 @@ pub fn score_check(check: &Check, answer: &str, case: &Case) -> Result<(f64, Str
                 )
             }
         }
-        Check::Command(cmd) => {
-            // ponytail: a blocking `bash -lc` on the async thread; checkers are small. Move it
-            // behind the caller's runner if a checker ever takes seconds.
-            let mut child = std::process::Command::new("/bin/bash")
-                .arg("-lc")
-                .arg(cmd)
-                .env("CASE_ID", &case.id)
-                .env("CASE_IDEAL", case.ideal.as_deref().unwrap_or(""))
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("check `{cmd}`: {e}"))?;
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(answer.as_bytes());
-            }
-            let out = child
-                .wait_with_output()
-                .map_err(|e| format!("check `{cmd}`: {e}"))?;
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let score = stdout
-                .lines()
-                .filter_map(|l| l.trim().strip_prefix("METRIC score="))
-                .filter_map(|v| v.trim().parse::<f64>().ok())
-                .next_back()
-                .ok_or_else(|| format!("check `{cmd}` printed no `METRIC score=` line"))?;
-            if !score.is_finite() {
-                return Err(format!("check `{cmd}`: score is not a number"));
-            }
-            let reason = stdout
-                .lines()
-                .map(str::trim)
-                .rfind(|l| !l.starts_with("METRIC ") && !l.is_empty())
-                .unwrap_or("")
-                .to_owned();
-            (score.clamp(0.0, 1.0), clip(&reason).into_owned())
-        }
+        Check::Command(cmd) => command_check(cmd, answer, case, ctx).await?,
     })
+}
+
+/// `/bin/bash -lc <cmd>` in `ctx.cwd` with the answer on stdin, `CASE_ID` / `CASE_IDEAL` and
+/// `ctx.env` set, killed at `ctx.timeout`; the score is the last `METRIC score=` line, the
+/// reason the last other non-empty line.
+async fn command_check(
+    cmd: &str,
+    answer: &str,
+    case: &Case,
+    ctx: &CheckCtx,
+) -> Result<(f64, String), String> {
+    let mut command = tokio::process::Command::new("/bin/bash");
+    command
+        .arg("-lc")
+        .arg(cmd)
+        .env("CASE_ID", &case.id)
+        .env("CASE_IDEAL", case.ideal.as_deref().unwrap_or(""))
+        .envs(ctx.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(cwd) = &ctx.cwd {
+        command.current_dir(cwd);
+    }
+    let mut child = command.spawn().map_err(|e| format!("check `{cmd}`: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(answer.as_bytes()).await;
+        drop(stdin);
+    }
+    let timeout = if ctx.timeout.is_zero() {
+        CHECK_TIMEOUT
+    } else {
+        ctx.timeout
+    };
+    let out = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| format!("check `{cmd}` timed out after {}s", timeout.as_secs()))?
+        .map_err(|e| format!("check `{cmd}`: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let score = stdout
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("METRIC score="))
+        .filter_map(|v| v.trim().parse::<f64>().ok())
+        .next_back()
+        .ok_or_else(|| {
+            format!(
+                "check `{cmd}` printed no `METRIC score=` line (exit {:?}): {}",
+                out.status.code(),
+                clip(String::from_utf8_lossy(&out.stderr).trim())
+            )
+        })?;
+    if !score.is_finite() {
+        return Err(format!("check `{cmd}`: score is not a number"));
+    }
+    let reason = stdout
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.starts_with("METRIC ") && !l.is_empty())
+        .unwrap_or("")
+        .to_owned();
+    Ok((score.clamp(0.0, 1.0), clip(&reason).into_owned()))
 }
 
 /// First 120 chars, one line.
@@ -186,6 +256,12 @@ mod tests {
         }
     }
 
+    const NO_CTX: CheckCtx = CheckCtx {
+        cwd: None,
+        timeout: Duration::ZERO,
+        env: Vec::new(),
+    };
+
     #[test]
     fn render_fills_the_slot_or_is_the_artefact() {
         assert_eq!(render("P", None), "P");
@@ -193,29 +269,50 @@ mod tests {
         assert_eq!(render("P", Some("<<{{artefact}}>>")), "<<P>>");
     }
 
-    #[test]
-    fn checks_score_exact_regex_contains_and_command() {
+    #[tokio::test]
+    async fn checks_score_exact_regex_contains_and_command() {
         let c = case(None);
         assert_eq!(
-            score_check(&Check::Exact("2021-03-03".into()), " 2021-03-03\n", &c).unwrap(),
+            score_check(
+                &Check::Exact("2021-03-03".into()),
+                " 2021-03-03\n",
+                &c,
+                &NO_CTX
+            )
+            .await
+            .unwrap(),
             (1.0, String::new())
         );
-        let (s, r) = score_check(&Check::Exact("2021-03-03".into()), "03/03/2021", &c).unwrap();
+        let (s, r) = score_check(
+            &Check::Exact("2021-03-03".into()),
+            "03/03/2021",
+            &c,
+            &NO_CTX,
+        )
+        .await
+        .unwrap();
         assert_eq!(s, 0.0);
         assert!(r.contains("expected") && r.contains("03/03/2021"));
         assert_eq!(
             score_check(
                 &Check::Regex(r"^\d{4}-\d{2}-\d{2}$".into()),
                 "2021-03-03",
-                &c
+                &c,
+                &NO_CTX
             )
+            .await
             .unwrap()
             .0,
             1.0
         );
-        assert!(score_check(&Check::Regex("(".into()), "x", &c).is_err());
+        assert!(
+            score_check(&Check::Regex("(".into()), "x", &c, &NO_CTX)
+                .await
+                .is_err()
+        );
         assert_eq!(
-            score_check(&Check::Contains("03".into()), "2021-03-03", &c)
+            score_check(&Check::Contains("03".into()), "2021-03-03", &c, &NO_CTX)
+                .await
                 .unwrap()
                 .0,
             1.0
@@ -224,17 +321,81 @@ mod tests {
             &Check::Command("read a; if [ \"$a\" = \"$CASE_IDEAL\" ]; then echo 'METRIC score=1'; else echo \"got $a\"; echo 'METRIC score=0.25'; fi".into()),
             "2021-03-03",
             &c,
+            &NO_CTX,
         )
+        .await
         .unwrap();
         assert_eq!((s, r), (1.0, String::new()));
         let (s, r) = score_check(
             &Check::Command("read a; echo \"got $a\"; echo 'METRIC score=0.25'".into()),
             "nope",
             &c,
+            &NO_CTX,
         )
+        .await
         .unwrap();
         assert_eq!((s, r.as_str()), (0.25, "got nope"));
-        assert!(score_check(&Check::Command("true".into()), "x", &c).is_err());
+        assert!(
+            score_check(&Check::Command("true".into()), "x", &c, &NO_CTX)
+                .await
+                .is_err()
+        );
+    }
+
+    /// R-W2-3: a `command` check runs in the context's cwd (a relative `./score.sh` resolves
+    /// there, not in the daemon's cwd), sees the context's env, and is killed at the timeout
+    /// instead of blocking a worker.
+    #[tokio::test]
+    async fn command_checks_run_in_the_custody_dir_with_env_and_a_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("score.sh"),
+            "#!/bin/bash\nread a\n[ \"$PWD\" = \"$AUTORESEARCH_EVALUATOR\" ] || { echo wrong-cwd; echo 'METRIC score=0'; exit 0; }\nif [ \"$a\" = \"$CASE_IDEAL\" ]; then echo 'METRIC score=1'; else echo \"got $a\"; echo 'METRIC score=0'; fi\n",
+        )
+        .unwrap();
+        let c = case(Some(Check::Command("bash ./score.sh".into())));
+        // Without a cwd the relative script is not found: an error, not a silent zero.
+        let e = score_check(c.check.as_ref().unwrap(), "2021-03-03", &c, &NO_CTX)
+            .await
+            .unwrap_err();
+        assert!(e.contains("no `METRIC score=` line"), "{e}");
+        let ctx = CheckCtx {
+            cwd: Some(dir.path().to_path_buf()),
+            timeout: Duration::from_secs(10),
+            env: vec![(
+                "AUTORESEARCH_EVALUATOR".into(),
+                dir.path().canonicalize().unwrap().display().to_string(),
+            )],
+        };
+        // `$PWD` is the canonical path on macOS (`/private/var/…`), hence the canonicalised env.
+        let (s, r) = score_check(c.check.as_ref().unwrap(), "2021-03-03", &c, &ctx)
+            .await
+            .unwrap();
+        assert_eq!((s, r.as_str()), (1.0, ""));
+        let s = run_case_in(&Echo("2021-03-03"), None, "P", None, &c, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.score, 0.0,
+            "the echo answer is not the bare date: {}",
+            s.reason
+        );
+        // A hung checker is killed at the timeout.
+        let slow = CheckCtx {
+            timeout: Duration::from_millis(200),
+            ..ctx
+        };
+        let started = std::time::Instant::now();
+        let e = score_check(
+            &Check::Command("sleep 5; echo 'METRIC score=1'".into()),
+            "x",
+            &c,
+            &slow,
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("timed out"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[tokio::test]
