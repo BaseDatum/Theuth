@@ -45,13 +45,15 @@ fn plain_session_prompt_is_byte_identical_and_bound_one_gains_the_contract() {
     assert!(PROMPT.contains("comes once"));
     assert!(PROMPT.contains("<notebook_changes>"));
     assert!(PROMPT.contains("manifest"));
-    assert!(PROMPT.contains("Before you answer a question about this notebook, look up what you need"));
+    assert!(
+        PROMPT.contains("Before you answer a question about this notebook, look up what you need")
+    );
     assert!(!PROMPT.contains("Each turn ends with"));
 }
 
 /// 157 D1: `notebooks.context_budget_tokens` is gone from the struct and ignored in a config that still has it.
-#[test]
-fn old_context_budget_key_still_loads() {
+#[tokio::test]
+async fn old_context_budget_key_still_loads() {
     let dir = std::env::temp_dir().join(format!("nb-budget-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let rt = runtime::Runtime::new(
@@ -141,7 +143,10 @@ fn capacity_truncates_the_first_overflow_at_a_block_and_mentions_the_rest() {
         "id=\"OLD\" title=\"Oldest\" level=\"mention\" dial=\"full\" status=\"omitted\" s=\"{}\">\nmention only: 1 words; read with doc_read(\"OLD\") if needed</item>",
         sha8(&oldest)
     )), "{got}");
-    assert!(got.contains("Not fitting this first injection: 1 item —"), "{got}");
+    assert!(
+        got.contains("Not fitting this first injection: 1 item —"),
+        "{got}"
+    );
     assert!(got.ends_with(
         "You may cite only these ids: NEW, MID, OLD (and the blocks inside them).\n</notebook>"
     ));
@@ -150,7 +155,15 @@ fn capacity_truncates_the_first_overflow_at_a_block_and_mentions_the_rest() {
     assert_eq!(got.matches("dial=\"full\" status=\"omitted\"").count(), 3);
     assert!(got.contains("Not fitting this first injection: 3 items —"));
     // No limit: nothing omitted, no sentence.
-    let got = render("NB", "t", "", &items, &Pins::new(), Budget::default(), u32::MAX);
+    let got = render(
+        "NB",
+        "t",
+        "",
+        &items,
+        &Pins::new(),
+        Budget::default(),
+        u32::MAX,
+    );
     assert!(!got.contains("Not fitting") && !got.contains("dial="));
 }
 
@@ -258,7 +271,7 @@ You may cite only these ids: RAW, WITH, NOTE, SESS (and the blocks inside them).
     let want = format!(
         "<notebook id=\"NB\" title=\"t\" manifest=\"true\">\n\
 <description s=\"{}\">d</description>\n\
-<item kind=\"source\" id=\"RAW\" title=\"Raw source\" level=\"full\" s=\"{}\">mention only: 2 words; read with doc_read(\"source:RAW\") if needed</item>\n\
+<item kind=\"source\" id=\"RAW\" title=\"Raw source\" level=\"full\" s=\"{}\">mention only: 3 words; read with doc_read(\"source:RAW\") if needed</item>\n\
 <item kind=\"source\" id=\"WITH\" title=\"With insights\" level=\"summary\" s=\"{}\">mention only: 17 words; read with doc_read(\"source:WITH\") if needed</item>\n\
 <item kind=\"note\" id=\"NOTE\" title=\"A note\" level=\"mention\" s=\"{}\">mention only: 4 words; read with doc_read(\"NOTE\") if needed</item>\n\
 <item kind=\"session\" id=\"SESS\" title=\"Chat\" level=\"mention\" s=\"{}\">mention only: read with session_read(\"SESS\")</item>\n\

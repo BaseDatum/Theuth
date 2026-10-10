@@ -471,9 +471,12 @@ pub async fn turn_message(
     history: &[(i64, genai::chat::ChatMessage)],
 ) -> Option<String> {
     use crate::notebook_context::{Baseline, next_message};
-    let base = Baseline::of(history.iter().filter_map(|(_, m)| {
-        (m.role == genai::chat::ChatRole::User).then(|| crate::loop_::text_of(&m.content))
-    }));
+    let base = Baseline::of(
+        history
+            .iter()
+            .filter(|(_, m)| m.role == genai::chat::ChatRole::User)
+            .map(|(_, m)| crate::loop_::text_of(&m.content)),
+    );
     let pins = match store.context_get(session).await {
         Ok(rows) => crate::notebook_context::pins_of(rows),
         Err(e) => {
@@ -710,7 +713,10 @@ pub fn manifest(
     budget: Budget,
 ) -> String {
     use crate::notebook_context::{Level, mention_line, plan};
-    let mut out = format!("<notebook id=\"{id}\" title=\"{}\" manifest=\"true\">\n", attr(title));
+    let mut out = format!(
+        "<notebook id=\"{id}\" title=\"{}\" manifest=\"true\">\n",
+        attr(title)
+    );
     out.push_str(&description_block(id, description, budget));
     let placed = plan(items, pins, u32::MAX);
     let mut ids: Vec<&str> = Vec::new();
@@ -754,7 +760,8 @@ fn description_block(id: &str, description: &str, budget: Budget) -> String {
 
 fn allow_list(ids: &[&str]) -> String {
     if ids.is_empty() {
-        "nothing in context — the agent sees only the description; there are no ids to cite.\n".to_owned()
+        "nothing in context — the agent sees only the description; there are no ids to cite.\n"
+            .to_owned()
     } else {
         format!(
             "You may cite only these ids: {} (and the blocks inside them).\n",

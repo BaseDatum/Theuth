@@ -90,7 +90,9 @@ impl ErasedTool for NbTool {
                         .map(|(_, _, t, _)| t.clone())
                         .unwrap_or_default();
                     ToolOutput {
-                        structured: Some(json!({"doc": {"title": title}, "words": 7, "origin": {"kind": "file"}, "status": "completed"})),
+                        structured: Some(
+                            json!({"doc": {"title": title}, "words": 7, "origin": {"kind": "file"}, "status": "completed"}),
+                        ),
                         ..ToolOutput::ok("")
                     }
                 }
@@ -166,13 +168,19 @@ fn block_once_then_notices_then_manifest_after_compaction() {
         assert!(block.starts_with(&format!("<notebook id=\"{NB}\" title=\"DR verification\">")));
         assert!(block.contains(SECRET), "turn 1 carries the content");
         assert!(block.contains("id=\"S1\" title=\"Runbook v7\" origin=\"file\" level=\"full\" status=\"available\" s=\""));
-        assert!(block.contains("id=\"N1\" title=\"Drill timeline\" level=\"full\" status=\"available\" s=\""));
+        assert!(block.contains(
+            "id=\"N1\" title=\"Drill timeline\" level=\"full\" status=\"available\" s=\""
+        ));
         assert!(!block.contains("manifest=\"true\""));
         println!("--- 157 example: first block ---\n{block}\n");
 
         // Turn 2, nothing changed: no `<notebook` row at all (a restart: the turn is rebuilt from the store).
         turn(&mut h, "and then?").await;
-        assert_eq!(notebook_rows(&h).await.len(), 1, "unchanged notebook adds nothing");
+        assert_eq!(
+            notebook_rows(&h).await.len(),
+            1,
+            "unchanged notebook adds nothing"
+        );
 
         // A source refresh (renamed too) and a note edit before turn 3: exactly one notice, the ids and read
         // calls on it, none of the content.
@@ -180,7 +188,9 @@ fn block_once_then_notices_then_manifest_after_compaction() {
             let mut n = nb.lock();
             n.items[0].2 = "Runbook v8".into();
             n.items[0].3 = format!("{} Step two. NEW-STEP-TEXT", n.items[0].3);
-            n.items[1].3.push_str("\n\n<!-- c -->\nT+5 DNS flipped EDITED-NOTE");
+            n.items[1]
+                .3
+                .push_str("\n\n<!-- c -->\nT+5 DNS flipped EDITED-NOTE");
         }
         turn(&mut h, "what changed?").await;
         let rows = notebook_rows(&h).await;
@@ -188,12 +198,29 @@ fn block_once_then_notices_then_manifest_after_compaction() {
         let notice = &rows[1];
         assert!(notice.starts_with(&format!("<notebook_changes notebook=\"{NB}\">\n")));
         assert_eq!(notice.matches("<change ").count(), 2, "{notice}");
-        assert!(notice.contains("<change kind=\"source\" id=\"S1\" title=\"Runbook v8\" level=\"full\" s=\""));
+        assert!(notice.contains(
+            "<change kind=\"source\" id=\"S1\" title=\"Runbook v8\" level=\"full\" s=\""
+        ));
         assert!(notice.contains("renamed from \"Runbook v7\"; content changed (text or insights); read it with doc_read(\"source:S1\") when it matters (cite theuth://sources/S1)"), "{notice}");
-        assert!(notice.contains("<change kind=\"note\" id=\"N1\" title=\"Drill timeline\" level=\"full\" s=\""));
-        assert!(notice.contains("edited; read it with doc_read(\"N1\")"), "{notice}");
-        for leak in [SECRET, "NEW-STEP-TEXT", "EDITED-NOTE", "Step one", "T+0", "T+5"] {
-            assert!(!notice.contains(leak), "the notice leaks {leak:?}: {notice}");
+        assert!(notice.contains(
+            "<change kind=\"note\" id=\"N1\" title=\"Drill timeline\" level=\"full\" s=\""
+        ));
+        assert!(
+            notice.contains("edited; read it with doc_read(\"N1\")"),
+            "{notice}"
+        );
+        for leak in [
+            SECRET,
+            "NEW-STEP-TEXT",
+            "EDITED-NOTE",
+            "Step one",
+            "T+0",
+            "T+5",
+        ] {
+            assert!(
+                !notice.contains(leak),
+                "the notice leaks {leak:?}: {notice}"
+            );
         }
         println!("--- 157 example: change notice ---\n{notice}\n");
 
@@ -218,8 +245,18 @@ fn block_once_then_notices_then_manifest_after_compaction() {
         turn(&mut h, "bring it back as a summary").await;
         let rows = notebook_rows(&h).await;
         assert_eq!(rows.len(), 4, "{rows:#?}");
-        assert!(rows[3].contains("<change kind=\"source\" id=\"S1\" title=\"Runbook v8\" level=\"summary\" s=\""), "{}", rows[3]);
-        assert!(rows[3].contains(">in context now at summary; read it with doc_read(\"source:S1\")"), "{}", rows[3]);
+        assert!(
+            rows[3].contains(
+                "<change kind=\"source\" id=\"S1\" title=\"Runbook v8\" level=\"summary\" s=\""
+            ),
+            "{}",
+            rows[3]
+        );
+        assert!(
+            rows[3].contains(">in context now at summary; read it with doc_read(\"source:S1\")"),
+            "{}",
+            rows[3]
+        );
         assert!(!rows[3].contains(SECRET));
 
         // A compaction (`/clear`-style fold so the whole epoch, block included, is folded): the next
@@ -236,12 +273,21 @@ fn block_once_then_notices_then_manifest_after_compaction() {
         let rows = notebook_rows(&h).await;
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let manifest = &rows[0];
-        assert!(manifest.starts_with(&format!("<notebook id=\"{NB}\" title=\"DR verification\" manifest=\"true\">")));
-        assert!(manifest.contains("<item kind=\"source\" id=\"S1\" title=\"Runbook v8\" level=\"summary\" s=\""));
-        assert!(manifest.contains("<item kind=\"note\" id=\"N1\" title=\"Drill timeline\" level=\"full\" s=\""));
+        assert!(manifest.starts_with(&format!(
+            "<notebook id=\"{NB}\" title=\"DR verification\" manifest=\"true\">"
+        )));
+        assert!(manifest.contains(
+            "<item kind=\"source\" id=\"S1\" title=\"Runbook v8\" level=\"summary\" s=\""
+        ));
+        assert!(manifest.contains(
+            "<item kind=\"note\" id=\"N1\" title=\"Drill timeline\" level=\"full\" s=\""
+        ));
         assert!(manifest.contains("The contents of these items were in context earlier in this chat; read what you need with doc_read / nb_search."));
         for leak in [SECRET, "NEW-STEP-TEXT", "EDITED-NOTE", "Step one", "T+0"] {
-            assert!(!manifest.contains(leak), "the manifest leaks {leak:?}: {manifest}");
+            assert!(
+                !manifest.contains(leak),
+                "the manifest leaks {leak:?}: {manifest}"
+            );
         }
         println!("--- 157 example: post-compaction manifest ---\n{manifest}\n");
 
@@ -252,8 +298,14 @@ fn block_once_then_notices_then_manifest_after_compaction() {
         turn(&mut h, "description?").await;
         let rows = notebook_rows(&h).await;
         assert_eq!(rows.len(), 2, "{rows:#?}");
-        assert!(rows[1].contains(&format!("<change kind=\"notebook\" id=\"{NB}\" s=\"")), "{}", rows[1]);
-        assert!(rows[1].contains(&format!("description changed; read it with doc_read(\"notebook:{NB}\")")));
+        assert!(
+            rows[1].contains(&format!("<change kind=\"notebook\" id=\"{NB}\" s=\"")),
+            "{}",
+            rows[1]
+        );
+        assert!(rows[1].contains(&format!(
+            "description changed; read it with doc_read(\"notebook:{NB}\")"
+        )));
         assert!(!rows[1].contains("failback"));
         // The frame as the model sees it holds exactly: head, then one manifest, one notice.
         let (epoch, head, _) = h.store.frame(h.id).await.unwrap();
@@ -325,7 +377,11 @@ fn endless_session_does_not_reinject_when_it_folds() {
         // holds the block, so nothing is injected again.
         send(&mut h, &actor, "again").await;
         send(&mut h, &actor, "and again").await;
-        assert_eq!(notebook_rows(&h).await.len(), 1, "no re-injection across endless turns");
+        assert_eq!(
+            notebook_rows(&h).await.len(),
+            1,
+            "no re-injection across endless turns"
+        );
         nb.lock().items[1].3.push_str("\n\n<!-- c -->\nmore");
         send(&mut h, &actor, "note?").await;
         let rows = notebook_rows(&h).await;

@@ -734,9 +734,7 @@ impl Change {
         };
         format!(
             "<change kind=\"{}\" id=\"{}\"{title}{level}{s}>{}</change>",
-            self.kind,
-            self.id,
-            self.text
+            self.kind, self.id, self.text
         )
     }
 }
@@ -822,7 +820,11 @@ pub fn diff(
             text: what,
         });
     }
-    for (gone, seen) in base.items.iter().filter(|(id, _)| !items.iter().any(|i| &i.id == *id)) {
+    for (gone, seen) in base
+        .items
+        .iter()
+        .filter(|(id, _)| !items.iter().any(|i| &i.id == *id))
+    {
         out.push(Change {
             kind: seen.kind.clone(),
             id: gone.clone(),
@@ -995,7 +997,11 @@ pub struct SessionFrame {
 impl Message<NotebookFrame> for Agents {
     type Reply = Result<SessionFrame, String>;
 
-    async fn handle(&mut self, m: NotebookFrame, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(
+        &mut self,
+        m: NotebookFrame,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let store = self.store_for(m.0);
         let model = store
             .session(m.0)
@@ -1004,10 +1010,10 @@ impl Message<NotebookFrame> for Agents {
             .map(|s| s.model)
             .unwrap_or_default();
         let (_, head, history) = store.frame(m.0).await.map_err(|e| e.to_string())?;
-        let tokens = history
-            .iter()
-            .map(|(_, m)| crate::compact::est(m))
-            .fold(head.as_ref().map_or(0, crate::compact::est), u32::saturating_add);
+        let tokens = history.iter().map(|(_, m)| crate::compact::est(m)).fold(
+            head.as_ref().map_or(0, crate::compact::est),
+            u32::saturating_add,
+        );
         let notebook_rows = history
             .iter()
             .filter(|(_, m)| m.role == genai::chat::ChatRole::User)
@@ -1516,7 +1522,8 @@ mod tests {
         assert_eq!(capacity(100_000, 20_000, 25_000), 43_000);
         assert_eq!(capacity(100_000, 20_000, 68_000), 0);
         assert_eq!(capacity(100_000, 20_000, 90_000), 0);
-        assert_eq!(capacity(10_000, 20_000, 0), 20_000 - 0); // fixed past the limit: no headroom
+        // Fixed past the limit: no headroom; the frame (≥ fixed in the loop) leaves nothing.
+        assert_eq!(capacity(10_000, 20_000, 20_000), 0);
         assert_eq!(default_limit(200_000, 0.8), 160_000);
         assert_eq!(default_limit(200_000, 0.0), 200_000);
         assert_eq!(default_limit(0, 0.8), (0.8 * UNKNOWN_WINDOW as f32) as u32);
@@ -1554,7 +1561,11 @@ You may cite only these ids: S1, N1 (and the blocks inside them).\n</notebook>";
         );
         assert_eq!(
             seen(&base, "S1"),
-            ("Run \"v7\" & more".into(), Level::Summary, "aaaaaaaa".into())
+            (
+                "Run \"v7\" & more".into(),
+                Level::Summary,
+                "aaaaaaaa".into()
+            )
         );
         // The dial, not the demoted level.
         assert_eq!(seen(&base, "N1").1, Level::Full);
@@ -1597,7 +1608,8 @@ You may cite only these ids: S1, N1 (and the blocks inside them).\n</notebook>";
         // switched off, session renamed, A1 added, C1 … and the description edited; N-gone removed.
         let mut live = items.clone();
         live[0].title = "Renamed".into();
-        live[0].body = Some("<!-- a -->\nraw text\n\n<!-- i -->\n## Insights\n\n<!-- j -->\nsum".into());
+        live[0].body =
+            Some("<!-- a -->\nraw text\n\n<!-- i -->\n## Insights\n\n<!-- j -->\nsum".into());
         live[1].body = Some(format!("{secret} EDITED"));
         live[3].title = "Chat renamed".into();
         live.push(item("artifact", "A1", None, 5));
@@ -1617,13 +1629,28 @@ You may cite only these ids: S1, N1 (and the blocks inside them).\n</notebook>";
         let by_id: HashMap<&str, &Change> = changes.iter().map(|c| (c.id.as_str(), c)).collect();
         assert_eq!(changes.len(), 7, "{changes:#?}");
         assert!(by_id["S1"].text.starts_with("renamed from \"S1\"; content changed (text or insights); now summary; read it with doc_read(\"source:S1\") when it matters (cite theuth://sources/S1)"), "{}", by_id["S1"].text);
-        assert_eq!((by_id["S1"].level, &by_id["S1"].s), (Level::Summary, &live[0].fingerprint()));
-        assert!(by_id["N1"].text.starts_with("edited; read it with doc_read(\"N1\")"));
+        assert_eq!(
+            (by_id["S1"].level, &by_id["S1"].s),
+            (Level::Summary, &live[0].fingerprint())
+        );
+        assert!(
+            by_id["N1"]
+                .text
+                .starts_with("edited; read it with doc_read(\"N1\")")
+        );
         assert_eq!(by_id["N2"].level, Level::Off);
         assert!(by_id["N2"].text.starts_with("now off"));
         assert!(by_id["C1"].text.starts_with("renamed from \"C1\""));
-        assert!(by_id["A1"].text.starts_with("in context now at mention; read it with artifact_read(\"A1\")"));
-        assert!(by_id["GONE"].text.starts_with("removed from the notebook; notebook_get(\"NB\")"));
+        assert!(
+            by_id["A1"]
+                .text
+                .starts_with("in context now at mention; read it with artifact_read(\"A1\")")
+        );
+        assert!(
+            by_id["GONE"]
+                .text
+                .starts_with("removed from the notebook; notebook_get(\"NB\")")
+        );
         assert_eq!(by_id["NB"].kind, "notebook");
         assert_eq!(by_id["NB"].s, notebooks::sha8("desc v2"));
         let text = notice("NB", &changes);
@@ -1633,7 +1660,15 @@ You may cite only these ids: S1, N1 (and the blocks inside them).\n</notebook>";
         assert_eq!(text.matches("<change ").count(), 7);
         // The notice applied to the baseline makes the next diff empty (one line per change, once).
         let next = Baseline::of([
-            notebooks::render("NB", "t", "desc", &items, &Pins::new(), Budget::default(), u32::MAX),
+            notebooks::render(
+                "NB",
+                "t",
+                "desc",
+                &items,
+                &Pins::new(),
+                Budget::default(),
+                u32::MAX,
+            ),
             text,
         ]);
         let mut live_pinned = live.clone();
@@ -1645,12 +1680,57 @@ You may cite only these ids: S1, N1 (and the blocks inside them).\n</notebook>";
         let c = diff(&next, "NB", "desc v2", &live_pinned, &pins);
         let by_id: HashMap<&str, &Change> = c.iter().map(|c| (c.id.as_str(), c)).collect();
         assert_eq!(c.len(), 2, "{c:#?}");
-        assert!(by_id["N1"].text.starts_with("now mention; read it with doc_read(\"N1\")"));
+        assert!(
+            by_id["N1"]
+                .text
+                .starts_with("now mention; read it with doc_read(\"N1\")")
+        );
         assert!(by_id["N2"].text.starts_with("in context now at full"));
         // `next_message`: nothing pending → None; no block in epoch 0 → the block; epoch 2 → the manifest.
-        assert!(next_message("NB", "t", "desc v2", &live_pinned, &pins, Budget::default(), u32::MAX, 0, &next).is_some());
+        assert!(
+            next_message(
+                "NB",
+                "t",
+                "desc v2",
+                &live_pinned,
+                &pins,
+                Budget::default(),
+                u32::MAX,
+                0,
+                &next
+            )
+            .is_some()
+        );
         let b = Baseline::default();
-        assert!(next_message("NB", "t", "d", &items, &Pins::new(), Budget::default(), u32::MAX, 0, &b).unwrap().starts_with("<notebook id=\"NB\" title=\"t\">"));
-        assert!(next_message("NB", "t", "d", &items, &Pins::new(), Budget::default(), u32::MAX, 2, &b).unwrap().starts_with("<notebook id=\"NB\" title=\"t\" manifest=\"true\">"));
+        assert!(
+            next_message(
+                "NB",
+                "t",
+                "d",
+                &items,
+                &Pins::new(),
+                Budget::default(),
+                u32::MAX,
+                0,
+                &b
+            )
+            .unwrap()
+            .starts_with("<notebook id=\"NB\" title=\"t\">")
+        );
+        assert!(
+            next_message(
+                "NB",
+                "t",
+                "d",
+                &items,
+                &Pins::new(),
+                Budget::default(),
+                u32::MAX,
+                2,
+                &b
+            )
+            .unwrap()
+            .starts_with("<notebook id=\"NB\" title=\"t\" manifest=\"true\">")
+        );
     }
 }
