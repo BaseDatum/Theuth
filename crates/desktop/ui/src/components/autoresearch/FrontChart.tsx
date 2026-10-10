@@ -2,7 +2,6 @@ import { useId, useState } from 'react'
 import type { KindView } from '@/rpc/bindings/KindView'
 
 type FrontView = Extract<KindView, { kind: 'front' }>
-type Point = FrontView['points'][number]
 
 const W = 720
 const H = 300
@@ -17,7 +16,11 @@ export function FrontChart({ view, onPick }: { view: FrontView; onPick?: (n: num
   const [xName, yName] = view.axes
   const id = useId()
   const [hover, setHover] = useState<{ x: number; y: number; text: string } | null>(null)
-  const pts = view.points.filter((p) => xName in p.scores && yName in p.scores)
+  const pts = view.points.flatMap((p) => {
+    const x = p.scores[xName]
+    const y = p.scores[yName]
+    return x === undefined || y === undefined ? [] : [{ n: p.n, member: p.member, x, y }]
+  })
   if (pts.length === 0) {
     return (
       <div className="rounded-md border border-dashed p-4 text-sm text-fg-tertiary" data-kind={view.kind}>
@@ -25,34 +28,31 @@ export function FrontChart({ view, onPick }: { view: FrontView; onPick?: (n: num
       </div>
     )
   }
-  const xs = pts.map((p) => p.scores[xName])
-  const ys = pts.map((p) => p.scores[yName])
+  const xs = pts.map((p) => p.x)
+  const ys = pts.map((p) => p.y)
   const sx = scale(Math.min(...xs), Math.max(...xs), PAD.left, W - PAD.right)
   const sy = scale(Math.min(...ys), Math.max(...ys), H - PAD.bottom, PAD.top)
   const members = view.members
-  const front = pts.filter((p) => members.includes(p.n)).sort((a, b) => a.scores[xName] - b.scores[xName])
+  const front = pts.filter((p) => members.includes(p.n)).sort((a, b) => a.x - b.x)
   // The staircase: the front members in x order; between two members the line runs along the
   // dominated corner (right, then down), so the area above/right of it is what the front beats.
   const stair = front
     .map((p, i) => {
-      const x = sx(p.scores[xName]).toFixed(1)
-      const y = sy(p.scores[yName]).toFixed(1)
+      const x = sx(p.x).toFixed(1)
+      const y = sy(p.y).toFixed(1)
       return i === 0 ? `M${x},${y}` : `H${x}V${y}`
     })
     .join(' ')
-  const label = (p: Point) => `#${p.n}${p.member ? ' · on the front' : ''} · ${xName} ${fmt(p.scores[xName])} · ${yName} ${fmt(p.scores[yName])}`
   return (
     <figure className="relative" data-kind={view.kind} data-members={members.length}>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} className="block max-w-full" role="img" aria-labelledby={`${id}-title`}>
-        <title id={`${id}-title`}>
-          {xName} against {yName}: {pts.length} experiments, {members.length} on the front
-        </title>
+        <title id={`${id}-title`}>{`${xName} against ${yName}: ${pts.length} experiments, ${members.length} on the front`}</title>
         <Axes xName={xName} yName={yName} xs={xs} ys={ys} sx={sx} sy={sy} />
         {front.length > 1 && <path d={stair} fill="none" stroke="var(--status-success-fg)" strokeWidth={1.8} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" data-stair />}
         {pts.map((p) => {
-          const x = sx(p.scores[xName])
-          const y = sy(p.scores[yName])
-          const text = label(p)
+          const x = sx(p.x)
+          const y = sy(p.y)
+          const text = `#${p.n}${p.member ? ' · on the front' : ''} · ${xName} ${fmt(p.x)} · ${yName} ${fmt(p.y)}`
           return (
             <circle
               key={p.n}

@@ -562,15 +562,15 @@ pub fn crowding(scores: &[Vec<f64>]) -> Vec<f64> {
     let n = scores.len();
     let mut dist = vec![0.0; n];
     let k = scores.first().map_or(0, Vec::len);
-    for j in 0..k {
+    for col in (0..k).map(|j| scores.iter().map(|s| s[j]).collect::<Vec<f64>>()) {
         let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by(|&a, &b| scores[a][j].total_cmp(&scores[b][j]));
-        let (lo, hi) = (scores[order[0]][j], scores[order[n - 1]][j]);
+        order.sort_by(|&a, &b| col[a].total_cmp(&col[b]));
+        let (lo, hi) = (col[order[0]], col[order[n - 1]]);
         dist[order[0]] = f64::INFINITY;
         dist[order[n - 1]] = f64::INFINITY;
         if hi > lo {
             for w in order.windows(3) {
-                dist[w[1]] += (scores[w[2]][j] - scores[w[0]][j]) / (hi - lo);
+                dist[w[1]] += (col[w[2]] - col[w[0]]) / (hi - lo);
             }
         }
     }
@@ -2085,7 +2085,7 @@ mod tests {
             [0, 1, 2, 3, 4, 5]
         );
         assert!(
-            points[0].member == false
+            !points[0].member
                 && points[1].member
                 && (points[2].scores["size_kb"] - 48.0).abs() < 1e-9
         );
