@@ -843,6 +843,55 @@ mod tests {
         assert!(got.iter().all(|s| !live_labels.contains(&s.label.as_str())));
     }
 
+    /// The RPC/tool path: a meeting on disk (manifest with event, `transcript.json`,
+    /// `embeddings.json`, an enrolled profile) → suggestions through [`suggest_for`].
+    #[tokio::test]
+    async fn fixture_on_disk_reaches_suggestions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(tmp.path()).await.unwrap();
+        let mut t = transcript(&[
+            (ME, 0, 2_000, "hi all"),
+            ("s1", 3_000, 6_000, "hello, this is Cy."),
+            ("s2", 7_000, 9_000, "hey"),
+        ]);
+        let mut m = crate::Manifest::new(
+            t.meeting,
+            crate::ProcessInfo {
+                pid: 1,
+                name: "zoom".into(),
+                bundle_id: None,
+                active: false,
+            },
+            "2026-10-10T10:00:00Z".into(),
+        );
+        m.state = crate::MeetingState::Review;
+        m.event = Some(event(&["Dana Whitfield", "Cy Young"]));
+        store.create(&m).await.unwrap();
+        t.meeting = m.id;
+        store.save_transcript(&t).await.unwrap();
+        std::fs::write(
+            store.meeting_dir(m.id).join(crate::transcript::EMBEDDINGS),
+            serde_json::to_vec(&HashMap::from([("s2".to_owned(), vec![1.0f32, 0.0])])).unwrap(),
+        )
+        .unwrap();
+        let mut p = Profiles::load(&store.speakers_dir()).unwrap();
+        let dana = p.create("Dana", None, &[1.0, 0.0]).unwrap();
+        let got = suggest_for(&store, m.id).unwrap();
+        assert_eq!(
+            names(&got),
+            [
+                ("s1", "Cy Young", SuggestionSource::Intro),
+                ("s2", "Dana", SuggestionSource::Voiceprint)
+            ]
+        );
+        assert_eq!(got[1].profile, Some(dana.id));
+        assert!(line(&got[1]).starts_with("s2 — Dana? (Voiceprint 1.00)"));
+        assert!(
+            suggest_for(&store, MeetingId::new()).is_err(),
+            "no such meeting"
+        );
+    }
+
     /// §10.5 gates: a 4 s span and a clipped span fail with the tooltip text; a clean 6 s span
     /// passes; windows that disagree fail.
     #[test]
@@ -858,9 +907,8 @@ mod tests {
             "4.0 s of speech: 5 s needed to enroll a voice"
         );
         let mut clipped = tone(6.0, 0.5);
-        for x in clipped.iter_mut().take(clipped.len() / 10) {
-            *x = 1.0;
-        }
+        let tenth = clipped.len() / 10;
+        clipped[..tenth].fill(1.0);
         assert!(
             gate_level(&clipped, rate)
                 .unwrap_err()
