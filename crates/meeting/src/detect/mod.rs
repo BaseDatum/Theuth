@@ -15,7 +15,7 @@ use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
-use crate::calendar::{EventId, EventMatch};
+use crate::calendar::{self, EventId, EventMatch};
 use crate::{MEETING_ACTOR, Meeting, MeetingEvent, MeetingId, ProcessInfo};
 
 /// `meeting.detect.*` (158 §6.1, §4.3). Nested in [`crate::MeetingConfig`]; every key defaults.
@@ -198,6 +198,24 @@ fn spawn_poll(me: ActorRef<Meeting>, poll_secs: u32) -> tokio::task::JoinHandle<
     })
 }
 
+/// `ask` → `bool`: `meeting_detection_set_event` (§8.2) re-matched the open prompt of `app_id`;
+/// the engine's copy follows so `meeting_detection` / `Status.detection` carry the pick.
+#[derive(Clone, Debug)]
+pub struct SetPromptEvent {
+    /// The prompted app.
+    pub app_id: String,
+    /// The re-match.
+    pub event: Option<EventMatch>,
+}
+
+impl Message<SetPromptEvent> for Meeting {
+    type Reply = bool;
+
+    async fn handle(&mut self, m: SetPromptEvent, _: &mut Context<Self, Self::Reply>) -> bool {
+        self.detect.engine.set_event(&m.app_id, m.event)
+    }
+}
+
 /// One sensor tick (`tell`): the processes holding an input stream right now.
 #[derive(Clone, Debug)]
 pub struct Holders(pub Vec<ProcessInfo>);
@@ -237,12 +255,18 @@ impl Meeting {
             || self.detect.talking
     }
 
-    /// Publish what the engine produced (§4.5).
-    pub(crate) async fn publish_detect(&self, out: Vec<rules::Output>) {
+    /// Publish what the engine produced (§4.5). The ONE calendar seam (§8): a new prompt is
+    /// matched against the event store here, a cleared prompt forgets the user's pick.
+    pub(crate) async fn publish_detect(&mut self, out: Vec<rules::Output>) {
         for o in out {
             let ev = match o {
-                rules::Output::Detected(d) => MeetingEvent::Detected(*d),
+                rules::Output::Detected(mut d) => {
+                    d.event = calendar::match_for(&self.store, chrono::Utc::now(), &d.app_id).await;
+                    self.detect.engine.set_event(&d.app_id, d.event.clone());
+                    MeetingEvent::Detected(*d)
+                }
                 rules::Output::Cleared { app_id, reason } => {
+                    calendar::matcher::clear_choice();
                     MeetingEvent::DetectionCleared { app_id, reason }
                 }
                 rules::Output::AppReleased {

@@ -16,7 +16,12 @@ Per-worker detail: `158-as-built-W1E.md`, `-W1M.md`, `-W1W.md`, `-W1U.md`; contr
 Close commits: `dca17626` (capture/system.rs de-dup), `d283a18e` (phase-1 gates), `af801b5c` (bindings, phase-2 gates, this file).
 Fold: `origin/main` 4b49e238 (W5 landed) merged at `77fc503f`, no conflicts (Cargo.lock took main's + mbx re-resolved `talk`);
 re-exported bindings (8 passed, 871 files); on the folded tree `mbx test -p meeting -p rpc` meeting 92 / rpc 56 passed,
-`tsc --noEmit` 0, wave vitest 9 files / 32 passed, `BUILD_SLOTS=1 mbx check --workspace --tests` exit 0. W2 still absent from main.
+`tsc --noEmit` 0, wave vitest 9 files / 32 passed, `BUILD_SLOTS=1 mbx check --workspace --tests` exit 0.
+Fold 2: `origin/main` 0fc7f295 (W2 landed) merged at `fe559038`; one conflict in `lib.rs` `StartMeeting` (W1's `session_model`
+default + W2's event seed, both kept). Seam wired (deviation 3). Bindings re-exported (8 passed, 871 files). Final tree:
+`mbx test -p meeting -p rpc` → meeting 92 + calendar 15 + rpc 56 passed, 0 failed; `clippy -p meeting` 0; `tsc` 0; vitest
+(banner, EventSwitcher, MeetingList, StartForm, Meetings, detection, model-offer, meeting-settings, api, store) 10 files / 33
+passed; `BUILD_SLOTS=1 mbx check --workspace --tests` exit 0 (pre-existing `block v0.1.6` note only).
 
 ## What landed
 
@@ -68,8 +73,12 @@ re-exported bindings (8 passed, 871 files); on the folded tree `mbx test -p meet
    local in both islands and the banner (orchestrator ruling 14:50). Islands still tolerate a re-send (ordering by `released_for_s`).
 2. `MeetingSettings` derives `kameo::Reply`; `rules::Output::Detected` is boxed; D13 also marks a `Recording`/`Paused` manifest with
    no audio file `Failed`; Not now cools the `also` apps too; `ended()` cools the recorded app.
-3. `EventSwitcher` still rendered through W1U's cast in `DetectionBanner.tsx` (W2's props have not landed); the calendar seam is the
-   single `matcher::best(..)` call in `detect/rules.rs` (comment marks `match_for` + `clear_choice()` for whichever lands second).
+3. Calendar seam wired at fold 2 (W2 on main): `Engine` stays pure (`Detection.event: None` in `rules.rs`, `Engine::set_event`);
+   the ONE seam is `Meeting::publish_detect` in `detect/mod.rs` — `calendar::match_for(&store, now, &app_id)` on every new
+   `Detected`, `matcher::clear_choice()` on every `Cleared` (covers dismiss, starting and the Released arm). `match_for` is
+   async and needs the store, so it could not live inside `tick`. W2's `rpc_detection_set_event` now also tells the actor
+   (`detect::SetPromptEvent`) so the engine's held prompt — `meeting_detection` / `Status.detection` — carries the pick.
+   `DetectionBanner.tsx` renders `<EventSwitcher detection={d} />` directly (cast gone); its test stubs the switcher (own suite).
 4. Windows "Never for" is a third button, not a ⋮ menu (WinUI `MenuFlyout` in a tool window fail-fasts; W1W).
 5. Default project in Settings is a `Select`, not a combobox; `DEFAULT_LIVE_TOOLS` duplicated in the UI (W1U).
 6. `DEFAULT_IGNORE` Linux entries `theuth-desktop`, `OBS Studio` and Windows `Cap.exe` / `Wispr Flow*.exe` are documented
@@ -80,6 +89,5 @@ re-exported bindings (8 passed, 871 files); on the folded tree `mbx test -p meet
 - Banner screenshot against a real engine with a prompt (needs a quiet machine; recipe in the briefs). A `?sim=` fixture for the
   banner would make this engine-free — not added (not requested).
 - Linux sensor compiled nowhere yet (behind `cfg(target_os = "linux")`).
-- W2 lands second: switch the seam, drop the `EventSwitcher` cast, re-run meeting tests + tsc + banner vitest (one-line each).
 - W1M: re-run `--probe-island clicks` with nothing of Sky's frontmost (7 keyboard steps were withheld, not failed).
 - A companion connecting mid-release gets no `AppReleased` (`Status` carries no release state; shape frozen).

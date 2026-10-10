@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use super::{Cleared, Detection};
-use crate::calendar::matcher;
+use crate::calendar::EventMatch;
 use crate::{MeetingId, ProcessInfo};
 
 /// Continuous hold before a prompt (§4.4 rule 2).
@@ -111,6 +111,17 @@ impl Engine {
         self.prompt.as_ref().map(|(d, _)| d)
     }
 
+    /// The calendar match for the open prompt of `app_id` (§8); `false` when no such prompt.
+    pub fn set_event(&mut self, app_id: &str, event: Option<EventMatch>) -> bool {
+        match self.prompt.as_mut() {
+            Some((d, _)) if d.app_id == app_id => {
+                d.event = event;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn ignored(&self, app_id: &str) -> bool {
         self.ignore.iter().any(|i| i.eq_ignore_ascii_case(app_id))
     }
@@ -206,9 +217,9 @@ impl Engine {
                         .filter(|(p, _)| p != id)
                         .map(|(_, app)| (*app).clone())
                         .collect(),
-                    // The ONE calendar seam (W2 lands second → `calendar::match_for(&store, now,
-                    // id)` here and `matcher::clear_choice()` where the prompt clears).
-                    event: matcher::best(chrono::Utc::now(), id, &[]),
+                    // Filled by the actor (`detect/mod.rs`): `calendar::match_for` needs the
+                    // store and an `await`; the engine stays pure.
+                    event: None,
                     project: None,
                     brief: None,
                 };

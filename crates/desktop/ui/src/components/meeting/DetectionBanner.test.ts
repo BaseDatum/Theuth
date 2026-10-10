@@ -14,6 +14,8 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@/lib/platform', async (original) => ({ ...(await original<typeof Platform>()), isDesktop: () => true }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
 vi.mock('@/components/sidebar/ProjectStyle', () => ({ ProjectIcon: () => null }))
+// The switcher has its own suite (EventSwitcher.test.ts); here it is a marker.
+vi.mock('@/components/meeting/EventSwitcher', () => ({ EventSwitcher: () => createElement('span', { 'data-switcher': '' }) }))
 
 // Static markup drops handlers, so the buttons and menu items register theirs by label; a test "clicks" by name.
 const handlers: Record<string, (() => void) | undefined> = {}

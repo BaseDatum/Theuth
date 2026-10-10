@@ -24,9 +24,6 @@ import { on } from '@/store/sessions'
 
 export const DETECTION_KEY = ['meeting-detection'] as const
 
-/** The W2U stub takes no props yet; it gets the prompt it is switching the event of (hand-off, see the as-built). */
-const Switcher = EventSwitcher as unknown as (p: { detection: Detection }) => ReactNode
-
 export function DetectionBanner() {
   const api = useApi()
   const navigate = useNavigate()
@@ -74,7 +71,7 @@ export function DetectionBanner() {
               {d.project}
             </Badge>
           )}
-          <Switcher detection={d} />
+          <EventSwitcher detection={d} />
         </div>
       )}
       <div className="flex items-center gap-2">
