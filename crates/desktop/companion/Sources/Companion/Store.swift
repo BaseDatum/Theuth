@@ -119,6 +119,7 @@ final class Store: ObservableObject {
         meetingObserve(data) // 149 W3: MeetingEvent.decode(data) → MeetingReducer.reduce(meeting, …)
         speech.observe(data) // 149s: SpeechStarted / SpeechAudio / SpeechFinished for the shared speaker's utterance
         pointObserve(data) // 149 W2: the voice key's dictation and the desk's reply
+        calendarObserve(data) // 158 W2: the `EventKit` bus item → EventKitSource
     }
 
     /// Debounced 250 ms (130 §5.2); never on a timer.

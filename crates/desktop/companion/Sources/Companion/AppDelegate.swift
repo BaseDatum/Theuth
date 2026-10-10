@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return nil
             }
         })
+        EventKitSource.install(store: store) // 158 W2: the macOS calendar source (Calendar/EventKitSource.swift); needs the client
 
         if let seconds = Flags.probe { runProbe(seconds) }
         installAskBar(attention: panel) // W3: panel, key-down half of the hotkey, --ask / --ask-probe
