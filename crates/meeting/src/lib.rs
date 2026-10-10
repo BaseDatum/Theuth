@@ -2156,12 +2156,14 @@ impl Message<StartMeeting> for Meeting {
                 }
                 Some(p.clone())
             }
-            None => calendar::prebrief::lookup(&self.store, self.cfg.project.as_deref(), event, title)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!("meeting: start: project memory: {e:#}");
-                    None
-                }),
+            None => {
+                calendar::prebrief::lookup(&self.store, self.cfg.project.as_deref(), event, title)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("meeting: start: project memory: {e:#}");
+                        None
+                    })
+            }
         };
         // 137 R1-D6: the mode is the start option, else the configured default; without
         // the agent bridge installed the meeting runs as before and says so once.
@@ -4381,7 +4383,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(got.project.as_deref(), Some("theuth"));
-        assert_eq!(b.store.manifest(m.id).unwrap().project.as_deref(), Some("theuth"));
+        assert_eq!(
+            b.store.manifest(m.id).unwrap().project.as_deref(),
+            Some("theuth")
+        );
         let rows = b.store.list_in(10, Some("theuth")).await.unwrap();
         assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), [m.id]);
         assert_eq!(rows[0].project.as_deref(), Some("theuth"));
@@ -4418,7 +4423,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cleared.project, None);
-        assert!(b.store.list_in(10, Some("theuth")).await.unwrap().is_empty());
+        assert!(
+            b.store
+                .list_in(10, Some("theuth"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             calendar::prebrief::remembered(&b.store, None, Some("Weekly sync"))
                 .await

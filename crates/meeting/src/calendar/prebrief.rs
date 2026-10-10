@@ -148,7 +148,7 @@ pub(crate) fn clean_project(p: Option<String>) -> Option<String> {
 pub(crate) struct PrebriefCtx;
 
 /// Reply to [`PrebriefCtx`].
-#[derive(Clone)]
+#[derive(Clone, kameo::Reply)]
 pub(crate) struct Ctx {
     pub store: Arc<Store>,
     pub cache: Option<Arc<Cache>>,
@@ -446,7 +446,10 @@ fn bullets(reply: &str) -> Vec<String> {
                 .or_else(|| t.strip_prefix("• "))
                 .or_else(|| {
                     let n = t.find(". ")?;
-                    t[..n].chars().all(|c| c.is_ascii_digit()).then(|| &t[n + 2..])
+                    t[..n]
+                        .chars()
+                        .all(|c| c.is_ascii_digit())
+                        .then(|| &t[n + 2..])
                 })?;
             let body = body.trim();
             (!body.is_empty()).then(|| body.to_owned())
@@ -753,15 +756,15 @@ impl Scheduler {
         {
             seen.insert(e.id.clone());
             let r = e.to_ref();
-            let project = match lookup(&cx.store, cx.default_project.as_deref(), Some(&r), None).await
-            {
-                Ok(Some(p)) => p,
-                Ok(None) => continue,
-                Err(err) => {
-                    tracing::warn!(event = %e.id, "prebrief: project: {err:#}");
-                    continue;
-                }
-            };
+            let project =
+                match lookup(&cx.store, cx.default_project.as_deref(), Some(&r), None).await {
+                    Ok(Some(p)) => p,
+                    Ok(None) => continue,
+                    Err(err) => {
+                        tracing::warn!(event = %e.id, "prebrief: project: {err:#}");
+                        continue;
+                    }
+                };
             let brief = if self.failed.contains(&e.id) {
                 None
             } else {
@@ -776,7 +779,7 @@ impl Scheduler {
             };
             let starts_in = cal::parse(&e.start)
                 .map(|s| s - now)
-                .unwrap_or_else(|_| chrono::Duration::max_value());
+                .unwrap_or(chrono::Duration::MAX);
             if starts_in <= chrono::Duration::minutes(SHOW_MIN) && !self.emitted.contains(&e.id) {
                 self.emitted.insert(e.id.clone());
                 out.push(MeetingEvent::Upcoming {
@@ -916,7 +919,11 @@ mod tests {
             join_url: None,
             join_host: Some("zoom.us".into()),
             organizer: Some(att("Dana Park", false)),
-            attendees: vec![att("Dana Park", false), att("Lee Wu", false), att("Sky", true)],
+            attendees: vec![
+                att("Dana Park", false),
+                att("Lee Wu", false),
+                att("Sky", true),
+            ],
             description: Some("Agenda: cutover, runbook".into()),
             all_day: false,
             tz: None,
@@ -977,7 +984,10 @@ mod tests {
             memory_keys(Some(&e), None),
             ["uid:abc", "title:design review"]
         );
-        assert_eq!(memory_keys(None, Some("Design review")), ["title:design review"]);
+        assert_eq!(
+            memory_keys(None, Some("Design review")),
+            ["title:design review"]
+        );
         assert!(memory_keys(None, Some("10/10")).is_empty());
     }
 
@@ -992,31 +1002,50 @@ mod tests {
             ..e.clone()
         };
         assert_eq!(
-            lookup(store, Some("default"), Some(&e), None).await.unwrap().as_deref(),
+            lookup(store, Some("default"), Some(&e), None)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("default"),
             "nothing remembered → the default"
         );
         assert_eq!(lookup(store, None, Some(&e), None).await.unwrap(), None);
         // Title memory from a meeting with no event.
-        remember(store, None, Some("Weekly sync"), "by-title").await.unwrap();
+        remember(store, None, Some("Weekly sync"), "by-title")
+            .await
+            .unwrap();
         assert_eq!(
-            lookup(store, Some("default"), Some(&bare), None).await.unwrap().as_deref(),
+            lookup(store, Some("default"), Some(&bare), None)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("by-title")
         );
         // The uid wins over the title.
         remember(store, Some(&e), None, "by-uid").await.unwrap();
         assert_eq!(
-            lookup(store, None, Some(&e), None).await.unwrap().as_deref(),
+            lookup(store, None, Some(&e), None)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("by-uid")
         );
         assert_eq!(
-            lookup(store, None, Some(&bare), None).await.unwrap().as_deref(),
+            lookup(store, None, Some(&bare), None)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("by-uid"),
             "remembering the event also wrote its title key"
         );
         forget(store, Some(&e), None).await.unwrap();
         assert_eq!(lookup(store, None, Some(&e), None).await.unwrap(), None);
-        assert_eq!(lookup(store, None, None, Some("weekly SYNC")).await.unwrap(), None);
+        assert_eq!(
+            lookup(store, None, None, Some("weekly SYNC"))
+                .await
+                .unwrap(),
+            None
+        );
         assert_eq!(clean_project(Some("  ".into())), None);
         assert_eq!(clean_project(Some(" x ".into())).as_deref(), Some("x"));
     }
@@ -1084,9 +1113,18 @@ mod tests {
         done(&store, "theuth", "2026-10-03T10:00:00Z", "runbook").await;
         ensure(&r.rt, &r.cx, &w, &e2, "theuth").await.unwrap();
         assert_eq!(w.calls(), 3);
-        let rows = r.cx.cache.as_ref().unwrap().list(Some("pre-meeting"), 10).await.unwrap();
+        let rows =
+            r.cx.cache
+                .as_ref()
+                .unwrap()
+                .list(Some("pre-meeting"), 10)
+                .await
+                .unwrap();
         assert_eq!(rows.len(), 1, "one row, updated in place");
-        assert_eq!(cached(&store, &e2.id).await.unwrap().unwrap().bullets, ["a", "b"]);
+        assert_eq!(
+            cached(&store, &e2.id).await.unwrap().unwrap().bullets,
+            ["a", "b"]
+        );
     }
 
     /// §16 W3 integration: three Done fixture meetings → one writer turn whose prompt carries
@@ -1103,7 +1141,9 @@ mod tests {
         let now = Utc::now();
         let e = event(now + chrono::Duration::minutes(12), 0);
         put_event(&store, &e).await;
-        let w = Canned::new("- Last time: cutover moved to Nov 3\n- Open: SRE-2386 owner\n- Who signs the runbook\n");
+        let w = Canned::new(
+            "- Last time: cutover moved to Nov 3\n- Open: SRE-2386 owner\n- Who signs the runbook\n",
+        );
         let mut s = Scheduler::default();
 
         // No project remembered and no default → no brief, no event.
@@ -1111,18 +1151,38 @@ mod tests {
         assert_eq!(w.calls(), 0);
 
         // The series is remembered (a past start / set_project did it).
-        remember(&store, Some(&e.to_ref()), None, "theuth").await.unwrap();
+        remember(&store, Some(&e.to_ref()), None, "theuth")
+            .await
+            .unwrap();
         // T−12: inside the generation window → one turn, nothing shown yet.
         assert!(s.tick(&r.rt, &r.cx, &w, now).await.is_empty());
         assert_eq!(w.calls(), 1);
         let prompt = w.prompts.lock()[0].clone();
         assert!(prompt.contains("\"Weekly sync\""), "{prompt}");
-        assert!(prompt.contains("Dana Park, Lee Wu, Sky"), "attendee names: {prompt}");
-        assert!(prompt.contains("Cutover moved to Nov 3"), "excerpt: {prompt}");
-        assert!(prompt.contains("## owner (2026-10-03)"), "newest first: {prompt}");
+        assert!(
+            prompt.contains("Dana Park, Lee Wu, Sky"),
+            "attendee names: {prompt}"
+        );
+        assert!(
+            prompt.contains("Cutover moved to Nov 3"),
+            "excerpt: {prompt}"
+        );
+        assert!(
+            prompt.contains("## owner (2026-10-03)"),
+            "newest first: {prompt}"
+        );
         assert!(!prompt.contains("ancient"), "only the last 3: {prompt}");
-        assert!(!prompt.contains("40 000"), "numbers section excluded: {prompt}");
-        let rows = r.cx.cache.as_ref().unwrap().list(Some("theuth"), 10).await.unwrap();
+        assert!(
+            !prompt.contains("40 000"),
+            "numbers section excluded: {prompt}"
+        );
+        let rows =
+            r.cx.cache
+                .as_ref()
+                .unwrap()
+                .list(Some("theuth"), 10)
+                .await
+                .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].aliases, ["Weekly sync", "Dana", "Lee"]);
         assert_eq!(rows[0].tags, ["pre-meeting", "theuth"]);
@@ -1133,19 +1193,39 @@ mod tests {
         let out = s.tick(&r.rt, &r.cx, &w, t5).await;
         assert_eq!(w.calls(), 1);
         match out.as_slice() {
-            [MeetingEvent::Upcoming { event, project, brief }] => {
+            [
+                MeetingEvent::Upcoming {
+                    event,
+                    project,
+                    brief,
+                },
+            ] => {
                 assert_eq!(event.id, e.id);
                 assert_eq!(project.as_deref(), Some("theuth"));
                 assert_eq!(
                     brief.as_deref(),
-                    Some(&["Last time: cutover moved to Nov 3".to_owned(), "Open: SRE-2386 owner".into(), "Who signs the runbook".into()][..])
+                    Some(
+                        &[
+                            "Last time: cutover moved to Nov 3".to_owned(),
+                            "Open: SRE-2386 owner".into(),
+                            "Who signs the runbook".into()
+                        ][..]
+                    )
                 );
             }
             other => panic!("expected one Upcoming, got {other:?}"),
         }
-        assert!(s.tick(&r.rt, &r.cx, &w, t5 + chrono::Duration::minutes(1)).await.is_empty());
+        assert!(
+            s.tick(&r.rt, &r.cx, &w, t5 + chrono::Duration::minutes(1))
+                .await
+                .is_empty()
+        );
         // T+6: out of the window; the instance is forgotten so a later tick never repeats it.
-        assert!(s.tick(&r.rt, &r.cx, &w, now + chrono::Duration::minutes(18)).await.is_empty());
+        assert!(
+            s.tick(&r.rt, &r.cx, &w, now + chrono::Duration::minutes(18))
+                .await
+                .is_empty()
+        );
         assert!(s.emitted.is_empty());
 
         // The detection side reads the same memory and cache.
@@ -1178,7 +1258,12 @@ mod tests {
         };
         let e2 = event(now + chrono::Duration::minutes(3), 0);
         put_event(&store, &e2).await;
-        assert!(Scheduler::default().tick(&r.rt, &off, &w, now).await.is_empty());
+        assert!(
+            Scheduler::default()
+                .tick(&r.rt, &off, &w, now)
+                .await
+                .is_empty()
+        );
         assert_eq!(w.calls(), 1);
     }
 }
