@@ -3047,6 +3047,13 @@ fn origin_cards_are_wrapped_for_the_desktop_classifier() {
 /// The YAML spec block of a fixture README, re-rooted at the harness repo (the pattern of
 /// `world::tests::readme_spec_starts_through_create`).
 fn readme_spec(h: &Harness, fixture: &str) -> StudySpec {
+    let mut spec = fixture_spec(fixture);
+    spec.repo = h._dir.path().display().to_string();
+    spec
+}
+
+/// The README's `yaml` block of `fixtures/<fixture>` as a spec (repo as written).
+fn fixture_spec(fixture: &str) -> StudySpec {
     let path = format!(
         "{}/fixtures/{fixture}/README.md",
         env!("CARGO_MANIFEST_DIR")
@@ -3059,9 +3066,7 @@ fn readme_spec(h: &Harness, fixture: &str) -> StudySpec {
         .split("```")
         .next()
         .unwrap();
-    let mut spec: StudySpec = serde_yaml::from_str(yaml).expect("the README spec parses");
-    spec.repo = h._dir.path().display().to_string();
-    spec
+    serde_yaml::from_str(yaml).expect("the README spec parses")
 }
 
 /// `create` accepts the spec and inserts the study `preparing`; returns the settled row
@@ -3176,7 +3181,10 @@ async fn create_accepts_every_kind_prompt_without_a_bench_command() {
         "{:?}",
         s.state
     );
-    assert!(s.session.is_some(), "a cases study has its session before the baseline runs");
+    assert!(
+        s.session.is_some(),
+        "a cases study has its session before the baseline runs"
+    );
 }
 
 /// R-SEAMS-11 / R-W6-3: a world study's `bench.command` is a custody workaround, not a need;
@@ -3194,6 +3202,37 @@ async fn create_accepts_every_kind_world_without_a_bench_command() {
         !matches!(&s.state, StudyState::Failed { reason } if reason.contains("bench.command")),
         "{:?}",
         s.state
+    );
+}
+
+/// 159 Z live proof: toy-prompt's baseline (two passes of a stochastic target) read σ = 7.9 %
+/// and `prepare` refused it under `noise.max_cv` = 5 %, although the paired per-case gate never
+/// reads that σ. The precondition belongs to the σ-based rules only: the scalar z-gate and the
+/// front's dominance (and an unbuilt combination, which fails closed); cases, judged, world and
+/// suite decide without it.
+#[test]
+fn baseline_noise_precondition_applies_to_sigma_rules_only() {
+    let kinds = [
+        ("toy-sort", true),
+        ("toy-pareto", true),
+        ("toy-route", true),
+        ("toy-prompt", false),
+        ("toy-judged", false),
+        ("toy-world", false),
+    ];
+    for (fixture, applies) in kinds {
+        let spec = fixture_spec(fixture);
+        assert_eq!(
+            super::baseline_noise_applies(&spec),
+            applies,
+            "{fixture}: rule {:?}",
+            spec.rule()
+        );
+    }
+    let meta = crate::suite::preset("/tmp/meta-repo");
+    assert!(
+        !super::baseline_noise_applies(&meta),
+        "meta decides with the paired gate"
     );
 }
 

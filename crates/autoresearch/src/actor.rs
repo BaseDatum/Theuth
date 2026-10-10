@@ -2181,9 +2181,7 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
         env.backend.pooled_sigma(std::slice::from_ref(&values)),
     );
     let cv = if m != 0.0 { sigma / m.abs() } else { 0.0 };
-    // 159 W6 H8: a world study's baseline σ is production's day-to-day variation; the mSPRT
-    // uses the arms' reported variance.
-    if cv > env.cfg.noise.max_cv && spec.axes.scoring != Scoring::World {
+    if cv > env.cfg.noise.max_cv && baseline_noise_applies(&spec) {
         return Err(Error::refused(format!(
             "σ = {:.1} % of the metric: a keep would need ≥ {:.1} %; make the benchmark steadier or raise repeats",
             cv * 100.0,
@@ -2233,6 +2231,18 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
         start_card(study, m, sigma, &sched),
     );
     Ok(())
+}
+
+/// Whether the baseline's σ/mean precondition (140 §5.3 `noise.max_cv`) applies: only the rules
+/// that read a scalar σ decide with it (`z_gate`, `dominance`). W6 H8: a world study's baseline
+/// σ is production's day-to-day variation (the mSPRT uses the arms' variance); 159 Z live proof:
+/// a prompt study's two baseline passes of a stochastic target read σ ≈ 8 % and were refused,
+/// although the paired per-case gate never looks at that σ — likewise the judge's win bound.
+fn baseline_noise_applies(spec: &StudySpec) -> bool {
+    matches!(
+        spec.rule(),
+        Some(GateRule::ZGate | GateRule::Dominance) | None
+    )
 }
 
 /// `repeats` samples of `tree` through the slot; a crash fails the whole thing.
