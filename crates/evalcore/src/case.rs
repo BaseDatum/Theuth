@@ -25,9 +25,10 @@ pub struct Case {
     pub synthetic: bool,
 }
 
-/// How a case's answer becomes a 0–1 score without a judge.
+/// How a case's answer becomes a 0–1 score without a judge. JSON `{"kind": "exact", "value":
+/// "2021-03-03"}` (adjacently tagged: serde cannot internally tag a newtype string — W2-f).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Check {
     /// `answer.trim() == expected`.
     Exact(String),
