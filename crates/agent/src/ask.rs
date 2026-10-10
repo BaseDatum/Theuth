@@ -33,8 +33,8 @@ pub struct AskConfig {
     pub ask_max_branches: u8,
     /// `nb_search` hits per branch.
     pub ask_hits_per_branch: u32,
-    /// Shared with the `<notebook>` block: each branch's passages fit in `context_budget_tokens / branches`.
-    pub context_budget_tokens: u32,
+    /// 157 D8: the passages of all branches together; each branch gets `ask_context_tokens / branches`.
+    pub ask_context_tokens: u32,
 }
 
 impl Default for AskConfig {
@@ -43,7 +43,7 @@ impl Default for AskConfig {
             ask_model: None,
             ask_max_branches: 5,
             ask_hits_per_branch: 10,
-            context_budget_tokens: 40_000,
+            ask_context_tokens: 40_000,
         }
     }
 }
@@ -375,7 +375,7 @@ async fn run_inner(
         branches: branches.clone(),
     })
     .await;
-    let budget = cfg.context_budget_tokens / branches.len().max(1) as u32;
+    let budget = cfg.ask_context_tokens / branches.len().max(1) as u32;
     let partials = futures::future::join_all(
         branches
             .iter()

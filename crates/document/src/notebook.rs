@@ -369,25 +369,28 @@ pub struct ContextItem {
     pub pinned: bool,
     /// Tokens this item contributes at `level` (chars / 4 on the hub).
     pub tokens: u32,
-    /// What the budget did to it.
+    /// What the first injection's capacity did to it (157 D4: the thread's own context, not a budget).
     pub status: ContextStatus,
 }
 
-/// The pre-turn estimate (144 §5.2, wave-2 contract §1).
+/// The pre-turn estimate (144 §5.2, wave-2 contract §1; 157 D9: no budget — the first injection is sized by
+/// the thread's context, then the block is never repeated).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ContextEstimate {
     /// Every item of the notebook with its level and fate, in injection order (full, summary, mention, off;
     /// newest first within a level).
     pub items: Vec<ContextItem>,
-    /// Tokens the injection will cost.
+    /// Tokens the injection costs (at the dial levels once the block is in the chat).
     pub total_tokens: u32,
-    /// The budget (`notebooks.context_budget_tokens`).
-    pub budget_tokens: u32,
-    /// Items left out: `off` or cut by the budget.
+    /// Items left out: `off`, or beyond what the first injection could carry.
     pub omitted: u32,
     /// Every item `off` (or no items): the block carries the "nothing in context" sentence.
     pub empty: bool,
+    /// The chat's current epoch already carries the `<notebook>` block (or its post-compaction manifest).
+    pub injected: bool,
+    /// Change lines the next turn's `<notebook_changes>` message would carry; 0 before the block.
+    pub pending_changes: u32,
 }
 
 /// What `insight_run` should produce (144 §4.3): exactly one of a builtin (`key_insights` | `toc` |

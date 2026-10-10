@@ -33,7 +33,8 @@ let estimate: ContextEstimate | undefined = {
     { id: 'src2', kind: 'source', title: 'Vendor SLA', level: 'full', pinned: true, tokens: 9000, status: 'truncated' },
   ],
   total_tokens: 12_400,
-  budget_tokens: 40_000,
+  injected: false,
+  pending_changes: 0,
   omitted: 0,
   empty: false,
 }
