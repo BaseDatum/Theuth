@@ -139,3 +139,26 @@ changed; this file and `docs/design/assets/158-live-*.png` are the only addition
 
 Engine, vite, ICS server and ffmpeg stopped (only processes this worker started); `/tmp/158-live-data`,
 `/tmp/158-live-ics`, `/tmp/158-live-events.jsonl`, `/tmp/158-live-fixture-ids.json` removed; Chromium tab closed.
+
+## Fix round (F158, branch `fix/158-live-defects`)
+
+Each defect got a failing test first, then the smallest change; all four are closed.
+
+1. `crates/meeting/src/calendar/ics.rs`: calcard iterates an RRULE in the DTSTART's *resolved* zone, and a `Z` time with no
+   TZID resolves to the default (local) — hence −1 h. A series whose DTSTART is `Z`-anchored (`utc_anchored`) is now
+   expanded with `Tz::UTC` as its default. `tests/calendar.rs::utc_rrule_expands_in_utc` (weekly `T170000Z`, six
+   instances across 2026-10-25) went `16:00:00Z ×6` → `17:00:00Z ×6`; the TZID (google/outlook) and single-UTC (icloud)
+   tests are unchanged.
+2. `crates/meeting/src/post/suggest.rs`: `INTRO_RE` gains `i am`. `intro_cue_forms_and_false_positives` failed with
+   `[s2 Bob, s3 Carol, s4 Dave]` (no Alice), now passes; "I am going / not / sorry / Here / Fine" stay out via `NOT_NAMES`.
+3. `DetectionBanner.tsx` renders `eventLine(ev)` from `lib/calendar` (the EventSwitcher's formatter); `lib/detection.ts`
+   `timeRange` (12-hour `toLocaleTimeString`) is gone. The banner test pins `<span>${eventLine(ev)}</span>` and no `AM/PM`
+   (before: `Weekly sync · 11:00 AM–11:30 AM`).
+4. `lib/meeting-project.ts` `useProjectChoices` adds the distinct `project`s of the plain `meeting_list` (the cached
+   `queryKeys.meetings` row the list already holds; no new RPC) — StartForm, ProjectChip and the list filter all read it.
+   `meeting-project.test.ts` (sessions `theuth`, meetings `ops`) went `theuth` → `ops,theuth`. `StartForm.test.ts` mock
+   gained `meeting_list`.
+
+Gates: `mbx test -p meeting` 121 + 16 pass; `mbx clippy -p meeting` clean; `bunx tsc --noEmit -p .` 0; vitest on the
+touched meeting/lib files 27/27; `BUILD_SLOTS=1 build-lock mbx check --workspace --tests` clean. As-built:
+`docs/design/158-as-built-F158.md`.
