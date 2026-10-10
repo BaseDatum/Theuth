@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { JudgmentRow } from '@/rpc/bindings/JudgmentRow'
-import { PairViewer, pairsOf } from './PairViewer'
+import { PairList, PairViewer, pairsOf } from './PairViewer'
 import { RatingLadder } from './RatingLadder'
 
 vi.mock('@/lib/rpc', async (original) => ({
@@ -85,4 +85,25 @@ test('rating ladder: empty says so, without an agreement figure', () => {
 test('pair viewer: a static paint shows the loading line (the query resolves client-side)', () => {
   const html = paint(createElement(PairViewer, { slug: 'tj', n: null }))
   expect(html).toContain('Loading pairs')
+})
+
+test('pair list: a pending human pair is blind — buttons only, no verdicts, reasons, outcome or order labels for that case (R-W3-1)', () => {
+  const rows = [
+    row(6, 2, 'p03', { winner: 'b', reason: 'the judge liked B' }),
+    row(7, 2, 'p03', { a_first: false, winner: 'b', reason: 'still B' }),
+    row(8, 2, 'p03', { model: 'human', winner: null, reason: '', cost_nanos: 0 }),
+    row(2, 1, 'p07', { a_first: false, reason: 'answered case reason' }),
+    row(3, 1, 'p07', { a_first: false }),
+    row(4, 1, 'p07', { model: 'human', winner: 'a', human: true, reason: '', cost_nanos: 0 }),
+  ]
+  const html = paint(createElement(PairList, { pairs: pairsOf(rows), busy: false, onAnswer: () => {} }))
+  expect(html).toContain('data-pending="1"')
+  expect(html).toContain('data-pair="2:p03" data-human="pending"')
+  expect(html).not.toContain('the judge liked B')
+  expect(html).not.toContain('still B')
+  expect(html).not.toContain('incumbent</span>')
+  expect(html).not.toContain('(candidate as A)')
+  // The answered case shows the judge's side and the agreement.
+  expect(html).toContain('answered case reason')
+  expect(html).toContain('agrees with the judge')
 })

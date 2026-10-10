@@ -63,11 +63,12 @@ function shown(r: JudgmentRow): string {
 }
 
 /**
- * 159 W3: the blind pairs of a study (or one experiment when `n` is set): per case the two
- * ordered verdicts with their reasons, the gate's reading, the judge's cost, and the human
- * pair — pending ones first, answered with A / B / same through `autoresearch.human_pair`.
- * The two output texts are not in `JudgmentRow` yet (hand-off to Z); the attention row
- * carries them, so here the user answers a pair they were shown there. Owner: W3.
+ * 159 W3: the blind pairs of a study (or one experiment when `n` is set). Pending human pairs
+ * come first in their own block, blind (D14): no verdicts, no outcome, no order labels, only
+ * the A / B / same buttons for a pair the attention row showed (the texts are not in
+ * `JudgmentRow` yet — hand-off to Z). Judged pairs below show the two ordered verdicts with
+ * their reasons, the gate's reading and the judge's cost; a case's judge rows appear only
+ * once its human pair is answered. Owner: W3.
  */
 export function PairViewer({ slug, n }: { slug: string; n: number | null }) {
   const api = useAutoresearchApi()
@@ -76,56 +77,72 @@ export function PairViewer({ slug, n }: { slug: string; n: number | null }) {
   const pairs = useMemo(() => pairsOf(q.data ?? []), [q.data])
   if (q.isPending) return <p className="text-xs text-fg-tertiary">Loading pairs…</p>
   if (pairs.length === 0) return <p className="text-xs text-fg-tertiary">No blind pairs yet{n === null ? '' : ` for experiment ${n}`}.</p>
+  return <PairList pairs={pairs} busy={answer.isPending} onAnswer={(id, winner) => answer.mutate({ id, winner })} />
+}
+
+/** The viewer's body, pure: pending human pairs blind in their own block, then the judged pairs. */
+export function PairList({ pairs, busy, onAnswer }: { pairs: Pair[]; busy: boolean; onAnswer: (id: bigint, winner: 'a' | 'b' | 'same') => void }) {
+  const pending = pairs.filter((p) => p.human && !p.human.human)
+  const judged = pairs.filter((p) => !(p.human && !p.human.human))
   const total = pairs.reduce((s, p) => s + p.cost, 0)
   return (
-    <div data-pairs={pairs.length} className="mt-3 space-y-2">
-      <p className="text-xs text-fg-tertiary">
-        {pairs.length} blind pair{pairs.length === 1 ? '' : 's'} · each judged twice with A and B swapped · judge cost {usd(total)}
-      </p>
-      <ul className="divide-y divide-border-subtle rounded-md border border-border-subtle">
-        {pairs.slice(0, SHOWN).map((p) => (
-          <li key={`${p.n}:${p.caseId}`} data-pair={`${p.n}:${p.caseId}`} className="space-y-1 px-3 py-2 text-xs">
-            <div className="flex flex-wrap items-baseline gap-2">
-              <span className="font-semibold">#{p.n}</span>
-              <span className="font-mono">{p.caseId}</span>
-              <span className="text-fg-tertiary">
-                {shortSha(p.candidate)} vs {shortSha(p.incumbent)}
-              </span>
-              <span className={cn('ml-auto rounded-full px-2 py-px font-semibold', p.outcome === 'a' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : p.outcome === 'b' ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300' : 'bg-layer-2 text-fg-secondary')}>
-                {WORD[p.outcome]}
-              </span>
-            </div>
-            <ol className="space-y-0.5 text-fg-secondary">
-              {p.verdicts.map((r, i) => (
-                <li key={r.id.toString()}>
-                  <span className="text-fg-tertiary">order {i + 1}{r.a_first ? ' (candidate as A)' : ' (incumbent as A)'}:</span> picked {shown(r)}
-                  {r.reason && <span> — {r.reason}</span>}
-                </li>
-              ))}
-            </ol>
-            {p.human && (
-              <div data-human={p.human.human ? 'answered' : 'pending'} className="flex flex-wrap items-center gap-2 pt-1">
-                {p.human.human ? (
-                  <span>
+    <div data-pairs={pairs.length} className="mt-3 space-y-3">
+      {pending.length > 0 && (
+        <section data-pending={pending.length} className="space-y-2 rounded-md border border-border bg-layer-2 p-3 text-xs">
+          <p className="font-semibold">Your pairs — which is better? (A and B as shown in the attention row; the judge's view stays hidden until you answer)</p>
+          <ul className="space-y-1">
+            {pending.map((p) => (
+              <li key={`${p.n}:${p.caseId}`} data-pair={`${p.n}:${p.caseId}`} data-human="pending" className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold">#{p.n}</span>
+                <span className="font-mono">{p.caseId}</span>
+                {(['a', 'b', 'same'] as const).map((w) => (
+                  <Button key={w} size="xs" variant="outline" disabled={busy} onClick={() => onAnswer(p.human!.id, w)}>
+                    {w === 'same' ? 'same' : w.toUpperCase()}
+                  </Button>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {judged.length > 0 && (
+        <>
+          <p className="text-xs text-fg-tertiary">
+            {judged.length} blind pair{judged.length === 1 ? '' : 's'} · each judged twice with A and B swapped · judge cost {usd(total)}
+          </p>
+          <ul className="divide-y divide-border-subtle rounded-md border border-border-subtle">
+            {judged.slice(0, SHOWN).map((p) => (
+              <li key={`${p.n}:${p.caseId}`} data-pair={`${p.n}:${p.caseId}`} className="space-y-1 px-3 py-2 text-xs">
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <span className="font-semibold">#{p.n}</span>
+                  <span className="font-mono">{p.caseId}</span>
+                  <span className="text-fg-tertiary">
+                    {shortSha(p.candidate)} vs {shortSha(p.incumbent)}
+                  </span>
+                  <span className={cn('ml-auto rounded-full px-2 py-px font-semibold', p.outcome === 'a' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : p.outcome === 'b' ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300' : 'bg-layer-2 text-fg-secondary')}>
+                    {WORD[p.outcome]}
+                  </span>
+                </div>
+                <ol className="space-y-0.5 text-fg-secondary">
+                  {p.verdicts.map((r, i) => (
+                    <li key={r.id.toString()}>
+                      <span className="text-fg-tertiary">order {i + 1}{r.a_first ? ' (candidate as A)' : ' (incumbent as A)'}:</span> picked {shown(r)}
+                      {r.reason && <span> — {r.reason}</span>}
+                    </li>
+                  ))}
+                </ol>
+                {p.human?.human && (
+                  <div data-human="answered" className="pt-1">
                     You said <strong>{p.human.winner === 'tie' ? 'same' : WORD[(p.human.winner as 'a' | 'b' | null) ?? 'tie']}</strong>
                     {p.human.winner === p.outcome ? ' — agrees with the judge' : ' — the judge disagreed'}
-                  </span>
-                ) : (
-                  <>
-                    <span className="text-fg-secondary">Your pair (shown in the attention row as A and B): which is better?</span>
-                    {(['a', 'b', 'same'] as const).map((w) => (
-                      <Button key={w} size="xs" variant="outline" disabled={answer.isPending} onClick={() => answer.mutate({ id: p.human!.id, winner: w })}>
-                        {w === 'same' ? 'same' : w.toUpperCase()}
-                      </Button>
-                    ))}
-                  </>
+                  </div>
                 )}
-              </div>
-            )}
-          </li>
-        ))}
-      </ul>
-      {pairs.length > SHOWN && <p className="text-xs text-fg-tertiary">… {pairs.length - SHOWN} older pairs not shown</p>}
+              </li>
+            ))}
+          </ul>
+          {judged.length > SHOWN && <p className="text-xs text-fg-tertiary">… {judged.length - SHOWN} older pairs not shown</p>}
+        </>
+      )}
     </div>
   )
 }

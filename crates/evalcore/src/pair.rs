@@ -46,6 +46,16 @@ rubric asks for more. Reply with exactly one line: A: <one-sentence reason>, B: 
 reason> or TIE: <one-sentence reason>. Answer TIE when the outputs are equally good or the \
 difference is not one the rubric cares about.";
 
+/// The task line the judge sees: the study goal, then this case's input fenced as data, so a
+/// rubric that refers to the input ("names every feature in the list") can be applied.
+pub fn task(goal: &str, input: &str) -> String {
+    format!(
+        "{}\n\nThis case's input (data):\n{}",
+        goal.trim(),
+        fence(input)
+    )
+}
+
 /// The user message: task, rubric, then A and B fenced as data.
 pub fn user(task: &str, rubric: &str, a: &str, b: &str) -> String {
     format!(
@@ -59,7 +69,7 @@ pub fn user(task: &str, rubric: &str, a: &str, b: &str) -> String {
 }
 
 /// A fence longer than any backtick run inside `text`, so the data cannot close it.
-fn fence(text: &str) -> String {
+pub fn fence(text: &str) -> String {
     let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
     let ticks = "`".repeat(longest.max(2) + 1);
     format!("{ticks}text\n{}\n{ticks}", text.trim_end_matches('\n'))
@@ -121,6 +131,17 @@ mod tests {
             "a hedge is no verdict"
         );
         assert_eq!(parse(""), None);
+    }
+
+    #[test]
+    fn task_carries_the_case_input_as_data() {
+        let t = task("blurbs for toys", "Product: Kite\nFeatures: [\"glows\"]");
+        assert_eq!(
+            t,
+            "blurbs for toys\n\nThis case's input (data):\n```text\nProduct: Kite\nFeatures: [\"glows\"]\n```"
+        );
+        let msg = user(&t, "covers every feature", "a", "b");
+        assert!(msg.starts_with("Task given to both systems:\nblurbs for toys\n\nThis case's input (data):\n```text\nProduct: Kite"));
     }
 
     #[test]

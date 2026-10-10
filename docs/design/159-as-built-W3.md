@@ -77,3 +77,32 @@ A: the probe's numbers are in the baseline log and the refusal text; the agreeme
 - **Z (skill.md L18):** replace the decline bullet with "A judge-only metric ("better prose", "nicer UI") → a **judged study**: see "Judged studies (no scalar)" below." (the fragment is appended after the core text).
 - **Z (after W2):** alias `cases.path` to `judge.prompts` if the W2 case set should serve judged studies (W3-a); `run_case` is then live for prompt artefacts (W3-f).
 - **Z (Cargo.lock):** none; no dependency added.
+
+## R2 — review fixes (R-W3.md, 2026-10-10)
+
+Gates after the fixes: `build-lock mbx test -p autoresearch -p evalcore --locked --no-run` rc 0; `mbx test -p autoresearch -p evalcore --locked --no-fail-fast` → autoresearch **203 / 0** (golden ledger green), evalcore **6 / 0**; `build-lock mbx clippy -p autoresearch -p evalcore --locked --tests` rc 0; `rustfmt --edition 2024` on `judge.rs` and `pair.rs` only; UI `build-lock bun run check` rc 0, `build-lock bun run test -- judged.test.ts components.test.ts` → 2 files, **15 / 0**. No wire type changed (bindings unchanged).
+
+- **R-W3-1 [BUG] fixed** — `PairViewer.tsx`: `PairList` renders pending human pairs in their own block with only the case id and the A / B / same buttons; a case's judge rows, reasons, order labels and outcome badge appear only once its human row is answered. Test `judged.test.ts` "pair list: a pending human pair is blind …" (failed on the old render: the reasons and order labels were painted above the buttons).
+- **R-W3-2 [BUG] fixed** — `judge.rs`: `outputs_dir_for(env, study, sha)` resolves any tree by its own sha (its dir, else the kept experiment with `commit_sha == sha` → its last candidate sample's tree dir); `incumbent_dir` and both sides of `pair_texts` use it; `study.incumbent_sha` is never a fallback. Test `a_pair_keeps_its_parent_after_the_next_keep` (two keeps, then `pair_texts` on the second keep's pair): run against the old fallback it failed with `A and B must be different texts`, as the reviewer predicted.
+- **R-W3-3 [BUG] fixed** — `evalcore::pair::task(goal, input)` puts the case input in the task as fenced data; `judge_case` and `probe` pass it. Tests `pair::tests::task_carries_the_case_input_as_data` and the e2e assertion on the fake judge's last message (`This case's input (data):` + `Features: [`).
+- **R-W3-4 [BUG] fixed** — the `Artefact::File` arm calls `evalcore::run::Model::call(&target, &artefact, case.input)` directly (artefact = system prompt, input = user turn), not W2's scoring replay. Test `a_prompt_artefact_generates_through_the_target` (an echo target; the output is the artefact plus the case's first line). W3-f is closed: the arm is tested.
+- **R-W3-5 [RISK] fixed** — an empty look (the prompt set ran out after a drift-doubled confirm) is a sample with `value = p̂ so far`, empty `cases`, no failure; `decide`'s `looks ≥ 2` / `m < looks·look` arms close the decision. Test `an_exhausted_prompt_set_closes_the_look_instead_of_crashing` (look 6 of a 40-case set at 8 per look).
+- **R-W3-6 [RISK] docs** — `skill/judged.md` says the power side (80 % preference kept reliably, 70 % about half, 60 % almost never; `judge.look: 30` with ≥ 60 prompts) and that "no gain" is "not clearly better on this prompt set". The default look stays 20 (the design's number; the cost line is sized to it).
+- **R-W3-7 [RISK] fixed** — `call_judge` returns `(verdict, reason, cost, model)`; an unparsed reply keeps the model's name in `model` and writes `unparsed: <head>` to `reason`. Test `an_unparsed_reply_keeps_the_model_column_clean`.
+- **R-W3-8 [RISK] handed off** — `validate_spec` is in the frozen `tools.rs`. Diff for the closer (`tools.rs` `validate_axes`, after the `world` check, before `Ok(())`):
+  ```rust
+      if a.scoring == Scoring::Pairwise
+          && let Some(j) = &spec.judge
+          && !j.prompts.trim().is_empty()
+          && !spec.evaluator_paths.iter().any(|p| p.trim() == j.prompts.trim())
+      {
+          return Err(format!(
+              "judge.prompts `{}` must be in evaluator_paths so a candidate cannot edit it",
+              j.prompts.trim()
+          ));
+      }
+  ```
+  The fixture README and the skill fragment already list the prompt set in `evaluator_paths`.
+- **R-W3-9 [RISK] handed off** — unchanged (W3-b): no post-keep hook exists for W3. For the closer: post the pair from the keep path (`actor::log`'s keep branch) by calling `judge::maybe_human_pair(env, study, n, &cand_tree, every)` once `pub(crate)` is wanted, and drop the call from `step`; until then the attention row's text (Z) should say the pair comes from a keep candidate.
+- **R-W3-10 [POLISH] fixed** — the brief's rubric is fenced with `pair::fence` (a fence longer than any backtick run; W5's `fence_safe` is not in this tree). The e2e brief assertion follows (` ```text `).
+- **R-W3-11 [POLISH] noted** — `bt_fit`'s doc says the se is the diagonal of the observed information (a ladder display, not a joint interval) and that the fit is refit per call; no cache added (≤ a few thousand games per segment).
