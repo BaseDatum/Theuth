@@ -302,6 +302,48 @@ pub fn log(data_dir: &Path, e: &EditRecord) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 159 §13.3: land a prompt study's finished sidecar text through dreaming's write path —
+/// backup once under `night`, atomic write, one `edits.jsonl` record whose rationale names
+/// the origin (`study:<slug>`) — so `dreaming_undo <night>` reverts it like any night's
+/// edits. The record is a whole-text `replace` with no anchor and no gate: the study's own
+/// paired gate decided, and `apply`'s record pass is not re-run. Returns the record.
+pub fn land_text(
+    data_dir: &Path,
+    night: &NightId,
+    skill: &str,
+    text: &str,
+    origin: &str,
+) -> anyhow::Result<EditRecord> {
+    anyhow::ensure!(
+        valid_skill_name(skill),
+        "skill name {skill:?}: lowercase letters, digits and `-` only, at most 64"
+    );
+    anyhow::ensure!(
+        origin.starts_with("study:"),
+        "origin must be `study:<slug>`, got {origin:?}"
+    );
+    let before = current(data_dir, skill);
+    if before != text {
+        backup_once(data_dir, night, skill)?;
+        write_atomic(&sidecar_path(data_dir, skill), text.as_bytes())?;
+    }
+    let record = EditRecord {
+        id: cases::new_id(),
+        night: night.clone(),
+        target: format!("skill:{skill}"),
+        op: EditOp::Replace,
+        content: scrub(text),
+        anchor: None,
+        rationale: format!("landed by {origin}"),
+        cases: Vec::new(),
+        gate: None,
+        applied_at: Some(cases::now_rfc3339()),
+        undone_at: None,
+    };
+    log(data_dir, &record)?;
+    Ok(record)
+}
+
 /// Every `edits.jsonl` record, folded by id (last line wins), in file order.
 pub fn all(data_dir: &Path) -> anyhow::Result<Vec<EditRecord>> {
     let text = match std::fs::read_to_string(edits_path(data_dir)) {
@@ -862,6 +904,125 @@ mod tests {
             .is_err()
         );
         assert!(apply(d, &cfg, "harness", &[], &night, Pass::Candidate).is_err());
+    }
+
+    /// 159 §13.2 P: a record pass whose replay rows are all train is not applied (the
+    /// gate is `unverified` with 0 val pairs); a mixed pass gates on the val pairs only.
+    /// The ids' stable splits under seed `"136"`: c1, c2, c3 → val; c4, c9 → train.
+    #[test]
+    fn record_pass_gates_on_val_cases_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let cfg = DreamConfig::default();
+        let night = "2026-10-10".to_owned();
+        for id in ["c1", "c2", "c3", "c4", "c9"] {
+            cases::append(d, &cases::sample(id, "harness"), &night).unwrap();
+        }
+        let add = edit(
+            EditOp::Add,
+            "Prefer numbered lists",
+            None,
+            Some(Verdict::Accepted),
+        );
+        let cand = apply(
+            d,
+            &cfg,
+            "harness",
+            std::slice::from_ref(&add),
+            &night,
+            Pass::Candidate,
+        )
+        .unwrap();
+        let sha = candidate_sha256(&cand.text);
+        let row = |case: &str, sha: Option<String>, score: f64| ReplayRow {
+            night: night.clone(),
+            case_id: case.into(),
+            candidate_sha256: sha,
+            score,
+            judge_model: "j".into(),
+            at: String::new(),
+        };
+        // Train-only: two strong pairs that the old gate would have accepted at min_val_cases 2.
+        let mut lax = cfg.clone();
+        lax.gate.min_val_cases = 2;
+        for c in ["c4", "c9"] {
+            log_row(d, &row(c, None, 0.2)).unwrap();
+            log_row(d, &row(c, Some(sha.clone()), 0.9)).unwrap();
+        }
+        let r = apply(
+            d,
+            &lax,
+            "harness",
+            std::slice::from_ref(&add),
+            &night,
+            Pass::Record,
+        )
+        .unwrap();
+        assert_eq!(r.edits[0].1, ApplyStatus::SkippedUnmatched, "{:?}", r.edits);
+        assert!(r.edits[0].2.contains("gate unverified"), "{}", r.edits[0].2);
+        assert!(!sidecar_path(d, "harness").exists());
+        assert_eq!(all(d).unwrap()[0].gate.unwrap().val_cases, 0);
+        // Mixed: three val pairs decide; the train pairs' 0.7 uplift is not in the numbers.
+        for c in ["c1", "c2", "c3"] {
+            log_row(d, &row(c, None, 0.5)).unwrap();
+            log_row(d, &row(c, Some(sha.clone()), 0.65)).unwrap();
+        }
+        let r = apply(
+            d,
+            &cfg,
+            "harness",
+            std::slice::from_ref(&add),
+            &night,
+            Pass::Record,
+        )
+        .unwrap();
+        assert_eq!(r.edits[0].1, ApplyStatus::Applied, "{:?}", r.edits);
+        let g = all(d)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.applied_at.is_some())
+            .unwrap()
+            .gate
+            .unwrap();
+        assert_eq!((g.verdict, g.val_cases), (Verdict::Accepted, 3));
+        assert!(
+            (g.baseline - 0.5).abs() < 1e-9 && (g.candidate - 0.65).abs() < 1e-9,
+            "{g:?}"
+        );
+    }
+
+    /// 159 §13.3: a prompt study lands its sidecar through the write path — backup once,
+    /// atomic write, a `replace` record naming the study — and `dreaming_undo`'s inputs
+    /// (the backup, the applied record) are in place.
+    #[test]
+    fn land_text_backs_up_writes_and_records_the_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let night = "2026-10-10".to_owned();
+        write_atomic(&sidecar_path(d, "harness"), b"- old\n").unwrap();
+        let rec = land_text(d, &night, "harness", "- new\n", "study:toy-prompt").unwrap();
+        assert_eq!(current(d, "harness"), "- new\n");
+        assert_eq!(
+            std::fs::read_to_string(backup_path(d, &night, "harness")).unwrap(),
+            "- old\n"
+        );
+        assert_eq!(
+            (rec.op, rec.target.as_str()),
+            (EditOp::Replace, "skill:harness")
+        );
+        assert_eq!(rec.rationale, "landed by study:toy-prompt");
+        assert!(rec.applied_at.is_some() && rec.gate.is_none());
+        let logged = all(d).unwrap();
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0].id, rec.id);
+        // Same text again: no second backup write (the first backup stays the pre-night text).
+        land_text(d, &night, "harness", "- new\n", "study:toy-prompt").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(backup_path(d, &night, "harness")).unwrap(),
+            "- old\n"
+        );
+        assert!(land_text(d, &night, "harness", "x", "night").is_err());
+        assert!(land_text(d, &night, "../x", "x", "study:s").is_err());
     }
 
     /// R-29 (D15): the anchor may be quoted as the proposer sees it — with

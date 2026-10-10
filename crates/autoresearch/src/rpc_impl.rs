@@ -190,8 +190,7 @@ pub async fn archive(slug: String) -> std::result::Result<Vec<ArchiveRow>, Strin
 
 /// 159 §5.11 `autoresearch.cases {slug, n?}` — the case × experiment rows of the heat strip (W2).
 pub async fn cases(slug: String, n: Option<u32>) -> std::result::Result<Vec<CaseRow>, String> {
-    let _ = (slug, n);
-    Err("not built (W2)".to_owned()) // 159:W2 — cases::rows(store, &slug, n)
+    crate::cases::rows_of(ask(Detail { slug }).await?.view, n) // 159:W2
 }
 
 /// 159 §5.11 `autoresearch.judgments {slug, n?}` — blind-pair verdicts (W3).

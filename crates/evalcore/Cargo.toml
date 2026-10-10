@@ -11,6 +11,10 @@ regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+tokio = { workspace = true }  # R-W2-3: `Check::Command` through tokio::process with a timeout (W2-n)
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

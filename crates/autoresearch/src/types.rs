@@ -352,8 +352,6 @@ macro_rules! block_specs {
 }
 
 block_specs! {
-    /// W2, W3: `cases: {source, path, skill_hint, render, split, repeats, max_cases}` — W2's addendum fills it.
-    CaseSetSpec;
     /// W2, W3: `judge: {rubric, …}` — W3's addendum fills it.
     JudgeSpec;
     /// W4: `population: {islands, descriptors, migrate_every}` — W4's addendum fills it.
@@ -366,6 +364,68 @@ block_specs! {
     WorldSpec;
     /// W7: `suite: {training, held_out, seeds, inner_budget}` — W7's addendum fills it.
     SuiteSpec;
+}
+
+// ───────────────────────────── 159 §7 W2: the case set ─────────────────────────────
+// R1 (orchestrator): each wave defines the fields of its own block spec here, directly after
+// the `block_specs!` invocation; every field defaults so a 140 spec stays byte-identical.
+
+wire! {
+    /// Where a prompt study's cases come from (159 §7).
+    #[derive(Copy, Default, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum CaseSource {
+        /// JSONL `{id, input, ideal?, check?, tags}` at `CaseSetSpec.path`, repo-relative.
+        #[default]
+        File,
+        /// `dreaming/cases.jsonl` filtered by `skill_hint` (159 §13.4).
+        Dreaming,
+    }
+}
+
+wire! {
+    /// 159 §7 W2: `cases: {source, path, skill_hint, artefact, render, split, repeats,
+    /// max_cases, train_shown}` — the case set a prompt study scores each tree on. Every
+    /// field defaults and is skipped at its default.
+    #[derive(Default, Eq)]
+    #[serde(default)]
+    pub struct CaseSetSpec {
+        /// `file` | `dreaming`.
+        pub source: CaseSource,
+        /// The JSONL file for `file`, repo-relative (list it in `evaluator_paths` too).
+        #[serde(skip_serializing_if = "String::is_empty")]
+        pub path: String,
+        /// The `skill_hint` filter for `dreaming`.
+        #[serde(skip_serializing_if = "String::is_empty")]
+        pub skill_hint: String,
+        /// The text file the session edits, repo-relative: the system prompt, or what
+        /// `render`'s `{{artefact}}` becomes.
+        #[serde(skip_serializing_if = "String::is_empty")]
+        pub artefact: String,
+        /// A system-prompt template holding `{{artefact}}`; empty = the artefact is the prompt.
+        #[serde(skip_serializing_if = "String::is_empty")]
+        pub render: String,
+        /// Percent shares `train/val/holdout`; empty = `40/40/20` (159 W-g).
+        #[serde(skip_serializing_if = "String::is_empty")]
+        pub split: String,
+        /// Target calls per case per sample; 0 = 1.
+        #[serde(skip_serializing_if = "is_zero_u8")]
+        pub repeats: u8,
+        /// Cap on cases read from the source after filtering; 0 = all.
+        #[serde(skip_serializing_if = "is_zero_u32")]
+        pub max_cases: u32,
+        /// Train cases replayed per sample for the brief's feedback; 0 = 16.
+        #[serde(skip_serializing_if = "is_zero_u32")]
+        pub train_shown: u32,
+    }
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 wire! {

@@ -1,0 +1,90 @@
+{"id": "long-01", "input": "Normalise this date to ISO 8601: 22 March 2012", "ideal": "2012-03-22", "check": {"kind": "exact", "value": "2012-03-22"}, "tags": ["long"]}
+{"id": "long-02", "input": "Normalise this date to ISO 8601: 17 April 2014", "ideal": "2014-04-17", "check": {"kind": "exact", "value": "2014-04-17"}, "tags": ["long"]}
+{"id": "long-03", "input": "Normalise this date to ISO 8601: 7 October 2006", "ideal": "2006-10-07", "check": {"kind": "exact", "value": "2006-10-07"}, "tags": ["long"]}
+{"id": "long-04", "input": "Normalise this date to ISO 8601: 16 December 2000", "ideal": "2000-12-16", "check": {"kind": "exact", "value": "2000-12-16"}, "tags": ["long"]}
+{"id": "long-05", "input": "Normalise this date to ISO 8601: 9 January 2012", "ideal": "2012-01-09", "check": {"kind": "exact", "value": "2012-01-09"}, "tags": ["long"]}
+{"id": "long-06", "input": "Normalise this date to ISO 8601: 8 July 2021", "ideal": "2021-07-08", "check": {"kind": "exact", "value": "2021-07-08"}, "tags": ["long"]}
+{"id": "long-07", "input": "Normalise this date to ISO 8601: 21 July 2015", "ideal": "2015-07-21", "check": {"kind": "exact", "value": "2015-07-21"}, "tags": ["long"]}
+{"id": "long-08", "input": "Normalise this date to ISO 8601: 22 June 2009", "ideal": "2009-06-22", "check": {"kind": "exact", "value": "2009-06-22"}, "tags": ["long"]}
+{"id": "long-09", "input": "Normalise this date to ISO 8601: 8 June 2008", "ideal": "2008-06-08", "check": {"kind": "exact", "value": "2008-06-08"}, "tags": ["long"]}
+{"id": "long-10", "input": "Normalise this date to ISO 8601: 19 November 2000", "ideal": "2000-11-19", "check": {"kind": "exact", "value": "2000-11-19"}, "tags": ["long"]}
+{"id": "us_long-11", "input": "Normalise this date to ISO 8601: July 16, 2006", "ideal": "2006-07-16", "check": {"kind": "exact", "value": "2006-07-16"}, "tags": ["us_long"]}
+{"id": "us_long-12", "input": "Normalise this date to ISO 8601: November 2, 2015", "ideal": "2015-11-02", "check": {"kind": "exact", "value": "2015-11-02"}, "tags": ["us_long"]}
+{"id": "us_long-13", "input": "Normalise this date to ISO 8601: November 6, 2002", "ideal": "2002-11-06", "check": {"kind": "exact", "value": "2002-11-06"}, "tags": ["us_long"]}
+{"id": "us_long-14", "input": "Normalise this date to ISO 8601: August 18, 2010", "ideal": "2010-08-18", "check": {"kind": "exact", "value": "2010-08-18"}, "tags": ["us_long"]}
+{"id": "us_long-15", "input": "Normalise this date to ISO 8601: April 7, 2023", "ideal": "2023-04-07", "check": {"kind": "exact", "value": "2023-04-07"}, "tags": ["us_long"]}
+{"id": "us_long-16", "input": "Normalise this date to ISO 8601: April 6, 2016", "ideal": "2016-04-06", "check": {"kind": "exact", "value": "2016-04-06"}, "tags": ["us_long"]}
+{"id": "us_long-17", "input": "Normalise this date to ISO 8601: May 27, 2017", "ideal": "2017-05-27", "check": {"kind": "exact", "value": "2017-05-27"}, "tags": ["us_long"]}
+{"id": "us_long-18", "input": "Normalise this date to ISO 8601: October 1, 2008", "ideal": "2008-10-01", "check": {"kind": "exact", "value": "2008-10-01"}, "tags": ["us_long"]}
+{"id": "us_long-19", "input": "Normalise this date to ISO 8601: February 6, 2002", "ideal": "2002-02-06", "check": {"kind": "exact", "value": "2002-02-06"}, "tags": ["us_long"]}
+{"id": "us_long-20", "input": "Normalise this date to ISO 8601: September 6, 2013", "ideal": "2013-09-06", "check": {"kind": "exact", "value": "2013-09-06"}, "tags": ["us_long"]}
+{"id": "us_slash-21", "input": "Normalise this date to ISO 8601: 09/03/2019", "ideal": "2019-09-03", "check": {"kind": "exact", "value": "2019-09-03"}, "tags": ["us_slash"]}
+{"id": "us_slash-22", "input": "Normalise this date to ISO 8601: 06/20/2023", "ideal": "2023-06-20", "check": {"kind": "exact", "value": "2023-06-20"}, "tags": ["us_slash"]}
+{"id": "us_slash-23", "input": "Normalise this date to ISO 8601: 06/25/2002", "ideal": "2002-06-25", "check": {"kind": "exact", "value": "2002-06-25"}, "tags": ["us_slash"]}
+{"id": "us_slash-24", "input": "Normalise this date to ISO 8601: 11/22/2006", "ideal": "2006-11-22", "check": {"kind": "exact", "value": "2006-11-22"}, "tags": ["us_slash"]}
+{"id": "us_slash-25", "input": "Normalise this date to ISO 8601: 05/15/2014", "ideal": "2014-05-15", "check": {"kind": "exact", "value": "2014-05-15"}, "tags": ["us_slash"]}
+{"id": "us_slash-26", "input": "Normalise this date to ISO 8601: 10/04/2000", "ideal": "2000-10-04", "check": {"kind": "exact", "value": "2000-10-04"}, "tags": ["us_slash"]}
+{"id": "us_slash-27", "input": "Normalise this date to ISO 8601: 07/23/2006", "ideal": "2006-07-23", "check": {"kind": "exact", "value": "2006-07-23"}, "tags": ["us_slash"]}
+{"id": "us_slash-28", "input": "Normalise this date to ISO 8601: 11/03/2006", "ideal": "2006-11-03", "check": {"kind": "exact", "value": "2006-11-03"}, "tags": ["us_slash"]}
+{"id": "us_slash-29", "input": "Normalise this date to ISO 8601: 07/09/2015", "ideal": "2015-07-09", "check": {"kind": "exact", "value": "2015-07-09"}, "tags": ["us_slash"]}
+{"id": "us_slash-30", "input": "Normalise this date to ISO 8601: 06/09/2007", "ideal": "2007-06-09", "check": {"kind": "exact", "value": "2007-06-09"}, "tags": ["us_slash"]}
+{"id": "eu_dots-31", "input": "Normalise this date to ISO 8601: 9.5.2019", "ideal": "2019-05-09", "check": {"kind": "exact", "value": "2019-05-09"}, "tags": ["eu_dots"]}
+{"id": "eu_dots-32", "input": "Normalise this date to ISO 8601: 18.3.2011", "ideal": "2011-03-18", "check": {"kind": "exact", "value": "2011-03-18"}, "tags": ["eu_dots"]}
+{"id": "eu_dots-33", "input": "Normalise this date to ISO 8601: 23.10.2002", "ideal": "2002-10-23", "check": {"kind": "exact", "value": "2002-10-23"}, "tags": ["eu_dots"]}
+{"id": "eu_dots-34", "input": "Normalise this date to ISO 8601: 14.10.2011", "ideal": "2011-10-14", "check": {"kind": "exact", "value": "2011-10-14"}, "tags": ["eu_dots"]}
+{"id": "eu_dots-35", "input": "Normalise this date to ISO 8601: 8.2.2025", "ideal": "2025-02-08", "check": {"kind": "exact", "value": "2025-02-08"}, "tags": ["eu_dots"]}
+{"id": "eu_dots-36", "input": "Normalise this date to ISO 8601: 3.10.2021", "ideal": "2021-10-03", "check": {"kind": "exact", "value": "2021-10-03"}, "tags": ["eu_dots"]}
+{"id": "eu_dots-37", "input": "Normalise this date to ISO 8601: 26.1.2001", "ideal": "2001-01-26", "check": {"kind": "exact", "value": "2001-01-26"}, "tags": ["eu_dots"]}
+{"id": "eu_dots-38", "input": "Normalise this date to ISO 8601: 23.5.2022", "ideal": "2022-05-23", "check": {"kind": "exact", "value": "2022-05-23"}, "tags": ["eu_dots"]}
+{"id": "eu_dots-39", "input": "Normalise this date to ISO 8601: 10.10.2025", "ideal": "2025-10-10", "check": {"kind": "exact", "value": "2025-10-10"}, "tags": ["eu_dots"]}
+{"id": "eu_dots-40", "input": "Normalise this date to ISO 8601: 21.4.2013", "ideal": "2013-04-21", "check": {"kind": "exact", "value": "2013-04-21"}, "tags": ["eu_dots"]}
+{"id": "ymd_slash-41", "input": "Normalise this date to ISO 8601: 2020/4/17", "ideal": "2020-04-17", "check": {"kind": "exact", "value": "2020-04-17"}, "tags": ["ymd_slash"]}
+{"id": "ymd_slash-42", "input": "Normalise this date to ISO 8601: 2005/4/27", "ideal": "2005-04-27", "check": {"kind": "exact", "value": "2005-04-27"}, "tags": ["ymd_slash"]}
+{"id": "ymd_slash-43", "input": "Normalise this date to ISO 8601: 2017/12/14", "ideal": "2017-12-14", "check": {"kind": "exact", "value": "2017-12-14"}, "tags": ["ymd_slash"]}
+{"id": "ymd_slash-44", "input": "Normalise this date to ISO 8601: 2019/12/11", "ideal": "2019-12-11", "check": {"kind": "exact", "value": "2019-12-11"}, "tags": ["ymd_slash"]}
+{"id": "ymd_slash-45", "input": "Normalise this date to ISO 8601: 2024/10/16", "ideal": "2024-10-16", "check": {"kind": "exact", "value": "2024-10-16"}, "tags": ["ymd_slash"]}
+{"id": "ymd_slash-46", "input": "Normalise this date to ISO 8601: 2012/3/2", "ideal": "2012-03-02", "check": {"kind": "exact", "value": "2012-03-02"}, "tags": ["ymd_slash"]}
+{"id": "ymd_slash-47", "input": "Normalise this date to ISO 8601: 2007/1/22", "ideal": "2007-01-22", "check": {"kind": "exact", "value": "2007-01-22"}, "tags": ["ymd_slash"]}
+{"id": "ymd_slash-48", "input": "Normalise this date to ISO 8601: 2010/7/2", "ideal": "2010-07-02", "check": {"kind": "exact", "value": "2010-07-02"}, "tags": ["ymd_slash"]}
+{"id": "ymd_slash-49", "input": "Normalise this date to ISO 8601: 2003/11/12", "ideal": "2003-11-12", "check": {"kind": "exact", "value": "2003-11-12"}, "tags": ["ymd_slash"]}
+{"id": "ymd_slash-50", "input": "Normalise this date to ISO 8601: 2024/12/20", "ideal": "2024-12-20", "check": {"kind": "exact", "value": "2024-12-20"}, "tags": ["ymd_slash"]}
+{"id": "short_year-51", "input": "Normalise this date to ISO 8601: May 6 02", "ideal": "2002-05-06", "check": {"kind": "exact", "value": "2002-05-06"}, "tags": ["short_year"]}
+{"id": "short_year-52", "input": "Normalise this date to ISO 8601: Mar 28 13", "ideal": "2013-03-28", "check": {"kind": "exact", "value": "2013-03-28"}, "tags": ["short_year"]}
+{"id": "short_year-53", "input": "Normalise this date to ISO 8601: Jan 7 11", "ideal": "2011-01-07", "check": {"kind": "exact", "value": "2011-01-07"}, "tags": ["short_year"]}
+{"id": "short_year-54", "input": "Normalise this date to ISO 8601: Sep 4 07", "ideal": "2007-09-04", "check": {"kind": "exact", "value": "2007-09-04"}, "tags": ["short_year"]}
+{"id": "short_year-55", "input": "Normalise this date to ISO 8601: Jun 15 11", "ideal": "2011-06-15", "check": {"kind": "exact", "value": "2011-06-15"}, "tags": ["short_year"]}
+{"id": "short_year-56", "input": "Normalise this date to ISO 8601: Apr 17 25", "ideal": "2025-04-17", "check": {"kind": "exact", "value": "2025-04-17"}, "tags": ["short_year"]}
+{"id": "short_year-57", "input": "Normalise this date to ISO 8601: Dec 12 04", "ideal": "2004-12-12", "check": {"kind": "exact", "value": "2004-12-12"}, "tags": ["short_year"]}
+{"id": "short_year-58", "input": "Normalise this date to ISO 8601: Aug 3 20", "ideal": "2020-08-03", "check": {"kind": "exact", "value": "2020-08-03"}, "tags": ["short_year"]}
+{"id": "short_year-59", "input": "Normalise this date to ISO 8601: Jun 10 12", "ideal": "2012-06-10", "check": {"kind": "exact", "value": "2012-06-10"}, "tags": ["short_year"]}
+{"id": "short_year-60", "input": "Normalise this date to ISO 8601: Oct 9 23", "ideal": "2023-10-09", "check": {"kind": "exact", "value": "2023-10-09"}, "tags": ["short_year"]}
+{"id": "ordinal_words-61", "input": "Normalise this date to ISO 8601: the twenty-sixth of June 2003", "ideal": "2003-06-26", "check": {"kind": "exact", "value": "2003-06-26"}, "tags": ["ordinal_words"]}
+{"id": "ordinal_words-62", "input": "Normalise this date to ISO 8601: the twenty-eighth of December 2002", "ideal": "2002-12-28", "check": {"kind": "exact", "value": "2002-12-28"}, "tags": ["ordinal_words"]}
+{"id": "ordinal_words-63", "input": "Normalise this date to ISO 8601: the eighteenth of November 2014", "ideal": "2014-11-18", "check": {"kind": "exact", "value": "2014-11-18"}, "tags": ["ordinal_words"]}
+{"id": "ordinal_words-64", "input": "Normalise this date to ISO 8601: the eighteenth of November 2022", "ideal": "2022-11-18", "check": {"kind": "exact", "value": "2022-11-18"}, "tags": ["ordinal_words"]}
+{"id": "ordinal_words-65", "input": "Normalise this date to ISO 8601: the thirteenth of August 2000", "ideal": "2000-08-13", "check": {"kind": "exact", "value": "2000-08-13"}, "tags": ["ordinal_words"]}
+{"id": "ordinal_words-66", "input": "Normalise this date to ISO 8601: the tenth of September 2010", "ideal": "2010-09-10", "check": {"kind": "exact", "value": "2010-09-10"}, "tags": ["ordinal_words"]}
+{"id": "ordinal_words-67", "input": "Normalise this date to ISO 8601: the twenty-eighth of November 2010", "ideal": "2010-11-28", "check": {"kind": "exact", "value": "2010-11-28"}, "tags": ["ordinal_words"]}
+{"id": "ordinal_words-68", "input": "Normalise this date to ISO 8601: the sixth of June 2004", "ideal": "2004-06-06", "check": {"kind": "exact", "value": "2004-06-06"}, "tags": ["ordinal_words"]}
+{"id": "ordinal_words-69", "input": "Normalise this date to ISO 8601: the twenty-fifth of January 2009", "ideal": "2009-01-25", "check": {"kind": "exact", "value": "2009-01-25"}, "tags": ["ordinal_words"]}
+{"id": "ordinal_words-70", "input": "Normalise this date to ISO 8601: the eighteenth of April 2025", "ideal": "2025-04-18", "check": {"kind": "exact", "value": "2025-04-18"}, "tags": ["ordinal_words"]}
+{"id": "ordinal_suffix-71", "input": "Normalise this date to ISO 8601: 13th Jun 2003", "ideal": "2003-06-13", "check": {"kind": "exact", "value": "2003-06-13"}, "tags": ["ordinal_suffix"]}
+{"id": "ordinal_suffix-72", "input": "Normalise this date to ISO 8601: 2nd Oct 2015", "ideal": "2015-10-02", "check": {"kind": "exact", "value": "2015-10-02"}, "tags": ["ordinal_suffix"]}
+{"id": "ordinal_suffix-73", "input": "Normalise this date to ISO 8601: 17th Jan 2018", "ideal": "2018-01-17", "check": {"kind": "exact", "value": "2018-01-17"}, "tags": ["ordinal_suffix"]}
+{"id": "ordinal_suffix-74", "input": "Normalise this date to ISO 8601: 26th Feb 2012", "ideal": "2012-02-26", "check": {"kind": "exact", "value": "2012-02-26"}, "tags": ["ordinal_suffix"]}
+{"id": "ordinal_suffix-75", "input": "Normalise this date to ISO 8601: 22nd Oct 2002", "ideal": "2002-10-22", "check": {"kind": "exact", "value": "2002-10-22"}, "tags": ["ordinal_suffix"]}
+{"id": "ordinal_suffix-76", "input": "Normalise this date to ISO 8601: 16th Jul 2014", "ideal": "2014-07-16", "check": {"kind": "exact", "value": "2014-07-16"}, "tags": ["ordinal_suffix"]}
+{"id": "ordinal_suffix-77", "input": "Normalise this date to ISO 8601: 9th Dec 2001", "ideal": "2001-12-09", "check": {"kind": "exact", "value": "2001-12-09"}, "tags": ["ordinal_suffix"]}
+{"id": "ordinal_suffix-78", "input": "Normalise this date to ISO 8601: 25th Aug 2021", "ideal": "2021-08-25", "check": {"kind": "exact", "value": "2021-08-25"}, "tags": ["ordinal_suffix"]}
+{"id": "ordinal_suffix-79", "input": "Normalise this date to ISO 8601: 8th Feb 2022", "ideal": "2022-02-08", "check": {"kind": "exact", "value": "2022-02-08"}, "tags": ["ordinal_suffix"]}
+{"id": "ordinal_suffix-80", "input": "Normalise this date to ISO 8601: 5th Jun 2015", "ideal": "2015-06-05", "check": {"kind": "exact", "value": "2015-06-05"}, "tags": ["ordinal_suffix"]}
+{"id": "compact-81", "input": "Normalise this date to ISO 8601: 20240704", "ideal": "2024-07-04", "check": {"kind": "exact", "value": "2024-07-04"}, "tags": ["compact"]}
+{"id": "compact-82", "input": "Normalise this date to ISO 8601: 20000425", "ideal": "2000-04-25", "check": {"kind": "exact", "value": "2000-04-25"}, "tags": ["compact"]}
+{"id": "compact-83", "input": "Normalise this date to ISO 8601: 20200711", "ideal": "2020-07-11", "check": {"kind": "exact", "value": "2020-07-11"}, "tags": ["compact"]}
+{"id": "compact-84", "input": "Normalise this date to ISO 8601: 20050801", "ideal": "2005-08-01", "check": {"kind": "exact", "value": "2005-08-01"}, "tags": ["compact"]}
+{"id": "compact-85", "input": "Normalise this date to ISO 8601: 20061227", "ideal": "2006-12-27", "check": {"kind": "exact", "value": "2006-12-27"}, "tags": ["compact"]}
+{"id": "compact-86", "input": "Normalise this date to ISO 8601: 20170822", "ideal": "2017-08-22", "check": {"kind": "exact", "value": "2017-08-22"}, "tags": ["compact"]}
+{"id": "compact-87", "input": "Normalise this date to ISO 8601: 20131112", "ideal": "2013-11-12", "check": {"kind": "exact", "value": "2013-11-12"}, "tags": ["compact"]}
+{"id": "compact-88", "input": "Normalise this date to ISO 8601: 20060512", "ideal": "2006-05-12", "check": {"kind": "exact", "value": "2006-05-12"}, "tags": ["compact"]}
+{"id": "compact-89", "input": "Normalise this date to ISO 8601: 20000715", "ideal": "2000-07-15", "check": {"kind": "exact", "value": "2000-07-15"}, "tags": ["compact"]}
+{"id": "compact-90", "input": "Normalise this date to ISO 8601: 20240207", "ideal": "2024-02-07", "check": {"kind": "exact", "value": "2024-02-07"}, "tags": ["compact"]}
