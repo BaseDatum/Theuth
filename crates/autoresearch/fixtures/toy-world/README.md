@@ -25,7 +25,7 @@ Study spec the smoke uses:
 ```yaml
 slug: toy-world
 goal: "Raise the landing page's conversion by editing its copy."
-metric: {name: conversion, unit: rate, direction: higher, min_effect: 10%}
+metric: {name: conversion, unit: rate, direction: higher, min_effect: 25%}
 secondary_guards: [{name: bounce, max_regression: 5%, direction: lower}]
 axes: {scoring: world}
 world:
@@ -45,8 +45,8 @@ off_limits: ["deploy.sh", "rollback.sh", "measure.sh", "test.sh", "world.py", "l
 budget: {usd: 3, per_experiment_usd: 0.3, hours: 336, experiments: 8}
 ```
 
-Expected (159 §11 T): three launches pressed; a copy that adds urgency and a benefit (a true
-+0.014, about +35 %) is kept within about 8 two-minute windows at the default traffic; a copy
+Expected (159 §11 T): three launches pressed; a copy that adds urgency, a benefit and social proof (a true
++0.019, about +48 %) is kept within about 7 two-minute windows at the default traffic (`TOY_WORLD_TRAFFIC=40000` makes it 2–3); a copy
 with no feature change ends inconclusive after 14 windows and is rolled back; both arms are
 rolled back on every close. The scripts `cd` to `$AUTORESEARCH_WORKTREE` because the harness
 runs the custody copy from `evaluator/<segment>/`, not the worktree; `world.py` is resolved
