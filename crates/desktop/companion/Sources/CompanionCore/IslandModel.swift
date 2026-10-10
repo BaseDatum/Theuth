@@ -39,12 +39,15 @@ public struct IslandModel: Equatable, Sendable {
         }
     }
 
-    /// 149i D2 — the Tauri original's rule: shown iff live, or "Always show" (the idle wordmark). No linger: Done/Failed/
-    /// Idle and the post-meeting states hide it at once.
-    public static func visible(_ slice: MeetingSlice, alwaysShow: Bool) -> Bool { alwaysShow || live(slice) }
+    /// 149i D2 — the Tauri original's rule: shown iff live, or "Always show" (the idle wordmark), or (158 §5.1) a prompt is up.
+    /// No linger: Done/Failed/Idle and the post-meeting states hide it at once.
+    public static func visible(_ slice: MeetingSlice, alwaysShow: Bool) -> Bool { alwaysShow || live(slice) || slice.prompt != nil }
 
-    /// 149i D1 — the attached layout: live → the strip + pane, unless the user collapsed it; otherwise the pill.
-    public static func attached(live: Bool, collapsed: Bool) -> IslandState { live && !collapsed ? .open : .closed }
+    /// 149i D1 — the attached layout: live → the strip + pane, unless the user collapsed it; otherwise the pill. A prompt
+    /// (158 §5) always opens: it has buttons to answer.
+    public static func attached(live: Bool, collapsed: Bool, prompt: Bool = false) -> IslandState {
+        prompt || (live && !collapsed) ? .open : .closed
+    }
 
     /// 149i §N — whether a next/previous key (J/K or ↑/↓) cycles the briefs: always while the request box is not focused; in
     /// the box J and K type letters (never cycle) and the arrows cycle only while the text is empty (else they move the caret).

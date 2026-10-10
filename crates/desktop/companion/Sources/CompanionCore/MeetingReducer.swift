@@ -40,6 +40,16 @@ public struct MeetingSlice: Equatable, Sendable {
     public var level: Level?
     /// What the meeting's session is doing right now (`TurnStarted`/`ToolCall*`/`TurnFinished`): `thinking…`, a tool name, or nothing.
     public var activity: String?
+    /// 158 §5: the island's prompt state — `.detected` (A/B) before a meeting, `.stop` (D) during one. W3 adds `.upcoming` (C).
+    public var prompt: Prompt?
+    /// "Keep recording" answered at this `releasedForS`: the engine re-sends `AppReleased` every 30 s with a growing count,
+    /// and those are muted; a smaller count is a fresh release episode and asks again.
+    public var keptReleasedForS: UInt32?
+
+    public enum Prompt: Equatable, Sendable {
+        case detected(Detection)
+        case stop(app: MeetingProcess, releasedForS: UInt32)
+    }
 
     public static let empty = MeetingSlice(meeting: nil, session: nil, state: .idle, degraded: [], elapsedMs: 0, clockAt: nil,
                                            topics: [], tapped: [], briefs: [], cursor: -1, unseen: 0, listening: false,
@@ -49,11 +59,13 @@ public struct MeetingSlice: Equatable, Sendable {
 
     public init(meeting: String?, session: String?, state: MeetingState, degraded: [Degradation], elapsedMs: UInt64, clockAt: Date?,
                 topics: [Topic], tapped: [String], briefs: [Brief], cursor: Int, unseen: Int, listening: Bool, approvalWaiting: Bool,
-                progress: Progress?, lines: [Line], deciding: String?, oracle: [OracleDecision], level: Level?, activity: String? = nil) {
+                progress: Progress?, lines: [Line], deciding: String?, oracle: [OracleDecision], level: Level?, activity: String? = nil,
+                prompt: Prompt? = nil, keptReleasedForS: UInt32? = nil) {
         self.meeting = meeting; self.session = session; self.state = state; self.degraded = degraded; self.elapsedMs = elapsedMs
         self.clockAt = clockAt; self.topics = topics; self.tapped = tapped; self.briefs = briefs; self.cursor = cursor
         self.unseen = unseen; self.listening = listening; self.approvalWaiting = approvalWaiting; self.progress = progress
         self.lines = lines; self.deciding = deciding; self.oracle = oracle; self.level = level; self.activity = activity
+        self.prompt = prompt; self.keptReleasedForS = keptReleasedForS
     }
 
     public var isLive: Bool { state.isLive }
@@ -75,7 +87,7 @@ public enum MeetingReducer {
             // The cues end with the recording.
             n.listening = state.isLive && s.listening
             n.approvalWaiting = state.isLive && s.approvalWaiting
-            if !state.isLive { n.activity = nil }
+            if !state.isLive { n.activity = nil; n.prompt = nil } // the meeting ended: a "Stop recording?" has nothing to stop
             if case .post = state {} else { n.progress = nil }
         case .level(let l):
             n.level = l
@@ -127,9 +139,16 @@ public enum MeetingReducer {
             if let i = s.oracle.firstIndex(where: { $0.batchId == decision.batchId }) { n.oracle[i] = decision }
             else { n.oracle = Array((s.oracle + [decision]).suffix(MeetingSlice.oracleKept)) }
             if s.deciding == decision.batchId { n.deciding = nil }
-        case .detected, .detectionCleared, .appReleased, .upcoming:
-            // 158 C158: inert until W1/W3 add `MeetingSlice.prompt` (§15.4); the slice does not change.
-            return s
+        case .detected(let d):
+            n.prompt = .detected(d)
+        case .detectionCleared(let appId, _):
+            if case .detected(let d)? = s.prompt, d.appId == appId { n.prompt = nil }
+        case .appReleased(let meeting, let app, let releasedForS):
+            guard s.meeting == meeting, s.isLive else { return s }
+            if let kept = s.keptReleasedForS, releasedForS > kept { return s } // a re-send of the episode the user kept
+            n.prompt = .stop(app: app, releasedForS: releasedForS); n.keptReleasedForS = nil
+        case .upcoming:
+            return s // 158 W3: island state (c)
         }
         return n
     }
@@ -139,6 +158,7 @@ public enum MeetingReducer {
         var n = MeetingSlice.empty
         n.meeting = status.meeting; n.session = status.session; n.state = status.state; n.degraded = status.degraded
         n.elapsedMs = status.elapsedMs; n.clockAt = now; n.topics = status.topics; n.approvalWaiting = status.approvalWaiting
+        n.prompt = status.detection.map { .detected($0) }
         return n
     }
 
@@ -168,6 +188,23 @@ public enum MeetingReducer {
     public static func markTapped(_ s: MeetingSlice, _ topic: String) -> MeetingSlice {
         guard !s.tapped.contains(topic) else { return s }
         var n = s; n.tapped.append(topic); return n
+    }
+
+    /// "Keep recording": the prompt goes, the engine's 30 s re-sends of this release stay muted (`keptReleasedForS`).
+    public static func keepRecording(_ s: MeetingSlice) -> MeetingSlice {
+        guard case .stop(_, let releasedForS)? = s.prompt else { return s }
+        var n = s; n.prompt = nil; n.keptReleasedForS = releasedForS; return n
+    }
+
+    /// The prompt's event line (158 §5.2 b): `<Title> · <hh:mm>–<hh:mm>`; a start or end that is not RFC 3339 drops the times.
+    public static func eventLine(_ e: EventRef) -> String {
+        // chrono emits RFC 3339 with or without fractional seconds (as `TheuthJSON.decoder` accepts).
+        let fractional = ISO8601DateFormatter(), plain = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func parse(_ s: String) -> Date? { fractional.date(from: s) ?? plain.date(from: s) }
+        guard let a = parse(e.start), let b = parse(e.end) else { return e.title }
+        let f = Date.FormatStyle(date: .omitted, time: .shortened)
+        return "\(e.title) · \(a.formatted(f))–\(b.formatted(f))"
     }
 
     /// Elapsed ms at `now` (pauses excluded): the clock runs only while recording.
