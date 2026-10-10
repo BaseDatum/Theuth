@@ -12,6 +12,7 @@ tools = { workspace = true }
 document = { workspace = true }  # one note per meeting; the summary turn edits it (59 §7.4)
 decision = { workspace = true }  # the oracle pre-filter on transcript batches (57 §3)
 voice = { workspace = true }
+talk = { workspace = true }  # 158 §4.6: `TalkEvent` — a live talk quiets the detector
 models = { workspace = true }  # `models::onnx::ort_lib` before the diarisation sessions (57 §6 step 1)
 kameo = { workspace = true }
 tokio = { workspace = true }

@@ -621,7 +621,7 @@ pub struct MeetingConfig {
 
 /// 158 §6.2: the user-facing subset of [`MeetingConfig`] that `meeting_settings_get` /
 /// `meeting_settings_set` move whole (not `batch_secs`, `context_tokens`, paths).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(default)]
 pub struct MeetingSettings {
@@ -667,21 +667,131 @@ impl From<&MeetingConfig> for MeetingSettings {
     }
 }
 
-/// `meeting_settings_get() -> MeetingSettings` (158 §6.2, W1): the `meeting:` block as
-/// configured. Reads config only; W1 moves it onto the actor so a live set is reflected.
+impl MeetingSettings {
+    /// Every key to `config.yaml` (158 §6.2), all or nothing: the writes land on a copy that
+    /// replaces the file only once each succeeded. Values are JSON scalars/arrays, which YAML
+    /// reads as quoted strings, `null`, booleans, numbers and flow sequences.
+    fn persist(&self, path: &Path) -> std::io::Result<()> {
+        let tmp = path.with_extension("yaml.meeting.tmp");
+        match std::fs::copy(path, &tmp) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            Err(e) => return Err(e),
+        }
+        match self.write_keys(&tmp) {
+            Ok(()) => std::fs::rename(&tmp, path),
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                Err(e)
+            }
+        }
+    }
+
+    fn write_keys(&self, path: &Path) -> std::io::Result<()> {
+        fn j<T: Serialize>(v: &T) -> String {
+            serde_json::to_string(v).expect("settings serialize")
+        }
+        for (k, v) in [
+            ("model", j(&self.model)),
+            ("summary_model", j(&self.summary_model)),
+            ("template", j(&self.template)),
+            ("language", j(&self.language)),
+            ("live_diarization", j(&self.live_diarization)),
+            ("live_tools", j(&self.live_tools)),
+            ("project", j(&self.project)),
+        ] {
+            runtime::write_config_value(path, "meeting", k, &v)?;
+        }
+        for (k, v) in [
+            ("enabled", j(&self.detect.enabled)),
+            ("ignore", j(&self.detect.ignore)),
+            ("poll_secs", j(&self.detect.poll_secs)),
+        ] {
+            runtime::write_nested_config_value(path, "meeting", "detect", k, &v)?;
+        }
+        for (k, v) in [
+            ("eventkit", j(&self.calendar.eventkit)),
+            ("prebrief", j(&self.calendar.prebrief)),
+            ("poll_secs", j(&self.calendar.poll_secs)),
+        ] {
+            runtime::write_nested_config_value(path, "meeting", "calendar", k, &v)?;
+        }
+        Ok(())
+    }
+
+    /// Into the live config (the `meeting_settings_set` subset only).
+    fn apply_to(self, c: &mut MeetingConfig) {
+        c.model = self.model;
+        c.summary_model = self.summary_model;
+        c.template = self.template;
+        c.language = self.language;
+        c.live_diarization = self.live_diarization;
+        c.live_tools = self.live_tools;
+        c.project = self.project;
+        c.detect = self.detect;
+        c.calendar = self.calendar;
+    }
+}
+
+/// `ask` → [`MeetingSettings`]: the live block (what a set left behind).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GetSettings;
+
+/// `ask` → `Result<MeetingSettings, String>`: persist the whole block, then apply it live
+/// (the detector restarts with its new list and cadence). A failed write changes nothing.
+#[derive(Clone, Debug)]
+pub struct SetSettings(pub MeetingSettings);
+
+impl Message<GetSettings> for Meeting {
+    type Reply = MeetingSettings;
+
+    async fn handle(&mut self, _: GetSettings, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        MeetingSettings::from(&self.cfg)
+    }
+}
+
+impl Message<SetSettings> for Meeting {
+    type Reply = Result<MeetingSettings, String>;
+
+    async fn handle(
+        &mut self,
+        m: SetSettings,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        m.0.persist(&self.rt.data_dir.join("config.yaml"))
+            .map_err(|e| format!("config.yaml: {e}"))?;
+        m.0.apply_to(&mut self.cfg);
+        self.detect.apply(&self.cfg.detect, ctx.actor_ref());
+        tracing::info!("meeting: settings updated");
+        Ok(MeetingSettings::from(&self.cfg))
+    }
+}
+
+/// `meeting_settings_get() -> MeetingSettings` (158 §6.2, W1): the live block from the actor,
+/// or the file when meetings are disabled.
 pub async fn rpc_settings_get(rt: &Runtime) -> anyhow::Result<MeetingSettings> {
+    if let Ok(Some(actor)) = ActorRef::<Meeting>::lookup(MEETING_ACTOR) {
+        return actor
+            .ask(GetSettings)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"));
+    }
     let cfg: MeetingConfig = rt.section("meeting").unwrap_or_default();
     Ok(MeetingSettings::from(&cfg))
 }
 
-/// `meeting_settings_set(MeetingSettings) -> MeetingSettings` (158 §6.2, W1): one actor
-/// message, `write_config_value` / `write_nested_config_value` per key, then `self.cfg`;
-/// a failed write changes nothing. Stub: refused.
+/// `meeting_settings_set(MeetingSettings) -> MeetingSettings` (158 §6.2, W1).
 pub async fn rpc_settings_set(
     _rt: &Runtime,
-    _settings: MeetingSettings,
+    settings: MeetingSettings,
 ) -> anyhow::Result<MeetingSettings> {
-    Err(anyhow::anyhow!("158 W1: not built yet"))
+    ActorRef::<Meeting>::lookup(MEETING_ACTOR)?
+        .ok_or_else(|| anyhow::anyhow!("meetings are disabled"))?
+        .ask(SetSettings(settings))
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 impl MeetingConfig {
@@ -1250,6 +1360,8 @@ pub struct Meeting {
     /// flight at `Summarize` (the stop-flush batch) is never taken for it, and
     /// two meetings may summarize at once — their sessions are distinct.
     summarizing: HashMap<MeetingId, Summarizing>,
+    /// 158 §4: the mic sensor's rules engine, theuth's own voice state, the poll task.
+    detect: detect::Detector,
 }
 
 /// One meeting's summary in flight: the form's input id, and the turn it opened
@@ -1258,6 +1370,8 @@ struct Summarizing {
     manifest: Manifest,
     input: InputId,
     turn: Option<TurnId>,
+    /// 158 §6.1: the model to put back on the session once the summary turn settles.
+    restore: Option<String>,
 }
 
 /// Wall clock on one summary from the form's delivery to its turn's end (04 §6). The
@@ -1982,10 +2096,18 @@ impl Message<StartMeeting> for Meeting {
             tx.send(Err("a meeting is already recording".into()));
             return reply;
         }
+        // 158 §5.4: a one-tap start names the prompted app; on a host whose render list
+        // misses a mic-only process (Windows) the prompt's own `ProcessInfo` stands in.
+        let prompted = self
+            .detect
+            .engine
+            .prompt()
+            .map(|d| d.app.clone())
+            .filter(|p| Some(p.pid) == m.process);
         let process = match m.process {
             None => system_audio(),
             Some(pid) => match tokio::task::spawn_blocking(capture::system::processes).await {
-                Ok(Ok(list)) => match list.into_iter().find(|p| p.pid == pid) {
+                Ok(Ok(list)) => match list.into_iter().find(|p| p.pid == pid).or(prompted) {
                     Some(p) => p,
                     None => {
                         tx.send(Err(format!("pid {pid} is not playing audio")));
@@ -2002,11 +2124,14 @@ impl Message<StartMeeting> for Meeting {
                 }
             },
         };
+        // 158 §4.4 rule 8: any start clears the prompt.
+        self.detect_starting(m.source.as_ref()).await;
         let now = chrono::Local::now();
         let mut manifest = Manifest::new(MeetingId::new(), process, now.to_rfc3339());
         manifest.title = m.title;
         manifest.context = m.context;
-        manifest.session_model = m.session_model;
+        // 158 §6.1: the start's pick, else `meeting.model`; `None` still falls to `agent.model`.
+        manifest.session_model = m.session_model.or_else(|| self.cfg.model.clone());
         // 137 R1-D6: the mode is the start option, else the configured default; without
         // the agent bridge installed the meeting runs as before and says so once.
         manifest.memory = self.endless.resolve(m.memory);
@@ -2345,11 +2470,13 @@ impl Message<Begun> for Meeting {
                 } else {
                     self.publish_state(&manifest).await;
                 }
+                self.detect_ended();
             }
             Ok(capture) => {
                 self.audio_capture = PermissionState::Granted;
                 manifest.state = MeetingState::Recording;
                 let id = manifest.id;
+                self.detect_recording(id, &manifest.process);
                 let me = ctx.actor_ref().clone();
                 let dir = self.store.meeting_dir(id);
                 let mut rec = Recording::new(manifest, capture, &self.cfg, &dir);
@@ -2670,6 +2797,7 @@ impl Message<StopMeeting> for Meeting {
         tools::unregister().await;
         // 57 §2.1: the meeting checkpoint is resident only while recording.
         oracle::release().await;
+        self.detect_ended();
         manifest.ended_at = Some(chrono::Local::now().to_rfc3339());
         manifest.duration_ms = Some(clock.now_ms());
         // 04 §2: the post pipeline takes it from here (its task saves `Post(_)`,
@@ -2710,7 +2838,7 @@ impl Message<MeetingStatus> for Meeting {
             approval_waiting: live.is_some_and(|l| !l.approvals.is_empty()),
             supported,
             accelerator: models::onnx::ep().to_owned(),
-            detection: None,
+            detection: self.detect.engine.prompt().cloned(),
         }
     }
 }
@@ -3746,6 +3874,7 @@ impl Meeting {
         me: ActorRef<Self>,
     ) -> Result<(), String> {
         let input = InputId::new();
+        let restore = self.summary_model_switch(manifest.session).await;
         session::queue_turn(manifest.session, input, summary::form_for(&manifest)).await?;
         manifest.state = MeetingState::Summarizing;
         manifest.failure = None;
@@ -3757,6 +3886,7 @@ impl Meeting {
                 manifest,
                 input,
                 turn: None,
+                restore,
             },
         );
         tokio::spawn(async move {
@@ -3766,14 +3896,66 @@ impl Meeting {
         Ok(())
     }
 
-    /// Release the slot matching `pred`.
+    /// 158 §6.1: the summary turn runs on `meeting.summary_model` when set — the session is
+    /// switched here and the model to put back is returned (its own, else the default new
+    /// sessions get: a session that followed the default stays pinned to that value after).
+    async fn summary_model_switch(&self, session: SessionId) -> Option<String> {
+        let model = self.cfg.summary_model.clone()?;
+        let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+            .ok()
+            .flatten()?;
+        let prior = match agents.ask(agent::SessionModel(session)).await {
+            Ok(Some(m)) => m,
+            Ok(None) => agents.ask(agent::GetDefaultModel).await.ok()?,
+            Err(e) => {
+                tracing::warn!(%session, "meeting: summary model: {e}");
+                return None;
+            }
+        };
+        if prior == model {
+            return None;
+        }
+        match agents
+            .ask(agent::SetModel {
+                session: Some(session),
+                model,
+                manual: false,
+            })
+            .await
+        {
+            Ok(_) => Some(prior),
+            Err(e) => {
+                tracing::warn!(%session, "meeting: summary model: {e}");
+                None
+            }
+        }
+    }
+
+    /// Release the slot matching `pred`; the session goes back to its own model (§6.1).
     fn take_summarizing(&mut self, pred: impl Fn(&Summarizing) -> bool) -> Option<Summarizing> {
         let id = self
             .summarizing
             .iter()
             .find(|(_, s)| pred(s))
             .map(|(id, _)| *id)?;
-        self.summarizing.remove(&id)
+        let s = self.summarizing.remove(&id)?;
+        if let Some(model) = s.restore.clone() {
+            let session = s.manifest.session;
+            tokio::spawn(async move {
+                if let Ok(Some(agents)) = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+                    && let Err(e) = agents
+                        .ask(agent::SetModel {
+                            session: Some(session),
+                            model,
+                            manual: false,
+                        })
+                        .await
+                {
+                    tracing::warn!(%session, "meeting: restore model: {e}");
+                }
+            });
+        }
+        Some(s)
     }
 
     /// A summary that will not settle through its turn: back to `Review` with
@@ -3903,6 +4085,36 @@ impl Message<agent::EndlessConfigChanged> for Meeting {
 // ---------------------------------------------------------------------------
 // Plugin
 
+/// 158 D13 (W-n): a meeting the last run left `Recording`/`Paused` — crash, power loss — with
+/// its tracks on disk is stopped here and enters post like any other ([`resumable`] then takes
+/// it); one that never wrote audio is `Failed`. No UI.
+async fn finalise_interrupted(store: &Store, manifests: &mut [Manifest]) {
+    for m in manifests
+        .iter_mut()
+        .filter(|m| matches!(m.state, MeetingState::Recording | MeetingState::Paused))
+    {
+        let dir = store.meeting_dir(m.id);
+        if m.tracks.iter().any(|t| dir.join(&t.file).is_file()) {
+            tracing::warn!(meeting = %m.id, "meeting: left {:?} by the last run; finalising", m.state);
+            m.state = MeetingState::Stopping;
+            m.ended_at
+                .get_or_insert_with(|| chrono::Local::now().to_rfc3339());
+        } else {
+            m.state = MeetingState::Failed;
+            m.failure = Some("interrupted before any audio was written".into());
+        }
+        if let Err(e) = store.save(m).await {
+            tracing::warn!(meeting = %m.id, "manifest: {e:#}");
+        }
+    }
+}
+
+/// 04 §2: a manifest whose post pipeline (or summary) a restart resumes.
+fn resumable(m: &Manifest) -> bool {
+    matches!(m.state, MeetingState::Post(_) | MeetingState::Summarizing)
+        || (m.state == MeetingState::Stopping && m.ended_at.is_some())
+}
+
 /// The plugin: opens the store, spawns and registers [`Meeting`].
 pub struct MeetingPlugin;
 
@@ -3928,15 +4140,13 @@ impl runtime::Plugin for MeetingPlugin {
                 return Ok(());
             }
         };
+        let mut manifests = store.manifests();
+        finalise_interrupted(&store, &mut manifests).await;
         // 04 §2: a restart mid-pipeline resumes it; a `Summarizing` manifest is
         // re-queued once the actor hears agent events (`Resummarize`, below).
-        let (resume, settle): (Vec<Manifest>, Vec<Manifest>) = store
-            .manifests()
+        let (resume, settle): (Vec<Manifest>, Vec<Manifest>) = manifests
             .into_iter()
-            .filter(|m| {
-                matches!(m.state, MeetingState::Post(_) | MeetingState::Summarizing)
-                    || (m.state == MeetingState::Stopping && m.ended_at.is_some())
-            })
+            .filter(resumable)
             .partition(|m| m.state != MeetingState::Summarizing);
         // 05 §0.1: the brief cache is its own file; a broken one costs the hot path, not the meeting.
         let cache = match Cache::open(&rt.data_dir).await {
@@ -3948,8 +4158,10 @@ impl runtime::Plugin for MeetingPlugin {
         };
         // 137 R1-D6: the meeting's memory port is the agent actor (kameo messages).
         endless_agent::install();
+        let detect_cfg = cfg.detect.clone();
         let mut meeting = Meeting {
             rt: rt.clone(),
+            detect: detect::Detector::new(&cfg.detect),
             cfg,
             endless: endless::Config::load(rt),
             store: store.clone(),
@@ -3973,6 +4185,10 @@ impl runtime::Plugin for MeetingPlugin {
         // 137 §11.3: `default_meeting` / `meeting_view_bytes` follow Settings › Memory live.
         rt.subscribe::<Meeting, agent::EndlessConfigChanged>(&actor)
             .await;
+        // 158 §4.6: theuth's own dictation and talk quiet the detector; §4.2: the sensor loop.
+        rt.subscribe::<Meeting, voice::VoiceEvent>(&actor).await;
+        rt.subscribe::<Meeting, talk::TalkEvent>(&actor).await;
+        let _ = actor.tell(detect::Configure(detect_cfg)).await;
         for m in settle {
             let _ = actor.tell(Resummarize(m)).await;
         }
@@ -4058,6 +4274,7 @@ mod tests {
             audio_capture: PermissionState::NotDetermined,
             post: Vec::new(),
             summarizing: HashMap::new(),
+            detect: detect::Detector::new(&DetectConfig::default()),
         };
         let actor = Meeting::spawn_with_mailbox(meeting, runtime::subscriber_mailbox());
         Bench {
@@ -4097,6 +4314,7 @@ mod tests {
                 manifest: m,
                 input,
                 turn: None,
+                restore: None,
             }))
             .await
             .unwrap();
@@ -4561,5 +4779,182 @@ mod tests {
             );
         }
         assert_eq!(Profiles::load(tmp.path()).unwrap().list().len(), 1);
+    }
+
+    fn zoom() -> ProcessInfo {
+        ProcessInfo {
+            pid: 4242,
+            name: "zoom.us".into(),
+            bundle_id: Some("us.zoom.xos".into()),
+            active: true,
+        }
+    }
+
+    /// 158 §4.7 integration: fake mic holders ticked into the actor → `Detected` on the bus
+    /// after 15 s, `Status.detection` set, "Not now" → `DetectionCleared{NotNow}` and clear.
+    #[tokio::test(start_paused = true)]
+    async fn fake_holders_reach_the_bus_as_detected() {
+        let b = bench().await;
+        b.actor.ask(detect::Holders(vec![zoom()])).await.unwrap();
+        tokio::time::advance(Duration::from_secs(14)).await;
+        b.actor.ask(detect::Holders(vec![zoom()])).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await; // the bus hop
+        assert!(
+            !b.events
+                .lock()
+                .iter()
+                .any(|e| matches!(e, MeetingEvent::Detected(_))),
+            "14 s is not a hold"
+        );
+        tokio::time::advance(Duration::from_secs(2)).await;
+        b.actor.ask(detect::Holders(vec![zoom()])).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await; // the bus hop
+        let det = b
+            .events
+            .lock()
+            .iter()
+            .find_map(|e| match e {
+                MeetingEvent::Detected(d) => Some(d.clone()),
+                _ => None,
+            })
+            .expect("Detected on the bus");
+        assert_eq!(det.app_id, "us.zoom.xos");
+        assert_eq!(det.app, zoom());
+        assert!(det.event.is_none(), "W2 fills the calendar match");
+        let status = b.actor.ask(MeetingStatus).await.unwrap();
+        assert_eq!(status.detection.as_ref(), Some(&det));
+        assert_eq!(
+            b.actor
+                .ask(detect::CurrentDetection)
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(&det)
+        );
+        b.actor
+            .ask(detect::Dismiss {
+                app_id: "us.zoom.xos".into(),
+                never: false,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await; // the bus hop
+        assert!(b.events.lock().iter().any(|e| matches!(
+            e,
+            MeetingEvent::DetectionCleared {
+                reason: Cleared::NotNow,
+                ..
+            }
+        )));
+        assert!(
+            b.actor
+                .ask(detect::CurrentDetection)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// §4.3: "Never for" lands in `config.yaml` under `meeting.detect.ignore` and the live
+    /// settings reflect it.
+    #[tokio::test(start_paused = true)]
+    async fn never_persists_to_the_ignore_list() {
+        let b = bench().await;
+        let path = b._dir.path().join("config.yaml");
+        std::fs::write(&path, "meeting:\n  max_minutes: 90\n").unwrap();
+        b.actor
+            .ask(detect::Dismiss {
+                app_id: "us.zoom.xos".into(),
+                never: true,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("max_minutes: 90"), "{text}");
+        let cfg: MeetingConfig = figment::Figment::new()
+            .merge(figment::providers::Yaml::file(&path))
+            .extract_inner("meeting")
+            .unwrap();
+        assert!(cfg.detect.ignore.iter().any(|i| i == "us.zoom.xos"));
+        assert!(
+            cfg.detect.ignore.iter().any(|i| i == "com.apple.Siri"),
+            "defaults kept"
+        );
+        let live = b.actor.ask(GetSettings).await.unwrap();
+        assert!(live.detect.ignore.iter().any(|i| i == "us.zoom.xos"));
+    }
+
+    /// §6.2: `meeting_settings_set` persists every key, keeps the rest of the file, and the
+    /// live config follows; the next start resolves `meeting.model`.
+    #[tokio::test(start_paused = true)]
+    async fn settings_set_persists_and_applies() {
+        let b = bench().await;
+        let path = b._dir.path().join("config.yaml");
+        std::fs::write(&path, "agent:\n  model: x/y\nmeeting:\n  max_minutes: 90\n").unwrap();
+        let mut s = MeetingSettings::default();
+        s.model = Some("openai/gpt-5".into());
+        s.summary_model = Some("anthropic/claude".into());
+        s.live_diarization = false;
+        s.detect.enabled = false;
+        s.detect.poll_secs = 7;
+        s.calendar.eventkit = true;
+        let got = b.actor.ask(SetSettings(s.clone())).await.unwrap().unwrap();
+        assert_eq!(got, s);
+        assert_eq!(b.actor.ask(GetSettings).await.unwrap(), s);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("agent:\n  model: x/y"), "{text}");
+        assert!(text.contains("max_minutes: 90"), "{text}");
+        let cfg: MeetingConfig = figment::Figment::new()
+            .merge(figment::providers::Yaml::file(&path))
+            .extract_inner("meeting")
+            .unwrap();
+        assert_eq!(MeetingSettings::from(&cfg), s);
+        assert_eq!(cfg.max_minutes, 90);
+        assert!(!b.actor.ask(LiveDiarization).await.unwrap());
+    }
+
+    /// 158 D13: a manifest the last run left `Recording` with a track on disk is `Stopping`
+    /// with an end time (so the post pipeline resumes it); one without audio is `Failed`.
+    #[tokio::test]
+    async fn interrupted_recordings_finalise_on_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        let mut with_audio =
+            Manifest::new(MeetingId::new(), zoom(), "2026-10-10T10:00:00+02:00".into());
+        with_audio.session = SessionId::new();
+        with_audio.state = MeetingState::Recording;
+        with_audio.tracks = vec![TrackFile {
+            track: Stem::Mic,
+            file: "mic.opus".into(),
+            sample_rate: 24_000,
+        }];
+        let mdir = store.create(&with_audio).await.unwrap();
+        std::fs::write(mdir.join("mic.opus"), b"OggS").unwrap();
+        let mut no_audio =
+            Manifest::new(MeetingId::new(), zoom(), "2026-10-10T11:00:00+02:00".into());
+        no_audio.session = SessionId::new();
+        no_audio.state = MeetingState::Paused;
+        store.create(&no_audio).await.unwrap();
+        let done = finished(&store, MeetingState::Done).await;
+
+        let mut manifests = store.manifests();
+        assert!(
+            !manifests.iter().any(resumable),
+            "nothing resumable before the arm"
+        );
+        finalise_interrupted(&store, &mut manifests).await;
+
+        let a = store.manifest(with_audio.id).unwrap();
+        assert_eq!(a.state, MeetingState::Stopping);
+        assert!(a.ended_at.is_some());
+        assert!(resumable(&a), "the post pipeline picks it up");
+        let n = store.manifest(no_audio.id).unwrap();
+        assert_eq!(n.state, MeetingState::Failed);
+        assert!(n.failure.as_deref().unwrap_or("").contains("interrupted"));
+        assert!(!resumable(&n));
+        assert_eq!(store.manifest(done.id).unwrap().state, MeetingState::Done);
+        assert_eq!(manifests.iter().filter(|m| resumable(m)).count(), 1);
     }
 }

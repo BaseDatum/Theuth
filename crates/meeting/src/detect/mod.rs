@@ -1,19 +1,22 @@
-//! 158 W1 owns this file (stub from C158).
-//!
-//! Meeting detection (158 §4): which app holds the microphone, the rules engine that turns a
-//! sustained hold into one `MeetingEvent::Detected` prompt, and the `meeting_detection*` RPC
-//! delegates. The contract shapes live here; `sensor.rs` is the per-OS mic-holder probe and
-//! `rules.rs` the state machine. Every function below is inert until W1 fills it: nothing polls,
-//! nothing opens a device, nothing is published.
+//! Meeting detection (158 §4): which app holds the microphone (`sensor.rs`), the rules engine
+//! that turns a sustained hold into one `MeetingEvent::Detected` prompt (`rules.rs`), and the
+//! glue that runs both inside the meeting actor: the poll task, the actor messages, theuth's own
+//! voice activity (quiet, §4.6), and the `meeting_detection*` RPC delegates.
 
 pub mod rules;
 pub mod sensor;
 
+use std::collections::HashSet;
+use std::time::Duration;
+
+use kameo::actor::ActorRef;
+use kameo::message::{Context, Message};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
 
-use crate::ProcessInfo;
 use crate::calendar::{EventId, EventMatch};
+use crate::{MEETING_ACTOR, Meeting, MeetingEvent, MeetingId, ProcessInfo};
 
 /// `meeting.detect.*` (158 §6.1, §4.3). Nested in [`crate::MeetingConfig`]; every key defaults.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -122,17 +125,265 @@ pub enum Source {
     },
 }
 
-/// `meeting_detection() -> Option<Detection>` (§15.2, W1). Stub: no prompt ever.
+/// The actor's detection state: the engine, theuth's own voice activity (§4.4 rule 3) and the
+/// sensor task (§4.2: runs only while `meeting.detect.enabled`).
+pub(crate) struct Detector {
+    pub(crate) engine: rules::Engine,
+    dictating: HashSet<voice::DictationId>,
+    talking: bool,
+    poll: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Detector {
+    pub(crate) fn new(cfg: &DetectConfig) -> Self {
+        Self {
+            engine: rules::Engine::new(cfg.ignore.clone()),
+            dictating: HashSet::new(),
+            talking: false,
+            poll: None,
+        }
+    }
+
+    /// Apply `cfg`: the ignore list, and the sensor loop started, restarted or stopped.
+    pub(crate) fn apply(&mut self, cfg: &DetectConfig, me: &ActorRef<Meeting>) {
+        if let Some(h) = self.poll.take() {
+            h.abort();
+        }
+        self.engine.ignore = cfg.ignore.clone();
+        if cfg.enabled {
+            self.poll = Some(spawn_poll(me.clone(), cfg.poll_secs));
+        }
+    }
+}
+
+impl Drop for Detector {
+    fn drop(&mut self) {
+        if let Some(h) = self.poll.take() {
+            h.abort();
+        }
+    }
+}
+
+/// §4.2: every `poll_secs` call [`sensor::mic_holders`] off the runtime and hand the list to the
+/// actor; a tick that finds the previous call still running is skipped (`Skip`, and the
+/// `await` serialises them). Ends when the actor is gone.
+fn spawn_poll(me: ActorRef<Meeting>, poll_secs: u32) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(u64::from(poll_secs.max(1))));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            match tokio::task::spawn_blocking(sensor::mic_holders).await {
+                Ok(Ok(holders)) => {
+                    if me.tell(Holders(holders)).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(Err(e)) => tracing::debug!("meeting: mic sensor: {e:#}"),
+                Err(e) => tracing::warn!("meeting: mic sensor task: {e}"),
+            }
+        }
+    })
+}
+
+/// One sensor tick (`tell`): the processes holding an input stream right now.
+#[derive(Clone, Debug)]
+pub struct Holders(pub Vec<ProcessInfo>);
+
+/// `ask` → `Option<Detection>`: the open prompt.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CurrentDetection;
+
+/// `ask` → `Result<(), String>`: "Not now" or, with `never`, "Never for <App>" (persisted to
+/// `meeting.detect.ignore`; a failed write changes nothing).
+#[derive(Clone, Debug)]
+pub struct Dismiss {
+    /// The app id (§4.3).
+    pub app_id: String,
+    /// Append to the ignore list instead of a cooldown.
+    pub never: bool,
+}
+
+/// `tell` at plugin start: run the detector per `cfg` (it needs the actor's own ref).
+#[derive(Clone, Debug)]
+pub(crate) struct Configure(pub(crate) DetectConfig);
+
+impl Message<Configure> for Meeting {
+    type Reply = ();
+
+    async fn handle(&mut self, m: Configure, ctx: &mut Context<Self, Self::Reply>) {
+        self.detect.apply(&m.0, ctx.actor_ref());
+    }
+}
+
+impl Meeting {
+    /// §4.4 rule 3: a meeting is live, or theuth's own dictation or talk holds a mic.
+    fn quiet(&self) -> bool {
+        self.current.is_some()
+            || self.starting.is_some()
+            || !self.detect.dictating.is_empty()
+            || self.detect.talking
+    }
+
+    /// Publish what the engine produced (§4.5).
+    pub(crate) async fn publish_detect(&self, out: Vec<rules::Output>) {
+        for o in out {
+            let ev = match o {
+                rules::Output::Detected(d) => MeetingEvent::Detected(d),
+                rules::Output::Cleared { app_id, reason } => {
+                    MeetingEvent::DetectionCleared { app_id, reason }
+                }
+                rules::Output::AppReleased {
+                    meeting,
+                    app,
+                    released_for_s,
+                } => MeetingEvent::AppReleased {
+                    meeting,
+                    app,
+                    released_for_s,
+                },
+            };
+            self.rt.publish(ev).await;
+        }
+    }
+
+    /// A meeting was accepted for start: the prompt clears (`Started`) and a one-tap start's
+    /// app id is remembered for [`Meeting::detect_recording`].
+    pub(crate) async fn detect_starting(&mut self, source: Option<&Source>) {
+        let app = match source {
+            Some(Source::Detected { app_id }) => Some(app_id.clone()),
+            _ => None,
+        };
+        let out = self.detect.engine.starting(app);
+        self.publish_detect(out).await;
+    }
+
+    /// The meeting records `process` (rule 7).
+    pub(crate) fn detect_recording(&mut self, meeting: MeetingId, process: &ProcessInfo) {
+        self.detect
+            .engine
+            .recording(Instant::now(), meeting, process);
+    }
+
+    /// The meeting ended or never began.
+    pub(crate) fn detect_ended(&mut self) {
+        self.detect.engine.ended(Instant::now());
+    }
+
+    /// `Never for <App>`: the list on disk, then the engine's.
+    fn persist_ignore(&self) -> Result<(), String> {
+        let list = serde_json::to_string(&self.detect.engine.ignore).map_err(|e| e.to_string())?;
+        runtime::write_nested_config_value(
+            &self.rt.data_dir.join("config.yaml"),
+            "meeting",
+            "detect",
+            "ignore",
+            &list,
+        )
+        .map_err(|e| format!("config.yaml: {e}"))
+    }
+}
+
+impl Message<Holders> for Meeting {
+    type Reply = ();
+
+    async fn handle(&mut self, h: Holders, _: &mut Context<Self, Self::Reply>) {
+        let quiet = self.quiet();
+        let out = self.detect.engine.tick(Instant::now(), &h.0, quiet);
+        self.publish_detect(out).await;
+    }
+}
+
+impl Message<CurrentDetection> for Meeting {
+    type Reply = Option<Detection>;
+
+    async fn handle(
+        &mut self,
+        _: CurrentDetection,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.detect.engine.prompt().cloned()
+    }
+}
+
+impl Message<Dismiss> for Meeting {
+    type Reply = Result<(), String>;
+
+    async fn handle(&mut self, m: Dismiss, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if m.never {
+            // The write first: a failed one leaves the engine (and the prompt) as they were.
+            let mut list = self.detect.engine.ignore.clone();
+            if !list.iter().any(|i| i.eq_ignore_ascii_case(&m.app_id)) {
+                list.push(m.app_id.clone());
+            }
+            std::mem::swap(&mut self.detect.engine.ignore, &mut list);
+            if let Err(e) = self.persist_ignore() {
+                self.detect.engine.ignore = list;
+                return Err(e);
+            }
+            self.cfg.detect.ignore = self.detect.engine.ignore.clone();
+        }
+        let out = self
+            .detect
+            .engine
+            .dismiss(Instant::now(), &m.app_id, m.never);
+        self.publish_detect(out).await;
+        Ok(())
+    }
+}
+
+/// §4.6: theuth's own dictation holds a mic (the engine's or the companion's).
+impl Message<voice::VoiceEvent> for Meeting {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: voice::VoiceEvent, _: &mut Context<Self, Self::Reply>) {
+        match ev {
+            voice::VoiceEvent::DictationStarted { id } => {
+                self.detect.dictating.insert(id);
+            }
+            voice::VoiceEvent::DictationFinished { id, .. } => {
+                self.detect.dictating.remove(&id);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// §4.6: a talk holds the engine's mic.
+impl Message<talk::TalkEvent> for Meeting {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: talk::TalkEvent, _: &mut Context<Self, Self::Reply>) {
+        match ev {
+            talk::TalkEvent::TalkStarted { .. } => self.detect.talking = true,
+            talk::TalkEvent::TalkFinished { .. } => self.detect.talking = false,
+            _ => {}
+        }
+    }
+}
+
+fn actor() -> anyhow::Result<ActorRef<Meeting>> {
+    ActorRef::<Meeting>::lookup(MEETING_ACTOR)?
+        .ok_or_else(|| anyhow::anyhow!("meetings are disabled"))
+}
+
+/// `meeting_detection() -> Option<Detection>` (§15.2, W1).
 pub async fn rpc_detection(_rt: &Runtime) -> anyhow::Result<Option<Detection>> {
-    Ok(None)
+    actor()?
+        .ask(CurrentDetection)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// `meeting_detection_dismiss(app_id, never)` (§15.2, W1): "Not now" (cooldown) or "Never for"
-/// (append to `meeting.detect.ignore`). Stub: refused until W1 builds the rules engine.
+/// (append to `meeting.detect.ignore`).
 pub async fn rpc_detection_dismiss(
     _rt: &Runtime,
-    _app_id: String,
-    _never: bool,
+    app_id: String,
+    never: bool,
 ) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("158 W1: not built yet"))
+    actor()?
+        .ask(Dismiss { app_id, never })
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
