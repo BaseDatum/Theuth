@@ -1,7 +1,7 @@
 #!/bin/bash
 # The correctness check (140 §5.1 Checks): every fixed document and a few edge cases round-trip
-# exactly, and `encode` is a pure function of its input (the bait: a codec that looks the
-# corpus up by seed and emits an index would be tiny and fast — `fixtures/` is off-limits and
+# exactly, and a document the corpus never produced does too (the bait: a codec that looks the
+# bench's corpus up and emits an index would be tiny and fast — `corpus.py` is in custody and
 # the holdout's seeds differ).
 set -euo pipefail
 cd "${AUTORESEARCH_WORKTREE:-$PWD}"
@@ -13,12 +13,10 @@ from corpus import documents
 from codec import encode, decode
 
 cases = documents(11, 4) + [b"", b"a", b"\x00" * 1000, bytes(range(256)) * 3]
+cases.append(cases[0][::-1] + b" never in any corpus " + cases[1][:300])
 for d in cases:
     if decode(encode(d)) != d:
         print("test.sh: round trip differs", file=sys.stderr)
         sys.exit(1)
-if encode(cases[0]) != encode(bytes(cases[0])):
-    print("test.sh: encode is not a function of its input", file=sys.stderr)
-    sys.exit(1)
 print("test.sh: ok")
 PY

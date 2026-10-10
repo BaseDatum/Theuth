@@ -21,9 +21,10 @@ for seed, count, words in ((101, 8, 900), (202, 10, 2200), (303, 6, 1500)):
     if back != docs:
         print(f"holdout: round trip differs for seed {seed}", file=sys.stderr)
         sys.exit(1)
+    size = sum(len(b) for b in blobs)
     total_ms += ms
-    total_bytes += sum(len(b) for b in blobs)
-    print(f"CASE s{seed} time_ms={ms:.3f} size_kb={total_bytes / 1024:.3f}")
+    total_bytes += size
+    print(f"CASE s{seed} time_ms={ms:.3f} size_kb={size / 1024:.3f}")
 print(f"METRIC time_ms={total_ms:.3f}")
 print(f"METRIC size_kb={total_bytes / 1024:.3f}")
 PY

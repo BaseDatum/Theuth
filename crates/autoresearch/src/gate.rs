@@ -518,7 +518,7 @@ mod tests {
                 name: format!("o{j}"),
                 direction: Direction::Lower,
                 min_effect: Effect::Relative(0.005),
-                max_regression: Effect::Absolute(0.0),
+                max_regression: None,
                 guard: false,
             })
             .collect();

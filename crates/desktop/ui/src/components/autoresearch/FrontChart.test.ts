@@ -36,6 +36,12 @@ test('front chart: a dot per plottable experiment, members outlined and joined b
   expect(html).toContain('>size_kb →<')
 })
 
+test('front chart: equal values on an axis draw one tick, not three duplicate keys (R-W1-12)', () => {
+  const flat = { ...view, points: view.points.map((p) => ({ ...p, scores: { ...p.scores, size_kb: 48 } })) }
+  const html = renderToStaticMarkup(createElement(FrontChart, { view: flat }))
+  expect((html.match(/text-anchor="end"/g) ?? []).length).toBe(1)
+})
+
 test('front chart: no plottable point paints the empty card, no svg', () => {
   const html = renderToStaticMarkup(createElement(FrontChart, { view: { ...view, points: [], members: [] } }))
   expect(html).toContain('data-kind="front"')

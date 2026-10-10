@@ -22,15 +22,15 @@ Registration lines used: `actor.rs` `parent_of` (`Search::Front`), `kind_rule` (
 **Mechanism.**
 - *Objectives*: `axes_of(spec)` = `objectives_in_force()` with role `objective` (competing) then `guard`; `report` never enters. `Effect` strings parsed once.
 - *Noise per objective*: `sigmas_of` = `gate::pooled_sigma` per objective over every clean tree of the study (holdout, noisy and lost rows excluded), the headline from `Sample.value`, the others from `Sample.secondaries`.
-- *Comparing two trees*: `compare` — Δ_j direction-normalised, `z_j = Δ_j / (σ_j √(1/n_c + 1/n_r))`; better iff `z_j ≥ z_k ∧ Δ_j > min_effect_j`; worse iff `z_j ≤ −z_k ∧ loss > max_regression_j`; σ_j = 0 is deterministic (effects alone); a guard is judged in its own direction and never called better.
+- *Comparing two trees*: `compare` — Δ_j direction-normalised, `z_j = Δ_j / (σ_j √(1/n_c + 1/n_r))`; better iff `z_j ≥ z_k ∧ Δ_j > min_effect_j`; worse iff `z_j ≤ −z_k` (a tolerated loss is still a loss, R-W1-2); `max_regression_j` is the loss a trade may carry — past it the candidate is not kept (`Compare::beyond_tolerance`); empty = any loss; σ_j = 0 is deterministic (effects alone); a guard is judged in its own direction and never called better.
 - *Dominance under noise*: `Compare::dominates` = better on ≥ 1 competing objective and worse on none.
 - *Entry rule*: in `decide` — (1) no member dominates c, (2) c is better than every member on some objective (each on the member's own samples), (3) every guard holds (`GuardFailed`). Members c dominates leave in `replay` (`front.retain(!dominates)`); their rows stay, `sync` deletes their refs.
-- *Verdicts*: `Improved` when c dominates its parent, `Traded` when it enters without dominating it; else `NoGain` / `Worse` / `GuardFailed`.
+- *Verdicts*: `Improved` when c dominates its parent (no significant loss: it replaces the parent), `Traded` when it enters beside it with a loss within `max_regression`; a loss past `max_regression` is `Worse`; else `NoGain` / `Worse` / `GuardFailed`.
 - *Sequential sampling*: one sample → `Worse` on a significant loss with no gain; `NoGain` below `z_discard` (confirm when the parent has < 3 samples and some Δ > 0, as 140); a fast entry needs `z_fast,k` on some objective and no worse objective; a possible trade always confirms; else `Confirm { confirm_runs }`. On means every call is at `z_k`.
 - *Parents*: `parent_of` sorts members by children ascending, ties by the headline objective; slot k takes the k-th. The study worktree is reset to the parent through `Backend::discard` when `Backend::head` differs (the Fake proves the reset: `resets == ["keep0001"]` at #4).
 - *Staleness*: `Trees::parent_age` from the parent's newest sample; a re-measure is requested only when the parent is the incumbent (the engine's in-place sample measures `study.incumbent_sha`, §Deviations W1-j).
 - *Cap*: `FRONT_CAP = 8`; `crowding` is NSGA-II's (extremes infinite); the least crowded leaves.
-- *Waves*: `parent_of(Some(k))` hands slot k a distinct member; promotion stays the ratchet's (W1-l, hand-off H1).
+- *Waves*: `parent_of(Some(_))` is refused (W1-l, R-W1-8); promotion stays the ratchet's (hand-off H1).
 
 **Seams.** `pareto::step` is `kind_rule`'s `Dominance` arm and returns `Decide { detail: Some(GateDecision { rule: Dominance, objectives: one ObjectiveDelta per axis, stat: max competing z, threshold: z_k or z_fast,k, n: candidate samples }) }`; the scalar fields carry the headline (axis 0). `gate_cfgs` of the design is `Dom::new(cfg, axes, sigmas, dof)`. One input per objective is built from the samples (`tree_values`), not from `GateInput.secondaries`. `incumbent_of` stays; `parent_of` is the dispatch C made.
 
@@ -42,7 +42,7 @@ Registration lines used: `actor.rs` `parent_of` (`Search::Front`), `kind_rule` (
 
 - **W1-a** The setup row `objectives` has one leaf, `objectives`, edited as lines `name lower|higher min_effect [max_regression] [unit]` (the `secondary_guards` grammar), not the indexed leaves `objectives[i].{…}` of §6: `SetupRow.leaves` is a static list and `kind_setup_for` matches leaf names exactly. Two or more lines set `axes.objectives: pareto` and `axes.search: front` and `normalise()` the spec.
 - **W1-b** The engine's incumbent (and so the study branch, holdouts, the drift repair, the trailer's x̄_i) is the **latest kept member**, not the headline member: `record_keep` moves `incumbent_sha` on every keep candidate including `Traded`, and no W1 hook runs between a keep and the next fire. The headline member is what `studies.scores`, the headline, the brief and the view name; the parent choice does not depend on the incumbent. Landing is per changeset anyway (§17 Q8).
-- **W1-c** On top of Šidák, `z_k` and `z_fast,k` are widened to the Student-t quantile at the σ pool's dof (Cornish–Fisher, `t_of`). Without it the simulated family-wise null entry rate with the staleness re-measure was 0.76 / 0.92 / 1.05 % at k = 2 / 3 / 4 (over §6's 1 % bound at k = 4): with k per-objective σ estimates on a few repeated samples, normal thresholds under-correct. With it: 0.61 / 0.80 / 0.83 %, power 76.8 % at k = 3. `z_discard` stays uncorrected (W-p); correcting it cost 20 points of power.
+- **W1-c** On top of Šidák, `z_k` and `z_fast,k` are widened to the exact Student-t quantile at the σ pool's dof (`t_of`; R2 replaced the Cornish–Fisher expansion, R-W1-6). Without it the simulated family-wise null entry rate with the staleness re-measure was 0.76 / 0.92 / 1.05 % at k = 2 / 3 / 4 (over §6's 1 % bound at k = 4): with k per-objective σ estimates on a few repeated samples, normal thresholds under-correct. With it: 0.61 / 0.80 / 0.83 %, power 76.8 % at k = 3. `z_discard` stays uncorrected (W-p); correcting it cost 20 points of power.
 - **W1-d** The "more than three objectives" warning is appended to the card's line 1 by `card_line` (`study_draft::warnings` has no per-kind hook).
 - **W1-e** `headline` reads each member's means from the ledger's samples; no fresh per-member measurement against the base at finalize (§6 Cost line 3). Finalize's changesets still re-measure every kept commit alone against the base.
 - **W1-f** The dominance rule has no `Suspicious` verdict; the reviewer still runs on every keep.
@@ -144,3 +144,63 @@ Likewise `row_json` returns `Null` for kind rows, so the sticky check ignores th
 **H6 — `crates/autoresearch/src/setup.rs`** (optional): an `axes.objectives` / `axes.search` leaf, so a 140 draft can be switched to a front study from the panel; today the switch happens through `autoresearch_draft` (the skill says how) or by setting two `objectives` lines.
 
 **H7 — `crates/autoresearch/src/wave.rs`** (later wave or Z): per-slot entry-rule promotion for `Search::Front` (§6 "Waves"); until then H1.
+
+## R2 — review fixes (R-W1.md)
+
+Gates re-run after the fixes: `build-lock mbx test -p autoresearch --locked --no-run` ok · `mbx test -p autoresearch --locked` **197 passed / 0 failed** (golden ledger green) · `build-lock mbx clippy -p autoresearch --locked --tests` 0 warnings · `cargo fmt -p autoresearch` touched only `pareto.rs`/`gate.rs` · `build-lock bun run check` ok · `bun run test` FrontChart + components **13 passed** (no wire change, no bindings export). Simulations after the exact t quantile: null front-entry 0.61 / 0.80 / 0.82 % at k = 2 / 3 / 4, power 76.7 % at k = 3.
+
+- **R-W1-1 [BUG]** — handed off (actor.rs is frozen); exact diff H8 below. The P-test cannot see it (the double writes the literal `"diff"`), so no test is possible inside W1's files; H8 is the fix and the ratchet is unchanged by it (`parent_sha == incumbent` there).
+- **R-W1-2 [RISK]** — fixed. A significant loss is `Worse` whether or not it is tolerated, so a tolerated loss never dominates and never evicts; `max_regression` is the loss a trade may carry — past it the candidate is `Worse` and not kept (`Axis.max_regression: Option<Effect>`, `None` = any loss; `Compare::beyond_tolerance`; `decide` refuses past it). Tests: `compare_calls_better_same_worse` (4 % within a 10 % tolerance → `Worse`, not dominating, not beyond; 20 % → beyond) and `decide_sequential_and_entry_rule` (8 % → `Traded`, 30 % → `Worse`) — both fail on the old code (`Same`/`Improved`/`Traded`). Skill text and the brief line say so now.
+- **R-W1-3 [RISK]** — not changed. A non-incumbent parent is not re-measured; `parent_of` could sample it in place, but every sample taken outside the measure loop bypasses the engine's drift/noisy accounting (`absorb_incumbent_sample` is private to actor.rs) and the budget's per-experiment bench cap. Recorded as W1-j; hand-off H9 names the one-line engine change that makes the measure loop sample the parent instead.
+- **R-W1-4 [RISK]** — not changed; recorded next to the simulation table (below). Pooling σ per segment would leave members from earlier segments without samples; pooling within ±50 % of the reference mean is a reasonable next step and lives entirely in `sigmas_of`.
+- **R-W1-5 [RISK]** — partly refuted, partly open. Membership is recomputed from all samples, but eviction depends only on the dominated member's and the evictor's own samples plus σ_j/dof; members' samples never change after their keep, so only σ_j (every new sample) can flip a call near the threshold. The flicker is bounded to borderline pairs; the archive mirror is idempotent and `children` is recounted from `parent_sha`, never lost. Persisting eviction (an `evicted_by` event written at `parent_of`) is the follow-up; not done in R2 (it changes the replay's semantics and the sim would need it too).
+- **R-W1-6 [RISK]** — fixed. `t_of` is now the exact Student-t quantile (regularised incomplete beta, bisection) — `evalcore::gate::t_quantile` does not exist on C's skeleton in this worktree (evalcore has `margin`/`paired`/`decide` only); Z may swap the body for W2's function at merge (H10). Test `t_of_is_the_exact_student_quantile`: `t_of(3.68, 2)` within 0.05 of the closed form 65.4 (the expansion gave 34.6 → fails before), `t_of(2.0, 2)` exact, `t_of(2.0, 10) ∈ (2.22, 2.3)`, large dof → z.
+- **R-W1-7 [RISK]** — handed off (actor.rs); H8 covers the report's `inc_samples` too.
+- **R-W1-8 [RISK]** — fixed. `parent_of(Some(_))` returns `Error::refused` (fail closed); test in `toy_pareto_front_end_to_end` (`parent_of(&st.env(), &study, Some(0))` is an error — returned `keep0002` before the fix). H1 still refuses at draft time.
+- **R-W1-9 [RISK]** — recorded: the ≤ 1 % figures hold for the simulated model (homoscedastic σ = 1 on every tree, permanent eviction, no sample cap, parent re-measure only for the incumbent, `z_discard` uncorrected). Not covered: heteroscedastic σ (R-W1-4), membership flicker (R-W1-5), the actor's `max_samples` fallback to the scalar `gate_step` against the incumbent when `decide` keeps confirming (unreachable: `decide` decides once the candidate has `1 + confirm_runs` samples and `max_samples = 2·confirm_runs + 2`).
+- **R-W1-10 [RISK]** — not changed; W1-b stands. Keeping the worktree detached is refused by `git::repair` on every begin (it re-attaches the branch, with an incident); moving the branch to the headline member needs the same frozen `repair`. A `refs/autoresearch/<slug>/kept/<n>` ref per keep is a good idea for Z (H11: one `refs::update`-style call in `log_env` after `backend.keep`).
+- **R-W1-11 [POLISH]** — fixed: the brief line no longer quotes thresholds and describes the tolerance correctly.
+- **R-W1-12 [POLISH]** — not changed: `KindView::Front.axes` carries names only (types.rs frozen); the chart's "lower-left" assumption holds for the fixture and every `lower` objective; a `higher` objective needs the directions in the view (H12: add `directions: [MetricDirection; 2]` to `KindView::Front`). Duplicate tick keys when all values are equal: real but harmless (React warns); fixed by deduping ticks in FrontChart — done.
+- **R-W1-13 [POLISH]** — fixed: `holdout.sh` prints the seed's own `size_kb`; `test.sh` round-trips a document no corpus seed produces instead of the vacuous identity check; README updated.
+- **R-W1-14 [POLISH]** — `settle` and `sample` are the frozen per-kind surface (§18.4) and stay; `let _ = slug;` in rpc_impl.rs is C's line, not the registration line (Z may drop it).
+
+### Hand-offs added in R2
+
+**H8 — `crates/autoresearch/src/actor.rs`, `measure_env` / `log_env` (R-W1-1, R-W1-7).** A front experiment's worktree sits at `exp.parent_sha`, not at the incumbent; every git base and the report's reference must be the parent. The ratchet is unchanged (`parent_sha == incumbent`).
+```diff
+@@ measure_env
+-    let patch_hash = env.backend.patch_hash(worktree, &incumbent)?;
++    let patch_hash = env.backend.patch_hash(worktree, &exp.parent_sha)?;
+@@ measure_env (the report's reference samples; R-W1-7)
+-    let inc_samples = incumbent_samples(env, study, &incumbent).await?;
++    let inc_samples = incumbent_samples(env, study, &exp.parent_sha).await?;
+     let inc_vals = bench_values(&inc_samples);
+@@ log_env
+     let incumbent = incumbent_of(&study)?;
++    // 159 W1: the tree the worktree rests on (a front member); the ratchet's parent is the incumbent.
++    let base = exp.parent_sha.clone();
+@@ log_env — verify_tree_for_keep
+-        match verify_tree_for_keep(env, &study, &exp, &worktree, &incumbent)? {
++        match verify_tree_for_keep(env, &study, &exp, &worktree, &base)? {
+@@ log_env — keep_pending
+-                &serde_json::json!({ "n": n, "parent": incumbent }),
++                &serde_json::json!({ "n": n, "parent": base }),
+@@ log_env — review revert
+-                        .diff_text(&worktree, &incumbent, &sha, 4 << 20)?;
++                        .diff_text(&worktree, &base, &sha, 4 << 20)?;
+-                    env.backend.reject(&worktree, &slug, n, &incumbent)?;
++                    env.backend.reject(&worktree, &slug, n, &base)?;
+                     let back = StudyPatch::incumbent(&incumbent, previous_mean, study.sigma);   // the study's incumbent goes back to the previous keep; unchanged
+@@ log_env — discard
+-        let hash = env.backend.discard(&worktree, &incumbent, &patch).map_err(|e| {
++        let hash = env.backend.discard(&worktree, &base, &patch).map_err(|e| {
+```
+`incumbent_sample_in_place` (confirm re-measure) keeps `incumbent`: `decide` only asks for it when the parent is the incumbent.
+
+**H9 — `crates/autoresearch/src/actor.rs`, `incumbent_sample_in_place` (R-W1-3, optional).** Sample `exp.parent_sha` instead of `incumbent` (`discard(worktree, &exp.parent_sha, stash)`, `tree_sha = &exp.parent_sha`, `absorb_incumbent_sample` only when the two coincide). Then `pareto::decide`'s `parent_is_incumbent` gate on `incumbent_sample` can be dropped (one line) and stale non-incumbent parents are re-measured by the design's rule.
+
+**H10 — `crates/autoresearch/src/pareto.rs`, `t_of` (R-W1-6).** Once W2's `evalcore::gate::t_quantile(df, p)` is on the branch, Z may replace the body with `t_quantile(dof.max(2), 1.0 − norm_tail(z))` and delete `t_tail`/`beta_inc`/`betacf`/`ln_gamma`; `t_of_is_the_exact_student_quantile` is the regression check.
+
+**H11 — `crates/autoresearch/src/actor.rs`, `log_env` after `backend.keep` (R-W1-10).** `git::plumbing(&worktree, &["update-ref", &format!("refs/autoresearch/{slug}/kept/{n}"), &sha])?;` so every kept commit stays reachable after its front ref is deleted.
+
+**H12 — `crates/autoresearch/src/types.rs`, `KindView::Front` (R-W1-12).** `directions: [Direction; 2]` beside `axes`, filled in `pareto::view` from `Front.axes`; FrontChart then draws the staircase corner per direction.

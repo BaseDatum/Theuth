@@ -3,7 +3,7 @@
 
 Use this kind when the user names two to five numbers that trade against each other and would merge *either* kind of win — faster but larger, smaller but slower, more accurate but slower. The study then keeps a **front** of versions none of which beats another on every objective, and the user lands the one they want. Use a plain **guard** instead when one quantity is a hard limit ("never more than 5 % more memory"): a guard only blocks, it never competes.
 
-Ask once: *"how much of each would you give up for a gain in another?"* The answer is each objective's `max_regression` (the loss on that objective a trade may carry; empty = any significant loss is `worse`). `min_effect` stays the smallest gain worth keeping, per objective.
+Ask once: *"how much of each would you give up for a gain in another?"* The answer is each objective's `max_regression`: the largest loss on that objective a trade may carry and still be kept (empty = any loss, as long as the trade wins somewhere else). `min_effect` stays the smallest gain worth keeping, per objective.
 
 Draft `objectives` instead of `metric`, and set the axes:
 
@@ -17,7 +17,7 @@ objectives:
 
 The benchmark prints one `METRIC <name>=` line per objective (and per guard); the first objective is the headline the scalar surfaces show. What changes in the loop:
 
-- A candidate is compared with its **parent** (the front member it was cut from), objective by objective, at a keep threshold corrected for the number of objectives (two objectives: z 2.28 instead of 2.00; three: 2.43). It is `improved` when it beats the parent on at least one objective and loses on none, `traded` when it beats the parent on one and loses within `max_regression` on another — both are keeps, both join the front. A new member must also beat every existing member on some objective; noise-level clones stay out. Members a keep dominates leave the front. At most eight members; past that the least distinct one leaves.
+- A candidate is compared with its **parent** (the front member it was cut from), objective by objective, at a keep threshold corrected for the number of objectives (two objectives: z 2.28 instead of 2.00; three: 2.43; wider still while the noise estimate rests on few samples). It is `improved` when it beats the parent on at least one objective and loses significantly on none — it replaces the parent; `traded` when it beats the parent on one and loses on another within that objective's `max_regression` — it joins the front beside the parent. A loss past `max_regression` is `worse`: nothing is kept. A new member must also beat every existing member on some objective; noise-level clones stay out. Only outright improvements evict members. At most eight members; past that the least distinct one leaves.
 - Each experiment is cut from the member with the fewest children, so no trade-off is starved; the study worktree sits at that member when the session starts.
 - Bench time grows 10–20 % (the stricter threshold sends more candidates to confirm). More than three objectives raises the bar for every keep; the card warns.
 - The Study view shows every experiment on the first two objectives with the front as a staircase; the headline reads `front of 3 · time_ms −21 % · size_kb −12 %`.

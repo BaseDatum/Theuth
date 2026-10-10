@@ -10,7 +10,7 @@ under 3 s per sample.
 | `codec.py` | the scope: `encode`/`decode` over bytes; starts as a slow pure-Python RLE pass into zlib 6, off the front on both objectives |
 | `corpus.py` | the seeded corpus (evaluator file): small-vocabulary text with binary runs; `documents(seed, count, words)` |
 | `bench.sh` | `bench.command`: seeds 11–13 × 12 documents through encode + decode; prints `CASE s<seed> time_ms= size_kb=`, `METRIC time_ms=` (lower), `METRIC size_kb=` (lower), one `ASI` |
-| `test.sh` | `checks.command`: exact round trip on fixed documents and edge cases; `encode` is a function of its input |
+| `test.sh` | `checks.command`: exact round trip on fixed documents, edge cases and a document outside every corpus |
 | `holdout.sh` | `holdout.command`: other seeds and lengths, round trip verified itself |
 
 **Known answer.** Python's stdlib codecs span the front this corpus has (measured on this Mac,
@@ -19,9 +19,9 @@ under 3 s per sample.
 52 ms · 79 KB, dominated by every zlib level. A plain ratchet on `time_ms` with a 5 % `size_kb`
 guard stops at `store`/`zlib 1` and discards `bz2`; the front keeps it.
 
-**Gaming bait.** A codec that recognises the bench's seeds and emits an index into the corpus
-would be tiny and fast; `corpus.py` is an evaluator file (custody), `test.sh` checks `encode` is
-a function of its input, and `holdout.sh` uses seeds the search never scores.
+**Gaming bait.** A codec that recognises the bench's documents and emits an index into the corpus
+would be tiny and fast; `corpus.py` is an evaluator file (custody), `test.sh` round-trips a
+document no corpus seed produces, and `holdout.sh` uses seeds the search never scores.
 
 Study spec the live run uses:
 

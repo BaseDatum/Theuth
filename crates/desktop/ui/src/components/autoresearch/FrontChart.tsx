@@ -111,7 +111,7 @@ function Axes({ xName, yName, xs, ys, sx, sy }: { xName: string; yName: string; 
   const ticks = (vals: number[]) => {
     const lo = Math.min(...vals)
     const hi = Math.max(...vals)
-    return [lo, (lo + hi) / 2, hi]
+    return [...new Set([lo, (lo + hi) / 2, hi])]
   }
   return (
     <g fontSize={11} fill="currentColor" fillOpacity={0.55}>

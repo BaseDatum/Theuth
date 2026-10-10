@@ -94,8 +94,9 @@ pub struct Axis {
     pub direction: Direction,
     /// Smallest gain that counts as better.
     pub min_effect: Effect,
-    /// Largest significant loss still called the same (`""` = none).
-    pub max_regression: Effect,
+    /// The loss a trade may carry on this objective (`None` = any); a guard's limit. A
+    /// significant loss is `Worse` either way; past the tolerance the candidate is not kept.
+    pub max_regression: Option<Effect>,
     /// A guard blocks a keep past `max_regression` and never competes.
     pub guard: bool,
 }
@@ -109,7 +110,13 @@ pub fn axes_of(spec: &StudySpec) -> Result<Vec<Axis>> {
                 name: o.name.trim().to_owned(),
                 direction: o.direction,
                 min_effect: Effect::parse(&o.min_effect).map_err(Error::refused)?,
-                max_regression: Effect::parse(&o.max_regression).map_err(Error::refused)?,
+                max_regression: if role == ObjectiveRole::Objective
+                    && o.max_regression.trim().is_empty()
+                {
+                    None
+                } else {
+                    Some(Effect::parse(&o.max_regression).map_err(Error::refused)?)
+                },
                 guard: role == ObjectiveRole::Guard,
             });
         }
@@ -198,17 +205,32 @@ impl Compare {
     pub fn guard_failed(&self) -> bool {
         self.deltas.iter().any(|d| d.call == Call::GuardFailed)
     }
-    /// 159 §6 "Dominance under noise": better on ≥ 1 competing objective, worse on none.
+    /// 159 §6 "Dominance under noise": better on ≥ 1 competing objective, worse on none
+    /// (a tolerated loss is still a loss: it never evicts, R-W1-2).
     pub fn dominates(&self, axes: &[Axis]) -> bool {
         self.better_any(axes) && !self.worse_any(axes)
+    }
+    /// A competing objective lost more than its `max_regression` allows: the trade is refused.
+    pub fn beyond_tolerance(&self, axes: &[Axis]) -> bool {
+        self.calls(axes).any(|(a, d)| {
+            !a.guard
+                && d.call == Call::Worse
+                && match (a.max_regression, d.delta, d.reference) {
+                    (Some(limit), Some(delta), Some(reference)) => {
+                        -delta > limit.against(reference)
+                    }
+                    _ => false,
+                }
+        })
     }
 }
 
 /// Candidate `c` against reference `r` (per-axis sample vectors), with per-axis pooled σ and
 /// the corrected threshold `z_k`. Δ is direction-normalised (positive = better);
 /// `z = Δ / (σ √(1/n_c + 1/n_r))`; better needs `z ≥ z_k` and `Δ > min_effect`; worse needs
-/// `z ≤ −z_k` and a loss past `max_regression`; σ = 0 is deterministic (effects alone). A guard
-/// is judged in its own direction against its limit and never called better.
+/// `z ≤ −z_k` (tolerated or not — see [`Compare::beyond_tolerance`]); σ = 0 is deterministic
+/// (effects alone). A guard is judged in its own direction against its limit and never called
+/// better.
 pub fn compare(axes: &[Axis], sigmas: &[f64], c: &[Vec<f64>], r: &[Vec<f64>], z_k: f64) -> Compare {
     let mut z_max: Option<f64> = None;
     let deltas = axes
@@ -237,16 +259,16 @@ pub fn compare(axes: &[Axis], sigmas: &[f64], c: &[Vec<f64>], r: &[Vec<f64>], z_
                 .then(|| delta / (sigma * (1.0 / cv.len() as f64 + 1.0 / rv.len() as f64).sqrt()));
             let significant_gain = z.is_none_or(|z| z >= z_k);
             let significant_loss = z.is_none_or(|z| z <= -z_k);
-            let loss_past = -delta > a.max_regression.against(xr) && delta < 0.0;
+            let loss = delta < 0.0 && significant_loss;
             let call = if a.guard {
-                if significant_loss && loss_past {
+                if loss && -delta > a.max_regression.map_or(0.0, |l| l.against(xr)) {
                     Call::GuardFailed
                 } else {
                     Call::Same
                 }
             } else if significant_gain && delta > a.min_effect.against(xr) {
                 Call::Better
-            } else if significant_loss && loss_past {
+            } else if loss {
                 Call::Worse
             } else {
                 Call::Same
@@ -314,15 +336,117 @@ impl<'a> Dom<'a> {
     }
 }
 
-/// The Student-t quantile with the same tail as the normal quantile `z`, at `dof` degrees of
-/// freedom (the Cornish–Fisher expansion, exact as `dof → ∞`; within 2 % of the table for
-/// `dof ≥ 4`). `dof = 0` (no repeated tree yet) is treated as 2.
+/// The Student-t quantile with the same upper tail as the normal quantile `z`, at `dof`
+/// degrees of freedom — exact (bisection on [`t_tail`]), so a one-sample fast keep right after
+/// the baseline (dof 2) runs at the intended tail, not 3× it (R-W1-6). `dof = 0` (no repeated
+/// tree yet) is treated as 2; past 10 000 the normal quantile is returned.
 pub fn t_of(z: f64, dof: usize) -> f64 {
+    if dof > 10_000 || z <= 0.0 {
+        return z;
+    }
     let v = dof.max(2) as f64;
-    let g1 = (z.powi(3) + z) / 4.0;
-    let g2 = (5.0 * z.powi(5) + 16.0 * z.powi(3) + 3.0 * z) / 96.0;
-    let g3 = (3.0 * z.powi(7) + 19.0 * z.powi(5) + 17.0 * z.powi(3) - 15.0 * z) / 384.0;
-    z + g1 / v + g2 / v.powi(2) + g3 / v.powi(3)
+    let target = norm_tail(z);
+    let (mut lo, mut hi) = (z, z.max(1.0) * 2.0);
+    while t_tail(hi, v) > target {
+        hi *= 2.0;
+    }
+    for _ in 0..200 {
+        let mid = (lo + hi) / 2.0;
+        if t_tail(mid, v) > target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo + hi) / 2.0
+}
+
+/// `P(T_v > t)` for `t ≥ 0`: `½ I_x(v/2, ½)` with `x = v / (v + t²)` (regularised incomplete
+/// beta, Lentz's continued fraction).
+fn t_tail(t: f64, v: f64) -> f64 {
+    let x = v / (v + t * t);
+    0.5 * beta_inc(v / 2.0, 0.5, x)
+}
+
+/// The regularised incomplete beta `I_x(a, b)` (Numerical Recipes `betai`/`betacf`).
+fn beta_inc(a: f64, b: f64, x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let ln_beta = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b);
+    let front = (ln_beta + a * x.ln() + b * (1.0 - x).ln()).exp();
+    if x < (a + 1.0) / (a + b + 2.0) {
+        front * betacf(a, b, x) / a
+    } else {
+        1.0 - front * betacf(b, a, 1.0 - x) / b
+    }
+}
+
+fn betacf(a: f64, b: f64, x: f64) -> f64 {
+    const TINY: f64 = 1e-300;
+    let (qab, qap, qam) = (a + b, a + 1.0, a - 1.0);
+    let mut c = 1.0;
+    let mut d = 1.0 - qab * x / qap;
+    if d.abs() < TINY {
+        d = TINY;
+    }
+    d = 1.0 / d;
+    let mut h = d;
+    for m in 1..=300 {
+        let m = m as f64;
+        let m2 = 2.0 * m;
+        let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        h *= d * c;
+        let aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        let del = d * c;
+        h *= del;
+        if (del - 1.0).abs() < 1e-14 {
+            break;
+        }
+    }
+    h
+}
+
+/// Lanczos `ln Γ(x)` for `x > 0`.
+fn ln_gamma(x: f64) -> f64 {
+    const G: [f64; 6] = [
+        76.180_091_729_471_46,
+        -86.505_320_329_416_77,
+        24.014_098_240_830_91,
+        -1.231_739_572_450_155,
+        0.120_865_097_386_617_9e-2,
+        -0.539_523_938_495_3e-5,
+    ];
+    let tmp = x + 5.5;
+    let tmp = tmp - (x + 0.5) * tmp.ln();
+    let ser = G
+        .iter()
+        .enumerate()
+        .fold(1.000_000_000_190_015, |s, (i, g)| {
+            s + g / (x + 1.0 + i as f64)
+        });
+    -tmp + (2.506_628_274_631_000_5 * ser / x).ln()
 }
 
 /// Degrees of freedom of the pooled σ: Σ (n − 1) over trees measured at least twice, on the
@@ -361,8 +485,9 @@ fn n_of(t: &[Vec<f64>]) -> usize {
 /// fast entry needs `z_fast,k` on some objective; nothing above `z_discard` is `NoGain`;
 /// anything between takes `confirm_runs` more samples. On means, every call is at `z_k`. A
 /// keep candidate (better on ≥ 1 objective vs its parent) then meets the entry rule: no member
-/// dominates it, it beats every member on some objective, every guard holds — `Improved` when
-/// it dominates its parent, `Traded` otherwise.
+/// dominates it, it beats every member on some objective, every guard holds and no loss
+/// exceeds its objective's `max_regression` — `Improved` when it dominates its parent (no
+/// significant loss at all), `Traded` otherwise.
 pub fn decide(d: &Dom, t: &Trees) -> GateStep {
     let (n_c, n_p) = (n_of(t.candidate), n_of(t.parent));
     if n_c == 0 || n_p == 0 {
@@ -428,6 +553,10 @@ pub fn decide(d: &Dom, t: &Trees) -> GateStep {
     }
     if vs_parent.guard_failed() {
         return finish(&vs_parent, Verdict::GuardFailed, threshold, n_c);
+    }
+    // A trade may carry a loss only up to each objective's `max_regression` (R-W1-2).
+    if vs_parent.beyond_tolerance(d.axes) {
+        return finish(&vs_parent, Verdict::Worse, threshold, n_c);
     }
     for m in t.members {
         let vs_m = compare(d.axes, d.sigmas, t.candidate, m, d.z_k);
@@ -881,10 +1010,17 @@ pub async fn step(
     Ok(decide(&d, &t))
 }
 
-/// `Search::Front`: the member with the fewest children, ties by the headline objective; slot
-/// `k` of a wave takes the k-th in that order. The front is mirrored into the ledger and the
-/// refs here, and the study worktree is reset to the parent before the brief is rendered.
+/// `Search::Front`: the member with the fewest children, ties by the headline objective; a
+/// wave slot is refused (R-W1-8). The front is mirrored into the ledger and the refs here, and
+/// the study worktree is reset to the parent before the brief is rendered.
 pub async fn parent_of(env: &Env, study: &StudyRecord, slot: Option<u8>) -> Result<String> {
+    if slot.is_some() {
+        // Wave promotion cherry-picks every slot onto the incumbent and confirms against it
+        // (wave.rs, frozen): a front study fails closed instead of corrupting lineages (R-W1-8).
+        return Err(Error::refused(
+            "a front study runs one experiment at a time (`parallel: 1`); wave slots on the front are not built (159 W1-l)",
+        ));
+    }
     let f = front(&env.store, study, (env.cfg.gate.z, env.cfg.gate.z_fast)).await?;
     sync(&env.store, study, &f).await?;
     if f.members.is_empty() {
@@ -910,17 +1046,14 @@ pub async fn parent_of(env: &Env, study: &StudyRecord, slot: Option<u8>) -> Resu
             }
         })
     });
-    let pick = order[usize::from(slot.unwrap_or(0)) % order.len()];
-    let parent = pick.sha.clone();
-    if slot.is_none() {
-        let worktree = crate::actor::worktree_of(study)?;
-        if env.backend.head(&worktree)? != parent {
-            let n = env.store.next_experiment_n(&study.slug).await?;
-            let runs = env.runs_dir(&study.slug, n);
-            std::fs::create_dir_all(&runs)?;
-            env.backend
-                .discard(&worktree, &parent, &runs.join("parent.patch"))?;
-        }
+    let parent = order[0].sha.clone();
+    let worktree = crate::actor::worktree_of(study)?;
+    if env.backend.head(&worktree)? != parent {
+        let n = env.store.next_experiment_n(&study.slug).await?;
+        let runs = env.runs_dir(&study.slug, n);
+        std::fs::create_dir_all(&runs)?;
+        env.backend
+            .discard(&worktree, &parent, &runs.join("parent.patch"))?;
     }
     Ok(parent)
 }
@@ -1311,7 +1444,7 @@ mod tests {
             name: name.into(),
             direction: Direction::Lower,
             min_effect: Effect::parse(min).unwrap(),
-            max_regression: Effect::parse(max).unwrap(),
+            max_regression: (!max.is_empty()).then(|| Effect::parse(max).unwrap()),
             guard: false,
         }
     }
@@ -1360,25 +1493,63 @@ mod tests {
         assert!((norm_tail(1.96) - 0.025).abs() < 1e-4);
     }
 
+    /// R-W1-6: `t_of` is the exact Student-t quantile. Closed form for ν = 2:
+    /// `(1 − 2p) / √(2p(1 − p))`; large ν → z. The 3-term Cornish–Fisher expansion gave 34.6
+    /// for (3.68, dof 2); exact is 65.4.
+    #[test]
+    fn t_of_is_the_exact_student_quantile() {
+        let p = norm_tail(3.68);
+        let exact2 = (1.0 - 2.0 * p) / (2.0 * p * (1.0 - p)).sqrt();
+        assert!(
+            exact2 > 60.0 && (t_of(3.68, 2) - exact2).abs() < 0.05,
+            "{} vs {exact2}",
+            t_of(3.68, 2)
+        );
+        let p = norm_tail(2.0);
+        let exact2 = (1.0 - 2.0 * p) / (2.0 * p * (1.0 - p)).sqrt();
+        assert!(
+            (t_of(2.0, 2) - exact2).abs() < 1e-3,
+            "{} vs {exact2}",
+            t_of(2.0, 2)
+        );
+        // t₁₀ at p = 0.02275 ≈ 2.26 (between the 0.975 and 0.99 table columns 2.228 / 2.764).
+        assert!((2.22..2.3).contains(&t_of(2.0, 10)), "{}", t_of(2.0, 10));
+        assert!((t_of(2.0, 20_000) - 2.0).abs() < 1e-9);
+        assert!((t_of(2.0, 5000) - 2.0).abs() < 1e-3);
+        // dof 0 and 1 are treated as 2.
+        assert_eq!(t_of(2.5, 0), t_of(2.5, 2));
+    }
+
     /// §6 "Comparing two trees": better needs z ≥ z_k and the effect; worse needs z ≤ −z_k and a
     /// loss past `max_regression`; a deterministic objective is judged on effects alone.
     #[test]
     fn compare_calls_better_same_worse() {
         let axes = two();
         let r = tree(&[100.0, 100.0, 100.0], &[50.0, 50.0, 50.0]);
-        // time clearly better, size 4 % worse but within the 10 % tolerated loss.
+        // time clearly better, size 4 % worse within the 10 % tolerated loss: still a loss
+        // (R-W1-2: a tolerated loss never dominates — the parent stays), inside the tolerance.
         let c = tree(&[90.0, 90.0, 90.0], &[52.0, 52.0, 52.0]);
         let cmp = compare(&axes, &[1.0, 1.0], &c, &r, 2.28);
         assert_eq!(cmp.deltas[0].call, Call::Better);
-        assert_eq!(cmp.deltas[1].call, Call::Same);
-        assert!(cmp.dominates(&axes));
+        assert_eq!(cmp.deltas[1].call, Call::Worse);
+        assert!(!cmp.dominates(&axes) && !cmp.beyond_tolerance(&axes));
         assert!((cmp.deltas[0].delta.unwrap() - 10.0).abs() < 1e-9);
         assert!((cmp.deltas[0].delta_pct.unwrap() + 10.0).abs() < 1e-9);
-        // size 20 % worse: past the tolerated loss → worse; a trade, not a domination.
+        // time better, size the same within noise: dominates.
+        let c = tree(&[90.0, 90.0, 90.0], &[50.5, 50.5, 50.5]);
+        let cmp = compare(&axes, &[1.0, 1.0], &c, &r, 2.28);
+        assert!(cmp.dominates(&axes));
+        // size 20 % worse: past the tolerated loss → the trade is refused.
         let c = tree(&[90.0, 90.0, 90.0], &[60.0, 60.0, 60.0]);
         let cmp = compare(&axes, &[1.0, 1.0], &c, &r, 2.28);
         assert_eq!(cmp.deltas[1].call, Call::Worse);
         assert!(cmp.better_any(&axes) && cmp.worse_any(&axes) && !cmp.dominates(&axes));
+        assert!(cmp.beyond_tolerance(&axes));
+        // No tolerance on time: any loss is a loss, never beyond it.
+        let c = tree(&[130.0, 130.0, 130.0], &[45.0, 45.0, 45.0]);
+        let cmp = compare(&axes, &[1.0, 1.0], &c, &r, 2.28);
+        assert_eq!(cmp.deltas[0].call, Call::Worse);
+        assert!(!cmp.beyond_tolerance(&axes));
         // Within noise on both.
         let c = tree(&[99.5, 100.5, 100.0], &[50.0, 50.0, 50.0]);
         let cmp = compare(&axes, &[1.0, 1.0], &c, &r, 2.28);
@@ -1394,7 +1565,7 @@ mod tests {
             name: "peak_kb".into(),
             direction: Direction::Lower,
             min_effect: Effect::Absolute(0.0),
-            max_regression: Effect::Relative(0.05),
+            max_regression: Some(Effect::Relative(0.05)),
             guard: true,
         });
         let r3 = vec![vec![100.0; 3], vec![50.0; 3], vec![10.0; 3]];
@@ -1441,8 +1612,8 @@ mod tests {
         assert_eq!(g.objectives.len(), 2);
         assert!((g.threshold.unwrap() - d.z_fast_k).abs() < 1e-9);
         assert!(z.unwrap() > 3.68);
-        // One sample, a possible trade (faster, 30 % larger): never entered on one sample.
-        let s = decide(&d, &trees(&tree(&[90.0], &[65.0]), &parent, &members));
+        // One sample, a possible trade (faster, 8 % larger): never entered on one sample.
+        let s = decide(&d, &trees(&tree(&[90.0], &[54.0]), &parent, &members));
         assert!(matches!(
             s,
             GateStep::Confirm {
@@ -1450,16 +1621,13 @@ mod tests {
                 incumbent_sample: false
             }
         ));
-        // Means: the trade enters as `Traded` — better than the only member on time.
-        let s = decide(
-            &d,
-            &trees(
-                &tree(&[90.0, 90.0, 90.0], &[65.0, 65.0, 65.0]),
-                &parent,
-                &members,
-            ),
-        );
+        // Means: the trade enters as `Traded` — better than the only member on time, within
+        // the 10 % tolerated loss on size; the parent is not dominated and stays.
+        let s = decide(&d, &trees(&tree(&[90.0; 3], &[54.0; 3]), &parent, &members));
         assert_eq!(verdict(&s), Verdict::Traded);
+        // 30 % larger: past the tolerated loss, the trade is refused (R-W1-2).
+        let s = decide(&d, &trees(&tree(&[90.0; 3], &[65.0; 3]), &parent, &members));
+        assert_eq!(verdict(&s), Verdict::Worse);
         // One sample 4σ worse on time, nothing better: worse at once.
         let s = decide(&d, &trees(&tree(&[104.0], &[50.0]), &parent, &members));
         assert_eq!(verdict(&s), Verdict::Worse);
@@ -1496,7 +1664,7 @@ mod tests {
             name: "peak_kb".into(),
             direction: Direction::Lower,
             min_effect: Effect::Absolute(0.0),
-            max_regression: Effect::Relative(0.05),
+            max_regression: Some(Effect::Relative(0.05)),
             guard: true,
         });
         let sig3 = [1.0, 1.0, 0.0];
@@ -2072,6 +2240,13 @@ mod tests {
             Some("keep0004"),
             "the engine's incumbent is the latest keep (W1-b)"
         );
+
+        // R-W1-8: a wave slot on a front study fails closed.
+        let e = parent_of(&st.env(), &study, Some(0))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("one experiment at a time"), "{e}");
 
         // The view, the RPC rows and the headline read the same replay.
         let d = detail(
