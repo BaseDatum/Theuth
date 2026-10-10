@@ -402,6 +402,7 @@ export function ModelMenu({ small = false, ...props }: Props & { small?: boolean
   const [advisor, setAdvisor] = useState(false)
   const m = useModel(props, () => setOpen(false))
   useOpenOnSlash(props, () => setOpen(true))
+  useOpenAdvisor(props.session, () => (setAdvisor(true), setOpen(true)))
   const resume = m.resume && (
     <Button variant="ghost" size="sm" className="h-7 shrink-0 gap-1 px-2 text-xs text-fg-tertiary" title="restart the harness process in this session's stored context (session/load)" onClick={() => void m.resume?.()}>
       <RotateCcw className="size-3.5" /> Resume
