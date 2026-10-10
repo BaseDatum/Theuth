@@ -340,7 +340,7 @@ internal sealed class IslandController : IDisposable
             // 158 §5.4: one frozen RPC; the engine fills the defaults (model, memory, template) server-side; the event and the
             // remembered project ride along when the prompt carried them (W2/W3).
             case IslandAction.StartRecording sr:
-                Log.Write($"island: start recording — {sr.Detection.App.Display} (pid {sr.Detection.App.Pid}, {sr.Detection.AppId}){(sr.Detection.Event is { } de ? $" event={de.Id}" : "")}{(sr.Detection.Project is { } dp ? $" project={dp}" : "")}");
+                Log.Write($"island: start recording — {sr.Detection.App.Display} (pid {sr.Detection.App.Pid}, {sr.Detection.AppId}){(sr.Detection.Event is { } ev1 ? $" event={ev1.Id}" : "")}{(sr.Detection.Project is { } pr1 ? $" project={pr1}" : "")}");
                 Fire(store.MeetingStartAsync(new StartMeeting
                 {
                     Process = sr.Detection.App.Pid, Consent = true, Source = StartSource.Detected(sr.Detection.AppId),
@@ -349,7 +349,7 @@ internal sealed class IslandController : IDisposable
                 break;
             // 158 §5.2 (c): Start from the upcoming brief — no mic holder yet, so no `process`; the source is the calendar event.
             case IslandAction.StartUpcoming su:
-                Log.Write($"island: start recording — upcoming {su.Upcoming.Event.Id} “{su.Upcoming.Event.Title}”{(su.Upcoming.Project is { } up ? $" project={up}" : "")}");
+                Log.Write($"island: start recording — upcoming {su.Upcoming.Event.Id} “{su.Upcoming.Event.Title}”{(su.Upcoming.Project is { } pr2 ? $" project={pr2}" : "")}");
                 Fire(store.MeetingStartAsync(new StartMeeting
                 {
                     Title = su.Upcoming.Event.Title, Consent = true, Source = StartSource.Calendar(su.Upcoming.Event.Id),
