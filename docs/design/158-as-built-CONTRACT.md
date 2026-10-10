@@ -1,8 +1,7 @@
 # 158 as-built — CONTRACT (C158)
-
-Branch `feat/158-contract` from origin/main f2d37aac; PIN commit `715e22d3` (`C158 PIN: 158 contract stubs (pre-gate)`).
-Behaviour-neutral: every stub is inert, every new field is `#[serde(default)]`, every new config key defaults to today.
-Frozen signatures below are copied from the source; waves fill bodies, never widen or rename.
+Branch `feat/158-contract` from origin/main f2d37aac; PIN `715e22d3`. Behaviour-neutral: every stub inert, every new field `#[serde(default)]`,
+every new config key defaults to today. Signatures below are copied from source; waves fill bodies, never widen or rename. No exhaustive Rust
+match needed fixing (`check --workspace --tests` green); nothing publishes the new events.
 
 ## Stub map by wave
 
@@ -22,7 +21,6 @@ Frozen signatures below are copied from the source; waves fill bodies, never wid
   - `pub async fn rpc_settings_set(_rt: &Runtime, _settings: MeetingSettings) -> anyhow::Result<MeetingSettings>` → Err.
 - `MeetingEvent` + `Detected(Detection)`, `DetectionCleared { app_id, reason: Cleared }`, `AppReleased { meeting, app, released_for_s: u32 }`
   (`Upcoming` is W3's, below). `Status.detection: Option<Detection>` (always `None`). `StartMeeting.source: Option<detect::Source>`.
-- Nothing publishes the new events; no exhaustive Rust match needed fixing (`check --workspace --tests` green).
 
 **W2 — `crates/meeting/src/calendar/{mod,ics,fetch,store,matcher}.rs`, `migrations/0003_calendar.sql`**
 - `calendar/mod.rs`: `CalendarConfig { eventkit: false, prebrief: true, poll_secs: 900 }`, `EventId(pub String)` (transparent),
@@ -69,30 +67,24 @@ Frozen signatures below are copied from the source; waves fill bodies, never wid
   `set(_rt, _config) -> Result<McpServerStatus>` → Err; `rotate_token(_rt) -> Result<()>` → Err; `audit_tail(_rt, _limit: u32) -> Result<Vec<AuditLine>>` → `Ok(vec![])`.
 - Workspace `rmcp` line gained `"server", "transport-streamable-http-server"` (rmcp 3.2.0 names verified). No plugin, no listener.
 - W5 wires the `trait Rpc` impls in `crates/theuth` (the catalogue cannot import `rpc`).
-
 **W6** — `Manifest.stats: Option<Stats { echo_dupes, mic_segments }>` (TS `MeetingStats`), always `None`.
 
-## RPC (`crates/rpc/src/api.rs`, after `set_meeting_live_diarization`; impls after it too)
-`meeting_detection` → `detect::rpc_detection`; `meeting_detection_dismiss(app_id, never)` → `detect::rpc_detection_dismiss`;
-`meeting_detection_set_event(event)` → `calendar::rpc_detection_set_event`; `meeting_settings_get/set` → `meeting::rpc_settings_get/set`;
-`meeting_set_project(id, project)` → `calendar::prebrief::rpc_set_project`; `meeting_set_event(id, event)` → `calendar::rpc_set_event`;
-`meeting_set_template(id, template)` → `templates::rpc_set_template`; `meeting_suggest_speakers(id)` → `post::suggest::rpc_suggest`;
-`meeting_templates` / `meeting_template_put(slug, body)` / `meeting_template_delete(slug)` → `templates::rpc_*`;
-`calendar_sources` / `calendar_source_add(name, url)` / `calendar_source_delete(id)` / `calendar_source_refresh(id)` → `calendar::rpc_*`;
-`calendar_push(source, window, events)` and `calendar_source_state(source, state)` (`with_extensions`; `client_of(ext)` passes the header) → `calendar::rpc_push` / `rpc_source_state`;
-`calendar_events(from, to)` → `calendar::rpc_events`; `calendar_settings_get/set` → `calendar::rpc_settings_get/set`;
-`mcp_server_get` / `mcp_server_set(config)` / `mcp_server_rotate_token` / `mcp_server_audit(limit)` → `mcp_server::status/set/rotate_token/audit_tail`.
-`meeting_list(limit, project)` — third param added, passed into `ListMeetings`. Errors map through `stub_err` (`anyhow` → `ASK_FAILED`).
+## RPC (`crates/rpc/src/api.rs`, declared and implemented after `set_meeting_live_diarization`)
+Each body is one delegate call, `anyhow` → `ASK_FAILED` via `stub_err`: `meeting_detection` / `meeting_detection_dismiss(app_id, never)` → `detect::rpc_*`;
+`meeting_detection_set_event(event)`, `meeting_set_event(id, event)`, `calendar_sources`, `calendar_source_add(name, url)`, `calendar_source_delete(id)`,
+`calendar_source_refresh(id)`, `calendar_events(from, to)`, `calendar_settings_get/set` → `calendar::rpc_*`; `calendar_push(source, window, events)` and
+`calendar_source_state(source, state)` are `with_extensions` and pass `client_of(ext)`; `meeting_settings_get/set` → `meeting::rpc_settings_*`;
+`meeting_set_project(id, project)` → `calendar::prebrief::rpc_set_project`; `meeting_set_template(id, template)`, `meeting_templates`,
+`meeting_template_put(slug, body)`, `meeting_template_delete(slug)` → `templates::rpc_*`; `meeting_suggest_speakers(id)` → `post::suggest::rpc_suggest`;
+`mcp_server_get/set(config)/rotate_token/audit(limit)` → `mcp_server::status/set/rotate_token/audit_tail`. `meeting_list(limit, project)`: third param into `ListMeetings`.
 
 ## UI (`crates/desktop/ui`)
-- `rpc/api.ts`: every method above in `Api` and `METHODS`; `meeting_list(limit, project?)`. Bindings regenerated (gitignored) — new files:
-  `Detection`, `DetectConfig`, `Cleared`, `StartSource`, `MeetingSettings`, `CalendarConfig`, `EventId`, `Attendee`, `EventRef`, `EventMatch`, `CalEvent`,
-  `CalSource`, `CalendarEvent`, `SpeakerSuggestion`, `SpeakerSuggestionSource`, `MeetingTemplate`, `TemplateSection`, `MeetingStats`,
-  `McpServerConfig`, `McpServerStatus`, `McpAuditLine`.
-- `settings/Calendar.tsx` (W2) and `settings/Mcp.tsx` (W5): placeholder component + `export const ready = false`; `SettingsDialog.tsx` TABS gained
-  `['calendar', 'Calendar', CalendarDays]` after Meetings and `['mcp', 'MCP server', Plug]` last; `NOT_READY` filters them out until a wave flips its flag
-  (the route still resolves, showing the placeholder). `meeting/DetectionBanner.tsx` (W1) and `meeting/EventSwitcher.tsx` (W2) render `null`;
-  `MeetingList.tsx` renders `<DetectionBanner />` under the header.
+- `rpc/api.ts`: every method above in `Api` + `METHODS`; `meeting_list(limit, project?)`. New (gitignored) bindings: `Detection`, `DetectConfig`, `Cleared`,
+  `StartSource`, `MeetingSettings`, `CalendarConfig`, `EventId`, `Attendee`, `EventRef`, `EventMatch`, `CalEvent`, `CalSource`, `CalendarEvent`,
+  `SpeakerSuggestion(Source)`, `MeetingTemplate`, `TemplateSection`, `MeetingStats`, `McpServerConfig`, `McpServerStatus`, `McpAuditLine`.
+- `settings/Calendar.tsx` (W2), `settings/Mcp.tsx` (W5): placeholder + `export const ready = false`; `SettingsDialog.tsx` TABS gained `calendar` (after
+  Meetings) and `mcp` (last), filtered by `NOT_READY` until a wave flips its flag (the route still resolves to the placeholder).
+  `meeting/DetectionBanner.tsx` (W1), `meeting/EventSwitcher.tsx` (W2) render `null`; `MeetingList.tsx` renders `<DetectionBanner />` under the header.
 
 ## Swift (`crates/desktop/companion/Sources`)
 - `TheuthKit/Models.swift`: `DetectionCleared`, `Attendee`, `EventRef`, `EventMatch`, `Detection`, `CalEvent`, `StartMeeting`, `StartSource`;
@@ -117,15 +109,12 @@ Frozen signatures below are copied from the source; waves fill bodies, never wid
 - W1: verify/complete `DEFAULT_IGNORE` identifiers per OS; Windows C# decoder (`MeetingWire.cs`) untouched by design.
 - W3: `store.rs` `upsert`/`list`/`Row` do not read or write `meetings.project` yet.
 
-## Gates (all run after the PIN; fixes in `d682387b`, `cc0dd44f`)
-- `BUILD_LABEL=158c build-lock mbx test -p meeting -p rpc -p mcp-server --no-run` → exit 0, no warnings.
-- `mbx test -p meeting -p rpc -p mcp-server` → all green (meeting 75 + 56 + rpc + mcp-server 1; 0 failed).
-- `BUILD_LABEL=158c build-lock mbx clippy -p meeting -p rpc -p mcp-server` → exit 0, no warnings (`clippy::all` deny).
-- `BUILD_SLOTS=1 BUILD_LABEL=158c build-lock mbx check --workspace --tests` → first run failed in `nodes` (lib test includes
-  `bindings/methods.json`, absent in a fresh worktree — pre-existing ordering); after the bindings export → exit 0.
-- `BUILD_SLOTS=1 build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` → 8 passed; 870 files copied into
-  `crates/desktop/ui/src/rpc/bindings/` (gitignored); the stale tracked `crates/rpc/bindings/MeetingSummary.ts` regenerated and committed.
-- `crates/desktop/ui`: `build-lock bun install` (+ `packages/apps`), `bunx tsc --noEmit -p .` → exit 0 after two fixture fixes
-  (`dev/meeting-page-fixture.ts` Manifest, `lib/attach.test.ts` MeetingSummary); `bunx vitest run` on `rpc/api.test.ts`, `lib/attach.test.ts`,
-  `components/meeting/MeetingList.test.ts`, `store/meeting.test.ts` → 4 files, 58 passed (METHODS equals `methods.json`).
+## Gates (all after the PIN; fixes in `d682387b`, `cc0dd44f`)
+- `build-lock mbx test -p meeting -p rpc -p mcp-server --no-run` → 0, no warnings; `mbx test -p meeting -p rpc -p mcp-server` → all green (0 failed).
+- `build-lock mbx clippy -p meeting -p rpc -p mcp-server` → 0, no warnings. `BUILD_SLOTS=1 build-lock mbx check --workspace --tests` → first run
+  failed in `nodes` (its lib test includes `bindings/methods.json`, absent in a fresh worktree — pre-existing ordering); after the export → 0.
+- `BUILD_SLOTS=1 build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` → 8 passed; 870 files copied to the UI (gitignored);
+  the stale tracked `crates/rpc/bindings/MeetingSummary.ts` regenerated and committed.
+- UI: `build-lock bun install` (ui + packages/apps); `bunx tsc --noEmit -p .` → 0 after two fixture fixes (`dev/meeting-page-fixture.ts`,
+  `lib/attach.test.ts`); `bunx vitest run` on `rpc/api.test.ts`, `lib/attach.test.ts`, `meeting/MeetingList.test.ts`, `store/meeting.test.ts` → 58 passed.
 - Companion: `build-lock swift test` with `test.sh`'s flags → 261 tests in 44 suites passed.
