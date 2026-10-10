@@ -286,6 +286,7 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         talk::TalkEvent,
         meeting::MeetingEvent,
         meeting::BriefEvent,
+        meeting::CalendarEvent,
         app::AppCallChanged,
         codeindex::CodeindexEvent,
         double::DoublePredicted,

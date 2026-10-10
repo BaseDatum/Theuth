@@ -636,3 +636,12 @@ fn url_rules() {
     );
     assert_eq!(fetch::secret_name("ab12"), "calendar.ics.ab12");
 }
+
+#[test]
+fn calendar_event_wire_shape_matches_the_companion() {
+    // W2M decodes `{"type":"EventKit","enabled":bool}` from `subscribe_events`.
+    let v = serde_json::to_value(meeting::CalendarEvent::EventKit { enabled: true }).unwrap();
+    assert_eq!(v, serde_json::json!({"type": "EventKit", "enabled": true}));
+    let v = serde_json::to_value(meeting::CalendarEvent::SourcesChanged).unwrap();
+    assert_eq!(v, serde_json::json!({"type": "SourcesChanged"}));
+}

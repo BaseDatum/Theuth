@@ -1,6 +1,8 @@
 # 158 as-built — W2E (engine: calendar sources, event store, matching, seed)
 
-Branch `feat/158-w2e`, cut from the C158 PIN `715e22d3` (pre-gate). Design §7, §8, §15.1–§15.3.
+Branch `feat/158-w2e`, cut from the C158 PIN `715e22d3`; `feat/158-contract` (`ccc48db5`) merged after the gate — clean,
+none of my files touched; §18 A3 is not in the merged design text (ends at A2). Design §7, §8, §15.1–§15.3.
+Ownership added by the orchestrator at 15:04: `crates/rpc/src/bridge.rs` (`CalendarEvent` forwarding).
 
 ## Built
 
@@ -63,6 +65,8 @@ Branch `feat/158-w2e`, cut from the C158 PIN `715e22d3` (pre-gate). Design §7, 
 - `build-lock mbx test -p meeting --no-run` → ok; `mbx test -p meeting` → 75 + 14 + 1 + 1 passed, 0 failed, 2 ignored
   (pre-existing).
 - `build-lock mbx clippy -p meeting` (and `--tests`) → clean after one `manual_pattern_char_comparison` fix.
+- After the contract merge + bridge change: `build-lock mbx test -p meeting -p rpc --no-run` → ok; `mbx test -p meeting -p rpc`
+  → meeting 75 + 15 + 1 + 1, rpc 56 + 1 + 1 passed, 0 failed; `build-lock mbx clippy -p meeting -p rpc` → clean.
 
 ## Deviations
 
@@ -81,9 +85,9 @@ Branch `feat/158-w2e`, cut from the C158 PIN `715e22d3` (pre-gate). Design §7, 
 1. `crates/meeting/src/lib.rs` `MeetingPlugin::start`: add `calendar::ensure_poll(rt)` after the actor registers, so
    ICS polling begins at boot. Until then it starts on the first calendar RPC (Settings › Calendar open, `calendar_events`,
    a push, `meeting_detection_set_event`).
-2. `crates/rpc/src/bridge.rs` (lines ~139 and ~208) + `client.rs:288` + `export.rs`: forward `meeting::CalendarEvent`
-   like `BriefEvent` so Settings re-reads on `SourcesChanged` and the companion sees `{"type":"EventKit","enabled":bool}`
-   (the `#[serde(tag = "type")]` shape W2M decodes).
+2. ~~forward `CalendarEvent`~~ — done here: `rpc/src/bridge.rs` (`forward!` + `rt.subscribe`) and `rpc/src/client.rs`
+   (in-process republish). Wire shape pinned by `calendar_event_wire_shape_matches_the_companion`:
+   `{"type":"EventKit","enabled":bool}` / `{"type":"SourcesChanged"}`. `export.rs` already lists `CalendarEvent` (C158).
 3. W1 (`detect/rules.rs`): on each tick `detection.event = calendar::match_for(&store, now, &app_id).await` (or
    `matcher::best` over `calendar::store::events`); call `matcher::clear_choice()` on `DetectionCleared`.
    `rpc_detection_set_event` relies on `detect::rpc_detection(rt)` returning the live prompt.
