@@ -362,7 +362,6 @@ block_specs! {
     LiteratureSpec;
     /// W5: `hooks: {before, after}` — W5's addendum fills it.
     HooksSpec;
-    // W6: `WorldSpec` is its own `wire!` below (159 §11 "The world block"; W6-a).
     /// W7: `suite: {training, held_out, seeds, inner_budget}` — W7's addendum fills it.
     SuiteSpec;
 }
