@@ -1,16 +1,27 @@
 # 158 as-built — W4 (speaker-name suggestions + notes): the wave
 
-Closed on `feat/158-w4e` (closer W4E). Base main 23ea03c5 (contract, W1, W2, W5); main not merged (W3 fold pending — the
-orchestrator sends it). Per-worker detail: `158-as-built-W4E.md` (engine), `158-as-built-W4U.md` (UI). Design §10, §11, §15 W4 rows, §16.
+Closed on `feat/158-w4e` (closer W4E). Base main 23ea03c5 (contract, W1, W2, W5); `origin/main` 8908ed1c (W3 landed) folded at
+`9d57c040`. Per-worker detail: `158-as-built-W4E.md` (engine), `158-as-built-W4U.md` (UI). Design §10, §11, §15 W4 rows, §16.
 
 | Worker | Branch / head | Scope |
 |---|---|---|
 | W4E | `feat/158-w4e` `44ce2a27` (pre-close) | `post/suggest.rs`, `speakers.rs::assign`, `templates.rs`, `note.rs`/`summary.rs` forms + rules, `post/transcribe.rs` dictionary pass, `meeting_suggest_speakers` tool, W4 RPC bodies, `Template.body`, `meeting_template_reset` |
 | W4U | `feat/158-w4u` `1a51a364` | `Review.tsx` suggestions (Suggest names, Accept / Not them), `settings/MeetingTemplates.tsx` + one line in `Meetings.tsx`, `StartForm.tsx` note-template select, `lib/meeting-templates.ts`, `lib/rpc.ts` keys |
-| close | this branch `180c08ce` (merge) → `6e72918e`, `7b1973e0`, + this file | hand-offs decided below, `Template.edited`, UI body/reset/gated, calendar test lock, bindings, gates |
+| close | this branch `180c08ce` (merge) → `6e72918e`, `7b1973e0`, `d4b845e7`, fold `9d57c040`, + this file | hand-offs decided below, `Template.edited`, UI body/reset/gated, calendar test lock, bindings, gates |
 
 ## Merge
 `git merge --no-ff feat/158-w4u` at `180c08ce`: no conflicts (W4U touched no Rust; W4E touched no UI).
+
+**Fold of `origin/main` 8908ed1c (W3)** at `9d57c040`, three files in conflict, all kept both sides: `lib.rs` StartMeeting — W3's
+project resolution (`clean_project` / `remember` / `lookup`) first, then W4's `manifest.template = templates::select(…)` reading the
+resolved `manifest.project`; `StartForm.tsx` — `startOptions` carries `project` (W3) and `template?` (W4), both emitted only when
+picked; `StartForm.test.ts` — api stubs and the `startOptions` test merged into one (`project: 'theuth', template: 'standup'`;
+absent, not `null`, when unpicked). `api.rs` auto-merged (W3 doc lines + `meeting_template_reset`). Bindings re-exported (8 passed,
+479 methods, copied). Folded-tree gates: `build-lock mbx test -p meeting -p rpc --no-run` 0; `mbx test -p meeting -p rpc` → meeting
+lib 120 (2 ignored) + calendar 15 + note 1 + oracle 1, rpc 56 + 1 + 1, 0 failed; `build-lock mbx clippy -p meeting -p rpc` 0 warnings;
+`build-lock bun install` ok; `bunx tsc --noEmit -p .` 0; vitest Review, StartForm, MeetingTemplates, Meetings, lib/meeting-templates,
+rpc/api, lib/segment-select, ControlCenter → 8 files, 32 passed; `BUILD_SLOTS=1 build-lock mbx check --workspace --tests` exit 0
+(`block v0.1.6` note only).
 
 ## Decisions taken at close (orchestrator 17:48)
 1. **`Template.body`** (raw file incl. front matter) on every template; `meeting_template_put(slug, body)` parses first, then writes
@@ -89,5 +100,3 @@ names* → Accept one → `speakers/<uuid>.json` written (or the gate's refusal 
   `try_lock` is refused while `engine.json` is unlinked — a `Lease` drop order / fd race worth a look by whoever owns `rpc/engine.rs`).
 - Floor/margin 0.6/0.08 are §10.2's starting values; retune with §14's eval.
 - `is_me` unknown for ICS feeds (W2) → the owner can be an attendee candidate on those events.
-- W3 fold: `lib.rs` StartMeeting (W3 sets `manifest.project` — W4's `templates::select` reads it, so the select call must stay after
-  W3's project line), `StartForm.tsx` `startOptions`, `api.rs` method order.
