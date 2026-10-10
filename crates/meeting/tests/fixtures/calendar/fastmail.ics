@@ -1,0 +1,23 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Fastmail//Synthetic//EN
+X-WR-CALNAME:Synthetic Fastmail
+BEGIN:VEVENT
+UID:floating-1@example.test
+DTSTAMP:20261001T000000Z
+DTSTART:20261016T090000
+DURATION:PT45M
+SUMMARY:Floating 1:1
+DESCRIPTION:No TZID and no Z: a floating time\, read as local.
+LOCATION:Webex: https://example.webex.com/meet/ada
+ATTENDEE;CN=Ada Lovelace;PARTSTAT=ACCEPTED:mailto:ada@example.test
+END:VEVENT
+BEGIN:VEVENT
+UID:no-link@example.test
+DTSTAMP:20261001T000000Z
+DTSTART:20261016T120000Z
+DTEND:20261016T124500Z
+SUMMARY:Lunch
+LOCATION:Cafeteria, see https://example.test/menu
+END:VEVENT
+END:VCALENDAR
