@@ -199,8 +199,7 @@ pub async fn judgments(
     slug: String,
     n: Option<u32>,
 ) -> std::result::Result<Vec<JudgmentRow>, String> {
-    let _ = (slug, n);
-    Err("not built (W3)".to_owned()) // 159:W3 — judge::judgments(store, &slug, n)
+    ask(crate::judge::Judgments { slug, n }).await // 159:W3
 }
 
 /// 159 §5.11 `autoresearch.human_pair {slug, id, winner}` — the user's answer to a blind pair (W3).
@@ -209,8 +208,7 @@ pub async fn human_pair(
     id: i64,
     winner: String,
 ) -> std::result::Result<StudyInfo, String> {
-    let _ = (slug, id, winner);
-    Err("not built (W3)".to_owned()) // 159:W3 — judge::human_pair(env, &slug, id, &winner)
+    ask(crate::judge::HumanPair { slug, id, winner }).await // 159:W3
 }
 
 /// 159 §5.11 `autoresearch.launch {slug, n, token, approve}` — the launch press (W6).

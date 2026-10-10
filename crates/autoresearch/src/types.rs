@@ -354,8 +354,6 @@ macro_rules! block_specs {
 block_specs! {
     /// W2, W3: `cases: {source, path, skill_hint, render, split, repeats, max_cases}` — W2's addendum fills it.
     CaseSetSpec;
-    /// W2, W3: `judge: {rubric, …}` — W3's addendum fills it.
-    JudgeSpec;
     /// W4: `population: {islands, descriptors, migrate_every}` — W4's addendum fills it.
     PopulationSpec;
     /// W5: `literature: {seed, every, via, max_queries}` — W5's addendum fills it.
@@ -366,6 +364,24 @@ block_specs! {
     WorldSpec;
     /// W7: `suite: {training, held_out, seeds, inner_budget}` — W7's addendum fills it.
     SuiteSpec;
+}
+
+wire! {
+    /// W3 (159 §8): the blind pair judge. Every field is `default`, so a spec without `judge`
+    /// is unchanged; `0` for a count means its default (`look` 20, `human_every` 5).
+    #[derive(Default, Eq)]
+    #[serde(default)]
+    pub struct JudgeSpec {
+        /// The rubric the judge applies; lives in the ledger, so the session cannot edit it.
+        pub rubric: String,
+        /// The prompt set: a repo-relative JSONL file of `{id, input}` cases, snapshotted into
+        /// `<root>/<slug>/judged/cases.jsonl` at the baseline.
+        pub prompts: String,
+        /// Cases per look (m₁); look 2 judges as many again. `0` = 20.
+        pub look: u32,
+        /// One blind pair goes to the user after every this many judged keeps (D14). `0` = 5.
+        pub human_every: u32,
+    }
 }
 
 wire! {
