@@ -953,7 +953,9 @@ fn strip_row(j: &JudgmentRow) -> bool {
 /// The case × experiment rows from the `judgments` table, and how many scored cases each split
 /// has (train counts the cases replayed for feedback, not the whole train share).
 pub fn rows_from(judgments: &[JudgmentRow]) -> (Vec<CaseRow>, SplitCounts) {
-    let mut acc: BTreeMap<String, (String, BTreeMap<u32, (f64, u32)>)> = BTreeMap::new();
+    /// Per experiment: the scores' sum and count.
+    type Sums = BTreeMap<u32, (f64, u32)>;
+    let mut acc: BTreeMap<String, (String, Sums)> = BTreeMap::new();
     for j in judgments {
         let Some(score) = j.score else { continue };
         let e = acc

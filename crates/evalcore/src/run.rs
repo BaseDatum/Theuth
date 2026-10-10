@@ -146,8 +146,7 @@ pub fn score_check(check: &Check, answer: &str, case: &Case) -> Result<(f64, Str
             let reason = stdout
                 .lines()
                 .map(str::trim)
-                .filter(|l| !l.starts_with("METRIC ") && !l.is_empty())
-                .next_back()
+                .rfind(|l| !l.starts_with("METRIC ") && !l.is_empty())
                 .unwrap_or("")
                 .to_owned();
             (score.clamp(0.0, 1.0), clip(&reason).into_owned())
