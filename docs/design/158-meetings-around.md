@@ -972,3 +972,160 @@ The start form gets nothing new for this; it is automatic.
 - Selection order: start pick > event memory > default, with a fixture manifest and memory rows.
 - Built-in upgrade: a file equal to shipped v1 is replaced by v2; an edited file is not.
 - Dictionary post pass: `gida` → `GIDA` with a user `Term`; a learned entry does not fire; a common word below 0.70 is untouched.
+
+## 12. theuth over MCP
+
+### 12.1 What exists
+
+`t mcp --session <id>` is a stdio MCP server an ACP child gets in `session/new.mcpServers` (`crates/theuth/src/mcp.rs:1-6`;
+`docs/design/75-acp-deep.md:193-199`): `Shim { session, client: Arc<WsClient> }` (`mcp.rs:24-28`) with three tools
+(`list_tools`, `mcp.rs:123-146`) proxied one-for-one to engine RPCs over jsonrpsee WS (`mcp.rs:56-68`, `:70-106`), served on
+`rmcp::transport::stdio()` (`mcp.rs:174-187`), spawned by the supervisor with `current_exe --data-dir … mcp --session <id>`
+(`crates/agent/src/supervisor.rs:2431-2446`). Features: workspace rmcp is client-only (`Cargo.toml:203`); `crates/theuth` adds
+`server`, `transport-io` (`crates/theuth/Cargo.toml:71-72`); `crates/tools` adds `auth` for the client (`crates/tools/Cargo.toml:24`).
+rmcp 3.2.0 (`Cargo.lock:17232-17233`) ships `transport-streamable-http-server` as a plain `tower_service::Service`
+(`~/.cargo/registry/src/*/rmcp-3.2.0/Cargo.toml:163-167`, `:120-132` — `tower-service`, `http`, `http-body`, `sse-stream`; no
+axum), exported as `StreamableHttpService` / `StreamableHttpServerConfig` (`rmcp-3.2.0/src/transport.rs:112-115`;
+`streamable_http_server/tower.rs:1007-1010`, `:1096-1099`), with `LocalSessionManager` (`session/local.rs:33`). theuth's MCP
+**client** reads `<data_dir>/mcp/*.json` in Claude-desktop and other layouts (`crates/tools/src/mcp.rs:1-8`, `:291-293`) and
+speaks stdio and streamable HTTP (`:1339-1403`). The engine's own RPC is jsonrpsee on a raw `TcpListener` with a tower `Auth`
+layer (`crates/rpc/src/lib.rs:186-229`), no axum, no CORS.
+
+### 12.2 The server (R10, D11)
+
+New crate `crates/mcp-server`, an engine plugin beside `RpcPlugin`:
+
+- **Features**: `rmcp = { workspace, features = ["server", "transport-streamable-http-server"] }`; HTTP driven by `hyper` 1
+  (`Cargo.lock:8952-8953`, already in the graph through jsonrpsee) + `hyper-util` `TokioIo` (`Cargo.lock:9018`):
+  `http1::Builder::serve_connection(TokioIo(stream), service_fn(|req| svc.handle(req)))` where `svc` is
+  `StreamableHttpService::new(|| Ok(Catalog::new(rpc)), Arc<LocalSessionManager>, config)`. No new HTTP framework.
+- **Lifecycle**: OFF by default (`mcp_server.enabled: false`). Settings › MCP switch → `mcp_server_set { enabled, port }` →
+  the plugin binds or drops its listener at runtime and writes the config (`write_config_value("mcp_server", …)`,
+  `crates/runtime/src/lib.rs:109`); on engine start it binds iff enabled. Stop closes sessions with `DELETE` semantics.
+- **Bind**: `127.0.0.1:<port>`, default `7788` (RPC is `127.0.0.1:7777`, `rpc/lib.rs:44-55`). No other bind address exists in
+  the UI or config; a non-loopback value is rejected at load with a warning, like `rpc.listen` is "loopback only by design".
+- **Token**: vault row `mcp.server.token` (name regex allows dots, `vault.rs:37`), generated once as 64 hex chars like the RPC
+  token (`rpc/lib.rs:254-266`), rotated from Settings; required as `Authorization: Bearer <token>` on every request, plain
+  compare as the RPC layer does (`rpc/lib.rs:271-293`; loopback-only, timing side channel out of the threat model).
+- **Origin / Host rules** (streamable HTTP's DNS-rebinding guard): accept `Origin` absent (CLI clients) or `http://localhost[:p]`
+  / `http://127.0.0.1[:p]`; anything else → 403. `Host` must be `127.0.0.1:<port>` or `localhost:<port>`. No CORS headers: no
+  browser client is a target. `json_response: false` (SSE streams for long tool calls), `sse_keep_alive: 15 s`
+  (`StreamableHttpServerConfig`, `tower.rs:60-77`).
+
+### 12.3 The stdio bridge in the TUI binary (W-h)
+
+`Cmd::Mcp { session: String }` (`crates/theuth/src/main.rs:171-177`) becomes `session: Option<String>`. With `--session` it is
+today's shim, unchanged byte-for-byte (`list_skills`, `load_skill`, `send_message`; `supervisor.rs:2431-2446` keeps passing it).
+Without, `t mcp` connects to the engine exactly as the shim does (`link_cli::connect`, `crates/theuth/src/link_cli.rs:96-105`,
+Bearer `<data_dir>/token`) and serves the **catalogue** on stdio. D11 spelled it `t mcp serve`; a bare `t mcp` avoids a positional
+beside clap's `--session` flag and reads naturally in an `mcpServers` entry. The HTTP server needs no running TUI; the stdio
+bridge needs a running engine (it is the ACP shim's exact precondition, `mcp.rs:174-177`).
+
+One catalogue, two transports: `crates/mcp-server/src/catalog.rs` defines each tool as `(name, description, schema, rpc method,
+arg mapping)`; a `trait Rpc { async fn call(method, params) -> Result<Value> }` has two impls — in-process jsonrpsee
+`Methods::call` for the HTTP server, `WsClient` for the stdio bridge. Nothing is implemented twice.
+
+### 12.4 The catalogue (W-i: read tools in W5)
+
+| Domain | Tool | Args | Returns | R/W | Backing RPC |
+|---|---|---|---|---|---|
+| meetings | `meeting_list` | `limit?`, `project?`, `since?` | summaries | R | `meeting_list` (`api.rs:1748`) |
+| meetings | `meeting_get` | `id` | manifest (event, project, speakers) | R | `meeting_get` (`:1751`) |
+| meetings | `meeting_transcript` | `id`, `from_seg?`, `limit?` (default 200) | segments page + `next` | R | `meeting_transcript` (`:1789`), paged in the catalogue |
+| meetings | `meeting_summary` | `id` | markdown | R | `meeting_summary` (`:1835`) |
+| meetings | `meeting_briefs` | `id` | briefs | R | `meeting_briefs` (`:1780`) |
+| meetings | `meeting_search` | `query`, `limit?` | hits with snippets | R | `search { categories: ["meetings"] }` (`:630`) |
+| meetings | `meeting_speakers` | — | enrolled profiles (names, no embeddings) | R | `meeting_speakers` (`:1808`) |
+| briefs | `brief_search`, `brief_get`, `brief_list` | as the RPCs | cached briefs | R | `brief_search` (`:2103`) … |
+| knowledge | `knowledge_search`, `knowledge_get`, `knowledge_list` | as the RPCs | notes | R | `knowledge_search` (`:902`), `knowledge_get` (`:905`) |
+| documents | `doc_list`, `doc_markdown` | `kind?` / `id` | list / markdown | R | `doc_list` (`:953`), `doc_markdown` (`:974`) |
+| notebooks | `notebook_list`, `notebook_items`, `notebook_search` | as the RPCs | | R | `notebook_list` (`:1082`), `notebook_items_list` (`:1120`), `nb_search` (`:1175`) |
+| sessions | `session_list`, `session_read` | `project?` / `id`, `from_turn?`, `limit?` | metadata / transcript page | R | `list_sessions` (`:500`), `load_session` (`:511`) |
+| tasks | `task_list`, `task_get` | as the RPCs | | R | `tasks_list` (`:2305`), `task_get` (`:2308`) |
+| artifacts | `artifact_list` | `session?` | metadata | R | `list_artifacts` (`:2370`) |
+| calendar | `calendar_events` | `from`, `to` | events (W2) | R | `calendar_events` |
+
+Rules: every list is paged (`limit` ≤ 200, cursors), never a per-call time budget — Minutes' 15 s corpus lease "denies every query
+on a real corpus" (#933, G `G-web-survey.md:97`, `:343`). Tool descriptions carry a one-line "use X first for Y" so a client
+routes to the smallest tool (Minutes' routing skill, E `E-minutes-source-recon.md:245`); the server's `instructions`
+(`ServerInfo`, as `mcp.rs:117-121` does) repeats it. **Writes** (`meeting_edit`, `doc_update`, `task_*`, `brief_put`) are not in
+W5: RPC handlers do not pass `tools.policy` (`registry.rs:973-992` gates registry tools; RPC is the UI's channel), so honouring
+D11's "writes go through theuth's existing approval policy" needs the gate design in §14, not a shortcut.
+
+### 12.5 Privacy and audit
+
+- **Private sessions excluded**: `session_list`/`session_read`/`artifact_list` drop roots with `retention == Private`
+  (`crates/agent/src/lib.rs:1235-1237`; `crates/tools/src/resources.rs:22-23`); their meetings do not exist (meetings are durable).
+- **Per-meeting restriction**: not now. Minutes' `sensitivity: restricted` needs a human grant + a per-call flag + an audit line
+  (E `E-minutes-source-recon.md:206`); theuth has no per-meeting sensitivity field, and adding one for W5 would be a feature
+  nobody asked for. The slot is `Manifest.restricted: bool` + a filter in the catalogue; §14 lists it.
+- **Audit (W-j)**: every call appends one line to `<data_dir>/mcp/server-audit.jsonl` — `{at, transport: http|stdio, client:
+  <MCP clientInfo.name>, tool, args_sha256, ok, ms}`; args are hashed, not stored; rotated at 50 MB. Settings › MCP shows the last
+  20 lines. No table (`grep audit crates/*/src` finds only replication counters).
+- Secrets never cross: results pass `Vault::redact` (`vault.rs:579`) like tool output does today.
+
+### 12.6 Settings › MCP server panel
+
+A new tab `['mcp', 'MCP server', Plug]` (`SettingsDialog.tsx:56-79`): switch "theuth as an MCP server"; port field (default
+7788); "Token" row with Rotate; "Copy MCP config" with a client picker (Claude Code / Codex / Cursor / stdio) copying exactly:
+
+```json
+{ "mcpServers": { "theuth": { "type": "http", "url": "http://127.0.0.1:7788/mcp",
+                              "headers": { "Authorization": "Bearer <token>" } } } }
+```
+
+and for stdio:
+
+```json
+{ "mcpServers": { "theuth": { "command": "/path/to/t", "args": ["--data-dir", "<data_dir>", "mcp"] } } }
+```
+
+(the same `mcpServers` wrapper theuth's own client parses, `crates/tools/src/mcp.rs:291-293`; Codex's `config.toml` variant is
+emitted when Codex is picked). The audit tail and "What is shared: meetings, notes, knowledge, notebooks, sessions, tasks,
+artifacts — read-only. Private sessions are never shared." close the panel.
+
+### 12.7 Relation to `t mcp --session` and the client
+
+Unchanged: the ACP shim (`75 §9`), `agents.yaml mcp: false` opt-out (`main.rs:1300`), `ToolRegistry::ExternalApproval` plans
+(`75-acp-deep.md:196`). The client (`crates/tools/src/mcp.rs`) is untouched; theuth-to-theuth over MCP (one machine's agents
+reading another's) is just an `mcp/*.json` entry pointing at another engine's URL — not built, but nothing blocks it.
+
+## 13. Echo cancellation outside macOS
+
+**Evidence today.** macOS uses VoiceProcessingIO (`capture/mic.rs:1-4`, `:38-39`); Windows/Linux open the plain mic and record
+`Degradation::MicNoAec` (`mic.rs:40-43`; `lib.rs:188-190`), and `supported()` reports `Partial("no echo cancellation;
+headphones recommended")` (`system.rs:108-116`). 53 rejected software AEC because of the two-clock problem
+(`docs/design/53-meetings.md:76-92`). The field agrees echo is unsolved in shipping apps (OpenWhispr #2582 echo in the note; G
+`G-web-survey.md:236-241`). Nobody has measured theuth's damage: the three tracks are separate, so an echo shows as a **mic
+segment whose text duplicates a system segment within 2 s**, not as a corrupted mix.
+
+**Measure-first gate (D12, W-o).** The post pass counts, per meeting, mic segments whose normalised text has Jaccard ≥ 0.8 with
+a system segment overlapping within ±2 s, and writes `echo_dupes` + `mic_segments` into the manifest's `degraded`-adjacent
+stats (`Manifest.stats`, new, `#[serde(default)]`). Settings › Meetings shows the ratio for the last 10 meetings on Windows/Linux.
+Gate: median ratio ≥ 5 % over ≥ 5 speaker-not-headphone meetings (the user ticks "I used speakers" in Review when asked once per
+meeting on those OSes). Headphone meetings are excluded — Anarlog turns AEC off for headphones as "pure cost" (B
+`B-anarlog-engine-recon.md:59`).
+
+**If the gate trips.** WebRTC AEC3 with the system track as the far-end reference (OpenWhispr's sidecar, D
+`D-openwhispr-source-recon.md:49-51`), fed from the existing rings (`capture/mod.rs:25-27`), after an FFT lag probe up to 600 ms
+that re-locks when the stable lag changes (Anarlog, B `:54-55`); plus the cheap bleed check — a mic segment duplicating a system
+segment within 2 s is dropped from the *transcript*, never from the audio (OpenWhispr's leak detector, D `:52-53`). The crate is
+a new dependency (`webrtc-audio-processing` or an AEC3 binding; none is in the lock) — chosen in W6 with a build on both hosts.
+Setting "Echo cancellation" Auto/Off appears only alongside it. Until then the bleed check alone may ship if the gate shows
+duplicates but AEC3 does not build cleanly: it needs no new crate.
+
+## 14. Later quality (D15)
+
+| Item | Gate (measure first) | Seam |
+|---|---|---|
+| Hybrid meeting search (FTS5 + embeddings, RRF K = 60; OpenWhispr D `D-openwhispr-source-recon.md:182`) | `meeting_search` miss rate on a 50-query set from Sky's meetings; FTS-only baseline ≥ 20 % misses | reuse 144's `EmbedActor` + `vec0` (`docs/design/144-notebooks.md:461-470`, `:501-503`, `:517-520`); a `segments_vec` table beside `segments` (`migrations/0002_segments.sql`) |
+| Markdown + YAML export per meeting (Minutes E `E-minutes-source-recon.md:89`) | asked for by a user or needed by a tool | `doc_export` (`api.rs`) for the note + a `meeting_export(id, dir)` writing `transcript.md`, `summary.md`, `meeting.yaml` |
+| Decisions/intents schema with confidence-tagged harvest (`decisions[].supersedes`, intents; Minutes E `:89-90`, `:256`) | ≥ 10 meetings in one project exist (the "did it stick?" question needs a series) | the summary form emits a fenced `yaml` block; `summary::finish` passes it to `knowledge_harvest` (`summary.rs:159-170`) with `confidence` |
+| Post-STT guard pass (repetition collapse ≥ 3 segments at ≥ 0.8 similarity; Minutes/Meetily) | measured on Parakeet output over 20 meetings; mostly a Whisper failure mode | `post/transcribe.rs` before `index_transcript` |
+| Multilingual live tier | a non-English meeting is recorded, or Sky asks | `meeting.language` (§6) selects a second checkpoint beside `nemotron-streaming-en` (`lib.rs:546-548`) |
+| Evals: DER dev set, streaming WER, brief/summary quality | first run of the autoresearch loop (`docs/design/140-autoresearch.md:5-12`, output grammar `:174-178`, keep-if-better gate `:184-195`) | `autoresearch-meetings-der.md` schedule; bench = 5 labelled meetings; also tunes §10's floor/margin |
+| Window-read participant names ("sees", W-g) | §10 suggestions leave ≥ 20 % of labels unnamed over 10 meetings | Windows `EnumChildWindows` text; macOS AX read-only (Anarlog's `meeting_ax`, B `B-anarlog-engine-recon.md:35`) — never typing |
+| MCP write tools, proposal-gated | a client asks for writes | a `Proposal { base_version, diff }` row a person applies (Anarlog C `C-anarlog-surface-recon.md:353-357`), or a synthetic session under `tools.policy` |
+| Per-meeting `restricted` flag for MCP | a user asks | `Manifest.restricted` + catalogue filter (§12.5) |
+| Pre-meeting brief without a project (shared-attendee ranking, C `:328-331`) | ≥ 30 % of matched events have no project after W3 | `cal_prebrief` sources widen |
+| Core Audio / WASAPI listeners instead of the 2 s poll (W-b) | the tick shows in `top` | `detect/sensor.rs` |
