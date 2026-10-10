@@ -89,7 +89,7 @@ starts only by hand (the only "calendar" in the crate is a stop-word list, `crat
 summary form (`crates/meeting/src/note.rs:21-35`), no MCP server for outside agents (`crates/theuth/src/mcp.rs:1-6` serves
 theuth's own ACP children), no echo cancellation off macOS (`crates/meeting/src/capture/system.rs:106-116`).
 
-Sky's words (2026-10-10 12:55, verbatim from `158-input-sky-rulings-2026-10-10.md`):
+Sky's words (2026-10-10 12:55, verbatim from knowledge `decisions/theuth-meeting-notetakers-rulings-2026-10-10`):
 
 - "ok yeah we need a robust meeting detection based on which app is using the mic, and the companion app should surface that in
   the notch window and ask if you want to start recording the meeting, there should be default settings for the model and
@@ -202,7 +202,7 @@ objects about the *input* side.
 | Linux | PipeWire registry nodes `Stream/Output/Audio` with `application.process.id` (`system.rs:368-376`) | nodes `Stream/Input/Audio`; a node's existence is "holding the mic" (PipeWire has no cheap running bit, `system.rs:393-396`); best effort, same 500 ms sync guard (`system.rs:399-417`) |
 
 flexaudio 0.2 exposes capture (`SourceKind::Mic`, `SystemLoopback`, `ProcessLoopback`) and no enumeration at all
-(`158-input-capture-flexaudio.md`; `system.rs:5-7` "flexaudio has no enumeration, so the process list is per OS here"), so the
+(knowledge `facts/theuth-meeting-capture-is-flexaudio-cross-platform`; `system.rs:5-7` "flexaudio has no enumeration, so the process list is per OS here"), so the
 sensor is per-OS code in the meeting crate exactly like `processes()`. **W-a:** it runs in the engine, not in the companions —
 one implementation, both islands, the page banner, and `examples/capture_probe.rs` get it; the companions stay RPC clients.
 
@@ -272,7 +272,7 @@ Rules, in order:
 6. **Presence is context**: a running Zoom/Teams/Meet tab never prompts (W-m); it only scores the calendar match (§8).
 7. **Ending**: while a meeting that was started from a prompt (or whose `StartMeeting.process` pid equals a holder) records, and
    the detected app has held no input stream for ≥ 30 s, emit `AppReleased`; the island asks "Stop recording?". Nothing stops by
-   itself: recording outranks intelligence (`158-input-wth-meeting-decisions.md:44`; `docs/design/53-meetings.md:181-189`).
+   itself: recording outranks intelligence (knowledge `projects/wth-meeting-assistant`; `docs/design/53-meetings.md:181-189`).
    OpenWhispr's auto-end waits for app exit or 60 s silence (D `D-openwhispr-source-recon.md:37-38`); theuth asks instead.
 8. **Withdraw** (W-e): a `Detected` prompt nobody answered is cleared with `DetectionCleared{reason: Released}` once the app has
    released the mic for 30 s, or `{reason: Started}` when any meeting starts. No wall-clock timeout.
@@ -349,7 +349,7 @@ stands: when the prompt clears and nothing is live, the window fades in ≤ 300 
 ```
 ╭──────────────────────────────────────────────────────────────╮
 │ ● Zoom is using your microphone                     [⋮]  [👁]│
-│   Weekly sync · 10:00–10:30                 ⟨ Invesco ⟩  [▾] │
+│   Weekly sync · 10:00–10:30                  ⟨ theuth ⟩  [▾] │
 │                                                              │
 │   [ Start recording ]   [ Not now ]                          │
 │   By starting the recording you acknowledge the recording    │
@@ -357,7 +357,7 @@ stands: when the prompt clears and nothing is live, the window fades in ≤ 300 
 ╰──────────────────────────────────────────────────────────────╯
 ```
 
-`[▾]` opens the "Which meeting is this?" list (top 3 candidates + "None of these"); `⟨ Invesco ⟩` is the project chip
+`[▾]` opens the "Which meeting is this?" list (top 3 candidates + "None of these"); `⟨ theuth ⟩` is the project chip
 (click → project list, §9).
 
 **(c) Upcoming brief** — W3; the matched event starts in ≤ 5 min and a pre-meeting brief is cached; shown alone (before any
@@ -365,7 +365,7 @@ mic hold) or above (b) when both apply.
 
 ```
 ╭──────────────────────────────────────────────────────────────╮
-│ ◔ Weekly sync in 4 min                               ⟨ Invesco ⟩│
+│ ◔ Weekly sync in 4 min                                ⟨ theuth ⟩│
 │   • Last time: cutover moved to Nov 3 (decided by Dana)      │
 │   • Open: SRE-2386 owner still unassigned                    │
 │   • Open question: who signs the DR runbook                  │
@@ -796,7 +796,7 @@ meeting_list, brief_search, brief_put}` (all registered at plugin start, `tools.
 > open items with owners, numbers and dates that matter. Then call `brief_put` with `title` = "<title>", `aliases` =
 > [<event short label ≤ 4 words>, <attendee first names>], `tags` = ["pre-meeting", "<project>"]. Reply with the bullets only.
 
-"Briefs = facts about the thing, NOT what to say" is Sky's standing rule (`158-input-wth-meeting-decisions.md:25`;
+"Briefs = facts about the thing, NOT what to say" is Sky's standing rule (knowledge `projects/wth-meeting-assistant`;
 `docs/design/53-meetings.md:16-18`). Timeout 45 s and ≤ 3 bullets follow Anarlog's "20-second brief" bounds (C
 `C-anarlog-surface-recon.md:336-343`); the session is closed after the reply (Private → nothing persists but the brief row).
 
@@ -1242,7 +1242,7 @@ pass at the end (the batch landing rule the 148 project used).
 | **W1** detection + prompt + defaults | `crates/meeting/src/detect/{mod,sensor,rules}.rs`; `MeetingConfig` + `MeetingSettings` (§6); `lib.rs:3783-3790` one arm (D13); `MeetingEvent` + `Status` additions; `api.rs` W1 rows; `Meetings.tsx` sections; `MeetingList.tsx` banner; Swift `Island/*`, `CompanionCore/{IslandModel,MeetingReducer}`, `TheuthKit/{Models,RpcClient}`; C# `Island/*`, `Core/{IslandModel,MeetingWire}`, `Rpc` | `capture/*` (read-only reuse of `processes()` helpers), `StartForm.tsx` beyond the project/template fields, the Tauri `Island.tsx`, `tools.rs` | unit: §4.7 rules tests, `MeetingReducerTests` + `IslandModelTests` (Swift, 20 + 12 today, `companion/Tests/CompanionCoreTests`) and `IslandTests` (C#, 20) grow by the prompt cases; integration: a fake `mic_holders` feeding the actor → `Detected` on `subscribe_events`; live: §4.7's Mac and Windows scripts, `IslandProbe` `--probe-island prompt` scenario (`IslandProbe.swift:6-10`) clicking Start/Not now/Never with synthetic input; a meeting left `Recording` in a fixture dir becomes `Review` on start |
 | **W2** calendar + matching + seed | `crates/meeting/src/calendar/{mod,ics,fetch,store,matcher}.rs`; `migrations/0003_calendar.sql`; `Cargo.toml` (`reqwest`, `rrule`, `chrono-tz` in the meeting crate); `api.rs` W2 rows; `Settings/Calendar.tsx` + `SettingsDialog.tsx` tab; companion `Calendar/EventKitSource.swift`, Info.plist usage string, `companion.entitlements.plist`; `Manifest.event`, seed in `start_task` | `detect/rules.rs` beyond calling `matcher::best`; `post/*`; `tools.rs` | unit: §7.7 fixtures, §8.4 matcher; integration: a local ICS server → rows → a fake detection → `Detected.event`; live: Sky's Google secret address and macOS Calendar on his Mac, Settings › Calendar "Upcoming" shows today's events, a Zoom meeting matches and the started line carries attendees |
 | **W3** projects + pre-meeting brief | `Manifest.project`, `MeetingSummary.project`, `meetings.project` column; `cal_project_memory`, `cal_prebrief`; `calendar/prebrief.rs` (the writer turn); prompt chip + `Upcoming` state in both islands; start form "Project" combobox; page header chip; `meeting_list` filter | `tools.rs` (uses existing tools), `summary.rs`, `cache.rs` schema | unit: memory lookup order, prebrief caching/invalidation, excerpt split by heading over a fixture `summary.md`; integration: a project with 3 `Done` fixture meetings → one Private session turn (mocked model) → `brief_put` row with attendee aliases → `Upcoming` at T−5; live: a real recurring event on Sky's calendar shows (c) five minutes before |
-| **W4** speaker suggestions + notes | `speakers.rs` (margin, mutuality), `post/suggest.rs`, `tools.rs` (`meeting_suggest_speakers`), `Review.tsx` chips; `note.rs`, `summary.rs` (`form_for`), `meeting/templates/`, `Settings` template section, start form template select; `post/transcribe.rs` dictionary pass | `detect/*`, `calendar/*`, the diariser (`post/diarize.rs`), `EnrollDialog.tsx` beyond the gate message | unit: §10.5 and §11.4 lists; integration: a fixture transcript + embeddings + attendees → suggestions; `meeting_edit(Rename)` + enroll on accept; live: Sky's "Invesco Planning" meeting (5 meetings on disk, `158-input-meeting-page-and-audio-seams.md:87-89`) re-run through post → Suggest names → accept one → profile written |
+| **W4** speaker suggestions + notes | `speakers.rs` (margin, mutuality), `post/suggest.rs`, `tools.rs` (`meeting_suggest_speakers`), `Review.tsx` chips; `note.rs`, `summary.rs` (`form_for`), `meeting/templates/`, `Settings` template section, start form template select; `post/transcribe.rs` dictionary pass | `detect/*`, `calendar/*`, the diariser (`post/diarize.rs`), `EnrollDialog.tsx` beyond the gate message | unit: §10.5 and §11.4 lists; integration: a fixture transcript + embeddings + attendees → suggestions; `meeting_edit(Rename)` + enroll on accept; live: the latest real meeting on Sky's Mac (5 meetings on disk, knowledge `facts/theuth-meeting-page-and-meeting-audio-seams-2026-10-09`) re-run through post → Suggest names → accept one → profile written |
 | **W5** MCP | new `crates/mcp-server`; `crates/theuth/src/mcp.rs` + `main.rs` (`session: Option`); `Settings/Mcp.tsx` + tab; `api.rs` W5 rows | every RPC handler it wraps (read-only use), `crates/tools/src/mcp.rs`, `supervisor.rs` | unit: catalogue schema snapshot, Origin/Host/Bearer rejections, paging, Private filter; integration: in-process `Methods` + rmcp's own client (`StreamableHttpClientTransport`, already in the workspace, `tools/src/mcp.rs:1373-1403`) → `list_tools` = 24, `meeting_list` round-trip; stdio: `t mcp` driven by `tokio::io::duplex` like `mcp.rs:196-223`; live: Claude Code with the copied JSON block reads a meeting summary; audit line appears |
 | **W6** later quality | per item (§13, §14) | everything not named by the item | per item's gate first; the echo counter lands first with no behaviour change |
 
@@ -1274,7 +1274,7 @@ playback and enrollment (`docs/design/156-meeting-view.md:74-142`) unchanged exc
 2. D2 names "theuth itself" once; two theuth processes hold mics (engine for meetings/`dictation_start(None)`, companion for the
    voice key/dictation, `VoiceRecorder.swift:26-43`) plus the Tauri shell — the ignore list carries all three (§4.3).
 3. D5 lists "transcript language"; nothing can consume it until a multilingual live model exists (`lib.rs:546-548`). Stored, inert.
-4. `158-input-wth-meeting-decisions.md:24` still lists "allow any read-only tool while in a meeting"; that switch was dropped on
+4. knowledge `projects/wth-meeting-assistant` still lists "allow any read-only tool while in a meeting"; that switch was dropped on
    2026-09-20 (`docs/design/meetings/03-island.md:45-46`). 158 does not revive it; the live allowlist (`lib.rs:593-606`) is the mechanism.
 5. D11 spells the stdio mode `t mcp serve`; the clap shape makes `t mcp` without `--session` the natural form (W-h).
 6. The Windows island decoder lacks `Summarized` while Swift has it (`MeetingWire.cs:44-76` vs `Models.swift:857-876`), and the
