@@ -23,9 +23,8 @@
   - decision packets with mini-boards and an attention inbox;
   - knowledge with nightly dreaming, and autoresearch;
   - chat channels.
-- **It is behind in two places:**
-  - the **work-to-merge loop** of the code-team planes: tracker as queue, a worktree per task, PR/CI feedback to the owner, a merge queue;
-  - Paperclip's newer **protocol rigour**: completion checked against durable evidence, leases for external agents, fail-closed accounting.
+- **It is behind on Paperclip's newer protocol rigour:** completion checked against durable evidence, leases for external agents, fail-closed accounting.
+- **The coding planes' work-to-merge loop is out of scope** (tracker as queue for code, a worktree per task, PR/CI feedback, a merge queue). Sky ruled at 14:10 that theuth does not manage worktrees and that a task is not a codebase change (§12, Revision 1). From those tools theuth takes only their general mechanisms: reconcile, stall detection, typed receipts, attention that clears itself, and external events routed to a task's owner.
 
 **Q2 — What can we learn?**
 - theuth's own record says its failures are not missing primitives. They sit at the **edges**:
@@ -50,7 +49,7 @@
 - **Fix the edges first.** Wave 1 is ten items, each small. Then:
   - Wave 2, durable runs and liveness;
   - Wave 3, done means evidence, so fewer reviews need Sky; the evidence gate and the double close the rest;
-  - Wave 4, the code-team loop (worktree per task, PR/CI routed to the owner, a Jira/GitHub bridge, a merge queue).
+  - No wave 4. Sky ruled out worktrees at 14:10 and tracker bridges at 14:15; integrations come from the MCP servers the user sets up (§12).
 - **Do not invest in more hierarchy.** The 2026 evidence shows CEO-style prompts add little. Procedure, verification and cost control are where a control plane pays (§5).
 
 ## 2. Method
@@ -140,14 +139,14 @@ Runs are still launched by the server, so a NAT'd machine still cannot volunteer
 |---|---|---|---|
 | A1 Agent model | Adapters, Ed25519 identity, lifecycle with `verifying` (Paperclip); agent = name + provider + runtime, plus skills (Multica) | Agent files on a roster: charter, model/effort/tools/mcp/budget. Harness chosen per task, not bound to the agent. Hiring in chat plus a wizard | **On par.** Gaps: template catalogue, smoke check on hire |
 | A2 Organisation & authority | Org chart; private tasks with intersection authority (Paperclip); authority carried by the originating human (Multica) | `reports_to`, escalate with packets, write cap, the double | **Ahead on decisions.** Gap: authority read from the actor string (`crates/tasks/src/ledger.rs#L1619-L1622`). Do not add hierarchy |
-| A3 Work model | Tracker as queue (Symphony, AO); typed dependencies, gates, templates (Beads); completion contract (Paperclip) | 7 states, one owner, reviewer, three blocker kinds, parent tree, `done_when` + `done_because`, review packets | **Behind** on tracker, goals, templates and evidence-checked done |
+| A3 Work model | Typed dependencies, gates, templates (Beads); completion contract (Paperclip); tracker as queue (Symphony, AO) | 7 states, one owner, reviewer, three blocker kinds, parent tree, `done_when` + `done_because`, review packets | **Behind** on goals, templates and evidence-checked done. Trackers come through the user's MCP, by ruling (§12) |
 | A4 Execution & runtime | Run rows with leases and typed failures (Multica); reconcile and stall (Symphony); detached hosts that survive upgrades (AO) | Wake ledger, mesh-hub dispatch, orphan sweep with liveness probe, epochs, placement, VMs, ACP | **Ahead on placement; behind** on durable run state, stall detection, reconcile, claim time (`crates/tasks/migrations/0001_tasks.sql#L34-L44`) |
-| A5 Coordination | Guarded delivery with typed receipts (AO); typed mentions (Multica); merge queue (Gas Town, omc) | Ledger, threads, peer messages, checkout lock | **Behind** on delivery semantics, mentions (`crates/tasks/src/ledger.rs#L1543-L1548`) and merge queue |
+| A5 Coordination | Guarded delivery with typed receipts (AO); typed mentions (Multica) | Ledger, threads, peer messages, checkout lock | **Behind** on delivery semantics and mentions (`crates/tasks/src/ledger.rs#L1543-L1548`) |
 | A6 Human in the loop | Self-resolving notifications (AO); plan approval (Claude Agent Teams); review gates (Multica) | Risk policy, approvals, the double, packets with `if_wrong`, attention inbox, alerts, companions, channels | **Ahead.** Gaps: review routing, a working Unblock, self-resolving rows |
 | A7 Cost & runaway | Fail-closed accounting and reservations (Paperclip); respawn caps and mass-death pause (Gas Town); launch/quota fuse (Ruflo) | Monthly per-agent budget pause, write cap, back-offs, chain bound | **Behind** on scopes, per-task cost and loop guards on background calls |
 | A8 Memory & learning | External providers (Paperclip); unified memory, lessons from review (CrewAI) | Knowledge with git history, dreaming, double, autoresearch, endless memory | **theuth ahead** |
 | A9 Observability & UX | Derived "whose turn" lanes (AO); execution log + usage per issue (Multica); usage view (Orca) | Org chart, board, HUD, attention, routines, transcripts, companions, voice | **Ahead in breadth.** Gaps: run cost, wake timeline |
-| A10 Extensibility | Plugins, MCP events, outside assistants joining (Paperclip) | ACP, MCP, A2A, skills, sensors, RPC | **Ahead** (ACP as the adapter contract). Gap: inbound webhook → task |
+| A10 Extensibility | Plugins, MCP events, outside assistants joining (Paperclip) | ACP, MCP, A2A, skills, sensors, RPC | **Ahead** (ACP as the adapter contract). Gap: a generic signal → owner wake (#22) |
 | A11 Engineering & traction | Paperclip 99.5k★ with 6.3k open issues and PRs; Multica 1k open issues | 558k lines of Rust and 136k of TypeScript, 3.4k commits in a month; private, one user | Not comparable. The field's lesson: trust incidents spread fast |
 
 ### 4.2 theuth facts the verdict rests on
@@ -249,19 +248,19 @@ Effort: S = a day or less, M = a few days, L = a week or more. Cost if wrong is 
 
 | # | Borrow | From | theuth seam | Effort | Cost if wrong |
 |---|---|---|---|---|---|
-| 17 | Evidence-backed done. Each `done_when` line gets an id and a revision. `checks` carry evidence refs, resolved against durable records (tool-call ids, artifacts, commits, CI runs, job logs) and classified accepted / missing / rejected / unverifiable on the review card. An amendment ledger records changed criteria | Paperclip `evidence-classifier.ts#L271-L310`; omc `tasks.ts#L311-L318`; Symphony proof of work | `crates/tasks/src/tools.rs#L559-L567`, `packet.rs`, review card | M | Medium: friction; ship in shadow first (#10) |
+| 17 | Evidence-backed done. Each `done_when` line gets an id and a revision. `checks` carry evidence refs, resolved against durable records (tool-call ids, artifacts, documents, messages sent, job logs, external links) and classified accepted / missing / rejected / unverifiable on the review card. An amendment ledger records changed criteria | Paperclip `evidence-classifier.ts#L271-L310`; omc `tasks.ts#L311-L318`; Symphony proof of work | `crates/tasks/src/tools.rs#L559-L567`, `packet.rs`, review card | M | Medium: friction; ship in shadow first (#10) |
 | 18 | Shrink what needs Sky's review, without a manager hop. Sky ruled on 2026-10-06 18:38 that a review addressed to him lands in Attention on its own, never via the manager. Three ways: (a) a desk may close its own task against an explicit `done_when` when every criterion's evidence is *accepted* (#17); this extends today's self-review rule; (b) the double answers review classes as Sky, by its trust ladder and 30 s grace; (c) Attention offers batched review digests | H census; Paperclip evidence gate (A); the double (126) | Effective reviewer in `ledger.rs`, `packet.rs`, `crates/double`, attention | M | Medium: a wrong close; the evidence classes and the double's ladder bound it |
 | 19 | Lessons from review dispositions become dreaming candidates, kept only if replay passes | CrewAI `human_feedback.py#L279-L296`; Paperclip suggestion box (A) | Review transitions → `crates/dreaming` | M | Low: the replay gate filters |
 | 20 | Workpad convention: one progress note updated in place, holding plan, criteria checklist, validation and a Confusions section | Symphony `WORKFLOW.md#L295-L329` (D) | Desk manual + `task_note` | S | Low |
 
-### 6.4 Wave 4: the code-team loop (workspace, sensors, MCP, a skill)
+### 6.4 Former wave 4 (dissolved by Sky's rulings of 14:10 and 14:15, see §12)
 
-| # | Borrow | From | theuth seam | Effort | Cost if wrong |
-|---|---|---|---|---|---|
-| 21 | An engine-managed worktree per code task: `where: worktree`, create/run/remove hooks, refusal while dirty, cleanup, writer isolation | Symphony hooks (D); AO (E); omc writer isolation (F) | `spawn_subagent` cwd, task `where`, reuse `crates/autoresearch/src/git.rs` | M | Medium: disk use and stale trees; needs a disk budget |
-| 22 | PR, CI and review-comment feedback routed to the owning desk (de-duplicated, capped, no LLM in the path), plus a head-guarded merge | AO `reactions.go#L158-L267` | `pr_watch` sensor → owner wake; GitHub MCP | M | Low |
-| 23 | Tracker bridge: Jira first (the SRE desks), then GitHub. Import eligible issues as tasks with `external`, map their states, and write back host-side through the MCP tools | Symphony's two-read kernel (D); Multica #1634 ask | Sensors + `task_create` + `external` field | M–L | Medium: sync conflicts; start one-way |
-| 24 | A merge queue for waves: an integration branch, merges one at a time under a mutex, batch-then-bisect on red, conflicts back as tasks. First as a skill plus a runtime helper | Gas Town `batch.go#L10-L35`; omc `merge-orchestrator.ts#L1-L21` | `skills/` + build-lock rules | M | Low as a skill |
+| # | Borrow | Status |
+|---|---|---|
+| 21 | Engine-managed worktrees | **Dropped** (14:10): theuth does not manage worktrees |
+| 22 | External events to the task's owner | **Moved to wave 2 as generic plumbing only.** A routine or sensor, built on whatever MCP servers the user configured, may raise a typed, de-duplicated, capped wake on a task's owner, with no LLM in the path. The mechanism comes from AO's reactions (`agent-orchestrator/backend/internal/lifecycle/reactions.go#L158-L267`). Seam: sensors (`crates/schedule`) → owner wake reason. M. There are no built-in integrations behind it |
+| 23 | Work trackers as task sources | **Dropped** (14:15): no tracker bridge; trackers are reached through MCP the user sets up |
+| 24 | Merge queue | **Dropped** (14:10): not a theuth feature |
 
 ### 6.5 Later, or only if needed
 - **Lease and fence protocol for external agents and A2A peers that take theuth tasks.** From Paperclip `openai-dot-runner.md#L120-L169`. Worth doing once remote or external agents take work.
@@ -289,6 +288,8 @@ Effort: S = a day or less, M = a few days, L = a week or more. Cost if wrong is 
 | Spending outside the owner's goal; telemetry on by default | Gas Town #3649, Vibe Kanban | Trust incidents spread fast; theuth's local-first, no-telemetry stance is an asset |
 | An SDK framework as the runtime; a manager LLM with only delegate and ask tools | CrewAI hierarchical | The checkout and dispatch path already does this deterministically |
 | Unbounded continuation while a task stays active | Symphony | The runaway hole (D, finding 4) |
+| Engine-managed worktrees, a PR/CI loop or a merge queue as product features | AO, Symphony, Multica, Gas Town, omc | Sky, 2026-10-10 14:10: theuth is not a coding agent, and a task is not a codebase change |
+| Built-in tracker bridges, sync or service integrations | Symphony (Linear), Multica (git hosts, Jira ask), AO (PR loop) | Sky, 2026-10-10 14:15: "all that stuff is just handled with MCP that the user sets up if they want it" |
 
 ## 8. Their weaknesses (what not to repeat)
 
@@ -327,9 +328,8 @@ Effort: S = a day or less, M = a few days, L = a week or more. Cost if wrong is 
 | Wave | Items | Size | Lands in | Why this order |
 |---|---|---|---|---|
 | 1. Fix the edges | 1–10 | Ten S items, about one omp wave | `crates/tasks`, `crates/roster` (attention, desk), agent communication, `crates/schedule` | Each one retires a recorded incident. They need no new data model, and they make the team usable unattended |
-| 2. Durable runs + liveness | 11–16 | M | `crates/tasks` (runs table, migration), roster wake path, agent/ACP supervision, endless render, budgets | Moves the in-memory truth onto the ledger. Waves 3 and 4 need run ids and typed failures to point at |
+| 2. Durable runs + liveness | 11–16, 22 | M | `crates/tasks` (runs table, migration), roster wake path, agent/ACP supervision, endless render, budgets, sensor → owner wake | Moves the in-memory truth onto the ledger. Waves 3 and 4 need run ids and typed failures to point at |
 | 3. Evidence + review flow | 17–20 | M | tasks tools and packet, review card, double (126), dreaming (136), desk manual | Needs run and tool-call ids as evidence refs (wave 2). It removes the review bottleneck the census shows |
-| 4. Code-team loop | 21–24 | M–L | spawn cwd/workspace, sensors + PR watch, Atlassian/GitHub MCP, `skills/` | Worth most once desks can finish, prove and hand back work without Sky (waves 1–3) |
 | Later | §6.5 | — | per item | Only when external agents, templates or multiple users arrive |
 
 Waves 1 and 2 touch `crates/tasks/src/ledger.rs`, `crates/roster` and `crates/agent`. Another orchestrator's endless-backoff wave is active in `crates/agent/src/endless/` today. A design for wave 1 should claim its number and name its files against what is in flight when it starts.
@@ -342,10 +342,10 @@ Waves 1 and 2 touch `crates/tasks/src/ledger.rs`, `crates/roster` and `crates/ag
    - the double answers review classes as you, by its trust ladder.
 
    This decides whether wave 3 changes who closes tasks or only how fast you can.
-2. **Tracker bridge: Jira first or GitHub first? One-way import or two-way?** Jira serves the SRE desks; GitHub serves theuth's own code work. Two-way is where sync conflicts live.
-3. **Engine-managed worktree per code task, or keep the orchestrator convention?** The engine-managed version costs disk and cleanup policy. It buys repeatable wave setup and writer isolation.
+2. ~~Tracker bridge~~: **answered 14:15, none.** Trackers are reached through MCP servers the user sets up.
+3. ~~Engine-managed worktree per code task~~: **answered 14:10, no.** theuth does not manage worktrees, and a task is not a codebase change.
 4. **Evidence-backed done: a hard refusal or an advisory badge?** The recommendation is shadow first (#10), then refuse `review` without evidence on tasks that have `done_when`.
-5. **Merge queue: a skill for omp waves first, or an engine service?** The recommendation is the skill first; it can graduate once the procedure is stable.
+5. ~~Merge queue~~: **answered 14:10, not a theuth feature.**
 
 ## 11. Appendices
 
@@ -373,3 +373,19 @@ Clones were read at the HEADs in §2, in `~/Develop/spike-agent-teams/` (local o
 ## 12. Amendments
 
 - **2026-10-10 13:50.** main 2b2430ad (another session's endless-backoff fix) makes a failing endless-compactor node back off, doubling up to 30 min. It also moves the genai pin so Haiku 5+ gets adaptive thinking. This closes the incident in §4.2 and covers the endless compactor part of §6.1 item 9. The other background callers still lack a loop guard and a budget reservation: dreaming, the title model and decide.
+- **2026-10-10 14:10, Revision 1 (Sky).** "We don't manage worktrees, this is not a coding agent, it may orchestrate them, but that's not its main role. A task does not equal a codebase change." Changes in this revision:
+  - **Dropped:** §6.4 items 21 (engine-managed worktrees) and 24 (merge queue).
+  - **Generalised:** item 22, from PR/CI feedback to external events routed to the task's owner; and item 17's evidence refs, from commits and CI runs to any durable record.
+  - **Unchanged in substance:** item 23 is now framed as work trackers as task sources.
+  - **Verdict:** "behind on the work-to-merge loop" is withdrawn in §1, and the coding planes' loop is now listed under do-not-borrow in §7.
+  - **Questions:** 3 and 5 in §10 are answered.
+
+  Recorded as `decisions/theuth-not-a-coding-agent-tasks-are-not-code-changes-2026-10-10`. The raw reports in the appendices are unchanged; E (Agent Orchestrator) and D (Symphony) still describe coding-specific loops, and only their general mechanisms apply.
+- **2026-10-10 14:15, Revision 2 (Sky).** "You don't want any kind of tracker bridge, all that stuff is just handled with MCP that the user sets up if they want it." Changes in this revision:
+  - **Dropped:** §6.4 item 23.
+  - **Wave 4 dissolved:** item 22 survives only as generic plumbing and moves to wave 2: a routine or sensor built on the user's own MCP servers can wake a task's owner.
+  - **Do-not-borrow:** §7 gains built-in tracker bridges, sync and integrations.
+  - **Questions:** question 2 in §10 is answered. Questions 1 (how much review can close without Sky) and 4 (whether evidence-backed done refuses or only advises) remain.
+
+  This matches the meeting rulings of 12:55 that day ("no integrations", all data over MCP). Recorded as `decisions/theuth-no-tracker-bridge-integrations-via-user-mcp-2026-10-10`.
+

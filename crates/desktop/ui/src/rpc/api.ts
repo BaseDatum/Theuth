@@ -120,6 +120,7 @@ import type { CalendarConfig } from '@/rpc/bindings/CalendarConfig'
 import type { McpServerConfig } from '@/rpc/bindings/McpServerConfig'
 import type { McpServerStatus } from '@/rpc/bindings/McpServerStatus'
 import type { McpAuditLine } from '@/rpc/bindings/McpAuditLine'
+import type { McpCallResult } from '@/rpc/bindings/McpCallResult'
 import type { Started } from '@/rpc/bindings/Started'
 import type { Topic } from '@/rpc/bindings/Topic'
 import type { TopicId } from '@/rpc/bindings/TopicId'
@@ -871,6 +872,8 @@ export interface Api {
   mcp_server_rotate_token(): Promise<null>
   /** 158 §12.5 (W5): the last `limit` audit lines, newest first. */
   mcp_server_audit(limit: number): Promise<McpAuditLine[]>
+  /** 158 §12.3 (W5): one catalogue tool call for the `t mcp` stdio bridge, run in the engine with redaction and an audit line. */
+  mcp_server_call(tool: string, args: JsonValue, client: string): Promise<McpCallResult>
   /** 16 §8: Settings › Search — the four external providers plus the `web` read/budget defaults. */
   search_settings_get(): Promise<SearchSettings>
   /** Persist to config.yaml and apply live (providers re-registered, next search uses the limits). */
@@ -1422,6 +1425,7 @@ export const METHODS = [
   'mcp_login',
   'mcp_logout',
   'mcp_server_audit',
+  'mcp_server_call',
   'mcp_server_get',
   'mcp_server_rotate_token',
   'mcp_server_set',

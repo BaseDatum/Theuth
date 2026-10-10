@@ -52,7 +52,7 @@ own `path#L` cite; no code was copied.
 - W-a Sensor and rules engine live in the engine (`crates/meeting/src/detect/`), not in the companions; companions render two new bus events. Reason: the per-OS process enumeration already lives at `crates/meeting/src/capture/system.rs:130`, `:240`, `:344`; the companions are plain RPC clients (`docs/design/134-companion-windows.md:317-319`).
 - W-b Polling every 2 s instead of Core Audio property listeners; cost ≈ one `AudioObjectGetPropertyData` per process object per tick. Listeners are the upgrade if the tick ever shows in `top`.
 - W-c The meeting session's `project` becomes the meeting's project when one is set, else today's `meetings` label (`crates/meeting/src/lib.rs:1936`).
-- W-d ICS: our own ~150-line VCALENDAR line reader (unfold, split, VEVENT/VTIMEZONE, RECURRENCE-ID overrides) + the `rrule` crate for RRULE/RDATE/EXDATE expansion with IANA zones; Windows zone names mapped by a bounded table.
+- W-d (superseded by Amendment A3) ~~ICS: our own ~150-line VCALENDAR line reader~~ — ICS is parsed with a maintained crate (candidates `calcard`, or `icalendar` + `rrule` + `chrono-tz`), with only glue of our own; Windows zone names mapped where the library lacks it.
 - W-e No clock timeout on the detection prompt; it withdraws when the detected app releases the mic for 30 s (D4's threshold) or when a meeting starts.
 - W-f One live model key (`meeting.model`: topics, briefs, the pre-meeting brief writer) and one summary key (`meeting.summary_model`, `None` = same); both fall back to `agent.model` (`crates/agent/src/supervisor.rs:10372`).
 - W-g Reading participant names from the meeting window is deferred to §14 (accessibility reads are fragile and Anarlog's is the same code path that can type into chat).
@@ -1305,3 +1305,8 @@ playback and enrollment (`docs/design/156-meeting-view.md:74-142`) unchanged exc
   normal MCP server — "it's a normal mcp, users data is their responsibility" — no proposal step and no theuth approval gate; W5
   ships write tools (W-i superseded, §12.4, §17); (3) one sentence everywhere: the start form drops its checkbox and longer wording
   for the R3 sentence (W1, §5.2); (4) MCP port 7788 confirmed; (5) Linux: the Meetings-page banner only (W-q confirmed).
+- 2026-10-10 14:16 — **A3, libraries first** (Sky: "Remember no reinventing the wheel, pick good libraries if they exist";
+  knowledge `decisions/sky-no-reinventing-the-wheel-prefer-libraries-2026-10-10`): every wave prefers maintained libraries over
+  hand-rolled code and lists its choices in its as-built. W-d is superseded — §7.3's reader becomes a maintained ICS crate plus
+  glue; §13's AEC3 plan uses a WebRTC audio-processing binding, never custom DSP; the Codex `config.toml` block (§12.6) is
+  generated with a TOML library.

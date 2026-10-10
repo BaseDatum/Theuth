@@ -83,13 +83,15 @@ export function lastCode(text: string): string | null {
 }
 
 /** 44 px ghost icon button with a tooltip (ChatGPT's action bar); `done` swaps the icon for a check.
- * `disabled` uses `aria-disabled` so the tooltip and focus still explain the button. */
+ * `disabled` uses `aria-disabled` so the tooltip and focus still explain the button. `text` also shows the label
+ * beside the icon (a labelled button where an icon alone would be ambiguous, e.g. the lightbox's removal control). */
 export function ActionButton({
   icon: Icon,
   label,
   onClick,
   done,
   disabled,
+  text,
   className,
 }: {
   icon: LucideIcon
@@ -97,6 +99,7 @@ export function ActionButton({
   onClick?: () => void
   done?: boolean
   disabled?: boolean
+  text?: boolean
   className?: string
 }) {
   return (
@@ -104,12 +107,13 @@ export function ActionButton({
       <TooltipTrigger asChild>
         <Button
           variant="ghost"
-          className={cn('size-11 rounded-lg text-fg-secondary aria-disabled:opacity-50 aria-disabled:hover:bg-transparent', className)}
+          className={cn(text ? 'h-11 px-3' : 'size-11', 'rounded-lg text-fg-secondary aria-disabled:opacity-50 aria-disabled:hover:bg-transparent', className)}
           aria-label={label}
           aria-disabled={disabled || undefined}
           onClick={disabled ? undefined : onClick}
         >
           {done ? <Check /> : <Icon />}
+          {text && label}
         </Button>
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
@@ -134,6 +138,7 @@ export function RemoveButton({
   active,
   icon = Trash2,
   label = 'Remove from context',
+  text,
   className,
 }: {
   session: string
@@ -141,16 +146,18 @@ export function RemoveButton({
   active: boolean
   icon?: LucideIcon
   label?: string
+  text?: boolean
   className?: string
 }) {
   const ok = useContextEditable(session)
   const revision = useSessionField(session, 'contextRevision')
-  if (!active) return <ActionButton icon={icon} label="Already outside current context" disabled className={className} />
+  if (!active) return <ActionButton icon={icon} label="Already outside current context" disabled text={text} className={className} />
   return (
     <ActionButton
       icon={icon}
       label={label}
       disabled={!ok || revision == null}
+      text={text}
       className={className}
       onClick={() => revision != null && openContextPicker(session, undefined, [target], revision)}
     />

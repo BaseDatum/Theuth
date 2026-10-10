@@ -1,0 +1,2306 @@
+[
+  {
+    "name": "meeting_list",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "MeetingList",
+      "type": "object",
+      "properties": {
+        "project": {
+          "description": "Only meetings of this project.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "since": {
+          "description": "Only meetings started at or after this RFC 3339 time.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Items per page, 1..=200 (default 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "`next_cursor` from the previous page; omit for the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "read_only": true
+  },
+  {
+    "name": "meeting_get",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "meeting_transcript",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TranscriptArgs",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Meeting id.",
+          "type": "string"
+        },
+        "from_seg": {
+          "description": "Index of the first segment (default 0; the previous page's `next`).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "limit": {
+          "description": "Segments per page, 1..=200 (default 200).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "meeting_summary",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "meeting_briefs",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "meeting_search",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Query",
+      "type": "object",
+      "properties": {
+        "query": {
+          "description": "Full-text query.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max hits (default 10, at most 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "meeting_speakers",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "NoArgs",
+      "description": "No arguments.",
+      "type": "object"
+    },
+    "read_only": true
+  },
+  {
+    "name": "brief_search",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Query",
+      "type": "object",
+      "properties": {
+        "query": {
+          "description": "Full-text query.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max hits (default 10, at most 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "brief_get",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "brief_list",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "BriefList",
+      "type": "object",
+      "properties": {
+        "tag": {
+          "description": "Only briefs carrying this tag.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Items per page, 1..=200 (default 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "`next_cursor` from the previous page; omit for the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "read_only": true
+  },
+  {
+    "name": "knowledge_search",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Query",
+      "type": "object",
+      "properties": {
+        "query": {
+          "description": "Full-text query.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max hits (default 10, at most 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "knowledge_get",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "knowledge_list",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "KnowledgeList",
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "description": "Id prefix, e.g. `decisions/`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "`fact | entity | decision | procedure | project`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "description": "Only concepts with this tag.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Items per page, 1..=200 (default 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "`next_cursor` from the previous page; omit for the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "read_only": true
+  },
+  {
+    "name": "doc_list",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "DocList",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Document kind.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "description": "Items per page, 1..=200 (default 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "`next_cursor` from the previous page; omit for the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "$defs": {
+        "DocKind": {
+          "description": "What a document is (§4.2 `kind`).",
+          "oneOf": [
+            {
+              "description": "A knowledge concept; the derived file is `knowledge/<id>.md` and the first block is the frontmatter.",
+              "type": "string",
+              "const": "knowledge"
+            },
+            {
+              "description": "A markdown artifact (step 5).",
+              "type": "string",
+              "const": "artifact"
+            },
+            {
+              "description": "A meeting's note (step 5).",
+              "type": "string",
+              "const": "meeting_note"
+            },
+            {
+              "description": "A free-standing note (step 3).",
+              "type": "string",
+              "const": "note"
+            },
+            {
+              "description": "An agent's charter — the body of `agents/<name>.md` (67 §6.1); the roster copies each export into the file.",
+              "type": "string",
+              "const": "agent_charter"
+            },
+            {
+              "description": "A task's thread (67 §7.1): comments, answers and the event log of one task. Owned by the task,\nso it never lists as a note.",
+              "type": "string",
+              "const": "task_thread"
+            },
+            {
+              "description": "A board (71 §2.1): a note the agent draws for a reader — sections, anchored prose, `Excerpt`s and\ndiagrams — bound like a note (`Binding::Note`, `documents/<id>/note.md`); its first block is the\nfrontmatter carrying `root:`, the absolute repository root every `code:` link and `ref` resolves against.",
+              "type": "string",
+              "const": "board"
+            },
+            {
+              "description": "A notebook (144 §3.1): the container over notes, sources, sessions and artifacts. Its body is the\ndescription the agent reads as a prompt block; its lists are `notebook_items` rows. Never lists\namong notes.",
+              "type": "string",
+              "const": "notebook"
+            },
+            {
+              "description": "A source (144 §3.1): read-only derived markdown of something fetched (file, URL, meeting, pasted\ntext, past session, MCP page, YouTube, audio, video) plus its insights. Bound by its origin key, so\nthe same thing is one document everywhere. Written by `Principal::Helper`/`File` only.",
+              "type": "string",
+              "const": "source"
+            }
+          ]
+        }
+      }
+    },
+    "read_only": true
+  },
+  {
+    "name": "doc_markdown",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "notebook_list",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "NotebookList",
+      "type": "object",
+      "properties": {
+        "archived": {
+          "description": "Include archived notebooks.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Items per page, 1..=200 (default 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "`next_cursor` from the previous page; omit for the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "read_only": true
+  },
+  {
+    "name": "notebook_items",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "NotebookItems",
+      "type": "object",
+      "properties": {
+        "notebook": {
+          "description": "Notebook id.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Items per page, 1..=200 (default 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "`next_cursor` from the previous page; omit for the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "notebook"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "notebook_search",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "NotebookSearch",
+      "type": "object",
+      "properties": {
+        "query": {
+          "description": "Full-text query over notebook blocks.",
+          "type": "string"
+        },
+        "notebooks": {
+          "description": "Restrict to these notebook ids.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "limit": {
+          "description": "Max hits (default 10).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "session_list",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SessionList",
+      "type": "object",
+      "properties": {
+        "project": {
+          "description": "Only sessions of this project.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Items per page, 1..=200 (default 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "`next_cursor` from the previous page; omit for the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "read_only": true
+  },
+  {
+    "name": "session_read",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SessionRead",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Session id.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Items per page, 1..=200 (default 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "`next_cursor` from the previous page; omit for the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "task_list",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TaskList",
+      "description": "`tasks_list` filter; every field narrows, all `None` = every task.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "`agent:<name>` | `user`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "state": {
+          "description": "Any of these states.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/TaskState"
+          },
+          "default": null
+        },
+        "engine": {
+          "description": "`where` equals this engine name.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "project": {
+          "description": "`project` equals this label.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "limit": {
+          "description": "Items per page, 1..=200 (default 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "`next_cursor` from the previous page; omit for the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "$defs": {
+        "TaskState": {
+          "description": "Where a task is in its life (67 §7.2).",
+          "oneOf": [
+            {
+              "description": "Created, not dispatched: no wake, no placement, not in any desk inbox.",
+              "type": "string",
+              "const": "backlog"
+            },
+            {
+              "description": "Queued for the owner: woken, placed, in the desk inbox; not checked out.",
+              "type": "string",
+              "const": "todo"
+            },
+            {
+              "description": "Checked out by the owner's session.",
+              "type": "string",
+              "const": "doing"
+            },
+            {
+              "description": "Owner finished; waits for the reviewer.",
+              "type": "string",
+              "const": "review"
+            },
+            {
+              "description": "Waiting on a decision, a person or another task.",
+              "type": "string",
+              "const": "blocked"
+            },
+            {
+              "description": "Reviewer approved.",
+              "type": "string",
+              "const": "done"
+            },
+            {
+              "description": "Dropped.",
+              "type": "string",
+              "const": "cancelled"
+            }
+          ]
+        }
+      }
+    },
+    "read_only": true
+  },
+  {
+    "name": "task_get",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "artifact_list",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "ArtifactList",
+      "type": "object",
+      "properties": {
+        "session": {
+          "description": "Only this session's artifacts.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Items per page, 1..=200 (default 50).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cursor": {
+          "description": "`next_cursor` from the previous page; omit for the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "read_only": true
+  },
+  {
+    "name": "calendar_events",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Window",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "RFC 3339 start of the window.",
+          "type": "string"
+        },
+        "to": {
+          "description": "RFC 3339 end of the window.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "read_only": true
+  },
+  {
+    "name": "calendar_sources",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "NoArgs",
+      "description": "No arguments.",
+      "type": "object"
+    },
+    "read_only": true
+  },
+  {
+    "name": "meeting_edit",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "MeetingEdit",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Meeting id.",
+          "type": "string"
+        },
+        "ops": {
+          "description": "Edits, applied all-or-none.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EditOp"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "ops"
+      ],
+      "$defs": {
+        "EditOp": {
+          "description": "One review edit (04 §0.4).",
+          "oneOf": [
+            {
+              "description": "Move segments to an existing label.",
+              "type": "object",
+              "properties": {
+                "segments": {
+                  "description": "Segment ids.",
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 0
+                  }
+                },
+                "speaker": {
+                  "description": "Existing label id.",
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string",
+                  "const": "Relabel"
+                }
+              },
+              "required": [
+                "op",
+                "segments",
+                "speaker"
+              ]
+            },
+            {
+              "description": "`Speaker 2` → `John`.",
+              "type": "object",
+              "properties": {
+                "speaker": {
+                  "description": "Label id.",
+                  "type": "string"
+                },
+                "name": {
+                  "description": "New display name.",
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string",
+                  "const": "Rename"
+                }
+              },
+              "required": [
+                "op",
+                "speaker",
+                "name"
+              ]
+            },
+            {
+              "description": "Join adjacent segments (in transcript order) into the first; its speaker wins.",
+              "type": "object",
+              "properties": {
+                "segments": {
+                  "description": "Segment ids, at least two, consecutive in the transcript.",
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 0
+                  }
+                },
+                "op": {
+                  "type": "string",
+                  "const": "Merge"
+                }
+              },
+              "required": [
+                "op",
+                "segments"
+              ]
+            },
+            {
+              "description": "Cut a segment before word `at_word` (`0 < at_word < words.len()`).",
+              "type": "object",
+              "properties": {
+                "segment": {
+                  "description": "Segment id.",
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "at_word": {
+                  "description": "Word index the second half starts at.",
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "op": {
+                  "type": "string",
+                  "const": "Split"
+                }
+              },
+              "required": [
+                "op",
+                "segment",
+                "at_word"
+              ]
+            },
+            {
+              "description": "Replace a segment's text; the words keep their times.",
+              "type": "object",
+              "properties": {
+                "segment": {
+                  "description": "Segment id.",
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "text": {
+                  "description": "New text.",
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string",
+                  "const": "FixText"
+                }
+              },
+              "required": [
+                "op",
+                "segment",
+                "text"
+              ]
+            },
+            {
+              "description": "Make (or update) a profile from this label's voice and link the label to it.",
+              "type": "object",
+              "properties": {
+                "speaker": {
+                  "description": "Label id.",
+                  "type": "string"
+                },
+                "name": {
+                  "description": "Profile name; an existing profile of that name takes the running mean.",
+                  "type": "string"
+                },
+                "entity": {
+                  "description": "Knowledge entity id, if the user picked one.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "type": "string",
+                  "const": "Enroll"
+                }
+              },
+              "required": [
+                "op",
+                "speaker",
+                "name"
+              ]
+            },
+            {
+              "description": "The user is done: sets `reviewed_at`.",
+              "type": "object",
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "const": "Reviewed"
+                }
+              },
+              "required": [
+                "op"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "read_only": false
+  },
+  {
+    "name": "meeting_set_project",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SetProject",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Meeting id.",
+          "type": "string"
+        },
+        "project": {
+          "description": "Project label; omit to clear.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "meeting_set_event",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SetEvent",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Meeting id.",
+          "type": "string"
+        },
+        "event": {
+          "description": "Calendar event id (`source:uid:recurrence_id`); omit to clear.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "meeting_set_template",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SetTemplate",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Meeting id.",
+          "type": "string"
+        },
+        "template": {
+          "description": "Template slug (`meeting_templates` lists them in the UI).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "template"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "doc_create",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "DocCreate",
+      "type": "object",
+      "properties": {
+        "title": {
+          "description": "Title of the new note.",
+          "type": "string"
+        },
+        "markdown": {
+          "description": "Initial markdown body.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "title"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "doc_rename",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Rename",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Document id.",
+          "type": "string"
+        },
+        "title": {
+          "description": "New title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "doc_delete",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "knowledge_put",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Put",
+      "description": "What a writer supplies to `put` (10 §2.3). `timestamp` and `source` are\nset by the harness.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Concept id (`dir/slug`, lowercase; ≤ 3 segments).",
+          "type": "string"
+        },
+        "type": {
+          "description": "`fact | entity | decision | procedure | project` (open).",
+          "type": "string"
+        },
+        "title": {
+          "description": "One line.",
+          "type": "string"
+        },
+        "description": {
+          "description": "One line; the title when absent.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tags": {
+          "description": "Tags.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "scope": {
+          "description": "Absolute directory the concept is specific to.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "body": {
+          "description": "Markdown body (≤ `BODY_MAX`).",
+          "type": "string"
+        },
+        "visibility": {
+          "description": "Who may read it (67 §9). Default: `private` when written by an agent's\nsession, `shared` otherwise.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Visibility"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "description": "`status:` (136 §5.1); `None` keeps the file's value (absent on a new file = `tidy`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Status"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "hint": {
+          "description": "`hint:`; `None` keeps the file's value (absent = `true`).",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "evidence": {
+          "description": "`evidence:`; empty keeps the file's value.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "verified": {
+          "description": "`verified:` `YYYY-MM-DD`; `None` keeps the file's value.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "valid_until": {
+          "description": "`valid_until:` RFC 3339; `None` keeps the file's value.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "superseded_by": {
+          "description": "`superseded_by:`; `None` keeps the file's value.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "merged_into": {
+          "description": "`merged_into:`; `None` keeps the file's value.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "title",
+        "body"
+      ],
+      "$defs": {
+        "Visibility": {
+          "description": "Who may read a concept (frontmatter `visibility`, 67 §9). Absent = `shared`.",
+          "oneOf": [
+            {
+              "description": "The owner alone.",
+              "type": "string",
+              "const": "private"
+            },
+            {
+              "description": "The owner and its reporting line (up and down).",
+              "type": "string",
+              "const": "team"
+            },
+            {
+              "description": "Everyone.",
+              "type": "string",
+              "const": "shared"
+            }
+          ]
+        },
+        "Status": {
+          "description": "Where a concept is in its life (frontmatter `status`, 136 §5.1). Absent = `tidy`.",
+          "oneOf": [
+            {
+              "description": "Written by the harvest, not yet tidied.",
+              "type": "string",
+              "const": "fresh"
+            },
+            {
+              "description": "Reviewed by dreaming (or written before 136).",
+              "type": "string",
+              "const": "tidy"
+            },
+            {
+              "description": "A redirect stub; `merged_into` names the canonical.",
+              "type": "string",
+              "const": "merged"
+            },
+            {
+              "description": "Kept searchable and restorable, never hinted.",
+              "type": "string",
+              "const": "archived"
+            },
+            {
+              "description": "A verification failed; the body says what changed.",
+              "type": "string",
+              "const": "stale"
+            },
+            {
+              "description": "Left the hint shelf for good (a warning whose trigger is gone).",
+              "type": "string",
+              "const": "retired"
+            }
+          ]
+        }
+      }
+    },
+    "read_only": false
+  },
+  {
+    "name": "knowledge_delete",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "task_create",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TaskCreate",
+      "description": "`task_create` input. Missing `owner` = `user`; `reviewer` defaults per 67 §7.1;\n`state` (`backlog` | `todo`) defaults to `backlog` on the wire.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "description": "`backlog` (default: created, not dispatched) or `todo` (the owner is woken).",
+          "$ref": "#/$defs/TaskState",
+          "default": "backlog"
+        },
+        "title": {
+          "description": "One line.",
+          "type": "string"
+        },
+        "brief": {
+          "description": "Markdown.",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Owner.",
+          "$ref": "#/$defs/Owner"
+        },
+        "reviewer": {
+          "description": "Reviewer; `None` = the owner's `reports_to`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Owner"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parent": {
+          "description": "Parent task for delegation.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "project": {
+          "description": "Project label.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "where": {
+          "description": "Engine name.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "harness": {
+          "description": "Harness.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "external": {
+          "description": "External ticket URLs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "done_when": {
+          "description": "Acceptance criteria; `None` = none stated (the creator should draft them from the brief).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "attachments": {
+          "description": "Attached references (design 66 refs), deduplicated by kind + id.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AttachRef"
+          },
+          "default": []
+        },
+        "priority": {
+          "description": "Priority; `None` = medium. The ledger refuses it from an agent.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Priority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "title",
+        "brief",
+        "owner"
+      ],
+      "$defs": {
+        "TaskState": {
+          "description": "Where a task is in its life (67 §7.2).",
+          "oneOf": [
+            {
+              "description": "Created, not dispatched: no wake, no placement, not in any desk inbox.",
+              "type": "string",
+              "const": "backlog"
+            },
+            {
+              "description": "Queued for the owner: woken, placed, in the desk inbox; not checked out.",
+              "type": "string",
+              "const": "todo"
+            },
+            {
+              "description": "Checked out by the owner's session.",
+              "type": "string",
+              "const": "doing"
+            },
+            {
+              "description": "Owner finished; waits for the reviewer.",
+              "type": "string",
+              "const": "review"
+            },
+            {
+              "description": "Waiting on a decision, a person or another task.",
+              "type": "string",
+              "const": "blocked"
+            },
+            {
+              "description": "Reviewer approved.",
+              "type": "string",
+              "const": "done"
+            },
+            {
+              "description": "Dropped.",
+              "type": "string",
+              "const": "cancelled"
+            }
+          ]
+        },
+        "Owner": {
+          "description": "Who owns (or reviews) a task. JSON: `{ \"type\": \"agent\", \"name\": \"ops\" }` |\n`{ \"type\": \"user\" }`; text (columns, filters, prompts): `agent:ops` | `user`.",
+          "oneOf": [
+            {
+              "description": "A roster agent by name.",
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "agent"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "name"
+              ]
+            },
+            {
+              "description": "The user.",
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "user"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            {
+              "description": "The harness itself: reviewer of a schedule task its `until` closed (67 §7.4).",
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "system"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            }
+          ]
+        },
+        "TaskId": {
+          "description": "Task id: uuidv7 as text.",
+          "type": "string"
+        },
+        "AttachRef": {
+          "description": "One attached reference: `title`/`meta` are frozen at attach time and are\ndisplay text only; `meta` may be empty.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "description": "What it is.",
+              "$ref": "#/$defs/Kind"
+            },
+            "id": {
+              "description": "The id the read tool for `kind` accepts.",
+              "type": "string"
+            },
+            "title": {
+              "description": "Human name as the user saw it; never empty (a missing one is filled from the id by whoever renders).",
+              "type": "string",
+              "default": ""
+            },
+            "meta": {
+              "description": "Display-only facts (`pdf v2 · 3 pages`); may be empty.",
+              "type": "string",
+              "default": ""
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        "Kind": {
+          "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`.",
+          "oneOf": [
+            {
+              "description": "A free-standing note (`DocId`).",
+              "type": "string",
+              "const": "note"
+            },
+            {
+              "description": "A knowledge concept, optionally a past revision (`id@<commit>`).",
+              "type": "string",
+              "const": "knowledge"
+            },
+            {
+              "description": "One artifact version (`call_id`).",
+              "type": "string",
+              "const": "artifact"
+            },
+            {
+              "description": "A past chat (`SessionId`).",
+              "type": "string",
+              "const": "session"
+            },
+            {
+              "description": "A meeting (`MeetingId`).",
+              "type": "string",
+              "const": "meeting"
+            },
+            {
+              "description": "A notebook (`DocId`, 144 §13.1).",
+              "type": "string",
+              "const": "notebook"
+            },
+            {
+              "description": "A source (`DocId`, 144 §13.1).",
+              "type": "string",
+              "const": "source"
+            }
+          ]
+        },
+        "Priority": {
+          "description": "How soon a task wants attention (132 D4). The user alone sets it; one\n[`crate::rank::rank`] orders the inbox and an agent's wake dispatch by it.",
+          "oneOf": [
+            {
+              "description": "Its own group at the top of the rail.",
+              "type": "string",
+              "const": "urgent"
+            },
+            {
+              "description": "Before the ordinary.",
+              "type": "string",
+              "const": "high"
+            },
+            {
+              "description": "The default.",
+              "type": "string",
+              "const": "medium"
+            },
+            {
+              "description": "When nothing else waits.",
+              "type": "string",
+              "const": "low"
+            }
+          ]
+        }
+      }
+    },
+    "read_only": false
+  },
+  {
+    "name": "task_update",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TaskUpdate",
+      "description": "`task_update` patch: `Some` = set, `None` = leave. Guarded transitions\n(`state` under a checkout, `done` needing a reviewer) are checked by the actor.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Task id.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Title.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "brief": {
+          "description": "Brief.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "owner": {
+          "description": "Owner.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Owner"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reviewer": {
+          "description": "Reviewer.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Owner"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "description": "State.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "blockers": {
+          "description": "Blockers, replaced whole.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "where": {
+          "description": "Engine name.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "project": {
+          "description": "Project label.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "harness": {
+          "description": "Harness.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "external": {
+          "description": "External URLs, replaced whole.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "done_when": {
+          "description": "Acceptance criteria.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "attachments": {
+          "description": "Attached references, replaced whole; each added/removed one is an `attached`/`detached` event.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/AttachRef"
+          },
+          "default": null
+        },
+        "done_because": {
+          "description": "Required from an agent moving a task to `done`; `user`/`system` default to intent met.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DoneBecause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "priority": {
+          "description": "Priority; the user only (the ledger refuses agents).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Priority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "$defs": {
+        "Owner": {
+          "description": "Who owns (or reviews) a task. JSON: `{ \"type\": \"agent\", \"name\": \"ops\" }` |\n`{ \"type\": \"user\" }`; text (columns, filters, prompts): `agent:ops` | `user`.",
+          "oneOf": [
+            {
+              "description": "A roster agent by name.",
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "agent"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "name"
+              ]
+            },
+            {
+              "description": "The user.",
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "user"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            {
+              "description": "The harness itself: reviewer of a schedule task its `until` closed (67 §7.4).",
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "system"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            }
+          ]
+        },
+        "TaskState": {
+          "description": "Where a task is in its life (67 §7.2).",
+          "oneOf": [
+            {
+              "description": "Created, not dispatched: no wake, no placement, not in any desk inbox.",
+              "type": "string",
+              "const": "backlog"
+            },
+            {
+              "description": "Queued for the owner: woken, placed, in the desk inbox; not checked out.",
+              "type": "string",
+              "const": "todo"
+            },
+            {
+              "description": "Checked out by the owner's session.",
+              "type": "string",
+              "const": "doing"
+            },
+            {
+              "description": "Owner finished; waits for the reviewer.",
+              "type": "string",
+              "const": "review"
+            },
+            {
+              "description": "Waiting on a decision, a person or another task.",
+              "type": "string",
+              "const": "blocked"
+            },
+            {
+              "description": "Reviewer approved.",
+              "type": "string",
+              "const": "done"
+            },
+            {
+              "description": "Dropped.",
+              "type": "string",
+              "const": "cancelled"
+            }
+          ]
+        },
+        "AttachRef": {
+          "description": "One attached reference: `title`/`meta` are frozen at attach time and are\ndisplay text only; `meta` may be empty.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "description": "What it is.",
+              "$ref": "#/$defs/Kind"
+            },
+            "id": {
+              "description": "The id the read tool for `kind` accepts.",
+              "type": "string"
+            },
+            "title": {
+              "description": "Human name as the user saw it; never empty (a missing one is filled from the id by whoever renders).",
+              "type": "string",
+              "default": ""
+            },
+            "meta": {
+              "description": "Display-only facts (`pdf v2 · 3 pages`); may be empty.",
+              "type": "string",
+              "default": ""
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        "Kind": {
+          "description": "What a reference points at. `id` is whatever the read tool for the kind\naccepts: `DocId`, concept id (optionally `@<commit>`), artifact `call_id`,\n`SessionId`, `MeetingId`.",
+          "oneOf": [
+            {
+              "description": "A free-standing note (`DocId`).",
+              "type": "string",
+              "const": "note"
+            },
+            {
+              "description": "A knowledge concept, optionally a past revision (`id@<commit>`).",
+              "type": "string",
+              "const": "knowledge"
+            },
+            {
+              "description": "One artifact version (`call_id`).",
+              "type": "string",
+              "const": "artifact"
+            },
+            {
+              "description": "A past chat (`SessionId`).",
+              "type": "string",
+              "const": "session"
+            },
+            {
+              "description": "A meeting (`MeetingId`).",
+              "type": "string",
+              "const": "meeting"
+            },
+            {
+              "description": "A notebook (`DocId`, 144 §13.1).",
+              "type": "string",
+              "const": "notebook"
+            },
+            {
+              "description": "A source (`DocId`, 144 §13.1).",
+              "type": "string",
+              "const": "source"
+            }
+          ]
+        },
+        "DoneBecause": {
+          "description": "Why a task is `done` (70 DESK-PROTOCOL, Sky's ruling): the reviewer judges\nagainst `done_when` first, the user's evident intention second, and third\nthe follow-up tasks that carry the work on. Written into the thread as\n`done because: …`.",
+          "oneOf": [
+            {
+              "description": "`done_when` is met.",
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "criteria_met"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            {
+              "description": "No explicit criteria, or they miss the point: the user's evident intention is met.",
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "intent_met"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            {
+              "description": "The work continues in follow-up tasks that naturally follow this one.",
+              "type": "object",
+              "properties": {
+                "tasks": {
+                  "description": "The follow-ups.",
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/TaskId"
+                  }
+                },
+                "type": {
+                  "type": "string",
+                  "const": "follow_ups_filed"
+                }
+              },
+              "required": [
+                "type",
+                "tasks"
+              ]
+            }
+          ]
+        },
+        "TaskId": {
+          "description": "Task id: uuidv7 as text.",
+          "type": "string"
+        },
+        "Priority": {
+          "description": "How soon a task wants attention (132 D4). The user alone sets it; one\n[`crate::rank::rank`] orders the inbox and an agent's wake dispatch by it.",
+          "oneOf": [
+            {
+              "description": "Its own group at the top of the rail.",
+              "type": "string",
+              "const": "urgent"
+            },
+            {
+              "description": "Before the ordinary.",
+              "type": "string",
+              "const": "high"
+            },
+            {
+              "description": "The default.",
+              "type": "string",
+              "const": "medium"
+            },
+            {
+              "description": "When nothing else waits.",
+              "type": "string",
+              "const": "low"
+            }
+          ]
+        }
+      }
+    },
+    "read_only": false
+  },
+  {
+    "name": "task_move",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TaskMove",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Task id.",
+          "type": "string"
+        },
+        "state": {
+          "description": "Target state.",
+          "$ref": "#/$defs/TaskState"
+        },
+        "note": {
+          "description": "Why, shown in the task's thread.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next": {
+          "description": "For `done` from `review`: the next task's number.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "state"
+      ],
+      "$defs": {
+        "TaskState": {
+          "description": "Where a task is in its life (67 §7.2).",
+          "oneOf": [
+            {
+              "description": "Created, not dispatched: no wake, no placement, not in any desk inbox.",
+              "type": "string",
+              "const": "backlog"
+            },
+            {
+              "description": "Queued for the owner: woken, placed, in the desk inbox; not checked out.",
+              "type": "string",
+              "const": "todo"
+            },
+            {
+              "description": "Checked out by the owner's session.",
+              "type": "string",
+              "const": "doing"
+            },
+            {
+              "description": "Owner finished; waits for the reviewer.",
+              "type": "string",
+              "const": "review"
+            },
+            {
+              "description": "Waiting on a decision, a person or another task.",
+              "type": "string",
+              "const": "blocked"
+            },
+            {
+              "description": "Reviewer approved.",
+              "type": "string",
+              "const": "done"
+            },
+            {
+              "description": "Dropped.",
+              "type": "string",
+              "const": "cancelled"
+            }
+          ]
+        }
+      }
+    },
+    "read_only": false
+  },
+  {
+    "name": "task_comment",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "TaskComment",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Task id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Comment text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "brief_put",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "CachedBriefPut",
+      "description": "What `brief_put` (tool and RPC) sends: an update when `id` names a row.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The row to update; omitted → a new brief.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BriefId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "bullets": {
+          "description": "Two or three short factual bullets.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "aliases": {
+          "description": "How people will say it (ticket ids, product names, first names); at least one, each at most four words.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tags": {
+          "description": "Free tags, e.g. one for the meeting this was prepared for.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "title",
+        "bullets",
+        "aliases"
+      ],
+      "$defs": {
+        "BriefId": {
+          "description": "A brief (phase 2).",
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "read_only": false
+  },
+  {
+    "name": "brief_delete",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "calendar_source_add",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SourceAdd",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        },
+        "url": {
+          "description": "`https://` or `webcal://` ICS address.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "calendar_source_delete",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "calendar_source_refresh",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Id",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The item's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "read_only": false
+  }
+]
