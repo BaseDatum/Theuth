@@ -82,11 +82,16 @@ Branch `feat/158-w2e`, cut from the C158 PIN `715e22d3` (pre-gate). Design §7, 
    ICS polling begins at boot. Until then it starts on the first calendar RPC (Settings › Calendar open, `calendar_events`,
    a push, `meeting_detection_set_event`).
 2. `crates/rpc/src/bridge.rs` (lines ~139 and ~208) + `client.rs:288` + `export.rs`: forward `meeting::CalendarEvent`
-   like `BriefEvent` so Settings re-reads on `SourcesChanged` and the companion sees `EventKit { enabled }`.
+   like `BriefEvent` so Settings re-reads on `SourcesChanged` and the companion sees `{"type":"EventKit","enabled":bool}`
+   (the `#[serde(tag = "type")]` shape W2M decodes).
 3. W1 (`detect/rules.rs`): on each tick `detection.event = calendar::match_for(&store, now, &app_id).await` (or
    `matcher::best` over `calendar::store::events`); call `matcher::clear_choice()` on `DetectionCleared`.
    `rpc_detection_set_event` relies on `detect::rpc_detection(rt)` returning the live prompt.
 4. UI (W2 UI worker): `CalSource.last_error` → amber row; the add form sends the raw pasted URL (engine normalises).
+
+W2M (companion, `a9d02221`) wire contract, checked against this side: push ids `eventkit:<uid>:<recurrence_id or "">`
+(rebuilt by `rpc_push`); states `granted` | `denied` | `not_determined` (stored lowercase as sent); `calendar_settings_get`
+→ `CalendarConfig.eventkit`; header `x-theuth-client: companion` is what `companion_only` requires. No engine change needed.
 
 ## Open items
 
