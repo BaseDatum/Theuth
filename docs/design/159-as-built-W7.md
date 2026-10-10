@@ -94,3 +94,27 @@ Also `setup::view_of` (the draft panel's `is_git_repo`): the same `ensure` when 
 **H8 — `review::advise` root** (`review.rs`): `rt.data_dir.join(crate::DIR)` ignores a configured `root:`; use the actor's `env.root` when `advise` gains an `Env`.
 
 **H9 — Settings › Autoresearch › Mechanism pane (Z, C-e):** `autoresearch.mechanism {op: list}` → active version and the list; Show per version; Adopt / Revert (`adopt {version: 0}`) presses.
+
+## R2 — review fixes (R-W7.md)
+
+Commit `fix(159-w7): R2 …` on a082aaa1. Each fix has a test that failed with the fix scratch-reverted and passes with it (`inner_repos_carry_no_answer_key_and_the_holdout_seed_lives_outside_them`, `a_suite_run_over_the_per_experiment_cap_starts_nothing`, `a_cancelled_suite_sample_stops_its_inner_studies_and_reports_their_spend`; run both ways on this Mac, see the final message).
+
+- **R-W7-1 [BUG] fixed.** `materialise` skips every `reference/*` entry, so no inner repo (nor its history) carries the answer key; `inner_spec` no longer lists `reference/` in `evaluator_paths`/`off_limits`; `best_known` still writes the reference text over the scope file of its own copy under `<study>/suite/reference/<name>`. Fixture READMEs updated. Test: `inner_repos_carry_no_answer_key_and_the_holdout_seed_lives_outside_them` (no `reference/` on disk, none in `git ls-files`, every fixture still has a reference entry for `best_known`).
+- **R-W7-6 [RISK] fixed, together with R-W7-1.** Each outer study draws one holdout seed (`suite::holdout_seed`, kept in `<study>/suite/holdout_seed`, never in any inner repo) and every inner study's `holdout.command` is `AUTORESEARCH_HOLDOUT_SEED=<seed> bash holdout.sh` (the seed rides in the command the plugin runs — the ledger's spec — because `runner::sample` is frozen and sets no extra env); the reference measurement gets the same seed through `plugin_command`'s `extra_env`, so every tree is scored on the same held-out inputs and no file in the repo names them. The four W7 `holdout.sh` read `AUTORESEARCH_HOLDOUT_SEED` (0 = the shipped seeds, byte-identical behaviour); toy-sort's seeded holdout is embedded in `suite::TOY_SORT_HOLDOUT` (the fixture dir is C's → H10). Same test: a seed of 17 yields different `CASE` ids than 0 on toy-dedupe, the seed is reread per outer study.
+- **R-W7-2 [BUG] fixed.** (a) Before anything starts, `sample` refuses when `fixtures × seeds × $2 > budget.per_experiment_usd` (`a_suite_run_over_the_per_experiment_cap_starts_nothing`: seeds 50 → refused, no inner study created). (b) Every inner study started is remembered; an inner task that ends in `Err` (cancel, the hours deadline, a failure to score) runs `StopNow` on it (`suite::stop_now` → `control_env`, boxed like `prepare`); after the join the sample sums `study_spend` over every started inner study, scored or not, and on cancel returns `Ok(Sample { lost: true, spend_nanos, .. })` instead of `Err`, so the row the caller already inserted carries the spend and the outer money stop sees it (`a_cancelled_suite_sample_stops_its_inner_studies_and_reports_their_spend`: the sample is lost with `spend_nanos > 0`, both inner studies are no longer running/preparing/paused, no `suite` event). `score_inner` errors are now one missing case, not a lost sample. W7-h is amended accordingly: inner studies are never left running by a sample that gave up. Hand-off H11 adds the same cap to `validate_spec` at draft time.
+- R-W7-3, -4, -5, -7, -8, -9, -10 [RISK] and -11, -12, -13 [POLISH]: not in R2's list for W7; untouched. Notes for the closer: R-W7-3 — with W2's `PAIRS_FOR_T = 10` the §14 suite's 8 pairs decide by the margin rule; `suite::step` could require `paired(..).t ≥ critical` for every n ≥ 2 once W2's `paired` is real (one line in my file; left for the closer's call since it changes W-r's rule). R-W7-9 — inner repos live under `<root>/<outer>/suite/…`; moving them to `<root>/suite/<outer>/…` is a one-line change of `dir` in `sample` if the study session's reads are not worktree-bound.
+
+Additional hand-offs from R2:
+
+**H10 — `crates/autoresearch/fixtures/toy-sort/holdout.sh` (C's file):** replace with `suite::TOY_SORT_HOLDOUT` (adds `import os`, `SEED = int(os.environ.get("AUTORESEARCH_HOLDOUT_SEED", "0"))`, `random.Random(seed + SEED)`, `CASE n{n}s{seed + SEED}`); identical output at seed 0.
+
+**H11 — `tools.rs` `validate_axes`**, after the world check:
+```rust
+    if a.scoring == Scoring::Suite {
+        let s = crate::suite::suite_of(spec);
+        let planned = s.training.len() as f64 * f64::from(s.seeds) * crate::suite::INNER_USD;
+        if planned > spec.budget.per_experiment_usd {
+            return Err(format!("a suite run costs about ${planned:.0}, over budget.per_experiment_usd {}", spec.budget.per_experiment_usd));
+        }
+    }
+```
