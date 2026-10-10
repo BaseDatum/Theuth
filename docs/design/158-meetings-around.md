@@ -508,6 +508,10 @@ has a model, the UI offers "Use it as the meeting default" once (one toast, one 
 from the form: the start form's model picker reads/writes the engine default's *per-start override* only (`session_model`), which
 is what it always sent.
 
+Main moved to c22556ea after this worktree was cut: `lib/meeting-settings.ts` gained a persisted `noteSplit` (default 5/9,
+clamp 0.15–0.85, `setNoteSplit`/`noteSplitAt`) and `ControlCenter.tsx` now lays out centre + "Resize note column" handle + note
+in one row. W1 (this file) and W3 (the header chips on the meeting page) edit those files and must fold c22556ea first (§18).
+
 ## 7. Calendar
 
 ### 7.1 Two sources, one store (R4, D6)
@@ -1291,4 +1295,6 @@ playback and enrollment (`docs/design/156-meeting-view.md:74-142`) unchanged exc
 
 **Amendments.**
 
-_(none yet)_
+- 2026-10-10 13:05 — main c22556ea ("popnote": `ControlCenter.tsx` centre/note row with a `ResizeHandle`, `meeting-settings.ts`
+  `noteSplit` + `meeting-settings.test.ts`) landed after the cut at b4e5833a. Waves W1 (§6.4, `meeting-settings.ts`) and W3
+  (meeting-page header chips, `ControlCenter.tsx`) start from main at or after c22556ea; nothing in this design conflicts with it.
