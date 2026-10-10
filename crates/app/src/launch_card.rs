@@ -83,7 +83,10 @@ pub fn source(spec: &StudySpec, launch: &Launch) -> String {
         lit(&format!("launch #{}", launch.n)),
         lit(&format!("study {slug}"))
     ));
-    out.push_str(&format!("l1 = TextContent({})\n", lit(&format!("**{l1}**"))));
+    out.push_str(&format!(
+        "l1 = TextContent({})\n",
+        lit(&format!("**{l1}**"))
+    ));
     for (name, text) in [("l2", &l2), ("l3", &l3), ("l4", &l4)] {
         out.push_str(&format!("{name} = TextContent({}, \"small\")\n", lit(text)));
     }
@@ -199,13 +202,15 @@ impl Tool for LaunchCardTool {
             window: a.window,
             token: a.token,
         };
-        Ok(match post_to(&self.core, cx.session, &detail.spec, &launch).await {
-            Ok(()) => ToolOutput::ok(format!(
-                "launch card #{} of {} posted",
-                launch.n, launch.slug
-            )),
-            Err(e) => ToolOutput::err(format!("autoresearch_launch_card: {e}")),
-        })
+        Ok(
+            match post_to(&self.core, cx.session, &detail.spec, &launch).await {
+                Ok(()) => ToolOutput::ok(format!(
+                    "launch card #{} of {} posted",
+                    launch.n, launch.slug
+                )),
+                Err(e) => ToolOutput::err(format!("autoresearch_launch_card: {e}")),
+            },
+        )
     }
 }
 
@@ -248,7 +253,11 @@ impl Tool for LaunchTool {
             "launch #{} of {}: {}; study {}",
             a.n,
             info.slug,
-            if a.approve { "approved, both arms live" } else { "refused" },
+            if a.approve {
+                "approved, both arms live"
+            } else {
+                "refused"
+            },
             serde_json::to_value(&info.state)
                 .ok()
                 .and_then(|v| v.get("state").and_then(|s| s.as_str()).map(str::to_owned))
@@ -299,9 +308,18 @@ mod tests {
     #[test]
     fn lines_name_the_launch_the_arms_and_the_rollback() {
         let [l1, l2, l3, l4] = lines(&spec(), &launch());
-        assert_eq!(l1, "Launch #3 of `landing`: shorter headline — urgency lifts sign-ups");
-        assert!(l2.starts_with("two arms, 10 % of traffic together (5 % each)"), "{l2}");
-        assert_eq!(l3, "windows of 24h; rollback `bash rollback.sh` runs on every close");
+        assert_eq!(
+            l1,
+            "Launch #3 of `landing`: shorter headline — urgency lifts sign-ups"
+        );
+        assert!(
+            l2.starts_with("two arms, 10 % of traffic together (5 % each)"),
+            "{l2}"
+        );
+        assert_eq!(
+            l3,
+            "windows of 24h; rollback `bash rollback.sh` runs on every close"
+        );
         assert!(l4.starts_with("Approve deploys"));
     }
 

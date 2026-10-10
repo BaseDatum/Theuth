@@ -39,8 +39,8 @@ use crate::store::{ExperimentRecord, Store, StudyPatch, StudyRecord, now};
 use crate::types::{
     ArmWindow, Call, Direction, Effect, ExperimentState, GateCfg, GateDecision, GateInput,
     GateRule, GateStep, KIND_WORLD, KindView, LaunchRecord, ObjectiveDelta, ObjectiveRole,
-    ObservationRow, PauseReason, Sample, StudyEvent, StudyInfo, StudySpec, StudyState,
-    Verdict, WaitInfo, WaitWhy, WorldSpec,
+    ObservationRow, PauseReason, Sample, StudyEvent, StudyInfo, StudySpec, StudyState, Verdict,
+    WaitInfo, WaitWhy, WorldSpec,
 };
 
 /// The control arm (the incumbent tree).
@@ -83,16 +83,17 @@ pub fn ratio_p(a: u64, b: u64) -> f64 {
 fn erfc(x: f64) -> f64 {
     let z = x.abs();
     let t = 1.0 / (1.0 + 0.5 * z);
-    let r = t * (-z * z - 1.265_512_23
-        + t * (1.000_023_68
-            + t * (0.374_091_96
-                + t * (0.096_784_18
-                    + t * (-0.186_288_06
-                        + t * (0.278_868_07
-                            + t * (-1.135_203_98
-                                + t * (1.488_515_87
-                                    + t * (-0.822_152_23 + t * 0.170_872_77)))))))))
-    .exp();
+    let r = t
+        * (-z * z - 1.265_512_23
+            + t * (1.000_023_68
+                + t * (0.374_091_96
+                    + t * (0.096_784_18
+                        + t * (-0.186_288_06
+                            + t * (0.278_868_07
+                                + t * (-1.135_203_98
+                                    + t * (1.488_515_87
+                                        + t * (-0.822_152_23 + t * 0.170_872_77)))))))))
+            .exp();
     if x >= 0.0 { r } else { 2.0 - r }
 }
 
@@ -355,9 +356,7 @@ fn arm(env: &Env, slug: &str, n: u32, until: &str) -> bool {
     let Some(at) = parse_at(until) else {
         return false;
     };
-    let delay = (at - chrono::Utc::now())
-        .to_std()
-        .unwrap_or(Duration::ZERO);
+    let delay = (at - chrono::Utc::now()).to_std().unwrap_or(Duration::ZERO);
     disarm(slug, n);
     let (env, slug_owned) = (env.clone(), slug.to_owned());
     let task = tokio::spawn(async move {
@@ -606,9 +605,8 @@ async fn measure(env: &Env, study: &StudyRecord, n: u32, win: u32) -> Result<Rea
         }
         let v = match out.structured {
             Some(v) => v,
-            None => serde_json::from_str(&out.content).map_err(|e| {
-                Error::refused(format!("`{}` did not answer JSON: {e}", t.name))
-            })?,
+            None => serde_json::from_str(&out.content)
+                .map_err(|e| Error::refused(format!("`{}` did not answer JSON: {e}", t.name)))?,
         };
         return Ok(parse_tool(&v, t));
     }
@@ -888,7 +886,8 @@ async fn post_card(study: &StudyRecord, exp: &ExperimentRecord, token: &str) {
         tracing::warn!(slug = %study.slug, n = exp.n, "launch card not posted: no origin session");
         return;
     };
-    if let Ok(Some(reg)) = kameo::actor::ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR)
+    if let Ok(Some(reg)) =
+        kameo::actor::ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR)
     {
         let call = ::tools::ToolCall {
             id: format!("autoresearch-launch-{}-{}-{}", study.slug, exp.n, now()),
@@ -984,7 +983,13 @@ fn snapshot(worktree: &Path, parent: &str, n: u32) -> Result<String> {
 
 /// `autoresearch.launch {slug, n, token, approve}`: the press. Approve deploys both arms; refuse
 /// closes the experiment as `Discarded`, "refused at launch".
-pub async fn launch(env: &Env, slug: &str, n: u32, token: &str, approve: bool) -> Result<StudyInfo> {
+pub async fn launch(
+    env: &Env,
+    slug: &str,
+    n: u32,
+    token: &str,
+    approve: bool,
+) -> Result<StudyInfo> {
     remember(env);
     let mut study = study_by_slug(&env.store, slug).await?;
     let w = world_of(&study.spec)?.clone();
@@ -1017,7 +1022,11 @@ pub async fn launch(env: &Env, slug: &str, n: u32, token: &str, approve: bool) -
         rec.state = "refused".into();
         env.store.launches_put(&rec).await?;
         env.store
-            .append_event(slug, "launch", &serde_json::json!({ "n": n, "state": "refused" }))
+            .append_event(
+                slug,
+                "launch",
+                &serde_json::json!({ "n": n, "state": "refused" }),
+            )
             .await?;
         close(
             env,
@@ -1039,7 +1048,10 @@ pub async fn launch(env: &Env, slug: &str, n: u32, token: &str, approve: bool) -
     let repo = PathBuf::from(&study.repo);
     let cand_sha = snapshot(&worktree, &incumbent, n)?;
     let share = (w.exposure.max_fraction / 2.0).to_string();
-    for (arm, sha) in [(CONTROL, incumbent.as_str()), (CANDIDATE, cand_sha.as_str())] {
+    for (arm, sha) in [
+        (CONTROL, incumbent.as_str()),
+        (CANDIDATE, cand_sha.as_str()),
+    ] {
         let dir = arm_dir(env, slug, arm);
         let _ = env.backend.worktree_remove(&repo, &dir);
         env.backend.worktree_add_detached(&repo, &dir, sha)?;
@@ -1054,7 +1066,13 @@ pub async fn launch(env: &Env, slug: &str, n: u32, token: &str, approve: bool) -
         );
         let run = env
             .backend
-            .plugin_command(&study, &format!("deploy-{arm}"), &w.deploy, timeout_of(&w), &extra)
+            .plugin_command(
+                &study,
+                &format!("deploy-{arm}"),
+                &w.deploy,
+                timeout_of(&w),
+                &extra,
+            )
             .await;
         let failed = match &run {
             Ok(r) if r.exit == Some(0) => None,
@@ -1087,7 +1105,11 @@ pub async fn launch(env: &Env, slug: &str, n: u32, token: &str, approve: bool) -
         )
         .await?;
     let until = chrono::Utc::now() + window_span(&w);
-    exp.line = format!("waiting · window 1 of at most {} · closes {}", w.max_windows, fmt_at(until));
+    exp.line = format!(
+        "waiting · window 1 of at most {} · closes {}",
+        w.max_windows,
+        fmt_at(until)
+    );
     wait(
         env,
         &study,
@@ -1168,12 +1190,17 @@ async fn window_end(
             })
             .await?;
     }
-    let obs = env.store.observations_list(&study.slug, Some(exp.n)).await?;
+    let obs = env
+        .store
+        .observations_list(&study.slug, Some(exp.n))
+        .await?;
     let base = study
         .incumbent_mean
         .or(env.store.base_mean(&study.slug).await?)
         .unwrap_or(0.0);
-    let guards = actor::gate_cfg(&env.cfg, spec).map(|c| c.guards).unwrap_or_default();
+    let guards = actor::gate_cfg(&env.cfg, spec)
+        .map(|c| c.guards)
+        .unwrap_or_default();
     let (look, outcome) = judge(
         &obs,
         spec.metric.direction,
@@ -1211,7 +1238,14 @@ async fn window_end(
     let unit = spec.metric.unit.as_str();
     let numbers = format!(
         "{} {:.4} vs {:.4} {unit} ({:+.1} %), Λ = {:.2} (p ≤ {:.3}), {} + {} units",
-        spec.metric.name, cand.mean, ctrl.mean, look.delta_pct, look.lambda, look.p, ctrl.units, cand.units
+        spec.metric.name,
+        cand.mean,
+        ctrl.mean,
+        look.delta_pct,
+        look.lambda,
+        look.p,
+        ctrl.units,
+        cand.units
     );
     env.store
         .append_event(
@@ -1353,7 +1387,13 @@ async fn rollback_all(env: &Env, study: &StudyRecord, n: u32) -> Result<()> {
             );
             match env
                 .backend
-                .plugin_command(study, &format!("rollback-{arm}"), &w.rollback, timeout_of(w), &extra)
+                .plugin_command(
+                    study,
+                    &format!("rollback-{arm}"),
+                    &w.rollback,
+                    timeout_of(w),
+                    &extra,
+                )
                 .await
             {
                 Ok(r) if r.exit == Some(0) => {}
@@ -1426,7 +1466,11 @@ async fn close(
         exp.commit_sha = Some(sha.clone());
         exp.state = ExperimentState::Kept;
         env.store
-            .record_keep(exp, &sha, &StudyPatch::incumbent(&sha, exp.metric, study.sigma))
+            .record_keep(
+                exp,
+                &sha,
+                &StudyPatch::incumbent(&sha, exp.metric, study.sigma),
+            )
             .await?;
     } else {
         let runs = env.runs_dir(&slug, exp.n);
@@ -1624,7 +1668,11 @@ pub async fn headline(store: &Store, study: &StudyRecord) -> Result<Option<Headl
     };
     let obs = store.observations_list(&study.slug, Some(last.n)).await?;
     let (ctrl, cand) = (cumulate(&obs, CONTROL), cumulate(&obs, CANDIDATE));
-    let final_mean = if cand.units > 0 { cand.mean } else { last.metric.unwrap_or(base) };
+    let final_mean = if cand.units > 0 {
+        cand.mean
+    } else {
+        last.metric.unwrap_or(base)
+    };
     let delta_pct = if base.abs() > f64::EPSILON {
         (final_mean - base) / base.abs() * 100.0
     } else {
@@ -1867,7 +1915,14 @@ mod tests {
 
     /// One study of `windows` looks: Bernoulli arms at `p` and `p + effect`, `units` per arm
     /// per window; the first non-`Continue` outcome and its window.
-    fn simulate(rng: &mut Rng, w: &WorldSpec, p: f64, effect: f64, units: u32, tau: f64) -> (Outcome, u32) {
+    fn simulate(
+        rng: &mut Rng,
+        w: &WorldSpec,
+        p: f64,
+        effect: f64,
+        units: u32,
+        tau: f64,
+    ) -> (Outcome, u32) {
         let mut rows = Vec::new();
         for win in 1..=w.max_windows {
             for (arm, pa) in [(CONTROL, p), (CANDIDATE, p + effect)] {
@@ -1946,17 +2001,29 @@ mod tests {
             obs(1, CONTROL, 1, 1000, 0.04, 0.0384),
             obs(1, CANDIDATE, 1, 1010, 0.04, 0.0384),
         ];
-        assert_eq!(judge(&fair, Direction::Higher, &w, 0.004, &[]).1, Outcome::Continue);
+        assert_eq!(
+            judge(&fair, Direction::Higher, &w, 0.004, &[]).1,
+            Outcome::Continue
+        );
         fair[0].raw["total"] = 10_000.into();
         let (_, over) = judge(&fair, Direction::Higher, &w, 0.004, &[]);
-        assert!(matches!(&over, Outcome::Ratio(r) if r.contains("exposure")), "{over:?}");
+        assert!(
+            matches!(&over, Outcome::Ratio(r) if r.contains("exposure")),
+            "{over:?}"
+        );
         fair[0].raw["total"] = 100_000.into();
-        assert_eq!(judge(&fair, Direction::Higher, &w, 0.004, &[]).1, Outcome::Continue);
+        assert_eq!(
+            judge(&fair, Direction::Higher, &w, 0.004, &[]).1,
+            Outcome::Continue
+        );
         // The cap is judged on traffic summed over windows, not one window's total.
         fair.push(obs(1, CONTROL, 2, 1000, 0.04, 0.0384));
         fair.push(obs(1, CANDIDATE, 2, 1010, 0.04, 0.0384));
         fair[2].raw["total"] = 20_000.into();
-        assert_eq!(judge(&fair, Direction::Higher, &w, 0.004, &[]).1, Outcome::Continue);
+        assert_eq!(
+            judge(&fair, Direction::Higher, &w, 0.004, &[]).1,
+            Outcome::Continue
+        );
     }
 
     /// A guard metric past its limit closes the launch before the keep test; the primary's
@@ -1968,8 +2035,18 @@ mod tests {
         c.raw["bounce"] = 0.50.into();
         let mut k = obs(1, CANDIDATE, 1, 1000, 0.06, 0.0564);
         k.raw["bounce"] = 0.60.into();
-        let guards = vec![("bounce".to_owned(), Effect::Relative(0.05), Direction::Lower)];
-        let (look, o) = judge(&[c.clone(), k.clone()], Direction::Higher, &w, 0.004, &guards);
+        let guards = vec![(
+            "bounce".to_owned(),
+            Effect::Relative(0.05),
+            Direction::Lower,
+        )];
+        let (look, o) = judge(
+            &[c.clone(), k.clone()],
+            Direction::Higher,
+            &w,
+            0.004,
+            &guards,
+        );
         assert_eq!(o, Outcome::Guard("bounce".into()));
         assert_eq!(look.breaches, vec!["bounce".to_owned()]);
         let (lower, _) = judge(&[c, k], Direction::Lower, &w, 0.004, &[]);
@@ -1997,8 +2074,25 @@ mod tests {
     #[test]
     fn parse_arms_and_tool_pointers() {
         let mut cv: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
-        cv.insert("control".into(), [("units", 812.0), ("mean", 0.0412), ("var", 0.0395), ("bounce", 0.5)].into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
-        cv.insert("total".into(), [("units", 10_000.0)].into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
+        cv.insert(
+            "control".into(),
+            [
+                ("units", 812.0),
+                ("mean", 0.0412),
+                ("var", 0.0395),
+                ("bounce", 0.5),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect(),
+        );
+        cv.insert(
+            "total".into(),
+            [("units", 10_000.0)]
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v))
+                .collect(),
+        );
         let r = parse_arms(&cv);
         assert_eq!(r.total, Some(10_000));
         let c = &r.arms["control"];
@@ -2037,7 +2131,10 @@ mod tests {
         assert!(setup_set(&mut spec, "world.window", "soon").is_err());
         assert!(setup_set(&mut spec, "world.nope", "x").is_err());
         let w = spec.world.as_ref().unwrap();
-        assert_eq!((w.exposure.max_fraction, w.min_windows, w.max_windows), (0.2, 3, 3));
+        assert_eq!(
+            (w.exposure.max_fraction, w.min_windows, w.max_windows),
+            (0.2, 3, 3)
+        );
         assert_eq!(setup_value(&spec, "deploy"), "bash deploy.sh");
         assert!(setup_value(&spec, "windows").starts_with("12h · 3–3 windows"));
         assert_eq!(setup_value(&spec, "measure"), "");
@@ -2052,7 +2149,10 @@ mod tests {
         let back: StudySpec = serde_json::from_str(&json).unwrap();
         assert_eq!(back.world, spec.world);
         let bare: WorldSpec = serde_json::from_str("{}").unwrap();
-        assert_eq!((bare.min_units, bare.max_windows, bare.alpha), (500, 14, 0.01));
+        assert_eq!(
+            (bare.min_units, bare.max_windows, bare.alpha),
+            (500, 14, 0.01)
+        );
     }
 
     // ───────── the engine: a real store, real git, the production backend ─────────
@@ -2070,7 +2170,11 @@ mod tests {
             .env("GIT_COMMITTER_EMAIL", "t@x")
             .output()
             .unwrap();
-        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
@@ -2125,10 +2229,16 @@ mod tests {
                 command: "bash test.sh".into(),
                 ..CommandSpec::default()
             }),
-            evaluator_paths: ["deploy.sh", "rollback.sh", "measure.sh", "test.sh", "world.py"]
-                .iter()
-                .map(|s| (*s).to_owned())
-                .collect(),
+            evaluator_paths: [
+                "deploy.sh",
+                "rollback.sh",
+                "measure.sh",
+                "test.sh",
+                "world.py",
+            ]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect(),
             scope: vec!["landing/copy.md".into()],
             budget: BudgetSpec {
                 experiments: 8,
@@ -2201,24 +2311,41 @@ mod tests {
             self.study = self.env.store.get_study(self.slug).await.unwrap().unwrap();
         }
         async fn exp(&self, n: u32) -> ExperimentRecord {
-            self.env.store.get_experiment(self.slug, n).await.unwrap().unwrap()
+            self.env
+                .store
+                .get_experiment(self.slug, n)
+                .await
+                .unwrap()
+                .unwrap()
         }
         fn live_arms(&self) -> Vec<String> {
             let s: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&self.state).unwrap_or("{}".into())).unwrap();
-            s["arms"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default()
+                serde_json::from_str(&std::fs::read_to_string(&self.state).unwrap_or("{}".into()))
+                    .unwrap();
+            s["arms"]
+                .as_object()
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default()
         }
         /// The launch fire as the measure loop leaves it: the candidate in the tree, one
         /// `measured` row with `Verdict::Pending`, then `request` with a known token.
         async fn fire(&mut self, n: u32, copy: &str, idea: &str) {
             self.reload().await;
             std::fs::write(self.worktree.join("landing/copy.md"), copy).unwrap();
-            let mut e = ExperimentRecord::open(self.slug, n, 0, self.study.incumbent_sha.as_deref().unwrap());
+            let mut e = ExperimentRecord::open(
+                self.slug,
+                n,
+                0,
+                self.study.incumbent_sha.as_deref().unwrap(),
+            );
             e.idea = idea.into();
             e.hypothesis = format!("{idea} lifts conversion");
             self.env.store.insert_experiment(&e).await.unwrap();
             // `step` through the actor's dispatch: the launch row and the Wait.
-            let s = Sample { n, ..Sample::default() };
+            let s = Sample {
+                n,
+                ..Sample::default()
+            };
             let cfg = actor::gate_cfg(&self.env.cfg, &self.study.spec).unwrap();
             let input = GateInput {
                 candidate: vec![0.04],
@@ -2229,10 +2356,17 @@ mod tests {
                 keep_simpler: false,
                 secondaries: vec![],
             };
-            let got = step(&self.env, &self.study, &cfg, &input, &[s], &[]).await.unwrap();
-            assert!(matches!(&got, GateStep::Wait { until, .. } if until == APPROVAL), "{got:?}");
+            let got = step(&self.env, &self.study, &cfg, &input, &[s], &[])
+                .await
+                .unwrap();
+            assert!(
+                matches!(&got, GateStep::Wait { until, .. } if until == APPROVAL),
+                "{got:?}"
+            );
             e.state = ExperimentState::Measured;
-            e.verdict = Some(Verdict::Pending { until: APPROVAL.into() });
+            e.verdict = Some(Verdict::Pending {
+                until: APPROVAL.into(),
+            });
             self.env.store.update_experiment(&e).await.unwrap();
             // `settle_launch` flips the measured row to waiting within a few polls.
             for _ in 0..100 {
@@ -2243,14 +2377,28 @@ mod tests {
             }
             let e = self.exp(n).await;
             assert_eq!(e.state, ExperimentState::Waiting, "#{n}: {}", e.line);
-            assert_eq!(e.wait.as_ref().map(|w| (w.why, w.until.as_str())), Some((WaitWhy::Approval, APPROVAL)));
+            assert_eq!(
+                e.wait.as_ref().map(|w| (w.why, w.until.as_str())),
+                Some((WaitWhy::Approval, APPROVAL))
+            );
             // A known token for the press (the real one went to the card).
-            let mut l = self.env.store.launches_get(self.slug, n).await.unwrap().unwrap();
+            let mut l = self
+                .env
+                .store
+                .launches_get(self.slug, n)
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(l.state, "requested");
             l.token_hash = sha256_hex("tok");
             self.env.store.launches_put(&l).await.unwrap();
             self.reload().await;
-            assert_eq!(self.study.state, StudyState::Paused { reason: PauseReason::LaunchApproval { n } });
+            assert_eq!(
+                self.study.state,
+                StudyState::Paused {
+                    reason: PauseReason::LaunchApproval { n }
+                }
+            );
             assert!(explains_disabled(&self.env.store, self.slug).await.unwrap());
         }
         /// Windows until the experiment closes; returns how many.
@@ -2278,7 +2426,16 @@ mod tests {
         let s = sample(
             &w.env,
             &w.study,
-            SampleRequest { slug: "tw1", n: 0, k: 1, tree_sha: &base_sha, role: crate::types::SampleRole::Baseline, worktree: &w.worktree, evaluator: &evaluator, runs_dir: &runs },
+            SampleRequest {
+                slug: "tw1",
+                n: 0,
+                k: 1,
+                tree_sha: &base_sha,
+                role: crate::types::SampleRole::Baseline,
+                worktree: &w.worktree,
+                evaluator: &evaluator,
+                runs_dir: &runs,
+            },
             &CancellationToken::new(),
         )
         .await
@@ -2288,32 +2445,82 @@ mod tests {
 
         // Launch 1: urgency + benefit + social, a true +0.019.
         w.fire(1, GOOD_COPY, "urgency and benefit").await;
-        assert!(launch(&w.env, "tw1", 1, "wrong", true).await.is_err(), "a wrong token is refused");
+        assert!(
+            launch(&w.env, "tw1", 1, "wrong", true).await.is_err(),
+            "a wrong token is refused"
+        );
         let info = launch(&w.env, "tw1", 1, "tok", true).await.unwrap();
-        assert_eq!(info.state, StudyState::Running, "approved: running again, file disabled");
+        assert_eq!(
+            info.state,
+            StudyState::Running,
+            "approved: running again, file disabled"
+        );
         let e = w.exp(1).await;
         assert_eq!(e.state, ExperimentState::Waiting);
         assert_eq!(e.wait.as_ref().map(|i| i.why), Some(WaitWhy::Window));
-        assert_eq!(w.env.store.launches_get("tw1", 1).await.unwrap().unwrap().state, "deployed");
-        assert_eq!(w.live_arms(), vec!["candidate".to_owned(), "control".to_owned()]);
+        assert_eq!(
+            w.env
+                .store
+                .launches_get("tw1", 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "deployed"
+        );
+        assert_eq!(
+            w.live_arms(),
+            vec!["candidate".to_owned(), "control".to_owned()]
+        );
         assert!(armed() >= 1, "a window timer is armed");
         assert!(explains_disabled(&w.env.store, "tw1").await.unwrap());
         let wins = w.run_windows(1).await;
         let e = w.exp(1).await;
-        assert_eq!(e.state, ExperimentState::Kept, "{} ({wins} windows)", e.line);
+        assert_eq!(
+            e.state,
+            ExperimentState::Kept,
+            "{} ({wins} windows)",
+            e.line
+        );
         assert!(wins >= 2 && wins <= 14, "{wins}");
-        assert!(e.gate.as_ref().is_some_and(|g| g.rule == GateRule::Msprt && g.stat.unwrap() >= 100.0), "{:?}", e.gate);
+        assert!(
+            e.gate
+                .as_ref()
+                .is_some_and(|g| g.rule == GateRule::Msprt && g.stat.unwrap() >= 100.0),
+            "{:?}",
+            e.gate
+        );
         let obs = w.env.store.observations_list("tw1", Some(1)).await.unwrap();
         assert_eq!(obs.len() as u32, wins * 2, "one row per arm per window");
         assert!(w.live_arms().is_empty(), "both arms rolled back");
-        assert_eq!(w.env.store.launches_get("tw1", 1).await.unwrap().unwrap().state, "rolled_back");
-        assert_ne!(w.study.incumbent_sha.as_deref(), Some(base_sha.as_str()), "the keep moved the incumbent");
+        assert_eq!(
+            w.env
+                .store
+                .launches_get("tw1", 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "rolled_back"
+        );
+        assert_ne!(
+            w.study.incumbent_sha.as_deref(),
+            Some(base_sha.as_str()),
+            "the keep moved the incumbent"
+        );
         assert_eq!(w.study.incumbent_sha, e.commit_sha);
-        assert_eq!(sh(&w.worktree, &["git", "rev-parse", "HEAD"]), e.commit_sha.clone().unwrap());
+        assert_eq!(
+            sh(&w.worktree, &["git", "rev-parse", "HEAD"]),
+            e.commit_sha.clone().unwrap()
+        );
         assert!(!w.env.root.join("tw1/arms/control").exists());
         let view = view(&w.env.store, &w.study).await.unwrap();
         match view {
-            KindView::World { windows, launch, lambda } => {
+            KindView::World {
+                windows,
+                launch,
+                lambda,
+            } => {
                 assert_eq!(windows.len() as u32, wins * 2);
                 assert_eq!(launch.map(|l| l.state), Some("rolled_back".to_owned()));
                 assert_eq!(lambda.len() as u32, wins);
@@ -2330,25 +2537,59 @@ mod tests {
         let e = w.exp(2).await;
         assert_eq!(e.state, ExperimentState::Discarded, "{}", e.line);
         assert_eq!(wins, 14);
-        assert!(e.line.starts_with("inconclusive after 14 windows"), "{}", e.line);
+        assert!(
+            e.line.starts_with("inconclusive after 14 windows"),
+            "{}",
+            e.line
+        );
         assert!(w.live_arms().is_empty());
-        assert_eq!(w.study.incumbent_sha, w.exp(1).await.commit_sha, "a null moves nothing");
-        assert_eq!(sh(&w.worktree, &["git", "status", "--porcelain"]), "", "the candidate was reverted");
+        assert_eq!(
+            w.study.incumbent_sha,
+            w.exp(1).await.commit_sha,
+            "a null moves nothing"
+        );
+        assert_eq!(
+            sh(&w.worktree, &["git", "status", "--porcelain"]),
+            "",
+            "the candidate was reverted"
+        );
 
         // Launch 3: refused at the card.
         w.fire(3, "# Ship now\n\nShort.\n", "terse").await;
         let info = launch(&w.env, "tw1", 3, "tok", false).await.unwrap();
         assert_eq!(info.state, StudyState::Running);
         let e = w.exp(3).await;
-        assert_eq!((e.state, e.line.as_str()), (ExperimentState::Discarded, "refused at launch"));
-        assert_eq!(w.env.store.launches_get("tw1", 3).await.unwrap().unwrap().state, "refused");
+        assert_eq!(
+            (e.state, e.line.as_str()),
+            (ExperimentState::Discarded, "refused at launch")
+        );
+        assert_eq!(
+            w.env
+                .store
+                .launches_get("tw1", 3)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "refused"
+        );
         assert!(w.live_arms().is_empty());
-        assert!(launch(&w.env, "tw1", 3, "tok", true).await.is_err(), "a second press is refused");
+        assert!(
+            launch(&w.env, "tw1", 3, "tok", true).await.is_err(),
+            "a second press is refused"
+        );
         assert!(!explains_disabled(&w.env.store, "tw1").await.unwrap());
         let h = headline(&w.env.store, &w.study).await.unwrap().unwrap();
-        assert!(h.final_mean > h.base_mean && h.text.contains("1 launch kept"), "{}", h.text);
+        assert!(
+            h.final_mean > h.base_mean && h.text.contains("1 launch kept"),
+            "{}",
+            h.text
+        );
         let brief = brief_section(&w.env.store, &w.study).await.unwrap();
-        assert!(brief.contains("## World study") && brief.contains("#1: launch rolled_back"), "{brief}");
+        assert!(
+            brief.contains("## World study") && brief.contains("#1: launch rolled_back"),
+            "{brief}"
+        );
     }
 
     /// 159 §11 Guard P: a deploy that ignores the split (the candidate grabs all traffic through
@@ -2364,7 +2605,16 @@ mod tests {
         assert_eq!((wins, e.state), (1, ExperimentState::Crashed), "{}", e.line);
         assert!(e.line.contains("sample ratio mismatch"), "{}", e.line);
         assert!(w.live_arms().is_empty(), "rolled back");
-        assert!(matches!(w.study.state, StudyState::Paused { reason: PauseReason::Other { .. } }), "{:?}", w.study.state);
+        assert!(
+            matches!(
+                w.study.state,
+                StudyState::Paused {
+                    reason: PauseReason::Other { .. }
+                }
+            ),
+            "{:?}",
+            w.study.state
+        );
     }
 
     /// 159 §11 Guard P: an engine restart mid-window re-arms the timer from `experiments.wait`
@@ -2375,9 +2625,16 @@ mod tests {
         let mut e = ExperimentRecord::open("tw3", 1, 0, w.study.incumbent_sha.as_deref().unwrap());
         e.state = ExperimentState::Waiting;
         let until = fmt_at(chrono::Utc::now() + chrono::Duration::hours(1));
-        e.wait = Some(WaitInfo { until: until.clone(), why: WaitWhy::Window, windows: 1 });
+        e.wait = Some(WaitInfo {
+            until: until.clone(),
+            why: WaitWhy::Window,
+            windows: 1,
+        });
         w.env.store.insert_experiment(&e).await.unwrap();
-        for mut o in [obs(1, CONTROL, 1, 500, 0.04, 0.038), obs(1, CANDIDATE, 1, 500, 0.05, 0.047)] {
+        for mut o in [
+            obs(1, CONTROL, 1, 500, 0.04, 0.038),
+            obs(1, CANDIDATE, 1, 500, 0.05, 0.047),
+        ] {
             o.slug = "tw3".into();
             w.env.store.observations_insert(&o).await.unwrap();
         }
@@ -2388,8 +2645,19 @@ mod tests {
         assert_eq!(rearm(&w.env).await.unwrap(), 1);
         assert_eq!(armed(), before + 1);
         let e = w.env.store.get_experiment("tw3", 1).await.unwrap().unwrap();
-        assert_eq!((e.state, e.wait.as_ref().map(|i| i.until.clone())), (ExperimentState::Waiting, Some(until)));
-        assert_eq!(w.env.store.observations_list("tw3", Some(1)).await.unwrap().len(), 2);
+        assert_eq!(
+            (e.state, e.wait.as_ref().map(|i| i.until.clone())),
+            (ExperimentState::Waiting, Some(until))
+        );
+        assert_eq!(
+            w.env
+                .store
+                .observations_list("tw3", Some(1))
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
         disarm("tw3", 1);
         assert_eq!(armed(), before);
         // An approval wait arms nothing (the press, not a clock, ends it).
