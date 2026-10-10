@@ -465,6 +465,30 @@ pub trait Backend: Send + Sync {
             .map(|m| m.nanos as f64 / 1e9)
             .sum())
     }
+    /// 159 Z (live proof): an unattended root session for the study before its schedule has
+    /// fired — engine-side scoring (cases, pairwise) charges its baseline model calls to it.
+    /// The schedule's own session replaces it at the first fire (`on_fired`); the baseline's
+    /// spend still counts through the Bench channel (Σ `samples.spend_nanos`).
+    async fn open_session(&self, slug: &str, worktree: &Path) -> Result<SessionId> {
+        let agents = agents().ok_or_else(|| Error::refused("agent actor is not running"))?;
+        let session = agents
+            .ask(agent::NewSession {
+                cwd: Some(worktree.to_path_buf()),
+                unattended: true,
+            })
+            .await
+            .map_err(|e| Error::refused(format!("baseline session: {e}")))?;
+        if let Err(e) = agents
+            .ask(agent::RenameSession {
+                session,
+                title: format!("{}{slug} · baseline", crate::SCHEDULE_PREFIX),
+            })
+            .await
+        {
+            tracing::warn!(%slug, "baseline session title not set: {e}");
+        }
+        Ok(session)
+    }
     /// `code_map(focus=scope, budget=…)` through the tool registry; `None` when unavailable.
     async fn code_map(
         &self,
@@ -2128,6 +2152,23 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
             study,
             StudyPatch {
                 playbook: Some(p),
+                ..StudyPatch::default()
+            },
+        )
+        .await?;
+    }
+
+    // 159 Z: cases and pairwise scoring call the target / judge inside the baseline sample,
+    // and every side call is charged to `study.session` — bound by the schedule's first fire,
+    // which comes after this. Open the study's session now (live proof: toy-prompt failed
+    // `the study has no bound session to charge the call to` at baseline sample 1).
+    if matches!(spec.axes.scoring, Scoring::Cases | Scoring::Pairwise) && study.session.is_none() {
+        let session = env.backend.open_session(&slug, &worktree).await?;
+        patch(
+            env,
+            study,
+            StudyPatch {
+                session: Some(Some(session)),
                 ..StudyPatch::default()
             },
         )

@@ -427,6 +427,9 @@ impl Backend for Fake {
     async fn session_cost(&self, _: Option<SessionId>) -> Result<f64> {
         self.spend.lock().clone().map_err(Error::refused)
     }
+    async fn open_session(&self, _: &str, _: &Path) -> Result<SessionId> {
+        Ok(SessionId::new())
+    }
     async fn code_map(
         &self,
         _: &runtime::Runtime,
@@ -3156,7 +3159,10 @@ async fn create_accepts_every_kind_judged_from_toy_judged() {
 
 /// R-SEAMS-11 / W2 H1: a prompt study runs no bench command (`cases` was a workaround word);
 /// `create` must take the README spec without one. The cases runner needs a target model, so
-/// only `create`'s acceptance is asserted (cases.rs's e2e test runs the fixture).
+/// only `create`'s acceptance is asserted (cases.rs's e2e test runs the fixture). 159 Z live
+/// proof: the baseline's target calls are charged to `study.session`, which the schedule binds
+/// only at its first fire — `prepare` must open one first (toy-prompt failed at baseline
+/// sample 1 with `the study has no bound session to charge the call to`).
 #[tokio::test]
 async fn create_accepts_every_kind_prompt_without_a_bench_command() {
     let fake = Fake::default();
@@ -3166,10 +3172,11 @@ async fn create_accepts_every_kind_prompt_without_a_bench_command() {
     spec.bench.command = String::new();
     let s = create_settles(&mut h, spec).await;
     assert!(
-        !matches!(&s.state, StudyState::Failed { reason } if reason.contains("bench.command")),
+        !matches!(&s.state, StudyState::Failed { reason } if reason.contains("bench.command") || reason.contains("no bound session")),
         "{:?}",
         s.state
     );
+    assert!(s.session.is_some(), "a cases study has its session before the baseline runs");
 }
 
 /// R-SEAMS-11 / R-W6-3: a world study's `bench.command` is a custody workaround, not a need;
