@@ -2007,6 +2007,18 @@ impl Message<StartMeeting> for Meeting {
         manifest.title = m.title;
         manifest.context = m.context;
         manifest.session_model = m.session_model;
+        // 158 §8.3 (W2): the picked calendar event seeds title, context and `manifest.event`.
+        let picked = m.event.as_ref().or(match &m.source {
+            Some(detect::Source::Calendar { event }) => Some(event),
+            _ => None,
+        });
+        if let Some(id) = picked {
+            match calendar::store::event(&self.store, id).await {
+                Ok(Some(e)) => calendar::seed(&mut manifest, &e),
+                Ok(None) => tracing::warn!(event = %id, "meeting: start: unknown calendar event"),
+                Err(e) => tracing::warn!("meeting: start: calendar event: {e:#}"),
+            }
+        }
         // 137 R1-D6: the mode is the start option, else the configured default; without
         // the agent bridge installed the meeting runs as before and says so once.
         manifest.memory = self.endless.resolve(m.memory);
@@ -3966,6 +3978,8 @@ impl runtime::Plugin for MeetingPlugin {
         }
         let actor = Meeting::spawn_with_mailbox(meeting, runtime::subscriber_mailbox());
         actor.register(MEETING_ACTOR)?;
+        // 158 §7.3 (W2): ICS subscriptions poll from boot, not from the first calendar RPC.
+        calendar::ensure_poll(rt);
         // 02 §0.4: turn state and approvals of the meeting session.
         rt.subscribe::<Meeting, AgentEvent>(&actor).await;
         rt.subscribe::<Meeting, ApprovalRequested>(&actor).await;

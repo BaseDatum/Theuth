@@ -25,7 +25,7 @@ use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use knowledge::KnowledgeChanged;
 use link::LinkEvent;
-use meeting::{BriefEvent, MeetingEvent};
+use meeting::{BriefEvent, CalendarEvent, MeetingEvent};
 use mesh::MeshEvent;
 use nodes::NodeEvent;
 use roster::attention::AttentionChanged;
@@ -138,6 +138,7 @@ forward!(
     TalkEvent,
     MeetingEvent,
     BriefEvent,
+    CalendarEvent,
     AppCallChanged,
     ActivityAppended,
     CodeindexEvent,
@@ -206,6 +207,7 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, TalkEvent>(&actor).await;
     rt.subscribe::<Bridge, MeetingEvent>(&actor).await;
     rt.subscribe::<Bridge, BriefEvent>(&actor).await;
+    rt.subscribe::<Bridge, CalendarEvent>(&actor).await;
     rt.subscribe::<Bridge, AppCallChanged>(&actor).await;
     rt.subscribe::<Bridge, ActivityAppended>(&actor).await;
     rt.subscribe::<Bridge, CodeindexEvent>(&actor).await;

@@ -6,6 +6,7 @@ import type { AskRequested } from '@/rpc/bindings/AskRequested'
 import type { AskResolved } from '@/rpc/bindings/AskResolved'
 import type { BrowserEvent } from '@/rpc/bindings/BrowserEvent'
 import type { BriefEvent } from '@/rpc/bindings/BriefEvent'
+import type { CalendarEvent } from '@/rpc/bindings/CalendarEvent'
 import type { CommunicationChanged } from '@/rpc/bindings/CommunicationChanged'
 import type { JobEvent } from '@/rpc/bindings/JobEvent'
 import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
@@ -103,6 +104,8 @@ export type WireEvent =
   | MeetingEvent
   /** 05 §0.8: the brief cache changed; the one meeting stream without a `meeting`. */
   | BriefEvent
+  /** 158 §7 (W2): a calendar source changed, or the EventKit switch moved; no `meeting`. */
+  | CalendarEvent
   /** 50 §10: settings (global or a subtree's opt-out/scope), a receipt's state, a consumed peer exchange, the A2A network. */
   | CommunicationChanged
   | PeerMessageChanged
