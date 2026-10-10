@@ -4,7 +4,7 @@ import { TrayIcon } from '@tauri-apps/api/tray'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { useShortcuts } from '@/lib/shortcuts'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { ATTENTION_KEY } from '@/components/hud/queries'
 import { StartupScreen } from '@/components/launch/StartupScreen'
@@ -14,6 +14,7 @@ import { AlertNotifier } from '@/lib/alerts'
 import { describe } from '@/lib/describe'
 import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
 import { companionAlive, onCompanionAlive, useCompanionAlive } from '@/lib/companion'
+import { EngineSwitch } from '@/lib/engine-switch'
 import { FocusTracker, Throttle, deriveFocus, typeCounts } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
@@ -586,8 +587,19 @@ function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(): void }) {
 /** Link clients by engine id; `AbortController` closes one when the engine is removed. */
 const links = new Map<string, AbortController>()
 
-/** The chat each engine was showing when the user switched away, restored on the way back (`/` otherwise). */
-const lastChat = new Map<string, string>()
+/**
+ * The switch gate (`lib/engine-switch`): resolves once the router holds the destination (`onLoad` fires after the
+ * matches commit), not on `navigate()`'s own promise, which waits for a render that the gate itself is holding back.
+ */
+const switcher = new EngineSwitch((href) => {
+  const { promise, resolve } = Promise.withResolvers<void>()
+  const off = router.subscribe('onLoad', () => {
+    off()
+    resolve()
+  })
+  void router.navigate({ href }).catch(resolve)
+  return promise
+})
 
 /** 96 §5.3: an overlay webview is a canvas and three listeners — no engines, no stores, no toaster. */
 export function App() {
@@ -600,8 +612,6 @@ function Main() {
   const engines = useEngines((s) => s.engines)
   const active = useEngines((s) => s.active)
   const needsPairing = useNeedsPairing()
-  /** The `active` last shown once IndexedDB was read; `null` before, so the stored value does not count as a switch. */
-  const shown = useRef<string | null>(null)
 
   useEffect(() => void hydrateEngines(), [])
   useEffect(watchNodes, [])
@@ -666,20 +676,17 @@ function Main() {
     }
   }, [active])
 
-  // A switch restores that engine's last chat, else `/` (the tree below remounts under the new provider);
-  // the hydration read keeps deep links like `/link#…`.
+  // A switch (48 §5): the engine left unmounts at once, its chat is remembered, the destination's last chat (else `/`)
+  // is loaded, and only then does its Shell mount — the hydration read shows at once and keeps deep links like `/link#…`.
+  useSyncExternalStore(switcher.subscribe, () => switcher.shown)
   useEffect(() => {
     if (!hydrated) return
-    if (shown.current !== null && shown.current !== active) {
-      const { pathname, href } = router.state.location
-      if (pathname.startsWith('/c/')) lastChat.set(shown.current, href)
-      else lastChat.delete(shown.current)
-      // Panes name sessions of the engine being left.
-      usePanes.setState({ root: null, focused: null, drag: null })
-      router.history.push(lastChat.get(active) ?? '/')
-    }
-    shown.current = active
+    // Panes name sessions of the engine being left.
+    if (switcher.shown !== null && switcher.shown !== active) usePanes.setState({ root: null, focused: null, drag: null })
+    const { pathname, href } = router.state.location
+    void switcher.activate(active, { pathname, href })
   }, [hydrated, active])
+  const engine = switcher.visible(active)
 
   useTauri()
   useMeetingHotkeys()
@@ -690,9 +697,9 @@ function Main() {
     <>
       {needsPairing ? (
         <PairScreen />
-      ) : (
-        <EngineProvider key={active} engine={active}>
-          <Shell engine={active} onRelaunch={() => setAttempt((n) => n + 1)} />
+      ) : engine === null ? null : (
+        <EngineProvider key={engine} engine={engine}>
+          <Shell engine={engine} onRelaunch={() => setAttempt((n) => n + 1)} />
         </EngineProvider>
       )}
       <Toaster />
