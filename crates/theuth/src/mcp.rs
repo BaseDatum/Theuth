@@ -50,14 +50,6 @@ struct SendMessage {
 struct NoArgs {}
 
 impl Shim {
-    /// A shim for `session`, proxying to `client`.
-    pub fn new(session: String, client: WsClient) -> Self {
-        Self {
-            session,
-            client: Arc::new(client),
-        }
-    }
-
     async fn call<T: serde::de::DeserializeOwned>(
         &self,
         method: &str,
@@ -248,7 +240,11 @@ mod tests {
         let (a, b) = tokio::io::duplex(1 << 16);
         // Both `serve`s block on the initialize handshake: run them together.
         let (server, mcp) = tokio::join!(
-            Shim::new("s1".into(), client).serve(tokio::io::split(a)),
+            Shim {
+                session: "s1".into(),
+                client: Arc::new(client)
+            }
+            .serve(tokio::io::split(a)),
             ().serve(tokio::io::split(b)),
         );
         let (server, mcp) = (server.unwrap(), mcp.unwrap());

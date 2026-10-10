@@ -79,6 +79,23 @@ Write (18, A2): `meeting_edit` (`meeting_edit`), `meeting_set_project`, `meeting
   say read + write now (A2).
 - `docs/design/158-meetings-around.md` §12.4/§15.5: the frozen list above (43 tools) — doc owner to paste.
 
-## Gates
+## Gates (BUILD_LABEL=158w5e, CARGO_BUILD_JOBS=4)
 
-(filled below after the runs)
+- `build-lock mbx test -p mcp-server -p theuth --no-run` → ok; `mbx test -p mcp-server -p theuth` → mcp-server lib 3
+  passed, `tests/catalog.rs` 4 passed (snapshot 43 tools / 25 read-only; paging; Private filter + error mapping;
+  Bearer 401 / Host 403 / Origin 403 / loopback-Origin 200 + rmcp `StreamableHttpClientTransport` round trip with
+  `list_tools` = 43, `meeting_list`, `task_comment`, `meeting_summary`, 3 audit lines with `client = test-client`,
+  listener gone after cancel); `t` 3 passed (`tools_proxy_to_the_engine`: `t mcp --session` byte-identical).
+- `build-lock mbx clippy -p mcp-server -p theuth` → clean (0 warnings).
+- Live smoke, scratch engine `t --data-dir /tmp/158w5e-data --headless` (`rpc.listen 127.0.0.1:27777`,
+  `mcp_server { enabled: true, port: 27788 }`, `secrets.key_store: file`): log `mcp server listening port=27788`;
+  curl: no bearer → 401, foreign Host → 403, foreign Origin → 403, initialize → 200 + `mcp-session-id`;
+  `tools/list` 43; `task_create` over MCP → row visible to `task_list`; `t mcp` on stdio: `tools/list` 43,
+  `task_get` returns the row, audit line `transport: stdio, client: stdio-smoke`; RPC `mcp_server_set {enabled:false}`
+  → connection refused, `{enabled:true}` → 401 again; `mcp_server_rotate_token` → old token 401, new token 200,
+  `config.yaml` rewritten in place; `mcp_server_audit(2)` returns the newest lines.
+
+## Open items
+
+- Live proof with Claude Code (§16 W5 row) needs Sky's engine + Settings copy block — orchestrator/UI wave.
+- `t mcp` without a vault: redaction only on the HTTP path (see Deviations).

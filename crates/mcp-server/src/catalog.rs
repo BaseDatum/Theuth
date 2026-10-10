@@ -9,8 +9,8 @@ use std::time::Instant;
 
 use rmcp::handler::server::common::schema_for_type;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
@@ -297,271 +297,268 @@ struct SourceAdd {
 
 // ---- the table ---------------------------------------------------------------------------------
 
-/// `(name, description, schema, read-only)`; the order clients see.
-fn table() -> Vec<(
+/// One catalogue row: `(name, description, input schema, read-only)`.
+type Row = (
     &'static str,
     &'static str,
     Arc<serde_json::Map<String, Value>>,
     bool,
-)> {
-    let s = |x: Arc<serde_json::Map<String, Value>>| x;
+);
+
+/// The rows, in the order clients see.
+fn table() -> Vec<Row> {
     vec![
         (
             "meeting_list",
             "Recorded meetings, newest first (summaries: id, title, started_at, state, project). Use `meeting_search` to find one by words.",
-            s(schema_for_type::<MeetingList>()),
+            schema_for_type::<MeetingList>(),
             true,
         ),
         (
             "meeting_get",
             "One meeting's manifest: title, times, process, calendar event, project, template, note document.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             true,
         ),
         (
             "meeting_transcript",
             "A page of transcript segments (speaker, t0_ms, t1_ms, text). Read `meeting_summary` first; this is long.",
-            s(schema_for_type::<TranscriptArgs>()),
+            schema_for_type::<TranscriptArgs>(),
             true,
         ),
         (
             "meeting_summary",
             "The meeting's summary markdown (decisions, action items, open questions). Start here for any meeting.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             true,
         ),
         (
             "meeting_briefs",
             "The in-meeting briefs (title + bullets) a meeting produced.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             true,
         ),
         (
             "meeting_search",
             "Full-text search over meeting titles and transcripts; hits carry a snippet and the meeting summary row.",
-            s(schema_for_type::<Query>()),
+            schema_for_type::<Query>(),
             true,
         ),
         (
             "meeting_speakers",
             "Enrolled speaker profiles (names, sample counts; never embeddings).",
-            s(schema_for_type::<NoArgs>()),
+            schema_for_type::<NoArgs>(),
             true,
         ),
         (
             "brief_search",
             "Full-text search over cached briefs.",
-            s(schema_for_type::<Query>()),
+            schema_for_type::<Query>(),
             true,
         ),
         (
             "brief_get",
             "One cached brief by id.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             true,
         ),
         (
             "brief_list",
             "Cached briefs, newest first, optionally by tag.",
-            s(schema_for_type::<BriefList>()),
+            schema_for_type::<BriefList>(),
             true,
         ),
         (
             "knowledge_search",
             "Semantic + full-text search over the knowledge base; hits carry a snippet. Use `knowledge_get` for the whole note.",
-            s(schema_for_type::<Query>()),
+            schema_for_type::<Query>(),
             true,
         ),
         (
             "knowledge_get",
             "One knowledge concept: metadata, text, links.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             true,
         ),
         (
             "knowledge_list",
             "Knowledge concepts by id prefix, type or tag (metadata only).",
-            s(schema_for_type::<KnowledgeList>()),
+            schema_for_type::<KnowledgeList>(),
             true,
         ),
         (
             "doc_list",
             "Documents (notes, meeting notes, artifacts, notebooks…), newest first; `doc_markdown` reads one.",
-            s(schema_for_type::<DocList>()),
+            schema_for_type::<DocList>(),
             true,
         ),
         (
             "doc_markdown",
             "A document's content as markdown.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             true,
         ),
         (
             "notebook_list",
             "Notebooks with their source, note and chat counts.",
-            s(schema_for_type::<NotebookList>()),
+            schema_for_type::<NotebookList>(),
             true,
         ),
         (
             "notebook_items",
             "A notebook's items (sources, notes, sessions, artifacts), oldest first.",
-            s(schema_for_type::<NotebookItems>()),
+            schema_for_type::<NotebookItems>(),
             true,
         ),
         (
             "notebook_search",
             "Block-level search inside notebooks; hits carry heading and snippet.",
-            s(schema_for_type::<NotebookSearch>()),
+            schema_for_type::<NotebookSearch>(),
             true,
         ),
         (
             "session_list",
             "Chat sessions (title, project, model, times), newest first. Private sessions are never listed.",
-            s(schema_for_type::<SessionList>()),
+            schema_for_type::<SessionList>(),
             true,
         ),
         (
             "session_read",
             "A page of one session's history (user, assistant, tool entries). Private sessions are refused.",
-            s(schema_for_type::<SessionRead>()),
+            schema_for_type::<SessionRead>(),
             true,
         ),
         (
             "task_list",
             "Tasks, oldest first, filtered by owner, state or project.",
-            s(schema_for_type::<TaskList>()),
+            schema_for_type::<TaskList>(),
             true,
         ),
-        (
-            "task_get",
-            "One task by id.",
-            s(schema_for_type::<Id>()),
-            true,
-        ),
+        ("task_get", "One task by id.", schema_for_type::<Id>(), true),
         (
             "artifact_list",
             "Artifact metadata (name, kind, mime, bytes, session); artifacts of Private sessions are dropped.",
-            s(schema_for_type::<ArtifactList>()),
+            schema_for_type::<ArtifactList>(),
             true,
         ),
         (
             "calendar_events",
             "Calendar events overlapping a window, start ascending.",
-            s(schema_for_type::<Window>()),
+            schema_for_type::<Window>(),
             true,
         ),
         (
             "calendar_sources",
             "Calendar sources (macOS Calendar, ICS subscriptions) with their last fetch state.",
-            s(schema_for_type::<NoArgs>()),
+            schema_for_type::<NoArgs>(),
             true,
         ),
         (
             "meeting_edit",
             "Edit a meeting transcript: relabel/rename/merge/split segments, fix text, enroll a speaker, mark reviewed. All-or-none.",
-            s(schema_for_type::<MeetingEdit>()),
+            schema_for_type::<MeetingEdit>(),
             false,
         ),
         (
             "meeting_set_project",
             "Set or clear a meeting's project label.",
-            s(schema_for_type::<SetProject>()),
+            schema_for_type::<SetProject>(),
             false,
         ),
         (
             "meeting_set_event",
             "Link a meeting to a calendar event, or unlink it.",
-            s(schema_for_type::<SetEvent>()),
+            schema_for_type::<SetEvent>(),
             false,
         ),
         (
             "meeting_set_template",
             "Set the notes template a meeting is summarised with.",
-            s(schema_for_type::<SetTemplate>()),
+            schema_for_type::<SetTemplate>(),
             false,
         ),
         (
             "doc_create",
             "Create a note document with optional markdown.",
-            s(schema_for_type::<DocCreate>()),
+            schema_for_type::<DocCreate>(),
             false,
         ),
         (
             "doc_rename",
             "Rename a note document.",
-            s(schema_for_type::<Rename>()),
+            schema_for_type::<Rename>(),
             false,
         ),
         (
             "doc_delete",
             "Move a note document to the trash.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             false,
         ),
         (
             "knowledge_put",
             "Create or replace a knowledge concept (id, type, title, tags, body).",
-            s(schema_for_type::<knowledge::Put>()),
+            schema_for_type::<knowledge::Put>(),
             false,
         ),
         (
             "knowledge_delete",
             "Delete a knowledge concept.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             false,
         ),
         (
             "task_create",
             "Create a task (title, brief, owner, state…).",
-            s(schema_for_type::<tasks::TaskCreate>()),
+            schema_for_type::<tasks::TaskCreate>(),
             false,
         ),
         (
             "task_update",
             "Patch a task's fields.",
-            s(schema_for_type::<TaskUpdate>()),
+            schema_for_type::<TaskUpdate>(),
             false,
         ),
         (
             "task_move",
             "Move a task to another state (backlog, todo, doing, review, blocked, done, cancelled).",
-            s(schema_for_type::<TaskMove>()),
+            schema_for_type::<TaskMove>(),
             false,
         ),
         (
             "task_comment",
             "Append a comment to a task's thread.",
-            s(schema_for_type::<TaskComment>()),
+            schema_for_type::<TaskComment>(),
             false,
         ),
         (
             "brief_put",
             "Create (no id) or update a cached brief.",
-            s(schema_for_type::<meeting::CachedBriefPut>()),
+            schema_for_type::<meeting::CachedBriefPut>(),
             false,
         ),
         (
             "brief_delete",
             "Delete a cached brief.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             false,
         ),
         (
             "calendar_source_add",
             "Subscribe to an ICS calendar address.",
-            s(schema_for_type::<SourceAdd>()),
+            schema_for_type::<SourceAdd>(),
             false,
         ),
         (
             "calendar_source_delete",
             "Remove a calendar source.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             false,
         ),
         (
             "calendar_source_refresh",
             "Fetch a calendar source now.",
-            s(schema_for_type::<Id>()),
+            schema_for_type::<Id>(),
             false,
         ),
     ]
@@ -1016,6 +1013,7 @@ impl From<String> for Error {
 impl ServerHandler for Catalog {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("theuth", env!("CARGO_PKG_VERSION")))
             .with_instructions(INSTRUCTIONS)
     }
 
