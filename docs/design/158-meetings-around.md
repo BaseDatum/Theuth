@@ -1,6 +1,6 @@
 # 158 MEETINGS-AROUND — detection, calendar, project series, speaker suggestions, templates, and theuth over MCP
 
-Status: DESIGN — planned, not built. Sky's rulings 2026-10-10 12:55 (`decisions/theuth-meeting-notetakers-rulings-2026-10-10`);
+Status: BUILT 2026-10-10 — contract 539e65aa, W5 MCP 4b49e238, W2 calendar 0fc7f295, W1 detection 23ea03c5, W3 projects 8908ed1c, W4 speakers + templates 0ac16fa3, live proof 3380bc61 (`158-live-proof.md`), fix round 5d7d4252, W6 38846c25; as-builts in `docs/design/158-as-built-*.md`. Sky's rulings 2026-10-10 12:55 (`decisions/theuth-meeting-notetakers-rulings-2026-10-10`);
 study `docs/studies/2026-10-10-local-meeting-notetakers.md` (main b9a9139c).
 
 Worktree `theuth-158`, branch `docs/158-meetings-around`, cut from origin/main b4e5833a. Every `path:line` below was re-opened in
