@@ -280,6 +280,12 @@ export function useInvalidateOn(): void {
       on('TopicRemoved', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
       on('Brief', (e) => void qc.invalidateQueries({ queryKey: queryKeys.meetingBriefs(e.meeting) })),
       on('BriefChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.briefs })),
+      // 158 §7.6 (W2): a source was added, removed, refreshed or errored, or a push landed — Settings › Calendar's
+      // rows and every Upcoming / `[▾]` list re-read.
+      on('SourcesChanged', () => {
+        void qc.invalidateQueries({ queryKey: ['calendar-sources'] })
+        void qc.invalidateQueries({ queryKey: ['calendar-events'] })
+      }),
       // 79 §4.4: VM rows are patched in place; the bring-up log per name; `OpenDesktop` (the `sandbox_desktop` tool) pops
       // the window out of the main shell only — pop-outs receive the same stream. `Changed` is also a `ScheduleEvent`.
       on('Changed', (e) => {

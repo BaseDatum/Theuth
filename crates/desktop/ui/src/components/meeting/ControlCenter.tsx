@@ -17,6 +17,7 @@ import { ArrowUp, Check, ChevronRight, LoaderCircle, PanelLeft, Zap } from 'luci
 import { useEffect, useRef, useState } from 'react'
 import { Divider } from '@/components/chat/Panes'
 import { BriefColumn, hhmmss, useBriefs } from '@/components/meeting/BriefColumn'
+import { EventSwitcher } from '@/components/meeting/EventSwitcher'
 import { MeetingActions } from '@/components/meeting/MeetingActions'
 import { MeetingHeader, duration, stateLabel } from '@/components/meeting/MeetingList'
 import { MeetingNote } from '@/components/meeting/Note'
@@ -135,6 +136,7 @@ export function ControlCenter({ id }: { id: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <MeetingHeader title={title}>
+        {manifest.data && <EventSwitcher meeting={id} event={manifest.data.event} startedAt={manifest.data.started_at} className="hidden max-w-64 md:inline-flex" />}
         {state && !isLive && <span className="shrink-0 text-[12px] text-fg-tertiary">{stateLabel(state)}</span>}
         {isLive && oracleSummary(store.oracle) && (
           <span className="hidden items-center gap-1 text-[12px] text-fg-tertiary md:flex" title="decision oracle this meeting (57 §3.4): skipped turns, briefs published, escalated, shadow agreement">
