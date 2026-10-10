@@ -340,25 +340,32 @@ impl Objective {
     }
 }
 
-macro_rules! block_specs {
-    ($($(#[$m:meta])* $name:ident;)*) => {$(
-        wire! {
-            $(#[$m])*
-            #[derive(Default, Eq)]
-            #[serde(default)]
-            pub struct $name {}
-        }
-    )*};
-}
-
-block_specs! {
-    /// W7: `suite: {training, held_out, seeds, inner_budget}` — W7's addendum fills it.
-    SuiteSpec;
+wire! {
+    /// W7 (159 §12): `suite: {training, held_out, seeds, inner_experiments, executor}` — the
+    /// fixture suite the outer study scores on. Empty lists mean the §14 suite; 0 means the
+    /// §12 constant (2 seeds, 8 inner experiments); `executor` is the inner studies' model.
+    #[derive(Default, Eq)]
+    #[serde(default)]
+    pub struct SuiteSpec {
+        /// Training fixtures (the outer bench).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub training: Vec<String>,
+        /// Held-out fixtures (the outer holdout; never in the brief).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub held_out: Vec<String>,
+        /// Inner studies per fixture.
+        pub seeds: u32,
+        /// Experiments per inner study.
+        pub inner_experiments: u32,
+        /// The inner studies' executor; `None` = the outer study's.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub executor: Option<String>,
+    }
 }
 
 // ───────────────────────────── 159 §7 W2: the case set ─────────────────────────────
-// R1 (orchestrator): each wave defines the fields of its own block spec here, directly after
-// the `block_specs!` invocation; every field defaults so a 140 spec stays byte-identical.
+// R1 (orchestrator): each wave defined the fields of its own block spec here (the skeleton's
+// empty `block_specs!` is gone); every field defaults so a 140 spec stays byte-identical.
 
 wire! {
     /// Where a prompt study's cases come from (159 §7).
