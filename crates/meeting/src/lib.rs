@@ -2140,7 +2140,15 @@ impl Message<StartMeeting> for Meeting {
         });
         if let Some(id) = picked {
             match calendar::store::event(&self.store, id).await {
-                Ok(Some(e)) => calendar::seed(&mut manifest, &e),
+                Ok(Some(e)) => {
+                    // W3 close: the islands' one-tap start from the Upcoming card sends the
+                    // event's description as `context`; the seed carries it already.
+                    let desc = e.to_ref().description;
+                    if manifest.context.as_deref().map(str::trim) == desc.as_deref() {
+                        manifest.context = None;
+                    }
+                    calendar::seed(&mut manifest, &e);
+                }
                 Ok(None) => tracing::warn!(event = %id, "meeting: start: unknown calendar event"),
                 Err(e) => tracing::warn!("meeting: start: calendar event: {e:#}"),
             }

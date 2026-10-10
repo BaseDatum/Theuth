@@ -278,7 +278,7 @@ pub async fn brief_for(
     if !cx.prebrief {
         return Ok(cached(&cx.store, &event.id).await?.map(|c| c.bullets));
     }
-    ensure(rt, &cx, &PrivateTurn, &row, project)
+    ensure(rt, &cx, &PrivateTurn::new(), &row, project)
         .await
         .map(|c| Some(c.bullets))
 }
@@ -504,111 +504,189 @@ pub(crate) trait Writer: Send + Sync {
     async fn write(&self, cx: &Ctx, project: &str, prompt: String) -> Result<String, String>;
 }
 
-/// Synthetic owner peer of the brief's Private root (a plugin has no RPC connection).
+/// Synthetic owner peer of the brief's Private root. A plugin has no RPC connection and the
+/// agent knows no engine-internal private owner (every private root today is a TUI/desktop
+/// peer), so the id is one no connection counter reaches; refusals fall back below.
 const PEER: u64 = u64::MAX - 158;
 
 /// §9.4: a Private root on `meeting.model`, the read tools only, one turn, closed after the
-/// reply — nothing survives but the brief row the engine files.
-pub(crate) struct PrivateTurn;
+/// reply — nothing survives but the brief row the engine files. When the private root is
+/// refused (private mode unavailable) or the turn does not answer in time, [`fallback`]:
+/// one no-tools `SideCall` (the oracle's path) on a throwaway durable session that is
+/// deleted right after — the brief still comes, from the excerpts and the event alone.
+pub(crate) struct PrivateTurn {
+    side: Arc<decision::SideCaller>,
+}
+
+impl PrivateTurn {
+    /// The production writer: side calls through the agent plugin.
+    pub(crate) fn new() -> Self {
+        Self {
+            side: crate::oracle::side_caller(),
+        }
+    }
+}
+
+fn agents() -> Result<ActorRef<agent::Agents>, String> {
+    ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
+        .ok()
+        .flatten()
+        .ok_or_else(|| "agent is not running".to_owned())
+}
+
+/// The private turn (§9.4 as designed).
+async fn private_turn(cx: &Ctx, project: &str, prompt: String) -> Result<String, String> {
+    let agents = agents()?;
+    let closed = tools::CancellationToken::new();
+    let open = agents
+        .ask(agent::CreateSession {
+            options: agent::CreateSessionOptions {
+                retention: tools::Retention::Private,
+                project: Some(project.to_owned()),
+                view: Some("prebrief".into()),
+                model: cx.model.clone(),
+                memory: Some(agent::MemoryMode::Epochs),
+                ..Default::default()
+            },
+            peer: Some((PEER, closed.clone())),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let session = open.session;
+    let turn = async {
+        agents
+            .ask(agent::SetToolset {
+                session,
+                toolset: Some(agent::Toolset {
+                    tools: [
+                        "knowledge_search",
+                        "knowledge_get",
+                        "meeting_read",
+                        "meeting_search",
+                        "meeting_list",
+                        "brief_search",
+                    ]
+                    .map(str::to_owned)
+                    .to_vec(),
+                    prompts: vec!["meeting".into(), "knowledge".into()],
+                    runtime: false,
+                    hint_limit: Some(0),
+                }),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        agents
+            .ask(agent::SendInput {
+                session: Some(session),
+                text: prompt,
+                files: Vec::new(),
+                delivery: agent::Delivery::default(),
+                id: None,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        let reply = async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let loaded = agents
+                    .ask(agent::LoadSession {
+                        session,
+                        before: None,
+                        limit: Some(12),
+                        settled_only: false,
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if loaded.running {
+                    continue;
+                }
+                let text = loaded.history.iter().rev().find_map(|h| match h {
+                    agent::HistoryEntry::Assistant { text, .. } if !text.trim().is_empty() => {
+                        Some(text.trim().to_owned())
+                    }
+                    _ => None,
+                });
+                if let Some(t) = text {
+                    return Ok::<_, String>(t);
+                }
+            }
+        };
+        tokio::time::timeout(TIMEOUT, reply)
+            .await
+            .map_err(|_| format!("no reply within {} s", TIMEOUT.as_secs()))?
+    }
+    .await;
+    if let Err(e) = agents
+        .ask(agent::LeaveSession {
+            session,
+            lease_secret: open.lease_secret,
+            peer: PEER,
+        })
+        .await
+    {
+        tracing::warn!(%session, "prebrief: close private root: {e}");
+    }
+    closed.cancel();
+    turn
+}
+
+/// The fallback's `SideCall`: no tools, no history, the prompt as the one user message.
+fn side_call(session: runtime::SessionId, cx: &Ctx, prompt: String) -> runtime::SideCall {
+    runtime::SideCall {
+        session,
+        role: match &cx.model {
+            Some(m) => runtime::ModelRole::Named(m.clone()),
+            None => runtime::ModelRole::Session,
+        },
+        system: "You prepare a short pre-meeting brief from the notes of past meetings and the \
+                 event. Facts only — never what the user should say. Reply with the bullets only."
+            .into(),
+        user: prompt,
+        budget: TIMEOUT,
+        kind: runtime::CallKind::Escalate,
+    }
+}
+
+/// One no-tools model call on a throwaway durable session of `project`, deleted after.
+async fn fallback(
+    side: &decision::SideCaller,
+    cx: &Ctx,
+    project: &str,
+    prompt: String,
+) -> Result<String, String> {
+    let agents = agents()?;
+    let open = agents
+        .ask(agent::CreateSession {
+            options: agent::CreateSessionOptions {
+                project: Some(project.to_owned()),
+                model: cx.model.clone(),
+                memory: Some(agent::MemoryMode::Epochs),
+                ..Default::default()
+            },
+            peer: None,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let session = open.session;
+    let reply = side(side_call(session, cx, prompt)).await.map(|r| r.text);
+    if let Err(e) = agents.ask(agent::DeleteSession { session }).await {
+        tracing::warn!(%session, "prebrief: delete throwaway session: {e}");
+    }
+    reply
+}
 
 #[async_trait::async_trait]
 impl Writer for PrivateTurn {
     async fn write(&self, cx: &Ctx, project: &str, prompt: String) -> Result<String, String> {
-        let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
-            .ok()
-            .flatten()
-            .ok_or("agent is not running")?;
-        let closed = tools::CancellationToken::new();
-        let open = agents
-            .ask(agent::CreateSession {
-                options: agent::CreateSessionOptions {
-                    retention: tools::Retention::Private,
-                    project: Some(project.to_owned()),
-                    view: Some("prebrief".into()),
-                    model: cx.model.clone(),
-                    memory: Some(agent::MemoryMode::Epochs),
-                    ..Default::default()
-                },
-                peer: Some((PEER, closed.clone())),
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-        let session = open.session;
-        let turn = async {
-            agents
-                .ask(agent::SetToolset {
-                    session,
-                    toolset: Some(agent::Toolset {
-                        tools: [
-                            "knowledge_search",
-                            "knowledge_get",
-                            "meeting_read",
-                            "meeting_search",
-                            "meeting_list",
-                            "brief_search",
-                        ]
-                        .map(str::to_owned)
-                        .to_vec(),
-                        prompts: vec!["meeting".into(), "knowledge".into()],
-                        runtime: false,
-                        hint_limit: Some(0),
-                    }),
-                })
-                .await
-                .map_err(|e| e.to_string())?;
-            agents
-                .ask(agent::SendInput {
-                    session: Some(session),
-                    text: prompt,
-                    files: Vec::new(),
-                    delivery: agent::Delivery::default(),
-                    id: None,
-                })
-                .await
-                .map_err(|e| e.to_string())?;
-            let reply = async {
-                loop {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    let loaded = agents
-                        .ask(agent::LoadSession {
-                            session,
-                            before: None,
-                            limit: Some(12),
-                            settled_only: false,
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    if loaded.running {
-                        continue;
-                    }
-                    let text = loaded.history.iter().rev().find_map(|h| match h {
-                        agent::HistoryEntry::Assistant { text, .. } if !text.trim().is_empty() => {
-                            Some(text.trim().to_owned())
-                        }
-                        _ => None,
-                    });
-                    if let Some(t) = text {
-                        return Ok::<_, String>(t);
-                    }
-                }
-            };
-            tokio::time::timeout(TIMEOUT, reply)
-                .await
-                .map_err(|_| format!("no reply within {} s", TIMEOUT.as_secs()))?
+        match private_turn(cx, project, prompt.clone()).await {
+            Ok(t) => Ok(t),
+            Err(e) => {
+                tracing::warn!("prebrief: private turn: {e}; falling back to a side call");
+                fallback(&*self.side, cx, project, prompt)
+                    .await
+                    .map_err(|f| format!("private turn: {e}; side call: {f}"))
+            }
         }
-        .await;
-        if let Err(e) = agents
-            .ask(agent::LeaveSession {
-                session,
-                lease_secret: open.lease_secret,
-                peer: PEER,
-            })
-            .await
-        {
-            tracing::warn!(%session, "prebrief: close private root: {e}");
-        }
-        closed.cancel();
-        turn
     }
 }
 
@@ -723,17 +801,18 @@ pub(crate) async fn ensure(
 
 // ---- §9.4 the Upcoming tick
 
-/// Per-process state of the one-minute tick: which instances were announced, which failed.
+/// Per-process state of the one-minute tick: which instances failed to generate.
 #[derive(Default)]
 pub(crate) struct Scheduler {
-    emitted: HashSet<EventId>,
     // ponytail: one generation attempt per instance per process; a restart retries.
     failed: HashSet<EventId>,
 }
 
 impl Scheduler {
     /// One tick at `now`: generate for matched-or-remembered events inside `start − 15 min`,
-    /// return `Upcoming` once per instance from `start − 5 min` to `start + 5 min`.
+    /// return `Upcoming` for every instance inside `start − 5 min … start + 5 min` — re-sent
+    /// each minute, so a companion connecting mid-window gets it; both islands mute a dismissed
+    /// event id and ignore an empty re-send of a brief they already show.
     pub(crate) async fn tick(
         &mut self,
         rt: &Runtime,
@@ -785,8 +864,7 @@ impl Scheduler {
             let starts_in = cal::parse(&e.start)
                 .map(|s| s - now)
                 .unwrap_or(chrono::Duration::MAX);
-            if starts_in <= chrono::Duration::minutes(SHOW_MIN) && !self.emitted.contains(&e.id) {
-                self.emitted.insert(e.id.clone());
+            if starts_in <= chrono::Duration::minutes(SHOW_MIN) {
                 out.push(MeetingEvent::Upcoming {
                     event: r,
                     project: Some(project),
@@ -794,7 +872,6 @@ impl Scheduler {
                 });
             }
         }
-        self.emitted.retain(|id| seen.contains(id));
         self.failed.retain(|id| seen.contains(id));
         out
     }
@@ -808,13 +885,14 @@ pub fn ensure_upcoming(rt: &Runtime) {
     UPCOMING.get_or_init(move || {
         tokio::spawn(async move {
             let mut s = Scheduler::default();
+            let writer = PrivateTurn::new();
             loop {
                 tokio::select! {
                     () = rt.shutdown.cancelled() => return,
                     () = tokio::time::sleep(Duration::from_secs(60)) => {}
                 }
                 let Ok(cx) = ctx().await else { continue };
-                for ev in s.tick(&rt, &cx, &PrivateTurn, Utc::now()).await {
+                for ev in s.tick(&rt, &cx, &writer, Utc::now()).await {
                     rt.publish(ev).await;
                 }
             }
@@ -1193,7 +1271,7 @@ mod tests {
         assert_eq!(rows[0].tags, ["pre-meeting", "theuth"]);
         assert_eq!(rows[0].title, "Weekly sync");
 
-        // T−5: `Upcoming` once, from the cache (no second turn); T−4 repeats nothing.
+        // T−5: `Upcoming` from the cache (no second turn); re-sent at T−4 and T+4, still no turn.
         let t5 = now + chrono::Duration::minutes(7);
         let out = s.tick(&r.rt, &r.cx, &w, t5).await;
         assert_eq!(w.calls(), 1);
@@ -1220,18 +1298,24 @@ mod tests {
             }
             other => panic!("expected one Upcoming, got {other:?}"),
         }
-        assert!(
-            s.tick(&r.rt, &r.cx, &w, t5 + chrono::Duration::minutes(1))
-                .await
-                .is_empty()
-        );
-        // T+6: out of the window; the instance is forgotten so a later tick never repeats it.
+        for later in [8, 16] {
+            let again = s
+                .tick(&r.rt, &r.cx, &w, now + chrono::Duration::minutes(later))
+                .await;
+            assert_eq!(
+                again.len(),
+                1,
+                "re-sent inside the window (T{})",
+                later - 12
+            );
+            assert_eq!(w.calls(), 1);
+        }
+        // T+6: out of the window.
         assert!(
             s.tick(&r.rt, &r.cx, &w, now + chrono::Duration::minutes(18))
                 .await
                 .is_empty()
         );
-        assert!(s.emitted.is_empty());
 
         // The detection side reads the same memory and cache.
         let mut d = Detection {
@@ -1270,5 +1354,50 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(w.calls(), 1);
+    }
+
+    /// The fallback's side call is no-tools and facts-only on the brief's model, charged under
+    /// the oracle's kind; without an agent the writer reports both legs of the hop.
+    #[tokio::test]
+    async fn fallback_side_call_shape_and_both_legs_reported() {
+        let r = rig(None).await;
+        let session = runtime::SessionId::new();
+        let call = side_call(session, &r.cx, "PROMPT".into());
+        assert_eq!(call.session, session);
+        assert_eq!(call.role, runtime::ModelRole::Session);
+        assert_eq!(call.kind, runtime::CallKind::Escalate);
+        assert_eq!(call.budget, TIMEOUT);
+        assert_eq!(call.user, "PROMPT");
+        assert!(
+            call.system.contains("never what the user should say"),
+            "{}",
+            call.system
+        );
+        let named = Ctx {
+            model: Some("fake/m".into()),
+            ..r.cx.clone()
+        };
+        assert_eq!(
+            side_call(session, &named, String::new()).role,
+            runtime::ModelRole::Named("fake/m".into())
+        );
+        // No agent in this test binary: the private root is refused, the fallback is tried,
+        // and the error names both.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        let side: Arc<decision::SideCaller> = Arc::new(move |c: runtime::SideCall| {
+            s2.lock().push(c.user.clone());
+            Box::pin(async { Err::<runtime::SideReply, String>("unreachable".into()) })
+        });
+        let w = PrivateTurn { side };
+        let err = w.write(&r.cx, "theuth", "P".into()).await.unwrap_err();
+        assert!(
+            err.starts_with("private turn: agent is not running; side call: "),
+            "{err}"
+        );
+        assert!(
+            seen.lock().is_empty(),
+            "no throwaway session without an agent → no call"
+        );
     }
 }
