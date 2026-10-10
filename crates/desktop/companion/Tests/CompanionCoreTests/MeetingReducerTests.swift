@@ -337,6 +337,10 @@ struct MeetingReducerTests {
         #expect(MeetingReducer.reduce(b, .upcoming(event: e, project: "theuth", brief: ["a"]), now: t0).prompt == .detected(merged))
         var own = withEvent; own.brief = ["engine"]; own.project = "p"
         #expect(MeetingReducer.reduce(c, .detected(own), now: t0).prompt == .detected(own))
+        // An Upcoming without bullets, then the detection, then the bullets: the empty brief does not shadow the real one.
+        let bare = MeetingReducer.reduce(.empty, .upcoming(event: e, project: "theuth", brief: nil), now: t0)
+        let then = MeetingReducer.reduce(bare, .detected(withEvent), now: t0)
+        #expect(MeetingReducer.reduce(then, .upcoming(event: e, project: "theuth", brief: ["a"]), now: t0).prompt == .detected(merged))
         // An unrelated detection (no event, or another event) is untouched and keeps the pane.
         let a = MeetingReducer.reduce(.empty, .detected(detection), now: t0)
         #expect(MeetingReducer.reduce(a, .upcoming(event: e, project: "theuth", brief: ["a"]), now: t0) == a)

@@ -135,7 +135,7 @@ enum IslandLog {
 
 /// `--probe-island <closed|open|detached|nonotch>`: a fixture meeting (two topics + a brief), the island shown in that
 /// state for N s (`--probe-seconds`, default 6) without key, a saved frame restored from this display's UUID and an
-/// off-screen one rejected; quit 0. `--probe-island <clicks|stop|open-no-hover>[-nonotch]` (149i, `IslandProbe.swift`): synthetic
+/// off-screen one rejected; quit 0. `--probe-island <clicks|stop|open-no-hover|prompt|upcoming>[-nonotch]` (149i/158, `IslandProbe.swift`): synthetic
 /// input against the probe's own island. `--probe-eye`: the island up with `sharingType = .none` for the shell's capture
 /// test (§9/§10). All `--shareable`-aware, all log to `/tmp/149-W3-island.log` or `--probe-log <path>`.
 extension Flags {

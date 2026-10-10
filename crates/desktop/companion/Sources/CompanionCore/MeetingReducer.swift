@@ -145,9 +145,7 @@ public enum MeetingReducer {
             if s.deciding == decision.batchId { n.deciding = nil }
         case .detected(var d):
             // §5.2 (c) "above (b) when both apply": a shown Upcoming for the same event lends its brief and project.
-            if case .upcoming(let e, let p, let b)? = s.prompt, d.event?.event.id == e.id {
-                d.brief = d.brief ?? b; d.project = d.project ?? p
-            }
+            if case .upcoming(let e, let p, let b)? = s.prompt, d.event?.event.id == e.id { lend(&d, brief: b, project: p) }
             n.prompt = .detected(d)
         case .detectionCleared(let appId, _):
             if case .detected(let d)? = s.prompt, d.appId == appId { n.prompt = nil }
@@ -160,7 +158,7 @@ public enum MeetingReducer {
             guard !IslandModel.live(s), s.dismissedUpcoming != event.id, !upcomingExpired(event, now: now) else { return s }
             if case .detected(var d)? = s.prompt {
                 guard d.event?.event.id == event.id else { return s } // an unrelated prompt keeps the pane
-                d.brief = d.brief ?? brief; d.project = d.project ?? project
+                lend(&d, brief: brief, project: project)
                 n.prompt = .detected(d)
             } else {
                 n.prompt = .upcoming(event: event, project: project, brief: brief ?? [])
@@ -229,6 +227,12 @@ public enum MeetingReducer {
     static func upcomingExpired(_ e: EventRef, now: Date) -> Bool {
         guard let start = date(e.start) else { return false }
         return now >= start + upcomingLinger
+    }
+
+    /// The engine's own `Detection.brief`/`project` win; an absent or empty brief takes the Upcoming's.
+    private static func lend(_ d: inout Detection, brief: [String]?, project: String?) {
+        if d.brief?.isEmpty != false, let b = brief, !b.isEmpty { d.brief = b }
+        d.project = d.project ?? project
     }
 
     /// The prompt's event line (158 §5.2 b): `<Title> · <hh:mm>–<hh:mm>`; a start or end that is not RFC 3339 drops the times.
