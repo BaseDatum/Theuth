@@ -75,6 +75,24 @@ Owned files touched: `crates/meeting/src/store.rs`, `calendar/prebrief.rs` (the 
 - Not exercised in tests: the agent hop (`CreateSession` Private / `SetSessionProject`) — no in-crate mock model; covered by the
   `Writer` seam and the agent's own tests.
 
-## Gates
+## Gates (each its own command, BUILD_LABEL=158w3e)
 
-(filled at close)
+- `build-lock mbx check -p meeting --tests` → 0, no warnings.
+- `build-lock mbx test -p meeting -p rpc --no-run` → 0; `mbx test -p meeting -p rpc` → meeting 99 passed (1 ignored, pre-existing)
+  + calendar 15 + 1 + 1, rpc 55 passed; `rpc::engine::tests::second_acquire_in_one_process_is_running` failed once
+  ("engine.lock is held but engine.json is missing" — a shared-filesystem lock race with another worker's run; it passed in the
+  run before and in the re-run `mbx test -p meeting -p rpc engine::tests` → 4 passed).
+- `build-lock mbx clippy -p meeting -p rpc` → 0, no warnings. `cargo fmt -p meeting -p rpc` bare.
+
+## Proof left (§16 W3)
+
+`prebrief::tests`: `memory_lookup_order_and_forget` (uid → title → default → none; forget), `excerpt_splits_the_fixture_by_heading`
+(`tests/fixtures/prebrief/summary.md`, three heading styles), `prebrief_caches_and_invalidates` (1 turn for 2 `ensure`s; sequence
+bump → 2; another project's Done meeting → still 2; a new Done meeting of the project → 3; one brief row updated in place),
+`three_done_meetings_one_turn_brief_row_upcoming_at_t_minus_5` (canned `Writer`: prompt carries the three excerpts newest first,
+not the 4th/oldest meeting, not the Numbers section, the attendee names; brief row aliases `["Weekly sync", "Dana", "Lee"]`, tags
+`["pre-meeting", "theuth"]`; `Upcoming` once at T−5 with the 3 bullets, nothing at T−4 / T+6; `decorate` fills
+`Detection.project`/`brief`; `prebrief = false` inert). `lib.rs::tests::set_project_updates_manifest_index_and_memory`
+(manifest + index row + `meeting_list(project)` + `done_in_project` + title memory; clearing forgets). Session project: the one
+expression in `start_task` (`manifest.project.or("meetings")`) and `SetSessionProject` in `SetProject` — not exercised (no agent in
+the bench).
