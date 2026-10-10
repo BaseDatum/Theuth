@@ -65,3 +65,11 @@ test('a prompt row carries no at; withGaps sees entries only', () => {
   expect(shape(rows)).toEqual(['u1', 'gap', 'u2', 'p:q'])
   expect('at' in (rows[3] as object)).toBe(false)
 })
+
+test('buildRows passes the pinned thinking ids to foldRuns; with collapse off nothing folds either way', () => {
+  const think: Entry = { id: 'r', kind: 'reasoning', text: 'hm', done: false, at: T + 15 }
+  const es = [tool('t1', 'shell', T), tool('t2', 'shell', T + 10), think, tool('t3', 'shell', T + 20), tool('t4', 'shell', T + 30)]
+  expect(shape(buildRows(es, [], 'desk', undefined, true))).toEqual(['run:t1'])
+  expect(shape(buildRows(es, [], 'desk', undefined, true, new Set(['r'])))).toEqual(['run:t1', 'r', 'run:t3'])
+  expect(shape(buildRows(es, [], 'desk', undefined, false, new Set(['r'])))).toEqual(['t1', 't2', 'r', 't3', 't4'])
+})

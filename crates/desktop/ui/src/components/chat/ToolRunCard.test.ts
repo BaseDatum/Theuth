@@ -32,6 +32,24 @@ test('foldRuns: assistant text splits runs, reasoning rides along, a lone call s
   expect(foldRuns([a, b, e])).toEqual([[a, b], e])
 })
 
+test('foldRuns: a pinned thinking block splits a run like a deliverable; unpinned still rides along; a lone tool beside it stays plain', () => {
+  const think: Entry = { id: 'r', kind: 'reasoning', text: 'hm', done: false }
+  const other: Entry = { id: 'r2', kind: 'reasoning', text: 'ok', done: true }
+  const [a, b, c, d] = [tool(1), tool(2), tool(3), tool(4)]
+  const pinned = new Set(['r'])
+  expect(foldRuns([a, b, think, c, d], pinned)).toEqual([[a, b], think, [c, d]])
+  expect(foldRuns([a, b, other, c, d], pinned)).toEqual([[a, b, other, c, d]])
+  // A lone tool on either side of the pinned block is a plain entry, not a one-tool run.
+  expect(foldRuns([a, think, c, d], pinned)).toEqual([a, think, [c, d]])
+  expect(foldRuns([a, b, think, c], pinned)).toEqual([[a, b], think, c])
+  // The streaming tail: pinned or not, a trailing block is outside the run.
+  expect(foldRuns([a, b, think], pinned)).toEqual([[a, b], think])
+  // Deliverables still split as before alongside a pin; no pins, the old shape.
+  const s = tool(9, { name: 'show' })
+  expect(foldRuns([a, s, b, think, c, d], pinned)).toEqual([a, s, b, think, [c, d]])
+  expect(foldRuns([a, b, think, c, d])).toEqual([[a, b, think, c, d]])
+})
+
 test('foldRuns: a deliverable never joins a run — it splits one; a board create still does; no deliverable, no change', () => {
   const [a, b, c, d] = [tool(1), tool(2), tool(3), tool(4)]
   for (const name of ['show', 'app', 'agent_draft', 'task_draft', 'routine_draft']) {
