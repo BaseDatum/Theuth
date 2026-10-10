@@ -35,7 +35,8 @@ match needed fixing (`check --workspace --tests` green); nothing publishes the n
     (`client` = the connection's `x-theuth-client`, `None` in-process; W2 refuses anything but `"companion"`)
   - `rpc_events(_rt, _from: String, _to: String) -> Result<Vec<CalEvent>>` → `Ok(vec![])`
   - `rpc_settings_get(rt) -> Result<CalendarConfig>` — real (config read); `rpc_settings_set(_rt, _config) -> Result<CalendarConfig>` → Err
-- `calendar/ics.rs`: `pub fn expand(_text: &str, _source: &str, _from: DateTime<Utc>, _to: DateTime<Utc>) -> anyhow::Result<Vec<CalEvent>>` → Err
+- `calendar/ics.rs`: `pub fn expand(_text: &str, _source: &str, _from: DateTime<Utc>, _to: DateTime<Utc>) -> anyhow::Result<Vec<CalEvent>>` → Err.
+  Library-agnostic by design (Sky 14:16, "libraries first"): W2 fills it with a maintained crate (calcard or icalendar + rrule + chrono-tz), not W-d's own reader.
 - `calendar/fetch.rs`: `pub async fn fetch(_rt: &Runtime, _source: &CalSource) -> anyhow::Result<Option<Vec<CalEvent>>>` → Err
 - `calendar/store.rs`: `sources(&Store)`, `replace_window(&Store, source: &str, window: (&str, &str), events: &[CalEvent]) -> Result<u32>`,
   `events(&Store, from: &str, to: &str)`; `Store::pool() -> &SqlitePool` added for them.
@@ -101,8 +102,7 @@ Each body is one delegate call, `anyhow` → `ASK_FAILED` via `stub_err`: `meeti
    would not compile otherwise. W1 replaces it with the prompt logic.
 3. `McpServerStatus` carries `token: Option<String>` so Settings can copy the JSON block (§12.6); W5 may keep or move it. `mcp_server::set`
    exists beside the five named stubs because `mcp_server_set` needs a delegate.
-4. §4.5 names `meeting_detection_enabled` / `set_meeting_detection_enabled`; §15.2 does not — not declared (`meeting_settings_*` carries `detect.enabled`).
-5. `ListMeetings` lost `Copy` (it holds `project: Option<String>`); no caller relied on it.
+4. §4.5's `meeting_detection_enabled` / `set_…` are not in §15.2 — not declared (`meeting_settings_*` carries `detect.enabled`). 5. `ListMeetings` lost `Copy`.
 
 ## Hand-offs
 - W2: subscribe `CalendarEvent` in `crates/rpc/src/bridge.rs` (`Event` enum + `rt.subscribe`) — `bridge.rs` was outside C158's files.
