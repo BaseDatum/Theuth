@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<!-- Theuth Companion.app (130 D11): hardened runtime with no entitlements. NSStatusItem, NSPanel and
-     UNUserNotificationCenter need none (spike SA §3 step 5); Swift needs no JIT. Microphone (W3) is a
-     usage string plus the audio-input entitlement, added when the Ask bar dictates. -->
+<!-- Theuth Companion.app (130 D11): hardened runtime. NSStatusItem, NSPanel and UNUserNotificationCenter need no
+     entitlement (spike SA §3 step 5); Swift needs no JIT. Microphone (W3) is a usage string plus the audio-input
+     entitlement, added when the Ask bar dictates. 158 §7.2: Calendars (EventKit full access) under the hardened runtime. -->
 <dict>
+  <key>com.apple.security.personal-information.calendars</key>
+  <true/>
 </dict>
 </plist>
