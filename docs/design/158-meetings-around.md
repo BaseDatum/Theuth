@@ -437,3 +437,218 @@ page banner behave identically. The companion has no `meeting_start` wrapper tod
 band under the header while `meeting_status().detection` is set: same copy, same two buttons, the lawful line. It reuses the
 `StartForm`'s `startOptions` (`StartForm.tsx:37-46`) with the detected pid and `consent: true`. On Linux this is the only
 surface; on macOS/Windows it is the fallback when the companion is not alive (`crates/desktop/ui/src/lib/companion.ts:11-27`).
+
+## 6. Meeting defaults
+
+### 6.1 What one-tap Start needs (D5, W-f)
+
+Today a manual start carries its own choices: `StartMeeting.session_model` (`lib.rs:639-641`, from the desktop's localStorage
+`useMeetingSettings.model`, `StartForm.tsx:59-60`), `memory` (`lib.rs:642-645`), `title`, `context`. A one-tap start sends
+none of them, so the engine must own defaults. They go into the existing `MeetingConfig` (`lib.rs:531-566`, `#[serde(default)]`,
+loaded by `rt.section("meeting")`, `lib.rs:3766`) — the same struct `live_tools`, `live_prompts` and `live_diarization` already
+live in — never into a second settings store.
+
+| Key (`meeting.*`) | Type | Default | Used by |
+|---|---|---|---|
+| `model` | `Option<String>` (`provider/model` id) | `None` → `agent.model` | the meeting session (topics + briefs), the pre-meeting brief writer (§9), `meeting_suggest_speakers` (§10) |
+| `summary_model` | `Option<String>` | `None` → `meeting.model` | the summary turn: `SetModel` on the meeting session before `queue_turn(summary::form_for)` (`lib.rs:3598-3600`), restored after |
+| `template` | `String` (slug) | `"meeting"` | §11; the start form, the prompt and the event can override |
+| `language` | `String` (BCP-47) | `"en"` | stored for the post pass; **inert** until the multilingual tier (§14) — live STT is `nemotron-streaming-en` (`lib.rs:546-548`) |
+| `live_diarization` | `bool` | `true` | exists (`lib.rs:556-558`) |
+| `live_tools`, `live_prompts`, `live_hint_limit` | as today | as today (`lib.rs:593-608`) | the live toolset; Settings shows the list read-only with a "Reset to default" |
+| `project` | `Option<String>` | `None` | §9: the project a meeting gets when nothing is remembered |
+| `detect.enabled` | `bool` | `true` | §4 |
+| `detect.ignore` | `Vec<String>` | §4.3's list | §4 |
+| `detect.poll_secs` | `u32` | `2` (`5` on Linux) | §4.2 |
+| `calendar.eventkit` | `bool` | `false` | §7 |
+| `calendar.prebrief` | `bool` | `true` | §9 |
+| `calendar.poll_secs` | `u32` | `900` | §7 |
+
+**W-f versus D5.** D5 names "brief/topic model and summary model". Topics and briefs are one session's turns (`tools.rs:26-57`,
+`meeting_topic` + `meeting_brief` in one allowlist), so one `model` key covers both; a separate topic model would need a second
+session. The summary is a distinct turn in the same session (`summary.rs:1-7`), so `summary_model` is a real, cheap second slot.
+
+**Resolution through 148.** A meeting is a *root* session: `CreateSessionOptions.model` (`lib.rs:1937`) is used when `Some`, else
+the supervisor picks `default_model` = `agent.model` (`supervisor.rs:10372`; chain at `:904-931` is for children). So the engine
+resolves `StartMeeting.session_model.or(cfg.model)` and passes it; `None` keeps falling to `agent.model` exactly as today. Nothing
+is written back: the `SetModel`-without-session path that rewrites `agent.model` (`supervisor.rs:8158-8162`) is not touched
+(148 R1 made in-chat picks local, `docs/design/148-model-defaults.md:16-23`). The meeting session's in-chat picker still applies
+to that meeting only.
+
+### 6.2 Where it lives, how it is set
+
+Config file keys under `meeting:`; setters follow `SetLiveDiarization` (`lib.rs:3567-3586`): one actor message, one
+`runtime::write_config_value` / `write_nested_config_value` (`crates/runtime/src/lib.rs:109`, `:137`), then `self.cfg.x = v`, then
+`Ok(v)`; "a failed config write changes nothing" (`api.rs:1823-1824`). RPCs: `meeting_settings_get() -> MeetingSettings` and
+`meeting_settings_set(MeetingSettings) -> MeetingSettings` (the whole-block shape `endless_settings_get/set` uses,
+`api.rs:2020-2027`), where `MeetingSettings` is the user-facing subset: `model, summary_model, template, language, live_diarization,
+live_tools, project, detect, calendar` (not `batch_secs`, `context_tokens`, paths). `meeting_live_diarization` /
+`set_meeting_live_diarization` (`api.rs:1822-1826`) stay for the companions that already call them.
+
+### 6.3 Settings › Meetings layout
+
+The tab exists (`SettingsDialog.tsx:67`, component `Meetings.tsx`). New sections, in this order, above today's "Screen capture":
+
+1. **Defaults** — "Meeting model" and "Summary model" rows with `ModelCombobox` (the picker every Settings row uses,
+   `Chat.tsx:36-51`; "Same as new sessions" / "Same as meeting model" when unset); "Template" select (§11); "Transcript language"
+   select (en only until §14, with a caption saying so); "Default project" combobox over `list_project_styles` + distinct
+   session projects (there is no distinct-project RPC; the client derives it as the sidebar does).
+2. **Detection** — "Detect meetings from the microphone" switch; "Ignored apps" list with remove buttons and an add field; caption:
+   "Apps on this list never prompt. theuth's own dictation is always ignored."
+3. **Live tools** — the allowlist as chips, "Reset to default".
+
+Then today's Screen capture, Push-to-talk, Live transcript, Local decision oracle, Enrolled speakers (`Meetings.tsx:29-74`).
+Calendar gets its own tab (§7.6) because it is not a meeting default.
+
+### 6.4 Migration
+
+None required: every key is `#[serde(default)]` (`lib.rs:530`). The desktop's localStorage `model` (`lib/meeting-settings.ts:24-37`)
+keeps working for manual starts; on first open of Settings › Meetings after the wave, if `meeting.model` is unset and localStorage
+has a model, the UI offers "Use it as the meeting default" once (one toast, one RPC). `useMeetingSettings.model` is then removed
+from the form: the start form's model picker reads/writes the engine default's *per-start override* only (`session_model`), which
+is what it always sent.
+
+## 7. Calendar
+
+### 7.1 Two sources, one store (R4, D6)
+
+- **EventKit through the macOS companion.** macOS Calendar already aggregates iCloud, Google, Exchange and CalDAV accounts the
+  user added to the system, so one permission covers them all — the same choice OpenWhispr made with a Swift `EKEventStore`
+  helper (D `D-openwhispr-source-recon.md:201`) and Minutes with AppleScript/EventKit (E `E-minutes-source-recon.md:250`).
+- **Calendar subscriptions (ICS / iCal secret address)** everywhere: the "secret address" Google, Outlook, Fastmail and iCloud all
+  publish; one URL, one GET, read-only. The URL is the credential, so it is a vault row.
+- Windows and Linux: ICS only. No OAuth, no CalDAV (§7.8).
+
+### 7.2 EventKit via the companion
+
+**Permission flow.** Settings › Calendar (desktop) → "Use macOS Calendar" switch → `calendar_settings_set { eventkit: true }`.
+The engine writes `meeting.calendar.eventkit` and publishes `CalendarEvent::EventKit { enabled: true }` on the bus. The companion
+(the only process that may ask: it is the TCC-responsible app the user sees in System Settings) observes it, calls
+`EKEventStore.requestFullAccessToEvents` (macOS 14+), and reports `calendar_source_state { source: "eventkit", state: Granted |
+Denied | NotDetermined }`. The companion's Info.plist gains `NSCalendarsFullAccessUsageDescription` ("theuth matches detected
+meetings to your calendar and seeds the meeting's context. Events never leave this Mac except as text sent to the model you
+chose.") and `companion.entitlements.plist` (today an empty dict, `crates/desktop/companion.entitlements.plist:7-8`) gains
+`com.apple.security.personal-information.calendars`. The companion is signed with that plist (`scripts/package-macos.sh:49-55`).
+Denied → the Settings row shows "Calendar access denied — allow theuth Companion in System Settings › Privacy › Calendars".
+
+**Window and push.** Rolling window −1 day … +14 days, `predicateForEvents(withStart:end:calendars:nil)`. The companion pushes on
+start, on every `EKEventStoreChanged` notification, on wake, and every 15 min: `calendar_push { source: "eventkit", window, events:
+Vec<CalEvent> }` — a full replace of the source's rows inside `window` (idempotent; a missed push costs nothing). Per `EKEvent`:
+`calendarItemExternalIdentifier` as `uid` (stable across devices), `occurrenceDate` as `recurrence_id` for instances of a
+recurring event, `title`, `startDate`/`endDate`, `isAllDay`, `timeZone`, `location`, `notes`, `url`, `organizer` (name,
+`mailto:`), `attendees` (`EKParticipant`: name, `mailto:`, `participantStatus`, `participantRole`, `isCurrentUser`), `status`
+(cancelled events are pushed as `cancelled: true` and dropped from matching). Push, not poll: the engine never links EventKit.
+
+**Windows companion.** No EventKit; the Windows companion gains nothing in W2 (ICS is engine-side). The Settings row says "macOS
+Calendar is available on Mac. Add a calendar subscription instead."
+
+### 7.3 ICS subscriptions
+
+**Add.** Settings › Calendar › "Calendar subscription (ICS / iCal secret address)" → paste URL → `calendar_source_add { name, url }`.
+The engine normalises `webcal://` → `https://`, refuses non-HTTPS unless `127.0.0.1`/`localhost`, stores the URL as vault secret
+`calendar.ics.<source_id>` (`Vault::set`, `crates/secrets/src/vault.rs:458`; name regex `[A-Za-z0-9_.\-]+`, `:37`, so dots not
+slashes), and a `cal_sources` row with `secret = "calendar.ics.<id>"`. The URL is never returned by any RPC; `list_secrets` shows
+the name (`api.rs:2432-2434`). Delete removes the row and the secret (`Vault::delete`, `vault.rs:514`).
+
+**Fetch.** Every `meeting.calendar.poll_secs` (900) and on "Refresh now": `reqwest` (workspace `0.13`, rustls+json+stream,
+`Cargo.toml:172`; the meeting crate gains the dependency) GET with `If-None-Match: <etag>` and `If-Modified-Since:
+<last_modified>`; `304` → touch `last_fetch`, done. Timeout 30 s, body cap 10 MB, `text/calendar` or anything that starts with
+`BEGIN:VCALENDAR`. `401/403/404/410` → `last_error = "URL rejected — regenerate the secret address in your calendar"`; network
+errors → `last_error` with the message; the previous rows stay until a successful fetch replaces them. Three consecutive failures
+→ the Settings row turns amber; never a dialog.
+
+**Parsing (W-d).** No ICS crate is in `Cargo.lock` (grepped `ical|rrule|chrono-tz` — checksum hex only). Choice:
+
+- A **bounded VCALENDAR reader** of our own in `crates/meeting/src/calendar/ics.rs` (~150 lines): unfold (CRLF + leading space or
+  tab), split `NAME;PARAM=VALUE;PARAM="quoted":VALUE`, unescape `\n \, \; \\`, collect `VEVENT` and `VTIMEZONE` components.
+  Properties read: `UID`, `SUMMARY`, `DTSTART`/`DTEND`/`DURATION` (with `TZID`, `VALUE=DATE` for all-day), `RRULE`, `RDATE`, `EXDATE`,
+  `RECURRENCE-ID` (with `RANGE=THISANDFUTURE`), `SEQUENCE`, `STATUS`, `LOCATION`, `DESCRIPTION`, `URL`, `ORGANIZER` (`CN`, `mailto:`),
+  `ATTENDEE` (`CN`, `PARTSTAT`, `ROLE`, `CUTYPE`, `mailto:`), `X-GOOGLE-CONFERENCE`, `X-MICROSOFT-SKYPETEAMSMEETINGURL`. Unknown
+  properties are skipped, never errors. `icalendar` 0.17 would parse this too, but RECURRENCE-ID overrides and vendor X-props
+  are handled by us either way, so the crate buys a type tree we would immediately flatten.
+- **`rrule` 0.14** for expansion (RRULE/RDATE/EXDATE, `RRuleSet::from_str` on the `DTSTART`+`RRULE`+`EXDATE`+`RDATE` lines,
+  `.after(window.start).before(window.end).all(500)`), with `chrono-tz` (0.10, which `rrule` depends on) for IANA zones.
+  RRULE semantics (BYDAY/BYSETPOS/WKST, DST transitions) are not "a few lines"; this is the one new dependency pair. `rrule` has
+  no RECURRENCE-ID: overrides are an `(uid, recurrence_id) → VEVENT` map applied after expansion (the generated instance is
+  replaced; `THISANDFUTURE` truncates the series at that date and the override becomes the head of a new series — bounded, and
+  documented in §18 as a known ceiling).
+- **Time zones.** `TZID` that parses as IANA → `chrono_tz::Tz`. Otherwise a bounded table of ~40 Windows names Outlook emits
+  ("Pacific Standard Time" → `America/Los_Angeles`, "W. Europe Standard Time" → `Europe/Berlin`, …). Otherwise the `VTIMEZONE`'s
+  `STANDARD` `TZOFFSETTO` as a fixed offset, and `last_error = "unknown time zone <TZID>; using its standard offset"` (a warning
+  row, not a failure). Floating times (no `TZID`, no `Z`) are local.
+- **Join link.** `URL`, then the conference X-props, then the first URL in `LOCATION`/`DESCRIPTION` whose host matches a rule
+  (`zoom.us`, `*.zoom.us`, `meet.google.com`, `teams.microsoft.com`, `teams.live.com`, `*.webex.com`, `facetime.apple.com`) —
+  OpenWhispr's host rules (D `D-openwhispr-source-recon.md:202`). Google redirect wrappers are unwrapped (Minutes, E
+  `E-minutes-source-recon.md:250`).
+
+Each fetch re-expands the window and replaces the source's rows (`DELETE WHERE source = ? AND start BETWEEN … ; INSERT`).
+
+### 7.4 The one event store (W-k)
+
+Tables in `meetings.sqlite` (`store.rs:22`; migrations under `crates/meeting/migrations/`, next `0003_calendar.sql`):
+
+```sql
+CREATE TABLE cal_sources (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL,        -- 'eventkit' | 'ics'
+  name TEXT NOT NULL, secret TEXT,                 -- vault name for ics; NULL for eventkit
+  enabled INTEGER NOT NULL DEFAULT 1,
+  etag TEXT, last_modified TEXT, last_fetch TEXT, last_error TEXT, state TEXT);
+CREATE TABLE cal_events (
+  id TEXT PRIMARY KEY,                             -- source:uid:recurrence_id
+  source TEXT NOT NULL REFERENCES cal_sources(id) ON DELETE CASCADE,
+  uid TEXT NOT NULL, recurrence_id TEXT, sequence INTEGER NOT NULL DEFAULT 0,
+  title TEXT NOT NULL, start TEXT NOT NULL, "end" TEXT NOT NULL, all_day INTEGER NOT NULL,
+  tz TEXT, location TEXT, description TEXT, join_url TEXT, join_host TEXT,
+  organizer_name TEXT, organizer_email TEXT,
+  attendees TEXT NOT NULL,                         -- json [{name,email,status,role,is_me}]
+  cancelled INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
+CREATE INDEX cal_events_window ON cal_events(start, "end");
+CREATE TABLE cal_project_memory (key TEXT PRIMARY KEY, project TEXT NOT NULL, updated_at TEXT NOT NULL);
+```
+
+`start`/`end` are RFC 3339 UTC; `tz` keeps the event's zone for display. Like the meetings index, this is derived data: a wipe
+plus a fetch/push rebuilds it (`docs/design/meetings/01-capture.md:29-32` — "truth is the directory" — here truth is the source).
+
+RPCs (§15): `calendar_sources`, `calendar_source_add`, `calendar_source_delete`, `calendar_source_refresh`, `calendar_push`
+(companion), `calendar_source_state` (companion), `calendar_events { from, to }`, `calendar_settings_get/set`.
+
+### 7.5 Privacy — what reaches a model, and when
+
+Event text stays in `meetings.sqlite` on this machine. It reaches a model in exactly three places, each user-visible: (1) at
+start, the seed (§8.4) — title, description (first 1 000 chars), attendee **names** (not emails), join host — in the meeting
+session's first input; (2) the pre-meeting brief writer turn (§9.4), when `meeting.calendar.prebrief` is on, for the one matched
+or imminent event; (3) `meeting_suggest_speakers` (§10) reads attendees from the manifest. Nothing is sent for events that are not
+matched or imminent. There is no local-only mode (R11): the model is whatever `meeting.model` resolves to. The ICS URL is never
+logged (reqwest errors are redacted through `Vault::redact`, `vault.rs:579`).
+
+### 7.6 Settings › Calendar
+
+A new tab after Meetings (`SettingsDialog.tsx:56-79`, `['calendar', 'Calendar', CalendarDays]`):
+
+1. **macOS Calendar** — switch "Use macOS Calendar"; state line (Granted / Denied with the System Settings hint / "Companion not
+   running"); greyed on Windows/Linux with the ICS hint.
+2. **Calendar subscriptions (ICS / iCal secret address)** — rows: name · last fetched · error (amber) · Refresh · Delete; "Add
+   subscription" with name + URL fields and the caption "Paste the secret address from Google Calendar › Settings › Integrate
+   calendar, Outlook › Shared calendars › Publish, or iCloud › Public calendar. Anyone with this URL can read the calendar; theuth
+   stores it in the vault."
+3. **Pre-meeting briefs** — switch (default on) with "shown on the island up to 5 minutes before a matched event".
+4. **Upcoming** — the next 5 events from `calendar_events` as a read-only list (the quickest proof that parsing works).
+
+### 7.7 Tests
+
+- `ics.rs`: fixtures `google.ics`, `outlook.ics`, `icloud.ics`, `fastmail.ics` (synthetic, committed under
+  `crates/meeting/tests/fixtures/calendar/`): folded lines, `TZID` IANA + Windows names, all-day `VALUE=DATE`, weekly `RRULE`
+  with `EXDATE`, a moved instance via `RECURRENCE-ID`, a `THISANDFUTURE`, a `CANCELLED`, attendees with `PARTSTAT`, Teams and
+  Zoom links in `DESCRIPTION`, a 20 kB description. Asserts: instance count in a window, override replaces instance, zone math
+  across a DST boundary, join host extracted, unknown property ignored.
+- Fetch: a local `axum`-free test server (`tokio::net::TcpListener` + hand-written response, like the jsonrpsee test fake in
+  `crates/theuth/src/mcp.rs:196-213`) for `200` → rows, `304` → untouched, `404` → error row and rows kept.
+- Companion: `CompanionCoreTests` gets `CalEvent` encode/decode; the EventKit read is proven live (W2 proof list, §16).
+
+### 7.8 Why not CalDAV or OAuth now
+
+R4: "not building integrations yet". CalDAV needs account credentials, a discovery dance (`PROPFIND`/`REPORT`), and per-server
+quirks; it would be a second credential type beside the URL. OAuth needs client registration per provider and a token refresh
+loop — what Anarlog outsources to a hosted relay (Nango, C `C-anarlog-surface-recon.md:368-373`; study §7 "do not borrow").
+The ICS secret address gives the same read-only view with one GET; EventKit covers the accounts a Mac user already added. If a
+provider turns off secret addresses, the slot for OAuth is `cal_sources.kind = 'oauth'` and a fetcher beside `ics.rs`.
