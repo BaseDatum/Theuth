@@ -892,6 +892,68 @@ mod tests {
         );
     }
 
+    /// The real shapes on disk: a COPY of a real meeting (`THEUTH_TEST_MEETING_DIR`, the copied
+    /// `meetings/<id>/`) and, optionally, copied profiles (`THEUTH_TEST_SPEAKERS_DIR`) through
+    /// [`suggest_for`]. Prints labels, sources and confidences only — never a name or a line.
+    ///
+    /// ```text
+    /// THEUTH_TEST_MEETING_DIR=/tmp/158/meetings/<id> \
+    ///   mbx test -p meeting -p rpc --lib suggest_on_a_real_meeting_copy -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs THEUTH_TEST_MEETING_DIR (a copied meeting)"]
+    async fn suggest_on_a_real_meeting_copy() {
+        let src = std::path::PathBuf::from(
+            std::env::var_os("THEUTH_TEST_MEETING_DIR").expect("THEUTH_TEST_MEETING_DIR"),
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(tmp.path()).await.unwrap();
+        let m: crate::Manifest =
+            serde_json::from_slice(&std::fs::read(src.join(crate::store::MANIFEST)).unwrap())
+                .unwrap();
+        let dst = store.meeting_dir(m.id);
+        std::fs::create_dir_all(&dst).unwrap();
+        for f in [
+            crate::store::MANIFEST,
+            crate::transcript::FILE,
+            crate::transcript::EMBEDDINGS,
+        ] {
+            if src.join(f).exists() {
+                std::fs::copy(src.join(f), dst.join(f)).unwrap();
+            }
+        }
+        if let Some(p) = std::env::var_os("THEUTH_TEST_SPEAKERS_DIR") {
+            let to = store.speakers_dir();
+            std::fs::create_dir_all(&to).unwrap();
+            for e in std::fs::read_dir(p).unwrap().flatten() {
+                std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
+        }
+        let t = store.transcript(m.id).unwrap();
+        let emb: HashMap<String, Vec<f32>> = serde_json::from_slice(
+            &std::fs::read(dst.join(crate::transcript::EMBEDDINGS)).unwrap(),
+        )
+        .unwrap();
+        eprintln!(
+            "labels {} · segments {} · embeddings {} (dim {}) · event {} · profiles {}",
+            t.speakers.len(),
+            t.segments.len(),
+            emb.len(),
+            emb.values().next().map_or(0, Vec::len),
+            m.event.is_some(),
+            Profiles::load(&store.speakers_dir()).unwrap().list().len()
+        );
+        let got = suggest_for(&store, m.id).unwrap();
+        for s in &got {
+            eprintln!("{} ← {:?} {:.2}", s.label, s.source, s.confidence);
+        }
+        assert!(got.iter().all(|s| s.label != ME));
+        assert!(
+            got.iter()
+                .all(|s| t.speakers.iter().any(|l| l.id == s.label))
+        );
+    }
+
     /// §10.5 gates: a 4 s span and a clipped span fail with the tooltip text; a clean 6 s span
     /// passes; windows that disagree fail.
     #[test]
