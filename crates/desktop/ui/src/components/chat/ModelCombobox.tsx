@@ -3,6 +3,7 @@
 // 148: `effort` passes through to the picker's effort levels; the trigger then reads `name · effort`.
 // 148 R2: on touch the picker opens in `ModelDialog`'s top-of-band dialog (127 §6), not a trigger-anchored popover
 // the keyboard would cover (the search input focuses on open); desktop keeps the popover.
+// 2026-10-10: the desktop popover is `modal`; inside the Settings dialog, the dialog's scroll lock otherwise cancels wheel events over the portaled list.
 
 import { ChevronDown } from 'lucide-react'
 import { useState } from 'react'
@@ -92,8 +93,10 @@ export function ModelCombobox({
       </Dialog>
     )
   }
+  // `modal`: the popover's own scroll lock supersedes a parent Dialog's (react-remove-scroll keeps a stack; only the top lock
+  // acts), so the portaled list scrolls with the wheel inside the Settings dialog instead of having its wheel events cancelled.
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setOpen} modal>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent align="start" className="w-80 p-0">
         {picker(undefined, 'max-h-[min(24rem,calc(var(--visible-band)-6rem))]')}
