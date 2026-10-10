@@ -46,7 +46,7 @@ export function ExperimentSheet({ study, n, onClose }: { study: StudyDetail; n: 
   )
 }
 
-function Body({ d, study }: { d: Detail; study: StudyDetail }) {
+export function Body({ d, study }: { d: Detail; study: StudyDetail }) {
   const unit = study.spec.metric.unit
   const control = useControl(study.info.slug)
   const r = d.row
@@ -167,6 +167,19 @@ function Body({ d, study }: { d: Detail; study: StudyDetail }) {
           <pre className="max-h-48 overflow-auto rounded-md bg-layer-2 p-2 font-mono text-xs leading-5 whitespace-pre-wrap">{tail}</pre>
         </section>
       ))}
+
+      {d.hooks && d.hooks.length > 0 && (
+        <section data-hooks={d.hooks.length}>
+          <h4 className="mb-1 text-xs font-semibold tracking-wide text-fg-secondary uppercase">Hooks</h4>
+          <div className="flex flex-col gap-1.5">
+            {d.hooks.map((h, i) => (
+              <pre key={i} className="max-h-48 overflow-auto rounded-md bg-layer-2 p-2 font-mono text-xs leading-5 whitespace-pre-wrap">
+                {h}
+              </pre>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }

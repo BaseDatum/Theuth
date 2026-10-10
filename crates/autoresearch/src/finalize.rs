@@ -19,7 +19,8 @@ use crate::git;
 use crate::runner::{self, SampleRequest};
 use crate::store::{ExperimentRecord, Store, StudyRecord};
 use crate::types::{
-    Changeset, Direction, Effect, ExperimentState, ReviewVerdict, SampleRole, StopReason, StudySpec,
+    Changeset, Direction, Effect, ExperimentState, Idea, MetricSpec, ReviewVerdict, SampleRole,
+    Scoring, StopReason, StudySpec,
 };
 
 /// `events.kind` of every finalize step.
@@ -78,6 +79,26 @@ pub struct FinalReport {
     pub cost_usd: f64,
     /// Wall hours since Start, paused time excluded.
     pub hours: f64,
+    /// 159 W5: kept experiments that tried a backlog idea, counted by the idea's `source`.
+    #[serde(default)]
+    pub keeps_by_source: BTreeMap<String, u32>,
+}
+
+/// 159 W5 §10 T: keeps by idea source. A kept experiment counts under the source of the idea
+/// row whose `tried_in` names it (`mark_tried`'s match at `experiment_run`), the first by
+/// priority; keeps that tried no backlog idea are not counted.
+fn keeps_by_source(kept: &[ExperimentRecord], ideas: &[Idea]) -> BTreeMap<String, u32> {
+    let mut by = BTreeMap::new();
+    for e in kept {
+        if let Some(i) = ideas.iter().find(|i| i.tried_in.contains(&e.n)) {
+            let word = serde_json::to_value(i.source)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            *by.entry(word).or_insert(0) += 1;
+        }
+    }
+    by
 }
 
 impl FinalReport {
@@ -93,7 +114,7 @@ impl FinalReport {
             s.push_str(&format!(" · holdout {h}"));
         }
         s.push_str(&format!(
-            "\n\nBase `{}` → final `{}` · {} experiments, {} kept · ${:.2} · {:.1} h · stopped: {}\n\n## Changesets\n\n",
+            "\n\nBase `{}` → final `{}` · {} experiments, {} kept · ${:.2} · {:.1} h · stopped: {}\n",
             short(&self.base_sha),
             short(&self.final_sha),
             self.experiments,
@@ -102,6 +123,16 @@ impl FinalReport {
             self.hours,
             reason_text(&self.reason)
         ));
+        if !self.keeps_by_source.is_empty() {
+            let by = self
+                .keeps_by_source
+                .iter()
+                .map(|(s, n)| format!("{s} {n}"))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            s.push_str(&format!("\nKeeps by idea source: {by}\n"));
+        }
+        s.push_str("\n## Changesets\n\n");
         if self.changesets.is_empty() {
             s.push_str("No kept changes.\n");
         } else {
@@ -388,6 +419,61 @@ fn better(direction: Direction, base: f64, other: f64) -> f64 {
     }
 }
 
+/// 159 R-W4-1 / R-SEAMS-26: the re-measure decides. One-sided t at the realised dof (3.75 at
+/// 4 dof, 2.33 only past ~30), so a population champion — the best of many lucky draws — is
+/// claimed in ≤ 1 % of null studies; a deterministic metric (σ = 0) confirms on the sign alone.
+pub(crate) fn confirmed(
+    direction: Direction,
+    base_mean: f64,
+    final_mean: f64,
+    sigma: f64,
+    nb: u32,
+    nf: u32,
+) -> bool {
+    let gain = better(direction, base_mean, final_mean);
+    if sigma > 0.0 && nb + nf > 2 {
+        let se = sigma * (1.0 / f64::from(nb) + 1.0 / f64::from(nf)).sqrt();
+        gain / se >= evalcore::gate::t_quantile(f64::from(nb + nf - 2), 0.99)
+    } else {
+        sigma == 0.0 && gain > 0.0
+    }
+}
+
+/// The scalar confirmation's headline line, ending in its word (` · confirmed` / ` · unconfirmed`).
+#[allow(clippy::too_many_arguments)]
+fn scalar_text(
+    metric: &MetricSpec,
+    base_mean: f64,
+    final_mean: f64,
+    delta_pct: f64,
+    sigma: f64,
+    nb: u32,
+    nf: u32,
+) -> String {
+    let ci = if nb > 0 && nf > 0 && base_mean != 0.0 {
+        1.96 * sigma * (1.0 / f64::from(nb) + 1.0 / f64::from(nf)).sqrt() / base_mean.abs() * 100.0
+    } else {
+        f64::NAN
+    };
+    let word = if confirmed(metric.direction, base_mean, final_mean, sigma, nb, nf) {
+        "confirmed"
+    } else {
+        "unconfirmed"
+    };
+    let unit = &metric.unit;
+    if ci.is_finite() {
+        format!(
+            "{} {:.4} → {:.4} {unit} ({:+.1} %, CI ±{:.1} %) · {word}",
+            metric.name, base_mean, final_mean, delta_pct, ci
+        )
+    } else {
+        format!(
+            "{} {:.4} → {:.4} {unit} ({:+.1} %) · {word}",
+            metric.name, base_mean, final_mean, delta_pct
+        )
+    }
+}
+
 fn mean(xs: &[f64]) -> Option<f64> {
     (!xs.is_empty()).then(|| xs.iter().sum::<f64>() / xs.len() as f64)
 }
@@ -405,6 +491,24 @@ fn pooled_sigma(trees: &[&[f64]]) -> f64 {
         0.0
     } else {
         (ss / df as f64).sqrt()
+    }
+}
+
+/// 159 §18.3 `kind_headline`: one arm per kind, the wave's module builds its headline
+/// (`front of 3 · time_ms −21 % · …`, `val score 0.52 → 0.81 on 48 cases`, …); `None` for
+/// `one metric`, and for a module that defers to the scalar confirmation.
+async fn kind_headline(store: &Store, study: &StudyRecord) -> Result<Option<Headline>> {
+    use crate::types::{
+        KIND_JUDGED, KIND_META, KIND_PARETO, KIND_POPULATION, KIND_PROMPT, KIND_WORLD,
+    };
+    match study.spec.kind() {
+        KIND_PARETO => crate::pareto::headline(store, study).await, // 159:W1
+        KIND_PROMPT => crate::cases::headline(store, study).await,  // 159:W2
+        KIND_JUDGED => crate::judge::headline(store, study).await,  // 159:W3
+        KIND_POPULATION => crate::population::headline(store, study).await, // 159:W4
+        KIND_WORLD => crate::world::headline(store, study).await,   // 159:W6
+        KIND_META => crate::suite::headline(store, study).await,    // 159:W7
+        _ => Ok(None),
     }
 }
 
@@ -495,6 +599,16 @@ impl Ctx<'_> {
         if let Some(p) = self.step_done("confirm").await? {
             return Ok(serde_json::from_value(p["headline"].clone())?);
         }
+        // 159 §18.3 `kind_headline`: a kind with its own headline (front, cases, pairs, cells,
+        // world, suite) records it instead of the scalar confirmation; `None` = the 140 path.
+        if let Some(headline) = kind_headline(self.store, self.study).await? {
+            self.record_step(
+                "confirm",
+                serde_json::json!({ "headline": headline, "notes": Vec::<String>::new() }),
+            )
+            .await?;
+            return Ok(headline);
+        }
         // R-56: the study turn may still be editing after `experiment_log`;
         // the "final" tree is the kept incumbent, nothing newer.
         git::reset_clean(&self.worktree, &self.final_sha)?;
@@ -549,24 +663,15 @@ impl Ctx<'_> {
             0.0
         };
         let (nb, nf) = (b.len() as u32, f.len() as u32);
-        let ci = if nb > 0 && nf > 0 && base_mean != 0.0 {
-            1.96 * sigma * (1.0 / f64::from(nb) + 1.0 / f64::from(nf)).sqrt() / base_mean.abs()
-                * 100.0
-        } else {
-            f64::NAN
-        };
-        let unit = &self.spec.metric.unit;
-        let text = if ci.is_finite() {
-            format!(
-                "{} {:.4} → {:.4} {unit} ({:+.1} %, CI ±{:.1} %)",
-                self.spec.metric.name, base_mean, final_mean, delta_pct, ci
-            )
-        } else {
-            format!(
-                "{} {:.4} → {:.4} {unit} ({:+.1} %)",
-                self.spec.metric.name, base_mean, final_mean, delta_pct
-            )
-        };
+        let text = scalar_text(
+            &self.spec.metric,
+            base_mean,
+            final_mean,
+            delta_pct,
+            sigma,
+            nb,
+            nf,
+        );
         let mut holdout = None;
         if let Some(h) = &self.spec.holdout {
             let mut hs = self.spec.clone();
@@ -654,6 +759,16 @@ impl Ctx<'_> {
                 .iter()
                 .filter_map(|n| by_n.get(n).and_then(|e| e.review.clone()))
                 .max_by_key(review_rank);
+            // 159 R-W2-4 / R-SEAMS-3: engine-side scoring (cases, pairwise, world, suite) has no
+            // bench command to run alone; the kind's gate already measured each keep against its
+            // incumbent.
+            if self.spec.axes.scoring != Scoring::Bench {
+                notes.push(format!(
+                    "changeset {}: measured by the kind's gate only",
+                    c.k
+                ));
+                continue;
+            }
             let wt = scratch(&dir, c.k);
             if !wt.exists() {
                 continue;
@@ -810,10 +925,7 @@ pub fn assemble(
     let mut dead_ends: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let (mut experiments, mut kept, mut cost) = (0u32, 0u32, 0u64);
     for e in rows {
-        if matches!(
-            e.state,
-            ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
-        ) {
+        if e.state.is_open() {
             continue;
         }
         experiments += 1;
@@ -920,6 +1032,7 @@ pub fn assemble(
         kept,
         cost_usd: cost as f64 / 1e9,
         hours,
+        keeps_by_source: BTreeMap::new(),
     }
 }
 
@@ -1007,7 +1120,7 @@ pub async fn run_with(
     let doc = match cx.step_done("report").await? {
         Some(p) => p["doc"].as_str().map(str::to_owned),
         None => {
-            let report = assemble(
+            let mut report = assemble(
                 study,
                 reason.clone(),
                 headline.clone(),
@@ -1015,6 +1128,8 @@ pub async fn run_with(
                 &rows,
                 notes,
             );
+            report.keeps_by_source =
+                keeps_by_source(&kept, &store.list_ideas(&study.slug, None).await?);
             let text = report.tables();
             std::fs::create_dir_all(&cx.study_dir)?;
             let path = cx.study_dir.join("report.md");
@@ -1398,5 +1513,156 @@ mod tests {
         );
         let back: FinalReport = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back, r);
+    }
+
+    /// 159 W5 §10 T: the summary counts keeps by the source of the idea they tried
+    /// (`tried_in`); a keep that tried no backlog idea is not counted; no match, no line.
+    #[test]
+    fn keeps_are_counted_by_idea_source() {
+        use crate::types::IdeaSource;
+        let keep = |n: u32| {
+            let mut e = ExperimentRecord::open("s", n, 0, "x");
+            e.state = ExperimentState::Kept;
+            e
+        };
+        let idea = |source: IdeaSource, tried_in: &[u32]| Idea {
+            slug: "s".into(),
+            text: "an idea".into(),
+            source,
+            tried_in: tried_in.to_vec(),
+            ..Idea::default()
+        };
+        let kept = [keep(1), keep(2), keep(3), keep(4), keep(9)];
+        let ideas = [
+            idea(IdeaSource::Literature, &[1, 2]),
+            idea(IdeaSource::Model, &[3]),
+            idea(IdeaSource::User, &[4, 7]),
+            idea(IdeaSource::Model, &[8]),
+        ];
+        let by = keeps_by_source(&kept, &ideas);
+        assert_eq!(
+            by.iter().map(|(s, n)| (s.as_str(), *n)).collect::<Vec<_>>(),
+            vec![("literature", 2), ("model", 1), ("user", 1)]
+        );
+        let mut r = assemble(
+            &StudyRecord::new(StudySpec::default(), None),
+            StopReason::Plateau,
+            Headline::default(),
+            vec![],
+            &kept,
+            vec![],
+        );
+        assert!(!r.tables().contains("Keeps by idea source"));
+        r.keeps_by_source = by;
+        assert!(
+            r.tables()
+                .contains("stopped: plateau\n\nKeeps by idea source: literature 2 · model 1 · user 1\n\n## Changesets"),
+            "{}",
+            r.tables()
+        );
+        assert!(keeps_by_source(&kept, &[]).is_empty());
+    }
+
+    /// 159 R-W4-1 / R-SEAMS-26: the re-measure decides. A null re-measure (3 + 3 fresh
+    /// samples, a gain of 1.5 se — past the ±1.96 σ CI's half-width in the headline's own
+    /// terms) reads `unconfirmed`; 5 se (past t₄(0.99) = 3.75) reads `confirmed`; a
+    /// deterministic metric confirms on the sign alone.
+    #[test]
+    fn a_null_re_measure_is_unconfirmed_and_a_clear_gain_confirmed() {
+        let m = MetricSpec {
+            name: "time_ms".into(),
+            unit: "ms".into(),
+            direction: Direction::Lower,
+            min_effect: "0.5%".into(),
+        };
+        let line = |gain_se: f64, sigma: f64| {
+            let se = sigma * (2.0f64 / 3.0).sqrt();
+            let f = 100.0 - gain_se * se;
+            scalar_text(&m, 100.0, f, f - 100.0, sigma, 3, 3)
+        };
+        let t = line(1.5, 1.0);
+        assert!(t.ends_with(" · unconfirmed"), "{t}");
+        let t = line(3.5, 1.0);
+        assert!(t.ends_with(" · unconfirmed"), "z 3.5 is not t₄(0.99): {t}");
+        let t = line(5.0, 1.0);
+        assert!(t.ends_with(" · confirmed"), "{t}");
+        assert!(t.contains("CI ±"), "{t}");
+        // σ = 0: the sign alone, no CI.
+        let t = scalar_text(&m, 100.0, 99.0, -1.0, 0.0, 3, 3);
+        assert!(t.ends_with(" %) · confirmed"), "{t}");
+        let t = scalar_text(&m, 100.0, 101.0, 1.0, 0.0, 3, 3);
+        assert!(t.ends_with(" · unconfirmed"), "{t}");
+        // A higher-is-better loss is never confirmed.
+        let mut up = m.clone();
+        up.direction = Direction::Higher;
+        assert!(scalar_text(&up, 100.0, 90.0, -10.0, 0.5, 3, 3).ends_with(" · unconfirmed"));
+    }
+
+    /// 159 R-W2-4 / R-SEAMS-3: a study scored by its kind (`scoring: cases`, `bench.command =
+    /// "cases"`) reaches `changesets()` without the bench ever running the word `cases` as a
+    /// program: the note says the kind's gate measured it, no sample row, no `runs/final` log.
+    #[tokio::test]
+    async fn changesets_skip_the_bench_for_engine_side_scoring() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        sh(tmp.path(), &["init", "-q", "-b", "main", "repo"]);
+        std::fs::write(repo.join("prompt.md"), "v1\n").unwrap();
+        let base = commit(&repo, "base");
+        let root = tmp.path().join("data");
+        let wt = root.join("s/worktree");
+        let mut spec = StudySpec {
+            slug: "s".into(),
+            ..Default::default()
+        };
+        spec.axes.scoring = Scoring::Cases;
+        spec.bench.command = "cases".into();
+        git::worktree_add(&repo, &spec, &wt, &base).unwrap();
+        std::fs::write(wt.join("prompt.md"), "v2\n").unwrap();
+        let keep = commit(&wt, "#1 prompt");
+        let store = Store::open(&root).await.unwrap();
+        let mut study = StudyRecord::new(spec, None);
+        study.repo = repo.display().to_string();
+        study.base_sha = Some(base.clone());
+        study.incumbent_sha = Some(keep.clone());
+        study.worktree = Some(wt.display().to_string());
+        let mut e = ExperimentRecord::open("s", 1, 0, "x");
+        e.state = ExperimentState::Kept;
+        e.commit_sha = Some(keep.clone());
+        e.delta_pct = Some(10.0);
+        let cx = Ctx {
+            store: &store,
+            study: &study,
+            spec: &study.spec,
+            repo: repo.clone(),
+            worktree: wt.clone(),
+            study_dir: root.join("s"),
+            base: base.clone(),
+            final_sha: keep.clone(),
+            cancel: CancellationToken::new(),
+            cfg: AutoresearchConfig::default(),
+        };
+        let headline = Headline {
+            base_mean: 0.5,
+            final_mean: 0.8,
+            sigma: 0.1,
+            n: (3, 3),
+            ..Headline::default()
+        };
+        let (cs, notes) = cx.changesets(&[e], &headline).await.unwrap();
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].delta_alone_pct, None, "not measured alone");
+        assert_eq!(cs[0].delta_together_pct, Some(10.0));
+        assert!(
+            notes
+                .iter()
+                .any(|n| n == "changeset 1: measured by the kind's gate only"),
+            "{notes:?}"
+        );
+        assert!(
+            !root.join("s/runs/final").exists(),
+            "the bench runner never ran `cases`"
+        );
+        let samples = store.list_samples("s", None).await.unwrap();
+        assert!(samples.is_empty(), "{samples:?}");
     }
 }

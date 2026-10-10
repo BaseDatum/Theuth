@@ -189,6 +189,8 @@ function build(slug: string, p: Plan): Built {
       cost_usd: 0.28 + (n % 9) / 100 + samples * 0.04,
       started_at: startedAt,
       finished_at: inFlight ? null : new Date(Date.parse(startedAt) + durationMs).toISOString(),
+      gate: null,
+      line,
     }
     rows.push(row)
     points.push({ n, verdict: st, metric: value, at: startedAt })
@@ -355,7 +357,7 @@ function study(args: { slug: string; goal?: string; repo?: string; state: StudyS
     experiments: args.plan.count,
     delta_pct: delta,
     headline: `Optimising ${s.metric.name} in ${repo} · ${args.plan.count} experiments${delta !== null ? ` · ${pct(delta)}` : ''} · ${args.state.state}`,
-    budget_used: { usd: args.usd ?? args.plan.count * 0.335, hours: Number(hoursUsed.toFixed(1)), experiments: args.plan.count },
+    budget_used: { usd: args.usd ?? args.plan.count * 0.335, hours: Number(hoursUsed.toFixed(1)), experiments: args.plan.count, by_channel: { session: args.usd ?? args.plan.count * 0.335, bench: 0 } },
     budget: s.budget,
     session: args.state.state === 'running' || args.state.state === 'paused' ? `ses-${args.slug}` : null,
     origin: `setup-${args.slug}`,
@@ -365,6 +367,8 @@ function study(args: { slug: string; goal?: string; repo?: string; state: StudyS
     finished_at: args.stop ? ago(20 * MIN) : null,
     stop_reason: args.stop ?? null,
     report_doc: args.report ?? null,
+    kind: 'one metric',
+    created_by: null,
   }
   const detail: StudyDetail = {
     info,
@@ -384,6 +388,7 @@ function study(args: { slug: string; goal?: string; repo?: string; state: StudyS
     needs_eyes: args.eyes ?? [],
     tail: info.current !== null ? 'CASE n4000 time_ms=144.196\nCASE n8000 time_ms=591.764\nCASE n12000 time_ms=1213.014\nMETRIC time_ms=1948.974' : null,
     final_holdout: args.state.state === 'finished' && args.holdout ? '61.0 → 49.7 (−18.5 %)' : null,
+    view: { kind: 'scalar' },
   }
   return { info, detail, rows: [...b.rows].reverse(), details: b.details }
 }
@@ -403,7 +408,7 @@ export const CHANGESETS: StudyChangeset[] = [
   { k: 4, name: 'expression-inline', branch: 'autoresearch/lexer-tokens/4-expression-inline', files: ['lib/liquid/expression.rb'], experiments: [31], delta_alone_pct: -2.2, delta_together_pct: -2.0, only_with: [], review: null },
 ]
 
-const paused = (kind: Exclude<PauseReason['kind'], 'other'>): StudyState => ({ state: 'paused', reason: { kind } })
+const paused = (kind: Exclude<PauseReason['kind'], 'other' | 'launch_approval'>): StudyState => ({ state: 'paused', reason: { kind } })
 
 /** Every fixture study, in the rail's order (running first, then paused, preparing, finished, failed). */
 export function studies(): Study[] {

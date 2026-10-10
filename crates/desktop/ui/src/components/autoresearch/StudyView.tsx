@@ -12,14 +12,21 @@ import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
 import type { PauseReason } from '@/rpc/bindings/PauseReason'
 import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
 import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
+import { ArchiveGrid } from './ArchiveGrid'
+import { CaseStrip } from './CaseStrip'
 import { ExperimentSheet } from './ExperimentDetail'
+import { FrontChart } from './FrontChart'
 import { DiscardStudy, Finished } from './Finished'
+import { PairViewer } from './PairViewer'
+import { RatingLadder } from './RatingLadder'
 import { RunTable } from './RunTable'
 import { Panel, SidePanel } from './SidePanel'
 import { StudyChart } from './StudyChart'
+import { SuiteChart } from './SuiteChart'
 import { Delta, StatePill } from './StudyList'
 import { type Bar, type Progress, budgetBars, clock, holdoutSummary, keepNeedsPct, metric, pauseReasonLabel, pct, phaseChips, shortSha, tally } from './model'
 import { useControl, useExperiments, useProgress, useStudy } from './queries'
+import { WorldChart } from './WorldChart'
 
 const route = getRouteApi('/autoresearch/$slug')
 
@@ -75,6 +82,7 @@ export function StudyView() {
           <span className="flex min-w-0 items-center gap-2">
             <span className="truncate">{slug}</span>
             <StatePill state={st} currentN={info.current} stop={info.stop_reason} />
+            {info.kind !== 'one metric' && <span className="truncate text-xs font-normal text-fg-tertiary">{info.kind}</span>}
           </span>
         }
       >
@@ -161,9 +169,7 @@ export function StudyView() {
 
           <Bars bars={budgetBars(info.budget_used, info.budget)} />
 
-          <Panel title="Every experiment" hint="the incumbent as a staircase">
-            <StudyChart detail={d} rows={runs.data} onPick={pick} />
-          </Panel>
+          <KindPanel detail={d} rows={runs.data} onPick={pick} />
 
           {info.current !== null && <Current n={info.current} row={current} progress={progress ?? { phase: info.phase, sample: 0, of: 0, elapsed_ms: 0 }} tail={d.tail} onOpen={() => pick(info.current)} />}
           {st.state === 'preparing' && <Preparing detail={d} />}
@@ -181,6 +187,59 @@ export function StudyView() {
       <ExperimentSheet study={d} n={n ?? null} onClose={() => pick(null)} />
     </div>
   )
+}
+
+/**
+ * 159 §5.7: the chart per kind. `scalar` is today's StudyChart; every other branch is its wave's component
+ * (a "needs a newer app" card until the wave lands).
+ */
+export function KindPanel({ detail, rows, onPick }: { detail: StudyDetail; rows?: readonly ExperimentRow[]; onPick: (n: number) => void }) {
+  const view = detail.view
+  switch (view.kind) {
+    case 'scalar':
+      return (
+        <Panel title="Every experiment" hint="the incumbent as a staircase">
+          <StudyChart detail={detail} rows={rows} onPick={onPick} />
+        </Panel>
+      )
+    case 'front':
+      return (
+        <Panel title="The front">
+          <FrontChart view={view} /> {/* 159:W1 */}
+        </Panel>
+      )
+    case 'cases':
+      return (
+        <Panel title="Cases">
+          <CaseStrip view={view} /> {/* 159:W2 */}
+        </Panel>
+      )
+    case 'ratings':
+      return (
+        <Panel title="Ratings">
+          <RatingLadder view={view} /> {/* 159:W3 */}
+          <PairViewer slug={detail.info.slug} n={null} />
+        </Panel>
+      )
+    case 'archive':
+      return (
+        <Panel title="The archive">
+          <ArchiveGrid view={view} /> {/* 159:W4 */}
+        </Panel>
+      )
+    case 'world':
+      return (
+        <Panel title="In the world">
+          <WorldChart view={view} /> {/* 159:W6 */}
+        </Panel>
+      )
+    case 'suite':
+      return (
+        <Panel title="The suite">
+          <SuiteChart view={view} /> {/* 159:W7 */}
+        </Panel>
+      )
+  }
 }
 
 /** The §8.6 buttons per state. Labels say their consequence; no second confirmation but Discard's. */

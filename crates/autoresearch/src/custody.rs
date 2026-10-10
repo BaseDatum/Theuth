@@ -39,11 +39,7 @@ pub fn take(
     let drafts = drafts_dir(evaluator_dir, &spec.slug);
     let mut custody = BTreeMap::new();
 
-    let commands = [
-        ("bench", Some(spec.bench.command.as_str())),
-        ("checks", spec.checks.as_ref().map(|c| c.command.as_str())),
-        ("holdout", spec.holdout.as_ref().map(|h| h.command.as_str())),
-    ];
+    let commands = commands(spec);
     check_commands(spec, repo, &drafts)?;
     for (_, cmd) in &commands {
         let Some(cmd) = cmd else { continue };
@@ -335,12 +331,7 @@ pub(crate) fn command_path<'a>(token: &'a str, drafts: &Path) -> Option<CommandP
 /// anywhere else — is refused. Program names (`python3`, `/usr/bin/env`) are
 /// not scripts. `drafts` is `<root>/drafts/<slug>/`.
 pub fn check_commands(spec: &StudySpec, repo: &Path, drafts: &Path) -> Result<()> {
-    let commands = [
-        ("bench", Some(spec.bench.command.as_str())),
-        ("checks", spec.checks.as_ref().map(|c| c.command.as_str())),
-        ("holdout", spec.holdout.as_ref().map(|h| h.command.as_str())),
-    ];
-    for (what, cmd) in commands {
+    for (what, cmd) in commands(spec) {
         let Some(cmd) = cmd else { continue };
         for token in cmd.split_whitespace() {
             let ok = match command_path(token, drafts) {
@@ -365,9 +356,29 @@ pub fn check_commands(spec: &StudySpec, repo: &Path, drafts: &Path) -> Result<()
     Ok(())
 }
 
+/// Every command the spec runs on the study's behalf, by name: the 140 three plus the 159
+/// hooks and world commands (R-SEAMS-12/20), so a script any of them names is in custody.
+fn commands(spec: &StudySpec) -> [(&'static str, Option<&str>); 8] {
+    fn cmd(c: &Option<crate::types::CommandSpec>) -> Option<&str> {
+        c.as_ref().map(|c| c.command.as_str())
+    }
+    let hooks = spec.hooks.as_ref();
+    let world = |f: fn(&crate::types::WorldSpec) -> &str| spec.world.as_ref().map(f);
+    [
+        ("bench", Some(spec.bench.command.as_str())),
+        ("checks", cmd(&spec.checks)),
+        ("holdout", spec.holdout.as_ref().map(|h| h.command.as_str())),
+        ("hook_before", hooks.and_then(|h| cmd(&h.before))), // 159:W5
+        ("hook_after", hooks.and_then(|h| cmd(&h.after))),
+        ("deploy", world(|w| w.deploy.as_str())), // 159:W6
+        ("rollback", world(|w| w.rollback.as_str())),
+        ("measure", world(|w| w.measure.as_str())),
+    ]
+}
+
 /// Does a relative command token look like a script path (so a miss is a
 /// misconfiguration, not a program name like `python3`)?
-fn looks_like_script(rel: &Path) -> bool {
+pub(crate) fn looks_like_script(rel: &Path) -> bool {
     rel.components().count() > 1 || has_script_extension(rel)
 }
 
@@ -555,6 +566,49 @@ mod tests {
         assert_eq!(command_path("/usr/bin/python3", drafts), None);
         assert_eq!(command_path("../x", drafts), None);
         assert_eq!(command_path("--flag", drafts), None);
+    }
+
+    /// 159 R-SEAMS-12/20: a hook script and the world commands' scripts enter custody like
+    /// `bench.sh` (drafts dir or repo), are frozen in `commands.json`, and a missing one refuses.
+    #[test]
+    fn hook_and_world_scripts_enter_custody_by_command() {
+        let (_tmp, repo, evaluator, root) = layout();
+        std::fs::write(root.join("drafts/toy/hook.sh"), "echo hi").unwrap();
+        std::fs::write(repo.join("deploy.sh"), "exit 0").unwrap();
+        let mut s = spec("toy");
+        s.hooks = Some(crate::types::HooksSpec {
+            before: Some(CommandSpec {
+                command: "bash hook.sh".into(),
+                ..CommandSpec::default()
+            }),
+            after: None,
+        });
+        s.world = Some(crate::types::WorldSpec {
+            deploy: "bash deploy.sh".into(),
+            rollback: "make down".into(),
+            measure: "python3 -m measure".into(),
+            ..Default::default()
+        });
+        let custody = take(&s, &repo, &evaluator).unwrap();
+        assert!(custody.contains_key("custody/hook.sh"), "{custody:?}");
+        assert!(custody.contains_key("deploy.sh"), "{custody:?}");
+        assert!(evaluator.join("hook.sh").is_file() && evaluator.join("deploy.sh").is_file());
+        let frozen: BTreeMap<String, String> =
+            serde_json::from_slice(&std::fs::read(evaluator.join("commands.json")).unwrap())
+                .unwrap();
+        assert_eq!(frozen["hook_before"], "bash hook.sh");
+        assert_eq!(frozen["deploy"], "bash deploy.sh");
+        assert_eq!(frozen["rollback"], "make down");
+        assert!(!frozen.contains_key("hook_after"));
+
+        let (_tmp, repo, evaluator, _root) = layout();
+        s.world.as_mut().unwrap().measure = "bash measure.sh".into();
+        let e = take(&s, &repo, &evaluator).unwrap_err().to_string();
+        assert!(e.contains("hook_before: `hook.sh` is not a file"), "{e}");
+        std::fs::write(_root.join("drafts/toy/hook.sh"), "echo hi").unwrap();
+        std::fs::write(repo.join("deploy.sh"), "exit 0").unwrap();
+        let e = take(&s, &repo, &evaluator).unwrap_err().to_string();
+        assert!(e.contains("measure: `measure.sh` is not a file"), "{e}");
     }
 
     #[test]

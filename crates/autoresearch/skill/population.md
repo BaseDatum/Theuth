@@ -1,0 +1,14 @@
+
+## Population studies — search, not a ratchet (159 §9)
+
+A population study keeps the stepping stones a ratchet throws away: an archive of elites, one per cell, where a cell is an island plus one or two binned behaviour descriptors (`peak_kb` × `time_ms`; for prompts, the case the candidate is best on). Each wave cuts every slot from a sampled elite, not from the champion; a change that lands in an empty cell is kept even when it is worse than the champion, an occupied cell is taken only by clearing the same gate as a ratchet keep. The champion is the best elite over every island; finalize re-measures it against the base with fresh samples before the headline counts.
+
+Use it when the task has many local optima or a deceptive first step (routing, scheduling, codecs, a prompt that must first get longer to get better) and the bench is fast: a wave spends about `parallel` times the samples, plus about 0.2 samples per experiment on elite re-measures. Do not use it for a bench of more than a few minutes, for a deterministic one-step task, or with `parallel: 1` (Start refuses it). The default budget stays 120 experiments with `parallel: 3`; a population pays off only over many experiments.
+
+In the spec:
+- `axes: {search: population}` and `parallel: 2–4`.
+- `population: {islands, descriptors, migrate_every, remeasure_after}`. `islands` defaults to `parallel` (2–4 independent archives; every `migrate_every` waves, default 4, each island's best elite is offered to the next). `descriptors` is one or two of `{source: secondary | asi | case_best, name, bins: [edges]}`: `secondary` is a `METRIC` line (the primary itself is allowed), `asi` an `ASI <name>=<number>` line, `case_best` the *index* (0-based, case ids sorted) of the case the tree improves most over the base — its edges cut that index range (`[3, 6]` for nine cases in three groups); `k` edges make `k + 1` bins. A candidate whose bench does not report a descriptor is rejected by the archive, so every descriptor must be printed on every run. Leave `descriptors` empty for one cell per island.
+- Pick descriptors that describe *how* a solution behaves, not how good it is: run time, memory, output size, which inputs it wins on. Run the bench once on the base (the probe does) and set edges around the base's value so it is not alone at one end — for a 1 ms base and algorithms that may take 100 ms, `[1, 10, 100]`.
+- Guards still apply (`secondary_guards`); do not guard the descriptor itself, or the stepping stones are refused.
+
+The draft card's first line reads "Population search: 3 islands, cells over `peak_kb` × `time_ms`; the champion is re-measured before it counts." The Study view shows one grid per island with the champion starred; the run table says whether each experiment entered a cell, replaced its elite, or was rejected.

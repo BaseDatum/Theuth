@@ -146,6 +146,11 @@ import type { StudyIdea } from '@/rpc/bindings/StudyIdea'
 import type { StudyInfo } from '@/rpc/bindings/StudyInfo'
 import type { DraftSummary } from '@/rpc/bindings/DraftSummary'
 import type { DraftView } from '@/rpc/bindings/DraftView'
+import type { ArchiveRow } from '@/rpc/bindings/ArchiveRow'
+import type { CaseRow } from '@/rpc/bindings/CaseRow'
+import type { JudgmentRow } from '@/rpc/bindings/JudgmentRow'
+import type { MechanismInfo } from '@/rpc/bindings/MechanismInfo'
+import type { MechanismOp } from '@/rpc/bindings/MechanismOp'
 import type { ModelInfo } from '@/rpc/bindings/ModelInfo'
 import type { Node } from '@/rpc/bindings/Node'
 import type { Pairing } from '@/rpc/bindings/Pairing'
@@ -1196,6 +1201,19 @@ export interface Api {
   'autoresearch.draft_confirm'(draft_id: string, field: string): Promise<DraftView>
   /** 151 D3: discard a draft — the drafts dir is removed, later Starts are refused. */
   'autoresearch.discard_draft'(draft_id: string): Promise<null>
+  // 159 §5.11: per-kind methods; the engine answers `not built (W<n>)` until the wave lands.
+  /** Archive rows — front members (W1) or population cells (W4). */
+  'autoresearch.archive'(slug: string): Promise<ArchiveRow[]>
+  /** Case × experiment rows for the heat strip; `n` narrows to one experiment (W2). */
+  'autoresearch.cases'(slug: string, n?: number | null): Promise<CaseRow[]>
+  /** Blind-pair verdicts; `n` narrows to one experiment (W3). */
+  'autoresearch.judgments'(slug: string, n?: number | null): Promise<JudgmentRow[]>
+  /** Your answer (`a` | `b` | `same`) to blind pair `id` (W3). */
+  'autoresearch.human_pair'(slug: string, id: number, winner: string): Promise<StudyInfo>
+  /** The launch press — approve deploys both arms, refuse discards experiment `n` (W6). */
+  'autoresearch.launch'(slug: string, n: number, token: string, approve: boolean): Promise<StudyInfo>
+  /** List, show or adopt a mechanism version (W7). */
+  'autoresearch.mechanism'(op: MechanismOp): Promise<MechanismInfo>
 }
 
 /** Every request method name, sorted; `api.test.ts` checks it against `bindings/methods.json`. */
@@ -1228,6 +1246,8 @@ export const METHODS = [
   'attention_dismiss',
   'attention_list',
   'attention_snooze',
+  'autoresearch.archive',
+  'autoresearch.cases',
   'autoresearch.control',
   'autoresearch.create',
   'autoresearch.discard_draft',
@@ -1238,8 +1258,12 @@ export const METHODS = [
   'autoresearch.experiment',
   'autoresearch.experiments',
   'autoresearch.get',
+  'autoresearch.human_pair',
   'autoresearch.idea',
+  'autoresearch.judgments',
+  'autoresearch.launch',
   'autoresearch.list',
+  'autoresearch.mechanism',
   'autoresearch.settings.get',
   'autoresearch.settings.set',
   'autoresearch.steer',

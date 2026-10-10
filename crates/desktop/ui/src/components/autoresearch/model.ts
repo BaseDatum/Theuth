@@ -3,6 +3,7 @@
 
 import type { BudgetSpec } from '@/rpc/bindings/BudgetSpec'
 import type { BudgetUsed } from '@/rpc/bindings/BudgetUsed'
+import type { Call } from '@/rpc/bindings/Call'
 import type { ExperimentPhase } from '@/rpc/bindings/ExperimentPhase'
 import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
 import type { ExperimentState } from '@/rpc/bindings/ExperimentState'
@@ -35,6 +36,7 @@ export function outcome(state: ExperimentState | null, verdict: ExperimentVerdic
     case 'open':
     case 'measuring':
     case 'measured':
+    case 'waiting': // 159: between fires (a launch, a window, inner studies)
     case null:
       return 'open'
     case 'discarded':
@@ -68,6 +70,8 @@ export function outcomeLabel(state: ExperimentState | null, verdict: ExperimentV
       return 'measuring'
     case 'measured':
       return 'measured'
+    case 'waiting':
+      return 'waiting for its window'
     case 'discarded':
       switch (verdict?.kind) {
         case 'worse':
@@ -114,6 +118,7 @@ export function chartOutcome(tag: string): Outcome {
     case 'open':
     case 'measuring':
     case 'measured':
+    case 'waiting':
       return 'open'
     default:
       return 'no_gain'
@@ -156,6 +161,8 @@ export function pauseReasonLabel(r: PauseReason): string {
       return 'too many review flags'
     case 'budget_confirm':
       return 'budget needs your OK'
+    case 'launch_approval':
+      return `launch #${r.n} needs your press`
     case 'other':
       return r.reason
   }
@@ -286,7 +293,7 @@ export type Chip = { label: string; status: 'done' | 'on' | 'todo' }
 /** What `ExperimentProgress` gave for the experiment in flight; `null` phase before `experiment_run`. */
 export type Progress = { phase: ExperimentPhase | null; sample: number; of: number; elapsed_ms: number }
 
-const PHASE_LABEL: Record<ExperimentPhase, string> = { novelty: 'novelty', custody: 'custody', waiting: 'bench slot', sampling: 'measuring', checks: 'checks', review: 'review' }
+const PHASE_LABEL: Record<ExperimentPhase, string> = { novelty: 'novelty', custody: 'custody', waiting: 'bench slot', sampling: 'measuring', checks: 'checks', review: 'review', cases: 'scoring cases', judging: 'judging', window: 'window' }
 
 /**
  * The current-experiment chips: thinking → editing → measuring k/N → checks → review. Before `experiment_run`
@@ -382,6 +389,29 @@ export function delta(direction: 'lower' | 'higher', delta_pct: number | null | 
   if (d === null || !Number.isFinite(d) || d === 0) return { text: pct(d), word: '', tone: 'muted' }
   const better = improved(direction, d)
   return { text: pct(d), word: better ? 'better' : 'worse', tone: better ? 'success' : 'danger' }
+}
+
+/** 159 W1 H2: a per-objective `call` in the badge's colours. */
+export const CALL_OUTCOME: Record<Call, Outcome> = { better: 'kept', same: 'no_gain', worse: 'worse', guard_failed: 'failed' }
+
+export type ObjectiveColumn = { name: string; direction: 'lower' | 'higher' | null }
+
+/**
+ * 159 W1 H2: the objectives of the shown front rows (`gate.rule === 'dominance'`), first seen first. `ObjectiveDelta`
+ * carries no direction; it is read off any row where the normalised Δ (positive = better) and the raw Δ % disagree in
+ * sign (lower is better) or agree (higher), `null` when no row tells.
+ */
+export function objectiveColumns(rows: readonly ExperimentRow[]): ObjectiveColumn[] {
+  const cols = new Map<string, ObjectiveColumn>()
+  for (const r of rows) {
+    if (r.gate?.rule !== 'dominance') continue
+    for (const o of r.gate.objectives) {
+      const col = cols.get(o.name) ?? { name: o.name, direction: null }
+      if (col.direction === null && o.delta && o.delta_pct) col.direction = o.delta > 0 === o.delta_pct > 0 ? 'higher' : 'lower'
+      cols.set(o.name, col)
+    }
+  }
+  return [...cols.values()]
 }
 
 const STATE_ORDER: Record<StudyState['state'], number> = { running: 0, finalizing: 1, paused: 2, preparing: 3, finished: 4, failed: 5, draft: 6, discarded: 7 }

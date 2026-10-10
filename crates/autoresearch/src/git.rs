@@ -99,6 +99,13 @@ pub fn read(cwd: &Path, args: &[&str]) -> Result<String> {
     git(cwd, args)
 }
 
+/// 159 W-f: a `git <args>` in `cwd` for [`crate::refs`] (`update-ref`, `for-each-ref`,
+/// `show-ref` under `refs/autoresearch/`), the same spelling as every other call here.
+/// Non-zero exit is an error.
+pub fn plumbing(cwd: &Path, args: &[&str]) -> Result<String> {
+    git(cwd, args)
+}
+
 /// `git diff` as bytes (binary patches are not UTF-8).
 fn diff_bytes(cwd: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let mut c = cmd(cwd, None, &["diff", "--no-color", "--no-ext-diff"]);

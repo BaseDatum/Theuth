@@ -1,0 +1,6 @@
+# reference optimum (outside the scope): 2-opt + or-opt, 40 restarts per seed, offline
+s11 6189.5
+s23 5844.3
+s37 6464.9
+mean 6166.2
+nearest_neighbour_mean 7449.7
