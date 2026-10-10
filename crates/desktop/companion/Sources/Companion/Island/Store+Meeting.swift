@@ -80,6 +80,25 @@ extension Store {
     /// "Keep recording": local only — no RPC exists; `MeetingReducer.keepRecording` mutes the engine's re-sends.
     func meetingKeepRecording() { meeting = meeting.map(MeetingReducer.keepRecording) }
 
+    /// 158 §5.2 (c) Start recording: no detected app (the engine taps system audio), source Calendar, title/context/event from
+    /// the event, the remembered project, `consent: true` (the lawful line was shown).
+    func meetingStartUpcoming(_ e: EventRef, project: String?) {
+        meeting?.prompt = nil
+        let start = StartMeeting(title: e.title, context: e.description.map { String($0.prefix(1_000)) }, consent: true,
+                                 source: .calendar(event: e.id), event: e.id, project: project)
+        meetingAct("meeting_start(source=calendar:\(e.id), consent=true)") { _ = try await $0.meetingStart(start) }
+    }
+
+    /// "Dismiss" on the Upcoming brief: local only (no RPC); the engine's minute re-sends of that event are muted.
+    func meetingDismissUpcoming() { meeting = meeting.map(MeetingReducer.dismissUpcoming) }
+
+    /// Once a second while the island is shown: the Upcoming brief clears at start + 5 min (§9.4).
+    func meetingTick(now: Date = Date()) {
+        guard let s = meeting else { return }
+        let n = MeetingReducer.tick(s, now: now)
+        if n != s { meeting = n }
+    }
+
     /// Step the brief cursor — the pane's chevrons clamp, the J/K/↑/↓ keys `wrap` (149i §N); one path, the island controller
     /// mirrors every cursor change with `meeting_cursor` and moves the focused topic to the shown brief's.
     func meetingMove(_ delta: Int, wrap: Bool = false) {

@@ -161,7 +161,7 @@ final class IslandController {
     private func startTick() {
         guard tick == nil else { return }
         tick = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.ui.now = Date() }
+            Task { @MainActor in self?.ui.now = Date(); self?.store.meetingTick() }
         }
         oracleTimer?.invalidate()
         oracleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -371,6 +371,7 @@ final class IslandController {
             // 158 §5.3: ⏎ = Start recording (the default button) / Keep recording (the safe default); else the TextField's onSubmit sends.
             switch s.prompt {
             case .detected(let d)? where !ui.boxFocused: store.meetingStartDetected(d)
+            case .upcoming(let e, let p, _)? where !ui.boxFocused: store.meetingStartUpcoming(e, project: p)
             case .stop? where !ui.boxFocused: store.meetingKeepRecording()
             default: return false
             }
@@ -383,12 +384,13 @@ final class IslandController {
     }
 
     /// ⎋: leave the box (the island stays key, §N) → undo a stop hold → close the ⋮ menu, answer a detection prompt "Not now"
-    /// (158 §5.3) and hand key back to the previous app.
+    /// or the Upcoming brief "Dismiss" (158 §5.3) and hand key back to the previous app.
     private func escape() {
         if ui.boxFocused { ui.blurTick += 1; return }
         if ui.stopHoldStarted != nil { ui.stopHoldStarted = nil; stopTimer?.invalidate(); return }
         ui.menuOpen = false
         if case .detected(let d)? = store.meeting?.prompt { store.meetingNotNow(d) }
+        if case .upcoming? = store.meeting?.prompt { store.meetingDismissUpcoming() }
         resignKey()
     }
 
@@ -429,7 +431,7 @@ final class IslandController {
         fakeNotch = !forceNoNotch && NSScreen.screens.allSatisfy { IslandGeometry.notch(of: $0) == nil }
         if fakeNotch { IslandLog.write("probe: no screen has a notch — a 200 × 37 notch is pretended at the top centre") }
         guard let s = screen else { return IslandLog.write("probe: no screen") }
-        if which.hasPrefix("clicks") || which.hasPrefix("stop") || which.hasPrefix("open-no-hover") || which.hasPrefix("prompt") {
+        if which.hasPrefix("clicks") || which.hasPrefix("stop") || which.hasPrefix("open-no-hover") || which.hasPrefix("prompt") || which.hasPrefix("upcoming") {
             Task { await runInputProbe(which) }
             return
         }

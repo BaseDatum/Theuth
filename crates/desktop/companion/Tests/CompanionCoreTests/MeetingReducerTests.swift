@@ -276,12 +276,83 @@ struct MeetingReducerTests {
         #expect(fresh.prompt == .stop(app: proc, releasedForS: 30) && fresh.keptReleasedForS == nil)
     }
 
-    @Test func seedCarriesTheDetectionAndUpcomingIsInert() {
+    @Test func seedCarriesTheDetection() {
         let status = MeetingStatus(state: .idle, detection: detection)
         #expect(MeetingReducer.seed(status, now: t0).prompt == .detected(detection))
         #expect(MeetingReducer.seed(MeetingStatus(), now: t0).prompt == nil)
-        let e = EventRef(id: "e", uid: "u", title: "Sync", start: "x", end: "y")
-        #expect(MeetingReducer.reduce(live(), .upcoming(event: e, project: nil, brief: nil), now: t0) == live())
+    }
+
+    // MARK: 158 §5.2 (c) / §9.4 — Upcoming
+
+    func event(_ id: String = "ek:u1:", startIn: TimeInterval = 240) -> EventRef {
+        let f = ISO8601DateFormatter()
+        return EventRef(id: id, uid: id, title: "Weekly sync", start: f.string(from: t0 + startIn), end: f.string(from: t0 + startIn + 1800),
+                        attendees: [Attendee(name: "Sky", isMe: true), Attendee(name: "Priya Shah"), Attendee(name: "Tom Okafor")])
+    }
+
+    @Test func upcomingShowsBeforeAMeetingAndNeverDuringOne() {
+        let e = event()
+        let s = MeetingReducer.reduce(.empty, .upcoming(event: e, project: "theuth", brief: ["a", "b"]), now: t0)
+        #expect(s.prompt == .upcoming(event: e, project: "theuth", brief: ["a", "b"]) && s.meeting == nil)
+        #expect(MeetingReducer.reduce(.empty, .upcoming(event: e, project: nil, brief: nil), now: t0).prompt == .upcoming(event: e, project: nil, brief: []))
+        for st in [MeetingState.starting, .recording, .paused, .stopping] {
+            #expect(MeetingReducer.reduce(live(st), .upcoming(event: e, project: nil, brief: nil), now: t0) == live(st))
+        }
+        // A finished meeting's slice still takes it; Started clears it (via `.empty`); a stale State{Done} of another meeting does not.
+        #expect(MeetingReducer.reduce(live(.done), .upcoming(event: e, project: nil, brief: nil), now: t0).prompt != nil)
+        #expect(MeetingReducer.reduce(s, .started(meeting: "m2", session: "s2", process: proc, at: "now"), now: t0).prompt == nil)
+        #expect(MeetingReducer.reduce(s, .state(meeting: "old", state: .done, degraded: []), now: t0).prompt == s.prompt)
+        // Past start + 5 min it is refused outright.
+        #expect(MeetingReducer.reduce(.empty, .upcoming(event: event(startIn: -301), project: nil, brief: nil), now: t0) == .empty)
+        #expect(MeetingReducer.reduce(.empty, .upcoming(event: event(startIn: -299), project: nil, brief: nil), now: t0).prompt != nil)
+    }
+
+    @Test func upcomingTickExpiresAtStartPlusFiveMinutes() {
+        let s = MeetingReducer.reduce(.empty, .upcoming(event: event(startIn: 60), project: nil, brief: ["a"]), now: t0)
+        #expect(MeetingReducer.tick(s, now: t0 + 359) == s)
+        #expect(MeetingReducer.tick(s, now: t0 + 360).prompt == nil)
+        let d = MeetingReducer.reduce(.empty, .detected(detection), now: t0)
+        #expect(MeetingReducer.tick(d, now: t0 + 10_000) == d) // only (c) has a clock
+    }
+
+    @Test func dismissUpcomingMutesTheReSendsOfThatEvent() {
+        let shown = MeetingReducer.reduce(.empty, .upcoming(event: event(), project: nil, brief: nil), now: t0)
+        let gone = MeetingReducer.dismissUpcoming(shown)
+        #expect(gone.prompt == nil && gone.dismissedUpcoming == "ek:u1:")
+        #expect(MeetingReducer.dismissUpcoming(.empty) == .empty)
+        #expect(MeetingReducer.reduce(gone, .upcoming(event: event(startIn: 120), project: nil, brief: nil), now: t0) == gone)
+        let other = MeetingReducer.reduce(gone, .upcoming(event: event("ek:u2:"), project: nil, brief: nil), now: t0)
+        #expect(other.prompt == .upcoming(event: event("ek:u2:"), project: nil, brief: []))
+    }
+
+    @Test func upcomingAndDetectedForTheSameEventMergeIntoB() {
+        let e = event()
+        var withEvent = detection; withEvent.event = EventMatch(event: e, score: 0.9)
+        var merged = withEvent; merged.brief = ["a"]; merged.project = "theuth"
+        // Upcoming first, then Detected: the detection takes the pane and keeps the brief + project.
+        let c = MeetingReducer.reduce(.empty, .upcoming(event: e, project: "theuth", brief: ["a"]), now: t0)
+        #expect(MeetingReducer.reduce(c, .detected(withEvent), now: t0).prompt == .detected(merged))
+        // Detected first, then Upcoming: the brief lands on the shown detection; the engine's own values win.
+        let b = MeetingReducer.reduce(.empty, .detected(withEvent), now: t0)
+        #expect(MeetingReducer.reduce(b, .upcoming(event: e, project: "theuth", brief: ["a"]), now: t0).prompt == .detected(merged))
+        var own = withEvent; own.brief = ["engine"]; own.project = "p"
+        #expect(MeetingReducer.reduce(c, .detected(own), now: t0).prompt == .detected(own))
+        // An unrelated detection (no event, or another event) is untouched and keeps the pane.
+        let a = MeetingReducer.reduce(.empty, .detected(detection), now: t0)
+        #expect(MeetingReducer.reduce(a, .upcoming(event: e, project: "theuth", brief: ["a"]), now: t0) == a)
+        #expect(MeetingReducer.reduce(c, .detected(detection), now: t0).prompt == .detected(detection))
+    }
+
+    @Test func upcomingLinesFollowTheMock() {
+        #expect(MeetingReducer.upcomingLine(event(startIn: 270), now: t0) == "In 5 min · Weekly sync")
+        #expect(MeetingReducer.upcomingLine(event(startIn: 60), now: t0) == "In 1 min · Weekly sync")
+        #expect(MeetingReducer.upcomingLine(event(startIn: 0), now: t0) == "Now · Weekly sync")
+        #expect(MeetingReducer.upcomingLine(event(startIn: -90), now: t0) == "Now · Weekly sync")
+        #expect(MeetingReducer.upcomingLine(EventRef(id: "e", uid: "u", title: "Sync", start: "soon", end: "later"), now: t0) == "Sync")
+        #expect(MeetingReducer.upcomingSource(project: "theuth", attendees: event().attendees) == "From the last meetings in theuth · attendees Priya Shah, Tom Okafor")
+        #expect(MeetingReducer.upcomingSource(project: nil, attendees: event().attendees) == "attendees Priya Shah, Tom Okafor")
+        #expect(MeetingReducer.upcomingSource(project: "theuth", attendees: []) == "From the last meetings in theuth")
+        #expect(MeetingReducer.upcomingSource(project: nil, attendees: [Attendee(name: "Me", isMe: true)]) == nil)
     }
 
     @Test func eventLineFormatsTitleAndTimes() {
