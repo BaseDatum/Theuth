@@ -54,6 +54,13 @@ Design: `docs/design/158-meetings-around.md` §4, §5.4, §6, D13, §15, A2.
 
 ## Gates
 
+- CLOSE W1 phase 1 (merged tree: contract ccc48db5 + W1M 045e531d + W1W 81752213, head dca17626):
+  `build-lock mbx test -p meeting -p rpc --no-run` → 0; `mbx test -p meeting -p rpc` → meeting 92 + rpc 56 (+ 6 small
+  bins) all passed; `build-lock mbx clippy -p meeting -p rpc` → 0; `build-lock bash crates/desktop/companion/test.sh` →
+  268 tests / 44 suites passed; build-B `cargo-check` `Cargo.toml -p meeting` @ dca17626 (job 20261010T143528-325) →
+  `Checking meeting v2.15.0 … Finished`, 0 errors/warnings (the `crates/desktop/Cargo.toml` target only pulls
+  `platform`, so `-p meeting` is the one that compiles the `cfg(windows)` sensor); build-B `test`
+  `Theuth.Companion.slnx` Debug (job 20261010T144621-327) → Core 496/496, Rpc 114/114. Linux sensor still uncompiled.
 - `build-lock mbx test -p meeting --no-run` → ok; `mbx test -p meeting` → 92 passed, 1 ignored (+ note 1, oracle 1).
 - `build-lock mbx clippy -p meeting --tests --examples` → 0 errors, 0 warnings.
 - `cargo fmt -p meeting` clean.
@@ -74,9 +81,12 @@ Design: `docs/design/158-meetings-around.md` §4, §5.4, §6, D13, §15, A2.
 
 ## Hand-offs
 
-- `capture/system.rs`: `image_name`, the PipeWire walk and the `get` property helper are duplicated in `sensor.rs`
-  (capture is read-only for W1). Making them `pub(crate)` / parametrising `sessions(flow, role)` and `nodes(class)`
-  would delete ~120 lines — closer or a later wave.
+- Done at CLOSE W1 phase 1 (orchestrator yes): `capture/system.rs` walks parametrised — macOS
+  `pub(crate) process_objects(running: u32)` (`processes()` passes `kAudioProcessPropertyIsRunningOutput`), Windows
+  `pub(crate) sessions_on(flow, roles)` (`processes()` = `eRender`/`[eMultimedia]`; `active |=` across roles; `Err`
+  only when a single-role call has no device, so the sensor sees "no mic" as empty), Linux `pub(crate) nodes(class)`.
+  `detect/sensor.rs` is ~40 lines of glue (`retain(active && !CoreSpeech)`, sort by name). Behaviour of `processes()`
+  unchanged; covered by `mic_holders_returns`, `capture_probe`, the meeting suite and build-B's Windows cargo-check.
 - Windows: a mic-only process is absent from `processes()` (render sessions), so `StartMeeting{process}` falls back to
   the prompt's `ProcessInfo`; `capture::system::spawn(pid)` still taps that pid's loopback as before.
 - C158 hand-off done — `DEFAULT_IGNORE` verified per OS (compared case-insensitively with `rules::app_id`):
