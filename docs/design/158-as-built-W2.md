@@ -47,6 +47,10 @@ Per-worker detail: `158-as-built-W2E.md` (engine), `158-as-built-W2M.md` (compan
 - `build-lock bunx tsc --noEmit -p .` → 0. `build-lock bunx vitest run` on `lib/calendar`, `settings/Calendar`, `meeting/EventSwitcher`,
   `meeting/MeetingList`, `meeting/ControlCenter`, `rpc/api`, `store/meeting` → 7 files, 23 tests passed.
 - `BUILD_SLOTS=1 build-lock mbx check --workspace --tests` → 0 (only the pre-existing `block v0.1.6` future-incompat note).
+- **Fold of `origin/main` 4b49e238 (W5 landed)**: `git merge origin/main` clean (no conflicts; `Cargo.lock` kept calcard and its
+  tree). Re-exported bindings (8 passed, 871 files). `build-lock mbx test -p meeting -p rpc --no-run` → 0; `mbx test -p meeting -p rpc`
+  → meeting 75 + 15 + 1 + 1, rpc 56 + 1 + 1 passed, 0 failed; `build-lock bunx tsc --noEmit -p .` → 0; the 7 vitest files → 23 passed;
+  `BUILD_SLOTS=1 build-lock mbx check --workspace --tests` → 0 (the `block v0.1.6` note only).
 
 ## Live proof
 
