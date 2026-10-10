@@ -37,8 +37,12 @@ Branch `feat/158-w1u` from the C158 contract head `ccc48db5`. UI only, under `cr
 
 1. `EventSwitcher` is rendered as `<Switcher detection={d}/>` through a cast (`EventSwitcher as unknown as (p: { detection }) => ReactNode`):
    the C158 stub takes no props and TS rejects attributes on a zero-parameter component. Hand-off to W2U below.
-2. Design §6.4's one-time "Use it as the meeting default" toast (localStorage `model` → `meeting.model`) is not built: the brief scopes
-   `lib/meeting-settings.ts` to read-only and the migration is "none required". Manual starts keep their localStorage model. Open item.
+2. (R1, built) §6.4's one-time migration: `lib/meeting-model-offer.ts` `offerMeetingDefault` — when the block has `model: null` and
+   `useMeetingSettings.getState().model` is set, one `sonner` toast "Use <model name> as the meeting default?" with **Use it** →
+   `meeting_settings_set({ ...block, model })`; shown once either way, remembered under `localStorage['meeting-settings-model-offered']`
+   beside `meeting-settings` (that store's fields untouched). Fired from a `useEffect` in `Meetings.tsx` once block + models load.
+   Tests `lib/meeting-model-offer.test.ts` (2: shown once, action writes the model, dismissed never again, nothing when the engine has a
+   model or the form never picked one). Manual starts keep sending their localStorage model as `session_model`.
 3. §6.3 names the Default project control a "combobox"; it is a `Select` (None + known projects), no inline "New project…" — a default
    project should be an existing one, and a per-keystroke write of a new name would hit the engine on every character.
 4. `DEFAULT_LIVE_TOOLS` duplicates `MeetingConfig::default().live_tools` (`crates/meeting/src/lib.rs`): there is no RPC for the default.
@@ -71,3 +75,7 @@ Branch `feat/158-w1u` from the C158 contract head `ccc48db5`. UI only, under `cr
 - `build-lock bunx vitest run src/lib/detection.test.ts src/components/meeting src/components/settings/Meetings.test.ts
   src/components/settings/Chat.test.ts src/dev/meeting-page-fixture.test.ts` → 10 files, 29 passed (the four new/changed suites plus the
   untouched meeting-page suites and Chat, whose `SAME_AS_NEW` Meetings now imports).
+
+## R1 (one-time §6.4 offer)
+
+- `build-lock bunx tsc --noEmit -p .` → 0. `build-lock bunx vitest run src/lib/meeting-model-offer.test.ts src/components/settings/Meetings.test.ts` → 5 passed.

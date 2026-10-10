@@ -8,7 +8,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { SAME_AS_NEW } from '@/components/settings/Chat'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { useProjects } from '@/components/chat/ProjectPicker'
@@ -21,6 +21,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { DEFAULT_EYE, DEFAULT_PTT, useMeetingSettings } from '@/lib/meeting-settings'
+import { offerMeetingDefault } from '@/lib/meeting-model-offer'
 import { useProjectStyles } from '@/lib/project-style'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { probeShortcut } from '@/lib/shortcuts'
@@ -71,6 +72,12 @@ export function Meetings() {
   const s = settings.data
   const busy = !s || save.isPending
   const set = (patch: Partial<MeetingSettings>) => s && save.mutate({ ...s, ...patch })
+  // §6.4: once per install, offer the start form's remembered model as `meeting.model` when the engine has none.
+  useEffect(() => {
+    if (!s || !models.data) return
+    const saved = useMeetingSettings.getState().model
+    offerMeetingDefault({ block: s, saved, label: models.data.find((m) => m.id === saved)?.name, write: (next) => save.mutate(next) })
+  }, [s, models.data, save.mutate])
   // W4 fills `meeting_templates`; until then the one slug on file reads "General".
   const templateRows = templates.data?.length ? templates.data : [{ slug: s?.template ?? 'meeting', name: 'General' }]
   return (
