@@ -188,6 +188,34 @@ fn icloud_url_property_and_utc() {
     assert_eq!(rows[0].tz, None);
 }
 
+/// Live-proof D1: a `Z` DTSTART with an RRULE expands in UTC — 17:00Z every week, also across the
+/// 2026-10-25 European clock change (the TZID case above and the single UTC event stay as they are).
+#[test]
+fn utc_rrule_expands_in_utc() {
+    let text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\nBEGIN:VEVENT\r\nUID:utc-weekly@example.test\r\n\
+                DTSTAMP:20260901T000000Z\r\nDTSTART:20261004T170000Z\r\nDTEND:20261004T173000Z\r\n\
+                RRULE:FREQ=WEEKLY;COUNT=6\r\nSUMMARY:Ops sync\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let rows = ics::expand(text, "s", t(FROM), t(TO)).unwrap();
+    let mut starts: Vec<&str> = rows.iter().map(|e| e.start.as_str()).collect();
+    starts.sort_unstable();
+    assert_eq!(
+        starts,
+        [
+            "2026-10-04T17:00:00Z",
+            "2026-10-11T17:00:00Z",
+            "2026-10-18T17:00:00Z",
+            "2026-10-25T17:00:00Z",
+            "2026-11-01T17:00:00Z",
+            "2026-11-08T17:00:00Z",
+        ]
+    );
+    assert!(
+        rows.iter()
+            .all(|e| e.end == e.start.replace("T17:00", "T17:30"))
+    );
+    assert_eq!(rows[0].tz, None);
+}
+
 #[test]
 fn fastmail_floating_time_is_local_and_unknown_hosts_are_not_links() {
     let rows = expand("fastmail.ics");

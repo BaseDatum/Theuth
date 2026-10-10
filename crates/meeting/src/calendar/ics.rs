@@ -73,7 +73,15 @@ pub fn expand(
             c.entries.retain(|e| e.name != ICalendarProperty::Sequence);
             sub.components.push(c);
         }
-        let expanded = sub.expand_dates(default_tz, LIMIT);
+        // calcard iterates an RRULE in the DTSTART's *resolved* zone, which for a `Z` time with no
+        // TZID is the default — i.e. local — so a UTC series would land one offset early (live
+        // proof D1). Such a series is expanded with UTC as its default instead.
+        let tz = if comps.iter().any(utc_anchored) {
+            Tz::UTC
+        } else {
+            default_tz
+        };
+        let expanded = sub.expand_dates(tz, LIMIT);
         for err in &expanded.errors {
             tracing::debug!(uid = %uid, "ics: {}", err.error);
         }
@@ -98,6 +106,14 @@ pub fn expand(
         }
     }
     Ok(out)
+}
+
+/// `DTSTART:…Z` with no `TZID` — the series is anchored in UTC.
+fn utc_anchored(comp: &&ICalendarComponent) -> bool {
+    comp.property(&ICalendarProperty::Dtstart).is_some_and(|e| {
+        e.tz_id().is_none()
+            && matches!(e.values.first(), Some(ICalendarValue::PartialDateTime(dt)) if dt.has_zone())
+    })
 }
 
 fn text(comp: &ICalendarComponent, prop: &ICalendarProperty) -> Option<String> {

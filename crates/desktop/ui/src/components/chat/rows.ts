@@ -21,8 +21,8 @@ export const isDecision = (prompt: Prompt): boolean =>
   prompt.type === 'AskRequested' && prompt.questions.length === 1 && prompt.questions[0]!.id.startsWith('decision:')
 
 /**
- * Entries (consecutive tool calls folded into one run row when `collapse`, 70), each with the prompts waiting on its
- * (unfinished, same-named) tool call. 114 (Sky's D1 + 16:55 correction):
+ * Entries (consecutive tool calls folded into one run row when `collapse`, 70; `pinned` thinking blocks never fold,
+ * `foldRuns`), each with the prompts waiting on its (unfinished, same-named) tool call. 114 (Sky's D1 + 16:55 correction):
  * - a decision ask is never a chat card: the desk's `escalate` tool row is the awareness and `/attention` is where it is
  *   answered — it is dropped here;
  * - every other prompt with no such row (a subagent's prompt, 19 §3.4: `children` is the session's subtree, labelled with
@@ -35,8 +35,9 @@ export function buildRows(
   session: string,
   children: Record<string, AgentInfo> | undefined,
   collapse: boolean,
+  pinned?: ReadonlySet<string>,
 ): Row[] {
-  const items = collapse ? foldRuns(entries) : entries
+  const items = collapse ? foldRuns(entries, pinned) : entries
   const rows: Row[] = items.map((item) =>
     Array.isArray(item) ? { key: (item[0] as Entry).id, run: item, prompts: null } : { key: item.id, entry: item, prompts: null },
   )

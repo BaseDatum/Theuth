@@ -23,6 +23,7 @@ import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { chatName } from '@/lib/attach'
 import { isDraft, usePanes } from '@/lib/panes'
+import { isNoSuchSession } from '@/lib/no-such-session'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
@@ -41,8 +42,6 @@ export const Route = createFileRoute('/c/$session')({
 const PAGE = 60
 /** Settled reloads refused because an event raced the read are retried at most this often before waiting for the next notification. */
 const SETTLE_TRIES = 3
-
-const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
 
 /** `theuth:reload-session` detail: `session` narrows it to one chat; `settled` asks for the mutation-refresh path (48 §5). A bare `Event` reloads in full. */
 type ReloadDetail = { session?: string; settled?: boolean }
@@ -158,106 +157,144 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
  * Keep `session`'s slice loaded while a view of it is mounted: the newest page, agents and artifacts on first
  * visit, the settled path (48 §5) on `ContextChanged`, a full reload on reconnect. Shared by the chat and the
  * talk view (76 §0.12); either may be the first to open the session.
+ *
+ * Every RPC is bound to the effect that issued it (`signal`): one settling after the effect was cleaned up — the
+ * route unmounted, the session or the engine changed — is dropped, no toast and no store write. "no such session"
+ * for this session (a deleted chat, a stale deep link, a notification for another engine's session) replaces the
+ * route with `/` silently; every other failure toasts.
  */
 export function useSessionLoad(session: string): void {
   const api = useApi()
+  const navigate = useNavigate()
   // The engine this route mounted under: an RPC landing after a switch writes to its own stores, never the new engine's (48 §5).
   const { sessions: store } = useScope()
+  const report = useCallback(
+    (e: unknown, signal: AbortSignal) => {
+      if (signal.aborted) return
+      if (isNoSuchSession(e)) void navigate({ to: '/', replace: true })
+      else toast.error(e instanceof Error ? e.message : String(e))
+    },
+    [navigate],
+  )
+
   // The plan (47 §5.4): one `get_todos` when the page carried none (an older engine, a refused read) or a gap
   // marked it stale. `setTodos` only moves forward, so a cached list is never wiped; a failed read leaves the
-  // list labelled stale (the card says so) rather than silently reading as empty. Bound to this route's engine
-  // and session, so a late reply after a switch still lands in the right slice.
-  const refreshTodos = useCallback(() => {
-    api.get_todos(session).then(
-      (t) => store.getState().setTodos(session, t),
-      (e) => {
-        store.getState().markTodosStale(session)
-        fail(e)
-      },
-    )
-  }, [api, session, store])
+  // list labelled stale (the card says so) rather than silently reading as empty.
+  const refreshTodos = useCallback(
+    (signal: AbortSignal) => {
+      api.get_todos(session).then(
+        (t) => {
+          if (!signal.aborted) store.getState().setTodos(session, t)
+        },
+        (e) => {
+          if (signal.aborted) return
+          store.getState().markTodosStale(session)
+          report(e, signal)
+        },
+      )
+    },
+    [api, session, store, report],
+  )
 
-  const load = useCallback(async () => {
-    // A reconnect rebinds an owned private tree first (51 §4.3); a read before that lands on the old peer and is refused.
-    await resumed()
-    const before = store.getState().sessions[session]
-    const fresh = before && freshness(before)
-    const [page, agents] = await Promise.all([api.load_session(session, null, PAGE), api.list_agents(session), relistArtifacts(api, store, session)])
-    const { loadHistory, setChildren } = store.getState()
-    loadHistory(session, page, 'replace', fresh)
-    setChildren(session, agents)
-    const s = store.getState().sessions[session]
-    if (!s?.todos || s.todosStale) refreshTodos()
-  }, [api, session, store, refreshTodos])
+  const load = useCallback(
+    async (signal: AbortSignal) => {
+      // A reconnect rebinds an owned private tree first (51 §4.3); a read before that lands on the old peer and is refused.
+      await resumed()
+      if (signal.aborted) return
+      const before = store.getState().sessions[session]
+      const fresh = before && freshness(before)
+      const [page, agents] = await Promise.all([api.load_session(session, null, PAGE), api.list_agents(session), relistArtifacts(api, store, session)])
+      if (signal.aborted) return
+      const { loadHistory, setChildren } = store.getState()
+      loadHistory(session, page, 'replace', fresh)
+      setChildren(session, agents)
+      const s = store.getState().sessions[session]
+      if (!s?.todos || s.todosStale) refreshTodos(signal)
+    },
+    [api, session, store, refreshTodos],
+  )
 
   // The mutation refresh (48 §5): a settled-only page, installed only when nothing raced it. Calls
   // while one is in flight coalesce into one more pass. A refusal from the actor (busy) waits for its
   // handback's `ContextChanged`; a refusal from the store (an event landed meanwhile) retries while idle.
   const settling = useRef(false)
   const again = useRef(false)
-  const settle = useCallback(() => {
-    if (settling.current) {
-      again.current = true
-      return
-    }
-    settling.current = true
-    void relistArtifacts(api, store, session)
-    void (async () => {
-      for (let tries = 0; tries < SETTLE_TRIES; tries++) {
-        const s = store.getState().sessions[session]
-        // Nothing to reconcile. A running turn is the engine's call, not this slice's `running` (stale after a gap,
-        // 129 D3): a busy actor answers `settled: false` and its `TurnDone` publishes the `ContextChanged` that comes back here.
-        if (!s?.contextStale) break
-        const fresh = freshness(s)
-        try {
-          const page = await api.load_session(session, null, PAGE, true)
-          if (store.getState().loadHistory(session, page, 'settled', fresh) || !page.settled || page.running) break
-        } catch (e) {
-          fail(e)
-          break
+  const settle = useCallback(
+    (signal: AbortSignal) => {
+      if (settling.current) {
+        again.current = true
+        return
+      }
+      settling.current = true
+      void relistArtifacts(api, store, session)
+      void (async () => {
+        for (let tries = 0; tries < SETTLE_TRIES; tries++) {
+          const s = store.getState().sessions[session]
+          // Nothing to reconcile. A running turn is the engine's call, not this slice's `running` (stale after a gap,
+          // 129 D3): a busy actor answers `settled: false` and its `TurnDone` publishes the `ContextChanged` that comes back here.
+          if (!s?.contextStale) break
+          const fresh = freshness(s)
+          try {
+            const page = await api.load_session(session, null, PAGE, true)
+            if (signal.aborted) break
+            if (store.getState().loadHistory(session, page, 'settled', fresh) || !page.settled || page.running) break
+          } catch (e) {
+            report(e, signal)
+            break
+          }
         }
-      }
-      settling.current = false
-      if (again.current) {
-        again.current = false
-        settle()
-      }
-    })()
-  }, [api, session, store])
+        settling.current = false
+        if (again.current && !signal.aborted) {
+          again.current = false
+          settle(signal)
+        }
+      })()
+    },
+    [api, session, store, report],
+  )
 
   useEffect(() => {
+    const ctl = new AbortController()
     const st = store.getState()
     st.ensure(session)
     const s = st.sessions[session]
     if (!s?.loaded) {
-      load().catch(fail)
+      load(ctl.signal).catch((e: unknown) => report(e, ctl.signal))
     } else {
-      api.list_agents(session).then((a) => store.getState().setChildren(session, a), fail)
+      api.list_agents(session).then(
+        (a) => {
+          if (!ctl.signal.aborted) store.getState().setChildren(session, a)
+        },
+        (e: unknown) => report(e, ctl.signal),
+      )
       // A `ContextChanged` reached this slice while another chat was shown.
-      if (s.contextStale) settle()
+      if (s.contextStale) settle(ctl.signal)
       // The plan went stale (reconnect / `Lagged`) or never arrived while hidden: refresh before display (47 §5.4).
-      if (!s.todos || s.todosStale) refreshTodos()
+      if (!s.todos || s.todosStale) refreshTodos(ctl.signal)
     }
-  }, [api, session, load, settle, store, refreshTodos])
+    return () => ctl.abort()
+  }, [api, session, load, settle, store, refreshTodos, report])
 
   // Reconnect (bare event): everything between is lost, so the visible session is re-fetched in full. A context
   // edit (`ContextChanged`, or the picker's `settled` event) and 129's `Lagged` resync go through the settled path instead.
   useEffect(() => {
+    const ctl = new AbortController()
     const reload = (ev: Event) => {
       const detail: ReloadDetail | undefined = ev instanceof CustomEvent ? ev.detail : undefined
       if (detail?.session !== undefined && detail.session !== session) return
-      if (detail?.settled) settle()
-      else void load().catch(fail)
+      if (detail?.settled) settle(ctl.signal)
+      else void load(ctl.signal).catch((e: unknown) => report(e, ctl.signal))
     }
     window.addEventListener('theuth:reload-session', reload)
     const off = on('ContextChanged', (e) => {
-      if (e.session === session) settle()
+      if (e.session === session) settle(ctl.signal)
     })
     return () => {
+      ctl.abort()
       window.removeEventListener('theuth:reload-session', reload)
       off()
     }
-  }, [load, settle, session])
+  }, [load, settle, session, report])
 }
 
 /** `Private` badge for a chat in the owned tree, plus the bounded reconnect countdown while its transport is down (51 §4.3). */

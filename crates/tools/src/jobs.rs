@@ -541,11 +541,16 @@ pub(crate) async fn admit_job(
 
 /// Output as it arrives: appended to the log file (none for a quiet job), the
 /// last [`TAIL`] bytes kept, and the bytes since the last [`JobEvent::Output`]
-/// (capped the same way).
+/// (capped the same way). The file is held only while something still
+/// writes it: the row the actor retains after the exit keeps the tail and
+/// the path, never the descriptor (`close`, `writer_done`).
 pub(crate) struct Log {
     file: Option<std::fs::File>,
     tail: VecDeque<u8>,
     pending: VecDeque<u8>,
+    /// Readers still feeding `push` (one per pipe drain); the file goes
+    /// with the last one.
+    writers: usize,
 }
 
 impl Log {
@@ -554,6 +559,25 @@ impl Log {
             file,
             tail: VecDeque::with_capacity(TAIL),
             pending: VecDeque::new(),
+            writers: 0,
+        }
+    }
+
+    /// Drop the file: the output is drained, or nobody will read on.
+    pub(crate) fn close(&mut self) {
+        self.file = None;
+    }
+
+    /// One more reader feeds this log; paired with [`Log::writer_done`].
+    fn writer(&mut self) {
+        self.writers += 1;
+    }
+
+    /// A reader hit EOF (or died): the last one closes the file.
+    fn writer_done(&mut self) {
+        self.writers -= 1;
+        if self.writers == 0 {
+            self.close();
         }
     }
 
@@ -591,6 +615,39 @@ impl Log {
             start += 1;
         }
         String::from_utf8_lossy(&bytes[start..]).into_owned()
+    }
+}
+
+#[cfg(test)]
+impl Log {
+    pub(crate) fn is_open(&self) -> bool {
+        self.file.is_some()
+    }
+}
+
+/// `ask` → the finished rows of `session` that still hold a descriptor
+/// (`"j3 log"`, `"j4 pty"`): the D1/D2 probe.
+#[cfg(test)]
+pub(crate) struct OpenHandles(pub(crate) SessionId);
+
+#[cfg(test)]
+impl Message<OpenHandles> for Jobs {
+    type Reply = Vec<String>;
+
+    async fn handle(&mut self, m: OpenHandles, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let mut held = Vec::new();
+        for j in self.sessions.get(&m.0).into_iter().flat_map(|s| &s.jobs) {
+            if j.exit.is_none() {
+                continue;
+            }
+            if lock(&j.log).is_open() {
+                held.push(format!("{} log", j.id));
+            }
+            if j.pty.as_ref().is_some_and(|p| p.holds_fds()) {
+                held.push(format!("{} pty", j.id));
+            }
+        }
+        held
     }
 }
 
@@ -1501,10 +1558,16 @@ impl Jobs {
                         a.unknown(format!("{}: killed at shutdown before it settled", job.id));
                     }
                     job.task.abort();
+                    // The aborted task never reaches its own close (D3): the
+                    // log file goes here; what an escapee writes past the
+                    // kill is lost to the log, as it is to the row.
+                    lock(&job.log).close();
                 }
                 // Nothing observes a terminal past shutdown / a transfer:
-                // release every charge.
-                if job.pty.take().is_some() {
+                // release every charge, and the pty's descriptors with it
+                // (a `Live` in flight may still hold the `Arc`).
+                if let Some(pty) = job.pty.take() {
+                    pty.release();
                     self.pty_bytes = self.pty_bytes.saturating_sub(crate::pty::RESERVE);
                 }
             }
@@ -1846,13 +1909,16 @@ async fn flush(rt: &Runtime, session: SessionId, id: &JobId, log: &Mutex<Log>) {
 /// Pipe → log as bytes arrive, the head kept aside for the finished output.
 /// Ends at EOF (`Ok`) or a read error (`Err`: the pipe may still be held,
 /// what follows is lost) — never reported as one or the other by default.
+/// Either way the reader signs off the log: the second one to end closes
+/// the log file (D1), whether or not anything still awaits the task.
 fn drain(mut r: std::io::PipeReader, log: Arc<Mutex<Log>>) -> Drain {
     let head: Arc<Mutex<Vec<u8>>> = Arc::default();
+    lock(&log).writer();
     let task = tokio::task::spawn_blocking({
         let head = head.clone();
         move || {
             let mut buf = [0u8; 4096];
-            loop {
+            let ended = loop {
                 match r.read(&mut buf) {
                     Ok(0) => break Ok(()),
                     Ok(n) => {
@@ -1865,7 +1931,9 @@ fn drain(mut r: std::io::PipeReader, log: Arc<Mutex<Log>>) -> Drain {
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(e) => break Err(e),
                 }
-            }
+            };
+            lock(&log).writer_done();
+            ended
         }
     });
     Drain { head, task }

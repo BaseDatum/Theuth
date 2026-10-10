@@ -186,21 +186,28 @@ pub fn acquire(data_dir: &Path, host: Host, listen: Option<String>) -> Result<Le
         .truncate(false)
         .write(true)
         .open(data_dir.join("engine.lock"))?;
-    match lock.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => {
-            // The holder writes its record right after locking; give it a beat.
-            for _ in 0..10 {
+    // The lock is retried for a beat, not just the record: a starting holder locks first and
+    // writes its record a moment later (→ `Running`); a leaving holder unlinks the record
+    // first and frees the lock when the file closes — and a child it is spawning at that
+    // moment keeps the lock alive past the close until it execs (fork copies the fd table).
+    let mut attempt = 0;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
                 if let Some(record) = read(data_dir) {
                     return Err(Error::Running(running(data_dir, record)));
                 }
+                if attempt == 10 {
+                    return Err(Error::Io(io::Error::other(
+                        "engine.lock is held but engine.json is missing",
+                    )));
+                }
+                attempt += 1;
                 std::thread::sleep(Duration::from_millis(20));
             }
-            return Err(Error::Io(io::Error::other(
-                "engine.lock is held but engine.json is missing",
-            )));
+            Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e)),
         }
-        Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e)),
     }
     let record = Record {
         pid: std::process::id(),

@@ -3,7 +3,8 @@
 // the live speaker labels switch (07 §6, `meeting.live_diarization` in the daemon's config) and the enrolled
 // speaker profiles (04 §7), which are the daemon's. The decision-oracle switch moved to Labs (57 §7.1).
 // 158 §6.3 (W1): the engine's one-tap defaults lead — Defaults (models, template, language, project),
-// Detection (switch + ignore list), Live tools — bound whole to `meeting_settings_get/set` (§6.2).
+// Detection (switch + ignore list), Live tools — bound whole to `meeting_settings_get/set` (§6.2). 158 §13 (W6): outside
+// macOS an "Echo" row sums `Manifest.stats` over the last 10 meetings (the measure-first gate; nothing is dropped).
 
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -27,6 +28,7 @@ import { useProjectStyles } from '@/lib/project-style'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { probeShortcut } from '@/lib/shortcuts'
 import { setHiddenFromCapture } from '@/lib/tauri'
+import type { Manifest } from '@/rpc/bindings/Manifest'
 import type { MeetingSettings } from '@/rpc/bindings/MeetingSettings'
 
 export const SETTINGS_KEY = ['meeting-settings'] as const
@@ -54,6 +56,16 @@ export function added(list: string[], entry: string): string[] {
   return v && !list.includes(v) ? [...list, v] : list
 }
 
+/** 158 §13: the echo ratio over the meetings that carry `stats`; the gate counts speaker meetings separately. */
+export function echoSummary(manifests: Manifest[]): string {
+  const rows = manifests.filter((m) => m.stats && m.stats.mic_segments > 0)
+  if (rows.length === 0) return 'No meeting measured yet — the count starts with the next meeting\u2019s post pass.'
+  const dupes = rows.reduce((n, m) => n + m.stats!.echo_dupes, 0)
+  const mic = rows.reduce((n, m) => n + m.stats!.mic_segments, 0)
+  const speakers = rows.filter((m) => m.stats!.speakers === true).length
+  return `${Math.round((100 * dupes) / mic)} % of your microphone segments repeated the other side (${dupes} of ${mic}) over the last ${rows.length} meeting${rows.length === 1 ? '' : 's'}, ${speakers} on speakers.`
+}
+
 export function Meetings() {
   const api = useApi()
   const hidden = useMeetingSettings((s) => s.hidden)
@@ -70,6 +82,12 @@ export function Meetings() {
   const models = useQuery({ queryKey: queryKeys.models, queryFn: () => api.list_models() })
   const projects = [...new Set([...useProjects(), ...Object.keys(useProjectStyles())])].sort()
   const save = useAction((next: MeetingSettings) => api.meeting_settings_set(next), { keys: [SETTINGS_KEY, queryKeys.meetingLiveDiarization] })
+  // 158 §13: the last 10 manifests, read only where the mic has no echo cancellation (Windows/Linux).
+  const echo = useQuery({
+    queryKey: [...queryKeys.meetings, 'echo'],
+    queryFn: async () => Promise.all((await api.meeting_list(10)).map((m) => api.meeting_get(m.id))),
+    enabled: !local,
+  })
   const s = settings.data
   const busy = !s || save.isPending
   const set = (patch: Partial<MeetingSettings>) => s && save.mutate({ ...s, ...patch })
@@ -161,6 +179,13 @@ export function Meetings() {
           />
         </Row>
       </Section>
+      {!local && (
+        <Section title="Echo">
+          <Row label="Echo in your microphone" description="Without echo cancellation the other side can leak back in through your microphone and be transcribed twice. This counts it; nothing is removed. Review asks per meeting whether you used speakers.">
+            <span className="text-[13px] text-fg-secondary">{echo.isError ? errorText(echo.error) : echo.data ? echoSummary(echo.data) : null}</span>
+          </Row>
+        </Section>
+      )}
       <Section title="Live tools" actions={<Button variant="outline" size="sm" disabled={busy || JSON.stringify(s?.live_tools) === JSON.stringify(DEFAULT_LIVE_TOOLS)} onClick={() => set({ live_tools: DEFAULT_LIVE_TOOLS })}>Reset to default</Button>}>
         <Row stack label="Allowed while a meeting runs" description="The meeting session's toolset: topics, briefs, knowledge and the web by default. Tool names as the Tools page lists them.">
           <Chips label="Live tool" items={s?.live_tools ?? []} disabled={busy} onChange={(live_tools) => set({ live_tools })} />

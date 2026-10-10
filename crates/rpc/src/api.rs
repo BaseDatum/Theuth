@@ -1876,6 +1876,13 @@ pub trait Api {
         id: meeting::MeetingId,
         template: String,
     ) -> RpcResult<meeting::Manifest>;
+    /// 158 §13 (W6): Review's once-per-meeting "Did you use speakers (not headphones)?".
+    #[method(name = "meeting_set_speakers")]
+    async fn meeting_set_speakers(
+        &self,
+        id: meeting::MeetingId,
+        speakers: bool,
+    ) -> RpcResult<meeting::Manifest>;
     /// 158 §10 (W4): speaker-name suggestions for a reviewed meeting; never applies anything.
     #[method(name = "meeting_suggest_speakers")]
     async fn meeting_suggest_speakers(
@@ -7598,6 +7605,16 @@ impl ApiServer for Server {
         template: String,
     ) -> RpcResult<meeting::Manifest> {
         meeting::templates::rpc_set_template(&self.rt, id, template)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_set_speakers(
+        &self,
+        id: meeting::MeetingId,
+        speakers: bool,
+    ) -> RpcResult<meeting::Manifest> {
+        meeting::post::echo::rpc_set_speakers(&self.rt, id, speakers)
             .await
             .map_err(stub_err)
     }
