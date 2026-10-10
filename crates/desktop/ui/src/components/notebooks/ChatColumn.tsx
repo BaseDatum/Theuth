@@ -105,9 +105,10 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
   if (composerOnly) return composer
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Chat about this notebook">
+    <section className="@container flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Chat about this notebook">
       <header className={HEADER}>
-        <span className="min-w-0 shrink-0 truncate whitespace-nowrap">
+        {/* A narrow column (the notes pane dragged wide) keeps the picker readable: the label and the New chat text go first. */}
+        <span className="hidden shrink-0 whitespace-nowrap @lg:inline">
           Chat <span className="font-normal text-fg-tertiary">· this notebook</span>
         </span>
         <div className="min-w-0 flex-1">
@@ -144,8 +145,8 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
-        <Button size="sm" variant="ghost" onClick={() => remember(notebook, null)}>
-          <SquarePen /> New chat
+        <Button size="sm" variant="ghost" aria-label="New chat" title="New chat" onClick={() => remember(notebook, null)}>
+          <SquarePen /> <span className="hidden @md:inline">New chat</span>
         </Button>
         {session && (
           <Button variant="ghost" size="icon-sm" aria-label="Open in the chat list" title="Open in the chat list" onClick={() => void navigate({ to: '/c/$session', params: { session }, search: {} })}>
