@@ -13,8 +13,10 @@ Per-worker detail: `158-as-built-W1E.md`, `-W1M.md`, `-W1W.md`, `-W1U.md`; contr
 | W1W | Windows island prompt (C#) | `81752213` | `835b64b5` |
 | W1U | desktop UI: banner, Settings › Meetings, R3 sentence, §6.4 offer | `d43077db` | `ae518452` (orchestrator) |
 
-Close commits: `dca17626` (capture/system.rs de-dup), `d283a18e` (phase-1 gates), this one (bindings, phase-2 gates, this file).
-`origin/main` not merged (W2 absent from main at close: `git log origin/main | grep 158-w2` empty; head 4b49e238 = W5).
+Close commits: `dca17626` (capture/system.rs de-dup), `d283a18e` (phase-1 gates), `af801b5c` (bindings, phase-2 gates, this file).
+Fold: `origin/main` 4b49e238 (W5 landed) merged at `77fc503f`, no conflicts (Cargo.lock took main's + mbx re-resolved `talk`);
+re-exported bindings (8 passed, 871 files); on the folded tree `mbx test -p meeting -p rpc` meeting 92 / rpc 56 passed,
+`tsc --noEmit` 0, wave vitest 9 files / 32 passed, `BUILD_SLOTS=1 mbx check --workspace --tests` exit 0. W2 still absent from main.
 
 ## What landed
 
