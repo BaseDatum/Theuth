@@ -966,3 +966,150 @@ Found while writing:
 10. **Migrations.** [0003 for C, then one reserved number per wave.] Or number them at landing?
 11. **The launch card's home.** [The study's origin chat and an attention row.] Or attention only?
 
+
+## 18. Revision 1 — parallel build (Sky, 2026-10-10 14:33)
+
+Sky, 14:33: "Parallel omp workers, git worktree, get it in, get it on main." This overrides §15's "one wave in flight at a time". After C's skeleton lands on `feat/159-variants`, **W1–W7 run in parallel**, each in its own worktree cut from the skeleton commit, and the closer Z merges them in dependency order (W1, W2, W3, W4, W5, W6, W7) with `--no-ff`. Where this section and §15 differ, this section wins. Build commands follow `~/.theuth/briefs/2026-10-10/159/WORKING-RULES.md`.
+
+### 18.1 The parallel rule
+
+- A wave edits **only the files its row of the table below lists**. Every other file is frozen after the skeleton.
+- Every plug-in point a wave needs in a shared file already exists as **one line** in the skeleton, marked `// 159:<TAG>` (Rust) or `// 159:<TAG>` / `{/* 159:<TAG> */}` (TS). The line calls the wave's own module or component. A wave never adds a second line to a shared file; if the one line is wrong, the wave hands it off in its as-built.
+- Cross-wave APIs (§18.4) are frozen with neutral stub bodies. A consumer codes against the signature; an implementer fills the body. Nobody changes a signature; a wrong signature is a hand-off.
+- Neutral means: no `todo!`, `unimplemented!` or panic on any path a 140 study can reach. Stubs on paths only a new kind reaches return `Err(Error::NotBuilt("W<n>"))`.
+- A 140 study must behave exactly as before the skeleton (§5.12's golden ledger; the test `golden_ledger_140` runs on every wave branch before merge).
+- Migrations: 0003 (C) holds every table and column §6–§12 name, so a wave normally adds none. A wave that needs one uses its reserved number (W1 = 0004 … W7 = 0010), bumps the migration-count assertion in its own test only, and says so in its as-built.
+- Generated TS bindings are never committed. A wave that changes a wire type regenerates them locally (rules §UI).
+
+### 18.2 Stub files the skeleton creates
+
+| wave | Rust (new, owned by the wave) | UI (new, owned by the wave) | skill fragment |
+|---|---|---|---|
+| W1 | `crates/autoresearch/src/pareto.rs`, `crates/autoresearch/src/refs.rs` | `components/autoresearch/FrontChart.tsx` | `crates/autoresearch/skill/pareto.md` |
+| W2 | `crates/evalcore/**` (except `src/pair.rs`), `crates/autoresearch/src/cases.rs` | `CaseStrip.tsx` | `skill/prompts.md` |
+| W3 | `crates/autoresearch/src/judge.rs`, `crates/evalcore/src/pair.rs` | `RatingLadder.tsx`, `PairViewer.tsx` | `skill/judged.md` |
+| W4 | `crates/autoresearch/src/population.rs` | `ArchiveGrid.tsx` | `skill/population.md` |
+| W5 | `crates/autoresearch/src/literature.rs`, `crates/autoresearch/src/hooks.rs` | `LiteratureIdeas.tsx` | `skill/literature.md` |
+| W6 | `crates/autoresearch/src/world.rs`, `crates/app/src/launch_card.rs` | `WorldChart.tsx` | `skill/world.md` |
+| W7 | `crates/autoresearch/src/mechanism.rs`, `crates/autoresearch/src/suite.rs` | `SuiteChart.tsx` | `skill/meta.md` |
+
+UI paths are under `crates/desktop/ui/src/components/autoresearch/`. The skill: `lib.rs` builds `SKILL` as `concat!(include_str!("../skill.md"), include_str!("../skill/pareto.md"), …)`; fragments start empty, so the installed text is byte-identical to today and `install_skill`'s rewrite-when-different rule is unchanged. A wave fills its fragment with its "## <Kind> studies" section; the core `skill.md` stays C's.
+
+### 18.3 File ownership
+
+Every file a wave may edit. "+ reg" means the wave may edit only the registration line(s) marked `// 159:<TAG>` for its own tag in that file. Fixture directories are `crates/autoresearch/fixtures/<name>/`.
+
+| wave | owns (may edit freely) | shared files: registration lines only |
+|---|---|---|
+| C | everything §5.12 lists; the stub files of §18.2 (until the skeleton lands); `crates/evalcore/src/lib.rs`; `crates/autoresearch/skill/*.md` (creating them empty); root `Cargo.toml` member/dependency line for evalcore; `crates/autoresearch/Cargo.toml`; `crates/rpc/src/{api,export}.rs` autoresearch blocks; `crates/desktop/ui/src/rpc/api.ts`; this §18; `docs/design/159-as-built-C.md` | — |
+| W1 | `src/pareto.rs`, `src/refs.rs`, `FrontChart.tsx`, `skill/pareto.md`, `fixtures/toy-pareto/**`, `gate.rs` tests module only (`mod tests`, the k-objective simulations), `docs/design/159-as-built-W1.md` | `actor.rs` + reg, `brief.rs` + reg, `setup.rs` + reg, `finalize.rs` + reg, `study_draft.rs` + reg, `StudyView.tsx` + reg, `rpc_impl.rs` + reg (`archive`), `RunTable.tsx` is **not** W1's: the per-objective Δ % columns are a hand-off to Z |
+| W2 | `crates/evalcore/**` except `src/pair.rs` and `src/lib.rs`; `src/cases.rs`; `CaseStrip.tsx`; `skill/prompts.md`; `fixtures/toy-prompt/**`; `crates/dreaming/src/{replay,cases,edits}.rs` (§13; dreaming's suite must stay green); `docs/design/159-as-built-W2.md` | `actor.rs` + reg, `brief.rs` + reg, `setup.rs` + reg, `finalize.rs` + reg, `study_draft.rs` + reg, `StudyView.tsx` + reg, `rpc_impl.rs` + reg (`cases`) |
+| W3 | `src/judge.rs`; `crates/evalcore/src/pair.rs`; `RatingLadder.tsx`; `PairViewer.tsx`; `skill/judged.md`; `fixtures/toy-judged/**`; `docs/design/159-as-built-W3.md` | `actor.rs` + reg, `brief.rs` + reg, `setup.rs` + reg, `finalize.rs` + reg, `study_draft.rs` + reg, `StudyView.tsx` + reg, `rpc_impl.rs` + reg (`judgments`, `human_pair`); the attention row is a hand-off to Z (crates/attention is frozen) |
+| W4 | `src/population.rs`; `ArchiveGrid.tsx`; `skill/population.md`; `fixtures/toy-route/**`; `docs/design/159-as-built-W4.md` | `actor.rs` + reg, `brief.rs` + reg, `setup.rs` + reg, `finalize.rs` + reg, `study_draft.rs` + reg, `StudyView.tsx` + reg, `rpc_impl.rs` + reg (`archive`, shared with W1: the stub dispatches on `archive.kind`, each wave fills its arm) |
+| W5 | `src/literature.rs`; `src/hooks.rs`; `LiteratureIdeas.tsx`; `skill/literature.md`; `fixtures/literature/**`; `docs/design/159-as-built-W5.md` | `actor.rs` + reg (hook points, plateau consult), `brief.rs` + reg, `setup.rs` + reg, `study_draft.rs` + reg, `StudyView.tsx` + reg (the ideas section), `SidePanel.tsx` + reg |
+| W6 | `src/world.rs`; `crates/app/src/launch_card.rs`; `WorldChart.tsx`; `skill/world.md`; `fixtures/toy-world/**`; `docs/design/159-as-built-W6.md` | `actor.rs` + reg (scoring, rule, recover re-arm), `binding.rs` + reg (reconcile), `schedule_file.rs` + reg, `brief.rs` + reg, `setup.rs` + reg, `finalize.rs` + reg, `study_draft.rs` + reg, `StudyView.tsx` + reg, `rpc_impl.rs` + reg (`launch`), `crates/app/src/lib.rs` + reg (`mod launch_card` and its RegisterTool) |
+| W7 | `src/mechanism.rs`; `src/suite.rs`; `SuiteChart.tsx`; `skill/meta.md`; `fixtures/{toy-dedupe,toy-wordfreq,toy-json,toy-lru}/**`; `docs/design/159-as-built-W7.md` | `actor.rs` + reg (scoring, rule), `brief.rs` + reg (`protocol` text through `mechanism::load`), `schedule_file.rs` + reg (fire prompt), `review.rs` + reg (advisor prompt), `config.rs` + reg (readers), `setup.rs` + reg, `finalize.rs` + reg, `study_draft.rs` + reg, `StudyView.tsx` + reg, `rpc_impl.rs` + reg (`mechanism`); the Settings › Autoresearch pane is a hand-off to Z |
+| Z | the merge; `RunTable.tsx`; the attention row; the Settings pane; `crates/rpc/src/api.rs` conflicts; everything handed off | — |
+
+Frozen for everyone after the skeleton (hand-off only): `types.rs`, `store.rs`, `migrations/0003_variants.sql`, `scanner.rs`, `runner.rs`, `gate.rs` (outside `mod tests`), `tools.rs`, `git.rs`, `wave.rs`, `stop.rs`, `custody.rs`, `novelty.rs`, `record.rs`, `slot.rs`, `lib.rs`, `error.rs`, `crates/rpc/**`, `crates/desktop/ui/src/rpc/**`, `model.ts`, `queries.ts`, `fixtures.ts`, `Finished.tsx`, `ExperimentDetail.tsx`, `StudyList.tsx`, `skill.md`, `crates/evalcore/src/lib.rs`. A wave that needs a change there writes the exact diff into its as-built "Hand-offs" section; the orchestrator or Z applies it.
+
+**Where the registration lines are** (every line is `// 159:<TAG>`-marked; waves fill bodies in their own module):
+
+| shared file | line(s) | dispatch |
+|---|---|---|
+| `actor.rs` | `kind_sample` | `Scoring::Cases → cases::sample` (W2), `Pairwise → judge::sample` (W3), `World → world::sample` (W6), `Suite → suite::sample` (W7) |
+| `actor.rs` | `kind_rule` | `GateRule::Dominance → pareto::step` (W1), `Paired → cases::step` (W2), `WinBound → judge::step` (W3), `Msprt → world::step` (W6) |
+| `actor.rs` | `parent_of` | `Search::Front → pareto::parent_of` (W1), `Population → population::parent_of` (W4) |
+| `actor.rs` | `kind_view` (in `detail`) | one arm per `KindView` variant → `<module>::view` (W1, W2, W3, W4, W6, W7) |
+| `actor.rs` | `recover` | `world::rearm(&env)` (W6) |
+| `actor.rs` | `after_experiment`, `measure_env` | `hooks::after`, `hooks::before` (W5); `literature::consult` beside the advisor consult (W5) |
+| `brief.rs` | `kind_section` | one arm per kind → `<module>::brief_section` (W1, W2, W3, W4, W6, W7) and `literature::brief_section` (W5) |
+| `setup.rs` | `KIND_SETUP` | one `KindSetup` row per wave: rows, leaves, `setup_value`, `setup_set` (W1–W7) |
+| `finalize.rs` | `kind_headline` | one arm per kind → `<module>::headline` (W1, W2, W3, W4, W6, W7) |
+| `study_draft.rs` | `kind_line` | one arm per kind → `autoresearch::<module>::card_line` (W1, W2, W3, W4, W6, W7); `literature::card_note` (W5) |
+| `rpc_impl.rs` | the six §5.11 methods | each stub body calls the wave's module (`pareto::archive` / `population::archive`, `cases::rows`, `judge::{judgments, human_pair}`, `world::launch`, `mechanism::rpc`) |
+| `binding.rs` | `reconcile_now` | `world::explains_disabled(&store, &slug)` (W6) |
+| `schedule_file.rs` | `text` | `mechanism::fire_prompt()` with the compiled text as fallback (W7) |
+| `review.rs` | `advisor_prompt` | `mechanism::advisor_prompt()` (W7) |
+| `StudyView.tsx` | `KindPanel` switch | one `case` per `view.kind` → the wave's component |
+| `SidePanel.tsx` | ideas list | `<LiteratureIdeas …/>` (W5) |
+| `crates/app/src/lib.rs` | `pub mod launch_card;` and its `RegisterTool` | W6 |
+
+### 18.4 Frozen cross-wave APIs
+
+Implementer → consumer. Signatures are copied from the skeleton; `path#L` in the SKELETON message points at each.
+
+**evalcore** (`crates/evalcore`, depends on `serde`, `serde_json`, `sha2`, `regex`, `async-trait` only). W2 implements; W3 (`pair`) and W7 (`gate::{paired, decide}`) consume.
+```rust
+pub struct Case { pub id: String, pub input: String, pub ideal: Option<String>, pub references: Vec<String>, pub check: Option<Check>, pub tags: Vec<String>, pub synthetic: bool }
+pub enum Check { Exact(String), Regex(String), Contains(String), Command(String) }
+pub enum Split { Train, Val, Holdout }
+pub struct Shares { pub train: u8, pub val: u8, pub holdout: u8 }        // percent; Default 40/40/20
+pub fn split(seed: &str, id: &str, shares: Shares, synthetic: bool) -> Split   // stable sha256 bucket; synthetic → Train (C implements)
+pub fn candidate_hash(text: &str) -> String                                  // sha256 hex (C implements)
+pub mod judge { pub const SYSTEM: &str; pub fn user(ideal: Option<&str>, references: &[String], answer: &str) -> String; pub fn parse(reply: &str) -> Option<f64> }   // 0–1
+pub mod pair  { pub enum Verdict { A, B, Tie } pub const SYSTEM: &str; pub fn user(task: &str, rubric: &str, a: &str, b: &str) -> String; pub fn parse(reply: &str) -> Option<(Verdict, String)> }
+pub mod gate  { pub struct Pair { pub id: String, pub baseline: f64, pub candidate: f64 }
+                pub struct Cfg { pub min_mean_delta: f64, pub max_case_regression: f64, pub min_pairs: usize }
+                pub enum Decision { Accept, Reject(String), Unverified(String) }
+                pub struct Paired { pub n: usize, pub mean: f64, pub sd: f64, pub t: f64, pub critical: f64, pub min_delta: f64 }
+                pub fn margin(pairs: &[Pair], cfg: &Cfg) -> Decision;                 // dreaming's rule
+                pub fn paired(pairs: &[Pair]) -> Option<Paired>;                     // t and c_n (W-n)
+                pub fn decide(pairs: &[Pair], cfg: &Cfg) -> Decision }               // margin + paired when n ≥ 10 (W-r)
+pub mod rows  { pub struct ReplayRow { pub case_id: String, pub split: Option<Split>, pub candidate_hash: String, pub score: f64, pub owner: String, pub reason: String, pub at: String }
+                pub trait Rows { fn append(&mut self, row: ReplayRow) -> Result<(), String>; fn latest(&self, case_id: &str, candidate_hash: &str) -> Option<ReplayRow>; } }
+pub mod run   { #[async_trait] pub trait Model: Send + Sync { async fn call(&self, system: &str, user: String) -> Result<String, String>; }
+                pub struct CaseScore { pub score: f64, pub answer: String, pub reason: String, pub tokens_in: u64, pub tokens_out: u64, pub cost_usd: f64 }
+                pub async fn run_case(target: &dyn Model, judge: Option<&dyn Model>, artefact: &str, template: Option<&str>, case: &Case) -> Result<CaseScore, String> }
+```
+
+**Front and cell refs** (`crates/autoresearch/src/refs.rs`). W1 implements; W4 consumes. Refs live under `refs/autoresearch/<slug>/<kind>/<key>` (W-f).
+```rust
+pub enum RefKind { Front, Cell }                                       // "front" | "cell"
+pub fn name(slug: &str, kind: RefKind, key: &str) -> String;
+pub fn update(repo: &Path, slug: &str, kind: RefKind, key: &str, sha: &str) -> Result<()>;
+pub fn delete(repo: &Path, slug: &str, kind: RefKind, key: &str) -> Result<()>;
+pub fn list(repo: &Path, slug: &str, kind: RefKind) -> Result<Vec<(String, String)>>;   // (key, sha)
+```
+
+**Waiting and the timer** (`crates/autoresearch/src/world.rs`). W6 implements; W7 consumes.
+```rust
+/// Put `exp` into `ExperimentState::Waiting` with `info` (stored in `experiments.wait`), disable the study's schedule file (W-i) and arm a timer for `info.until`.
+pub async fn wait(env: &actor::Env, study: &StudyRecord, exp: &mut ExperimentRecord, info: WaitInfo) -> Result<()>;
+/// The timer fired (or W7's inner studies finished): run the kind's resume step; close the experiment or extend the wait; re-enable the schedule file when it closes. Returns the new state.
+pub async fn resume(env: &actor::Env, slug: &str, n: u32) -> Result<ExperimentState>;
+/// At engine start: re-arm one timer per waiting experiment from `experiments.wait.until`. Returns how many.
+pub async fn rearm(env: &actor::Env) -> Result<u32>;
+```
+
+**The paired gate** — `evalcore::gate::{paired, decide}` above. W2 implements; W7 consumes (one fixture × seed = one `Pair`).
+
+**Plugin-side calls** (`actor::Backend`, §5.10). C implements; W2, W3, W5, W6 and W7 consume. The defaults are production; `Fake` in `actor/tests.rs` overrides them for tests.
+```rust
+async fn invoke_tool(&self, study: &StudyRecord, name: &str, args: serde_json::Value, timeout: Duration) -> Result<tools::ToolOutput>;
+async fn side_call(&self, study: &StudyRecord, role: runtime::ModelRole, system: &str, user: String, budget: Duration) -> Result<runtime::SideReply>;
+async fn plugin_command(&self, study: &StudyRecord, what: &str, command: &str, timeout: Duration, extra_env: &[(String, String)]) -> Result<runner::CommandRun>;
+pub struct CommandRun { pub exit: Option<i32>, pub tail: String, pub wall_ms: u64, pub scanned: scanner::Scanned }   // runner.rs
+```
+
+**Per-kind plug-in signatures** every wave module exposes (the registration lines call these; bodies are the wave's):
+```rust
+pub async fn sample(env: &actor::Env, study: &StudyRecord, req: runner::SampleRequest<'_>, cancel: &CancellationToken) -> Result<Sample>;      // scoring kinds
+pub async fn step(env: &actor::Env, study: &StudyRecord, cfg: &GateCfg, input: &GateInput, candidate: &[Sample], reference: &[Sample]) -> Result<GateStep>;   // rule kinds
+pub async fn parent_of(env: &actor::Env, study: &StudyRecord, slot: Option<u8>) -> Result<String>;   // search kinds
+pub async fn view(store: &Store, study: &StudyRecord) -> Result<KindView>;
+pub async fn brief_section(store: &Store, study: &StudyRecord) -> Result<String>;                     // "" = nothing
+pub async fn headline(store: &Store, study: &StudyRecord) -> Result<Option<finalize::Headline>>;      // None = the scalar headline
+pub fn card_line(spec: &StudySpec) -> String;                                                           // the draft card's line 1
+pub const SETUP_ROWS: &[setup::SetupRow];  pub fn setup_value(spec: &StudySpec, row: &str) -> String;  pub fn setup_set(spec: &mut StudySpec, leaf: &str, v: &str) -> Result<(), String>;
+```
+
+### 18.5 Changes to §5 made by the skeleton
+
+- **C-a** `GateDecision.rule` is `GateRule` (`z_gate | dominance | paired | win_bound | msprt`); the rule table of §5.6 is `StudySpec::rule()`, and `validate_spec` refuses a combination with no row.
+- **C-b** `StudySpec::kind()` returns the kind word of §3 (`one metric`, `several objectives`, `prompt study`, `judged`, `population`, `real world`, `meta`) by precedence: artefact `mechanism` → meta; scoring `world` → real world; search `population` → population; objectives `judged` → judged; scoring `cases` → prompt study; objectives `pareto` → several objectives; else one metric. `StudyInfo.kind` carries it.
+- **C-c** The golden ledger dumps the 0002 column list by name, so it is byte-identical before and after 0003; the new columns are proved by their own test (§5.12 item 4).
+- **C-d** `BudgetUsed.by_channel` is filled for every study (`session`, `bench`), and `study_spend` = Session + Bench. For a 140 study `bench` is 0, so the money stop is unchanged.
+- **C-e** The one-line plug-in points of §18.3 replace §15's "edits to shared files" column; `RunTable.tsx`, the attention row and the Settings pane go to Z.
+- **C-f** `refs.rs` is a separate file (W1) rather than `git.rs` additions, so W1 and W4 need no git.rs edit; the two functions wrap `git update-ref` / `for-each-ref` through `git::run`.
+
