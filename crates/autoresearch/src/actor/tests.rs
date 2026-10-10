@@ -2554,6 +2554,35 @@ async fn finalize_writes_the_report_prose_before_the_tables() {
         d.info.budget_used.usd,
         x.cost_nanos
     );
+    // 159 §5.8 (Z live proof): a finished study's spend is Session + Bench — an engine-side
+    // sample's `spend_nanos` (a case runner's or a suite's inner studies) stays in the total
+    // after the study ends (meta read $0.06 beside `by_channel.bench` $0.30).
+    h.studies
+        .store
+        .insert_sample(
+            "t1",
+            &Sample {
+                n: 1,
+                k: 9,
+                tree_sha: "keep0001".into(),
+                role: Some(SampleRole::Candidate),
+                value: Some(4.0),
+                spend_nanos: 250_000_000,
+                at: now(),
+                ..Sample::default()
+            },
+        )
+        .await
+        .unwrap();
+    let d = detail(&mut h.studies, Detail { slug: "t1".into() })
+        .await
+        .unwrap();
+    assert!(
+        (d.info.budget_used.usd - (x.cost_nanos as f64 / 1e9 + 0.25)).abs() < 1e-9,
+        "finished spend = closed experiments + bench channel: {} (bench {:?})",
+        d.info.budget_used.usd,
+        d.info.budget_used.by_channel.get("bench")
+    );
     // Revision 2: finalize's holdout result reaches the Study view; its final-tree samples
     // at n = 0 never pool into the base's holdout point.
     assert_eq!(d.final_holdout.as_deref(), Some("5 → 4 (−20.0 %)"));

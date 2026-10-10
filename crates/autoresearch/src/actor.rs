@@ -935,16 +935,20 @@ async fn study_spend_or_closed(env: &Env, study: &StudyRecord) -> f64 {
     }
 }
 
-/// Σ `cost_nanos` of the closed experiments, in USD (no agent ask).
+/// Σ `cost_nanos` of the closed experiments plus the Bench channel (Σ `samples.spend_nanos`),
+/// in USD, with no agent ask — 159 §5.8: study spend = Session + Bench on every path (live
+/// proof: a finished meta study showed $0.06 beside `by_channel.bench` $0.30).
 async fn closed_spend(env: &Env, slug: &str) -> f64 {
-    env.store
+    let closed: f64 = env
+        .store
         .list_experiments(slug, None, u32::MAX)
         .await
         .unwrap_or_default()
         .iter()
         .filter(|e| is_closed(e))
         .map(|e| e.cost_nanos as f64 / 1e9)
-        .sum()
+        .sum();
+    closed + env.store.bench_spend(slug).await.unwrap_or(0) as f64 / 1e9
 }
 
 /// Review reverts the user already acted on (`restore` or `kept_reverted` events): no row, no needs-eyes line.
