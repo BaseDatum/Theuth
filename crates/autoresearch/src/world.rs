@@ -61,7 +61,7 @@ const RATIO_P: f64 = 0.001;
 /// mSPRT likelihood ratio (159 §11): Λ = √(V / (V + τ²)) · exp(τ² Δ̂² / (2 V (V + τ²))).
 /// `v` is the variance of `delta`; with no variance or no τ there is no evidence (Λ = 1).
 pub fn lambda(delta: f64, v: f64, tau: f64) -> f64 {
-    if !(v > 0.0) || !(tau > 0.0) || !delta.is_finite() {
+    if v <= 0.0 || tau <= 0.0 || !v.is_finite() || !tau.is_finite() || !delta.is_finite() {
         return 1.0;
     }
     let t2 = tau * tau;

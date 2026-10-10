@@ -39,8 +39,8 @@ Worker 159-W6, worktree `~/Develop/theuth-159-w6`, branch `feat/159-w6-world`, c
 ## Gates (through build-lock, `BUILD_LABEL=159-W6`, stable 1.96.1)
 
 - `build-lock mbx test -p autoresearch --locked --no-run` then `mbx test -p autoresearch --locked world::` — **11 passed, 0 failed**: `peeking_null_keeps_at_most_one_percent` (10,000 null studies × 14 looks, keeps ≤ 1 %, harms ≤ 5 %), `true_improvement_is_kept_within_max_windows` (+0.019 on 0.040 at 500 units/arm/window: ≥ 85 % kept), `harmful_candidate_rolled_back_within_three_windows` (conversion halved, 2,000 units: all `Harm`, ≥ 95 % within 3 windows, none past 4), `ratio_mismatch_and_exposure_are_crashes`, `guards_and_direction`, `lambda_and_cumulate`, `parse_arms_and_tool_pointers`, `setup_rows_round_trip_and_card_line`, `restart_rearms_the_timer_and_keeps_observations`, `ratio_failure_pauses_the_study` (toy-world, the bait file → `crash: sample ratio mismatch`, study `Paused { Other }`, rolled back), `toy_world_three_launches` (below).
-- `build-lock mbx test -p autoresearch -p app --locked --no-run`, `mbx test -p autoresearch -p app --locked` — see the final message for counts (incl. `golden_ledger_140`, `launch_card` tests).
-- `build-lock mbx clippy -p autoresearch -p app --locked` — see the final message.
+- `build-lock mbx test -p autoresearch -p app --locked --no-run`, then `mbx test -p autoresearch -p app --locked` bare — autoresearch **199 passed, 0 failed** (incl. `golden_ledger_140`, the 11 world tests), app **49 passed + 1 integration** (incl. the 2 `launch_card` tests). A second full run under the machine's parallel-wave load flaked two of app's `helper::tests` (process-deadline timing, not W6's files); re-run alone: 8/8 pass.
+- `build-lock mbx clippy -p autoresearch -p app --locked` — clean (one `neg_cmp_op_on_partial_ord` in `world::lambda` fixed on the way).
 - `cargo fmt -p autoresearch -p app` — touched only `world.rs`, `launch_card.rs`.
 - UI: `build-lock bun run check` — exit 0; `build-lock bun run test -- src/components/autoresearch/WorldChart.test.ts` — 2 passed.
 
