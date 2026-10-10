@@ -188,6 +188,17 @@ $c = $m.GetCurrentSession(); if ($c) { "current " + $c.SourceAppUserModelId + " 
         $out = & powershell.exe -NoProfile -NonInteractive -Command $ps 2>&1
         foreach ($l in $out) { Say "media: $l" }
     }
+    'stack' {
+        # stack <pid> — managed stacks of a running .NET process (dotnet-stack, installed on demand into the user's tool path)
+        $target = [int]$Rest[0]
+        $tool = Join-Path $env:USERPROFILE '.dotnet\tools\dotnet-stack.exe'
+        if (-not (Test-Path $tool)) { $o = & dotnet tool install -g dotnet-stack 2>&1; foreach ($l in $o) { Say "stack: install: $l" } }
+        $p = Get-Process -Id $target -ErrorAction SilentlyContinue
+        if (-not $p) { Say "stack: no process $target"; break }
+        Say ("stack: pid $target threads=" + $p.Threads.Count + " responding=" + $p.Responding)
+        $out = & $tool report -p $target 2>&1
+        foreach ($l in $out) { $s = "$l"; if ($s.Trim().Length -gt 0) { Say ("stack: " + (Clip $s 220)) } }
+    }
     'clip-get' { $t = Get-Clipboard -Raw; Say "clip-get: '$t'" }
     'history' {
         $k = 'HKCU:\Software\Microsoft\Clipboard'
