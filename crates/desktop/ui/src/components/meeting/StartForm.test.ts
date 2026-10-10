@@ -3,6 +3,7 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
+import { LAWFUL } from '@/lib/detection'
 import { StartForm, startOptions } from './StartForm'
 
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => () => {} }))
@@ -30,8 +31,19 @@ test('the ∞ switch follows agent.endless.default_meeting and sits under the mo
   expect(html).toContain('Keeps a compressed memory of the whole meeting behind the live transcript; zoom and recall bring any earlier moment back.')
 })
 
-test('startOptions sends memory only with the switch on; the rest is unchanged', () => {
-  expect(startOptions({ pid: 0, title: ' Standup ', context: '', consent: true, model: 'm', endless: true })).toEqual({
+test('158 R3 / A2: the form shows the one lawful sentence and no consent checkbox; Start is not gated on it', async () => {
+  const html = await render()
+  expect(html).toContain(LAWFUL)
+  // The only checkbox left is the ∞ switch's hidden input; the consent label and its 53 §0.14 wording are gone.
+  expect(html).not.toMatch(/<label[^>]*>\s*<input[^>]*type="checkbox"/)
+  expect(html).not.toContain('I acknowledge I understand the law')
+  const start = html.match(/<button[^>]*>[^<]*Start<\/button>/)?.[0]
+  expect(start).toBeDefined()
+  expect(start).not.toContain('disabled=""')
+})
+
+test('startOptions always sends consent: true and memory only with the switch on; the rest is unchanged', () => {
+  expect(startOptions({ pid: 0, title: ' Standup ', context: '', model: 'm', endless: true })).toEqual({
     process: null,
     title: 'Standup',
     context: null,
@@ -39,5 +51,5 @@ test('startOptions sends memory only with the switch on; the rest is unchanged',
     session_model: 'm',
     memory: 'endless',
   })
-  expect(startOptions({ pid: 42, title: '', context: 'x', consent: false, model: null, endless: false })).toMatchObject({ process: 42, memory: undefined })
+  expect(startOptions({ pid: 42, title: '', context: 'x', model: null, endless: false })).toMatchObject({ process: 42, consent: true, memory: undefined })
 })

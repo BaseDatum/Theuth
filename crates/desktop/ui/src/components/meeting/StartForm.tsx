@@ -1,7 +1,7 @@
 // 53 §4.1 / 03 §3: the start form — source picker (System audio by default, or one app; apps playing
-// audio first), title, a dictated context box, the consent checkbox (decision 14), the session's
-// model (the chat header's picker; remembered in `meeting-settings`), the permissions row.
-// `Start` → `meeting_start` → the control center.
+// audio first), title, a dictated context box, the one lawful sentence (158 R3, Amendment A2: no checkbox;
+// Start sends `consent: true`), the session's model (the chat header's picker; remembered in
+// `meeting-settings`), the permissions row. `Start` → `meeting_start` → the control center.
 
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -14,12 +14,12 @@ import { ModelPicker } from '@/components/chat/ModelPicker'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { LAWFUL } from '@/lib/detection'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { PermissionState } from '@/rpc/bindings/PermissionState'
@@ -29,16 +29,14 @@ import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
 /** The picker's "System audio" row; `meeting_start` gets `process: null`. */
 const SYSTEM = 0
 const PRIVACY = 'x-apple.systempreferences:com.apple.preference.security'
-/** 53 decision 14, verbatim. */
-export const CONSENT = 'I acknowledge I understand the law and this recording is legal.'
 
-/** What `Start` sends (137 R1-D6 adds `memory`: `'endless'` with the ∞ switch on, else `null` = the engine's `default_meeting`). */
-export function startOptions(form: { pid: number; title: string; context: string; consent: boolean; model: string | null; endless: boolean }): StartMeeting {
+/** What `Start` sends (137 R1-D6 adds `memory`: `'endless'` with the ∞ switch on, else `null` = the engine's `default_meeting`; 158 R3: `consent` is always `true` — the sentence was shown). */
+export function startOptions(form: { pid: number; title: string; context: string; model: string | null; endless: boolean }): StartMeeting {
   return {
     process: form.pid === SYSTEM ? null : form.pid,
     title: form.title.trim() || null,
     context: form.context.trim() || null,
-    consent: form.consent,
+    consent: true,
     session_model: form.model,
     memory: form.endless ? 'endless' : undefined,
   }
@@ -54,7 +52,6 @@ export function StartForm() {
   const [pid, setPid] = useState(SYSTEM)
   const [title, setTitle] = useState('')
   const [context, setContext] = useState('')
-  const [consent, setConsent] = useState(false)
   const saved = useMeetingSettings((s) => s.model)
   const model = saved ?? info?.default_model
   const [pickModel, setPickModel] = useState(false)
@@ -67,7 +64,7 @@ export function StartForm() {
   const endlessOn = endless ?? endlessSettings.data?.default_meeting ?? false
 
   const start = useAction(
-    (_: void) => api.meeting_start(startOptions({ pid, title, context, consent, model: saved, endless: endlessOn })),
+    (_: void) => api.meeting_start(startOptions({ pid, title, context, model: saved, endless: endlessOn })),
     {
       keys: [queryKeys.meetings, queryKeys.meetingStatus],
       onSuccess: (started) => void navigate({ to: '/meetings/$id', params: { id: started.meeting } }),
@@ -152,19 +149,9 @@ export function StartForm() {
         </Row>
         <Permission label="Microphone" state={perms.data?.microphone} pane="Privacy_Microphone" />
         <Permission label="System audio recording" state={perms.data?.audio_capture} pane="Privacy_AudioCapture" />
-        <div className="py-4">
-          <Label className="items-start gap-3 leading-5">
-            <input
-              type="checkbox"
-              className="mt-0.5 size-4 shrink-0 accent-fg-accent"
-              checked={consent}
-              onChange={(e) => setConsent(e.target.checked)}
-            />
-            <span className="font-normal">{CONSENT}</span>
-          </Label>
-        </div>
+        <p className="py-4 text-sm text-fg-secondary">{LAWFUL}</p>
         <div className="flex justify-end">
-          <Button disabled={!consent || disabled || start.isPending} onClick={() => start.mutate()}>
+          <Button disabled={disabled || start.isPending} onClick={() => start.mutate()}>
             {start.isPending && <LoaderCircle className="animate-spin" />} Start
           </Button>
         </div>
