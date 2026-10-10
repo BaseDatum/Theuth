@@ -55,6 +55,12 @@ const INNER_PER_EXPERIMENT_USD: f64 = 0.3;
 const INNER_HOURS: f64 = 3.0;
 /// Inner studies in flight at once (§12 Cost: "two at a time").
 const INNER_CONCURRENCY: usize = 2;
+/// How long a sample waits for one inner study before stopping it: the inner budget's hours
+/// plus slack; seconds under test, so a driver that never fires fails fast instead of hanging.
+#[cfg(not(test))]
+const INNER_DEADLINE: Duration = Duration::from_secs((INNER_HOURS * 3600.0) as u64 + 1800);
+#[cfg(test)]
+const INNER_DEADLINE: Duration = Duration::from_secs(20);
 /// How often a waiting sample looks at its inner studies.
 #[cfg(not(test))]
 const POLL: Duration = Duration::from_secs(2);
@@ -786,7 +792,7 @@ fn control_boxed(
 /// Wait for `slug` to reach a terminal state; `Err` when cancelled or past the inner budget's
 /// hours plus slack.
 async fn wait_terminal(env: &Env, slug: &str, cancel: &CancellationToken) -> Result<StudyRecord> {
-    let deadline = Instant::now() + Duration::from_secs_f64(INNER_HOURS * 3600.0 + 1800.0);
+    let deadline = Instant::now() + INNER_DEADLINE;
     loop {
         let s = env
             .store
@@ -2187,6 +2193,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn outer_suite_study_runs_inner_studies_decides_and_registers_a_version() {
+        tokio::time::timeout(Duration::from_secs(120), outer_suite_study_body())
+            .await
+            .expect("the outer suite study hung");
+    }
+
+    async fn outer_suite_study_body() {
         set_gate(fake_gate());
         let double = Arc::new(Double::default());
         let mut h = harness(double.clone()).await;
@@ -2435,6 +2447,12 @@ mod tests {
     /// any inner study exists.
     #[tokio::test]
     async fn a_suite_run_over_the_per_experiment_cap_starts_nothing() {
+        tokio::time::timeout(Duration::from_secs(10), cap_body())
+            .await
+            .expect("the cap test hung: inner studies were started");
+    }
+
+    async fn cap_body() {
         let h = harness(Arc::new(Double::default())).await;
         let env = h.studies.env();
         let study = outer_for_sample(&h, 50, 8).await; // 1 fixture × 50 seeds × $2 = $100 > $20
@@ -2470,6 +2488,12 @@ mod tests {
     /// a (lost) row carrying what they spent, so the outer money stop sees it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_cancelled_suite_sample_stops_its_inner_studies_and_reports_their_spend() {
+        tokio::time::timeout(Duration::from_secs(60), cancelled_body())
+            .await
+            .expect("the cancelled sample hung");
+    }
+
+    async fn cancelled_body() {
         let double = Arc::new(Double::default());
         let h = harness(double.clone()).await;
         let env = h.studies.env();

@@ -118,3 +118,7 @@ Additional hand-offs from R2:
         }
     }
 ```
+
+### R2 addendum — the 57-minute hang (18:55)
+
+The run the orchestrator killed (`-- suite::tests::inner_repos suite::tests::a_suite_run suite::tests::a_cancelled`, pid 71175) was W7's deliberate **before-fix** run: the three R-W7-1/2/6 fixes were scratch-reverted in the working tree (then `git checkout`-ed back) to show the new tests fail without them. With the cap disabled, `a_suite_run_over_the_per_experiment_cap_starts_nothing` started 100 inner studies with no scheduler and `wait_terminal` waited its 3.5 h deadline — the pre-fix behaviour the test exists to catch, not the committed code (f6216180 passed 204/204 in 28 s before and after). Hardening so nothing like it can sit for an hour again: `INNER_DEADLINE` is the inner budget's hours + 30 min in production and 20 s under test (a sample whose inner studies nobody drives now fails fast in tests), and the three inner-study tests run under `tokio::time::timeout` (120 s, 60 s, 10 s) that fails with a message instead of hanging.
