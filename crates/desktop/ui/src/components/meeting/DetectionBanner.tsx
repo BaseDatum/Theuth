@@ -15,7 +15,8 @@ import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { EMPTY, LAWFUL, type Released, detectedStart, reduce, timeRange } from '@/lib/detection'
+import { EMPTY, LAWFUL, type Released, detectedStart, reduce } from '@/lib/detection'
+import { eventLine } from '@/lib/calendar'
 import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
@@ -60,11 +61,7 @@ export function DetectionBanner() {
       <div className="text-sm font-medium">{d.app.name} is using your microphone</div>
       {(ev || d.project) && (
         <div className="flex flex-wrap items-center gap-2 text-sm text-fg-secondary">
-          {ev && (
-            <span>
-              {ev.title} · {timeRange(ev.start, ev.end)}
-            </span>
-          )}
+          {ev && <span>{eventLine(ev)}</span>}
           {d.project && (
             <Badge variant="outline">
               <ProjectIcon project={d.project} className="size-3" />

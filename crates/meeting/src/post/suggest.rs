@@ -89,9 +89,9 @@ const VOCATIVE: f32 = 0.5;
 const ELIMINATION: f32 = 0.6;
 const ONE_ON_ONE: f32 = 0.9;
 
-/// `I'm Dana`, `this is Dana`, `my name is Dana`, `it's Dana` — the token after the cue.
+/// `I'm Dana`, `I am Dana`, `this is Dana`, `my name is Dana`, `it's Dana` — the token after the cue.
 static INTRO_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:i'?m|this is|my name is|it'?s)\s+([\p{L}][\p{L}'’-]*)").unwrap()
+    Regex::new(r"(?i)\b(?:i'?m|i am|this is|my name is|it'?s)\s+([\p{L}][\p{L}'’-]*)").unwrap()
 });
 /// `Dana, …` at the start; `…, Dana.` / `… thanks Dana.` at the end.
 static VOCATIVE_START_RE: LazyLock<Regex> =
@@ -691,6 +691,51 @@ mod tests {
         );
         let got = suggest(&t, &HashMap::new(), &empty(), None);
         assert_eq!(names(&got), [("s1", "Bob", SuggestionSource::Intro)]);
+    }
+
+    /// Live-proof D2: every cue form names the speaker; "I am going / not / sorry" never does.
+    #[test]
+    fn intro_cue_forms_and_false_positives() {
+        let t = transcript(&[
+            (
+                "s1",
+                1_000,
+                2_000,
+                "Hi, I am Alice from the operations team.",
+            ),
+            ("s2", 3_000, 4_000, "Hello, I'm Bob."),
+            ("s3", 5_000, 6_000, "Hey, my name is Carol."),
+            ("s4", 7_000, 8_000, "Morning. This is Dave."),
+            (
+                "s5",
+                9_000,
+                10_000,
+                "I am going to share my screen. I am not sure. I am sorry.",
+            ),
+            ("s6", 11_000, 12_000, "I am Here now, I am Fine."),
+        ]);
+        let got = suggest(&t, &HashMap::new(), &empty(), None);
+        assert_eq!(
+            names(&got),
+            [
+                ("s1", "Alice", SuggestionSource::Intro),
+                ("s2", "Bob", SuggestionSource::Intro),
+                ("s3", "Carol", SuggestionSource::Intro),
+                ("s4", "Dave", SuggestionSource::Intro),
+            ]
+        );
+        assert!(
+            got[0].evidence.starts_with("\"I am Alice\" at 00:01"),
+            "{}",
+            got[0].evidence
+        );
+        // With an event the attendee list is the filter: "I am Alice" still finds Alice Chen.
+        let e = event(&["Alice Chen", "Bob Stone"]);
+        let got = suggest(&t, &HashMap::new(), &empty(), Some(&e));
+        assert_eq!(
+            names(&got)[0],
+            ("s1", "Alice Chen", SuggestionSource::Intro)
+        );
     }
 
     /// §10.5: 1:1 → OneOnOne 0.9 for the one system label; two labels → none (the second gets

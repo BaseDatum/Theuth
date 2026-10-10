@@ -1,10 +1,38 @@
-import { QueryClient } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createElement, type ReactNode } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { buildRows } from '@/components/sidebar/SessionList'
+import type * as Rpc from '@/lib/rpc'
 import type { Manifest } from '@/rpc/bindings/Manifest'
+import type { MeetingSummary } from '@/rpc/bindings/MeetingSummary'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import { queryKeys } from './rpc'
-import { changeProject, meetingsQuery, newProjectName, projectChoices } from './meeting-project'
+import { changeProject, meetingsQuery, newProjectName, projectChoices, useProjectChoices } from './meeting-project'
+
+const api = {
+  list_sessions: vi.fn(async (): Promise<SessionSummary[]> => []),
+  list_project_styles: vi.fn(async () => []),
+  meeting_list: vi.fn(async (): Promise<MeetingSummary[]> => []),
+}
+vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
+
+/** `useProjectChoices()` after every query it issues has answered. */
+async function choices(): Promise<string> {
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  const Probe = () => createElement('i', null, useProjectChoices().join(','))
+  const paint = () => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(Probe) as ReactNode }))
+  paint()
+  for (const query of qc.getQueryCache().findAll()) await qc.fetchQuery({ ...query.options, queryKey: query.queryKey })
+  return paint()
+}
+
+test('live-proof D4: a project that exists only on meetings is offered by the pickers, next to the sessions\u2019 projects', async () => {
+  api.list_sessions.mockResolvedValueOnce([session('s1', 'theuth')])
+  api.meeting_list.mockResolvedValueOnce([{ id: 'm1', project: 'ops' } as MeetingSummary, { id: 'm2', project: null } as MeetingSummary])
+  expect(await choices()).toBe('<i>ops,theuth</i>')
+  expect(api.meeting_list).toHaveBeenCalledWith(null, null)
+})
 
 test('projectChoices merges every source, trims, drops blanks and nulls, de-duplicates and sorts; newProjectName is case-insensitive', () => {
   expect(projectChoices(['theuth', null, ' ', 'Acme '], ['acme', 'Acme', undefined], [])).toEqual(['Acme', 'acme', 'theuth'])

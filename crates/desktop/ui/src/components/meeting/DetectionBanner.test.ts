@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, test, vi } from 'vitest'
 import type * as Platform from '@/lib/platform'
 import type * as Rpc from '@/lib/rpc'
+import { eventLine } from '@/lib/calendar'
 import { LAWFUL } from '@/lib/detection'
 import type { Detection } from '@/rpc/bindings/Detection'
 import { DetectionBanner, ReleasePrompt } from './DetectionBanner'
@@ -97,13 +98,16 @@ test('Not now dismisses with never: false; "Never for Zoom" with never: true', a
   await vi.waitFor(() => expect(api.meeting_detection_dismiss).toHaveBeenLastCalledWith('us.zoom.xos', true))
 })
 
-test('no prompt (meeting_detection → null) renders nothing; a matched event and project show as the second line', async () => {
+test('no prompt (meeting_detection → null) renders nothing; a matched event and project show as the second line in the switcher\u2019s 24-hour form', async () => {
   api.meeting_detection.mockResolvedValueOnce(null)
   expect(await render()).toBe('')
   const ev = { id: 'e1', uid: 'u', title: 'Weekly sync', start: '2026-10-10T10:00:00Z', end: '2026-10-10T10:30:00Z', join_url: null, join_host: null, organizer: null, attendees: [], description: null }
   api.meeting_detection.mockResolvedValueOnce({ ...zoom, event: { event: ev, score: 0.9, alternatives: [] }, project: 'theuth' })
   const html = await render()
-  expect(html).toContain('Weekly sync · ')
+  // Live-proof D3: one formatter with the EventSwitcher (`eventLine`), never "06:51 PM" next to "18:51".
+  expect(html).toContain(`<span>${eventLine(ev)}</span>`)
+  expect(html).toMatch(/Weekly sync · ([\w ]+ )?\d\d:\d\d–\d\d:\d\d</)
+  expect(html).not.toMatch(/[AP]M/)
   expect(html).toContain('theuth')
 })
 
