@@ -316,8 +316,7 @@ fn urls_in(text: &str) -> Vec<String> {
         let end = tail
             .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '\\'))
             .unwrap_or(tail.len());
-        let token =
-            tail[..end].trim_end_matches(|c| matches!(c, '.' | ',' | ';' | ':' | ')' | ']' | '}'));
+        let token = tail[..end].trim_end_matches(['.', ',', ';', ':', ')', ']', '}']);
         if token.len() > 8 {
             out.push(token.to_owned());
         }
