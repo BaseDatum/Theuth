@@ -486,6 +486,7 @@ internal sealed class IslandController : IDisposable
         foreach (var (at, name, action) in steps)
         {
             var t = dispatcher.CreateTimer();
+            fixtureTimers.Add(t); // referenced for the controller's lifetime: an unreferenced DispatcherQueueTimer never fires once collected
             t.Interval = TimeSpan.FromSeconds(at);
             t.IsRepeating = false;
             t.Tick += (_, _) =>
@@ -505,6 +506,7 @@ internal sealed class IslandController : IDisposable
     {
         Fixture();
         var t = dispatcher.CreateTimer();
+        fixtureTimers.Add(t);
         t.Interval = TimeSpan.FromSeconds(8);
         t.IsRepeating = false;
         t.Tick += (_, _) =>
@@ -515,6 +517,8 @@ internal sealed class IslandController : IDisposable
         };
         t.Start();
     }
+
+    private readonly List<DispatcherQueueTimer> fixtureTimers = new();
 
     public void Dispose()
     {
