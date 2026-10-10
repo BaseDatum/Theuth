@@ -95,6 +95,8 @@ export function useFavorites(): { favorites: string[]; toggleFavorite(id: string
 
 type Props = {
   session: string | null
+  /** 157 D1: this picker's pane is the page's own (a notebook's chat column) — `/model` opens it whatever `usePanes` focuses. */
+  own?: boolean
 }
 
 /** The picker's state shared by the header button, the compact row and the dialog. */
@@ -278,9 +280,15 @@ function pinnedValue(m: Model): string | undefined {
   return current && harnessItemValue('Model', current)
 }
 
-/** `/model` opens the focused pane's picker (a draft pane counts as focused when it is the route's own). */
-function useOpenOnSlash(session: string | null, open: () => void) {
-  const focused = usePanes((s) => session === null || s.focused === session)
+/**
+ * Pure: does `/model` (`theuth:open`) address this picker? The focused pane's (a draft pane counts as focused when it
+ * is the route's own), or (157 D1) one that is its page's own — a notebook's chat column, which no split pane focuses.
+ */
+export const slashTarget = (session: string | null, focused: string | null, own: boolean): boolean => own || session === null || focused === session
+
+/** `/model` opens the focused pane's picker (`slashTarget`). */
+function useOpenOnSlash({ session, own = false }: Props, open: () => void) {
+  const focused = usePanes((s) => slashTarget(session, s.focused, own))
   const latest = useRef(open)
   latest.current = open
   useEffect(() => {
@@ -386,14 +394,14 @@ function ModelCommand({ m, session, advisor, className, listClassName, footerCla
  * An ACP child (75 §8) gets the same picker over its harness's own options —
  * a Model group and, when the harness offers one, an Effort group; with the
  * process gone it shows `omp · <model>` as plain text.
+ * `small` (157 D1): the 28 px, text-xs trigger of a column header (the notebook chat) instead of the 36 px headline.
  */
-export function ModelMenu(props: Props) {
+export function ModelMenu({ small = false, ...props }: Props & { small?: boolean }) {
   const [open, setOpen] = useState(false)
   // 125 §8.2: opened from the pill → the Advisor level first; a normal open starts on the models level.
   const [advisor, setAdvisor] = useState(false)
   const m = useModel(props, () => setOpen(false))
-  useOpenOnSlash(props.session, () => setOpen(true))
-  useOpenAdvisor(props.session, () => (setAdvisor(true), setOpen(true)))
+  useOpenOnSlash(props, () => setOpen(true))
   const resume = m.resume && (
     <Button variant="ghost" size="sm" className="h-7 shrink-0 gap-1 px-2 text-xs text-fg-tertiary" title="restart the harness process in this session's stored context (session/load)" onClick={() => void m.resume?.()}>
       <RotateCcw className="size-3.5" /> Resume
@@ -420,10 +428,10 @@ export function ModelMenu(props: Props) {
     <>
       <Popover open={open} onOpenChange={(o) => (setOpen(o), !o && setAdvisor(false))}>
         <PopoverTrigger asChild>
-          <Button variant="ghost" className="h-9 max-w-full gap-1 rounded-lg px-2.5 text-lg font-medium text-fg-secondary">
+          <Button variant="ghost" className={small ? 'h-7 max-w-full gap-1 rounded-md px-2 text-xs font-medium text-fg-secondary' : 'h-9 max-w-full gap-1 rounded-lg px-2.5 text-lg font-medium text-fg-secondary'}>
             <span className="min-w-0 truncate">{m.agent ? harnessLabel(m) : m.name}</span>
-            {effortLabel && <span className="shrink-0 text-sm font-normal text-fg-tertiary">· {effortLabel}</span>}
-            <ChevronDown className="size-4 opacity-70" />
+            {effortLabel && <span className={cn('shrink-0 font-normal text-fg-tertiary', small ? 'text-[11px]' : 'text-sm')}>· {effortLabel}</span>}
+            <ChevronDown className={small ? 'size-3.5 opacity-70' : 'size-4 opacity-70'} />
           </Button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-80 p-0">
@@ -458,7 +466,7 @@ export function ModelRow({ onOpen, ...props }: Props & { onOpen(): void }) {
 export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: boolean; onOpenChange(o: boolean): void }) {
   const [advisor, setAdvisor] = useState(false)
   const m = useModel(props, () => onOpenChange(false))
-  useOpenOnSlash(props.session, () => onOpenChange(true))
+  useOpenOnSlash(props, () => onOpenChange(true))
   useOpenAdvisor(props.session, () => (setAdvisor(true), onOpenChange(true)))
   if (m.watching || (m.agent && !m.harness)) return null
   const place = dialogPlacement(touch())

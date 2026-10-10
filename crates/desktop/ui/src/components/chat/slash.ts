@@ -14,6 +14,7 @@ import { useConnection } from '@/store/connection'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
 import { EMPTY, openDraftSession, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { notebookKeys } from '@/lib/notebooks-rpc'
 import { openContextPicker, type ShakeCategory } from './ContextPicker'
 import { openBroadcastDialog } from './BroadcastDialog'
 
@@ -44,6 +45,11 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
     name: '/effort',
     hint: '[level|clear]',
     desc: 'reasoning effort (picker without arg)',
+  },
+  {
+    name: '/endless',
+    hint: 'on|off',
+    desc: 'switch this session between endless memory and epochs (idle sessions only)',
   },
   {
     name: '/mcp',
@@ -378,6 +384,18 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!session) return useDrafts.getState().setPick({ effort: arg === 'clear' ? null : arg })
       await api.set_effort(session, arg === 'clear' ? null : arg, true)
       return
+    // 137 §8.6 (157 D3): the TUI's `/endless on|off` on the desktop too — `set_session_memory`, idle sessions only; the
+    // badge and the Memory panel follow the refreshed `sessions` row (and a notebook's `notebook_chats` row) and `session_memory`.
+    case '/endless': {
+      if (sub !== 'on' && sub !== 'off') throw new Error(`/endless: expected on|off, got ${JSON.stringify(sub)}`)
+      if (!session) throw new Error('no session yet: the ∞ switch sets a new chat\u2019s memory')
+      const m = await api.set_session_memory(session, sub === 'on' ? 'endless' : 'epochs')
+      active().qc.setQueryData(queryKeys.sessionMemory(session), m)
+      void active().qc.invalidateQueries({ queryKey: queryKeys.sessions })
+      void active().qc.invalidateQueries({ queryKey: [...notebookKeys.all, 'chats'] })
+      toast(m.mode === 'endless' ? 'endless memory on' : 'endless memory off: back to epochs')
+      return
+    }
     case '/title': {
       if (!arg) return settings(navigate, 'loop', session)
       const m = await api.set_title_model(arg === 'off' || arg === 'clear' ? null : arg)

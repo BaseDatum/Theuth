@@ -1,16 +1,21 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ExternalLink, SquarePen } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Composer } from '@/components/chat/Composer'
+import { Composer, PLAIN_DRAFT } from '@/components/chat/Composer'
+import { MemoryBadge, MemoryPanel } from '@/components/chat/MemoryPanel'
+import { ModelMenu } from '@/components/chat/ModelMenu'
 import { Transcript } from '@/components/chat/Transcript'
-import { NotebookContext, applyContextDefaults, useNotebookSession, useOpenThread } from '@/components/notebooks/NotebookContext'
+import { NotebookContext, applyContextDefaults, useEndlessSettings, useNotebookSession, useOpenThread } from '@/components/notebooks/NotebookContext'
 import { useContextEstimate, useNotebook, useNotebookChats } from '@/components/notebooks/useNotebook'
 import { ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Switch } from '@/components/ui/switch'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { AttachRef } from '@/lib/attach'
+import { useCompactorLabel } from '@/lib/endless'
 import { contextLine } from '@/lib/notebook-context'
 import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -45,6 +50,10 @@ const HEADER = 'flex h-10 shrink-0 items-center gap-2 border-b border-border-sub
  * `composerOnly`: the phone's Sources tab pins just the context line and the composer.
  * Wave 2 §5.2: the context line under the header comes from `notebook_context_estimate`; a new thread gets this
  * device's remembered dial positions (`notebook_context_set` per item) right after its session exists.
+ * 157 D1–D3: the header carries the model picker (`ModelMenu`, the thread's or the draft's pick; `/model` opens it,
+ * `own`), the ∞ switch for a new chat (NewChatPane's rule: `agent.endless.default_chat`, remembered per draft, the
+ * compactor line under the composer while on; applied as `memory: 'endless'` on both creation paths) and, for an
+ * existing endless thread, the ∞ badge that opens the Memory panel. `/endless on|off` switches an existing thread.
  */
 export function ChatColumn({ notebook, title, notes, composerOnly = false }: { notebook: string; title: string; notes: readonly DocSummary[]; composerOnly?: boolean }) {
   const nb = useNotebooksApi()
@@ -55,6 +64,14 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
   const chats = useNotebookChats(notebook).data ?? []
   const session = useNotebookSession(notebook)
   useLoadSession(session)
+  const summary = session ? chats.find((c) => c.id === session) : undefined
+  const [memory, setMemory] = useState(false)
+  // 157 D3: the new chat's ∞ choice — the draft's own once touched, else the engine default; forgotten with the draft.
+  const settings = useEndlessSettings()
+  const picked = useOpenThread((s) => s.endless[notebook])
+  const endless = picked ?? settings?.default_chat ?? false
+  const setEndless = useOpenThread((s) => s.setEndless)
+  const compactor = useCompactorLabel(settings?.model)
   const row = useNotebook(notebook).data
   const sources = row?.sources ?? 0
   const estimate = useContextEstimate(notebook, session)
@@ -81,7 +98,8 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
   const composer = (
     <div className="shrink-0 border-t border-border-subtle bg-background">
       <ContextLine estimate={estimate.data} error={estimate.error} />
-      <Composer key={session ?? 'new'} session={session} pinned={pinned} sessionTitle={title} onCreated={(id) => void onCreated(id)} compact />
+      {!session && endless && <p className="px-3 pt-1 text-[11px] text-fg-tertiary">Endless memory · compactor: {compactor}</p>}
+      <Composer key={session ?? 'new'} session={session} pinned={pinned} sessionTitle={title} draftCreate={{ ...PLAIN_DRAFT, endless }} onCreated={(id) => void onCreated(id)} compact />
     </div>
   )
   if (composerOnly) return composer
@@ -89,12 +107,30 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Chat about this notebook">
       <header className={HEADER}>
-        <span className="min-w-0 truncate whitespace-nowrap">
+        <span className="min-w-0 shrink-0 truncate whitespace-nowrap">
           Chat <span className="font-normal text-fg-tertiary">· this notebook</span>
         </span>
+        <div className="min-w-0 flex-1">
+          <ModelMenu session={session} own small />
+        </div>
+        {session ? (
+          <MemoryBadge session={session} summary={summary} open={memory} onToggle={() => setMemory((o) => !o)} />
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <label className="flex shrink-0 items-center gap-1.5">
+                <Switch checked={endless} onCheckedChange={(on) => setEndless(notebook, on)} aria-label="Endless memory" />
+                <span aria-hidden className="relative -top-px text-sm leading-4 [font-feature-settings:normal]">
+                  {'\u221E'}
+                </span>
+              </label>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Endless memory for this new chat{endless ? ` · compactor: ${compactor}` : ''}</TooltipContent>
+          </Tooltip>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="ml-auto">
+            <Button variant="outline" size="sm">
               Chats · {chats.length} <ChevronDown />
             </Button>
           </DropdownMenuTrigger>
@@ -117,6 +153,7 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
           </Button>
         )}
       </header>
+      {session && <MemoryPanel session={session} open={memory} onOpenChange={setMemory} />}
       <NotebookContext value={{ notebook, notes, onChanged }}>
         {session ? (
           <Transcript key={session} session={session} compact />
