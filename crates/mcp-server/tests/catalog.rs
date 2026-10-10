@@ -163,7 +163,11 @@ async fn paging() {
         .filter(|c| c.0 == "meeting_list")
         .map(|c| c.1[0].as_u64().unwrap())
         .collect();
-    assert_eq!(asked, [50, 250], "the RPC is asked for offset + limit rows");
+    assert_eq!(
+        asked,
+        [51, 251],
+        "the RPC is asked for offset + limit + 1 rows"
+    );
 
     let t = json(
         &client

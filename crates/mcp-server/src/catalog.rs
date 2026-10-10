@@ -49,7 +49,7 @@ pub struct Catalog {
 #[derive(Deserialize, JsonSchema)]
 struct NoArgs {}
 
-/// Paging, shared by every list.
+// Paging, shared by every list (a plain comment: flattened, its doc would replace the tool's).
 #[derive(Deserialize, JsonSchema, Default)]
 struct Page {
     /// Items per page, 1..=200 (default 50).
@@ -68,9 +68,10 @@ impl Page {
             .and_then(|c| c.parse().ok())
             .unwrap_or(0)
     }
-    /// How many rows to ask an RPC with its own `limit` for.
+    /// How many rows to ask an RPC with its own `limit` for: one past the page, so `slice` can
+    /// tell whether a next page exists.
     fn fetch(&self) -> u32 {
-        (self.offset() + self.limit()) as u32
+        (self.offset() + self.limit() + 1) as u32
     }
     /// `{items, next_cursor}` over the full list; `next_cursor` only when more rows exist.
     fn slice(&self, items: Vec<Value>) -> Value {
