@@ -29,24 +29,27 @@ const render = (ask?: string | true) => {
   return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(NotebookHeaderActions, { notebook: NB, ask, onAskChange: vi.fn() }) }))
 }
 
-test('desktop: Ask across notebooks, Overviews ▾ and Pop out sit in the header; the dialog follows ?ask', () => {
+test('desktop: Ask across notebooks, Overviews ▾ and Open in new window sit in the header; the dialog follows ?ask', () => {
   const html = render()
   expect(html).toContain('Ask across notebooks')
   expect(html).toContain('Overviews')
-  expect(html).toContain('aria-label="Pop out"')
+  expect(html).toContain('aria-label="Open in new window"')
+  // The app-wide pop-out icon (`AppWindow`, as the chat header, notes and meetings use), not lucide's picture-in-picture.
+  expect(html).toContain('class="lucide lucide-app-window')
+  expect(html).not.toContain('lucide-picture-in-picture')
   expect(html).not.toContain('aria-label="Notebook actions"')
   expect(html).not.toContain('data-ask')
   expect(render(true)).toContain('data-ask')
 })
 
-test('Sky\'s ruling: Pop out opens /notebooks/<id> in its own window through the shared helper; none inside a pop-out or where no window can open', async () => {
+test('Sky\'s ruling: Open in new window opens /notebooks/<id> in its own window through the shared helper; none inside a pop-out or where no window can open', async () => {
   await popOutNotebook(NB)
   expect(env.openPopout).toHaveBeenCalledWith({ kind: 'notebook', notebook: NB })
   env.popped = true
-  expect(render()).not.toContain('aria-label="Pop out"')
+  expect(render()).not.toContain('aria-label="Open in new window"')
   env.popped = false
   env.canPopout = false
-  expect(render()).not.toContain('aria-label="Pop out"')
+  expect(render()).not.toContain('aria-label="Open in new window"')
   env.canPopout = true
 })
 
@@ -54,7 +57,7 @@ test('under 768 px the group collapses into one ⋯ menu', () => {
   env.mobile = true
   const html = render()
   expect(html).toContain('aria-label="Notebook actions"')
-  expect(html).not.toContain('aria-label="Pop out"')
+  expect(html).not.toContain('aria-label="Open in new window"')
   expect(html).not.toContain('>Ask across notebooks<')
   env.mobile = false
 })
