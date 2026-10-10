@@ -106,15 +106,7 @@ pub fn is_custody_refusal(v: &Verdict) -> bool {
 /// Build the [`View`] for `study` from the ledger and `spend_usd`.
 pub async fn view(store: &Store, study: &StudyRecord, spend_usd: f64) -> Result<View> {
     let all = store.list_experiments(&study.slug, None, u32::MAX).await?; // newest first
-    let closed: Vec<_> = all
-        .iter()
-        .filter(|e| {
-            !matches!(
-                e.state,
-                ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
-            )
-        })
-        .collect();
+    let closed: Vec<_> = all.iter().filter(|e| e.state.is_closed()).collect();
     let last_keep_n = closed
         .iter()
         .find(|e| e.state == ExperimentState::Kept)

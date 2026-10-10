@@ -1,0 +1,1655 @@
+{
+  "events": [
+    {
+      "id": 1,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 1,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 2,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 1
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 3,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 1,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 4,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 2,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 5,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 2
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 6,
+      "slug": "t1",
+      "kind": "keep_pending",
+      "payload": {
+        "n": 2,
+        "parent": "base0000"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 7,
+      "slug": "t1",
+      "kind": "keep",
+      "payload": {
+        "n": 2,
+        "sha": "keep0002"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 8,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 2,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 9,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 3,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 10,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 3
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 11,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 3,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 12,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 4,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 13,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 4
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 14,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 4
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 15,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 4,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 16,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 5,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 17,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 5
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 18,
+      "slug": "t1",
+      "kind": "keep_pending",
+      "payload": {
+        "n": 5,
+        "parent": "keep0002"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 19,
+      "slug": "t1",
+      "kind": "keep",
+      "payload": {
+        "n": 5,
+        "sha": "keep0005"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 20,
+      "slug": "t1",
+      "kind": "review",
+      "payload": {
+        "n": 5,
+        "reason": "caches the benchmark input",
+        "reverted": true
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 21,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 5,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 22,
+      "slug": "t1",
+      "kind": "segment",
+      "payload": {
+        "segment": 1
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 23,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 6,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 24,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 6
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 25,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 6,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 26,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 7,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 27,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 7
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 28,
+      "slug": "t1",
+      "kind": "keep_pending",
+      "payload": {
+        "n": 7,
+        "parent": "keep0002"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 29,
+      "slug": "t1",
+      "kind": "keep",
+      "payload": {
+        "n": 7,
+        "sha": "keep0007"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 30,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 7,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 31,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 8,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 32,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 8
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 33,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 8,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 34,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 9,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 35,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 9
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 36,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 9,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 37,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 10,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 38,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 10
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 39,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 10,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 40,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 11,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 41,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 11
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 42,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 11,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 43,
+      "slug": "t1",
+      "kind": "begin",
+      "payload": {
+        "n": 12,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 44,
+      "slug": "t1",
+      "kind": "run",
+      "payload": {
+        "n": 12
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 45,
+      "slug": "t1",
+      "kind": "keep_pending",
+      "payload": {
+        "n": 12,
+        "parent": "keep0007"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 46,
+      "slug": "t1",
+      "kind": "keep",
+      "payload": {
+        "n": 12,
+        "sha": "keep0012"
+      },
+      "at": "<masked>"
+    },
+    {
+      "id": 47,
+      "slug": "t1",
+      "kind": "closed",
+      "payload": {
+        "n": 12,
+        "spend_usd": "<masked>"
+      },
+      "at": "<masked>"
+    }
+  ],
+  "experiments": [
+    {
+      "slug": "t1",
+      "n": 1,
+      "wave": null,
+      "slot": null,
+      "segment": 0,
+      "parent_sha": "base0000",
+      "state": "discarded",
+      "verdict": {
+        "kind": "no_gain"
+      },
+      "idea": "hoist the bounds check",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": 0.0,
+      "delta_pct": 0.0,
+      "z": 0.2,
+      "n_samples": 1,
+      "metric": 100.0,
+      "commit_sha": null,
+      "patch_path": "t1/runs/1/candidate.patch",
+      "patch_hash": "ph",
+      "review": null,
+      "line": "no_gain: -0.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 2,
+      "wave": null,
+      "slot": null,
+      "segment": 0,
+      "parent_sha": "base0000",
+      "state": "kept",
+      "verdict": {
+        "kind": "improved"
+      },
+      "idea": "skip the copy",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": 10.0,
+      "delta_pct": -10.0,
+      "z": 4.0,
+      "n_samples": 1,
+      "metric": 90.0,
+      "commit_sha": "keep0002",
+      "patch_path": null,
+      "patch_hash": "ph",
+      "review": {
+        "kind": "clean",
+        "reason": "fine"
+      },
+      "line": "improved: -10.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 3,
+      "wave": null,
+      "slot": null,
+      "segment": 0,
+      "parent_sha": "keep0002",
+      "state": "discarded",
+      "verdict": {
+        "kind": "worse"
+      },
+      "idea": "bigger buffer",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": -5.0,
+      "delta_pct": 5.0,
+      "z": -3.0,
+      "n_samples": 1,
+      "metric": 95.0,
+      "commit_sha": null,
+      "patch_path": "t1/runs/3/candidate.patch",
+      "patch_hash": "ph",
+      "review": null,
+      "line": "worse: +5.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 4,
+      "wave": null,
+      "slot": null,
+      "segment": 0,
+      "parent_sha": "keep0002",
+      "state": "crashed",
+      "verdict": {
+        "kind": "crash"
+      },
+      "idea": "unsafe fast path",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": null,
+      "delta_pct": null,
+      "z": null,
+      "n_samples": 1,
+      "metric": null,
+      "commit_sha": null,
+      "patch_path": "t1/runs/4/candidate.patch",
+      "patch_hash": "ph",
+      "review": null,
+      "line": "crash: exit 1 (tail below)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 5,
+      "wave": null,
+      "slot": null,
+      "segment": 0,
+      "parent_sha": "keep0002",
+      "state": "rejected_by_review",
+      "verdict": {
+        "kind": "improved"
+      },
+      "idea": "memoise the input",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": 20.0,
+      "delta_pct": -20.0,
+      "z": 6.0,
+      "n_samples": 1,
+      "metric": 70.0,
+      "commit_sha": "keep0005",
+      "patch_path": "t1/runs/5/candidate.patch",
+      "patch_hash": "ph",
+      "review": {
+        "kind": "reverted",
+        "reason": "caches the benchmark input"
+      },
+      "line": "improved: -20.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 6,
+      "wave": null,
+      "slot": null,
+      "segment": 1,
+      "parent_sha": "keep0002",
+      "state": "discarded",
+      "verdict": {
+        "kind": "no_gain"
+      },
+      "idea": "reorder fields",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": 0.0,
+      "delta_pct": 0.0,
+      "z": 0.2,
+      "n_samples": 1,
+      "metric": 90.0,
+      "commit_sha": null,
+      "patch_path": "t1/runs/6/candidate.patch",
+      "patch_hash": "ph",
+      "review": null,
+      "line": "no_gain: -0.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 7,
+      "wave": null,
+      "slot": null,
+      "segment": 1,
+      "parent_sha": "keep0002",
+      "state": "kept",
+      "verdict": {
+        "kind": "improved"
+      },
+      "idea": "SIMD the hot loop",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": 5.0,
+      "delta_pct": -5.0,
+      "z": 3.0,
+      "n_samples": 1,
+      "metric": 85.0,
+      "commit_sha": "keep0007",
+      "patch_path": null,
+      "patch_hash": "ph",
+      "review": {
+        "kind": "clean",
+        "reason": "fine"
+      },
+      "line": "improved: -5.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 8,
+      "wave": null,
+      "slot": null,
+      "segment": 1,
+      "parent_sha": "keep0007",
+      "state": "discarded",
+      "verdict": {
+        "kind": "worse"
+      },
+      "idea": "prefetch",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": -5.0,
+      "delta_pct": 5.0,
+      "z": -3.0,
+      "n_samples": 1,
+      "metric": 88.0,
+      "commit_sha": null,
+      "patch_path": "t1/runs/8/candidate.patch",
+      "patch_hash": "ph",
+      "review": null,
+      "line": "worse: +5.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 9,
+      "wave": null,
+      "slot": null,
+      "segment": 1,
+      "parent_sha": "keep0007",
+      "state": "discarded",
+      "verdict": {
+        "kind": "improved"
+      },
+      "idea": "drop the assert",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "discard",
+      "justification": null,
+      "deviations": [],
+      "delta": 1.0,
+      "delta_pct": -1.0,
+      "z": 2.5,
+      "n_samples": 1,
+      "metric": 84.0,
+      "commit_sha": null,
+      "patch_path": "t1/runs/9/candidate.patch",
+      "patch_hash": "ph",
+      "review": null,
+      "line": "improved: -1.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 10,
+      "wave": null,
+      "slot": null,
+      "segment": 1,
+      "parent_sha": "keep0007",
+      "state": "discarded",
+      "verdict": {
+        "kind": "no_gain"
+      },
+      "idea": "inline the getter",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": 0.0,
+      "delta_pct": 0.0,
+      "z": 0.2,
+      "n_samples": 1,
+      "metric": 85.0,
+      "commit_sha": null,
+      "patch_path": "t1/runs/10/candidate.patch",
+      "patch_hash": "ph",
+      "review": null,
+      "line": "no_gain: -0.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 11,
+      "wave": null,
+      "slot": null,
+      "segment": 1,
+      "parent_sha": "keep0007",
+      "state": "discarded",
+      "verdict": {
+        "kind": "no_gain"
+      },
+      "idea": "shrink the enum",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": 0.0,
+      "delta_pct": 0.0,
+      "z": 0.2,
+      "n_samples": 1,
+      "metric": 85.0,
+      "commit_sha": null,
+      "patch_path": "t1/runs/11/candidate.patch",
+      "patch_hash": "ph",
+      "review": null,
+      "line": "no_gain: -0.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    },
+    {
+      "slug": "t1",
+      "n": 12,
+      "wave": null,
+      "slot": null,
+      "segment": 1,
+      "parent_sha": "keep0007",
+      "state": "kept",
+      "verdict": {
+        "kind": "improved"
+      },
+      "idea": "batch the writes",
+      "category": "c",
+      "hypothesis": "",
+      "description": "d",
+      "learned": "l",
+      "next": null,
+      "decision": "auto",
+      "justification": null,
+      "deviations": [],
+      "delta": 5.0,
+      "delta_pct": -5.0,
+      "z": 3.0,
+      "n_samples": 1,
+      "metric": 80.0,
+      "commit_sha": "keep0012",
+      "patch_path": null,
+      "patch_hash": "ph",
+      "review": {
+        "kind": "clean",
+        "reason": "fine"
+      },
+      "line": "improved: -5.00 % (1 samples)",
+      "cost_nanos": "<masked>",
+      "started_at": "<masked>",
+      "finished_at": "<masked>"
+    }
+  ],
+  "ideas": [
+    {
+      "id": 1,
+      "slug": "t1",
+      "text": "unroll the inner loop",
+      "category": "loop",
+      "source": "user",
+      "priority": 3,
+      "status": "open",
+      "tried_in": [],
+      "at": "<masked>"
+    }
+  ],
+  "samples": [
+    {
+      "id": 1,
+      "slug": "t1",
+      "n": 0,
+      "k": 1,
+      "tree_sha": "base0000",
+      "role": "baseline",
+      "value": 100.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 2,
+      "slug": "t1",
+      "n": 0,
+      "k": 2,
+      "tree_sha": "base0000",
+      "role": "baseline",
+      "value": 100.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 3,
+      "slug": "t1",
+      "n": 0,
+      "k": 3,
+      "tree_sha": "base0000",
+      "role": "baseline",
+      "value": 100.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 4,
+      "slug": "t1",
+      "n": 0,
+      "k": 1,
+      "tree_sha": "base0000",
+      "role": "holdout",
+      "value": 500.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 5,
+      "slug": "t1",
+      "n": 0,
+      "k": 2,
+      "tree_sha": "base0000",
+      "role": "holdout",
+      "value": 500.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 6,
+      "slug": "t1",
+      "n": 0,
+      "k": 3,
+      "tree_sha": "base0000",
+      "role": "holdout",
+      "value": 500.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 7,
+      "slug": "t1",
+      "n": 1,
+      "k": 1,
+      "tree_sha": "exp:1",
+      "role": "candidate",
+      "value": 100.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 8,
+      "slug": "t1",
+      "n": 2,
+      "k": 1,
+      "tree_sha": "keep0002",
+      "role": "candidate",
+      "value": 90.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 9,
+      "slug": "t1",
+      "n": 2,
+      "k": 1,
+      "tree_sha": "keep0002",
+      "role": "holdout",
+      "value": 450.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 10,
+      "slug": "t1",
+      "n": 2,
+      "k": 2,
+      "tree_sha": "keep0002",
+      "role": "holdout",
+      "value": 450.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 11,
+      "slug": "t1",
+      "n": 2,
+      "k": 3,
+      "tree_sha": "keep0002",
+      "role": "holdout",
+      "value": 450.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 12,
+      "slug": "t1",
+      "n": 3,
+      "k": 1,
+      "tree_sha": "exp:3",
+      "role": "candidate",
+      "value": 95.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 13,
+      "slug": "t1",
+      "n": 4,
+      "k": 1,
+      "tree_sha": "exp:4",
+      "role": "candidate",
+      "value": null,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": null,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 1,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 14,
+      "slug": "t1",
+      "n": 4,
+      "k": 1,
+      "tree_sha": "exp:4r1",
+      "role": "candidate",
+      "value": null,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 1,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 15,
+      "slug": "t1",
+      "n": 5,
+      "k": 1,
+      "tree_sha": "keep0005",
+      "role": "candidate",
+      "value": 70.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 16,
+      "slug": "t1",
+      "n": 0,
+      "k": 1,
+      "tree_sha": "keep0002",
+      "role": "baseline",
+      "value": 90.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 17,
+      "slug": "t1",
+      "n": 0,
+      "k": 2,
+      "tree_sha": "keep0002",
+      "role": "baseline",
+      "value": 90.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 18,
+      "slug": "t1",
+      "n": 0,
+      "k": 3,
+      "tree_sha": "keep0002",
+      "role": "baseline",
+      "value": 90.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 19,
+      "slug": "t1",
+      "n": 6,
+      "k": 1,
+      "tree_sha": "exp:6",
+      "role": "candidate",
+      "value": 90.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 20,
+      "slug": "t1",
+      "n": 7,
+      "k": 1,
+      "tree_sha": "keep0007",
+      "role": "candidate",
+      "value": 85.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 21,
+      "slug": "t1",
+      "n": 7,
+      "k": 1,
+      "tree_sha": "keep0007",
+      "role": "holdout",
+      "value": 425.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 22,
+      "slug": "t1",
+      "n": 7,
+      "k": 2,
+      "tree_sha": "keep0007",
+      "role": "holdout",
+      "value": 425.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 23,
+      "slug": "t1",
+      "n": 7,
+      "k": 3,
+      "tree_sha": "keep0007",
+      "role": "holdout",
+      "value": 425.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 24,
+      "slug": "t1",
+      "n": 8,
+      "k": 1,
+      "tree_sha": "exp:8",
+      "role": "candidate",
+      "value": 88.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 25,
+      "slug": "t1",
+      "n": 9,
+      "k": 1,
+      "tree_sha": "exp:9",
+      "role": "candidate",
+      "value": 84.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 26,
+      "slug": "t1",
+      "n": 10,
+      "k": 1,
+      "tree_sha": "exp:10",
+      "role": "candidate",
+      "value": 85.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 27,
+      "slug": "t1",
+      "n": 11,
+      "k": 1,
+      "tree_sha": "exp:11",
+      "role": "candidate",
+      "value": 85.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 28,
+      "slug": "t1",
+      "n": 12,
+      "k": 1,
+      "tree_sha": "keep0012",
+      "role": "candidate",
+      "value": 80.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 29,
+      "slug": "t1",
+      "n": 12,
+      "k": 1,
+      "tree_sha": "keep0012",
+      "role": "holdout",
+      "value": 400.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 30,
+      "slug": "t1",
+      "n": 12,
+      "k": 2,
+      "tree_sha": "keep0012",
+      "role": "holdout",
+      "value": 400.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    },
+    {
+      "id": 31,
+      "slug": "t1",
+      "n": 12,
+      "k": 3,
+      "tree_sha": "keep0012",
+      "role": "holdout",
+      "value": 400.0,
+      "secondaries": {},
+      "cases": {},
+      "asi": {},
+      "exit": 0,
+      "wall_ms": "<masked>",
+      "load": "<masked>",
+      "noisy": 0,
+      "lost": 0,
+      "log_path": null,
+      "at": "<masked>",
+      "slot_holders": "<masked>",
+      "failure": null
+    }
+  ],
+  "segments": [
+    {
+      "slug": "t1",
+      "segment": 0,
+      "opened_at": "<masked>",
+      "opened_by": "user",
+      "reason": null,
+      "custody": {
+        "bench.sh": "abc"
+      },
+      "baseline_mean": 100.0,
+      "baseline_n": 3
+    },
+    {
+      "slug": "t1",
+      "segment": 1,
+      "opened_at": "<masked>",
+      "opened_by": "user",
+      "reason": "new machine",
+      "custody": {
+        "bench.sh": "abc"
+      },
+      "baseline_mean": 90.0,
+      "baseline_n": 3
+    }
+  ],
+  "steers": [
+    {
+      "id": 1,
+      "slug": "t1",
+      "text": "try SIMD",
+      "by": "user",
+      "at": "<masked>",
+      "seen_in": 6
+    }
+  ],
+  "studies": [
+    {
+      "slug": "t1",
+      "state": "running",
+      "state_reason": null,
+      "spec": {
+        "slug": "t1",
+        "goal": "faster",
+        "repo": "<dir>",
+        "base": "HEAD",
+        "metric": {
+          "name": "time_ms",
+          "unit": "ms",
+          "direction": "lower",
+          "min_effect": "0.5%"
+        },
+        "secondary_guards": [],
+        "bench": {
+          "command": "bench.sh",
+          "timeout": "600s",
+          "repeats": 3,
+          "exclusive": true,
+          "smoke": null
+        },
+        "checks": null,
+        "holdout": {
+          "command": "holdout.sh",
+          "every": 1,
+          "repeats": null
+        },
+        "evaluator_paths": [],
+        "scope": [],
+        "off_limits": [],
+        "warm": null,
+        "budget": {
+          "usd": 20.0,
+          "per_experiment_usd": 1.5,
+          "hours": 10.0,
+          "experiments": 50
+        },
+        "parallel": 1,
+        "models": {
+          "executor": null,
+          "review": null,
+          "advisor": null
+        },
+        "window": null,
+        "include_dirty": false
+      },
+      "repo": "<dir>",
+      "base_sha": "base0000",
+      "branch": "autoresearch/t1",
+      "worktree": "<dir>/autoresearch/t1/worktree",
+      "schedule": "autoresearch-t1",
+      "session": "<masked>",
+      "origin": "<masked>",
+      "incumbent_sha": "keep0012",
+      "incumbent_mean": 80.0,
+      "sigma": 0.0,
+      "segment": 1,
+      "playbook": "",
+      "created_at": "<masked>",
+      "started_at": "<masked>",
+      "paused_ms": "<masked>",
+      "finished_at": "<masked>",
+      "stop_reason": null,
+      "report_doc": null,
+      "created_by": "user"
+    }
+  ]
+}

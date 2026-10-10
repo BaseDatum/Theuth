@@ -27,9 +27,10 @@ use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::config::{AgentDefaults, AutoresearchConfig};
 use crate::types::{
-    Begin, Control, ControlOp, ExperimentState, IdeaChange, IdeaOp, Log, LogArgs, LogReport, Notes,
-    NotesArgs, ReviewVerdict, Run, RunArgs, RunReport, StartDraft, StartWhen, Status, SteerMsg,
-    StudyInfo, StudySpec, Verdict,
+    Begin, CaseSource, Control, ControlOp, ExperimentState, IdeaChange, IdeaOp, Log, LogArgs,
+    LogReport, Notes, NotesArgs, ObjectiveRole, ObjectivesMode, ReviewVerdict, Run, RunArgs,
+    RunReport, Scoring, Search, StartDraft, StartWhen, Status, SteerMsg, StudyInfo, StudySpec,
+    Verdict,
 };
 use crate::{AUTORESEARCH_ACTOR, PLUGIN, Studies};
 
@@ -197,8 +198,12 @@ pub fn write_draft(
     }
     confirmed.retain(|r| !sticky.contains(r));
     let token = SessionId::new().0.simple().to_string();
+    // 159 §5.2: `metric` and `secondary_guards` mirror the headline and the guards before
+    // every save (a no-op without `objectives`).
+    let mut spec = spec.clone();
+    spec.normalise();
     let draft = Draft {
-        spec: spec.clone(),
+        spec,
         origin: Some(origin),
         token: Some(token.clone()),
         partial,
@@ -239,27 +244,68 @@ pub fn check_slug(slug: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// What `autoresearch_draft` refuses before drawing a card (140 §4.1): the slug rule,
-/// a goal, a repo, a metric name, a benchmark command, sane budgets, a parsable `min_effect`.
+/// What `autoresearch_draft` refuses before drawing a card (140 §4.1; 159 §5.2 per axis
+/// combination): the slug rule, a goal, a repo, a decision rule for the axes, the right
+/// objectives for the mode, `metric.name` and `bench.command` when the bench scores, sane
+/// budgets, parsable effects.
 pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
     check_slug(&spec.slug)?;
     if spec.goal.trim().is_empty() {
         return Err("goal is empty".into());
     }
-    if spec.repo.trim().is_empty() || !Path::new(&spec.repo).is_absolute() {
+    // 159 W2 H6: a `file` artefact with no repo gets a scratch repo at prepare.
+    let scratch = spec.axes.artefact == crate::types::Artefact::File && spec.repo.trim().is_empty();
+    if !scratch && (spec.repo.trim().is_empty() || !Path::new(&spec.repo).is_absolute()) {
         return Err("repo must be an absolute path".into());
     }
-    if spec.metric.name.trim().is_empty() {
-        return Err("metric.name is empty (the METRIC <name>= line the benchmark prints)".into());
+    validate_axes(spec)?;
+    if spec.axes.scoring == Scoring::Cases {
+        // 159 W2 H4: the case set a prompt study scores on.
+        let cs = spec
+            .cases
+            .as_ref()
+            .ok_or("a prompt study needs a `cases` block")?;
+        if cs.artefact.trim().is_empty() {
+            return Err("cases.artefact is empty (the text file the study edits)".into());
+        }
+        match cs.source {
+            CaseSource::File if cs.path.trim().is_empty() => {
+                return Err("cases.path is empty".into());
+            }
+            CaseSource::Dreaming if cs.skill_hint.trim().is_empty() => {
+                return Err("cases.skill_hint is empty".into());
+            }
+            _ => {}
+        }
+        crate::cases::shares(cs)?;
     }
-    if spec.bench.command.trim().is_empty() {
-        return Err("bench.command is empty".into());
+    if spec.axes.scoring == Scoring::Bench {
+        if spec.metric.name.trim().is_empty() && spec.objectives.is_empty() {
+            return Err(
+                "metric.name is empty (the METRIC <name>= line the benchmark prints)".into(),
+            );
+        }
+        if spec.bench.command.trim().is_empty() {
+            return Err("bench.command is empty".into());
+        }
     }
-    crate::types::Effect::parse(&spec.metric.min_effect)
-        .map_err(|e| format!("metric.min_effect: {e}"))?;
-    for g in &spec.secondary_guards {
-        crate::types::Effect::parse(&g.max_regression)
-            .map_err(|e| format!("secondary_guards[{}]: {e}", g.name))?;
+    if spec.objectives.is_empty() {
+        crate::types::Effect::parse(&spec.metric.min_effect)
+            .map_err(|e| format!("metric.min_effect: {e}"))?;
+        for g in &spec.secondary_guards {
+            crate::types::Effect::parse(&g.max_regression)
+                .map_err(|e| format!("secondary_guards[{}]: {e}", g.name))?;
+        }
+    } else {
+        for o in &spec.objectives {
+            if o.name.trim().is_empty() {
+                return Err("an objective has no name".into());
+            }
+            crate::types::Effect::parse(&o.min_effect)
+                .map_err(|e| format!("objectives[{}].min_effect: {e}", o.name))?;
+            crate::types::Effect::parse(&o.max_regression)
+                .map_err(|e| format!("objectives[{}].max_regression: {e}", o.name))?;
+        }
     }
     let b = &spec.budget;
     if !(b.usd > 0.0
@@ -292,6 +338,118 @@ pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
         humantime::parse_duration(t).map_err(|e| format!("{what} `{t}`: {e}"))?;
     }
     Ok(())
+}
+
+/// 159 §5.2, §5.6: the axes must name a built combination (the rule table), the objectives
+/// must fit the mode (exactly one primary for `single`; 2–5 competing objectives for
+/// `pareto`; no scalar objective for `judged`), population search needs `parallel ≥ 2`, and a
+/// world study spends no money (D4).
+fn validate_axes(spec: &StudySpec) -> Result<(), String> {
+    let a = &spec.axes;
+    if spec.rule().is_none() {
+        return Err(format!(
+            "no wave has built objectives `{}` with scoring `{}` (159 §5.6)",
+            tag(&a.objectives),
+            tag(&a.scoring)
+        ));
+    }
+    let all = spec.objectives_in_force();
+    let primaries = all
+        .iter()
+        .filter(|o| o.role == ObjectiveRole::Primary)
+        .count();
+    let competing = all
+        .iter()
+        .filter(|o| o.role == ObjectiveRole::Objective)
+        .count();
+    match a.objectives {
+        ObjectivesMode::Single if primaries != 1 => {
+            return Err(format!(
+                "a `single` study needs exactly one primary objective, not {primaries}"
+            ));
+        }
+        ObjectivesMode::Single if competing > 0 => {
+            return Err(
+                "a `single` study has no competing objectives; use `axes.objectives: pareto`"
+                    .into(),
+            );
+        }
+        ObjectivesMode::Pareto if !(2..=5).contains(&competing) => {
+            return Err(format!(
+                "a `pareto` study needs 2–5 competing objectives, not {competing} (159 §4)"
+            ));
+        }
+        ObjectivesMode::Pareto if primaries > 0 => {
+            return Err("a `pareto` study has objectives, not a primary".into());
+        }
+        _ => {}
+    }
+    if a.search == Search::Population && spec.parallel < 2 {
+        return Err("population search needs parallel ≥ 2".into());
+    }
+    if a.search == Search::Front && a.objectives != ObjectivesMode::Pareto {
+        return Err("`search: front` needs `objectives: pareto`".into());
+    }
+    if a.search == Search::Front && spec.parallel > 1 {
+        // 159 W1 H1: wave.rs promotes no slot onto the front yet.
+        return Err("a front study runs one experiment at a time (`parallel: 1`); wave promotion onto the front is not built (159 W1-l)".into());
+    }
+    if a.scoring == Scoring::World && spec.world.is_none() {
+        return Err("a world study needs a `world` block".into());
+    }
+    // 159 W7 H11: one suite run (fixtures × seeds inner studies at $INNER_USD) must fit the cap.
+    if a.scoring == Scoring::Suite {
+        let s = crate::suite::suite_of(spec);
+        let planned = s.training.len() as f64 * f64::from(s.seeds) * crate::suite::INNER_USD;
+        if planned > spec.budget.per_experiment_usd {
+            return Err(format!(
+                "a suite run costs about ${planned:.0}, over budget.per_experiment_usd {}",
+                spec.budget.per_experiment_usd
+            ));
+        }
+    }
+    // 159 W3 R-W3-8: the prompt set must be in custody so a candidate cannot edit it.
+    if a.scoring == Scoring::Pairwise
+        && let Some(j) = &spec.judge
+        && !j.prompts.trim().is_empty()
+        && !spec
+            .evaluator_paths
+            .iter()
+            .any(|p| p.trim() == j.prompts.trim())
+    {
+        return Err(format!(
+            "judge.prompts `{}` must be in evaluator_paths so a candidate cannot edit it",
+            j.prompts.trim()
+        ));
+    }
+    // 159 W5 R-W5-4/R-W5-7: the literature block needs its tools in `calls` and a query cap.
+    if let Some(l) = &spec.literature {
+        let via = if l.via.trim().is_empty() {
+            "search_web"
+        } else {
+            l.via.trim()
+        };
+        for t in ["read_url", via] {
+            if !spec.calls.iter().any(|c| c.trim() == t) {
+                return Err(format!("literature needs `{t}` in calls"));
+            }
+        }
+        if l.max_queries > 100 {
+            return Err(format!(
+                "literature.max_queries {} is over the cap of 100",
+                l.max_queries
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// serde's word for a unit enum value (`"pareto"`), for messages.
+fn tag<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 // ───────────────────────────── argument limits ─────────────────────────────
@@ -1352,6 +1510,7 @@ mod tests {
                 usd: 5.75,
                 hours: 2.5,
                 experiments: 34,
+                ..BudgetUsed::default()
             },
             current: Some(35),
             phase: Some(Phase::Sampling),
@@ -1574,6 +1733,162 @@ mod tests {
         assert!(e.contains("bench.repeats must be at least 2"), "{e}");
     }
 
+    /// 159 Z: the seam checks handed off by W1 (front + waves), W2 (the `cases` block), W3
+    /// (`judge.prompts` in custody) and W5 (literature tools in `calls`, the query cap).
+    #[test]
+    fn axis_seams_are_refused_with_the_reason() {
+        let base = StudySpec {
+            slug: "s".into(),
+            goal: "g".into(),
+            repo: "/tmp/r".into(),
+            metric: MetricSpec {
+                name: "t".into(),
+                ..Default::default()
+            },
+            bench: BenchSpec {
+                command: "b".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let obj = |name: &str| Objective {
+            name: name.into(),
+            role: ObjectiveRole::Objective,
+            min_effect: "1%".into(),
+            max_regression: "5%".into(),
+            ..Default::default()
+        };
+        // W1 H1: a front study with waves.
+        let front = StudySpec {
+            axes: Axes {
+                objectives: ObjectivesMode::Pareto,
+                search: Search::Front,
+                ..Default::default()
+            },
+            objectives: vec![obj("a"), obj("b")],
+            ..base.clone()
+        };
+        validate_spec(&front).unwrap();
+        let e = validate_spec(&StudySpec {
+            parallel: 2,
+            ..front.clone()
+        })
+        .unwrap_err();
+        assert!(e.contains("one experiment at a time"), "{e}");
+
+        // W2 H4: the `cases` block.
+        let prompt = StudySpec {
+            axes: Axes {
+                scoring: Scoring::Cases,
+                artefact: Artefact::File,
+                ..Default::default()
+            },
+            cases: Some(CaseSetSpec {
+                path: "cases.jsonl".into(),
+                artefact: "prompt.md".into(),
+                ..Default::default()
+            }),
+            ..base.clone()
+        };
+        validate_spec(&prompt).unwrap();
+        for (cs, msg) in [
+            (None, "needs a `cases` block"),
+            (
+                Some(CaseSetSpec {
+                    artefact: String::new(),
+                    ..prompt.cases.clone().unwrap()
+                }),
+                "cases.artefact is empty",
+            ),
+            (
+                Some(CaseSetSpec {
+                    path: String::new(),
+                    ..prompt.cases.clone().unwrap()
+                }),
+                "cases.path is empty",
+            ),
+            (
+                Some(CaseSetSpec {
+                    source: CaseSource::Dreaming,
+                    ..prompt.cases.clone().unwrap()
+                }),
+                "cases.skill_hint is empty",
+            ),
+            (
+                Some(CaseSetSpec {
+                    split: "50/50/50".into(),
+                    ..prompt.cases.clone().unwrap()
+                }),
+                "split",
+            ),
+        ] {
+            let e = validate_spec(&StudySpec {
+                cases: cs,
+                ..prompt.clone()
+            })
+            .unwrap_err();
+            assert!(e.contains(msg), "{e} should mention {msg}");
+        }
+
+        // W3 R-W3-8: the prompt set must be an evaluator path.
+        let judged = StudySpec {
+            axes: Axes {
+                objectives: ObjectivesMode::Judged,
+                scoring: Scoring::Pairwise,
+                artefact: Artefact::File,
+                ..Default::default()
+            },
+            judge: Some(JudgeSpec {
+                prompts: "judged/prompts.jsonl".into(),
+                ..Default::default()
+            }),
+            evaluator_paths: vec!["judged/prompts.jsonl".into()],
+            ..base.clone()
+        };
+        validate_spec(&judged).unwrap();
+        let e = validate_spec(&StudySpec {
+            evaluator_paths: vec![],
+            ..judged.clone()
+        })
+        .unwrap_err();
+        assert!(
+            e.contains("judge.prompts `judged/prompts.jsonl` must be in evaluator_paths"),
+            "{e}"
+        );
+
+        // W5 R-W5-4 / R-W5-7: the literature tools and the query cap.
+        let lit = StudySpec {
+            literature: Some(LiteratureSpec::default()),
+            calls: vec!["search_web".into(), "read_url".into()],
+            ..base.clone()
+        };
+        validate_spec(&lit).unwrap();
+        let e = validate_spec(&StudySpec {
+            calls: vec!["search_web".into()],
+            ..lit.clone()
+        })
+        .unwrap_err();
+        assert!(e.contains("literature needs `read_url` in calls"), "{e}");
+        let e = validate_spec(&StudySpec {
+            literature: Some(LiteratureSpec {
+                via: "arxiv".into(),
+                ..Default::default()
+            }),
+            ..lit.clone()
+        })
+        .unwrap_err();
+        assert!(e.contains("literature needs `arxiv` in calls"), "{e}");
+        let e = validate_spec(&StudySpec {
+            literature: Some(LiteratureSpec {
+                max_queries: 101,
+                ..Default::default()
+            }),
+            ..lit.clone()
+        })
+        .unwrap_err();
+        assert!(e.contains("max_queries 101 is over the cap of 100"), "{e}");
+    }
+
     /// R-13: `autoresearch_control` is refused to a study's bound session and to
     /// a wave child — even one that has not yet bound a slot (`wave::is_child`);
     /// a root session passes.
@@ -1679,6 +1994,47 @@ mod tests {
         assert_eq!(
             e,
             "autoresearch_probe is not available inside a study session"
+        );
+    }
+
+    /// 159 W7 H11: a suite run's planned inner spend must fit `budget.per_experiment_usd`.
+    #[test]
+    fn validate_spec_refuses_a_suite_run_over_the_per_experiment_cap() {
+        let mut spec = crate::suite::preset("/x/mechanism");
+        validate_spec(&spec).unwrap();
+        spec.budget.per_experiment_usd = 10.0;
+        let e = validate_spec(&spec).unwrap_err();
+        assert!(
+            e.contains("costs about $16") && e.contains("per_experiment_usd 10"),
+            "{e}"
+        );
+    }
+
+    /// 159 W2 H6: a `file` artefact without a repo is a scratch-repo study, not a refusal.
+    #[test]
+    fn validate_spec_takes_a_file_artefact_without_a_repo() {
+        let mut spec = StudySpec {
+            slug: "p".into(),
+            goal: "g".into(),
+            repo: String::new(),
+            axes: crate::types::Axes {
+                scoring: Scoring::Cases,
+                artefact: Artefact::File,
+                ..Default::default()
+            },
+            cases: Some(CaseSetSpec {
+                source: CaseSource::File,
+                path: "/abs/cases.jsonl".into(),
+                artefact: "prompt.md".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        validate_spec(&spec).unwrap();
+        spec.axes.artefact = Default::default();
+        assert_eq!(
+            validate_spec(&spec).unwrap_err(),
+            "repo must be an absolute path"
         );
     }
 }

@@ -28,6 +28,7 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 regex = { workspace = true }  # the token patterns of `scrub`
 sha2 = { workspace = true }  # the train/val split hash (136 §6)
+evalcore = { workspace = true }  # 159 §13.1 the shared eval core: split, judge prompt, margin + paired gate, run_case (W2)
 uuid = { workspace = true }  # time-ordered ids (no ulid crate in the workspace)
 sqlx = { workspace = true }  # read-only `dry_run` over knowledge.sqlite / sessions.sqlite
 ts-rs = { workspace = true, optional = true }

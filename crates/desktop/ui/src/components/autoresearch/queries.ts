@@ -88,6 +88,18 @@ export function useAutoresearchSettings() {
   return useQuery({ queryKey: [...KEY, 'settings'], queryFn: () => api['autoresearch.settings.get']() })
 }
 
+/** `autoresearch.mechanism {op: list}` (159 W7): the active version (`null` = compiled defaults) and every registered one, newest first. */
+export function useMechanism() {
+  const api = useAutoresearchApi()
+  return useQuery({ queryKey: [...KEY, 'mechanism'], queryFn: () => api['autoresearch.mechanism']({ op: 'list' }) })
+}
+
+/** One version's files (`{op: show, version}`), fetched once a Show press names it; `null` = nothing open. */
+export function useMechanismFiles(version: number | null) {
+  const api = useAutoresearchApi()
+  return useQuery({ queryKey: [...KEY, 'mechanism', version], queryFn: () => api['autoresearch.mechanism']({ op: 'show', version }), enabled: version !== null })
+}
+
 /** `autoresearch.control`: every button of the header, the needs-your-eyes rows and the changesets table. A merge has no row to change, so it says so. */
 export function useControl(slug: string) {
   const api = useAutoresearchApi()

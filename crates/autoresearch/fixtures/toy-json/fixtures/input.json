@@ -1,0 +1,2194 @@
+{
+ "records": [
+  {
+   "id": 0,
+   "name": "tab\there",
+   "score": 74.179,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 794,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 1,
+   "name": "delta",
+   "score": 64.897,
+   "tags": [
+    "beta"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 889,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 2,
+   "name": "delta",
+   "score": 38.076,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 13,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 3,
+   "name": "delta",
+   "score": 40.815,
+   "tags": [
+    "uni\u00e9"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 816,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 4,
+   "name": "beta",
+   "score": 13.877,
+   "tags": [
+    "gamma",
+    "gamma",
+    "alpha"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 5,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 5,
+   "name": "delta",
+   "score": 77.359,
+   "tags": [
+    "gamma"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 984,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 6,
+   "name": "delta",
+   "score": 53.922,
+   "tags": [
+    "gamma"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 707,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 7,
+   "name": "delta",
+   "score": 96.656,
+   "tags": [
+    "tab\there",
+    "alpha",
+    "quote\"q"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 958,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 8,
+   "name": "gamma",
+   "score": 26.381,
+   "tags": [
+    "tab\there",
+    "alpha"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 724,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 9,
+   "name": "quote\"q",
+   "score": 6.602,
+   "tags": [
+    "tab\there",
+    "slash/x"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 189,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 10,
+   "name": "slash/x",
+   "score": 47.254,
+   "tags": [
+    "alpha"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 961,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 11,
+   "name": "alpha",
+   "score": 94.922,
+   "tags": [
+    "uni\u00e9",
+    "alpha"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 428,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 12,
+   "name": "quote\"q",
+   "score": 37.637,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 724,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 13,
+   "name": "gamma",
+   "score": 62.371,
+   "tags": [
+    "beta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 951,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 14,
+   "name": "slash/x",
+   "score": 34.438,
+   "tags": [
+    "tab\there",
+    "slash/x"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 766,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 15,
+   "name": "quote\"q",
+   "score": 85.969,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 93,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 16,
+   "name": "delta",
+   "score": 34.074,
+   "tags": [
+    "gamma",
+    "quote\"q"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 719,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 17,
+   "name": "beta",
+   "score": 31.245,
+   "tags": [
+    "tab\there",
+    "gamma"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 641,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 18,
+   "name": "gamma",
+   "score": 72.114,
+   "tags": [
+    "slash/x",
+    "gamma"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 82,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 19,
+   "name": "uni\u00e9",
+   "score": 3.183,
+   "tags": [
+    "tab\there",
+    "slash/x"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 149,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 20,
+   "name": "alpha",
+   "score": 97.905,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 342,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 21,
+   "name": "delta",
+   "score": 13.057,
+   "tags": [
+    "uni\u00e9"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 444,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 22,
+   "name": "quote\"q",
+   "score": 14.925,
+   "tags": [
+    "tab\there",
+    "gamma",
+    "slash/x"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 635,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 23,
+   "name": "gamma",
+   "score": 97.601,
+   "tags": [
+    "slash/x",
+    "quote\"q",
+    "slash/x"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 481,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 24,
+   "name": "uni\u00e9",
+   "score": 90.186,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 544,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 25,
+   "name": "gamma",
+   "score": 62.696,
+   "tags": [
+    "quote\"q",
+    "gamma",
+    "beta"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 527,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 26,
+   "name": "quote\"q",
+   "score": 6.311,
+   "tags": [
+    "alpha",
+    "tab\there"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 721,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 27,
+   "name": "tab\there",
+   "score": 83.523,
+   "tags": [
+    "tab\there",
+    "quote\"q"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 594,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 28,
+   "name": "alpha",
+   "score": 47.43,
+   "tags": [
+    "quote\"q",
+    "tab\there"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 836,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 29,
+   "name": "quote\"q",
+   "score": 34.788,
+   "tags": [
+    "uni\u00e9",
+    "quote\"q"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 176,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 30,
+   "name": "slash/x",
+   "score": 97.612,
+   "tags": [
+    "gamma",
+    "gamma"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 370,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 31,
+   "name": "slash/x",
+   "score": 28.286,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 747,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 32,
+   "name": "uni\u00e9",
+   "score": 17.183,
+   "tags": [
+    "tab\there",
+    "tab\there",
+    "alpha"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 600,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 33,
+   "name": "slash/x",
+   "score": 62.407,
+   "tags": [
+    "delta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 184,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 34,
+   "name": "alpha",
+   "score": 98.647,
+   "tags": [
+    "gamma"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 136,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 35,
+   "name": "beta",
+   "score": 31.735,
+   "tags": [
+    "slash/x"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 36,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 36,
+   "name": "uni\u00e9",
+   "score": 46.533,
+   "tags": [
+    "beta",
+    "delta",
+    "delta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 382,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 37,
+   "name": "alpha",
+   "score": 35.052,
+   "tags": [
+    "uni\u00e9",
+    "beta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 560,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 38,
+   "name": "quote\"q",
+   "score": 96.437,
+   "tags": [
+    "beta",
+    "tab\there"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 347,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 39,
+   "name": "tab\there",
+   "score": 95.83,
+   "tags": [
+    "uni\u00e9"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 577,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 40,
+   "name": "quote\"q",
+   "score": 46.747,
+   "tags": [
+    "uni\u00e9"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 980,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 41,
+   "name": "delta",
+   "score": 96.8,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 914,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 42,
+   "name": "alpha",
+   "score": 38.185,
+   "tags": [
+    "gamma",
+    "quote\"q"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 912,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 43,
+   "name": "uni\u00e9",
+   "score": 42.92,
+   "tags": [
+    "slash/x"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 995,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 44,
+   "name": "uni\u00e9",
+   "score": 38.389,
+   "tags": [
+    "tab\there"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 308,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 45,
+   "name": "slash/x",
+   "score": 25.107,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 314,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 46,
+   "name": "slash/x",
+   "score": 92.954,
+   "tags": [
+    "slash/x"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 675,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 47,
+   "name": "slash/x",
+   "score": 24.55,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 846,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 48,
+   "name": "uni\u00e9",
+   "score": 1.32,
+   "tags": [
+    "delta",
+    "slash/x"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 251,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 49,
+   "name": "slash/x",
+   "score": 26.769,
+   "tags": [
+    "tab\there"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 622,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 50,
+   "name": "slash/x",
+   "score": 51.822,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 129,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 51,
+   "name": "tab\there",
+   "score": 28.235,
+   "tags": [
+    "tab\there",
+    "alpha"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 369,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 52,
+   "name": "gamma",
+   "score": 3.643,
+   "tags": [
+    "slash/x",
+    "beta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 558,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 53,
+   "name": "delta",
+   "score": 1.456,
+   "tags": [
+    "slash/x",
+    "uni\u00e9",
+    "slash/x"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 872,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 54,
+   "name": "delta",
+   "score": 89.89,
+   "tags": [
+    "beta",
+    "tab\there",
+    "alpha"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 443,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 55,
+   "name": "tab\there",
+   "score": 64.839,
+   "tags": [
+    "tab\there",
+    "gamma",
+    "gamma"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 562,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 56,
+   "name": "slash/x",
+   "score": 97.292,
+   "tags": [
+    "uni\u00e9"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 831,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 57,
+   "name": "alpha",
+   "score": 6.842,
+   "tags": [
+    "tab\there"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 810,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 58,
+   "name": "beta",
+   "score": 66.36,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 439,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 59,
+   "name": "beta",
+   "score": 99.833,
+   "tags": [
+    "alpha",
+    "beta",
+    "beta"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 661,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 60,
+   "name": "beta",
+   "score": 71.244,
+   "tags": [
+    "tab\there"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 448,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 61,
+   "name": "gamma",
+   "score": 18.309,
+   "tags": [
+    "uni\u00e9"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 68,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 62,
+   "name": "delta",
+   "score": 4.356,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 763,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 63,
+   "name": "beta",
+   "score": 27.987,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 899,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 64,
+   "name": "gamma",
+   "score": 0.997,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 614,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 65,
+   "name": "slash/x",
+   "score": 48.958,
+   "tags": [
+    "alpha",
+    "gamma"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 154,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 66,
+   "name": "tab\there",
+   "score": 91.042,
+   "tags": [
+    "tab\there"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 241,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 67,
+   "name": "tab\there",
+   "score": 83.261,
+   "tags": [
+    "gamma",
+    "delta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 464,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 68,
+   "name": "uni\u00e9",
+   "score": 17.932,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 87,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 69,
+   "name": "alpha",
+   "score": 9.118,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 464,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 70,
+   "name": "delta",
+   "score": 38.985,
+   "tags": [
+    "slash/x",
+    "quote\"q",
+    "beta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 30,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 71,
+   "name": "uni\u00e9",
+   "score": 5.366,
+   "tags": [
+    "uni\u00e9"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 228,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 72,
+   "name": "beta",
+   "score": 8.378,
+   "tags": [
+    "delta",
+    "gamma",
+    "uni\u00e9"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 240,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 73,
+   "name": "tab\there",
+   "score": 33.327,
+   "tags": [
+    "uni\u00e9",
+    "uni\u00e9"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 851,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 74,
+   "name": "quote\"q",
+   "score": 64.789,
+   "tags": [
+    "quote\"q",
+    "alpha",
+    "delta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 405,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 75,
+   "name": "beta",
+   "score": 9.7,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 200,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 76,
+   "name": "alpha",
+   "score": 49.003,
+   "tags": [
+    "quote\"q",
+    "alpha",
+    "uni\u00e9"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 911,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 77,
+   "name": "uni\u00e9",
+   "score": 32.326,
+   "tags": [
+    "beta",
+    "delta",
+    "gamma"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 72,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 78,
+   "name": "quote\"q",
+   "score": 86.907,
+   "tags": [
+    "gamma",
+    "tab\there",
+    "beta"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 165,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 79,
+   "name": "tab\there",
+   "score": 67.199,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 32,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 80,
+   "name": "quote\"q",
+   "score": 92.452,
+   "tags": [
+    "quote\"q",
+    "alpha"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 689,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 81,
+   "name": "slash/x",
+   "score": 47.173,
+   "tags": [
+    "beta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 332,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 82,
+   "name": "tab\there",
+   "score": 45.388,
+   "tags": [
+    "gamma"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 731,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 83,
+   "name": "alpha",
+   "score": 57.472,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 933,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 84,
+   "name": "quote\"q",
+   "score": 68.052,
+   "tags": [
+    "slash/x"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 68,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 85,
+   "name": "slash/x",
+   "score": 16.335,
+   "tags": [
+    "gamma"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 963,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 86,
+   "name": "alpha",
+   "score": 64.587,
+   "tags": [
+    "tab\there",
+    "alpha",
+    "slash/x"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 797,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 87,
+   "name": "uni\u00e9",
+   "score": 16.976,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 857,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 88,
+   "name": "quote\"q",
+   "score": 93.95,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 822,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 89,
+   "name": "slash/x",
+   "score": 9.195,
+   "tags": [
+    "alpha",
+    "delta",
+    "alpha"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 800,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 90,
+   "name": "alpha",
+   "score": 4.79,
+   "tags": [
+    "slash/x",
+    "tab\there",
+    "alpha"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 972,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 91,
+   "name": "delta",
+   "score": 17.939,
+   "tags": [
+    "delta",
+    "delta",
+    "beta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 809,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 92,
+   "name": "beta",
+   "score": 8.682,
+   "tags": [
+    "beta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 219,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 93,
+   "name": "alpha",
+   "score": 44.121,
+   "tags": [
+    "slash/x",
+    "uni\u00e9"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 385,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 94,
+   "name": "gamma",
+   "score": 72.564,
+   "tags": [
+    "slash/x",
+    "delta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 142,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 95,
+   "name": "tab\there",
+   "score": 48.322,
+   "tags": [
+    "uni\u00e9",
+    "quote\"q"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 549,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 96,
+   "name": "beta",
+   "score": 47.161,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 990,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 97,
+   "name": "delta",
+   "score": 27.583,
+   "tags": [
+    "delta",
+    "alpha",
+    "delta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 903,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 98,
+   "name": "quote\"q",
+   "score": 88.553,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 321,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 99,
+   "name": "uni\u00e9",
+   "score": 75.232,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 669,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 100,
+   "name": "gamma",
+   "score": 57.473,
+   "tags": [
+    "gamma",
+    "alpha",
+    "alpha"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 274,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 101,
+   "name": "beta",
+   "score": 81.208,
+   "tags": [
+    "gamma",
+    "quote\"q",
+    "beta"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 140,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 102,
+   "name": "tab\there",
+   "score": 49.772,
+   "tags": [
+    "tab\there",
+    "alpha"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 782,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 103,
+   "name": "alpha",
+   "score": 2.747,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 846,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 104,
+   "name": "quote\"q",
+   "score": 43.596,
+   "tags": [
+    "alpha",
+    "delta"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 128,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 105,
+   "name": "quote\"q",
+   "score": 20.119,
+   "tags": [
+    "alpha",
+    "gamma"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 846,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 106,
+   "name": "gamma",
+   "score": 72.683,
+   "tags": [],
+   "ok": true,
+   "nested": {
+    "x": 620,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 107,
+   "name": "gamma",
+   "score": 63.057,
+   "tags": [
+    "slash/x"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 444,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 108,
+   "name": "uni\u00e9",
+   "score": 11.82,
+   "tags": [
+    "slash/x",
+    "delta"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 444,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 109,
+   "name": "gamma",
+   "score": 44.142,
+   "tags": [
+    "slash/x"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 610,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 110,
+   "name": "alpha",
+   "score": 10.356,
+   "tags": [
+    "alpha",
+    "delta",
+    "alpha"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 590,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 111,
+   "name": "delta",
+   "score": 48.199,
+   "tags": [
+    "uni\u00e9",
+    "slash/x"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 283,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 112,
+   "name": "delta",
+   "score": 30.323,
+   "tags": [
+    "delta",
+    "quote\"q"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 254,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 113,
+   "name": "alpha",
+   "score": 61.815,
+   "tags": [
+    "quote\"q",
+    "gamma",
+    "gamma"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 501,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 114,
+   "name": "uni\u00e9",
+   "score": 3.774,
+   "tags": [
+    "uni\u00e9"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 734,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 115,
+   "name": "tab\there",
+   "score": 90.018,
+   "tags": [
+    "quote\"q"
+   ],
+   "ok": true,
+   "nested": {
+    "x": 481,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 116,
+   "name": "beta",
+   "score": 80.037,
+   "tags": [
+    "alpha",
+    "beta",
+    "gamma"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 22,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 117,
+   "name": "quote\"q",
+   "score": 67.793,
+   "tags": [
+    "uni\u00e9",
+    "slash/x"
+   ],
+   "ok": false,
+   "nested": {
+    "x": 707,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 118,
+   "name": "uni\u00e9",
+   "score": 44.975,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 817,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  },
+  {
+   "id": 119,
+   "name": "uni\u00e9",
+   "score": 36.28,
+   "tags": [],
+   "ok": false,
+   "nested": {
+    "x": 534,
+    "y": null,
+    "z": [
+     1,
+     2.5,
+     -3
+    ]
+   }
+  }
+ ],
+ "count": 120
+}

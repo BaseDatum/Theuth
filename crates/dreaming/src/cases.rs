@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use sha2::{Digest as _, Sha256};
 
 use crate::scrub::{clip, scrub};
 use crate::types::{Case, CaseOrigin, CaseState, Split};
@@ -39,17 +38,21 @@ pub fn now_rfc3339() -> String {
 }
 
 /// The stable split of `id` (136 §6): `sha256(seed + id) % 100 < 34 → val`;
-/// synthetic never val.
+/// synthetic never val. The hash is the shared core's (159 §13.1): dreaming's
+/// two-way split is `evalcore::split` with `Shares { train: 66, val: 34, holdout: 0 }`.
 pub fn split_for(id: &str, origin: CaseOrigin) -> Split {
-    if origin == CaseOrigin::Synthetic {
-        return Split::Train;
-    }
-    let digest = Sha256::digest(format!("{SPLIT_SEED}{id}").as_bytes());
-    let n = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes"));
-    if n % 100 < VAL_PERCENT {
-        Split::Val
-    } else {
-        Split::Train
+    match evalcore::split(
+        SPLIT_SEED,
+        id,
+        evalcore::Shares {
+            train: (100 - VAL_PERCENT) as u8,
+            val: VAL_PERCENT as u8,
+            holdout: 0,
+        },
+        origin == CaseOrigin::Synthetic,
+    ) {
+        evalcore::Split::Val => Split::Val,
+        evalcore::Split::Train | evalcore::Split::Holdout => Split::Train,
     }
 }
 

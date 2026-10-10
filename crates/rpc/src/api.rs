@@ -2159,6 +2159,46 @@ pub trait Api {
     /// 151 D3: discard a draft — the drafts dir is removed, later Starts are refused.
     #[method(name = "autoresearch.discard_draft")]
     async fn autoresearch_discard_draft(&self, draft_id: String) -> RpcResult<()>;
+    /// 159 §5.11: archive rows — front members (W1) or population cells (W4).
+    #[method(name = "autoresearch.archive")]
+    async fn autoresearch_archive(&self, slug: String) -> RpcResult<Vec<autoresearch::ArchiveRow>>;
+    /// 159 §5.11: case × experiment rows for the heat strip; `n` narrows to one experiment (W2).
+    #[method(name = "autoresearch.cases")]
+    async fn autoresearch_cases(
+        &self,
+        slug: String,
+        n: Option<u32>,
+    ) -> RpcResult<Vec<autoresearch::CaseRow>>;
+    /// 159 §5.11: blind-pair verdicts; `n` narrows to one experiment (W3).
+    #[method(name = "autoresearch.judgments")]
+    async fn autoresearch_judgments(
+        &self,
+        slug: String,
+        n: Option<u32>,
+    ) -> RpcResult<Vec<autoresearch::JudgmentRow>>;
+    /// 159 §5.11: the user's answer (`a` | `b` | `same`) to blind pair `id` (W3).
+    #[method(name = "autoresearch.human_pair")]
+    async fn autoresearch_human_pair(
+        &self,
+        slug: String,
+        id: i64,
+        winner: String,
+    ) -> RpcResult<autoresearch::StudyInfo>;
+    /// 159 §5.11: the launch press — approve deploys both arms, refuse discards experiment `n` (W6).
+    #[method(name = "autoresearch.launch")]
+    async fn autoresearch_launch(
+        &self,
+        slug: String,
+        n: u32,
+        token: String,
+        approve: bool,
+    ) -> RpcResult<autoresearch::StudyInfo>;
+    /// 159 §5.11: list, show or adopt a mechanism version (W7).
+    #[method(name = "autoresearch.mechanism")]
+    async fn autoresearch_mechanism(
+        &self,
+        op: autoresearch::MechanismOp,
+    ) -> RpcResult<autoresearch::MechanismInfo>;
     /// 137 §11.1 `agent.endless` as in force (Settings › Memory).
     #[method(name = "endless_settings_get")]
     async fn endless_settings_get(&self) -> RpcResult<EndlessConfig>;
@@ -7277,6 +7317,11 @@ impl ApiServer for Server {
         slug: String,
         op: autoresearch::ControlOp,
     ) -> RpcResult<autoresearch::StudyInfo> {
+        // 159 §13.3: a learned-sidecar study's Merge lands through dreaming first (backup,
+        // atomic write, `edits.jsonl`); the actor's Merge then does its bookkeeping.
+        crate::landing::before_merge(&self.rt.data_dir, &slug, &op)
+            .await
+            .map_err(dreaming_err)?;
         autoresearch::rpc_impl::control(slug, op)
             .await
             .map_err(dreaming_err)
@@ -7346,6 +7391,66 @@ impl ApiServer for Server {
 
     async fn autoresearch_discard_draft(&self, draft_id: String) -> RpcResult<()> {
         autoresearch::rpc_impl::discard_draft(draft_id)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    // 159 §5.11: per-kind methods; stubs in `autoresearch::rpc_impl` until their wave.
+
+    async fn autoresearch_archive(&self, slug: String) -> RpcResult<Vec<autoresearch::ArchiveRow>> {
+        autoresearch::rpc_impl::archive(slug)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_cases(
+        &self,
+        slug: String,
+        n: Option<u32>,
+    ) -> RpcResult<Vec<autoresearch::CaseRow>> {
+        autoresearch::rpc_impl::cases(slug, n)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_judgments(
+        &self,
+        slug: String,
+        n: Option<u32>,
+    ) -> RpcResult<Vec<autoresearch::JudgmentRow>> {
+        autoresearch::rpc_impl::judgments(slug, n)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_human_pair(
+        &self,
+        slug: String,
+        id: i64,
+        winner: String,
+    ) -> RpcResult<autoresearch::StudyInfo> {
+        autoresearch::rpc_impl::human_pair(slug, id, winner)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_launch(
+        &self,
+        slug: String,
+        n: u32,
+        token: String,
+        approve: bool,
+    ) -> RpcResult<autoresearch::StudyInfo> {
+        autoresearch::rpc_impl::launch(slug, n, token, approve)
+            .await
+            .map_err(dreaming_err)
+    }
+
+    async fn autoresearch_mechanism(
+        &self,
+        op: autoresearch::MechanismOp,
+    ) -> RpcResult<autoresearch::MechanismInfo> {
+        autoresearch::rpc_impl::mechanism(op)
             .await
             .map_err(dreaming_err)
     }

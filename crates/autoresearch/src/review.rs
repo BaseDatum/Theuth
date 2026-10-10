@@ -162,12 +162,16 @@ fn agents() -> Result<ActorRef<agent::Agents>> {
         .ok_or_else(|| Error::refused("agent actor is not running"))
 }
 
-async fn call(
+/// 159 §5.10: one SideCall charged to the study session under `CallKind::Autoresearch`, the
+/// body `Backend::side_call` and this module's `call` share. `Err` is the message the caller
+/// shows (no bound session, no agent actor, the provider's or the budget's error).
+pub async fn side_call(
     study: &StudyRecord,
     role: runtime::ModelRole,
     system: &str,
     user: String,
-) -> std::result::Result<String, String> {
+    budget: Duration,
+) -> std::result::Result<runtime::SideReply, String> {
     let session = study
         .session
         .ok_or("the study has no bound session to charge the call to")?;
@@ -178,12 +182,22 @@ async fn call(
             role,
             system: system.to_owned(),
             user,
-            budget: CALL_BUDGET,
+            budget,
             kind: runtime::CallKind::Autoresearch,
         })
         .await
-        .map(|r| r.text)
         .map_err(|e| e.to_string())
+}
+
+async fn call(
+    study: &StudyRecord,
+    role: runtime::ModelRole,
+    system: &str,
+    user: String,
+) -> std::result::Result<String, String> {
+    side_call(study, role, system, user, CALL_BUDGET)
+        .await
+        .map(|r| r.text)
 }
 
 const REVIEW_SYSTEM: &str = "You are the independent reviewer of an automated optimisation loop. Follow the message's instructions exactly and answer in one line.";
@@ -454,7 +468,13 @@ pub async fn advise(
             _ => runtime::ModelRole::Session,
         },
     };
-    let reply = call(study, role, ADVISOR_SYSTEM, user)
+    // 159 W7 H8 / R-SEAMS-17: the configured `root:` (as finalize.rs reads it) and the
+    // study's pin, so a running study's advisor never switches on Adopt.
+    let cfg: crate::config::AutoresearchConfig = rt.section("autoresearch").unwrap_or_default();
+    let system =
+        crate::mechanism::advisor_prompt(&cfg.root(&rt.data_dir), study.mechanism.as_deref())
+            .unwrap_or_else(|| ADVISOR_SYSTEM.to_owned()); // 159:W7
+    let reply = call(study, role, &system, user)
         .await
         .map_err(Error::refused)?;
     let ideas = parse_ideas(&reply);

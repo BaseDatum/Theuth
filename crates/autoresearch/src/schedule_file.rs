@@ -99,11 +99,17 @@ pub fn text(
         s.push_str(&format!("when: {}\n", yaml_str(w)));
     }
     s.push_str("---\n\n");
-    s.push_str(&format!(
-        "Run the next experiment of autoresearch study `{}`. Call experiment_begin() first and follow the protocol \
-         in the brief it returns. Do not ask questions; nobody is watching this session.\n",
-        spec.slug
-    ));
+    // 159:W7 — the fire prompt of the pinned mechanism, else the compiled text; the study
+    // root is two levels above `<root>/<slug>/worktree`.
+    let root = worktree.parent().and_then(Path::parent).unwrap_or(worktree);
+    match crate::mechanism::fire_prompt(root, None) {
+        Some(p) => s.push_str(&p.replace("{slug}", &spec.slug)),
+        None => s.push_str(&format!(
+            "Run the next experiment of autoresearch study `{}`. Call experiment_begin() first and follow the protocol \
+             in the brief it returns. Do not ask questions; nobody is watching this session.\n",
+            spec.slug
+        )),
+    }
     s
 }
 

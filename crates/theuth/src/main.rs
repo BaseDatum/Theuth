@@ -1362,8 +1362,14 @@ fn main() -> anyhow::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("subprocess") {
         std::process::exit(i32::from(worker::run()));
     }
+    // 159 Z: the autoresearch handlers (begin → brief render → per-kind sections, log → gate →
+    // finalize) are deep chains of large async fns; a debug build's poll frames pass tokio's
+    // 2 MiB default worker stack once the seven kinds dispatch from one place (the golden
+    // ledger overflowed at 2 MiB, passed at 3). Reserved, not committed: 8 MiB costs nothing
+    // until used.
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_stack_size(8 << 20)
         .build()?
         .block_on(run());
     // A failed start (a plugin refused) still unlinks engine.json (63 §2.1).

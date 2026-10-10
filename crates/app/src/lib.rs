@@ -17,6 +17,7 @@ pub mod agent_draft;
 pub mod draft;
 pub mod fence;
 pub mod helper;
+pub mod launch_card; // 159:W6
 pub mod meta;
 pub mod routine_draft;
 pub mod sched;
@@ -370,6 +371,7 @@ impl runtime::Plugin for AppPlugin {
                         core: core.clone(),
                     })))
                     .await;
+                launch_card::register(&reg, core.clone()).await; // 159:W6
                 let _ = reg
                     .ask(tools::RegisterPrompt {
                         plugin: "app",

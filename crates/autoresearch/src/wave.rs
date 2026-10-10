@@ -25,7 +25,7 @@ use crate::config::OnSuspicious;
 use crate::error::{Error, Result};
 use crate::git::KeepMeta;
 use crate::runner::SampleRequest;
-use crate::store::{ExperimentRecord, StudyRecord, now};
+use crate::store::{ExperimentRecord, StudyPatch, StudyRecord, now};
 use crate::types::*;
 use crate::{Studies, binding, schedule_file};
 
@@ -248,7 +248,7 @@ pub(crate) async fn next_wave(env: &Env, slug: &str) -> Result<u32> {
 pub(crate) async fn open_env(env: &Env, study: &StudyRecord, wave: u32) -> Result<Vec<Slot>> {
     let slug = study.slug.as_str();
     let n_slots = study.spec.parallel.max(2);
-    let incumbent = actor::incumbent_of(study)?;
+    let _ = actor::incumbent_of(study)?; // every slot's parent still needs an incumbent to exist
     let study_wt = actor::worktree_of(study)?;
     let first = env.store.next_experiment_n(slug).await?;
     let categories = assign_categories(env, study, wave, usize::from(n_slots)).await?;
@@ -259,10 +259,12 @@ pub(crate) async fn open_env(env: &Env, study: &StudyRecord, wave: u32) -> Resul
         if dir.exists() {
             env.backend.worktree_remove(&study_wt, &dir)?;
         }
+        // 159 §18.3: a front (W1) or population (W4) slot is cut from its own parent.
+        let parent = actor::parent_of(env, study, Some(k)).await?;
         env.backend
-            .worktree_add_detached(&study_wt, &dir, &incumbent)?;
+            .worktree_add_detached(&study_wt, &dir, &parent)?;
         let n = first + i as u32;
-        let mut exp = ExperimentRecord::open(slug, n, study.segment, &incumbent);
+        let mut exp = ExperimentRecord::open(slug, n, study.segment, &parent);
         exp.wave = Some(wave);
         exp.slot = Some(k);
         env.store.insert_experiment(&exp).await?;
@@ -300,8 +302,10 @@ async fn study_by_slug(env: &Env, slug: &str) -> Result<StudyRecord> {
 }
 
 /// Distinct categories per slot: the user's ★ ideas first (one slot each),
-/// then a rotation (by wave number) over the categories seen in the study's
-/// experiments and backlog; slots past the known categories are a free choice.
+/// then a rotation (by wave number) over the mechanism's preferred categories
+/// (159 W7 H6, when its `mechanism.yaml` lists any) followed by the categories
+/// seen in the study's experiments and backlog; slots past the known categories
+/// are a free choice.
 async fn assign_categories(
     env: &Env,
     study: &StudyRecord,
@@ -312,7 +316,9 @@ async fn assign_categories(
     let ideas = env.store.list_ideas(slug, Some(IdeaStatus::Open)).await?;
     let mut exps = env.store.list_experiments(slug, None, u32::MAX).await?;
     exps.reverse(); // oldest first: a stable rotation order
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = crate::mechanism::load(&env.root, study.mechanism.as_deref())
+        .map(|m| m.params.categories)
+        .unwrap_or_default();
     for c in exps
         .iter()
         .map(|e| e.category.trim())
@@ -452,12 +458,7 @@ pub(crate) async fn wave_closed(env: &Env, slug: &str, wave: u32) -> Result<bool
         .await?
         .iter()
         .filter(|e| e.wave == Some(wave))
-        .all(|e| {
-            !matches!(
-                e.state,
-                ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
-            )
-        }))
+        .all(|e| !e.state.is_open()))
 }
 
 async fn promoted_already(env: &Env, slug: &str, wave: u32) -> Result<bool> {
@@ -571,6 +572,11 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
         return Ok(Promotion::default());
     }
     let mut study = study_by_slug(env, slug).await?;
+    if study.spec.axes.search == Search::Population {
+        // 159:W4 — boxed: the archive settle's future is large and would ride inside every
+        // ratchet promotion's frame otherwise.
+        return Box::pin(crate::population::promote(env, &study, wave)).await;
+    }
     let exps: Vec<ExperimentRecord> = env
         .store
         .list_experiments(slug, None, u32::MAX)
@@ -585,7 +591,8 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
     let mut candidates = Vec::new();
     for e in exps.iter().cloned() {
         match e.state {
-            ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured => {
+            // 159 W-q: a `Waiting` slot (a later window decides it) is not abandoned by the promotion.
+            s if s.is_dangling() => {
                 abandon(env, e).await?;
             }
             ExperimentState::Kept if e.commit_sha.is_some() => candidates.push(e),
@@ -668,7 +675,18 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
                 study.incumbent_sha = Some(new_sha.clone());
                 study.incumbent_mean = Some(mean_c);
                 env.store.update_experiment(&exp).await?;
-                env.store.update_study(&study).await?;
+                // 159 R-W4-2 / R-SEAMS-25: the settle took minutes and other sessions wrote the
+                // playbook, a pause or a stop meanwhile — never the stale row.
+                env.store
+                    .patch_study(
+                        slug,
+                        &StudyPatch {
+                            incumbent_sha: Some(new_sha.clone()),
+                            incumbent_mean: Some(Some(mean_c)),
+                            ..StudyPatch::default()
+                        },
+                    )
+                    .await?;
                 review(
                     env,
                     &mut study,
@@ -711,7 +729,15 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
     }
     let sigma_before = study.sigma;
     study.sigma = Some(actor::segment_sigma(env, &study).await?);
-    env.store.update_study(&study).await?;
+    env.store
+        .patch_study(
+            slug,
+            &StudyPatch {
+                sigma: Some(study.sigma),
+                ..StudyPatch::default()
+            },
+        )
+        .await?;
     promotion.incumbent = study.incumbent_sha.clone();
     // §5.3 Revision 2: the last promoted keep is judged against the σ the wave was measured under.
     if let Some(n) = promotion.promoted.last()
@@ -831,9 +857,9 @@ async fn confirm(
             keep_simpler: false,
             secondaries: actor::secondary_means(&taken, &inc_samples),
         };
-        match env.backend.gate_step(&gcfg, &input) {
+        match actor::kind_rule(env, study, &gcfg, &input, &taken, &inc_samples).await? {
             GateStep::Confirm { .. } => {}
-            d @ GateStep::Decide { .. } => {
+            d @ (GateStep::Decide { .. } | GateStep::Wait { .. }) => {
                 decision = Some(d);
                 break;
             }
@@ -852,6 +878,7 @@ async fn confirm(
         delta,
         delta_pct,
         z,
+        detail,
     }) = decision
     else {
         return Ok(Err("the confirm samples did not decide the gate".into()));
@@ -862,6 +889,7 @@ async fn confirm(
             delta,
             delta_pct,
             z,
+            detail,
         },
         &study.spec.metric.unit,
         mean_c,
@@ -951,6 +979,17 @@ async fn review(
             study.incumbent_sha = Some(previous.to_owned());
             study.incumbent_mean = previous_mean;
             exp.state = ExperimentState::RejectedByReview;
+            // 159 R-SEAMS-25: only the columns the revert owns, never the stale row.
+            env.store
+                .patch_study(
+                    &slug,
+                    &StudyPatch {
+                        incumbent_sha: Some(previous.to_owned()),
+                        incumbent_mean: Some(previous_mean),
+                        ..StudyPatch::default()
+                    },
+                )
+                .await?;
             env.store
                 .append_event(
                     &slug,
@@ -963,8 +1002,7 @@ async fn review(
         other => other,
     };
     exp.review = Some(rv);
-    env.store.update_experiment(exp).await?;
-    env.store.update_study(study).await
+    env.store.update_experiment(exp).await
 }
 
 /// The commit message metadata of a slot keep (the candidate commit; the promoted pick carries it over).
@@ -1003,6 +1041,9 @@ mod tests {
         running: AtomicU32,
         peak: AtomicU32,
         delay_ms: u64,
+        /// R-SEAMS-25: another session's `experiment_notes` landing while the promotion's
+        /// confirm sample runs on the study branch.
+        notes_during_confirm: Mutex<Option<(Store, String)>>,
     }
 
     impl Bench {
@@ -1026,6 +1067,18 @@ mod tests {
             self.peak.fetch_max(running, Ordering::SeqCst);
             if self.delay_ms > 0 {
                 tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            }
+            if req.role == SampleRole::Candidate
+                && !req.worktree.to_string_lossy().contains("cand-")
+            {
+                let notes = self.notes_during_confirm.lock().take();
+                if let Some((store, text)) = notes {
+                    let p = StudyPatch {
+                        playbook: Some(text),
+                        ..StudyPatch::default()
+                    };
+                    store.patch_study("wave", &p).await?;
+                }
             }
             let value = self.values.lock().pop_front();
             self.running.fetch_sub(1, Ordering::SeqCst);
@@ -1394,10 +1447,19 @@ mod tests {
         let r2 = child_round(&h, c2, 2, "main.py", true).await.unwrap();
         assert_eq!(r2.applied, ExperimentState::Kept);
         assert_eq!(study(&h).await.incumbent_sha.unwrap(), base);
+        // R-SEAMS-25: slot 2's session writes notes while slot 3's log promotes the wave.
+        *bench.notes_during_confirm.lock() = Some((
+            h.studies.store.clone(),
+            "notes written during the promotion".to_owned(),
+        ));
         let r3 = child_round(&h, c3, 3, "sorter.py", true).await.unwrap();
 
         // The last log promoted: #1 (Δ 10) onto the branch, #2 (disjoint) after it, #3 (overlaps #1) lost.
         let after = study(&h).await;
+        assert_eq!(
+            after.playbook, "notes written during the promotion",
+            "the promotion patches its own columns and keeps the notes another session wrote"
+        );
         let incumbent = after.incumbent_sha.clone().unwrap();
         assert_ne!(incumbent, base);
         assert_eq!(git::head(&study_wt).unwrap(), incumbent);
