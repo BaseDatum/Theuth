@@ -316,6 +316,37 @@ fn new_token() -> String {
     SessionId::new().0.simple().to_string()
 }
 
+/// The press's compare-and-set: move the `launches` row from `requested` to `rec.state`
+/// (`approving` | `refused`) with `decided_at`/`by`, only if it is still `requested`. `Ok(false)`
+/// = someone pressed first (R-W6-1).
+async fn claim_launch(store: &Store, rec: &LaunchRecord) -> Result<bool> {
+    let r = sqlx::query(
+        "UPDATE launches SET state = ?3, decided_at = ?4, by = ?5 \
+         WHERE slug = ?1 AND n = ?2 AND state = 'requested'",
+    )
+    .bind(&rec.slug)
+    .bind(rec.n)
+    .bind(&rec.state)
+    .bind(&rec.decided_at)
+    .bind(&rec.by)
+    .execute(store.pool())
+    .await?;
+    Ok(r.rows_affected() == 1)
+}
+
+/// The launch rows of a study that block a new launch: `approving` (an interrupted deploy the
+/// engine has not rolled back yet) and `rollback_failed` (arms that may still be live).
+async fn blocking_launch(store: &Store, slug: &str) -> Result<Option<LaunchRecord>> {
+    for e in store.list_experiments(slug, None, 50).await? {
+        if let Some(l) = store.launches_get(slug, e.n).await?
+            && matches!(l.state.as_str(), "approving" | "rollback_failed")
+        {
+            return Ok(Some(l));
+        }
+    }
+    Ok(None)
+}
+
 // ───────────────────────────── the engine handle for the press ─────────────────────────────
 
 /// The engine's `Env`, remembered by every entry the actor calls (`rearm` at start, `sample`,
@@ -445,7 +476,35 @@ pub async fn resume(env: &Env, slug: &str, n: u32) -> Result<ExperimentState> {
 pub async fn rearm(env: &Env) -> Result<u32> {
     remember(env);
     let mut n = 0;
-    for exp in env.store.waiting_experiments().await? {
+    for mut exp in env.store.waiting_experiments().await? {
+        // R-W6-1 (c): the engine died between the press and `deployed` — roll both arms back
+        // (rollback is idempotent) and close; nothing is known about what went live.
+        if let Some(l) = env.store.launches_get(&exp.slug, exp.n).await?
+            && l.state == "approving"
+        {
+            let study = study_by_slug(&env.store, &exp.slug).await?;
+            let failures = close(
+                env,
+                &study,
+                &mut exp,
+                Verdict::Crash,
+                ExperimentState::Crashed,
+                "crash: the engine stopped while deploying; both arms rolled back".into(),
+            )
+            .await?;
+            let mut s = study;
+            if failures.is_empty()
+                && matches!(
+                    s.state,
+                    StudyState::Paused {
+                        reason: PauseReason::LaunchApproval { .. }
+                    }
+                )
+            {
+                unpause(env, &mut s, true).await?;
+            }
+            continue;
+        }
         let Some(info) = exp.wait.as_ref() else {
             continue;
         };
@@ -698,6 +757,12 @@ pub async fn step(
         return Err(Error::refused(format!(
             "launch #{} is still running; one world experiment at a time",
             open.n
+        )));
+    }
+    if let Some(l) = blocking_launch(&env.store, &study.slug).await? {
+        return Err(Error::refused(format!(
+            "launch #{} is {}: production must be checked by hand before another launch",
+            l.n, l.state
         )));
     }
     let token = new_token();
@@ -1016,11 +1081,25 @@ pub async fn launch(
             exp.state.tag()
         )));
     }
+    // R-W6-1: the press is a compare-and-set on the `launches` row — `requested` →
+    // `refused` | `approving` in one conditional UPDATE, before any deploy runs. A second press
+    // (a double click, Refuse during the deploys) finds the row moved and is refused; an engine
+    // that dies mid-deploy leaves `approving`, which `rearm` rolls back.
     rec.decided_at = Some(now());
     rec.by = Some("user".into());
+    rec.state = if approve { "approving" } else { "refused" }.into();
+    if !claim_launch(&env.store, &rec).await? {
+        let now_state = env
+            .store
+            .launches_get(slug, n)
+            .await?
+            .map(|r| r.state)
+            .unwrap_or_default();
+        return Err(Error::refused(format!(
+            "launch #{n} was already pressed ({now_state})"
+        )));
+    }
     if !approve {
-        rec.state = "refused".into();
-        env.store.launches_put(&rec).await?;
         env.store
             .append_event(
                 slug,
@@ -1080,9 +1159,7 @@ pub async fn launch(
             Err(e) => Some(format!("deploy {arm}: {e}")),
         };
         if let Some(line) = failed {
-            rec.state = "approved".into();
-            env.store.launches_put(&rec).await?;
-            close(
+            let failures = close(
                 env,
                 &study,
                 &mut exp,
@@ -1091,7 +1168,9 @@ pub async fn launch(
                 format!("crash: {line}; both arms rolled back"),
             )
             .await?;
-            unpause(env, &mut study, true).await?;
+            if failures.is_empty() {
+                unpause(env, &mut study, true).await?;
+            }
             return actor::info_full(env, &study).await;
         }
     }
@@ -1372,14 +1451,21 @@ async fn pause_other(env: &Env, study: &mut StudyRecord, reason: String) -> Resu
     Ok(())
 }
 
-/// Roll back both arms (always), drop the arm worktrees, mark the launch `rolled_back`.
-async fn rollback_all(env: &Env, study: &StudyRecord, n: u32) -> Result<()> {
+/// Roll back both arms (always, once anything was deployed), drop the arm worktrees, and mark
+/// the launch: `rolled_back` when every command exited 0, `rollback_failed` otherwise (R-W6-2,
+/// R-W6-4: a ledger never says "rolled back" over arms that may still be live). Returns the
+/// failures; a launch that never reached the deploys (`requested`, `refused`) runs no command.
+async fn rollback_all(env: &Env, study: &StudyRecord, n: u32) -> Result<Vec<String>> {
     let w = world_of(&study.spec)?;
     let repo = PathBuf::from(&study.repo);
+    let rec = env.store.launches_get(&study.slug, n).await?;
+    let deployed = rec
+        .as_ref()
+        .is_some_and(|r| !matches!(r.state.as_str(), "requested" | "refused"));
     let mut failures = Vec::new();
     for arm in [CONTROL, CANDIDATE] {
-        if !w.rollback.trim().is_empty() {
-            let dir = arm_dir(env, &study.slug, arm);
+        let dir = arm_dir(env, &study.slug, arm);
+        if deployed && !w.rollback.trim().is_empty() {
             let extra = arm_env(
                 arm,
                 n,
@@ -1401,33 +1487,38 @@ async fn rollback_all(env: &Env, study: &StudyRecord, n: u32) -> Result<()> {
                 Err(e) => failures.push(format!("{arm}: {e}")),
             }
         }
-        let dir = arm_dir(env, &study.slug, arm);
         if dir.exists() {
             let _ = env.backend.worktree_remove(&repo, &dir);
         }
     }
-    if let Some(mut rec) = env.store.launches_get(&study.slug, n).await?
-        && rec.state != "requested"
-        && rec.state != "refused"
-    {
-        rec.state = "rolled_back".into();
+    let state = if !deployed {
+        None
+    } else if failures.is_empty() {
+        Some("rolled_back")
+    } else {
+        Some("rollback_failed")
+    };
+    if let (Some(mut rec), Some(state)) = (rec, state) {
+        rec.state = state.into();
         env.store.launches_put(&rec).await?;
+        env.store
+            .append_event(
+                &study.slug,
+                "launch",
+                &serde_json::json!({ "n": n, "state": state, "failures": failures }),
+            )
+            .await?;
     }
-    env.store
-        .append_event(
-            &study.slug,
-            "launch",
-            &serde_json::json!({ "n": n, "state": "rolled_back", "failures": failures }),
-        )
-        .await?;
     if !failures.is_empty() {
         tracing::warn!(slug = %study.slug, n, "rollback failed: {}", failures.join("; "));
     }
-    Ok(())
+    Ok(failures)
 }
 
 /// Close a world experiment outside the session: rollback, keep or discard, the `closed` event,
-/// the schedule file back on, the stop rules.
+/// then the schedule file back on and the stop rules — or, when a rollback command failed, the
+/// study paused with the reason (R-W6-2/4: arms that may still be live never get a next launch
+/// deployed on top of them). Returns the rollback failures.
 async fn close(
     env: &Env,
     study: &StudyRecord,
@@ -1435,10 +1526,10 @@ async fn close(
     verdict: Verdict,
     state: ExperimentState,
     line: String,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let slug = study.slug.clone();
     disarm(&slug, exp.n);
-    rollback_all(env, study, exp.n).await?;
+    let failures = rollback_all(env, study, exp.n).await?;
     let worktree = actor::worktree_of(study)?;
     let incumbent = actor::incumbent_of(study)?;
     if exp.description.trim().is_empty() {
@@ -1507,7 +1598,22 @@ async fn close(
             z: None,
         })
         .await;
-    if !actor::is_terminal(&study.state) && study.state != StudyState::Finalizing {
+    if !failures.is_empty() {
+        let mut s = study.clone();
+        if matches!(s.state, StudyState::Paused { .. }) {
+            unpause(env, &mut s, false).await?;
+        }
+        pause_other(
+            env,
+            &mut s,
+            format!(
+                "rollback of launch #{} failed ({}); check production, then resume",
+                exp.n,
+                failures.join("; ")
+            ),
+        )
+        .await?;
+    } else if !actor::is_terminal(&study.state) && study.state != StudyState::Finalizing {
         set_file(&slug, true).await;
         let env2 = env.clone();
         tokio::spawn(async move {
@@ -1516,7 +1622,7 @@ async fn close(
             }
         });
     }
-    Ok(())
+    Ok(failures)
 }
 
 // ───────────────────────────── the Study view, brief, headline, card ─────────────────────────────
@@ -2191,7 +2297,7 @@ mod tests {
         }
     }
 
-    fn spec(slug: &str, repo: &Path, traffic: u32) -> StudySpec {
+    fn spec(slug: &str, repo: &Path, traffic: u32, rollback: &str) -> StudySpec {
         StudySpec {
             slug: slug.into(),
             goal: "more conversion".into(),
@@ -2213,7 +2319,7 @@ mod tests {
             },
             world: Some(WorldSpec {
                 deploy: "bash deploy.sh".into(),
-                rollback: "bash rollback.sh".into(),
+                rollback: rollback.into(),
                 measure: format!("TOY_WORLD_TRAFFIC={traffic} bash measure.sh"),
                 window: "1h".into(),
                 min_units: 400,
@@ -2260,7 +2366,7 @@ mod tests {
 
     /// A toy-world repo, its study worktree and custody copies, a `running` study with the
     /// base as incumbent — what `create` leaves behind, without the actor.
-    async fn world(slug: &str, traffic: u32) -> World {
+    async fn world(slug: &str, traffic: u32, rollback: &str) -> World {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         copy_dir(Path::new(FIXTURE), &repo);
@@ -2279,7 +2385,7 @@ mod tests {
             store,
             backend: Arc::new(actor::Real),
         };
-        let sp = spec(slug, &repo, traffic);
+        let sp = spec(slug, &repo, traffic, rollback);
         let study_dir = root.join(slug);
         let worktree = study_dir.join("worktree");
         crate::git::worktree_add(&repo, &sp, &worktree, &base).unwrap();
@@ -2418,7 +2524,7 @@ mod tests {
     /// the experiment — both arms rolled back on every close, the incumbent moved by the keep.
     #[tokio::test]
     async fn toy_world_three_launches() {
-        let mut w = world("tw1", 40_000).await;
+        let mut w = world("tw1", 40_000, "bash rollback.sh").await;
         // Baseline through `sample`: production as it is (the control arm on all traffic).
         let runs = w.env.root.join("tw1/runs/0");
         let evaluator = w.env.root.join("tw1/evaluator/0");
@@ -2596,7 +2702,7 @@ mod tests {
     /// the bait file) crashes on the ratio check at the first window and pauses the study.
     #[tokio::test]
     async fn ratio_failure_pauses_the_study() {
-        let mut w = world("tw2", 40_000).await;
+        let mut w = world("tw2", 40_000, "bash rollback.sh").await;
         std::fs::write(w.worktree.join("landing/traffic.txt"), "1.0\n").unwrap();
         w.fire(1, GOOD_COPY, "grab traffic").await;
         launch(&w.env, "tw2", 1, "tok", true).await.unwrap();
@@ -2621,7 +2727,7 @@ mod tests {
     /// and loses no observation.
     #[tokio::test]
     async fn restart_rearms_the_timer_and_keeps_observations() {
-        let w = world("tw3", 40_000).await;
+        let w = world("tw3", 40_000, "bash rollback.sh").await;
         let mut e = ExperimentRecord::open("tw3", 1, 0, w.study.incumbent_sha.as_deref().unwrap());
         e.state = ExperimentState::Waiting;
         let until = fmt_at(chrono::Utc::now() + chrono::Duration::hours(1));
@@ -2667,5 +2773,269 @@ mod tests {
         w.env.store.insert_experiment(&a).await.unwrap();
         assert_eq!(rearm(&w.env).await.unwrap(), 1);
         disarm("tw3", 1);
+    }
+
+    /// R-W6-1 (a, b): the press is a compare-and-set — two Approves at once deploy once, and a
+    /// Refuse after the Approve is refused instead of discarding a row whose arms are live.
+    #[tokio::test]
+    async fn double_press_deploys_once() {
+        let mut w = world("tw4", 40_000, "bash rollback.sh").await;
+        w.fire(1, GOOD_COPY, "double click").await;
+        let (a, b) = tokio::join!(
+            launch(&w.env, "tw4", 1, "tok", true),
+            launch(&w.env, "tw4", 1, "tok", true)
+        );
+        assert!(
+            a.is_ok() != b.is_ok(),
+            "exactly one press wins: {a:?} / {b:?}"
+        );
+        let err = a.err().or(b.err()).unwrap().to_string();
+        assert!(err.contains("already"), "{err}");
+        let deployed = w
+            .env
+            .store
+            .list_events("tw4", Some("launch"), 50)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|e| e.payload["state"] == "deployed")
+            .count();
+        assert_eq!(deployed, 1, "one deploy of both arms");
+        assert_eq!(
+            w.env
+                .store
+                .launches_get("tw4", 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "deployed"
+        );
+        let refuse = launch(&w.env, "tw4", 1, "tok", false).await;
+        assert!(refuse.is_err(), "a Refuse after the Approve is refused");
+        assert_eq!(
+            w.exp(1).await.state,
+            ExperimentState::Waiting,
+            "the live row is untouched"
+        );
+        assert_eq!(
+            w.live_arms(),
+            vec!["candidate".to_owned(), "control".to_owned()]
+        );
+        w.run_windows(1).await;
+        assert!(w.live_arms().is_empty());
+    }
+
+    /// R-W6-1 (c): the engine died between the press and `deployed` (the row says `approving`,
+    /// one arm is live) — `rearm` rolls both arms back, closes the experiment and resumes the study.
+    #[tokio::test]
+    async fn rearm_rolls_back_an_interrupted_deploy() {
+        let mut w = world("tw5", 40_000, "bash rollback.sh").await;
+        w.fire(1, GOOD_COPY, "interrupted").await;
+        let mut l = w.env.store.launches_get("tw5", 1).await.unwrap().unwrap();
+        l.state = "approving".into();
+        w.env.store.launches_put(&l).await.unwrap();
+        // The control arm went live before the engine stopped.
+        let out = std::process::Command::new("bash")
+            .arg("deploy.sh")
+            .current_dir(&w.worktree)
+            .env("AUTORESEARCH_WORKTREE", &w.worktree)
+            .env("AUTORESEARCH_EVALUATOR", w.env.root.join("tw5/evaluator/0"))
+            .env("AUTORESEARCH_ARM", "control")
+            .env("AUTORESEARCH_EXPOSURE", "0.05")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(w.live_arms(), vec!["control".to_owned()]);
+        assert_eq!(
+            rearm(&w.env).await.unwrap(),
+            0,
+            "no timer for a row that is closed instead"
+        );
+        let e = w.exp(1).await;
+        assert_eq!(e.state, ExperimentState::Crashed, "{}", e.line);
+        assert!(e.line.contains("stopped while deploying"), "{}", e.line);
+        assert!(w.live_arms().is_empty(), "both arms rolled back");
+        assert_eq!(
+            w.env
+                .store
+                .launches_get("tw5", 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "rolled_back"
+        );
+        w.reload().await;
+        assert_eq!(w.study.state, StudyState::Running);
+        assert!(
+            launch(&w.env, "tw5", 1, "tok", true).await.is_err(),
+            "the stale card's press is refused"
+        );
+    }
+
+    /// R-W6-2, R-W6-4: a rollback that fails never reads `rolled_back`; the study pauses with
+    /// the reason, the schedule file stays off and the next launch is refused until a human looks.
+    #[tokio::test]
+    async fn rollback_failure_pauses_the_study_and_blocks_the_next_launch() {
+        let mut w = world("tw6", 40_000, "exit 3").await;
+        w.fire(1, GOOD_COPY, "bad rollback").await;
+        launch(&w.env, "tw6", 1, "tok", true).await.unwrap();
+        w.run_windows(1).await;
+        let e = w.exp(1).await;
+        assert!(e.state.is_closed(), "{}", e.line);
+        assert_eq!(
+            w.env
+                .store
+                .launches_get("tw6", 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "rollback_failed"
+        );
+        let failed = w
+            .env
+            .store
+            .list_events("tw6", Some("launch"), 50)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|ev| ev.payload["state"] == "rollback_failed")
+            .unwrap();
+        assert_eq!(failed.payload["failures"].as_array().unwrap().len(), 2);
+        assert!(
+            matches!(&w.study.state, StudyState::Paused { reason: PauseReason::Other { reason } } if reason.contains("rollback of launch #1 failed")),
+            "{:?}",
+            w.study.state
+        );
+        // The next launch fire is refused while the row stands.
+        let mut e2 = ExperimentRecord::open("tw6", 2, 0, w.study.incumbent_sha.as_deref().unwrap());
+        e2.idea = "next".into();
+        w.env.store.insert_experiment(&e2).await.unwrap();
+        let cfg = actor::gate_cfg(&w.env.cfg, &w.study.spec).unwrap();
+        let input = GateInput {
+            candidate: vec![0.04],
+            incumbent: vec![0.04],
+            sigma: 0.0,
+            largest_accepted_delta: None,
+            incumbent_age: 0,
+            keep_simpler: false,
+            secondaries: vec![],
+        };
+        let err = step(
+            &w.env,
+            &w.study,
+            &cfg,
+            &input,
+            &[Sample {
+                n: 2,
+                ..Sample::default()
+            }],
+            &[],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("rollback_failed"), "{err}");
+        assert!(
+            w.env.store.launches_get("tw6", 2).await.unwrap().is_none(),
+            "no launch row for a refused fire"
+        );
+    }
+
+    /// R-W6-3: the README's study spec starts through `actor::create` — the baseline is read from
+    /// the world (three `measure` calls), custody holds the scripts, the study reaches `running`.
+    /// `noise.max_cv` is raised to 0.1: production's day-to-day σ (≈ 7 % here) is not the
+    /// decision's noise for a world study (hand-off 8 lifts the check for `scoring: world`).
+    #[tokio::test]
+    async fn readme_spec_starts_through_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        copy_dir(Path::new(FIXTURE), &repo);
+        sh(&repo, &["git", "init", "-q", "-b", "main"]);
+        sh(&repo, &["git", "add", "-A"]);
+        sh(&repo, &["git", "commit", "-q", "-m", "base"]);
+        let readme = std::fs::read_to_string(Path::new(FIXTURE).join("README.md")).unwrap();
+        let yaml = readme
+            .split("```yaml\n")
+            .nth(1)
+            .unwrap()
+            .split("```")
+            .next()
+            .unwrap();
+        let mut spec: StudySpec = serde_yaml::from_str(yaml).expect("the README spec parses");
+        spec.repo = repo.display().to_string();
+        assert_eq!(spec.kind(), KIND_WORLD);
+        crate::tools::validate_spec(&spec).unwrap();
+        let root = dir.path().join("autoresearch");
+        let mut cfg = AutoresearchConfig::default();
+        cfg.noise.max_cv = 0.1;
+        let mut studies = crate::Studies {
+            data_dir: dir.path().to_path_buf(),
+            root: root.clone(),
+            cfg,
+            agent: AgentDefaults::default(),
+            rt: runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf()),
+            store: Store::open(&root).await.unwrap(),
+            backend: Arc::new(actor::Real),
+        };
+        let info = actor::create(
+            &mut studies,
+            crate::types::Create {
+                spec,
+                origin: SessionId::new(),
+                start: crate::types::StartWhen::Now,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(info.state, StudyState::Preparing);
+        let mut study = None;
+        for _ in 0..600 {
+            let s = studies.store.get_study("toy-world").await.unwrap().unwrap();
+            if s.state == StudyState::Running || matches!(s.state, StudyState::Failed { .. }) {
+                study = Some(s);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let study = study.expect("the study settles");
+        assert_eq!(study.state, StudyState::Running, "{:?}", study.state);
+        assert!(
+            study
+                .incumbent_mean
+                .is_some_and(|m| (0.02..0.07).contains(&m)),
+            "{:?}",
+            study.incumbent_mean
+        );
+        for f in [
+            "deploy.sh",
+            "rollback.sh",
+            "measure.sh",
+            "world.py",
+            "test.sh",
+        ] {
+            assert!(
+                root.join("toy-world/evaluator/0").join(f).is_file(),
+                "{f} in custody"
+            );
+        }
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("toy-world/world-state/state.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            state["tick"], 3,
+            "three baseline reads, one simulated day each"
+        );
+        assert!(
+            state["arms"].as_object().unwrap().is_empty(),
+            "nothing deployed at Start"
+        );
     }
 }

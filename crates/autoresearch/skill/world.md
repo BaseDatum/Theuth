@@ -1,7 +1,7 @@
 
 ## World studies
 
-A *world study* (159 §11) optimises a metric that lives outside the machine — a landing page's conversion, an email template's reply rate, an endpoint's live latency — read from production, not printed by a benchmark. Set `axes: {scoring: world}` and a `world:` block; `bench` is not needed.
+A *world study* (159 §11) optimises a metric that lives outside the machine — a landing page's conversion, an email template's reply rate, an endpoint's live latency — read from production, not printed by a benchmark. Set `axes: {scoring: world}` and a `world:` block. Set `bench.command` to the same measure command (Start still requires one; a world study never runs it as a bench — custody takes it — and `bench.repeats` is how many times the source is read for the baseline).
 
 **When.** The user owns the deploy (a command of theirs puts a tree live for a slice of traffic), can read the metric per arm (a command or one of their read-only analytics tools), and has a rollback that is safe to run twice. **Never**: anything that spends money, anything without a rollback, anything where a bad arm hurts people. Say so and decline.
 
