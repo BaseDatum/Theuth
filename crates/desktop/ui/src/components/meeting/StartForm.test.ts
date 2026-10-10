@@ -14,6 +14,7 @@ vi.mock('@/lib/rpc', async (original) => ({
     meeting_permissions: async () => ({ microphone: 'Authorized', audio_capture: 'Authorized' }),
     list_models: async () => [],
     endless_settings_get: async () => ({ default_meeting: true, model: null }),
+    meeting_templates: async () => [{ slug: 'standup', name: 'Standup', description: '', sections: [], builtin: true }],
   }),
 }))
 
@@ -42,14 +43,23 @@ test('158 R3 / A2: the form shows the one lawful sentence and no consent checkbo
   expect(start).not.toContain('disabled=""')
 })
 
-test('startOptions always sends consent: true and memory only with the switch on; the rest is unchanged', () => {
-  expect(startOptions({ pid: 0, title: ' Standup ', context: '', model: 'm', endless: true })).toEqual({
+test('startOptions always sends consent: true and memory only with the switch on; template only when picked', () => {
+  expect(startOptions({ pid: 0, title: ' Standup ', context: '', model: 'm', endless: true, template: 'standup' })).toEqual({
     process: null,
     title: 'Standup',
     context: null,
     consent: true,
     session_model: 'm',
     memory: 'endless',
+    template: 'standup',
   })
-  expect(startOptions({ pid: 42, title: '', context: 'x', model: null, endless: false })).toMatchObject({ process: 42, consent: true, memory: undefined })
+  const auto = startOptions({ pid: 42, title: '', context: 'x', model: null, endless: false, template: null })
+  expect(auto).toMatchObject({ process: 42, consent: true, memory: undefined })
+  expect(auto.template).toBeUndefined()
+})
+
+test('158 §11.1: the Note template row sits under the session model, Automatic by default', async () => {
+  const html = await render()
+  expect(html).toMatch(/Session model.*Note template.*aria-label="Note template"/s)
+  expect(html).toContain('else the default from Settings › Meetings')
 })

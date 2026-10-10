@@ -22,7 +22,7 @@ export interface Draft {
 }
 
 /** `initial` opens the editor at mount (tests; a "New template…" link could pass one). */
-export function MeetingTemplates({ initial = null }: { initial?: Draft | null } = {}) {
+export function MeetingTemplates({ initial = null }: { initial?: Draft | null }) {
   const api = useApi()
   const templates = useQuery({ queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
   const [draft, setDraft] = useState<Draft | null>(initial)
