@@ -176,24 +176,29 @@ public sealed class IslandModel
     /// <summary>The meeting the island last presented (null when none is live).</summary>
     public string? Meeting { get; private set; }
 
+    /// <summary>158 §5.1: a detection or stop prompt is up (<c>slice.prompt != nil</c>); set by <see cref="Present"/>.</summary>
+    public bool HasPrompt { get; private set; }
+
     /// <summary>
     /// D2 — the original's rule (<c>Island.tsx:73</c>): shown iff the meeting is Starting · Recording · Paused · Stopping, or
-    /// Settings › Island "Always show" keeps the idle wordmark. No linger after the last topic or brief: Done · Failed · Idle ·
-    /// Post hide the island at once (the window plays <see cref="CloseAnimation"/> first).
+    /// Settings › Island "Always show" keeps the idle wordmark, or (158 §5.1) a prompt is up. No linger after the last topic or
+    /// brief: Done · Failed · Idle · Post hide the island at once (the window plays <see cref="CloseAnimation"/> first).
     /// </summary>
-    public bool ShouldShow(string state) => IsLive(state) || AlwaysShow;
+    public bool ShouldShow(string state) => IsLive(state) || AlwaysShow || HasPrompt;
 
     /// <summary>
     /// D1: the meeting's state arrived. While live the island is OPEN (strip + brief pane) unless the user collapsed THIS meeting
-    /// with an explicit click (remembered per meeting id); a new meeting opens again. Not live: the closed pill — the idle
-    /// wordmark when "Always show" is on, else nothing (<see cref="ShouldShow"/> is false). Returns true when the mode changed.
+    /// with an explicit click (remembered per meeting id); a new meeting opens again. A prompt (158 §5) is always open: it is the
+    /// island's content, not the pill's. Not live, no prompt: the closed pill — the idle wordmark when "Always show" is on, else
+    /// nothing (<see cref="ShouldShow"/> is false). Returns true when the mode changed.
     /// </summary>
-    public bool Present(string? meeting, string state)
+    public bool Present(string? meeting, string state, bool prompt = false)
     {
         var before = Mode;
         bool live = meeting is not null && IsLive(state);
         Meeting = live ? meeting : null;
-        Mode = live && !collapsed.Contains(meeting!) ? IslandMode.Open : IslandMode.Closed;
+        HasPrompt = prompt;
+        Mode = prompt || (live && !collapsed.Contains(meeting!)) ? IslandMode.Open : IslandMode.Closed;
         return Mode != before;
     }
 
@@ -202,11 +207,12 @@ public sealed class IslandModel
 
     /// <summary>
     /// D1: the explicit collapse (the strip's collapse button, or Esc on the island): the live meeting shows the closed pill
-    /// from now on, for this meeting only. False when nothing is live (the idle wordmark is already closed).
+    /// from now on, for this meeting only. False when nothing is live (the idle wordmark is already closed) or a prompt is up
+    /// (158 §5: the prompt is answered, not hidden).
     /// </summary>
     public bool Collapse()
     {
-        if (Meeting is null || Mode == IslandMode.Closed) return false;
+        if (Meeting is null || Mode == IslandMode.Closed || HasPrompt) return false;
         collapsed.Add(Meeting);
         Mode = IslandMode.Closed;
         return true;

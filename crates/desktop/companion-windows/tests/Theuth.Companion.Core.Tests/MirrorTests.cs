@@ -104,8 +104,11 @@ public sealed class MeetingReducerMirrorTests
     [Fact]
     public void SummarizedKeepsTheSlice()
     {
-        // `Summarized` is not an island change: MeetingWire yields nothing for it and the slice stands.
-        Assert.Null(MeetingWire.Decode("Summarized", """{"type":"Summarized","meeting":"m1","title":"x"}"""u8));
+        // 158 §18 c6: `Summarized` decodes (as in Swift) and the slice stands — the title is the page's, not the island's.
+        var c = Assert.IsType<MeetingChange.Summarized>(MeetingWire.Decode("Summarized", """{"type":"Summarized","meeting":"m1","title":"x"}"""u8));
+        Assert.Equal(("m1", "x"), (c.Meeting, c.Title));
+        var s = Rec();
+        Assert.Same(s, R(s, c));
     }
 
     [Fact] public void DeletedEmptiesTheSlice() => Assert.Same(MeetingSnapshot.Empty, R(Rec(), new MeetingChange.Deleted("m1")));

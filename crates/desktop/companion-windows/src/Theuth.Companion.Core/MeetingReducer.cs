@@ -33,7 +33,29 @@ public sealed record MeetingLine(string Track, long T0Ms, string Text, bool Requ
 /// <summary>57 §3.4: one oracle verdict; <see cref="Disposition"/> is <c>skip</c> · <c>brief</c> · else escalated.</summary>
 public sealed record MeetingOracleRow(string BatchId, string Disposition, bool Tier2, bool? Agreed);
 
-/// <summary>What the reducer consumes: the 13 <c>MeetingEvent</c> variants the island reads plus the meeting session's turn activity.</summary>
+/// <summary><c>meeting::ProcessInfo</c>: the app that holds the mic / is tapped.</summary>
+public sealed record MeetingProcess(uint Pid, string Name, string? BundleId = null, bool Active = false)
+{
+    /// <summary>158 §5.2 <c>&lt;App&gt;</c>: on Windows the image basename without <c>.exe</c>.</summary>
+    public string Display => Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? Name[..^4] : Name;
+}
+
+/// <summary><c>detect::Detection</c> (158 §4.5): the prompt. <c>event</c> / <c>project</c> / <c>brief</c> come with W2/W3.</summary>
+public sealed record MeetingDetection(MeetingProcess App, string AppId, string Since, IReadOnlyList<MeetingProcess> Also);
+
+/// <summary>158 §5.2 / §15.4 <c>MeetingSlice.prompt</c>: the island state that is not the meeting itself.</summary>
+public abstract record MeetingPrompt
+{
+    private MeetingPrompt() { }
+
+    /// <summary>(a) "&lt;App&gt; is using your microphone" — Start recording · Not now · Never for &lt;App&gt;.</summary>
+    public sealed record Detected(MeetingDetection Detection) : MeetingPrompt;
+
+    /// <summary>(d) "&lt;App&gt; stopped using your microphone N s ago — Stop recording?" — Stop · Keep recording.</summary>
+    public sealed record Stop(string Meeting, MeetingProcess App, uint ReleasedForS) : MeetingPrompt;
+}
+
+/// <summary>What the reducer consumes: the <c>MeetingEvent</c> variants the island reads plus the meeting session's turn activity.</summary>
 public abstract record MeetingChange
 {
     private MeetingChange() { }
@@ -67,6 +89,18 @@ public abstract record MeetingChange
     public sealed record OracleDeciding(string Meeting, string BatchId) : MeetingChange;
 
     public sealed record OracleDecision(string Meeting, MeetingOracleRow Decision) : MeetingChange;
+
+    /// <summary><c>Summarized</c>: the title is set; the island keeps its slice (decoded for parity with Swift, 158 §18 c6).</summary>
+    public sealed record Summarized(string Meeting, string Title) : MeetingChange;
+
+    /// <summary>158 §4.5: an eligible app has held the mic ≥ 15 s. No meeting yet.</summary>
+    public sealed record Detected(MeetingDetection Detection) : MeetingChange;
+
+    /// <summary>158 §4.5: the prompt went away; <see cref="Reason"/> is <c>NotNow</c> · <c>Never</c> · <c>Released</c> · <c>Started</c>.</summary>
+    public sealed record DetectionCleared(string AppId, string Reason) : MeetingChange;
+
+    /// <summary>158 §4.4 rule 7: the detected app released the mic for <see cref="ReleasedForS"/> — "Stop recording?". Re-sent every 30 s.</summary>
+    public sealed record AppReleased(string Meeting, MeetingProcess App, uint ReleasedForS) : MeetingChange;
 
     /// <summary><c>TurnStarted</c> → "thinking…", <c>ToolCallStarted</c> → "‹name›…", <c>TurnFinished</c> → null; only for the meeting's session.</summary>
     public sealed record Activity(string Session, string? Text) : MeetingChange;
@@ -125,6 +159,9 @@ public sealed record MeetingSnapshot
 
     public float SystemLevel { get; init; }
 
+    /// <summary>158 §5: the detection or stop prompt; the island shows while one is set (<see cref="IslandModel.ShouldShow"/>).</summary>
+    public MeetingPrompt? Prompt { get; init; }
+
     /// <summary>The brief under the cursor.</summary>
     public MeetingBrief? Current => Cursor >= 0 && Cursor < Briefs.Count ? Briefs[Cursor] : null;
 
@@ -181,6 +218,8 @@ public static class MeetingReducer
                     ApprovalWaiting = live && s.ApprovalWaiting,
                     Activity = live ? s.Activity : null,
                     Progress = c.StateWord == "Post" ? s.Progress : null,
+                    // 158 §5.2 (d): the stop prompt ends with the recording; a detection prompt is not the meeting's.
+                    Prompt = s.Prompt is MeetingPrompt.Stop && !live ? null : s.Prompt,
                 };
             }
             case MeetingChange.TopicAdded t:
@@ -239,6 +278,13 @@ public static class MeetingReducer
                 return s.Meeting == lv.Meeting ? s with { MicLevel = lv.MicRms, SystemLevel = lv.SystemRms } : s;
             case MeetingChange.Activity act:
                 return s.Session == act.Session ? s with { Activity = act.Text } : s;
+            // 158 §5: the prompt. `Started` (above) empties the slice, which also clears it (`Cleared::Started` is a no-op then).
+            case MeetingChange.Detected d:
+                return s with { Prompt = new MeetingPrompt.Detected(d.Detection) };
+            case MeetingChange.DetectionCleared dc:
+                return s.Prompt is MeetingPrompt.Detected pd && pd.Detection.AppId == dc.AppId ? s with { Prompt = null } : s;
+            case MeetingChange.AppReleased ar:
+                return s.Meeting == ar.Meeting && Live(s.State) ? s with { Prompt = new MeetingPrompt.Stop(ar.Meeting, ar.App, ar.ReleasedForS) } : s;
             default:
                 return s;
         }
@@ -292,7 +338,8 @@ public static class MeetingReducer
     /// <summary><c>meeting_status</c> + <c>meeting_briefs</c> + <c>meeting_live</c> → the snapshot (connect, reconnect).</summary>
     public static MeetingSnapshot Hydrate(
         string? meeting, string? session, string state, IReadOnlyList<string> degraded, long elapsedMs, string? cursor,
-        IReadOnlyList<MeetingTopic> topics, bool approvalWaiting, IReadOnlyList<MeetingBrief> briefs, IReadOnlyList<MeetingLine> lines, DateTimeOffset now)
+        IReadOnlyList<MeetingTopic> topics, bool approvalWaiting, IReadOnlyList<MeetingBrief> briefs, IReadOnlyList<MeetingLine> lines, DateTimeOffset now,
+        MeetingDetection? detection = null)
     {
         int at = cursor is null ? -1 : IndexOf(briefs, b => b.Id == cursor);
         return MeetingSnapshot.Empty with
@@ -308,6 +355,7 @@ public static class MeetingReducer
             Cursor = at >= 0 ? at : briefs.Count - 1,
             ApprovalWaiting = approvalWaiting,
             Lines = lines.TakeLast(LinesKeep).ToArray(),
+            Prompt = detection is null ? null : new MeetingPrompt.Detected(detection),
         };
     }
 

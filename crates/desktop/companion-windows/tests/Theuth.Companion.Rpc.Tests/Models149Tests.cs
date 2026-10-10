@@ -139,6 +139,18 @@ public sealed class Models149Tests
         var reply = TheuthJson.Deserialize<ScreenContextReply>("""{"lines":["[screen 1 …]"],"files":["C:\\a.png"]}""");
         Assert.Single(reply.Files);
     }
+
+    [Fact]
+    public void DetectionDecodesAndStartMeetingEncodesThePromptStart() // 158 §5.4, §15.1
+    {
+        var s = TheuthJson.Deserialize<MeetingStatus>("""{"state":"Idle","meeting":null,"session":null,"elapsed_ms":0,"degraded":[],"supported":{"kind":"Full"},"accelerator":"","detection":{"app":{"pid":4242,"name":"Zoom.exe","bundle_id":null,"active":true},"app_id":"zoom.exe","since":"2026-10-10T10:00:00Z","also":[],"event":null,"project":null,"brief":null}}""");
+        Assert.Equal((4242u, "Zoom.exe", "zoom.exe"), (s.Detection!.App.Pid, s.Detection.App.Name, s.Detection.AppId));
+        Assert.Null(TheuthJson.Deserialize<MeetingStatus>("""{"state":"Idle","meeting":null,"session":null,"elapsed_ms":0,"degraded":[],"supported":{"kind":"Full"},"accelerator":""}""").Detection);
+        // The one-tap start: pid, consent, source — everything else omitted so the engine fills its defaults (§6).
+        Assert.Equal("""[{"process":4242,"consent":true,"source":{"kind":"detected","app_id":"zoom.exe"}}]""",
+            TheuthJson.EncodeParams(new StartMeeting { Process = 4242, Consent = true, Source = StartSource.Detected("zoom.exe") }));
+        Assert.Equal("""{"kind":"calendar","event":"ics:u1:"}""", TheuthJson.Serialize(StartSource.Calendar("ics:u1:")));
+    }
 }
 
 internal static class MeetingStatusTestExt

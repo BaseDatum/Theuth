@@ -50,6 +50,9 @@ public interface IStoreEngine
     Task MeetingDeeperAsync(string brief) => Task.FromException(new NotSupportedException("meeting_deeper"));
     Task MeetingRequestAsync(string text) => Task.FromException(new NotSupportedException("meeting_request"));
     Task MeetingPttAsync(bool held) => Task.FromException(new NotSupportedException("meeting_ptt"));
+    // 158 §5.4 / §15.2 (W1W): the island prompt.
+    Task<MeetingStarted> MeetingStartAsync(StartMeeting start) => Task.FromException<MeetingStarted>(new NotSupportedException("meeting_start"));
+    Task MeetingDetectionDismissAsync(string appId, bool never) => Task.FromException(new NotSupportedException("meeting_detection_dismiss"));
     Task<ModeInfo> MeetingOracleModeAsync() => Task.FromException<ModeInfo>(new NotSupportedException("meeting_oracle_mode"));
     Task<MeetingPermissions> MeetingPermissionsAsync() => Task.FromException<MeetingPermissions>(new NotSupportedException("meeting_permissions"));
     Task<CachedBrief> BriefGetAsync(string id) => Task.FromException<CachedBrief>(new NotSupportedException("brief_get"));
@@ -111,6 +114,8 @@ public sealed class RpcStoreEngine(RpcClient client) : IStoreEngine
     public Task MeetingDeeperAsync(string brief) => Client.MeetingDeeperAsync(brief);
     public Task MeetingRequestAsync(string text) => Client.MeetingRequestAsync(text);
     public Task MeetingPttAsync(bool held) => Client.MeetingPttAsync(held);
+    public Task<MeetingStarted> MeetingStartAsync(StartMeeting start) => Client.MeetingStartAsync(start);
+    public Task MeetingDetectionDismissAsync(string appId, bool never) => Client.MeetingDetectionDismissAsync(appId, never);
     public Task<ModeInfo> MeetingOracleModeAsync() => Client.MeetingOracleModeAsync();
     public Task<MeetingPermissions> MeetingPermissionsAsync() => Client.MeetingPermissionsAsync();
     public Task<CachedBrief> BriefGetAsync(string id) => Client.BriefGetAsync(id);

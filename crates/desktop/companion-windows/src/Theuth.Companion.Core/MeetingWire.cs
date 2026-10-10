@@ -4,7 +4,7 @@ namespace Theuth.Companion.Core;
 
 /// <summary>
 /// The meeting wire → Core records (149 §3.6 "all RPCs exist"): decodes <c>meeting_status</c>, <c>meeting_briefs</c>,
-/// <c>meeting_live</c> results and the 13 <c>MeetingEvent</c> stream items (<c>crates/meeting/src/lib.rs</c>, tagged by
+/// <c>meeting_live</c> results and the <c>MeetingEvent</c> stream items (<c>crates/meeting/src/lib.rs</c>, tagged by
 /// <c>type</c>) into <see cref="MeetingChange"/>s for <see cref="MeetingReducer"/>. Reads JSON directly so the island needs no
 /// typed DTO beyond WW1's raw stream hook; every field optional-tolerant (a missing field is a default, never a throw).
 /// </summary>
@@ -13,7 +13,9 @@ public static class MeetingWire
     public static readonly IReadOnlySet<string> EventTypes = new HashSet<string>(StringComparer.Ordinal)
     {
         "Started", "State", "TopicAdded", "TopicRemoved", "Brief", "Utterance", "Listening", "ApprovalWaiting",
-        "PostProgress", "ReviewReady", "Deleted", "OracleDeciding", "OracleDecision", "Level",
+        "PostProgress", "ReviewReady", "Summarized", "Deleted", "OracleDeciding", "OracleDecision", "Level",
+        // 158 §4.5 (W1): the prompt events; `Detected` / `DetectionCleared` carry no `meeting`.
+        "Detected", "DetectionCleared", "AppReleased",
     };
 
     public static readonly IReadOnlySet<string> ActivityTypes = new HashSet<string>(StringComparer.Ordinal)
@@ -56,6 +58,11 @@ public static class MeetingWire
             case "Level":
                 return new MeetingChange.Level(meeting, e.TryGetProperty("mic_rms", out var mr) && mr.ValueKind == JsonValueKind.Number ? (float)mr.GetDouble() : 0,
                     e.TryGetProperty("system_rms", out var sr) && sr.ValueKind == JsonValueKind.Number ? (float)sr.GetDouble() : 0);
+            case "Summarized": return new MeetingChange.Summarized(meeting, Str(e, "title") ?? "");
+            case "Detected": return Detection(e) is { } det ? new MeetingChange.Detected(det) : null;
+            case "DetectionCleared": return new MeetingChange.DetectionCleared(Str(e, "app_id") ?? "", Str(e, "reason") ?? "");
+            case "AppReleased":
+                return e.TryGetProperty("app", out var ap) && Process(ap) is { } app ? new MeetingChange.AppReleased(meeting, app, (uint)Long(e, "released_for_s")) : null;
             case "Listening": return new MeetingChange.Listening(meeting, Bool(e, "held"));
             case "ApprovalWaiting": return new MeetingChange.ApprovalWaiting(meeting, Bool(e, "waiting"));
             case "PostProgress": return new MeetingChange.PostProgress(meeting, Str(e, "stage") ?? "", (int)Long(e, "pct"));
@@ -93,7 +100,8 @@ public static class MeetingWire
             foreach (var u in la.EnumerateArray())
                 lines.Add(new MeetingLine(Str(u, "track") ?? "System", Long(u, "t0_ms"), Str(u, "text") ?? "", Bool(u, "request"), Open: false, Str(u, "speaker")));
         return MeetingReducer.Hydrate(Str(status, "meeting"), Str(status, "session"), word, Words(status, "degraded"), Long(status, "elapsed_ms"),
-            Str(status, "cursor"), topics, Bool(status, "approval_waiting"), bs, lines, now);
+            Str(status, "cursor"), topics, Bool(status, "approval_waiting"), bs, lines, now,
+            status.TryGetProperty("detection", out var det) ? Detection(det) : null);
     }
 
     /// <summary><c>MeetingState</c>: a word, or <c>{"Post": "Transcribing"}</c>.</summary>
@@ -132,6 +140,20 @@ public static class MeetingWire
         if (b.TryGetProperty("bullets", out var bl) && bl.ValueKind == JsonValueKind.Array)
             foreach (var x in bl.EnumerateArray()) if (x.ValueKind == JsonValueKind.String) bullets.Add(x.GetString() ?? "");
         return new MeetingBrief(id, Str(b, "topic"), Str(b, "title") ?? "", bullets, Str(b, "source") ?? "Auto", Long(b, "at_ms"), Str(b, "parent"), Str(b, "cached"));
+    }
+
+    /// <summary><c>ProcessInfo</c>; null without a <c>name</c> (a pid alone cannot be shown).</summary>
+    private static MeetingProcess? Process(JsonElement p) =>
+        p.ValueKind == JsonValueKind.Object && Str(p, "name") is { } name ? new MeetingProcess((uint)Long(p, "pid"), name, Str(p, "bundle_id"), Bool(p, "active")) : null;
+
+    /// <summary><c>detect::Detection</c> (158 §15.1): <c>app</c> + <c>app_id</c> required; <c>also</c> defaults empty.</summary>
+    private static MeetingDetection? Detection(JsonElement d)
+    {
+        if (d.ValueKind != JsonValueKind.Object || !d.TryGetProperty("app", out var ap) || Process(ap) is not { } app || Str(d, "app_id") is not { } appId) return null;
+        var also = new List<MeetingProcess>();
+        if (d.TryGetProperty("also", out var al) && al.ValueKind == JsonValueKind.Array)
+            foreach (var x in al.EnumerateArray()) if (Process(x) is { } p) also.Add(p);
+        return new MeetingDetection(app, appId, Str(d, "since") ?? "", also);
     }
 
     private static string? Str(JsonElement e, string key) =>

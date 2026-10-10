@@ -369,6 +369,12 @@ public partial class StoreModel
 
     public Task MeetingStopAsync() => engine.MeetingStopAsync();
 
+    /// <summary>158 §5.4: <c>meeting_start</c> from the prompt (<c>process</c> = the detected pid, <c>consent: true</c>, <c>source: detected</c>).</summary>
+    public Task<MeetingStarted> MeetingStartAsync(StartMeeting start) => engine.MeetingStartAsync(start);
+
+    /// <summary>158 §5.3: "Not now" (<c>never: false</c>) · "Never for &lt;App&gt;" (<c>never: true</c>).</summary>
+    public Task MeetingDetectionDismissAsync(string appId, bool never) => engine.MeetingDetectionDismissAsync(appId, never);
+
     public Task MeetingTapAsync(string topic) => engine.MeetingTapAsync(topic);
 
     public Task MeetingDismissAsync(string topic) => engine.MeetingDismissAsync(topic);
