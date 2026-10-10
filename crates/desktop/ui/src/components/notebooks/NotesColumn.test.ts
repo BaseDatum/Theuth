@@ -45,7 +45,8 @@ const estimate: ContextEstimate = {
     { id: 'n2', kind: 'note', title: 'RTO vs measured', level: 'off', pinned: false, tokens: 0, status: 'omitted' },
   ],
   total_tokens: 1200,
-  budget_tokens: 40_000,
+  injected: false,
+  pending_changes: 0,
   omitted: 1,
   empty: false,
 }

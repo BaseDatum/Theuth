@@ -1215,9 +1215,10 @@ pub trait Api {
         kind: Option<document::ItemKind>,
         level: document::ContextLevel,
     ) -> RpcResult<()>;
-    /// 144 §5.2: what the next turn's `<notebook>` block carries — per item the effective level, pinned or
-    /// not, tokens and status; the total against `notebooks.context_budget_tokens`. Read-only, no model call;
-    /// `session: None` = a new thread (the default rule alone). Owner only.
+    /// 144 §5.2 / 157 D9: what the chat's `<notebook>` block carries — per item the effective level, pinned
+    /// or not, tokens and status; the total; whether the block is already in the chat and how many change
+    /// lines the next turn would send. Sized by the thread's own context, never a notebook budget. Read-only,
+    /// no model call; `session: None` = a new thread (the default rule, the engine's default model). Owner only.
     #[method(name = "notebook_context_estimate", with_extensions)]
     async fn notebook_context_estimate(
         &self,
@@ -5791,9 +5792,8 @@ impl ApiServer for Server {
     ) -> RpcResult<document::ContextEstimate> {
         owner(ext)?;
         let agents = lookup::<Agents>(agent::AGENT_ACTOR)?;
-        let budget = agent::notebooks::Budget::from_runtime(&self.rt);
         let est = nb_result(
-            agent::notebook_context::estimate(&agents, session, &notebook.to_string(), budget)
+            agent::notebook_context::estimate(&agents, session, &notebook.to_string(), &self.rt)
                 .await,
         )?;
         // The agent's estimate serialises to the contract's shape (string kinds, lowercase levels).

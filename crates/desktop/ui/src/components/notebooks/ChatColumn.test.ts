@@ -25,27 +25,27 @@ const estimate: ContextEstimate = {
     { id: 'n2', kind: 'note', title: 'Questions', level: 'full', pinned: false, tokens: 560, status: 'available' },
   ],
   total_tokens: 12_400,
-  budget_tokens: 40_000,
   omitted: 1,
   empty: false,
+  injected: false,
+  pending_changes: 0,
 }
 
 const render = (e: ContextEstimate | undefined, error: Error | null = null) => renderToStaticMarkup(createElement(ContextLine, { estimate: e, error }))
 
-test('the §5.2 sentence, the omitted chip aimed at the first omitted card, and the budget bar at 31 %', () => {
+test('the §5.2 sentence, the omitted chip aimed at the first omitted card, no budget bar', () => {
   const html = render(estimate)
-  expect(html.replace(/<[^>]+>/g, '')).toContain('in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes · ~12.4k of 40k tokens1 omitted')
+  expect(html.replace(/<[^>]+>/g, '')).toContain('in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes · ~12.4k tokens1 omitted')
   expect(html).toContain('title="Scroll to the first omitted item"')
-  expect(html).toContain('aria-valuenow="12400"')
-  expect(html).toContain('aria-valuemax="40000"')
-  expect(html).toContain('width:31%')
-  expect(html).toContain('bg-primary')
+  expect(html).not.toContain('progressbar')
+  expect(html).not.toContain('40k')
 })
 
-test('amber from 80 % of the budget, red when anything was truncated; nothing in context is said before send', () => {
-  expect(render({ ...estimate, total_tokens: 33_000, omitted: 0 })).toContain('bg-amber-500')
-  expect(render({ ...estimate, items: [{ ...estimate.items[0]!, status: 'truncated' }], total_tokens: 40_000, omitted: 0 })).toContain('bg-danger')
-  const empty = render({ items: [], total_tokens: 0, budget_tokens: 40_000, omitted: 0, empty: true })
+test('pending changes once the block is in the chat; nothing in context is said before send', () => {
+  const sent = render({ ...estimate, injected: true, pending_changes: 2 }).replace(/<[^>]+>/g, '')
+  expect(sent).toContain('2 changes go with your next message')
+  expect(render({ ...estimate, injected: true }).replace(/<[^>]+>/g, '')).not.toContain('next message')
+  const empty = render({ items: [], total_tokens: 0, omitted: 0, empty: true, injected: false, pending_changes: 0 })
   expect(empty).toContain('nothing in context — the agent sees only the description')
   expect(empty).not.toContain('omitted')
   expect(render(undefined)).toContain('in context: …')

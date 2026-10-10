@@ -5,7 +5,7 @@
 //! insight job charges to a notebook chat. Ids, kinds and levels are strings here: the agent crate does
 //! not depend on `document` (`rpc` maps them onto the contract's types).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -324,16 +324,19 @@ pub type Pins = HashMap<String, Level>;
 
 // ---- The planner: one source of truth for the block and the estimate -----------------------------
 
-/// One item after the default rule and the budget: what the block injects and what the estimate counts.
+/// One item after the default rule and the capacity: what the block injects and what the estimate counts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Placed<'a> {
     /// The item.
     pub item: &'a Item,
-    /// The effective level.
+    /// The effective level: what the text is.
     pub level: Level,
+    /// The dial level — pinned or default — `level` falls short of when the item did not fit or could
+    /// not be read (157 D3: the baseline records this one).
+    pub dial: Level,
     /// A `session_context` row decided it.
     pub pinned: bool,
-    /// What the budget did.
+    /// What the capacity did.
     pub status: Status,
     /// Tokens of `text` (chars / 4).
     pub tokens: u32,
@@ -344,9 +347,10 @@ pub struct Placed<'a> {
 /// §5.1: the effective level per item — pinned if present, else `summary` for a source with a
 /// `## Insights` section, `full` for other sources and notes, `mention` for sessions and artifacts —
 /// taken newest first per level in the order full → summary → mention while the running total stays
-/// under `budget` tokens; the first overflow is `truncated` at a `<!-- id -->` boundary, the rest fall
-/// to `mention` / `omitted`; `off` items are omitted. The result is in injection order.
-pub fn plan<'a>(items: &'a [Item], pins: &Pins, budget: u32) -> Vec<Placed<'a>> {
+/// under `capacity` tokens (157 D4: what the session can take, not a notebook budget); the first overflow
+/// is `truncated` at a `<!-- id -->` boundary, the rest fall to `mention` / `omitted`; `off` items are
+/// omitted. The result is in injection order.
+pub fn plan<'a>(items: &'a [Item], pins: &Pins, capacity: u32) -> Vec<Placed<'a>> {
     let mut order: Vec<&Item> = items.iter().collect();
     order.sort_by_key(|i| std::cmp::Reverse(i.added_ms));
     let requested: Vec<(&Item, Level, bool)> = order
@@ -356,7 +360,7 @@ pub fn plan<'a>(items: &'a [Item], pins: &Pins, budget: u32) -> Vec<Placed<'a>> 
             None => (it, default_level(it), false),
         })
         .collect();
-    let mut left = budget;
+    let mut left = capacity;
     let mut spent_truncation = false;
     let mut out: Vec<Placed<'a>> = Vec::with_capacity(requested.len());
     for want in [Level::Full, Level::Summary, Level::Mention, Level::Off] {
@@ -365,6 +369,7 @@ pub fn plan<'a>(items: &'a [Item], pins: &Pins, budget: u32) -> Vec<Placed<'a>> 
                 Level::Off => Placed {
                     item: it,
                     level,
+                    dial: level,
                     pinned,
                     status: Status::Omitted,
                     tokens: 0,
@@ -377,6 +382,7 @@ pub fn plan<'a>(items: &'a [Item], pins: &Pins, budget: u32) -> Vec<Placed<'a>> 
                     Placed {
                         item: it,
                         level,
+                        dial: level,
                         pinned,
                         status: Status::Available,
                         tokens,
@@ -397,6 +403,7 @@ pub fn plan<'a>(items: &'a [Item], pins: &Pins, budget: u32) -> Vec<Placed<'a>> 
                                 Placed {
                                     item: it,
                                     level,
+                                    dial: level,
                                     pinned,
                                     status: Status::Available,
                                     tokens: total,
@@ -415,6 +422,7 @@ pub fn plan<'a>(items: &'a [Item], pins: &Pins, budget: u32) -> Vec<Placed<'a>> 
                                 Placed {
                                     item: it,
                                     level,
+                                    dial: level,
                                     pinned,
                                     status: Status::Truncated,
                                     tokens: shown,
@@ -425,7 +433,7 @@ pub fn plan<'a>(items: &'a [Item], pins: &Pins, budget: u32) -> Vec<Placed<'a>> 
                                 }
                             } else {
                                 spent_truncation = true;
-                                demoted(it, pinned, &mut left)
+                                demoted(it, level, pinned, &mut left)
                             }
                         }
                         // The read failed: nothing to inject beyond the line.
@@ -436,6 +444,7 @@ pub fn plan<'a>(items: &'a [Item], pins: &Pins, budget: u32) -> Vec<Placed<'a>> 
                             Placed {
                                 item: it,
                                 level: Level::Mention,
+                                dial: level,
                                 pinned,
                                 status: Status::Available,
                                 tokens,
@@ -453,14 +462,15 @@ pub fn plan<'a>(items: &'a [Item], pins: &Pins, budget: u32) -> Vec<Placed<'a>> 
     out
 }
 
-/// Beyond the budget: the mention line, `omitted`.
-fn demoted<'a>(it: &'a Item, pinned: bool, left: &mut u32) -> Placed<'a> {
+/// Beyond the capacity: the mention line, `omitted`.
+fn demoted<'a>(it: &'a Item, dial: Level, pinned: bool, left: &mut u32) -> Placed<'a> {
     let text = mention_line(it);
     let tokens = tokens(&text);
     *left = left.saturating_sub(tokens);
     Placed {
         item: it,
         level: Level::Mention,
+        dial,
         pinned,
         status: Status::Omitted,
         tokens,
@@ -554,6 +564,358 @@ fn teaser(body: &str) -> String {
     cut(body, 400).trim_end().to_owned()
 }
 
+// ---- 157 D3: the baseline in the history, and what changed since --------------------------------
+
+/// One item as the epoch's block or a later notice last described it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Seen {
+    /// `source | note | session | artifact`.
+    pub kind: String,
+    /// Display title then.
+    pub title: String,
+    /// The dial level then (`dial` of a line that has one, else `level`).
+    pub level: Level,
+    /// [`Item::fingerprint`] then.
+    pub s: String,
+}
+
+/// What the model was told about the notebook this epoch (157 D3): parsed back from the rows it sees,
+/// so it survives a restart and resets at a compaction by construction.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Baseline {
+    /// A `<notebook …>` block (full or manifest) is among the rows.
+    pub injected: bool,
+    /// The description's `sha8`.
+    pub description: String,
+    /// Non-`off` items by id.
+    pub items: BTreeMap<String, Seen>,
+}
+
+impl Baseline {
+    /// From the epoch's user rows in order: the last `<notebook ` block resets the baseline, every
+    /// `<notebook_changes` after it applies; a notice before any block is stale and ignored.
+    pub fn of(texts: impl IntoIterator<Item = String>) -> Self {
+        let mut base = Self::default();
+        for text in texts {
+            if text.starts_with("<notebook ") {
+                base = Self {
+                    injected: true,
+                    ..Default::default()
+                };
+                base.read(&text);
+            } else if text.starts_with("<notebook_changes") && base.injected {
+                base.read(&text);
+            }
+        }
+        base
+    }
+
+    /// Apply the tag lines of a block or a notice; item bodies and the description text are skipped.
+    fn read(&mut self, text: &str) {
+        let mut inside: Option<&str> = None;
+        for line in text.lines() {
+            if let Some(close) = inside {
+                if line.trim_end().ends_with(close) {
+                    inside = None;
+                }
+                continue;
+            }
+            let tag = line.trim_start();
+            if let Some(rest) = tag.strip_prefix("<description") {
+                let a = attrs(rest);
+                if let Some(s) = a.get("s") {
+                    self.description = s.clone();
+                }
+                if !line.trim_end().ends_with("</description>") {
+                    inside = Some("</description>");
+                }
+            } else if let Some(rest) = tag.strip_prefix("<item ") {
+                self.seen(&attrs(rest));
+                if !line.trim_end().ends_with("</item>") {
+                    inside = Some("</item>");
+                }
+            } else if let Some(rest) = tag.strip_prefix("<change ") {
+                let a = attrs(rest);
+                if a.get("kind").map(String::as_str) == Some("notebook") {
+                    if let Some(s) = a.get("s") {
+                        self.description = s.clone();
+                    }
+                } else {
+                    self.seen(&a);
+                }
+            }
+        }
+    }
+
+    fn seen(&mut self, a: &HashMap<String, String>) {
+        let Some(id) = a.get("id") else {
+            return;
+        };
+        let level = a
+            .get("dial")
+            .or_else(|| a.get("level"))
+            .and_then(|l| Level::parse(l))
+            .unwrap_or(Level::Mention);
+        if level == Level::Off {
+            self.items.remove(id);
+            return;
+        }
+        self.items.insert(
+            id.clone(),
+            Seen {
+                kind: a.get("kind").cloned().unwrap_or_default(),
+                title: a.get("title").cloned().unwrap_or_default(),
+                level,
+                s: a.get("s").cloned().unwrap_or_default(),
+            },
+        );
+    }
+}
+
+/// `name="value"` pairs of a tag's opening, values unescaped (the inverse of [`notebooks::attr`]).
+fn attrs(tag: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let mut rest = tag;
+    while let Some(eq) = rest.find("=\"") {
+        let start = rest[..eq]
+            .rfind(|c: char| c.is_whitespace() || c == '<')
+            .map_or(0, |i| i + 1);
+        let name = rest[start..eq].to_owned();
+        let after = &rest[eq + 2..];
+        let Some(end) = after.find('"') else {
+            break;
+        };
+        out.insert(
+            name,
+            after[..end]
+                .replace("&quot;", "\"")
+                .replace("&lt;", "<")
+                .replace("&amp;", "&"),
+        );
+        rest = &after[end + 1..];
+    }
+    out
+}
+
+/// One line of a `<notebook_changes>` note (157 D2/D7): never the content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Change {
+    /// `source | note | session | artifact`, or `notebook` for the description.
+    pub kind: String,
+    /// The item id (the notebook id for the description).
+    pub id: String,
+    /// Display title now; empty for the description.
+    pub title: String,
+    /// The dial level now; `off` when the item left the context (switched off or removed).
+    pub level: Level,
+    /// The fingerprint now; empty when `off`.
+    pub s: String,
+    /// What changed and how to read it.
+    pub text: String,
+}
+
+impl Change {
+    /// The `<change …>…</change>` line.
+    pub fn line(&self) -> String {
+        let s = if self.s.is_empty() {
+            String::new()
+        } else {
+            format!(" s=\"{}\"", self.s)
+        };
+        let title = if self.title.is_empty() {
+            String::new()
+        } else {
+            format!(" title=\"{}\"", notebooks::attr(&self.title))
+        };
+        let level = if self.kind == "notebook" {
+            String::new()
+        } else {
+            format!(" level=\"{}\"", self.level.as_str())
+        };
+        format!(
+            "<change kind=\"{}\" id=\"{}\"{title}{level}{s}>{}</change>",
+            self.kind, self.id, self.text
+        )
+    }
+}
+
+/// `doc_read("source:<id>")` and the like.
+pub fn read_call(it: &Item) -> String {
+    match it.kind.as_str() {
+        "source" => format!("doc_read(\"source:{}\")", it.id),
+        "note" => format!("doc_read(\"{}\")", it.id),
+        "session" => format!("session_read(\"{}\")", it.id),
+        _ => format!("artifact_read(\"{}\")", it.id),
+    }
+}
+
+/// 157 D3: the live notebook against the baseline — items added, removed, renamed, edited (the
+/// fingerprint moved: content or insights), dial moved (to or from `off` included), the description
+/// edited — one [`Change`] each, in notebook order, removals and the description last.
+pub fn diff(
+    base: &Baseline,
+    id: &str,
+    description: &str,
+    items: &[Item],
+    pins: &Pins,
+) -> Vec<Change> {
+    let mut out = Vec::new();
+    for it in items {
+        let dial = match pins.get(&it.id) {
+            Some(&l) => clamp(&it.kind, l),
+            None => default_level(it),
+        };
+        let seen = base.items.get(&it.id);
+        if dial == Level::Off {
+            if seen.is_some() {
+                out.push(Change {
+                    kind: it.kind.clone(),
+                    id: it.id.clone(),
+                    title: it.title.clone(),
+                    level: Level::Off,
+                    s: String::new(),
+                    text: "now off: leave it out unless the user brings it back".to_owned(),
+                });
+            }
+            continue;
+        }
+        let s = it.fingerprint();
+        let read = format!(
+            "read it with {} when it matters (cite {})",
+            read_call(it),
+            it.href()
+        );
+        let what = match seen {
+            None => format!("in context now at {}; {read}", dial.as_str()),
+            Some(seen) => {
+                let mut parts = Vec::new();
+                if seen.title != it.title {
+                    parts.push(format!("renamed from \"{}\"", seen.title));
+                }
+                if seen.s != s {
+                    parts.push(
+                        match it.kind.as_str() {
+                            "note" => "edited",
+                            "source" => "content changed (text or insights)",
+                            _ => "changed",
+                        }
+                        .to_owned(),
+                    );
+                }
+                if seen.level != dial {
+                    parts.push(format!("now {}", dial.as_str()));
+                }
+                if parts.is_empty() {
+                    continue;
+                }
+                format!("{}; {read}", parts.join("; "))
+            }
+        };
+        out.push(Change {
+            kind: it.kind.clone(),
+            id: it.id.clone(),
+            title: it.title.clone(),
+            level: dial,
+            s,
+            text: what,
+        });
+    }
+    for (gone, seen) in base
+        .items
+        .iter()
+        .filter(|(id, _)| !items.iter().any(|i| &i.id == *id))
+    {
+        out.push(Change {
+            kind: seen.kind.clone(),
+            id: gone.clone(),
+            title: seen.title.clone(),
+            level: Level::Off,
+            s: String::new(),
+            text: format!("removed from the notebook; notebook_get(\"{id}\") lists what remains"),
+        });
+    }
+    let desc = notebooks::sha8(description);
+    if base.description != desc {
+        out.push(Change {
+            kind: "notebook".to_owned(),
+            id: id.to_owned(),
+            title: String::new(),
+            level: Level::Mention,
+            s: desc,
+            text: format!("description changed; read it with doc_read(\"notebook:{id}\")"),
+        });
+    }
+    out
+}
+
+/// The `<notebook_changes>` message for `changes`.
+pub fn notice(id: &str, changes: &[Change]) -> String {
+    let mut out = format!("<notebook_changes notebook=\"{id}\">\n");
+    for c in changes {
+        out.push_str(&c.line());
+        out.push('\n');
+    }
+    out.push_str("</notebook_changes>");
+    out
+}
+
+/// 157 D2: what a bound turn appends. No block in the epoch → the block within `capacity` in epoch 0,
+/// the manifest (D5) after a compaction; else the change notice when something moved, else `None`.
+#[allow(clippy::too_many_arguments)]
+pub fn next_message(
+    id: &str,
+    title: &str,
+    description: &str,
+    items: &[Item],
+    pins: &Pins,
+    budget: Budget,
+    capacity: u32,
+    epoch: u32,
+    base: &Baseline,
+) -> Option<String> {
+    if !base.injected {
+        return Some(if epoch == 0 {
+            notebooks::render(id, title, description, items, pins, budget, capacity)
+        } else {
+            notebooks::manifest(id, title, description, items, pins, budget)
+        });
+    }
+    let changes = diff(base, id, description, items, pins);
+    (!changes.is_empty()).then(|| notice(id, &changes))
+}
+
+// ---- 157 D4: the first injection's capacity -------------------------------------------------------
+
+/// The window assumed when the catalog knows none: auto-compaction is off then (07 §8.1), and the
+/// first injection must still stop somewhere.
+// ponytail: one number for every unknown model; a per-provider guess if an unknown-window chat ever overflows on its first turn.
+pub const UNKNOWN_WINDOW: u32 = 128_000;
+
+/// The trigger a session without an override sizes against: `compact_at × window`, the window itself
+/// when auto-compaction is off, [`UNKNOWN_WINDOW`] when the catalog knows none.
+pub fn default_limit(window: u32, compact_at: f32) -> u32 {
+    let window = if window == 0 { UNKNOWN_WINDOW } else { window };
+    if compact_at > 0.0 {
+        (compact_at * window as f32) as u32
+    } else {
+        window
+    }
+}
+
+/// Tokens the first block may take: the frame after it stays where a fold would leave it —
+/// `fixed + (HEAD_SHARE + TAIL_SHARE) % of the headroom` over `limit` (81 COMPACT-FLOOR: the 40 % the
+/// fold keeps free for growth is the reply headroom) — `frame` being the frame as it stands (system
+/// prompt, tools, head, history). Zero when the frame is already past it.
+pub fn capacity(limit: u32, fixed: u32, frame: u32) -> u32 {
+    let avail = crate::compact::headroom(limit, fixed);
+    fixed
+        .saturating_add(crate::compact::share(
+            avail,
+            crate::compact::HEAD_SHARE + crate::compact::TAIL_SHARE,
+        ))
+        .saturating_sub(frame)
+}
+
 // ---- The estimate ----------------------------------------------------------------------------------
 
 /// One row of the estimate (the contract's `ContextItem`, strings for kind).
@@ -571,27 +933,30 @@ pub struct EstimateItem {
     pub pinned: bool,
     /// Tokens at `level`.
     pub tokens: u32,
-    /// What the budget did.
+    /// What the capacity did.
     pub status: Status,
 }
 
-/// The pre-turn estimate (the contract's `ContextEstimate`).
+/// The pre-turn estimate (the contract's `ContextEstimate`, 157 D9).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Estimate {
     /// Every item, in injection order.
     pub items: Vec<EstimateItem>,
     /// Σ `tokens`.
     pub total_tokens: u32,
-    /// `notebooks.context_budget_tokens`.
-    pub budget_tokens: u32,
-    /// `off` or beyond the budget.
+    /// `off`, or beyond what the first injection can carry (`status == omitted`).
     pub omitted: u32,
     /// Nothing injected: the block carries the "nothing in context" sentence.
     pub empty: bool,
+    /// The current epoch already carries the block: the items are in context at their dial levels and
+    /// `omitted` counts `off` only.
+    pub injected: bool,
+    /// Change lines the next turn's `<notebook_changes>` would carry; 0 before the block.
+    pub pending_changes: u32,
 }
 
 /// The estimate of a plan.
-pub fn estimate_of(placed: &[Placed<'_>], budget_tokens: u32) -> Estimate {
+pub fn estimate_of(placed: &[Placed<'_>], injected: bool, pending_changes: u32) -> Estimate {
     let items: Vec<EstimateItem> = placed
         .iter()
         .map(|p| EstimateItem {
@@ -606,26 +971,89 @@ pub fn estimate_of(placed: &[Placed<'_>], budget_tokens: u32) -> Estimate {
         .collect();
     Estimate {
         total_tokens: items.iter().map(|i| i.tokens).sum(),
-        budget_tokens,
         omitted: items.iter().filter(|i| i.status == Status::Omitted).count() as u32,
         empty: placed.iter().all(|p| p.level == Level::Off),
         items,
+        injected,
+        pending_changes,
+    }
+}
+
+/// `ask` → `Result<SessionFrame, String>`: what the estimate needs of a thread (157 D9).
+#[derive(Clone, Copy, Debug)]
+pub struct NotebookFrame(pub SessionId);
+
+/// A thread's frame as the estimate sees it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionFrame {
+    /// The thread's model id.
+    pub model: String,
+    /// The epoch's user rows that open with `<notebook` (block and notices), in order.
+    pub notebook_rows: Vec<String>,
+    /// `est` of the head and the epoch's rows — the system prompt and tools are not known here.
+    pub tokens: u32,
+}
+
+impl Message<NotebookFrame> for Agents {
+    type Reply = Result<SessionFrame, String>;
+
+    async fn handle(
+        &mut self,
+        m: NotebookFrame,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let store = self.store_for(m.0);
+        let model = store
+            .session(m.0)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|s| s.model)
+            .unwrap_or_default();
+        let (_, head, history) = store.frame(m.0).await.map_err(|e| e.to_string())?;
+        let tokens = history.iter().map(|(_, m)| crate::compact::est(m)).fold(
+            head.as_ref().map_or(0, crate::compact::est),
+            u32::saturating_add,
+        );
+        let notebook_rows = history
+            .iter()
+            .filter(|(_, m)| m.role == genai::chat::ChatRole::User)
+            .map(|(_, m)| crate::loop_::text_of(&m.content))
+            .filter(|t| t.starts_with("<notebook"))
+            .collect();
+        Ok(SessionFrame {
+            model,
+            notebook_rows,
+            tokens,
+        })
     }
 }
 
 /// `notebook_context_estimate(notebook, session)`: read-only, no model call, nothing cached. The items
-/// come through the registry as `session` (a fresh id when `None`: the default rule with no pins).
+/// come through the registry as `session` (a fresh id when `None`: the default rule with no pins, the
+/// engine's default model). Before the block, the plan runs at the thread's [`capacity`] (the system
+/// prompt and tools unknown here: `fixed = 0`, so the loop may still demote an item the estimate kept);
+/// after it, at the dial levels, with the pending change lines counted.
 pub async fn estimate(
     agents: &ActorRef<Agents>,
     session: Option<SessionId>,
     notebook: &str,
-    budget: Budget,
+    rt: &Runtime,
 ) -> anyhow::Result<Estimate> {
-    let pins = match session {
-        Some(s) => pins(agents, s).await?,
-        None => Pins::new(),
+    let (pins, frame) = match session {
+        Some(s) => (
+            pins(agents, s).await?,
+            agents.ask(NotebookFrame(s)).await.map_err(err)?,
+        ),
+        None => (
+            Pins::new(),
+            SessionFrame {
+                model: agents.ask(crate::GetDefaultModel).await.map_err(err)?,
+                ..Default::default()
+            },
+        ),
     };
-    let (_, _, mut items) = notebooks::fetch(None, session.unwrap_or_default(), notebook).await?;
+    let (_, description, mut items) =
+        notebooks::fetch(None, session.unwrap_or_default(), notebook).await?;
     let sessions: Vec<(usize, SessionId)> = items
         .iter()
         .enumerate()
@@ -643,8 +1071,30 @@ pub async fn estimate(
             }
         }
     }
-    let placed = plan(&items, &pins, budget.context_budget_tokens);
-    Ok(estimate_of(&placed, budget.context_budget_tokens))
+    let base = Baseline::of(frame.notebook_rows);
+    let cap = if base.injected {
+        u32::MAX
+    } else {
+        let window = agents
+            .ask(crate::ListModels)
+            .await
+            .map_err(err)?
+            .iter()
+            .find(|m| m.id == frame.model)
+            .map_or(0, |m| m.context);
+        let compact_at = rt
+            .section::<crate::AgentConfig>("agent")
+            .unwrap_or_default()
+            .compact_at;
+        capacity(default_limit(window, compact_at), 0, frame.tokens)
+    };
+    let placed = plan(&items, &pins, cap);
+    let pending = if base.injected {
+        diff(&base, notebook, &description, &items, &pins).len() as u32
+    } else {
+        0
+    };
+    Ok(estimate_of(&placed, base.injected, pending))
 }
 
 // ---- Tools -----------------------------------------------------------------------------------------
@@ -680,10 +1130,11 @@ impl Tool for ContextSetTool {
     type Args = ContextSetArgs;
 
     fn description(&self) -> String {
-        "Set how much of a notebook item this thread's `<notebook>` block carries from the next turn on: \
-         `off` (not mentioned), `mention` (one line), `summary` (the source's insights), `full` (the whole \
-         text). Sessions and artifacts are `mention` at most. Pinned until cleared; the default rule picks \
-         for the rest."
+        "Set how much of a notebook item this thread carries: `off` (not mentioned), `mention` (one line), \
+         `summary` (the source's insights), `full` (the whole text). The first message of a chat carries the \
+         items at their levels; after that a change takes effect as a `<notebook_changes>` line on the next \
+         turn (`now full: read it with doc_read(<id>) when it matters`), never a re-injection. Sessions and \
+         artifacts are `mention` at most. Pinned until cleared; the default rule picks for the rest."
             .into()
     }
 
@@ -701,7 +1152,7 @@ impl Tool for ContextSetTool {
         )
         .await?;
         Ok(ToolOutput::ok(format!(
-            "{} {} → {} for thread {session} (applies from the next turn)",
+            "{} {} → {} for thread {session} (a change line on the next turn)",
             a.kind, a.item, a.level
         )))
     }
@@ -717,9 +1168,9 @@ pub struct ContextEstimateArgs {
     pub session: Option<String>,
 }
 
-/// `notebook_context_estimate` (ReadOnly): what the next turn's block will carry.
+/// `notebook_context_estimate` (ReadOnly): what the chat's first block carries, or what has changed since it.
 pub struct ContextEstimateTool {
-    /// For `notebooks.context_budget_tokens`.
+    /// For `notebooks.*` and `agent.compact_at`.
     pub rt: Runtime,
 }
 
@@ -731,9 +1182,11 @@ impl Tool for ContextEstimateTool {
     type Args = ContextEstimateArgs;
 
     fn description(&self) -> String {
-        "What the `<notebook>` block of this thread's next turn will carry for a notebook: per item its \
-         effective level, whether it is pinned, its tokens and status (available | truncated | omitted), \
-         the total against the budget. No model call."
+        "What this thread's `<notebook>` block carries for a notebook: per item its effective level, whether \
+         it is pinned, its tokens and status (available | truncated | omitted — did not fit the first \
+         injection), the total; whether the block is already in this chat and how many change lines the next \
+         turn would send. The first message of a chat carries the levels; after that a change arrives as a \
+         `<notebook_changes>` note on the next turn. No model call."
             .into()
     }
 
@@ -742,17 +1195,23 @@ impl Tool for ContextEstimateTool {
             Some(s) => s.parse::<SessionId>()?,
             None => cx.session,
         };
-        let budget = Budget::from_runtime(&self.rt);
-        let est = estimate(&agents()?, Some(session), &a.notebook, budget).await?;
+        let est = estimate(&agents()?, Some(session), &a.notebook, &self.rt).await?;
         let mut text = format!(
-            "{} of {} tokens · {} omitted{}\n",
+            "{} tokens · {} omitted{}{}\n",
             est.total_tokens,
-            est.budget_tokens,
             est.omitted,
             if est.empty {
                 " · nothing in context"
             } else {
                 ""
+            },
+            if est.injected {
+                format!(
+                    " · block in this chat · {} change line(s) pending",
+                    est.pending_changes
+                )
+            } else {
+                " · block not yet sent".to_owned()
             }
         );
         for i in &est.items {
@@ -993,16 +1452,16 @@ mod tests {
                 ("S", Level::Off, Status::Omitted, true),
             ]
         );
-        let e = estimate_of(&p, 40_000);
-        assert_eq!((e.omitted, e.empty, e.budget_tokens), (1, false, 40_000));
+        let e = estimate_of(&p, false, 0);
+        assert_eq!((e.omitted, e.empty, e.injected), (1, false, false));
         assert_eq!(e.total_tokens, p.iter().map(|p| p.tokens).sum::<u32>());
         let all_off: Pins = ["S", "R", "N", "C"]
             .into_iter()
             .map(|id| (id.to_owned(), Level::Off))
             .collect();
-        let e = estimate_of(&plan(&items, &all_off, 40_000), 40_000);
+        let e = estimate_of(&plan(&items, &all_off, 40_000), false, 0);
         assert!(e.empty && e.omitted == 4 && e.total_tokens == 0);
-        assert!(estimate_of(&plan(&[], &Pins::new(), 40_000), 40_000).empty);
+        assert!(estimate_of(&plan(&[], &Pins::new(), 40_000), false, 0).empty);
     }
 
     #[test]
@@ -1031,13 +1490,13 @@ mod tests {
         );
         assert_eq!(p[1].tokens, 20);
         assert!(p[1].text.ends_with("[truncated: 20 of 30 tokens shown; the rest with doc_read(blocks=[…]); first omitted block m3]"));
-        assert_eq!(p[2].level, Level::Mention);
+        assert_eq!((p[2].level, p[2].dial), (Level::Mention, Level::Full));
         assert_eq!(
             p[2].text,
             "mention only: 3 words; read with doc_read(\"OLD\") if needed"
         );
-        let e = estimate_of(&p, 32);
-        assert_eq!(e.omitted, 1);
+        let e = estimate_of(&p, true, 2);
+        assert_eq!((e.omitted, e.pending_changes), (1, 2));
         assert_eq!(e.total_tokens, 10 + 20 + tokens(&p[2].text));
     }
 
@@ -1054,5 +1513,224 @@ mod tests {
         assert_eq!(clamp("artifact", Level::Summary), Level::Mention);
         assert_eq!(check_level("summary"), Ok(Level::Summary));
         assert!(check_level("loud").is_err() && check_kind("blob").is_err());
+    }
+
+    /// 157 D4: the block fills the frame up to where a fold would leave it, never past it.
+    #[test]
+    fn capacity_is_the_fold_point_minus_the_frame() {
+        // limit 100k over 20k fixed: headroom 80k, 60 % = 48k → the frame may reach 68k.
+        assert_eq!(capacity(100_000, 20_000, 25_000), 43_000);
+        assert_eq!(capacity(100_000, 20_000, 68_000), 0);
+        assert_eq!(capacity(100_000, 20_000, 90_000), 0);
+        // Fixed past the limit: no headroom; the frame (≥ fixed in the loop) leaves nothing.
+        assert_eq!(capacity(10_000, 20_000, 20_000), 0);
+        assert_eq!(default_limit(200_000, 0.8), 160_000);
+        assert_eq!(default_limit(200_000, 0.0), 200_000);
+        assert_eq!(default_limit(0, 0.8), (0.8 * UNKNOWN_WINDOW as f32) as u32);
+    }
+
+    fn seen(base: &Baseline, id: &str) -> (String, Level, String) {
+        let s = &base.items[id];
+        (s.title.clone(), s.level, s.s.clone())
+    }
+
+    /// 157 D3: the block and later notices parse back into the baseline; a notice before a block is
+    /// stale; a later block resets.
+    #[test]
+    fn baseline_parses_block_and_notices_in_order() {
+        let block = "<notebook id=\"NB\" title=\"t\">\n\
+<description s=\"d1d1d1d1\">a &quot;desc&quot;\n<item kind=\"x\" id=\"NOT-AN-ITEM\"> inside the description</description>\n\
+<item kind=\"source\" id=\"S1\" title=\"Run &quot;v7&quot; &amp; more\" origin=\"file\" level=\"summary\" status=\"available\" s=\"aaaaaaaa\">\n\
+<!-- a -->\nbody\n<item kind=\"note\" id=\"BODY\" title=\"x\" level=\"full\" status=\"available\" s=\"bbbbbbbb\">\n</item>\n\
+<item kind=\"note\" id=\"N1\" title=\"Note\" level=\"mention\" dial=\"full\" status=\"omitted\" s=\"cccccccc\">\nmention only</item>\n\
+You may cite only these ids: S1, N1 (and the blocks inside them).\n</notebook>";
+        let notice = "<notebook_changes notebook=\"NB\">\n\
+<change kind=\"source\" id=\"S1\" title=\"Run v8\" level=\"full\" s=\"a2a2a2a2\">renamed; now full</change>\n\
+<change kind=\"note\" id=\"N1\" title=\"Note\" level=\"off\">now off</change>\n\
+<change kind=\"note\" id=\"N2\" title=\"New\" level=\"full\" s=\"dddddddd\">in context now</change>\n\
+<change kind=\"notebook\" id=\"NB\" s=\"d2d2d2d2\">description changed</change>\n\
+</notebook_changes>";
+        let stale = Baseline::of([notice.to_owned()]);
+        assert_eq!(stale, Baseline::default());
+        let base = Baseline::of([block.to_owned()]);
+        assert!(base.injected);
+        assert_eq!(base.description, "d1d1d1d1");
+        assert_eq!(
+            base.items.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["N1", "S1"]
+        );
+        assert_eq!(
+            seen(&base, "S1"),
+            (
+                "Run \"v7\" & more".into(),
+                Level::Summary,
+                "aaaaaaaa".into()
+            )
+        );
+        // The dial, not the demoted level.
+        assert_eq!(seen(&base, "N1").1, Level::Full);
+        let base = Baseline::of([block.to_owned(), notice.to_owned()]);
+        assert_eq!(base.description, "d2d2d2d2");
+        assert_eq!(
+            seen(&base, "S1"),
+            ("Run v8".into(), Level::Full, "a2a2a2a2".into())
+        );
+        assert!(!base.items.contains_key("N1"));
+        assert_eq!(seen(&base, "N2").2, "dddddddd");
+        // A later block (a manifest after a compaction) starts over.
+        let again = Baseline::of([notice.to_owned(), block.to_owned(), "hi".to_owned()]);
+        assert_eq!(again, Baseline::of([block.to_owned()]));
+    }
+
+    /// 157 D3: every change kind is one line; the lines carry ids and read calls, never the content.
+    #[test]
+    fn diff_reports_every_change_kind_without_content() {
+        let secret = "<!-- a -->\n# Plan\n\nTHE-SECRET-PASSAGE";
+        let s1 = item("source", "S1", Some("<!-- a -->\nraw text"), 1);
+        let n1 = item("note", "N1", Some(secret), 2);
+        let n2 = item("note", "N2", Some("<!-- a -->\n# Two"), 3);
+        let c1 = item("session", "C1", None, 4);
+        let items = vec![s1.clone(), n1.clone(), n2.clone(), c1.clone()];
+        let block = notebooks::render(
+            "NB",
+            "t",
+            "desc",
+            &items,
+            &Pins::new(),
+            Budget::default(),
+            u32::MAX,
+        );
+        let base = Baseline::of([block]);
+        // Nothing moved → nothing to say.
+        assert!(diff(&base, "NB", "desc", &items, &Pins::new()).is_empty());
+
+        // Renamed + edited source (insights appended flip its default level too), note edited, N2
+        // switched off, session renamed, A1 added, C1 … and the description edited; N-gone removed.
+        let mut live = items.clone();
+        live[0].title = "Renamed".into();
+        live[0].body =
+            Some("<!-- a -->\nraw text\n\n<!-- i -->\n## Insights\n\n<!-- j -->\nsum".into());
+        live[1].body = Some(format!("{secret} EDITED"));
+        live[3].title = "Chat renamed".into();
+        live.push(item("artifact", "A1", None, 5));
+        let mut base_with_gone = base.clone();
+        base_with_gone.items.insert(
+            "GONE".into(),
+            Seen {
+                kind: "note".into(),
+                title: "Old".into(),
+                level: Level::Full,
+                s: "00000000".into(),
+            },
+        );
+        let mut pins = Pins::new();
+        pins.insert("N2".into(), Level::Off);
+        let changes = diff(&base_with_gone, "NB", "desc v2", &live, &pins);
+        let by_id: HashMap<&str, &Change> = changes.iter().map(|c| (c.id.as_str(), c)).collect();
+        assert_eq!(changes.len(), 7, "{changes:#?}");
+        assert!(by_id["S1"].text.starts_with("renamed from \"S1\"; content changed (text or insights); now summary; read it with doc_read(\"source:S1\") when it matters (cite theuth://sources/S1)"), "{}", by_id["S1"].text);
+        assert_eq!(
+            (by_id["S1"].level, &by_id["S1"].s),
+            (Level::Summary, &live[0].fingerprint())
+        );
+        assert!(
+            by_id["N1"]
+                .text
+                .starts_with("edited; read it with doc_read(\"N1\")")
+        );
+        assert_eq!(by_id["N2"].level, Level::Off);
+        assert!(by_id["N2"].text.starts_with("now off"));
+        assert!(by_id["C1"].text.starts_with("renamed from \"C1\""));
+        assert!(
+            by_id["A1"]
+                .text
+                .starts_with("in context now at mention; read it with artifact_read(\"A1\")")
+        );
+        assert!(
+            by_id["GONE"]
+                .text
+                .starts_with("removed from the notebook; notebook_get(\"NB\")")
+        );
+        assert_eq!(by_id["NB"].kind, "notebook");
+        assert_eq!(by_id["NB"].s, notebooks::sha8("desc v2"));
+        let text = notice("NB", &changes);
+        assert!(text.starts_with("<notebook_changes notebook=\"NB\">\n<change "));
+        assert!(text.ends_with("</change>\n</notebook_changes>"));
+        assert!(!text.contains("SECRET") && !text.contains("raw text") && !text.contains("EDITED"));
+        assert_eq!(text.matches("<change ").count(), 7);
+        // The notice applied to the baseline makes the next diff empty (one line per change, once).
+        let next = Baseline::of([
+            notebooks::render(
+                "NB",
+                "t",
+                "desc",
+                &items,
+                &Pins::new(),
+                Budget::default(),
+                u32::MAX,
+            ),
+            text,
+        ]);
+        let mut live_pinned = live.clone();
+        live_pinned.retain(|i| i.id != "GONE");
+        assert!(diff(&next, "NB", "desc v2", &live_pinned, &pins).is_empty());
+        // A dial change alone is one line (D7); back from off is "in context now".
+        pins.insert("N1".into(), Level::Mention);
+        pins.remove("N2");
+        let c = diff(&next, "NB", "desc v2", &live_pinned, &pins);
+        let by_id: HashMap<&str, &Change> = c.iter().map(|c| (c.id.as_str(), c)).collect();
+        assert_eq!(c.len(), 2, "{c:#?}");
+        assert!(
+            by_id["N1"]
+                .text
+                .starts_with("now mention; read it with doc_read(\"N1\")")
+        );
+        assert!(by_id["N2"].text.starts_with("in context now at full"));
+        // `next_message`: nothing pending → None; no block in epoch 0 → the block; epoch 2 → the manifest.
+        assert!(
+            next_message(
+                "NB",
+                "t",
+                "desc v2",
+                &live_pinned,
+                &pins,
+                Budget::default(),
+                u32::MAX,
+                0,
+                &next
+            )
+            .is_some()
+        );
+        let b = Baseline::default();
+        assert!(
+            next_message(
+                "NB",
+                "t",
+                "d",
+                &items,
+                &Pins::new(),
+                Budget::default(),
+                u32::MAX,
+                0,
+                &b
+            )
+            .unwrap()
+            .starts_with("<notebook id=\"NB\" title=\"t\">")
+        );
+        assert!(
+            next_message(
+                "NB",
+                "t",
+                "d",
+                &items,
+                &Pins::new(),
+                Budget::default(),
+                u32::MAX,
+                2,
+                &b
+            )
+            .unwrap()
+            .starts_with("<notebook id=\"NB\" title=\"t\" manifest=\"true\">")
+        );
     }
 }

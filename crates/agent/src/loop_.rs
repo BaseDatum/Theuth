@@ -5562,21 +5562,68 @@ impl Turn {
             self.note("todo", &list).await;
             self.state.todo_touched_round = round;
         }
-        // 144 §5.3: a bound chat's turn opens with the volatile `<notebook>` block, after the user's
-        // `[attached …]` lines and before the knowledge hints. A retried round 0 already has it.
+        // 144 §5.3 / 157 D2: a bound chat gets its `<notebook>` block once per epoch (the manifest after a
+        // compaction, D5) and a `<notebook_changes>` note when the notebook moved since, after the user's
+        // `[attached …]` lines and before the knowledge hints. A retried round 0 already has either.
         if chat
             && round == 0
-            && !self
-                .state
-                .history
-                .last()
-                .is_some_and(|(_, m)| text_of(&m.content).starts_with("<notebook "))
+            && !self.state.history.last().is_some_and(|(_, m)| {
+                let t = text_of(&m.content);
+                t.starts_with("<notebook ") || t.starts_with("<notebook_changes")
+            })
             && let Ok(Some(nb)) = self.shared.store.effective_notebook(self.shared.id).await
         {
+            // D4: the first block may fill the frame up to where a fold would leave it; an endless
+            // turn sizes against its view budget (the view blocks are in `fixed`, 137 D4).
+            let fixed = self.fixed_tokens();
+            let frame = if self.state.used == 0 {
+                self.est_frame()
+            } else {
+                projected
+            };
+            let limit = match self.shared.endless.as_ref().filter(|_| endless) {
+                Some(e) => e.config().view_bytes / 4,
+                None => self.threshold(window).unwrap_or_else(|| {
+                    crate::notebook_context::default_limit(window, self.shared.cfg.compact_at)
+                }),
+            };
+            let capacity = crate::notebook_context::capacity(limit, fixed, frame);
+            // The epoch's rows: `state.history`, except under endless memory, where the frame is rebuilt
+            // from the view every turn (`endless_start` clears it) and the store's rows are the record.
+            // ponytail: an endless chat reads its whole row set each turn; a `LIKE '<notebook%'` query if that ever shows.
+            let (epoch, stored);
+            let history: &[(i64, ChatMessage)] = if endless {
+                match self.shared.store.frame(self.shared.id).await {
+                    Ok((e, _, rows)) => {
+                        epoch = e;
+                        stored = rows;
+                        &stored
+                    }
+                    Err(err) => {
+                        tracing::warn!(session = %self.shared.id, "notebook frame not read: {err:#}");
+                        epoch = self.state.epoch;
+                        &self.state.history
+                    }
+                }
+            } else {
+                epoch = self.state.epoch;
+                &self.state.history
+            };
             let budget = crate::notebooks::Budget::from_runtime(&self.shared.rt);
-            let block =
-                crate::notebooks::block(&self.shared.store, self.shared.id, &nb, budget).await;
-            self.persist(ChatMessage::user(block)).await;
+            let message = crate::notebooks::turn_message(
+                &self.shared.store,
+                self.shared.id,
+                &nb,
+                budget,
+                capacity,
+                epoch,
+                history,
+            )
+            .await;
+            if let Some(text) = message {
+                tracing::debug!(session = %self.shared.id, notebook = %nb, epoch, capacity, fixed, frame, limit, kind = text.split([' ', '>']).next().unwrap_or_default(), "notebook message");
+                self.persist(ChatMessage::user(text)).await;
+            }
         }
         // 10 §4.2: hints at turn start against the input, then every `hint_rounds`
         // rounds against what was appended since; each id once per epoch. 06 §1.5:
@@ -8030,6 +8077,10 @@ mod regen_stamp_tests;
 /// 137 §14: the endless frame — fresh turns, the view before the input, D11 cut, `/endless off` head.
 #[cfg(test)]
 mod endless_tests;
+
+/// 157 D2–D5: the notebook block once, change notices, the manifest after a compaction, endless memory.
+#[cfg(test)]
+mod notebook_ctx_tests;
 
 /// 109 W1: the journal's write points, the §4.2 resume rules and the §11.1 crash matrix.
 #[cfg(test)]

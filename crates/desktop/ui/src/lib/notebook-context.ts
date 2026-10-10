@@ -1,8 +1,9 @@
 // 144 §5.1 (writer's call W-g): the dial lives on the session server-side; this device remembers the last position
 // per (notebook, item) in `localStorage` (`note-chat.ts`'s pattern) and the chat column applies it to a NEW thread
 // with `notebook_context_set` right after the session exists. Without a session the dial writes only here.
-// §5.2: the pure words of the context line (`in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes ·
-// ~12.4k of 40k tokens · 1 omitted`) live here too, shared by the chat column and the bulk rows.
+// §5.2 / 157 D9: the pure words of the context line (`in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes ·
+// ~12.4k tokens · 1 omitted`, plus `2 changes go with your next message` once the block is in the chat) live here too,
+// shared by the chat column and the bulk rows.
 import { create } from 'zustand'
 import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
 import type { ContextLevel } from '@/rpc/bindings/ContextLevel'
@@ -23,12 +24,18 @@ export function kindWords(items: readonly EstimateItem[], kind: ItemKind, word: 
   return `${on.length} ${word}${on.length === 1 ? '' : 's'}${breakdown}`
 }
 
-/** The context line's parts (§5.2); `empty` → the one sentence. */
+/** `2 changes go with your next message` — the pending part once the block is in the chat; `null` otherwise. */
+export const pendingWords = (e: ContextEstimate): string | null =>
+  e.injected && e.pending_changes > 0 ? `${e.pending_changes} change${e.pending_changes === 1 ? '' : 's'} go${e.pending_changes === 1 ? 'es' : ''} with your next message` : null
+
+/** The context line's parts (§5.2, 157 D9: no budget); `empty` → the one sentence. */
 export function contextLine(e: ContextEstimate): string[] {
   if (e.empty) return ['nothing in context — the agent sees only the description']
   const parts = [kindWords(e.items, 'source', 'source'), kindWords(e.items, 'note', 'note')].filter((p): p is string => p !== null)
-  parts.push(`~${fmtTokens(e.total_tokens)} of ${fmtTokens(e.budget_tokens)} tokens`)
+  parts.push(`~${fmtTokens(e.total_tokens)} tokens`)
   if (e.omitted > 0) parts.push(`${e.omitted} omitted`)
+  const pending = pendingWords(e)
+  if (pending) parts.push(pending)
   return parts
 }
 

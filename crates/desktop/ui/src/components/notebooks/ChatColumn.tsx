@@ -20,7 +20,6 @@ import { contextLine } from '@/lib/notebook-context'
 import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
-import { cn } from '@/lib/utils'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
 import { useSessions } from '@/store/sessions'
 
@@ -170,16 +169,15 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
 }
 
 /**
- * §5.2: `in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes · ~12.4k of 40k tokens · 1 omitted`, a thin
- * budget bar (amber from 80 %, red when something was truncated) and the `N omitted` chip that scrolls the column to
- * the first omitted card (`id="item-<id>"`). Wraps to two lines on the phone.
+ * §5.2 / 157 D9: `in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes · ~12.4k tokens · 1 omitted`, the
+ * `N omitted` chip that scrolls the column to the first omitted card (`id="item-<id>"`) and, once the block is in the
+ * chat, `2 changes go with your next message`. No budget bar: the first injection is sized by the chat's own context.
+ * Wraps to two lines on the phone.
  */
 export function ContextLine({ estimate, error }: { estimate: ContextEstimate | undefined; error: Error | null }) {
   if (error) return <p className="px-3 pt-2 text-[11px] text-danger">{error.message}</p>
   if (!estimate) return <p className="px-3 pt-2 text-[11px] text-fg-tertiary">in context: …</p>
   const parts = contextLine(estimate)
-  const ratio = estimate.budget_tokens > 0 ? Math.min(1, estimate.total_tokens / estimate.budget_tokens) : 0
-  const truncated = estimate.items.some((i) => i.status === 'truncated')
   const firstOmitted = estimate.items.find((i) => i.status === 'omitted')
   const omittedLabel = `${estimate.omitted} omitted`
   return (
@@ -211,16 +209,6 @@ export function ContextLine({ estimate, error }: { estimate: ContextEstimate | u
           {omittedLabel}
         </button>
       )}
-      <span
-        role="progressbar"
-        aria-label="Context budget"
-        aria-valuemin={0}
-        aria-valuemax={estimate.budget_tokens}
-        aria-valuenow={estimate.total_tokens}
-        className="h-1 min-w-16 flex-1 basis-full rounded-sm bg-layer-2 md:basis-auto"
-      >
-        <span className={cn('block h-full rounded-sm', truncated ? 'bg-danger' : ratio >= 0.8 ? 'bg-amber-500' : 'bg-primary')} style={{ width: `${Math.round(ratio * 100)}%` }} />
-      </span>
     </div>
   )
 }
