@@ -111,6 +111,11 @@ impl Engine {
         self.prompt.as_ref().map(|(d, _)| d)
     }
 
+    /// The open prompt, mutable: 158 §9 (W3) fills `project` / `brief` after the match.
+    pub fn prompt_mut(&mut self) -> Option<&mut Detection> {
+        self.prompt.as_mut().map(|(d, _)| d)
+    }
+
     /// The calendar match for the open prompt of `app_id` (§8); `false` when no such prompt.
     pub fn set_event(&mut self, app_id: &str, event: Option<EventMatch>) -> bool {
         match self.prompt.as_mut() {

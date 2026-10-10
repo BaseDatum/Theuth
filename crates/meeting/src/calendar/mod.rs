@@ -409,7 +409,7 @@ impl Message<SetEvent> for Meeting {
 }
 
 /// The running actor, or why not.
-fn actor() -> anyhow::Result<ActorRef<Meeting>> {
+pub(super) fn actor() -> anyhow::Result<ActorRef<Meeting>> {
     ActorRef::<Meeting>::lookup(MEETING_ACTOR)
         .ok()
         .flatten()
@@ -490,12 +490,17 @@ pub async fn rpc_detection_set_event(
     let store = store_and_poll(rt).await?;
     matcher::choose(&detection.app_id, event);
     detection.event = match_for(&store, Utc::now(), &detection.app_id).await;
+    // 158 §9.3 / §9.4 (W3): the project chip and a cached brief follow the new pick.
+    let cx = prebrief::ctx().await?;
+    prebrief::decorate(&store, cx.default_project.as_deref(), &mut detection).await;
     // W1 close: the engine's held prompt follows, so `meeting_detection` / `Status.detection` agree.
     if let Ok(Some(actor)) = ActorRef::<Meeting>::lookup(crate::MEETING_ACTOR) {
         let _ = actor
             .ask(crate::detect::SetPromptEvent {
                 app_id: detection.app_id.clone(),
                 event: detection.event.clone(),
+                project: detection.project.clone(),
+                brief: detection.brief.clone(),
             })
             .await;
     }

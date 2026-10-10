@@ -612,7 +612,7 @@ pub struct MeetingConfig {
     pub template: String,
     /// 158 §6.1: transcript language (BCP-47); stored, inert until the multilingual tier (§14).
     pub language: String,
-    /// 158 §6.1 (W3): the project a meeting gets when nothing is remembered. Carried, not yet read.
+    /// 158 §6.1 (W3): the project a meeting gets when nothing is remembered (§9.3).
     pub project: Option<String>,
     /// 158 §4 (W1): detection. Carried, not yet read.
     pub detect: DetectConfig,
@@ -888,7 +888,7 @@ pub struct StartMeeting {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub event: Option<EventId>,
-    /// 158 §9.2 (W3): the meeting's project; `None` = remembered or `meeting.project`. Carried, not yet read.
+    /// 158 §9.2 (W3): the meeting's project; `None` = remembered (`uid:` → `title:`) or `meeting.project`.
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub project: Option<String>,
@@ -973,7 +973,7 @@ pub struct Status {
 pub struct ListMeetings {
     /// Most rows; `None` = 100.
     pub limit: Option<u32>,
-    /// 158 §9.2 (W3): only meetings of this project. Carried, not yet applied.
+    /// 158 §9.2 (W3): only meetings of this project.
     #[serde(default)]
     pub project: Option<String>,
 }
@@ -2140,11 +2140,39 @@ impl Message<StartMeeting> for Meeting {
         });
         if let Some(id) = picked {
             match calendar::store::event(&self.store, id).await {
-                Ok(Some(e)) => calendar::seed(&mut manifest, &e),
+                Ok(Some(e)) => {
+                    // W3 close: the islands' one-tap start from the Upcoming card sends the
+                    // event's description as `context`; the seed carries it already.
+                    let desc = e.to_ref().description;
+                    if manifest.context.as_deref().map(str::trim) == desc.as_deref() {
+                        manifest.context = None;
+                    }
+                    calendar::seed(&mut manifest, &e);
+                }
                 Ok(None) => tracing::warn!(event = %id, "meeting: start: unknown calendar event"),
                 Err(e) => tracing::warn!("meeting: start: calendar event: {e:#}"),
             }
         }
+        // 158 §9.3 (W3): the start's pick, else memory (`uid:` → `title:`), else `meeting.project`.
+        // Only an explicit pick is remembered, so the default stays changeable.
+        let picked_project = calendar::prebrief::clean_project(m.project);
+        let (event, title) = (manifest.event.as_ref(), manifest.title.as_deref());
+        manifest.project = match &picked_project {
+            Some(p) => {
+                if let Err(e) = calendar::prebrief::remember(&self.store, event, title, p).await {
+                    tracing::warn!("meeting: start: project memory: {e:#}");
+                }
+                Some(p.clone())
+            }
+            None => {
+                calendar::prebrief::lookup(&self.store, self.cfg.project.as_deref(), event, title)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("meeting: start: project memory: {e:#}");
+                        None
+                    })
+            }
+        };
         // 137 R1-D6: the mode is the start option, else the configured default; without
         // the agent bridge installed the meeting runs as before and says so once.
         manifest.memory = self.endless.resolve(m.memory);
@@ -2220,7 +2248,8 @@ async fn start_task(store: &Store, mut manifest: Manifest, setup: &Setup) -> Beg
     let open = agents
         .ask(agent::CreateSession {
             options: agent::CreateSessionOptions {
-                project: Some("meetings".into()),
+                // 158 §9.2 W-c: the meeting's project, else the `meetings` pseudo-project.
+                project: manifest.project.clone().or_else(|| Some("meetings".into())),
                 model: manifest.session_model.clone(),
                 // 137 R1-D6: never the chat default — the meeting's mode is set below with
                 // the meeting filter, so the agent never starts an unfiltered tree here.
@@ -2861,7 +2890,7 @@ impl Message<ListMeetings> for Meeting {
 
     async fn handle(&mut self, m: ListMeetings, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.store
-            .list(m.limit.unwrap_or(100))
+            .list_in(m.limit.unwrap_or(100), m.project.as_deref())
             .await
             .map_err(|e| format!("{e:#}"))
     }
@@ -4193,6 +4222,8 @@ impl runtime::Plugin for MeetingPlugin {
         actor.register(MEETING_ACTOR)?;
         // 158 §7.3 (W2): ICS subscriptions poll from boot, not from the first calendar RPC.
         calendar::ensure_poll(rt);
+        // 158 §9.4 (W3): the one-minute `Upcoming` tick.
+        calendar::prebrief::ensure_upcoming(rt);
         // 02 §0.4: turn state and approvals of the meeting session.
         rt.subscribe::<Meeting, AgentEvent>(&actor).await;
         rt.subscribe::<Meeting, ApprovalRequested>(&actor).await;
@@ -4341,6 +4372,79 @@ mod tests {
         async fn handle(&mut self, h: Hold, _: &mut Context<Self, ()>) {
             self.summarizing.insert(h.0.manifest.id, h.0);
         }
+    }
+
+    /// 158 §9.2 (W3): `meeting_set_project` rewrites the manifest and the index row (so the
+    /// `project` filter finds it), remembers the series by title, and clearing forgets it.
+    #[tokio::test]
+    async fn set_project_updates_manifest_index_and_memory() {
+        let b = bench().await;
+        let mut m = finished(&b.store, MeetingState::Done).await;
+        m.title = Some("Weekly sync".into());
+        b.store.save(&m).await.unwrap();
+        let got = b
+            .actor
+            .ask(calendar::prebrief::SetProject {
+                meeting: m.id,
+                project: Some("theuth".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(got.project.as_deref(), Some("theuth"));
+        assert_eq!(
+            b.store.manifest(m.id).unwrap().project.as_deref(),
+            Some("theuth")
+        );
+        let rows = b.store.list_in(10, Some("theuth")).await.unwrap();
+        assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), [m.id]);
+        assert_eq!(rows[0].project.as_deref(), Some("theuth"));
+        assert!(b.store.list_in(10, Some("other")).await.unwrap().is_empty());
+        assert_eq!(
+            b.actor
+                .ask(ListMeetings {
+                    limit: None,
+                    project: Some("theuth".into())
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            calendar::prebrief::remembered(&b.store, None, Some("weekly sync — Oct 14"))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("theuth"),
+            "the title key is remembered"
+        );
+        assert_eq!(
+            b.store.done_in_project("theuth", 3).await.unwrap()[0].id,
+            m.id
+        );
+        let cleared = b
+            .actor
+            .ask(calendar::prebrief::SetProject {
+                meeting: m.id,
+                project: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(cleared.project, None);
+        assert!(
+            b.store
+                .list_in(10, Some("theuth"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            calendar::prebrief::remembered(&b.store, None, Some("Weekly sync"))
+                .await
+                .unwrap(),
+            None,
+            "a cleared project is not sticky"
+        );
     }
 
     /// 06 §1.5 / 81: the toolset sent at start carries the configured hint
