@@ -784,7 +784,15 @@ pub async fn sample(
     } else {
         &suite.training
     };
-    known(names).map_err(Error::refused)?;
+    // A fixture another wave owns may be absent from this build (toy-pareto, toy-route until
+    // W1/W4 land): the suite runs on what it has and says what it skipped.
+    let missing: Vec<&String> = names.iter().filter(|n| fixture(n).is_none()).collect();
+    if missing.len() == names.len() {
+        known(names).map_err(Error::refused)?;
+    }
+    if !missing.is_empty() {
+        tracing::warn!(slug = %study.slug, ?missing, "suite fixtures not in this build; skipped");
+    }
     let sha = mechanism_sha(study, &req)?;
     let dir = crate::study_dir(&env.root, &study.slug).join("suite");
     let best = best_known(env, study, names, &dir).await;
@@ -897,6 +905,7 @@ pub async fn sample(
             &serde_json::json!({
                 "n": req.n, "k": req.k, "role": req.role, "mechanism": sha,
                 "held_out": held_out, "value": value, "spend_usd": spend_usd, "inner": inner,
+                "missing": missing,
             }),
         )
         .await?;
@@ -1463,6 +1472,22 @@ mod tests {
             None,
             "W1's fixture is a hand-off row"
         );
+        // Custody: every fixture file the inner session could game is an evaluator path and
+        // off limits, so an inner keep that edits one is refused (140 §5.3).
+        let f = fixture("toy-lru").unwrap();
+        let spec = inner_spec(f, "x", d.path(), &suite_of(&preset("/x")), &preset("/x"));
+        for p in [
+            "bench.sh",
+            "test.sh",
+            "holdout.sh",
+            "fixtures/",
+            "reference/",
+        ] {
+            assert!(spec.evaluator_paths.iter().any(|e| e == p), "{p}");
+        }
+        assert!(spec.off_limits.iter().any(|o| o == "reference/**"));
+        assert_eq!(spec.scope, vec!["lru.py"]);
+        crate::tools::validate_spec(&spec).unwrap();
     }
 
     // ───────────────────────── the double and the harness ─────────────────────────

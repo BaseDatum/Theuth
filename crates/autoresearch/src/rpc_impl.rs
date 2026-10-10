@@ -227,7 +227,9 @@ pub async fn launch(
 /// 159 §5.11 `autoresearch.mechanism {op}` — list, show or adopt a mechanism version (W7).
 pub async fn mechanism(op: MechanismOp) -> std::result::Result<MechanismInfo, String> {
     let _ = op;
-    Err("not built (W7)".to_owned()) // 159:W7 — mechanism::rpc(root, op)
+    crate::mechanism::rpc(&ask(DraftRoot).await?, op)
+        .await
+        .map_err(|e| e.to_string()) // 159:W7
 }
 
 #[cfg(test)]

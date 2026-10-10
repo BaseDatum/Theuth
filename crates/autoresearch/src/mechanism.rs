@@ -641,6 +641,54 @@ mod tests {
         assert_eq!((m.version, m.params.plateau.window), (3, 8));
     }
 
+    /// Through the frozen call sites: with v1 adopted, the schedule file and the brief are
+    /// byte for byte what the compiled texts give.
+    #[tokio::test]
+    async fn adopted_defaults_change_no_byte_of_the_schedule_file_or_the_brief() {
+        let r = root();
+        let cfg = AutoresearchConfig::default();
+        let spec = crate::types::StudySpec {
+            slug: "t1".into(),
+            goal: "faster".into(),
+            repo: r.path().display().to_string(),
+            ..crate::types::StudySpec::default()
+        };
+        let worktree = r.path().join("t1").join("worktree");
+        let before =
+            crate::schedule_file::text(&spec, &cfg, &worktree, "m", &crate::types::StartWhen::Now);
+        let store = crate::store::Store::open(r.path()).await.unwrap();
+        let study = crate::store::StudyRecord::new(spec.clone(), None);
+        store.create_study(&study).await.unwrap();
+        let cx = crate::brief::Context {
+            n: 1,
+            gate: cfg.gate.clone(),
+            crash_retries: cfg.defaults.crash_retries,
+            ..crate::brief::Context::default()
+        };
+        let brief_before = crate::brief::render(&store, &study, &cfg.brief, &cx)
+            .await
+            .unwrap()
+            .text;
+
+        ensure(r.path()).unwrap();
+        rpc(r.path(), MechanismOp::Adopt { version: 1 })
+            .await
+            .unwrap();
+        let after =
+            crate::schedule_file::text(&spec, &cfg, &worktree, "m", &crate::types::StartWhen::Now);
+        assert_eq!(after, before, "the fire prompt is byte-identical");
+        let cx = crate::brief::Context {
+            protocol: protocol(r.path(), None),
+            ..cx
+        };
+        assert!(cx.protocol.is_some());
+        let brief_after = crate::brief::render(&store, &study, &cfg.brief, &cx)
+            .await
+            .unwrap()
+            .text;
+        assert_eq!(brief_after, brief_before, "the protocol is byte-identical");
+    }
+
     #[test]
     fn readers_are_silent_until_a_version_is_adopted() {
         let r = root();
