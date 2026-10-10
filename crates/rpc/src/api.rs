@@ -2154,10 +2154,7 @@ pub trait Api {
     async fn autoresearch_discard_draft(&self, draft_id: String) -> RpcResult<()>;
     /// 159 §5.11: archive rows — front members (W1) or population cells (W4).
     #[method(name = "autoresearch.archive")]
-    async fn autoresearch_archive(
-        &self,
-        slug: String,
-    ) -> RpcResult<Vec<autoresearch::ArchiveRow>>;
+    async fn autoresearch_archive(&self, slug: String) -> RpcResult<Vec<autoresearch::ArchiveRow>>;
     /// 159 §5.11: case × experiment rows for the heat strip; `n` narrows to one experiment (W2).
     #[method(name = "autoresearch.cases")]
     async fn autoresearch_cases(
@@ -7388,10 +7385,7 @@ impl ApiServer for Server {
 
     // 159 §5.11: per-kind methods; stubs in `autoresearch::rpc_impl` until their wave.
 
-    async fn autoresearch_archive(
-        &self,
-        slug: String,
-    ) -> RpcResult<Vec<autoresearch::ArchiveRow>> {
+    async fn autoresearch_archive(&self, slug: String) -> RpcResult<Vec<autoresearch::ArchiveRow>> {
         autoresearch::rpc_impl::archive(slug)
             .await
             .map_err(dreaming_err)
