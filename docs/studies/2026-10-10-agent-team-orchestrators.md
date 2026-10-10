@@ -369,3 +369,7 @@ Clones were read at the HEADs in §2, in `~/Develop/spike-agent-teams/` (local o
 - `facts/theuth-team-features-inventory-vs-agent-team-axes-2026-10-10`
 - `facts/theuth-borrow-list-from-agent-team-orchestrators-2026-10-10`
 - `projects/theuth-agent-team-orchestrators-study-2026-10-10`
+
+## 12. Amendments
+
+- **2026-10-10 13:50.** main 2b2430ad (another session's endless-backoff fix) makes a failing endless-compactor node back off, doubling up to 30 min. It also moves the genai pin so Haiku 5+ gets adaptive thinking. This closes the incident in §4.2 and covers the endless compactor part of §6.1 item 9. The other background callers still lack a loop guard and a budget reservation: dreaming, the title model and decide.
