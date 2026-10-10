@@ -497,6 +497,8 @@ async fn judge_case(
                 human: false,
                 cost_nanos: c,
                 at: now(),
+                a_text: None,
+                b_text: None,
             })
             .await?;
     }
@@ -553,6 +555,8 @@ async fn probe(
                     human: false,
                     cost_nanos: cost,
                     at: now(),
+                    a_text: None,
+                    b_text: None,
                 })
                 .await?;
         }
@@ -1128,6 +1132,8 @@ async fn maybe_human_pair(
             human: false,
             cost_nanos: 0,
             at: now(),
+            a_text: None,
+            b_text: None,
         })
         .await?;
     env.store

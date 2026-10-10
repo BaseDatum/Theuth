@@ -5174,6 +5174,7 @@ pub async fn detail_env(env: &Env, m: Detail) -> Result<StudyDetail> {
         tail,
         final_holdout,
         view,
+        citations: Vec::new(), // 159 W5: filled by the citations hand-off
     })
 }
 
@@ -5265,6 +5266,7 @@ pub async fn experiment_env(env: &Env, m: Experiment) -> Result<ExperimentDetail
         line: e.line.clone(),
         diff,
         tails,
+        hooks: Vec::new(), // 159 W5: filled by the hooks hand-off
     })
 }
 

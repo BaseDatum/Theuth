@@ -834,6 +834,8 @@ impl From<JudgmentRaw> for JudgmentRow {
             human: r.human != 0,
             cost_nanos: r.cost_nanos as u64,
             at: r.at,
+            a_text: None,
+            b_text: None,
         }
     }
 }

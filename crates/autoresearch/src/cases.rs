@@ -923,6 +923,8 @@ pub async fn sample(
                 human: false,
                 cost_nanos: s.spent.cost_nanos,
                 at: at.clone(),
+                a_text: None,
+                b_text: None,
             })
             .await?;
     }

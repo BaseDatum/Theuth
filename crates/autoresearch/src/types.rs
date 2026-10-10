@@ -2077,6 +2077,9 @@ wire! {
         pub final_holdout: Option<String>,
         /// 159 §5.7: what the Study view switches on; `Scalar` = `series` as today.
         pub view: KindView,
+        /// 159 W5: the citation of every literature idea in `ideas`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub citations: Vec<CitationRow>,
     }
 }
 
@@ -2370,6 +2373,12 @@ wire! {
         pub cost_nanos: u64,
         /// RFC 3339.
         pub at: String,
+        /// 159 W3: the text shown as A for a pending human pair (`model = human`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub a_text: Option<String>,
+        /// 159 W3: the text shown as B for a pending human pair.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub b_text: Option<String>,
     }
 }
 
@@ -2841,6 +2850,9 @@ wire! {
         pub tails: Vec<String>,
         /// Cases that moved most.
         pub cases_moved: Vec<CaseDelta>,
+        /// 159 W5: the `hook_before` / `hook_after` event outputs of this experiment.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub hooks: Vec<String>,
     }
 }
 
