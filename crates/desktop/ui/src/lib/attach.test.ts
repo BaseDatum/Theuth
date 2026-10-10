@@ -144,6 +144,7 @@ const meeting: MeetingSummary = {
   process_name: 'zoom.us',
   duration_ms: 42n * 60_000n,
   state: 'Done',
+  project: null,
 }
 
 describe('§8 naming table', () => {
