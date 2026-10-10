@@ -356,8 +356,6 @@ block_specs! {
     CaseSetSpec;
     /// W2, W3: `judge: {rubric, …}` — W3's addendum fills it.
     JudgeSpec;
-    /// W4: `population: {islands, descriptors, migrate_every}` — W4's addendum fills it.
-    PopulationSpec;
     /// W5: `literature: {seed, every, via, max_queries}` — W5's addendum fills it.
     LiteratureSpec;
     /// W5: `hooks: {before, after}` — W5's addendum fills it.
@@ -366,6 +364,25 @@ block_specs! {
     WorldSpec;
     /// W7: `suite: {training, held_out, seeds, inner_budget}` — W7's addendum fills it.
     SuiteSpec;
+}
+
+wire! {
+    /// W4 (159 §9): `population: {islands, descriptors, migrate_every, remeasure_after}`. Every
+    /// field defaults to "unset" (0 / empty) and is resolved in `population::cfg`: `islands` =
+    /// `parallel` clamped to 2–4, `migrate_every` = 4 waves, `remeasure_after` = the gate's.
+    /// Not `Eq`: bin edges are `f64`.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct PopulationSpec {
+        /// Independent archives (2–4); 0 = `parallel`.
+        pub islands: u8,
+        /// One or two binned behaviour descriptors; empty = one cell per island (a plain elite).
+        pub descriptors: Vec<crate::population::Descriptor>,
+        /// Offer each island's best elite to the next island every this many waves; 0 = 4.
+        pub migrate_every: u32,
+        /// Re-measure a picked elite whose newest sample is older than this many experiments; 0 = the gate's `remeasure_after`.
+        pub remeasure_after: u32,
+    }
 }
 
 wire! {

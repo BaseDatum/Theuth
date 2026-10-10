@@ -184,8 +184,7 @@ pub async fn discard_draft(draft_id: String) -> std::result::Result<(), String> 
 
 /// 159 §5.11 `autoresearch.archive {slug}` (W1 front members, W4 cells).
 pub async fn archive(slug: String) -> std::result::Result<Vec<ArchiveRow>, String> {
-    let _ = slug;
-    Err("not built (W1, W4)".to_owned()) // 159:W1 159:W4 — pareto::archive / population::archive on `archive.kind`
+    crate::population::archive(&crate::store::Store::open(&ask(DraftRoot).await?).await.map_err(|e| e.to_string())?, &slug).await.map_err(|e| e.to_string()) // 159:W1 159:W4 — pareto::archive / population::archive on `archive.kind` (W4: cells; W1 chains `front`)
 }
 
 /// 159 §5.11 `autoresearch.cases {slug, n?}` — the case × experiment rows of the heat strip (W2).
