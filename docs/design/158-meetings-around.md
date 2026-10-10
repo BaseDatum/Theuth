@@ -184,3 +184,256 @@ flowchart LR
 | Stop prompt | new island state; `meeting_stop` unchanged |
 | Post | existing pipeline; new tool `meeting_suggest_speakers`; template-aware `form_for` |
 | MCP server | new crate; read-only wrappers over existing RPC handlers |
+
+## 4. Meeting detection
+
+### 4.1 The signal (D1)
+
+The signal is **a process holding an input stream**, never "a meeting app is running" (OpenWhispr: "a running app never
+prompts by itself (FaceTime idles in the background)", D `D-openwhispr-source-recon.md:24-26`; Minutes narrows the mic signal to
+the call app's process family "so a dictation tool holding the mic does not validate an idle Zoom", E
+`E-minutes-source-recon.md:24`). Where theuth already enumerates processes for the *output* side, the sensor asks the same
+objects about the *input* side.
+
+| OS | Today (`capture/system.rs`) | Sensor (new `crates/meeting/src/detect/sensor.rs`) |
+|---|---|---|
+| macOS | `kAudioHardwarePropertyProcessObjectList`, per object `kAudioProcessPropertyPID`, `BundleID`, `IsRunningOutput` (`system.rs:136-139`, `:217-220`) | same list, read `kAudioProcessPropertyIsRunningInput` (the property OpenWhispr's Swift helper listens on, D `D-openwhispr-source-recon.md:34`; Anarlog's `is_running_input`, B `B-anarlog-engine-recon.md:25`); skip `com.apple.CoreSpeech` (Siri, D `:34`) and our own pid as `processes()` does (`system.rs:213-218`) |
+| Windows | `GetDefaultAudioEndpoint(eRender, eMultimedia)` → `IAudioSessionManager2` → `IAudioSessionControl2::GetProcessId`, `AudioSessionStateActive` (`system.rs:267-302`) | the same walk on `eCapture` for both `eConsole` and `eCommunications` (they can differ), de-duplicated by pid; name via the existing `image_name` (`system.rs:311`); `bundle_id` stays `None` |
+| Linux | PipeWire registry nodes `Stream/Output/Audio` with `application.process.id` (`system.rs:368-376`) | nodes `Stream/Input/Audio`; a node's existence is "holding the mic" (PipeWire has no cheap running bit, `system.rs:393-396`); best effort, same 500 ms sync guard (`system.rs:399-417`) |
+
+flexaudio 0.2 exposes capture (`SourceKind::Mic`, `SystemLoopback`, `ProcessLoopback`) and no enumeration at all
+(`158-input-capture-flexaudio.md`; `system.rs:5-7` "flexaudio has no enumeration, so the process list is per OS here"), so the
+sensor is per-OS code in the meeting crate exactly like `processes()`. **W-a:** it runs in the engine, not in the companions —
+one implementation, both islands, the page banner, and `examples/capture_probe.rs` get it; the companions stay RPC clients.
+
+Signature: `pub fn mic_holders() -> anyhow::Result<Vec<ProcessInfo>>` — `active` means "input running" here. The sort and
+own-pid skip are shared with `processes()` (`system.rs:119-125`).
+
+### 4.2 Polling, cost (W-b)
+
+A `tokio::time::interval(2 s)` tick calls `mic_holders()` in `spawn_blocking`; a tick that finds the previous call still running
+is skipped. Cost per tick: macOS ≈ N property reads (N = process objects Core Audio knows, typically 10–40, each a `size`+`get`
+pair as in `system.rs:186-210`), microseconds; Windows one COM init + session enumeration (`system.rs:245-251`), milliseconds;
+Linux a PipeWire connect + registry replay bounded at 500 ms (`system.rs:412-416`) — so Linux ticks every 5 s. Nothing on this
+path allocates per frame; it is a list of a few dozen structs every 2 s. Anarlog registers property listeners and falls back to a
+1 s poll when registration fails (B `B-anarlog-engine-recon.md:24`); the poll is the simpler side of that design and the listener
+is the upgrade if the tick ever shows in `top`. `ponytail: 2 s poll; Core Audio/WASAPI session listeners if latency or CPU matters.`
+
+The tick runs only while `meeting.detect.enabled` is true and the meeting plugin is enabled (`lib.rs:3771-3774`).
+
+### 4.3 Identities and the ignore list (D2, W-l)
+
+`AppId` (a `String`): macOS `bundle_id` (fallback `name`); Windows the lowercase basename of the image (`zoom.exe`); Linux
+`application.name` from the node props (`system.rs:384`). It is the key for cooldowns, "Never for", and project memory (§9).
+
+Default `meeting.detect.ignore` (deny-list, not allow-list — Anarlog's policy, B `B-anarlog-engine-recon.md:28`):
+
+- theuth itself, **both processes**: the engine (own pid, already skipped) and the companion `io.theuth.mac.companion`
+  (`scripts/bundle-companion.sh:12`) / `Theuth.Companion.exe`, which hold the mic for dictation, the voice key and
+  point-and-say (`crates/desktop/companion/Sources/Companion/Voice/VoiceRecorder.swift:26-43`;
+  `crates/desktop/companion-windows/src/Theuth.Companion/Voice/VoiceRecorder.cs:10-13`); and the desktop shell `io.theuth.mac`
+  (`crates/desktop/tauri.conf.json:6`) for the Tauri dictation path;
+- other dictation apps: Wispr Flow, superwhisper, VoiceInk, MacWhisper, Voice Memos (Anarlog's category list, B `:28`);
+- screen recorders: OBS, Loom, Cap, Screen Studio, CleanShot, Kap (B `:28`);
+- voice assistants: `com.apple.CoreSpeech`, `com.apple.Siri`.
+
+"Never for <App>" appends the `AppId` to the list with `runtime::write_nested_config_value(…, "meeting", "detect", "ignore", …)`
+(`crates/runtime/src/lib.rs:137`); Settings › Meetings lists and removes entries. The false positive Minutes shipped — a dictation
+tool holding the mic fires call detection (G `G-web-survey.md:92`, issue #244) — is a regression test (§4.7).
+
+### 4.4 The rules engine as a state machine (D2, D4)
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Candidate: eligible app holds mic
+  Candidate --> Idle: released before 15 s
+  Candidate --> Prompting: held 15 s, no cooldown, not quiet
+  Prompting --> Idle: Not now (cooldown 10 min) or Never (ignore) or released 30 s
+  Prompting --> Recording: Start recording
+  Idle --> Recording: manual start
+  Recording --> Ending: detected app released 30 s
+  Ending --> Recording: Keep recording
+  Ending --> Idle: Stop or meeting ended
+  Recording --> Idle: meeting ended
+```
+
+Rules, in order:
+
+1. **Eligible** = holder whose `AppId` is not in `meeting.detect.ignore`. Holders that are ignored are invisible to every rule.
+2. **Hold ≥ 15 s** continuously before any prompt (Anarlog's `mic_usage_tracker` sustain, B `B-anarlog-engine-recon.md:29`). The
+   candidate clock restarts if the app drops out of a tick.
+3. **Quiet**: no prompt while `MeetingState` is Starting/Recording/Paused/Stopping (the island is already busy), while a theuth
+   dictation or talk is live (`dictation_status`, `crates/rpc/src/api.rs:1614`; `talk_start`, `api.rs:1695` — the engine
+   knows its own voice state), or during a cooldown for that `AppId`. Quiet pauses the candidate clock; it does not reset it.
+4. **One prompt per overlap**: several eligible holders at once produce ONE `Detected` naming the longest-held app, the others in
+   `also` (OpenWhispr's rule, G `G-web-survey.md:286-290`).
+5. **Not now** → 10-minute cooldown for that `AppId` (B `:29`); **Never for** → §4.3.
+6. **Presence is context**: a running Zoom/Teams/Meet tab never prompts (W-m); it only scores the calendar match (§8).
+7. **Ending**: while a meeting that was started from a prompt (or whose `StartMeeting.process` pid equals a holder) records, and
+   the detected app has held no input stream for ≥ 30 s, emit `AppReleased`; the island asks "Stop recording?". Nothing stops by
+   itself: recording outranks intelligence (`158-input-wth-meeting-decisions.md:44`; `docs/design/53-meetings.md:181-189`).
+   OpenWhispr's auto-end waits for app exit or 60 s silence (D `D-openwhispr-source-recon.md:37-38`); theuth asks instead.
+8. **Withdraw** (W-e): a `Detected` prompt nobody answered is cleared with `DetectionCleared{reason: Released}` once the app has
+   released the mic for 30 s, or `{reason: Started}` when any meeting starts. No wall-clock timeout.
+
+### 4.5 Events and how companions subscribe
+
+Two new `MeetingEvent` variants (`lib.rs:265-398`, `#[serde(tag = "type")]`), published with `rt.publish` like `State`
+(`lib.rs:1254-1257`) and forwarded by the bridge unchanged (`crates/rpc/src/bridge.rs:207`):
+
+- `Detected { app: ProcessInfo, app_id: String, since: String, also: Vec<ProcessInfo>, event: Option<EventMatch>, project: Option<String>, brief: Option<Vec<String>> }`
+  — `event`/`project`/`brief` are filled by W2/W3 and `None` before.
+- `DetectionCleared { app_id: String, reason: Cleared }` with `Cleared = NotNow | Never | Released | Started`.
+- `AppReleased { meeting: MeetingId, app: ProcessInfo, released_for_s: u32 }` — the "Stop recording?" trigger; re-sent every 30 s
+  while the state holds so a late-joining island asks too.
+
+`Status` (`lib.rs:686-712`) gains `detection: Option<Detection>` so `meeting_status` hydrates a companion that connects
+mid-prompt (the Swift store already seeds from status, `Store+Meeting.swift:30-45`; Windows `IslandController.Hydrate`,
+`IslandController.cs:142-162`). Companions subscribe exactly as today: `subscribe_events(null, null)` (`RpcClient.swift:79-82`;
+`docs/design/134-companion-windows.md:373-375`), decode by `type` (`MeetingWire.cs:44-76`, `Models.swift:857-876`) — both
+decoders gain the three variants.
+
+RPCs (§15): `meeting_detection() -> Option<Detection>`, `meeting_detection_dismiss(app_id, never: bool)`,
+`meeting_detection_enabled() -> bool`, `set_meeting_detection_enabled(on)`. Start is the frozen `meeting_start` with
+`StartMeeting.source = Some(Source::Detected { app_id })` and `process = Some(app.pid)`.
+
+### 4.6 Interaction with dictation and talk
+
+The engine's meeting mic is `voice::mic::Capture::open_with(Aec::Vpio)` (`capture/mic.rs:38-39`); dictation from a companion
+streams the companion's own PCM (`crates/desktop/companion/Sources/CompanionCore/AskRpc.swift:34` "`None` would open the ENGINE's mic"). So three processes can hold a mic
+for theuth. The sensor ignores all three (§4.3); the quiet rule (§4.4 step 3) covers the case where the user dictates *during*
+an eligible app's hold. Nothing here changes who owns the mic: the detector never opens a device.
+
+### 4.7 Tests
+
+- `detect/rules.rs` unit tests with `tokio::time::pause()` (Anarlog pins cooldowns the same way, B `B-anarlog-engine-recon.md:238`):
+  held 14 s → nothing; 15 s → one `Detected`; Not now → silence for 10 min then a prompt again; two holders → one event with
+  `also`; ignored holder alone → nothing; ignored + eligible → the eligible one; live meeting → nothing; dictation live → the clock
+  pauses, prompt after dictation ends + remaining hold; release 29 s → nothing, 30 s → `AppReleased`; `Never` → ignore list grows
+  and the app never prompts; a dictation app (Minutes #244) → nothing.
+- `sensor.rs`: one test per OS behind `cfg(target_os)` that calls `mic_holders()` and asserts it returns (empty is fine);
+  `examples/capture_probe.rs` (`crates/meeting/examples/capture_probe.rs:1-4`) prints holders beside `processes()` for the manual
+  per-host proof.
+- Live proof (W1): on a Mac, open FaceTime or Zoom, wait 15 s → island prompt; "Not now" → quiet 10 min; start → recording; mute
+  Zoom → nothing; quit Zoom → "Stop recording?" after 30 s. Same on Windows with Teams.
+
+## 5. The island prompt
+
+### 5.1 Rules it inherits
+
+The prompt is a **state of the existing island**, in both companions (D3). It therefore inherits: never takes focus
+(`.nonactivatingPanel`, `becomesKeyOnlyIfNeeded`, `IslandWindow.swift:16-20`; `WS_EX_NOACTIVATE`, `IslandWindow.cs:119`),
+hidden from capture (`sharingType = .none`, `IslandWindow.swift:27`; `WDA_EXCLUDEFROMCAPTURE`, `ToolWindow.cs:51`), every
+control clickable (149 ruling D3, `docs/design/149-as-built-island-fix.md:31-33`), the eye tint for exposure (`§E`,
+`:136-139`), and `show()` via `orderFrontRegardless` (`IslandWindow.swift:36-37`). Visibility gains one reason: `visible =
+alwaysShow || live(slice) || slice.prompt != nil` (`IslandModel.swift:43`; `IslandModel.cs:201`). The 149 "no linger" rule
+stands: when the prompt clears and nothing is live, the window fades in ≤ 300 ms (`IslandPanel.swift:156-170`).
+
+### 5.2 States and copy
+
+**(a) Detected** — no calendar match.
+
+```
+╭──────────────────────────────────────────────────────────────╮
+│ ● Zoom is using your microphone                     [⋮]  [👁]│
+│                                                              │
+│   [ Start recording ]   [ Not now ]                          │
+│   By starting the recording you acknowledge the recording    │
+│   is lawful.                                                 │
+╰──────────────────────────────────────────────────────────────╯
+```
+
+**(b) Detected + event** — W2 fills `event`, W3 `project`.
+
+```
+╭──────────────────────────────────────────────────────────────╮
+│ ● Zoom is using your microphone                     [⋮]  [👁]│
+│   Weekly sync · 10:00–10:30                 ⟨ Invesco ⟩  [▾] │
+│                                                              │
+│   [ Start recording ]   [ Not now ]                          │
+│   By starting the recording you acknowledge the recording    │
+│   is lawful.                                                 │
+╰──────────────────────────────────────────────────────────────╯
+```
+
+`[▾]` opens the "Which meeting is this?" list (top 3 candidates + "None of these"); `⟨ Invesco ⟩` is the project chip
+(click → project list, §9).
+
+**(c) Upcoming brief** — W3; the matched event starts in ≤ 5 min and a pre-meeting brief is cached; shown alone (before any
+mic hold) or above (b) when both apply.
+
+```
+╭──────────────────────────────────────────────────────────────╮
+│ ◔ Weekly sync in 4 min                               ⟨ Invesco ⟩│
+│   • Last time: cutover moved to Nov 3 (decided by Dana)      │
+│   • Open: SRE-2386 owner still unassigned                    │
+│   • Open question: who signs the DR runbook                  │
+│   [ Start recording ]   [ Dismiss ]                          │
+│   By starting the recording you acknowledge the recording    │
+│   is lawful.                                                 │
+╰──────────────────────────────────────────────────────────────╯
+```
+
+**(d) Stop?** — during a recording, after `AppReleased`.
+
+```
+╭──────────────────────────────────────────────────────────────╮
+│ ● rec 00:41   Zoom stopped using your microphone 30 s ago    │
+│   Stop recording?        [ Stop ]   [ Keep recording ]       │
+╰──────────────────────────────────────────────────────────────╯
+```
+
+Copy, exactly: `<App> is using your microphone` · optional `<Title> · <hh:mm>–<hh:mm>` · optional project chip · primary
+`Start recording`, secondary `Not now`, overflow `⋮` → `Never for <App>` (and, from W2, `Which meeting is this?`) · the lawful
+line verbatim from R3: **"By starting the recording you acknowledge the recording is lawful."** It is a sentence, not a
+checkbox; tapping Start sends `consent: true` (`StartMeeting.consent`, `lib.rs:636-638`, "Required") and the engine records
+`consent_at` as it does today (`store.rs:94-95`). The manual start form keeps its checkbox and `CONSENT` text
+(`StartForm.tsx:33`, `:162-171`) — §18 Q4 asks whether the two wordings should converge.
+
+`<App>` is `ProcessInfo.name` (`proc_name`, else the bundle id's last component, `system.rs:221-223`); on Windows the image
+basename without `.exe`. Degradations are shown as today's badges after start, not in the prompt.
+
+### 5.3 Buttons, keyboard, accessibility
+
+| Control | Mouse | Keys (island is key only after a click on it, `IslandWindow.swift:42-45`, `IslandPanel.swift:74`; Windows `TakeForeground` on press, `IslandWindow.cs:766-773`) |
+|---|---|---|
+| Start recording | click | `⏎` (default button) |
+| Not now | click | `⎋` — the existing `.islandEscape` path (`IslandPanel.swift:374-384`) |
+| Never for App | ⋮ menu | `N` inside the menu |
+| Which meeting | `[▾]` | `↑`/`↓` move, `⏎` picks (reuses the brief-cycling monitor, `IslandPanel.swift:333-371`, gated off while the list is open) |
+| Stop / Keep | click | `⏎` = Keep (safe default), `⌃⇧M` hold = Stop (the existing stop chord, `docs/design/149-companion-native.md:463-466`) |
+
+Accessibility: the prompt view is one `NSAccessibility` group labelled with the first line; buttons carry their titles;
+the lawful line is static text in the group (VoiceOver reads it after the buttons). Windows: `AutomationProperties.Name` on
+the same elements. Colours are system (`systemOrange`/`systemGreen` only for the eye, as ruled, `149-as-built-island-fix.md:136-139`);
+no new tints.
+
+### 5.4 What "Start recording" calls
+
+One frozen RPC, `meeting_start(StartMeeting)` (`api.rs:1731-1732`), with:
+
+```
+process:        Some(app.pid)            // the detected app, so its audio is tapped, not all system audio
+title:          event.title or None      // W2
+context:        event.description/agenda  // W2 (first 1 000 chars)
+consent:        true                      // the lawful line was shown
+session_model:  None                      // → meeting.model → agent.model (§6)
+memory:         None                      // → agent.endless.default_meeting (lib.rs:642-645)
+source:         Some(Detected{app_id})    // new, §15
+event:          Some(EventRef)            // new, W2
+project:        remembered project or None // new, W3
+template:       None                      // → default template (§11)
+```
+
+The companion calls nothing else: the engine fills defaults (§6) server-side so a one-tap start from the Mac, Windows and the
+page banner behave identically. The companion has no `meeting_start` wrapper today (grepped `meeting_start|meetingStart` in
+`crates/desktop/companion*` — only the Windows seed tool at `tools/Theuth.Companion.Seed/Program.cs:222` calls it); both
+`RpcClient.swift:321-348` and `Theuth.Companion.Rpc` gain one.
+
+### 5.5 Page banner (W-q)
+
+`MeetingList.tsx` (`crates/desktop/ui/src/components/meeting/MeetingList.tsx:35-59` is the header) shows the same prompt as a
+band under the header while `meeting_status().detection` is set: same copy, same two buttons, the lawful line. It reuses the
+`StartForm`'s `startOptions` (`StartForm.tsx:37-46`) with the detected pid and `consent: true`. On Linux this is the only
+surface; on macOS/Windows it is the fallback when the companion is not alive (`crates/desktop/ui/src/lib/companion.ts:11-27`).
