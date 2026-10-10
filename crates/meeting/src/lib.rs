@@ -608,7 +608,7 @@ pub struct MeetingConfig {
     pub model: Option<String>,
     /// 158 §6.1 (W1): the summary turn's model; `None` → `model`. Carried, not yet read.
     pub summary_model: Option<String>,
-    /// 158 §6.1 (W4): default note template slug. Carried, not yet read.
+    /// 158 §6.1 (W4): default note template slug when the start picks none and nothing is remembered.
     pub template: String,
     /// 158 §6.1: transcript language (BCP-47); stored, inert until the multilingual tier (§14).
     pub language: String,
@@ -892,7 +892,7 @@ pub struct StartMeeting {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub project: Option<String>,
-    /// 158 §11.1 (W4): the note template slug; `None` = remembered or `meeting.template`. Carried, not yet read.
+    /// 158 §11.1 (W4): the note template slug; `None` = remembered per event/project, else `meeting.template`.
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub template: Option<String>,
@@ -1229,6 +1229,10 @@ pub enum EnrollTarget {
         name: String,
         /// Knowledge entity id, if the user picked one.
         entity: Option<String>,
+        /// 158 §10.4: the automatic path (a suggestion's Accept) runs the quality gates (≥ 5 s,
+        /// agreement, SNR, clipping) before embedding; the manual selection enrol (156) does not.
+        #[serde(default)]
+        gated: bool,
     },
     /// Fold the speech into this enrolled profile ("enhance").
     Existing {
@@ -2173,6 +2177,15 @@ impl Message<StartMeeting> for Meeting {
                     })
             }
         };
+        // 158 §11.1 (W4): the start's pick → remembered for the event / project → `meeting.template`.
+        manifest.template = templates::select(
+            &self.store,
+            m.template.as_deref(),
+            manifest.event.as_ref(),
+            manifest.project.as_deref(),
+            &self.cfg.template,
+        )
+        .await;
         // 137 R1-D6: the mode is the start option, else the configured default; without
         // the agent bridge installed the meeting runs as before and says so once.
         manifest.memory = self.endless.resolve(m.memory);
@@ -3772,9 +3785,10 @@ impl Message<EnrollSegments> for Meeting {
                         paths.models.display()
                     )
                 })?;
-            Ok((self.track_path(&manifest, track), vp, models))
+            let gated = matches!(m.target, EnrollTarget::New { gated: true, .. });
+            Ok((self.track_path(&manifest, track), vp, models, gated))
         })();
-        let (path, vp, models) = match prep {
+        let (path, vp, models, gated) = match prep {
             Ok(p) => p,
             Err(e) => {
                 tx.send(Err(e));
@@ -3788,11 +3802,16 @@ impl Message<EnrollSegments> for Meeting {
                 speech_ms,
                 available_ms,
             } = vp;
-            let emb =
-                tokio::task::spawn_blocking(move || post::embed_spans(&path, &spans, &models))
-                    .await
-                    .map_err(|e| e.to_string())
-                    .and_then(|r| r.map_err(|e| format!("{e:#}")));
+            let emb = tokio::task::spawn_blocking(move || {
+                if gated {
+                    post::suggest::embed_spans_gated(&path, &spans, &models)
+                } else {
+                    post::embed_spans(&path, &spans, &models)
+                }
+            })
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.map_err(|e| format!("{e:#}")));
             let r = match emb {
                 Ok(emb) => me
                     .ask(EnrollApply {
@@ -3818,7 +3837,7 @@ impl Message<EnrollApply> for Meeting {
         self.enrollable(a.m.meeting)?;
         let mut profiles = Profiles::load(&self.paths().speakers).map_err(|e| format!("{e:#}"))?;
         let profile = match a.m.target {
-            EnrollTarget::New { name, entity } => profiles.create(&name, entity, &a.emb)?,
+            EnrollTarget::New { name, entity, .. } => profiles.create(&name, entity, &a.emb)?,
             EnrollTarget::Existing { profile } => profiles.add_sample(profile, &a.emb)?,
         };
         let mut t = self
@@ -4768,6 +4787,7 @@ mod tests {
                 target: EnrollTarget::New {
                     name: "Dana".into(),
                     entity: None,
+                    gated: false,
                 },
             })
         };

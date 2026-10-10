@@ -299,8 +299,18 @@ fn near(a: f32, b: f32) -> bool {
     (a - b).abs() < 1e-4
 }
 
+/// `matcher::choose` is process-global (one prompt at a time in the engine): the tests that
+/// score `us.zoom.xos` while `example_3` picks and clears its event take this lock.
+static ZOOM: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn zoom_lock() -> std::sync::MutexGuard<'static, ()> {
+    ZOOM.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn example_1_zoom_holds_the_mic() {
+    let _g = zoom_lock();
     let m = matcher::best(t(NOW), "us.zoom.xos", &[weekly()]).unwrap();
     assert!(near(m.score, 1.8), "{}", m.score);
     assert!(matcher::shown(&m));
@@ -326,6 +336,7 @@ fn example_2_chrome_prefers_meet_over_zoom() {
 
 #[test]
 fn example_3_two_zoom_events_within_the_margin_open_the_list() {
+    let _g = zoom_lock();
     let now = t("2026-10-13T17:28:00Z");
     let standup = ev(
         "standup",
@@ -383,6 +394,7 @@ fn example_4_teams_with_a_lone_meet_event() {
 
 #[test]
 fn example_5_nothing_cancelled_allday_declined_and_edges() {
+    let _g = zoom_lock();
     assert!(matcher::best(t(NOW), "us.zoom.xos", &[]).is_none());
     let mut cancelled = weekly();
     cancelled.cancelled = true;

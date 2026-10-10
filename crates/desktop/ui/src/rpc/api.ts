@@ -846,6 +846,8 @@ export interface Api {
   meeting_template_put(slug: string, body: string): Promise<MeetingTemplate>
   /** 158 §11.1 (W4): delete a user template; refused for built-ins. */
   meeting_template_delete(slug: string): Promise<null>
+  /** 158 §11.1 (W4): restore a built-in's shipped body over the user's edits; refused for user templates. */
+  meeting_template_reset(slug: string): Promise<MeetingTemplate>
   /** 158 §7.4 (W2): every calendar source. */
   calendar_sources(): Promise<CalSource[]>
   /** 158 §7.3 (W2): add an ICS subscription; the URL goes to the vault. */
@@ -1469,6 +1471,7 @@ export const METHODS = [
   'meeting_tap',
   'meeting_template_delete',
   'meeting_template_put',
+  'meeting_template_reset',
   'meeting_templates',
   'meeting_topics',
   'meeting_transcript',

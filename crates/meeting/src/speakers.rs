@@ -13,6 +13,23 @@ pub use crate::ProfileId;
 pub const DIR: &str = "speakers";
 /// Cosine at or above which a profile is proposed for a cluster (04 §0.3).
 pub const MATCH: f32 = 0.6;
+/// 158 §10.2 step 4: a voiceprint match must beat its runner-up by this much — the label's
+/// second-best profile and the profile's second-best label. Anarlog 0.62/0.08, OpenWhispr
+/// 0.65/0.03; retune for wespeaker CAM++ with §14's eval.
+pub const MARGIN: f32 = 0.08;
+
+/// One label ↔ profile pair [`Profiles::assign`] kept.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Assigned {
+    /// Transcript label.
+    pub label: String,
+    /// The profile.
+    pub profile: Profile,
+    /// Cosine.
+    pub score: f32,
+    /// The profile's second-best label when it also cleared [`MATCH`]: `(label, score)`.
+    pub also: Option<(String, f32)>,
+}
 
 /// What the wire sees (`meeting_speakers`): the embedding stays in the file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -102,6 +119,70 @@ impl Profiles {
             .filter(|(_, c)| *c >= MATCH)
             .max_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(s, c)| (s.profile.id, s.profile.name.clone(), c))
+    }
+
+    /// 158 §10.2 step 4: the one-to-one pairs of `labels` (label, embedding) and profiles —
+    /// kept when the score is ≥ [`MATCH`], beats the label's runner-up profile and the
+    /// profile's runner-up label by ≥ [`MARGIN`], and is mutual (each is the other's best).
+    /// `allowed` restricts the profiles considered; `None` = every profile.
+    pub fn assign(
+        &self,
+        labels: &[(&str, &[f32])],
+        allowed: Option<&[ProfileId]>,
+    ) -> Vec<Assigned> {
+        let profiles: Vec<&Stored> = self
+            .list
+            .iter()
+            .filter(|s| allowed.is_none_or(|a| a.contains(&s.profile.id)))
+            .collect();
+        if profiles.is_empty() || labels.is_empty() {
+            return Vec::new();
+        }
+        // scores[i][j]: label i against profile j.
+        let scores: Vec<Vec<f32>> = labels
+            .iter()
+            .map(|(_, emb)| profiles.iter().map(|p| cosine(&p.embedding, emb)).collect())
+            .collect();
+        // (best index, best score, runner-up score) of one row.
+        let top2 = |row: &mut dyn Iterator<Item = f32>| -> (usize, f32, f32) {
+            let (mut bi, mut b, mut r) = (0, f32::MIN, f32::MIN);
+            for (i, s) in row.enumerate() {
+                if s > b {
+                    (r, b, bi) = (b, s, i);
+                } else if s > r {
+                    r = s;
+                }
+            }
+            (bi, b, r.max(0.0))
+        };
+        let mut out = Vec::new();
+        for (i, (label, _)) in labels.iter().enumerate() {
+            let (j, s, runner_profile) = top2(&mut scores[i].iter().copied());
+            if s < MATCH || s - runner_profile < MARGIN {
+                continue;
+            }
+            let (best_label, _, runner_label) = top2(&mut scores.iter().map(|row| row[j]));
+            if best_label != i || s - runner_label < MARGIN {
+                continue;
+            }
+            let also = (runner_label >= MATCH)
+                .then(|| {
+                    scores
+                        .iter()
+                        .enumerate()
+                        .filter(|(k, _)| *k != i)
+                        .max_by(|a, b| a.1[j].total_cmp(&b.1[j]))
+                        .map(|(k, row)| (labels[k].0.to_owned(), row[j]))
+                })
+                .flatten();
+            out.push(Assigned {
+                label: (*label).to_owned(),
+                profile: profiles[j].profile.clone(),
+                score: s,
+                also,
+            });
+        }
+        out
     }
 
     /// New profile, or the running mean into the one already named `name`
@@ -321,5 +402,54 @@ mod tests {
         );
         assert_eq!(d.profile.samples, 3);
         assert_eq!(reloaded.list().len(), 1);
+    }
+
+    /// A unit vector at cosine `c` to the x axis.
+    fn at(c: f32) -> Vec<f32> {
+        vec![c, (1.0 - c * c).sqrt()]
+    }
+
+    /// 158 §10.5: margin ties (0.71/0.69 → neither; 0.71/0.55 → one) and mutuality.
+    #[test]
+    fn assign_needs_floor_margin_and_mutuality() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut p = Profiles::load(tmp.path()).unwrap();
+        let dana = p.create("Dana", None, &[1.0, 0.0]).unwrap();
+        let (a, b) = (at(0.71), at(0.69));
+        assert!(
+            p.assign(&[("s1", &a), ("s2", &b)], None).is_empty(),
+            "two labels within the margin of one profile → neither"
+        );
+        let b = at(0.55);
+        let got = p.assign(&[("s1", &a), ("s2", &b)], None);
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].label.as_str(), got[0].profile.id), ("s1", dana.id));
+        assert!((got[0].score - 0.71).abs() < 1e-3 && got[0].also.is_none());
+        // The runner-up label is reported when it cleared MATCH on its own.
+        let b = at(0.62);
+        let got = p.assign(&[("s1", &a), ("s2", &b)], None);
+        assert_eq!(got.len(), 1);
+        assert!(
+            got[0]
+                .also
+                .as_ref()
+                .is_some_and(|(l, s)| l == "s2" && (s - 0.62).abs() < 1e-3)
+        );
+        // Restricting to no allowed profile → nothing; below MATCH → nothing.
+        assert!(p.assign(&[("s1", &a)], Some(&[])).is_empty());
+        assert!(p.assign(&[("s1", &at(0.59))], None).is_empty());
+        // Mutuality: Dana is best for s2, but s2's best is John → neither pair.
+        p.create("John", None, &[0.0, 1.0]).unwrap();
+        let (s1, s2) = (vec![0.5, 0.866], vec![0.6, 0.8]);
+        assert!(p.assign(&[("s1", &s1), ("s2", &s2)], None).is_empty());
+        // Clear it up: s1 far from John → s2 ↔ John (0.8 vs 0.6), s1 ↔ nobody.
+        let s1 = at(0.95);
+        let got = p.assign(&[("s1", &s1), ("s2", &s2)], None);
+        assert_eq!(
+            got.iter()
+                .map(|a| (a.label.as_str(), a.profile.name.as_str()))
+                .collect::<Vec<_>>(),
+            [("s1", "Dana"), ("s2", "John")]
+        );
     }
 }

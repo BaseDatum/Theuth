@@ -32,8 +32,8 @@ import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
 const SYSTEM = 0
 const PRIVACY = 'x-apple.systempreferences:com.apple.preference.security'
 
-/** What `Start` sends (137 R1-D6 adds `memory`: `'endless'` with the ∞ switch on, else `null` = the engine's `default_meeting`; 158 R3: `consent` is always `true` — the sentence was shown; 158 §9.2: `project` only when picked — absent = remembered or `meeting.project`). */
-export function startOptions(form: { pid: number; title: string; context: string; model: string | null; endless: boolean; project: string | null }): StartMeeting {
+/** What `Start` sends (137 R1-D6 adds `memory`: `'endless'` with the ∞ switch on, else `null` = the engine's `default_meeting`; 158 R3: `consent` is always `true` — the sentence was shown; 158 §9.2: `project` only when picked — absent = remembered or `meeting.project`; 158 §11.1: `template` only when picked, else the engine resolves remembered → `meeting.template`). */
+export function startOptions(form: { pid: number; title: string; context: string; model: string | null; endless: boolean; project: string | null; template?: string | null }): StartMeeting {
   return {
     process: form.pid === SYSTEM ? null : form.pid,
     title: form.title.trim() || null,
@@ -42,8 +42,12 @@ export function startOptions(form: { pid: number; title: string; context: string
     session_model: form.model,
     memory: form.endless ? 'endless' : undefined,
     project: form.project ?? undefined,
+    template: form.template ?? undefined,
   }
 }
+
+// Radix Select refuses '' as a value: "let the engine decide" is its own row.
+const AUTO = 'auto'
 
 export function StartForm() {
   const api = useApi()
@@ -67,8 +71,12 @@ export function StartForm() {
   const [endless, setEndless] = useState<boolean | null>(null)
   const endlessOn = endless ?? endlessSettings.data?.default_meeting ?? false
 
+  // 158 §11.1: the note template; `null` = not picked here (remembered per event, else `meeting.template`).
+  const templates = useQuery({ queryKey: queryKeys.meetingTemplates, queryFn: () => api.meeting_templates() })
+  const [template, setTemplate] = useState<string | null>(null)
+
   const start = useAction(
-    (_: void) => api.meeting_start(startOptions({ pid, title, context, model: saved, endless: endlessOn, project })),
+    (_: void) => api.meeting_start(startOptions({ pid, title, context, model: saved, endless: endlessOn, project, template })),
     {
       keys: [queryKeys.meetings, queryKeys.meetingStatus],
       onSuccess: (started) => void navigate({ to: '/meetings/$id', params: { id: started.meeting } }),
@@ -140,6 +148,21 @@ export function StartForm() {
               />
             </PopoverContent>
           </Popover>
+        </Row>
+        <Row label="Note template" description="The headings the summary is written under. Automatic: the one remembered for this calendar event, else the default from Settings › Meetings.">
+          <Select value={template ?? AUTO} onValueChange={(v) => setTemplate(v === AUTO ? null : v)}>
+            <SelectTrigger className="w-64" aria-label="Note template">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={AUTO}>Automatic</SelectItem>
+              {templates.data?.map((t) => (
+                <SelectItem key={t.slug} value={t.slug}>
+                  {t.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Row>
         <Row
           label={
