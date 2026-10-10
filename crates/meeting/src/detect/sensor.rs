@@ -101,7 +101,7 @@ pub fn mic_holders() -> anyhow::Result<Vec<ProcessInfo>> {
         .filter(|p| holding.contains(&p.pid) && p.bundle_id.as_deref() != Some(CORE_SPEECH))
         .map(|p| ProcessInfo { active: true, ..p })
         .collect();
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|p| p.name.to_lowercase());
     Ok(out)
 }
 
@@ -175,7 +175,7 @@ unsafe fn capture_sessions() -> anyhow::Result<Vec<ProcessInfo>> {
                 });
             }
         }
-        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out.sort_by_key(|p| p.name.to_lowercase());
         Ok(out)
     }
 }
@@ -286,7 +286,7 @@ pub fn mic_holders() -> anyhow::Result<Vec<ProcessInfo>> {
         .map_err(|e| anyhow::anyhow!("pipewire timer: {e:?}"))?;
     mainloop.run();
     let mut out = std::mem::take(&mut *found.borrow_mut());
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|p| p.name.to_lowercase());
     Ok(out)
 }
 

@@ -229,7 +229,7 @@ impl Meeting {
     pub(crate) async fn publish_detect(&self, out: Vec<rules::Output>) {
         for o in out {
             let ev = match o {
-                rules::Output::Detected(d) => MeetingEvent::Detected(d),
+                rules::Output::Detected(d) => MeetingEvent::Detected(*d),
                 rules::Output::Cleared { app_id, reason } => {
                     MeetingEvent::DetectionCleared { app_id, reason }
                 }

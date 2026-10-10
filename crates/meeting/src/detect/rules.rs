@@ -37,7 +37,7 @@ pub fn app_id(p: &ProcessInfo) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
     /// §4.5 `Detected`.
-    Detected(Detection),
+    Detected(Box<Detection>),
     /// §4.5 `DetectionCleared`.
     Cleared {
         /// Which app's prompt.
@@ -208,7 +208,7 @@ impl Engine {
                     project: None,
                     brief: None,
                 };
-                out.push(Output::Detected(det.clone()));
+                out.push(Output::Detected(Box::new(det.clone())));
                 self.prompt = Some((det, now));
             }
         }
@@ -340,7 +340,7 @@ mod tests {
     fn detected(out: &[Output]) -> Vec<&Detection> {
         out.iter()
             .filter_map(|o| match o {
-                Output::Detected(d) => Some(d),
+                Output::Detected(d) => Some(&**d),
                 _ => None,
             })
             .collect()
@@ -396,7 +396,7 @@ mod tests {
         let mut e = engine();
         let t0 = Instant::now();
         let siri = app("Siri", "com.apple.Siri", 300);
-        assert!(hold(&mut e, t0, 40, &[siri.clone()], false).is_empty());
+        assert!(hold(&mut e, t0, 40, std::slice::from_ref(&siri), false).is_empty());
         let out = hold(&mut e, t0 + S * 42, 20, &[siri, zoom()], false);
         let d = detected(&out);
         assert_eq!(d.len(), 1);

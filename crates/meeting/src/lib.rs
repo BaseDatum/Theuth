@@ -4893,10 +4893,12 @@ mod tests {
         let b = bench().await;
         let path = b._dir.path().join("config.yaml");
         std::fs::write(&path, "agent:\n  model: x/y\nmeeting:\n  max_minutes: 90\n").unwrap();
-        let mut s = MeetingSettings::default();
-        s.model = Some("openai/gpt-5".into());
-        s.summary_model = Some("anthropic/claude".into());
-        s.live_diarization = false;
+        let mut s = MeetingSettings {
+            model: Some("openai/gpt-5".into()),
+            summary_model: Some("anthropic/claude".into()),
+            live_diarization: false,
+            ..MeetingSettings::default()
+        };
         s.detect.enabled = false;
         s.detect.poll_secs = 7;
         s.calendar.eventkit = true;
