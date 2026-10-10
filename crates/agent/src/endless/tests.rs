@@ -2,7 +2,7 @@
 //! settle → render → tools → `/endless off|on`.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use genai::chat::{ChatMessage, ContentPart, MessageContent, ToolCall, ToolResponse};
@@ -63,15 +63,23 @@ async fn harness() -> (crate::TestDir, Endless, Store, Arc<Echo>, SessionId) {
 async fn harness_with(
     cfg: EndlessConfig,
 ) -> (crate::TestDir, Endless, Store, Arc<Echo>, SessionId) {
+    let echo = Arc::new(Echo {
+        calls: Mutex::new(0),
+        model: super::pump::resolved_for_tests("fake/compactor"),
+    });
+    let (scratch, endless, store, id) = harness_for(cfg, echo.clone()).await;
+    (scratch, endless, store, echo, id)
+}
+
+async fn harness_for(
+    cfg: EndlessConfig,
+    compactor: Arc<dyn Compactor>,
+) -> (crate::TestDir, Endless, Store, SessionId) {
     let scratch = crate::TestDir::new("endless-e2e");
     let dir = scratch.0.clone();
     let store = Store::open(&dir.join("sessions.sqlite"), None)
         .await
         .unwrap();
-    let echo = Arc::new(Echo {
-        calls: Mutex::new(0),
-        model: super::pump::resolved_for_tests("fake/compactor"),
-    });
     let mut endless = Endless::new(
         store.clone(),
         Runtime::new(figment::Figment::new(), dir.clone()),
@@ -83,13 +91,109 @@ async fn harness_with(
     );
     Arc::get_mut(&mut endless.inner)
         .unwrap()
-        .compactor_for_tests = Some(echo.clone());
+        .compactor_for_tests = Some(compactor);
     let id = SessionId::new();
     store
         .create_session(id, "fake/session", None, None, None)
         .await
         .unwrap();
-    (scratch, endless, store, echo, id)
+    (scratch, endless, store, id)
+}
+
+/// Every call fails: a deterministic 400 from the provider.
+struct Fail {
+    model: models::Resolved,
+}
+
+impl Compactor for Fail {
+    fn compress<'a>(
+        &'a self,
+        _ctx: &'a str,
+        _convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(async { Err("400: thinking.enabled is not supported".to_owned()) })
+    }
+
+    fn model(&self) -> &models::Resolved {
+        &self.model
+    }
+}
+
+/// A node that keeps failing backs off (`retry_secs` doubling, 30 min cap)
+/// and one success clears its failure state.
+#[tokio::test]
+async fn failing_node_backs_off_until_a_success() {
+    let base = 10;
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            view_bytes: 16_000,
+            retry_secs: base,
+            ..EndlessConfig::default()
+        },
+        Arc::new(Fail {
+            model: super::pump::resolved_for_tests("fake/failing"),
+        }),
+    )
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    let long = (0..60)
+        .map(|k| format!("worker_processes auto; line {k} of the nginx config"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    seed(&store, id, &long).await;
+    endless.attach(id, attached()).await.unwrap();
+
+    // The pump's own first failure.
+    let mut failed = Vec::new();
+    for _ in 0..200 {
+        failed = super::pump::failed_for_tests(&endless.inner, id);
+        if !failed.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (key, at, n) = failed.first().copied().expect("a node failed");
+    assert_eq!(n, 1);
+    assert!(at > Instant::now() + Duration::from_secs(u64::from(base) - 1));
+
+    // Drive the next failures directly: no waiting out the delays.
+    for k in 2..=12u32 {
+        let before = Instant::now();
+        super::pump::finish_for_tests(&endless.inner, id, key, Err("400".to_owned())).await;
+        let (_, at, n) = super::pump::failed_for_tests(&endless.inner, id)
+            .into_iter()
+            .find(|(k, ..)| *k == key)
+            .expect("still failed");
+        assert_eq!(n, k);
+        let want = Duration::from_secs(u64::from(base) << (k - 1)).min(Duration::from_secs(1800));
+        assert!(at >= before + want, "k={k}: {:?} < {want:?}", at - before);
+        assert!(at <= Instant::now() + want, "k={k}: not past the cap");
+    }
+
+    super::pump::finish_for_tests(
+        &endless.inner,
+        id,
+        key,
+        Ok(super::tree::Node {
+            l: key.0,
+            i: key.1,
+            text: "built".into(),
+            size: 5,
+            free: false,
+            model: Some("fake/failing".into()),
+            tries: 1,
+        }),
+    )
+    .await;
+    assert!(
+        !super::pump::failed_for_tests(&endless.inner, id)
+            .iter()
+            .any(|(k, ..)| *k == key),
+        "a success clears the failure state"
+    );
 }
 
 fn attached() -> Attached {

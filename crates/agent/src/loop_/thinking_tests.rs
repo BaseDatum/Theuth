@@ -508,6 +508,37 @@ async fn anthropic_request_carries_thinking_per_effort() {
     assert!(b.get("thinking").is_none(), "{b}");
 }
 
+/// Claude Haiku 5+ takes adaptive thinking (genai fork: the legacy
+/// `thinking.enabled` shape was a 400 on Haiku 5.5); Haiku 4.5 keeps the
+/// budget shape.
+#[tokio::test]
+async fn haiku_5_request_uses_adaptive_thinking() {
+    let h = Harness::new().await;
+    let haiku55 = h.resolve("anthropic/claude-haiku-5-5");
+    let haiku45 = h.resolve("anthropic/claude-haiku-4-5");
+
+    let (b, _) = h.round(&haiku55, default_effort(&haiku55), &user()).await;
+    assert_eq!(b["thinking"]["type"], "adaptive", "{b}");
+    assert_eq!(b["output_config"]["effort"], "medium", "{b}");
+
+    let (b, _) = h.round(&haiku55, Some(ReasoningEffort::Max), &user()).await;
+    assert_eq!(b["thinking"]["type"], "adaptive", "{b}");
+    assert_eq!(b["output_config"]["effort"], "max", "{b}");
+
+    let (b, _) = h
+        .round(&haiku55, Some(ReasoningEffort::Zero), &user())
+        .await;
+    assert_eq!(b["thinking"], json!({"type": "disabled"}), "{b}");
+
+    let (b, _) = h.round(&haiku45, default_effort(&haiku45), &user()).await;
+    assert_eq!(
+        b["thinking"],
+        json!({"type": "enabled", "budget_tokens": 8000}),
+        "{b}"
+    );
+    assert!(b.get("output_config").is_none(), "{b}");
+}
+
 #[tokio::test]
 async fn thinking_block_round_trips_with_signature_on_tool_use_turn() {
     let h = Harness::new().await;
