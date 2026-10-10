@@ -199,20 +199,30 @@ fn spawn_poll(me: ActorRef<Meeting>, poll_secs: u32) -> tokio::task::JoinHandle<
 }
 
 /// `ask` → `bool`: `meeting_detection_set_event` (§8.2) re-matched the open prompt of `app_id`;
-/// the engine's copy follows so `meeting_detection` / `Status.detection` carry the pick.
+/// the engine's copy follows so `meeting_detection` / `Status.detection` carry the pick (and,
+/// 158 §9 W3, the project and brief that follow it).
 #[derive(Clone, Debug)]
 pub struct SetPromptEvent {
     /// The prompted app.
     pub app_id: String,
     /// The re-match.
     pub event: Option<EventMatch>,
+    /// The remembered project for the pick.
+    pub project: Option<String>,
+    /// The cached brief for the pick.
+    pub brief: Option<Vec<String>>,
 }
 
 impl Message<SetPromptEvent> for Meeting {
     type Reply = bool;
 
     async fn handle(&mut self, m: SetPromptEvent, _: &mut Context<Self, Self::Reply>) -> bool {
-        self.detect.engine.set_event(&m.app_id, m.event)
+        let hit = self.detect.engine.set_event(&m.app_id, m.event);
+        if let Some(d) = self.detect.engine.prompt_mut().filter(|d| d.app_id == m.app_id) {
+            d.project = m.project;
+            d.brief = m.brief;
+        }
+        hit
     }
 }
 
@@ -262,7 +272,14 @@ impl Meeting {
             let ev = match o {
                 rules::Output::Detected(mut d) => {
                     d.event = calendar::match_for(&self.store, chrono::Utc::now(), &d.app_id).await;
+                    // 158 §9.3 / §9.4 (W3): the project chip and a cached brief, from memory.
+                    calendar::prebrief::decorate(&self.store, self.cfg.project.as_deref(), &mut d)
+                        .await;
                     self.detect.engine.set_event(&d.app_id, d.event.clone());
+                    if let Some(p) = self.detect.engine.prompt_mut().filter(|p| p.app_id == d.app_id) {
+                        p.project = d.project.clone();
+                        p.brief = d.brief.clone();
+                    }
                     MeetingEvent::Detected(*d)
                 }
                 rules::Output::Cleared { app_id, reason } => {

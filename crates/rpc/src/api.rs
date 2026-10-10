@@ -1745,7 +1745,7 @@ pub trait Api {
     #[method(name = "meeting_status")]
     async fn meeting_status(&self) -> RpcResult<meeting::Status>;
     /// Recorded meetings, newest first (`limit` default 100); 158 §9.2: `project` filters
-    /// to one project (W3; ignored until then).
+    /// to one project.
     #[method(name = "meeting_list")]
     async fn meeting_list(
         &self,

@@ -378,8 +378,8 @@ const SENTENCE_OPENERS: [&str; 72] = [
     "thanks",
 ];
 
-/// Months and weekdays: capitalised, not subjects.
-const CALENDAR: [&str; 19] = [
+/// Months and weekdays: capitalised, not subjects (also the 158 §9.3 `title:` key filter).
+pub(crate) const CALENDAR: [&str; 19] = [
     "january",
     "february",
     "march",
