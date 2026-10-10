@@ -6981,7 +6981,7 @@ dependencies = [
 [[package]]
 name = "genai"
 version = "0.7.0-beta.24-WIP"
-source = "git+https://github.com/skymoore/rust-genai?branch=main#21643b7143ac3ae11353e2e73f84f5326255eaf2"
+source = "git+https://github.com/skymoore/rust-genai?branch=main#617cafeed2910b0c50a91ccacdc3cf1248030a69"
 dependencies = [
  "aws-config",
  "aws-credential-types",
