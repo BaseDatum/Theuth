@@ -16,7 +16,7 @@ Design: `docs/design/158-meetings-around.md` §4, §5.4, §6, D13, §15, A2.
 - `crates/meeting/src/detect/rules.rs` — pure `Engine` (§4.4): `tick(now, holders, quiet)`, `dismiss(now, id, never)`,
   `starting(source_app)`, `recording(now, meeting, process)`, `ended(now)` → `Vec<Output>` (`Detected` / `Cleared` /
   `AppReleased`). 15 s hold (quiet pauses, drop-out resets), per-app 10 min cooldown, one prompt per overlap with
-  `also`, ignore list case-insensitive, `AppReleased` at 30 s and every 30 s after, `Cleared{Released}` at 30 s,
+  `also`, ignore list case-insensitive, `AppReleased` once per release episode at 30 s, `Cleared{Released}` at 30 s,
   `Cleared{Started}` on any accepted start. `app_id()`: bundle id / `application.name`, Windows `<stem>.exe` lowercase.
   Calls `calendar::matcher::best(now, app_id, &[])` to fill `Detection.event` (W2 fills the candidates).
 - `crates/meeting/src/detect/mod.rs` — `Detector` (engine + dictation/talk flags + poll task) lives in the `Meeting`
@@ -93,4 +93,6 @@ Design: `docs/design/158-meetings-around.md` §4, §5.4, §6, D13, §15, A2.
 ## Open
 
 - `Engine::tick` accrues `dt` since the previous tick, so a sensor error skips time rather than counting it.
-- `AppReleased` repeats every 30 s even after "Keep recording" (per §4.5); the islands de-duplicate per meeting.
+- `AppReleased` is emitted once per release episode (orchestrator ruling 14:50 over §4.5's "re-sent every 30 s":
+  there is no keep-recording RPC). A companion that connects mid-release does not get it; `Status` carries no
+  release state (shape frozen) — hand-off if a reconnecting island must also ask.

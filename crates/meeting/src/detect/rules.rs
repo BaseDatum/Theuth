@@ -73,7 +73,8 @@ struct Tracked {
     app_id: String,
     app: ProcessInfo,
     last_seen: Instant,
-    last_sent: Option<Instant>,
+    /// `AppReleased` went out for the current release episode.
+    asked: bool,
 }
 
 /// The state machine. One per engine; lives in the meeting actor.
@@ -162,20 +163,22 @@ impl Engine {
             }
         }
 
-        // Rule 7: the recording's app let go for 30 s → ask, and keep asking every 30 s.
+        // Rule 7: the recording's app let go for 30 s → ask once per release episode (there is
+        // no "keep recording" RPC; the island's answer is local). A new episode needs the app
+        // to hold the mic again first.
         if let Some(t) = self.tracked.as_mut() {
             if holders.iter().any(|p| app_id(p) == t.app_id) {
                 t.last_seen = now;
-                t.last_sent = None;
+                t.asked = false;
             } else {
                 let released = now - t.last_seen;
-                if released >= RELEASE && t.last_sent.is_none_or(|s| now - s >= RELEASE) {
+                if released >= RELEASE && !t.asked {
                     out.push(Output::AppReleased {
                         meeting: t.meeting,
                         app: t.app.clone(),
                         released_for_s: released.as_secs() as u32,
                     });
-                    t.last_sent = Some(now);
+                    t.asked = true;
                 }
             }
         }
@@ -273,7 +276,7 @@ impl Engine {
             app_id,
             app: process.clone(),
             last_seen: now,
-            last_sent: None,
+            asked: false,
         });
     }
 
@@ -438,7 +441,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn release_asks_at_thirty_seconds_and_repeats() {
+    async fn release_asks_once_per_episode() {
         let mut e = engine();
         let t0 = Instant::now();
         hold(&mut e, t0, 16, &[zoom()], false);
@@ -449,7 +452,7 @@ mod tests {
         // Recording: quiet, and zoom still holds; `gone` is the last tick that saw it.
         assert!(hold(&mut e, t1, 10, &[zoom()], true).is_empty());
         let gone = t1 + S * 10;
-        // Zoom lets go: 28 s nothing, 30 s one ask, then one more every 30 s.
+        // Zoom lets go: 28 s nothing, 30 s one ask, then silence while the release continues.
         let out = hold(&mut e, gone + S * 2, 26, &[], true);
         assert!(out.is_empty(), "{out:?}");
         let out = e.tick(gone + S * 30, &[], true);
@@ -457,18 +460,24 @@ mod tests {
             matches!(&out[..], [Output::AppReleased { meeting: m, released_for_s: 30, .. }] if *m == meeting),
             "{out:?}"
         );
-        let out = hold(&mut e, gone + S * 32, 26, &[], true);
-        assert!(out.is_empty(), "{out:?}");
-        let out = e.tick(gone + S * 60, &[], true);
-        assert!(matches!(
-            &out[..],
-            [Output::AppReleased {
-                released_for_s: 60,
-                ..
-            }]
-        ));
-        // Back: the counter resets; nothing stops by itself.
-        assert!(hold(&mut e, gone + S * 62, 40, &[zoom()], true).is_empty());
+        let out = hold(&mut e, gone + S * 32, 120, &[], true);
+        assert!(out.is_empty(), "no re-send on the same episode: {out:?}");
+        // Back, then gone again: a new episode asks once more; nothing stops by itself.
+        let back = gone + S * 160;
+        assert!(hold(&mut e, back, 10, &[zoom()], true).is_empty());
+        let gone2 = back + S * 10;
+        assert!(hold(&mut e, gone2 + S * 2, 26, &[], true).is_empty());
+        let out = e.tick(gone2 + S * 30, &[], true);
+        assert!(
+            matches!(
+                &out[..],
+                [Output::AppReleased {
+                    released_for_s: 30,
+                    ..
+                }]
+            ),
+            "{out:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

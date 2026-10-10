@@ -416,7 +416,8 @@ pub enum MeetingEvent {
         reason: Cleared,
     },
     /// 158 §4.4 rule 7 (W1): the detected app has held no input stream for `released_for_s`;
-    /// the island asks "Stop recording?". Re-sent every 30 s while it holds.
+    /// the island asks "Stop recording?". Once per release episode (W1 orchestrator ruling: there
+    /// is no "keep recording" RPC); a new episode needs the app to hold the mic again first.
     AppReleased {
         /// The recording meeting.
         meeting: MeetingId,
