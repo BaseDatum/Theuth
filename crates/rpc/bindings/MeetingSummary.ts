@@ -40,6 +40,6 @@ duration_ms: bigint | null,
  */
 state: MeetingState, 
 /**
- * 158 §9.2 (W3): the meeting's project (`meetings.project`); `None` until W3 reads the column.
+ * 158 §9.2 (W3): the meeting's project (`meetings.project`).
  */
 project: string | null, };

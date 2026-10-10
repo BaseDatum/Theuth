@@ -39,8 +39,8 @@ Owned files touched: `crates/meeting/src/store.rs`, `calendar/prebrief.rs` (the 
 - **Upcoming tick** (`Scheduler::tick`, `ensure_upcoming(rt)` started at boot beside `ensure_poll`): every 60 s, when
   `meeting.calendar.prebrief`; events with `start ∈ [now − 5, now + 15] min`, not cancelled / all-day; project from memory
   (`uid` → `title` → `meeting.project`; none → skipped, §9.4); generation inside `start − 15 min` (synchronous in the tick's own
-  task, one attempt per instance per process); `MeetingEvent::Upcoming { event, project, brief }` **once** per instance from
-  `start − 5 min` (also when the engine first sees the event inside the window, up to `start + 5`). `brief_for(rt, event, project)`
+  task, one attempt per instance per process); `MeetingEvent::Upcoming { event, project, brief }` every tick while
+  `start − 5 ≤ now ≤ start + 5` (W3 close; W3E first emitted once — the islands dedupe by event id). `brief_for(rt, event, project)`
   = `ensure` on the stored row (cached bullets only when `prebrief` is off or the row is gone).
 
 ## Deviations
@@ -48,8 +48,8 @@ Owned files touched: `crates/meeting/src/store.rs`, `calendar/prebrief.rs` (the 
 1. The brief row is written by the engine after the turn, not by the model calling `brief_put` (§9.4 prompt): deterministic
    aliases/tags, testable with a canned model, no dependency on the model obeying a tool instruction; `brief_put` left out of the
    turn's toolset (read tools only).
-2. `Upcoming` is emitted once per event instance (not every minute); a companion connecting inside the window misses it (the
-   `Detected` prompt still carries `brief`). Islands clear at `start + 5` on their own (§9.4).
+2. (superseded at W3 close) `Upcoming` is re-sent each minute inside the window so a companion connecting mid-window gets it; the
+   islands mute a dismissed id. Islands clear at `start + 5` on their own (§9.4).
 3. Only an explicit `StartMeeting.project` writes memory at start; a project that came from `meeting.project` is not made sticky.
 4. Invalidation is lazy (compared on the next tick / `brief_for`) rather than event-driven at `Done`.
 5. The cache takes 2–3 bullets: a one-bullet reply is cached and shown on the island but files no brief row.
@@ -69,11 +69,11 @@ Owned files touched: `crates/meeting/src/store.rs`, `calendar/prebrief.rs` (the 
 
 ## Open items
 
-- `PrivateTurn` needs the private-mode participants registry ready (`ParticipantsReady`); if private mode is unavailable the
-  tick logs and marks the instance failed (no brief) — retried after a restart.
+- `PrivateTurn` needs the private-mode participants registry ready (`ParticipantsReady`); if the private root is refused the
+  fallback leg answers; if both fail the tick marks the instance failed (no brief) — retried after a restart.
 - `brief_for` is a frozen entry point with no engine caller yet.
-- Not exercised in tests: the agent hop (`CreateSession` Private / `SetSessionProject`) — no in-crate mock model; covered by the
-  `Writer` seam and the agent's own tests.
+- The agent hop is not exercised against a live agent (no cross-crate mock model). W3 close added the `SideCall` fallback leg
+  (`fallback`, throwaway durable session, `CallKind::Escalate`) and `fallback_side_call_shape_and_both_legs_reported`; see `158-as-built-W3.md`.
 
 ## Gates (each its own command, BUILD_LABEL=158w3e)
 
