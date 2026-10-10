@@ -499,6 +499,176 @@ mod tests {
         assert!(rate >= 0.80, "keep rate {rate:.4}");
     }
 
+    /// 159 §6 Guard: `simulate` for the dominance rule (W1). `k` objectives, all null except a
+    /// true `effect`·σ gain on objective 0; parents rotate over the front (fewest children, ties
+    /// by objective 0), every `Confirm` is followed, an `Improved`/`Traded` enters the front and
+    /// evicts what it dominates. Returns the entry count.
+    fn simulate_front(seed: u64, experiments: usize, k: usize, effect: f64) -> usize {
+        use crate::pareto::{self, Axis, Dom, Trees};
+        struct M {
+            truth: Vec<f64>,
+            values: Vec<Vec<f64>>,
+            children: u32,
+            /// Experiment index of its newest sample (the engine's `parent_age` source).
+            last: usize,
+        }
+        let cfg = cfg();
+        let axes: Vec<Axis> = (0..k)
+            .map(|j| Axis {
+                name: format!("o{j}"),
+                direction: Direction::Lower,
+                min_effect: Effect::Relative(0.005),
+                max_regression: None,
+                guard: false,
+            })
+            .collect();
+        let mut rng = Rng(seed);
+        let draw = |rng: &mut Rng, mu: &[f64]| -> Vec<f64> {
+            mu.iter().map(|m| m + rng.normal()).collect()
+        };
+        let push = |t: &mut Vec<Vec<f64>>, s: &[f64]| {
+            for (j, v) in s.iter().enumerate() {
+                t[j].push(*v);
+            }
+        };
+        let base_truth = vec![100.0; k];
+        let mut base = vec![Vec::new(); k];
+        for _ in 0..3 {
+            push(&mut base, &draw(&mut rng, &base_truth));
+        }
+        let mut past: Vec<Vec<Vec<f64>>> = Vec::new();
+        let mut front = vec![M {
+            truth: base_truth,
+            values: base,
+            children: 0,
+            last: 0,
+        }];
+        let mut incumbent = 0usize;
+        let mut entries = 0;
+        for i in 0..experiments {
+            let p = (0..front.len())
+                .min_by(|&a, &b| {
+                    front[a].children.cmp(&front[b].children).then_with(|| {
+                        mean(&front[a].values[0]).total_cmp(&mean(&front[b].values[0]))
+                    })
+                })
+                .unwrap();
+            front[p].children += 1;
+            let mut cand_truth = front[p].truth.clone();
+            cand_truth[0] -= effect;
+            let mut cand = vec![Vec::new(); k];
+            push(&mut cand, &draw(&mut rng, &cand_truth));
+            loop {
+                let sigmas: Vec<f64> = (0..k)
+                    .map(|j| {
+                        let mut trees: Vec<Vec<f64>> = past.iter().map(|t| t[j].clone()).collect();
+                        trees.extend(front.iter().map(|m| m.values[j].clone()));
+                        trees.push(cand[j].clone());
+                        pooled_sigma(&trees)
+                    })
+                    .collect();
+                let dof: usize = past
+                    .iter()
+                    .map(|t| &t[0])
+                    .chain(front.iter().map(|m| &m.values[0]))
+                    .chain(std::iter::once(&cand[0]))
+                    .filter(|v| v.len() >= 2)
+                    .map(|v| v.len() - 1)
+                    .sum();
+                let d = Dom::new(&cfg, &axes, &sigmas, dof);
+                let members: Vec<Vec<Vec<f64>>> = front.iter().map(|m| m.values.clone()).collect();
+                let st = pareto::decide(
+                    &d,
+                    &Trees {
+                        candidate: &cand,
+                        parent: &front[p].values,
+                        parent_age: (i.saturating_sub(front[p].last)).saturating_sub(1) as u32,
+                        parent_is_incumbent: p == incumbent,
+                        members: &members,
+                    },
+                );
+                match st {
+                    GateStep::Confirm {
+                        more,
+                        incumbent_sample,
+                    } => {
+                        // Like the actor: an incumbent-first step with nothing else asked still
+                        // advances by one candidate sample when no incumbent sample is taken.
+                        let more = if more == 0 && !incumbent_sample {
+                            1
+                        } else {
+                            more
+                        };
+                        for _ in 0..more {
+                            push(&mut cand, &draw(&mut rng, &cand_truth));
+                        }
+                        if incumbent_sample {
+                            let s = draw(&mut rng, &front[p].truth);
+                            push(&mut front[p].values, &s);
+                            front[p].last = i;
+                        }
+                    }
+                    GateStep::Decide {
+                        verdict: Verdict::Improved | Verdict::Traded,
+                        ..
+                    } => {
+                        entries += 1;
+                        let mut i = 0;
+                        while i < front.len() {
+                            if pareto::compare(&axes, &sigmas, &cand, &front[i].values, d.z_k)
+                                .dominates(&axes)
+                            {
+                                past.push(front.remove(i).values);
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        front.push(M {
+                            truth: cand_truth,
+                            values: cand,
+                            children: 0,
+                            last: i,
+                        });
+                        incumbent = front.len() - 1;
+                        break;
+                    }
+                    GateStep::Decide { .. } => {
+                        past.push(cand);
+                        break;
+                    }
+                    GateStep::Wait { .. } => unreachable!("the dominance rule never waits"),
+                }
+            }
+        }
+        entries
+    }
+
+    /// 159 §6 Guard, §15 P: k ∈ {2, 3, 4} null objectives, 100 studies × 100 experiments each;
+    /// the front's false-entry rate stays at or below 1 % with the Šidák-corrected thresholds.
+    #[test]
+    fn front_null_entry_rate_at_most_one_percent_for_two_to_four_objectives() {
+        for k in [2usize, 3, 4] {
+            let entries: usize = (0..100)
+                .map(|s| simulate_front(3000 + 100 * k as u64 + s, 100, k, 0.0))
+                .sum();
+            let rate = entries as f64 / 10_000.0;
+            eprintln!("k = {k}: null front-entry rate {rate:.4} ({entries} / 10000)");
+            assert!(
+                rate <= 0.01,
+                "k = {k}: entry rate {rate:.4} ({entries} / 10000)"
+            );
+        }
+    }
+
+    /// 159 §6 Guard: a true 3σ gain on one of three objectives is kept at least 70 % of the time.
+    #[test]
+    fn front_keeps_a_true_three_sigma_gain_at_three_objectives() {
+        let entries: usize = (0..200).map(|s| simulate_front(9000 + s, 50, 3, 3.0)).sum();
+        let rate = entries as f64 / 10_000.0;
+        eprintln!("k = 3: 3σ entry rate {rate:.4} ({entries} / 10000)");
+        assert!(rate >= 0.70, "entry rate {rate:.4}");
+    }
+
     #[test]
     fn pooled_sigma_classical_and_robust() {
         assert_eq!(pooled_sigma(&[vec![1.0], vec![2.0]]), 0.0);
