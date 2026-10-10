@@ -168,13 +168,15 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SandboxCmd,
     },
-    /// The stdio MCP server an ACP child gets in `session/new.mcpServers`
-    /// (75 §9): `list_skills`, `load_skill`, `send_message` proxied to the
-    /// running engine for one child session.
+    /// An MCP server on stdio. With `--session` (75 §9): the three-tool shim
+    /// an ACP child gets in `session/new.mcpServers` (`list_skills`,
+    /// `load_skill`, `send_message`). Without (158 §12.3): theuth's data
+    /// catalogue — the same tools the engine serves over HTTP — for any MCP
+    /// client's `mcpServers` entry. Both need a running engine.
     Mcp {
-        /// The child's theuth session id.
+        /// The child's theuth session id (ACP shim mode).
         #[arg(long)]
-        session: String,
+        session: Option<String>,
     },
     /// The owner's double (design doc 126): the Tier B training job a GPU node runs in-process
     /// (`t double train-b`), without an engine.
@@ -1846,6 +1848,12 @@ async fn run() -> anyhow::Result<()> {
         }
     } else {
         start_plugins(&rt, plugins).await?;
+        // 158 §12.2: theuth as an MCP server, iff `mcp_server.enabled`; the catalogue calls the API in-process.
+        mcp_server::boot(
+            &rt,
+            std::sync::Arc::new(rpc::client::Local::new(rt.clone())),
+        )
+        .await;
     }
 
     // 79 smoke bug 7: every normal exit names its origin (an rpc `shutdown` logs its peer in `api.rs`).

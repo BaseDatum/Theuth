@@ -4,6 +4,10 @@
 //! `list_skills`, `load_skill(name)`, `send_message(text)` → the parent's
 //! `<message from=…>` input. Exits when stdin closes (the harness is gone)
 //! or the engine's RPC socket drops, so nothing outlives either side.
+//!
+//! `t mcp` without `--session` (158 §12.3, W-h) bridges stdio to the same
+//! catalogue the engine's HTTP MCP server exposes (`mcp_server::Catalog`),
+//! over the same engine connection; audit lines go to the same file.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -46,14 +50,6 @@ struct SendMessage {
 struct NoArgs {}
 
 impl Shim {
-    /// A shim for `session`, proxying to `client`.
-    pub fn new(session: String, client: WsClient) -> Self {
-        Self {
-            session,
-            client: Arc::new(client),
-        }
-    }
-
     async fn call<T: serde::de::DeserializeOwned>(
         &self,
         method: &str,
@@ -170,14 +166,26 @@ impl ServerHandler for Shim {
     }
 }
 
-/// Serve on stdio until the harness closes stdin or the engine drops.
-pub async fn run(data_dir: &Path, listen: &str, session: String) -> anyhow::Result<()> {
+/// Serve on stdio until the harness closes stdin or the engine drops: the
+/// child shim with `session`; without, the catalogue bridge — every tool call
+/// is `mcp_server_call` on the engine, which redacts and audits (158 §12.5).
+pub async fn run(data_dir: &Path, listen: &str, session: Option<String>) -> anyhow::Result<()> {
     let client = crate::link_cli::connect(data_dir, listen)
         .await
         .map_err(|e| anyhow::anyhow!("no engine on {listen}: {e}"))?;
-    let shim = Shim::new(session, client);
-    let watch = shim.client.clone();
-    let running = shim.serve(rmcp::transport::stdio()).await?;
+    let client = Arc::new(client);
+    let watch = client.clone();
+    match session {
+        Some(session) => serve_until_gone(Shim { session, client }, watch).await,
+        None => serve_until_gone(mcp_server::Bridge::new(client), watch).await,
+    }
+}
+
+async fn serve_until_gone<H: ServerHandler>(
+    handler: H,
+    watch: Arc<WsClient>,
+) -> anyhow::Result<()> {
+    let running = handler.serve(rmcp::transport::stdio()).await?;
     let ct = running.cancellation_token();
     tokio::spawn(async move {
         watch.on_disconnect().await;
@@ -228,7 +236,11 @@ mod tests {
         let (a, b) = tokio::io::duplex(1 << 16);
         // Both `serve`s block on the initialize handshake: run them together.
         let (server, mcp) = tokio::join!(
-            Shim::new("s1".into(), client).serve(tokio::io::split(a)),
+            Shim {
+                session: "s1".into(),
+                client: Arc::new(client)
+            }
+            .serve(tokio::io::split(a)),
             ().serve(tokio::io::split(b)),
         );
         let (server, mcp) = (server.unwrap(), mcp.unwrap());
