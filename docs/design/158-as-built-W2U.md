@@ -55,5 +55,10 @@ Branch `feat/158-w2u` from the C158 contract head `ccc48db5`. UI only (`crates/d
 - No interactive (click) tests: the UI test setup is `renderToStaticMarkup` without jsdom/testing-library, so the RPC paths are
   proven through the exported seams (`addSource`, `deleteSource`, `setEvent`), as `MeetingList.test.ts` does.
 
-## Gates
-(filled after `.ui-ready`; see the DONE message)
+## Gates (after `.ui-ready`, in `crates/desktop/ui`)
+- `BUILD_LABEL=158w2u build-lock bunx tsc --noEmit -p .` → exit 0, no diagnostics (`--listFiles` confirms the three new sources
+  and three tests are in the program).
+- `BUILD_LABEL=158w2u build-lock bunx vitest run src/lib/calendar.test.ts src/components/settings/Calendar.test.ts
+  src/components/meeting/EventSwitcher.test.ts` → 3 files, 9 tests passed.
+- Not run: vite build, cargo/mbx, Swift, C# (out of scope). No live-engine smoke: the W2 Rust RPCs are still C158 stubs
+  (`calendar_sources` → `[]`, `calendar_source_add` → error), so the panel shows the empty states against today's engine.

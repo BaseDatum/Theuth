@@ -24,8 +24,9 @@ export function Calendar() {
   const mac = isMacDesktop()
   const settings = useQuery({ queryKey: calendarKeys.settings, queryFn: () => api.calendar_settings_get() })
   const sources = useQuery({ queryKey: calendarKeys.sources, queryFn: () => api.calendar_sources() })
-  // One stable window per mount: a `Date.now()` key would refetch every render.
-  const [day] = useState<[string, string]>(() => [new Date().toISOString(), new Date(Date.now() + 86_400_000).toISOString()])
+  // The window is rounded to the minute so re-renders share one query key instead of refetching every paint.
+  const now = Math.floor(Date.now() / 60_000) * 60_000
+  const day: [string, string] = [new Date(now).toISOString(), new Date(now + 86_400_000).toISOString()]
   const events = useQuery({ queryKey: calendarKeys.events(...day), queryFn: () => api.calendar_events(...day) })
   const save = useAction((config: CalendarConfig) => api.calendar_settings_set(config), { keys: [calendarKeys.settings, calendarKeys.sources] })
   const add = useAction((v: { name: string; url: string }) => addSource(api, v.name, v.url), {

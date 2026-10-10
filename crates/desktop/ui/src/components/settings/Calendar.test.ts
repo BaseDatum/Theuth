@@ -7,6 +7,8 @@ import type { CalSource } from '@/rpc/bindings/CalSource'
 import type { CalEvent } from '@/rpc/bindings/CalEvent'
 import { Calendar, addSource, deleteSource, ready } from './Calendar'
 
+// Frozen clock: the panel's Upcoming key is the minute-rounded `Date.now()`; two paints must share it.
+vi.useFakeTimers({ toFake: ['Date'] })
 const SECRET = 'https://calendar.google.com/calendar/ical/sky%40example.com/private-0123456789abcdef/basic.ics'
 const sources: CalSource[] = [
   { id: 'ics-1', kind: 'ics', name: 'Work', enabled: true, last_fetch: new Date(Date.now() - 180_000).toISOString(), last_error: null, state: null },
@@ -40,7 +42,7 @@ test('sources list: ICS rows by name with sync age or the amber error, the Event
   expect(html).toContain('Work')
   expect(html).toContain('synced 3 min ago')
   expect(html).toMatch(/class="text-warning">URL rejected/)
-  expect(html).not.toContain('macOS Calendar</div>') // the eventkit source is not a subscription row
+  expect(html).not.toContain('<div class="text-sm">macOS Calendar</div>') // the eventkit source is not a subscription row
   expect(html).toContain('System Settings › Privacy › Calendars')
   expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Use macOS Calendar"/)
   expect(html).toMatch(/type="password"[^>]*aria-label="Subscription URL"/)
