@@ -7,8 +7,8 @@ Per-worker detail: `158-as-built-W2E.md` (engine), `158-as-built-W2M.md` (compan
 |---|---|---|
 | W2E | `feat/158-w2e` `458c43d2` (P1) | store, calcard ICS glue, fetch, matcher, RPC bodies, seed, poll task, `CalendarEvent` on the rpc bridge |
 | W2M | `feat/158-w2m` `a9d02221` | EventKit source in the macOS companion: permission, −1…+14 d push, state report, entitlement + usage string |
-| W2U | `feat/158-w2u` `4c3d0761` (merged `d75ee6e5`) | Settings › Calendar (`ready = true`), `EventSwitcher`, `lib/calendar.ts`, tests |
-| close | this branch `be80a9c8`+ | Event chip in the meeting page header, `CalendarEvent` in the TS wire union, `SourcesChanged` invalidation, bindings, gates |
+| W2U | `feat/158-w2u` `7afc8ba8` (merged twice: `d75ee6e5`, then the flat-props commit) | Settings › Calendar (`ready = true`), `EventSwitcher` (flat props `{ detection?, meeting?, onChanged?, className? }`), `lib/calendar.ts`, tests |
+| close | this branch `be80a9c8`+ | Event chip `<EventSwitcher meeting={id} />` in the meeting page header, `CalendarEvent` in the TS wire union, `SourcesChanged` invalidation, bindings, gates |
 
 ## What landed
 
