@@ -2,6 +2,7 @@ import { cn } from 'cn'
 import {
   Bot,
   AudioLines,
+  CalendarDays,
   ChevronLeft,
   ChevronRight,
   Eye,
@@ -17,6 +18,7 @@ import {
   MicVocal,
   Moon,
   Monitor,
+  Plug,
   Radio,
   RefreshCw,
   Search as SearchIcon,
@@ -31,6 +33,7 @@ import { Advisor } from '@/components/settings/Advisor'
 import { Agents } from '@/components/settings/Agents'
 import { Autoresearch } from '@/components/settings/Autoresearch'
 import { Approvals } from '@/components/settings/Approvals'
+import { Calendar, ready as calendarReady } from '@/components/settings/Calendar'
 import { Channels } from '@/components/settings/Channels'
 import { Chat } from '@/components/settings/Chat'
 import { Communication } from '@/components/settings/Communication'
@@ -43,6 +46,7 @@ import { Link } from '@/components/settings/Link'
 import { Loop } from '@/components/settings/Loop'
 import { Labs, useLabsVisible } from '@/components/settings/Labs'
 import { Memory } from '@/components/settings/Memory'
+import { Mcp, ready as mcpReady } from '@/components/settings/Mcp'
 import { Meetings } from '@/components/settings/Meetings'
 import { Search } from '@/components/settings/Search'
 import { Mesh } from '@/components/settings/Mesh'
@@ -65,6 +69,7 @@ const TABS = [
   ['memory', 'Memory', InfinityIcon],
   ['computer', 'Computer', Monitor],
   ['meetings', 'Meetings', Mic],
+  ['calendar', 'Calendar', CalendarDays],
   ['voice', 'Voice', MicVocal],
   ['voice-key', 'Voice key', AudioLines],
   ['search', 'Search', SearchIcon],
@@ -76,7 +81,11 @@ const TABS = [
   ['connections', 'Connections', KeyRound],
   ['channels', 'Channels', MessageSquare],
   ['shortcuts', 'Shortcuts', Keyboard],
+  ['mcp', 'MCP server', Plug],
 ] as const satisfies readonly (readonly [string, string, LucideIcon])[]
+
+/** 158 C158: tabs whose module says `ready === false` are filtered out of the list (W2/W5 flip their own flag). */
+const NOT_READY: Partial<Record<Tab, boolean>> = { calendar: calendarReady, mcp: mcpReady }
 
 export type Tab = (typeof TABS)[number][0]
 
@@ -108,6 +117,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'memory' && <Memory />}
       {tab === 'computer' && <Computer />}
       {tab === 'meetings' && <Meetings />}
+      {tab === 'calendar' && <Calendar />}
       {tab === 'voice-key' && <VoiceKey />}
       {tab === 'voice' && <Voice />}
       {tab === 'search' && <Search />}
@@ -119,6 +129,7 @@ function Pane({ tab, session, peer, onClose }: Omit<Props, 'onTab'>) {
       {tab === 'connections' && <Connections />}
       {tab === 'channels' && <Channels />}
       {tab === 'shortcuts' && <Shortcuts />}
+      {tab === 'mcp' && <Mcp />}
     </>
   )
 }
@@ -133,7 +144,8 @@ export function SettingsDialog({ tab, session, peer, onTab, onClose }: Props) {
   const [pushed, setPushed] = useState(false)
   // Labs only while `decision.enabled` (57 §7.1).
   const hasLabs = useLabsVisible()
-  const tabs = TABS.filter(([id]) => id !== 'labs' || hasLabs)
+  // 158 C158: a wave's tab stays out of the list until its module flips `ready` (Calendar W2, MCP W5).
+  const tabs = TABS.filter(([id]) => (id !== 'labs' || hasLabs) && NOT_READY[id] !== false)
   const label = TABS.find(([id]) => id === tab)?.[1] ?? 'Settings'
 
   if (mobile) {

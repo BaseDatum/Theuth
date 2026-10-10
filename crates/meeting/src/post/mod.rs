@@ -7,6 +7,7 @@
 
 pub mod align;
 pub mod diarize;
+pub mod suggest;
 pub mod transcribe;
 
 use std::collections::HashMap;

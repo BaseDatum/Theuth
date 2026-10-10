@@ -12,7 +12,8 @@
 //!   [`StartMeeting`], [`PauseMeeting`], [`ResumeMeeting`], [`StopMeeting`],
 //!   [`MeetingStatus`], [`ListMeetings`], [`GetMeeting`], [`DeleteMeeting`],
 //!   [`CheckPermissions`]
-//! - events: [`MeetingEvent`] (one stream; every variant carries `meeting`)
+//! - events: [`MeetingEvent`] (one stream; every per-meeting variant carries `meeting`;
+//!   158's `Detected` / `DetectionCleared` / `Upcoming` precede a meeting and carry none)
 //!
 //! The types below are the shared contract frozen in `meetings/README.md` §3;
 //! phases 2–4 add variants and fields, never rename or retype.
@@ -37,7 +38,9 @@ use crate::post::diarize;
 
 pub mod batch;
 pub mod cache;
+pub mod calendar;
 pub mod capture;
+pub mod detect;
 pub mod diar;
 pub mod endless;
 mod endless_agent;
@@ -53,17 +56,24 @@ pub mod state;
 pub mod store;
 pub mod stt;
 pub mod summary;
+pub mod templates;
 pub mod tools;
 pub mod topics;
 pub mod transcript;
 
 pub use cache::{Cache, CachedBrief, CachedBriefPut};
+pub use calendar::{
+    Attendee, CalEvent, CalSource, CalendarConfig, CalendarEvent, EventId, EventMatch, EventRef,
+};
+pub use detect::{Cleared, DetectConfig, Detection};
 pub use oracle::{OracleDecision, OracleDisposition, OracleOutcome};
+pub use post::suggest::{Suggestion, SuggestionSource};
 pub use speakers::{Profile, Profiles};
 use state::Prompted;
 pub use state::{Recording, RecordingClock};
-pub use store::{Gap, Manifest, MeetingSummary, SearchHit, Stem, Store, TrackFile};
+pub use store::{Gap, Manifest, MeetingSummary, SearchHit, Stats, Stem, Store, TrackFile};
 use stt::Piece;
+pub use templates::{Section, Template};
 use topics::{Gone, Record};
 pub use transcript::{EditOp, Proposed, Segment, SpeakerLabel, Transcript, Word};
 
@@ -395,6 +405,35 @@ pub enum MeetingEvent {
         /// The verdict.
         decision: OracleDecision,
     },
+    /// 158 §4.5 (W1): an eligible app has held the mic ≥ 15 s — the island's prompt. Not
+    /// per-meeting: there is none yet. `event`/`project`/`brief` are filled by W2/W3.
+    Detected(Detection),
+    /// 158 §4.5 (W1): the prompt went away, and why.
+    DetectionCleared {
+        /// Which app's prompt.
+        app_id: String,
+        /// Why.
+        reason: Cleared,
+    },
+    /// 158 §4.4 rule 7 (W1): the detected app has held no input stream for `released_for_s`;
+    /// the island asks "Stop recording?". Re-sent every 30 s while it holds.
+    AppReleased {
+        /// The recording meeting.
+        meeting: MeetingId,
+        /// The app that let go.
+        app: ProcessInfo,
+        /// Seconds since it released.
+        released_for_s: u32,
+    },
+    /// 158 §9.4 (W3): a matched-or-remembered event starts within 5 minutes — island state (c).
+    Upcoming {
+        /// The event.
+        event: EventRef,
+        /// Its project, when resolved.
+        project: Option<String>,
+        /// The pre-meeting brief bullets, when generated.
+        brief: Option<Vec<String>>,
+    },
 }
 
 /// Why a topic button disappeared (phase 2).
@@ -563,6 +602,86 @@ pub struct MeetingConfig {
     pub live_prompts: Vec<String>,
     /// 06 §1.5 / 81: lines per `<knowledge>` note while recording; 0 = none.
     pub live_hint_limit: u32,
+    /// 158 §6.1 (W1): the meeting session's model (`provider/model`); `None` → `agent.model`.
+    /// Carried, not yet read — W1 resolves `StartMeeting.session_model.or(cfg.model)`.
+    pub model: Option<String>,
+    /// 158 §6.1 (W1): the summary turn's model; `None` → `model`. Carried, not yet read.
+    pub summary_model: Option<String>,
+    /// 158 §6.1 (W4): default note template slug. Carried, not yet read.
+    pub template: String,
+    /// 158 §6.1: transcript language (BCP-47); stored, inert until the multilingual tier (§14).
+    pub language: String,
+    /// 158 §6.1 (W3): the project a meeting gets when nothing is remembered. Carried, not yet read.
+    pub project: Option<String>,
+    /// 158 §4 (W1): detection. Carried, not yet read.
+    pub detect: DetectConfig,
+    /// 158 §7 (W2): calendar. Carried, not yet read.
+    pub calendar: CalendarConfig,
+}
+
+/// 158 §6.2: the user-facing subset of [`MeetingConfig`] that `meeting_settings_get` /
+/// `meeting_settings_set` move whole (not `batch_secs`, `context_tokens`, paths).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(default)]
+pub struct MeetingSettings {
+    /// `meeting.model`.
+    pub model: Option<String>,
+    /// `meeting.summary_model`.
+    pub summary_model: Option<String>,
+    /// `meeting.template`.
+    pub template: String,
+    /// `meeting.language`.
+    pub language: String,
+    /// `meeting.live_diarization`.
+    pub live_diarization: bool,
+    /// `meeting.live_tools`.
+    pub live_tools: Vec<String>,
+    /// `meeting.project`.
+    pub project: Option<String>,
+    /// `meeting.detect.*`.
+    pub detect: DetectConfig,
+    /// `meeting.calendar.*`.
+    pub calendar: CalendarConfig,
+}
+
+impl Default for MeetingSettings {
+    fn default() -> Self {
+        Self::from(&MeetingConfig::default())
+    }
+}
+
+impl From<&MeetingConfig> for MeetingSettings {
+    fn from(c: &MeetingConfig) -> Self {
+        Self {
+            model: c.model.clone(),
+            summary_model: c.summary_model.clone(),
+            template: c.template.clone(),
+            language: c.language.clone(),
+            live_diarization: c.live_diarization,
+            live_tools: c.live_tools.clone(),
+            project: c.project.clone(),
+            detect: c.detect.clone(),
+            calendar: c.calendar.clone(),
+        }
+    }
+}
+
+/// `meeting_settings_get() -> MeetingSettings` (158 §6.2, W1): the `meeting:` block as
+/// configured. Reads config only; W1 moves it onto the actor so a live set is reflected.
+pub async fn rpc_settings_get(rt: &Runtime) -> anyhow::Result<MeetingSettings> {
+    let cfg: MeetingConfig = rt.section("meeting").unwrap_or_default();
+    Ok(MeetingSettings::from(&cfg))
+}
+
+/// `meeting_settings_set(MeetingSettings) -> MeetingSettings` (158 §6.2, W1): one actor
+/// message, `write_config_value` / `write_nested_config_value` per key, then `self.cfg`;
+/// a failed write changes nothing. Stub: refused.
+pub async fn rpc_settings_set(
+    _rt: &Runtime,
+    _settings: MeetingSettings,
+) -> anyhow::Result<MeetingSettings> {
+    Err(anyhow::anyhow!("158 W1: not built yet"))
 }
 
 impl MeetingConfig {
@@ -606,6 +725,13 @@ impl Default for MeetingConfig {
             .to_vec(),
             live_prompts: ["meeting", "knowledge", "web"].map(String::from).to_vec(),
             live_hint_limit: 2,
+            model: None,
+            summary_model: None,
+            template: templates::DEFAULT.to_owned(),
+            language: "en".to_owned(),
+            project: None,
+            detect: DetectConfig::default(),
+            calendar: CalendarConfig::default(),
         }
     }
 }
@@ -643,6 +769,22 @@ pub struct StartMeeting {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub memory: Option<agent::MemoryMode>,
+    /// 158 §15.1 (W1): how the start happened; `None` = manual. Carried, not yet read.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub source: Option<detect::Source>,
+    /// 158 §8.3 (W2): the calendar event to seed from. Carried, not yet read.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub event: Option<EventId>,
+    /// 158 §9.2 (W3): the meeting's project; `None` = remembered or `meeting.project`. Carried, not yet read.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub project: Option<String>,
+    /// 158 §11.1 (W4): the note template slug; `None` = remembered or `meeting.template`. Carried, not yet read.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub template: Option<String>,
 }
 
 /// Reply to [`StartMeeting`].
@@ -709,13 +851,20 @@ pub struct Status {
     /// (`models::onnx::ep`: `DmlExecutionProvider` | `CPUExecutionProvider`).
     #[serde(default)]
     pub accelerator: String,
+    /// 158 §4.5 (W1): the current detection prompt, so a companion connecting mid-prompt
+    /// renders it. `None` until W1.
+    #[serde(default)]
+    pub detection: Option<Detection>,
 }
 
 /// `ask` → `Result<Vec<MeetingSummary>, String>`: from the index, newest first.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ListMeetings {
     /// Most rows; `None` = 100.
     pub limit: Option<u32>,
+    /// 158 §9.2 (W3): only meetings of this project. Carried, not yet applied.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// `ask` → `Result<Manifest, String>`: the manifest as on disk.
@@ -2561,6 +2710,7 @@ impl Message<MeetingStatus> for Meeting {
             approval_waiting: live.is_some_and(|l| !l.approvals.is_empty()),
             supported,
             accelerator: models::onnx::ep().to_owned(),
+            detection: None,
         }
     }
 }

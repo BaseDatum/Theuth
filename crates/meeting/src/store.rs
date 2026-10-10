@@ -10,6 +10,7 @@ use runtime::SessionId;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
+use crate::calendar::EventRef;
 use crate::transcript::{self, Transcript};
 use crate::{DIR, Degradation, MeetingId, MeetingState, ProcessInfo};
 
@@ -116,6 +117,33 @@ pub struct Manifest {
     /// The meeting's note (59 §7.4), created at start; `None` for meetings recorded before notes existed.
     #[serde(default)]
     pub note: Option<document::DocId>,
+    /// 158 §8.3 (W2): the matched calendar event, persisted because the calendar row rotates out.
+    #[serde(default)]
+    pub event: Option<EventRef>,
+    /// 158 §9.2 (W3): the meeting's project; `None` = the `meetings` label as before.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// 158 §11.1 (W4): the note template slug; `meeting` reproduces today's headings.
+    #[serde(default = "default_template")]
+    pub template: String,
+    /// 158 §13 (W6): the echo counter from the post pass.
+    #[serde(default)]
+    pub stats: Option<Stats>,
+}
+
+fn default_template() -> String {
+    crate::templates::DEFAULT.to_owned()
+}
+
+/// 158 §13 (W6): mic segments whose text duplicates a system segment within 2 s — the
+/// measure-first echo gate (D12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "MeetingStats"))]
+pub struct Stats {
+    /// Duplicated mic segments.
+    pub echo_dupes: u32,
+    /// Mic segments counted.
+    pub mic_segments: u32,
 }
 
 impl Manifest {
@@ -146,6 +174,10 @@ impl Manifest {
                 })
                 .collect(),
             note: None,
+            event: None,
+            project: None,
+            template: default_template(),
+            stats: None,
         }
     }
 
@@ -159,6 +191,7 @@ impl Manifest {
             process_name: self.process.name.clone(),
             duration_ms: self.duration_ms,
             state: self.state,
+            project: self.project.clone(),
         }
     }
 }
@@ -183,6 +216,9 @@ pub struct MeetingSummary {
     pub duration_ms: Option<u64>,
     /// Last state the manifest said.
     pub state: MeetingState,
+    /// 158 §9.2 (W3): the meeting's project (`meetings.project`); `None` until W3 reads the column.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// One `meeting_search` hit (04 §5).
@@ -226,6 +262,7 @@ fn row_to_summary(r: Row) -> anyhow::Result<MeetingSummary> {
         process_name: r.5,
         duration_ms: r.6.map(|d| d as u64),
         state: serde_json::from_str(&r.7)?,
+        project: None,
     })
 }
 
@@ -262,6 +299,11 @@ impl Store {
             store.rebuild().await?;
         }
         Ok(store)
+    }
+
+    /// The index pool, for the 158 calendar tables (`calendar::store`, migration 0003).
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     /// `<data_dir>/meetings/<id>/`.

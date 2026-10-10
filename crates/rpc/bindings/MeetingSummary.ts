@@ -38,4 +38,8 @@ duration_ms: bigint | null,
 /**
  * Last state the manifest said.
  */
-state: MeetingState, };
+state: MeetingState, 
+/**
+ * 158 §9.2 (W3): the meeting's project (`meetings.project`); `None` until W3 reads the column.
+ */
+project: string | null, };
