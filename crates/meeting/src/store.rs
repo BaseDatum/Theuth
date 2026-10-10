@@ -136,7 +136,7 @@ fn default_template() -> String {
 }
 
 /// 158 §13 (W6): mic segments whose text duplicates a system segment within 2 s — the
-/// measure-first echo gate (D12).
+/// measure-first echo gate (D12) — and the user's one-per-meeting "used speakers" answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "MeetingStats"))]
 pub struct Stats {
@@ -144,6 +144,9 @@ pub struct Stats {
     pub echo_dupes: u32,
     /// Mic segments counted.
     pub mic_segments: u32,
+    /// Review's "Did you use speakers (not headphones)?" — `None` until answered.
+    #[serde(default)]
+    pub speakers: Option<bool>,
 }
 
 impl Manifest {
@@ -592,6 +595,26 @@ mod tests {
         m.state = MeetingState::Done;
         m.duration_ms = Some(35_000);
         m
+    }
+
+    /// 158 §13 (W6): a manifest written before `stats` (and a `stats` written before
+    /// `speakers`) still parses; a counted manifest round-trips.
+    #[test]
+    fn manifest_without_stats_parses_and_stats_round_trip() {
+        let m = manifest();
+        let mut v = serde_json::to_value(&m).unwrap();
+        v.as_object_mut().unwrap().remove("stats");
+        assert_eq!(serde_json::from_value::<Manifest>(v).unwrap(), m);
+        let old: Stats = serde_json::from_str(r#"{"echo_dupes":3,"mic_segments":40}"#).unwrap();
+        assert_eq!(old.speakers, None);
+        let mut m = manifest();
+        m.stats = Some(Stats {
+            echo_dupes: 3,
+            mic_segments: 40,
+            speakers: Some(true),
+        });
+        let back: Manifest = serde_json::from_slice(&serde_json::to_vec(&m).unwrap()).unwrap();
+        assert_eq!(back, m);
     }
 
     #[tokio::test]

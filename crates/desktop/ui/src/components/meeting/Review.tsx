@@ -8,7 +8,8 @@
 // turn. "Done reviewing"/"Summarize" live in the page header (`MeetingActions`), not here. 158 §10.3: *Suggest names*
 // asks `meeting_suggest_speakers` once and shows one row per label (name, confidence bar, evidence); Accept renames
 // and, without a linked profile, enrolls the label's speech — the engine's quality gates (§10.4) decide; a refusal
-// keeps the name and says why. Nothing happens without a click (R6).
+// keeps the name and says why. Nothing happens without a click (R6). 158 §13 (W6): outside macOS (no VoiceProcessingIO)
+// the pane asks once per meeting "Did you use speakers (not headphones)?" → `meeting_set_speakers`, the echo gate's sample.
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { LoaderCircle, Volume2 } from 'lucide-react'
@@ -20,6 +21,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getSharedAudioContext } from '@/hooks/use-audio-context'
+import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { SegmentPlayer, playError } from '@/lib/segment-audio'
 import { enrollBlock, enrolledToast, rowBlock, secondsText, selectClick, speechMs } from '@/lib/segment-select'
@@ -49,6 +51,12 @@ export function Review({ id, readOnly = false }: { id: string; readOnly?: boolea
   const transcript = useQuery({ queryKey: queryKeys.meetingTranscript(id), queryFn: () => api.meeting_transcript(id) })
   const edit = useAction((ops: EditOp[]) => api.meeting_edit(id, ops), {
     onSuccess: (t) => qc.setQueryData(queryKeys.meetingTranscript(id), t),
+  })
+  // 158 §13: the manifest (shared with the page header) says whether the speakers question was answered.
+  const askSpeakers = !isMacDesktop()
+  const manifest = useQuery({ queryKey: queryKeys.meeting(id), queryFn: () => api.meeting_get(id), enabled: askSpeakers })
+  const speakers = useAction((used: boolean) => api.meeting_set_speakers(id, used), {
+    onSuccess: (m) => qc.setQueryData(queryKeys.meeting(id), m),
   })
   // Cached, never fetched on its own: the button refetches; Accept/Not them drop rows from the cached list.
   const suggestions = useQuery({ queryKey: queryKeys.meetingSuggestions(id), queryFn: () => api.meeting_suggest_speakers(id), enabled: false, staleTime: Infinity })
@@ -87,6 +95,17 @@ export function Review({ id, readOnly = false }: { id: string; readOnly?: boolea
       {t && (
         <>
           {!t.diarized && t.note && <p className="text-[13px] text-fg-secondary">{t.note}</p>}
+          {askSpeakers && manifest.data && manifest.data.stats?.speakers == null && (
+            <div className="flex flex-wrap items-center gap-2 text-[13px] text-fg-secondary">
+              <span>Did you use speakers (not headphones) in this meeting?</span>
+              <Button size="sm" variant="outline" disabled={speakers.isPending} onClick={() => speakers.mutate(true)}>
+                Speakers
+              </Button>
+              <Button size="sm" variant="outline" disabled={speakers.isPending} onClick={() => speakers.mutate(false)}>
+                Headphones
+              </Button>
+            </div>
+          )}
           {!readOnly && (
             <div className="flex flex-wrap items-start gap-2">
               {t.speakers.map((s) => (

@@ -7,6 +7,7 @@
 
 pub mod align;
 pub mod diarize;
+pub mod echo;
 pub mod suggest;
 pub mod transcribe;
 
@@ -272,6 +273,10 @@ async fn run(cx: &Ctx, m: &mut Manifest) -> Result<(), (PostStage, anyhow::Error
         .await
         .map_err(|e| (PostStage::Aligning, e))?;
     let _ = cx.progress.send((PostStage::Aligning, 100));
+    // 158 §13 (W6): count only; the speakers answer survives a re-run.
+    let mut stats = echo::count(&transcript.segments);
+    stats.speakers = m.stats.and_then(|s| s.speakers);
+    m.stats = Some(stats);
     m.state = MeetingState::Review;
     save(cx, m).await;
     cx.rt
