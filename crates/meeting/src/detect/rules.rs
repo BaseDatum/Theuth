@@ -206,7 +206,8 @@ impl Engine {
                         .filter(|(p, _)| p != id)
                         .map(|(_, app)| (*app).clone())
                         .collect(),
-                    // W2 fills the candidates from the event store; `&[]` is "no calendar".
+                    // The ONE calendar seam (W2 lands second → `calendar::match_for(&store, now,
+                    // id)` here and `matcher::clear_choice()` where the prompt clears).
                     event: matcher::best(chrono::Utc::now(), id, &[]),
                     project: None,
                     brief: None,
