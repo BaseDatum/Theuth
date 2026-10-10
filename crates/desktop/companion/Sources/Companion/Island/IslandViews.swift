@@ -225,11 +225,11 @@ struct PromptView: View {
             }
             HStack(spacing: 8) {
                 if ui.menuOpen {
-                    Button("Never for \(app)") { ui.menuOpen = false; store.meetingNever(detection) }.buttonStyle(.bordered).islandRect("never", ui)
+                    PromptButton("Never for \(app)") { ui.menuOpen = false; store.meetingNever(detection) }.islandRect("never", ui)
                     StripButton(nil, icon: "xmark") { ui.menuOpen = false }.islandRect("menu-close", ui)
                 } else {
-                    Button("Start recording") { store.meetingStartDetected(detection) }.buttonStyle(.borderedProminent).islandRect("start", ui)
-                    Button("Not now") { store.meetingNotNow(detection) }.buttonStyle(.bordered).islandRect("not-now", ui)
+                    PromptButton("Start recording", primary: true) { store.meetingStartDetected(detection) }.islandRect("start", ui)
+                    PromptButton("Not now") { store.meetingNotNow(detection) }.islandRect("not-now", ui)
                 }
             }.padding(.leading, 24)
             Text(Self.lawful).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true).padding(.leading, 24)
@@ -255,13 +255,31 @@ struct StopRow: View {
             HStack(spacing: 8) {
                 Text("Stop recording?").font(.callout.weight(.semibold))
                 Spacer(minLength: 0)
-                Button("Stop") { store.meetingStop() }.buttonStyle(.bordered).islandRect("stop-now", ui)
-                Button("Keep recording") { store.meetingKeepRecording() }.buttonStyle(.borderedProminent).islandRect("keep", ui)
+                PromptButton("Stop") { store.meetingStop() }.islandRect("stop-now", ui)
+                PromptButton("Keep recording", primary: true) { store.meetingKeepRecording() }.islandRect("keep", ui)
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .accessibilityElement(children: .contain).accessibilityLabel(line)
         .islandRect("stop-row", ui)
+    }
+}
+
+/// The prompt's answers: the primary is an accent capsule (a non-key panel draws `.borderedProminent` grey), the rest the
+/// strip's capsule. The title is the accessibility label.
+struct PromptButton: View {
+    let title: String
+    var primary = false
+    let action: () -> Void
+    init(_ title: String, primary: Bool = false, action: @escaping () -> Void) { self.title = title; self.primary = primary; self.action = action }
+    var body: some View {
+        Button(action: action) {
+            Text(title).font(.subheadline.weight(primary ? .semibold : .regular))
+                .foregroundStyle(primary ? Color.white : Color.primary)
+                .padding(.horizontal, 12).frame(height: 26)
+                .background(Capsule().fill(primary ? Color.accentColor : Color.primary.opacity(0.08)))
+                .contentShape(Capsule())
+        }.buttonStyle(.plain)
     }
 }
 
