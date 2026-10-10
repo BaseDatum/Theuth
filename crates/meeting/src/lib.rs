@@ -4792,9 +4792,10 @@ mod tests {
 
     /// 158 §4.7 integration: fake mic holders ticked into the actor → `Detected` on the bus
     /// after 15 s, `Status.detection` set, "Not now" → `DetectionCleared{NotNow}` and clear.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn fake_holders_reach_the_bus_as_detected() {
         let b = bench().await;
+        tokio::time::pause(); // after the store opened: sqlx's pool timeout is wall-clock
         b.actor.ask(detect::Holders(vec![zoom()])).await.unwrap();
         tokio::time::advance(Duration::from_secs(14)).await;
         b.actor.ask(detect::Holders(vec![zoom()])).await.unwrap();
@@ -4837,7 +4838,6 @@ mod tests {
                 never: false,
             })
             .await
-            .unwrap()
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await; // the bus hop
         assert!(b.events.lock().iter().any(|e| matches!(
@@ -4858,7 +4858,7 @@ mod tests {
 
     /// §4.3: "Never for" lands in `config.yaml` under `meeting.detect.ignore` and the live
     /// settings reflect it.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn never_persists_to_the_ignore_list() {
         let b = bench().await;
         let path = b._dir.path().join("config.yaml");
@@ -4869,10 +4869,10 @@ mod tests {
                 never: true,
             })
             .await
-            .unwrap()
             .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("max_minutes: 90"), "{text}");
+        use figment::providers::Format as _;
         let cfg: MeetingConfig = figment::Figment::new()
             .merge(figment::providers::Yaml::file(&path))
             .extract_inner("meeting")
@@ -4888,7 +4888,7 @@ mod tests {
 
     /// §6.2: `meeting_settings_set` persists every key, keeps the rest of the file, and the
     /// live config follows; the next start resolves `meeting.model`.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn settings_set_persists_and_applies() {
         let b = bench().await;
         let path = b._dir.path().join("config.yaml");
@@ -4900,12 +4900,13 @@ mod tests {
         s.detect.enabled = false;
         s.detect.poll_secs = 7;
         s.calendar.eventkit = true;
-        let got = b.actor.ask(SetSettings(s.clone())).await.unwrap().unwrap();
+        let got = b.actor.ask(SetSettings(s.clone())).await.unwrap();
         assert_eq!(got, s);
         assert_eq!(b.actor.ask(GetSettings).await.unwrap(), s);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("agent:\n  model: x/y"), "{text}");
         assert!(text.contains("max_minutes: 90"), "{text}");
+        use figment::providers::Format as _;
         let cfg: MeetingConfig = figment::Figment::new()
             .merge(figment::providers::Yaml::file(&path))
             .extract_inner("meeting")
