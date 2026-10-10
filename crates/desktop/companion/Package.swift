@@ -37,5 +37,7 @@ let package = Package(
             swiftSettings: swift5
         ),
         .testTarget(name: "CompanionCoreTests", dependencies: ["CompanionCore"], swiftSettings: swift5),
+        // 158 W2: the EventKit mapping lives in the executable; SwiftPM links it for tests (`@testable import Companion`).
+        .testTarget(name: "CompanionTests", dependencies: ["Companion"], swiftSettings: swift5),
     ]
 )

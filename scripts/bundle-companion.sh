@@ -62,6 +62,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>NSSupportsSuddenTermination</key><false/>
   $ICON_KEY
   <key>NSMicrophoneUsageDescription</key><string>Theuth Companion records only while you hold a hotkey — the Ask bar's, an agent row's mic, or the voice key (⌃S) — to dictate a request to theuth.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>theuth matches detected meetings to your calendar and seeds the meeting's context. Events never leave this Mac except as text sent to the model you chose.</string>
 </dict>
 </plist>
 EOF
