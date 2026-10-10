@@ -128,6 +128,14 @@ fn sort(out: &mut [ProcessInfo]) {
 /// our own pid skipped.
 #[cfg(target_os = "macos")]
 pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
+    process_objects(objc2_core_audio::kAudioProcessPropertyIsRunningOutput)
+}
+
+/// The Core Audio process objects with `active` read from `running`
+/// (`kAudioProcessPropertyIsRunningOutput` for the picker, `…IsRunningInput` for the
+/// 158 §4.1 mic sensor); own pid skipped, active first, then by name.
+#[cfg(target_os = "macos")]
+pub(crate) fn process_objects(running: u32) -> anyhow::Result<Vec<ProcessInfo>> {
     use std::ffi::c_void;
     use std::ptr::NonNull;
 
@@ -135,8 +143,7 @@ pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
         AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
         AudioObjectPropertyAddress, kAudioHardwarePropertyProcessObjectList,
         kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
-        kAudioProcessPropertyBundleID, kAudioProcessPropertyIsRunningOutput,
-        kAudioProcessPropertyPID,
+        kAudioProcessPropertyBundleID, kAudioProcessPropertyPID,
     };
     use objc2_core_foundation::{CFRetained, CFString};
 
@@ -217,7 +224,7 @@ pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
             let pid: i32 = get(obj, kAudioProcessPropertyPID)?;
             let pid = u32::try_from(pid).ok().filter(|&p| p != me)?;
             let bundle_id = get_string(obj, kAudioProcessPropertyBundleID);
-            let active = get::<u32>(obj, kAudioProcessPropertyIsRunningOutput).unwrap_or(0) != 0;
+            let active = get::<u32>(obj, running).unwrap_or(0) != 0;
             let name = proc_name(pid)
                 .or_else(|| bundle_id.as_deref()?.rsplit('.').next().map(str::to_owned))
                 .unwrap_or_else(|| pid.to_string());
@@ -238,13 +245,26 @@ pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
 /// render device. `bundle_id` is `None` on Windows.
 #[cfg(target_os = "windows")]
 pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
+    use windows::Win32::Media::Audio::{eMultimedia, eRender};
+    sessions_on(eRender, &[eMultimedia])
+}
+
+/// Processes with an audio session on the default endpoint of `flow` for each of `roles`
+/// (158 §4.1: the capture side asks `eConsole` and `eCommunications`, which can differ),
+/// de-duplicated by pid (`active` if any role's session is); `Err` only when no role has a
+/// default device. Own pid and the system-sounds session (pid 0) skipped.
+#[cfg(target_os = "windows")]
+pub(crate) fn sessions_on(
+    flow: windows::Win32::Media::Audio::EDataFlow,
+    roles: &[windows::Win32::Media::Audio::ERole],
+) -> anyhow::Result<Vec<ProcessInfo>> {
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
     // SAFETY: COM init/uninit are balanced on this thread; `RPC_E_CHANGED_MODE`
     // (already initialized as STA) still leaves COM usable, so only our own
     // successful init is undone.
     unsafe {
         let ours = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
-        let out = sessions();
+        let out = sessions(flow, roles);
         if ours {
             CoUninitialize();
         }
@@ -253,11 +273,14 @@ pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
 }
 
 #[cfg(target_os = "windows")]
-unsafe fn sessions() -> anyhow::Result<Vec<ProcessInfo>> {
+unsafe fn sessions(
+    flow: windows::Win32::Media::Audio::EDataFlow,
+    roles: &[windows::Win32::Media::Audio::ERole],
+) -> anyhow::Result<Vec<ProcessInfo>> {
     use anyhow::Context as _;
     use windows::Win32::Media::Audio::{
         AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
-        MMDeviceEnumerator, eMultimedia, eRender,
+        MMDeviceEnumerator,
     };
     use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
     use windows::core::Interface as _;
@@ -267,39 +290,54 @@ unsafe fn sessions() -> anyhow::Result<Vec<ProcessInfo>> {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .context("MMDeviceEnumerator")?;
-        let device = enumerator
-            .GetDefaultAudioEndpoint(eRender, eMultimedia)
-            .context("no default render device")?;
-        let manager: IAudioSessionManager2 = device
-            .Activate(CLSCTX_ALL, None)
-            .context("IAudioSessionManager2")?;
-        let sessions = manager
-            .GetSessionEnumerator()
-            .context("session enumerator")?;
         let me = std::process::id();
         let mut out: Vec<ProcessInfo> = Vec::new();
-        for i in 0..sessions.GetCount().unwrap_or(0) {
-            let Ok(control) = sessions.GetSession(i) else {
-                continue;
+        let mut no_device = None;
+        for role in roles {
+            let device = match enumerator.GetDefaultAudioEndpoint(flow, *role) {
+                Ok(d) => d,
+                Err(e) => {
+                    no_device.get_or_insert(e);
+                    continue;
+                }
             };
-            let Ok(pid) = control
-                .cast::<IAudioSessionControl2>()
-                .and_then(|c| c.GetProcessId())
-            else {
-                continue;
-            };
-            // Pid 0 is the system-sounds session.
-            if pid == 0 || pid == me || out.iter().any(|p| p.pid == pid) {
-                continue;
-            }
-            out.push(ProcessInfo {
-                pid,
-                name: image_name(pid).unwrap_or_else(|| pid.to_string()),
-                bundle_id: None,
-                active: control
+            let manager: IAudioSessionManager2 = device
+                .Activate(CLSCTX_ALL, None)
+                .context("IAudioSessionManager2")?;
+            let sessions = manager
+                .GetSessionEnumerator()
+                .context("session enumerator")?;
+            for i in 0..sessions.GetCount().unwrap_or(0) {
+                let Ok(control) = sessions.GetSession(i) else {
+                    continue;
+                };
+                let Ok(pid) = control
+                    .cast::<IAudioSessionControl2>()
+                    .and_then(|c| c.GetProcessId())
+                else {
+                    continue;
+                };
+                // Pid 0 is the system-sounds session.
+                if pid == 0 || pid == me {
+                    continue;
+                }
+                let active = control
                     .GetState()
-                    .is_ok_and(|s| s == AudioSessionStateActive),
-            });
+                    .is_ok_and(|s| s == AudioSessionStateActive);
+                if let Some(p) = out.iter_mut().find(|p| p.pid == pid) {
+                    p.active |= active;
+                    continue;
+                }
+                out.push(ProcessInfo {
+                    pid,
+                    name: image_name(pid).unwrap_or_else(|| pid.to_string()),
+                    bundle_id: None,
+                    active,
+                });
+            }
+        }
+        if let Some(e) = no_device.filter(|_| out.is_empty() && roles.len() == 1) {
+            return Err(anyhow::Error::from(e).context("no default audio device"));
         }
         sort(&mut out);
         Ok(out)
@@ -342,6 +380,13 @@ fn image_name(pid: u32) -> Option<String> {
 /// PipeWire daemon answers. `bundle_id` carries `application.name`.
 #[cfg(target_os = "linux")]
 pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
+    nodes("Stream/Output/Audio")
+}
+
+/// PipeWire registry nodes of `media.class`, one per `application.process.id`, own pid
+/// skipped; every node counts as `active` (158 §4.1: no cheap running bit). 500 ms guard.
+#[cfg(target_os = "linux")]
+pub(crate) fn nodes(class: &'static str) -> anyhow::Result<Vec<ProcessInfo>> {
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::Duration;
@@ -366,7 +411,7 @@ pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
                 return;
             };
             if global.type_ != pw::types::ObjectType::Node
-                || props.get(*pw::keys::MEDIA_CLASS) != Some("Stream/Output/Audio")
+                || props.get(*pw::keys::MEDIA_CLASS) != Some(class)
             {
                 return;
             }
@@ -390,8 +435,8 @@ pub fn processes() -> anyhow::Result<Vec<ProcessInfo>> {
                 pid,
                 name,
                 bundle_id: app,
-                // Every node here is a live output stream; PipeWire has no
-                // cheap "currently playing" bit at the registry level.
+                // Every node here is a live stream of `class`; PipeWire has no
+                // cheap "currently running" bit at the registry level.
                 active: true,
             });
         })

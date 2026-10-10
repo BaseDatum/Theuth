@@ -490,6 +490,15 @@ pub async fn rpc_detection_set_event(
     let store = store_and_poll(rt).await?;
     matcher::choose(&detection.app_id, event);
     detection.event = match_for(&store, Utc::now(), &detection.app_id).await;
+    // W1 close: the engine's held prompt follows, so `meeting_detection` / `Status.detection` agree.
+    if let Ok(Some(actor)) = ActorRef::<Meeting>::lookup(crate::MEETING_ACTOR) {
+        let _ = actor
+            .ask(crate::detect::SetPromptEvent {
+                app_id: detection.app_id.clone(),
+                event: detection.event.clone(),
+            })
+            .await;
+    }
     rt.publish(MeetingEvent::Detected(detection.clone())).await;
     Ok(Some(detection))
 }

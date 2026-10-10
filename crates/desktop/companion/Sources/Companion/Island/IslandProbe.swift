@@ -19,6 +19,10 @@ extension IslandController {
         }
         func sleep(_ s: Double) async { try? await Task.sleep(for: .seconds(s)) }
         IslandLog.write("probe \(which): AXIsProcessTrusted=\(trusted) shareable=\(Flags.shareable) screens=\(NSScreen.screens.map { "\($0.localizedName) \($0.frame)" }) pointer=\(pointer) number=\(window.windowNumber)")
+        if which.hasPrefix("prompt") {
+            await runPromptProbe(which, trusted: trusted, check: check)
+            return await finish(which, pass: pass, fail: fail, eye: savedEye, frames: savedFrames, pointer: pointer)
+        }
 
         // The pointer is parked far from the island first: the open layout must not depend on hover.
         guard let s = screen else { return IslandLog.write("probe \(which): no screen") }
@@ -190,6 +194,70 @@ extension IslandController {
             }
         }
         await finish(which, pass: pass, fail: fail, eye: savedEye, frames: savedFrames, pointer: pointer)
+    }
+
+    /// 158 W1 — `--probe-island prompt`: the wire's `Detected` through the real decoder → island states A (no event) and B
+    /// (event + project), each answer clicked (Start / Not now / ⋮ → Never) and asserted on the suppressed RPC label; then a
+    /// recording + `AppReleased` → state D, Keep (local, re-sends muted) and Stop. Nothing is sent (`AskFlags.automated`).
+    private func runPromptProbe(_ which: String, trusted: Bool, check: (String, Bool, @autoclosure () -> String) -> Void) async {
+        func sleep(_ s: Double) async { try? await Task.sleep(for: .seconds(s)) }
+        let detected = #"{"type":"Detected","app":{"pid":4242,"name":"Zoom","bundle_id":"us.zoom.xos","active":true},"app_id":"us.zoom.xos","since":"2026-10-10T10:00:00Z","also":[]}"#
+        let withEvent = #"{"type":"Detected","app":{"pid":4242,"name":"Zoom","bundle_id":"us.zoom.xos","active":true},"app_id":"us.zoom.xos","since":"2026-10-10T10:00:00Z","also":[],"event":{"event":{"id":"ek:u1:","uid":"u1","title":"Weekly product sync","start":"2026-10-10T10:00:00Z","end":"2026-10-10T10:30:00Z"},"score":0.9},"project":"theuth"}"#
+        func feed(_ json: String) { store.meetingObserve(Data(json.utf8)); IslandLog.write("probe \(which): fed \(json.prefix(60))…") }
+        func isDetected() -> Bool { if case .detected? = store.meeting?.prompt { return true } else { return false } }
+
+        feed(detected); await sleep(1.5)
+        check("detected shows the open prompt", shown && ui.isOpen && isDetected() && ui.rects["start"] != nil && ui.rects["not-now"] != nil,
+              "shown=\(shown) state=\(ui.state) prompt=\(String(describing: store.meeting?.prompt)) rects=\(Array(ui.rects.keys).sorted())")
+        logProbeState(which)
+        await shot("\(which)-a-detected")
+        logRects(["start", "not-now", "menu", "eye", "prompt"])
+        guard trusted else {
+            check("synthetic input", false, "NOT PROVABLE: CGEventPost needs Accessibility, which this probe bundle lacks")
+            return
+        }
+        // Start recording → `meeting_start` with the pid, source Detected and consent; the prompt is gone at once.
+        await click("start")
+        check("start click", store.meetingActs.contains("meeting_start(pid=4242, source=detected:us.zoom.xos, consent=true)") && !isDetected(),
+              "acts=\(store.meetingActs) prompt=\(String(describing: store.meeting?.prompt))")
+        await sleep(0.6)
+        check("prompt gone hides the island", !shown, "shown=\(shown) visible=\(window.isVisible)")
+        // Not now → dismiss(never: false).
+        feed(detected); await sleep(1.2)
+        await click("not-now")
+        check("not now click", store.meetingActs.contains("meeting_detection_dismiss(us.zoom.xos, never=false)") && !isDetected(), "acts=\(store.meetingActs)")
+        // State B, then ⋮ → Never for Zoom → dismiss(never: true).
+        feed(withEvent); await sleep(1.2)
+        check("event line + project chip", ui.rects["project"] != nil && store.meeting?.prompt == .detected(try! TheuthJSON.decoder.decode(Detection.self, from: Data(withEvent.utf8))),
+              "rects=\(Array(ui.rects.keys).sorted())")
+        await shot("\(which)-b-event")
+        await click("menu")
+        check("menu click", ui.menuOpen && ui.rects["never"] != nil, "menuOpen=\(ui.menuOpen) rects=\(Array(ui.rects.keys).sorted())")
+        await shot("\(which)-b-menu")
+        await click("never")
+        check("never click", store.meetingActs.contains("meeting_detection_dismiss(us.zoom.xos, never=true)") && !isDetected() && !ui.menuOpen,
+              "acts=\(store.meetingActs) menuOpen=\(ui.menuOpen)")
+        // State D: a recording, then the app released the mic for 30 s.
+        var slice = IslandFixture.slice()
+        slice.meeting = "probe-meeting"
+        store.meeting = slice
+        await sleep(1)
+        let released = #"{"type":"AppReleased","meeting":"probe-meeting","app":{"pid":4242,"name":"Zoom","bundle_id":"us.zoom.xos","active":false},"released_for_s":30}"#
+        feed(released); await sleep(1)
+        let asks: Bool = { if case .stop(let app, 30)? = store.meeting?.prompt, app.pid == 4242, app.name == "Zoom" { return true } else { return false } }()
+        check("app released asks", asks && ui.isOpen && ui.rects["keep"] != nil,
+              "prompt=\(String(describing: store.meeting?.prompt)) state=\(ui.state) rects=\(Array(ui.rects.keys).sorted())")
+        await shot("\(which)-d-stop")
+        logRects(["stop-now", "keep", "stop-row"])
+        await click("keep")
+        check("keep click", store.meeting?.prompt == nil && store.meeting?.keptReleasedForS == 30 && store.meeting?.isLive == true,
+              "prompt=\(String(describing: store.meeting?.prompt)) kept=\(String(describing: store.meeting?.keptReleasedForS))")
+        feed(released.replacingOccurrences(of: "\"released_for_s\":30", with: "\"released_for_s\":60")); await sleep(0.5)
+        check("re-send after keep is muted", store.meeting?.prompt == nil, "prompt=\(String(describing: store.meeting?.prompt))")
+        feed(released); await sleep(1)
+        check("a fresh release asks again", ui.rects["stop-now"] != nil && store.meeting?.prompt != nil, "prompt=\(String(describing: store.meeting?.prompt))")
+        await click("stop-now")
+        check("stop click", store.meetingActs.contains("meeting_stop"), "acts=\(store.meetingActs)")
     }
 
     private func finish(_ which: String, pass: Int, fail: Int, eye: Bool, frames: [String: CGRect], pointer: NSPoint) async {
