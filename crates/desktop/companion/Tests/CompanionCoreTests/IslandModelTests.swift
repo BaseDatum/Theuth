@@ -44,6 +44,8 @@ struct IslandModelTests {
         #expect(!IslandModel.live(s) && IslandModel.visible(s, alwaysShow: false))
         #expect(IslandModel.attached(live: false, collapsed: false, prompt: true) == .open)
         #expect(IslandModel.attached(live: true, collapsed: true, prompt: true) == .open) // "Stop recording?" reopens a collapsed island
+        s.prompt = .upcoming(event: EventRef(id: "e", uid: "u", title: "Sync", start: "x", end: "y"), project: nil, brief: [])
+        #expect(!IslandModel.live(s) && IslandModel.visible(s, alwaysShow: false)) // (c) too, before any mic hold
         s.prompt = nil
         #expect(!IslandModel.visible(s, alwaysShow: false)) // no linger once it clears
     }

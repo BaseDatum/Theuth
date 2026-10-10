@@ -150,6 +150,8 @@ struct OpenIsland: View {
             }
             if case .detected(let d)? = s.prompt {
                 PromptView(ui: ui, store: store, detection: d)
+            } else if case .upcoming(let e, let p, let b)? = s.prompt {
+                UpcomingView(ui: ui, store: store, event: e, project: p, brief: b)
             } else {
                 Strip(ui: ui, store: store, slice: s)
                     .background(DragGrip(ui: ui))
@@ -217,12 +219,10 @@ struct PromptView: View {
             if detection.event != nil || detection.project != nil {
                 HStack(spacing: 8) {
                     if let e = detection.event?.event { Text(MeetingReducer.eventLine(e)).font(.subheadline).foregroundColor(.secondary).lineLimit(1) }
-                    if let p = detection.project {
-                        Text(p).font(.caption).padding(.horizontal, 8).frame(height: 20).background(Capsule().fill(Color.primary.opacity(0.08)))
-                            .accessibilityLabel("Project \(p)").islandRect("project", ui)
-                    }
+                    if let p = detection.project { ProjectChip(ui: ui, project: p) }
                 }.padding(.leading, 24)
             }
+            if let b = detection.brief, !b.isEmpty { BriefBullets(bullets: b).padding(.leading, 24) } // §5.2 (c) above (b): both apply
             HStack(spacing: 8) {
                 if ui.menuOpen {
                     PromptButton("Never for \(app)") { ui.menuOpen = false; store.meetingNever(detection) }.islandRect("never", ui)
@@ -237,6 +237,66 @@ struct PromptView: View {
         .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
         .accessibilityElement(children: .contain).accessibilityLabel(headline)
         .islandRect("prompt", ui)
+    }
+}
+
+/// 158 §5.2 (c) — the pre-meeting brief: `In N min · <Title>` + project chip, the brief's bullets, `From the last meetings in
+/// <project> · attendees …`, Start recording · Dismiss, the lawful sentence (R3). Clears at start + 5 min (`MeetingReducer.tick`).
+struct UpcomingView: View {
+    @ObservedObject var ui: IslandUI
+    @ObservedObject var store: Store
+    let event: EventRef
+    let project: String?
+    let brief: [String]
+
+    var body: some View {
+        let headline = MeetingReducer.upcomingLine(event, now: ui.now)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                DragGrip(ui: ui).frame(width: 18, height: 26).islandRect("grip", ui)
+                Image(systemName: "clock").font(.caption.weight(.semibold)).foregroundColor(.accentColor).accessibilityHidden(true)
+                Text(headline).font(.callout.weight(.semibold)).lineLimit(1)
+                Spacer(minLength: 0)
+                if let p = project { ProjectChip(ui: ui, project: p) }
+                RoundButton(icon: EyeGlyph.symbol(ui.eyeHidden), label: EyeGlyph.label(ui.eyeHidden), tint: EyeGlyph.tint(ui.eyeHidden)) {
+                    ui.eyeHidden.toggle()
+                }.islandRect("eye", ui)
+            }
+            if !brief.isEmpty { BriefBullets(bullets: brief).padding(.leading, 24) }
+            if let src = MeetingReducer.upcomingSource(project: project, attendees: event.attendees) {
+                Text(src).font(.caption).foregroundColor(.secondary).lineLimit(2).padding(.leading, 24)
+            }
+            HStack(spacing: 8) {
+                PromptButton("Start recording", primary: true) { store.meetingStartUpcoming(event, project: project) }.islandRect("start", ui)
+                PromptButton("Dismiss") { store.meetingDismissUpcoming() }.islandRect("dismiss", ui)
+            }.padding(.leading, 24)
+            Text(PromptView.lawful).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true).padding(.leading, 24)
+        }
+        .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
+        .accessibilityElement(children: .contain).accessibilityLabel(headline)
+        .islandRect("upcoming", ui)
+    }
+}
+
+/// The prompt's project chip (`⟨ theuth ⟩`, §5.2 b/c).
+struct ProjectChip: View {
+    @ObservedObject var ui: IslandUI
+    let project: String
+    var body: some View {
+        Text(project).font(.caption).padding(.horizontal, 8).frame(height: 20).background(Capsule().fill(Color.primary.opacity(0.08)))
+            .lineLimit(1).accessibilityLabel("Project \(project)").islandRect("project", ui)
+    }
+}
+
+/// The pre-meeting brief's bullets (≤ 3 by §9.4; drawn as sent).
+struct BriefBullets: View {
+    let bullets: [String]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(bullets.enumerated()), id: \.offset) { _, b in
+                Text("• \(b)").font(.subheadline).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 
