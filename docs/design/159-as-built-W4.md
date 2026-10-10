@@ -41,10 +41,11 @@ Not dispatched for this kind and left as C's neutral stubs: `population::sample`
 ## 3. Gates and results
 
 - `BUILD_LABEL=159-W4 build-lock mbx check -p autoresearch --locked` → rc 0.
-- `build-lock mbx test -p autoresearch --locked --no-run` → rc 0; `mbx test -p autoresearch --locked --no-fail-fast` → **202 passed, 0 failed** (190 before W4 + 12 W4; `golden_ledger_140` ok).
-- `build-lock mbx clippy -p autoresearch --locked` → see §6 (filled after the run).
-- `cargo fmt`: not run over the crate (it would touch files W4 does not own); population.rs and population/tests.rs were formatted with `rustfmt --edition 2024` on those two files only.
-- UI: `.ui-ready` — see §6.
+- `build-lock mbx test -p autoresearch --locked --no-run` → rc 0; `mbx test -p autoresearch --locked --no-fail-fast` → **202 passed, 0 failed** (190 before W4 + 12 W4; `golden_ledger_140` ok). With `--nocapture`: `deceptive: archive 50 / 50, ratchet 0 / 50`; `null champion cleared 7 / 400`.
+- `build-lock mbx clippy -p autoresearch --locked` → rc 0, 0 warnings.
+- `cargo fmt`: not run over the crate (it would touch files W4 does not own); population.rs and population/tests.rs formatted with `rustfmt --edition 2024` on those two files only (`--check` clean afterwards).
+- `BUILD_SLOTS=1 build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` → 8 passed; `Descriptor.ts`, `DescriptorSource.ts`, `PopulationSpec.ts` generated; copied to `crates/desktop/ui/src/rpc/bindings/` (not committed).
+- `.ui-ready` appeared at 17:45; `build-lock bun run check` → rc 0; `build-lock bun run test -- src/components/autoresearch src/rpc/api.test.ts` → 6 files, **41 passed** (37 + the 4 of `ArchiveGrid.test.ts`). Visual limit: the grid is proved by static paint (`renderToStaticMarkup`) — one section per island, 4 cells, one `data-champion`, `★ #1`, hover text, 5 empty cells on a 2 × 4 grid; no running desktop UI in this worktree.
 
 ## 4. P tests (population/tests.rs)
 
@@ -67,9 +68,14 @@ Not dispatched for this kind and left as C's neutral stubs: `population::sample`
 
 `bash bench.sh` in `fixtures/toy-route`: `CASE s11 length=7247.9 · CASE s23 length=7431.2 · CASE s37 length=7670.0 · METRIC length=7449.71 · METRIC time_ms=1.283 · ASI python=3.14.8`, rc 0 in < 0.2 s. `bash test.sh` → `test.sh: ok`. `bash holdout.sh` → `METRIC length=7759.63`. Offline reference (2-opt + or-opt + 2-opt, 40 restarts per seed, 78 s): 6189.5 / 5844.3 / 6464.9, mean 6166.2 (−17.2 % against nearest neighbour), in `fixtures/optimum.txt` outside the scope. T (three population seeds against three ratchet seeds at the same experiment budget) is the closer's live run; the spec and the control are in the fixture README.
 
-## 6. Late results
+## 6. UI test (ArchiveGrid.test.ts)
 
-Filled after the clippy / UI runs (see the final message).
+| test | proves |
+|---|---|
+| `bins of a key` | `i0:2.1` → [2, 1], `i3:4` → [4], `i1:` → [] |
+| `distance from the champion` | 0 at the champion, 1 at the farthest, proportional between, whatever the direction |
+| `grid: one section per island …` | two `data-island` sections, four `data-cell`s, exactly one `data-champion`, the star, descriptor and children in the hover text, no empty cell when the single-descriptor grid is full; with two descriptors 5 of 8 cells empty, both axis labels |
+| `grid: no elite yet says so` | the empty-archive text under `data-kind="archive"` |
 
 ## 7. Hand-offs
 
@@ -100,5 +106,3 @@ Filled after the clippy / UI runs (see the final message).
 **H5 — reviewer at archive acceptance (W4-f, Z).** In `population::promote` after `settle` returns `Entered | Replaced` for a slot in state `Kept`: call wave.rs's `review(..)` (make it `pub(crate)`) or `review::review` directly; a `Flagged` verdict under `on_suspicious: revert` removes the cell (`archive_remove` + `refs::delete`) and marks the experiment `rejected_by_review`.
 
 **H6 — lineage on hover (optional, Z).** `CellRow` has no parent; the grid's hover shows the cell, not the chain. Adding `parent_ref: Option<String>` to `ExperimentRow` (types.rs) lets `ArchiveGrid` take `rows` and walk `parent_ref` → cell → its experiment.
-
-**Orchestrator** `.ui-ready` had not appeared in this worktree by the time the Rust gates were green; see §6 for what W4 could run.
