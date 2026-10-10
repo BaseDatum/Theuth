@@ -10,6 +10,7 @@ import { Link } from '@tanstack/react-router'
 import { X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { SAME_AS_NEW } from '@/components/settings/Chat'
+import { MeetingTemplates } from '@/components/settings/MeetingTemplates'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { ChordInput, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
@@ -29,7 +30,7 @@ import { setHiddenFromCapture } from '@/lib/tauri'
 import type { MeetingSettings } from '@/rpc/bindings/MeetingSettings'
 
 export const SETTINGS_KEY = ['meeting-settings'] as const
-const TEMPLATES_KEY = ['meeting-templates'] as const
+const TEMPLATES_KEY = queryKeys.meetingTemplates
 /** `MeetingConfig::default().live_tools` (`crates/meeting/src/lib.rs`); "Reset to default" writes this list. */
 export const DEFAULT_LIVE_TOOLS = [
   'meeting_topic',
@@ -211,6 +212,7 @@ export function Meetings() {
           </Row>
         ))}
       </Section>
+      <MeetingTemplates />
     </>
   )
 }
