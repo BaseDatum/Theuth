@@ -346,4 +346,37 @@ public extension RpcClient {
     func meetingTopics() async throws -> [Topic] { try await call("meeting_topics") }
 
     func meetingLive(id: String) async throws -> [Utterance] { try await call("meeting_live", [.init(id)]) }
+
+    // 158 (C158 contract; W1/W2 call these). The engine answers inertly until the waves land.
+    /// `meeting_start(StartMeeting)` → the meeting and session ids; the island's "Start recording" (158 §5.4).
+    func meetingStart(_ start: StartMeeting) async throws -> MeetingStarted { try await call("meeting_start", [.init(start)]) }
+
+    /// `meeting_detection()` (158 §4.5): the current prompt, `nil` when none.
+    func meetingDetection() async throws -> Detection? { try await call("meeting_detection") }
+
+    /// `meeting_detection_dismiss(app_id, never)` (158 §4.4): "Not now" / "Never for <App>".
+    func meetingDetectionDismiss(appId: String, never: Bool) async throws {
+        let _: JSONValue = try await call("meeting_detection_dismiss", [.init(appId), .init(never)])
+    }
+
+    /// `meeting_detection_set_event(event)` (158 §8.2): pick or clear (`nil`) the prompt's event.
+    func meetingDetectionSetEvent(_ event: String?) async throws -> Detection? {
+        try await call("meeting_detection_set_event", [.init(event)])
+    }
+
+    /// `calendar_push(source, window, events)` (158 §7.2, companion only) → rows written.
+    func calendarPush(source: String, window: (String, String), events: [CalEvent]) async throws -> UInt32 {
+        try await call("calendar_push", [.init(source), .init([window.0, window.1]), .init(events)])
+    }
+
+    /// `calendar_source_state(source, state)` (158 §7.2, companion only): `granted` / `denied` / ….
+    func calendarSourceState(source: String, state: String) async throws {
+        let _: JSONValue = try await call("calendar_source_state", [.init(source), .init(state)])
+    }
+}
+
+/// `Started` (crates/meeting/src/lib.rs): `meeting_start`'s reply.
+public struct MeetingStarted: Codable, Equatable, Sendable {
+    public var meeting: String
+    public var session: String
 }

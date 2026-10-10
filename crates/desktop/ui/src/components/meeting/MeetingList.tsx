@@ -7,6 +7,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { AppWindow, MoreHorizontal, Paperclip, Trash2 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { dragSource } from '@/components/chat/AttachChip'
+import { DetectionBanner } from '@/components/meeting/DetectionBanner'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { Column } from '@/components/library/Page'
@@ -101,6 +102,8 @@ export function MeetingList() {
           </Button>
         )}
       </MeetingHeader>
+      {/* 158 §5.5 (W-q): the detection prompt as a page banner; renders nothing until W1. */}
+      <DetectionBanner />
       {/* 143 D5: the same centred column as Tools/Secrets/Notes. */}
       <Column>
         {list.isError && <Empty>{errorText(list.error)}</Empty>}

@@ -109,6 +109,17 @@ import type { ProcessInfo } from '@/rpc/bindings/ProcessInfo'
 import type { Profile } from '@/rpc/bindings/Profile'
 import type { ProfileId } from '@/rpc/bindings/ProfileId'
 import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
+import type { Detection } from '@/rpc/bindings/Detection'
+import type { EventId } from '@/rpc/bindings/EventId'
+import type { MeetingSettings } from '@/rpc/bindings/MeetingSettings'
+import type { SpeakerSuggestion } from '@/rpc/bindings/SpeakerSuggestion'
+import type { MeetingTemplate } from '@/rpc/bindings/MeetingTemplate'
+import type { CalSource } from '@/rpc/bindings/CalSource'
+import type { CalEvent } from '@/rpc/bindings/CalEvent'
+import type { CalendarConfig } from '@/rpc/bindings/CalendarConfig'
+import type { McpServerConfig } from '@/rpc/bindings/McpServerConfig'
+import type { McpServerStatus } from '@/rpc/bindings/McpServerStatus'
+import type { McpAuditLine } from '@/rpc/bindings/McpAuditLine'
 import type { Started } from '@/rpc/bindings/Started'
 import type { Topic } from '@/rpc/bindings/Topic'
 import type { TopicId } from '@/rpc/bindings/TopicId'
@@ -770,7 +781,8 @@ export interface Api {
   /** Review edits (04 §0.4): all `ops` applied and saved, or none; the message names the refused op. */
   meeting_edit(id: MeetingId, ops: EditOp[]): Promise<MeetingTranscript>
   meeting_get(id: MeetingId): Promise<Manifest>
-  meeting_list(limit: number | null): Promise<MeetingSummary[]>
+  /** 158 §9.2: `project` filters to one project (W3; ignored by the engine until then). */
+  meeting_list(limit: number | null, project?: string | null): Promise<MeetingSummary[]>
   /** `live.jsonl`, last 2 000 utterances. */
   meeting_live(id: MeetingId): Promise<Utterance[]>
   /** `decision_mode('meeting')` (57 §3.4). */
@@ -808,6 +820,57 @@ export interface Api {
   meeting_live_diarization(): Promise<boolean>
   /** Persist `meeting.live_diarization`; applies from the next meeting start. */
   set_meeting_live_diarization(on: boolean): Promise<boolean>
+  // 158 §15.2 — contract methods (C158); the engine answers inertly until each wave lands.
+  /** 158 §4.5 (W1): the current detection prompt, `null` when none. */
+  meeting_detection(): Promise<Detection | null>
+  /** 158 §4.4 (W1): "Not now" (cooldown) or, with `never`, "Never for <App>". */
+  meeting_detection_dismiss(app_id: string, never: boolean): Promise<null>
+  /** 158 §8.2 (W2): pick (or clear) the event of the current prompt. */
+  meeting_detection_set_event(event: EventId | null): Promise<Detection | null>
+  /** 158 §6.2 (W1): the user-facing `meeting:` block. */
+  meeting_settings_get(): Promise<MeetingSettings>
+  /** 158 §6.2 (W1): persist the whole block; a failed write changes nothing. */
+  meeting_settings_set(settings: MeetingSettings): Promise<MeetingSettings>
+  /** 158 §9.2 (W3): set or clear a meeting's project. */
+  meeting_set_project(id: MeetingId, project: string | null): Promise<Manifest>
+  /** 158 §8.2 (W2): set or clear a meeting's calendar event. */
+  meeting_set_event(id: MeetingId, event: EventId | null): Promise<Manifest>
+  /** 158 §11.1 (W4): the note template, changeable until Summarize. */
+  meeting_set_template(id: MeetingId, template: string): Promise<Manifest>
+  /** 158 §10 (W4): speaker-name suggestions; never applies anything. */
+  meeting_suggest_speakers(id: MeetingId): Promise<SpeakerSuggestion[]>
+  /** 158 §11.1 (W4): every template, built-ins first. */
+  meeting_templates(): Promise<MeetingTemplate[]>
+  /** 158 §11.1 (W4): write `<slug>.md` and return it parsed. */
+  meeting_template_put(slug: string, body: string): Promise<MeetingTemplate>
+  /** 158 §11.1 (W4): delete a user template; refused for built-ins. */
+  meeting_template_delete(slug: string): Promise<null>
+  /** 158 §7.4 (W2): every calendar source. */
+  calendar_sources(): Promise<CalSource[]>
+  /** 158 §7.3 (W2): add an ICS subscription; the URL goes to the vault. */
+  calendar_source_add(name: string, url: string): Promise<CalSource>
+  /** 158 §7.4 (W2): delete a source and its events. */
+  calendar_source_delete(id: string): Promise<null>
+  /** 158 §7.3 (W2): fetch now. */
+  calendar_source_refresh(id: string): Promise<CalSource>
+  /** 158 §7.2 (W2), companion only: replace a source's rows in a window; the rows written. */
+  calendar_push(source: string, window: [string, string], events: CalEvent[]): Promise<number>
+  /** 158 §7.2 (W2), companion only: the EventKit state line. */
+  calendar_source_state(source: string, state: string): Promise<null>
+  /** 158 §7.4 (W2): events overlapping `[from, to]` (RFC 3339). */
+  calendar_events(from: string, to: string): Promise<CalEvent[]>
+  /** 158 §7.6 (W2): the `meeting.calendar` block. */
+  calendar_settings_get(): Promise<CalendarConfig>
+  /** 158 §7.6 (W2): persist and apply the `meeting.calendar` block. */
+  calendar_settings_set(config: CalendarConfig): Promise<CalendarConfig>
+  /** 158 §12.6 (W5): the MCP server's config, listener state, URL and token. */
+  mcp_server_get(): Promise<McpServerStatus>
+  /** 158 §12.2 (W5): persist `mcp_server` and bind or drop the listener live. */
+  mcp_server_set(config: McpServerConfig): Promise<McpServerStatus>
+  /** 158 §12.2 (W5): a fresh token; every open MCP session ends. */
+  mcp_server_rotate_token(): Promise<null>
+  /** 158 §12.5 (W5): the last `limit` audit lines, newest first. */
+  mcp_server_audit(limit: number): Promise<McpAuditLine[]>
   /** 16 §8: Settings › Search — the four external providers plus the `web` read/budget defaults. */
   search_settings_get(): Promise<SearchSettings>
   /** Persist to config.yaml and apply live (providers re-registered, next search uses the limits). */
@@ -1181,6 +1244,15 @@ export const METHODS = [
   'brief_tags',
   'broadcast',
   'browser_screenshot',
+  'calendar_events',
+  'calendar_push',
+  'calendar_settings_get',
+  'calendar_settings_set',
+  'calendar_source_add',
+  'calendar_source_delete',
+  'calendar_source_refresh',
+  'calendar_source_state',
+  'calendar_sources',
   'cancel',
   'cancel_job',
   'cite_resolve',
@@ -1349,11 +1421,18 @@ export const METHODS = [
   'logout',
   'mcp_login',
   'mcp_logout',
+  'mcp_server_audit',
+  'mcp_server_get',
+  'mcp_server_rotate_token',
+  'mcp_server_set',
   'mcp_status',
   'meeting_briefs',
   'meeting_cursor',
   'meeting_deeper',
   'meeting_delete',
+  'meeting_detection',
+  'meeting_detection_dismiss',
+  'meeting_detection_set_event',
   'meeting_dismiss',
   'meeting_edit',
   'meeting_get',
@@ -1369,15 +1448,24 @@ export const METHODS = [
   'meeting_request',
   'meeting_resume',
   'meeting_segment_audio',
+  'meeting_set_event',
+  'meeting_set_project',
+  'meeting_set_template',
+  'meeting_settings_get',
+  'meeting_settings_set',
   'meeting_speaker_delete',
   'meeting_speaker_enroll',
   'meeting_speakers',
   'meeting_start',
   'meeting_status',
   'meeting_stop',
+  'meeting_suggest_speakers',
   'meeting_summarize',
   'meeting_summary',
   'meeting_tap',
+  'meeting_template_delete',
+  'meeting_template_put',
+  'meeting_templates',
   'meeting_topics',
   'meeting_transcript',
   'mesh_add',

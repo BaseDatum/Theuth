@@ -127,6 +127,9 @@ public enum MeetingReducer {
             if let i = s.oracle.firstIndex(where: { $0.batchId == decision.batchId }) { n.oracle[i] = decision }
             else { n.oracle = Array((s.oracle + [decision]).suffix(MeetingSlice.oracleKept)) }
             if s.deciding == decision.batchId { n.deciding = nil }
+        case .detected, .detectionCleared, .appReleased, .upcoming:
+            // 158 C158: inert until W1/W3 add `MeetingSlice.prompt` (§15.4); the slice does not change.
+            return s
         }
         return n
     }
