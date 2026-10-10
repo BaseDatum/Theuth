@@ -1333,6 +1333,7 @@ async fn suspended_scenarios() {
     // 139 W2
     release_drain_writes_suspended_or_finished(&registry, &holds).await;
     cancel_while_draining_is_a_suspension(&registry, &hits, &holds, &reference).await;
+    relaunched_turn_is_marked_while_it_runs(&registry, &hits, &holds).await;
     unload_always_lands_the_cancel(&registry, &holds).await;
 }
 
@@ -1850,4 +1851,98 @@ async fn unload_always_lands_the_cancel(registry: &ActorRef<ToolRegistry>, holds
         holds.1.store(false, Ordering::SeqCst);
         assert!(h.store.open_turns(Scope::Here).await.unwrap().is_empty());
     }
+}
+
+/// Poll until the actor handed its state back.
+async fn wait_idle(actor: &ActorRef<Session>) {
+    for _ in 0..200 {
+        if !actor.ask(IsRunning).await.unwrap() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the actor never went idle");
+}
+
+/// The seam `Loaded.resume` reads to tell a relaunched open turn from one
+/// that is simply running: `ResumedTurn` is `None` for an ordinary turn in
+/// flight, and the user's cancel closes that turn in the journal
+/// (`turn_finished{cancelled}`, nothing open afterwards); a turn relaunched
+/// through `Resume` is marked while it runs and unmarked once it ended.
+async fn relaunched_turn_is_marked_while_it_runs(
+    registry: &ActorRef<ToolRegistry>,
+    hits: &Path,
+    holds: &Holds,
+) {
+    // An ordinary turn, held in `poke`: running, not relaunched.
+    let mut h = Harness::new(BatchFake).await;
+    journal(registry, &h.store).await;
+    holds.1.store(true, Ordering::SeqCst);
+    let actor = start_turn(&h, "go").await;
+    let tid = wait_open_turn(&h, "ordinary").await;
+    wait_mid_batch(&h, tid, C2, C1).await;
+    assert!(actor.ask(IsRunning).await.unwrap());
+    assert_eq!(actor.ask(ResumedTurn).await.unwrap(), None);
+    // The user stops it: the row closes, nothing is open.
+    actor.tell(CancelTurn { keep: None }).await.unwrap();
+    let events = h.drain().await;
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TurnFinished { turn, stop_reason, .. } if *turn == tid && stop_reason == "cancelled"
+    )));
+    holds.1.store(false, Ordering::SeqCst);
+    wait_idle(&actor).await;
+    assert_eq!(
+        kinds(&h.store, h.id, tid).await.last().unwrap(),
+        "turn_finished"
+    );
+    assert!(h.store.open_turn(h.id).await.unwrap().is_none());
+
+    // A turn interrupted with `probe` started, relaunched through the
+    // actor's `Resume`; the rerun of `probe` is held so the turn stays in
+    // flight while the marker is read.
+    let (mut h, tid) = interrupt_mid_batch(registry, &holds.0, C1, C2).await;
+    let plan = h.store.resume_plan(h.id, tid).await.unwrap();
+    holds.0.store(true, Ordering::SeqCst);
+    let actor = h.actor("openai/textonly").await;
+    assert!(
+        actor
+            .ask(Resume {
+                plan,
+                slots: None,
+                cause: ResumeCause::Crash,
+                from: None,
+                lost_jobs: Vec::new(),
+            })
+            .await
+            .unwrap()
+    );
+    let file = hits_file(hits, h.id);
+    let probes = || hits_of(&file).iter().filter(|h| *h == PROBE).count();
+    for _ in 0..200 {
+        if probes() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(probes(), 2, "probe reran and is held");
+    assert!(actor.ask(IsRunning).await.unwrap());
+    assert_eq!(actor.ask(ResumedTurn).await.unwrap(), Some(tid));
+    // A held call never returns; the user's cancel ends the relaunched
+    // turn, which closes its row and drops the marker.
+    actor.tell(CancelTurn { keep: None }).await.unwrap();
+    holds.0.store(false, Ordering::SeqCst);
+    let events = h.drain().await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnResumed { turn, .. } if *turn == tid))
+    );
+    wait_idle(&actor).await;
+    assert_eq!(actor.ask(ResumedTurn).await.unwrap(), None);
+    assert_eq!(
+        kinds(&h.store, h.id, tid).await.last().unwrap(),
+        "turn_finished"
+    );
+    assert!(h.store.open_turn(h.id).await.unwrap().is_none());
 }
