@@ -362,10 +362,106 @@ block_specs! {
     LiteratureSpec;
     /// W5: `hooks: {before, after}` — W5's addendum fills it.
     HooksSpec;
-    /// W6: `world: {deploy, rollback, measure, exposure, window, …}` — W6's addendum fills it.
-    WorldSpec;
+    // W6: `WorldSpec` is its own `wire!` below (159 §11 "The world block"; W6-a).
     /// W7: `suite: {training, held_out, seeds, inner_budget}` — W7's addendum fills it.
     SuiteSpec;
+}
+
+wire! {
+    /// W6: `world: {deploy, rollback, measure, exposure, window, min_units, min_windows,
+    /// max_windows, alpha, alpha_harm, tau, timeout}` (159 §11 "The world block"). Every
+    /// field defaults, so `world: {}` is a valid block that only lacks its commands.
+    #[serde(default)]
+    pub struct WorldSpec {
+        /// Custody command that puts one arm live: gets `AUTORESEARCH_ARM`, `AUTORESEARCH_TREE`,
+        /// `AUTORESEARCH_ARM_WORKTREE`, `AUTORESEARCH_EXPOSURE`, `AUTORESEARCH_N`.
+        pub deploy: String,
+        /// Custody command that takes one arm down; idempotent (setup runs it once on the base).
+        pub rollback: String,
+        /// Custody command printing `CASE <arm> units=<n> mean=<x> var=<v> [<name>=<v> …]` per arm.
+        pub measure: String,
+        /// A read-only registry tool (listed in `calls`) read instead of `measure` (W-d).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub measure_tool: Option<MeasureTool>,
+        /// Share of traffic both arms take together (each gets half); default 0.1.
+        pub exposure: ExposureSpec,
+        /// One window, humantime; default `24h`.
+        pub window: String,
+        /// Units per arm before a keep may be called; default 500.
+        pub min_units: u32,
+        /// Windows before a keep may be called; default 2.
+        pub min_windows: u32,
+        /// Windows before the launch ends inconclusive; default 14.
+        pub max_windows: u32,
+        /// Keep level: Λ ≥ 1/α; default 0.01.
+        pub alpha: f64,
+        /// Harm level: Λ ≥ 1/α_harm with Δ̂ worsening; default 0.05.
+        pub alpha_harm: f64,
+        /// The effect the user expects, in metric units; `None` = `metric.min_effect` of the base mean.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub tau: Option<f64>,
+        /// One deploy/measure/rollback command's limit, humantime; default `600s`.
+        pub timeout: String,
+    }
+}
+
+impl Default for WorldSpec {
+    fn default() -> Self {
+        Self {
+            deploy: String::new(),
+            rollback: String::new(),
+            measure: String::new(),
+            measure_tool: None,
+            exposure: ExposureSpec::default(),
+            window: "24h".into(),
+            min_units: 500,
+            min_windows: 2,
+            max_windows: 14,
+            alpha: 0.01,
+            alpha_harm: 0.05,
+            tau: None,
+            timeout: "600s".into(),
+        }
+    }
+}
+
+wire! {
+    /// `world.exposure` (159 §11): the cap on the traffic both arms take.
+    #[serde(default)]
+    pub struct ExposureSpec {
+        /// Share of traffic for both arms together; default 0.1.
+        pub max_fraction: f64,
+    }
+}
+
+impl Default for ExposureSpec {
+    fn default() -> Self {
+        Self { max_fraction: 0.1 }
+    }
+}
+
+wire! {
+    /// `world.measure_tool` (159 §11, W-d): a read-only registry tool whose JSON answer holds
+    /// the arms. `arms` points at an array of arm objects; the other pointers are relative to one
+    /// arm object.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct MeasureTool {
+        /// Registry tool name; must also be in `calls`.
+        pub name: String,
+        /// Arguments passed as they are.
+        pub args: serde_json::Value,
+        /// JSON pointer to the array of arms (`/arms`).
+        pub arms: String,
+        /// JSON pointer to the arm name inside one arm (`/arm`).
+        pub arm: String,
+        /// JSON pointer to the unit count (`/units`).
+        pub units: String,
+        /// JSON pointer to the mean (`/mean`).
+        pub mean: String,
+        /// JSON pointer to the variance (`/var`).
+        pub var: String,
+    }
 }
 
 wire! {

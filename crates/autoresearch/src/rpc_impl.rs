@@ -220,8 +220,7 @@ pub async fn launch(
     token: String,
     approve: bool,
 ) -> std::result::Result<StudyInfo, String> {
-    let _ = (slug, n, token, approve);
-    Err("not built (W6)".to_owned()) // 159:W6 — world::launch(env, &slug, n, &token, approve)
+    crate::world::launch_rpc(slug, n, token, approve).await // 159:W6
 }
 
 /// 159 §5.11 `autoresearch.mechanism {op}` — list, show or adopt a mechanism version (W7).
