@@ -10,9 +10,10 @@
 //! never the keep count — and the held-out fixtures run only as the outer study's holdout, so
 //! their numbers never reach the outer brief.
 //!
-//! The suite is spelled with the 140 fields the spec already has (W7-a): `bench.command`
-//! names the training fixtures, `holdout.command` the held-out ones (empty = the §14 suite),
-//! `models.target` the inner executor. Seeds and the inner budget are the §12 constants.
+//! The suite is `spec.suite` (`SuiteSpec`, R1): training and held-out fixture names (empty =
+//! the §14 suite), seeds and experiments per inner study (0 = the §12 constants, 2 and 8), the
+//! inner executor. `bench.repeats` is still the incumbent's suite runs at Start and
+//! `holdout.every` the held-out cadence; their `command`s are unused for this kind.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -32,7 +33,8 @@ use crate::store::{Store, StudyRecord};
 use crate::types::{
     BenchSpec, BudgetSpec, Call, CommandSpec, Direction, GateCfg, GateDecision, GateInput,
     GateRule, GateStep, Guard, HoldoutSpec, KindView, MetricSpec, ModelsSpec, ObjectiveDelta,
-    ObjectiveRole, Sample, SampleRole, StartWhen, StudySpec, StudyState, SuiteRow, Verdict,
+    ObjectiveRole, Sample, SampleRole, StartWhen, StudySpec, StudyState, SuiteRow, SuiteSpec,
+    Verdict,
 };
 
 /// The §14 training suite.
@@ -250,13 +252,17 @@ pub fn materialise(f: &Fixture, dir: &Path) -> Result<()> {
 
 // ───────────────────────────── the suite in the spec ─────────────────────────────
 
-/// What the outer spec says about the suite (W7-a encoding).
+/// What the outer spec says about the suite: `spec.suite` with the §12/§14 defaults filled.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Suite {
     /// Training fixtures (the bench).
     pub training: Vec<String>,
     /// Held-out fixtures (the outer holdout).
     pub held_out: Vec<String>,
+    /// Inner studies per fixture.
+    pub seeds: u32,
+    /// Experiments per inner study.
+    pub inner_experiments: u32,
     /// The inner studies' executor; `None` = the outer study's.
     pub executor: Option<String>,
 }
@@ -269,28 +275,33 @@ fn words(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// The suite of `spec`: `bench.command` (training), `holdout.command` (held out), each
-/// defaulting to §14's lists; `models.target` is the inner executor.
+/// The suite of `spec`: `spec.suite` (R1), empty lists = §14's, zeros = §12's constants.
 pub fn suite_of(spec: &StudySpec) -> Suite {
-    let training = words(&spec.bench.command);
-    let held_out = spec
-        .holdout
-        .as_ref()
-        .map(|h| words(&h.command))
-        .unwrap_or_default();
+    let s = spec.suite.clone().unwrap_or_default();
     Suite {
-        training: if training.is_empty() {
-            TRAINING.iter().map(|s| (*s).to_owned()).collect()
+        training: if s.training.is_empty() {
+            TRAINING.iter().map(|x| (*x).to_owned()).collect()
         } else {
-            training
+            s.training
         },
-        held_out: if held_out.is_empty() {
-            HELD_OUT.iter().map(|s| (*s).to_owned()).collect()
+        held_out: if s.held_out.is_empty() {
+            HELD_OUT.iter().map(|x| (*x).to_owned()).collect()
         } else {
-            held_out
+            s.held_out
         },
-        executor: spec.models.target.clone(),
+        seeds: if s.seeds == 0 { SEEDS } else { s.seeds },
+        inner_experiments: if s.inner_experiments == 0 {
+            INNER_EXPERIMENTS
+        } else {
+            s.inner_experiments
+        },
+        executor: s.executor,
     }
+}
+
+/// The spec's `suite` block, created on first write.
+fn suite_mut(spec: &mut StudySpec) -> &mut SuiteSpec {
+    spec.suite.get_or_insert_with(SuiteSpec::default)
 }
 
 /// The meta preset the setup chat starts from (`/autoresearch meta`, 159 §12): the §14 suite,
@@ -309,16 +320,23 @@ pub fn preset(repo: &str) -> StudySpec {
             min_effect: "0.02".into(),
         },
         bench: BenchSpec {
-            command: TRAINING.join(" "),
+            command: "suite".into(),
             timeout: "4h".into(),
             repeats: 2,
             exclusive: false,
             smoke: None,
         },
         holdout: Some(HoldoutSpec {
-            command: HELD_OUT.join(" "),
+            command: "suite".into(),
             every: 2,
             repeats: Some(1),
+        }),
+        suite: Some(SuiteSpec {
+            training: TRAINING.iter().map(|x| (*x).to_owned()).collect(),
+            held_out: HELD_OUT.iter().map(|x| (*x).to_owned()).collect(),
+            seeds: SEEDS,
+            inner_experiments: INNER_EXPERIMENTS,
+            executor: None,
         }),
         evaluator_paths: Vec::new(),
         scope: crate::mechanism::FILES
@@ -345,7 +363,7 @@ pub fn preset(repo: &str) -> StudySpec {
 /// Draft card line 1 for a meta study.
 pub fn card_line(spec: &StudySpec) -> String {
     let s = suite_of(spec);
-    let inner = s.training.len() as u32 * SEEDS;
+    let inner = s.training.len() as u32 * s.seeds;
     let cost = inner as f64 * INNER_COST_USD * 4.0 / 3.0;
     format!(
         "Improve the study mechanism on {} training fixtures ({} held out); each outer experiment runs {inner} inner studies, about ${cost:.0}.",
@@ -358,7 +376,13 @@ pub fn card_line(spec: &StudySpec) -> String {
 pub const SETUP_ROWS: &[SetupRow] = &[SetupRow {
     row: "suite",
     label: "Suite",
-    leaves: &["suite.training", "suite.held_out", "suite.executor"],
+    leaves: &[
+        "suite.training",
+        "suite.held_out",
+        "suite.seeds",
+        "suite.inner_experiments",
+        "suite.executor",
+    ],
 }];
 
 /// One-line value of a kind row for the draft panel.
@@ -368,9 +392,11 @@ pub fn setup_value(spec: &StudySpec, row: &str) -> String {
     }
     let s = suite_of(spec);
     let mut line = format!(
-        "training {} · held out {} · {SEEDS} seeds · {INNER_EXPERIMENTS} inner experiments at ${INNER_USD} each",
+        "training {} · held out {} · {} seeds · {} inner experiments at ${INNER_USD} each",
         s.training.join(", "),
-        s.held_out.join(", ")
+        s.held_out.join(", "),
+        s.seeds,
+        s.inner_experiments
     );
     if let Some(e) = s.executor {
         line.push_str(&format!(" on {e}"));
@@ -394,6 +420,16 @@ fn known(names: &[String]) -> std::result::Result<(), String> {
 
 /// Set one kind leaf from the panel's text.
 pub fn setup_set(spec: &mut StudySpec, leaf: &str, v: &str) -> std::result::Result<(), String> {
+    let count = |what: &str, max: u32| -> std::result::Result<u32, String> {
+        let n: u32 = v
+            .trim()
+            .parse()
+            .map_err(|_| format!("{what}: not a whole number"))?;
+        if n == 0 || n > max {
+            return Err(format!("{what}: {n} is outside 1..={max}"));
+        }
+        Ok(n)
+    };
     match leaf {
         "suite.training" => {
             let names = words(v);
@@ -401,21 +437,27 @@ pub fn setup_set(spec: &mut StudySpec, leaf: &str, v: &str) -> std::result::Resu
                 return Err("suite.training: name at least one fixture".into());
             }
             known(&names)?;
-            spec.bench.command = names.join(" ");
+            suite_mut(spec).training = names;
         }
         "suite.held_out" => {
             let names = words(v);
             known(&names)?;
-            let every = spec.holdout.as_ref().map_or(2, |h| h.every.max(1));
-            spec.holdout = (!names.is_empty()).then(|| HoldoutSpec {
-                command: names.join(" "),
-                every,
-                repeats: Some(1),
-            });
+            suite_mut(spec).held_out = names;
+            if spec.holdout.is_none() {
+                spec.holdout = Some(HoldoutSpec {
+                    command: "suite".into(),
+                    every: 2,
+                    repeats: Some(1),
+                });
+            }
+        }
+        "suite.seeds" => suite_mut(spec).seeds = count("suite.seeds", 5)?,
+        "suite.inner_experiments" => {
+            suite_mut(spec).inner_experiments = count("suite.inner_experiments", 40)?;
         }
         "suite.executor" => {
             let v = v.trim();
-            spec.models.target = (!v.is_empty()).then(|| v.to_owned());
+            suite_mut(spec).executor = (!v.is_empty()).then(|| v.to_owned());
         }
         other => return Err(format!("unknown field `{other}`")),
     }
@@ -506,7 +548,7 @@ fn inner_spec(f: &Fixture, slug: &str, repo: &Path, suite: &Suite, outer: &Study
             usd: INNER_USD,
             per_experiment_usd: INNER_PER_EXPERIMENT_USD,
             hours: INNER_HOURS,
-            experiments: INNER_EXPERIMENTS,
+            experiments: suite.inner_experiments,
         },
         parallel: 1,
         models: ModelsSpec {
@@ -815,7 +857,7 @@ pub async fn sample(
     let mut set = tokio::task::JoinSet::new();
     for name in names {
         let Some(f) = fixture(name) else { continue };
-        for seed in 1..=SEEDS {
+        for seed in 1..=suite.seeds {
             let mut slug = inner_slug(&study.slug, req.n, req.role, req.k, f.name, seed);
             let mut i = 2;
             while env.store.get_study(&slug).await?.is_some() {
@@ -1425,6 +1467,37 @@ mod tests {
         assert_eq!(suite_of(&spec).executor.as_deref(), Some("cheap-model"));
         assert!(setup_value(&spec, "suite").ends_with("on cheap-model"));
         assert!(setup_set(&mut spec, "suite.bogus", "x").is_err());
+        setup_set(&mut spec, "suite.seeds", "3").unwrap();
+        setup_set(&mut spec, "suite.inner_experiments", "4").unwrap();
+        assert!(setup_set(&mut spec, "suite.seeds", "0").is_err());
+        assert!(setup_set(&mut spec, "suite.inner_experiments", "many").is_err());
+        let s = suite_of(&spec);
+        assert_eq!((s.seeds, s.inner_experiments), (3, 4));
+        assert_eq!(
+            spec.suite.as_ref().unwrap().training,
+            vec!["toy-dedupe", "toy-lru"]
+        );
+        // The block survives the wire and a 140 spec never carries it.
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(
+            serde_json::from_str::<StudySpec>(&json).unwrap().suite,
+            spec.suite
+        );
+        assert!(
+            !serde_json::to_string(&StudySpec::default())
+                .unwrap()
+                .contains("suite")
+        );
+        // Zeros and empty lists read as the §12/§14 defaults.
+        let bare = StudySpec {
+            suite: Some(SuiteSpec::default()),
+            ..preset("/x")
+        };
+        assert_eq!(suite_of(&bare).training, TRAINING.to_vec());
+        assert_eq!(
+            (suite_of(&bare).seeds, suite_of(&bare).inner_experiments),
+            (SEEDS, INNER_EXPERIMENTS)
+        );
         assert!(
             card_line(&preset("/x"))
                 .starts_with("Improve the study mechanism on 4 training fixtures (3 held out)")

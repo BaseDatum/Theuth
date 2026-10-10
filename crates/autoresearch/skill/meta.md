@@ -8,9 +8,9 @@ Scoring is a **suite of fixture studies**: each outer experiment copies every tr
 Start from the preset and ask only three things:
 - **Budget.** `budget.usd` defaults to $60; one outer experiment is about $13 (4 fixtures × 2 seeds × ≈ $1.20 plus the incumbent's re-run every third experiment), so $60 buys 4–5 outer experiments. `budget.experiments` defaults to 6.
 - **Window.** An outer experiment takes 2–3 hours of wall time; offer the user's idle window (`window:`), or none.
-- **Suite.** Training `toy-sort toy-dedupe toy-wordfreq toy-pareto`, held out `toy-route toy-json toy-lru`. The user may name fewer; the `suite` row of the draft panel lists them.
+- **Suite.** Training `toy-sort toy-dedupe toy-wordfreq toy-pareto`, held out `toy-route toy-json toy-lru`, 2 seeds, 8 inner experiments. The user may name fewer; the `suite` row of the draft panel lists them.
 
-The draft (the fields are the 140 ones; the suite rides on them):
+The draft:
 
 ```yaml
 slug: meta
@@ -18,14 +18,14 @@ goal: "Improve how theuth runs studies: the protocol, the fire prompt, the advis
 repo: /Users/me/.theuth/autoresearch/mechanism
 axes: {scoring: suite, artefact: mechanism}
 metric: {name: suite_gain, direction: higher, min_effect: "0.02"}
-bench: {command: "toy-sort toy-dedupe toy-wordfreq toy-pareto", timeout: 4h, repeats: 2, exclusive: false}
-holdout: {command: "toy-route toy-json toy-lru", every: 2, repeats: 1}
+suite: {training: [toy-sort, toy-dedupe, toy-wordfreq, toy-pareto], held_out: [toy-route, toy-json, toy-lru], seeds: 2, inner_experiments: 8, executor: <a cheap executor>}
+bench: {command: suite, timeout: 4h, repeats: 2, exclusive: false}
+holdout: {command: suite, every: 2, repeats: 1}
 scope: [protocol.md, fire.md, advisor.md, mechanism.yaml]
-models: {target: <a cheap executor for the inner studies>}
 budget: {usd: 60, per_experiment_usd: 20, hours: 24, experiments: 6}
 ```
 
-`bench.command` names the training fixtures, `holdout.command` the held-out ones, `bench.repeats` the suite runs of the incumbent at Start, `models.target` the inner executor, `bench.timeout` the time one suite run may take. The repo must exist: Settings › Autoresearch › Mechanism seeds it from the compiled defaults the first time it is opened (version 1); if `<data_dir>/autoresearch/mechanism` is missing, ask the user to open it once.
+`suite` is the block that matters: empty lists mean the full suite, `0` the defaults. `bench.repeats` is the incumbent's suite runs at Start, `holdout.every` how often the held-out suite runs (keeps), `bench.timeout` the time one suite run may take; the two `command`s are not run. The repo must exist: Settings › Autoresearch › Mechanism seeds it from the compiled defaults the first time it is opened (version 1); if `<data_dir>/autoresearch/mechanism` is missing, ask the user to open it once.
 
 While it runs, `autoresearch_status` shows the suite's mean gain as the metric; the Study view shows the per-fixture bars, training and held-out apart, and the mechanism diff of each keep. Finalize ends with "mechanism v<n> ready to adopt": adoption is the user's press in Settings › Autoresearch (`autoresearch.mechanism {op: adopt, version}`). New studies pin the adopted version at Start; running studies keep theirs; Revert returns to the compiled defaults. Inner studies carry `created_by: meta:<slug>/<fixture>/<seed>` and are not the user's: do not report on them one by one.
 

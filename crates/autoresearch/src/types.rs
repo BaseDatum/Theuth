@@ -364,8 +364,29 @@ block_specs! {
     HooksSpec;
     /// W6: `world: {deploy, rollback, measure, exposure, window, …}` — W6's addendum fills it.
     WorldSpec;
-    /// W7: `suite: {training, held_out, seeds, inner_budget}` — W7's addendum fills it.
-    SuiteSpec;
+}
+
+wire! {
+    /// W7 (159 §12): `suite: {training, held_out, seeds, inner_experiments, executor}` — the
+    /// fixture suite the outer study scores on. Empty lists mean the §14 suite; 0 means the
+    /// §12 constant (2 seeds, 8 inner experiments); `executor` is the inner studies' model.
+    #[derive(Default, Eq)]
+    #[serde(default)]
+    pub struct SuiteSpec {
+        /// Training fixtures (the outer bench).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub training: Vec<String>,
+        /// Held-out fixtures (the outer holdout; never in the brief).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub held_out: Vec<String>,
+        /// Inner studies per fixture.
+        pub seeds: u32,
+        /// Experiments per inner study.
+        pub inner_experiments: u32,
+        /// The inner studies' executor; `None` = the outer study's.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub executor: Option<String>,
+    }
 }
 
 wire! {
