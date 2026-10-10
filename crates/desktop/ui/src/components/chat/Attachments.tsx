@@ -1,6 +1,7 @@
 import { X } from 'lucide-react'
 import { memo, type ReactNode, useEffect, useState } from 'react'
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { resolveDocument, resolveFile } from '@/lib/files'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -71,7 +72,7 @@ export function Img({ path, className }: { path: string; className: string }) {
 }
 
 /** One thumbnail or chip. An `occurrence` is a stored model-visible part (48 §3.3) and carries the removal target; a bare path is an artifact or optimistic file and has none. */
-type Item = { key: string; name: string; path: string | null; image: boolean; pdf: boolean; occurrence?: ContextAttachment }
+export type Item = { key: string; name: string; path: string | null; image: boolean; pdf: boolean; occurrence?: ContextAttachment }
 
 /** Authoritative occurrences replace `files` outright once present (each its own item, so a path attached twice stays two
  * targets and a rematerialized copy never doubles an optimistic path); bare `files` are only our pre-persistence or artifact paths. */
@@ -128,7 +129,8 @@ function Thumb({ item, onOpen, control, chipControl }: { item: Item; onOpen: () 
   )
 }
 
-/** The lightbox body: the image, or the PDF in a frame (WKWebView's own viewer; iOS draws page 1 — ponytail: reuse the artifact panel's pdf.js pages if that matters). */
+/** The media: the image, or the PDF in a frame (WKWebView's own viewer; iOS draws page 1 — ponytail: reuse the artifact panel's pdf.js pages if that matters).
+ * Both are sized to the viewport minus room for the close button above and the toolbar below, inside the safe area; `dvh`, so iPad's URL bar never hides the bottom. */
 function Original({ item }: { item: Item }) {
   return item.image ? <OriginalImage item={item} /> : <OriginalDocument item={item} />
 }
@@ -137,7 +139,7 @@ function OriginalImage({ item }: { item: Item }) {
   const src = useFileUrl(item.path ?? '')
   if (src === null) return <div className="h-64 w-96 animate-pulse rounded-xl bg-layer-2" />
   if (src === '') return <div className="rounded-xl bg-layer-1 px-4 py-3 text-sm text-fg-secondary">Preview unavailable: {item.name}</div>
-  return <img src={src} alt={item.name} className="max-h-[85vh] w-auto rounded-xl" />
+  return <img src={src} alt={item.name} className="max-h-[calc(100dvh_-_8rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-auto max-w-[calc(100vw_-_2rem_-_env(safe-area-inset-left)_-_env(safe-area-inset-right))] rounded-xl object-contain" />
 }
 
 /** 120 §9b: a document never loads from `asset:` — a typed `blob:` of the RPC bytes, locally too. */
@@ -145,11 +147,44 @@ function OriginalDocument({ item }: { item: Item }) {
   const src = useDocumentUrl(item.path ?? '')
   if (src === null) return <div className="h-64 w-96 animate-pulse rounded-xl bg-layer-2" />
   if (src === '') return <div className="rounded-xl bg-layer-1 px-4 py-3 text-sm text-fg-secondary">Preview unavailable: {item.name}</div>
-  return <iframe src={src} title={item.name} className="h-[85vh] w-[90vw] rounded-xl border-0 bg-white" />
+  return <iframe src={src} title={item.name} className="h-[calc(100dvh_-_8rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-[min(90vw,1100px)] rounded-xl border-0 bg-white" />
 }
 
-/** Thumbnails (`max-h-64`) of images with a lightbox; other files as name chips (PDFs viewable). `occurrences` are the
- * stored, model-visible attachments and get a sibling corner `X` (image) or chip `X` (document) that opens the removal
+/** The lightbox body, portal-free so tests can render it: a `Close` X top-right of the viewport, the media, and under it the
+ * removal control as a labelled Trash2 button — never an `X`, which Sky read as "close" on iPad. The toolbar hangs below the
+ * media out of flow, so the media itself sits on the viewport centre; the media's `max-h` leaves it room. */
+export function Lightbox({ item, session, active }: { item: Item; session?: string; active: boolean }) {
+  return (
+    <>
+      <DialogTitle className="sr-only">{item.occurrence?.removed ? `Archived original, removed from context: ${item.name}` : item.name}</DialogTitle>
+      <DialogClose asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Close"
+          className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-[max(0.75rem,env(safe-area-inset-right))] size-11 rounded-full bg-layer-1/80 text-fg-primary shadow-sm hover:bg-layer-1 [&_svg]:size-5"
+        >
+          <X />
+        </Button>
+      </DialogClose>
+      <div className="relative">
+        <Original item={item} />
+        {item.occurrence && (
+          <div className="absolute inset-x-0 top-full mt-2 flex justify-center text-xs text-fg-secondary">
+            {item.occurrence.removed ? (
+              <span className="italic">Removed from context · archive only</span>
+            ) : (
+              session && <RemoveButton session={session} target={item.occurrence.target} active={active} text className="rounded-full bg-layer-1/80 text-fg-primary hover:bg-layer-1" />
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
+/** Thumbnails (`max-h-64`) of images with a lightbox (`Lightbox`); other files as name chips (PDFs viewable). `occurrences` are
+ * the stored, model-visible attachments and get a sibling corner `X` (image) or chip `X` (document) that opens the removal
  * review on exactly that occurrence; removed ones collapse to a `Removed from context` chip whose `View original` is
  * archive-only. `active` is the owning row's membership (false once folded before `tail_from`). `files` are plain paths
  * for artifact/optimistic callers and get no controls. */
@@ -194,17 +229,14 @@ export const Attachments = memo(function Attachments({
         ),
       )}
       <Dialog open={open !== null} onOpenChange={(o) => !o && setOpen(null)}>
+        {/* A full-viewport transparent flex box that centres the media (tailwind-merge drops the default centred-card classes);
+            a tap that lands on the box itself — anywhere off the media and its toolbar — closes, as Esc and the X do. */}
         <DialogContent
-          className="max-w-[90vw] border-0 bg-transparent p-0 shadow-none sm:max-w-[90vw]"
+          className="inset-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 items-center justify-center gap-0 rounded-none border-0 bg-transparent p-0 shadow-none sm:max-w-none"
           showCloseButton={false}
+          onClick={(e) => e.target === e.currentTarget && setOpen(null)}
         >
-          <DialogTitle className="sr-only">{open?.occurrence?.removed ? `Archived original, removed from context: ${open.name}` : (open?.name ?? 'Attachment')}</DialogTitle>
-          {open && <Original item={open} />}
-          {open?.occurrence && (
-            <div className="flex items-center justify-end gap-2 text-xs text-fg-secondary">
-              {open.occurrence.removed ? <span className="italic">Removed from context · archive only</span> : control(open, false)}
-            </div>
-          )}
+          {open && <Lightbox item={open} session={session} active={active} />}
         </DialogContent>
       </Dialog>
     </div>

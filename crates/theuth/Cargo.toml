@@ -70,6 +70,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] 
 meeting = { workspace = true }  # 58 §6.1: capture backends per OS
 # `t mcp`: the stdio MCP shim an ACP child gets (75 §9).
 rmcp = { workspace = true, features = ["server", "transport-io"] }
+mcp-server = { workspace = true }  # 158 §12: the HTTP MCP server's boot hook + the `t mcp` catalogue bridge
 schemars = { workspace = true }
 serde = { workspace = true }
 
