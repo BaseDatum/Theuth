@@ -44,9 +44,10 @@ Budget: judge and generator calls go through `Backend::side_call`, which the age
 - `build-lock mbx check -p autoresearch -p evalcore --locked --tests` → rc 0 after one test-only fix.
 - `build-lock mbx test -p autoresearch -p evalcore --locked --no-run` → rc 0, no warnings.
 - `mbx test -p autoresearch -p evalcore --locked --no-fail-fast` → autoresearch **199 passed / 0 failed** (`golden_ledger_140` included), evalcore **5 passed / 0 failed**.
-- `build-lock mbx clippy -p autoresearch -p evalcore --locked --tests` → see §6.
-- `BUILD_SLOTS=1 build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` + copy → see §6.
-- UI (`.ui-ready` present): `build-lock bun run check` → rc 0; `build-lock bun run test -- src/components/autoresearch/judged.test.ts src/components/autoresearch/components.test.ts` → 2 files, 14 tests passed.
+- `build-lock mbx clippy -p autoresearch -p evalcore --locked --tests` → rc 0 after two fixes (`manual_is_multiple_of`, `needless_question_mark`).
+- `BUILD_SLOTS=1 build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` → 8 passed; `bindings/JudgeSpec.ts` carries the four fields; copied to `crates/desktop/ui/src/rpc/bindings/` (gitignored, not committed).
+- UI (`.ui-ready` present): `build-lock bun run check` → rc 0 before and after the binding copy; `build-lock bun run test -- src/components/autoresearch/judged.test.ts src/components/autoresearch/components.test.ts` → 2 files, 14 tests passed.
+- `rustfmt --edition 2024` ran only on `judge.rs` and `pair.rs`; no shared file was reformatted. `git diff --cached --name-only` before each commit listed W3 files plus the two `// 159:W3` lines in `rpc_impl.rs` and the `JudgeSpec` block in `types.rs`.
 
 ## 4. P tests (judge.rs `mod tests`, pair.rs `mod tests`)
 
@@ -76,7 +77,3 @@ A: the probe's numbers are in the baseline log and the refusal text; the agreeme
 - **Z (skill.md L18):** replace the decline bullet with "A judge-only metric ("better prose", "nicer UI") → a **judged study**: see "Judged studies (no scalar)" below." (the fragment is appended after the core text).
 - **Z (after W2):** alias `cases.path` to `judge.prompts` if the W2 case set should serve judged studies (W3-a); `run_case` is then live for prompt artefacts (W3-f).
 - **Z (Cargo.lock):** none; no dependency added.
-
-## 6. Gate results filled after the runs
-
-(see the final message)
