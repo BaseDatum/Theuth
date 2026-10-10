@@ -1832,6 +1832,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Backend for FakeTarget {
+        async fn open_session(&self, _: &str, _: &std::path::Path) -> Result<runtime::SessionId> {
+            Ok(runtime::SessionId::new())
+        }
         async fn side_call(
             &self,
             _study: &StudyRecord,

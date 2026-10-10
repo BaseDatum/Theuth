@@ -465,6 +465,30 @@ pub trait Backend: Send + Sync {
             .map(|m| m.nanos as f64 / 1e9)
             .sum())
     }
+    /// 159 Z (live proof): an unattended root session for the study before its schedule has
+    /// fired — engine-side scoring (cases, pairwise) charges its baseline model calls to it.
+    /// The schedule's own session replaces it at the first fire (`on_fired`); the baseline's
+    /// spend still counts through the Bench channel (Σ `samples.spend_nanos`).
+    async fn open_session(&self, slug: &str, worktree: &Path) -> Result<SessionId> {
+        let agents = agents().ok_or_else(|| Error::refused("agent actor is not running"))?;
+        let session = agents
+            .ask(agent::NewSession {
+                cwd: Some(worktree.to_path_buf()),
+                unattended: true,
+            })
+            .await
+            .map_err(|e| Error::refused(format!("baseline session: {e}")))?;
+        if let Err(e) = agents
+            .ask(agent::RenameSession {
+                session,
+                title: format!("{}{slug} · baseline", crate::SCHEDULE_PREFIX),
+            })
+            .await
+        {
+            tracing::warn!(%slug, "baseline session title not set: {e}");
+        }
+        Ok(session)
+    }
     /// `code_map(focus=scope, budget=…)` through the tool registry; `None` when unavailable.
     async fn code_map(
         &self,
@@ -911,16 +935,20 @@ async fn study_spend_or_closed(env: &Env, study: &StudyRecord) -> f64 {
     }
 }
 
-/// Σ `cost_nanos` of the closed experiments, in USD (no agent ask).
+/// Σ `cost_nanos` of the closed experiments plus the Bench channel (Σ `samples.spend_nanos`),
+/// in USD, with no agent ask — 159 §5.8: study spend = Session + Bench on every path (live
+/// proof: a finished meta study showed $0.06 beside `by_channel.bench` $0.30).
 async fn closed_spend(env: &Env, slug: &str) -> f64 {
-    env.store
+    let closed: f64 = env
+        .store
         .list_experiments(slug, None, u32::MAX)
         .await
         .unwrap_or_default()
         .iter()
         .filter(|e| is_closed(e))
         .map(|e| e.cost_nanos as f64 / 1e9)
-        .sum()
+        .sum();
+    closed + env.store.bench_spend(slug).await.unwrap_or(0) as f64 / 1e9
 }
 
 /// Review reverts the user already acted on (`restore` or `kept_reverted` events): no row, no needs-eyes line.
@@ -2134,15 +2162,30 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
         .await?;
     }
 
+    // 159 Z: cases and pairwise scoring call the target / judge inside the baseline sample,
+    // and every side call is charged to `study.session` — bound by the schedule's first fire,
+    // which comes after this. Open the study's session now (live proof: toy-prompt failed
+    // `the study has no bound session to charge the call to` at baseline sample 1).
+    if matches!(spec.axes.scoring, Scoring::Cases | Scoring::Pairwise) && study.session.is_none() {
+        let session = env.backend.open_session(&slug, &worktree).await?;
+        patch(
+            env,
+            study,
+            StudyPatch {
+                session: Some(Some(session)),
+                ..StudyPatch::default()
+            },
+        )
+        .await?;
+    }
+
     let values = baseline(env, study, &head, 0, SampleRole::Baseline, &cancel).await?;
     let (m, sigma) = (
         mean(&values),
         env.backend.pooled_sigma(std::slice::from_ref(&values)),
     );
     let cv = if m != 0.0 { sigma / m.abs() } else { 0.0 };
-    // 159 W6 H8: a world study's baseline σ is production's day-to-day variation; the mSPRT
-    // uses the arms' reported variance.
-    if cv > env.cfg.noise.max_cv && spec.axes.scoring != Scoring::World {
+    if cv > env.cfg.noise.max_cv && baseline_noise_applies(&spec) {
         return Err(Error::refused(format!(
             "σ = {:.1} % of the metric: a keep would need ≥ {:.1} %; make the benchmark steadier or raise repeats",
             cv * 100.0,
@@ -2192,6 +2235,18 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
         start_card(study, m, sigma, &sched),
     );
     Ok(())
+}
+
+/// Whether the baseline's σ/mean precondition (140 §5.3 `noise.max_cv`) applies: only the rules
+/// that read a scalar σ decide with it (`z_gate`, `dominance`). W6 H8: a world study's baseline
+/// σ is production's day-to-day variation (the mSPRT uses the arms' variance); 159 Z live proof:
+/// a prompt study's two baseline passes of a stochastic target read σ ≈ 8 % and were refused,
+/// although the paired per-case gate never looks at that σ — likewise the judge's win bound.
+fn baseline_noise_applies(spec: &StudySpec) -> bool {
+    matches!(
+        spec.rule(),
+        Some(GateRule::ZGate | GateRule::Dominance) | None
+    )
 }
 
 /// `repeats` samples of `tree` through the slot; a crash fails the whole thing.

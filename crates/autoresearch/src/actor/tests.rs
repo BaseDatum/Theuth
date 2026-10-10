@@ -427,6 +427,9 @@ impl Backend for Fake {
     async fn session_cost(&self, _: Option<SessionId>) -> Result<f64> {
         self.spend.lock().clone().map_err(Error::refused)
     }
+    async fn open_session(&self, _: &str, _: &Path) -> Result<SessionId> {
+        Ok(SessionId::new())
+    }
     async fn code_map(
         &self,
         _: &runtime::Runtime,
@@ -2551,6 +2554,35 @@ async fn finalize_writes_the_report_prose_before_the_tables() {
         d.info.budget_used.usd,
         x.cost_nanos
     );
+    // 159 §5.8 (Z live proof): a finished study's spend is Session + Bench — an engine-side
+    // sample's `spend_nanos` (a case runner's or a suite's inner studies) stays in the total
+    // after the study ends (meta read $0.06 beside `by_channel.bench` $0.30).
+    h.studies
+        .store
+        .insert_sample(
+            "t1",
+            &Sample {
+                n: 1,
+                k: 9,
+                tree_sha: "keep0001".into(),
+                role: Some(SampleRole::Candidate),
+                value: Some(4.0),
+                spend_nanos: 250_000_000,
+                at: now(),
+                ..Sample::default()
+            },
+        )
+        .await
+        .unwrap();
+    let d = detail(&mut h.studies, Detail { slug: "t1".into() })
+        .await
+        .unwrap();
+    assert!(
+        (d.info.budget_used.usd - (x.cost_nanos as f64 / 1e9 + 0.25)).abs() < 1e-9,
+        "finished spend = closed experiments + bench channel: {} (bench {:?})",
+        d.info.budget_used.usd,
+        d.info.budget_used.by_channel.get("bench")
+    );
     // Revision 2: finalize's holdout result reaches the Study view; its final-tree samples
     // at n = 0 never pool into the base's holdout point.
     assert_eq!(d.final_holdout.as_deref(), Some("5 → 4 (−20.0 %)"));
@@ -3044,6 +3076,13 @@ fn origin_cards_are_wrapped_for_the_desktop_classifier() {
 /// The YAML spec block of a fixture README, re-rooted at the harness repo (the pattern of
 /// `world::tests::readme_spec_starts_through_create`).
 fn readme_spec(h: &Harness, fixture: &str) -> StudySpec {
+    let mut spec = fixture_spec(fixture);
+    spec.repo = h._dir.path().display().to_string();
+    spec
+}
+
+/// The README's `yaml` block of `fixtures/<fixture>` as a spec (repo as written).
+fn fixture_spec(fixture: &str) -> StudySpec {
     let path = format!(
         "{}/fixtures/{fixture}/README.md",
         env!("CARGO_MANIFEST_DIR")
@@ -3056,9 +3095,7 @@ fn readme_spec(h: &Harness, fixture: &str) -> StudySpec {
         .split("```")
         .next()
         .unwrap();
-    let mut spec: StudySpec = serde_yaml::from_str(yaml).expect("the README spec parses");
-    spec.repo = h._dir.path().display().to_string();
-    spec
+    serde_yaml::from_str(yaml).expect("the README spec parses")
 }
 
 /// `create` accepts the spec and inserts the study `preparing`; returns the settled row
@@ -3156,7 +3193,10 @@ async fn create_accepts_every_kind_judged_from_toy_judged() {
 
 /// R-SEAMS-11 / W2 H1: a prompt study runs no bench command (`cases` was a workaround word);
 /// `create` must take the README spec without one. The cases runner needs a target model, so
-/// only `create`'s acceptance is asserted (cases.rs's e2e test runs the fixture).
+/// only `create`'s acceptance is asserted (cases.rs's e2e test runs the fixture). 159 Z live
+/// proof: the baseline's target calls are charged to `study.session`, which the schedule binds
+/// only at its first fire — `prepare` must open one first (toy-prompt failed at baseline
+/// sample 1 with `the study has no bound session to charge the call to`).
 #[tokio::test]
 async fn create_accepts_every_kind_prompt_without_a_bench_command() {
     let fake = Fake::default();
@@ -3166,9 +3206,13 @@ async fn create_accepts_every_kind_prompt_without_a_bench_command() {
     spec.bench.command = String::new();
     let s = create_settles(&mut h, spec).await;
     assert!(
-        !matches!(&s.state, StudyState::Failed { reason } if reason.contains("bench.command")),
+        !matches!(&s.state, StudyState::Failed { reason } if reason.contains("bench.command") || reason.contains("no bound session")),
         "{:?}",
         s.state
+    );
+    assert!(
+        s.session.is_some(),
+        "a cases study has its session before the baseline runs"
     );
 }
 
@@ -3187,6 +3231,37 @@ async fn create_accepts_every_kind_world_without_a_bench_command() {
         !matches!(&s.state, StudyState::Failed { reason } if reason.contains("bench.command")),
         "{:?}",
         s.state
+    );
+}
+
+/// 159 Z live proof: toy-prompt's baseline (two passes of a stochastic target) read σ = 7.9 %
+/// and `prepare` refused it under `noise.max_cv` = 5 %, although the paired per-case gate never
+/// reads that σ. The precondition belongs to the σ-based rules only: the scalar z-gate and the
+/// front's dominance (and an unbuilt combination, which fails closed); cases, judged, world and
+/// suite decide without it.
+#[test]
+fn baseline_noise_precondition_applies_to_sigma_rules_only() {
+    let kinds = [
+        ("toy-sort", true),
+        ("toy-pareto", true),
+        ("toy-route", true),
+        ("toy-prompt", false),
+        ("toy-judged", false),
+        ("toy-world", false),
+    ];
+    for (fixture, applies) in kinds {
+        let spec = fixture_spec(fixture);
+        assert_eq!(
+            super::baseline_noise_applies(&spec),
+            applies,
+            "{fixture}: rule {:?}",
+            spec.rule()
+        );
+    }
+    let meta = crate::suite::preset("/tmp/meta-repo");
+    assert!(
+        !super::baseline_noise_applies(&meta),
+        "meta decides with the paired gate"
     );
 }
 
