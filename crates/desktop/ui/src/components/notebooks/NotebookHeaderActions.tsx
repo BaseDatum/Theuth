@@ -1,6 +1,7 @@
-// 144 §12.1 (wave 2, U2): the notebook header's right group — Ask across notebooks, Overviews ▾, Pop out (Sky's
-// ruling 2026-10-09: a notebook pops out like a note), then the existing Share. Under 768 px the group is one ⋯ menu.
-import { ChevronDown, MessageSquareMore, MoreHorizontal, PictureInPicture2 } from 'lucide-react'
+// 144 §12.1 (wave 2, U2): the notebook header's right group — Ask across notebooks, Overviews ▾, Open in new window
+// (Sky's ruling 2026-10-09: a notebook pops out like a note; the app-wide `AppWindow` icon and label), then the
+// existing Share. Under 768 px the group is one ⋯ menu.
+import { AppWindow, ChevronDown, MessageSquareMore, MoreHorizontal } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { AskDialog } from '@/components/notebooks/AskDialog'
 import { OVERVIEWS, useRunOverview } from '@/components/notebooks/OverviewsSection'
@@ -59,7 +60,7 @@ export function NotebookHeaderActions({ notebook, ask, onAskChange, share }: { n
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={() => void popOutNotebook(notebook)}>
-                  <PictureInPicture2 /> Pop out
+                  <AppWindow /> Open in new window
                 </DropdownMenuItem>
               </>
             )}
@@ -79,8 +80,8 @@ export function NotebookHeaderActions({ notebook, ask, onAskChange, share }: { n
             <DropdownMenuContent align="end">{OVERVIEWS.map((o) => item(o.kind, o.label))}</DropdownMenuContent>
           </DropdownMenu>
           {popout && (
-            <Button variant="ghost" size="icon-sm" aria-label="Pop out" title="Pop out" onClick={() => void popOutNotebook(notebook)}>
-              <PictureInPicture2 />
+            <Button variant="ghost" size="icon-sm" aria-label="Open in new window" title="Open in new window" onClick={() => void popOutNotebook(notebook)}>
+              <AppWindow />
             </Button>
           )}
         </>

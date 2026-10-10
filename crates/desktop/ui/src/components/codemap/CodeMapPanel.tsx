@@ -7,6 +7,7 @@
  * walks a tree or lays out more than the visible set.
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { AppWindow } from 'lucide-react'
 import { type CSSProperties, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { appendDraft, prefillDraft } from '@/components/chat/Composer'
@@ -403,8 +404,8 @@ export function CodeMapPanel({ session, root, onClose, popped = false, route }: 
             </button>
           )}
           {!popped && !mobile && !isPopout() && canPopout() && realRoot && (
-            <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" title="Open in new window" aria-label="Open in new window" onClick={openPopped}>
-              ⤢
+            <button type="button" className="inline-flex items-center rounded px-1.5 py-0.5 hover:bg-layer-2" title="Open in new window" aria-label="Open in new window" onClick={openPopped}>
+              <AppWindow className="size-3" />
             </button>
           )}
           {onClose && (

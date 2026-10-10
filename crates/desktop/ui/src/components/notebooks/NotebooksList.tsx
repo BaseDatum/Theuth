@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
-import { Archive, ArchiveRestore, MoreHorizontal, Notebook as NotebookIcon, Pencil, PictureInPicture2, Plus, Trash2 } from 'lucide-react'
+import { AppWindow, Archive, ArchiveRestore, MoreHorizontal, Notebook as NotebookIcon, Pencil, Plus, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useState } from 'react'
 import { toast } from 'sonner'
 import { Column, Page } from '@/components/library/Page'
@@ -244,7 +244,7 @@ function Row({ notebook: n, archived }: { notebook: Notebook; archived: boolean 
           </DropdownMenuItem>
           {canPopout() && (
             <DropdownMenuItem onSelect={() => void popOutNotebook(id)}>
-              <PictureInPicture2 /> Pop out
+              <AppWindow /> Open in new window
             </DropdownMenuItem>
           )}
           <DropdownMenuItem variant="destructive" disabled={previewDelete.isPending} onSelect={() => previewDelete.mutate()}>
