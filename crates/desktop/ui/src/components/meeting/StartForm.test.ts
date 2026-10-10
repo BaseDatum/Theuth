@@ -14,6 +14,8 @@ vi.mock('@/lib/rpc', async (original) => ({
     meeting_permissions: async () => ({ microphone: 'Authorized', audio_capture: 'Authorized' }),
     list_models: async () => [],
     endless_settings_get: async () => ({ default_meeting: true, model: null }),
+    list_sessions: async () => [],
+    list_project_styles: async () => [],
   }),
 }))
 
@@ -42,14 +44,23 @@ test('158 R3 / A2: the form shows the one lawful sentence and no consent checkbo
   expect(start).not.toContain('disabled=""')
 })
 
-test('startOptions always sends consent: true and memory only with the switch on; the rest is unchanged', () => {
-  expect(startOptions({ pid: 0, title: ' Standup ', context: '', model: 'm', endless: true })).toEqual({
+test('158 §9.2: the Project row sits between Context and the model row and reads Default until a project is picked', async () => {
+  const html = await render()
+  expect(html).toMatch(/Context.*role="combobox"[^>]*aria-label="Project"[^>]*>.*Default.*Session model/s)
+})
+
+test('startOptions always sends consent: true, memory only with the switch on, project only when picked; the rest is unchanged', () => {
+  expect(startOptions({ pid: 0, title: ' Standup ', context: '', model: 'm', endless: true, project: 'theuth' })).toEqual({
     process: null,
     title: 'Standup',
     context: null,
     consent: true,
     session_model: 'm',
     memory: 'endless',
+    project: 'theuth',
   })
-  expect(startOptions({ pid: 42, title: '', context: 'x', model: null, endless: false })).toMatchObject({ process: 42, consent: true, memory: undefined })
+  const dflt = startOptions({ pid: 42, title: '', context: 'x', model: null, endless: false, project: null })
+  expect(dflt).toMatchObject({ process: 42, consent: true, memory: undefined })
+  // Absent, not `null`: `StartMeeting.project` is `Option<String>` with `None` = the engine's remembered / `meeting.project` choice.
+  expect(JSON.stringify(dflt)).not.toContain('project')
 })

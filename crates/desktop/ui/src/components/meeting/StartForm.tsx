@@ -1,7 +1,8 @@
 // 53 §4.1 / 03 §3: the start form — source picker (System audio by default, or one app; apps playing
 // audio first), title, a dictated context box, the one lawful sentence (158 R3, Amendment A2: no checkbox;
-// Start sends `consent: true`), the session's model (the chat header's picker; remembered in
-// `meeting-settings`), the permissions row. `Start` → `meeting_start` → the control center.
+// Start sends `consent: true`), the project (158 §9.2: a combobox; "Default" leaves the engine's remembered /
+// `meeting.project` choice), the session's model (the chat header's picker; remembered in `meeting-settings`),
+// the permissions row. `Start` → `meeting_start` → the control center.
 
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -11,6 +12,7 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { useFavorites } from '@/components/chat/ModelMenu'
 import { ModelPicker } from '@/components/chat/ModelPicker'
+import { ProjectChip } from '@/components/meeting/ProjectChip'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -30,8 +32,8 @@ import type { StartMeeting } from '@/rpc/bindings/StartMeeting'
 const SYSTEM = 0
 const PRIVACY = 'x-apple.systempreferences:com.apple.preference.security'
 
-/** What `Start` sends (137 R1-D6 adds `memory`: `'endless'` with the ∞ switch on, else `null` = the engine's `default_meeting`; 158 R3: `consent` is always `true` — the sentence was shown). */
-export function startOptions(form: { pid: number; title: string; context: string; model: string | null; endless: boolean }): StartMeeting {
+/** What `Start` sends (137 R1-D6 adds `memory`: `'endless'` with the ∞ switch on, else `null` = the engine's `default_meeting`; 158 R3: `consent` is always `true` — the sentence was shown; 158 §9.2: `project` only when picked — absent = remembered or `meeting.project`). */
+export function startOptions(form: { pid: number; title: string; context: string; model: string | null; endless: boolean; project: string | null }): StartMeeting {
   return {
     process: form.pid === SYSTEM ? null : form.pid,
     title: form.title.trim() || null,
@@ -39,6 +41,7 @@ export function startOptions(form: { pid: number; title: string; context: string
     consent: true,
     session_model: form.model,
     memory: form.endless ? 'endless' : undefined,
+    project: form.project ?? undefined,
   }
 }
 
@@ -52,6 +55,7 @@ export function StartForm() {
   const [pid, setPid] = useState(SYSTEM)
   const [title, setTitle] = useState('')
   const [context, setContext] = useState('')
+  const [project, setProject] = useState<string | null>(null)
   const saved = useMeetingSettings((s) => s.model)
   const model = saved ?? info?.default_model
   const [pickModel, setPickModel] = useState(false)
@@ -64,7 +68,7 @@ export function StartForm() {
   const endlessOn = endless ?? endlessSettings.data?.default_meeting ?? false
 
   const start = useAction(
-    (_: void) => api.meeting_start(startOptions({ pid, title, context, model: saved, endless: endlessOn })),
+    (_: void) => api.meeting_start(startOptions({ pid, title, context, model: saved, endless: endlessOn, project })),
     {
       keys: [queryKeys.meetings, queryKeys.meetingStatus],
       onSuccess: (started) => void navigate({ to: '/meetings/$id', params: { id: started.meeting } }),
@@ -108,6 +112,9 @@ export function StartForm() {
           </div>
           <Textarea rows={3} className="mt-2" value={context} onChange={(e) => setContext(e.target.value)} />
         </div>
+        <Row label="Project" description="Groups the meeting and its chat with the project's sessions. Default = the project remembered for this calendar series, else Settings › Meetings.">
+          <ProjectChip value={project} onChange={setProject} empty="Default" className="w-64 justify-between" />
+        </Row>
         <Row
           label="Session model"
           description="The meeting's own chat session runs on it; a fast, inexpensive model is the sensible choice here."
