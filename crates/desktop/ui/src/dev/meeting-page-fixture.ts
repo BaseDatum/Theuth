@@ -141,6 +141,10 @@ export function seed(mode: Mode): Seed {
       { track: 'mix', file: 'mix.opus', sample_rate: 24000 },
     ],
     note: NOTE,
+    event: null,
+    project: null,
+    template: 'meeting',
+    stats: null,
   }
   const transcript: MeetingTranscript = {
     meeting: FIXTURE_ID,
