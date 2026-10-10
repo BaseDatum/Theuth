@@ -78,6 +78,11 @@ Write (18, A2): `meeting_edit` (`meeting_edit`), `meeting_set_project`, `meeting
   is filled once the listener has been enabled once (or `rotate_token` ran). "What is shared" copy in §12.6 should
   say read + write now (A2).
 - `docs/design/158-meetings-around.md` §12.4/§15.5: the frozen list above (43 tools) — doc owner to paste.
+- Contract hand-off (C158, "`crates/mcp-server` cannot import `crates/rpc`"): already so. `mcp-server` depends on
+  `jsonrpsee` (core `ClientT`) only; the `Rpc` impl bound to the real API is `rpc::client::Local`, injected from
+  `crates/theuth/src/main.rs` (`mcp_server::boot`), and `WsClient` in `crates/theuth/src/mcp.rs`. No
+  `mcp_catalogue.rs` was needed. `feat/158-contract` (ccc48db5) merged at b6676f34; only `Cargo.lock` conflicted
+  (kept the superset dep list); gates re-run green after the merge.
 
 ## Gates (BUILD_LABEL=158w5e, CARGO_BUILD_JOBS=4)
 
