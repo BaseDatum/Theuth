@@ -1,0 +1,16 @@
+[package]
+name = "evalcore"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "159 §13.1: the eval core autoresearch prompt studies and dreaming share — cases, the stable split, the 0–1 judge and the pair verdict, the margin and paired gates, replay rows"
+
+[dependencies]
+async-trait = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

@@ -248,7 +248,7 @@ pub(crate) async fn next_wave(env: &Env, slug: &str) -> Result<u32> {
 pub(crate) async fn open_env(env: &Env, study: &StudyRecord, wave: u32) -> Result<Vec<Slot>> {
     let slug = study.slug.as_str();
     let n_slots = study.spec.parallel.max(2);
-    let incumbent = actor::incumbent_of(study)?;
+    let _ = actor::incumbent_of(study)?; // every slot's parent still needs an incumbent to exist
     let study_wt = actor::worktree_of(study)?;
     let first = env.store.next_experiment_n(slug).await?;
     let categories = assign_categories(env, study, wave, usize::from(n_slots)).await?;
@@ -259,10 +259,12 @@ pub(crate) async fn open_env(env: &Env, study: &StudyRecord, wave: u32) -> Resul
         if dir.exists() {
             env.backend.worktree_remove(&study_wt, &dir)?;
         }
+        // 159 §18.3: a front (W1) or population (W4) slot is cut from its own parent.
+        let parent = actor::parent_of(env, study, Some(k)).await?;
         env.backend
-            .worktree_add_detached(&study_wt, &dir, &incumbent)?;
+            .worktree_add_detached(&study_wt, &dir, &parent)?;
         let n = first + i as u32;
-        let mut exp = ExperimentRecord::open(slug, n, study.segment, &incumbent);
+        let mut exp = ExperimentRecord::open(slug, n, study.segment, &parent);
         exp.wave = Some(wave);
         exp.slot = Some(k);
         env.store.insert_experiment(&exp).await?;
@@ -452,12 +454,7 @@ pub(crate) async fn wave_closed(env: &Env, slug: &str, wave: u32) -> Result<bool
         .await?
         .iter()
         .filter(|e| e.wave == Some(wave))
-        .all(|e| {
-            !matches!(
-                e.state,
-                ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
-            )
-        }))
+        .all(|e| !e.state.is_open()))
 }
 
 async fn promoted_already(env: &Env, slug: &str, wave: u32) -> Result<bool> {
@@ -585,7 +582,7 @@ pub(crate) async fn promote_env(env: &Env, slug: &str, wave: u32) -> Result<Prom
     let mut candidates = Vec::new();
     for e in exps.iter().cloned() {
         match e.state {
-            ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured => {
+            s if s.is_open() => {
                 abandon(env, e).await?;
             }
             ExperimentState::Kept if e.commit_sha.is_some() => candidates.push(e),
@@ -831,9 +828,9 @@ async fn confirm(
             keep_simpler: false,
             secondaries: actor::secondary_means(&taken, &inc_samples),
         };
-        match env.backend.gate_step(&gcfg, &input) {
+        match actor::kind_rule(env, study, &gcfg, &input, &taken, &inc_samples).await? {
             GateStep::Confirm { .. } => {}
-            d @ GateStep::Decide { .. } => {
+            d @ (GateStep::Decide { .. } | GateStep::Wait { .. }) => {
                 decision = Some(d);
                 break;
             }
@@ -852,6 +849,7 @@ async fn confirm(
         delta,
         delta_pct,
         z,
+        detail,
     }) = decision
     else {
         return Ok(Err("the confirm samples did not decide the gate".into()));
@@ -862,6 +860,7 @@ async fn confirm(
             delta,
             delta_pct,
             z,
+            detail,
         },
         &study.spec.metric.unit,
         mean_c,

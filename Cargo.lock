@@ -1411,6 +1411,7 @@ dependencies = [
  "chrono",
  "codeindex",
  "document",
+ "evalcore",
  "figment",
  "globset",
  "humantime",
@@ -5817,6 +5818,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "evalcore"
+version = "2.15.0"
+dependencies = [
+ "async-trait",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

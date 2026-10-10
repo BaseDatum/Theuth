@@ -101,6 +101,7 @@ impl Fake {
             delta,
             delta_pct: -delta,
             z: Some(z),
+            detail: None,
         });
     }
 }
@@ -275,6 +276,7 @@ impl Backend for Fake {
             delta: 0.0,
             delta_pct: 0.0,
             z: Some(0.2),
+            detail: None,
         })
     }
     fn keep_simpler(&self, _: &GateCfg, _: &GateInput, added: u32, removed: u32) -> bool {

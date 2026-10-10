@@ -490,6 +490,105 @@ pub trait Backend: Send + Sync {
             .ok()?;
         (!out.is_error && !out.content.trim().is_empty()).then_some(out.content)
     }
+    // ── 159 §5.10 plugin-side calls (C implements; W2, W3, W5, W6, W7 consume) ──
+    /// A registry tool called for a study (W5 `search_web`/`read_url`, W6 MCP reads).
+    /// `ToolCall.session` is the study session, so cost and policy attach to the study;
+    /// refused unless `name` is in `spec.calls` and its registry risk is read-only (W-d);
+    /// output capped at 64 KiB and scrubbed of control characters; never shown to the
+    /// session raw.
+    async fn invoke_tool(
+        &self,
+        study: &StudyRecord,
+        name: &str,
+        args: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<::tools::ToolOutput> {
+        if !study.spec.calls.iter().any(|c| c == name) {
+            return Err(Error::refused(format!(
+                "`{name}` is not in the study's `calls` list"
+            )));
+        }
+        let session = study.session.ok_or_else(|| {
+            Error::refused("the study has no bound session to charge the call to")
+        })?;
+        let reg = ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR)
+            .ok()
+            .flatten()
+            .ok_or_else(|| Error::refused("the tool registry is not running"))?;
+        let specs = reg
+            .ask(::tools::ListTools(None))
+            .await
+            .map_err(|e| Error::refused(format!("list tools: {e}")))?;
+        let spec = specs
+            .iter()
+            .find(|t| t.name == name)
+            .ok_or_else(|| Error::refused(format!("`{name}` is not a registered tool")))?;
+        if spec.risk != ::tools::Risk::ReadOnly {
+            return Err(Error::refused(format!(
+                "`{name}` is {:?}, not read-only (159 W-d)",
+                spec.risk
+            )));
+        }
+        let call = ::tools::ToolCall {
+            id: format!("autoresearch-{}-{name}-{}", study.slug, now()),
+            name: name.to_owned(),
+            args,
+            session,
+            quiet: true,
+        };
+        let mut out = tokio::time::timeout(timeout, reg.ask(::tools::Invoke(call)))
+            .await
+            .map_err(|_| Error::refused(format!("`{name}` timed out after {timeout:?}")))?
+            .map_err(|e| Error::refused(format!("`{name}`: {e}")))?;
+        out.content = scrub(&out.content, INVOKE_CAP);
+        out.files.clear();
+        Ok(out)
+    }
+    /// One SideCall charged to the study session (`CallKind::Autoresearch`): the case runner,
+    /// the judge, literature extraction. `review::call` shares the body.
+    async fn side_call(
+        &self,
+        study: &StudyRecord,
+        role: runtime::ModelRole,
+        system: &str,
+        user: String,
+        budget: Duration,
+    ) -> Result<runtime::SideReply> {
+        crate::review::side_call(study, role, system, user, budget)
+            .await
+            .map_err(Error::refused)
+    }
+    /// A custody command the plugin runs (hooks, deploy, measure, rollback): `runner::command`
+    /// with the study environment plus `extra_env`, scanned with the v2 grammar. `what` names
+    /// the log (`runs/plugin/<what>-0.log`).
+    async fn plugin_command(
+        &self,
+        study: &StudyRecord,
+        what: &str,
+        command: &str,
+        timeout: Duration,
+        extra_env: &[(String, String)],
+    ) -> Result<crate::runner::CommandRun> {
+        let worktree = worktree_of(study)?;
+        let study_dir = worktree
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| worktree.clone());
+        let evaluator = study_dir.join("evaluator").join(study.segment.to_string());
+        let runs = study_dir.join("runs").join("plugin");
+        let req = SampleRequest {
+            slug: &study.slug,
+            n: 0,
+            k: 0,
+            tree_sha: study.incumbent_sha.as_deref().unwrap_or(""),
+            role: SampleRole::Candidate,
+            worktree: &worktree,
+            evaluator: &evaluator,
+            runs_dir: &runs,
+        };
+        let cancel = CancellationToken::new();
+        crate::runner::command_run(what, command, timeout, req, &cancel, extra_env).await
+    }
 }
 
 /// The production backend: every method is the trait's default.
@@ -500,6 +599,25 @@ fn agents() -> Option<ActorRef<agent::Agents>> {
     ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
         .ok()
         .flatten()
+}
+
+/// 159 §5.10: the most of a plugin-side tool output the plugin keeps.
+const INVOKE_CAP: usize = 64 * 1024;
+
+/// Drop control characters (except `\n` and `\t`) and cut at `cap` bytes on a char boundary.
+fn scrub(s: &str, cap: usize) -> String {
+    let mut out: String = s
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect();
+    if out.len() > cap {
+        let mut cut = cap;
+        while !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
+    }
+    out
 }
 
 // ───────────────────────────── small helpers ─────────────────────────────
@@ -566,6 +684,16 @@ pub(crate) fn incumbent_of(study: &StudyRecord) -> Result<String> {
         .ok_or_else(|| Error::refused(format!("study `{}` has no incumbent yet", study.slug)))
 }
 
+/// 159 §18.3 `parent_of`: what the next experiment is cut from, by `axes.search`. The ratchet
+/// is the incumbent (140); the front (W1) and the population (W4) pick their own parent.
+pub(crate) async fn parent_of(env: &Env, study: &StudyRecord, slot: Option<u8>) -> Result<String> {
+    match study.spec.axes.search {
+        Search::Ratchet => incumbent_of(study),
+        Search::Front => crate::pareto::parent_of(env, study, slot).await, // 159:W1
+        Search::Population => crate::population::parent_of(env, study, slot).await, // 159:W4
+    }
+}
+
 pub(crate) fn gate_cfg(cfg: &AutoresearchConfig, spec: &StudySpec) -> Result<GateCfg> {
     Ok(GateCfg {
         direction: spec.metric.direction,
@@ -583,6 +711,39 @@ pub(crate) fn gate_cfg(cfg: &AutoresearchConfig, spec: &StudySpec) -> Result<Gat
             .collect::<std::result::Result<_, _>>()
             .map_err(Error::refused)?,
     })
+}
+
+/// 159 §18.3 `kind_rule`: the decision rule of the §5.6 table. `z_gate` is `Backend::gate_step`
+/// (140, unchanged); every other rule lives in its wave's module and gets the samples too.
+/// A combination with no row is refused (`validate_spec` already refuses it at draft time).
+pub(crate) async fn kind_rule(
+    env: &Env,
+    study: &StudyRecord,
+    cfg: &GateCfg,
+    input: &GateInput,
+    candidate: &[Sample],
+    reference: &[Sample],
+) -> Result<GateStep> {
+    let rule = study.spec.rule().ok_or_else(|| {
+        Error::refused(format!(
+            "no decision rule for objectives `{:?}` with scoring `{:?}`",
+            study.spec.axes.objectives, study.spec.axes.scoring
+        ))
+    })?;
+    match rule {
+        GateRule::ZGate => Ok(env.backend.gate_step(cfg, input)),
+        GateRule::Dominance => {
+            crate::pareto::step(env, study, cfg, input, candidate, reference).await
+        } // 159:W1
+        GateRule::Paired if study.spec.axes.scoring == Scoring::Suite => {
+            crate::suite::step(env, study, cfg, input, candidate, reference).await // 159:W7
+        }
+        GateRule::Paired => crate::cases::step(env, study, cfg, input, candidate, reference).await, // 159:W2
+        GateRule::WinBound => {
+            crate::judge::step(env, study, cfg, input, candidate, reference).await
+        } // 159:W3
+        GateRule::Msprt => crate::world::step(env, study, cfg, input, candidate, reference).await, // 159:W6
+    }
 }
 
 pub(crate) fn mean(v: &[f64]) -> f64 {
@@ -670,10 +831,7 @@ pub(crate) async fn segment_sigma(env: &Env, study: &StudyRecord) -> Result<f64>
 }
 
 fn is_closed(e: &ExperimentRecord) -> bool {
-    !matches!(
-        e.state,
-        ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
-    )
+    e.state.is_closed()
 }
 
 /// Closed experiments, kept experiments.
@@ -723,7 +881,23 @@ pub(crate) async fn study_spend(env: &Env, study: &StudyRecord) -> Result<f64> {
         .filter(|e| e.kind == "begin" || e.kind == "closed")
         .find_map(|e| e.payload.get("spend_usd").and_then(|v| v.as_f64()))
         .unwrap_or(0.0);
-    Ok(closed + (live - mark).max(0.0))
+    // 159 §5.8: study spend = Session + Bench (Σ `samples.spend_nanos`; 0 for a 140 study).
+    let bench = env.store.bench_spend(&study.slug).await? as f64 / 1e9;
+    Ok(closed + (live - mark).max(0.0) + bench)
+}
+
+/// 159 §5.8: the spend per channel for `BudgetUsed.by_channel` — `session` is the study's
+/// spend minus the bench channel, `bench` is Σ `samples.spend_nanos`. `world` stays unset
+/// (always 0 under D4).
+async fn spend_channels(env: &Env, slug: &str, spend: f64) -> BTreeMap<String, f64> {
+    let bench = env.store.bench_spend(slug).await.unwrap_or(0) as f64 / 1e9;
+    BTreeMap::from([
+        (
+            SpendChannel::Session.key().to_owned(),
+            (spend - bench).max(0.0),
+        ),
+        (SpendChannel::Bench.key().to_owned(), bench),
+    ])
 }
 
 /// [`study_spend`] for displays that cannot refuse: the closed sum on error.
@@ -1073,6 +1247,7 @@ fn pause_word(reason: &PauseReason) -> String {
         PauseReason::CustodyRefusals => "evaluator files keep changing".into(),
         PauseReason::ReviewFlags => "the reviewer keeps flagging keeps".into(),
         PauseReason::BudgetConfirm => "budget needs your confirmation".into(),
+        PauseReason::LaunchApproval { n } => format!("launch #{n} waits for your press"),
         PauseReason::Other { reason } => reason.clone(),
     }
 }
@@ -1084,6 +1259,7 @@ fn pause_tag(reason: &PauseReason) -> &'static str {
         PauseReason::CustodyRefusals => "custody_refusals",
         PauseReason::ReviewFlags => "review_flags",
         PauseReason::BudgetConfirm => "budget_confirm",
+        PauseReason::LaunchApproval { .. } => "launch_approval",
         PauseReason::Other { .. } => "other",
     }
 }
@@ -1160,6 +1336,7 @@ fn info_from(
             usd: spend,
             hours,
             experiments: closed,
+            by_channel: BTreeMap::new(),
         },
         budget: study.spec.budget.clone(),
         session: study.session,
@@ -1170,6 +1347,7 @@ fn info_from(
         finished_at: study.finished_at.clone(),
         stop_reason: study.stop_reason.clone(),
         report_doc: study.report_doc.clone(),
+        kind: study.spec.kind().to_owned(),
     }
 }
 
@@ -1187,6 +1365,7 @@ pub async fn info_full(env: &Env, study: &StudyRecord) -> Result<StudyInfo> {
     let hours = hours_live(env, study).await;
     let mut i = info_from(study, &env.root, base_mean, closed, spend, hours);
     i.incumbent.kept = kept;
+    i.budget_used.by_channel = spend_channels(env, &study.slug, spend).await;
     Ok(i)
 }
 
@@ -1296,6 +1475,28 @@ pub(crate) async fn bench_sample(
     env.backend.sample(spec, &env.cfg.bench, req, cancel).await
 }
 
+/// 159 §18.3 `kind_sample`: how a tree becomes numbers, by `axes.scoring`. `bench` is
+/// [`bench_sample`] (140, no ledger read); the engine-side kinds look the study up and score
+/// in their own module.
+pub(crate) async fn kind_sample(
+    env: &Env,
+    spec: &StudySpec,
+    req: SampleRequest<'_>,
+    cancel: &CancellationToken,
+) -> Result<Sample> {
+    if spec.axes.scoring == Scoring::Bench {
+        return bench_sample(env, spec, req, cancel).await;
+    }
+    let study = study_by_slug(&env.store, req.slug).await?;
+    match spec.axes.scoring {
+        Scoring::Bench => unreachable!("handled above"),
+        Scoring::Cases => crate::cases::sample(env, &study, req, cancel).await, // 159:W2
+        Scoring::Pairwise => crate::judge::sample(env, &study, req, cancel).await, // 159:W3
+        Scoring::World => crate::world::sample(env, &study, req, cancel).await, // 159:W6
+        Scoring::Suite => crate::suite::sample(env, &study, req, cancel).await, // 159:W7
+    }
+}
+
 /// What the live-tail ticks of a sample publish (`ExperimentProgress` every [`SAMPLE_TICK`]).
 #[derive(Clone, Copy)]
 pub(crate) struct Ticks<'a> {
@@ -1335,7 +1536,7 @@ pub(crate) async fn scored_sample(
         SampleRole::Holdout => format!("sample-{}-holdout.log", req.k),
         SampleRole::Final => format!("sample-{}-final.log", req.k),
     });
-    let fut = bench_sample(env, spec, req, cancel);
+    let fut = kind_sample(env, spec, req, cancel);
     tokio::pin!(fut);
     let mut tick = tokio::time::interval(SAMPLE_TICK);
     tick.tick().await;
@@ -1726,7 +1927,9 @@ pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
             state_word(&existing.state)
         )));
     }
-    let mut study = StudyRecord::new(m.spec, Some(m.origin));
+    let mut spec = m.spec;
+    spec.normalise(); // 159 §5.2
+    let mut study = StudyRecord::new(spec, Some(m.origin));
     study.state = StudyState::Preparing;
     study.created_by = Some("user".into());
     study.schedule = Some(schedule_file::name(&study.slug));
@@ -2221,7 +2424,10 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
     let slots = match wave {
         Some(w) => Some(crate::wave::open_env(env, &study, w).await?),
         None => {
-            let exp = ExperimentRecord::open(&slug, n, study.segment, &incumbent);
+            // 159 §18.3: the ratchet's parent is the incumbent; a front (W1) or population (W4)
+            // parent is picked, and checked out, by its module.
+            let parent = parent_of(env, &study, None).await?;
+            let exp = ExperimentRecord::open(&slug, n, study.segment, &parent);
             env.store.insert_experiment(&exp).await?;
             None
         }
@@ -2358,6 +2564,8 @@ async fn brief_context(
         gate: env.cfg.gate.clone(),
         crash_retries: env.cfg.defaults.crash_retries,
         worktree: None,
+        hooks: crate::hooks::before(env, study, n).await.unwrap_or(None), // 159:W5
+        protocol: crate::mechanism::protocol(&env.root, study.mechanism.as_deref()), // 159:W7
     })
 }
 
@@ -2852,7 +3060,7 @@ async fn measure_env(
             keep_simpler: false,
             secondaries,
         };
-        match env.backend.gate_step(&gcfg, &input) {
+        match kind_rule(env, study, &gcfg, &input, &cand_taken, &inc_samples).await? {
             GateStep::Confirm {
                 more,
                 incumbent_sample,
@@ -2897,21 +3105,24 @@ async fn measure_env(
                     taken.push(si);
                 }
             }
-            d @ GateStep::Decide { .. } => decision = Some(d),
+            d @ (GateStep::Decide { .. } | GateStep::Wait { .. }) => decision = Some(d),
         }
         last_input = Some(input);
     }
     // At the cap the gate decides on what was measured; with no measurable input it is no gain.
-    let (verdict, delta, delta_pct, z) =
-        match decision.or_else(|| last_input.as_ref().map(|i| env.backend.gate_step(&gcfg, i))) {
-            Some(GateStep::Decide {
-                verdict,
-                delta,
-                delta_pct,
-                z,
-            }) => (verdict, delta, delta_pct, z),
-            _ => (Verdict::NoGain, 0.0, 0.0, None),
-        };
+    let (verdict, delta, delta_pct, z, detail) = match decision
+        .or_else(|| last_input.as_ref().map(|i| env.backend.gate_step(&gcfg, i)))
+    {
+        Some(GateStep::Decide {
+            verdict,
+            delta,
+            delta_pct,
+            z,
+            detail,
+        }) => (verdict, delta, delta_pct, z, detail),
+        Some(GateStep::Wait { until, .. }) => (Verdict::Pending { until }, 0.0, 0.0, None, None),
+        _ => (Verdict::NoGain, 0.0, 0.0, None, None),
+    };
     let cand_vals = clean_values(
         &taken
             .iter()
@@ -2932,6 +3143,7 @@ async fn measure_env(
         delta,
         delta_pct,
         z,
+        detail: detail.clone(),
     };
     report.verdict = verdict.clone();
     report.delta = Some(delta);
@@ -2963,6 +3175,7 @@ async fn measure_env(
     }
     report.cases_moved = cases_moved(&taken, &inc_samples);
     exp.metric = Some(cand_mean);
+    exp.gate = detail;
 
     // Checks only on a would-be keep (§5.1).
     if verdict.is_keep_candidate()
@@ -3389,6 +3602,7 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         Err(e) => tracing::warn!(%slug, n, "experiment cost unknown: {e}"),
     }
     env.store.update_experiment(&exp).await?;
+    let _ = crate::hooks::after(env, &study, &exp).await; // 159:W5
     for id in &a.closes {
         if let Some(mut idea) = env.store.get_idea(*id).await?
             && idea.slug == slug
@@ -3676,6 +3890,9 @@ async fn apply_rules_from_turn(
             env.store
                 .append_event(slug, "explore", &serde_json::json!({ "after_n": after_n }))
                 .await?;
+            if study.spec.literature.is_some() {
+                let _ = crate::literature::consult(env, &study).await; // 159:W5
+            }
             // §9.2: one advisor consult; its ideas enter the backlog as `advisor`, priority 2.
             let model = env.cfg.advisor(&study.spec.models);
             match env
@@ -4944,6 +5161,7 @@ pub async fn detail_env(env: &Env, m: Detail) -> Result<StudyDetail> {
     } else {
         None
     };
+    let view = kind_view(env, &study).await?;
     Ok(StudyDetail {
         info,
         spec: study.spec.clone(),
@@ -4955,7 +5173,24 @@ pub async fn detail_env(env: &Env, m: Detail) -> Result<StudyDetail> {
         needs_eyes,
         tail,
         final_holdout,
+        view,
     })
+}
+
+/// 159 §18.3 `kind_view`: the Study view's per-kind data, by `StudySpec::kind`. `one metric`
+/// is `Scalar` (the chart series as today); every other kind asks its module.
+async fn kind_view(env: &Env, study: &StudyRecord) -> Result<KindView> {
+    let store = &env.store;
+    match study.spec.kind() {
+        KIND_SCALAR => Ok(KindView::Scalar),
+        KIND_PARETO => crate::pareto::view(store, study).await, // 159:W1
+        KIND_PROMPT => crate::cases::view(store, study).await,  // 159:W2
+        KIND_JUDGED => crate::judge::view(store, study).await,  // 159:W3
+        KIND_POPULATION => crate::population::view(store, study).await, // 159:W4
+        KIND_WORLD => crate::world::view(store, study).await,   // 159:W6
+        KIND_META => crate::suite::view(store, study).await,    // 159:W7
+        _ => Ok(KindView::Scalar),
+    }
 }
 
 /// `Experiments` → rows newest first (140 §12.5).
@@ -5135,6 +5370,7 @@ pub async fn recover(env: &Env) -> Result<()> {
             _ => {}
         }
     }
+    crate::world::rearm(env).await?; // 159:W6
     Ok(())
 }
 

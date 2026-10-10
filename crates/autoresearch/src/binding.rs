@@ -292,7 +292,10 @@ async fn reconcile_now(env: &Env, me: &ActorRef<Studies>) -> Result<()> {
             actor::begin_finalize(env, study, reason).await?;
             continue;
         };
+        // 159:W6 — a disabled file that a waiting experiment explains is not a user pause.
+        let waiting = crate::world::explains_disabled(&env.store, &study.slug).await?;
         let op = match (file.enabled, paused) {
+            (false, false) if waiting => continue,
             (false, false) => ControlOp::Pause,
             (true, true) => ControlOp::Resume,
             _ => continue,

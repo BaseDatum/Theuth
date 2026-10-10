@@ -11,6 +11,7 @@ import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
 import type { StudyIdea } from '@/rpc/bindings/StudyIdea'
 import type { StudySteer } from '@/rpc/bindings/StudySteer'
 import { useControl, useIdea, useSteer } from './queries'
+import { LiteratureIdeas } from './LiteratureIdeas'
 
 /** §13.1 the side panel: Tell the study… · Needs your eyes · Ideas · Playbook. */
 export function SidePanel({ detail, rows, onPick }: { detail: StudyDetail; rows: ExperimentRow[]; onPick: (n: number) => void }) {
@@ -159,6 +160,7 @@ function Ideas({ slug, ideas, live }: { slug: string; ideas: StudyIdea[]; live: 
         </form>
       )}
       {open.length === 0 && !adding ? <p className="text-[13px] text-fg-tertiary">No open ideas; the study will propose its own.</p> : null}
+      <LiteratureIdeas ideas={ideas} /> {/* 159:W5 */}
       <ul className="flex flex-col gap-1.5">
         {open.map((i) => (
           <li key={i.id} className="group/idea flex items-start gap-1.5 text-[13px]">

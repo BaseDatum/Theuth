@@ -408,6 +408,24 @@ fn pooled_sigma(trees: &[&[f64]]) -> f64 {
     }
 }
 
+/// 159 §18.3 `kind_headline`: one arm per kind, the wave's module builds its headline
+/// (`front of 3 · time_ms −21 % · …`, `val score 0.52 → 0.81 on 48 cases`, …); `None` for
+/// `one metric`, and for a module that defers to the scalar confirmation.
+async fn kind_headline(store: &Store, study: &StudyRecord) -> Result<Option<Headline>> {
+    use crate::types::{
+        KIND_JUDGED, KIND_META, KIND_PARETO, KIND_POPULATION, KIND_PROMPT, KIND_WORLD,
+    };
+    match study.spec.kind() {
+        KIND_PARETO => crate::pareto::headline(store, study).await, // 159:W1
+        KIND_PROMPT => crate::cases::headline(store, study).await,  // 159:W2
+        KIND_JUDGED => crate::judge::headline(store, study).await,  // 159:W3
+        KIND_POPULATION => crate::population::headline(store, study).await, // 159:W4
+        KIND_WORLD => crate::world::headline(store, study).await,   // 159:W6
+        KIND_META => crate::suite::headline(store, study).await,    // 159:W7
+        _ => Ok(None),
+    }
+}
+
 /// What `run` carries between steps.
 struct Ctx<'a> {
     store: &'a Store,
@@ -494,6 +512,16 @@ impl Ctx<'_> {
     async fn confirm(&self) -> Result<Headline> {
         if let Some(p) = self.step_done("confirm").await? {
             return Ok(serde_json::from_value(p["headline"].clone())?);
+        }
+        // 159 §18.3 `kind_headline`: a kind with its own headline (front, cases, pairs, cells,
+        // world, suite) records it instead of the scalar confirmation; `None` = the 140 path.
+        if let Some(headline) = kind_headline(self.store, self.study).await? {
+            self.record_step(
+                "confirm",
+                serde_json::json!({ "headline": headline, "notes": Vec::<String>::new() }),
+            )
+            .await?;
+            return Ok(headline);
         }
         // R-56: the study turn may still be editing after `experiment_log`;
         // the "final" tree is the kept incumbent, nothing newer.
@@ -810,10 +838,7 @@ pub fn assemble(
     let mut dead_ends: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let (mut experiments, mut kept, mut cost) = (0u32, 0u32, 0u64);
     for e in rows {
-        if matches!(
-            e.state,
-            ExperimentState::Open | ExperimentState::Measuring | ExperimentState::Measured
-        ) {
+        if e.state.is_open() {
             continue;
         }
         experiments += 1;

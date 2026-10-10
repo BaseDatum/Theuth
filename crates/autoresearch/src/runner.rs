@@ -90,7 +90,16 @@ pub async fn sample(
 
     std::fs::create_dir_all(req.runs_dir)?;
     let log = req.runs_dir.join(sample_log_name(req.k, req.role));
-    let run = run(&spec.bench.command, wrapper, timeout, &req, &log, cancel).await?;
+    let run = run(
+        &spec.bench.command,
+        wrapper,
+        timeout,
+        &req,
+        &log,
+        cancel,
+        &[],
+    )
+    .await?;
     let mut scanned = run.scanned;
     let primary = scanned.metrics.remove(&spec.metric.name);
     let value = if run.exit == Some(0) && scanned.bad_number.is_none() {
@@ -128,6 +137,8 @@ pub async fn sample(
         at: crate::store::now(),
         slot_holders: slot::build_slot_holders(),
         failure,
+        case_values: scanned.case_values,
+        spend_nanos: scanned.spend_nanos,
     })
 }
 
@@ -161,8 +172,43 @@ pub async fn command(
 ) -> Result<(Option<i32>, String, u64)> {
     std::fs::create_dir_all(req.runs_dir)?;
     let log = req.runs_dir.join(format!("command-{}.log", req.k));
-    let run = run(command, None, timeout, &req, &log, cancel).await?;
+    let run = run(command, None, timeout, &req, &log, cancel, &[]).await?;
     Ok((run.exit, tail(&log), run.wall_ms))
+}
+
+/// 159 §5.10: what a plugin-side command (`Backend::plugin_command`: hooks, deploy, measure,
+/// rollback) produced — the exit, the log tail and the output scanned with the v2 grammar.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CommandRun {
+    /// Process exit; `None` when killed.
+    pub exit: Option<i32>,
+    /// Last 30 lines / 4 KiB of the log.
+    pub tail: String,
+    /// Wall time.
+    pub wall_ms: u64,
+    /// `METRIC`, `CASE`, `SPEND`, `ASI` lines.
+    pub scanned: Scanned,
+}
+
+/// [`command`] with `extra_env` on top of the study environment, scanned; the log is
+/// `runs_dir/<what>-<k>.log`.
+pub async fn command_run(
+    what: &str,
+    command: &str,
+    timeout: Duration,
+    req: SampleRequest<'_>,
+    cancel: &CancellationToken,
+    extra_env: &[(String, String)],
+) -> Result<CommandRun> {
+    std::fs::create_dir_all(req.runs_dir)?;
+    let log = req.runs_dir.join(format!("{what}-{}.log", req.k));
+    let run = run(command, None, timeout, &req, &log, cancel, extra_env).await?;
+    Ok(CommandRun {
+        exit: run.exit,
+        tail: tail(&log),
+        wall_ms: run.wall_ms,
+        scanned: run.scanned,
+    })
 }
 
 /// Last 30 lines / 4 KiB of `log` for the model (140 §5.1).
@@ -215,6 +261,7 @@ async fn run(
     req: &SampleRequest<'_>,
     log: &Path,
     cancel: &CancellationToken,
+    extra_env: &[(String, String)],
 ) -> Result<Run> {
     let resolved = resolve(command, req.slug, req.evaluator);
     let script = match wrapper {
@@ -240,6 +287,9 @@ async fn run(
     if wrapper.is_some() {
         cmd.env("BUILD_SLOTS", "1")
             .env("BUILD_LABEL", format!("bench:{}", req.slug));
+    }
+    for (k, v) in extra_env {
+        cmd.env(k, v);
     }
     let started = Instant::now();
     let mut child = cmd.spawn()?;

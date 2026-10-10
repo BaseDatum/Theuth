@@ -102,18 +102,19 @@ pub fn lines(spec: &StudySpec) -> [String; 5] {
     } else {
         String::new()
     };
+    let scalar_line = format!(
+        "Optimise `{}` ({dir} is better{min_effect}) of `{}` in {repo} (base {}{})",
+        spec.metric.name.trim(),
+        spec.bench.command.trim(),
+        spec.base.trim(),
+        if spec.include_dirty {
+            " + your uncommitted changes"
+        } else {
+            ""
+        }
+    );
     [
-        format!(
-            "Optimise `{}` ({dir} is better{min_effect}) of `{}` in {repo} (base {}{})",
-            spec.metric.name.trim(),
-            spec.bench.command.trim(),
-            spec.base.trim(),
-            if spec.include_dirty {
-                " + your uncommitted changes"
-            } else {
-                ""
-            }
-        ),
+        kind_line(spec).unwrap_or(scalar_line),
         format!("{check} · {holdout}{guards}"),
         format!(
             "may edit {} · never keeps {} · evaluator files {}",
@@ -135,6 +136,29 @@ pub fn lines(spec: &StudySpec) -> [String; 5] {
             spec.slug
         ),
     ]
+}
+
+/// 159 §18.3 `kind_line`: the card's first line for a kind other than `one metric`; each wave's
+/// module words its own (`None` = the scalar line). The literature block (W5) adds a note.
+fn kind_line(spec: &StudySpec) -> Option<String> {
+    use autoresearch::{
+        KIND_JUDGED, KIND_META, KIND_PARETO, KIND_POPULATION, KIND_PROMPT, KIND_WORLD,
+    };
+    let mut line = match spec.kind() {
+        KIND_PARETO => autoresearch::pareto::card_line(spec), // 159:W1
+        KIND_PROMPT => autoresearch::cases::card_line(spec),  // 159:W2
+        KIND_JUDGED => autoresearch::judge::card_line(spec),  // 159:W3
+        KIND_POPULATION => autoresearch::population::card_line(spec), // 159:W4
+        KIND_WORLD => autoresearch::world::card_line(spec),   // 159:W6
+        KIND_META => autoresearch::suite::card_line(spec),    // 159:W7
+        _ => return None,
+    };
+    let note = autoresearch::literature::card_note(spec); // 159:W5
+    if !note.is_empty() {
+        line.push_str(" · ");
+        line.push_str(&note);
+    }
+    Some(line)
 }
 
 /// The §4.1 warnings: no check, no holdout, wall-clock without `exclusive`, empty scope, budget over the threshold, review off.

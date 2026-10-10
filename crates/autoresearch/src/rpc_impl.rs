@@ -10,8 +10,8 @@ use crate::config::AutoresearchConfig;
 use crate::types::*;
 use crate::{AUTORESEARCH_ACTOR, Studies};
 
-/// The method names the `rpc` crate registers (140 §12.5, 151 §4.4).
-pub const METHODS: [&str; 15] = [
+/// The method names the `rpc` crate registers (140 §12.5, 151 §4.4, 159 §5.11).
+pub const METHODS: [&str; 21] = [
     "autoresearch.list",
     "autoresearch.get",
     "autoresearch.experiments",
@@ -27,6 +27,12 @@ pub const METHODS: [&str; 15] = [
     "autoresearch.draft_edit",
     "autoresearch.draft_confirm",
     "autoresearch.discard_draft",
+    "autoresearch.archive",
+    "autoresearch.cases",
+    "autoresearch.judgments",
+    "autoresearch.human_pair",
+    "autoresearch.launch",
+    "autoresearch.mechanism",
 ];
 
 fn actor() -> std::result::Result<ActorRef<Studies>, String> {
@@ -170,6 +176,58 @@ pub async fn draft_confirm(
 pub async fn discard_draft(draft_id: String) -> std::result::Result<(), String> {
     let root = ask(DraftRoot).await?;
     crate::setup::discard(&root, &draft_id).map_err(|e| e.to_string())
+}
+
+// ───────────────────────────── 159 §5.11 per-kind methods ─────────────────────────────
+// Stubs that answer `not built (W<n>)` until their wave; each wave edits only its one
+// `// 159:<TAG>` line here (159 §18.1).
+
+/// 159 §5.11 `autoresearch.archive {slug}` (W1 front members, W4 cells).
+pub async fn archive(slug: String) -> std::result::Result<Vec<ArchiveRow>, String> {
+    let _ = slug;
+    Err("not built (W1, W4)".to_owned()) // 159:W1 159:W4 — pareto::archive / population::archive on `archive.kind`
+}
+
+/// 159 §5.11 `autoresearch.cases {slug, n?}` — the case × experiment rows of the heat strip (W2).
+pub async fn cases(slug: String, n: Option<u32>) -> std::result::Result<Vec<CaseRow>, String> {
+    let _ = (slug, n);
+    Err("not built (W2)".to_owned()) // 159:W2 — cases::rows(store, &slug, n)
+}
+
+/// 159 §5.11 `autoresearch.judgments {slug, n?}` — blind-pair verdicts (W3).
+pub async fn judgments(
+    slug: String,
+    n: Option<u32>,
+) -> std::result::Result<Vec<JudgmentRow>, String> {
+    let _ = (slug, n);
+    Err("not built (W3)".to_owned()) // 159:W3 — judge::judgments(store, &slug, n)
+}
+
+/// 159 §5.11 `autoresearch.human_pair {slug, id, winner}` — the user's answer to a blind pair (W3).
+pub async fn human_pair(
+    slug: String,
+    id: i64,
+    winner: String,
+) -> std::result::Result<StudyInfo, String> {
+    let _ = (slug, id, winner);
+    Err("not built (W3)".to_owned()) // 159:W3 — judge::human_pair(env, &slug, id, &winner)
+}
+
+/// 159 §5.11 `autoresearch.launch {slug, n, token, approve}` — the launch press (W6).
+pub async fn launch(
+    slug: String,
+    n: u32,
+    token: String,
+    approve: bool,
+) -> std::result::Result<StudyInfo, String> {
+    let _ = (slug, n, token, approve);
+    Err("not built (W6)".to_owned()) // 159:W6 — world::launch(env, &slug, n, &token, approve)
+}
+
+/// 159 §5.11 `autoresearch.mechanism {op}` — list, show or adopt a mechanism version (W7).
+pub async fn mechanism(op: MechanismOp) -> std::result::Result<MechanismInfo, String> {
+    let _ = op;
+    Err("not built (W7)".to_owned()) // 159:W7 — mechanism::rpc(root, op)
 }
 
 #[cfg(test)]

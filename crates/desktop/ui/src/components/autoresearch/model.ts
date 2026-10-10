@@ -35,6 +35,7 @@ export function outcome(state: ExperimentState | null, verdict: ExperimentVerdic
     case 'open':
     case 'measuring':
     case 'measured':
+    case 'waiting': // 159: between fires (a launch, a window, inner studies)
     case null:
       return 'open'
     case 'discarded':
@@ -68,6 +69,8 @@ export function outcomeLabel(state: ExperimentState | null, verdict: ExperimentV
       return 'measuring'
     case 'measured':
       return 'measured'
+    case 'waiting':
+      return 'waiting for its window'
     case 'discarded':
       switch (verdict?.kind) {
         case 'worse':
@@ -114,6 +117,7 @@ export function chartOutcome(tag: string): Outcome {
     case 'open':
     case 'measuring':
     case 'measured':
+    case 'waiting':
       return 'open'
     default:
       return 'no_gain'
@@ -156,6 +160,8 @@ export function pauseReasonLabel(r: PauseReason): string {
       return 'too many review flags'
     case 'budget_confirm':
       return 'budget needs your OK'
+    case 'launch_approval':
+      return `launch #${r.n} needs your press`
     case 'other':
       return r.reason
   }
@@ -286,7 +292,7 @@ export type Chip = { label: string; status: 'done' | 'on' | 'todo' }
 /** What `ExperimentProgress` gave for the experiment in flight; `null` phase before `experiment_run`. */
 export type Progress = { phase: ExperimentPhase | null; sample: number; of: number; elapsed_ms: number }
 
-const PHASE_LABEL: Record<ExperimentPhase, string> = { novelty: 'novelty', custody: 'custody', waiting: 'bench slot', sampling: 'measuring', checks: 'checks', review: 'review' }
+const PHASE_LABEL: Record<ExperimentPhase, string> = { novelty: 'novelty', custody: 'custody', waiting: 'bench slot', sampling: 'measuring', checks: 'checks', review: 'review', cases: 'scoring cases', judging: 'judging', window: 'window' }
 
 /**
  * The current-experiment chips: thinking → editing → measuring k/N → checks → review. Before `experiment_run`

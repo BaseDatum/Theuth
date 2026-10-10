@@ -80,6 +80,7 @@ pub fn step(cfg: &GateCfg, input: &GateInput) -> GateStep {
         delta,
         delta_pct,
         z,
+        detail: None,
     };
     // R-30: a jump that looked like gaming on its first sample stays `suspicious`
     // after the confirm samples pull the means under the thresholds — the
@@ -280,7 +281,10 @@ pub fn line(
             Verdict::ChecksFailed => format!("checks failed: primary {}", full(*z)),
             Verdict::Crash => "crash (tail below)".to_owned(),
             Verdict::Refused { reason } => format!("refused: {reason}"),
+            Verdict::Traded => format!("traded: joined the front; {}", full(*z)),
+            Verdict::Pending { until } => format!("pending: waiting until {until}"),
         },
+        GateStep::Wait { until, why } => format!("waiting: {why}, until {until}"),
     }
 }
 
@@ -361,8 +365,40 @@ mod tests {
     fn verdict(step: &GateStep) -> &Verdict {
         match step {
             GateStep::Decide { verdict, .. } => verdict,
-            GateStep::Confirm { .. } => panic!("confirm, not a verdict: {step:?}"),
+            GateStep::Confirm { .. } | GateStep::Wait { .. } => panic!("not a verdict: {step:?}"),
         }
+    }
+
+    /// 159 §5.12 item 4: the 140 scalar rule never fills `detail` — every verdict path of
+    /// `step` (one-sample keep, confirmed keep, worse, no gain, guard, suspicious, deterministic).
+    #[test]
+    fn scalar_decisions_carry_no_detail() {
+        let mut guarded = cfg();
+        guarded.guards = vec![("alloc".into(), Effect::Relative(0.05), Direction::Lower)];
+        let mut with_guard = input(&[60.0], &[100.0, 100.0, 100.0], 1.0);
+        with_guard.secondaries = vec![("alloc".into(), 200.0, 100.0)];
+        let steps = [
+            step(&cfg(), &input(&[60.0], &[100.0, 100.0, 100.0], 1.0)),
+            step(
+                &cfg(),
+                &input(&[90.0, 90.0, 90.0], &[100.0, 100.0, 100.0], 1.0),
+            ),
+            step(&cfg(), &input(&[140.0], &[100.0, 100.0, 100.0], 1.0)),
+            step(
+                &cfg(),
+                &input(&[100.0, 100.0, 100.0], &[100.0, 100.0, 100.0], 1.0),
+            ),
+            step(&cfg(), &input(&[990.0], &[1000.0], 0.0)),
+            step(&guarded, &with_guard),
+        ];
+        let mut decided = 0;
+        for s in &steps {
+            if let GateStep::Decide { detail, .. } = s {
+                assert!(detail.is_none(), "{s:?}");
+                decided += 1;
+            }
+        }
+        assert!(decided >= 4, "{steps:?}");
     }
 
     // ── a tiny deterministic RNG: LCG + Box-Muller (no new deps) ──
@@ -769,6 +805,7 @@ mod tests {
             delta: 0.0,
             delta_pct: 0.0,
             z: None,
+            detail: None,
         };
         assert_eq!(
             line(&st, "ms", 0.0, 0.0, 0),

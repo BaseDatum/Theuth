@@ -20,8 +20,9 @@ use sqlx::{FromRow, Row};
 
 use crate::error::{Error, Result};
 use crate::types::{
-    By, Decision, ExperimentRow, ExperimentState, Idea, IdeaSource, IdeaStatus, PauseReason,
-    ReviewVerdict, Sample, SampleRole, Steer, StopReason, StudySpec, StudyState, Verdict,
+    ArchiveRow, By, CitationRow, Decision, ExperimentRow, ExperimentState, GateDecision, Idea,
+    IdeaSource, IdeaStatus, JudgmentRow, LaunchRecord, ObservationRow, PauseReason, RatingRecord,
+    ReviewVerdict, Sample, SampleRole, Steer, StopReason, StudySpec, StudyState, Verdict, WaitInfo,
 };
 
 /// File name under the root.
@@ -111,11 +112,33 @@ pub struct StudyRecord {
     pub report_doc: Option<String>,
     /// Who created it.
     pub created_by: Option<String>,
+    /// 159 §5.4: `{objective: mean}` of the headline incumbent.
+    pub scores: BTreeMap<String, f64>,
+    /// 159 §5.4: 1 for a 140 spec, 2 once any 159 field is set.
+    pub spec_v: u32,
+    /// 159 W7: pinned mechanism sha; `None` = compiled defaults.
+    pub mechanism: Option<String>,
+}
+
+/// `studies.spec_v` (159 §5.4): 1 for a 140 spec, 2 once any §5.1 field is set.
+fn spec_version(spec: &StudySpec) -> u32 {
+    let plain = spec.axes.is_default()
+        && spec.objectives.is_empty()
+        && spec.cases.is_none()
+        && spec.judge.is_none()
+        && spec.population.is_none()
+        && spec.literature.is_none()
+        && spec.hooks.is_none()
+        && spec.world.is_none()
+        && spec.suite.is_none()
+        && spec.calls.is_empty();
+    if plain { 1 } else { 2 }
 }
 
 impl StudyRecord {
     /// A fresh `draft` row for `spec`.
     pub fn new(spec: StudySpec, origin: Option<runtime::SessionId>) -> Self {
+        let spec_v = spec_version(&spec);
         Self {
             slug: spec.slug.clone(),
             state: StudyState::Draft,
@@ -139,6 +162,9 @@ impl StudyRecord {
             stop_reason: None,
             report_doc: None,
             created_by: None,
+            scores: BTreeMap::new(),
+            spec_v,
+            mechanism: None,
         }
     }
 }
@@ -179,6 +205,10 @@ pub struct StudyPatch {
     pub stop_reason: Option<StopReason>,
     /// Report document id.
     pub report_doc: Option<String>,
+    /// 159: the headline incumbent's objective means.
+    pub scores: Option<BTreeMap<String, f64>>,
+    /// 159 W7: the pinned mechanism sha (`Some(None)` = back to compiled defaults).
+    pub mechanism: Option<Option<String>>,
 }
 
 impl StudyPatch {
@@ -247,6 +277,12 @@ impl StudyPatch {
         if let Some(v) = &self.report_doc {
             s.report_doc = Some(v.clone());
         }
+        if let Some(v) = &self.scores {
+            s.scores = v.clone();
+        }
+        if let Some(v) = &self.mechanism {
+            s.mechanism = v.clone();
+        }
     }
 }
 
@@ -275,6 +311,9 @@ struct StudyRaw {
     stop_reason: Option<String>,
     report_doc: Option<String>,
     created_by: Option<String>,
+    scores: String,
+    spec_v: i64,
+    mechanism: Option<String>,
 }
 
 fn split_state(state: &StudyState) -> (&'static str, Option<String>) {
@@ -331,6 +370,9 @@ impl From<StudyRaw> for StudyRecord {
             stop_reason: from_json(r.stop_reason),
             report_doc: r.report_doc,
             created_by: r.created_by,
+            scores: serde_json::from_str(&r.scores).unwrap_or_default(),
+            spec_v: r.spec_v as u32,
+            mechanism: r.mechanism,
         }
     }
 }
@@ -446,6 +488,14 @@ pub struct ExperimentRecord {
     pub started_at: String,
     /// RFC 3339.
     pub finished_at: Option<String>,
+    /// 159 §5.6: the rule's full decision; `None` = a 140 scalar row.
+    pub gate: Option<GateDecision>,
+    /// 159 §5.8: Σ `SPEND` of its samples, USD nanos.
+    pub bench_spend_nanos: u64,
+    /// 159 W1/W4: `refs/autoresearch/<slug>/<kind>/<key>` it was cut from.
+    pub parent_ref: Option<String>,
+    /// 159 §5.9: why and until when it waits; `None` = never waited.
+    pub wait: Option<WaitInfo>,
 }
 
 impl ExperimentRecord {
@@ -482,6 +532,10 @@ impl ExperimentRecord {
             cost_nanos: 0,
             started_at: now(),
             finished_at: None,
+            gate: None,
+            bench_spend_nanos: 0,
+            parent_ref: None,
+            wait: None,
         }
     }
 
@@ -544,6 +598,10 @@ struct ExperimentRaw {
     cost_nanos: i64,
     started_at: String,
     finished_at: Option<String>,
+    gate: Option<String>,
+    bench_spend_nanos: i64,
+    parent_ref: Option<String>,
+    wait: Option<String>,
 }
 
 impl From<ExperimentRaw> for ExperimentRecord {
@@ -579,6 +637,10 @@ impl From<ExperimentRaw> for ExperimentRecord {
             cost_nanos: r.cost_nanos as u64,
             started_at: r.started_at,
             finished_at: r.finished_at,
+            gate: from_json(r.gate),
+            bench_spend_nanos: r.bench_spend_nanos as u64,
+            parent_ref: r.parent_ref,
+            wait: from_json(r.wait),
         }
     }
 }
@@ -602,6 +664,8 @@ struct SampleRaw {
     at: String,
     slot_holders: String,
     failure: Option<String>,
+    case_values: String,
+    spend_nanos: i64,
 }
 
 impl From<SampleRaw> for Sample {
@@ -624,6 +688,8 @@ impl From<SampleRaw> for Sample {
             at: r.at,
             slot_holders: serde_json::from_str(&r.slot_holders).unwrap_or_default(),
             failure: r.failure,
+            case_values: serde_json::from_str(&r.case_values).unwrap_or_default(),
+            spend_nanos: r.spend_nanos as u64,
         }
     }
 }
@@ -695,17 +761,206 @@ pub struct EventRecord {
     pub at: String,
 }
 
+// ───────────────────────────── 159 §5.4 rows ─────────────────────────────
+
+#[derive(FromRow)]
+struct ArchiveRaw {
+    slug: String,
+    kind: String,
+    key: String,
+    sha: String,
+    n: i64,
+    #[sqlx(rename = "ref")]
+    ref_name: String,
+    scores: String,
+    descriptor: String,
+    island: Option<i64>,
+    children: i64,
+    at: String,
+}
+
+impl From<ArchiveRaw> for ArchiveRow {
+    fn from(r: ArchiveRaw) -> Self {
+        Self {
+            slug: r.slug,
+            kind: r.kind,
+            key: r.key,
+            sha: r.sha,
+            n: r.n as u32,
+            ref_name: r.ref_name,
+            scores: serde_json::from_str(&r.scores).unwrap_or_default(),
+            descriptor: serde_json::from_str(&r.descriptor).unwrap_or_default(),
+            island: r.island.map(|i| i as u8),
+            children: r.children as u32,
+            at: r.at,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct JudgmentRaw {
+    id: i64,
+    slug: String,
+    n: i64,
+    case_id: String,
+    split: String,
+    a_sha: String,
+    b_sha: Option<String>,
+    a_first: Option<i64>,
+    model: String,
+    score: Option<f64>,
+    winner: Option<String>,
+    reason: String,
+    human: i64,
+    cost_nanos: i64,
+    at: String,
+}
+
+impl From<JudgmentRaw> for JudgmentRow {
+    fn from(r: JudgmentRaw) -> Self {
+        Self {
+            id: r.id,
+            slug: r.slug,
+            n: r.n as u32,
+            case_id: r.case_id,
+            split: r.split,
+            a_sha: r.a_sha,
+            b_sha: r.b_sha,
+            a_first: r.a_first.map(|a| a != 0),
+            model: r.model,
+            score: r.score,
+            winner: r.winner,
+            reason: r.reason,
+            human: r.human != 0,
+            cost_nanos: r.cost_nanos as u64,
+            at: r.at,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct RatingRaw {
+    slug: String,
+    segment: i64,
+    sha: String,
+    theta: f64,
+    se: f64,
+    games: i64,
+    at: String,
+}
+
+impl From<RatingRaw> for RatingRecord {
+    fn from(r: RatingRaw) -> Self {
+        Self {
+            slug: r.slug,
+            segment: r.segment as u32,
+            sha: r.sha,
+            theta: r.theta,
+            se: r.se,
+            games: r.games as u32,
+            at: r.at,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct CitationRaw {
+    idea_id: i64,
+    url: String,
+    title: String,
+    quote: String,
+    verified: i64,
+    fetched_at: String,
+}
+
+impl From<CitationRaw> for CitationRow {
+    fn from(r: CitationRaw) -> Self {
+        Self {
+            idea_id: r.idea_id,
+            url: r.url,
+            title: r.title,
+            quote: r.quote,
+            verified: r.verified != 0,
+            fetched_at: r.fetched_at,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct LaunchRaw {
+    slug: String,
+    n: i64,
+    state: String,
+    token_hash: String,
+    exposure: f64,
+    requested_at: String,
+    decided_at: Option<String>,
+    by: Option<String>,
+}
+
+impl From<LaunchRaw> for LaunchRecord {
+    fn from(r: LaunchRaw) -> Self {
+        Self {
+            slug: r.slug,
+            n: r.n as u32,
+            state: r.state,
+            token_hash: r.token_hash,
+            exposure: r.exposure,
+            requested_at: r.requested_at,
+            decided_at: r.decided_at,
+            by: r.by,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct ObservationRaw {
+    id: i64,
+    slug: String,
+    n: i64,
+    arm: String,
+    win: i64,
+    start_at: String,
+    end_at: String,
+    units: i64,
+    mean: Option<f64>,
+    var: Option<f64>,
+    raw: String,
+    at: String,
+}
+
+impl From<ObservationRaw> for ObservationRow {
+    fn from(r: ObservationRaw) -> Self {
+        Self {
+            id: r.id,
+            slug: r.slug,
+            n: r.n as u32,
+            arm: r.arm,
+            win: r.win as u32,
+            start_at: r.start_at,
+            end_at: r.end_at,
+            units: r.units as u32,
+            mean: r.mean,
+            var: r.var,
+            raw: serde_json::from_str(&r.raw).unwrap_or(serde_json::Value::Null),
+            at: r.at,
+        }
+    }
+}
+
 // ───────────────────────────── the store ─────────────────────────────
 
 const STUDY_COLS: &str = "slug, state, state_reason, spec, repo, base_sha, branch, worktree, schedule, session, origin, \
     incumbent_sha, incumbent_mean, sigma, segment, playbook, created_at, started_at, paused_ms, finished_at, \
-    stop_reason, report_doc, created_by";
+    stop_reason, report_doc, created_by, scores, spec_v, mechanism";
 
 const EXPERIMENT_COLS: &str = "slug, n, wave, slot, segment, parent_sha, state, verdict, idea, category, hypothesis, \
     description, learned, next, decision, justification, deviations, delta, delta_pct, z, n_samples, metric, \
-    commit_sha, patch_path, patch_hash, review, line, cost_nanos, started_at, finished_at";
+    commit_sha, patch_path, patch_hash, review, line, cost_nanos, started_at, finished_at, gate, bench_spend_nanos, \
+    parent_ref, wait";
 
-const SAMPLE_COLS: &str = "n, k, tree_sha, role, value, secondaries, cases, asi, exit, wall_ms, load, noisy, lost, log_path, at, slot_holders, failure";
+const SAMPLE_COLS: &str = "n, k, tree_sha, role, value, secondaries, cases, asi, exit, wall_ms, load, noisy, lost, log_path, at, slot_holders, failure, \
+    case_values, spend_nanos";
 
 type Q = sqlx::QueryBuilder<sqlx::Sqlite>;
 
@@ -771,6 +1026,12 @@ fn study_update(slug: &str, from: &[&str], p: &StudyPatch) -> Q {
     if let Some(v) = &p.report_doc {
         q.push(", report_doc = ").push_bind(v.clone());
     }
+    if let Some(v) = &p.scores {
+        q.push(", scores = ").push_bind(to_json(v));
+    }
+    if let Some(v) = &p.mechanism {
+        q.push(", mechanism = ").push_bind(v.clone());
+    }
     q.push(" WHERE slug = ").push_bind(slug.to_owned());
     if !from.is_empty() {
         q.push(" AND state IN (");
@@ -818,6 +1079,11 @@ fn experiment_update(e: &ExperimentRecord, from: &[ExperimentState]) -> Q {
     q.push(", cost_nanos = ").push_bind(e.cost_nanos as i64);
     q.push(", started_at = ").push_bind(e.started_at.clone());
     q.push(", finished_at = ").push_bind(e.finished_at.clone());
+    q.push(", gate = ").push_bind(e.gate.as_ref().map(to_json));
+    q.push(", bench_spend_nanos = ")
+        .push_bind(e.bench_spend_nanos as i64);
+    q.push(", parent_ref = ").push_bind(e.parent_ref.clone());
+    q.push(", wait = ").push_bind(e.wait.as_ref().map(to_json));
     q.push(" WHERE slug = ").push_bind(e.slug.clone());
     q.push(" AND n = ").push_bind(i64::from(e.n));
     push_state_filter(&mut q, from);
@@ -863,8 +1129,9 @@ impl Store {
         sqlx::query(
             "INSERT INTO studies (slug, state, state_reason, spec, repo, base_sha, branch, worktree, schedule, session, \
              origin, incumbent_sha, incumbent_mean, sigma, segment, playbook, created_at, started_at, paused_ms, \
-             finished_at, stop_reason, report_doc, created_by) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+             finished_at, stop_reason, report_doc, created_by, scores, spec_v, mechanism) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, \
+             ?24, ?25, ?26)",
         )
         .bind(&s.slug)
         .bind(state)
@@ -889,6 +1156,9 @@ impl Store {
         .bind(s.stop_reason.as_ref().map(to_json))
         .bind(&s.report_doc)
         .bind(&s.created_by)
+        .bind(to_json(&s.scores))
+        .bind(i64::from(s.spec_v))
+        .bind(&s.mechanism)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -901,7 +1171,8 @@ impl Store {
             "UPDATE studies SET state = ?2, state_reason = ?3, spec = ?4, repo = ?5, base_sha = ?6, branch = ?7, \
              worktree = ?8, schedule = ?9, session = ?10, origin = ?11, incumbent_sha = ?12, incumbent_mean = ?13, \
              sigma = ?14, segment = ?15, playbook = ?16, created_at = ?17, started_at = ?18, paused_ms = ?19, \
-             finished_at = ?20, stop_reason = ?21, report_doc = ?22, created_by = ?23 WHERE slug = ?1",
+             finished_at = ?20, stop_reason = ?21, report_doc = ?22, created_by = ?23, scores = ?24, spec_v = ?25, \
+             mechanism = ?26 WHERE slug = ?1",
         )
         .bind(&s.slug)
         .bind(state)
@@ -926,6 +1197,9 @@ impl Store {
         .bind(s.stop_reason.as_ref().map(to_json))
         .bind(&s.report_doc)
         .bind(&s.created_by)
+        .bind(to_json(&s.scores))
+        .bind(i64::from(s.spec_v))
+        .bind(&s.mechanism)
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -1064,9 +1338,10 @@ impl Store {
         sqlx::query(
             "INSERT INTO experiments (slug, n, wave, slot, segment, parent_sha, state, verdict, idea, category, hypothesis, \
              description, learned, next, decision, justification, deviations, delta, delta_pct, z, n_samples, metric, \
-             commit_sha, patch_path, patch_hash, review, line, cost_nanos, started_at, finished_at) \
+             commit_sha, patch_path, patch_hash, review, line, cost_nanos, started_at, finished_at, gate, \
+             bench_spend_nanos, parent_ref, wait) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, \
-             ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
+             ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
         )
         .bind(&e.slug)
         .bind(i64::from(e.n))
@@ -1098,6 +1373,10 @@ impl Store {
         .bind(e.cost_nanos as i64)
         .bind(&e.started_at)
         .bind(&e.finished_at)
+        .bind(e.gate.as_ref().map(to_json))
+        .bind(e.bench_spend_nanos as i64)
+        .bind(&e.parent_ref)
+        .bind(e.wait.as_ref().map(to_json))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1236,8 +1515,8 @@ impl Store {
     pub async fn insert_sample(&self, slug: &str, s: &Sample) -> Result<i64> {
         let r = sqlx::query(
             "INSERT INTO samples (slug, n, k, tree_sha, role, value, secondaries, cases, asi, exit, wall_ms, load, \
-             noisy, lost, log_path, at, slot_holders, failure) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+             noisy, lost, log_path, at, slot_holders, failure, case_values, spend_nanos) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         )
         .bind(slug)
         .bind(i64::from(s.n))
@@ -1257,6 +1536,8 @@ impl Store {
         .bind(&s.at)
         .bind(to_json(&s.slot_holders))
         .bind(&s.failure)
+        .bind(to_json(&s.case_values))
+        .bind(s.spend_nanos as i64)
         .execute(&self.pool)
         .await?;
         Ok(r.last_insert_rowid())
@@ -1267,7 +1548,7 @@ impl Store {
         sqlx::query(
             "UPDATE samples SET tree_sha = ?2, role = ?3, value = ?4, secondaries = ?5, cases = ?6, asi = ?7, \
              exit = ?8, wall_ms = ?9, load = ?10, noisy = ?11, lost = ?12, log_path = ?13, at = ?14, \
-             slot_holders = ?15, failure = ?16 WHERE id = ?1",
+             slot_holders = ?15, failure = ?16, case_values = ?17, spend_nanos = ?18 WHERE id = ?1",
         )
         .bind(id)
         .bind(&s.tree_sha)
@@ -1285,6 +1566,8 @@ impl Store {
         .bind(&s.at)
         .bind(to_json(&s.slot_holders))
         .bind(&s.failure)
+        .bind(to_json(&s.case_values))
+        .bind(s.spend_nanos as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1460,11 +1743,263 @@ impl Store {
             })
             .collect()
     }
+
+    // ── 159 variants ──
+
+    /// Archive rows of a study (W1 front, W4 cells), by key; `kind` filters.
+    pub async fn archive_list(&self, slug: &str, kind: Option<&str>) -> Result<Vec<ArchiveRow>> {
+        let rows: Vec<ArchiveRaw> = sqlx::query_as(
+            "SELECT slug, kind, key, sha, n, ref, scores, descriptor, island, children, at FROM archive \
+             WHERE slug = ?1 AND (?2 IS NULL OR kind = ?2) ORDER BY key",
+        )
+        .bind(slug)
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Insert or replace an archive row by `(slug, kind, key)`.
+    pub async fn archive_put(&self, a: &ArchiveRow) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO archive (slug, kind, key, sha, n, ref, scores, descriptor, island, children, at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )
+        .bind(&a.slug)
+        .bind(&a.kind)
+        .bind(&a.key)
+        .bind(&a.sha)
+        .bind(i64::from(a.n))
+        .bind(&a.ref_name)
+        .bind(to_json(&a.scores))
+        .bind(to_json(&a.descriptor))
+        .bind(a.island.map(i64::from))
+        .bind(i64::from(a.children))
+        .bind(&a.at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete one archive row.
+    pub async fn archive_remove(&self, slug: &str, kind: &str, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM archive WHERE slug = ?1 AND kind = ?2 AND key = ?3")
+            .bind(slug)
+            .bind(kind)
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Append a judgment (`row.id` ignored); returns its id.
+    pub async fn judgments_insert(&self, j: &JudgmentRow) -> Result<i64> {
+        let r = sqlx::query(
+            "INSERT INTO judgments (slug, n, case_id, split, a_sha, b_sha, a_first, model, score, winner, reason, \
+             human, cost_nanos, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        )
+        .bind(&j.slug)
+        .bind(i64::from(j.n))
+        .bind(&j.case_id)
+        .bind(&j.split)
+        .bind(&j.a_sha)
+        .bind(&j.b_sha)
+        .bind(j.a_first.map(i64::from))
+        .bind(&j.model)
+        .bind(j.score)
+        .bind(&j.winner)
+        .bind(&j.reason)
+        .bind(i64::from(j.human))
+        .bind(j.cost_nanos as i64)
+        .bind(&j.at)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.last_insert_rowid())
+    }
+
+    /// Judgments of one experiment (`n`), or of the whole study, in order.
+    pub async fn judgments_list(&self, slug: &str, n: Option<u32>) -> Result<Vec<JudgmentRow>> {
+        let rows: Vec<JudgmentRaw> = sqlx::query_as(
+            "SELECT id, slug, n, case_id, split, a_sha, b_sha, a_first, model, score, winner, reason, human, \
+             cost_nanos, at FROM judgments WHERE slug = ?1 AND (?2 IS NULL OR n = ?2) ORDER BY id",
+        )
+        .bind(slug)
+        .bind(n.map(i64::from))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// A human's answer to a pair: sets `winner` and marks the row `human`.
+    pub async fn judgment_set_human(&self, id: i64, winner: &str) -> Result<()> {
+        sqlx::query("UPDATE judgments SET winner = ?2, human = 1 WHERE id = ?1")
+            .bind(id)
+            .bind(winner)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Insert or replace a rating by `(slug, segment, sha)`.
+    pub async fn ratings_put(&self, r: &RatingRecord) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO ratings (slug, segment, sha, theta, se, games, at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind(&r.slug)
+        .bind(i64::from(r.segment))
+        .bind(&r.sha)
+        .bind(r.theta)
+        .bind(r.se)
+        .bind(i64::from(r.games))
+        .bind(&r.at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Ratings of one segment, strongest first.
+    pub async fn ratings_list(&self, slug: &str, segment: u32) -> Result<Vec<RatingRecord>> {
+        let rows: Vec<RatingRaw> = sqlx::query_as(
+            "SELECT slug, segment, sha, theta, se, games, at FROM ratings \
+             WHERE slug = ?1 AND segment = ?2 ORDER BY theta DESC",
+        )
+        .bind(slug)
+        .bind(i64::from(segment))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Insert or replace an idea's citation.
+    pub async fn citations_put(&self, c: &CitationRow) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO citations (idea_id, url, title, quote, verified, fetched_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(c.idea_id)
+        .bind(&c.url)
+        .bind(&c.title)
+        .bind(&c.quote)
+        .bind(i64::from(c.verified))
+        .bind(&c.fetched_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The citation of an idea, if any.
+    pub async fn citations_get(&self, idea_id: i64) -> Result<Option<CitationRow>> {
+        let r: Option<CitationRaw> = sqlx::query_as(
+            "SELECT idea_id, url, title, quote, verified, fetched_at FROM citations WHERE idea_id = ?1",
+        )
+        .bind(idea_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(r.map(Into::into))
+    }
+
+    /// Insert or replace a launch by `(slug, n)`.
+    pub async fn launches_put(&self, l: &LaunchRecord) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO launches (slug, n, state, token_hash, exposure, requested_at, decided_at, by) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(&l.slug)
+        .bind(i64::from(l.n))
+        .bind(&l.state)
+        .bind(&l.token_hash)
+        .bind(l.exposure)
+        .bind(&l.requested_at)
+        .bind(&l.decided_at)
+        .bind(&l.by)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The launch of an experiment, if any.
+    pub async fn launches_get(&self, slug: &str, n: u32) -> Result<Option<LaunchRecord>> {
+        let r: Option<LaunchRaw> = sqlx::query_as(
+            "SELECT slug, n, state, token_hash, exposure, requested_at, decided_at, by FROM launches \
+             WHERE slug = ?1 AND n = ?2",
+        )
+        .bind(slug)
+        .bind(i64::from(n))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(r.map(Into::into))
+    }
+
+    /// Append an observation (`row.id` ignored); returns its id.
+    pub async fn observations_insert(&self, o: &ObservationRow) -> Result<i64> {
+        let raw = if o.raw.is_null() {
+            "{}".to_owned()
+        } else {
+            o.raw.to_string()
+        };
+        let r = sqlx::query(
+            "INSERT INTO observations (slug, n, arm, win, start_at, end_at, units, mean, var, raw, at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )
+        .bind(&o.slug)
+        .bind(i64::from(o.n))
+        .bind(&o.arm)
+        .bind(i64::from(o.win))
+        .bind(&o.start_at)
+        .bind(&o.end_at)
+        .bind(i64::from(o.units))
+        .bind(o.mean)
+        .bind(o.var)
+        .bind(raw)
+        .bind(&o.at)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.last_insert_rowid())
+    }
+
+    /// Observations of one experiment (`n`), or of the whole study, in order.
+    pub async fn observations_list(
+        &self,
+        slug: &str,
+        n: Option<u32>,
+    ) -> Result<Vec<ObservationRow>> {
+        let rows: Vec<ObservationRaw> = sqlx::query_as(
+            "SELECT id, slug, n, arm, win, start_at, end_at, units, mean, var, raw, at FROM observations \
+             WHERE slug = ?1 AND (?2 IS NULL OR n = ?2) ORDER BY id",
+        )
+        .bind(slug)
+        .bind(n.map(i64::from))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Σ `samples.spend_nanos` of a study (159 §5.8, the Bench channel).
+    pub async fn bench_spend(&self, slug: &str) -> Result<u64> {
+        let n: i64 =
+            sqlx::query_scalar("SELECT COALESCE(SUM(spend_nanos), 0) FROM samples WHERE slug = ?1")
+                .bind(slug)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(n as u64)
+    }
+
+    /// Every `waiting` experiment across studies (W6 re-arms their timers at start).
+    pub async fn waiting_experiments(&self) -> Result<Vec<ExperimentRecord>> {
+        let rows: Vec<ExperimentRaw> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {EXPERIMENT_COLS} FROM experiments WHERE state = 'waiting' ORDER BY slug, n"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{GateRule, WaitWhy};
 
     async fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
@@ -1485,7 +2020,7 @@ mod tests {
             .fetch_one(s.pool())
             .await
             .unwrap();
-        assert_eq!(n, 2, "0001_init + 0002_sample_detail");
+        assert_eq!(n, 3, "0001_init + 0002_sample_detail + 0003_variants");
         drop(s);
         let s = Store::open(dir.path()).await.unwrap();
         let fts: i64 = sqlx::query_scalar("SELECT count(*) FROM experiments_fts")
@@ -1626,5 +2161,233 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// 0003's defaults read as a 140 row, and every 159 accessor round-trips once.
+    #[tokio::test]
+    async fn migration_0003_applies_to_a_140_ledger_and_reads_back() {
+        let (_dir, s) = store().await;
+        let spec = StudySpec {
+            slug: "sort".into(),
+            goal: "faster".into(),
+            repo: "/r".into(),
+            ..Default::default()
+        };
+        let study = StudyRecord::new(spec, None);
+        s.create_study(&study).await.unwrap();
+        let mut e = ExperimentRecord::open("sort", 1, 0, "abc");
+        s.insert_experiment(&e).await.unwrap();
+        let sample = Sample {
+            n: 1,
+            k: 0,
+            tree_sha: "def".into(),
+            role: Some(SampleRole::Candidate),
+            value: Some(3.0),
+            case_values: BTreeMap::from([(
+                "n1".to_owned(),
+                BTreeMap::from([("time_ms".to_owned(), 3.0)]),
+            )]),
+            spend_nanos: 250_000_000,
+            exit: Some(0),
+            at: now(),
+            ..Default::default()
+        };
+        s.insert_sample("sort", &sample).await.unwrap();
+
+        let got = s.get_study("sort").await.unwrap().unwrap();
+        assert_eq!(got.spec_v, 1);
+        assert!(got.scores.is_empty());
+        assert_eq!(got.mechanism, None);
+        assert_eq!(got, study);
+        let got = s.get_experiment("sort", 1).await.unwrap().unwrap();
+        assert_eq!(got.gate, None);
+        assert_eq!(got.wait, None);
+        assert_eq!(got.parent_ref, None);
+        assert_eq!(got.bench_spend_nanos, 0);
+        assert_eq!(got, e);
+        let got = s.list_samples("sort", Some(1)).await.unwrap();
+        assert_eq!(got, vec![sample.clone()]);
+        assert_eq!(got[0].case_values["n1"]["time_ms"], 3.0);
+        assert_eq!(got[0].spend_nanos, 250_000_000);
+        assert_eq!(s.bench_spend("sort").await.unwrap(), 250_000_000);
+
+        let study_scores = StudyPatch {
+            scores: Some([("time_ms".to_owned(), 3.0)].into()),
+            mechanism: Some(Some("m1".into())),
+            ..Default::default()
+        };
+        s.patch_study("sort", &study_scores).await.unwrap();
+        let got = s.get_study("sort").await.unwrap().unwrap();
+        assert_eq!(got.scores["time_ms"], 3.0);
+        assert_eq!(got.mechanism.as_deref(), Some("m1"));
+
+        let front = ArchiveRow {
+            slug: "sort".into(),
+            kind: "front".into(),
+            key: "f1".into(),
+            sha: "def".into(),
+            n: 1,
+            ref_name: "refs/autoresearch/sort/front/f1".into(),
+            scores: [("time_ms".to_owned(), 3.0)].into(),
+            at: now(),
+            ..Default::default()
+        };
+        let cell = ArchiveRow {
+            kind: "cell".into(),
+            key: "i0:1.2".into(),
+            island: Some(0),
+            descriptor: [("len".to_owned(), 1.0)].into(),
+            ..front.clone()
+        };
+        s.archive_put(&front).await.unwrap();
+        s.archive_put(&cell).await.unwrap();
+        assert_eq!(
+            s.archive_list("sort", None).await.unwrap(),
+            vec![front.clone(), cell.clone()]
+        );
+        assert_eq!(
+            s.archive_list("sort", Some("cell")).await.unwrap(),
+            vec![cell]
+        );
+        s.archive_remove("sort", "cell", "i0:1.2").await.unwrap();
+        assert_eq!(s.archive_list("sort", None).await.unwrap(), vec![front]);
+
+        let judgment = JudgmentRow {
+            slug: "sort".into(),
+            n: 1,
+            case_id: "c1".into(),
+            split: "val".into(),
+            a_sha: "abc".into(),
+            b_sha: Some("def".into()),
+            a_first: Some(false),
+            model: "judge".into(),
+            winner: Some("a".into()),
+            reason: "tighter".into(),
+            cost_nanos: 7,
+            at: now(),
+            ..Default::default()
+        };
+        let id = s.judgments_insert(&judgment).await.unwrap();
+        assert_eq!(
+            s.judgments_list("sort", Some(1)).await.unwrap(),
+            vec![JudgmentRow { id, ..judgment }]
+        );
+        s.judgment_set_human(id, "b").await.unwrap();
+        let got = &s.judgments_list("sort", None).await.unwrap()[0];
+        assert_eq!((got.winner.as_deref(), got.human), (Some("b"), true));
+        assert!(s.judgments_list("sort", Some(2)).await.unwrap().is_empty());
+
+        let weak = RatingRecord {
+            slug: "sort".into(),
+            segment: 0,
+            sha: "abc".into(),
+            theta: -0.5,
+            se: 0.2,
+            games: 4,
+            at: now(),
+        };
+        let strong = RatingRecord {
+            sha: "def".into(),
+            theta: 0.5,
+            ..weak.clone()
+        };
+        s.ratings_put(&weak).await.unwrap();
+        s.ratings_put(&strong).await.unwrap();
+        assert_eq!(s.ratings_list("sort", 0).await.unwrap(), vec![strong, weak]);
+
+        let citation = CitationRow {
+            idea_id: 1,
+            url: "https://example.org/p".into(),
+            title: "P".into(),
+            quote: "we find".into(),
+            verified: true,
+            fetched_at: now(),
+        };
+        s.citations_put(&citation).await.unwrap();
+        assert_eq!(s.citations_get(1).await.unwrap(), Some(citation));
+        assert_eq!(s.citations_get(2).await.unwrap(), None);
+
+        let launch = LaunchRecord {
+            slug: "sort".into(),
+            n: 1,
+            state: "approved".into(),
+            token_hash: "h".into(),
+            exposure: 0.1,
+            requested_at: now(),
+            decided_at: Some(now()),
+            by: Some("sky".into()),
+        };
+        s.launches_put(&launch).await.unwrap();
+        assert_eq!(s.launches_get("sort", 1).await.unwrap(), Some(launch));
+        assert_eq!(s.launches_get("sort", 2).await.unwrap(), None);
+
+        let obs = ObservationRow {
+            slug: "sort".into(),
+            n: 1,
+            arm: "candidate".into(),
+            win: 0,
+            start_at: now(),
+            end_at: now(),
+            units: 100,
+            mean: Some(0.4),
+            var: Some(0.01),
+            raw: serde_json::json!({"conv": 40}),
+            at: now(),
+            ..Default::default()
+        };
+        let id = s.observations_insert(&obs).await.unwrap();
+        assert_eq!(
+            s.observations_list("sort", Some(1)).await.unwrap(),
+            vec![ObservationRow { id, ..obs }]
+        );
+        assert!(
+            s.observations_list("sort", Some(2))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        assert!(s.waiting_experiments().await.unwrap().is_empty());
+        e.state = ExperimentState::Waiting;
+        e.wait = Some(WaitInfo {
+            until: "your approval".into(),
+            why: WaitWhy::Approval,
+            windows: 0,
+        });
+        s.update_experiment(&e).await.unwrap();
+        assert_eq!(s.waiting_experiments().await.unwrap(), vec![e.clone()]);
+        assert!(
+            s.dangling_experiment("sort", None).await.unwrap().is_none(),
+            "waiting is not dangling"
+        );
+    }
+
+    /// `experiments.gate` carries a v2 `GateDecision` through update and get.
+    #[tokio::test]
+    async fn gate_decision_round_trips() {
+        let (_dir, s) = store().await;
+        let spec = StudySpec {
+            slug: "sort".into(),
+            goal: "faster".into(),
+            repo: "/r".into(),
+            ..Default::default()
+        };
+        s.create_study(&StudyRecord::new(spec, None)).await.unwrap();
+        let mut e = ExperimentRecord::open("sort", 1, 0, "abc");
+        s.insert_experiment(&e).await.unwrap();
+        e.gate = Some(GateDecision {
+            v: 2,
+            rule: GateRule::Dominance,
+            stat: Some(1.5),
+            threshold: Some(1.0),
+            n: 6,
+            ..Default::default()
+        });
+        e.bench_spend_nanos = 42;
+        e.parent_ref = Some("refs/autoresearch/sort/front/f1".into());
+        s.update_experiment(&e).await.unwrap();
+        let got = s.get_experiment("sort", 1).await.unwrap().unwrap();
+        assert_eq!(got, e);
+        assert_eq!(got.gate.unwrap().rule, GateRule::Dominance);
     }
 }

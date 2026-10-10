@@ -28,8 +28,8 @@ use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 use crate::config::{AgentDefaults, AutoresearchConfig};
 use crate::types::{
     Begin, Control, ControlOp, ExperimentState, IdeaChange, IdeaOp, Log, LogArgs, LogReport, Notes,
-    NotesArgs, ReviewVerdict, Run, RunArgs, RunReport, StartDraft, StartWhen, Status, SteerMsg,
-    StudyInfo, StudySpec, Verdict,
+    NotesArgs, ObjectiveRole, ObjectivesMode, ReviewVerdict, Run, RunArgs, RunReport, Scoring,
+    Search, StartDraft, StartWhen, Status, SteerMsg, StudyInfo, StudySpec, Verdict,
 };
 use crate::{AUTORESEARCH_ACTOR, PLUGIN, Studies};
 
@@ -197,8 +197,12 @@ pub fn write_draft(
     }
     confirmed.retain(|r| !sticky.contains(r));
     let token = SessionId::new().0.simple().to_string();
+    // 159 §5.2: `metric` and `secondary_guards` mirror the headline and the guards before
+    // every save (a no-op without `objectives`).
+    let mut spec = spec.clone();
+    spec.normalise();
     let draft = Draft {
-        spec: spec.clone(),
+        spec,
         origin: Some(origin),
         token: Some(token.clone()),
         partial,
@@ -239,8 +243,10 @@ pub fn check_slug(slug: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// What `autoresearch_draft` refuses before drawing a card (140 §4.1): the slug rule,
-/// a goal, a repo, a metric name, a benchmark command, sane budgets, a parsable `min_effect`.
+/// What `autoresearch_draft` refuses before drawing a card (140 §4.1; 159 §5.2 per axis
+/// combination): the slug rule, a goal, a repo, a decision rule for the axes, the right
+/// objectives for the mode, `metric.name` and `bench.command` when the bench scores, sane
+/// budgets, parsable effects.
 pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
     check_slug(&spec.slug)?;
     if spec.goal.trim().is_empty() {
@@ -249,17 +255,34 @@ pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
     if spec.repo.trim().is_empty() || !Path::new(&spec.repo).is_absolute() {
         return Err("repo must be an absolute path".into());
     }
-    if spec.metric.name.trim().is_empty() {
-        return Err("metric.name is empty (the METRIC <name>= line the benchmark prints)".into());
+    validate_axes(spec)?;
+    if spec.axes.scoring == Scoring::Bench {
+        if spec.metric.name.trim().is_empty() && spec.objectives.is_empty() {
+            return Err(
+                "metric.name is empty (the METRIC <name>= line the benchmark prints)".into(),
+            );
+        }
+        if spec.bench.command.trim().is_empty() {
+            return Err("bench.command is empty".into());
+        }
     }
-    if spec.bench.command.trim().is_empty() {
-        return Err("bench.command is empty".into());
-    }
-    crate::types::Effect::parse(&spec.metric.min_effect)
-        .map_err(|e| format!("metric.min_effect: {e}"))?;
-    for g in &spec.secondary_guards {
-        crate::types::Effect::parse(&g.max_regression)
-            .map_err(|e| format!("secondary_guards[{}]: {e}", g.name))?;
+    if spec.objectives.is_empty() {
+        crate::types::Effect::parse(&spec.metric.min_effect)
+            .map_err(|e| format!("metric.min_effect: {e}"))?;
+        for g in &spec.secondary_guards {
+            crate::types::Effect::parse(&g.max_regression)
+                .map_err(|e| format!("secondary_guards[{}]: {e}", g.name))?;
+        }
+    } else {
+        for o in &spec.objectives {
+            if o.name.trim().is_empty() {
+                return Err("an objective has no name".into());
+            }
+            crate::types::Effect::parse(&o.min_effect)
+                .map_err(|e| format!("objectives[{}].min_effect: {e}", o.name))?;
+            crate::types::Effect::parse(&o.max_regression)
+                .map_err(|e| format!("objectives[{}].max_regression: {e}", o.name))?;
+        }
     }
     let b = &spec.budget;
     if !(b.usd > 0.0
@@ -292,6 +315,70 @@ pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
         humantime::parse_duration(t).map_err(|e| format!("{what} `{t}`: {e}"))?;
     }
     Ok(())
+}
+
+/// 159 §5.2, §5.6: the axes must name a built combination (the rule table), the objectives
+/// must fit the mode (exactly one primary for `single`; 2–5 competing objectives for
+/// `pareto`; no scalar objective for `judged`), population search needs `parallel ≥ 2`, and a
+/// world study spends no money (D4).
+fn validate_axes(spec: &StudySpec) -> Result<(), String> {
+    let a = &spec.axes;
+    if spec.rule().is_none() {
+        return Err(format!(
+            "no wave has built objectives `{}` with scoring `{}` (159 §5.6)",
+            tag(&a.objectives),
+            tag(&a.scoring)
+        ));
+    }
+    let all = spec.objectives_in_force();
+    let primaries = all
+        .iter()
+        .filter(|o| o.role == ObjectiveRole::Primary)
+        .count();
+    let competing = all
+        .iter()
+        .filter(|o| o.role == ObjectiveRole::Objective)
+        .count();
+    match a.objectives {
+        ObjectivesMode::Single if primaries != 1 => {
+            return Err(format!(
+                "a `single` study needs exactly one primary objective, not {primaries}"
+            ));
+        }
+        ObjectivesMode::Single if competing > 0 => {
+            return Err(
+                "a `single` study has no competing objectives; use `axes.objectives: pareto`"
+                    .into(),
+            );
+        }
+        ObjectivesMode::Pareto if !(2..=5).contains(&competing) => {
+            return Err(format!(
+                "a `pareto` study needs 2–5 competing objectives, not {competing} (159 §4)"
+            ));
+        }
+        ObjectivesMode::Pareto if primaries > 0 => {
+            return Err("a `pareto` study has objectives, not a primary".into());
+        }
+        _ => {}
+    }
+    if a.search == Search::Population && spec.parallel < 2 {
+        return Err("population search needs parallel ≥ 2".into());
+    }
+    if a.search == Search::Front && a.objectives != ObjectivesMode::Pareto {
+        return Err("`search: front` needs `objectives: pareto`".into());
+    }
+    if a.scoring == Scoring::World && spec.world.is_none() {
+        return Err("a world study needs a `world` block".into());
+    }
+    Ok(())
+}
+
+/// serde's word for a unit enum value (`"pareto"`), for messages.
+fn tag<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 // ───────────────────────────── argument limits ─────────────────────────────
@@ -1352,6 +1439,7 @@ mod tests {
                 usd: 5.75,
                 hours: 2.5,
                 experiments: 34,
+                ..BudgetUsed::default()
             },
             current: Some(35),
             phase: Some(Phase::Sampling),

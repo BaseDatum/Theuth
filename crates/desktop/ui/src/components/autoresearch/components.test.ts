@@ -8,7 +8,7 @@ import { RunTable } from './RunTable'
 import { StudyChart } from './StudyChart'
 import { StatePill } from './StudyList'
 import { Finished } from './Finished'
-import { Bars, Controls, Current } from './StudyView'
+import { Bars, Controls, Current, KindPanel } from './StudyView'
 import { studies } from './fixtures'
 import { budgetBars } from './model'
 
@@ -153,9 +153,17 @@ test('finished: the headline reads the raw Δ with the direction word; the holdo
 })
 
 test('budget bars: the fill turns warning near the cap and danger at it', () => {
-  const html = paint(createElement(Bars, { bars: budgetBars({ usd: 19.6, hours: 10, experiments: 3 }, { usd: 20, per_experiment_usd: 1.5, hours: 10, experiments: 120 }) }))
+  const html = paint(createElement(Bars, { bars: budgetBars({ usd: 19.6, hours: 10, experiments: 3, by_channel: {} }, { usd: 20, per_experiment_usd: 1.5, hours: 10, experiments: 120 }) }))
   expect(html).toContain('bg-warning')
   expect(html).toContain('bg-danger')
   expect(html).toContain('bg-fg-accent')
   expect(html).toContain('aria-valuenow="98"')
+})
+
+test('kind panel: a `front` view paints the W1 component, not the scalar chart (159 §5.7)', () => {
+  const d = by('sort-speed').detail
+  const front = { ...d, view: { kind: 'front' as const, axes: ['time_ms', 'size_kb'] as [string, string], points: [], members: [] } }
+  const html = paint(createElement(KindPanel, { detail: front, onPick: () => {} }))
+  expect(html).toContain('data-kind="front"')
+  expect(html).not.toContain('data-outcome=')
 })

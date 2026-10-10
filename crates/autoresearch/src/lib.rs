@@ -12,6 +12,12 @@
 //! - W3: [`actor`], [`binding`], [`schedule_file`], [`stop`] (§4, §8, §12.3).
 //! - W6: [`tools`], [`brief`], [`novelty`], [`review`] (§7, §9, §12.4), `skill.md` (§12.7).
 //! - W5: [`wave`] (§10).
+//!
+//! 159 (seven variants; §18 of its design): C froze the contract in [`types`], [`store`],
+//! [`scanner`], [`runner`] and the dispatch lines of [`actor`]; each wave owns one module —
+//! W1 [`pareto`] + [`refs`], W2 [`cases`] (+ `crates/evalcore`), W3 [`judge`], W4
+//! [`population`], W5 [`literature`] + [`hooks`], W6 [`world`], W7 [`mechanism`] + [`suite`] —
+//! and one skill fragment under `skill/`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,14 +29,22 @@ use runtime::Runtime;
 pub mod actor;
 pub mod binding;
 pub mod brief;
+pub mod cases;
 pub mod config;
 pub mod custody;
 pub mod error;
 pub mod finalize;
 pub mod gate;
 pub mod git;
+pub mod hooks;
+pub mod judge;
+pub mod literature;
+pub mod mechanism;
 pub mod novelty;
+pub mod pareto;
+pub mod population;
 pub mod record;
+pub mod refs;
 pub mod review;
 pub mod rpc_impl;
 pub mod runner;
@@ -40,9 +54,11 @@ pub mod setup;
 pub mod slot;
 pub mod stop;
 pub mod store;
+pub mod suite;
 pub mod tools;
 pub mod types;
 pub mod wave;
+pub mod world;
 
 pub use config::AutoresearchConfig;
 pub use error::{Error, Result};
@@ -61,8 +77,19 @@ pub const SCHEDULE_PREFIX: &str = "autoresearch-";
 /// `/bin/bash -lc` (runner.rs, custody.rs), which a stock Windows box does not have. `Create` and
 /// the draft tool refuse with this text before anything is written.
 pub const WINDOWS_UNSUPPORTED: &str = "autoresearch needs a POSIX shell (/bin/bash) for bench, check and holdout commands — on Windows run studies from WSL or a macOS/Linux engine";
-/// The bundled `autoresearch` skill (binary-owned; `<data_dir>/skills/autoresearch.md`; W6 writes it).
-pub const SKILL: &str = include_str!("../skill.md");
+/// The bundled `autoresearch` skill (binary-owned; `<data_dir>/skills/autoresearch.md`): the 140
+/// core text plus one fragment per 159 wave (`skill/<kind>.md`, each owned by its wave; empty
+/// until the wave lands, so the installed text is byte-identical to the core until then).
+pub const SKILL: &str = concat!(
+    include_str!("../skill.md"),
+    include_str!("../skill/pareto.md"),     // 159:W1
+    include_str!("../skill/prompts.md"),    // 159:W2
+    include_str!("../skill/judged.md"),     // 159:W3
+    include_str!("../skill/population.md"), // 159:W4
+    include_str!("../skill/literature.md"), // 159:W5
+    include_str!("../skill/world.md"),      // 159:W6
+    include_str!("../skill/meta.md"),       // 159:W7
+);
 /// Where the skill is written, root-relative.
 pub const SKILL_PATH: &str = "skills/autoresearch.md";
 

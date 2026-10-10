@@ -75,6 +75,48 @@ wire! {
         /// §6 "include my uncommitted changes": a dirty checkout is snapshotted onto
         /// the study branch (base must be HEAD) instead of refusing Start.
         pub include_dirty: bool,
+        // ── 159 §5.1: every field below is `default` and skipped at its default, so a 140 spec
+        // serialises byte for byte as before and `DraftArgs` gains only optional keys.
+        /// The six axes of 159 §3; `Default` = the 140 study.
+        #[serde(skip_serializing_if = "Axes::is_default")]
+        #[serde(default)]
+        pub axes: Axes,
+        /// Objectives with roles (159 §5.2); empty = one primary from `metric` plus the guards.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default)]
+        pub objectives: Vec<Objective>,
+        /// W2, W3: the case set.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        pub cases: Option<CaseSetSpec>,
+        /// W2, W3: the judge.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        pub judge: Option<JudgeSpec>,
+        /// W4: cells, islands, descriptors.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        pub population: Option<PopulationSpec>,
+        /// W5: literature search.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        pub literature: Option<LiteratureSpec>,
+        /// W5: before/after hooks.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        pub hooks: Option<HooksSpec>,
+        /// W6: deploy, measure, rollback, exposure, windows.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        pub world: Option<WorldSpec>,
+        /// W7: the fixture suite.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        pub suite: Option<SuiteSpec>,
+        /// W5, W6: registry tools the plugin may call for this study (read-only risk only, W-d).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default)]
+        pub calls: Vec<String>,
     }
 }
 
@@ -99,9 +141,354 @@ impl Default for StudySpec {
             models: ModelsSpec::default(),
             window: None,
             include_dirty: false,
+            axes: Axes::default(),
+            objectives: Vec::new(),
+            cases: None,
+            judge: None,
+            population: None,
+            literature: None,
+            hooks: None,
+            world: None,
+            suite: None,
+            calls: Vec::new(),
         }
     }
 }
+
+// ───────────────────────────── 159 §5.1–§5.2: axes and objectives ─────────────────────────────
+
+wire! {
+    /// The six axes of 159 §3 (idea sources are the opt-in blocks `literature` and `hooks`;
+    /// the measurement rule follows from `objectives` × `scoring`, see [`StudySpec::rule`]).
+    #[derive(Copy, Default, Eq)]
+    #[serde(default)]
+    pub struct Axes {
+        /// What counts as better.
+        pub objectives: ObjectivesMode,
+        /// How a tree becomes numbers.
+        pub scoring: Scoring,
+        /// What the next candidate is cut from (`ratchet` + `parallel > 1` = waves).
+        pub search: Search,
+        /// What the session edits.
+        pub artefact: Artefact,
+    }
+}
+
+impl Axes {
+    /// The 140 study: `single · bench · ratchet · repo`.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+wire! {
+    /// `axes.objectives`.
+    #[derive(Copy, Default, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ObjectivesMode {
+        /// One primary decides alone (140).
+        #[default]
+        Single,
+        /// 2–5 competing objectives, Pareto keeps (W1).
+        Pareto,
+        /// A judged preference, no scalar (W3).
+        Judged,
+    }
+}
+
+wire! {
+    /// `axes.scoring`.
+    #[derive(Copy, Default, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Scoring {
+        /// The bench prints `METRIC` and `CASE` lines (140).
+        #[default]
+        Bench,
+        /// An engine-side runner scores each case by checker or judge (W2).
+        Cases,
+        /// A blind judge of two outputs (W3).
+        Pairwise,
+        /// Deploy, wait, read both arms (W6).
+        World,
+        /// Inner fixture studies (W7).
+        Suite,
+    }
+}
+
+wire! {
+    /// `axes.search`.
+    #[derive(Copy, Default, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Search {
+        /// One incumbent; waves cut slots from it (140).
+        #[default]
+        Ratchet,
+        /// Parents from the Pareto front (W1).
+        Front,
+        /// Cells, islands, sampled parents (W4).
+        Population,
+    }
+}
+
+wire! {
+    /// `axes.artefact`.
+    #[derive(Copy, Default, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Artefact {
+        /// Code in a repo worktree (140).
+        #[default]
+        Repo,
+        /// A text file, in a repo or a plugin-made scratch repo (W2).
+        File,
+        /// The study mechanism files (W7).
+        Mechanism,
+    }
+}
+
+wire! {
+    /// One objective (159 §5.2): a `METRIC` name, a case score name, or a judged label.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct Objective {
+        /// `METRIC <name>=`, the case score name, or the judged label.
+        pub name: String,
+        /// Unit for display.
+        pub unit: String,
+        /// Which way is better.
+        pub direction: Direction,
+        /// What the objective does in the decision.
+        pub role: ObjectiveRole,
+        /// Effect grammar; `primary` and `objective` roles.
+        pub min_effect: String,
+        /// Effect grammar; a guard's limit, or an objective's tolerated loss (W1).
+        pub max_regression: String,
+        /// Where its value comes from.
+        pub source: ObjectiveSource,
+    }
+}
+
+wire! {
+    /// A role of 159 §5.2.
+    #[derive(Copy, Default, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ObjectiveRole {
+        /// Decides alone (`single`).
+        #[default]
+        Primary,
+        /// Competes (`pareto`, 2–5).
+        Objective,
+        /// Blocks a keep past its limit, in its own direction (gate.rs `guard_failures`).
+        Guard,
+        /// Stored and charted; never decides.
+        Report,
+    }
+}
+
+wire! {
+    /// Where an objective's value comes from.
+    #[derive(Default, Eq)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    pub enum ObjectiveSource {
+        /// A `METRIC` line of the bench (140).
+        #[default]
+        Metric,
+        /// The mean of a case score over the set (W2).
+        CaseMean {
+            /// The CASE v2 pair name.
+            name: String,
+        },
+        /// The share of cases whose score passes (W2).
+        CasePass {
+            /// The CASE v2 pair name.
+            name: String,
+        },
+        /// The blind judge's win share (W3).
+        Judged,
+        /// An arm metric read from the world (W6).
+        World {
+            /// The `ARM … <name>=` field.
+            name: String,
+        },
+    }
+}
+
+impl Objective {
+    /// The 140 primary: `metric` as an objective.
+    pub fn primary(m: &MetricSpec) -> Self {
+        Self {
+            name: m.name.clone(),
+            unit: m.unit.clone(),
+            direction: m.direction,
+            role: ObjectiveRole::Primary,
+            min_effect: m.min_effect.clone(),
+            max_regression: String::new(),
+            source: ObjectiveSource::Metric,
+        }
+    }
+
+    /// A 140 guard as an objective.
+    pub fn guard(g: &Guard) -> Self {
+        Self {
+            name: g.name.clone(),
+            unit: String::new(),
+            direction: g.direction,
+            role: ObjectiveRole::Guard,
+            min_effect: String::new(),
+            max_regression: g.max_regression.clone(),
+            source: ObjectiveSource::Metric,
+        }
+    }
+}
+
+macro_rules! block_specs {
+    ($($(#[$m:meta])* $name:ident;)*) => {$(
+        wire! {
+            $(#[$m])*
+            #[derive(Default, Eq)]
+            #[serde(default)]
+            pub struct $name {}
+        }
+    )*};
+}
+
+block_specs! {
+    /// W2, W3: `cases: {source, path, skill_hint, render, split, repeats, max_cases}` — W2's addendum fills it.
+    CaseSetSpec;
+    /// W2, W3: `judge: {rubric, …}` — W3's addendum fills it.
+    JudgeSpec;
+    /// W4: `population: {islands, descriptors, migrate_every}` — W4's addendum fills it.
+    PopulationSpec;
+    /// W5: `literature: {seed, every, via, max_queries}` — W5's addendum fills it.
+    LiteratureSpec;
+    /// W5: `hooks: {before, after}` — W5's addendum fills it.
+    HooksSpec;
+    /// W6: `world: {deploy, rollback, measure, exposure, window, …}` — W6's addendum fills it.
+    WorldSpec;
+    /// W7: `suite: {training, held_out, seeds, inner_budget}` — W7's addendum fills it.
+    SuiteSpec;
+}
+
+wire! {
+    /// Which decision rule a combination of axes uses (159 §5.6 table, C-a).
+    #[derive(Copy, Default, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum GateRule {
+        /// The sequential z gate on independent samples (140).
+        #[default]
+        ZGate,
+        /// Corrected dominance (W1).
+        Dominance,
+        /// Paired per-case t plus margin (W2; W7 with fixtures as cases).
+        Paired,
+        /// Wilson lower bound of the win share (W3).
+        WinBound,
+        /// Always-valid mSPRT over windows (W6).
+        Msprt,
+    }
+}
+
+impl StudySpec {
+    /// `objectives` when non-empty; else one primary from `metric` and one guard per
+    /// `secondary_guards` entry (same names, directions and limits). Never empty for a valid spec.
+    pub fn objectives_in_force(&self) -> Vec<Objective> {
+        if !self.objectives.is_empty() {
+            return self.objectives.clone();
+        }
+        std::iter::once(Objective::primary(&self.metric))
+            .chain(self.secondary_guards.iter().map(Objective::guard))
+            .collect()
+    }
+
+    /// The objective every scalar surface shows: the first primary, else the first objective,
+    /// else the first of any role.
+    pub fn headline(&self) -> Objective {
+        let all = self.objectives_in_force();
+        all.iter()
+            .find(|o| o.role == ObjectiveRole::Primary)
+            .or_else(|| all.iter().find(|o| o.role == ObjectiveRole::Objective))
+            .or_else(|| all.first())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Before every save: mirror `headline()` into `metric` and the guards into
+    /// `secondary_guards`, so 151 rows, the card's first line and the probe keep reading `metric`.
+    /// A spec with no `objectives` is unchanged.
+    pub fn normalise(&mut self) {
+        if self.objectives.is_empty() {
+            return;
+        }
+        let h = self.headline();
+        self.metric = MetricSpec {
+            name: h.name,
+            unit: h.unit,
+            direction: h.direction,
+            min_effect: h.min_effect,
+        };
+        self.secondary_guards = self
+            .objectives
+            .iter()
+            .filter(|o| o.role == ObjectiveRole::Guard)
+            .map(|o| Guard {
+                name: o.name.clone(),
+                max_regression: o.max_regression.clone(),
+                direction: o.direction,
+            })
+            .collect();
+    }
+
+    /// The decision rule of the 159 §5.6 table; `None` for a combination no wave has built.
+    pub fn rule(&self) -> Option<GateRule> {
+        use ObjectivesMode as O;
+        use Scoring as S;
+        Some(match (self.axes.objectives, self.axes.scoring) {
+            (O::Single, S::Bench) => GateRule::ZGate,
+            (O::Pareto, S::Bench) => GateRule::Dominance,
+            (O::Single | O::Pareto, S::Cases) => GateRule::Paired,
+            (O::Judged, S::Pairwise) => GateRule::WinBound,
+            (O::Single, S::World) => GateRule::Msprt,
+            (O::Single, S::Suite) => GateRule::Paired,
+            _ => return None,
+        })
+    }
+
+    /// The kind word of 159 §3 (C-b), by precedence: artefact `mechanism` → meta; scoring
+    /// `world` → real world; search `population` → population; objectives `judged` → judged;
+    /// scoring `cases` → prompt study; objectives `pareto` → several objectives; else one metric.
+    pub fn kind(&self) -> &'static str {
+        let a = &self.axes;
+        if a.artefact == Artefact::Mechanism {
+            KIND_META
+        } else if a.scoring == Scoring::World {
+            KIND_WORLD
+        } else if a.search == Search::Population {
+            KIND_POPULATION
+        } else if a.objectives == ObjectivesMode::Judged {
+            KIND_JUDGED
+        } else if a.scoring == Scoring::Cases {
+            KIND_PROMPT
+        } else if a.objectives == ObjectivesMode::Pareto {
+            KIND_PARETO
+        } else {
+            KIND_SCALAR
+        }
+    }
+}
+
+/// The kind words of 159 §3 (`StudySpec::kind`, `StudyInfo.kind`).
+pub const KIND_SCALAR: &str = "one metric";
+/// W1.
+pub const KIND_PARETO: &str = "several objectives";
+/// W2.
+pub const KIND_PROMPT: &str = "prompt study";
+/// W3.
+pub const KIND_JUDGED: &str = "judged";
+/// W4.
+pub const KIND_POPULATION: &str = "population";
+/// W6.
+pub const KIND_WORLD: &str = "real world";
+/// W7.
+pub const KIND_META: &str = "meta";
 
 wire! {
     /// `metric:` of §4.1.
@@ -247,6 +634,12 @@ wire! {
         pub review: Option<String>,
         /// The plateau consult.
         pub advisor: Option<String>,
+        /// 159: the model a prompt artefact runs on (W2); default `agent.model`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub target: Option<String>,
+        /// 159: the case or pair judge (W2, W3); default the reviewer's other-vendor rule.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub judge: Option<String>,
     }
 }
 
@@ -358,6 +751,11 @@ wire! {
         ReviewFlags,
         /// The draft's budget is above `confirm_budget_usd`.
         BudgetConfirm,
+        /// 159 W6: the study waits for a launch press on experiment `n`; paused time for `budget.hours`.
+        LaunchApproval {
+            /// The experiment.
+            n: u32,
+        },
         /// Anything else, in words.
         Other {
             /// Why.
@@ -426,6 +824,8 @@ wire! {
         Interrupted,
         /// The run hit `run_timeout`.
         Timeout,
+        /// 159 W-a: between fires — a W6 launch and its windows, W7's inner studies. Not dangling.
+        Waiting,
     }
 }
 
@@ -445,7 +845,28 @@ impl ExperimentState {
             Self::Abandoned => "abandoned",
             Self::Interrupted => "interrupted",
             Self::Timeout => "timeout",
+            Self::Waiting => "waiting",
         }
+    }
+
+    /// 159 W-q: not closed — `Open`, `Measuring`, `Measured` or `Waiting`. The one predicate every
+    /// "open, measuring or measured" site routes through.
+    pub fn is_open(&self) -> bool {
+        matches!(
+            self,
+            Self::Open | Self::Measuring | Self::Measured | Self::Waiting
+        )
+    }
+
+    /// What `TurnFinished` and `begin`'s repair may close: `Open`, `Measuring`, `Measured`.
+    /// A waiting experiment is never dangling (`store::dangling_experiment` keeps these three).
+    pub fn is_dangling(&self) -> bool {
+        matches!(self, Self::Open | Self::Measuring | Self::Measured)
+    }
+
+    /// `!is_open()`.
+    pub fn is_closed(&self) -> bool {
+        !self.is_open()
     }
 }
 
@@ -474,6 +895,13 @@ wire! {
         Suspicious,
         /// Granted keep-simpler (not worse, fewer lines, checks pass).
         KeepSimpler,
+        /// 159 W1: entered the front without dominating its parent; a keep candidate.
+        Traded,
+        /// 159 W6: a world launch waiting for its press or window; not a keep candidate.
+        Pending {
+            /// `"your approval"` or the window's end, RFC 3339.
+            until: String,
+        },
     }
 }
 
@@ -490,12 +918,17 @@ impl Verdict {
             Self::Refused { .. } => "refused",
             Self::Suspicious => "suspicious",
             Self::KeepSimpler => "keep_simpler",
+            Self::Traded => "traded",
+            Self::Pending { .. } => "pending",
         }
     }
 
     /// Would the harness keep this (before checks and review)?
     pub fn is_keep_candidate(&self) -> bool {
-        matches!(self, Self::Improved | Self::Suspicious | Self::KeepSimpler)
+        matches!(
+            self,
+            Self::Improved | Self::Suspicious | Self::KeepSimpler | Self::Traded
+        )
     }
 }
 
@@ -558,7 +991,18 @@ wire! {
         /// Why there is no value: the runner's reason (`exit 1`, `bad number time_ms=nan`,
         /// `no METRIC time_ms line`, `killed`).
         pub failure: Option<String>,
+        /// 159 §5.3 CASE v2: `id → name → value`, names kept; `cases` stays the id's last value.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        pub case_values: BTreeMap<String, BTreeMap<String, f64>>,
+        /// 159 §5.3: Σ `SPEND` lines of the run, USD nanos (the Bench spend channel).
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        pub spend_nanos: u64,
     }
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 // ───────────────────────────── §5.2 the gate ─────────────────────────────
@@ -625,7 +1069,136 @@ pub enum GateStep {
         delta_pct: f64,
         /// The z-score behind it (`None` when σ = 0).
         z: Option<f64>,
+        /// 159 W-e: the rule's full decision; `None` = the 140 scalar rule.
+        detail: Option<GateDecision>,
     },
+    /// 159 W6, W7: decide after a later window; the experiment goes `Waiting`.
+    Wait {
+        /// RFC 3339, or `"your approval"`.
+        until: String,
+        /// Why, in words.
+        why: String,
+    },
+}
+
+wire! {
+    /// 159 §5.6: what a rule decided, per objective (`experiments.gate`, `{"v": 2, …}`).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct GateDecision {
+        /// Schema version, 2.
+        pub v: u8,
+        /// The rule.
+        pub rule: GateRule,
+        /// One per objective in force.
+        pub objectives: Vec<ObjectiveDelta>,
+        /// The rule's statistic (z_k, t, Wilson bound, Λ).
+        pub stat: Option<f64>,
+        /// What `stat` had to clear.
+        pub threshold: Option<f64>,
+        /// Samples, cases, pairs or units behind it.
+        pub n: u32,
+    }
+}
+
+impl GateDecision {
+    /// The schema version every row carries.
+    pub const V: u8 = 2;
+}
+
+wire! {
+    /// One objective's comparison inside a [`GateDecision`].
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct ObjectiveDelta {
+        /// The objective.
+        pub name: String,
+        /// Its role.
+        pub role: ObjectiveRole,
+        /// Candidate mean.
+        pub candidate: Option<f64>,
+        /// Reference mean (incumbent, parent or elite).
+        pub reference: Option<f64>,
+        /// Direction-normalised Δ (positive = better).
+        pub delta: Option<f64>,
+        /// Raw relative change (gate.rs#L72-L75 convention).
+        pub delta_pct: Option<f64>,
+        /// The z behind it, when the rule has one.
+        pub z: Option<f64>,
+        /// What the rule called it.
+        pub call: Call,
+    }
+}
+
+wire! {
+    /// A per-objective call.
+    #[derive(Copy, Default, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Call {
+        /// Significantly better and past `min_effect`.
+        Better,
+        /// Within noise.
+        #[default]
+        Same,
+        /// Significantly worse past the tolerated loss.
+        Worse,
+        /// A guard past its limit.
+        GuardFailed,
+    }
+}
+
+wire! {
+    /// 159 §5.9: why and until when an experiment waits (`experiments.wait`).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct WaitInfo {
+        /// RFC 3339, or `"your approval"`.
+        pub until: String,
+        /// Why.
+        pub why: WaitWhy,
+        /// Windows measured so far (W6).
+        pub windows: u32,
+    }
+}
+
+wire! {
+    /// Why an experiment waits.
+    #[derive(Copy, Default, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum WaitWhy {
+        /// A launch press (W6).
+        #[default]
+        Approval,
+        /// A measurement window (W6).
+        Window,
+        /// Inner studies (W7).
+        Inner,
+    }
+}
+
+wire! {
+    /// 159 §5.8: where study money goes.
+    #[derive(Copy, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum SpendChannel {
+        /// Model calls in the study session tree, engine-side SideCalls included.
+        Session,
+        /// Σ `samples.spend_nanos`, self-reported by benches (W-m).
+        Bench,
+        /// Money a world study spends; always 0 under D4.
+        World,
+    }
+}
+
+impl SpendChannel {
+    /// The `by_channel` key.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Bench => "bench",
+            Self::World => "world",
+        }
+    }
 }
 
 // ───────────────────────────── §12.4 tool arguments and reports ─────────────────────────────
@@ -853,6 +1426,9 @@ wire! {
         pub hours: f64,
         /// Experiments closed.
         pub experiments: u32,
+        /// 159 §5.8: USD per [`SpendChannel`] key (`session`, `bench`, `world`).
+        #[serde(default)]
+        pub by_channel: BTreeMap<String, f64>,
     }
 }
 
@@ -1088,6 +1664,8 @@ wire! {
         Advisor,
         /// The setup conversation.
         Setup,
+        /// 159 W5: a cited literature idea (`citations` row).
+        Literature,
     }
 }
 
@@ -1171,6 +1749,12 @@ wire! {
         Checks,
         /// The reviewer call.
         Review,
+        /// 159 W2: the engine-side case runner.
+        Cases,
+        /// 159 W3: the blind pair judge.
+        Judging,
+        /// 159 W6: a measurement window.
+        Window,
     }
 }
 
@@ -1227,6 +1811,8 @@ wire! {
         pub stop_reason: Option<StopReason>,
         /// The report document id once finished.
         pub report_doc: Option<String>,
+        /// 159 §5.7: the kind word of §3 (`one metric`, `several objectives`, …).
+        pub kind: String,
     }
 }
 
@@ -1255,6 +1841,464 @@ wire! {
         pub tail: Option<String>,
         /// Finalize's holdout result (`61.0 → 49.7 (−18.5 %)`, §11.1) once finished.
         pub final_holdout: Option<String>,
+        /// 159 §5.7: what the Study view switches on; `Scalar` = `series` as today.
+        pub view: KindView,
+    }
+}
+
+// ───────────────────────────── 159 §5.7 the kind views ─────────────────────────────
+
+wire! {
+    /// 159 §5.7: the per-kind view the Study view switches on.
+    #[derive(Default)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    pub enum KindView {
+        /// `StudyDetail.series` as today (140).
+        #[default]
+        Scalar,
+        /// W1: a scatter on two objectives with the front as a staircase.
+        Front {
+            /// The two objectives plotted.
+            axes: [String; 2],
+            /// Every experiment.
+            points: Vec<FrontPoint>,
+            /// Experiment numbers of the current front members.
+            members: Vec<u32>,
+        },
+        /// W2: the case × experiment heat strip.
+        Cases {
+            /// One per case.
+            rows: Vec<CaseRow>,
+            /// Cases per split.
+            split: SplitCounts,
+        },
+        /// W3: the rating ladder and the agreement figure.
+        Ratings {
+            /// Kept versions, best first.
+            ladder: Vec<RatingRow>,
+            /// Judge–human agreement, once a pair was answered.
+            agreement: Option<Agreement>,
+        },
+        /// W4: the archive grid.
+        Archive {
+            /// The two descriptors.
+            axes: [String; 2],
+            /// Every live elite.
+            cells: Vec<CellRow>,
+            /// Island count.
+            islands: u8,
+        },
+        /// W6: both arms per window, Λ, the launch.
+        World {
+            /// One per arm per window.
+            windows: Vec<ArmWindow>,
+            /// The current launch, if any.
+            launch: Option<LaunchRow>,
+            /// Λ after each window.
+            lambda: Vec<f64>,
+        },
+        /// W7: per fixture, incumbent against candidate mechanism.
+        Suite {
+            /// One per fixture.
+            fixtures: Vec<SuiteRow>,
+        },
+    }
+}
+
+wire! {
+    /// One experiment on the front chart (W1).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct FrontPoint {
+        /// Experiment.
+        pub n: u32,
+        /// Its tree.
+        pub sha: String,
+        /// Objective means.
+        pub scores: BTreeMap<String, f64>,
+        /// On the front now.
+        pub member: bool,
+    }
+}
+
+wire! {
+    /// One case across experiments (W2; `autoresearch.cases`).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct CaseRow {
+        /// Case id.
+        pub id: String,
+        /// `train` | `val` | `holdout`.
+        pub split: String,
+        /// Score per experiment number (0 = the base).
+        pub values: BTreeMap<u32, f64>,
+    }
+}
+
+wire! {
+    /// Cases per split (W2).
+    #[derive(Copy, Default, Eq)]
+    #[serde(default)]
+    pub struct SplitCounts {
+        /// Train.
+        pub train: u32,
+        /// Val.
+        pub val: u32,
+        /// Holdout.
+        pub holdout: u32,
+    }
+}
+
+wire! {
+    /// One rung of the Bradley–Terry ladder (W3).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct RatingRow {
+        /// The version's tree.
+        pub sha: String,
+        /// Strength.
+        pub theta: f64,
+        /// Its standard error.
+        pub se: f64,
+        /// Pairs judged.
+        pub games: u32,
+        /// `θ × 400/ln 10 + 1000`.
+        pub elo: f64,
+        /// Experiment number, when it was a keep.
+        pub n: Option<u32>,
+    }
+}
+
+wire! {
+    /// Judge–human agreement (W3, D14).
+    #[derive(Copy, Default, Eq)]
+    #[serde(default)]
+    pub struct Agreement {
+        /// Human answers that matched the judge's double verdict.
+        pub agreed: u32,
+        /// Human pairs answered.
+        pub asked: u32,
+    }
+}
+
+wire! {
+    /// One live elite of the archive (W4).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct CellRow {
+        /// `i<island>:<bin>.<bin>`.
+        pub key: String,
+        /// Island.
+        pub island: Option<u8>,
+        /// The elite's tree.
+        pub sha: String,
+        /// The experiment that landed it.
+        pub n: u32,
+        /// Objective means.
+        pub scores: BTreeMap<String, f64>,
+        /// Descriptor values.
+        pub descriptor: BTreeMap<String, f64>,
+        /// Children sampled from it.
+        pub children: u32,
+        /// The champion.
+        pub champion: bool,
+    }
+}
+
+wire! {
+    /// One arm in one window (W6; `observations` row).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct ArmWindow {
+        /// Experiment.
+        pub n: u32,
+        /// `control` | `candidate`.
+        pub arm: String,
+        /// Window index.
+        pub win: u32,
+        /// RFC 3339.
+        pub start_at: String,
+        /// RFC 3339.
+        pub end_at: String,
+        /// Units observed.
+        pub units: u32,
+        /// Mean outcome.
+        pub mean: Option<f64>,
+        /// Variance.
+        pub var: Option<f64>,
+    }
+}
+
+wire! {
+    /// One launch (W6; `launches` row without the token hash).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct LaunchRow {
+        /// Study.
+        pub slug: String,
+        /// Experiment.
+        pub n: u32,
+        /// `requested` | `approved` | `refused` | `deployed` | `rolled_back`.
+        pub state: String,
+        /// Share of traffic both arms take.
+        pub exposure: f64,
+        /// RFC 3339.
+        pub requested_at: String,
+        /// RFC 3339.
+        pub decided_at: Option<String>,
+        /// Who pressed.
+        pub by: Option<String>,
+    }
+}
+
+wire! {
+    /// One fixture of the suite (W7).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct SuiteRow {
+        /// Fixture name.
+        pub fixture: String,
+        /// In the held-out set.
+        pub held_out: bool,
+        /// Normalised holdout gain under the incumbent mechanism.
+        pub incumbent: Option<f64>,
+        /// Under the candidate mechanism.
+        pub candidate: Option<f64>,
+    }
+}
+
+// ───────────────────────────── 159 §5.4–§5.5, §5.11 ledger rows and RPC replies ─────────────────────────────
+
+wire! {
+    /// `archive` row (159 §5.4): a W1 front member or a W4 cell elite.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct ArchiveRow {
+        /// Study.
+        pub slug: String,
+        /// `front` | `cell`.
+        pub kind: String,
+        /// `f<n>` or `i<island>:<bin>.<bin>`.
+        pub key: String,
+        /// The tree.
+        pub sha: String,
+        /// The experiment that landed it.
+        pub n: u32,
+        /// `refs/autoresearch/<slug>/<kind>/<key>`.
+        #[serde(rename = "ref")]
+        pub ref_name: String,
+        /// Objective means.
+        pub scores: BTreeMap<String, f64>,
+        /// Descriptor values (W4).
+        pub descriptor: BTreeMap<String, f64>,
+        /// Island (W4).
+        pub island: Option<u8>,
+        /// Children sampled from it.
+        pub children: u32,
+        /// RFC 3339.
+        pub at: String,
+    }
+}
+
+wire! {
+    /// `judgments` row (159 §5.4): a W2 case score (`b_sha` NULL) or a W3 pair.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct JudgmentRow {
+        /// Row id (0 before insert).
+        pub id: i64,
+        /// Study.
+        pub slug: String,
+        /// Experiment.
+        pub n: u32,
+        /// Case.
+        pub case_id: String,
+        /// `train` | `val` | `holdout`.
+        pub split: String,
+        /// The tree scored, or the pair's first tree.
+        pub a_sha: String,
+        /// The pair's second tree (W3).
+        pub b_sha: Option<String>,
+        /// Whether A was shown first (W3).
+        pub a_first: Option<bool>,
+        /// The judge model.
+        pub model: String,
+        /// 0–1 (W2).
+        pub score: Option<f64>,
+        /// `a` | `b` | `tie` (W3).
+        pub winner: Option<String>,
+        /// The judge's reason.
+        pub reason: String,
+        /// Answered by a human.
+        pub human: bool,
+        /// USD nanos.
+        #[cfg_attr(feature = "ts", ts(type = "number"))]
+        pub cost_nanos: u64,
+        /// RFC 3339.
+        pub at: String,
+    }
+}
+
+wire! {
+    /// `ratings` row (159 §5.4, W3).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct RatingRecord {
+        /// Study.
+        pub slug: String,
+        /// Segment.
+        pub segment: u32,
+        /// The version's tree.
+        pub sha: String,
+        /// Strength.
+        pub theta: f64,
+        /// Standard error.
+        pub se: f64,
+        /// Pairs judged.
+        pub games: u32,
+        /// RFC 3339.
+        pub at: String,
+    }
+}
+
+wire! {
+    /// `citations` row (159 §5.4, W5).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct CitationRow {
+        /// The `ideas.id` it cites.
+        pub idea_id: i64,
+        /// Source URL.
+        pub url: String,
+        /// Page title.
+        pub title: String,
+        /// ≤ 300 characters, verified against the fetched text.
+        pub quote: String,
+        /// The quote occurred in the page.
+        pub verified: bool,
+        /// RFC 3339.
+        pub fetched_at: String,
+    }
+}
+
+wire! {
+    /// `launches` row (159 §5.4, W6); the token hash never leaves the store as a `LaunchRow`.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct LaunchRecord {
+        /// Study.
+        pub slug: String,
+        /// Experiment.
+        pub n: u32,
+        /// `requested` | `approved` | `refused` | `deployed` | `rolled_back`.
+        pub state: String,
+        /// sha256 of the press token.
+        pub token_hash: String,
+        /// Share of traffic both arms take.
+        pub exposure: f64,
+        /// RFC 3339.
+        pub requested_at: String,
+        /// RFC 3339.
+        pub decided_at: Option<String>,
+        /// Who pressed.
+        pub by: Option<String>,
+    }
+}
+
+impl LaunchRecord {
+    /// The view without the token hash.
+    pub fn row(&self) -> LaunchRow {
+        LaunchRow {
+            slug: self.slug.clone(),
+            n: self.n,
+            state: self.state.clone(),
+            exposure: self.exposure,
+            requested_at: self.requested_at.clone(),
+            decided_at: self.decided_at.clone(),
+            by: self.by.clone(),
+        }
+    }
+}
+
+wire! {
+    /// `observations` row (159 §5.4, W6).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct ObservationRow {
+        /// Row id (0 before insert).
+        pub id: i64,
+        /// Study.
+        pub slug: String,
+        /// Experiment.
+        pub n: u32,
+        /// `control` | `candidate`.
+        pub arm: String,
+        /// Window index.
+        pub win: u32,
+        /// RFC 3339.
+        pub start_at: String,
+        /// RFC 3339.
+        pub end_at: String,
+        /// Units observed.
+        pub units: u32,
+        /// Mean outcome.
+        pub mean: Option<f64>,
+        /// Variance.
+        pub var: Option<f64>,
+        /// The source's raw fields.
+        pub raw: serde_json::Value,
+        /// RFC 3339.
+        pub at: String,
+    }
+}
+
+wire! {
+    /// `autoresearch.mechanism` op (159 §5.11, W7).
+    #[derive(Eq)]
+    #[serde(tag = "op", rename_all = "snake_case")]
+    pub enum MechanismOp {
+        /// Every version.
+        List,
+        /// One version's files.
+        Show {
+            /// Version; `None` = the active one.
+            version: Option<u32>,
+        },
+        /// A press: new studies pin this version.
+        Adopt {
+            /// Version.
+            version: u32,
+        },
+    }
+}
+
+wire! {
+    /// `autoresearch.mechanism` reply (W7).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct MechanismInfo {
+        /// The active version; `None` = the compiled defaults.
+        pub active: Option<u32>,
+        /// Known versions, newest first.
+        pub versions: Vec<MechanismVersion>,
+        /// `Show`: file name → text.
+        pub files: BTreeMap<String, String>,
+    }
+}
+
+wire! {
+    /// One mechanism version (W7).
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct MechanismVersion {
+        /// Version.
+        pub version: u32,
+        /// Git sha of `<root>/mechanism/`.
+        pub sha: String,
+        /// RFC 3339.
+        pub at: String,
+        /// The adopting study's headline, or "compiled defaults".
+        pub summary: String,
     }
 }
 
@@ -1901,5 +2945,233 @@ window: null
         assert_eq!(s.holdout.as_ref().unwrap().every, 5);
         let back: StudySpec = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
+    }
+
+    /// 159 §5.12 item 2: a 140 spec, its flattened draft arguments and a 151 draft serialise
+    /// byte for byte as before C — no new key appears while every new field is at its default.
+    #[test]
+    fn a_140_spec_serialises_without_any_159_key() {
+        let s = StudySpec {
+            slug: "x".into(),
+            goal: "g".into(),
+            repo: "/r".into(),
+            ..StudySpec::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        for key in [
+            "axes",
+            "objectives",
+            "cases",
+            "judge",
+            "population",
+            "literature",
+            "hooks",
+            "world",
+            "suite",
+            "calls",
+            "target",
+        ] {
+            assert!(!json.contains(&format!("\"{key}\"")), "{key} in {json}");
+        }
+        let args = DraftArgs {
+            spec: s.clone(),
+            ..DraftArgs::default()
+        };
+        let flat = serde_json::to_string(&args).unwrap();
+        assert!(!flat.contains("\"axes\"") && !flat.contains("\"objectives\""));
+        // The 140 shape (every key of the 140 struct, nothing else) parses and round-trips.
+        let back: StudySpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+        assert!(s.axes.is_default());
+        assert_eq!(s.kind(), KIND_SCALAR);
+        assert_eq!(s.rule(), Some(GateRule::ZGate));
+        // And a spec with a 159 field set writes it.
+        let mut p = s.clone();
+        p.axes.objectives = ObjectivesMode::Pareto;
+        let pj = serde_json::to_string(&p).unwrap();
+        assert!(pj.contains("\"axes\"") && pj.contains("\"pareto\""));
+        assert_eq!(p.kind(), KIND_PARETO);
+        assert_eq!(p.rule(), Some(GateRule::Dominance));
+    }
+
+    /// 159 §5.12 item 4: `objectives_in_force()` from `metric` + guards; `normalise()` mirrors
+    /// the headline and the guards back; the round trip is the identity on a 140 spec.
+    #[test]
+    fn objectives_in_force_and_normalise() {
+        let mut s = StudySpec {
+            metric: MetricSpec {
+                name: "time_ms".into(),
+                unit: "ms".into(),
+                direction: Direction::Lower,
+                min_effect: "0.5%".into(),
+            },
+            secondary_guards: vec![Guard {
+                name: "alloc_mb".into(),
+                max_regression: "5%".into(),
+                direction: Direction::Lower,
+            }],
+            ..StudySpec::default()
+        };
+        let before = s.clone();
+        let o = s.objectives_in_force();
+        assert_eq!(o.len(), 2);
+        assert_eq!(
+            (o[0].name.as_str(), o[0].role),
+            ("time_ms", ObjectiveRole::Primary)
+        );
+        assert_eq!(o[0].min_effect, "0.5%");
+        assert_eq!(
+            (o[1].name.as_str(), o[1].role),
+            ("alloc_mb", ObjectiveRole::Guard)
+        );
+        assert_eq!(o[1].max_regression, "5%");
+        assert_eq!(s.headline().name, "time_ms");
+        s.normalise();
+        assert_eq!(s, before, "normalise is the identity without `objectives`");
+
+        // With objectives: the first primary becomes `metric`, the guards `secondary_guards`.
+        s.objectives = vec![
+            Objective {
+                name: "size_kb".into(),
+                unit: "kB".into(),
+                direction: Direction::Lower,
+                role: ObjectiveRole::Guard,
+                max_regression: "10%".into(),
+                ..Objective::default()
+            },
+            Objective {
+                name: "score".into(),
+                unit: "".into(),
+                direction: Direction::Higher,
+                role: ObjectiveRole::Primary,
+                min_effect: "1%".into(),
+                ..Objective::default()
+            },
+            Objective {
+                name: "tokens".into(),
+                role: ObjectiveRole::Report,
+                ..Objective::default()
+            },
+        ];
+        s.normalise();
+        assert_eq!(s.metric.name, "score");
+        assert_eq!(s.metric.direction, Direction::Higher);
+        assert_eq!(s.metric.min_effect, "1%");
+        assert_eq!(s.secondary_guards.len(), 1);
+        assert_eq!(s.secondary_guards[0].name, "size_kb");
+        assert_eq!(s.secondary_guards[0].max_regression, "10%");
+        assert_eq!(s.objectives_in_force(), s.objectives);
+        let mut again = s.clone();
+        again.normalise();
+        assert_eq!(again, s, "normalise is idempotent");
+    }
+
+    /// 159 §5.12 item 4: `is_open()` covers `Waiting`; `is_dangling()` does not (W-q).
+    #[test]
+    fn is_open_covers_waiting_and_dangling_does_not() {
+        use ExperimentState as S;
+        for s in [S::Open, S::Measuring, S::Measured] {
+            assert!(s.is_open() && s.is_dangling() && !s.is_closed(), "{s:?}");
+        }
+        assert!(S::Waiting.is_open());
+        assert!(!S::Waiting.is_dangling());
+        assert!(!S::Waiting.is_closed());
+        for s in [
+            S::Kept,
+            S::Discarded,
+            S::Crashed,
+            S::ChecksFailed,
+            S::Refused,
+            S::RejectedByReview,
+            S::Abandoned,
+            S::Interrupted,
+            S::Timeout,
+        ] {
+            assert!(!s.is_open() && !s.is_dangling() && s.is_closed(), "{s:?}");
+        }
+        assert_eq!(S::Waiting.tag(), "waiting");
+        assert_eq!(serde_json::to_string(&S::Waiting).unwrap(), "\"waiting\"");
+    }
+
+    /// 159 §5.6: the rule table, and the combinations no wave has built.
+    #[test]
+    fn rule_table_and_kind_words() {
+        let mk = |o: ObjectivesMode, s: Scoring, se: Search, a: Artefact| StudySpec {
+            axes: Axes {
+                objectives: o,
+                scoring: s,
+                search: se,
+                artefact: a,
+            },
+            ..StudySpec::default()
+        };
+        use {Artefact as A, ObjectivesMode as O, Scoring as S, Search as Se};
+        assert_eq!(
+            mk(O::Single, S::Bench, Se::Ratchet, A::Repo).rule(),
+            Some(GateRule::ZGate)
+        );
+        assert_eq!(
+            mk(O::Pareto, S::Bench, Se::Front, A::Repo).rule(),
+            Some(GateRule::Dominance)
+        );
+        assert_eq!(
+            mk(O::Single, S::Cases, Se::Ratchet, A::File).rule(),
+            Some(GateRule::Paired)
+        );
+        assert_eq!(
+            mk(O::Pareto, S::Cases, Se::Ratchet, A::File).rule(),
+            Some(GateRule::Paired)
+        );
+        assert_eq!(
+            mk(O::Judged, S::Pairwise, Se::Ratchet, A::File).rule(),
+            Some(GateRule::WinBound)
+        );
+        assert_eq!(
+            mk(O::Single, S::World, Se::Ratchet, A::Repo).rule(),
+            Some(GateRule::Msprt)
+        );
+        assert_eq!(
+            mk(O::Single, S::Suite, Se::Ratchet, A::Mechanism).rule(),
+            Some(GateRule::Paired)
+        );
+        assert_eq!(mk(O::Judged, S::Bench, Se::Ratchet, A::Repo).rule(), None);
+        assert_eq!(mk(O::Pareto, S::World, Se::Ratchet, A::Repo).rule(), None);
+        assert_eq!(
+            mk(O::Single, S::Suite, Se::Ratchet, A::Mechanism).kind(),
+            KIND_META
+        );
+        assert_eq!(
+            mk(O::Single, S::World, Se::Ratchet, A::Repo).kind(),
+            KIND_WORLD
+        );
+        assert_eq!(
+            mk(O::Single, S::Bench, Se::Population, A::Repo).kind(),
+            KIND_POPULATION
+        );
+        assert_eq!(
+            mk(O::Judged, S::Pairwise, Se::Ratchet, A::File).kind(),
+            KIND_JUDGED
+        );
+        assert_eq!(
+            mk(O::Single, S::Cases, Se::Ratchet, A::File).kind(),
+            KIND_PROMPT
+        );
+        assert_eq!(
+            mk(O::Pareto, S::Bench, Se::Front, A::Repo).kind(),
+            KIND_PARETO
+        );
+        // The tagged forms every wave and the UI read.
+        let v = serde_json::to_value(KindView::Scalar).unwrap();
+        assert_eq!(v, serde_json::json!({ "kind": "scalar" }));
+        let d = serde_json::to_value(GateDecision {
+            v: GateDecision::V,
+            rule: GateRule::Dominance,
+            ..GateDecision::default()
+        })
+        .unwrap();
+        assert_eq!(d["v"], 2);
+        assert_eq!(d["rule"], "dominance");
+        let w = serde_json::to_value(WaitInfo::default()).unwrap();
+        assert_eq!(w["why"], "approval");
     }
 }

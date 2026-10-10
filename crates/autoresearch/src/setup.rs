@@ -18,8 +18,9 @@ use crate::error::{Error, Result};
 use crate::runner::{self, SampleRequest};
 use crate::tools::{Draft, Seams, draft_spec_path, read_draft, validate_spec};
 use crate::types::{
-    BudgetSpec, Direction, DraftField, DraftSummary, DraftView, FieldState, Guard, ModelsSpec,
-    ProbeKind, ProbeResult, SampleRole, StudySpec,
+    BudgetSpec, Direction, DraftField, DraftSummary, DraftView, FieldState, Guard, KIND_JUDGED,
+    KIND_META, KIND_PARETO, KIND_POPULATION, KIND_PROMPT, KIND_WORLD, ModelsSpec, ProbeKind,
+    ProbeResult, SampleRole, StudySpec,
 };
 use crate::{drafts_dir, git};
 
@@ -78,6 +79,100 @@ pub const LEAVES: [&str; 32] = [
     "include_dirty",
 ];
 
+// ───────────────────────────── 159 §18.3 kind rows ─────────────────────────────
+
+/// One draft-panel row a kind adds (159 §18.3): the row name, its label and the leaves
+/// `draft_edit.field` accepts for it. The rows live in the wave's module.
+#[derive(Clone, Copy, Debug)]
+pub struct SetupRow {
+    /// Row name (`objectives`, `cases`, `world`, …).
+    pub row: &'static str,
+    /// Panel label.
+    pub label: &'static str,
+    /// Leaves under the row.
+    pub leaves: &'static [&'static str],
+}
+
+/// A wave's setup registration: which kind it serves, its rows, and how a row is rendered
+/// and set. One entry per wave; the bodies are in the wave's module.
+struct KindSetup {
+    kind: &'static str,
+    rows: &'static [SetupRow],
+    value: fn(&StudySpec, &str) -> String,
+    set: fn(&mut StudySpec, &str, &str) -> std::result::Result<(), String>,
+}
+
+/// The registry: the rows a draft shows beyond the 140 ones are those of its kind, plus the
+/// literature block's. Every entry is empty until its wave; a 140 draft shows the nine rows.
+const KIND_SETUP: [KindSetup; 7] = [
+    KindSetup {
+        kind: KIND_PARETO,
+        rows: crate::pareto::SETUP_ROWS,
+        value: crate::pareto::setup_value,
+        set: crate::pareto::setup_set,
+    }, // 159:W1
+    KindSetup {
+        kind: KIND_PROMPT,
+        rows: crate::cases::SETUP_ROWS,
+        value: crate::cases::setup_value,
+        set: crate::cases::setup_set,
+    }, // 159:W2
+    KindSetup {
+        kind: KIND_JUDGED,
+        rows: crate::judge::SETUP_ROWS,
+        value: crate::judge::setup_value,
+        set: crate::judge::setup_set,
+    }, // 159:W3
+    KindSetup {
+        kind: KIND_POPULATION,
+        rows: crate::population::SETUP_ROWS,
+        value: crate::population::setup_value,
+        set: crate::population::setup_set,
+    }, // 159:W4
+    KindSetup {
+        kind: "literature",
+        rows: crate::literature::SETUP_ROWS,
+        value: crate::literature::setup_value,
+        set: crate::literature::setup_set,
+    }, // 159:W5
+    KindSetup {
+        kind: KIND_WORLD,
+        rows: crate::world::SETUP_ROWS,
+        value: crate::world::setup_value,
+        set: crate::world::setup_set,
+    }, // 159:W6
+    KindSetup {
+        kind: KIND_META,
+        rows: crate::suite::SETUP_ROWS,
+        value: crate::suite::setup_value,
+        set: crate::suite::setup_set,
+    }, // 159:W7
+];
+
+/// The registrations that apply to a spec: its kind's, and the literature block's when set.
+fn kind_setups(spec: &StudySpec) -> impl Iterator<Item = &'static KindSetup> {
+    let kind = spec.kind();
+    let lit = spec.literature.is_some() || spec.hooks.is_some();
+    KIND_SETUP
+        .iter()
+        .filter(move |k| k.kind == kind || (lit && k.kind == "literature"))
+}
+
+/// The kind rows a spec's draft panel shows after the 140 rows.
+pub fn kind_rows(spec: &StudySpec) -> Vec<&'static SetupRow> {
+    kind_setups(spec).flat_map(|k| k.rows.iter()).collect()
+}
+
+/// The registration owning `row` (by row name) or `leaf` (by its row), if any.
+fn kind_setup_for(spec: &StudySpec, row: &str) -> Option<(&'static KindSetup, &'static SetupRow)> {
+    kind_setups(spec).find_map(|k| {
+        k.rows
+            .iter()
+            .find(|r| r.row == row || r.leaves.contains(&row))
+            .map(|r| (k, r))
+    })
+}
+
 /// The panel label of a row.
 pub fn label(row: &str) -> &'static str {
     match row {
@@ -95,7 +190,11 @@ pub fn label(row: &str) -> &'static str {
         "parallel" => "Parallel",
         "models" => "Models",
         "evaluator_paths" => "Evaluator paths",
-        _ => "?",
+        _ => KIND_SETUP
+            .iter()
+            .flat_map(|k| k.rows.iter())
+            .find(|r| r.row == row)
+            .map_or("?", |r| r.label),
     }
 }
 
@@ -130,7 +229,11 @@ pub fn present(spec: &StudySpec, row: &str) -> bool {
         "secondary_guards" => !spec.secondary_guards.is_empty(),
         "warm" => opt_non_empty(spec.warm.as_ref()),
         "evaluator_paths" => !spec.evaluator_paths.is_empty(),
-        _ => DEFAULTABLE.contains(&row),
+        _ => {
+            DEFAULTABLE.contains(&row)
+                || kind_setup_for(spec, row)
+                    .is_some_and(|(k, r)| !(k.value)(spec, r.row).is_empty())
+        }
     }
 }
 
@@ -296,7 +399,9 @@ pub fn value(spec: &StudySpec, row: &str) -> String {
             }
         }
         "evaluator_paths" => join(&spec.evaluator_paths),
-        _ => String::new(),
+        _ => kind_setup_for(spec, row)
+            .map(|(k, r)| (k.value)(spec, r.row))
+            .unwrap_or_default(),
     }
 }
 
@@ -506,9 +611,11 @@ pub fn view_of(root: &Path, d: Draft, started: bool) -> DraftView {
             (FieldState::Proposed, None)
         }
     };
+    let kind_rows = kind_rows(spec);
     let fields: Vec<DraftField> = MAIN_ROWS
         .iter()
         .chain(ADVANCED_ROWS.iter())
+        .chain(kind_rows.iter().map(|r| &r.row))
         .map(|row| {
             let (state, evidence) = state_of(row);
             DraftField {
@@ -762,7 +869,12 @@ pub fn set_leaf(spec: &mut StudySpec, leaf: &str, v: &str) -> std::result::Resul
         // R1: the panel's "Start with my uncommitted changes" (= `tools::mark_include_dirty`);
         // not a row, so `edit` marks nothing user-set or confirmed.
         "include_dirty" => spec.include_dirty = parse_bool(v)?,
-        other => return Err(format!("unknown field `{other}`")),
+        other => {
+            return match kind_setup_for(spec, other) {
+                Some((k, _)) => (k.set)(spec, other, v),
+                None => Err(format!("unknown field `{other}`")),
+            };
+        }
     }
     Ok(())
 }
