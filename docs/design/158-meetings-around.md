@@ -1129,3 +1129,166 @@ duplicates but AEC3 does not build cleanly: it needs no new crate.
 | Per-meeting `restricted` flag for MCP | a user asks | `Manifest.restricted` + catalogue filter (§12.5) |
 | Pre-meeting brief without a project (shared-attendee ranking, C `:328-331`) | ≥ 30 % of matched events have no project after W3 | `cal_prebrief` sources widen |
 | Core Audio / WASAPI listeners instead of the 2 s poll (W-b) | the tick shows in `top` | `detect/sensor.rs` |
+
+## 15. Contract
+
+Frozen shapes. Every new field on an existing type is `#[serde(default)]` and additive; TS bindings regenerate from `ts-rs`
+(`lib.rs:148`). Owner wave in brackets.
+
+### 15.1 Rust types (`crates/meeting/src/lib.rs`, `store.rs`, new modules)
+
+```rust
+// detect/ (W1)
+pub enum Cleared { NotNow, Never, Released, Started }
+pub struct Detection { pub app: ProcessInfo, pub app_id: String, pub since: String, pub also: Vec<ProcessInfo>,
+                       pub event: Option<EventMatch>, pub project: Option<String>, pub brief: Option<Vec<String>> }
+pub enum Source { Manual, Detected { app_id: String }, Calendar { event: EventId } }        // StartMeeting.source
+// MeetingEvent additions (W1, W3)
+Detected(Detection) | DetectionCleared { app_id: String, reason: Cleared }
+| AppReleased { meeting: MeetingId, app: ProcessInfo, released_for_s: u32 }
+| Upcoming { event: EventRef, project: Option<String>, brief: Option<Vec<String>> }
+// Status (W1): + detection: Option<Detection>
+// StartMeeting (W1–W3, all Option, default None): + source: Option<Source>, event: Option<EventId>,
+//   project: Option<String>, template: Option<String>
+// Manifest (W2–W4): + event: Option<EventRef>, project: Option<String>, template: String (default "meeting"),
+//   stats: Option<Stats>                      // Stats { echo_dupes: u32, mic_segments: u32 } (W6)
+// MeetingSummary (W3): + project: Option<String>
+// calendar/ (W2)
+pub struct EventId(pub String);                 // "source:uid:recurrence_id"
+pub struct Attendee { pub name: String, pub email: Option<String>, pub status: Option<String>, pub is_me: bool }
+pub struct EventRef { pub id: EventId, pub uid: String, pub title: String, pub start: String, pub end: String,
+                      pub join_url: Option<String>, pub join_host: Option<String>, pub organizer: Option<Attendee>,
+                      pub attendees: Vec<Attendee>, pub description: Option<String> }
+pub struct EventMatch { pub event: EventRef, pub score: f32, pub alternatives: Vec<EventRef> }
+pub struct CalEvent { /* EventRef fields + */ pub all_day: bool, pub tz: Option<String>, pub cancelled: bool, pub sequence: u32,
+                      pub location: Option<String>, pub recurrence_id: Option<String> }
+pub struct CalSource { pub id: String, pub kind: String, pub name: String, pub enabled: bool, pub last_fetch: Option<String>,
+                       pub last_error: Option<String>, pub state: Option<String> }
+pub enum CalendarEvent { EventKit { enabled: bool }, SourcesChanged }      // bus, forwarded like MeetingEvent
+// MeetingConfig (W1–W3): see §6.1 table; nested `detect: DetectConfig`, `calendar: CalendarConfig`
+pub struct MeetingSettings { /* §6.2 user-facing subset */ }
+// speakers (W4)
+pub enum SuggestionSource { Voiceprint, Intro, Vocative, Elimination, OneOnOne, Warning }
+pub struct Suggestion { pub label: String, pub name: String, pub email: Option<String>, pub profile: Option<ProfileId>,
+                        pub confidence: f32, pub source: SuggestionSource, pub evidence: String }
+// templates (W4)
+pub struct Template { pub slug: String, pub name: String, pub description: String, pub sections: Vec<Section>, pub builtin: bool }
+pub struct Section { pub title: String, pub instruction: Option<String>, pub required: bool }
+// mcp-server (W5)
+pub struct McpServerConfig { pub enabled: bool, pub port: u16 }           // config section `mcp_server`
+```
+
+### 15.2 RPC methods (`crates/rpc/src/api.rs`, after `set_meeting_live_diarization`, `api.rs:1825-1826`)
+
+| Method | Params → Result | Wave |
+|---|---|---|
+| `meeting_detection` | `() → Option<Detection>` | W1 |
+| `meeting_detection_dismiss` | `(app_id: String, never: bool) → ()` | W1 |
+| `meeting_detection_set_event` | `(event: Option<EventId>) → Option<Detection>` | W2 |
+| `meeting_settings_get` / `meeting_settings_set` | `() → MeetingSettings` / `(MeetingSettings) → MeetingSettings` | W1 |
+| `meeting_set_project` | `(id: MeetingId, project: Option<String>) → Manifest` | W3 |
+| `meeting_set_event` | `(id: MeetingId, event: Option<EventId>) → Manifest` | W2 |
+| `meeting_set_template` | `(id: MeetingId, template: String) → Manifest` | W4 |
+| `meeting_list` | gains `project: Option<String>` (3rd param, default None) | W3 |
+| `meeting_suggest_speakers` | `(id: MeetingId) → Vec<Suggestion>` | W4 |
+| `meeting_templates` / `meeting_template_put` / `meeting_template_delete` | `() → Vec<Template>` / `(slug, body: String) → Template` / `(slug) → ()` | W4 |
+| `calendar_sources` / `calendar_source_add` / `calendar_source_delete` / `calendar_source_refresh` | `() → Vec<CalSource>` / `(name, url) → CalSource` / `(id) → ()` / `(id) → CalSource` | W2 |
+| `calendar_push` | `(source: String, window: (String, String), events: Vec<CalEvent>) → u32` — companion only (`with_extensions`, client header `x-theuth-client`, `rpc/lib.rs:313-321`) | W2 |
+| `calendar_source_state` | `(source: String, state: String) → ()` — companion only | W2 |
+| `calendar_events` | `(from: String, to: String) → Vec<CalEvent>` | W2 |
+| `calendar_settings_get` / `calendar_settings_set` | `() → CalendarConfig` / `(CalendarConfig) → CalendarConfig` | W2 |
+| `mcp_server_get` / `mcp_server_set` / `mcp_server_rotate_token` / `mcp_server_audit` | `() → McpServerStatus` / `(McpServerConfig) → McpServerStatus` / `() → ()` / `(limit) → Vec<AuditLine>` | W5 |
+
+### 15.3 Config keys
+
+`meeting.model`, `meeting.summary_model`, `meeting.template`, `meeting.language`, `meeting.project`, `meeting.detect.enabled`,
+`meeting.detect.ignore`, `meeting.detect.poll_secs` (W1); `meeting.calendar.eventkit`, `meeting.calendar.prebrief`,
+`meeting.calendar.poll_secs` (W2); `mcp_server.enabled`, `mcp_server.port` (W5). Vault rows: `calendar.ics.<source_id>` (W2),
+`mcp.server.token` (W5).
+
+### 15.4 Swift and C# island model additions (W1; W2/W3 fill fields)
+
+- Swift `Models.swift`: `MeetingEvent` cases `detected(Detection)`, `detectionCleared(appId, reason)`, `appReleased(meeting, app,
+  releasedForS)`, `upcoming(event, project, brief)`; types `Detection`, `EventRef`, `Attendee`, `EventMatch`; `MeetingStatus.detection`.
+  `MeetingSlice` (`MeetingReducer.swift:7-45`) gains `prompt: Prompt?` where `Prompt = .detected(Detection) | .upcoming(…) |
+  .stop(app, releasedForS)`; `IslandModel.visible` gains `|| slice.prompt != nil` (`IslandModel.swift:43`); `RpcClient` gains
+  `meetingStart(StartMeeting)`, `meetingDetection()`, `meetingDetectionDismiss(appId:never:)`, `meetingDetectionSetEvent(_:)`.
+- C# `MeetingWire.Decode` (`MeetingWire.cs:44-76`) gains the four types (and the missing `Summarized`, §18); `IslandModel.ShouldShow`
+  gains `|| HasPrompt` (`IslandModel.cs:201`); `IslandAction` gains `StartRecording`, `NotNow`, `NeverForApp`, `PickEvent`, `Stop`,
+  `KeepRecording`; `Theuth.Companion.Rpc` gains the same four calls.
+- Companion (W2, macOS only): `Calendar/EventKitSource.swift` in `Companion`, `CalEvent` in `TheuthKit/Models.swift`,
+  `calendarPush`, `calendarSourceState` in `RpcClient.swift`.
+
+### 15.5 MCP tool list (W5)
+
+`meeting_list`, `meeting_get`, `meeting_transcript`, `meeting_summary`, `meeting_briefs`, `meeting_search`, `meeting_speakers`,
+`brief_search`, `brief_get`, `brief_list`, `knowledge_search`, `knowledge_get`, `knowledge_list`, `doc_list`, `doc_markdown`,
+`notebook_list`, `notebook_items`, `notebook_search`, `session_list`, `session_read`, `task_list`, `task_get`, `artifact_list`,
+`calendar_events` — 24 tools, all read-only, all paged where they list.
+
+## 16. Waves
+
+Order: W1 → W2 → W3 → W4 → W5 → W6. W1 and W5 share no files and can run in parallel; W2 needs W1's `Detected` event to fill;
+W3 needs W2's store; W4 needs W2's `Manifest.event` (speaker candidates) but its template/dictionary half can start after W1; W6
+is gated per item. Every wave: no cargo/bun runs mid-flight on the shared machine beyond its own crate's tests; one verification
+pass at the end (the batch landing rule the 148 project used).
+
+| Wave | You own | Must not touch | Proof |
+|---|---|---|---|
+| **W1** detection + prompt + defaults | `crates/meeting/src/detect/{mod,sensor,rules}.rs`; `MeetingConfig` + `MeetingSettings` (§6); `lib.rs:3783-3790` one arm (D13); `MeetingEvent` + `Status` additions; `api.rs` W1 rows; `Meetings.tsx` sections; `MeetingList.tsx` banner; Swift `Island/*`, `CompanionCore/{IslandModel,MeetingReducer}`, `TheuthKit/{Models,RpcClient}`; C# `Island/*`, `Core/{IslandModel,MeetingWire}`, `Rpc` | `capture/*` (read-only reuse of `processes()` helpers), `StartForm.tsx` beyond the project/template fields, the Tauri `Island.tsx`, `tools.rs` | unit: §4.7 rules tests, `MeetingReducerTests` + `IslandModelTests` (Swift, 20 + 12 today, `companion/Tests/CompanionCoreTests`) and `IslandTests` (C#, 20) grow by the prompt cases; integration: a fake `mic_holders` feeding the actor → `Detected` on `subscribe_events`; live: §4.7's Mac and Windows scripts, `IslandProbe` `--probe-island prompt` scenario (`IslandProbe.swift:6-10`) clicking Start/Not now/Never with synthetic input; a meeting left `Recording` in a fixture dir becomes `Review` on start |
+| **W2** calendar + matching + seed | `crates/meeting/src/calendar/{mod,ics,fetch,store,matcher}.rs`; `migrations/0003_calendar.sql`; `Cargo.toml` (`reqwest`, `rrule`, `chrono-tz` in the meeting crate); `api.rs` W2 rows; `Settings/Calendar.tsx` + `SettingsDialog.tsx` tab; companion `Calendar/EventKitSource.swift`, Info.plist usage string, `companion.entitlements.plist`; `Manifest.event`, seed in `start_task` | `detect/rules.rs` beyond calling `matcher::best`; `post/*`; `tools.rs` | unit: §7.7 fixtures, §8.4 matcher; integration: a local ICS server → rows → a fake detection → `Detected.event`; live: Sky's Google secret address and macOS Calendar on his Mac, Settings › Calendar "Upcoming" shows today's events, a Zoom meeting matches and the started line carries attendees |
+| **W3** projects + pre-meeting brief | `Manifest.project`, `MeetingSummary.project`, `meetings.project` column; `cal_project_memory`, `cal_prebrief`; `calendar/prebrief.rs` (the writer turn); prompt chip + `Upcoming` state in both islands; start form "Project" combobox; page header chip; `meeting_list` filter | `tools.rs` (uses existing tools), `summary.rs`, `cache.rs` schema | unit: memory lookup order, prebrief caching/invalidation, excerpt split by heading over a fixture `summary.md`; integration: a project with 3 `Done` fixture meetings → one Private session turn (mocked model) → `brief_put` row with attendee aliases → `Upcoming` at T−5; live: a real recurring event on Sky's calendar shows (c) five minutes before |
+| **W4** speaker suggestions + notes | `speakers.rs` (margin, mutuality), `post/suggest.rs`, `tools.rs` (`meeting_suggest_speakers`), `Review.tsx` chips; `note.rs`, `summary.rs` (`form_for`), `meeting/templates/`, `Settings` template section, start form template select; `post/transcribe.rs` dictionary pass | `detect/*`, `calendar/*`, the diariser (`post/diarize.rs`), `EnrollDialog.tsx` beyond the gate message | unit: §10.5 and §11.4 lists; integration: a fixture transcript + embeddings + attendees → suggestions; `meeting_edit(Rename)` + enroll on accept; live: Sky's "Invesco Planning" meeting (5 meetings on disk, `158-input-meeting-page-and-audio-seams.md:87-89`) re-run through post → Suggest names → accept one → profile written |
+| **W5** MCP | new `crates/mcp-server`; `crates/theuth/src/mcp.rs` + `main.rs` (`session: Option`); `Settings/Mcp.tsx` + tab; `api.rs` W5 rows | every RPC handler it wraps (read-only use), `crates/tools/src/mcp.rs`, `supervisor.rs` | unit: catalogue schema snapshot, Origin/Host/Bearer rejections, paging, Private filter; integration: in-process `Methods` + rmcp's own client (`StreamableHttpClientTransport`, already in the workspace, `tools/src/mcp.rs:1373-1403`) → `list_tools` = 24, `meeting_list` round-trip; stdio: `t mcp` driven by `tokio::io::duplex` like `mcp.rs:196-223`; live: Claude Code with the copied JSON block reads a meeting summary; audit line appears |
+| **W6** later quality | per item (§13, §14) | everything not named by the item | per item's gate first; the echo counter lands first with no behaviour change |
+
+**Must-not-regress (every wave).** Island focus and capture rules: `.nonactivatingPanel`, `sharingType .none`
+(`IslandWindow.swift:16-27`), `WS_EX_NOACTIVATE` + `WDA_EXCLUDEFROMCAPTURE` (`IslandWindow.cs:119`, `ToolWindow.cs:51`) — the
+probe's `clicks` and `stop` scenarios stay green (`IslandProbe.swift:35-170`). No linger (149 D2). Dictation mic ownership: the
+companion's `VoiceRecorder` and the engine's `dictation_start(None)` are untouched; the detector never opens a device (§4.6).
+Meeting start/stop: `meeting_start` with today's six fields behaves exactly as before (new fields default `None`); `meeting_stop`,
+pause/resume unchanged; `consent: false` still refuses (`lib.rs:621-624`). The 156 page: `BriefColumn`, `MeetingActions`,
+playback and enrollment (`docs/design/156-meeting-view.md:74-142`) unchanged except the header chips and the Suggest names button.
+`t mcp --session` output byte-identical. `live_tools` default list unchanged (`lib.rs:593-606`).
+
+## 17. Out of scope
+
+- D16 as ruled: device switching (R8; the `DeviceLost` branch at `system.rs:67-70` stays a log-and-exit), crash-recovery UI
+  (D13's silent finalise only), meetings on other devices/mobile (R8), OAuth calendars and CalDAV (R4, §7.8), a local-only mode
+  (R11), typing or sending into meeting chats (study §7).
+- Cut by the writer: window-title and AX participant reads in W4 (W-g, §14); MCP write tools in W5 (W-i, §14); a per-meeting
+  `restricted` flag (§12.5); a Tauri `Island.tsx` prompt (W-q — the page banner covers Linux); topic buttons from agenda lines
+  (§8.3 — buttons need briefs); Core Audio/WASAPI listeners (W-b, §14); importing other note-takers' meetings over their MCP
+  servers (study §6 item 16 — theuth's client can already mount them; no engine work, so nothing to design).
+
+## 18. Open questions and amendments
+
+**Contradictions found (tree wins for facts).**
+
+1. D9 says a meeting "gets a project"; the tree already gives every meeting session `project: Some("meetings")` (`lib.rs:1936`).
+   Resolved by W-c; Q1 below asks Sky to confirm.
+2. D2 names "theuth itself" once; two theuth processes hold mics (engine for meetings/`dictation_start(None)`, companion for the
+   voice key/dictation, `VoiceRecorder.swift:26-43`) plus the Tauri shell — the ignore list carries all three (§4.3).
+3. D5 lists "transcript language"; nothing can consume it until a multilingual live model exists (`lib.rs:546-548`). Stored, inert.
+4. `158-input-wth-meeting-decisions.md:24` still lists "allow any read-only tool while in a meeting"; that switch was dropped on
+   2026-09-20 (`docs/design/meetings/03-island.md:45-46`). 158 does not revive it; the live allowlist (`lib.rs:593-606`) is the mechanism.
+5. D11 spells the stdio mode `t mcp serve`; the clap shape makes `t mcp` without `--session` the natural form (W-h).
+6. The Windows island decoder lacks `Summarized` while Swift has it (`MeetingWire.cs:44-76` vs `Models.swift:857-876`), and the
+   Windows Island settings caption still says "for 10 minutes after the last topic or brief" (`SettingsWindow.WW3.cs:31`) against
+   the no-linger ruling. Both are pre-existing parity gaps W1 should close while it is in those files.
+7. The ICS plan's `rrule` crate has no `RECURRENCE-ID`; overrides are handled by our reader (§7.3) — a known ceiling, not a bug.
+
+**Questions only Sky can answer.**
+
+1. Should a meeting with a project move its session under that project in the sidebar (W-c), or keep every meeting under
+   `meetings` and show the project only on the meeting page?
+2. MCP writes: do you want any at all (note edits, tasks) — and if so, proposal-gated (a person applies) or live through approvals?
+3. The prompt's lawful line is a sentence with no checkbox (R3); the manual start form keeps its checkbox and the longer 53 §0.14
+   wording (`StartForm.tsx:33`). Converge the form on the R3 sentence, or keep both?
+4. Default port for the MCP server: 7788 beside RPC's 7777 — fine, or do you want it configurable from the first version only via
+   the config file?
+5. Linux has no companion; the Meetings-page banner is its only prompt (W-q). Acceptable until a Linux companion exists?
+
+**Amendments.**
+
+_(none yet)_
