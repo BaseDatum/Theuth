@@ -37,6 +37,24 @@ const DEFAULT_UNIT_SECS: f64 = 5.0;
 const DEFAULT_UNIT_USD: f64 = 0.02;
 /// Nodes that calibrate the estimate (R1-D4).
 const CALIBRATE_NODES: u32 = 20;
+/// Longest wait between retries of a failing node.
+const RETRY_CAP: Duration = Duration::from_secs(1800);
+
+/// Retry delay after `failures` consecutive failures (`failures ≥ 1`):
+/// `base_secs × 2^(failures−1)`, capped at [`RETRY_CAP`].
+fn retry_delay(base_secs: u32, failures: u32) -> Duration {
+    let factor = 2u64
+        .checked_pow(failures.saturating_sub(1))
+        .unwrap_or(u64::MAX);
+    let secs = u64::from(base_secs).saturating_mul(factor);
+    Duration::from_secs(secs).min(RETRY_CAP)
+}
+
+/// A failed node: when it may retry and how many times in a row it failed.
+struct Retry {
+    at: Instant,
+    failures: u32,
+}
 
 /// One attached session's live state.
 pub struct Handle {
@@ -124,7 +142,7 @@ struct Live {
     fold: Option<Fold>,
     running: HashSet<(u8, u64)>,
     /// Failed nodes and when they may retry.
-    failed: HashMap<(u8, u64), Instant>,
+    failed: HashMap<(u8, u64), Retry>,
     /// Nodes whose first failure was reported.
     reported: HashSet<(u8, u64)>,
     /// `(turn, <chat>…</chat>)`, newest last.
@@ -534,7 +552,7 @@ fn schedule(state: &Arc<State>) {
         .find(|p| !live.tree.built(p.l, p.i))
         .map_or(t, |p| p.start());
     let free = |live: &Live, key: &(u8, u64)| {
-        !live.running.contains(key) && live.failed.get(key).is_none_or(|at| *at <= now)
+        !live.running.contains(key) && live.failed.get(key).is_none_or(|r| r.at <= now)
     };
     let mut candidates: Vec<(u8, u64)> = Vec::new();
     if frontier < t && !live.tree.built(0, frontier) && free(&live, &(0, frontier)) {
@@ -708,9 +726,16 @@ async fn finish(state: &State, key: (u8, u64), outcome: Result<Node, String>, to
             state.built_tx.send_modify(|v| *v += 1);
         }
         Err(e) => {
+            let base = state.cfg.read().retry_secs;
+            let prev = live.failed.get(&key).map_or(0, |r| r.failures);
+            let failures = prev.saturating_add(1);
+            let delay = retry_delay(base, failures);
             live.failed.insert(
                 key,
-                Instant::now() + Duration::from_secs(u64::from(state.cfg.read().retry_secs)),
+                Retry {
+                    at: Instant::now() + delay,
+                    failures,
+                },
             );
             if live.reported.insert(key) {
                 tracing::warn!(session = %state.session, l = key.0, i = key.1, error = %e, "endless: node failed (will retry)");
@@ -719,6 +744,9 @@ async fn finish(state: &State, key: (u8, u64), outcome: Result<Node, String>, to
                     id_n(key.0, key.1).0,
                     id_n(key.0, key.1).1
                 ));
+            }
+            if delay >= RETRY_CAP && (prev == 0 || retry_delay(base, prev) < RETRY_CAP) {
+                tracing::warn!(session = %state.session, l = key.0, i = key.1, model = %state.compactor.model_id(), failures, error = %e, "endless: node keeps failing (retrying every 30 min)");
             }
         }
     }
@@ -733,7 +761,7 @@ fn emit_progress(state: &Arc<State>) -> Duration {
     let next_retry = live
         .failed
         .values()
-        .map(|at| at.saturating_duration_since(Instant::now()))
+        .map(|r| r.at.saturating_duration_since(Instant::now()))
         .min()
         .unwrap_or(Duration::from_secs(60));
     if !live.dirty {
@@ -1214,5 +1242,58 @@ pub(crate) fn resolved_for_tests(id: &str) -> models::Resolved {
         genai: id.to_owned(),
         provider: None,
         model: None,
+    }
+}
+
+/// Test seam: `(key, retry at, consecutive failures)` of every failed node.
+#[cfg(test)]
+pub(crate) fn failed_for_tests(
+    inner: &Inner,
+    session: SessionId,
+) -> Vec<((u8, u64), Instant, u32)> {
+    let state = state_of(inner, session).expect("attached");
+    let live = state.live.lock();
+    let mut v: Vec<_> = live
+        .failed
+        .iter()
+        .map(|(k, r)| (*k, r.at, r.failures))
+        .collect();
+    v.sort();
+    v
+}
+
+/// Test seam: drive one job outcome through [`finish`] without the pump.
+#[cfg(test)]
+pub(crate) async fn finish_for_tests(
+    inner: &Inner,
+    session: SessionId,
+    key: (u8, u64),
+    outcome: Result<Node, String>,
+) {
+    let state = state_of(inner, session).expect("attached");
+    finish(&state, key, outcome, Duration::ZERO).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_delay_doubles_to_the_cap() {
+        let want = [10, 20, 40, 80, 160, 320, 640, 1280, 1800, 1800];
+        for (i, secs) in want.into_iter().enumerate() {
+            assert_eq!(
+                retry_delay(10, i as u32 + 1),
+                Duration::from_secs(secs),
+                "n={}",
+                i + 1
+            );
+        }
+        assert_eq!(retry_delay(0, 1), Duration::ZERO);
+        assert_eq!(retry_delay(0, 40), Duration::ZERO);
+        assert_eq!(retry_delay(10, 63), RETRY_CAP);
+        assert_eq!(retry_delay(10, 64), RETRY_CAP);
+        assert_eq!(retry_delay(10, u32::MAX), RETRY_CAP);
+        assert_eq!(retry_delay(u32::MAX, u32::MAX), RETRY_CAP);
     }
 }
