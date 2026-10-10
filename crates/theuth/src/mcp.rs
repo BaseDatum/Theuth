@@ -4,6 +4,10 @@
 //! `list_skills`, `load_skill(name)`, `send_message(text)` → the parent's
 //! `<message from=…>` input. Exits when stdin closes (the harness is gone)
 //! or the engine's RPC socket drops, so nothing outlives either side.
+//!
+//! `t mcp` without `--session` (158 §12.3, W-h) bridges stdio to the same
+//! catalogue the engine's HTTP MCP server exposes (`mcp_server::Catalog`),
+//! over the same engine connection; audit lines go to the same file.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -170,14 +174,30 @@ impl ServerHandler for Shim {
     }
 }
 
-/// Serve on stdio until the harness closes stdin or the engine drops.
-pub async fn run(data_dir: &Path, listen: &str, session: String) -> anyhow::Result<()> {
+/// Serve on stdio until the harness closes stdin or the engine drops: the
+/// child shim with `session`, the catalogue without.
+pub async fn run(data_dir: &Path, listen: &str, session: Option<String>) -> anyhow::Result<()> {
     let client = crate::link_cli::connect(data_dir, listen)
         .await
         .map_err(|e| anyhow::anyhow!("no engine on {listen}: {e}"))?;
-    let shim = Shim::new(session, client);
-    let watch = shim.client.clone();
-    let running = shim.serve(rmcp::transport::stdio()).await?;
+    let client = Arc::new(client);
+    let watch = client.clone();
+    match session {
+        Some(session) => serve_until_gone(Shim { session, client }, watch).await,
+        None => {
+            // No vault handle outside the engine: results are the user's own RPC view.
+            let catalog =
+                mcp_server::Catalog::new(client, "stdio", mcp_server::Audit::new(data_dir), None);
+            serve_until_gone(catalog, watch).await
+        }
+    }
+}
+
+async fn serve_until_gone<H: ServerHandler>(
+    handler: H,
+    watch: Arc<WsClient>,
+) -> anyhow::Result<()> {
+    let running = handler.serve(rmcp::transport::stdio()).await?;
     let ct = running.cancellation_token();
     tokio::spawn(async move {
         watch.on_disconnect().await;

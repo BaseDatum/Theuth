@@ -11764,6 +11764,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
+name = "mcp-server"
+version = "2.15.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "document",
+ "http 1.5.0",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jsonrpsee",
+ "knowledge",
+ "meeting",
+ "parking_lot",
+ "rmcp",
+ "runtime",
+ "schemars 1.2.2",
+ "secrets",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tasks",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17240,11 +17273,14 @@ dependencies = [
  "chrono",
  "futures",
  "http 1.5.0",
+ "http-body 1.1.0",
+ "http-body-util",
  "indexmap 2.14.2",
  "oauth2",
  "pastey 0.2.3",
  "pin-project-lite",
  "process-wrap",
+ "rand 0.10.2",
  "reqwest 0.13.5",
  "schemars 1.2.2",
  "serde",
@@ -17254,6 +17290,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tower-service",
  "tracing",
  "url",
  "uuid",
@@ -17385,6 +17422,7 @@ dependencies = [
  "knowledge",
  "libc",
  "link",
+ "mcp-server",
  "meeting",
  "mesh",
  "nodes",
@@ -21848,6 +21886,7 @@ dependencies = [
  "jsonrpsee",
  "knowledge",
  "link",
+ "mcp-server",
  "meeting",
  "mesh",
  "models",
