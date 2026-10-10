@@ -75,9 +75,12 @@ pub struct Template {
     pub description: String,
     /// In order.
     pub sections: Vec<Section>,
-    /// Shipped with the binary (delete rewrites the shipped body instead of removing it).
+    /// Shipped with the binary (`meeting_template_reset` restores the shipped body; delete refused).
     #[serde(default)]
     pub builtin: bool,
+    /// The raw markdown file, front matter included — what Settings edits and `put` writes verbatim.
+    #[serde(default)]
+    pub body: String,
 }
 
 /// The front matter as written; unknown fields (`builtin: 1`) are ignored.
@@ -124,6 +127,7 @@ pub fn parse(slug: &str, text: &str) -> Result<Template, String> {
         description: fm.description.trim().to_owned(),
         sections,
         builtin: is_builtin(slug),
+        body: text.to_owned(),
     })
 }
 
@@ -380,35 +384,54 @@ pub async fn rpc_template_put(
     slug: String,
     body: String,
 ) -> anyhow::Result<Template> {
-    if !valid_slug(&slug) {
+    put(&dir_of(rt), &slug, &body)
+}
+
+/// [`rpc_template_put`]'s body: validate by parsing, then write `body` exactly as given.
+pub fn put(dir: &Path, slug: &str, body: &str) -> anyhow::Result<Template> {
+    if !valid_slug(slug) {
         anyhow::bail!("slug must be 1–40 chars of a-z, 0-9 and '-'");
     }
-    let t = parse(&slug, &body).map_err(anyhow::Error::msg)?;
-    let dir = dir_of(rt);
-    install(&dir, BUILTINS)?;
+    let t = parse(slug, body).map_err(anyhow::Error::msg)?;
+    install(dir, BUILTINS)?;
     std::fs::write(dir.join(format!("{slug}.md")), body)?;
     Ok(t)
 }
 
-/// `meeting_template_delete(slug)` (W4): a user template is removed; a built-in gets its
-/// shipped body back ("Reset" — the file is never gone).
+/// `meeting_template_delete(slug)` (W4): a user template is removed; refused for a built-in
+/// (§11.1 — `meeting_template_reset` is the way back to the shipped body).
 pub async fn rpc_template_delete(rt: &Runtime, slug: String) -> anyhow::Result<()> {
-    if !valid_slug(&slug) {
+    delete(&dir_of(rt), &slug)
+}
+
+/// [`rpc_template_delete`]'s body.
+pub fn delete(dir: &Path, slug: &str) -> anyhow::Result<()> {
+    if !valid_slug(slug) {
         anyhow::bail!("unknown template {slug:?}");
     }
-    let dir = dir_of(rt);
-    let path = dir.join(format!("{slug}.md"));
-    match builtin(&slug) {
-        Some(body) => {
-            std::fs::write(&path, body)?;
-            // The record follows so the next upgrade still sees an unedited file.
-            install(&dir, BUILTINS)?;
-            Ok(())
-        }
-        None => {
-            std::fs::remove_file(&path).map_err(|e| anyhow::anyhow!("remove template {slug}: {e}"))
-        }
+    if is_builtin(slug) {
+        anyhow::bail!("{slug} is built in: reset it instead of deleting it");
     }
+    std::fs::remove_file(dir.join(format!("{slug}.md")))
+        .map_err(|e| anyhow::anyhow!("remove template {slug}: {e}"))
+}
+
+/// `meeting_template_reset(slug) -> Template` (W4, W4U request): drop the user's edits to a
+/// built-in so the embedded body applies again; refused for a user template.
+pub async fn rpc_template_reset(rt: &Runtime, slug: String) -> anyhow::Result<Template> {
+    reset(&dir_of(rt), &slug)
+}
+
+/// [`rpc_template_reset`]'s body: the shipped body is written back and recorded as ours, so the
+/// next upgrade sees an unedited file again.
+pub fn reset(dir: &Path, slug: &str) -> anyhow::Result<Template> {
+    let Some(body) = builtin(slug) else {
+        anyhow::bail!("{slug:?} is not a built-in template");
+    };
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(dir.join(format!("{slug}.md")), body)?;
+    install(dir, BUILTINS)?;
+    parse(slug, body).map_err(anyhow::Error::msg)
 }
 
 /// `meeting_set_template(id, template) -> Manifest` (W4): changeable until Summarize; the pick
@@ -543,6 +566,67 @@ mod tests {
         assert_eq!(load(Some(tmp.path()), "nope").slug, DEFAULT);
         assert_eq!(load(None, "standup").name, "Standup");
         assert_eq!(load(None, "broken").slug, DEFAULT);
+    }
+
+    /// W4U: `body` is the file verbatim; `put` validates then writes exactly what was sent;
+    /// `delete` refuses built-ins; `reset` restores a built-in's shipped body (and the upgrade
+    /// record), refuses user templates.
+    #[test]
+    fn put_delete_and_reset_round_trip_the_raw_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let shipped = builtin("standup").unwrap();
+        assert_eq!(
+            list(dir).unwrap()[2].body,
+            shipped,
+            "body is the file as shipped"
+        );
+        let edited = format!("{V2}\nmy notes  \n");
+        let t = put(dir, "standup", &edited).unwrap();
+        assert_eq!(
+            (t.body.as_str(), t.builtin, t.sections.len()),
+            (edited.as_str(), true, 2)
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("standup.md")).unwrap(),
+            edited
+        );
+        assert!(
+            put(dir, "standup", "---\nname: X\n---\n").is_err(),
+            "invalid body not written"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("standup.md")).unwrap(),
+            edited
+        );
+        assert!(put(dir, "Bad Slug", V1).is_err());
+        // The edited built-in survives an install (user edit), then reset brings the shipped body back.
+        install(dir, BUILTINS).unwrap();
+        assert_eq!(load(Some(dir), "standup").body, edited);
+        assert!(
+            delete(dir, "standup")
+                .unwrap_err()
+                .to_string()
+                .contains("built in")
+        );
+        let t = reset(dir, "standup").unwrap();
+        assert_eq!(t.body, shipped);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("standup.md")).unwrap(),
+            shipped
+        );
+        // User template: put, reset refused, delete removes, second delete errs.
+        put(dir, "retro", V1).unwrap();
+        assert!(
+            reset(dir, "retro")
+                .unwrap_err()
+                .to_string()
+                .contains("not a built-in")
+        );
+        delete(dir, "retro").unwrap();
+        assert!(!dir.join("retro.md").exists());
+        assert!(delete(dir, "retro").is_err());
+        assert!(reset(dir, "nope").is_err());
     }
 
     fn event(uid: &str, title: &str) -> EventRef {

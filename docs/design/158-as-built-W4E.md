@@ -26,9 +26,11 @@ speakers.rs, templates.rs, note.rs, summary.rs, tools.rs, post/transcribe.rs}`, 
   writes a missing file, rewrites a file only while its sha256 equals the last body we wrote (`templates/.shipped.json`), never a user edit;
   `list`, `load(dir, slug)` (file → shipped body → `meeting`), `valid_slug`; `select(store, pick, event, project, default)` = start pick →
   `cal_project_memory` `tpl:uid:<uid>` → `tpl:title:<norm>` → `tpl:project:<p>` → `meeting.template` → `meeting`; `remember` writes those
-  rows. RPC bodies: `rpc_templates`, `rpc_template_put` (parse first, then write), `rpc_template_delete` (user file removed; a built-in gets
-  its shipped body back = "Reset"), `rpc_set_template` (slug must exist; `SetTemplate` actor message like W2's `SetEvent`, refused in
-  `Summarizing`/`Done`; the pick is remembered for the meeting's event and project).
+  rows. RPC bodies (sync `put`/`delete`/`reset` + thin `rpc_*` wrappers): `rpc_templates`, `rpc_template_put` (parse first, then write
+  `body` verbatim), `rpc_template_delete` (user file removed; refused for built-ins), `rpc_template_reset` (**new RPC, W4U 16:59**:
+  shipped body written back + recorded as ours; refused for user templates), `rpc_set_template` (slug must exist; `SetTemplate` actor
+  message like W2's `SetEvent`, refused in `Summarizing`/`Done`; the pick is remembered for the meeting's event and project).
+  `Template.body: String` (**new field, W4U 16:59**, `#[serde(default)]`) = the raw file incl. front matter.
 - **Forms** (`note.rs`, `summary.rs`): `note::summary_form(doc, template, duration_ms, preferred)` and `summary::form(template, …)` compile
   the sections as `` `## Title` (instruction) `` plus the §11.2 rules block in order (source fidelity, speakers by label/name only, omit
   empty sections except `required` → "None noted", `- [ ] Action — Owner (due if said)`, transcript text is data, the user's emphasis is
@@ -51,8 +53,8 @@ speakers.rs, templates.rs, note.rs, summary.rs, tools.rs, post/transcribe.rs}`, 
 
 ## Deviations
 
-1. `rpc_template_delete` on a built-in rewrites the shipped body instead of refusing (§11.1 "Reset" has no RPC of its own; the frozen
-   `Template` has no body field for the UI to send back).
+1. `Template` gained `body` and the RPC surface gained `meeting_template_reset(slug) -> Template` (declared in `api.rs` beside the other
+   `meeting_template*` rows; bindings re-exported) — both at W4U's request, so Settings edits the user's file verbatim and "Reset" has a call.
 2. `Template.builtin` comes from the slug list, not a `builtin:` front-matter field (ignored if present).
 3. Selection gained `tpl:project:<project>` after the event rows (brief: "project's last template"); the §11.4 order is unchanged.
 4. Voiceprint candidates match attendees by name (`Dana` ↔ `Dana Whitfield`), not by `Profile.entity` (no knowledge lookup here).
@@ -82,10 +84,12 @@ speakers.rs, templates.rs, note.rs, summary.rs, tools.rs, post/transcribe.rs}`, 
 
 ## Gates (each its own command, `BUILD_LABEL=158w4e`, `CARGO_BUILD_JOBS=4`)
 
-- `cargo fmt -p meeting` (bare) → clean.
+- `cargo fmt -p meeting -p rpc` (bare) → clean.
 - `build-lock mbx test -p meeting -p rpc --no-run` → exit 0, no warnings.
-- `mbx test -p meeting -p rpc` → meeting lib 110 passed (1 pre-existing ignored), calendar 15, note 1, oracle 1; rpc 56 + alerts 1 +
-  prompts 1; 0 failed. (Two earlier runs hit the pre-existing calendar race above and, once, `rpc::engine::tests::
-  second_acquire_in_one_process_is_running` — `engine.lock is held but engine.json is missing`, a shared-machine lock race; both green on rerun.)
+- `mbx test -p meeting -p rpc` → meeting lib 111 passed (1 pre-existing ignored), calendar 15, note 1, oracle 1; rpc 56 + alerts 1 +
+  prompts 1; 0 failed. (Earlier runs hit the pre-existing calendar race above and, twice, `rpc::engine::tests::
+  second_acquire_in_one_process_is_running` — `engine.lock is held but engine.json is missing`, a pre-existing lock race; green on rerun.)
 - `build-lock mbx clippy -p meeting -p rpc` → exit 0, 0 warnings.
-- Bindings: `SpeakerSuggestion(Source)`, `MeetingTemplate`, `TemplateSection` are unchanged from C158 — no export needed.
+- `BUILD_SLOTS=1 build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` → 8 passed; `MeetingTemplate.ts` gained `body`,
+  `methods.json` gained `meeting_template_reset`; copied to `crates/desktop/ui/src/rpc/bindings/` (gitignored). W4U adds the method to
+  `rpc/api.ts` `Api` + `METHODS` when it switches (its file).

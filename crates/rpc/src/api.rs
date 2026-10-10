@@ -1895,6 +1895,9 @@ pub trait Api {
     /// 158 §11.1 (W4): delete a user template; refused for built-ins.
     #[method(name = "meeting_template_delete")]
     async fn meeting_template_delete(&self, slug: String) -> RpcResult<()>;
+    /// 158 §11.1 (W4): restore a built-in's shipped body over the user's edits; refused for user templates.
+    #[method(name = "meeting_template_reset")]
+    async fn meeting_template_reset(&self, slug: String) -> RpcResult<meeting::Template>;
     /// 158 §7.4 (W2): every calendar source.
     #[method(name = "calendar_sources")]
     async fn calendar_sources(&self) -> RpcResult<Vec<meeting::CalSource>>;
@@ -7521,6 +7524,12 @@ impl ApiServer for Server {
 
     async fn meeting_template_delete(&self, slug: String) -> RpcResult<()> {
         meeting::templates::rpc_template_delete(&self.rt, slug)
+            .await
+            .map_err(stub_err)
+    }
+
+    async fn meeting_template_reset(&self, slug: String) -> RpcResult<meeting::Template> {
+        meeting::templates::rpc_template_reset(&self.rt, slug)
             .await
             .map_err(stub_err)
     }
