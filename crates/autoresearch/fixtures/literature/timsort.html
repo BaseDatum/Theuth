@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Timsort — the sort behind Python's sorted()</title></head>
+<body>
+<h1>Timsort — the sort behind Python's sorted()</h1>
+<p>Timsort is a hybrid, stable sorting algorithm derived from merge sort and insertion sort. It was
+designed by Tim Peters in 2002 for CPython and has been the standard sort of Python's list.sort()
+and the built-in sorted() ever since.</p>
+<h2>Natural runs</h2>
+<p>The algorithm finds runs that are already ordered, ascending or strictly descending, and extends
+short runs to a minimum length (minrun, between 32 and 64) with binary insertion sort. Descending
+runs are reversed in place, so partially sorted input costs close to O(n) comparisons.</p>
+<h2>Galloping merge</h2>
+<p>Runs are merged pairwise from a stack that keeps the run lengths balanced. When one run keeps
+winning comparisons, the merge switches to galloping mode: it searches exponentially, then
+bisects, to find where the next element of the other run belongs, copying whole blocks at once.</p>
+<h2>In practice</h2>
+<p>A pure-Python insertion sort runs about a thousand times slower than the C implementation. For
+lists of integers, calling the built-in sorted() or list.sort() is the single largest win; a
+key function is applied once per element (decorate-sort-undecorate), never once per comparison.</p>
+</body>
+</html>

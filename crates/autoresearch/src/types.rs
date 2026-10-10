@@ -352,10 +352,6 @@ macro_rules! block_specs {
 }
 
 block_specs! {
-    /// W5: `literature: {seed, every, via, max_queries}` — W5's addendum fills it.
-    LiteratureSpec;
-    /// W5: `hooks: {before, after}` — W5's addendum fills it.
-    HooksSpec;
     /// W6: `world: {deploy, rollback, measure, exposure, window, …}` — W6's addendum fills it.
     WorldSpec;
     /// W7: `suite: {training, held_out, seeds, inner_budget}` — W7's addendum fills it.
@@ -458,6 +454,56 @@ wire! {
         pub migrate_every: u32,
         /// Re-measure a picked elite whose newest sample is older than this many experiments; 0 = the gate's `remeasure_after`.
         pub remeasure_after: u32,
+    }
+}
+
+wire! {
+    /// 159 W5 (§10): one idea the setup chat found in prior work; at Start the plugin fetches
+    /// `url` and keeps the idea only if `quote` occurs in the page.
+    #[derive(Default, Eq)]
+    #[serde(default)]
+    pub struct LiteratureSeed {
+        /// The idea, one sentence.
+        pub text: String,
+        /// Its category (`algorithm`, `caching`, …).
+        pub category: String,
+        /// Where it was read.
+        pub url: String,
+        /// Page title.
+        pub title: String,
+        /// A verbatim passage from the page, ≤ 300 characters.
+        pub quote: String,
+    }
+}
+
+wire! {
+    /// 159 W5 (§10): `literature: {seed, every, via, max_queries}` — ideas from papers and the
+    /// web, each with a verified citation, searched plugin-side (`search_web` / `read_url` must
+    /// be in `calls`). `Some(LiteratureSpec::default())` = on with the defaults.
+    #[derive(Default, Eq)]
+    #[serde(default)]
+    pub struct LiteratureSpec {
+        /// Ideas found at setup; verified at Start.
+        pub seed: Vec<LiteratureSeed>,
+        /// Also consult every this many keeps; 0 = at plateaus only.
+        pub every: u32,
+        /// A read-only MCP literature tool (listed in `calls`) to search with; "" = `search_web`.
+        pub via: String,
+        /// Searches per study; 0 = 12.
+        pub max_queries: u32,
+    }
+}
+
+wire! {
+    /// 159 W5 (D5): `hooks: {before, after}` — custody scripts the plugin runs around every
+    /// experiment; their stdout (≤ 8 KiB) reaches the next brief as fenced data.
+    #[derive(Default)]
+    #[serde(default)]
+    pub struct HooksSpec {
+        /// Runs at `experiment_begin` in the study worktree, before the brief renders.
+        pub before: Option<CommandSpec>,
+        /// Runs when an experiment closes, with `AUTORESEARCH_VERDICT` and `AUTORESEARCH_DELTA_PCT`.
+        pub after: Option<CommandSpec>,
     }
 }
 

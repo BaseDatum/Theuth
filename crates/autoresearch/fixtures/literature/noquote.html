@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Notes on radix sort</title></head>
+<body>
+<h1>Notes on radix sort</h1>
+<p>Radix sort orders fixed-width keys by one digit at a time, least significant digit first, using a
+stable counting pass per digit. Its running time is linear in the number of keys times the number
+of digits, and it needs an output buffer the size of the input.</p>
+<p>Whether it beats a comparison sort depends on the key width and the cache; on small inputs the
+constant factors of the counting passes dominate.</p>
+</body>
+</html>
