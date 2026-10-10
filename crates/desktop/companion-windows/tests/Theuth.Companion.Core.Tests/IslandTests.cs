@@ -524,14 +524,21 @@ public sealed class MeetingReducerTests
         Assert.Equal(("ics:weekly:", "theuth", 1), (u.Event.Id, u.Project, u.Brief.Count));
         Assert.True(s.Prompting);
         Assert.Null(s.Prompt);
-        // Both apply: the detection prompt arrives and the upcoming brief stays above it; its clear leaves the brief.
+        // Both apply (different events): the detection prompt arrives and the upcoming brief stays above it; its clear leaves the brief.
         var both = R(s, new MeetingChange.Detected(Zoomed()));
         Assert.NotNull(both.Prompt);
         Assert.Same(u, both.Upcoming);
+        Assert.False(both.UpcomingMerged);
         Assert.Same(u, R(both, new MeetingChange.DetectionCleared("zoom.exe", "NotNow")).Upcoming);
-        // A `brief: null` re-send keeps the card (empty bullets); a newer event replaces.
-        Assert.Empty(MeetingReducer.Reduce(s, new MeetingChange.Upcoming(Weekly, null, null), T10).Upcoming!.Brief);
+        // A re-send with `brief: null` keeps the bullets it had (an empty brief never replaces a non-empty one); a newer event replaces.
+        Assert.Equal(u.Brief, MeetingReducer.Reduce(s, new MeetingChange.Upcoming(Weekly, null, null), T10).Upcoming!.Brief);
         Assert.Equal("ics:other:", MeetingReducer.Reduce(s, new MeetingChange.Upcoming(Weekly with { Id = "ics:other:" }, null, null), T10).Upcoming!.Event.Id);
+        Assert.Empty(MeetingReducer.Reduce(s, new MeetingChange.Upcoming(Weekly with { Id = "ics:other:" }, null, null), T10).Upcoming!.Brief);
+        // Never beside a live meeting: ignored while live, cleared when the meeting goes live.
+        var live = Recording();
+        Assert.Same(live, MeetingReducer.Reduce(live, up, T10));
+        Assert.Null(R(s, new MeetingChange.State("m1", "Recording", Array.Empty<string>())).Upcoming);
+        Assert.NotNull(R(s, new MeetingChange.State("m1", "Done", Array.Empty<string>())).Upcoming);
         // §9.4: clears at start + 5 min, not before; a meeting starting empties the slice.
         Assert.Same(s, MeetingReducer.Expire(s, T10 + TimeSpan.FromMinutes(9)));
         Assert.Null(MeetingReducer.Expire(s, T10 + TimeSpan.FromMinutes(9) + TimeSpan.FromSeconds(1)).Upcoming);
@@ -549,6 +556,29 @@ public sealed class MeetingReducerTests
         Assert.Same(s, MeetingReducer.Reduce(s, up, T10)); // the one-minute tick re-sends it: ignored
         Assert.NotNull(MeetingReducer.Reduce(s, new MeetingChange.Upcoming(Weekly with { Id = "ics:next:" }, null, null), T10).Upcoming); // another event shows
         Assert.Same(MeetingSnapshot.Empty, MeetingReducer.DismissUpcoming(MeetingSnapshot.Empty)); // nothing to dismiss
+    }
+
+    [Fact]
+    public void ADetectionOfTheSameEventMergesTheUpcomingIntoOnePane()
+    {
+        var s = MeetingReducer.Reduce(MeetingSnapshot.Empty, new MeetingChange.Upcoming(Weekly, "theuth", new[] { "Open: SRE-2386 owner still unassigned" }), T10);
+        // The engine's `Detected` names the same event, no brief / project of its own: the prompt shows the upcoming's bullets and chip.
+        var merged = R(s, new MeetingChange.Detected(Zoomed() with { Event = Weekly }));
+        Assert.True(merged.UpcomingMerged);
+        Assert.NotNull(merged.Upcoming); // kept: Not now on the prompt leaves the card standing alone again
+        var shown = merged.DetectedShown!;
+        Assert.Equal(("theuth", "Open: SRE-2386 owner still unassigned"), (shown.Project, Assert.Single(shown.Brief!)));
+        Assert.Equal(("zoom.exe", "ics:weekly:"), (shown.AppId, shown.Event!.Id));
+        Assert.False(R(merged, new MeetingChange.DetectionCleared("zoom.exe", "NotNow")).UpcomingMerged);
+        // The detection's own non-empty brief / project win; an empty one does not replace the upcoming's.
+        var own = R(s, new MeetingChange.Detected(Zoomed() with { Event = Weekly, Project = "ops", Brief = new[] { "own" } })).DetectedShown!;
+        Assert.Equal(("ops", "own"), (own.Project, Assert.Single(own.Brief!)));
+        var empty = R(s, new MeetingChange.Detected(Zoomed() with { Event = Weekly, Brief = Array.Empty<string>() })).DetectedShown!;
+        Assert.Equal("Open: SRE-2386 owner still unassigned", Assert.Single(empty.Brief!));
+        // Unmerged: the detection is shown as it came.
+        var plain = R(s, new MeetingChange.Detected(Zoomed()));
+        Assert.Null(plain.DetectedShown!.Brief);
+        Assert.Null(MeetingSnapshot.Empty.DetectedShown);
     }
 
     [Fact]

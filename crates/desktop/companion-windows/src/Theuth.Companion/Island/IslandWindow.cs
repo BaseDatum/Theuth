@@ -939,15 +939,17 @@ internal sealed partial class IslandWindow : ToolWindow
         shell.CornerRadius = new CornerRadius(8);
         shell.Padding = new Thickness(10, 6, 10, 8);
         var s = snapshot;
-        // 158 §5.2: (c) the upcoming brief stands alone or above (a)/(b); (a)/(b) the detection prompt stands alone before a meeting;
-        // (d) the stop prompt sits under the live strip and pane.
+        // 158 §5.2: (c) the upcoming brief stands alone or above (a)/(b) — or, when both name the same event, merges into the detection
+        // prompt (one pane, W3M parity); (a)/(b) the detection prompt stands alone before a meeting; (d) the stop prompt sits under the
+        // live strip and pane.
         if (s.Meeting is not null) RenderStrip();
-        if (s.Upcoming is { } up) RenderUpcoming(up, head: s.Meeting is null);
+        bool upcomingShown = s.Upcoming is not null && !s.UpcomingMerged;
+        if (upcomingShown) RenderUpcoming(s.Upcoming!, head: s.Meeting is null);
         switch (s.Prompt)
         {
-            case MeetingPrompt.Detected d: RenderDetected(d.Detection, head: s.Meeting is null && s.Upcoming is null); break;
+            case MeetingPrompt.Detected: RenderDetected(s.DetectedShown!, head: s.Meeting is null && !upcomingShown); break;
             case MeetingPrompt.Stop st: RenderPane(s); RenderStopPrompt(st); break;
-            default: if (s.Upcoming is null) RenderPane(s); break;
+            default: if (!upcomingShown) RenderPane(s); break;
         }
     }
 
@@ -1060,6 +1062,8 @@ internal sealed partial class IslandWindow : ToolWindow
             if (d.Project is { Length: > 0 } project) ev.Children.Add(ProjectChip(project, "island-prompt-project"));
             group.Children.Add(ev);
         }
+        // The merged upcoming brief (or the detection's own cached brief, §9.4): the bullets once, on this pane.
+        if (d.Brief is { Count: > 0 } bullets) foreach (var bullet in bullets.Take(3)) group.Children.Add(Bullet(bullet));
         var buttons = Row(6);
         var start = Btn("Start recording", "Start recording (Enter)", () => act(new IslandAction.StartRecording(d)), "island-prompt-start");
         start.Background = Theme.Brush(NativeLook.Accent, root.ActualTheme);

@@ -172,7 +172,7 @@ internal sealed class IslandController : IDisposable
 
     private static MeetingProcess Process(ProcessInfo p) => new(p.Pid, p.Name, p.BundleId, p.Active);
 
-    private static MeetingEventRef Event(EventRef e) => new(e.Id, e.Title, e.Start, e.End, e.Attendees.Where(a => !a.IsMe && a.Name.Length > 0).Select(a => a.Name).ToArray());
+    private static MeetingEventRef Event(EventRef e) => new(e.Id, e.Title, e.Start, e.End, e.Attendees.Where(a => !a.IsMe && a.Name.Length > 0).Select(a => a.Name).ToArray(), e.Description);
 
     private void Apply(MeetingSnapshot next, MeetingChange? change)
     {
@@ -347,13 +347,14 @@ internal sealed class IslandController : IDisposable
                     Event = sr.Detection.Event?.Id, Project = sr.Detection.Project,
                 }), "meeting_start");
                 break;
-            // 158 §5.2 (c): Start from the upcoming brief — no mic holder yet, so no `process`; the source is the calendar event.
+            // 158 §5.2 (c) / §5.4: Start from the upcoming brief — no mic holder yet, so no `process`; the calendar event is the source,
+            // its title and description (first 1 000 chars) the title and context.
             case IslandAction.StartUpcoming su:
                 Log.Write($"island: start recording — upcoming {su.Upcoming.Event.Id} “{su.Upcoming.Event.Title}”{(su.Upcoming.Project is { } pr2 ? $" project={pr2}" : "")}");
                 Fire(store.MeetingStartAsync(new StartMeeting
                 {
-                    Title = su.Upcoming.Event.Title, Consent = true, Source = StartSource.Calendar(su.Upcoming.Event.Id),
-                    Event = su.Upcoming.Event.Id, Project = su.Upcoming.Project,
+                    Title = su.Upcoming.Event.Title, Context = su.Upcoming.Event.Description is { Length: > 0 } ctx ? (ctx.Length > 1000 ? ctx[..1000] : ctx) : null,
+                    Consent = true, Source = StartSource.Calendar(su.Upcoming.Event.Id), Event = su.Upcoming.Event.Id, Project = su.Upcoming.Project,
                 }), "meeting_start");
                 break;
             case IslandAction.DismissUpcoming:
@@ -518,8 +519,10 @@ internal sealed class IslandController : IDisposable
 
     /// <summary>
     /// 158 §5.2 (c) (W3W): <c>--island-upcoming</c> shows the upcoming brief for a fixture event 4 min out ("In 4 min · Weekly product sync",
-    /// three bullets, the project chip, the source line). <c>--island-upcoming-auto</c>: (c) alone → (c) above (b) with the chip → Dismiss
-    /// leaves (b) with the event row and chip → Not now → gone; <c>upcoming158:</c> log lines and a PNG per state under %TEMP%.
+    /// three bullets, the project chip, the source line). <c>--island-upcoming-auto</c>: (c) alone → a detection of the SAME event merges
+    /// into one pane (bullets + chip on the prompt) → Not now leaves (c) alone again → a detection of ANOTHER event shows (c) above (b)
+    /// → Dismiss leaves (b) with its event row and chip → the engine's re-send is ignored → Not now → gone; <c>upcoming158:</c> log lines
+    /// and a PNG per state under %TEMP%.
     /// </summary>
     private void FixtureUpcoming()
     {
@@ -536,14 +539,18 @@ internal sealed class IslandController : IDisposable
         Apply(MeetingReducer.Reduce(MeetingSnapshot.Empty, new MeetingChange.Upcoming(ev, "theuth", bullets), now), null);
         Log.Write("island: fixture upcoming applied (In 4 min · Weekly product sync)");
         if (!Environment.GetCommandLineArgs().Contains("--island-upcoming-auto")) return;
+        var other = ev with { Id = "fixture:standup:", Title = "Daily standup", Attendees = Array.Empty<string>() };
+        MeetingChange.Detected Zoom(MeetingEventRef e) => new(new MeetingDetection(FixtureApp, "zoom.exe", DateTimeOffset.Now.ToString("O"), Array.Empty<MeetingProcess>(), e, null, null));
         FixtureSteps("upcoming", new (int, string, Action)[]
         {
             (2, "upcoming", () => { }),
-            (3, "both", () => Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.Detected(new MeetingDetection(FixtureApp, "zoom.exe", DateTimeOffset.Now.ToString("O"), Array.Empty<MeetingProcess>(), ev, "theuth", bullets)), DateTimeOffset.Now), null)),
-            (5, "dismissed", () => Act(new IslandAction.DismissUpcoming())),
-            (6, "resent-ignored", () => Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.Upcoming(ev, "theuth", bullets), DateTimeOffset.Now), null)),
-            (7, "not-now", () => Act(new IslandAction.NotNow("zoom.exe"))),
-            (9, "gone", () => { }),
+            (3, "merged", () => Apply(MeetingReducer.Reduce(snapshot, Zoom(ev), DateTimeOffset.Now), null)),
+            (5, "unmerged", () => Act(new IslandAction.NotNow("zoom.exe"))),
+            (6, "both", () => Apply(MeetingReducer.Reduce(snapshot, Zoom(other), DateTimeOffset.Now), null)),
+            (8, "dismissed", () => Act(new IslandAction.DismissUpcoming())),
+            (9, "resent-ignored", () => Apply(MeetingReducer.Reduce(snapshot, new MeetingChange.Upcoming(ev, "theuth", bullets), DateTimeOffset.Now), null)),
+            (10, "not-now", () => Act(new IslandAction.NotNow("zoom.exe"))),
+            (12, "gone", () => { }),
         });
     }
 

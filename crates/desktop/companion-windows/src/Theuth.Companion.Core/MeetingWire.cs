@@ -167,7 +167,7 @@ public static class MeetingWire
         var names = new List<string>();
         if (e.TryGetProperty("attendees", out var at) && at.ValueKind == JsonValueKind.Array)
             foreach (var a in at.EnumerateArray()) if (!Bool(a, "is_me") && Str(a, "name") is { Length: > 0 } n) names.Add(n);
-        return new MeetingEventRef(id, title, Str(e, "start") ?? "", Str(e, "end") ?? "", names);
+        return new MeetingEventRef(id, title, Str(e, "start") ?? "", Str(e, "end") ?? "", names, Str(e, "description"));
     }
 
     /// <summary>A string array field, or null when absent / null (<c>Option&lt;Vec&lt;String&gt;&gt;</c>).</summary>

@@ -42,8 +42,11 @@ public sealed record MeetingProcess(uint Pid, string Name, string? BundleId = nu
     public string Display => Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? Name[..^4] : Name;
 }
 
-/// <summary><c>calendar::EventRef</c> (158 §15.1), the fields the island shows; <see cref="Attendees"/> are the other people's names (<c>is_me</c> dropped).</summary>
-public sealed record MeetingEventRef(string Id, string Title, string Start, string End, IReadOnlyList<string> Attendees)
+/// <summary>
+/// <c>calendar::EventRef</c> (158 §15.1), the fields the island shows and sends; <see cref="Attendees"/> are the other people's names
+/// (<c>is_me</c> dropped); <see cref="Description"/> feeds <c>StartMeeting.context</c> (§5.4).
+/// </summary>
+public sealed record MeetingEventRef(string Id, string Title, string Start, string End, IReadOnlyList<string> Attendees, string? Description = null)
 {
     public DateTimeOffset? StartAt => Parse(Start);
 
@@ -57,7 +60,10 @@ public sealed record MeetingEventRef(string Id, string Title, string Start, stri
 public sealed record MeetingDetection(MeetingProcess App, string AppId, string Since, IReadOnlyList<MeetingProcess> Also,
     MeetingEventRef? Event = null, string? Project = null, IReadOnlyList<string>? Brief = null);
 
-/// <summary>158 §5.2 (c) / §9.4: <c>MeetingEvent::Upcoming</c> — the matched event starts within 5 min; shown alone or above the detection prompt.</summary>
+/// <summary>
+/// 158 §5.2 (c) / §9.4: <c>MeetingEvent::Upcoming</c> — the matched event starts within 5 min; shown alone, above the detection prompt,
+/// or merged into it when both name the same event (W3M parity: one pane).
+/// </summary>
 public sealed record MeetingUpcoming(MeetingEventRef Event, string? Project, IReadOnlyList<string> Brief)
 {
     /// <summary>§9.4: island (c) clears at <c>start + 5 min</c> (or when a meeting starts).</summary>
@@ -201,7 +207,7 @@ public sealed record MeetingSnapshot
     /// <summary>158 §5: the detection or stop prompt; the island shows while one is set (<see cref="IslandModel.ShouldShow"/>).</summary>
     public MeetingPrompt? Prompt { get; init; }
 
-    /// <summary>158 §5.2 (c): the upcoming brief; independent of <see cref="Prompt"/> (both show when both apply).</summary>
+    /// <summary>158 §5.2 (c): the upcoming brief; its own slot beside <see cref="Prompt"/> (both show when both apply, one pane when they share the event).</summary>
     public MeetingUpcoming? Upcoming { get; init; }
 
     /// <summary>The event id the user dismissed (158 §5.2 c "Dismiss"): the engine re-sends <c>Upcoming</c> each minute, so the reducer ignores that one.</summary>
@@ -209,6 +215,14 @@ public sealed record MeetingSnapshot
 
     /// <summary>158 §5.1: the island shows for a prompt or an upcoming brief (<see cref="IslandModel.ShouldShow"/>).</summary>
     public bool Prompting => Prompt is not null || Upcoming is not null;
+
+    /// <summary>W3M parity (3): the detection prompt and the upcoming brief name the same event → ONE pane, the prompt, with the brief merged in.</summary>
+    public bool UpcomingMerged => Upcoming is { } u && Prompt is MeetingPrompt.Detected d && d.Detection.Event?.Id == u.Event.Id;
+
+    /// <summary>The detection prompt as rendered: its own non-empty brief / project, else the merged upcoming's (an empty brief never replaces a non-empty one).</summary>
+    public MeetingDetection? DetectedShown => Prompt is not MeetingPrompt.Detected d ? null
+        : !UpcomingMerged ? d.Detection
+        : d.Detection with { Brief = d.Detection.Brief is { Count: > 0 } b ? b : Upcoming!.Brief, Project = d.Detection.Project ?? Upcoming!.Project };
 
     /// <summary>The brief under the cursor.</summary>
     public MeetingBrief? Current => Cursor >= 0 && Cursor < Briefs.Count ? Briefs[Cursor] : null;
@@ -266,8 +280,9 @@ public static class MeetingReducer
                     ApprovalWaiting = live && s.ApprovalWaiting,
                     Activity = live ? s.Activity : null,
                     Progress = c.StateWord == "Post" ? s.Progress : null,
-                    // 158 §5.2 (d): the stop prompt ends with the recording; a detection prompt is not the meeting's.
+                    // 158 §5.2 (d): the stop prompt ends with the recording; a detection prompt is not the meeting's. (c) never shows beside a live meeting.
                     Prompt = s.Prompt is MeetingPrompt.Stop && !live ? null : s.Prompt,
+                    Upcoming = live ? null : s.Upcoming,
                 };
             }
             case MeetingChange.TopicAdded t:
@@ -334,7 +349,12 @@ public static class MeetingReducer
             case MeetingChange.AppReleased ar:
                 return s.Meeting == ar.Meeting && Live(s.State) ? s with { Prompt = new MeetingPrompt.Stop(ar.Meeting, ar.App, ar.ReleasedForS) } : s;
             case MeetingChange.Upcoming up:
-                return up.Event.Id == s.UpcomingDismissed ? s : s with { Upcoming = new MeetingUpcoming(up.Event, up.Project, up.Bullets ?? Array.Empty<string>()) };
+            {
+                // W3M parity (2): not beside a live meeting; (1) a dismissed event stays dismissed; a re-send with an empty brief keeps the bullets it had.
+                if (Live(s.State) || up.Event.Id == s.UpcomingDismissed) return s;
+                var bullets = up.Bullets is { Count: > 0 } b ? b : s.Upcoming is { } old && old.Event.Id == up.Event.Id ? old.Brief : Array.Empty<string>();
+                return s with { Upcoming = new MeetingUpcoming(up.Event, up.Project, bullets) };
+            }
             default:
                 return s;
         }
