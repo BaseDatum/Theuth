@@ -58,6 +58,25 @@ internal abstract partial class ToolWindow : Window
             e.Cancel = true;
             OnCloseRequested();
         };
+        lock (Live) Live.Add(this);
+        Closed += (_, _) => { lock (Live) Live.Remove(this); };
+    }
+
+    /// <summary>Every tool window not closed yet (153 W153D-R3: windows created after the surfaces — the answer card, the suggestion card,
+    /// the Ask bar — were never closed for good at quit, their Closing cancelled Application.Exit and the process stayed alive).</summary>
+    private static readonly List<ToolWindow> Live = new();
+
+    /// <summary>The app quits: every tool window still open is closed for good (idempotent; a failure is logged and the rest go on).</summary>
+    public static void CloseAllForGood()
+    {
+        ToolWindow[] open;
+        lock (Live) open = Live.ToArray();
+        foreach (var w in open)
+        {
+            try { w.CloseForGood(); }
+            catch (Exception e) { Log.Write($"{w.Title}: CloseForGood at quit failed: {e.GetType().Name}: {e.Message}"); }
+        }
+        if (open.Length > 0) Log.Write($"quit: {open.Length} tool window(s) closed for good");
     }
 
     public HWND Hwnd { get; }
@@ -66,6 +85,8 @@ internal abstract partial class ToolWindow : Window
 
     /// <summary>Set when the app quits: closing then really closes.</summary>
     public bool AllowClose { get; set; }
+
+    private bool closedForGood;
 
     public bool IsShown => AppWindow.IsVisible;
 
@@ -146,6 +167,8 @@ internal abstract partial class ToolWindow : Window
     /// <summary>The app quits: really close (removes the subclass first).</summary>
     public void CloseForGood()
     {
+        if (closedForGood) return;
+        closedForGood = true;
         AllowClose = true;
         try { OnClosingForGood(); }
         catch (Exception e) { Log.Write($"{Title}: OnClosingForGood failed: {e.GetType().Name}: {e.Message}"); }
