@@ -40,12 +40,17 @@ pub const MAX_BULLETS: usize = 3;
 // ---- §9.3 project memory
 
 /// `title:` key material: lowercase, letters only (digits and punctuation go), month and
-/// weekday words dropped, single spaces.
+/// weekday words dropped (full or 3-letter: `Oct`, `Tue`), single spaces.
 pub fn norm_title(title: &str) -> String {
+    let calendar = |w: &str| {
+        crate::oracle::CALENDAR
+            .iter()
+            .any(|c| *c == w || (w.len() == 3 && c.starts_with(w)))
+    };
     title
         .to_lowercase()
         .split(|c: char| !c.is_alphabetic())
-        .filter(|w| !w.is_empty() && !crate::oracle::CALENDAR.contains(w))
+        .filter(|w| !w.is_empty() && !calendar(w))
         .collect::<Vec<_>>()
         .join(" ")
 }
