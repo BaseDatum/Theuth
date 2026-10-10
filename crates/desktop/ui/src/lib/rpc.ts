@@ -107,6 +107,10 @@ export const queryKeys = {
   meetingTranscript: (id: string) => ['meeting-transcript', id] as const,
   meetingSummary: (id: string) => ['meeting-summary', id] as const,
   meetingSpeakers: ['meeting-speakers'] as const,
+  /** `meeting_templates()` (158 §11.1): Settings › Meetings' Template select and Templates list, the start form's select. */
+  meetingTemplates: ['meeting-templates'] as const,
+  /** `meeting_suggest_speakers(id)` (158 §10.3): fetched only when Review's *Suggest names* asks; Accept/Not them edit the cached list. */
+  meetingSuggestions: (id: string) => ['meeting-suggestions', id] as const,
   /** `search_settings_get()` (16 §8): Settings › Search providers and defaults. */
   searchSettings: ['search-settings'] as const,
   /** `search_status()` (16 §8): per-engine health from the last calls. */
