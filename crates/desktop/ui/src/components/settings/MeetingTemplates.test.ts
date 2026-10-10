@@ -30,12 +30,23 @@ const meeting: MeetingTemplate = {
     { title: 'Decisions', instruction: null, required: false },
   ],
   builtin: true,
+  body: '---\nname: General\ndescription: Any meeting\nsections:\n  - title: Summary\n  - title: Decisions\n---\n# my notes\n',
+  edited: true,
 }
-const retro: MeetingTemplate = { slug: 'retro', name: 'Retro', description: '', sections: [{ title: 'Went well', instruction: 'bullets', required: true }], builtin: false }
+const retro: MeetingTemplate = {
+  slug: 'retro',
+  name: 'Retro',
+  description: '',
+  sections: [{ title: 'Went well', instruction: 'bullets', required: true }],
+  builtin: false,
+  body: '---\nname: Retro\nsections:\n  - title: Went well\n    instruction: bullets\n    required: true\n---\n',
+  edited: false,
+}
 const api = {
   meeting_templates: vi.fn(async () => [meeting, retro]),
   meeting_template_put: vi.fn(async (slug: string) => ({ ...retro, slug })),
   meeting_template_delete: vi.fn(async () => null),
+  meeting_template_reset: vi.fn(async () => ({ ...meeting, edited: false })),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
@@ -86,15 +97,27 @@ test('New template opens the editor on templateBody(NEW_TEMPLATE); Save puts the
   await vi.waitFor(() => expect(api.meeting_template_put).toHaveBeenCalledWith('stand-up', body))
 })
 
-test('Edit rebuilds the front matter from the parsed template; a new slug that already exists cannot be saved', async () => {
-  const { html } = await render({ slug: 'retro', isNew: false, body: templateBody(retro) })
+test('Edit opens the file itself (body, verbatim) and Save writes it back unchanged; a new slug that already exists cannot be saved', async () => {
+  const { html } = await render({ slug: 'retro', isNew: false, body: retro.body })
   expect(html).toContain('retro.md')
-  expect(html).toContain('  - title: &quot;Went well&quot;')
+  expect(html).toContain('    instruction: bullets')
   expect(html).toContain('    required: true')
   press('Save')
-  await vi.waitFor(() => expect(api.meeting_template_put).toHaveBeenCalledWith('retro', templateBody(retro)))
+  await vi.waitFor(() => expect(api.meeting_template_put).toHaveBeenCalledWith('retro', retro.body))
 
   const dup = await render({ slug: 'Meeting', isNew: true, body: templateBody(NEW_TEMPLATE) })
   expect(dup.html).toContain('already exists')
   expect(dup.html).toMatch(/<button disabled="">Save<\/button>/)
+})
+
+test('Reset to built-in shows only on an edited built-in and calls meeting_template_reset', async () => {
+  const { html, qc } = await render()
+  expect(html).toMatch(/<button aria-label="Reset General to built-in">/)
+  expect(html).not.toContain('Reset Retro')
+  press('Reset General to built-in')
+  await vi.waitFor(() => expect(api.meeting_template_reset).toHaveBeenCalledWith('meeting'))
+  await vi.waitFor(() => expect(qc.getQueryState(['meeting-templates'])?.isInvalidated).toBe(true))
+  api.meeting_templates.mockResolvedValueOnce([{ ...meeting, edited: false }, retro])
+  const pristine = await render()
+  expect(pristine.html).not.toContain('Reset General')
 })

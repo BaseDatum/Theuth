@@ -107,27 +107,29 @@ pub fn rules(t: &Template, duration_ms: Option<u64>, preferred: &[String]) -> St
 /// Most dictionary entries named in a form.
 pub const PREFERRED_CAP: usize = 40;
 
-/// §11.3: the user's and learned `Term` / `Mention` / `Abbrev` canonicals from the dictionary
-/// at `data_dir`, at most [`PREFERRED_CAP`]; empty without a data dir or a dictionary.
+/// §11.3: the user's and learned `Term` / `Mention` / `Abbrev` canonicals from
+/// `<data_dir>/voice/dictionary.json` (the user layer only — the packaged dataset is never
+/// loaded here: this runs on every head push), at most [`PREFERRED_CAP`]; empty without a data
+/// dir or a file.
 pub fn preferred_names(data_dir: Option<&Path>) -> Vec<String> {
     let Some(dir) = data_dir else {
         return Vec::new();
     };
-    let d = match voice::Dictionary::load(dir) {
-        Ok(d) => d,
+    match voice::dictionary::store::read(&voice::dictionary::store::path(dir)) {
+        Ok((entries, _)) => preferred_from(entries),
         Err(e) => {
             tracing::warn!("dictionary: {e:#}");
-            return Vec::new();
+            Vec::new()
         }
-    };
-    preferred_from(&d)
+    }
 }
 
-/// [`preferred_names`] over a loaded dictionary.
-pub fn preferred_from(d: &voice::Dictionary) -> Vec<String> {
-    use voice::Kind;
-    d.list(None)
+/// [`preferred_names`] over the user + learned entries.
+pub fn preferred_from(entries: impl IntoIterator<Item = voice::Entry>) -> Vec<String> {
+    use voice::{Kind, Source};
+    entries
         .into_iter()
+        .filter(|e| e.source != Source::Packaged)
         .filter(|e| matches!(e.kind, Kind::Term | Kind::Mention | Kind::Abbrev))
         .map(|e| e.canonical)
         .take(PREFERRED_CAP)
@@ -337,12 +339,20 @@ mod tests {
             source,
             tags: Vec::new(),
         };
-        let mut d = voice::Dictionary::default();
-        d.put(entry("GIDA", Kind::Term, Source::User));
-        d.put(entry("@dana", Kind::Mention, Source::Learned));
-        d.put(entry("SRE", Kind::Abbrev, Source::User));
-        d.put(entry("comma", Kind::Symbol, Source::User));
-        assert_eq!(preferred_from(&d), ["GIDA", "@dana", "SRE"]);
+        let entries = vec![
+            entry("GIDA", Kind::Term, Source::User),
+            entry("@dana", Kind::Mention, Source::Learned),
+            entry("SRE", Kind::Abbrev, Source::User),
+            entry("comma", Kind::Symbol, Source::User),
+            entry("kubernetes", Kind::Term, Source::Packaged),
+        ];
+        assert_eq!(preferred_from(entries.clone()), ["GIDA", "@dana", "SRE"]);
         assert!(preferred_names(None).is_empty());
+        // Through the file the dictation actor writes.
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(preferred_names(Some(tmp.path())).is_empty(), "no file yet");
+        voice::dictionary::store::write(&voice::dictionary::store::path(tmp.path()), &entries, &[])
+            .unwrap();
+        assert_eq!(preferred_names(Some(tmp.path())), ["GIDA", "@dana", "SRE"]);
     }
 }

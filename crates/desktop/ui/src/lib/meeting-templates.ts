@@ -1,19 +1,21 @@
-// 158 §11.1: the pure parts of Settings › Meetings › Templates. `meeting_templates` returns templates parsed (no raw
-// file), so the editor rebuilds the front matter from the parsed shape; every scalar is JSON-quoted, which YAML
-// reads verbatim (YAML 1.2 double-quoted strings are a superset of JSON strings), so names with `:` or `#` survive.
+// 158 §11.1: the pure parts of Settings › Meetings › Templates. Edit works on the file itself (`MeetingTemplate.body`);
+// only "New template" needs a body built from a shape — every scalar is JSON-quoted, which YAML reads verbatim (YAML
+// 1.2 double-quoted strings are a superset of JSON strings), so names with `:` or `#` survive.
 
 import type { MeetingTemplate } from '@/rpc/bindings/MeetingTemplate'
 
+/** The parsed shape a body is built from. */
+export type TemplateShape = Pick<MeetingTemplate, 'name' | 'description' | 'sections'>
+
 /** What "New template" opens with: one summary section to edit. */
-export const NEW_TEMPLATE: Omit<MeetingTemplate, 'slug'> = {
+export const NEW_TEMPLATE: TemplateShape = {
   name: '',
   description: '',
   sections: [{ title: 'Summary', instruction: 'at most 120 words', required: false }],
-  builtin: false,
 }
 
 /** The `<slug>.md` body for `meeting_template_put`: front matter only (sections live there), `builtin` never written. */
-export function templateBody(t: Omit<MeetingTemplate, 'slug' | 'builtin'>): string {
+export function templateBody(t: TemplateShape): string {
   const lines = [`name: ${JSON.stringify(t.name)}`, `description: ${JSON.stringify(t.description)}`, 'sections:']
   for (const s of t.sections) {
     lines.push(`  - title: ${JSON.stringify(s.title)}`)

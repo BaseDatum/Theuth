@@ -65,7 +65,8 @@ export function Review({ id, readOnly = false }: { id: string; readOnly?: boolea
       hide(s.label)
       // A voiceprint match is linked by the rename itself; a Warning carries no voice to enroll.
       if (s.profile || s.source === 'Warning') return
-      const target: EnrollTarget = { kind: 'New', name: s.name, entity: null }
+      // 158 §10.4: the automatic path runs the engine's quality gates; a refusal keeps the name.
+      const target: EnrollTarget = { kind: 'New', name: s.name, entity: null, gated: true }
       try {
         // Every segment of the label, one track by construction; the engine keeps the first ≤ 30 s (`ENROLL_MAX_MS`).
         const r = await api.meeting_speaker_enroll(id, t.segments.filter((g) => g.speaker === s.label).map((g) => g.id), target)

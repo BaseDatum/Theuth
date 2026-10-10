@@ -132,7 +132,7 @@ test('Accept renames through meeting_edit, then enrolls the label\u2019s segment
   press('Accept Priya Shah for Speaker 1')
   await vi.waitFor(() => expect(api.meeting_speaker_enroll).toHaveBeenCalledTimes(1))
   expect(api.meeting_edit).toHaveBeenCalledWith(ID, [{ op: 'Rename', speaker: 's1', name: 'Priya Shah' }])
-  expect(api.meeting_speaker_enroll).toHaveBeenCalledWith(ID, [2, 4], { kind: 'New', name: 'Priya Shah', entity: null })
+  expect(api.meeting_speaker_enroll).toHaveBeenCalledWith(ID, [2, 4], { kind: 'New', name: 'Priya Shah', entity: null, gated: true })
   await vi.waitFor(() => expect(qc.getQueryData(queryKeys.meetingTranscript(ID))).toEqual(enrolled.transcript))
   expect(qc.getQueryData(queryKeys.meetingSuggestions(ID))).toEqual([])
   expect(toast.success).toHaveBeenCalledTimes(1)

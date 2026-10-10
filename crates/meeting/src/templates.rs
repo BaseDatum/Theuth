@@ -81,6 +81,9 @@ pub struct Template {
     /// The raw markdown file, front matter included — what Settings edits and `put` writes verbatim.
     #[serde(default)]
     pub body: String,
+    /// A built-in whose file differs from the shipped body (Settings shows "Reset to built-in").
+    #[serde(default)]
+    pub edited: bool,
 }
 
 /// The front matter as written; unknown fields (`builtin: 1`) are ignored.
@@ -128,6 +131,7 @@ pub fn parse(slug: &str, text: &str) -> Result<Template, String> {
         sections,
         builtin: is_builtin(slug),
         body: text.to_owned(),
+        edited: builtin(slug).is_some_and(|b| b != text),
     })
 }
 
@@ -584,8 +588,8 @@ mod tests {
         let edited = format!("{V2}\nmy notes  \n");
         let t = put(dir, "standup", &edited).unwrap();
         assert_eq!(
-            (t.body.as_str(), t.builtin, t.sections.len()),
-            (edited.as_str(), true, 2)
+            (t.body.as_str(), t.builtin, t.edited, t.sections.len()),
+            (edited.as_str(), true, true, 2)
         );
         assert_eq!(
             std::fs::read_to_string(dir.join("standup.md")).unwrap(),
@@ -610,7 +614,7 @@ mod tests {
                 .contains("built in")
         );
         let t = reset(dir, "standup").unwrap();
-        assert_eq!(t.body, shipped);
+        assert_eq!((t.body.as_str(), t.edited), (shipped, false));
         assert_eq!(
             std::fs::read_to_string(dir.join("standup.md")).unwrap(),
             shipped

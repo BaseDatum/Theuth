@@ -1,8 +1,8 @@
 // 158 §11.1 (W4): Settings › Meetings › Templates — every `<data_dir>/meetings/templates/<slug>.md` as the engine
-// parsed it (`meeting_templates`), Edit opens the front matter as markdown (rebuilt by `lib/meeting-templates.ts`,
-// since the RPC carries no raw body), New starts from one Summary section, Save → `meeting_template_put(slug, body)`,
-// Delete → `meeting_template_delete` (built-ins refuse; the button says so). The Defaults row's Template select and the
-// start form read the same query, so a save shows up there at once.
+// parsed it (`meeting_templates`), Edit opens the file itself (`body`, saved verbatim), New starts from one Summary
+// section, Save → `meeting_template_put(slug, body)`, Delete → `meeting_template_delete` (disabled for built-ins),
+// an edited built-in gets "Reset to built-in" → `meeting_template_reset`. The Defaults row's Template select and
+// the start form read the same query, so a save shows up there at once.
 
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -31,6 +31,7 @@ export function MeetingTemplates({ initial = null }: { initial?: Draft | null })
     onSuccess: () => setDraft(null),
   })
   const del = useAction((slug: string) => api.meeting_template_delete(slug), { keys: [queryKeys.meetingTemplates] })
+  const reset = useAction((slug: string) => api.meeting_template_reset(slug), { keys: [queryKeys.meetingTemplates] })
   const slug = draft ? (draft.isNew ? slugify(draft.slug) : draft.slug) : ''
   const taken = draft?.isNew && templates.data?.some((t) => t.slug === slug)
   return (
@@ -55,9 +56,14 @@ export function MeetingTemplates({ initial = null }: { initial?: Draft | null })
           }
           description={`${t.description || `${t.slug}.md`} · ${t.sections.map((s) => s.title).join(', ')}`}
         >
-          <Button variant="outline" size="sm" aria-label={`Edit ${t.name}`} disabled={!!draft} onClick={() => setDraft({ slug: t.slug, isNew: false, body: templateBody(t) })}>
+          <Button variant="outline" size="sm" aria-label={`Edit ${t.name}`} disabled={!!draft} onClick={() => setDraft({ slug: t.slug, isNew: false, body: t.body })}>
             Edit
           </Button>
+          {t.builtin && t.edited && (
+            <Button variant="outline" size="sm" aria-label={`Reset ${t.name} to built-in`} disabled={reset.isPending} onClick={() => reset.mutate(t.slug)}>
+              Reset to built-in
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
