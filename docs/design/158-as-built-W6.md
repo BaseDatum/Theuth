@@ -69,10 +69,10 @@ Not touched; worth a look by whoever owns `Store`.
 - `cargo fmt -p meeting -p rpc` (bare) → clean.
 - `build-lock mbx test -p meeting -p rpc --no-run` → 0, no warnings.
 - `mbx test -p meeting -p rpc` → meeting 125 passed (2 ignored) + calendar 15 + note 1 + oracle 1; rpc 56 + alerts 1 + prompts 1; 0 failed.
-- `build-lock mbx clippy -p meeting -p rpc` → see below.
+- `build-lock mbx clippy -p meeting -p rpc` → exit 0, 0 warnings.
 - `BUILD_SLOTS=1 build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` → 8 passed; copied to
   `crates/desktop/ui/src/rpc/bindings/` (gitignored); `MeetingStats.speakers`, `methods.json` + `meeting_set_speakers`.
 - `build-lock bun install` (ui 623, packages/apps 484) → ok. `build-lock bunx tsc --noEmit -p .` → 0.
 - `build-lock bunx vitest run` Review, settings/Meetings, rpc/api → 3 files, 12 tests passed.
 - Measurement run above (1 passed, `--ignored`).
-- `BUILD_SLOTS=1 build-lock mbx check --workspace --tests` → see below.
+- `BUILD_SLOTS=1 build-lock mbx check --workspace --tests` → exit 0 (only the pre-existing `block v0.1.6` future-incompat note).
