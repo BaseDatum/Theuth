@@ -172,3 +172,15 @@ test('148 R1: in a session /model and /effort switch that session (manual), leav
   expect(set_effort).toHaveBeenCalledWith('abc', null, true)
   expect(useDrafts.getState().pick).toEqual(NO_PICK)
 })
+
+test('157 D3: /endless on|off switches the session through set_session_memory; a draft and a bad argument are refused', async () => {
+  const set_session_memory = vi.fn().mockResolvedValue({ mode: 'endless', view: [] })
+  expect(isCommand('/endless on', SKILLS)).toBe(true)
+  await run('/endless on', ctxFor({ set_session_memory }, 'abc'))
+  expect(set_session_memory).toHaveBeenCalledWith('abc', 'endless')
+  await run('/endless off', ctxFor({ set_session_memory }, 'abc'))
+  expect(set_session_memory).toHaveBeenLastCalledWith('abc', 'epochs')
+  await expect(run('/endless maybe', ctxFor({ set_session_memory }, 'abc'))).rejects.toThrow(/on\|off/)
+  await expect(run('/endless on', { ...ctxFor({ set_session_memory }), session: null })).rejects.toThrow(/no session yet/)
+  expect(set_session_memory).toHaveBeenCalledTimes(2)
+})

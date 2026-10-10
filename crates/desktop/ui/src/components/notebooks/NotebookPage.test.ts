@@ -5,11 +5,11 @@ import { expect, test, vi } from 'vitest'
 import type * as Popout from '@/lib/popout'
 import { NotebookPage } from './NotebookPage'
 
-const env = vi.hoisted(() => ({ popped: false }))
+const env = vi.hoisted(() => ({ popped: false, search: {} as Record<string, unknown> }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, ...p }: { children?: unknown; 'aria-label'?: string }) => createElement('a', p, children as never),
-  getRouteApi: () => ({ useParams: () => ({ id: 'nb1' }), useSearch: () => ({}) }),
+  getRouteApi: () => ({ useParams: () => ({ id: 'nb1' }), useSearch: () => env.search }),
   useNavigate: () => vi.fn(),
   useRouterState: () => '/notebooks/nb1',
 }))
@@ -21,12 +21,13 @@ vi.mock('@/components/editor/useDocument', () => ({ useDocument: () => ({ provid
 vi.mock('@/components/notes/useNotes', () => ({ useNotes: () => ({ data: [] }) }))
 vi.mock('@/components/notebooks/useNotebook', () => ({
   useNotebook: () => ({ data: { doc: { id: 'nb1', title: 'DR failover' }, project: null, sources: 2 } }),
-  useNotebookItems: () => ({ data: [] }),
+  useNotebookItems: () => ({ data: [{ kind: 'note', item: 'n1' }] }),
   useDescription: () => ({ data: '' }),
   firstLine: () => '',
 }))
 vi.mock('@/components/notebooks/ChatColumn', () => ({ ChatColumn: () => createElement('div', { 'data-col': 'chat' }) }))
 vi.mock('@/components/notebooks/NotesColumn', () => ({ NotesColumn: () => createElement('div', { 'data-col': 'notes' }) }))
+vi.mock('@/components/notebooks/NotePane', () => ({ NotePane: ({ id }: { id: string }) => createElement('div', { 'data-col': 'note', 'data-note': id }) }))
 vi.mock('@/components/sources/SourcesColumn', () => ({ SourcesColumn: () => createElement('div', { 'data-col': 'sources' }) }))
 vi.mock('@/components/notebooks/NotebookHeaderActions', () => ({ NotebookHeaderActions: () => createElement('div', { 'data-actions': true }) }))
 vi.mock('@/components/share/ShareDialog', () => ({ ShareAction: () => null }))
@@ -46,4 +47,17 @@ test('the shell shows the Library band and the phone back control; a popped wind
   for (const col of ['sources', 'chat', 'notes']) expect(popped).toContain(`data-col="${col}"`)
   expect(popped).toContain('data-actions')
   env.popped = false
+})
+
+test('157 D4/D7: ?note opens a member note in the right-hand pane (a foreign id keeps the list); the pane has its resize handle', () => {
+  const list = render()
+  expect(list).toContain('data-col="notes"')
+  expect(list).toContain('aria-label="Resize notes pane"')
+  env.search = { note: 'n1' }
+  const open = render()
+  expect(open).toContain('data-note="n1"')
+  expect(open).not.toContain('data-col="notes"')
+  env.search = { note: 'foreign' }
+  expect(render()).toContain('data-col="notes"')
+  env.search = {}
 })

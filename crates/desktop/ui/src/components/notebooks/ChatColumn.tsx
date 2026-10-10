@@ -1,21 +1,25 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ExternalLink, SquarePen } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Composer } from '@/components/chat/Composer'
+import { Composer, PLAIN_DRAFT } from '@/components/chat/Composer'
+import { MemoryBadge, MemoryPanel } from '@/components/chat/MemoryPanel'
+import { ModelMenu } from '@/components/chat/ModelMenu'
 import { Transcript } from '@/components/chat/Transcript'
-import { NotebookContext, applyContextDefaults, useNotebookSession, useOpenThread } from '@/components/notebooks/NotebookContext'
+import { NotebookContext, applyContextDefaults, useEndlessSettings, useNotebookSession, useOpenThread } from '@/components/notebooks/NotebookContext'
 import { useContextEstimate, useNotebook, useNotebookChats } from '@/components/notebooks/useNotebook'
 import { ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Switch } from '@/components/ui/switch'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { AttachRef } from '@/lib/attach'
+import { useCompactorLabel } from '@/lib/endless'
 import { contextLine } from '@/lib/notebook-context'
 import { notebookKeys, useContextApi, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { ContextEstimate } from '@/rpc/bindings/ContextEstimate'
-import { cn } from '@/lib/utils'
 import type { DocSummary } from '@/rpc/bindings/DocSummary'
 import { useSessions } from '@/store/sessions'
 
@@ -45,6 +49,10 @@ const HEADER = 'flex h-10 shrink-0 items-center gap-2 border-b border-border-sub
  * `composerOnly`: the phone's Sources tab pins just the context line and the composer.
  * Wave 2 §5.2: the context line under the header comes from `notebook_context_estimate`; a new thread gets this
  * device's remembered dial positions (`notebook_context_set` per item) right after its session exists.
+ * 157 D1–D3: the header carries the model picker (`ModelMenu`, the thread's or the draft's pick; `/model` opens it,
+ * `own`), the ∞ switch for a new chat (NewChatPane's rule: `agent.endless.default_chat`, remembered per draft, the
+ * compactor line under the composer while on; applied as `memory: 'endless'` on both creation paths) and, for an
+ * existing endless thread, the ∞ badge that opens the Memory panel. `/endless on|off` switches an existing thread.
  */
 export function ChatColumn({ notebook, title, notes, composerOnly = false }: { notebook: string; title: string; notes: readonly DocSummary[]; composerOnly?: boolean }) {
   const nb = useNotebooksApi()
@@ -55,6 +63,14 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
   const chats = useNotebookChats(notebook).data ?? []
   const session = useNotebookSession(notebook)
   useLoadSession(session)
+  const summary = session ? chats.find((c) => c.id === session) : undefined
+  const [memory, setMemory] = useState(false)
+  // 157 D3: the new chat's ∞ choice — the draft's own once touched, else the engine default; forgotten with the draft.
+  const settings = useEndlessSettings()
+  const picked = useOpenThread((s) => s.endless[notebook])
+  const endless = picked ?? settings?.default_chat ?? false
+  const setEndless = useOpenThread((s) => s.setEndless)
+  const compactor = useCompactorLabel(settings?.model)
   const row = useNotebook(notebook).data
   const sources = row?.sources ?? 0
   const estimate = useContextEstimate(notebook, session)
@@ -81,20 +97,40 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
   const composer = (
     <div className="shrink-0 border-t border-border-subtle bg-background">
       <ContextLine estimate={estimate.data} error={estimate.error} />
-      <Composer key={session ?? 'new'} session={session} pinned={pinned} sessionTitle={title} onCreated={(id) => void onCreated(id)} compact />
+      {!session && endless && <p className="px-3 pt-1 text-[11px] text-fg-tertiary">Endless memory · compactor: {compactor}</p>}
+      <Composer key={session ?? 'new'} session={session} pinned={pinned} sessionTitle={title} draftCreate={{ ...PLAIN_DRAFT, endless }} onCreated={(id) => void onCreated(id)} compact />
     </div>
   )
   if (composerOnly) return composer
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Chat about this notebook">
+    <section className="@container flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Chat about this notebook">
       <header className={HEADER}>
-        <span className="min-w-0 truncate whitespace-nowrap">
+        {/* A narrow column (the notes pane dragged wide) keeps the picker readable: the label and the New chat text go first. */}
+        <span className="hidden shrink-0 whitespace-nowrap @lg:inline">
           Chat <span className="font-normal text-fg-tertiary">· this notebook</span>
         </span>
+        <div className="min-w-0 flex-1">
+          <ModelMenu session={session} own small />
+        </div>
+        {session ? (
+          <MemoryBadge session={session} summary={summary} open={memory} onToggle={() => setMemory((o) => !o)} />
+        ) : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <label className="flex shrink-0 items-center gap-1.5">
+                <Switch checked={endless} onCheckedChange={(on) => setEndless(notebook, on)} aria-label="Endless memory" />
+                <span aria-hidden className="relative -top-px text-sm leading-4 [font-feature-settings:normal]">
+                  {'\u221E'}
+                </span>
+              </label>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Endless memory for this new chat{endless ? ` · compactor: ${compactor}` : ''}</TooltipContent>
+          </Tooltip>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="ml-auto">
+            <Button variant="outline" size="sm">
               Chats · {chats.length} <ChevronDown />
             </Button>
           </DropdownMenuTrigger>
@@ -108,8 +144,8 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
-        <Button size="sm" variant="ghost" onClick={() => remember(notebook, null)}>
-          <SquarePen /> New chat
+        <Button size="sm" variant="ghost" aria-label="New chat" title="New chat" onClick={() => remember(notebook, null)}>
+          <SquarePen /> <span className="hidden @md:inline">New chat</span>
         </Button>
         {session && (
           <Button variant="ghost" size="icon-sm" aria-label="Open in the chat list" title="Open in the chat list" onClick={() => void navigate({ to: '/c/$session', params: { session }, search: {} })}>
@@ -117,6 +153,7 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
           </Button>
         )}
       </header>
+      {session && <MemoryPanel session={session} open={memory} onOpenChange={setMemory} />}
       <NotebookContext value={{ notebook, notes, onChanged }}>
         {session ? (
           <Transcript key={session} session={session} compact />
@@ -132,16 +169,15 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
 }
 
 /**
- * §5.2: `in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes · ~12.4k of 40k tokens · 1 omitted`, a thin
- * budget bar (amber from 80 %, red when something was truncated) and the `N omitted` chip that scrolls the column to
- * the first omitted card (`id="item-<id>"`). Wraps to two lines on the phone.
+ * §5.2 / 157 D9: `in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes · ~12.4k tokens · 1 omitted`, the
+ * `N omitted` chip that scrolls the column to the first omitted card (`id="item-<id>"`) and, once the block is in the
+ * chat, `2 changes go with your next message`. No budget bar: the first injection is sized by the chat's own context.
+ * Wraps to two lines on the phone.
  */
 export function ContextLine({ estimate, error }: { estimate: ContextEstimate | undefined; error: Error | null }) {
   if (error) return <p className="px-3 pt-2 text-[11px] text-danger">{error.message}</p>
   if (!estimate) return <p className="px-3 pt-2 text-[11px] text-fg-tertiary">in context: …</p>
   const parts = contextLine(estimate)
-  const ratio = estimate.budget_tokens > 0 ? Math.min(1, estimate.total_tokens / estimate.budget_tokens) : 0
-  const truncated = estimate.items.some((i) => i.status === 'truncated')
   const firstOmitted = estimate.items.find((i) => i.status === 'omitted')
   const omittedLabel = `${estimate.omitted} omitted`
   return (
@@ -173,16 +209,6 @@ export function ContextLine({ estimate, error }: { estimate: ContextEstimate | u
           {omittedLabel}
         </button>
       )}
-      <span
-        role="progressbar"
-        aria-label="Context budget"
-        aria-valuemin={0}
-        aria-valuemax={estimate.budget_tokens}
-        aria-valuenow={estimate.total_tokens}
-        className="h-1 min-w-16 flex-1 basis-full rounded-sm bg-layer-2 md:basis-auto"
-      >
-        <span className={cn('block h-full rounded-sm', truncated ? 'bg-danger' : ratio >= 0.8 ? 'bg-amber-500' : 'bg-primary')} style={{ width: `${Math.round(ratio * 100)}%` }} />
-      </span>
     </div>
   )
 }

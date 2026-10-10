@@ -8,25 +8,35 @@ import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { ChatColumn } from '@/components/notebooks/ChatColumn'
 import { type AskSearch, NotebookHeaderActions } from '@/components/notebooks/NotebookHeaderActions'
+import { NotePane } from '@/components/notebooks/NotePane'
 import { NotesColumn } from '@/components/notebooks/NotesColumn'
+import { paneMode } from '@/components/notebooks/notebook-pane'
 import { firstLine, useDescription, useNotebook, useNotebookItems } from '@/components/notebooks/useNotebook'
 import { useNotes } from '@/components/notes/useNotes'
 import { ShareAction } from '@/components/share/ShareDialog'
 import { SourcesColumn } from '@/components/sources/SourcesColumn'
 import { Button } from '@/components/ui/button'
+import { ResizeHandle } from '@/components/ui/resize-handle'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { type Side, type Tab, layout, useNotebookColumns } from '@/lib/notebook-columns'
+import { NOTES_MAX_RATIO, NOTES_MIN_PX, RAIL_PX, SIDE_PX, type Side, type Tab, clampNotesWidth, layout, useNotebookColumns } from '@/lib/notebook-columns'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { isPopout } from '@/lib/popout'
+import { PX_STEP } from '@/lib/resize-drag'
 import { cn } from '@/lib/utils'
 
 const route = getRouteApi('/notebooks_/$id')
 
-/** `/notebooks/$id` (144 §12.1): sources | chat | notes. `?new` = just created: the title is selected; `?tab` = the phone's open column; `?ask` = the Ask dialog (wave 2). */
+/** A note opened in a pane narrower than this widens it once to `NOTE_OPEN_PX` (157 D7); it is never shrunk back. */
+const NOTE_OPEN_PX = 480
+
+/**
+ * `/notebooks/$id` (144 §12.1): sources | chat | notes. `?new` = just created: the title is selected; `?tab` = the phone's open column;
+ * `?ask` = the Ask dialog (wave 2); `?note=<doc>` (157 D4) = the note open in the right-hand pane of the columns layout.
+ */
 export function NotebookPage() {
   const { id } = route.useParams()
-  const { new: isNew, tab, ask } = route.useSearch()
-  return <Notebook key={id} id={id} isNew={isNew === true} tab={tab ?? 'chat'} ask={ask} />
+  const { new: isNew, tab, ask, note } = route.useSearch()
+  return <Notebook key={id} id={id} isNew={isNew === true} tab={tab ?? 'chat'} ask={ask} note={note} />
 }
 
 const TABS: { key: Tab; label: (sources: number, notes: number) => string }[] = [
@@ -35,7 +45,7 @@ const TABS: { key: Tab; label: (sources: number, notes: number) => string }[] = 
   { key: 'notes', label: (_, n) => `Notes · ${n}` },
 ]
 
-function Notebook({ id, isNew, tab, ask }: { id: string; isNew: boolean; tab: Tab; ask: AskSearch }) {
+function Notebook({ id, isNew, tab, ask, note }: { id: string; isNew: boolean; tab: Tab; ask: AskSearch; note: string | undefined }) {
   const nb = useNotebooksApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -66,15 +76,34 @@ function Notebook({ id, isNew, tab, ask }: { id: string; isNew: boolean; tab: Ta
   useEffect(() => {
     if (!isNew || !ready) return
     titleInput.current?.select()
-    void navigate({ to: '/notebooks/$id', params: { id }, search: { ...(tab === 'chat' ? {} : { tab }), ...(ask === undefined ? {} : { ask }) }, replace: true })
-  }, [isNew, ready, id, tab, ask, navigate])
+    void navigate({ to: '/notebooks/$id', params: { id }, search: { ...(tab === 'chat' ? {} : { tab }), ...(ask === undefined ? {} : { ask }), ...(note === undefined ? {} : { note }) }, replace: true })
+  }, [isNew, ready, id, tab, ask, note, navigate])
   // The Ask dialog is URL state (`?ask`), so `/ask` in the composer and the header button share one path.
-  const setAsk = (next: AskSearch) => void navigate({ to: '/notebooks/$id', params: { id }, search: { ...(tab === 'chat' ? {} : { tab }), ...(next === undefined ? {} : { ask: next }) }, replace: true })
+  const setAsk = (next: AskSearch) => void navigate({ to: '/notebooks/$id', params: { id }, search: { ...(tab === 'chat' ? {} : { tab }), ...(next === undefined ? {} : { ask: next }), ...(note === undefined ? {} : { note }) }, replace: true })
 
   const mobile = useIsMobile()
   const collapsed = useNotebookColumns((s) => s.collapsed)
   const toggle = useNotebookColumns((s) => s.toggle)
-  const l = layout(mobile, collapsed)
+  const notesWidth = useNotebookColumns((s) => s.notesWidth)
+  const setNotesWidth = useNotebookColumns((s) => s.setNotesWidth)
+  const l = layout(mobile, collapsed, notesWidth)
+  // 157 D4: the open note is URL state too (`?note`), so browser back closes it; `fresh` (just created here) is this
+  // render's knowledge: its row may not be in `items` yet, and its title gets selected once. Opening pushes history,
+  // closing replaces it (back after a close never reopens the note).
+  const [fresh, setFresh] = useState<string | null>(null)
+  const noteSearch = (next: string | undefined) => ({ ...(tab === 'chat' ? {} : { tab }), ...(ask === undefined ? {} : { ask }), ...(next === undefined ? {} : { note: next }) })
+  const grid = useRef<HTMLDivElement>(null)
+  // The page width the clamps use: the grid once laid out (SSR/test: no window either, so a desktop-ish guess).
+  const pageW = () => grid.current?.getBoundingClientRect().width ?? globalThis.innerWidth ?? 1280
+  const clampW = (px: number) => clampNotesWidth(px, pageW(), collapsed.sources ? RAIL_PX : SIDE_PX)
+  const openNote = (doc: string, isFresh: boolean) => {
+    setFresh(isFresh ? doc : null)
+    if (notesWidth < NOTE_OPEN_PX) setNotesWidth(clampW(NOTE_OPEN_PX))
+    void navigate({ to: '/notebooks/$id', params: { id }, search: noteSearch(doc) })
+  }
+  const closeNote = () => void navigate({ to: '/notebooks/$id', params: { id }, search: noteSearch(undefined), replace: true })
+  const pane = paneMode(note, items?.filter((i) => i.kind === 'note').map((i) => i.item), fresh)
+  const right = useRef(0)
   const members = live.provider?.meta?.members.length ?? 0
   const chat = (composerOnly?: boolean) => <ChatColumn notebook={id} title={title || 'Untitled'} notes={notes} composerOnly={composerOnly} />
   // 143's pop-out rule: its own window has no band (SectionBand returns null) and no way back; the row is the drag bar.
@@ -108,13 +137,24 @@ function Notebook({ id, isNew, tab, ask }: { id: string; isNew: boolean; tab: Ta
         </div>
       </SectionRow>
       {l.mode === 'columns' ? (
-        <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: l.template }}>
+        <div ref={grid} className="grid min-h-0 flex-1" style={{ gridTemplateColumns: l.template }}>
           <SideColumn side="sources" collapsed={collapsed.sources} toggle={toggle}>
             <SourcesColumn notebook={id} />
           </SideColumn>
           <div className="flex min-h-0 min-w-0 flex-col border-l border-border-subtle">{chat()}</div>
-          <SideColumn side="notes" collapsed={collapsed.notes} toggle={toggle} className="border-l border-border-subtle">
-            <NotesColumn notebook={id} />
+          <SideColumn side="notes" collapsed={collapsed.notes} toggle={toggle} className="flex-row">
+            {/* 157 D7: the pane's left edge; the handle is the column's first 4 px (in place of its border). */}
+            <ResizeHandle
+              orientation="vertical"
+              aria-label="Resize notes pane"
+              value={{ now: notesWidth, min: NOTES_MIN_PX, max: Math.floor(pageW() * NOTES_MAX_RATIO) }}
+              onStart={() => (right.current = grid.current?.getBoundingClientRect().right ?? pageW())}
+              onMove={(x) => setNotesWidth(clampW(right.current - x))}
+              onNudge={(d) => setNotesWidth(clampW(notesWidth - d * PX_STEP))}
+            />
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {pane.kind === 'note' ? <NotePane key={pane.id} notebook={id} id={pane.id} fresh={fresh === pane.id} onBack={closeNote} /> : <NotesColumn notebook={id} onOpen={openNote} />}
+            </div>
           </SideColumn>
         </div>
       ) : (

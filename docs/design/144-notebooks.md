@@ -65,6 +65,7 @@ W-a §3 the notebook's description is its own Y.Doc body, the lists are rows · 
 URL/file/meeting everywhere · W-d §4.1 YouTube `auto` = captions, then `yt-dlp` audio → local STT · W-e §4.2 one
 source = one document under a size cap, no chunked documents · W-f §4.3 insights are a block section at the end of the
 source · W-g §5 the dial lives on the session server-side, the device remembers defaults · W-h §5 budget 40 000 tokens
+(superseded 2026-10-10 by Sky's ruling, 157 D1: no notebook budget — the first injection is sized by the session)
 · W-i §6 `?s=<sha8>` for drift; `doc_insert` refuses dead `theuth://` targets · W-j §7 `gte-modernbert-base` (CLS
 pooling, what the candle stack already does); FTS5 + `vec0` as two tables in one file · W-k §8 one notebook per
 session, a `notebook` column · W-l §10 the audio overview is two voices, one synthesis per turn, one MP3.
@@ -324,9 +325,9 @@ whole markdown with `<!-- id -->` per block as `doc_read(format="markdown")`, `5
 artifacts are `mention`-only (the model fetches with `session_read`/`artifact_read`, `attach.rs:26-30`).
 
 **Default rule**, computed on the hub at turn time: `summary` when the source has ≥ 1 insight else `full` — newest
-first — while the running total stays under the budget; `mention` for the rest (`open-notebook:
-frontend/src/lib/utils/source-context.ts:23-26` is the insights-if-any rule; the budget ordering is ours). Notes
-default to `full` under the same budget.
+first — while the running total stays under the session's capacity (157 D4); `mention` for the rest (`open-notebook:
+frontend/src/lib/utils/source-context.ts:23-26` is the insights-if-any rule; the ordering is ours). Notes default to
+`full` under the same capacity.
 
 **Storage (writer's call W-g)**: the dial lives on the **session**, server-side — `session_context(session, kind, item,
 level, hlc)` in `sessions.sqlite`, set by `notebook_context_set` (RPC from the card, tool from the agent, §13), read at
@@ -334,46 +335,88 @@ turn assembly; sessions are owner-only (D13), so "per thread, never shared". The
 `lib/notebook-context.ts` (zustand + localStorage, `note-chat.ts:1-2`'s pattern) and applies them to a **new** thread's
 first message. Rejected: a marker line carrying the dial in the user text (20 sources × 26-char ids); page-state only.
 
-**Budget (writer's call W-h)**: `notebooks.context_budget_tokens` = **40 000**: under every current chat model's
-window with room for history, tools and the reply (meetings compact at 24 000, 53 §4.7); open-notebook found 50 000
-workable for source chat (`open-notebook: graphs/source_chat.py:85`); a 40k block at the volatile tail (10 §14) costs
-one prefix miss per turn, not one per item. Tokens ≈ `chars / 4` on the hub (the UI's `≈ bytes/3`,
-`137-endless.md:287`, over-counts prose; the hub's number is what the composer shows).
+**Budget (writer's call W-h, superseded 2026-10-10)**: W-h set `notebooks.context_budget_tokens` = 40 000. Sky's
+ruling (knowledge `decisions/theuth-notebook-chat-context-rulings-2026-10-10`): *"what is the point of this budget? why
+not just let it behave like a normal session, and let the user select endless context if they want."* So, as built by
+157 D1/D4: there is no notebook budget. The first injection is limited only by the session itself — the block may fill
+the frame up to where a fold would leave it (`fixed + 60 % of the headroom` over the compaction trigger, 81
+COMPACT-FLOOR's `HEAD_SHARE + TAIL_SHARE`; an endless session sizes against its view budget), so the trigger does not
+fire on the turn after the block (`notebook_context::capacity`). Items beyond it render as mentions with
+`status="omitted"` and `dial="<the chosen level>"`, and the block says how many did not fit. `context_budget_tokens` is
+ignored when a config still has it; Ask keeps its own sizing under `ask_context_tokens` (§9, 157 D8). Tokens ≈ `chars /
+4` on the hub (the UI's `≈ bytes/3`, `137-endless.md:287`, over-counts prose; the hub's number is what the composer shows).
+
+**Once, then notices (157 D2/D3, Sky's second ruling)**: *"the agent has access to the notebook data, if something
+changes, it get's information on how to reach that new data, and that if the user asks a question it should look that
+up so it's aware of everything. this way we're not cache busting on every update to the notebook."* The block is
+injected once per epoch: the first epoch of a chat gets it at the dial levels, an epoch after a compaction gets the
+manifest (§5.3). Later turns append nothing when nothing changed, else one short `<notebook_changes>` user message —
+one `<change>` line per item added, removed, renamed, edited (content or insights), moved on the dial (to or from
+`off` included) or the description edited, each with the kind, id, title, the new level and fingerprint and how to
+read it (`doc_read`, `nb_search`, `notebook_get`), never the content. Earlier messages are never edited or hidden. The
+baseline lives in the history: every item line carries `s="<sha8 of its markdown>"` (W-i's hash) and its level, and
+the turn parses the epoch's block and the notices after it back into the baseline before comparing with the live
+notebook — so it survives a restart and resets at a compaction by construction, no migration.
 
 ### 5.2 The pre-turn estimate
 
-The composer's context line (§12): `in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes · ~12.4k of 40k
-tokens · 1 omitted` — from `notebook_context_estimate(notebook, session)` (read-only, any engine), re-run on every dial
-change and `SourceEvent::Changed`. "omitted" = `off` or cut by the budget; the chip scrolls the sources column to them.
-Every item `off` → "nothing in context — the agent sees only the description" **before** send, and the same sentence
-in the block (never a silent empty context; `open-notebook` shipped bulk toggles after exactly that bug, CHANGELOG 1.10.0).
+The composer's context line (§12): `in context: 4 sources (2 summary · 1 full · 1 mention) · 2 notes · ~12.4k tokens ·
+1 omitted` before the first send, the same counts plus `2 changes go with your next message` once the block is in the
+chat — from `notebook_context_estimate(notebook, session)` (read-only, any engine), re-run on every dial change and
+`SourceEvent::Changed`. `ContextEstimate` carries `injected` (the epoch has the block) and `pending_changes` (157 D9);
+no `budget_tokens`, no bar. "omitted" = `off` or beyond the first injection's capacity (after the block, `off` only);
+the chip scrolls the sources column to them. Every item `off` → "nothing in context — the agent sees only the
+description" **before** send, and the same sentence in the block (never a silent empty context; `open-notebook`
+shipped bulk toggles after exactly that bug, CHANGELOG 1.10.0). Without a session the estimate sizes against the
+model a new chat would get (the engine default); never a fixed number.
 
 ### 5.3 The injection shape
 
-A volatile tail block built by the agent plugin next to `<knowledge>` hints when the session has a `notebook`
-binding (§8), after the user turn's `[attached …]` lines:
+A volatile block built by the agent plugin next to `<knowledge>` hints when the session has a `notebook` binding (§8),
+after the user turn's `[attached …]` lines — **once per epoch** (157 D2): the first turn of the chat gets it at the
+dial levels, the first turn after a compaction gets the manifest; afterwards only `<notebook_changes>` notes:
 
 ```
 <notebook id="01K7…" title="DR verification — ICD portal">
-<description>…the notebook document's markdown, ≤ 2 000 tokens, truncated with a notice…</description>
-<item kind="source" id="01K7…S1" title="ICD portal DR runbook v7" origin="file · 48 pages" level="summary" status="available">
+<description s="4f1c…">…the notebook document's markdown, ≤ 2 000 tokens, truncated with a notice…</description>
+<item kind="source" id="01K7…S1" title="ICD portal DR runbook v7" origin="file · 48 pages" level="summary" status="available" s="9a2e…">
 (the Insights section's blocks, each with its <!-- id -->)</item>
-<item kind="source" id="01K7…S2" title="AWS Route 53 failover docs" origin="url · fetched 9 d ago · changed since" level="mention" status="omitted">
-mention only: 11 400 words; read with doc_read("01K7…S2") if needed</item>
-<item kind="source" id="01K7…S4" title="DR-412 Failover drill results" origin="jira" level="full" status="truncated">
+<item kind="source" id="01K7…S2" title="AWS Route 53 failover docs" origin="url · fetched 9 d ago · changed since" level="mention" dial="full" status="omitted" s="77b0…">
+mention only: 11 400 words; read with doc_read("source:01K7…S2") if needed</item>
+<item kind="source" id="01K7…S4" title="DR-412 Failover drill results" origin="jira" level="full" status="truncated" s="c0de…">
 …markdown… [truncated: 3 200 of 9 800 tokens shown; the rest with doc_read(blocks=[…]); first omitted block 7f2a]</item>
-<item kind="note" id="01K7…N1" title="Drill timeline" level="full" status="available">…</item>
+<item kind="note" id="01K7…N1" title="Drill timeline" level="full" status="available" s="5e5e…">…</item>
+Not fitting this first injection: 1 item — the mentions above with status="omitted" and dial="<the level the user chose>"; read with doc_read when it matters.
 You may cite only these ids: 01K7…S1, 01K7…S2, 01K7…S4, 01K7…N1 (and the blocks inside them).
 </notebook>
 ```
 
+A later turn, only when something moved (157 D2/D3/D7; one `<change>` per item, never the content):
+
+```
+<notebook_changes notebook="01K7…">
+<change kind="source" id="01K7…S1" title="ICD portal DR runbook v8" level="summary" s="b1b1…">renamed from "ICD portal DR runbook v7"; content changed (text or insights); read it with doc_read("source:01K7…S1") when it matters (cite theuth://sources/01K7…S1)</change>
+<change kind="note" id="01K7…N2" title="Open questions" level="full" s="d2d2…">in context now at full; read it with doc_read("01K7…N2") when it matters (cite theuth://notes/01K7…N2)</change>
+<change kind="source" id="01K7…S2" title="AWS Route 53 failover docs" level="off">now off: leave it out unless the user brings it back</change>
+<change kind="notebook" id="01K7…" s="4f1d…">description changed; read it with doc_read("notebook:01K7…")</change>
+</notebook_changes>
+```
+
+The first turn after a compaction (157 D5) — the manifest: the description, every non-`off` item as one mention line
+at its dial level with its fingerprint, and the sentence *"The contents of these items were in context earlier in this
+chat; read what you need with doc_read / nb_search."*; `<notebook … manifest="true">`, never the content again (the
+compaction loop of facts/theuth-meeting-session-compacts-every-turn-2026-09-28 cannot recur).
+
 `status ∈ available | truncated | omitted` per item with the notice verbatim (`open-notebook:
-utils/context_builder.py:34-36, 471-477` — technique). The allow-list sentence is the per-turn citation contract
-(§6.2). Order = full, summary, mention, newest first within a level, so truncation hits the least-chosen first. The
-`[attached …]` grammar (`attach.rs:17-21`) is unchanged; inside a notebook session every message leads with
-`[attached notebook <id> "<title>"]` (a sixth `Kind`, §13) and the attachments `PROMPT` gains one row: *notebook → its
-items are already in the `<notebook>` block at the levels the user chose; `doc_read` any item for more.* A static
-`notebooks` prompt block (~120 tokens) explains the block, the levels and the citation grammar.
+utils/context_builder.py:34-36, 471-477` — technique); `s` is the fingerprint the next turn compares (W-i's sha8);
+`dial` appears only when the rendered level fell short of the chosen one. The allow-list sentence is the citation
+contract (§6.2) — the model may also cite ids a `<notebook_changes>` message or a tool result gave it. Order = full,
+summary, mention, newest first within a level, so truncation hits the least-chosen first. The `[attached …]` grammar
+(`attach.rs:17-21`) is unchanged; inside a notebook session every message leads with `[attached notebook <id>
+"<title>"]` (a sixth `Kind`, §13) and the attachments `PROMPT` gains one row: *notebook → its `<notebook>` block
+opened this chat (a manifest after a compaction) and `<notebook_changes>` messages say what moved since; before you
+answer, `doc_read` the items and `nb_search` for passages.* A static `notebooks` prompt block (~200 tokens) explains
+the block, the levels, the notices, the citation grammar and the rule to look things up before answering (157 D6).
 
 **Outside a notebook nothing changes**: no block, no allow-list sentence, markers and the attachments prompt exactly as
 `attach.rs:17-35`, `doc_read` on demand.
@@ -574,7 +617,8 @@ Implementation: a `notebook_ask` tool (ReadOnly): one planning side call (`noteb
 writes the plan as JSON; branches are **subagents** (`spawn_subagent`) given one instruction each, an id allow-list of
 their hits, and only `nb_search` (§7.4, scoped to their notebooks) + `doc_read`; the parent synthesises under "use only
 ids present in the partial answers" (`open-notebook: prompts/ask/final_answer.jinja:13-23` — the rule, not the graph).
-Limits: `ask_max_branches` 5, `ask_hits_per_branch` 10, each branch's budget = `context_budget_tokens / branches`, one
+Limits: `ask_max_branches` 5, `ask_hits_per_branch` 10, each branch's budget = `ask_context_tokens / branches` (157 D8:
+Ask's own key, default 40 000 — the notebook chat has no budget any more, §5.1), one
 retry per failing branch, the run under the turn's cancellation. It lands in the ask session (Library › Notebooks › Ask)
 and optionally "Save as note into …" one notebook (its chips still point into the others). Rejected: vector-only
 retrieval; a single-turn graph (the ask session is a normal session — the user keeps asking).
@@ -703,7 +747,7 @@ pub struct Source { pub doc: DocSummary, pub origin: SourceOrigin, pub status: S
     pub fetched_ms: Option<i64>, pub content_sha: Option<String>, pub changed_since: Option<i64>, pub bytes: Option<u64>, pub words: Option<u32>,
     pub duration_ms: Option<u64>, pub pages: Option<u32>, pub insights: u32, pub meta: serde_json::Value }
 #[serde(rename_all = "lowercase")] pub enum ContextLevel { Off, Mention, Summary, Full }
-pub struct ContextEstimate { pub items: Vec<ContextItem>, pub tokens: u32, pub budget: u32, pub omitted: u32 }   // ContextItem { kind, item, level, status: Available|Truncated|Omitted, tokens }
+pub struct ContextEstimate { pub items: Vec<ContextItem>, pub total_tokens: u32, pub omitted: u32, pub empty: bool, pub injected: bool, pub pending_changes: u32 }   // 157 D9; ContextItem { id, kind, title, level, pinned, status: Available|Truncated|Omitted, tokens }
 pub struct Citation { pub href: String, pub kind: CiteKind, pub id: String, pub locator: Option<String>, pub sha8: Option<String>,
     pub status: LocateStatus /* codeindex::LocateStatus reused */, pub available: bool, pub title: String, pub text: Option<String> }
 #[serde(tag = "type")] pub enum SourceEvent { Changed { source: DocId, status: SourceStatus }, Progress { source: DocId, percent: u8 } }
@@ -738,8 +782,9 @@ No `notebook_share` tool (59 decision 15 extends: sharing is RPC from the UI, ne
 `source_refresh`, `source_insights_run`, `insight_promote`, `notebook_context_set`, `notebook_context_estimate`,
 `cite_resolve(hrefs)`, `nb_search`; `SourceEvent` on the existing `subscribe_events`. Every write goes through
 `doc_send` (69 §4: `NotHub` → forward). Prompt blocks: `attachments` (`attach.rs:17-35`) + two rows (notebook, source);
-`notebooks` (new, static, ~120 tokens: the block, the levels, the grammar, the allow-list rule, "quoted material");
-`<notebook …>` (volatile, per turn, §5.3) only in bound sessions.
+`notebooks` (static, ~200 tokens: the block once, the levels, the `<notebook_changes>` notes, "look it up before you
+answer", the grammar, the allow-list rule, "quoted material"); `<notebook …>` (once per epoch, §5.3) and
+`<notebook_changes>` (when something moved) only in bound sessions.
 
 ## 14. Config
 
@@ -749,7 +794,7 @@ notebooks:
   insight_default: on              # one Dense summary per source at ingest
   insight_input_tokens: 24000
   embedding_model: embed-gte-modernbert-base   # a directory under <data_dir>/models/; never provider/model (D9)
-  context_budget_tokens: 40000
+  # context_budget_tokens: gone (157 D1, 2026-10-10) — the first `<notebook>` block is sized by the session; still-present keys are ignored
   chunk_tokens: 400
   chunk_overlap: 0.15
   chunk_min_tokens: 5
@@ -763,6 +808,7 @@ notebooks:
   ask_model: ~                     # W3 planning side call; ~ = session model
   ask_max_branches: 5
   ask_hits_per_branch: 10
+  ask_context_tokens: 40000       # 157 D8: all branches' passages together, split by branch count
   audio_voices: [peter_yearsley]   # W3; a second name once the checkpoint ships one
 ```
 
