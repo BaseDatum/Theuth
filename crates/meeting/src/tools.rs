@@ -445,6 +445,58 @@ impl Tool for MeetingSpeakersTool {
     }
 }
 
+/// `meeting_suggest_speakers` arguments (158 §10.1).
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct SuggestArgs {
+    /// Meeting id; default: the meeting of this session, else the most recent.
+    #[serde(default)]
+    pub meeting: Option<MeetingId>,
+}
+
+/// Name suggestions per speaker label; never applies anything (R6).
+pub struct MeetingSuggestSpeakersTool(pub Arc<Store>);
+
+#[async_trait::async_trait]
+impl Tool for MeetingSuggestSpeakersTool {
+    const NAME: &'static str = "meeting_suggest_speakers";
+    const RISK: Risk = Risk::ReadOnly;
+    const RETURNS: &'static str = "list[dict]";
+    type Args = SuggestArgs;
+
+    fn description(&self) -> String {
+        "Who each speaker label of a recorded meeting probably is: one row per label with the \
+         proposed name, confidence (0–1), source (voiceprint, self-introduction, vocative, \
+         elimination, one-on-one) and the evidence line, plus a warning when one label seems to \
+         hold several people. Suggestions only — the user accepts them in Review; nothing is \
+         renamed here. Defaults to the meeting this session belongs to."
+            .into()
+    }
+
+    async fn call(&self, a: SuggestArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        let id = match resolve(&self.0, a.meeting, &cx).await {
+            Ok(id) => id,
+            Err(e) => return result(Err(e)),
+        };
+        let rows = match crate::post::suggest::suggest_for(&self.0, id) {
+            Ok(rows) => rows,
+            Err(e) => return result(Err(format!("{e:#}"))),
+        };
+        if rows.is_empty() {
+            return result(Ok(
+                "no suggestions: nothing in the transcript, embeddings or attendee \
+                             list points at a name"
+                    .into(),
+            ));
+        }
+        let text = rows
+            .iter()
+            .map(crate::post::suggest::line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(structured(text, rows))
+    }
+}
+
 /// `meeting_list` arguments.
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 pub struct ListArgs {
@@ -495,9 +547,13 @@ impl Tool for MeetingListTool {
     }
 }
 
-/// Register the four post tools (plugin start).
+/// Register the five post tools (plugin start); the data dir is remembered for the sync form
+/// compiler (`summary::form_for`) on the way (158 §11).
 pub async fn register_post(reg: &ActorRef<ToolRegistry>, store: Arc<Store>) {
     let speakers = store.speakers_dir();
+    if let Some(data_dir) = speakers.parent().and_then(std::path::Path::parent) {
+        crate::templates::attach(data_dir.to_owned());
+    }
     let _ = reg
         .ask(RegisterTool(Arc::new(MeetingReadTool(store.clone()))))
         .await;
@@ -509,6 +565,11 @@ pub async fn register_post(reg: &ActorRef<ToolRegistry>, store: Arc<Store>) {
             store: store.clone(),
             speakers,
         })))
+        .await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(MeetingSuggestSpeakersTool(
+            store.clone(),
+        ))))
         .await;
     let _ = reg
         .ask(RegisterTool(Arc::new(MeetingListTool(store))))

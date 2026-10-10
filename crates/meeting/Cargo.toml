@@ -44,6 +44,10 @@ calcard = { version = "0.3", default-features = false }
 reqwest = { workspace = true }  # ICS subscription GET (conditional)
 secrets = { workspace = true }  # the subscription URL is a vault row `calendar.ics.<id>`
 url = { workspace = true }  # join-link host, Google redirect unwrapping
+# 158 §10–§11 (W4): templates as markdown + YAML front matter, cue regexes, shipped-body hashes.
+gray_matter = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-audio = { workspace = true }
