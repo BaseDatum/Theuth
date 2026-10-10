@@ -232,4 +232,64 @@ struct MeetingReducerTests {
         #expect(MeetingReducer.elapsed(s, now: t0 + 100) == 60_000)
         #expect(MeetingReducer.mmss(62_500) == "01:02" && MeetingReducer.mmss(3_661_000) == "61:01")
     }
+
+    // MARK: 158 §5 — the prompt (Detected / DetectionCleared / AppReleased)
+
+    var detection: Detection { Detection(app: proc, appId: "us.zoom.xos", since: "2026-10-10T10:00:00Z") }
+
+    @Test func detectedShowsThePromptAndStartClearsIt() {
+        let s = MeetingReducer.reduce(.empty, .detected(detection), now: t0)
+        #expect(s.prompt == .detected(detection) && s.meeting == nil && s.state == .idle)
+        // Any meeting starting (Started, or the engine's DetectionCleared{Started}) withdraws it.
+        #expect(MeetingReducer.reduce(s, .started(meeting: "m2", session: "s2", process: proc, at: "now"), now: t0).prompt == nil)
+        #expect(MeetingReducer.reduce(s, .detectionCleared(appId: "us.zoom.xos", reason: .started), now: t0).prompt == nil)
+    }
+
+    @Test func detectionClearedOnlyForTheShownApp() {
+        let s = MeetingReducer.reduce(.empty, .detected(detection), now: t0)
+        for r in [DetectionCleared.notNow, .never, .released] {
+            #expect(MeetingReducer.reduce(s, .detectionCleared(appId: "us.zoom.xos", reason: r), now: t0).prompt == nil)
+        }
+        #expect(MeetingReducer.reduce(s, .detectionCleared(appId: "com.apple.FaceTime", reason: .released), now: t0) == s)
+        #expect(MeetingReducer.reduce(.empty, .detectionCleared(appId: "us.zoom.xos", reason: .released), now: t0) == .empty)
+    }
+
+    @Test func appReleasedAsksOnlyForTheLiveMeeting() {
+        let s = MeetingReducer.reduce(live(), .appReleased(meeting: "m1", app: proc, releasedForS: 30), now: t0)
+        #expect(s.prompt == .stop(app: proc, releasedForS: 30) && s.isLive)
+        #expect(MeetingReducer.reduce(live(), .appReleased(meeting: "other", app: proc, releasedForS: 30), now: t0).prompt == nil)
+        #expect(MeetingReducer.reduce(live(.review), .appReleased(meeting: "m1", app: proc, releasedForS: 30), now: t0).prompt == nil)
+        // The 30 s re-send updates the count; the meeting ending takes the question with it.
+        #expect(MeetingReducer.reduce(s, .appReleased(meeting: "m1", app: proc, releasedForS: 60), now: t0).prompt == .stop(app: proc, releasedForS: 60))
+        #expect(MeetingReducer.reduce(s, .state(meeting: "m1", state: .done, degraded: []), now: t0).prompt == nil)
+        #expect(MeetingReducer.reduce(s, .state(meeting: "m1", state: .paused, degraded: []), now: t0).prompt == s.prompt)
+    }
+
+    @Test func keepRecordingMutesTheReSendsUntilAFreshRelease() {
+        let asked = MeetingReducer.reduce(live(), .appReleased(meeting: "m1", app: proc, releasedForS: 30), now: t0)
+        let kept = MeetingReducer.keepRecording(asked)
+        #expect(kept.prompt == nil && kept.keptReleasedForS == 30 && kept.isLive)
+        #expect(MeetingReducer.keepRecording(live()) == live()) // nothing asked
+        let resent = MeetingReducer.reduce(kept, .appReleased(meeting: "m1", app: proc, releasedForS: 60), now: t0)
+        #expect(resent == kept)
+        let fresh = MeetingReducer.reduce(kept, .appReleased(meeting: "m1", app: proc, releasedForS: 30), now: t0)
+        #expect(fresh.prompt == .stop(app: proc, releasedForS: 30) && fresh.keptReleasedForS == nil)
+    }
+
+    @Test func seedCarriesTheDetectionAndUpcomingIsInert() {
+        let status = MeetingStatus(state: .idle, detection: detection)
+        #expect(MeetingReducer.seed(status, now: t0).prompt == .detected(detection))
+        #expect(MeetingReducer.seed(MeetingStatus(), now: t0).prompt == nil)
+        let e = EventRef(id: "e", uid: "u", title: "Sync", start: "x", end: "y")
+        #expect(MeetingReducer.reduce(live(), .upcoming(event: e, project: nil, brief: nil), now: t0) == live())
+    }
+
+    @Test func eventLineFormatsTitleAndTimes() {
+        let e = EventRef(id: "e", uid: "u", title: "Weekly sync", start: "2026-10-10T10:00:00Z", end: "2026-10-10T10:30:00Z")
+        let line = MeetingReducer.eventLine(e)
+        #expect(line.hasPrefix("Weekly sync · ") && line.contains("–") && line.count > "Weekly sync · ".count + 5)
+        #expect(MeetingReducer.eventLine(EventRef(id: "e", uid: "u", title: "Sync", start: "soon", end: "later")) == "Sync")
+        let frac = EventRef(id: "e", uid: "u", title: "S", start: "2026-10-10T10:00:00.000Z", end: "2026-10-10T10:30:00.000Z")
+        #expect(MeetingReducer.eventLine(frac) == MeetingReducer.eventLine(EventRef(id: "e", uid: "u", title: "S", start: "2026-10-10T10:00:00Z", end: "2026-10-10T10:30:00Z")))
+    }
 }

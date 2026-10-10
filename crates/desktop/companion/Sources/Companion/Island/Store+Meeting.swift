@@ -58,6 +58,28 @@ extension Store {
     func meetingResume() { meetingAct("meeting_resume") { try await $0.meetingResume() } }
     func meetingStop() { meetingAct("meeting_stop") { try await $0.meetingStop() } }
 
+    // 158 §5.4 — the prompt's answers. Each clears the prompt at once (the engine's `DetectionCleared`/`Started` confirm it);
+    // Start sends the one frozen RPC with the detected pid, `consent: true` (the lawful line was shown) and what W2/W3 filled.
+    func meetingStartDetected(_ d: Detection) {
+        meeting?.prompt = nil
+        let start = StartMeeting(process: d.app.pid, title: d.event?.event.title, context: d.event?.event.description.map { String($0.prefix(1_000)) },
+                                 consent: true, source: .detected(appId: d.appId), event: d.event?.event.id, project: d.project)
+        meetingAct("meeting_start(pid=\(d.app.pid), source=detected:\(d.appId), consent=true)") { _ = try await $0.meetingStart(start) }
+    }
+
+    func meetingNotNow(_ d: Detection) {
+        meeting?.prompt = nil
+        meetingAct("meeting_detection_dismiss(\(d.appId), never=false)") { try await $0.meetingDetectionDismiss(appId: d.appId, never: false) }
+    }
+
+    func meetingNever(_ d: Detection) {
+        meeting?.prompt = nil
+        meetingAct("meeting_detection_dismiss(\(d.appId), never=true)") { try await $0.meetingDetectionDismiss(appId: d.appId, never: true) }
+    }
+
+    /// "Keep recording": local only — no RPC exists; `MeetingReducer.keepRecording` mutes the engine's re-sends.
+    func meetingKeepRecording() { meeting = meeting.map(MeetingReducer.keepRecording) }
+
     /// Step the brief cursor — the pane's chevrons clamp, the J/K/↑/↓ keys `wrap` (149i §N); one path, the island controller
     /// mirrors every cursor change with `meeting_cursor` and moves the focused topic to the shown brief's.
     func meetingMove(_ delta: Int, wrap: Bool = false) {
