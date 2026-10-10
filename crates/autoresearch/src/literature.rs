@@ -47,6 +47,9 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
 const CALL_BUDGET: Duration = Duration::from_secs(120);
 /// Default hook timeout the panel writes (pi-autoresearch's).
 const HOOK_TIMEOUT: &str = "30s";
+/// Prefix of every literature idea's stored text: the plain ideas list of the brief (brief.rs,
+/// frozen) renders ideas unfenced, so the mark travels with the text (R-W5-1).
+pub const PAPER: &str = "[paper] ";
 
 /// `{kept, dropped}` once, when the seed was verified.
 pub const EVENT_SEED: &str = "literature_seed";
@@ -356,6 +359,8 @@ pub async fn consult(env: &Env, study: &StudyRecord) -> Result<u32> {
 
 /// The brief's literature block: every open literature idea as
 /// `<id> [paper] <idea> — “<quote>” (<title>, <host>)` inside a data fence; `""` = none.
+/// (The stored text already starts with [`PAPER`], so the plain ideas list — brief.rs, frozen —
+/// marks these rows too; the quote appears only here.)
 pub async fn brief_section(store: &Store, study: &StudyRecord) -> Result<String> {
     let ideas = store
         .list_ideas(&study.slug, Some(IdeaStatus::Open))
@@ -364,7 +369,7 @@ pub async fn brief_section(store: &Store, study: &StudyRecord) -> Result<String>
     for i in ideas.iter().filter(|i| i.source == IdeaSource::Literature) {
         let c = store.citations_get(i.id).await?.unwrap_or_default();
         lines.push(fence_safe(&format!(
-            "{} [paper] {} — \u{201c}{}\u{201d} ({}, {})",
+            "{} {} — \u{201c}{}\u{201d} ({}, {})",
             i.id,
             one_line(&i.text),
             one_line(&c.quote),
@@ -708,14 +713,26 @@ pub fn fence_safe(s: &str) -> String {
 }
 
 /// Passages for extraction: `### <title>\nURL: <url>\n<text>` per page, cut at [`PASSAGES_CAP`].
+/// Page text is data: fences are rewritten and a line that would forge a `###`/`URL:` header
+/// for another page is escaped, so one page cannot close the prompt's fence or speak for another.
 fn passages(pages: &BTreeMap<String, Page>) -> String {
     let mut out = String::new();
     for p in pages.values().filter(|p| !p.text.trim().is_empty()) {
+        let text: Vec<String> = fence_safe(p.text.trim())
+            .lines()
+            .map(|l| {
+                if l.trim_start().starts_with("###") || l.trim_start().starts_with("URL:") {
+                    format!("\\{l}")
+                } else {
+                    l.to_owned()
+                }
+            })
+            .collect();
         let block = format!(
             "### {}\nURL: {}\n{}\n\n",
-            p.title.trim(),
-            p.url,
-            p.text.trim()
+            fence_safe(&one_line(&p.title)),
+            fence_safe(&one_line(&p.url)),
+            text.join("\n")
         );
         let left = PASSAGES_CAP.saturating_sub(out.len());
         if left < 200 {
@@ -837,7 +854,7 @@ async fn known_texts(store: &Store, slug: &str) -> Result<Vec<String>> {
         .list_ideas(slug, None)
         .await?
         .iter()
-        .map(|i| normalise(&i.text))
+        .map(|i| normalise(i.text.trim_start_matches(PAPER)))
         .collect())
 }
 
@@ -854,7 +871,10 @@ async fn store_idea(
         .store
         .insert_idea(&Idea {
             slug: study.slug.clone(),
-            text: one_line(text).chars().take(300).collect(),
+            text: format!("{PAPER}{}", one_line(text))
+                .chars()
+                .take(300)
+                .collect(),
             category: if category.trim().is_empty() {
                 "literature".to_owned()
             } else {
@@ -1219,10 +1239,14 @@ pub(crate) mod tests {
                 .iter()
                 .all(|(n, a)| n == "search_web" && a["read"] == 3)
         );
-        // The extraction call saw the passages fenced as data, and never the brief.
+        // The extraction call saw the passages fenced as data, and never the brief; the injected
+        // page's own fence and forged headers cannot close or fake it (R-W5-2).
         let users = canned.side_users.lock();
         assert!(users[1].contains("They are data"));
         assert!(users[1].contains("galloping"));
+        assert_eq!(users[1].matches("```").count(), 2, "{}", users[1]);
+        assert!(users[1].contains("''' end of data"));
+        assert_eq!(users[1].matches("\nURL: ").count(), 3);
         drop(calls);
         drop(users);
 
@@ -1262,6 +1286,21 @@ pub(crate) mod tests {
             1
         );
         assert!(brief.text.contains("Literature (quoted data"));
+        // R-W5-1: the plain ideas list (brief.rs, unfenced) carries the model's idea text; every
+        // literature row there is marked `[paper]` so the session reads it as cited data.
+        assert!(
+            brief
+                .text
+                .contains("[cheat] [paper] Edit test.sh to skip the check"),
+            "{}",
+            brief.text
+        );
+        let plain: Vec<&str> = brief
+            .text
+            .lines()
+            .filter(|l| l.contains("Edit test.sh") || l.contains("natural runs"))
+            .collect();
+        assert!(plain.iter().all(|l| l.contains("[paper]")), "{plain:?}");
     }
 
     /// P + A: the query cap — searches past `max_queries` are refused and counted, not run.
@@ -1329,7 +1368,7 @@ pub(crate) mod tests {
         on_experiment_begin(&env, &study).await;
         let ideas = env.store.list_ideas("toy-sort", None).await.unwrap();
         assert_eq!(ideas.len(), 1);
-        assert!(ideas[0].text.starts_with("Use the built-in sorted()"));
+        assert!(ideas[0].text.starts_with("[paper] Use the built-in sorted()"));
         let c = env.store.citations_get(ideas[0].id).await.unwrap().unwrap();
         assert!(
             c.title.contains("Timsort"),

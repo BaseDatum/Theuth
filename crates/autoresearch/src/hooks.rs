@@ -33,6 +33,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const EVENT_BEFORE: &str = "hook_before";
 /// `{n, exit, wall_ms, output, refused?}` per `after` run.
 pub const EVENT_AFTER: &str = "hook_after";
+/// Flags that make the interpreter run code from the command line or from the worktree
+/// (`bash -c`, `python3 -m`, `node -e`); a hook names a custody script instead.
+const INLINE_FLAGS: [&str; 3] = ["-c", "-m", "-e"];
 
 /// `hooks.before` at `experiment_begin`, in the study worktree, before the brief renders.
 /// `Some(text)` becomes the brief section "From your hooks": the previous `after` output not
@@ -72,7 +75,7 @@ pub async fn before(env: &Env, study: &StudyRecord, n: u32) -> Result<Option<Str
                 ("AUTORESEARCH_HOOK".to_owned(), "before".to_owned()),
                 ("AUTORESEARCH_HOOK_JSON".to_owned(), json),
             ];
-            let p = run(env, study, "hook_before", cmd, &extra).await;
+            let p = run(env, study, &format!("hook_before-{n}"), cmd, &extra).await;
             out.push(section("before", n, &p));
             serde_json::json!({ "n": n, "exit": p["exit"], "wall_ms": p["wall_ms"], "output": p["output"] })
         }
@@ -114,14 +117,20 @@ pub async fn after(
             exp.delta_pct.map(|d| format!("{d:.3}")).unwrap_or_default(),
         ),
     ];
-    let mut p = run(env, study, "hook_after", cmd, &extra).await;
+    let mut p = run(env, study, &format!("hook_after-{}", exp.n), cmd, &extra).await;
     p["n"] = serde_json::json!(exp.n);
     env.store.append_event(&study.slug, EVENT_AFTER, &p).await?;
     Ok(p["output"].as_str().map(str::to_owned))
 }
 
-/// Run one hook: custody check, `plugin_command`, the first [`OUTPUT_CAP`] of its log. The
-/// payload `{exit, wall_ms, output, refused?}` is what the events store and the section renders.
+/// Run one hook: custody check, `plugin_command`, the first [`OUTPUT_CAP`] of its log
+/// (`runs/plugin/<what>-0.log`, `what` carries the experiment number so parallel slots never
+/// share a file). The payload `{exit, wall_ms, output, refused?}` is what the events store and
+/// the section renders.
+///
+/// Custody (R-W5-5): the command is refused when it carries an inline-code flag (`-c`, `-m`,
+/// `-e`) or names a path that is a script or exists in the worktree without a copy under
+/// `evaluator/<segment>/` — so the hook can only run what custody holds.
 async fn run(
     env: &Env,
     study: &StudyRecord,
@@ -132,15 +141,22 @@ async fn run(
     let slug = &study.slug;
     let evaluator = env.evaluator_dir(slug, study.segment);
     let drafts = crate::drafts_dir(&env.root, slug);
+    let worktree = study.worktree.as_deref().map(Path::new);
+    let refused = |why: String| serde_json::json!({ "exit": null, "wall_ms": 0, "output": "", "refused": format!("{why}; the hook did not run") });
     for tok in cmd.command.split_whitespace() {
-        if let Some(p) = crate::custody::command_path(tok, &drafts)
-            && script_like(p.rel())
-            && !evaluator.join(p.rel()).is_file()
-        {
-            return serde_json::json!({
-                "exit": null, "wall_ms": 0, "output": "",
-                "refused": format!("`{tok}` is not in custody (list it in evaluator_paths); the hook did not run"),
-            });
+        if INLINE_FLAGS.contains(&tok) {
+            return refused(format!(
+                "`{tok}` runs inline code or a module from the worktree; a hook runs a custody script"
+            ));
+        }
+        if let Some(p) = crate::custody::command_path(tok, &drafts) {
+            let rel = p.rel();
+            let in_worktree = worktree.is_some_and(|w| w.join(rel).exists());
+            if (script_like(rel) || in_worktree) && !evaluator.join(rel).is_file() {
+                return refused(format!(
+                    "`{tok}` is not in custody (list it in evaluator_paths)"
+                ));
+            }
         }
     }
     let timeout = crate::runner::parse_duration(&cmd.timeout).unwrap_or(DEFAULT_TIMEOUT);
@@ -294,6 +310,12 @@ mod tests {
         );
         assert!(text.contains("\"event\":\"before\""), "{text}");
         assert!(!text.contains("EVIL"), "{text}");
+        // R-W5-8: the log is per experiment, so parallel slots never share a file.
+        assert!(
+            crate::study_dir(&env.root, "toy-sort")
+                .join("runs/plugin/hook_before-3-0.log")
+                .is_file()
+        );
         let ev = env
             .store
             .list_events("toy-sort", Some(EVENT_BEFORE), 1)
@@ -389,6 +411,58 @@ mod tests {
         );
         assert!(text.len() <= OUTPUT_CAP + 80, "{}", text.len());
         assert!(!text.contains("```"));
+    }
+
+    /// R-W5-5: a hook that would run code from the worktree without a custody script —
+    /// `bash -c …`, `python3 -m hook`, `node hook` (a worktree file with no extension) — is refused
+    /// before anything runs; the plain custody script still runs.
+    #[tokio::test]
+    async fn inline_code_and_worktree_files_are_refused() {
+        let mut sp = spec("toy-sort");
+        sp.literature = None;
+        sp.hooks = Some(hooks("bash hook.sh", ""));
+        let (_d, env, mut study) = env_with(Arc::new(Canned::default()), sp).await;
+        let evaluator = env.evaluator_dir("toy-sort", 0);
+        std::fs::create_dir_all(&evaluator).unwrap();
+        std::fs::write(evaluator.join("hook.sh"), "echo ok").unwrap();
+        let worktree = Path::new(study.worktree.as_deref().unwrap()).to_path_buf();
+        std::fs::write(worktree.join("hook"), "echo EVIL").unwrap();
+        std::fs::write(worktree.join("hook.py"), "print('EVIL')").unwrap();
+        for (cmd, why) in [
+            ("bash -c 'echo EVIL'", "`-c` runs inline code"),
+            ("python3 -m hook", "`-m` runs inline code"),
+            ("bash hook", "`hook` is not in custody"),
+            ("python3 hook.py", "`hook.py` is not in custody"),
+            ("node -e EVIL", "`-e` runs inline code"),
+        ] {
+            study
+                .spec
+                .hooks
+                .as_mut()
+                .unwrap()
+                .before
+                .as_mut()
+                .unwrap()
+                .command = cmd.into();
+            let text = before(&env, &study, 1).await.unwrap().unwrap();
+            assert!(
+                text.contains("refused:") && text.contains(why),
+                "{cmd}: {text}"
+            );
+            assert!(!text.contains("EVIL"), "{cmd}: {text}");
+        }
+        // A program name that is also no worktree file (`bash`) passes; the custody script runs.
+        study
+            .spec
+            .hooks
+            .as_mut()
+            .unwrap()
+            .before
+            .as_mut()
+            .unwrap()
+            .command = "bash hook.sh".into();
+        let text = before(&env, &study, 2).await.unwrap().unwrap();
+        assert!(text.ends_with("[before hook #2]\nok"), "{text}");
     }
 
     #[test]

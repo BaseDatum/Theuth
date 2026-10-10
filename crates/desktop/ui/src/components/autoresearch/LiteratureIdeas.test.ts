@@ -31,11 +31,12 @@ test('literature ideas: nothing for a 140 study, a paper chip with link and quot
   const plain = [idea(1, 'user'), idea(2, 'model'), idea(3, 'advisor')]
   expect(renderToStaticMarkup(createElement(LiteratureIdeas, { ideas: plain }))).toBe('')
 
-  const ideas = [...plain, idea(4, 'literature', { text: 'Merge natural runs like Timsort', tried_in: [7, 9] }), idea(5, 'literature', { status: 'closed' })]
+  const ideas = [...plain, idea(4, 'literature', { text: '[paper] Merge natural runs like Timsort', tried_in: [7, 9] }), idea(5, 'literature', { status: 'closed' })]
   const citations = [citation(4, 'https://www.example.org/timsort?x=1', 'runs that are already ordered', 'Timsort — the sort behind sorted()')]
   const html = renderToStaticMarkup(createElement(LiteratureIdeas, { ideas, citations }))
   expect(html).toContain('data-papers="2"')
   expect(html).toContain('2 cited ideas')
+  expect(html).not.toContain('[paper] Merge')
   expect(html).toContain('Merge natural runs like Timsort')
   expect(html).toContain('href="https://www.example.org/timsort?x=1"')
   expect(html).toContain('paper · Timsort — the sort behind sorted()')

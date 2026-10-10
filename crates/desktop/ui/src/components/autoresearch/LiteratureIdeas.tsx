@@ -28,7 +28,7 @@ export function LiteratureIdeas({ ideas, citations = [] }: { ideas: readonly Stu
           const c = byIdea.get(i.id)
           return (
             <li key={i.id} className="text-[13px]" data-idea={i.id}>
-              <span className={i.status === 'closed' ? 'text-fg-tertiary line-through' : ''}>{i.text}</span>{' '}
+              <span className={i.status === 'closed' ? 'text-fg-tertiary line-through' : ''}>{i.text.replace(/^\[paper\]\s*/, '')}</span>{' '}
               <span className="text-[11px] text-fg-tertiary">[{i.category}]</span>
               {i.tried_in.length > 0 && (
                 <span className="ml-1 text-[11px] text-fg-tertiary" title={`Tried in experiment${i.tried_in.length === 1 ? '' : 's'} ${i.tried_in.join(', ')}`}>
