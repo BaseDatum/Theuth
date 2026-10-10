@@ -468,8 +468,12 @@ impl From<Signal> for platform::Signal {
 
 /// What a running PTY job shares with the tools (22 §4.8): the master's
 /// writer, the rendered screen, an output wake-up and the process group.
+/// `writer` and `master` are the handle's two descriptors (both dups of the
+/// master); [`PtyHandle::release`] drops them at exit, and the retained
+/// row answers from the parser's final screen alone (D2).
 pub(crate) struct PtyHandle {
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// `None` once released: a late `send` sees "job finished".
+    writer: Mutex<Option<Box<dyn Write + Send>>>,
     parser: Mutex<vt100::Parser>,
     /// Bumped under `parser`'s lock after each `process` and once at exit
     /// (51 §7.3): equal revisions mean an identical retained buffer.
@@ -479,7 +483,7 @@ pub(crate) struct PtyHandle {
     /// own emulator; sent under `parser`'s lock so a subscriber that took its
     /// snapshot under the same lock sees every byte after it exactly once.
     stream: broadcast::Sender<PtyOut>,
-    /// The master side, kept for `resize`; the job task takes it at exit.
+    /// The master side, kept for `resize`; released with `writer` at exit.
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     /// `== pgid`: the child is a session leader.
     pid: u32,
@@ -581,6 +585,20 @@ impl PtyHandle {
     pub(crate) fn screen(&self) -> (Vec<String>, (u16, u16)) {
         let s = self.snapshot(PtyViewport::Live);
         (s.text(), s.cursor_pos)
+    }
+
+    /// Drop the master and its writer (D2): the slave side gets its SIGHUP
+    /// once the reader's dup goes too, a late `resize`/`send` sees "job
+    /// finished", and the row keeps only the parser. Idempotent.
+    pub(crate) fn release(&self) {
+        drop(lock(&self.master).take());
+        drop(lock(&self.writer).take());
+    }
+
+    /// D2 probe: does the handle still own a pty descriptor?
+    #[cfg(test)]
+    pub(crate) fn holds_fds(&self) -> bool {
+        lock(&self.master).is_some() || lock(&self.writer).is_some()
     }
 
     fn exit(&self) -> Option<JobExit> {
@@ -1401,7 +1419,7 @@ impl Message<Launch<StartPty>> for Jobs {
             .map_err(|e| format!("{e:#}"))?;
         self.pty_bytes += RESERVE;
         let pty = Arc::new(PtyHandle {
-            writer: Mutex::new(s.writer),
+            writer: Mutex::new(Some(s.writer)),
             parser: Mutex::new(vt100::Parser::new(ROWS, COLS, HISTORY)),
             revision: AtomicU64::new(0),
             output: Notify::new(),
@@ -1806,6 +1824,9 @@ async fn write(
     let pty = Arc::clone(pty);
     tokio::task::spawn_blocking(move || {
         let mut w = lock(&pty.writer);
+        let Some(w) = w.as_mut() else {
+            return Err(std::io::Error::other("job finished"));
+        };
         w.write_all(&data).and_then(|()| w.flush())
     })
     .await
@@ -1957,6 +1978,7 @@ async fn linger(
                     while let Some(c) = rx.recv().await {
                         lock(&log).push(&c);
                     }
+                    lock(&log).close();
                 }
                 if let Some(tree) = group {
                     jobs::group_gone(&tree, None).await;
@@ -1965,7 +1987,13 @@ async fn linger(
         }
         // The job itself completed and its result is owed regardless; the
         // supervisor that refused (or is gone) certifies nothing meanwhile.
-        Err(e) => tracing::warn!("{id}: pty background work left untracked: {e}"),
+        // The reader goes with `rx`; nothing feeds the log after this.
+        Err(e) => {
+            if let Some((_, log)) = rx {
+                lock(&log).close();
+            }
+            tracing::warn!("{id}: pty background work left untracked: {e}");
+        }
     }
 }
 
@@ -2270,9 +2298,15 @@ async fn run(mut j: Run) {
             Err(_) => break false,
         }
     };
-    // Closes the slave: anything that escaped the group gets SIGHUP. Taken
-    // from the handle so a late `resize` sees "job finished".
-    drop(lock(&j.pty.master).take());
+    // Closes the slave: anything that escaped the group gets SIGHUP (once the
+    // reader's dup is gone too). Taken from the handle so a late `resize` /
+    // `send` sees "job finished" (D2).
+    j.pty.release();
+    // Drained to EOF: the log file goes now (D1); otherwise with the reader
+    // in `linger`.
+    if closed {
+        lock(&j.log).close();
+    }
     // Ownership is the process group, not the tty: the leader is reaped, but
     // a `&` child of it lives on in the same group whether or not it still
     // holds the slave. The result waits `SETTLE` (`KILL_WAIT` after a kill)
@@ -2423,8 +2457,9 @@ fn respond(pty: &PtyHandle, carry: &mut Vec<u8>, chunk: &[u8], cursor: (u16, u16
         let at = i + off;
         match query(&data[at..], cursor) {
             Scan::Reply(len, reply) => {
-                let mut w = lock(&pty.writer);
-                let _ = w.write_all(&reply).and_then(|()| w.flush());
+                if let Some(w) = lock(&pty.writer).as_mut() {
+                    let _ = w.write_all(&reply).and_then(|()| w.flush());
+                }
                 i = at + len;
             }
             Scan::Partial => {
@@ -3524,7 +3559,7 @@ mod tests {
     fn bare_handle(touched: Instant) -> PtyHandle {
         let pid = std::process::id();
         PtyHandle {
-            writer: Mutex::new(Box::new(std::io::sink())),
+            writer: Mutex::new(None),
             parser: Mutex::new(vt100::Parser::new(ROWS, COLS, HISTORY)),
             revision: AtomicU64::new(0),
             output: Notify::new(),
@@ -4582,5 +4617,119 @@ mod tests {
             "{}",
             out.content
         );
+    }
+
+    /// A pipe job through the real actor, as `shell` sends it.
+    async fn pipe_job(fx: &Fx, command: &str, timeout: Option<Duration>) {
+        fx.jobs
+            .ask(crate::jobs::Start {
+                session: fx.session,
+                command: command.into(),
+                call_id: String::new(),
+                quiet: false,
+                shell: crate::shell::ShellTool::build_shell(false).await.unwrap(),
+                put_back: Arc::new(|_| {}),
+                root: fx.dir.clone(),
+                activity: None,
+                timeout,
+            })
+            .await
+            .unwrap();
+    }
+
+    /// Polls until every row of the session has left `running`.
+    async fn all_settled(fx: &Fx, within: Duration) {
+        let deadline = Instant::now() + within;
+        loop {
+            let rows = list(fx).await;
+            if rows.iter().all(|r| r.state != "running") {
+                return;
+            }
+            assert!(Instant::now() < deadline, "still running: {rows:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Polls the probe until no finished row holds a descriptor; fails with
+    /// the holders at `within`.
+    async fn nothing_held(fx: &Fx, within: Duration) {
+        let deadline = Instant::now() + within;
+        loop {
+            let held = fx
+                .jobs
+                .ask(crate::jobs::OpenHandles(fx.session))
+                .await
+                .unwrap();
+            if held.is_empty() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "finished jobs still hold descriptors: {held:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// D1–D3: once a job has exited (normally, by timeout, by cancel) its
+    /// retained row keeps the tail but no log file, master, reader or writer.
+    #[tokio::test]
+    async fn finished_jobs_hold_no_descriptors() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, ..) = tools(&fx);
+        for i in 0..4 {
+            pipe_job(&fx, &format!("echo pipe {i}"), None).await;
+        }
+        pipe_job(&fx, "sleep 30", Some(Duration::from_secs(1))).await; // j5: timeout
+        pipe_job(&fx, "sleep 30", None).await; // j6: cancelled
+        cancel(&fx, "j6").await;
+        for i in 0..3 {
+            Tool::call(&start, start_args(&format!("echo pty {i}")), cx(&fx))
+                .await
+                .unwrap();
+        }
+        Tool::call(&start, start_args("sleep 30"), cx(&fx))
+            .await
+            .unwrap(); // j10: cancelled
+        cancel(&fx, "j10").await;
+        all_settled(&fx, Duration::from_secs(10)).await;
+        let rows = list(&fx).await;
+        assert_eq!(rows.len(), 10, "{rows:?}");
+        assert_eq!(rows[4].state, "timeout");
+        assert_eq!(rows[5].state, "killed");
+        assert_eq!(rows[9].state, "killed");
+        assert_eq!(rows[0].tail, "pipe 0\n");
+        assert!(rows[6].tail.starts_with("pty 0"), "{:?}", rows[6].tail);
+        nothing_held(&fx, Duration::from_secs(5)).await;
+        // D4: the logs on disk stay.
+        assert_eq!(std::fs::read_to_string(&rows[3].log).unwrap(), "pipe 3\n");
+        assert!(
+            std::fs::read_to_string(&rows[8].log)
+                .unwrap()
+                .contains("pty 2")
+        );
+    }
+
+    /// D3: rows a drain leaves `lost` (`KillSession`) hold nothing either.
+    #[tokio::test]
+    async fn lost_jobs_hold_no_descriptors() {
+        let fx = fixture(Duration::from_millis(100), Duration::from_secs(60)).await;
+        let (start, ..) = tools(&fx);
+        pipe_job(&fx, "sleep 30", None).await;
+        Tool::call(&start, start_args("sleep 30"), cx(&fx))
+            .await
+            .unwrap();
+        fx.jobs
+            .ask(crate::jobs::KillSession {
+                session: fx.session,
+            })
+            .await
+            .unwrap();
+        let rows = list(&fx).await;
+        assert_eq!(
+            rows.iter().map(|r| r.state.as_str()).collect::<Vec<_>>(),
+            ["lost", "lost"]
+        );
+        nothing_held(&fx, Duration::from_secs(5)).await;
     }
 }
