@@ -19,8 +19,8 @@ use crate::runner::{self, SampleRequest};
 use crate::tools::{Draft, Seams, draft_spec_path, read_draft, validate_spec};
 use crate::types::{
     BudgetSpec, Direction, DraftField, DraftSummary, DraftView, FieldState, Guard, KIND_JUDGED,
-    KIND_META, KIND_PARETO, KIND_POPULATION, KIND_PROMPT, KIND_WORLD, ModelsSpec, ProbeKind,
-    ProbeResult, SampleRole, StudySpec,
+    KIND_META, KIND_PARETO, KIND_POPULATION, KIND_PROMPT, KIND_SCALAR, KIND_WORLD, ModelsSpec,
+    ProbeKind, ProbeResult, SampleRole, Scoring, StudySpec,
 };
 use crate::{drafts_dir, git};
 
@@ -165,12 +165,29 @@ pub fn kind_rows(spec: &StudySpec) -> Vec<&'static SetupRow> {
 
 /// The registration owning `row` (by row name) or `leaf` (by its row), if any.
 fn kind_setup_for(spec: &StudySpec, row: &str) -> Option<(&'static KindSetup, &'static SetupRow)> {
-    kind_setups(spec).find_map(|k| {
-        k.rows
-            .iter()
-            .find(|r| r.row == row || r.leaves.contains(&row))
-            .map(|r| (k, r))
-    })
+    kind_setups(spec).find_map(|k| owning_row(k, row).map(|r| (k, r)))
+}
+
+/// The registration `set_leaf` routes `leaf` to: the kind's; the literature block's even
+/// before `literature`/`hooks` is set, so the panel toggle can turn them on (159 W5 hand-off
+/// 4); and W1's `objectives` row for a 140 draft, which two objective lines switch to a front
+/// study (159 W1 H6). Rows stay gated on presence.
+fn kind_setup_for_leaf(spec: &StudySpec, leaf: &str) -> Option<&'static KindSetup> {
+    let kind = spec.kind();
+    KIND_SETUP
+        .iter()
+        .filter(|k| {
+            k.kind == kind
+                || k.kind == "literature"
+                || (kind == KIND_SCALAR && k.kind == KIND_PARETO)
+        })
+        .find(|k| owning_row(k, leaf).is_some())
+}
+
+fn owning_row(k: &'static KindSetup, row: &str) -> Option<&'static SetupRow> {
+    k.rows
+        .iter()
+        .find(|r| r.row == row || r.leaves.contains(&row))
 }
 
 /// The panel label of a row.
@@ -222,7 +239,11 @@ pub fn present(spec: &StudySpec, row: &str) -> bool {
         "repo" => non_empty(&spec.repo),
         "metric" => non_empty(&spec.metric.name),
         "bench" => non_empty(&spec.bench.command),
-        "checks" => spec.checks.as_ref().is_some_and(|c| non_empty(&c.command)),
+        // 159 W2 H2: a prompt study has no check command; the engine scores the cases.
+        "checks" => {
+            spec.checks.as_ref().is_some_and(|c| non_empty(&c.command))
+                || spec.axes.scoring == Scoring::Cases
+        }
         "holdout" => spec.holdout.as_ref().is_some_and(|h| non_empty(&h.command)),
         "scope" => !spec.scope.is_empty(),
         "window" => opt_non_empty(spec.window.as_ref()),
@@ -254,7 +275,10 @@ pub fn row_json(spec: &StudySpec, row: &str) -> serde_json::Value {
         "parallel" => serde_json::json!(spec.parallel),
         "models" => serde_json::json!(spec.models),
         "evaluator_paths" => serde_json::json!(spec.evaluator_paths),
-        _ => serde_json::Value::Null,
+        // 159 W1 H3: a kind row's value, so a re-draft that changes it is sticky too.
+        _ => kind_setup_for(spec, row).map_or(serde_json::Value::Null, |(k, r)| {
+            serde_json::json!((k.value)(spec, r.row))
+        }),
     }
 }
 
@@ -870,8 +894,8 @@ pub fn set_leaf(spec: &mut StudySpec, leaf: &str, v: &str) -> std::result::Resul
         // not a row, so `edit` marks nothing user-set or confirmed.
         "include_dirty" => spec.include_dirty = parse_bool(v)?,
         other => {
-            return match kind_setup_for(spec, other) {
-                Some((k, _)) => (k.set)(spec, other, v),
+            return match kind_setup_for_leaf(spec, other) {
+                Some(k) => (k.set)(spec, other, v),
                 None => Err(format!("unknown field `{other}`")),
             };
         }
@@ -894,10 +918,14 @@ pub fn edit(root: &Path, draft_id: &str, leaf: &str, value: &str) -> Result<()> 
 
 /// `autoresearch.draft_confirm`: the user OK'd a row; refused for a missing one.
 pub fn confirm(root: &Path, draft_id: &str, row: &str) -> Result<()> {
-    if !MAIN_ROWS.contains(&row) && !ADVANCED_ROWS.contains(&row) {
+    let mut d = read_draft(root, draft_id)?;
+    // 159 W1 H3: kind rows (`objectives`, `cases`, …) can be OK'd like the 140 rows.
+    if !MAIN_ROWS.contains(&row)
+        && !ADVANCED_ROWS.contains(&row)
+        && !kind_rows(&d.spec).iter().any(|r| r.row == row)
+    {
         return Err(Error::refused(format!("unknown row `{row}`")));
     }
-    let mut d = read_draft(root, draft_id)?;
     if !present(&d.spec, row) {
         return Err(Error::refused(format!(
             "{} is missing; nothing to confirm",
@@ -1460,6 +1488,69 @@ mod tests {
         let e = confirm(&root, "toy", "holdout").unwrap_err().to_string();
         assert_eq!(e, "Holdout is missing; nothing to confirm");
         assert!(confirm(&root, "toy", "nope").is_err());
+    }
+
+    /// 159 Z (W1 H3, W2 H2, W5 hand-off 4): a kind row can be OK'd and is sticky; a prompt
+    /// study's Check row counts as present; the literature toggle works on a plain draft.
+    #[test]
+    fn kind_rows_confirm_stick_and_literature_toggles_on_a_plain_draft() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let s = spec(Path::new("/x/repo"));
+        write_draft(&root, &s, SessionId::new(), true, vec![]).unwrap();
+        assert!(
+            confirm(&root, "toy", "objectives")
+                .unwrap_err()
+                .to_string()
+                .contains("unknown row"),
+            "a 140 draft has no objectives row"
+        );
+        edit(
+            &root,
+            "toy",
+            "objectives",
+            "time_ms lower 1% 5% ms\nsize_kb lower 1% 5% kB",
+        )
+        .unwrap();
+        let d = read_draft(&root, "toy").unwrap();
+        assert_eq!(d.spec.axes.search, crate::types::Search::Front);
+        assert_eq!(d.confirmed, vec!["objectives"]);
+        confirm(&root, "toy", "objectives").unwrap();
+        assert!(row_json(&d.spec, "objectives").is_string());
+        // A re-draft that changes the user-set objectives is sticky; an unchanged one keeps the OK.
+        let mut again = d.spec.clone();
+        again.objectives[0].min_effect = "2%".into();
+        let (_, sticky) = write_draft(&root, &again, SessionId::new(), true, vec![]).unwrap();
+        assert_eq!(sticky, vec!["objectives"]);
+        assert!(read_draft(&root, "toy").unwrap().confirmed.is_empty());
+        confirm(&root, "toy", "objectives").unwrap();
+        write_draft(&root, &again, SessionId::new(), true, vec![]).unwrap();
+        assert_eq!(
+            read_draft(&root, "toy").unwrap().confirmed,
+            vec!["objectives"]
+        );
+
+        // W2 H2: no check command, but the engine scores the cases.
+        let mut prompt = s.clone();
+        prompt.checks = None;
+        assert!(!present(&prompt, "checks"));
+        prompt.axes.scoring = Scoring::Cases;
+        assert!(present(&prompt, "checks"));
+
+        // W5 hand-off 4: the literature leaf before the block exists.
+        write_draft(&root, &s, SessionId::new(), true, vec![]).unwrap();
+        assert!(kind_rows(&s).is_empty());
+        edit(&root, "toy", "literature", "on").unwrap();
+        let d = read_draft(&root, "toy").unwrap();
+        assert!(d.spec.literature.is_some());
+        assert_eq!(d.confirmed, vec!["literature"]);
+        assert!(kind_rows(&d.spec).iter().any(|r| r.row == "literature"));
+        edit(&root, "toy", "hooks.before.command", "bash hook.sh").unwrap();
+        assert!(read_draft(&root, "toy").unwrap().spec.hooks.is_some());
+        let e = edit(&root, "toy", "cases.path", "x")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("unknown field"), "{e}");
     }
 
     #[test]

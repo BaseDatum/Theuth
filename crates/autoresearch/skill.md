@@ -15,7 +15,7 @@ Fits when all three hold:
 
 Does not fit:
 - No metric → this is a normal task; say so and do it (or offer to help define a metric first).
-- A judge-only metric ("better prose", "nicer UI") → warn: the loop will optimise the judge, not the goal. Only proceed with a numeric proxy **and** a holdout; otherwise decline.
+- A judge-only metric ("better prose", "nicer UI") → warn: a bare judge loop optimises the judge, not the goal. Proceed only as a **prompt study** (the judge scores each case against a reference, with a holdout; see "Prompt and skill studies" below) or as a **judged study** (see "Judged studies (no scalar)" below); otherwise decline.
 - The thing to optimise is the benchmark itself, or a flaky one → fix the benchmark first.
 - A pure jj repo without git colocation, or a repo that is not git → refused at Start.
 

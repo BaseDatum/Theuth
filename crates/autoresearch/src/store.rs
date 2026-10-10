@@ -562,6 +562,8 @@ impl ExperimentRecord {
             cost_usd: self.cost_nanos as f64 / 1e9,
             started_at: self.started_at.clone(),
             finished_at: self.finished_at.clone(),
+            gate: self.gate.clone(),
+            line: self.line.clone(),
         }
     }
 }

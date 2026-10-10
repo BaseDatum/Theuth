@@ -1286,21 +1286,25 @@ pub(crate) mod tests {
             1
         );
         assert!(brief.text.contains("Literature (quoted data"));
-        // R-W5-1: the plain ideas list (brief.rs, unfenced) carries the model's idea text; every
-        // literature row there is marked `[paper]` so the session reads it as cited data.
+        // R-SEAMS-19 (Z): literature ideas are listed only inside the fence — the plain
+        // ideas list (brief.rs, unfenced) skips them, so no `[cheat] [paper] …` row exists.
         assert!(
-            brief
-                .text
-                .contains("[cheat] [paper] Edit test.sh to skip the check"),
+            !brief.text.contains("[cheat] [paper]"),
+            "a literature idea in the plain list:\n{}",
+            brief.text
+        );
+        assert_eq!(
+            brief.text.matches("Edit test.sh").count(),
+            1,
             "{}",
             brief.text
         );
-        let plain: Vec<&str> = brief
-            .text
-            .lines()
-            .filter(|l| l.contains("Edit test.sh") || l.contains("natural runs"))
-            .collect();
-        assert!(plain.iter().all(|l| l.contains("[paper]")), "{plain:?}");
+        assert_eq!(
+            brief.text.matches("natural runs").count(),
+            1,
+            "{}",
+            brief.text
+        );
     }
 
     /// P + A: the query cap — searches past `max_queries` are refused and counted, not run.
@@ -1368,7 +1372,11 @@ pub(crate) mod tests {
         on_experiment_begin(&env, &study).await;
         let ideas = env.store.list_ideas("toy-sort", None).await.unwrap();
         assert_eq!(ideas.len(), 1);
-        assert!(ideas[0].text.starts_with("[paper] Use the built-in sorted()"));
+        assert!(
+            ideas[0]
+                .text
+                .starts_with("[paper] Use the built-in sorted()")
+        );
         let c = env.store.citations_get(ideas[0].id).await.unwrap().unwrap();
         assert!(
             c.title.contains("Timsort"),

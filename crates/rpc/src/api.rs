@@ -7310,6 +7310,11 @@ impl ApiServer for Server {
         slug: String,
         op: autoresearch::ControlOp,
     ) -> RpcResult<autoresearch::StudyInfo> {
+        // 159 §13.3: a learned-sidecar study's Merge lands through dreaming first (backup,
+        // atomic write, `edits.jsonl`); the actor's Merge then does its bookkeeping.
+        crate::landing::before_merge(&self.rt.data_dir, &slug, &op)
+            .await
+            .map_err(dreaming_err)?;
         autoresearch::rpc_impl::control(slug, op)
             .await
             .map_err(dreaming_err)

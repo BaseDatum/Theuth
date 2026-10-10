@@ -107,3 +107,21 @@ test('pair list: a pending human pair is blind — buttons only, no verdicts, re
   expect(html).toContain('answered case reason')
   expect(html).toContain('agrees with the judge')
 })
+
+test('pair list: a pending pair with a_text/b_text shows both texts above the buttons, still blind (159 W3 hand-off)', () => {
+  const rows = [
+    row(6, 2, 'p03', { winner: 'b', reason: 'the judge liked B' }),
+    row(7, 2, 'p03', { a_first: false, winner: 'b', reason: 'still B' }),
+    row(8, 2, 'p03', { model: 'human', winner: null, reason: '', cost_nanos: 0, a_text: 'Buy now — ships today.', b_text: 'Order today and it ships tomorrow.' }),
+  ]
+  const html = paint(createElement(PairList, { pairs: pairsOf(rows), busy: false, onAnswer: () => {} }))
+  expect(html).toMatch(/data-side="A"[^>]*><div[^>]*>A<\/div><pre[^>]*>Buy now — ships today.<\/pre>/)
+  expect(html).toMatch(/data-side="B"[^>]*><div[^>]*>B<\/div><pre[^>]*>Order today and it ships tomorrow.<\/pre>/)
+  expect(html.indexOf('data-side="A"')).toBeLessThan(html.indexOf('>same</button>'))
+  expect(html).not.toContain('the judge liked B')
+  expect(html).not.toContain('still B')
+  expect(html).not.toContain('(candidate as A)')
+  // Without texts (the row predates the hand-off) no panes are drawn.
+  const bare = paint(createElement(PairList, { pairs: pairsOf(rows.slice(0, 2).concat(row(9, 2, 'p03', { model: 'human', winner: null, reason: '', cost_nanos: 0 }))), busy: false, onAnswer: () => {} }))
+  expect(bare).not.toContain('data-side=')
+})

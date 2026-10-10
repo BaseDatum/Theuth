@@ -152,7 +152,9 @@ async fn run(
         if let Some(p) = crate::custody::command_path(tok, &drafts) {
             let rel = p.rel();
             let in_worktree = worktree.is_some_and(|w| w.join(rel).exists());
-            if (script_like(rel) || in_worktree) && !evaluator.join(rel).is_file() {
+            if (crate::custody::looks_like_script(rel) || in_worktree)
+                && !evaluator.join(rel).is_file()
+            {
                 return refused(format!(
                     "`{tok}` is not in custody (list it in evaluator_paths)"
                 ));
@@ -240,18 +242,6 @@ async fn hook_json(
         })),
     })
     .to_string()
-}
-
-/// A relative token that names a script, not a program (`bash`, `python3`): has a directory part
-/// or a script extension. Mirrors `custody::looks_like_script` (private there).
-fn script_like(rel: &Path) -> bool {
-    rel.components().count() > 1
-        || rel.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-            matches!(
-                e,
-                "sh" | "bash" | "zsh" | "py" | "rb" | "js" | "mjs" | "ts" | "pl" | "lua"
-            )
-        })
 }
 
 /// The first [`OUTPUT_CAP`] bytes of the log, lossily decoded.
@@ -468,7 +458,10 @@ mod tests {
     #[test]
     fn a_140_study_has_no_hooks() {
         assert!(StudyRecord::new(spec("x"), None).spec.hooks.is_none());
-        assert!(script_like(Path::new("hook.sh")) && script_like(Path::new("tools/run")));
-        assert!(!script_like(Path::new("python3")));
+        assert!(
+            crate::custody::looks_like_script(Path::new("hook.sh"))
+                && crate::custody::looks_like_script(Path::new("tools/run"))
+        );
+        assert!(!crate::custody::looks_like_script(Path::new("python3")));
     }
 }

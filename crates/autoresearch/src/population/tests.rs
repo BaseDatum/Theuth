@@ -425,9 +425,9 @@ fn gate_beats(
 
 /// 159 §9 Guard P1: a null population (every child's true effect 0) over 200 experiments, then
 /// the champion re-measured the way finalize's `confirm` does it — `repeats` fresh samples per
-/// side, σ pooled from those two trees — and judged (a) as the headline prints today, a gain
-/// past the ±1.96 σ CI, and (b) by the R-W4-1 rule, `(base − final) / (σ √(1/nb + 1/nf)) ≥
-/// t_quantile(nb + nf − 2, 0.99)`. Returns `(ci_gain, confirmed)` for this run.
+/// side, σ pooled from those two trees — and judged (a) as the CI alone would, a gain past
+/// ±1.96 σ, and (b) by `finalize::confirmed` (R-W4-1: the one-sided t at the realised dof).
+/// Returns `(ci_gain, confirmed)` for this run.
 fn null_run(seed: u64) -> (bool, bool) {
     let cfg = sim_cfg();
     let mut rng = Rng(seed);
@@ -484,124 +484,40 @@ fn null_run(seed: u64) -> (bool, bool) {
     let sigma = gate::pooled_sigma(&[b.clone(), f.clone()]);
     let se = sigma * (1.0 / nb as f64 + 1.0 / nf as f64).sqrt();
     let t = (mean(&b) - mean(&f)) / se;
-    (t > 1.96, t >= t_quantile(nb + nf - 2, 0.99))
+    (
+        t > 1.96,
+        crate::finalize::confirmed(
+            Direction::Lower,
+            mean(&b),
+            mean(&f),
+            sigma,
+            nb as u32,
+            nf as u32,
+        ),
+    )
 }
 
-/// Student t upper quantile: the smallest `t` with `P(T_dof ≤ t) ≥ p` (bisection on the
-/// regularised incomplete beta). The sim's stand-in for `evalcore::gate::t_quantile` (W2).
-fn t_quantile(dof: usize, p: f64) -> f64 {
-    let nu = dof as f64;
-    let cdf = |t: f64| 1.0 - 0.5 * beta_inc(nu / 2.0, 0.5, nu / (nu + t * t));
-    let (mut lo, mut hi) = (0.0, 100.0);
-    for _ in 0..200 {
-        let mid = (lo + hi) / 2.0;
-        if cdf(mid) < p {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    (lo + hi) / 2.0
-}
-
-/// Regularised incomplete beta `I_x(a, b)` (Lentz continued fraction).
-fn beta_inc(a: f64, b: f64, x: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if x >= 1.0 {
-        return 1.0;
-    }
-    let front =
-        (ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln()).exp();
-    let cf = |a: f64, b: f64, x: f64| {
-        let tiny = 1e-300;
-        let mut c = 1.0;
-        let mut d = 1.0 - (a + b) * x / (a + 1.0);
-        d = 1.0 / if d.abs() < tiny { tiny } else { d };
-        let mut h = d;
-        for m in 1..300 {
-            let m = m as f64;
-            let m2 = 2.0 * m;
-            let aa = m * (b - m) * x / ((a + m2 - 1.0) * (a + m2));
-            d = 1.0 + aa * d;
-            d = 1.0 / if d.abs() < tiny { tiny } else { d };
-            c = 1.0 + aa / c;
-            if c.abs() < tiny {
-                c = tiny;
-            }
-            h *= d * c;
-            let aa = -(a + m) * (a + b + m) * x / ((a + m2) * (a + m2 + 1.0));
-            d = 1.0 + aa * d;
-            d = 1.0 / if d.abs() < tiny { tiny } else { d };
-            c = 1.0 + aa / c;
-            if c.abs() < tiny {
-                c = tiny;
-            }
-            let del = d * c;
-            h *= del;
-            if (del - 1.0).abs() < 1e-14 {
-                break;
-            }
-        }
-        h
-    };
-    if x < (a + 1.0) / (a + b + 2.0) {
-        front * cf(a, b, x) / a
-    } else {
-        1.0 - front * cf(b, a, 1.0 - x) / b
-    }
-}
-
-/// Lanczos `ln Γ` (Numerical Recipes `gammln`).
-fn ln_gamma(x: f64) -> f64 {
-    const COF: [f64; 6] = [
-        76.180_091_729_471_46,
-        -86.505_320_329_416_77,
-        24.014_098_240_830_91,
-        -1.231_739_572_450_155,
-        0.120_865_097_386_617_9e-2,
-        -0.539_523_938_495_3e-5,
-    ];
-    let tmp = x + 5.5;
-    let tmp = tmp - (x + 0.5) * tmp.ln();
-    let mut ser = 1.000_000_000_190_015;
-    let mut y = x;
-    for c in COF {
-        y += 1.0;
-        ser += c / y;
-    }
-    -tmp + (2.506_628_274_631_000_5 * ser / x).ln()
-}
-
+/// The quantile the rule leans on (`evalcore::gate::t_quantile`, W2) against the table.
 #[test]
 fn t_quantile_matches_the_table() {
-    assert!(
-        (t_quantile(4, 0.99) - 3.747).abs() < 0.01,
-        "{}",
-        t_quantile(4, 0.99)
-    );
-    assert!(
-        (t_quantile(10, 0.99) - 2.764).abs() < 0.01,
-        "{}",
-        t_quantile(10, 0.99)
-    );
-    assert!(
-        (t_quantile(30, 0.99) - 2.457).abs() < 0.01,
-        "{}",
-        t_quantile(30, 0.99)
-    );
-    assert!(
-        (t_quantile(4, 0.975) - 2.776).abs() < 0.01,
-        "{}",
-        t_quantile(4, 0.975)
-    );
+    use evalcore::gate::t_quantile;
+    for (dof, p, want) in [
+        (4, 0.99, 3.747),
+        (10, 0.99, 2.764),
+        (30, 0.99, 2.457),
+        (4, 0.975, 2.776),
+    ] {
+        let got = t_quantile(f64::from(dof), p);
+        assert!(
+            (got - want).abs() < 0.01,
+            "t({dof}, {p}) = {got}, table {want}"
+        );
+    }
 }
 
-/// R-W4-1: the champion's claim on finalize's fresh samples (`repeats` = 3 per side, 4 dof). As
-/// the headline prints today (a gain past the ±1.96 σ CI, no decision) the null claim rate is
-/// well above 1 %; with the t rule of Hand-off H4 (`t ≥ t_quantile(nb + nf − 2, 0.99)` ≈ 3.75 at
-/// 4 dof) it is ≤ 1 %.
+/// R-W4-1: the champion's claim on finalize's fresh samples (`repeats` = 3 per side, 4 dof). A
+/// gain past the ±1.96 σ CI alone would claim well above 1 % of null studies; `finalize::confirmed`
+/// (the one-sided t at the realised dof, ≈ 3.75 at 4 dof) claims ≤ 1 %.
 #[test]
 fn null_population_champion_confirmed_at_most_one_percent_under_the_t_rule() {
     let runs = 1000usize;
@@ -756,6 +672,8 @@ struct Bench {
     commands: Mutex<Vec<String>>,
     /// R-W4-2: another session's `experiment_notes` landing while a settle runs its checks.
     notes_during_checks: Mutex<Option<(Store, String, String)>>,
+    /// W4 H5: the experiment the reviewer flags.
+    flag: Mutex<Option<u32>>,
 }
 
 impl Bench {
@@ -812,12 +730,18 @@ impl Backend for Bench {
         &self,
         _: &Store,
         _: &StudyRecord,
-        _: u32,
+        n: u32,
         _: &str,
         _: &runtime::Runtime,
     ) -> Result<ReviewVerdict> {
-        Ok(ReviewVerdict::Clean {
-            reason: "fine".into(),
+        Ok(if *self.flag.lock() == Some(n) {
+            ReviewVerdict::Flagged {
+                reason: "skips the tour check".into(),
+            }
+        } else {
+            ReviewVerdict::Clean {
+                reason: "fine".into(),
+            }
         })
     }
     async fn seed_playbook(&self, _: &str, _: &runtime::Runtime) -> Result<Option<String>> {
@@ -1082,31 +1006,17 @@ async fn a_wave_settles_into_cells_moves_the_champion_and_cuts_the_next_wave_fro
     }
 
     let (n1, _) = child_round(&h, 1, Verdict::Improved).await;
-    // The last slot's `experiment_log` calls `wave::promote_env` (the 140 cherry-pick path),
-    // which the W4 hand-off line turns into `population::promote` for `search: population`.
-    // Until that line lands this stands in for it: the frozen path sees wave 1 as promoted
-    // and does nothing, and `promote` below is the one promotion of the wave.
-    env.store
-        .append_event(
-            SLUG,
-            crate::wave::EVENT_PROMOTED,
-            &serde_json::json!({ "wave": 1, "promoted": [], "incumbent": base, "stand_in": "159 W4 hand-off" }),
-        )
-        .await
-        .unwrap();
-    let (n2, _) = child_round(&h, 2, Verdict::Worse).await;
     let e1 = env.store.get_experiment(SLUG, n1).await.unwrap().unwrap();
-    let e2 = env.store.get_experiment(SLUG, n2).await.unwrap().unwrap();
     assert_eq!(e1.state, ExperimentState::Kept);
-    assert_eq!(e2.state, ExperimentState::Discarded);
-    assert!(e2.patch_path.is_some() && e2.commit_sha.is_none());
     assert_eq!(
         study(&h).await.incumbent_sha.as_deref(),
         Some(base.as_str()),
         "a slot keep moves nothing yet"
     );
 
-    // The replacement of wave promotion.
+    // The last slot's `experiment_log` promotes the wave: `wave::promote_env` dispatches a
+    // population study to `promote` (159 W4 H1).
+    // Slot 2's own run is `worse`: no checks of its own, the settle's stepping stone runs them once.
     let checks_before = bench.commands.lock().len();
     // R-W4-2: slot 2's session writes notes while the settle runs the stepping stone's checks.
     *bench.notes_during_checks.lock() = Some((
@@ -1114,12 +1024,13 @@ async fn a_wave_settles_into_cells_moves_the_champion_and_cuts_the_next_wave_fro
         SLUG.to_owned(),
         "notes written during the settle".to_owned(),
     ));
-    let p = promote(&env, &study(&h).await, 1).await.unwrap();
+    let (n2, _) = child_round(&h, 2, Verdict::Worse).await;
     assert_eq!(
         study(&h).await.playbook,
         "notes written during the settle",
         "the promotion patches its own columns and keeps the notes another session wrote"
     );
+    let p = promotion_of(&env, 1).await;
     assert_eq!(
         p.promoted,
         vec![n1, n2],
@@ -1356,17 +1267,22 @@ async fn a_stale_elite_picked_as_parent_is_re_measured_first() {
     let _ = &mut h;
 }
 
-/// Records the wave as promoted so the frozen 140 `promote_env` does nothing when the last slot
-/// logs (stands in for Hand-off H1; see `a_wave_settles_…`).
-async fn stand_in_promoted(env: &Env, wave: u32, incumbent: &str) {
-    env.store
-        .append_event(
-            SLUG,
-            crate::wave::EVENT_PROMOTED,
-            &serde_json::json!({ "wave": wave, "promoted": [], "incumbent": incumbent, "stand_in": "159 W4 hand-off" }),
-        )
+/// What the last slot's `experiment_log` promoted (the `wave_promoted` event `promote` writes;
+/// `wave::promote_env` dispatches a population study there, 159 W4 H1).
+async fn promotion_of(env: &Env, wave: u32) -> Promotion {
+    let ev = env
+        .store
+        .list_events(SLUG, Some(crate::wave::EVENT_PROMOTED), 10)
         .await
         .unwrap();
+    let e = ev
+        .iter()
+        .find(|e| e.payload["wave"] == wave)
+        .unwrap_or_else(|| panic!("wave {wave} not promoted: {ev:?}"));
+    Promotion {
+        promoted: serde_json::from_value(e.payload["promoted"].clone()).unwrap(),
+        incumbent: e.payload["incumbent"].as_str().map(str::to_owned),
+    }
 }
 
 /// R-W4-3, R-W4-4, R-W4-5 with noise (σ ≈ 10 from the baseline). Wave 1 files two stepping
@@ -1410,9 +1326,8 @@ async fn a_challenged_one_sample_elite_is_re_measured_and_suspicious_jumps_stay_
     .await
     .unwrap();
     let (n1, _) = child_round(&h, 1, Verdict::Worse).await;
-    stand_in_promoted(&env, 1, &base).await;
     let (n2, _) = child_round(&h, 2, Verdict::Worse).await;
-    let p = promote(&env, &study(&h).await, 1).await.unwrap();
+    let p = promotion_of(&env, 1).await;
     assert_eq!(p.promoted, vec![n1, n2], "two stepping stones");
     assert_eq!(
         p.incumbent.as_deref(),
@@ -1447,9 +1362,8 @@ async fn a_challenged_one_sample_elite_is_re_measured_and_suspicious_jumps_stay_
     .await
     .unwrap();
     let (n3, _) = child_round(&h, 1, Verdict::NoGain).await;
-    stand_in_promoted(&env, 2, &base).await;
     let (n4, _) = child_round(&h, 2, Verdict::Worse).await;
-    let p = promote(&env, &study(&h).await, 2).await.unwrap();
+    let p = promotion_of(&env, 2).await;
     assert_eq!(p.promoted, vec![n4]);
     assert!(
         bench.values.lock().is_empty(),
@@ -1513,4 +1427,108 @@ async fn a_challenged_one_sample_elite_is_re_measured_and_suspicious_jumps_stay_
 
 async fn repo_of(h: &H) -> PathBuf {
     actor::worktree_of(&study(h).await).unwrap()
+}
+
+/// W4 H5 (W4-f): the reviewer runs at archive acceptance. Slot 1's keep (`improved`, would enter
+/// `i0:1` and become the champion) is flagged under `on_suspicious: revert`: the acceptance is
+/// undone (no cell, no ref), the row says `rejected_by_review` with the saved patch and the
+/// `rejected/<n>` ref, the champion stays the base; slot 2's stepping stone is not reviewed.
+#[tokio::test]
+async fn a_flagged_keep_is_reverted_at_acceptance_and_its_cell_stays_empty() {
+    let bench = Bench::with(&[
+        (7450.0, 1.0),
+        (7450.0, 1.0),
+        (7450.0, 1.0),
+        (7000.0, 50.0),
+        (7600.0, 200.0),
+    ]);
+    let mut h = harness(bench.clone(), 2).await;
+    let env = h.studies.env();
+    let base = study(&h).await.incumbent_sha.unwrap();
+    let repo = repo_of(&h).await;
+    actor::begin_env(
+        &env,
+        Begin {
+            session: h.session,
+            slot: None,
+        },
+    )
+    .await
+    .unwrap();
+    let (n1, _) = child_round(&h, 1, Verdict::Improved).await;
+    *bench.flag.lock() = Some(n1);
+    let c1 = env
+        .store
+        .get_experiment(SLUG, n1)
+        .await
+        .unwrap()
+        .unwrap()
+        .commit_sha
+        .unwrap();
+    let (n2, _) = child_round(&h, 2, Verdict::Worse).await;
+    let p = promotion_of(&env, 1).await;
+    assert_eq!(p.promoted, vec![n2], "the flagged keep is not promoted");
+    assert_eq!(p.incumbent.as_deref(), Some(base.as_str()));
+    assert_eq!(git::head(&repo).unwrap(), base);
+
+    let e1 = env.store.get_experiment(SLUG, n1).await.unwrap().unwrap();
+    assert_eq!(e1.state, ExperimentState::RejectedByReview);
+    assert!(
+        matches!(&e1.review, Some(ReviewVerdict::Reverted { reason }) if reason == "skips the tour check"),
+        "{:?}",
+        e1.review
+    );
+    assert!(
+        e1.line
+            .starts_with("rejected by review (skips the tour check); entered an empty cell"),
+        "{}",
+        e1.line
+    );
+    let patch = env.root.join(e1.patch_path.as_deref().unwrap());
+    assert!(
+        std::fs::read_to_string(&patch)
+            .unwrap()
+            .contains("# slot 1 idea"),
+        "the saved patch is the keep's diff"
+    );
+    assert_eq!(
+        sh(&repo, &["rev-parse", &git::rejected_ref(SLUG, n1)]),
+        c1,
+        "Restore finds the commit"
+    );
+    let keys: Vec<String> = env
+        .store
+        .archive_list(SLUG, Some("cell"))
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.key.clone())
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["i0:0", "i1:0", "i1:1"],
+        "no cell for the flagged keep"
+    );
+    assert_eq!(refs::list(&repo, SLUG, RefKind::Cell).unwrap().len(), 3);
+    let archived = env
+        .store
+        .list_events(SLUG, Some(EVENT_ARCHIVE), 10)
+        .await
+        .unwrap();
+    assert!(
+        archived
+            .iter()
+            .any(|e| e.payload["n"] == n1 && e.payload["outcome"] == "rejected_by_review"),
+        "{archived:?}"
+    );
+    let reviews = env
+        .store
+        .list_events(SLUG, Some("review"), 10)
+        .await
+        .unwrap();
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews[0].payload["reverted"], true);
+    let e2 = env.store.get_experiment(SLUG, n2).await.unwrap().unwrap();
+    assert_eq!(e2.review, None, "a stepping stone is not reviewed");
+    let _ = &mut h;
 }

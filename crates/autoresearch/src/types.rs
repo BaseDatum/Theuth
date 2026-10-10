@@ -2814,6 +2814,12 @@ wire! {
         pub started_at: String,
         /// RFC 3339.
         pub finished_at: Option<String>,
+        /// 159 §5.6: the rule's full decision (per-objective Δ for a front row); `None` = a scalar row.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub gate: Option<GateDecision>,
+        /// 159 W6: the verdict line (`waiting · window 2 of at most 14 · closes …` for a waiting row).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        pub line: String,
     }
 }
 

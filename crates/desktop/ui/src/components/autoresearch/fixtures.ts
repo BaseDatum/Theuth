@@ -189,6 +189,8 @@ function build(slug: string, p: Plan): Built {
       cost_usd: 0.28 + (n % 9) / 100 + samples * 0.04,
       started_at: startedAt,
       finished_at: inFlight ? null : new Date(Date.parse(startedAt) + durationMs).toISOString(),
+      gate: null,
+      line,
     }
     rows.push(row)
     points.push({ n, verdict: st, metric: value, at: startedAt })

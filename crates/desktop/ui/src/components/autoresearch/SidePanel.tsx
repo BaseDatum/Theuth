@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
+import type { CitationRow } from '@/rpc/bindings/CitationRow'
 import type { StudyDetail } from '@/rpc/bindings/StudyDetail'
 import type { StudyIdea } from '@/rpc/bindings/StudyIdea'
 import type { StudySteer } from '@/rpc/bindings/StudySteer'
@@ -29,7 +30,7 @@ export function SidePanel({ detail, rows, onPick }: { detail: StudyDetail; rows:
         )}
       </div>
       <div className="flex min-w-0 flex-col gap-3">
-        <Ideas slug={detail.info.slug} ideas={detail.ideas} live={live} />
+        <Ideas slug={detail.info.slug} ideas={detail.ideas} citations={detail.citations} live={live} />
         {detail.playbook && (
           <Panel title="Playbook" hint="kept by the study for its next experiments">
             <pre className="max-h-64 overflow-auto font-sans text-[13px] leading-5 whitespace-pre-wrap text-fg-secondary">{detail.playbook}</pre>
@@ -110,7 +111,7 @@ function SteerHistory({ steers }: { steers: StudySteer[] }) {
 }
 
 /** Ideas: open ones first (★ the user's, by priority), tried/closed under a line; add (priority 3, source user), reprioritise (0–3, R-90) and close. */
-function Ideas({ slug, ideas, live }: { slug: string; ideas: StudyIdea[]; live: boolean }) {
+function Ideas({ slug, ideas, citations, live }: { slug: string; ideas: StudyIdea[]; citations?: CitationRow[]; live: boolean }) {
   const [adding, setAdding] = useState(false)
   const [text, setText] = useState('')
   const [category, setCategory] = useState('')
@@ -160,7 +161,7 @@ function Ideas({ slug, ideas, live }: { slug: string; ideas: StudyIdea[]; live: 
         </form>
       )}
       {open.length === 0 && !adding ? <p className="text-[13px] text-fg-tertiary">No open ideas; the study will propose its own.</p> : null}
-      <LiteratureIdeas ideas={ideas} /> {/* 159:W5 */}
+      <LiteratureIdeas ideas={ideas} citations={citations} /> {/* 159:W5 */}
       <ul className="flex flex-col gap-1.5">
         {open.map((i) => (
           <li key={i.id} className="group/idea flex items-start gap-1.5 text-[13px]">

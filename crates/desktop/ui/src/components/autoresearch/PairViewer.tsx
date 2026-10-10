@@ -65,10 +65,9 @@ function shown(r: JudgmentRow): string {
 /**
  * 159 W3: the blind pairs of a study (or one experiment when `n` is set). Pending human pairs
  * come first in their own block, blind (D14): no verdicts, no outcome, no order labels, only
- * the A / B / same buttons for a pair the attention row showed (the texts are not in
- * `JudgmentRow` yet — hand-off to Z). Judged pairs below show the two ordered verdicts with
- * their reasons, the gate's reading and the judge's cost; a case's judge rows appear only
- * once its human pair is answered. Owner: W3.
+ * the two texts (`a_text` / `b_text`, when the row carries them) and the A / B / same buttons.
+ * Judged pairs below show the two ordered verdicts with their reasons, the gate's reading and
+ * the judge's cost; a case's judge rows appear only once its human pair is answered. Owner: W3.
  */
 export function PairViewer({ slug, n }: { slug: string; n: number | null }) {
   const api = useAutoresearchApi()
@@ -92,14 +91,26 @@ export function PairList({ pairs, busy, onAnswer }: { pairs: Pair[]; busy: boole
           <p className="font-semibold">Your pairs — which is better? (A and B as shown in the attention row; the judge's view stays hidden until you answer)</p>
           <ul className="space-y-1">
             {pending.map((p) => (
-              <li key={`${p.n}:${p.caseId}`} data-pair={`${p.n}:${p.caseId}`} data-human="pending" className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold">#{p.n}</span>
-                <span className="font-mono">{p.caseId}</span>
-                {(['a', 'b', 'same'] as const).map((w) => (
-                  <Button key={w} size="xs" variant="outline" disabled={busy} onClick={() => onAnswer(p.human!.id, w)}>
-                    {w === 'same' ? 'same' : w.toUpperCase()}
-                  </Button>
-                ))}
+              <li key={`${p.n}:${p.caseId}`} data-pair={`${p.n}:${p.caseId}`} data-human="pending" className="space-y-1.5">
+                {p.human!.a_text != null && p.human!.b_text != null && (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {(['A', 'B'] as const).map((side) => (
+                      <div key={side} data-side={side} className="rounded-md border border-border-subtle bg-layer-1 p-2">
+                        <div className="mb-1 font-semibold text-fg-tertiary">{side}</div>
+                        <pre className="max-h-64 overflow-auto font-sans whitespace-pre-wrap">{side === 'A' ? p.human!.a_text : p.human!.b_text}</pre>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold">#{p.n}</span>
+                  <span className="font-mono">{p.caseId}</span>
+                  {(['a', 'b', 'same'] as const).map((w) => (
+                    <Button key={w} size="xs" variant="outline" disabled={busy} onClick={() => onAnswer(p.human!.id, w)}>
+                      {w === 'same' ? 'same' : w.toUpperCase()}
+                    </Button>
+                  ))}
+                </div>
               </li>
             ))}
           </ul>

@@ -47,6 +47,9 @@ struct Fake {
     custody_from: Mutex<Vec<std::path::PathBuf>>,
     /// What `finalize` returns as the report document (a path = the no-documents-actor fallback).
     doc: Mutex<Option<String>>,
+    /// 159 R-SEAMS-7: every `(git op, base sha)` the actor handed to `patch_hash`/`discard`/
+    /// `diff_text`/`reject` — the tree an experiment is diffed against must be its parent.
+    bases: Mutex<Vec<(String, String)>>,
 }
 
 impl Default for Fake {
@@ -83,6 +86,7 @@ impl Default for Fake {
             tried: Default::default(),
             custody_from: Default::default(),
             doc: Mutex::new(Some("doc-1".into())),
+            bases: Default::default(),
         }
     }
 }
@@ -136,7 +140,8 @@ impl Backend for Fake {
     fn keep(&self, _: &Path, _: &StudySpec, meta: &KeepMeta, _: Option<&str>) -> Result<String> {
         Ok(format!("keep{:04}", meta.n))
     }
-    fn discard(&self, _: &Path, _: &str, patch_path: &Path) -> Result<String> {
+    fn discard(&self, _: &Path, base: &str, patch_path: &Path) -> Result<String> {
+        self.bases.lock().push(("discard".into(), base.into()));
         std::fs::write(patch_path, "diff")?;
         *self.discards.lock() += 1;
         Ok("patchhash".into())
@@ -161,17 +166,20 @@ impl Backend for Fake {
     fn repair(&self, _: &Path, _: &StudySpec, _: &str, _: &Path) -> Result<Option<String>> {
         Ok(self.repair.lock().take())
     }
-    fn reject(&self, _: &Path, _: &str, _: u32, _: &str) -> Result<()> {
+    fn reject(&self, _: &Path, _: &str, _: u32, previous: &str) -> Result<()> {
+        self.bases.lock().push(("reject".into(), previous.into()));
         Ok(())
     }
     fn restore_rejected(&self, _: &Path, _: &str, n: u32) -> Result<()> {
         self.restored.lock().push(n);
         Ok(())
     }
-    fn patch_hash(&self, _: &Path, _: &str) -> Result<String> {
+    fn patch_hash(&self, _: &Path, base: &str) -> Result<String> {
+        self.bases.lock().push(("patch_hash".into(), base.into()));
         Ok(self.patch_hash.lock().clone())
     }
-    fn diff_text(&self, _: &Path, _: &str, _: &str, _: usize) -> Result<String> {
+    fn diff_text(&self, _: &Path, a: &str, _: &str, _: usize) -> Result<String> {
+        self.bases.lock().push(("diff_text".into(), a.into()));
         Ok("diff".into())
     }
     async fn sample(
@@ -3020,6 +3028,438 @@ fn origin_cards_are_wrapped_for_the_desktop_classifier() {
     assert!(
         wrapped("a\"<b>&", "failed", "x")
             .starts_with("<autoresearch slug=\"a&quot;&lt;b&gt;&amp;\" event=\"failed\">\n")
+    );
+}
+
+// ───────────────────────────── 159 hand-offs (Z) ─────────────────────────────
+
+/// The YAML spec block of a fixture README, re-rooted at the harness repo (the pattern of
+/// `world::tests::readme_spec_starts_through_create`).
+fn readme_spec(h: &Harness, fixture: &str) -> StudySpec {
+    let path = format!(
+        "{}/fixtures/{fixture}/README.md",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let readme = std::fs::read_to_string(&path).unwrap();
+    let yaml = readme
+        .split("```yaml\n")
+        .nth(1)
+        .unwrap()
+        .split("```")
+        .next()
+        .unwrap();
+    let mut spec: StudySpec = serde_yaml::from_str(yaml).expect("the README spec parses");
+    spec.repo = h._dir.path().display().to_string();
+    spec
+}
+
+/// `create` accepts the spec and inserts the study `preparing`; returns the settled row
+/// (`running`, or `failed` with the pipeline's reason — never a `create` refusal).
+async fn create_settles(h: &mut Harness, spec: StudySpec) -> StudyRecord {
+    crate::tools::validate_spec(&spec).unwrap();
+    let slug = spec.slug.clone();
+    let info = create(
+        &mut h.studies,
+        Create {
+            spec,
+            origin: SessionId::new(),
+            start: StartWhen::Now,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(info.state, StudyState::Preparing);
+    wait_state(&h.studies.store, &slug, |s| {
+        *s == StudyState::Running || matches!(s, StudyState::Failed { .. })
+    })
+    .await
+}
+
+/// R-W6-3: one `create` per kind from the fixture READMEs (meta/suite is W7, not merged).
+#[tokio::test]
+async fn create_accepts_every_kind_scalar_from_toy_sort() {
+    let fake = Fake::with_values(&[100.0, 101.0, 99.0]);
+    let mut h = harness(fake, AutoresearchConfig::default()).await;
+    let spec = readme_spec(&h, "toy-sort");
+    assert_eq!(spec.kind(), "one metric");
+    let s = create_settles(&mut h, spec).await;
+    assert_eq!(s.state, StudyState::Running);
+}
+
+#[tokio::test]
+async fn create_accepts_every_kind_pareto_from_toy_pareto() {
+    let fake = Fake::with_values(&[100.0, 101.0, 99.0]);
+    let mut h = harness(fake, AutoresearchConfig::default()).await;
+    let spec = readme_spec(&h, "toy-pareto");
+    assert_eq!(spec.axes.search, Search::Front);
+    let s = create_settles(&mut h, spec).await;
+    assert_eq!(s.state, StudyState::Running, "{:?}", s.state);
+}
+
+#[tokio::test]
+async fn create_accepts_every_kind_population_from_toy_route() {
+    let fake = Fake::with_values(&[100.0, 101.0, 99.0]);
+    let mut h = harness(fake, AutoresearchConfig::default()).await;
+    let spec = readme_spec(&h, "toy-route");
+    assert_eq!(spec.axes.search, Search::Population);
+    let s = create_settles(&mut h, spec).await;
+    assert_eq!(s.state, StudyState::Running, "{:?}", s.state);
+}
+
+#[tokio::test]
+async fn create_accepts_every_kind_scalar_with_literature_and_hooks() {
+    let fake = Fake::with_values(&[100.0, 101.0, 99.0]);
+    let mut h = harness(fake, AutoresearchConfig::default()).await;
+    let mut spec = readme_spec(&h, "toy-sort");
+    spec.slug = "toy-sort-lit".into();
+    spec.calls = vec!["read_url".into(), "search_web".into()];
+    spec.literature = Some(LiteratureSpec {
+        max_queries: 2,
+        ..LiteratureSpec::default()
+    });
+    spec.hooks = Some(HooksSpec {
+        before: Some(CommandSpec {
+            command: "bash hook.sh".into(),
+            ..CommandSpec::default()
+        }),
+        after: None,
+    });
+    let s = create_settles(&mut h, spec).await;
+    assert_eq!(s.state, StudyState::Running, "{:?}", s.state);
+    assert!(s.spec.literature.is_some() && s.spec.hooks.is_some());
+}
+
+/// The judged README carries `bench.command` (its generator); `create` takes the spec as is.
+/// Judging needs a judge model, so the pipeline's end is not asserted here (judge.rs's e2e
+/// test drives a judged study through its own double).
+#[tokio::test]
+async fn create_accepts_every_kind_judged_from_toy_judged() {
+    let fake = Fake::with_values(&[0.5, 0.5]);
+    let mut h = harness(fake, AutoresearchConfig::default()).await;
+    let spec = readme_spec(&h, "toy-judged");
+    assert_eq!(spec.axes.scoring, Scoring::Pairwise);
+    let s = create_settles(&mut h, spec).await;
+    assert!(
+        !matches!(&s.state, StudyState::Failed { reason } if reason.contains("bench.command")),
+        "{:?}",
+        s.state
+    );
+}
+
+/// R-SEAMS-11 / W2 H1: a prompt study runs no bench command (`cases` was a workaround word);
+/// `create` must take the README spec without one. The cases runner needs a target model, so
+/// only `create`'s acceptance is asserted (cases.rs's e2e test runs the fixture).
+#[tokio::test]
+async fn create_accepts_every_kind_prompt_without_a_bench_command() {
+    let fake = Fake::default();
+    let mut h = harness(Arc::new(fake), AutoresearchConfig::default()).await;
+    let mut spec = readme_spec(&h, "toy-prompt");
+    assert_eq!(spec.axes.scoring, Scoring::Cases);
+    spec.bench.command = String::new();
+    let s = create_settles(&mut h, spec).await;
+    assert!(
+        !matches!(&s.state, StudyState::Failed { reason } if reason.contains("bench.command")),
+        "{:?}",
+        s.state
+    );
+}
+
+/// R-SEAMS-11 / R-W6-3: a world study's `bench.command` is a custody workaround, not a need;
+/// `create` takes the README spec without it. The full start (`actor::Real`, three baseline
+/// reads, `running`) is `world::tests::readme_spec_starts_through_create`.
+#[tokio::test]
+async fn create_accepts_every_kind_world_without_a_bench_command() {
+    let fake = Fake::default();
+    let mut h = harness(Arc::new(fake), AutoresearchConfig::default()).await;
+    let mut spec = readme_spec(&h, "toy-world");
+    assert_eq!(spec.axes.scoring, Scoring::World);
+    spec.bench.command = String::new();
+    let s = create_settles(&mut h, spec).await;
+    assert!(
+        !matches!(&s.state, StudyState::Failed { reason } if reason.contains("bench.command")),
+        "{:?}",
+        s.state
+    );
+}
+
+/// R-SEAMS-7 / W1 H8 / W4 H3: an experiment cut from a non-incumbent parent (a front member, a
+/// cell elite) is hashed, diffed and discarded against `exp.parent_sha`, never the incumbent.
+#[tokio::test]
+async fn run_and_log_diff_against_the_parent_not_the_incumbent() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0, 100.5, 100.0]);
+    let mut h = harness(fake.clone(), AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(
+        &mut h.studies,
+        Begin {
+            session,
+            slot: None,
+        },
+    )
+    .await
+    .unwrap();
+    // The module that picked the parent wrote it on the row (pareto/population `parent_of`).
+    let mut exp = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    exp.parent_sha = "elite0001".into();
+    h.studies.store.update_experiment(&exp).await.unwrap();
+    fake.bases.lock().clear();
+    let args = RunArgs {
+        idea: "x".into(),
+        category: "c".into(),
+        ..RunArgs::default()
+    };
+    run(
+        &mut h.studies,
+        Run {
+            session,
+            slot: None,
+            args,
+        },
+    )
+    .await
+    .unwrap();
+    let lr = log(
+        &mut h.studies,
+        Log {
+            session,
+            slot: None,
+            args: LogArgs::default(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(lr.applied, ExperimentState::Discarded);
+    let bases = fake.bases.lock().clone();
+    let ops: Vec<&str> = bases.iter().map(|(op, _)| op.as_str()).collect();
+    assert!(
+        ops.contains(&"patch_hash") && ops.contains(&"discard"),
+        "{bases:?}"
+    );
+    assert!(
+        bases.iter().all(|(_, base)| base == "elite0001"),
+        "every git base is the parent: {bases:?}"
+    );
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert_eq!(
+        s.incumbent_sha.as_deref(),
+        Some("base0000"),
+        "the incumbent is untouched"
+    );
+}
+
+/// W6 hand-off 1: `experiment_log` on a waiting launch records the text and leaves the state.
+#[tokio::test]
+async fn log_on_a_waiting_experiment_records_text_and_keeps_it_waiting() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
+    let mut h = harness(fake, AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(
+        &mut h.studies,
+        Begin {
+            session,
+            slot: None,
+        },
+    )
+    .await
+    .unwrap();
+    let mut exp = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    exp.state = ExperimentState::Waiting;
+    exp.verdict = Some(Verdict::Pending {
+        until: "2026-10-11T00:00:00Z".into(),
+    });
+    h.studies.store.update_experiment(&exp).await.unwrap();
+    let lr = log(
+        &mut h.studies,
+        Log {
+            session,
+            slot: None,
+            args: LogArgs {
+                description: "swapped the headline".into(),
+                learned: "waiting on the world".into(),
+                ..LogArgs::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(lr.applied, ExperimentState::Waiting);
+    let e = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(e.state, ExperimentState::Waiting);
+    assert_eq!(e.description, "swapped the headline");
+    assert_eq!(e.learned, "waiting on the world");
+    assert!(e.finished_at.is_none(), "not closed");
+}
+
+/// W6 hand-off 3: Discard is refused while a launch is live (a waiting experiment); the study
+/// must be stopped first so the arms are rolled back.
+#[tokio::test]
+async fn discard_is_refused_while_a_launch_is_live() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
+    let mut h = harness(fake, AutoresearchConfig::default()).await;
+    let session = started(&mut h, "t1", 10).await;
+    begin(
+        &mut h.studies,
+        Begin {
+            session,
+            slot: None,
+        },
+    )
+    .await
+    .unwrap();
+    let mut exp = h
+        .studies
+        .store
+        .get_experiment("t1", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    exp.state = ExperimentState::Waiting;
+    h.studies.store.update_experiment(&exp).await.unwrap();
+    // The press pauses the study; a paused study is otherwise discardable.
+    h.studies
+        .store
+        .patch_study(
+            "t1",
+            &StudyPatch::state(StudyState::Paused {
+                reason: PauseReason::LaunchApproval { n: 1 },
+            }),
+        )
+        .await
+        .unwrap();
+    let e = control(
+        &mut h.studies,
+        Control {
+            slug: "t1".into(),
+            op: ControlOp::Discard,
+            by: By::User,
+        },
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("a launch is live"), "{e}");
+    let s = h.studies.store.get_study("t1").await.unwrap().unwrap();
+    assert!(
+        matches!(s.state, StudyState::Paused { .. }),
+        "{:?}",
+        s.state
+    );
+}
+
+/// W3 + W6 attention rows: a pending human pair and a requested launch are `Blocked` rows
+/// with the answer's ids; the launch token never appears.
+#[tokio::test]
+async fn attention_lists_pending_pairs_and_requested_launches() {
+    let fake = Fake::with_values(&[100.0, 100.0, 100.0]);
+    let mut h = harness(fake, AutoresearchConfig::default()).await;
+    started(&mut h, "t1", 10).await;
+    let store = h.studies.store.clone();
+    // A launch's experiment is `waiting` (for the press, then for its window).
+    for n in [2, 3] {
+        let mut e = ExperimentRecord::open("t1", n, 0, "base0000");
+        e.state = ExperimentState::Waiting;
+        store.insert_experiment(&e).await.unwrap();
+    }
+    let pair = store
+        .judgments_insert(&JudgmentRow {
+            slug: "t1".into(),
+            n: 1,
+            case_id: "c7".into(),
+            split: "val".into(),
+            a_sha: "keep0001".into(),
+            b_sha: Some("base0000".into()),
+            a_first: Some(true),
+            model: "human".into(),
+            at: now(),
+            ..JudgmentRow::default()
+        })
+        .await
+        .unwrap();
+    store
+        .judgments_insert(&JudgmentRow {
+            slug: "t1".into(),
+            n: 1,
+            case_id: "c8".into(),
+            a_sha: "keep0001".into(),
+            b_sha: Some("base0000".into()),
+            model: "human".into(),
+            human: true,
+            winner: Some("a".into()),
+            at: now(),
+            ..JudgmentRow::default()
+        })
+        .await
+        .unwrap();
+    store
+        .launches_put(&LaunchRecord {
+            slug: "t1".into(),
+            n: 2,
+            state: "requested".into(),
+            token_hash: "deadbeefcafe".into(),
+            exposure: 0.1,
+            requested_at: now(),
+            decided_at: None,
+            by: None,
+        })
+        .await
+        .unwrap();
+    store
+        .launches_put(&LaunchRecord {
+            slug: "t1".into(),
+            n: 3,
+            state: "deployed".into(),
+            token_hash: "feedface".into(),
+            exposure: 0.1,
+            requested_at: now(),
+            decided_at: Some(now()),
+            by: Some("user".into()),
+        })
+        .await
+        .unwrap();
+    let items = roster::attention::Source::items(&AttentionSource(store)).await;
+    let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            format!("autoresearch:pair:t1:{pair}").as_str(),
+            "autoresearch:launch:t1:2"
+        ],
+        "{items:?}"
+    );
+    for i in &items {
+        assert_eq!(i.kind, roster::attention::AttentionKind::Blocked);
+        let text = format!("{} {}", i.title, i.detail.as_deref().unwrap_or(""));
+        assert!(
+            !text.contains("deadbeef") && !text.contains("feedface"),
+            "{text}"
+        );
+    }
+    assert_eq!(
+        items[0].title,
+        format!("Study t1: which blurb is better? (pair {pair})")
+    );
+    assert_eq!(items[0].detail.as_deref(), Some("case c7"));
+    assert_eq!(
+        items[1].title,
+        "Study t1: launch #2 needs your press · exposure 10 %"
     );
 }
 

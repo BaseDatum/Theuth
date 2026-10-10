@@ -27,9 +27,10 @@ use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::config::{AgentDefaults, AutoresearchConfig};
 use crate::types::{
-    Begin, Control, ControlOp, ExperimentState, IdeaChange, IdeaOp, Log, LogArgs, LogReport, Notes,
-    NotesArgs, ObjectiveRole, ObjectivesMode, ReviewVerdict, Run, RunArgs, RunReport, Scoring,
-    Search, StartDraft, StartWhen, Status, SteerMsg, StudyInfo, StudySpec, Verdict,
+    Begin, CaseSource, Control, ControlOp, ExperimentState, IdeaChange, IdeaOp, Log, LogArgs,
+    LogReport, Notes, NotesArgs, ObjectiveRole, ObjectivesMode, ReviewVerdict, Run, RunArgs,
+    RunReport, Scoring, Search, StartDraft, StartWhen, Status, SteerMsg, StudyInfo, StudySpec,
+    Verdict,
 };
 use crate::{AUTORESEARCH_ACTOR, PLUGIN, Studies};
 
@@ -256,6 +257,26 @@ pub fn validate_spec(spec: &StudySpec) -> Result<(), String> {
         return Err("repo must be an absolute path".into());
     }
     validate_axes(spec)?;
+    if spec.axes.scoring == Scoring::Cases {
+        // 159 W2 H4: the case set a prompt study scores on.
+        let cs = spec
+            .cases
+            .as_ref()
+            .ok_or("a prompt study needs a `cases` block")?;
+        if cs.artefact.trim().is_empty() {
+            return Err("cases.artefact is empty (the text file the study edits)".into());
+        }
+        match cs.source {
+            CaseSource::File if cs.path.trim().is_empty() => {
+                return Err("cases.path is empty".into());
+            }
+            CaseSource::Dreaming if cs.skill_hint.trim().is_empty() => {
+                return Err("cases.skill_hint is empty".into());
+            }
+            _ => {}
+        }
+        crate::cases::shares(cs)?;
+    }
     if spec.axes.scoring == Scoring::Bench {
         if spec.metric.name.trim().is_empty() && spec.objectives.is_empty() {
             return Err(
@@ -367,8 +388,45 @@ fn validate_axes(spec: &StudySpec) -> Result<(), String> {
     if a.search == Search::Front && a.objectives != ObjectivesMode::Pareto {
         return Err("`search: front` needs `objectives: pareto`".into());
     }
+    if a.search == Search::Front && spec.parallel > 1 {
+        // 159 W1 H1: wave.rs promotes no slot onto the front yet.
+        return Err("a front study runs one experiment at a time (`parallel: 1`); wave promotion onto the front is not built (159 W1-l)".into());
+    }
     if a.scoring == Scoring::World && spec.world.is_none() {
         return Err("a world study needs a `world` block".into());
+    }
+    // 159 W3 R-W3-8: the prompt set must be in custody so a candidate cannot edit it.
+    if a.scoring == Scoring::Pairwise
+        && let Some(j) = &spec.judge
+        && !j.prompts.trim().is_empty()
+        && !spec
+            .evaluator_paths
+            .iter()
+            .any(|p| p.trim() == j.prompts.trim())
+    {
+        return Err(format!(
+            "judge.prompts `{}` must be in evaluator_paths so a candidate cannot edit it",
+            j.prompts.trim()
+        ));
+    }
+    // 159 W5 R-W5-4/R-W5-7: the literature block needs its tools in `calls` and a query cap.
+    if let Some(l) = &spec.literature {
+        let via = if l.via.trim().is_empty() {
+            "search_web"
+        } else {
+            l.via.trim()
+        };
+        for t in ["read_url", via] {
+            if !spec.calls.iter().any(|c| c.trim() == t) {
+                return Err(format!("literature needs `{t}` in calls"));
+            }
+        }
+        if l.max_queries > 100 {
+            return Err(format!(
+                "literature.max_queries {} is over the cap of 100",
+                l.max_queries
+            ));
+        }
     }
     Ok(())
 }
@@ -1660,6 +1718,162 @@ mod tests {
         };
         let e = validate_spec(&spec).unwrap_err();
         assert!(e.contains("bench.repeats must be at least 2"), "{e}");
+    }
+
+    /// 159 Z: the seam checks handed off by W1 (front + waves), W2 (the `cases` block), W3
+    /// (`judge.prompts` in custody) and W5 (literature tools in `calls`, the query cap).
+    #[test]
+    fn axis_seams_are_refused_with_the_reason() {
+        let base = StudySpec {
+            slug: "s".into(),
+            goal: "g".into(),
+            repo: "/tmp/r".into(),
+            metric: MetricSpec {
+                name: "t".into(),
+                ..Default::default()
+            },
+            bench: BenchSpec {
+                command: "b".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let obj = |name: &str| Objective {
+            name: name.into(),
+            role: ObjectiveRole::Objective,
+            min_effect: "1%".into(),
+            max_regression: "5%".into(),
+            ..Default::default()
+        };
+        // W1 H1: a front study with waves.
+        let front = StudySpec {
+            axes: Axes {
+                objectives: ObjectivesMode::Pareto,
+                search: Search::Front,
+                ..Default::default()
+            },
+            objectives: vec![obj("a"), obj("b")],
+            ..base.clone()
+        };
+        validate_spec(&front).unwrap();
+        let e = validate_spec(&StudySpec {
+            parallel: 2,
+            ..front.clone()
+        })
+        .unwrap_err();
+        assert!(e.contains("one experiment at a time"), "{e}");
+
+        // W2 H4: the `cases` block.
+        let prompt = StudySpec {
+            axes: Axes {
+                scoring: Scoring::Cases,
+                artefact: Artefact::File,
+                ..Default::default()
+            },
+            cases: Some(CaseSetSpec {
+                path: "cases.jsonl".into(),
+                artefact: "prompt.md".into(),
+                ..Default::default()
+            }),
+            ..base.clone()
+        };
+        validate_spec(&prompt).unwrap();
+        for (cs, msg) in [
+            (None, "needs a `cases` block"),
+            (
+                Some(CaseSetSpec {
+                    artefact: String::new(),
+                    ..prompt.cases.clone().unwrap()
+                }),
+                "cases.artefact is empty",
+            ),
+            (
+                Some(CaseSetSpec {
+                    path: String::new(),
+                    ..prompt.cases.clone().unwrap()
+                }),
+                "cases.path is empty",
+            ),
+            (
+                Some(CaseSetSpec {
+                    source: CaseSource::Dreaming,
+                    ..prompt.cases.clone().unwrap()
+                }),
+                "cases.skill_hint is empty",
+            ),
+            (
+                Some(CaseSetSpec {
+                    split: "50/50/50".into(),
+                    ..prompt.cases.clone().unwrap()
+                }),
+                "split",
+            ),
+        ] {
+            let e = validate_spec(&StudySpec {
+                cases: cs,
+                ..prompt.clone()
+            })
+            .unwrap_err();
+            assert!(e.contains(msg), "{e} should mention {msg}");
+        }
+
+        // W3 R-W3-8: the prompt set must be an evaluator path.
+        let judged = StudySpec {
+            axes: Axes {
+                objectives: ObjectivesMode::Judged,
+                scoring: Scoring::Pairwise,
+                artefact: Artefact::File,
+                ..Default::default()
+            },
+            judge: Some(JudgeSpec {
+                prompts: "judged/prompts.jsonl".into(),
+                ..Default::default()
+            }),
+            evaluator_paths: vec!["judged/prompts.jsonl".into()],
+            ..base.clone()
+        };
+        validate_spec(&judged).unwrap();
+        let e = validate_spec(&StudySpec {
+            evaluator_paths: vec![],
+            ..judged.clone()
+        })
+        .unwrap_err();
+        assert!(
+            e.contains("judge.prompts `judged/prompts.jsonl` must be in evaluator_paths"),
+            "{e}"
+        );
+
+        // W5 R-W5-4 / R-W5-7: the literature tools and the query cap.
+        let lit = StudySpec {
+            literature: Some(LiteratureSpec::default()),
+            calls: vec!["search_web".into(), "read_url".into()],
+            ..base.clone()
+        };
+        validate_spec(&lit).unwrap();
+        let e = validate_spec(&StudySpec {
+            calls: vec!["search_web".into()],
+            ..lit.clone()
+        })
+        .unwrap_err();
+        assert!(e.contains("literature needs `read_url` in calls"), "{e}");
+        let e = validate_spec(&StudySpec {
+            literature: Some(LiteratureSpec {
+                via: "arxiv".into(),
+                ..Default::default()
+            }),
+            ..lit.clone()
+        })
+        .unwrap_err();
+        assert!(e.contains("literature needs `arxiv` in calls"), "{e}");
+        let e = validate_spec(&StudySpec {
+            literature: Some(LiteratureSpec {
+                max_queries: 101,
+                ..Default::default()
+            }),
+            ..lit.clone()
+        })
+        .unwrap_err();
+        assert!(e.contains("max_queries 101 is over the cap of 100"), "{e}");
     }
 
     /// R-13: `autoresearch_control` is refused to a study's bound session and to

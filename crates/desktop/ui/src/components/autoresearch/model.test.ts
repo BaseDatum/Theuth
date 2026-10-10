@@ -24,6 +24,8 @@ const row = (over: Partial<ExperimentRow>): ExperimentRow => ({
   cost_usd: 0,
   started_at: '2026-10-08T00:00:00Z',
   finished_at: '2026-10-08T00:05:00Z',
+  gate: null,
+  line: '',
   ...over,
 })
 

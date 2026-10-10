@@ -3,7 +3,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
 import { Delta } from './StudyList'
-import { OUTCOME_CLASS, type RunFilter, duration, filterRuns, metric, outcome, outcomeLabel, rowDuration, shortSha, sigmas, usd } from './model'
+import { CALL_OUTCOME, OUTCOME_CLASS, type RunFilter, duration, filterRuns, metric, objectiveColumns, outcome, outcomeLabel, rowDuration, shortSha, sigmas, usd } from './model'
 
 const FILTERS: { id: RunFilter; label: string }[] = [
   { id: 'all', label: 'all' },
@@ -13,16 +13,21 @@ const FILTERS: { id: RunFilter; label: string }[] = [
 
 /** The verdict badge of a row: words from `outcomeLabel`, colour from `OUTCOME_CLASS`. */
 export function VerdictBadge({ row, className }: { row: Pick<ExperimentRow, 'state' | 'verdict'>; className?: string }) {
-  return <span className={cn('inline-flex h-5 items-center rounded-full px-2 text-[11px] font-semibold whitespace-nowrap', OUTCOME_CLASS[outcome(row.state, row.verdict)], className)}>{outcomeLabel(row.state, row.verdict)}</span>
+  return <span className={cn(BADGE, OUTCOME_CLASS[outcome(row.state, row.verdict)], className)}>{outcomeLabel(row.state, row.verdict)}</span>
 }
+
+const BADGE = 'inline-flex h-5 items-center rounded-full px-2 text-[11px] font-semibold whitespace-nowrap'
 
 /**
  * §13.1 the run table: #, verdict, value, Δ vs the incumbent, σ-multiple, idea [category], duration, cost, commit;
  * filters all / kept / flagged. A row is a button to its experiment. Newest first, as the RPC returns them.
+ * 159 W1 H2: a front study adds one Δ % column per objective (the scalar Δ stays the headline);
+ * 159 W6: a `waiting` row shows its verdict line across the value and Δ cells.
  */
 export function RunTable({ rows, metricName, direction, pending, active, onPick }: { rows: ExperimentRow[] | undefined; metricName: string; direction: 'lower' | 'higher'; pending: boolean; active: number | null; onPick: (n: number) => void }) {
   const [filter, setFilter] = useState<RunFilter>('all')
   const shown = useMemo(() => filterRuns(rows ?? [], filter), [rows, filter])
+  const objectives = useMemo(() => objectiveColumns(shown), [shown])
   return (
     <section className="rounded-[10px] border border-border-subtle bg-layer-1">
       <header className="flex flex-wrap items-center gap-2 px-3 py-2">
@@ -59,6 +64,11 @@ export function RunTable({ rows, metricName, direction, pending, active, onPick 
                 <Th>verdict</Th>
                 <Th className="text-right">{metricName}</Th>
                 <Th className="text-right">Δ</Th>
+                {objectives.map((o) => (
+                  <Th key={o.name} className="text-right" title={o.direction ? `${o.direction} is better` : undefined}>
+                    {o.name} Δ %{o.direction && <span className="ml-1 font-normal">{o.direction}</span>}
+                  </Th>
+                ))}
                 <Th className="hidden text-right md:table-cell" title="Standard deviations better than the incumbent">
                   σ×
                 </Th>
@@ -87,10 +97,33 @@ export function RunTable({ rows, metricName, direction, pending, active, onPick 
                   <Td>
                     <VerdictBadge row={r} />
                   </Td>
-                  <Td className="text-right tabular-nums">{metric(r.metric, '')}</Td>
-                  <Td className="text-right">
-                    <Delta direction={direction} delta_pct={r.delta_pct} muted={r.state !== 'kept'} />
-                  </Td>
+                  {r.state === 'waiting' ? (
+                    <Td className="text-fg-secondary" colSpan={2 + objectives.length}>
+                      {r.line || '—'}
+                    </Td>
+                  ) : (
+                    <>
+                      <Td className="text-right tabular-nums">{metric(r.metric, '')}</Td>
+                      <Td className="text-right">
+                        <Delta direction={direction} delta_pct={r.delta_pct} muted={r.state !== 'kept'} />
+                      </Td>
+                      {objectives.map((o) => {
+                        const d = r.gate?.rule === 'dominance' ? r.gate.objectives.find((x) => x.name === o.name) : undefined
+                        return (
+                          <Td key={o.name} className="text-right">
+                            {d ? (
+                              <>
+                                <Delta direction={o.direction ?? direction} delta_pct={d.delta_pct} muted={r.state !== 'kept'} />
+                                <span className={cn(BADGE, 'ml-1', OUTCOME_CLASS[CALL_OUTCOME[d.call]])}>{d.call.replace('_', ' ')}</span>
+                              </>
+                            ) : (
+                              <span className="text-fg-tertiary">—</span>
+                            )}
+                          </Td>
+                        )
+                      })}
+                    </>
+                  )}
                   <Td className="hidden text-right tabular-nums md:table-cell">{sigmas(r.z)}</Td>
                   <Td className="max-w-[360px] min-w-[150px] whitespace-normal">
                     <span className="line-clamp-2">
@@ -123,6 +156,10 @@ function Th({ children, className, title }: { children: ReactNode; className?: s
   )
 }
 
-function Td({ children, className }: { children: ReactNode; className?: string }) {
-  return <td className={cn('px-3 py-1.5 whitespace-nowrap', className)}>{children}</td>
+function Td({ children, className, colSpan }: { children: ReactNode; className?: string; colSpan?: number }) {
+  return (
+    <td colSpan={colSpan} className={cn('px-3 py-1.5 whitespace-nowrap', className)}>
+      {children}
+    </td>
+  )
 }

@@ -1853,7 +1853,8 @@ fn validate(spec: &StudySpec, cfg: &AutoresearchConfig) -> Result<()> {
     if spec.metric.name.trim().is_empty() {
         return Err(Error::refused("metric.name is empty"));
     }
-    if spec.bench.command.trim().is_empty() {
+    // 159 W2 H1 / R-SEAMS-11: engine-side scoring (cases, pairwise, world, suite) runs no bench command.
+    if spec.axes.scoring == Scoring::Bench && spec.bench.command.trim().is_empty() {
         return Err(Error::refused("bench.command is empty"));
     }
     if spec.bench.repeats == 0 {
@@ -1900,35 +1901,37 @@ pub async fn create(a: &mut Studies, m: Create) -> Result<StudyInfo> {
         return Err(Error::refused(crate::WINDOWS_UNSUPPORTED));
     }
     let env = a.env();
-    validate(&m.spec, &env.cfg)?;
+    // 159 §5.2: `metric` mirrors the headline objective before `validate` reads it (a pareto
+    // README spec carries `objectives` only — R-W6-3, every kind creatable).
+    let mut spec = m.spec;
+    spec.normalise();
+    validate(&spec, &env.cfg)?;
     // 140-P live: `spawn_subagent` is gated by `agent.communication` (50 §2.1); without it
     // every wave is abandoned ("spawn_subagent is not available in this session").
-    if m.spec.parallel > 1 && !env.agent.communication {
+    if spec.parallel > 1 && !env.agent.communication {
         return Err(Error::refused(
             "parallel > 1 needs `agent.communication: true` in config.yaml (spawn_subagent is off — a \
              ceiling no session can override); start the study with parallel: 1 or switch it on",
         ));
     }
     // `git rev-parse` is a process spawn: never on the mailbox thread (R-100).
-    let (backend, repo) = (env.backend.clone(), PathBuf::from(&m.spec.repo));
+    let (backend, repo) = (env.backend.clone(), PathBuf::from(&spec.repo));
     let is_git = tokio::task::spawn_blocking(move || backend.is_git_repo(&repo))
         .await
         .unwrap_or(false);
     if !is_git {
         return Err(Error::refused(format!(
             "repo `{}` is not a git repository (a pure jj repo needs git colocation)",
-            m.spec.repo
+            spec.repo
         )));
     }
-    if let Some(existing) = env.store.get_study(&m.spec.slug).await? {
+    if let Some(existing) = env.store.get_study(&spec.slug).await? {
         return Err(Error::refused(format!(
             "slug `{}` is taken by a study that is {}",
             existing.slug,
             state_word(&existing.state)
         )));
     }
-    let mut spec = m.spec;
-    spec.normalise(); // 159 §5.2
     let mut study = StudyRecord::new(spec, Some(m.origin));
     study.state = StudyState::Preparing;
     study.created_by = Some("user".into());
@@ -2081,7 +2084,9 @@ async fn prepare_steps(env: &Env, study: &mut StudyRecord, start: &StartWhen) ->
         env.backend.pooled_sigma(std::slice::from_ref(&values)),
     );
     let cv = if m != 0.0 { sigma / m.abs() } else { 0.0 };
-    if cv > env.cfg.noise.max_cv {
+    // 159 W6 H8: a world study's baseline σ is production's day-to-day variation; the mSPRT
+    // uses the arms' reported variance.
+    if cv > env.cfg.noise.max_cv && spec.axes.scoring != Scoring::World {
         return Err(Error::refused(format!(
             "σ = {:.1} % of the metric: a keep would need ≥ {:.1} %; make the benchmark steadier or raise repeats",
             cv * 100.0,
@@ -2427,7 +2432,8 @@ pub async fn begin_env(env: &Env, m: Begin) -> Result<Brief> {
             // 159 §18.3: the ratchet's parent is the incumbent; a front (W1) or population (W4)
             // parent is picked, and checked out, by its module.
             let parent = parent_of(env, &study, None).await?;
-            let exp = ExperimentRecord::open(&slug, n, study.segment, &parent);
+            let mut exp = ExperimentRecord::open(&slug, n, study.segment, &parent);
+            exp.parent_ref = crate::pareto::parent_ref(&env.store, &slug, &parent).await?; // 159:W1
             env.store.insert_experiment(&exp).await?;
             None
         }
@@ -2623,12 +2629,32 @@ pub async fn run(a: &mut Studies, m: Run) -> Result<RunReport> {
     run_env(&a.env(), m).await
 }
 
-/// The experiment the study session is working on (`open|measuring|measured`).
-async fn current_experiment(env: &Env, study: &StudyRecord) -> Result<ExperimentRecord> {
-    env.store
-        .dangling_experiment(&study.slug, None)
-        .await?
-        .ok_or_else(|| Error::refused("no experiment is open: call experiment_begin first"))
+/// The experiment the study session is working on (`open|measuring|measured`); with
+/// `or_waiting` also the study's newest `waiting` launch (159 W6: `experiment_log` records its
+/// text without closing it). Kept out of `log_env`'s generator: inlined there, the extra
+/// sqlx future overflowed the 2 MiB test stack (golden ledger).
+async fn current_experiment(
+    env: &Env,
+    study: &StudyRecord,
+    or_waiting: bool,
+) -> Result<ExperimentRecord> {
+    if let Some(e) = env.store.dangling_experiment(&study.slug, None).await? {
+        return Ok(e);
+    }
+    if or_waiting
+        && let Some(e) = env
+            .store
+            .waiting_experiments()
+            .await?
+            .into_iter()
+            .filter(|e| e.slug == study.slug)
+            .last()
+    {
+        return Ok(e);
+    }
+    Err(Error::refused(
+        "no experiment is open: call experiment_begin first",
+    ))
 }
 
 /// Refused before a sample: record and return.
@@ -2672,7 +2698,7 @@ pub async fn run_env(env: &Env, m: Run) -> Result<RunReport> {
         Some(slot) => crate::wave::resolve_env(env, m.session, slot).await?,
         None => {
             let study = study_of(env, m.session).await?;
-            let exp = current_experiment(env, &study).await?;
+            let exp = current_experiment(env, &study, false).await?;
             let worktree = worktree_of(&study)?;
             (study, exp, worktree)
         }
@@ -2836,7 +2862,7 @@ async fn measure_env(
     // Novelty (§7.3).
     progress(env, &slug, n, &started, Phase::Novelty, 0, 1).await;
     // A git failure here is an error the model sees, never an empty hash fed to the novelty check (R-102).
-    let patch_hash = env.backend.patch_hash(worktree, &incumbent)?;
+    let patch_hash = env.backend.patch_hash(worktree, &exp.parent_sha)?; // 159 R-SEAMS-7
     exp.patch_hash = Some(patch_hash.clone());
     let flagged_before = env
         .store
@@ -3042,7 +3068,7 @@ async fn measure_env(
             .filter(|s| s.role == Some(SampleRole::Candidate))
             .cloned()
             .collect();
-        let inc_samples = incumbent_samples(env, study, &incumbent).await?;
+        let inc_samples = incumbent_samples(env, study, &exp.parent_sha).await?;
         let incumbent_age = inc_samples
             .iter()
             .map(|s| s.n)
@@ -3130,7 +3156,7 @@ async fn measure_env(
             .cloned()
             .collect::<Vec<_>>(),
     );
-    let inc_samples = incumbent_samples(env, study, &incumbent).await?;
+    let inc_samples = incumbent_samples(env, study, &exp.parent_sha).await?;
     let inc_vals = bench_values(&inc_samples);
     let cand_mean = mean(&cand_vals);
     let inc_mean = if inc_vals.is_empty() {
@@ -3373,7 +3399,8 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         Some(slot) => crate::wave::resolve_env(env, m.session, slot).await?,
         None => {
             let study = study_of(env, m.session).await?;
-            let exp = current_experiment(env, &study).await?;
+            // 159 W6: `experiment_log` may also find a waiting launch (its text is recorded).
+            let exp = current_experiment(env, &study, true).await?;
             let worktree = worktree_of(&study)?;
             (study, exp, worktree)
         }
@@ -3385,7 +3412,22 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         ));
     }
     let a = m.args;
+    // 159 W6: a world launch waiting for its press (or its window) — record the text, leave the
+    // state; `world::close` ends the row when the world answers.
+    if matches!(exp.verdict, Some(Verdict::Pending { .. })) || exp.state == ExperimentState::Waiting
+    {
+        exp.description = a.description.chars().take(500).collect();
+        exp.learned = a.learned.chars().take(500).collect();
+        env.store.update_experiment(&exp).await?;
+        return Ok(LogReport {
+            applied: exp.state,
+            ..LogReport::default()
+        });
+    }
     let incumbent = incumbent_of(&study)?;
+    // 159 W1 H8 / R-SEAMS-7: the tree the worktree rests on (a front member, a cell elite);
+    // every git base and reference sample is the parent — the ratchet's parent is the incumbent.
+    let base = exp.parent_sha.clone();
     let n = exp.n;
     exp.description = a.description.chars().take(500).collect();
     exp.learned = a.learned.chars().take(500).collect();
@@ -3402,7 +3444,7 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
     // R-1: a keep commits what is in the tree *now*. Before any keep (incl. keep-simpler)
     // the tree must still be the measured patch, custody intact, nothing off-limits.
     if (keep || wants_simpler) && exp.verdict.is_some() {
-        match verify_tree_for_keep(env, &study, &exp, &worktree, &incumbent).await? {
+        match verify_tree_for_keep(env, &study, &exp, &worktree, &base).await? {
             TreeCheck::Same => {}
             TreeCheck::Changed => {
                 env.store
@@ -3431,7 +3473,7 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         }
     }
     if wants_simpler && !matches!(verdict, Verdict::Refused { .. }) {
-        keep = keep_simpler_granted(env, &mut study, &mut exp, &worktree, &incumbent).await?;
+        keep = keep_simpler_granted(env, &mut study, &mut exp, &worktree, &base).await?;
         if keep {
             exp.verdict = Some(Verdict::KeepSimpler);
             exp.line = format!("keep-simpler granted; {}", exp.line);
@@ -3487,7 +3529,7 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
             .append_event(
                 &slug,
                 "keep_pending",
-                &serde_json::json!({ "n": n, "parent": incumbent }),
+                &serde_json::json!({ "n": n, "parent": base }),
             )
             .await?;
         let sha = env
@@ -3506,6 +3548,20 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         study.incumbent_sha = Some(sha.clone());
         study.incumbent_mean = new_mean;
         report.commit = Some(sha.clone());
+        // 159 W1 H11: every keep stays reachable past a review revert or a front/population
+        // branch move. The branch already holds the commit; a failed ref is a warning.
+        if crate::git::is_git_repo(&worktree)
+            && let Err(e) = crate::git::plumbing(
+                &worktree,
+                &[
+                    "update-ref",
+                    &format!("refs/autoresearch/{slug}/kept/{n}"),
+                    &sha,
+                ],
+            )
+        {
+            tracing::warn!(%slug, n, "kept ref not written: {e}");
+        }
 
         // §9.1: review inside the call, before the next fire can build on it.
         if let Some(model) = env.cfg.reviewer(&study.spec.models, &env.agent) {
@@ -3531,12 +3587,10 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
                     // Revert: incumbent ← previous, the commit stays as a rejected ref, the patch
                     // is kept — and Restore must find it, so both writes are checked (R-103).
                     let patch_file = runs.join("candidate.patch");
-                    let diff = env
-                        .backend
-                        .diff_text(&worktree, &incumbent, &sha, 4 << 20)?;
+                    let diff = env.backend.diff_text(&worktree, &base, &sha, 4 << 20)?;
                     std::fs::write(&patch_file, diff)?;
                     exp.patch_path = Some(format!("{slug}/runs/{n}/candidate.patch"));
-                    env.backend.reject(&worktree, &slug, n, &incumbent)?;
+                    env.backend.reject(&worktree, &slug, n, &base)?;
                     let back = StudyPatch::incumbent(&incumbent, previous_mean, study.sigma);
                     patch(env, &mut study, back).await?;
                     exp.state = ExperimentState::RejectedByReview;
@@ -3560,7 +3614,7 @@ pub async fn log_env(env: &Env, m: Log) -> Result<LogReport> {
         let patch = runs.join("candidate.patch");
         // R-104: a failed discard (patch not saved, tree not reset) keeps the experiment
         // `measured` and the candidate in the tree; the model can call experiment_log again.
-        let hash = env.backend.discard(&worktree, &incumbent, &patch).map_err(|e| {
+        let hash = env.backend.discard(&worktree, &base, &patch).map_err(|e| {
             Error::refused(format!(
                 "the candidate could not be saved and reverted ({e}); nothing was closed — call experiment_log again"
             ))
@@ -3972,7 +4026,7 @@ async fn finalize_deferred(store: &Store, slug: &str) -> Result<bool> {
 
 /// `enabled: false` + a `paused` event + the state. A no-op on an already paused
 /// study (R-46: a rule re-pause must not re-stamp `paused.at`).
-async fn pause(env: &Env, study: &mut StudyRecord, reason: PauseReason) -> Result<()> {
+pub(crate) async fn pause(env: &Env, study: &mut StudyRecord, reason: PauseReason) -> Result<()> {
     if matches!(study.state, StudyState::Paused { .. }) {
         return Ok(());
     }
@@ -4580,6 +4634,22 @@ pub async fn control_env(env: &Env, m: Control) -> Result<StudyInfo> {
                 clear_phase(&env.root, &slug);
             }
             begin_finalize(&env, study.clone(), StopReason::UserNow).await?;
+            // 159 W6 hand-off 3: a waiting launch is closed `Abandoned` (arms rolled back) now
+            // that the study is finalizing; `world::resume` closes on a finalizing study.
+            // (Not inside `begin_finalize`: `resume` → `close` → `after_experiment` →
+            // `begin_finalize` is a cycle of async fns rustc cannot type.)
+            for e in env
+                .store
+                .waiting_experiments()
+                .await?
+                .into_iter()
+                .filter(|e| e.slug == slug)
+            {
+                // Boxed: `resume` → `window_end` → `close` is a large future; keep `control_env` small.
+                if let Err(err) = Box::pin(crate::world::resume(&env, &slug, e.n)).await {
+                    tracing::warn!(%slug, n = e.n, "launch not closed at stop: {err}");
+                }
+            }
         }
         ControlOp::RunOnce => {
             let paused = matches!(study.state, StudyState::Paused { .. });
@@ -4708,6 +4778,10 @@ pub async fn control_env(env: &Env, m: Control) -> Result<StudyInfo> {
                 .await?;
         }
         ControlOp::Discard => {
+            // 159 W6 hand-off 3: a waiting launch has arms in production; stop rolls them back.
+            if crate::world::explains_disabled(&env.store, &slug).await? {
+                return Err(Error::refused("a launch is live; stop the study first"));
+            }
             if matches!(
                 study.state,
                 StudyState::Running | StudyState::Preparing | StudyState::Finalizing
@@ -5162,6 +5236,13 @@ pub async fn detail_env(env: &Env, m: Detail) -> Result<StudyDetail> {
         None
     };
     let view = kind_view(env, &study).await?;
+    // 159 W5: the citation of every literature idea.
+    let mut citations = Vec::new();
+    for i in ideas.iter().filter(|i| i.source == IdeaSource::Literature) {
+        if let Some(c) = env.store.citations_get(i.id).await? {
+            citations.push(c);
+        }
+    }
     Ok(StudyDetail {
         info,
         spec: study.spec.clone(),
@@ -5174,7 +5255,7 @@ pub async fn detail_env(env: &Env, m: Detail) -> Result<StudyDetail> {
         tail,
         final_holdout,
         view,
-        citations: Vec::new(), // 159 W5: filled by the citations hand-off
+        citations,
     })
 }
 
@@ -5251,6 +5332,17 @@ pub async fn experiment_env(env: &Env, m: Experiment) -> Result<ExperimentDetail
         .filter(|t| !t.is_empty())
         .collect();
     let inc = incumbent_samples(env, &study, &e.parent_sha).await?;
+    // 159 W5: the hook outputs of this experiment (`hook_before` then `hook_after`).
+    let mut hooks = Vec::new();
+    for kind in [crate::hooks::EVENT_BEFORE, crate::hooks::EVENT_AFTER] {
+        for ev in env.store.list_events(&m.slug, Some(kind), 10_000).await? {
+            if ev.payload.get("n").and_then(|v| v.as_u64()) == Some(u64::from(m.n))
+                && let Some(out) = ev.payload.get("output").and_then(|v| v.as_str())
+            {
+                hooks.push(out.to_owned());
+            }
+        }
+    }
     Ok(ExperimentDetail {
         row: e.row(),
         hypothesis: e.hypothesis.clone(),
@@ -5266,7 +5358,7 @@ pub async fn experiment_env(env: &Env, m: Experiment) -> Result<ExperimentDetail
         line: e.line.clone(),
         diff,
         tails,
-        hooks: Vec::new(), // 159 W5: filled by the hooks hand-off
+        hooks,
     })
 }
 
@@ -5494,6 +5586,56 @@ impl roster::attention::Source for AttentionSource {
                         ),
                         Some(e.idea.clone()),
                         e.finished_at.as_deref().unwrap_or(&e.started_at),
+                        s.origin,
+                    ));
+                }
+            }
+            if is_terminal(&s.state) {
+                continue;
+            }
+            // 159 W3: a blind pair waiting for the user's answer (`autoresearch.human_pair`;
+            // the Study view's PairViewer shows the two texts).
+            for j in self
+                .0
+                .judgments_list(&s.slug, None)
+                .await
+                .unwrap_or_default()
+                .iter()
+                .filter(|j| j.model == "human" && !j.human)
+            {
+                out.push(item(
+                    format!("autoresearch:pair:{}:{}", s.slug, j.id),
+                    AttentionKind::Blocked,
+                    format!("Study {}: which blurb is better? (pair {})", s.slug, j.id),
+                    Some(format!("case {}", j.case_id)),
+                    &j.at,
+                    s.origin,
+                ));
+            }
+            // 159 W6: a launch waiting for the press (`autoresearch.launch` with the card's token;
+            // the row never carries it — `LaunchRecord.token_hash` stays out).
+            for e in self
+                .0
+                .waiting_experiments()
+                .await
+                .unwrap_or_default()
+                .iter()
+                .filter(|e| e.slug == s.slug)
+            {
+                if let Ok(Some(l)) = self.0.launches_get(&s.slug, e.n).await
+                    && l.state == "requested"
+                {
+                    out.push(item(
+                        format!("autoresearch:launch:{}:{}", s.slug, l.n),
+                        AttentionKind::Blocked,
+                        format!(
+                            "Study {}: launch #{} needs your press · exposure {:.0} %",
+                            s.slug,
+                            l.n,
+                            l.exposure * 100.0
+                        ),
+                        None,
+                        &l.requested_at,
                         s.origin,
                     ));
                 }

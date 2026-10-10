@@ -1148,7 +1148,8 @@ pub async fn promote(env: &Env, study: &StudyRecord, wave: u32) -> Result<Promot
     let cancel = actor::cancel_token(&env.root, slug);
     let mut promotion = Promotion::default();
     for mut exp in exps {
-        if exp.state.is_open() {
+        // 159 W-q: a `Waiting` slot (a later window decides it) is not abandoned by the promotion.
+        if exp.state.is_dangling() {
             abandon(env, exp).await?;
             continue;
         }
@@ -1157,12 +1158,20 @@ pub async fn promote(env: &Env, study: &StudyRecord, wave: u32) -> Result<Promot
         if cancel.is_cancelled() {
             break;
         }
-        if settle(env, &study, &before, &mut a, &mut exp, &cancel)
+        let snapshot = a.clone();
+        if !settle(env, &study, &before, &mut a, &mut exp, &cancel)
             .await?
             .accepted()
         {
-            promotion.promoted.push(exp.n);
+            continue;
         }
+        // 159 W4 H5: the reviewer at acceptance (§9.1). A flag under `revert` undoes the
+        // acceptance: the archive is as it was before this slot, so `save` writes no cell.
+        if exp.state == ExperimentState::Kept && review(env, &study, &mut exp, &repo).await? {
+            a = snapshot;
+            continue;
+        }
+        promotion.promoted.push(exp.n);
     }
     if cfg.migrate_every > 0 && wave > 0 && wave.is_multiple_of(cfg.migrate_every) {
         let gcfg = actor::gate_cfg(&env.cfg, &study.spec)?;
@@ -1235,6 +1244,69 @@ pub async fn promote(env: &Env, study: &StudyRecord, wave: u32) -> Result<Promot
         .await?;
     actor::clear_phase(&env.root, slug);
     Ok(promotion)
+}
+
+/// §9.1 on an accepted keep — wave.rs's `review` without the branch reset: a slot's commit is
+/// not on the study branch, so the flag only records the rejected ref and the saved patch.
+/// `Ok(true)` when a flag reverted the acceptance (`on_suspicious: revert`).
+async fn review(
+    env: &Env,
+    study: &StudyRecord,
+    exp: &mut ExperimentRecord,
+    repo: &Path,
+) -> Result<bool> {
+    let Some(model) = env.cfg.reviewer(&study.spec.models, &env.agent) else {
+        return Ok(false);
+    };
+    let slug = study.slug.as_str();
+    let n = exp.n;
+    actor::progress(env, slug, n, &exp.started_at, Phase::Review, 0, 1).await;
+    let rv = match env
+        .backend
+        .review(&env.store, study, n, &model, &env.rt)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => ReviewVerdict::Error {
+            reason: e.to_string(),
+        },
+    };
+    let (rv, reverted) = match rv {
+        ReviewVerdict::Flagged { reason }
+            if env.cfg.review.on_suspicious == crate::config::OnSuspicious::Revert =>
+        {
+            let sha = exp.commit_sha.clone().unwrap_or_default();
+            let patch = env.runs_dir(slug, n).join("candidate.patch");
+            let diff = env
+                .backend
+                .diff_text(repo, &exp.parent_sha, &sha, 4 << 20)?;
+            std::fs::create_dir_all(patch.parent().unwrap())?;
+            std::fs::write(&patch, diff)?;
+            exp.patch_path = Some(format!("{slug}/runs/{n}/candidate.patch"));
+            git::plumbing(repo, &["update-ref", &git::rejected_ref(slug, n), &sha])?;
+            exp.state = ExperimentState::RejectedByReview;
+            exp.line = format!("rejected by review ({reason}); {}", exp.line);
+            env.store
+                .append_event(
+                    slug,
+                    "review",
+                    &serde_json::json!({ "n": n, "reason": reason, "reverted": true }),
+                )
+                .await?;
+            env.store
+                .append_event(
+                    slug,
+                    EVENT_ARCHIVE,
+                    &serde_json::json!({ "wave": exp.wave, "n": n, "outcome": "rejected_by_review", "why": reason }),
+                )
+                .await?;
+            (ReviewVerdict::Reverted { reason }, true)
+        }
+        other => (other, false),
+    };
+    exp.review = Some(rv);
+    env.store.update_experiment(exp).await?;
+    Ok(reverted)
 }
 
 /// Close a slot nobody logged (wave.rs `abandon`, kept private there).

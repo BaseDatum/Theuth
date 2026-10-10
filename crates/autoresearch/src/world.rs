@@ -837,42 +837,8 @@ pub async fn request(
         )
         .await?;
     let mut study = study.clone();
-    pause_for_launch(env, &mut study, exp.n).await?;
+    actor::pause(env, &mut study, PauseReason::LaunchApproval { n: exp.n }).await?; // 159 R-SEAMS-24
     post_card(&study, &exp, token).await;
-    Ok(())
-}
-
-/// `enabled: false` + a `paused` event + `Paused { LaunchApproval { n } }` (the actor's `pause`
-/// is private; this is its body with the launch reason).
-async fn pause_for_launch(env: &Env, study: &mut StudyRecord, n: u32) -> Result<()> {
-    if matches!(study.state, StudyState::Paused { .. }) {
-        return Ok(());
-    }
-    set_file(&study.slug, false).await;
-    env.store
-        .append_event(
-            &study.slug,
-            "paused",
-            &serde_json::json!({ "reason": "launch_approval", "at": now() }),
-        )
-        .await?;
-    let state = StudyState::Paused {
-        reason: PauseReason::LaunchApproval { n },
-    };
-    if env
-        .store
-        .patch_study_if(&study.slug, &["running"], &StudyPatch::state(state.clone()))
-        .await?
-    {
-        study.state = state.clone();
-        env.rt
-            .publish(StudyEvent::StudyChanged {
-                slug: study.slug.clone(),
-                state,
-                reason: Some(format!("launch #{n} waits for your press")),
-            })
-            .await;
-    }
     Ok(())
 }
 
@@ -1410,45 +1376,17 @@ async fn window_end(
             )
             .await?;
             let mut s = study.clone();
-            pause_other(env, &mut s, format!("launch #{}: {reason}", exp.n)).await?;
+            actor::pause(
+                env,
+                &mut s,
+                PauseReason::Other {
+                    reason: format!("launch #{}: {reason}", exp.n),
+                },
+            )
+            .await?; // 159 R-SEAMS-24
         }
     }
     Ok(exp.state)
-}
-
-/// `Paused { Other { reason } }` after a ratio failure (the deploy or the measurement is broken).
-async fn pause_other(env: &Env, study: &mut StudyRecord, reason: String) -> Result<()> {
-    if matches!(study.state, StudyState::Paused { .. }) {
-        return Ok(());
-    }
-    set_file(&study.slug, false).await;
-    env.store
-        .append_event(
-            &study.slug,
-            "paused",
-            &serde_json::json!({ "reason": "other", "at": now() }),
-        )
-        .await?;
-    let state = StudyState::Paused {
-        reason: PauseReason::Other {
-            reason: reason.clone(),
-        },
-    };
-    if env
-        .store
-        .patch_study_if(&study.slug, &["running"], &StudyPatch::state(state.clone()))
-        .await?
-    {
-        study.state = state.clone();
-        env.rt
-            .publish(StudyEvent::StudyChanged {
-                slug: study.slug.clone(),
-                state,
-                reason: Some(reason),
-            })
-            .await;
-    }
-    Ok(())
 }
 
 /// Roll back both arms (always, once anything was deployed), drop the arm worktrees, and mark
@@ -1603,14 +1541,17 @@ async fn close(
         if matches!(s.state, StudyState::Paused { .. }) {
             unpause(env, &mut s, false).await?;
         }
-        pause_other(
+        // 159 R-SEAMS-24: the actor's pause.
+        actor::pause(
             env,
             &mut s,
-            format!(
-                "rollback of launch #{} failed ({}); check production, then resume",
-                exp.n,
-                failures.join("; ")
-            ),
+            PauseReason::Other {
+                reason: format!(
+                    "rollback of launch #{} failed ({}); check production, then resume",
+                    exp.n,
+                    failures.join("; ")
+                ),
+            },
         )
         .await?;
     } else if !actor::is_terminal(&study.state) && study.state != StudyState::Finalizing {

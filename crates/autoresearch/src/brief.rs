@@ -198,8 +198,12 @@ pub async fn render(
 
     // Ideas.
     out.push_str("\nIdeas (open, highest priority first; user ideas marked ★):\n");
+    // 159 R-SEAMS-19: literature ideas are cited data; they are listed only inside the fenced
+    // Literature section (`literature::brief_section`), never unfenced here.
+    let lit = study.spec.literature.is_some();
     let idea_lines: Vec<String> = ideas
         .iter()
+        .filter(|i| !(lit && i.source == IdeaSource::Literature))
         .take(cfg.ideas as usize)
         .map(|i| {
             format!(
@@ -1082,6 +1086,42 @@ mod tests {
             .map(|l| l.split(']').next().unwrap())
             .collect();
         assert_eq!(cats, ["[algorithm", "[allocation", "[caching", "[io"]);
+    }
+
+    /// 159 R-SEAMS-19 / W5 hand-off 8: a literature idea's text is data — it appears only
+    /// inside the fenced Literature section, never in the plain (unfenced) ideas list.
+    #[tokio::test]
+    async fn literature_ideas_are_listed_only_inside_their_fence() {
+        let (_d, store, mut study) = fixture(0, 0, 2, 0).await;
+        study.spec.literature = Some(LiteratureSpec::default());
+        store
+            .insert_idea(&Idea {
+                slug: "sort-speed".into(),
+                text: "[paper] Detect and merge natural runs like Timsort".into(),
+                category: "algorithm".into(),
+                source: IdeaSource::Literature,
+                priority: 2,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let b = render(&store, &study, &BriefConfig::default(), &cx(3))
+            .await
+            .unwrap();
+        let plain: Vec<&str> = b
+            .text
+            .lines()
+            .skip_while(|l| !l.starts_with("Ideas (open"))
+            .skip(1)
+            .take_while(|l| !l.is_empty())
+            .collect();
+        assert_eq!(plain.len(), 2, "{plain:?}");
+        assert!(
+            !plain.iter().any(|l| l.contains("natural runs")),
+            "a literature idea in the plain list: {plain:?}"
+        );
+        assert!(b.text.contains("Literature (quoted data"), "{}", b.text);
+        assert_eq!(b.text.matches("natural runs").count(), 1, "{}", b.text);
     }
 
     /// R-77: the cap keeps the newest dead-end groups, not the first categories

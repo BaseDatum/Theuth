@@ -337,116 +337,15 @@ impl<'a> Dom<'a> {
 }
 
 /// The Student-t quantile with the same upper tail as the normal quantile `z`, at `dof`
-/// degrees of freedom — exact (bisection on [`t_tail`]), so a one-sample fast keep right after
-/// the baseline (dof 2) runs at the intended tail, not 3× it (R-W1-6). `dof = 0` (no repeated
-/// tree yet) is treated as 2; past 10 000 the normal quantile is returned.
+/// degrees of freedom — exact (`evalcore::gate::t_quantile`, R-SEAMS-9: one source of truth),
+/// so a one-sample fast keep right after the baseline (dof 2) runs at the intended tail, not
+/// 3× it (R-W1-6). `dof = 0` (no repeated tree yet) is treated as 2; past 10 000 the normal
+/// quantile is returned.
 pub fn t_of(z: f64, dof: usize) -> f64 {
     if dof > 10_000 || z <= 0.0 {
         return z;
     }
-    let v = dof.max(2) as f64;
-    let target = norm_tail(z);
-    let (mut lo, mut hi) = (z, z.max(1.0) * 2.0);
-    while t_tail(hi, v) > target {
-        hi *= 2.0;
-    }
-    for _ in 0..200 {
-        let mid = (lo + hi) / 2.0;
-        if t_tail(mid, v) > target {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    (lo + hi) / 2.0
-}
-
-/// `P(T_v > t)` for `t ≥ 0`: `½ I_x(v/2, ½)` with `x = v / (v + t²)` (regularised incomplete
-/// beta, Lentz's continued fraction).
-fn t_tail(t: f64, v: f64) -> f64 {
-    let x = v / (v + t * t);
-    0.5 * beta_inc(v / 2.0, 0.5, x)
-}
-
-/// The regularised incomplete beta `I_x(a, b)` (Numerical Recipes `betai`/`betacf`).
-fn beta_inc(a: f64, b: f64, x: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if x >= 1.0 {
-        return 1.0;
-    }
-    let ln_beta = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b);
-    let front = (ln_beta + a * x.ln() + b * (1.0 - x).ln()).exp();
-    if x < (a + 1.0) / (a + b + 2.0) {
-        front * betacf(a, b, x) / a
-    } else {
-        1.0 - front * betacf(b, a, 1.0 - x) / b
-    }
-}
-
-fn betacf(a: f64, b: f64, x: f64) -> f64 {
-    const TINY: f64 = 1e-300;
-    let (qab, qap, qam) = (a + b, a + 1.0, a - 1.0);
-    let mut c = 1.0;
-    let mut d = 1.0 - qab * x / qap;
-    if d.abs() < TINY {
-        d = TINY;
-    }
-    d = 1.0 / d;
-    let mut h = d;
-    for m in 1..=300 {
-        let m = m as f64;
-        let m2 = 2.0 * m;
-        let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
-        d = 1.0 + aa * d;
-        if d.abs() < TINY {
-            d = TINY;
-        }
-        c = 1.0 + aa / c;
-        if c.abs() < TINY {
-            c = TINY;
-        }
-        d = 1.0 / d;
-        h *= d * c;
-        let aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
-        d = 1.0 + aa * d;
-        if d.abs() < TINY {
-            d = TINY;
-        }
-        c = 1.0 + aa / c;
-        if c.abs() < TINY {
-            c = TINY;
-        }
-        d = 1.0 / d;
-        let del = d * c;
-        h *= del;
-        if (del - 1.0).abs() < 1e-14 {
-            break;
-        }
-    }
-    h
-}
-
-/// Lanczos `ln Γ(x)` for `x > 0`.
-fn ln_gamma(x: f64) -> f64 {
-    const G: [f64; 6] = [
-        76.180_091_729_471_46,
-        -86.505_320_329_416_77,
-        24.014_098_240_830_91,
-        -1.231_739_572_450_155,
-        0.120_865_097_386_617_9e-2,
-        -0.539_523_938_495_3e-5,
-    ];
-    let tmp = x + 5.5;
-    let tmp = tmp - (x + 0.5) * tmp.ln();
-    let ser = G
-        .iter()
-        .enumerate()
-        .fold(1.000_000_000_190_015, |s, (i, g)| {
-            s + g / (x + 1.0 + i as f64)
-        });
-    -tmp + (2.506_628_274_631_000_5 * ser / x).ln()
+    evalcore::gate::t_quantile(dof.max(2) as f64, 1.0 - norm_tail(z))
 }
 
 /// Degrees of freedom of the pooled σ: Σ (n − 1) over trees measured at least twice, on the

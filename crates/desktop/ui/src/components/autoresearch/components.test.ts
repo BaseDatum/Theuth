@@ -8,9 +8,13 @@ import { RunTable } from './RunTable'
 import { StudyChart } from './StudyChart'
 import { StatePill } from './StudyList'
 import { Finished } from './Finished'
+import { SidePanel } from './SidePanel'
+import { Body as ExperimentBody } from './ExperimentDetail'
 import { Bars, Controls, Current, KindPanel } from './StudyView'
 import { studies } from './fixtures'
 import { budgetBars } from './model'
+import type { ExperimentRow } from '@/rpc/bindings/ExperimentRow'
+import type { ObjectiveDelta } from '@/rpc/bindings/ObjectiveDelta'
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -166,4 +170,56 @@ test('kind panel: a `front` view paints the W1 component, not the scalar chart (
   const html = paint(createElement(KindPanel, { detail: front, onPick: () => {} }))
   expect(html).toContain('data-kind="front"')
   expect(html).not.toContain('data-outcome=')
+})
+
+const objective = (name: string, delta_pct: number, delta: number, call: ObjectiveDelta['call']): ObjectiveDelta => ({ name, role: 'objective', candidate: null, reference: null, delta, delta_pct, z: null, call })
+const gate = (objectives: ObjectiveDelta[]): ExperimentRow['gate'] => ({ v: 2, rule: 'dominance', objectives, stat: 3.1, threshold: 2.4, n: 3 })
+
+test('run table: a front study adds one Δ % column per objective with its direction word and call; scalar rows show — (159 W1 H2)', () => {
+  const [kept, other, ...rest] = by('sort-speed').rows
+  const rows: ExperimentRow[] = [
+    { ...kept!, state: 'kept', gate: gate([objective('time_ms', -12.5, 6.2, 'better'), objective('size_kb', 3.4, -1.7, 'worse')]) },
+    { ...other!, state: 'discarded', gate: gate([objective('time_ms', 0.2, -0.1, 'same'), objective('size_kb', -8.1, 4.0, 'better')]) },
+    rest[0]!,
+  ]
+  const html = paint(createElement(RunTable, { rows, metricName: 'time_ms', direction: 'lower', pending: false, active: null, onPick: () => {} }))
+  expect(html).toMatch(/<th[^>]*title="lower is better"[^>]*>time_ms Δ %<span[^>]*>lower<\/span><\/th>/)
+  expect(html).toMatch(/<th[^>]*title="lower is better"[^>]*>size_kb Δ %<span[^>]*>lower<\/span><\/th>/)
+  expect(html.indexOf('time_ms Δ %')).toBeLessThan(html.indexOf('size_kb Δ %'))
+  expect(html).toMatch(/text-success[^"]*" title="better — lower is better">−12.5 %<\/span><span class="[^"]*bg-success-bg text-success">better<\/span>/)
+  expect(html).toMatch(/text-danger[^"]*" title="worse — lower is better">\+3.4 %<\/span><span class="[^"]*text-danger">worse<\/span>/)
+  expect(html).toContain('>same</span>')
+  // The scalar row has no objectives: a dash per objective column.
+  expect(count(html, /<span class="text-fg-tertiary">—<\/span>/g)).toBe(2)
+  // No front rows → no objective columns at all.
+  expect(paint(createElement(RunTable, { rows: [rest[0]!], metricName: 'time_ms', direction: 'lower', pending: false, active: null, onPick: () => {} }))).not.toContain('Δ %')
+})
+
+test('run table: a waiting row shows its line across the value and Δ cells, badge from outcomeLabel (159 W6)', () => {
+  const base = by('sort-speed').rows[0]!
+  const rows: ExperimentRow[] = [{ ...base, state: 'waiting', verdict: null, metric: null, delta_pct: null, line: 'waiting · window 2 of at most 14 · closes in 6h' }]
+  const html = paint(createElement(RunTable, { rows, metricName: 'conversion', direction: 'higher', pending: false, active: null, onPick: () => {} }))
+  expect(html).toMatch(/<td colSpan="2"[^>]*>waiting · window 2 of at most 14 · closes in 6h<\/td>/)
+  expect(html).toMatch(/bg-info-bg text-info">waiting for its window</)
+})
+
+test('side panel: a literature idea reaches LiteratureIdeas with its citation — link and quote (159 W5 hand-off 1)', () => {
+  const d = by('sort-speed').detail
+  const ideas = [...d.ideas, { id: 9001, slug: d.info.slug, text: '[paper] Merge natural runs like Timsort', category: 'algorithm', source: 'literature' as const, priority: 1, status: 'open' as const, tried_in: [], at: '2026-10-10T00:00:00Z' }]
+  const citations = [{ idea_id: BigInt(9001), url: 'https://example.org/timsort', title: 'Timsort', quote: 'runs that are already ordered', verified: true, fetched_at: '2026-10-10T00:00:00Z' }]
+  const html = paint(createElement(SidePanel, { detail: { ...d, ideas, citations }, rows: [], onPick: () => {} }))
+  expect(html).toContain('href="https://example.org/timsort"')
+  expect(html).toContain('paper · Timsort')
+  expect(html).toContain('>runs that are already ordered</q>')
+})
+
+test('experiment detail: a Hooks block with one preformatted entry per hook output, none when empty (159 W5 hand-off 6)', () => {
+  const s = by('sort-speed')
+  const d = s.details.get(s.rows[0]!.n)!
+  expect(paint(createElement(ExperimentBody, { d: { ...d, hooks: [] }, study: s.detail }))).not.toContain('>Hooks<')
+  const html = paint(createElement(ExperimentBody, { d: { ...d, hooks: ['before: warmed cache\nok', 'after: flushed'] }, study: s.detail }))
+  expect(html).toContain('data-hooks="2"')
+  expect(html).toContain('>Hooks<')
+  expect(html).toMatch(/<pre class="[^"]*font-mono[^"]*">before: warmed cache\nok<\/pre>/)
+  expect(html).toMatch(/<pre class="[^"]*font-mono[^"]*">after: flushed<\/pre>/)
 })

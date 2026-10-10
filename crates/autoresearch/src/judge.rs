@@ -26,7 +26,7 @@ use crate::finalize::Headline;
 use crate::gate;
 use crate::runner::SampleRequest;
 use crate::setup::SetupRow;
-use crate::store::{Store, StudyPatch, StudyRecord, now};
+use crate::store::{Store, StudyRecord, now};
 use crate::types::{
     Agreement, Artefact, Call, Effect, ExperimentState, GateCfg, GateDecision, GateInput, GateRule,
     GateStep, JudgeSpec, KindView, ObjectiveDelta, ObjectiveRole, PauseReason, Phase, RatingRecord,
@@ -1197,9 +1197,23 @@ pub async fn pair_texts(
     })
 }
 
-/// `autoresearch.judgments {slug, n?}`.
-pub async fn judgments(store: &Store, slug: &str, n: Option<u32>) -> Result<Vec<JudgmentRow>> {
-    store.judgments_list(slug, n).await
+/// `autoresearch.judgments {slug, n?}`. A pending human pair (`model == human && !human`) carries
+/// its two texts in the shown order so the viewer can paint them; unreadable outputs leave them `None`.
+pub async fn judgments(env: &Env, slug: &str, n: Option<u32>) -> Result<Vec<JudgmentRow>> {
+    let mut rows = env.store.judgments_list(slug, n).await?;
+    let pending = rows.iter().any(|r| r.model == HUMAN_MODEL && !r.human);
+    if pending && let Some(study) = env.store.get_study(slug).await? {
+        for r in rows
+            .iter_mut()
+            .filter(|r| r.model == HUMAN_MODEL && !r.human)
+        {
+            if let Ok((a, b)) = pair_texts(env, &study, r).await {
+                r.a_text = Some(a);
+                r.b_text = Some(b);
+            }
+        }
+    }
+    Ok(rows)
 }
 
 /// `autoresearch.human_pair {slug, id, winner}`: Sky's answer (`a` | `b` | `same`) to a blind pair,
@@ -1246,27 +1260,15 @@ pub async fn human_pair(env: &Env, slug: &str, id: i64, winner: &str) -> Result<
         && recent.iter().filter(|a| **a).count() < AGREE_MIN
         && study.state == StudyState::Running
     {
-        let reason = PauseReason::Other {
-            reason: "the judge disagrees with you".to_owned(),
-        };
-        if let Err(e) = crate::schedule_file::set_enabled(slug, false).await {
-            tracing::warn!(slug, error = %e, "pause: schedule file not disabled");
-        }
-        env.store
-            .append_event(
-                slug,
-                "paused",
-                &serde_json::json!({ "reason": "other", "at": now() }),
-            )
-            .await?;
-        let paused = StudyState::Paused { reason };
-        if env
-            .store
-            .patch_study_if(slug, &["running"], &StudyPatch::state(paused.clone()))
-            .await?
-        {
-            study.state = paused;
-        }
+        // 159 R-SEAMS-24: the actor's pause (schedule file off, `paused` event, state if running).
+        crate::actor::pause(
+            env,
+            &mut study,
+            PauseReason::Other {
+                reason: "the judge disagrees with you".to_owned(),
+            },
+        )
+        .await?;
     }
     info_full(env, &study).await
 }
@@ -1526,7 +1528,7 @@ impl Message<Judgments> for Studies {
         let (reply, tx) = ctx.reply_sender();
         let env = self.env();
         tokio::spawn(async move {
-            let r = judgments(&env.store, &m.slug, m.n)
+            let r = judgments(&env, &m.slug, m.n)
                 .await
                 .map_err(|e| e.to_string());
             if let Some(tx) = tx {
@@ -2263,11 +2265,22 @@ sys.exit(main())
         let cand_text = read_output(&tree_dir(&root, "tj", "exp:1"), &human.case_id).unwrap();
         assert!(shown_a == cand_text || shown_b == cand_text);
         assert_ne!(shown_a, shown_b);
+        // The RPC rows carry a pending pair's texts in the shown order (W3 hand-off, a_text/b_text).
+        let pending = judgments(&env, "tj", Some(1))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == human.id)
+            .unwrap();
+        assert_eq!(
+            (pending.a_text.as_deref(), pending.b_text.as_deref()),
+            (Some(shown_a.as_str()), Some(shown_b.as_str()))
+        );
         // Sky picks the candidate too: agreement 1/1; the answer is stored in ledger terms.
         let pick = if shown_a == cand_text { "a" } else { "b" };
         let info = human_pair(&env, "tj", human.id, pick).await.unwrap();
         assert_eq!(info.state, StudyState::Running);
-        let answered = judgments(&store, "tj", Some(1))
+        let answered = judgments(&env, "tj", Some(1))
             .await
             .unwrap()
             .into_iter()
@@ -2277,6 +2290,7 @@ sys.exit(main())
             (answered.human, answered.winner.as_deref()),
             (true, Some("a"))
         );
+        assert!(answered.a_text.is_none() && answered.b_text.is_none());
         assert!(
             human_pair(&env, "tj", human.id, "a").await.is_err(),
             "answered twice"
