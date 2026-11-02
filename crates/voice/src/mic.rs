@@ -225,9 +225,10 @@ fn run(
     while !stop.load(Ordering::SeqCst) {
         while let Some(ev) = stream.poll_event() {
             let msg = match ev {
-                Event::PermissionDenied => "permission denied".to_owned(),
+                Event::PermissionDenied { .. } => "permission denied".to_owned(),
                 Event::DeviceLost => "device lost".to_owned(),
                 Event::Error(m) => m,
+                Event::TerminalError { error } => error.to_string(),
                 // Stalls are retried by flexaudio's watchdog; drops are audible, not fatal.
                 _ => continue,
             };

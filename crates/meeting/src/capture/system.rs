@@ -64,7 +64,10 @@ pub fn spawn(pid: u32, mut feed: Feed, stop: Arc<AtomicBool>) -> anyhow::Result<
             while !stop.load(Ordering::SeqCst) {
                 while let Some(ev) = stream.poll_event() {
                     match ev {
-                        Event::PermissionDenied | Event::DeviceLost | Event::Error(_) => {
+                        Event::PermissionDenied { .. }
+                        | Event::DeviceLost
+                        | Event::Error(_)
+                        | Event::TerminalError { .. } => {
                             tracing::warn!(pid, "process tap stopped: {ev:?}");
                             return;
                         }

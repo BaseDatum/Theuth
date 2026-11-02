@@ -130,9 +130,9 @@ rubato = "0.16"  # resample inbound audio to the model's 16 kHz (45 §0.5)
 mp3lame-encoder = "0.2"  # outbound clips: MP3 24 kHz mono 48 kbit/s, the one container every client plays (45 §0.4)
 parking_lot = "0.12"  # the STT model slot: locked only inside `spawn_blocking`, no poisoning to unwrap
 # Dictation (design doc 54): the daemon owns the mic and gates a streaming Nemotron session with TEN-VAD.
-flexaudio = "0.2"  # 54 §0.2: native default-input capture, 48 kHz mono f32 on a dedicated thread (`voice::mic`); 0.2.0 is the only published release
+flexaudio = "0.8"  # 54 §0.2: native default-input capture, 48 kHz mono f32 on a dedicated thread (`voice::mic`)
 wavekat-vad = { version = "0.1", default-features = false, features = ["ten-vad"] }  # 54 §0.4: TEN-VAD on the same `ort` dylib, 256-sample frames (`voice::vad`); model fetched at build unless `TEN_VAD_MODEL_PATH`
-cpal = "0.16"  # 76 §0.3: the daemon's speaker (`voice::out::Player`), default output, f32; same major flexaudio already pins
+cpal = "0.16"  # 76 §0.3: the daemon's speaker (`voice::out::Player`), default output, f32; same major flexaudio already pins (held: flexaudio-mic 0.8.1 needs cpal ^0.16, and 0.18's alsa-sys 0.4 clashes with its alsa-sys 0.3 on `links = "alsa"`)
 # Update (design doc 39): semver compare, the updater plugin's own minisign verifier, tar for the
 # single-file CLI payload. The desktop side is tauri-plugin-updater below.
 semver = "1"
