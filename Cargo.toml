@@ -358,9 +358,9 @@ dashmap = "6"
 # Published names carry `-lf`; the future local plugin crate is `a2a`, so the core SDK is aliased
 # `a2a-types` (imports are `a2a_types::…`). Default `rustls-tls` = aws-lc-rs, the provider
 # `theuth::main` installs. Both pull `a2a-pb` (prost/pbjson): the HTTP wire is ProtoJSON.
-a2a-types = { package = "a2a-lf", version = "=0.3.1" }
-a2a-client = { package = "a2a-client-lf", version = "=0.2.5" }
-a2a-server = { package = "a2a-server-lf", version = "=0.4.4" }
+a2a-types = { package = "a2a-lf", version = "=0.4.2" }
+a2a-client = { package = "a2a-client-lf", version = "=0.2.9" }
+a2a-server = { package = "a2a-server-lf", version = "=0.5.3" }
 rand = "0.9"
 # Schedule (design doc 34): croner = cron parsing + next occurrence in a chrono TimeZone
 # (local time, DST-correct) + `describe()`; humantime = `every:` durations.
@@ -397,10 +397,11 @@ brush-core = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0.5
 brush-parser = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0.5" }
 # iocraft: `TextInput.newline_modifiers` so a multiline input inserts a newline
 # only on Shift+Enter and leaves plain Enter to the parent (submit),
-# `TerminalEvent::Paste` forwarding crossterm's bracketed-paste events, and
-# `TextInput.mask` for password fields (37 §5). Branch `mask-0.9` =
-# tag iocraft-v0.9.1 + three commits (also derives `Default` for `KeyModifiers`).
-iocraft = { git = "https://github.com/skymoore/iocraft", branch = "mask-0.9" }
+# `TextInput.ignore_paste` so the owner, not the input, handles upstream's
+# `TerminalEvent::BracketedPaste`, and `TextInput.mask` for password fields (37 §5).
+# Branch `mask-0.9.3` = tag iocraft-v0.9.3 + three commits (also derives `Default`
+# for `KeyModifiers`).
+iocraft = { git = "https://github.com/skymoore/iocraft", branch = "mask-0.9.3" }
 # curve25519-dalek: libsignal (under presage) must build against Signal's fork;
 # only presage's tree resolves this crate, so nothing else is affected.
 curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }
@@ -435,9 +436,10 @@ pbjson-types = { path = "vendor/pbjson-types" }
 # a2a-client-lf (the A2A SDK client): its shared SSE parser appended every body chunk to an
 # unbounded reassembly buffer before looking for an event terminator, so a peer that never
 # sends the blank line (or sends one huge frame) could grow memory without limit ahead of
-# theuth's post-decode caps (50 §8). `vendor/a2a-client` = crates.io 0.2.5 (a2aproject/a2a-rs
-# 365d056) + `MAX_SSE_EVENT_BYTES` (64 KiB) enforced in `parse_sse_bytes` before the
-# append; an oversized event yields one `A2AError` and ends the stream (50 §3.4). Drop when
+# theuth's post-decode caps (50 §8). `vendor/a2a-client` = crates.io 0.2.9 (a2aproject/a2a-rs
+# 9a8d77e) + `MAX_SSE_EVENT_BYTES` (64 KiB) enforced in `parse_sse_bytes` before the
+# append; an oversized event yields one `A2AError` and ends the stream (50 §3.4). Unary bodies
+# (incl. `wire::response_text`) are read under `MAX_RESPONSE_BYTES` (2 MiB). Drop when
 # an a2a-client-lf release bounds the frame.
 a2a-client-lf = { path = "vendor/a2a-client" }
 # libsqlite3-sys (under presage-store-sqlite, the Signal channel's encrypted store, via sqlx and

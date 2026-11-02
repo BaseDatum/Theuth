@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "a2a-client-lf"
-version = "0.2.5"
+version = "0.2.9"
 dependencies = [
  "a2a-lf",
  "a2a-pb",
@@ -58,9 +58,9 @@ dependencies = [
 
 [[package]]
 name = "a2a-lf"
-version = "0.3.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b24d0f12bb1205e7ff85edbac2ea34aedd028f31dfebe8628e3aae4a66c200bd"
+checksum = "c9bdc39f79399c01ec4df5da3b653e31b3bac52214ca3d8331d6f059c273b5b8"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -72,9 +72,9 @@ dependencies = [
 
 [[package]]
 name = "a2a-pb"
-version = "0.2.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "554b021cf14a1bc3dbb68390b26d937646ccac84bb6cdafc79aad6791ffdc5b6"
+checksum = "24091234b0c532f1ae1f5bba21e8840d542b6636b469fedcbad3a1167aae051e"
 dependencies = [
  "a2a-lf",
  "chrono",
@@ -93,9 +93,9 @@ dependencies = [
 
 [[package]]
 name = "a2a-server-lf"
-version = "0.4.4"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88ffb594fc04f18b5bd6ff0c16d9dba11c8ed882c04cae3d35b8d15c05df08ad"
+checksum = "5d98a2aa231797557d88f858a6a4975235dbf7fc5e1b6b8b6b644da47de99bcf"
 dependencies = [
  "a2a-lf",
  "a2a-pb",
@@ -4467,7 +4467,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -6858,7 +6858,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.1.3",
+ "windows-link 0.2.1",
  "windows-result 0.4.1",
 ]
 
@@ -7374,7 +7374,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c91d8cffac8849493a82233811bd02b2b183b8cf39bf704de0fa0841b737595"
 dependencies = [
  "bstr 1.13.1",
- "hashbrown 0.15.5",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -9422,8 +9422,8 @@ checksum = "2f0fb0570afe1fed943c5c3d4102d5358592d8625fda6a0007fdbe65a92fba96"
 
 [[package]]
 name = "iocraft"
-version = "0.9.1"
-source = "git+https://github.com/skymoore/iocraft?branch=mask-0.9#b25ae1f3f6280cc2a1da55a2c80ad1c2f8fdbcd8"
+version = "0.9.3"
+source = "git+https://github.com/skymoore/iocraft?branch=mask-0.9.3#8d567c23b80d96527f7b2cf08e5e0a4a0cf6818f"
 dependencies = [
  "bitflags 2.13.2",
  "crossterm",
@@ -9437,8 +9437,8 @@ dependencies = [
 
 [[package]]
 name = "iocraft-macros"
-version = "0.2.4"
-source = "git+https://github.com/skymoore/iocraft?branch=mask-0.9#b25ae1f3f6280cc2a1da55a2c80ad1c2f8fdbcd8"
+version = "0.2.5"
+source = "git+https://github.com/skymoore/iocraft?branch=mask-0.9.3#8d567c23b80d96527f7b2cf08e5e0a4a0cf6818f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -23787,12 +23787,12 @@ dependencies = [
 
 [[package]]
 name = "unjar"
-version = "0.1.0"
-source = "git+https://github.com/skymoore/unjar?branch=main#0d3b7c3ea29307359d12be154b0ea7a1d95e35ec"
+version = "0.1.1"
+source = "git+https://github.com/skymoore/unjar?branch=main#6de9ad31b53e9624937c933184db3f813b62c96c"
 dependencies = [
  "aes 0.9.4",
  "cbc 0.2.1",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "pbkdf2 0.13.0",
  "rusqlite",
  "serde",

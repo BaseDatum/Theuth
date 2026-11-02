@@ -1,4 +1,5 @@
 // Copyright AGNTCY Contributors (https://github.com/agntcy)
+// Copyright A2A Contributors (https://github.com/a2aproject)
 // SPDX-License-Identifier: Apache-2.0
 use a2a::*;
 use a2a_pb::protojson_conv::{self, ProtoJsonPayload};
@@ -13,6 +14,7 @@ use crate::push_config_compat::{
     deserialize_task_push_notification_config,
 };
 use crate::transport::{ServiceParams, Transport, TransportFactory};
+use crate::wire;
 
 const REST_SEND_MESSAGE_PATH: &str = "/message:send";
 const REST_STREAM_MESSAGE_PATH: &str = "/message:stream";
@@ -78,16 +80,18 @@ impl RestTransport {
     }
 
     async fn send(&self, builder: reqwest::RequestBuilder) -> Result<reqwest::Response, A2AError> {
-        builder
-            .send()
-            .await
-            .map_err(|e| A2AError::internal(format!("HTTP request failed: {e}")))
+        // Every REST request goes through here, so wire logging for this
+        // binding needs exactly one call site.
+        wire::send(&self.client, builder).await
     }
 
     async fn into_rest_error(resp: reqwest::Response) -> A2AError {
         let status = resp.status();
         let body = crate::jsonrpc::read_bounded_body(resp).await.unwrap_or_default();
         let body = String::from_utf8_lossy(&body);
+        // A failing response is the one a person reaches for --debug to see,
+        // so log it on the way to being turned into an error.
+        wire::log_response(status, &body);
         parse_rest_error(status, &body)
     }
 
@@ -113,7 +117,9 @@ impl RestTransport {
         if !resp.status().is_success() {
             return Err(Self::into_rest_error(resp).await);
         }
-        let payload = crate::jsonrpc::read_bounded_json::<Value>(resp, "response").await?;
+        let body = wire::response_text(resp).await?;
+        let payload = serde_json::from_str::<Value>(&body)
+            .map_err(|e| A2AError::internal(format!("failed to parse response: {e}")))?;
 
         Ok(payload)
     }
@@ -148,7 +154,9 @@ impl RestTransport {
         if !resp.status().is_success() {
             return Err(Self::into_rest_error(resp).await);
         }
-        let payload = crate::jsonrpc::read_bounded_json::<Value>(resp, "response").await?;
+        let body = wire::response_text(resp).await?;
+        let payload = serde_json::from_str::<Value>(&body)
+            .map_err(|e| A2AError::internal(format!("failed to parse response: {e}")))?;
 
         Ok(payload)
     }
@@ -242,10 +250,7 @@ fn parse_rest_error(status: reqwest::StatusCode, body: &str) -> A2AError {
 }
 
 fn should_retry_subscribe_with_legacy_path(err: &A2AError) -> bool {
-    if matches!(
-        err.code,
-        error_code::METHOD_NOT_FOUND | error_code::UNSUPPORTED_OPERATION
-    ) {
+    if matches!(err.code, error_code::METHOD_NOT_FOUND) {
         return true;
     }
 
@@ -763,7 +768,7 @@ mod tests {
             details: None,
         }));
 
-        assert!(should_retry_subscribe_with_legacy_path(&A2AError {
+        assert!(!should_retry_subscribe_with_legacy_path(&A2AError {
             code: error_code::UNSUPPORTED_OPERATION,
             message: "unsupported".to_string(),
             details: None,

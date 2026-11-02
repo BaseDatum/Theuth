@@ -1,4 +1,5 @@
 // Copyright AGNTCY Contributors (https://github.com/agntcy)
+// Copyright A2A Contributors (https://github.com/a2aproject)
 // SPDX-License-Identifier: Apache-2.0
 // Framing internals reached by the fuzz targets in fuzz/ — see #238.
 // Thin wrappers, not re-exports: the originals stay crate-private.
@@ -28,6 +29,7 @@ pub mod middleware;
 mod push_config_compat;
 pub mod rest;
 pub mod transport;
+mod wire;
 
 pub use client::A2AClient;
 pub use factory::A2AClientFactory;
