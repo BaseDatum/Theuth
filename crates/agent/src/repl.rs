@@ -2548,10 +2548,10 @@ mod tests {
     }
 
     fn pixel(p: &Path) -> u8 {
-        let mut r = png::Decoder::new(std::fs::File::open(p).unwrap())
+        let mut r = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(p).unwrap()))
             .read_info()
             .unwrap();
-        let mut px = vec![0u8; r.output_buffer_size()];
+        let mut px = vec![0u8; r.output_buffer_size().unwrap()];
         r.next_frame(&mut px).unwrap();
         px[0]
     }
