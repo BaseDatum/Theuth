@@ -147,7 +147,9 @@ fn scratch_is_removed_on_drop() {
     assert!(!path.exists(), "{path:?}");
 }
 pub mod cost;
+pub mod costs;
 pub mod lifecycle;
+pub mod limits;
 pub mod private;
 
 pub use activity::{
@@ -170,6 +172,11 @@ pub use cost::{
     CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,
     MeterUpdate, Money, Provenance, SessionCost, SpendDay, SpendOwner, SpendOwnerKind, SpendReport,
     TokenTotals,
+};
+pub use costs::{
+    CostBasis, CostCall, CostCallsCursor, CostCallsPage, CostCallsQuery, CostCells, CostCube,
+    CostCubeChanged, CostCubeCursor, CostCubeMeta, CostModel, CostReason, CostRoot, CostRootEntry,
+    CostService,
 };
 pub use dreaming_ledger::{
     Ledger, LedgerCount, LedgerHintUse, LedgerQuestion, LedgerRewind, LedgerSession, LedgerSince,

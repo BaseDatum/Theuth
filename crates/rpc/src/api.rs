@@ -532,6 +532,24 @@ pub trait Api {
     /// `ModelUsageChanged`.
     #[method(name = "spend_report")]
     async fn spend_report(&self, days: u32) -> RpcResult<SpendReport>;
+    /// 160 §3.2: the full-history cost cube from memory — `since` null, of
+    /// another epoch or older than the change log → a full snapshot; else the
+    /// hours changed since (empty when current). `CostCubeChanged` announces
+    /// new revisions. The empty full cube until the engine's first build lands.
+    #[method(name = "cost_cube")]
+    async fn cost_cube(&self, since: Option<agent::CostCubeCursor>) -> RpcResult<agent::CostCube>;
+    /// 160 §4: ledger rows newest first (native attempts and placed reported
+    /// money), keyset-paged by `before`; Σ over all pages = the cube's total
+    /// for the same filter.
+    #[method(name = "cost_calls")]
+    async fn cost_calls(&self, query: agent::CostCallsQuery) -> RpcResult<agent::CostCallsPage>;
+    /// 160 §5: every provider's usage limits and theuth's budget caps, from
+    /// the engine's in-memory snapshot (never a provider call).
+    #[method(name = "usage_limits")]
+    async fn usage_limits(&self) -> RpcResult<agent::limits::UsageLimits>;
+    /// 160 §5: ask the limit pollers to refresh soon (`provider` or all); returns at once.
+    #[method(name = "usage_limits_refresh")]
+    async fn usage_limits_refresh(&self, provider: Option<String>) -> RpcResult<()>;
     /// Set a session's title by hand; `TitleChanged` follows on the stream.
     #[method(name = "rename_session", with_extensions)]
     async fn rename_session(&self, session: SessionId, title: String) -> RpcResult<()>;
@@ -3418,6 +3436,13 @@ pub(crate) fn failed(msg: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(ASK_FAILED, msg.into(), None::<()>)
 }
 
+/// 160: the engine's cost cube service; `NOT_RUNNING` before the agent plugin started.
+fn cost_service() -> RpcResult<&'static agent::CostService> {
+    agent::CostService::engine().ok_or_else(|| {
+        ErrorObjectOwned::owned(NOT_RUNNING, "costs: agent is not running", None::<()>)
+    })
+}
+
 /// 158 §15.2: a wave module's `anyhow` error as `ASK_FAILED` (the stubs' "not built yet" too).
 fn stub_err(e: anyhow::Error) -> ErrorObjectOwned {
     failed(format!("{e:#}"))
@@ -4346,6 +4371,26 @@ impl ApiServer for Server {
 
     async fn spend_report(&self, days: u32) -> RpcResult<SpendReport> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SpendReportQuery(days)).await
+    }
+
+    async fn cost_cube(&self, since: Option<agent::CostCubeCursor>) -> RpcResult<agent::CostCube> {
+        Ok(cost_service()?.cube(since.as_ref()))
+    }
+
+    async fn cost_calls(&self, query: agent::CostCallsQuery) -> RpcResult<agent::CostCallsPage> {
+        cost_service()?
+            .calls(&query)
+            .await
+            .map_err(|e| failed(format!("{e:#}")))
+    }
+
+    async fn usage_limits(&self) -> RpcResult<agent::limits::UsageLimits> {
+        Ok(agent::limits::LimitsHub::global().snapshot())
+    }
+
+    async fn usage_limits_refresh(&self, provider: Option<String>) -> RpcResult<()> {
+        agent::limits::LimitsHub::global().kick(provider.as_deref());
+        Ok(())
     }
 
     async fn session_take(
@@ -9860,6 +9905,55 @@ mod tests {
         assert_eq!(json["days"][0]["day"], "2026-10-07");
         let back: SpendReport = serde_json::from_value(json).unwrap();
         assert_eq!(back, report);
+    }
+
+    /// 160 §3.2/§4/§5: the four methods are registered, `cost_calls` takes a
+    /// partial query (absent filters = none), `usage_limits` answers from the
+    /// hub, and the wire shapes the UI codes against hold.
+    #[tokio::test]
+    async fn cost_methods_are_registered_with_their_wire_shapes() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+        let call = |body: String| {
+            let methods = methods.clone();
+            async move {
+                let (resp, _) = methods.raw_json_request(&body, 1).await.unwrap();
+                serde_json::from_str::<serde_json::Value>(resp.get()).unwrap()
+            }
+        };
+        for (m, params) in [
+            ("cost_cube", "[null]"),
+            ("cost_calls", r#"[{"bases":["reported"],"limit":5}]"#),
+            ("usage_limits", "[]"),
+            ("usage_limits_refresh", "[null]"),
+        ] {
+            let v = call(format!(
+                r#"{{"jsonrpc":"2.0","method":"{m}","params":{params},"id":1}}"#
+            ))
+            .await;
+            let code = v["error"]["code"].as_i64();
+            assert!(
+                code.is_none() || code == Some(i64::from(NOT_RUNNING)),
+                "{m}: {v}"
+            );
+        }
+        let v =
+            call(r#"{"jsonrpc":"2.0","method":"usage_limits","params":[],"id":1}"#.into()).await;
+        assert!(v["result"]["providers"].is_array(), "{v}");
+        let ev = serde_json::to_value(agent::CostCubeChanged {
+            epoch: "e".into(),
+            rev: 3,
+        })
+        .unwrap();
+        assert_eq!(
+            ev,
+            serde_json::json!({"type": "CostCubeChanged", "epoch": "e", "rev": 3})
+        );
+        let q: agent::CostCallsQuery =
+            serde_json::from_str(r#"{"bases":["unpriced"],"before":{"at_ms":5,"id":"x"}}"#)
+                .unwrap();
+        assert_eq!(q.bases, Some(vec![agent::CostBasis::Unpriced]));
+        assert_eq!(q.limit, None);
     }
 
     /// The daemon's devices are out of a relay peer's reach: `talk_start` with

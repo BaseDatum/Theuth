@@ -152,37 +152,77 @@ pub(crate) async fn reserve_call_in(
     Ok(call)
 }
 
-/// Root delete: every call, meter and owner under `root`, owners child-first.
-pub(crate) async fn delete_root_ledger_in(
+/// Root delete (160 H1): the books stay. Every owner of the subtree is
+/// tombstoned like a child delete; calls, meters and turns are kept; one
+/// `cost_root_tombstones` row keeps the root's attribution (desk,
+/// unattended, routine name, project, creation time) for when its session
+/// row is gone. Run before the session rows are deleted, in their transaction.
+pub(crate) async fn tombstone_root_in(
     conn: &mut SqliteConnection,
     root: SessionId,
 ) -> anyhow::Result<()> {
     let rid = root.to_string();
-    sqlx::query(
-        "DELETE FROM model_calls WHERE owner_id IN (SELECT id FROM cost_owners WHERE root_id = ?)",
+    let at = now();
+    type Head = (Option<String>, bool, String, Option<String>, String);
+    let head: Option<Head> = sqlx::query_as(
+        "SELECT desk, unattended, title, project, created_at FROM sessions WHERE id = ?",
     )
     .bind(&rid)
-    .execute(&mut *conn)
+    .fetch_optional(&mut *conn)
     .await?;
-    sqlx::query("DELETE FROM remote_meters WHERE owner_id IN (SELECT id FROM cost_owners WHERE root_id = ?)")
+    if let Some((desk, unattended, title, project, created_at)) = head {
+        let routine = unattended.then(|| routine_name(&title).to_owned());
+        sqlx::query(
+            "INSERT OR REPLACE INTO cost_root_tombstones \
+             (root_id, desk, unattended, routine, project, created_at, deleted_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&rid)
+        .bind(desk)
+        .bind(unattended)
+        .bind(routine)
+        .bind(project)
+        .bind(created_at)
+        .bind(&at)
+        .execute(&mut *conn)
+        .await?;
+    }
+    sqlx::query("UPDATE cost_owners SET deleted_at = ? WHERE root_id = ? AND deleted_at IS NULL")
+        .bind(&at)
         .bind(&rid)
         .execute(&mut *conn)
         .await?;
-    // Leaf peeling: each pass removes owners nobody points at; bounded by depth.
-    for _ in 0..LINEAGE_MAX {
-        let removed = sqlx::query(
-            "DELETE FROM cost_owners WHERE root_id = ?1 AND id NOT IN \
-             (SELECT parent_id FROM cost_owners WHERE root_id = ?1 AND parent_id IS NOT NULL)",
-        )
-        .bind(&rid)
-        .execute(&mut *conn)
-        .await?
-        .rows_affected();
-        if removed == 0 {
-            break;
-        }
-    }
     Ok(())
+}
+
+/// A scheduler root's routine: its title before ` · ` (`routine` when empty).
+fn routine_name(title: &str) -> &str {
+    let name = title.split(" · ").next().unwrap_or("").trim();
+    if name.is_empty() { "routine" } else { name }
+}
+
+/// Who a root belongs to (128 R3, 160 D6): the desk's agent, a scheduler
+/// root's routine, the user; a root whose session row is gone keeps its
+/// tombstone's attribution (160 H1), else is `other`.
+pub(crate) fn root_owner(
+    live: Option<(&str, Option<&str>, bool)>,
+    tomb: Option<(Option<&str>, bool, Option<&str>)>,
+) -> (SpendOwnerKind, String) {
+    let (desk, unattended, routine) = match (live, tomb) {
+        (Some((title, desk, unattended)), _) => (desk, unattended, Some(routine_name(title))),
+        (None, Some((desk, unattended, routine))) => (desk, unattended, routine),
+        (None, None) => return (SpendOwnerKind::Other, "other".to_owned()),
+    };
+    if let Some(agent) = desk {
+        return (SpendOwnerKind::Agent, agent.to_owned());
+    }
+    if unattended {
+        return (
+            SpendOwnerKind::Routine,
+            routine.unwrap_or("routine").to_owned(),
+        );
+    }
+    (SpendOwnerKind::User, "you".to_owned())
 }
 
 /// Raw `model_calls` columns the summary needs.
@@ -210,12 +250,8 @@ struct SpendRow {
     returned_currency: Option<String>,
     estimated_nanos: Option<i64>,
     estimated_currency: Option<String>,
-    /// `sessions.desk` of the root: the roster agent whose tree this is.
-    desk: Option<String>,
-    /// `sessions.unattended` of the root: on a root, only the scheduler sets it.
-    unattended: Option<bool>,
-    /// `NULL` when the root's session row is gone (or the owner was never registered).
-    title: Option<String>,
+    /// `cost_owners.root_id`; `NULL` when the owner was never registered.
+    root_id: Option<String>,
 }
 
 impl SpendRow {
@@ -230,22 +266,42 @@ impl SpendRow {
             0.0
         })
     }
+}
 
-    /// Who the root belongs to: the desk's agent, a scheduler root's routine
-    /// (title `<name>` or `<name> · <subject>`), the user, or a gone root.
-    fn owner(&self) -> (SpendOwnerKind, String) {
-        let Some(title) = &self.title else {
-            return (SpendOwnerKind::Other, "other".to_owned());
-        };
-        if let Some(agent) = &self.desk {
-            return (SpendOwnerKind::Agent, agent.clone());
-        }
-        if self.unattended == Some(true) {
-            let name = title.split(" · ").next().unwrap_or("").trim();
-            let name = if name.is_empty() { "routine" } else { name };
-            return (SpendOwnerKind::Routine, name.to_owned());
-        }
-        (SpendOwnerKind::User, "you".to_owned())
+/// One accounting root with its live session row and its tombstone (160 H1)
+/// when either exists: the cube's root dimension and `spend_report`'s owners.
+#[derive(FromRow)]
+pub(crate) struct RootRow {
+    pub(crate) id: String,
+    /// `NULL` when the root's session row is gone.
+    pub(crate) title: Option<String>,
+    pub(crate) desk: Option<String>,
+    pub(crate) unattended: Option<bool>,
+    pub(crate) project: Option<String>,
+    pub(crate) created_at: Option<String>,
+    pub(crate) t_present: bool,
+    pub(crate) t_desk: Option<String>,
+    pub(crate) t_unattended: Option<bool>,
+    pub(crate) t_routine: Option<String>,
+    pub(crate) t_project: Option<String>,
+    pub(crate) t_created_at: Option<String>,
+}
+
+impl RootRow {
+    /// spend_report's owner rules (see [`root_owner`]).
+    pub(crate) fn owner(&self) -> (SpendOwnerKind, String) {
+        root_owner(
+            self.title
+                .as_deref()
+                .map(|t| (t, self.desk.as_deref(), self.unattended == Some(true))),
+            self.t_present.then(|| {
+                (
+                    self.t_desk.as_deref(),
+                    self.t_unattended == Some(true),
+                    self.t_routine.as_deref(),
+                )
+            }),
+        )
     }
 }
 
@@ -319,20 +375,50 @@ impl MeterMetadata {
             .unwrap_or_default()
     }
 
-    fn push(&mut self, nanos: i64, currency: &str) {
+    fn push(&mut self, nanos: i64, currency: &str, at: &str) {
         if self.reports.len() == RAW_REPORTS {
             self.reports.pop_front();
         }
         self.reports.push_back(RawReport {
             amount: nanos,
             currency: currency.to_owned(),
-            at: now(),
+            at: at.to_owned(),
         });
     }
 
     fn json(&self) -> anyhow::Result<String> {
         Ok(serde_json::to_string(self)?)
     }
+}
+
+/// The raw reports kept in a meter's `source_metadata`, oldest first, as
+/// `(cumulative nanos, currency, arrival time)`; empty when absent or unreadable.
+pub(crate) fn metadata_reports(json: Option<&str>) -> Vec<(i64, String, String)> {
+    MeterMetadata::parse(json)
+        .reports
+        .into_iter()
+        .map(|r| (r.amount, r.currency, r.at))
+        .collect()
+}
+
+/// 160 H2: keep one applied meter report beside the metadata ring.
+async fn record_report_in(
+    conn: &mut SqliteConnection,
+    meter: &str,
+    nanos: i64,
+    currency: &str,
+    at: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO remote_meter_reports (meter_id, amount_nanos, currency, at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(meter)
+    .bind(nanos)
+    .bind(currency)
+    .bind(at)
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 fn money(nanos: Option<i64>, currency: Option<&str>) -> Option<Money> {
@@ -705,7 +791,9 @@ impl Store {
                     let high = s.high_water_nanos.unwrap_or(0);
                     let base = s.baseline_nanos.unwrap_or(0);
                     let mut meta = MeterMetadata::parse(s.source_metadata.as_deref());
-                    meta.push(total_nanos, &total.currency);
+                    let at = now();
+                    meta.push(total_nanos, &total.currency, &at);
+                    record_report_in(&mut tx, &s.id, total_nanos, &total.currency, &at).await?;
                     let changed = match total_nanos.cmp(&high) {
                         std::cmp::Ordering::Equal => {
                             sqlx::query(
@@ -775,14 +863,16 @@ impl Store {
         };
         let baseline = if known_zero { 0 } else { total_nanos };
         let mut meta = MeterMetadata::default();
-        meta.push(total_nanos, &total.currency);
+        let at = now();
+        meta.push(total_nanos, &total.currency, &at);
+        let id = Uuid::now_v7().to_string();
         sqlx::query(
             "INSERT INTO remote_meters (id, owner_id, origin, external_session, epoch, source, currency, \
              baseline_nanos, high_water_nanos, attributed_nanos, baseline_kind, scope, coverage, \
              coverage_boundary, last_report_id, source_metadata, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(Uuid::now_v7().to_string())
+        .bind(&id)
         .bind(&oid)
         .bind(&update.origin)
         .bind(&update.external_session)
@@ -798,9 +888,10 @@ impl Store {
         .bind(if known_zero { None } else { Some("imported_baseline") })
         .bind(&update.report_id)
         .bind(meta.json()?)
-        .bind(now())
+        .bind(&at)
         .execute(&mut *tx)
         .await?;
+        record_report_in(&mut tx, &id, total_nanos, &total.currency, &at).await?;
         let bumped = bump_in(&mut tx, &oid).await?;
         tx.commit().await?;
         Ok(bumped)
@@ -955,8 +1046,15 @@ impl Store {
     /// Model-call spend by local day (128 Rev 3): the last `days` local
     /// calendar days ending on `now_ms`'s day (clamped to 1..=31), the month
     /// to date, and the window's top 8 owners by root session. Local day =
-    /// this host's timezone, computed here, not in SQL.
-    pub async fn spend_report(&self, now_ms: u64, days: u32) -> anyhow::Result<SpendReport> {
+    /// this host's timezone, computed here, not in SQL. 160 H5: `reported`
+    /// (the cost cube's placed remote-meter money) is added to the days, the
+    /// month and the owners' dollars at its placed time; it adds no calls.
+    pub(crate) async fn spend_report(
+        &self,
+        now_ms: u64,
+        days: u32,
+        reported: &[crate::costs::Piece],
+    ) -> anyhow::Result<SpendReport> {
         use chrono::{Datelike, Local, TimeZone};
         let days = days.clamp(1, 31);
         let now = chrono::Utc
@@ -976,15 +1074,28 @@ impl Store {
             .to_rfc3339();
         let rows: Vec<SpendRow> = sqlx::query_as(
             "SELECT m.created_at, m.status, m.returned_nanos, m.returned_currency, \
-             m.estimated_nanos, m.estimated_currency, s.desk, s.unattended, s.title \
+             m.estimated_nanos, m.estimated_currency, c.root_id \
              FROM model_calls m \
              LEFT JOIN cost_owners c ON c.id = m.owner_id \
-             LEFT JOIN sessions s ON s.id = c.root_id \
              WHERE m.created_at >= ?",
         )
         .bind(&since)
         .fetch_all(&self.read)
         .await?;
+        let roots: HashMap<String, (SpendOwnerKind, String)> = self
+            .cost_roots()
+            .await?
+            .into_iter()
+            .map(|r| {
+                let owner = r.owner();
+                (r.id, owner)
+            })
+            .collect();
+        let owner_of = |root: Option<&str>| {
+            root.and_then(|r| roots.get(r))
+                .cloned()
+                .unwrap_or((SpendOwnerKind::Other, "other".to_owned()))
+        };
 
         let mut report = SpendReport {
             days: (0..days)
@@ -1002,6 +1113,19 @@ impl Store {
             owners: Vec::new(),
         };
         let mut owners: HashMap<(SpendOwnerKind, String), SpendOwner> = HashMap::new();
+        let mut owner_add = |root: Option<&str>, usd: f64, calls: u32| {
+            let (kind, name) = owner_of(root);
+            let o = owners
+                .entry((kind, name.clone()))
+                .or_insert_with(|| SpendOwner {
+                    kind,
+                    name,
+                    usd: 0.0,
+                    calls: 0,
+                });
+            o.usd += usd;
+            o.calls = o.calls.saturating_add(calls);
+        };
         for r in &rows {
             if r.status.parse::<CallStatus>().ok() == Some(CallStatus::NotDispatched) {
                 continue;
@@ -1022,17 +1146,29 @@ impl Store {
             }
             let i = usize::try_from((day - first).num_days()).unwrap_or(0);
             fold_spend(&mut report.days[i], usd);
-            let (kind, name) = r.owner();
-            let o = owners
-                .entry((kind, name.clone()))
-                .or_insert_with(|| SpendOwner {
-                    kind,
-                    name,
-                    usd: 0.0,
-                    calls: 0,
-                });
-            o.usd += usd.unwrap_or(0.0);
-            o.calls = o.calls.saturating_add(1);
+            owner_add(r.root_id.as_deref(), usd.unwrap_or(0.0), 1);
+        }
+        for p in reported {
+            let Some(at) = chrono::Utc
+                .timestamp_millis_opt(i64::try_from(p.at_ms).unwrap_or(i64::MAX))
+                .single()
+            else {
+                continue;
+            };
+            let day = at.with_timezone(&Local).date_naive();
+            if day > today {
+                continue;
+            }
+            let usd = p.nanos as f64 / crate::cost::NANOS_PER_UNIT as f64;
+            if day >= month_first {
+                report.month.usd += usd;
+            }
+            if day < first {
+                continue;
+            }
+            let i = usize::try_from((day - first).num_days()).unwrap_or(0);
+            report.days[i].usd += usd;
+            owner_add(Some(&p.root), usd, 0);
         }
         let mut owners: Vec<SpendOwner> = owners.into_values().collect();
         owners.sort_by(|a, b| {
@@ -1054,13 +1190,252 @@ impl Store {
         Ok(())
     }
 
-    /// Root delete (see [`delete_root_ledger_in`]).
-    pub async fn delete_root_ledger(&self, root: SessionId) -> anyhow::Result<()> {
+    /// Root delete keeping the books (see [`tombstone_root_in`]).
+    pub async fn tombstone_root(&self, root: SessionId) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
-        delete_root_ledger_in(&mut tx, root).await?;
+        tombstone_root_in(&mut tx, root).await?;
         tx.commit().await?;
         Ok(())
     }
+
+    /// 160 cube: every accounting root with its session row and tombstone.
+    pub(crate) async fn cost_roots(&self) -> anyhow::Result<Vec<RootRow>> {
+        Ok(sqlx::query_as(
+            "SELECT c.id, s.title, s.desk, s.unattended, s.project, s.created_at, \
+             t.root_id IS NOT NULL AS t_present, t.desk AS t_desk, t.unattended AS t_unattended, \
+             t.routine AS t_routine, t.project AS t_project, t.created_at AS t_created_at \
+             FROM cost_owners c LEFT JOIN sessions s ON s.id = c.id \
+             LEFT JOIN cost_root_tombstones t ON t.root_id = c.id \
+             WHERE c.id = c.root_id",
+        )
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// 160 cube: `(owner, root, revision)` of every accounting owner.
+    pub(crate) async fn cost_revisions(&self) -> anyhow::Result<Vec<(String, String, i64)>> {
+        Ok(
+            sqlx::query_as("SELECT id, root_id, revision FROM cost_owners")
+                .fetch_all(&self.read)
+                .await?,
+        )
+    }
+
+    /// 160 H3: owners whose history predates the ledger.
+    pub(crate) async fn cost_pre_ledger_sessions(&self) -> anyhow::Result<u32> {
+        let n: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_owners WHERE history_coverage = ?")
+                .bind(Coverage::Unknown.as_str())
+                .fetch_one(&self.read)
+                .await?;
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    }
+
+    /// 160 cube, native leg: `model_calls ⋈ cost_owners` (not
+    /// `not_dispatched`) grouped by UTC hour, root, provider, model, kind,
+    /// money class and, for rows without money, the reason; rows without
+    /// money but with tokens stay one group each (`solo`) so the builder
+    /// reprices them exactly as `cost_calls` does. `roots`/`since` narrow an
+    /// incremental refresh (`cost_owners_root` → `model_calls_created`).
+    pub(crate) async fn cost_native(
+        &self,
+        roots: Option<&[String]>,
+        since: Option<&str>,
+    ) -> anyhow::Result<Vec<NativeGroup>> {
+        let roots_json = roots.map(|r| serde_json::to_string(r).unwrap_or_default());
+        Ok(sqlx::query_as(
+            "SELECT substr(m.created_at, 1, 13) AS hour, c.root_id, \
+             COALESCE(m.provider, '') AS provider, COALESCE(m.requested_model, '') AS model, m.kind, \
+             CASE WHEN m.returned_nanos IS NOT NULL THEN 0 WHEN m.estimated_nanos IS NOT NULL THEN 2 ELSE 3 END AS cls, \
+             CASE WHEN m.returned_nanos IS NULL AND m.estimated_nanos IS NULL \
+                  THEN COALESCE(m.unknown_reason, m.status) END AS reason, \
+             CASE WHEN m.returned_nanos IS NULL AND m.estimated_nanos IS NULL \
+                  AND (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL) THEN m.call_id END AS solo, \
+             COUNT(*) AS calls, \
+             SUM(m.status IN ('failed', 'cancelled', 'unresolved')) AS failed, \
+             SUM(CASE WHEN m.returned_nanos IS NOT NULL THEN IIF(m.returned_currency = 'USD', m.returned_nanos, 0) \
+                 WHEN m.estimated_nanos IS NOT NULL THEN IIF(m.estimated_currency = 'USD', m.estimated_nanos, 0) \
+                 ELSE 0 END) AS nanos, \
+             SUM(COALESCE(m.input_tokens, 0)) AS input, SUM(COALESCE(m.output_tokens, 0)) AS output, \
+             SUM(COALESCE(m.cache_read_tokens, 0)) AS cache_read, \
+             SUM(COALESCE(m.cache_write_tokens, 0)) AS cache_write \
+             FROM cost_owners c JOIN model_calls m ON m.owner_id = c.id AND (?2 IS NULL OR m.created_at >= ?2) \
+             WHERE (?1 IS NULL OR c.root_id IN (SELECT value FROM json_each(?1))) \
+             AND m.status <> 'not_dispatched' \
+             GROUP BY 1, 2, 3, 4, 5, 6, 7, 8",
+        )
+        .bind(roots_json)
+        .bind(since)
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// 160 cube, reported leg: every remote meter with its owner's root and
+    /// harness model.
+    pub(crate) async fn cost_meters(&self) -> anyhow::Result<Vec<MeterInput>> {
+        Ok(sqlx::query_as(
+            "SELECT r.id, r.owner_id, c.root_id, r.origin, r.currency, \
+             COALESCE(r.baseline_nanos, 0) AS baseline_nanos, COALESCE(r.attributed_nanos, 0) AS attributed_nanos, \
+             r.updated_at, r.source_metadata, s.harness_model \
+             FROM remote_meters r JOIN cost_owners c ON c.id = r.owner_id \
+             LEFT JOIN sessions s ON s.id = r.owner_id",
+        )
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// 160 H2: every kept meter report `(meter, cumulative nanos, currency, at)`.
+    pub(crate) async fn cost_meter_reports(
+        &self,
+    ) -> anyhow::Result<Vec<(String, i64, String, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT meter_id, amount_nanos, currency, at FROM remote_meter_reports ORDER BY meter_id, at",
+        )
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// 160 cube, reported leg: every remote turn with its owner's root.
+    pub(crate) async fn cost_turns(&self) -> anyhow::Result<Vec<TurnInput>> {
+        Ok(sqlx::query_as(
+            "SELECT t.owner_id, c.root_id, t.harness, t.model, t.input_tokens, t.output_tokens, \
+             t.cache_read_tokens, t.cache_write_tokens, t.at \
+             FROM remote_turns t JOIN cost_owners c ON c.id = t.owner_id ORDER BY t.owner_id, t.at",
+        )
+        .fetch_all(&self.read)
+        .await?)
+    }
+
+    /// 160 §4: native ledger rows newest first with `created_at < upper`
+    /// (and `>= lower`), filtered in SQL; `priced` = model ids the catalog
+    /// prices, so a row without money but with tokens counts as estimated.
+    pub(crate) async fn cost_call_rows(
+        &self,
+        f: &CallFilter<'_>,
+        upper: &str,
+        lower: Option<&str>,
+        limit: u32,
+    ) -> anyhow::Result<Vec<CallRowOut>> {
+        let json = |v: Option<&[String]>| v.map(|v| serde_json::to_string(v).unwrap_or_default());
+        let bases = f
+            .bases
+            .map(|b| b.iter().map(|b| i64::from(b.code())).collect::<Vec<_>>())
+            .map(|b| serde_json::to_string(&b).unwrap_or_default());
+        Ok(sqlx::query_as(
+            "SELECT m.call_id, m.created_at, c.root_id, m.owner_id, m.provider, \
+             m.requested_model, m.kind, m.status, m.returned_nanos, m.returned_currency, \
+             m.estimated_nanos, m.estimated_currency, m.input_tokens, m.output_tokens, \
+             m.cache_read_tokens, m.cache_write_tokens, m.unknown_reason, \
+             CASE WHEN m.returned_nanos IS NOT NULL THEN 0 WHEN m.estimated_nanos IS NOT NULL THEN 2 \
+                  WHEN (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL) \
+                       AND m.requested_model IN (SELECT value FROM json_each(?8)) THEN 2 ELSE 3 END AS basis \
+             FROM model_calls m JOIN cost_owners c ON c.id = m.owner_id \
+             WHERE m.created_at < ?1 AND (?2 IS NULL OR m.created_at >= ?2) \
+             AND m.status <> 'not_dispatched' \
+             AND (?3 IS NULL OR c.root_id IN (SELECT value FROM json_each(?3))) \
+             AND (?4 IS NULL OR m.provider IN (SELECT value FROM json_each(?4))) \
+             AND (?5 IS NULL OR m.requested_model IN (SELECT value FROM json_each(?5))) \
+             AND (?6 IS NULL OR m.kind IN (SELECT value FROM json_each(?6))) \
+             AND (?9 IS NULL OR basis IN (SELECT value FROM json_each(?9))) \
+             ORDER BY m.created_at DESC LIMIT ?7",
+        )
+        .bind(upper)
+        .bind(lower)
+        .bind(json(f.roots))
+        .bind(json(f.providers))
+        .bind(json(f.models))
+        .bind(json(f.kinds))
+        .bind(i64::from(limit))
+        .bind(f.priced)
+        .bind(bases)
+        .fetch_all(&self.read)
+        .await?)
+    }
+}
+
+/// One group of [`Store::cost_native`].
+#[derive(FromRow)]
+pub(crate) struct NativeGroup {
+    /// `YYYY-MM-DDTHH` (UTC).
+    pub(crate) hour: String,
+    pub(crate) root_id: String,
+    pub(crate) provider: String,
+    pub(crate) model: String,
+    pub(crate) kind: String,
+    /// 0 known · 2 estimated · 3 no money.
+    pub(crate) cls: i64,
+    pub(crate) reason: Option<String>,
+    pub(crate) solo: Option<String>,
+    pub(crate) calls: i64,
+    pub(crate) failed: i64,
+    pub(crate) nanos: i64,
+    pub(crate) input: i64,
+    pub(crate) output: i64,
+    pub(crate) cache_read: i64,
+    pub(crate) cache_write: i64,
+}
+
+/// One meter of [`Store::cost_meters`].
+#[derive(FromRow)]
+pub(crate) struct MeterInput {
+    pub(crate) id: String,
+    pub(crate) owner_id: String,
+    pub(crate) root_id: String,
+    pub(crate) origin: String,
+    pub(crate) currency: String,
+    pub(crate) baseline_nanos: i64,
+    pub(crate) attributed_nanos: i64,
+    pub(crate) updated_at: String,
+    pub(crate) source_metadata: Option<String>,
+    pub(crate) harness_model: Option<String>,
+}
+
+/// One turn of [`Store::cost_turns`].
+#[derive(FromRow)]
+pub(crate) struct TurnInput {
+    pub(crate) owner_id: String,
+    pub(crate) root_id: String,
+    pub(crate) harness: String,
+    pub(crate) model: Option<String>,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_read_tokens: i64,
+    pub(crate) cache_write_tokens: i64,
+    pub(crate) at: String,
+}
+
+/// SQL-side filter of [`Store::cost_call_rows`].
+pub(crate) struct CallFilter<'a> {
+    pub(crate) roots: Option<&'a [String]>,
+    pub(crate) providers: Option<&'a [String]>,
+    pub(crate) models: Option<&'a [String]>,
+    pub(crate) kinds: Option<&'a [String]>,
+    pub(crate) bases: Option<&'a [crate::costs::CostBasis]>,
+    /// JSON array of catalog-priced model ids.
+    pub(crate) priced: &'a str,
+}
+
+/// One row of [`Store::cost_call_rows`].
+#[derive(FromRow)]
+pub(crate) struct CallRowOut {
+    pub(crate) call_id: String,
+    pub(crate) created_at: String,
+    pub(crate) root_id: String,
+    pub(crate) owner_id: String,
+    pub(crate) provider: Option<String>,
+    pub(crate) requested_model: Option<String>,
+    pub(crate) kind: String,
+    pub(crate) status: String,
+    pub(crate) returned_nanos: Option<i64>,
+    pub(crate) returned_currency: Option<String>,
+    pub(crate) estimated_nanos: Option<i64>,
+    pub(crate) estimated_currency: Option<String>,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_read_tokens: Option<i64>,
+    pub(crate) cache_write_tokens: Option<i64>,
+    pub(crate) unknown_reason: Option<String>,
+    pub(crate) basis: i64,
 }
 
 #[cfg(test)]
@@ -1190,14 +1565,18 @@ mod tests {
             .unwrap();
         assert_eq!(bumped.iter().map(|(s, _)| *s).collect::<Vec<_>>(), vec![r]);
 
-        store.delete_root_ledger(r).await.unwrap();
-        assert!(store.session_cost(r).await.unwrap().is_none());
-        assert!(store.session_cost(g).await.unwrap().is_none());
-        let (calls,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM model_calls")
-            .fetch_one(&store.read)
-            .await
-            .unwrap();
-        assert_eq!(calls, 0);
+        // 160 H1: a root delete keeps the books — owners tombstoned, rows kept.
+        store.tombstone_root(r).await.unwrap();
+        let rc = store.session_cost(r).await.unwrap().unwrap();
+        assert_eq!(returned(&rc.total), vec![("USD", 600_000_000)]);
+        let (calls, live): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM model_calls), \
+             (SELECT COUNT(*) FROM cost_owners WHERE deleted_at IS NULL)",
+        )
+        .fetch_one(&store.read)
+        .await
+        .unwrap();
+        assert_eq!((calls, live), (3, 0));
     }
 
     #[tokio::test]
@@ -1598,7 +1977,7 @@ mod tests {
             .await
             .unwrap();
 
-        let r = store.spend_report(now_ms, 7).await.unwrap();
+        let r = store.spend_report(now_ms, 7, &[]).await.unwrap();
         assert_eq!(r.days.len(), 7);
         assert_eq!(r.days[6].day, today.format("%Y-%m-%d").to_string());
         assert_eq!(
@@ -1639,8 +2018,19 @@ mod tests {
         );
 
         // `days` is clamped: 0 → one day (today), 99 → 31.
-        assert_eq!(store.spend_report(now_ms, 0).await.unwrap().days.len(), 1);
-        assert_eq!(store.spend_report(now_ms, 99).await.unwrap().days.len(), 31);
+        assert_eq!(
+            store.spend_report(now_ms, 0, &[]).await.unwrap().days.len(),
+            1
+        );
+        assert_eq!(
+            store
+                .spend_report(now_ms, 99, &[])
+                .await
+                .unwrap()
+                .days
+                .len(),
+            31
+        );
     }
 
     /// 136 R-1: the cap is per night — spend before `since` is not counted.
