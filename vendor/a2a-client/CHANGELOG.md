@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9](https://github.com/a2aproject/a2a-rs/compare/a2a-client-lf-v0.2.8...a2a-client-lf-v0.2.9) - 2026-10-16
+
+### Other
+
+- updated the following local packages: a2a-lf, a2a-pb
+
+## [0.2.8](https://github.com/a2aproject/a2a-rs/compare/a2a-client-lf-v0.2.7...a2a-client-lf-v0.2.8) - 2026-10-11
+
+### Fixed
+
+- honor task list timestamps and terminal subscribe errors ([#320](https://github.com/a2aproject/a2a-rs/pull/320))
+
+## [0.2.7](https://github.com/a2aproject/a2a-rs/compare/a2a-client-lf-v0.2.6...a2a-client-lf-v0.2.7) - 2026-09-30
+
+### Other
+
+- updated the following local packages: a2a-lf, a2a-pb
+
+## [0.2.6](https://github.com/a2aproject/a2a-rs/compare/a2a-client-lf-v0.2.5...a2a-client-lf-v0.2.6) - 2026-09-30
+
+### Added
+
+- *(a2acli)* log raw wire messages under --debug, with unconditional redaction ([#256](https://github.com/a2aproject/a2a-rs/pull/256))
+
+### Other
+
+- add the A2A Contributors copyright line to every header ([#260](https://github.com/a2aproject/a2a-rs/pull/260))
+
 ## [0.2.5](https://github.com/a2aproject/a2a-rs/compare/a2a-client-lf-v0.2.4...a2a-client-lf-v0.2.5) - 2026-09-15
 
 ### Added
