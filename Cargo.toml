@@ -144,7 +144,7 @@ bollard = "0.21"
 # preview; `csv` parses table artifacts; `resvg` (already transitive via typst) rasterises SVG artifacts.
 # typst-as-lib's kit features = embedded fonts + system font scan through typst-kit; `typst-layout`
 # owns `PagedDocument` (not re-exported by `typst` 0.15).
-typst-as-lib = { version = "0.16", features = ["typst-kit-fonts", "typst-kit-embed-fonts"] }
+typst-as-lib = { version = "0.17", features = ["typst-kit-fonts", "typst-kit-embed-fonts"] }
 typst = "0.15"
 typst-layout = "0.15"
 # 35 §3.2 Archive kind: `zip` reads the central directory only (no compression features: nothing
