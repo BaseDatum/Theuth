@@ -175,7 +175,8 @@ fn status_transitions_ok_warn_limited_ok_stale() {
         "the bucket's reset passed: reads full"
     );
 
-    // A success with no limit headers lifts a fresh 429.
+    // A success with no limit headers lifts a fresh 429 — of its own model
+    // scope only (review 160-LIM #3: a Haiku 200 never clears an Opus 429).
     st.observe(
         "anthropic",
         "api_key",
@@ -184,15 +185,37 @@ fn status_transitions_ok_warn_limited_ok_stale() {
         &limited,
         NOW + 40_000,
     );
-    assert!(!st.observe("anthropic", "api_key", "m", 500, &[], NOW + 40_001));
-    assert!(st.observe("anthropic", "api_key", "m", 200, &[], NOW + 40_002));
+    let opus = "claude-opus-5-5";
+    assert!(!st.observe("anthropic", "api_key", opus, 500, &[], NOW + 40_001));
+    assert!(!st.observe(
+        "anthropic",
+        "api_key",
+        "claude-haiku-5-5",
+        200,
+        &[],
+        NOW + 40_001
+    ));
+    st.observe(
+        "anthropic",
+        "api_key",
+        "claude-haiku-5-5",
+        200,
+        &anthropic("Mon, 02 Nov 2026 14:25:10 GMT", 900, RESET),
+        NOW + 40_001,
+    );
+    assert_eq!(
+        row(&st.render(NOW + 40_002), id).status,
+        LimitStatus::Limited,
+        "another scope's 200 keeps the Opus 429"
+    );
+    assert!(st.observe("anthropic", "api_key", opus, 200, &[], NOW + 40_002));
     assert_ne!(
         row(&st.render(NOW + 40_003), id).status,
         LimitStatus::Limited
     );
 
-    // No call for > 15 minutes: stale.
-    let s = st.render(NOW + 40_000 + 15 * MIN + 1);
+    // No call for > 15 minutes since the last observation: stale.
+    let s = st.render(NOW + 40_001 + 15 * MIN + 1);
     assert_eq!(row(&s, id).status, LimitStatus::Stale);
 }
 

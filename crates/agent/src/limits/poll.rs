@@ -99,13 +99,15 @@ pub(crate) struct Schedule {
 }
 
 impl Schedule {
-    pub(crate) fn new(source: Source, first_due: u64) -> Self {
+    /// `last_run`: the source's restored observation, so engine restarts never
+    /// poll sooner than the cadence allows (review 160-LIM #7).
+    pub(crate) fn new(source: Source, first_due: u64, last_run: Option<u64>) -> Self {
         let (every, kick_min) = source.cadence();
         Self {
             every,
             kick_min,
-            next_due: first_due,
-            last_run: None,
+            next_due: last_run.map_or(first_due, |t| first_due.max(t.saturating_add(every))),
+            last_run,
             cooldown: 0,
             blocked_until: 0,
         }
@@ -185,15 +187,36 @@ pub(crate) fn truncate_account(id: &str) -> String {
     }
 }
 
-/// An `oauth::Store::access` failure, mapped to the status rules (recon §2.4).
+/// An `oauth::Store::access` failure, mapped to the status rules (recon §2.4):
+/// the token endpoint unreachable or answering 5xx/429 is transient (Code
+/// flow: `<ns>: token endpoint: …` / `… returned 503 …`; Poll flow:
+/// `<ns>: refresh: …`); a 4xx or a missing grant is a dead login.
 fn token_error(ns: &str, e: &str) -> PollError {
+    let returned = e
+        .split_once(" returned ")
+        .and_then(|(_, s)| s.split_whitespace().next())
+        .and_then(|s| s.parse::<u16>().ok());
     if e.contains("hub engine") {
         PollError::Transient("the hub engine refreshes this login; showing last values".into())
-    } else if e.contains(": refresh: ") || e.contains("refreshed elsewhere") {
+    } else if e.contains(": refresh: ")
+        || e.contains(": token endpoint: ")
+        || e.contains("refreshed elsewhere")
+        || returned.is_some_and(|s| s == 429 || s >= 500)
+    {
         PollError::Transient("token refresh failed; showing last values".into())
     } else {
         PollError::Hard(format!("login expired — run /login {ns}"))
     }
+}
+
+/// `oauth::Store::access` in a detached task: refresh tokens rotate, so the
+/// poll's timeout must never cancel a refresh between the server's rotation
+/// and the save (review 160-LIM #5); a timeout only stops waiting for it.
+async fn access(auth: &Auth, p: oauth::Provider) -> Result<oauth::Tokens, String> {
+    let store = auth.oauth.clone();
+    tokio::spawn(async move { store.access(&p).await })
+        .await
+        .map_err(|e| format!("token refresh task: {e}"))?
 }
 
 fn env_key(name: &str) -> Option<String> {
@@ -236,9 +259,7 @@ pub(crate) async fn fetch(
             if auth.oauth.load("openai").is_none() {
                 return Ok(None);
             }
-            let t = auth
-                .oauth
-                .access(&oauth::OPENAI)
+            let t = access(auth, oauth::OPENAI)
                 .await
                 .map_err(|e| token_error("openai", &e))?;
             let mut headers = vec![
@@ -263,9 +284,7 @@ pub(crate) async fn fetch(
             if auth.oauth.load("anthropic").is_none() {
                 return Ok(None);
             }
-            let t = auth
-                .oauth
-                .access(&oauth::ANTHROPIC)
+            let t = access(auth, oauth::ANTHROPIC)
                 .await
                 .map_err(|e| token_error("anthropic", &e))?;
             let headers = [
@@ -412,8 +431,10 @@ fn codex_window(w: &Value, id: String, name: Option<&str>, now_ms: u64) -> Optio
     let window_secs = u64_at(w, "limit_window_seconds").filter(|s| *s > 0);
     let resets_at_ms = u64_at(w, "reset_at")
         .filter(|s| *s > 0)
-        .map(|s| s * 1000)
-        .or_else(|| u64_at(w, "reset_after_seconds").map(|s| now_ms + s * 1000));
+        .map(|s| s.saturating_mul(1000))
+        .or_else(|| {
+            u64_at(w, "reset_after_seconds").map(|s| now_ms.saturating_add(s.saturating_mul(1000)))
+        });
     let span = window_label(window_secs);
     Some(UsageWindow {
         id,
@@ -726,7 +747,7 @@ mod tests {
 
     #[test]
     fn schedule_cadence_kick_spacing_and_429_cooldown() {
-        let mut s = Schedule::new(Source::Claude, NOW);
+        let mut s = Schedule::new(Source::Claude, NOW, None);
         s.ran(NOW, Outcome::Done, 0.0);
         assert_eq!(s.next_due, NOW + 10 * MIN, "10 min background");
         s.kick(NOW + 10_000);
@@ -756,11 +777,28 @@ mod tests {
         s.kick(t + 2 * MIN);
         assert_eq!(s.next_due, t + 2 * MIN, "a success clears the cool-down");
 
-        let mut c = Schedule::new(Source::Codex, NOW);
+        let mut c = Schedule::new(Source::Codex, NOW, None);
         c.ran(NOW, Outcome::Done, 0.0);
         assert_eq!(c.next_due, NOW + 60 * MIN, "Codex polls hourly");
         c.kick(NOW + MIN);
         assert_eq!(c.next_due, NOW + 5 * MIN, "≤ 1 per 5 min on kick");
+
+        // Review 160-LIM #7: a restart 2 min after the last poll keeps both rules.
+        let start = NOW + 2 * MIN;
+        let mut r = Schedule::new(Source::Codex, start + 20_000, Some(NOW));
+        assert_eq!(
+            r.next_due,
+            NOW + 60 * MIN,
+            "background cadence survives a restart"
+        );
+        r.kick(start);
+        assert_eq!(r.next_due, NOW + 5 * MIN, "kick spacing survives a restart");
+        let fresh = Schedule::new(Source::Codex, start + 20_000, Some(NOW - 2 * 60 * MIN));
+        assert_eq!(
+            fresh.next_due,
+            start + 20_000,
+            "an old observation waits only the boot delay"
+        );
     }
 
     #[test]
@@ -945,5 +983,43 @@ mod tests {
         )
         .unwrap();
         assert_eq!(w.resets_at_ms, Some(u64::MAX));
+    }
+
+    /// Review 160-LIM #5: a poll that gives up waiting leaves the refresh to
+    /// finish and save the rotated grant (no forced /login).
+    #[tokio::test]
+    async fn a_timed_out_poll_never_cancels_a_token_refresh() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(300))
+                    .set_body_json(
+                        json!({"access_token": "a2", "refresh_token": "r2", "expires_in": 3600}),
+                    ),
+            )
+            .mount(&server)
+            .await;
+        let dir = crate::TestDir::new("limits-refresh");
+        let auth = Auth::stub(&dir.0);
+        let old = oauth::Tokens {
+            access_token: "a1".into(),
+            refresh_token: Some("r1".into()),
+            expires_at: 0,
+            account_id: None,
+        };
+        auth.oauth.save("openai", &old).await.unwrap();
+        let mut p = oauth::OPENAI;
+        p.token_url = format!("{}/token", server.uri()).into();
+        let waited = tokio::time::timeout(Duration::from_millis(50), access(&auth, p)).await;
+        assert!(waited.is_err(), "the poll gave up waiting");
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let t = auth.oauth.load("openai").unwrap();
+        assert_eq!(
+            t.refresh_token.as_deref(),
+            Some("r2"),
+            "rotated grant saved"
+        );
     }
 }

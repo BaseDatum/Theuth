@@ -337,7 +337,11 @@ impl LimitsHub {
         } else {
             FIRST_POLL_MS
         };
-        let mut sched = Schedule::new(source, now_ms() + first);
+        let last = source.row().and_then(|id| {
+            let st = self.inner.state.lock();
+            st.rows.get(id).and_then(|r| r.observed_at_ms)
+        });
+        let mut sched = Schedule::new(source, now_ms() + first, last);
         loop {
             let wait = sched.next_due.saturating_sub(now_ms());
             tokio::select! {
@@ -361,7 +365,14 @@ impl LimitsHub {
         match source {
             Source::Local => {
                 let presence = presence(&ctx.auth);
-                let budgets = budgets::read(&ctx.db, &ctx.data_dir, now).await;
+                let pieces = match crate::costs::CostService::engine() {
+                    Some(costs) => costs.pieces().await.unwrap_or_else(|e| {
+                        tracing::debug!("limits: reported pieces: {e:#}");
+                        Arc::default()
+                    }),
+                    None => Arc::default(),
+                };
+                let budgets = budgets::read(&ctx.db, &ctx.data_dir, now, &pieces).await;
                 let recent = budgets::recent_providers(&ctx.db, now).await;
                 let mut st = self.inner.state.lock();
                 st.apply_presence(presence);
@@ -471,7 +482,7 @@ impl LimitsHub {
 /// Atomic, owner-only (`platform::files::write_private`).
 fn save(path: &Path, snap: &UsageLimits) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        platform::files::private_dir(dir)?;
     }
     let bytes = serde_json::to_vec(snap).map_err(std::io::Error::other)?;
     platform::files::write_private(path, &bytes)
@@ -535,9 +546,9 @@ impl LimitsConfig {
 }
 
 /// The `ChatFrameSink` `Backend::stream` installs on every genai call: hands
-/// the response head to [`LimitsHub::global`]; [`HeaderTap::error`] does the
-/// same for a failed call's `genai::Error` (a 429 is seen even if the stream
-/// never opened).
+/// the response head to [`LimitsHub::global`]. The fork calls `on_response`
+/// before its `is_success()` branch, so a 429 is seen too (genai's errors
+/// carry no status on theuth's paths — review 160-LIM #4).
 pub(crate) struct HeaderTap {
     provider: String,
     auth: &'static str,
@@ -552,25 +563,6 @@ impl HeaderTap {
             model: model.to_owned(),
         })
     }
-
-    fn observe(&self, status: u16, headers: &reqwest::header::HeaderMap) {
-        LimitsHub::global().observe_headers(
-            &self.provider,
-            self.auth,
-            &self.model,
-            status,
-            &lower(headers),
-            now_ms(),
-        );
-    }
-
-    /// Harvest a failed call's status and headers (`genai::Error::status/headers`).
-    pub(crate) fn error(&self, e: &genai::Error) {
-        if let Some(status) = e.status() {
-            let empty = reqwest::header::HeaderMap::new();
-            self.observe(status.as_u16(), e.headers().unwrap_or(&empty));
-        }
-    }
 }
 
 impl ChatFrameSink for HeaderTap {
@@ -582,7 +574,14 @@ impl ChatFrameSink for HeaderTap {
         status: reqwest::StatusCode,
         headers: &reqwest::header::HeaderMap,
     ) {
-        self.observe(status.as_u16(), headers);
+        LimitsHub::global().observe_headers(
+            &self.provider,
+            self.auth,
+            &self.model,
+            status.as_u16(),
+            &lower(headers),
+            now_ms(),
+        );
     }
 }
 
@@ -624,7 +623,9 @@ struct Row {
     rates: Vec<RateObs>,
     balance: Option<Balance>,
     observed_at_ms: Option<u64>,
-    limited_until_ms: Option<u64>,
+    /// 429 deadlines per model scope (`headers::model_group`; `""` = the whole
+    /// row, from a poll): a 2xx clears only its own scope (review 160-LIM #3).
+    limited: BTreeMap<String, u64>,
     /// The last poll failed: `Stale` (transient) or `Error` (hard) + message.
     failure: Option<(LimitStatus, String)>,
     /// From the snapshot file: `stale` until fresh data arrives.
@@ -723,13 +724,11 @@ impl State {
     ) -> bool {
         let p = headers::parse(model, status, h, now);
         let ok = (200..300).contains(&status);
+        let scope = headers::model_group(model);
         if p.is_empty() {
-            // A success after a 429 lifts the limit; nothing else to learn.
+            // A success after a 429 lifts its scope's limit; nothing else to learn.
             return match self.rows.get_mut(&row_id(provider, auth)) {
-                Some(row) if ok && row.limited_until_ms.is_some() => {
-                    row.limited_until_ms = None;
-                    true
-                }
+                Some(row) if ok => row.limited.remove(&scope).is_some(),
                 _ => false,
             };
         }
@@ -765,10 +764,10 @@ impl State {
         if p.balance.is_some() {
             row.balance = p.balance;
         }
-        if p.limited_until_ms.is_some() {
-            row.limited_until_ms = p.limited_until_ms;
+        if let Some(until) = p.limited_until_ms {
+            row.limited.insert(scope, until);
         } else if ok {
-            row.limited_until_ms = None;
+            row.limited.remove(&scope);
         }
         true
     }
@@ -790,7 +789,11 @@ impl State {
                 }
                 row.plan = d.plan.or(row.plan.take());
                 row.account = d.account.or(row.account.take());
-                row.limited_until_ms = d.limited.then_some(now + source.cadence().0);
+                if d.limited {
+                    row.limited.insert(String::new(), now + source.cadence().0);
+                } else {
+                    row.limited.remove("");
+                }
                 row.observed_at_ms = row.observed_at_ms.max(Some(now));
                 row.failure = None;
                 row.restored = false;
@@ -844,7 +847,7 @@ impl State {
         if let Some((LimitStatus::Error, m)) = &row.failure {
             return (LimitStatus::Error, Some(m.clone()));
         }
-        if let Some(until) = row.limited_until_ms.filter(|t| *t > now) {
+        if let Some(until) = row.limited.values().copied().filter(|t| *t > now).max() {
             return (
                 LimitStatus::Limited,
                 Some(format!("limited until {}", hhmm(until))),
@@ -1054,7 +1057,7 @@ impl State {
                 auth: p.auth,
                 account: p.account,
                 plan: p.plan,
-                limited_until_ms: None,
+                limited: BTreeMap::new(),
                 failure: None,
             };
             st.rows.insert(p.id, row);

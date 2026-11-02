@@ -240,20 +240,15 @@ impl Backend {
                     };
                 let tap = crate::limits::HeaderTap::new(&label, limit_auth, slug(resolved));
                 let opts = thought_connection(reply_cap(opts.clone(), resolved), &label)
-                    .with_raw_frame_sink_arc(tap.clone());
+                    .with_raw_frame_sink_arc(tap);
                 let opts = openrouter_options(resolved, &auth.openrouter, opts);
-                match client.exec_chat_stream(spec, req, Some(&opts)).await {
-                    Ok(r) => Ok(Box::pin(r.stream.map(move |ev| {
-                        ev.map_err(|e| {
-                            tap.error(&e);
-                            provider_error(e)
-                        })
-                    }))),
-                    Err(e) => {
-                        tap.error(&e);
-                        Err(provider_error(e))
-                    }
-                }
+                client
+                    .exec_chat_stream(spec, req, Some(&opts))
+                    .await
+                    .map(|r| -> EventStream {
+                        Box::pin(r.stream.map(|ev| ev.map_err(provider_error)))
+                    })
+                    .map_err(provider_error)
             }
         }
     }
@@ -599,6 +594,62 @@ mod tests {
             crate::compact::classify(&message),
             crate::compact::Failure::Deterministic
         );
+    }
+
+    // 160 §5.4 / review 160-LIM #4: a gateway's 429 reaches the limits hub
+    // through `Backend::stream` (the fork's `on_response`), status `limited`.
+    #[tokio::test]
+    async fn gateway_429_through_stream_marks_the_row_limited() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("x-ratelimit-limit-requests", "100")
+                    .insert_header("x-ratelimit-remaining-requests", "0")
+                    .insert_header("x-ratelimit-reset-requests", "6m0s")
+                    .insert_header("retry-after", "30")
+                    .set_body_raw(r#"{"error":{"message":"slow down"}}"#, "application/json"),
+            )
+            .mount(&server)
+            .await;
+        let dir = crate::TestDir::new("backend-429");
+        let auth = crate::supervisor::Auth::stub(&dir.0);
+        auth.gateways.write().unwrap().insert(
+            "z160gw".into(),
+            Gateway {
+                base_url: format!("{}/v1/", server.uri()),
+                key: "gk".into(),
+            },
+        );
+        let backend = Backend::Genai {
+            client: Client::new().unwrap(),
+            auth,
+        };
+        let resolved = Resolved {
+            id: "z160gw/m-1".into(),
+            genai: "z160gw/m-1".into(),
+            provider: Some("z160gw".into()),
+            model: None,
+        };
+        let req = ChatRequest::new(vec![genai::chat::ChatMessage::user("hi")]);
+        let opened = backend
+            .stream(&resolved, req, &ChatOptions::default(), SessionId::new())
+            .await;
+        if let Ok(mut s) = opened {
+            while let Some(ev) = s.next().await {
+                if ev.is_err() {
+                    break;
+                }
+            }
+        }
+        let snap = crate::limits::LimitsHub::global().snapshot();
+        let row = snap
+            .providers
+            .iter()
+            .find(|p| p.id == "z160gw:gateway")
+            .expect("gateway row");
+        assert_eq!(row.status, crate::limits::LimitStatus::Limited, "{row:?}");
+        assert_eq!(row.rates[0].remaining, 0, "{row:?}");
     }
 
     #[test]

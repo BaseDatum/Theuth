@@ -1,5 +1,6 @@
 //! theuth's own caps (160 §5.3): roster `Budget::Monthly` from the agent
-//! files (month-to-date ledger spend of the desk's roots) and session caps
+//! files (month-to-date spend of the desk's roots, live or deleted (H1):
+//! native calls plus placed external-harness money) and session caps
 //! (`sessions.budget`: the latest capped run per routine). Read-only SQL on
 //! the engine's ledger; rows only where a cap exists. USD caps only — the
 //! ledger prices in USD.
@@ -12,6 +13,7 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use super::BudgetLimit;
+use crate::costs::Piece;
 
 const NANOS: f64 = 1_000_000_000.0;
 /// `returned ?? estimated`, USD only (`Store::budget_spent`'s measure); a
@@ -25,12 +27,14 @@ macro_rules! usd {
 }
 
 /// Every cap row, agents first, then routines and one-off sessions.
+/// `reported`: the cost cube's placed meter money (USD).
 pub(super) async fn read(
     db: &SqlitePool,
     data_dir: &Path,
     now_ms: u64,
+    reported: &[Piece],
 ) -> anyhow::Result<Vec<BudgetLimit>> {
-    let mut out = monthly(db, &data_dir.join("agents"), now_ms).await?;
+    let mut out = monthly(db, &data_dir.join("agents"), now_ms, reported).await?;
     out.extend(sessions(db).await?);
     Ok(out)
 }
@@ -99,7 +103,12 @@ fn monthly_usd(text: &str) -> Option<f64> {
     (currency.eq_ignore_ascii_case("USD") && amount.is_finite() && amount > 0.0).then_some(amount)
 }
 
-async fn monthly(db: &SqlitePool, dir: &Path, now_ms: u64) -> anyhow::Result<Vec<BudgetLimit>> {
+async fn monthly(
+    db: &SqlitePool,
+    dir: &Path,
+    now_ms: u64,
+    reported: &[Piece],
+) -> anyhow::Result<Vec<BudgetLimit>> {
     let mut caps: BTreeMap<String, f64> = BTreeMap::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
@@ -123,18 +132,39 @@ async fn monthly(db: &SqlitePool, dir: &Path, now_ms: u64) -> anyhow::Result<Vec
         return Ok(Vec::new());
     }
     let (first, next) = month_bounds(now_ms);
+    // The root's desk from its live row, else its tombstone (160 H1: a deleted
+    // desk root keeps its spend under the agent).
     let spent: Vec<(String, i64)> = sqlx::query_as(concat!(
-        "SELECT s.desk, ",
+        "SELECT COALESCE(s.desk, t.desk) AS d, ",
         usd!(),
         " FROM model_calls m \
          JOIN cost_owners c ON c.id = m.owner_id \
-         JOIN sessions s ON s.id = c.root_id \
-         WHERE m.created_at >= ?1 AND s.desk IS NOT NULL GROUP BY s.desk"
+         LEFT JOIN sessions s ON s.id = c.root_id \
+         LEFT JOIN cost_root_tombstones t ON t.root_id = c.root_id \
+         WHERE m.created_at >= ?1 AND COALESCE(s.desk, t.desk) IS NOT NULL GROUP BY d"
     ))
     .bind(rfc3339(first))
     .fetch_all(db)
     .await?;
-    let spent: BTreeMap<String, i64> = spent.into_iter().collect();
+    let mut spent: BTreeMap<String, i64> = spent.into_iter().collect();
+    let month: Vec<&Piece> = reported.iter().filter(|p| p.at_ms >= first).collect();
+    if !month.is_empty() {
+        let desks: BTreeMap<String, String> = sqlx::query_as(
+            "SELECT id, desk FROM sessions WHERE desk IS NOT NULL \
+             UNION ALL SELECT root_id, desk FROM cost_root_tombstones WHERE desk IS NOT NULL",
+        )
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .collect();
+        for p in month {
+            if let Some(desk) = desks.get(&p.root) {
+                let nanos = i64::try_from(p.nanos).unwrap_or(i64::MAX);
+                let e = spent.entry(desk.clone()).or_default();
+                *e = e.saturating_add(nanos);
+            }
+        }
+    }
     Ok(caps
         .into_iter()
         .map(|(name, cap)| BudgetLimit {
@@ -330,7 +360,7 @@ mod tests {
 
         let db = super::super::open_db(&path);
         let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap();
-        let got = read(&db, &dir.0, now).await.unwrap();
+        let got = read(&db, &dir.0, now, &[]).await.unwrap();
         let rows: Vec<_> = got
             .iter()
             .map(|b| {
@@ -357,5 +387,25 @@ mod tests {
                 .unwrap()
                 .contains("anthropic")
         );
+
+        // Review 160-LIM #6: placed harness money this month counts (last
+        // month's does not), and deleting the desk root keeps its spend (H1).
+        let piece = |at_ms: u64, usd: u64| Piece {
+            meter: "m1".into(),
+            k: 0,
+            at_ms,
+            root: desk.to_string(),
+            owner: desk.to_string(),
+            via: "omp".into(),
+            model: "anthropic/m".into(),
+            nanos: usd * 250_000_000,
+            exact: true,
+        };
+        let (first, _) = month_bounds(now);
+        let reported = [piece(now, 2), piece(first - 1, 4)];
+        store.delete_session(desk).await.unwrap();
+        let got = read(&db, &dir.0, now, &reported).await.unwrap();
+        assert_eq!(got[0].id, "agent:ivan");
+        assert_eq!((got[0].spent_usd * 100.0).round() / 100.0, 2.5, "{got:?}");
     }
 }

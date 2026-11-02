@@ -90,7 +90,7 @@ pub(crate) fn parse(model: &str, status: u16, h: &[(String, String)], now_ms: u6
     if status == 429 {
         let retry = get(h, "retry-after-ms")
             .and_then(|v| v.trim().parse::<f64>().ok())
-            .map(|ms| now_ms + ms.max(0.0) as u64)
+            .map(|ms| now_ms.saturating_add(ms.max(0.0) as u64))
             .or_else(|| get(h, "retry-after").and_then(|v| retry_after_ms(v, now_ms)));
         let exhausted = out
             .rates
@@ -229,7 +229,7 @@ fn codex(h: &[(String, String)], out: &mut Parsed) {
         let p = format!("x-{limit_id}-{slot}-");
         let window_secs = get(h, &format!("{p}window-minutes"))
             .and_then(count)
-            .map(|m| m * 60);
+            .map(|m| m.saturating_mul(60));
         let span = window_label(window_secs);
         let (id, label) = if limit_id == "codex" {
             (slot.to_owned(), span)
@@ -314,17 +314,17 @@ pub(crate) fn reset_ms(v: &str, now_ms: u64) -> Option<u64> {
         } else if n >= 1e9 {
             (n * 1000.0) as u64
         } else {
-            now_ms + (n * 1000.0) as u64
+            now_ms.saturating_add((n * 1000.0) as u64)
         });
     }
-    go_duration_ms(v).map(|d| now_ms + d)
+    go_duration_ms(v).map(|d| now_ms.saturating_add(d))
 }
 
 /// `retry-after`: delay seconds or an HTTP date.
 fn retry_after_ms(v: &str, now_ms: u64) -> Option<u64> {
     let v = v.trim();
     match v.parse::<f64>() {
-        Ok(s) if s.is_finite() && s >= 0.0 => Some(now_ms + (s * 1000.0) as u64),
+        Ok(s) if s.is_finite() && s >= 0.0 => Some(now_ms.saturating_add((s * 1000.0) as u64)),
         _ => http_date_ms(v),
     }
 }
@@ -626,7 +626,10 @@ mod tests {
             ]),
             u64::MAX - 1,
         );
-        assert!(p.rates.iter().all(|r| r.resets_at_ms == Some(u64::MAX)), "{p:?}");
+        assert!(
+            p.rates.iter().all(|r| r.resets_at_ms == Some(u64::MAX)),
+            "{p:?}"
+        );
         assert_eq!(p.windows[0].window_secs, Some(u64::MAX));
     }
 }
