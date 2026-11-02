@@ -177,8 +177,9 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", rev = "d207bb5b9db990a611b1552242c1be48ef0cf76a", features = ["hyper"] }
 # Telegram Bot API client (98 §0.1). ZeroVer: exact pin, bumped by hand against its CHANGELOG.
 tgbot = { version = "=0.48.1", default-features = false }
-sha2 = "0.10"
-hmac = "0.12"
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"  # digest 0.11 outputs (hybrid-array) have no `LowerHex`
 # Documents (design doc 59): `yrs` = the Yjs-compatible CRDT the harness holds as authority; `sync` = y-protocols
 # awareness. Pinned exactly: the desktop and helper pin `yjs` 13.6.32, and the two must agree on the wire.
 yrs = { version = "=0.28.0", features = ["sync"] }
@@ -362,7 +363,7 @@ dashmap = "6"
 a2a-types = { package = "a2a-lf", version = "=0.4.2" }
 a2a-client = { package = "a2a-client-lf", version = "=0.2.9" }
 a2a-server = { package = "a2a-server-lf", version = "=0.5.3" }
-rand = "0.9"
+rand = "0.10"
 # Schedule (design doc 34): croner = cron parsing + next occurrence in a chrono TimeZone
 # (local time, DST-correct) + `describe()`; humantime = `every:` durations.
 croner = { version = "4", features = ["chrono"] }
@@ -370,7 +371,7 @@ humantime = "2"
 # secrets vault (37): XChaCha20-Poly1305 file, key in the OS keychain (or a 0600 file),
 # values zeroized in memory, one aho-corasick pass scrubs tool output, rpassword for `--secret-set`.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }  # secrets vault (37)
-chacha20poly1305 = "0.10"  # secrets vault (37)
+chacha20poly1305 = "0.11"  # secrets vault (37)
 zeroize = "1"  # secrets vault (37)
 aho-corasick = "1"  # secrets vault (37)
 rpassword = "7"  # secrets vault (37)

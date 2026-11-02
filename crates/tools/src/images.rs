@@ -72,7 +72,7 @@ pub fn save(bytes: &[u8], mime: &str, dir: &Path) -> anyhow::Result<PathBuf> {
     let ext = format_of(mime)
         .map_err(anyhow::Error::msg)?
         .extensions_str()[0];
-    let hex = format!("{:x}", Sha256::digest(bytes));
+    let hex = hex::encode(Sha256::digest(bytes));
     let stem = &hex[..16];
     let path = dir.join(format!("{stem}.{ext}"));
     if read_regular(&path, bytes.len() as u64 + 1).is_ok_and(|held| held == bytes) {

@@ -1104,8 +1104,8 @@ mod tests {
             blob("AAAA", "application/zip", "file:///r.zip"),
         ];
         let (text, files) = prompt_parts(&blocks, &dir);
-        let hex = format!("{:x}", Sha256::digest(bytes));
-        let pdf_hex = format!("{:x}", Sha256::digest(pdf));
+        let hex = hex::encode(Sha256::digest(bytes));
+        let pdf_hex = hex::encode(Sha256::digest(pdf));
         assert_eq!(
             files,
             [

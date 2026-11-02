@@ -385,7 +385,7 @@ fn invocation_from_row(r: InvRow) -> Result<Invocation, String> {
 }
 
 fn sha16(bytes: &[u8]) -> String {
-    let mut hex = format!("{:x}", Sha256::digest(bytes));
+    let mut hex = hex::encode(Sha256::digest(bytes));
     hex.truncate(16);
     hex
 }

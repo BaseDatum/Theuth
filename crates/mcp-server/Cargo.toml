@@ -24,6 +24,7 @@ parking_lot = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 uuid = { workspace = true }
 # The `Rpc` seam is jsonrpsee's `ClientT`: `rpc::client::Local` in the engine, `WsClient` in `t mcp`.
 jsonrpsee = { workspace = true, features = ["client-core"] }

@@ -214,7 +214,7 @@ pub fn fingerprint(b: &Binary) -> String {
             h.update(url.as_bytes());
         }
     }
-    let hex = format!("{:x}", h.finalize());
+    let hex = hex::encode(h.finalize());
     hex[..16].to_owned()
 }
 

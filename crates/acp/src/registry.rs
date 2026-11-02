@@ -223,7 +223,7 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
         .await
         .with_context(|| format!("download {}", bin.archive))?;
     if let Some(want) = &bin.sha256 {
-        let got = format!("{:x}", Sha256::digest(&bytes));
+        let got = hex::encode(Sha256::digest(&bytes));
         if !got.eq_ignore_ascii_case(want.trim()) {
             bail!(
                 "{}: sha256 mismatch (expected {want}, got {got})",

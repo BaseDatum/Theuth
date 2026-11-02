@@ -69,7 +69,7 @@ pub fn record() -> anyhow::Result<Record> {
 
 /// Hex sha256 of the embedded file.
 pub fn sha256() -> String {
-    format!("{:x}", Sha256::digest(GZ))
+    hex::encode(Sha256::digest(GZ))
 }
 
 /// Verify the hash (proof row 3), gunzip, index.

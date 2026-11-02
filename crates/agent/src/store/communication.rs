@@ -504,7 +504,7 @@ fn fingerprint(recipient: &str, body: &str, reply_to: Option<Uuid>) -> String {
     if let Some(r) = reply_to {
         h.update(r.as_bytes());
     }
-    format!("{:x}", h.finalize())
+    hex::encode(h.finalize())
 }
 
 fn bounded(name: &str, s: &str, max: usize) -> anyhow::Result<()> {

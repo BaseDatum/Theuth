@@ -121,7 +121,7 @@ impl Item {
 /// First 8 hex of sha256 (144 W-i's `?s=<sha8>`).
 pub fn sha8(s: &str) -> String {
     use sha2::Digest as _;
-    let hex = format!("{:x}", sha2::Sha256::digest(s.as_bytes()));
+    let hex = hex::encode(sha2::Sha256::digest(s.as_bytes()));
     hex[..8].to_owned()
 }
 

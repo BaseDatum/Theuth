@@ -18,7 +18,7 @@ const SKILL_PATH: &str = "skills/codeindex.md";
 const STAMP_PATH: &str = "skills/.codeindex.md.sha256";
 
 fn sha(text: &str) -> String {
-    format!("{:x}", sha2::Sha256::digest(text.as_bytes()))
+    hex::encode(sha2::Sha256::digest(text.as_bytes()))
 }
 
 /// Install [`CODEINDEX_SKILL`] under `data_dir`. Writes when the file is

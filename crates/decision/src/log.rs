@@ -130,7 +130,7 @@ pub fn question_hash(ids: &[i64]) -> String {
     for id in ids {
         h.update(id.to_le_bytes());
     }
-    format!("{:x}", h.finalize())
+    hex::encode(h.finalize())
 }
 
 /// What `Stats { family }` answers: today's file folded for one family.

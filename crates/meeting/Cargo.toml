@@ -48,6 +48,7 @@ url = { workspace = true }  # join-link host, Google redirect unwrapping
 gray_matter = { workspace = true }
 regex = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-audio = { workspace = true }
