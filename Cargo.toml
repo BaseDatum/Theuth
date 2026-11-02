@@ -11,7 +11,7 @@ publish = false
 # Knowledge bundle (design doc 10): OKF v0.1 format, and local-only git history via gitoxide
 # (no default features: no network, no interrupt/parking_lot; `parallel` = Arc-based sharing so the handle is Send; skills clone/pull stay on the user's git, 04 §2.2).
 okf = "=0.1.0-alpha.1"
-gix = { version = "0.87", default-features = false, features = ["revision", "blob-diff", "sha1", "parallel"] }
+gix = { version = "0.90", default-features = false, features = ["revision", "blob-diff", "sha1", "parallel"] }
 platform = { path = "crates/platform" }  # OS primitives: process trees, private files, open, service units, PTY program, ORT name, target matrix (design doc 58)
 runtime = { path = "crates/runtime" }
 models = { path = "crates/models" }
