@@ -405,11 +405,11 @@ iocraft = { git = "https://github.com/skymoore/iocraft", branch = "mask-0.9.3" }
 # curve25519-dalek: libsignal (under presage) must build against Signal's fork;
 # only presage's tree resolves this crate, so nothing else is affected.
 curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }
-# anydoc / pdf-inspector: identical to crates.io 0.2.4 / 1.15.0; the tags are
+# anydoc / pdf-inspector: identical to crates.io 0.2.4 / 1.25.2; the tags are
 # used because some networks' proxies refuse static.crates.io downloads of these
-# crates (and of lopdf 0.44's `aes 0.9`, hence 1.15.0 → lopdf 0.42). Drop when that clears.
+# crates. Drop when that clears. (lopdf 0.45's `aes 0.9` is already in the graph.)
 anydoc = { git = "https://github.com/firecrawl/anydoc", tag = "v0.2.4" }
-pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", tag = "v1.15.0" }
+pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", tag = "v1.25.2" }
 # obscura vendors corrected taffy/cosmic-text under `vendor/` and patches them in its own
 # workspace; a git dependency's patches do not propagate, so we point at the same copies (23 §2).
 taffy = { git = "https://github.com/skymoore/obscura", branch = "main" }
