@@ -397,10 +397,11 @@ brush-core = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0.5
 brush-parser = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0.5" }
 # iocraft: `TextInput.newline_modifiers` so a multiline input inserts a newline
 # only on Shift+Enter and leaves plain Enter to the parent (submit),
-# `TerminalEvent::Paste` forwarding crossterm's bracketed-paste events, and
-# `TextInput.mask` for password fields (37 §5). Branch `mask-0.9` =
-# tag iocraft-v0.9.1 + three commits (also derives `Default` for `KeyModifiers`).
-iocraft = { git = "https://github.com/skymoore/iocraft", branch = "mask-0.9" }
+# `TextInput.ignore_paste` so the owner, not the input, handles upstream's
+# `TerminalEvent::BracketedPaste`, and `TextInput.mask` for password fields (37 §5).
+# Branch `mask-0.9.3` = tag iocraft-v0.9.3 + three commits (also derives `Default`
+# for `KeyModifiers`).
+iocraft = { git = "https://github.com/skymoore/iocraft", branch = "mask-0.9.3" }
 # curve25519-dalek: libsignal (under presage) must build against Signal's fork;
 # only presage's tree resolves this crate, so nothing else is affected.
 curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }

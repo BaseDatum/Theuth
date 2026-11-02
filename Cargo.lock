@@ -9623,8 +9623,8 @@ checksum = "2f0fb0570afe1fed943c5c3d4102d5358592d8625fda6a0007fdbe65a92fba96"
 
 [[package]]
 name = "iocraft"
-version = "0.9.1"
-source = "git+https://github.com/skymoore/iocraft?branch=mask-0.9#b25ae1f3f6280cc2a1da55a2c80ad1c2f8fdbcd8"
+version = "0.9.3"
+source = "git+https://github.com/skymoore/iocraft?branch=mask-0.9.3#8d567c23b80d96527f7b2cf08e5e0a4a0cf6818f"
 dependencies = [
  "bitflags 2.13.1",
  "crossterm",
@@ -9638,8 +9638,8 @@ dependencies = [
 
 [[package]]
 name = "iocraft-macros"
-version = "0.2.4"
-source = "git+https://github.com/skymoore/iocraft?branch=mask-0.9#b25ae1f3f6280cc2a1da55a2c80ad1c2f8fdbcd8"
+version = "0.2.5"
+source = "git+https://github.com/skymoore/iocraft?branch=mask-0.9.3#8d567c23b80d96527f7b2cf08e5e0a4a0cf6818f"
 dependencies = [
  "proc-macro2",
  "quote",

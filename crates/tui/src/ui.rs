@@ -163,7 +163,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             let Some(mut events) = events else { return };
             // Kitty keyboard protocol: without it Shift+Enter is a plain `\r`.
             // Pushed after iocraft entered the alternate screen (separate stack).
-            // Bracketed paste: a paste arrives as one `TerminalEvent::Paste`
+            // Bracketed paste: a paste arrives as one `TerminalEvent::BracketedPaste`
             // instead of a key per character.
             let _ = crossterm::execute!(
                 std::io::stdout(),
@@ -353,7 +353,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                     }) if kind != KeyEventKind::Release => {
                         m.terminal_type(code, modifiers, &commands);
                     }
-                    TerminalEvent::Paste(text) => m.terminal_paste(text, &commands),
+                    TerminalEvent::BracketedPaste(text) => m.terminal_paste(text, &commands),
                     _ => {}
                 }
                 return;
@@ -365,7 +365,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                 ..
             }) = event
             else {
-                if let TerminalEvent::Paste(text) = event {
+                if let TerminalEvent::BracketedPaste(text) = event {
                     // Search paste is query text at the cursor: never an
                     // attachment, paste token or slash command (49 §6.1).
                     if m.search_open() {
@@ -844,6 +844,7 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
                         auto_grow: true,
                         newline_modifiers: KeyModifiers::SHIFT,
                         mask,
+                        ignore_paste: true,
                         on_change: move |v: String| {
                             let mut m = model.write();
                             m.sync_slash(&v);
@@ -1724,6 +1725,7 @@ fn search_box(
                         handle,
                         has_focus: query_focus,
                         value: s.query.clone(),
+                        ignore_paste: true,
                         on_change: move |v: String| model.write().search_edit(v),
                     )
                 }
