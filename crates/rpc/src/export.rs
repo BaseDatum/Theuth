@@ -752,7 +752,28 @@ async fn export_bindings() {
         agent::SessionMemory,
         agent::EndlessProgress,
         agent::UnitFilter,
-        agent::EndlessConfig
+        agent::EndlessConfig,
+        agent::CostBasis,
+        agent::CostCubeCursor,
+        agent::CostRoot,
+        agent::CostRootEntry,
+        agent::CostModel,
+        agent::CostCells,
+        agent::CostReason,
+        agent::CostCubeMeta,
+        agent::CostCube,
+        agent::CostCubeChanged,
+        agent::CostCallsCursor,
+        agent::CostCallsQuery,
+        agent::CostCall,
+        agent::CostCallsPage,
+        agent::limits::LimitStatus,
+        agent::limits::UsageWindow,
+        agent::limits::RateLimit,
+        agent::limits::Balance,
+        agent::limits::ProviderLimits,
+        agent::limits::BudgetLimit,
+        agent::limits::UsageLimits
     );
 
     use crate::ApiServer;
