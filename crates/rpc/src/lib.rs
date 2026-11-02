@@ -373,8 +373,14 @@ mod tests {
             .register_async_method("wait_closed", |_, tx, ext| async move {
                 let peer = ext.get::<RpcPeer>().cloned().expect("authenticated");
                 let _ = tx.send(("waiting", peer.id()));
+                // Detached like production cleanup: jsonrpsee cancels the call
+                // itself once its socket is gone.
+                let watch = peer.clone();
+                tokio::spawn(async move {
+                    watch.closed().await;
+                    let _ = tx.send(("closed", watch.id()));
+                });
                 peer.closed().await;
-                let _ = tx.send(("closed", peer.id()));
                 peer.id()
             })
             .unwrap();
