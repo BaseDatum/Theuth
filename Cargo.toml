@@ -370,7 +370,9 @@ croner = { version = "4", features = ["chrono"] }
 humantime = "2"
 # secrets vault (37): XChaCha20-Poly1305 file, key in the OS keychain (or a 0600 file),
 # values zeroized in memory, one aho-corasick pass scrubs tool output, rpassword for `--secret-set`.
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }  # secrets vault (37)
+# keyring 4 default `v1` = the 3.x API over apple-native (login keychain, same generic-password
+# service/account lookup as 3's `apple-native`), windows-native and zbus secret-service stores.
+keyring = "4"  # secrets vault (37)
 chacha20poly1305 = "0.11"  # secrets vault (37)
 zeroize = "1"  # secrets vault (37)
 aho-corasick = "1"  # secrets vault (37)

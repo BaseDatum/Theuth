@@ -49,7 +49,7 @@ const BACKEND: &str = if cfg!(target_os = "macos") {
 } else if cfg!(windows) {
     "Windows Credential Manager (CredReadW/CredWriteW, CRED_PERSIST_LOCAL_MACHINE)"
 } else {
-    "Secret Service (keyring sync-secret-service)"
+    "Secret Service (keyring zbus-secret-service)"
 };
 
 /// `Auto` falls back to the file only when the *store* failed (no keychain,
