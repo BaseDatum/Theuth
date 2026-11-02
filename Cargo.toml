@@ -448,6 +448,7 @@ a2a-client-lf = { path = "vendor/a2a-client" }
 # route), no crypto link-lib of its own, and `sqlcipher/boringssl_evp_mac.h` supplying the
 # OpenSSL-3-only EVP_MAC surface over BoringSSL's HMAC (58 §0, §2.2). Drop when libsqlite3-sys
 # grows a BoringSSL provider option, or Signal's store stops needing SQLCipher.
+# Held at 0.36 (crates.io 0.39.1): presage-store-sqlite and rusqlite 0.38 (unjar) need ^0.36, sqlx-sqlite 0.9 <0.38.
 libsqlite3-sys = { path = "vendor/libsqlite3-sys" }
 
 # boring-sys (libsignal's BoringSSL, also the crypto behind vendor/libsqlite3-sys): upstream emits
