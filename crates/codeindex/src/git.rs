@@ -141,7 +141,7 @@ impl Git {
             let (a, b) = (self.rev(a)?, self.rev(b)?);
             let base = self
                 .repo
-                .merge_base(a, b)
+                .merge_base(a, b)?
                 .with_context(|| format!("no merge base for {spec}"))?
                 .detach();
             return Ok(Range::Commits {

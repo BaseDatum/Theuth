@@ -11,7 +11,7 @@ publish = false
 # Knowledge bundle (design doc 10): OKF v0.2 format (okf-core only: no validator/studio), and local-only git history via gitoxide
 # (no default features: no network, no interrupt/parking_lot; `parallel` = Arc-based sharing so the handle is Send; skills clone/pull stay on the user's git, 04 §2.2).
 okf = { version = "0.2.7", default-features = false }
-gix = { version = "0.87", default-features = false, features = ["revision", "blob-diff", "sha1", "parallel"] }
+gix = { version = "0.90", default-features = false, features = ["revision", "blob-diff", "sha1", "parallel"] }
 platform = { path = "crates/platform" }  # OS primitives: process trees, private files, open, service units, PTY program, ORT name, target matrix (design doc 58)
 runtime = { path = "crates/runtime" }
 models = { path = "crates/models" }
@@ -146,16 +146,16 @@ bollard = "0.21"
 # preview; `csv` parses table artifacts; `resvg` (already transitive via typst) rasterises SVG artifacts.
 # typst-as-lib's kit features = embedded fonts + system font scan through typst-kit; `typst-layout`
 # owns `PagedDocument` (not re-exported by `typst` 0.15).
-typst-as-lib = { version = "0.16", features = ["typst-kit-fonts", "typst-kit-embed-fonts"] }
+typst-as-lib = { version = "0.17", features = ["typst-kit-fonts", "typst-kit-embed-fonts"] }
 typst = "0.15"
 typst-layout = "0.15"
 # 35 §3.2 Archive kind: `zip` reads the central directory only (no compression features: nothing
-# is ever inflated); `bzip2` (already in the lock through zip 0.6) streams `.tar.bz2` headers.
-zip = { version = "8", default-features = false }
-bzip2 = "0.4"
+# is ever inflated); `bzip2` streams `.tar.bz2` headers.
+zip = { version = "9", default-features = false }
+bzip2 = "0.6"
 typst-pdf = "0.15"
 typst-render = "0.15"
-resvg = "0.47"
+resvg = "0.47"  # held at 0.47: typst-render/krilla-svg (typst 0.15, latest) require ^0.47; 0.49 would add a second resvg+usvg
 csv = "1.4"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "io-util", "process", "signal"] }
@@ -171,7 +171,7 @@ unicode-width = "0.2"
 # json-render fences (design doc 30 §4): repair model-authored JSON before serde; same algorithm as the desktop's `jsonrepair`.
 jsonrepair-rs = "0.2"
 # App argument re-check before invocation (design doc 46 §4); no `$ref` retrieval over http/file.
-jsonschema = { version = "0.33", default-features = false }
+jsonschema = { version = "0.60", default-features = false }
 # OAuth login (design doc 05). reqwest major must match rmcp's.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form", "query", "http2", "stream"] }
 # Fork `feat/shared-message-attachments` = upstream 2.31.1 (ab4d193a) + forwarded/unfurled
@@ -242,7 +242,7 @@ microsandbox = { version = "=0.7.13", default-features = false, features = ["loc
 prost = "0.14"
 prost-types = "0.14"
 prost-build = "0.14"
-protox = "0.9"
+protox = "0.10"
 bytes = "1"
 h2 = "0.4"
 # Web search/fetch (design doc 16): one HTML parser for markdown and text; wiremock for provider contract tests.
@@ -265,7 +265,7 @@ monty-alloc = { version = "=1.4.0", features = ["exit-code"] }
 regex = "1"
 # PTY jobs (design doc 22): wezterm's pty layer and a vt100 screen for the model.
 portable-pty = "0.9"
-vt100 = "0.16"
+vt100 = "0.18"
 # grep tool (12 §10): ripgrep's walker and matcher crates
 ignore = "0.4.33"
 grep-regex = "0.1.14"
@@ -276,7 +276,7 @@ presage = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf
 presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8" }
 qrcode = { version = "0.14", default-features = false }
 # Snap compaction frames (design doc 13 §0.4): 8-bit grayscale encode only; not `image`.
-png = "0.17"
+png = "0.18"
 # Agent Client Protocol (design doc 06): external harnesses as subagents, `t --acp`.
 # Pinned exactly, only the v1 schema module is used (06 §7). 3.6.0 (141 §4.1):
 # `process`/`stdio` gate the native transports, `unstable_end_turn_token_usage`

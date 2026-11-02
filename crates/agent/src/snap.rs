@@ -302,10 +302,12 @@ mod tests {
         assert_eq!(a.len(), 1);
         assert!(rasterize(&[], &shape).is_empty());
 
-        let mut reader = png::Decoder::new(&a[0][..]).read_info().unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(&a[0][..]))
+            .read_info()
+            .unwrap();
         let info = reader.info();
         assert_eq!((info.width, info.height), (shape.frame, 2 * shape.cell_h));
-        let mut px = vec![0u8; reader.output_buffer_size()];
+        let mut px = vec![0u8; reader.output_buffer_size().unwrap()];
         reader.next_frame(&mut px).unwrap();
         let glyph_rows = &px[..(shape.frame as usize) * GLYPH_H];
         assert!(glyph_rows.contains(&0));
