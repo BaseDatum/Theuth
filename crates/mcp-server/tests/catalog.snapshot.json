@@ -841,6 +841,10 @@
               "description": "Move segments to an existing label.",
               "type": "object",
               "properties": {
+                "op": {
+                  "type": "string",
+                  "const": "Relabel"
+                },
                 "segments": {
                   "description": "Segment ids.",
                   "type": "array",
@@ -853,10 +857,6 @@
                 "speaker": {
                   "description": "Existing label id.",
                   "type": "string"
-                },
-                "op": {
-                  "type": "string",
-                  "const": "Relabel"
                 }
               },
               "required": [
@@ -869,6 +869,10 @@
               "description": "`Speaker 2` → `John`.",
               "type": "object",
               "properties": {
+                "op": {
+                  "type": "string",
+                  "const": "Rename"
+                },
                 "speaker": {
                   "description": "Label id.",
                   "type": "string"
@@ -876,10 +880,6 @@
                 "name": {
                   "description": "New display name.",
                   "type": "string"
-                },
-                "op": {
-                  "type": "string",
-                  "const": "Rename"
                 }
               },
               "required": [
@@ -892,6 +892,10 @@
               "description": "Join adjacent segments (in transcript order) into the first; its speaker wins.",
               "type": "object",
               "properties": {
+                "op": {
+                  "type": "string",
+                  "const": "Merge"
+                },
                 "segments": {
                   "description": "Segment ids, at least two, consecutive in the transcript.",
                   "type": "array",
@@ -900,10 +904,6 @@
                     "format": "uint32",
                     "minimum": 0
                   }
-                },
-                "op": {
-                  "type": "string",
-                  "const": "Merge"
                 }
               },
               "required": [
@@ -915,6 +915,10 @@
               "description": "Cut a segment before word `at_word` (`0 < at_word < words.len()`).",
               "type": "object",
               "properties": {
+                "op": {
+                  "type": "string",
+                  "const": "Split"
+                },
                 "segment": {
                   "description": "Segment id.",
                   "type": "integer",
@@ -926,10 +930,6 @@
                   "type": "integer",
                   "format": "uint32",
                   "minimum": 0
-                },
-                "op": {
-                  "type": "string",
-                  "const": "Split"
                 }
               },
               "required": [
@@ -942,6 +942,10 @@
               "description": "Replace a segment's text; the words keep their times.",
               "type": "object",
               "properties": {
+                "op": {
+                  "type": "string",
+                  "const": "FixText"
+                },
                 "segment": {
                   "description": "Segment id.",
                   "type": "integer",
@@ -951,10 +955,6 @@
                 "text": {
                   "description": "New text.",
                   "type": "string"
-                },
-                "op": {
-                  "type": "string",
-                  "const": "FixText"
                 }
               },
               "required": [
@@ -967,6 +967,10 @@
               "description": "Make (or update) a profile from this label's voice and link the label to it.",
               "type": "object",
               "properties": {
+                "op": {
+                  "type": "string",
+                  "const": "Enroll"
+                },
                 "speaker": {
                   "description": "Label id.",
                   "type": "string"
@@ -981,10 +985,6 @@
                     "string",
                     "null"
                   ]
-                },
-                "op": {
-                  "type": "string",
-                  "const": "Enroll"
                 }
               },
               "required": [
@@ -2008,16 +2008,16 @@
               "description": "The work continues in follow-up tasks that naturally follow this one.",
               "type": "object",
               "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "follow_ups_filed"
+                },
                 "tasks": {
                   "description": "The follow-ups.",
                   "type": "array",
                   "items": {
                     "$ref": "#/$defs/TaskId"
                   }
-                },
-                "type": {
-                  "type": "string",
-                  "const": "follow_ups_filed"
                 }
               },
               "required": [
