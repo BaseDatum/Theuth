@@ -1461,4 +1461,24 @@ mod tests {
         );
         assert_eq!(v.get("gh", 0).unwrap().as_str(), "ghp_0123456789");
     }
+
+    /// `fixtures/vault-pre-dep-w2b`: a data dir written by the pre-bump code
+    /// (chacha20poly1305 0.10, rand 0.9, base64 0.22) under a dummy file key:
+    /// `secrets.sqlite` rows plus an unmigrated pre-67 `secrets.vault`. The
+    /// current crypto stack must open every byte of it.
+    #[tokio::test]
+    async fn vault_written_by_old_crypto_stack_still_opens() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/vault-pre-dep-w2b");
+        let dir = tempfile::tempdir().unwrap();
+        for f in ["secrets.key", "secrets.sqlite", LEGACY_FILE] {
+            std::fs::copy(fixture.join(f), dir.path().join(f)).unwrap();
+        }
+        let v = open(dir.path()).await;
+        assert_eq!(v.get("gh", 0).unwrap().as_str(), "dummy-old-value-2");
+        assert_eq!(v.get("gh", 1).unwrap().as_str(), "dummy-old-value-1");
+        assert_eq!(
+            v.get("legacy_tok", 0).unwrap().as_str(),
+            "legacy-dummy-value-1"
+        );
+    }
 }
