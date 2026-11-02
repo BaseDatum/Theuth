@@ -35,7 +35,7 @@ Design: `153-voice-anywhere.md` §10.2, §11, §14.2, §16 row 19. Worktree `fea
 `native::timeout_is_clamped`, `native::exec_without_shell` (`/bin/echo` gets `x; rm -f M; echo pwned > M` as one argv entry, prints it, M never
 appears), `native::timeout_kills` (`/bin/sleep 10` with 1 s), `native::stdin_is_fed_and_nonzero_exit_is_not_ok`,
 `native::applescript_returns_result_line` (live `osascript`, `return 1 + 1` → `2\nexit 0 · …`; `return "x"; echo pwned` → syntax error, no app),
-`tools::all_registers_computer_tools_then_native_with_screenshot_read_only`, `tools::prompt_block_mentions_command_marker`.
+`tools::all_registers_computer_tools_then_native_with_their_risks` (named `…_with_screenshot_read_only` until 161), `tools::prompt_block_mentions_command_marker`.
 
 ## Gates
 - `build-lock mbx clippy -p computer -p tools --tests` → `Finished dev profile … 18.02s`, 0 warnings.

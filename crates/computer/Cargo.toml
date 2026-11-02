@@ -3,7 +3,7 @@ name = "computer"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "Screenshot and pointer/keyboard tools over the user's desktop (design doc 27)"
+description = "Screenshot, pointer/keyboard, accessibility-tree and clipboard tools over the user's desktop (design docs 27, 161)"
 
 [dependencies]
 runtime = { workspace = true }
@@ -22,6 +22,10 @@ enigo = { workspace = true }
 image = { workspace = true }
 sha2 = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+# 161: accessibility tree + headless ref actions (`a11y/`); one adapter crate per OS below.
+agent-desktop-core = { workspace = true }
+# 161: the clipboard tools (`clipboard.rs`).
+arboard = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-graphics = { workspace = true }
@@ -32,12 +36,15 @@ objc2-application-services = { workspace = true }
 objc2-core-foundation = { workspace = true, features = ["CFURL", "CFNumber", "CFArray"] }
 objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "libc"] }
 objc2-foundation = { workspace = true }
+# 161: agent-desktop's AX adapter (`a11y/session.rs`).
+agent-desktop-macos = { workspace = true }
 
 # 149 WE1: UI Automation reader (`ax.rs`, `windows_uia`). 0.62 is the `windows` the graph already
 # carries through xcap 0.9.8 (no workspace entry exists; `meeting` pins =0.54.0 for flexaudio),
 # so this adds a dependency edge, not a crate version. `Win32_System_Ole` + `Win32_System_Com`
 # gate the `VARIANT` struct; `Win32_UI_WindowsAndMessaging` is the foreground window and
 # `GetWindowTextW` fallback; `Win32_System_Threading` is `QueryFullProcessImageNameW`.
+# 161: `Win32_UI_HiDpi` is `SetProcessDpiAwarenessContext` (per-monitor-v2 at plugin start).
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
@@ -46,8 +53,15 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# 161: agent-desktop's UIA adapter (`a11y/session.rs`).
+agent-desktop-windows = { workspace = true }
+
+# 161: agent-desktop's AT-SPI adapter (`a11y/session.rs`).
+[target.'cfg(target_os = "linux")'.dependencies]
+agent-desktop-linux = { workspace = true }
 
 [dev-dependencies]
 figment = { workspace = true }
