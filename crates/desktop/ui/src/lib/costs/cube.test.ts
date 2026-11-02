@@ -5,6 +5,7 @@ import type { CostCube } from '@/rpc/bindings/CostCube'
 import type { CostRootEntry } from '@/rpc/bindings/CostRootEntry'
 import { costsFixture } from '@/dev/costs-fixture'
 import { breakdown, emptyCube, heat, HOUR_MS, index, merge, options, previousPeriod, series, sessions, toCsv, tokenSeries, totals } from './cube'
+import { resetIn } from './format'
 import { granBlock, resolveRange, validateCostsSearch } from './search'
 
 type Cell = { hour: number; root?: number; model?: number; provider?: number; kind?: number; via?: number; basis?: number; usd?: number; calls?: number; failed?: number; input?: number; output?: number; read?: number; write?: number }
@@ -128,16 +129,16 @@ test('filters: model aliases share a name, owner via the root, title search, and
   expect(o.owner.map((x) => [x.id, x.kind])).toEqual([['agent:builder', 'agent']])
 })
 
-test('top 7 + other: ten groups fold the three smallest into other; the stack sums to the total', () => {
+test('top 6 + other: ten groups fold the four smallest into other; the stack sums to the total', () => {
   const models = Array.from({ length: 10 }, (_, i) => ({ id: `m${i}`, name: `m${i}`, provider: 'anthropic' }))
   const ix = index(cube(models.map((_, i) => ({ hour: 10, model: i, usd: i + 1 })), { models }), 'UTC')
   const s = series(ix, { from: 10 * HOUR_MS, to: 11 * HOUR_MS, gran: 'hour', groupBy: 'model', metric: 'usd', filters: {} })
-  expect(s.series.map((x) => x.label)).toEqual(['m9', 'm8', 'm7', 'm6', 'm5', 'm4', 'm3', 'other'])
+  expect(s.series.map((x) => x.label)).toEqual(['m9', 'm8', 'm7', 'm6', 'm5', 'm4', 'other'])
   expect(s.series.at(-1)!.color).toBe('var(--chart-6)')
-  expect(s.rows[0]!.other).toBe(1 + 2 + 3)
+  expect(s.rows[0]!.other).toBe(1 + 2 + 3 + 4)
   expect(s.rows[0]!.total).toBe(55)
   expect(s.total).toBe(55)
-  expect(new Set(s.series.map((x) => x.color)).size).toBe(8)
+  expect(new Set(s.series.map((x) => x.color)).size).toBe(7)
 })
 
 test('previous period: the dashed line is the equal run of buckets before, the KPI window the equal hours before', () => {
@@ -203,7 +204,8 @@ test('URL search: validate drops junk and defaults, survives the router round tr
   expect(resolveRange({ range: 'today' }, now, 'America/New_York', null)).toEqual({ from: Date.parse('2026-11-02T05:00:00Z'), to: now })
   expect(resolveRange({ range: 'mtd' }, now, 'Europe/London', null).from).toBe(Date.parse('2026-11-01T00:00:00Z'))
   expect(resolveRange({}, now, 'Europe/London', null).from).toBe(Date.parse('2026-10-04T00:00:00+01:00'))
-  expect(granBlock('UTC', resolveRange({ range: '30d' }, now, 'UTC', null), 'hour')).toMatch(/more than 400/)
+  expect(granBlock('UTC', resolveRange({ range: '30d' }, now, 'UTC', null), 'hour')).toMatch(/more than 120/)
+  expect(granBlock('UTC', resolveRange({ range: '7d' }, now, 'UTC', null), 'hour')).toMatch(/more than 120/) // 6 days + today > 120 hours
   expect(granBlock('UTC', resolveRange({ range: 'today' }, now, 'UTC', null), 'day')).toMatch(/one bucket/)
   expect(granBlock('UTC', resolveRange({ range: '90d' }, now, 'UTC', null), 'day')).toBeNull()
 })
@@ -230,4 +232,13 @@ test('perf bound: 100 k cells — index once, then a full page query (series, to
   const t0 = performance.now()
   run()
   expect(performance.now() - t0).toBeLessThan(50)
+})
+
+test('limit resets read as one short line: minutes, hours + minutes within a day, then a day label', () => {
+  const now = new Date(2026, 10, 2, 17, 30).getTime()
+  expect(resetIn(now - 1, now)).toBe('now')
+  expect(resetIn(now + 48 * 60_000, now)).toBe('in 48m')
+  expect(resetIn(now + 108 * 60_000, now)).toBe('in 1h 48m')
+  expect(resetIn(new Date(2026, 10, 5, 19, 18).getTime(), now)).toBe('Thu 19:18')
+  expect(resetIn(new Date(2026, 10, 20, 9, 0).getTime(), now)).toBe('20 Nov')
 })

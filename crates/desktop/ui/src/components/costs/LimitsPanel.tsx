@@ -12,7 +12,7 @@ import type { RateLimit } from '@/rpc/bindings/RateLimit'
 import type { UsageWindow } from '@/rpc/bindings/UsageWindow'
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
 import { Panel, Tag, type Tone } from '@/components/costs/ui'
-import { ago, compact, int, usd, usdShort, when } from '@/lib/costs/format'
+import { ago, compact, int, resetIn, usd, usdShort, when } from '@/lib/costs/format'
 import { useUsageLimits } from '@/lib/costs/queries'
 
 const WARN = 'var(--status-warning-fg)'
@@ -46,10 +46,10 @@ const GAUGE_SIZE = { width: 70, height: 62 }
 /** One subscription window: a 210°→-30° arc clamped at 100 %, the real percent in the middle, label and reset below. */
 function Gauge({ w, now }: { w: UsageWindow; now: number }) {
   const real = Math.round(w.used_fraction * 100)
-  const reset = w.resets_at_ms == null ? null : `resets ${when(w.resets_at_ms, now)}`
+  const reset = w.resets_at_ms == null ? null : resetIn(w.resets_at_ms, now)
   const data = useMemo(() => [{ v: clampPct(w.used_fraction), fill: heat(w.used_fraction, 0.75, 0.9) }], [w.used_fraction])
   return (
-    <div className="relative flex w-[70px] shrink-0 flex-col items-center">
+    <div className="relative flex w-[76px] shrink-0 flex-col items-center">
       <ChartContainer config={GAUGE_CONFIG} initialDimension={GAUGE_SIZE} className="aspect-auto h-[62px] w-[70px]">
         <RadialBarChart data={data} cx={35} cy={33} innerRadius={23} outerRadius={29} barSize={6} startAngle={210} endAngle={-30}>
           <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
@@ -62,7 +62,7 @@ function Gauge({ w, now }: { w: UsageWindow; now: number }) {
                 hideIndicator
                 formatter={() => (
                   <span className="font-mono">
-                    used {real}%{reset && ` · ${reset}`}
+                    used {real}%{reset && ` · resets ${reset}`}
                   </span>
                 )}
               />
@@ -71,8 +71,14 @@ function Gauge({ w, now }: { w: UsageWindow; now: number }) {
         </RadialBarChart>
       </ChartContainer>
       <span className="pointer-events-none absolute inset-x-0 top-[23px] text-center font-mono text-[14px] font-semibold">{real}%</span>
-      <span className="-mt-0.5 text-center text-[11px] text-fg-secondary">{w.label}</span>
-      {reset && <span className="text-center font-mono text-[10px] text-fg-tertiary">{reset}</span>}
+      <span className="-mt-0.5 max-w-full truncate text-center text-[11px] whitespace-nowrap text-fg-secondary" title={w.label}>
+        {w.label}
+      </span>
+      {reset && (
+        <span className="max-w-full truncate text-center font-mono text-[10px] whitespace-nowrap text-fg-tertiary" title={`resets ${reset}`}>
+          {reset}
+        </span>
+      )}
     </div>
   )
 }

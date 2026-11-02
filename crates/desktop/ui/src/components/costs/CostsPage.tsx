@@ -24,8 +24,9 @@ import { LedgerTable } from './LedgerTable'
 import { LimitsPanel } from './LimitsPanel'
 import { RangeBar } from './RangeBar'
 import { SessionsTable } from './SessionsTable'
-import { SpendChart } from './SpendChart'
+import { type ChartView, SpendChart } from './SpendChart'
 import { Tokens, When } from './When'
+import { useStaged } from './ui'
 
 const route = getRouteApi('/costs')
 
@@ -47,7 +48,10 @@ function useNow(): number {
 const fmtDate = (ms: number) => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 
 export function CostsPage() {
+  // §6.5: the controls follow `search` at once; everything computed or drawn from the cube follows `view`, a deferred
+  // copy, so a click commits the control first and the panels catch up in an interruptible render.
   const search = route.useSearch()
+  const view = useDeferredValue(search)
   const navigate = route.useNavigate()
   const api = useApi()
   const sidebar = useSidebar()
@@ -57,15 +61,20 @@ export function CostsPage() {
   const ix = useCostIndex(tz)
   const meta = ix.cube.meta
   const firstMs = meta.first_call_ms ?? (ix.n ? ix.minHour * HOUR_MS : null)
-  const { range, from, to } = search
-  const r = useMemo(() => resolveRange({ range, from, to }, now, tz, firstMs), [range, from, to, now, tz, firstMs])
-  const gran = effectiveGran(search, tz, r)
-  const fkey = JSON.stringify(filtersOf(search))
+  // Urgent (controls).
+  const rNow = useMemo(() => resolveRange({ range: search.range, from: search.from, to: search.to }, now, tz, firstMs), [search.range, search.from, search.to, now, tz, firstMs])
+  const granNow = effectiveGran(search, tz, rNow)
+  const fkeyNow = JSON.stringify(filtersOf(search))
+  const filtersNow = useMemo((): Filters => JSON.parse(fkeyNow), [fkeyNow])
+  const ctl = useMemo<ChartView>(() => ({ groupBy: search.by ?? 'model', metric: search.metric ?? 'usd', compare: search.compare !== false }), [search.by, search.metric, search.compare])
+  // Deferred (panels).
+  const r = useMemo(() => resolveRange({ range: view.range, from: view.from, to: view.to }, now, tz, firstMs), [view.range, view.from, view.to, now, tz, firstMs])
+  const gran = effectiveGran(view, tz, r)
+  const fkey = JSON.stringify(filtersOf(view))
   const filters = useMemo((): Filters => JSON.parse(fkey), [fkey])
-  const by = search.by ?? 'model'
-  const metric = search.metric ?? 'usd'
-  const compare = search.compare !== false
-  const rangeLabel = search.range === 'custom' ? 'range' : PRESET_LABEL[search.range ?? '30d']
+  const chartView = useMemo<ChartView>(() => ({ groupBy: view.by ?? 'model', metric: view.metric ?? 'usd', compare: view.compare !== false }), [view.by, view.metric, view.compare])
+  const { groupBy: by, metric, compare } = chartView
+  const rangeLabel = view.range === 'custom' ? 'range' : PRESET_LABEL[view.range ?? '30d']
 
   const set = useCallback((patch: Partial<CostsSearch>) => void navigate({ search: (prev) => validateCostsSearch({ ...prev, ...patch }) }), [navigate])
   const addFilter = useCallback(
@@ -78,10 +87,14 @@ export function CostsPage() {
   const onRange = useCallback((f: number, t: number) => set({ range: 'custom', from: f, to: t, gran: undefined }), [set])
   const out = useMemo(() => series(ix, { ...r, gran, groupBy: by, metric, filters }), [ix, r, gran, by, metric, filters])
   const opts = useMemo(() => options(ix, r, filters), [ix, r, filters])
-  // The panels below the fold follow a deferred view (§6.5).
-  const view = useMemo(() => ({ ix, r, gran, filters }), [ix, r, gran, filters])
-  const d = useDeferredValue(view)
-  const rows = useMemo(() => sessions(d.ix, d.r, d.filters), [d])
+  // Below the main chart each card takes the new view a frame or more later (Breakdowns stages its five cards itself),
+  // so a range change commits in frame-sized pieces instead of one long one.
+  const panels = useMemo(() => ({ ix, r, gran, filters, rangeLabel }), [ix, r, gran, filters, rangeLabel])
+  const p1 = useStaged(panels, 1)
+  const pWhen = useStaged(panels, 7)
+  const pTok = useStaged(panels, 8)
+  const p3 = useStaged(panels, 9)
+  const rows = useMemo(() => sessions(p3.ix, p3.r, p3.filters), [p3])
 
   const exportCsv = () => {
     const name = `theuth-costs-${new Date(r.from).toISOString().slice(0, 10)}-${new Date(r.to).toISOString().slice(0, 10)}-${gran}-${by}`
@@ -113,37 +126,26 @@ export function CostsPage() {
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="@container mx-auto flex max-w-[1600px] flex-col gap-3.5 px-3 pt-3.5 pb-5 md:px-4">
-          <RangeBar search={search} r={r} gran={gran} tz={tz} now={now} set={set} />
-          <FilterChips options={opts} filters={filters} set={set} />
+          <RangeBar search={search} r={rNow} gran={granNow} tz={tz} now={now} set={set} />
+          <FilterChips options={opts} filters={filtersNow} set={set} />
           {ix.n === 0 ? (
             <p className="rounded-xl border border-border bg-card px-4 py-10 text-center text-sm text-fg-tertiary">No model calls recorded yet.</p>
           ) : (
             <>
               <Kpis ix={ix} r={r} filters={filters} now={now} rangeLabel={rangeLabel} />
-              <SpendChart
-                out={out}
-                metric={metric}
-                groupBy={by}
-                compare={compare}
-                rangeLabel={rangeLabel}
-                onGroupBy={onGroupBy}
-                onMetric={onMetric}
-                onCompare={onCompare}
-                onFilter={addFilter}
-                onRange={onRange}
-              />
+              <SpendChart out={out} view={chartView} ctl={ctl} rangeLabel={rangeLabel} onGroupBy={onGroupBy} onMetric={onMetric} onCompare={onCompare} onFilter={addFilter} onRange={onRange} />
             </>
           )}
           <LimitsPanel now={now} />
           {ix.n > 0 && (
             <>
-              <Breakdowns ix={d.ix} r={d.r} filters={d.filters} rangeLabel={rangeLabel} onFilter={addFilter} />
+              <Breakdowns ix={p1.ix} r={p1.r} filters={p1.filters} rangeLabel={p1.rangeLabel} onFilter={addFilter} />
               <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr))]">
-                <When ix={d.ix} r={d.r} gran={d.gran} filters={d.filters} rangeLabel={rangeLabel} />
-                <Tokens ix={d.ix} r={d.r} gran={d.gran} filters={d.filters} rangeLabel={rangeLabel} />
+                <When ix={pWhen.ix} r={pWhen.r} filters={pWhen.filters} rangeLabel={pWhen.rangeLabel} />
+                <Tokens ix={pTok.ix} r={pTok.r} gran={pTok.gran} filters={pTok.filters} rangeLabel={pTok.rangeLabel} />
               </div>
-              <SessionsTable rows={rows} title={`Sessions · ${rangeLabel}`} now={now} onFilter={addFilter} />
-              <LedgerTable ix={d.ix} range={d.r} filters={d.filters} now={now} />
+              <SessionsTable rows={rows} title={`Sessions · ${p3.rangeLabel}`} now={now} onFilter={addFilter} />
+              <LedgerTable ix={p3.ix} range={p3.r} filters={p3.filters} now={now} />
             </>
           )}
           {(meta.pre_ledger_sessions > 0 || ix.n > 0) && (

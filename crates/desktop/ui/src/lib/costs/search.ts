@@ -92,10 +92,10 @@ export function resolveRange(s: CostsSearch, now: number, tz: string, firstMs: n
   }
 }
 
-/** §6.6 auto-pick: ≤ 2 days → hour, ≤ 31 days → day, ≤ 180 days → week, else month. */
+/** Auto-pick within the 120-bucket cap: ≤ 5 days → hour, ≤ 120 days → day, ≤ 120 weeks → week, else month. */
 export function autoGran(r: Range): Gran {
   const days = (r.to - r.from) / DAY_MS
-  return days <= 2 ? 'hour' : days <= 31 ? 'day' : days <= 180 ? 'week' : 'month'
+  return days <= 5 ? 'hour' : days <= 120 ? 'day' : days <= 840 ? 'week' : 'month'
 }
 
 /** Why a granularity is disabled for a range, or `null` when it is allowed. */

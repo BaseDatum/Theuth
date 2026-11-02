@@ -1,11 +1,11 @@
 // 160 §7.7: by model, owner, provider (donut), kind and project for the range and filters; a click adds the filter.
 
-import { memo, useMemo } from 'react'
+import { memo, useCallback, useMemo } from 'react'
 import { Bar, BarChart, Cell, LabelList, Pie, PieChart, XAxis, YAxis } from 'recharts'
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
 import { type BreakdownRow, breakdown, type Dim, type Filters, type Index, OTHER_COLOR, type Range } from '@/lib/costs/cube'
 import { compact, int, usd, usdShort } from '@/lib/costs/format'
-import { OwnerGlyph, Panel, Swatch } from './ui'
+import { OwnerGlyph, Panel, Swatch, useStaged } from './ui'
 
 const TOP = 10
 const PIE = ['var(--chart-1)', 'var(--chart-5)', 'var(--chart-3)', 'var(--chart-7)', 'var(--chart-2)', 'var(--chart-8)', 'var(--chart-4)']
@@ -37,10 +37,11 @@ function Tip({ row }: { row: BreakdownRow }) {
 /** Horizontal bars of the top rows, `$` labels (or the call count for an unpriced row). */
 function HBars({ rows, color, onPick }: { rows: BreakdownRow[]; color: string; onPick: (id: string) => void }) {
   const data: Datum[] = useMemo(() => rows.slice(0, TOP).map((r) => ({ ...r, text: r.usd > 0 ? usdShort(r.usd) : `${int(r.calls)} calls` })), [rows])
+  const config = useMemo(() => ({ usd: { label: 'cost', color } }), [color])
   if (!data.length) return <p className="py-6 text-center text-xs text-fg-tertiary">Nothing in this range.</p>
   return (
     <>
-      <ChartContainer config={{ usd: { label: 'cost', color } }} className="aspect-auto w-full" style={{ height: data.length * 26 + 8 }} initialDimension={{ width: 420, height: data.length * 26 + 8 }}>
+      <ChartContainer config={config} className="aspect-auto w-full" style={{ height: data.length * 26 + 8 }} initialDimension={{ width: 420, height: data.length * 26 + 8 }}>
         <BarChart data={data} layout="vertical" margin={{ top: 0, right: 64, bottom: 0, left: 0 }} barCategoryGap={6}>
           <XAxis type="number" hide domain={[0, 'dataMax']} />
           <YAxis type="category" dataKey="label" width={150} interval={0} tick={(p: { x?: number | string; y?: number | string; payload?: { value?: unknown; index?: number } }) => {
@@ -104,31 +105,42 @@ function Donut({ rows, onPick }: { rows: BreakdownRow[]; onPick: (id: string) =>
 }
 
 type Props = { ix: Index; r: Range; filters: Filters; rangeLabel: string; onFilter: (dim: Dim, id: string) => void }
+type View = Omit<Props, 'onFilter'>
 
+const PANELS: { dim: 'model' | 'owner' | 'provider' | 'kind' | 'project'; color: string }[] = [
+  { dim: 'model', color: 'var(--chart-1)' },
+  { dim: 'owner', color: 'var(--chart-2)' },
+  { dim: 'provider', color: '' },
+  { dim: 'kind', color: 'var(--chart-3)' },
+  { dim: 'project', color: 'var(--chart-7)' },
+]
+const OWNER_NOTE = (
+  <span className="inline-flex items-center gap-1.5">
+    <OwnerGlyph kind="agent" />
+    agent <OwnerGlyph kind="routine" />
+    routine
+  </span>
+)
+
+/** The five breakdown cards; each takes a new view one frame after the previous one, so they commit separately (§6.5). */
 export const Breakdowns = memo(function Breakdowns({ ix, r, filters, rangeLabel, onFilter }: Props) {
-  const by = useMemo(() => {
-    const out = {} as Record<'model' | 'owner' | 'provider' | 'kind' | 'project', BreakdownRow[]>
-    for (const d of ['model', 'owner', 'provider', 'kind', 'project'] as const) out[d] = breakdown(ix, r, filters, d)
-    return out
-  }, [ix, r, filters])
-  const owners = by.owner
+  const view = useMemo((): View => ({ ix, r, filters, rangeLabel }), [ix, r, filters, rangeLabel])
   return (
     <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr))]">
-      <Panel title={`By model · ${rangeLabel}`}>
-        <HBars rows={by.model} color="var(--chart-1)" onPick={(id) => onFilter('model', id)} />
-      </Panel>
-      <Panel title={`By owner · ${rangeLabel}`} note={owners.length ? <span className="inline-flex items-center gap-1.5"><OwnerGlyph kind="agent" />agent <OwnerGlyph kind="routine" />routine</span> : undefined}>
-        <HBars rows={owners} color="var(--chart-2)" onPick={(id) => onFilter('owner', id)} />
-      </Panel>
-      <Panel title={`By provider · ${rangeLabel}`}>
-        <Donut rows={by.provider} onPick={(id) => onFilter('provider', id)} />
-      </Panel>
-      <Panel title={`By kind · ${rangeLabel}`}>
-        <HBars rows={by.kind} color="var(--chart-3)" onPick={(id) => onFilter('kind', id)} />
-      </Panel>
-      <Panel title={`By project · ${rangeLabel}`}>
-        <HBars rows={by.project} color="var(--chart-7)" onPick={(id) => onFilter('project', id)} />
-      </Panel>
+      {PANELS.map((p, k) => (
+        <Breakdown key={p.dim} dim={p.dim} color={p.color} view={view} stage={k} onFilter={onFilter} />
+      ))}
     </div>
+  )
+})
+
+const Breakdown = memo(function Breakdown({ dim, color, view, stage, onFilter }: { dim: (typeof PANELS)[number]['dim']; color: string; view: View; stage: number; onFilter: (dim: Dim, id: string) => void }) {
+  const v = useStaged(view, stage)
+  const rows = useMemo(() => breakdown(v.ix, v.r, v.filters, dim), [v, dim])
+  const pick = useCallback((id: string) => onFilter(dim, id), [onFilter, dim])
+  return (
+    <Panel title={`By ${dim} · ${v.rangeLabel}`} note={dim === 'owner' && rows.length ? OWNER_NOTE : undefined}>
+      {dim === 'provider' ? <Donut rows={rows} onPick={pick} /> : <HBars rows={rows} color={color} onPick={pick} />}
+    </Panel>
   )
 })

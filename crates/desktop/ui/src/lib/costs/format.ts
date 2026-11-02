@@ -52,3 +52,12 @@ export function when(ms: number, now: number): string {
   if (Math.abs(ms - now) < 6 * 86_400_000) return `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${hm}`
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
+
+/** A limit reset in one short line: `in 48m`, `in 1h 48m` within a day, else `Thu 19:18` / `12 Nov`; `now` once passed. */
+export function resetIn(ms: number, now: number): string {
+  const m = Math.round((ms - now) / 60_000)
+  if (m <= 0) return 'now'
+  if (m < 60) return `in ${m}m`
+  if (m < 1440) return `in ${Math.floor(m / 60)}h ${m % 60}m`
+  return when(ms, now)
+}

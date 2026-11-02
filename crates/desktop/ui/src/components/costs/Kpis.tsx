@@ -6,11 +6,13 @@ import { Area, AreaChart } from 'recharts'
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
 import { BASES, BASIS_COLOR, BASIS_LABEL, DAY_MS, type Filters, HOUR_MS, type Index, previousPeriod, type Range, series, totals } from '@/lib/costs/cube'
 import { compact, int, pct, usd, usdShort } from '@/lib/costs/format'
+import { autoGran } from '@/lib/costs/search'
 import { cn } from '@/lib/utils'
 
 const USD = { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 } as const
 const COMPACT = { notation: 'compact', maximumFractionDigits: 2 } as const
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const SPARK_CFG = { v: { label: 'spend', color: 'var(--chart-1)' } }
 
 function Card({ title, value, wrap = false, children }: { title: string; value: ReactNode; wrap?: boolean; children?: ReactNode }) {
   return (
@@ -45,7 +47,7 @@ export const Kpis = memo(function Kpis({ ix, r, filters, now, rangeLabel }: Prop
     const thisHour = spend(nowH, nowH + HOUR_MS)
     const lastHour = spend(nowH - HOUR_MS, nowH)
     const mtd = spend(monthStart, now)
-    const spark = series(ix, { ...r, gran: (r.to - r.from) / DAY_MS <= 2 ? 'hour' : 'day', groupBy: 'basis', metric: 'usd', filters, topN: 4 }).rows.map((x) => ({ start: x.start, tip: x.tip, v: x.total }))
+    const spark = series(ix, { ...r, gran: autoGran(r), groupBy: 'basis', metric: 'usd', filters, topN: 4 }).rows.map((x) => ({ start: x.start, tip: x.tip, v: x.total }))
     return {
       t,
       delta: prev.usd > 0 ? (t.usd - prev.usd) / prev.usd : null,
@@ -84,7 +86,7 @@ export const Kpis = memo(function Kpis({ ix, r, filters, now, rangeLabel }: Prop
             </>
           )}
         </span>
-        <ChartContainer config={{ v: { label: 'spend', color: 'var(--chart-1)' } }} className="mt-auto aspect-auto h-[30px] w-full" initialDimension={{ width: 160, height: 30 }}>
+        <ChartContainer config={SPARK_CFG} className="mt-auto aspect-auto h-[30px] w-full" initialDimension={{ width: 160, height: 30 }}>
           <AreaChart data={k.spark} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
             <defs>
               <linearGradient id="costs-spark" x1="0" y1="0" x2="0" y2="1">

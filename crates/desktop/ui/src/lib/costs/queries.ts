@@ -22,12 +22,12 @@ export const CALLS_KEY = ['costs', 'calls'] as const
 export type CostsSim = 'costs' | 'costs-file' | null
 
 /**
- * `?sim=costs`: the committed synthetic fixture. `?sim=costs-file` (dev only): a cube JSON at `VITE_COSTS_FIXTURE_URL`,
+ * `?sim=costs`: the committed synthetic fixture. `?sim=costs-file` (only when a local build sets `VITE_COSTS_FIXTURE_URL`): a cube JSON at that URL,
  * for local screenshots against a real-shaped cube that is never committed.
  */
 export function costsSim(search = typeof location === 'undefined' ? '' : location.search): CostsSim {
   const v = new URLSearchParams(search).get('sim')
-  return v === 'costs' ? 'costs' : v === 'costs-file' && import.meta.env.DEV && import.meta.env.VITE_COSTS_FIXTURE_URL ? 'costs-file' : null
+  return v === 'costs' ? 'costs' : v === 'costs-file' && import.meta.env.VITE_COSTS_FIXTURE_URL ? 'costs-file' : null
 }
 
 /** The held cube; `emptyCube()` until the snapshot or the engine answers (never a loading state). */

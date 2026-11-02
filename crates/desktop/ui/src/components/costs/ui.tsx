@@ -1,7 +1,7 @@
 // 160 §7: the costs page's small shared pieces — the card with its mono title, the segmented control, tags, swatches.
 // Theme tokens only.
 
-import type { ReactNode } from 'react'
+import { type ReactNode, startTransition, useEffect, useState } from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
@@ -25,10 +25,17 @@ export function Panel({ title, note, actions, className, children, id }: { title
 
 export type SegItem<T extends string> = { value: T; label: ReactNode; /** Why it is disabled; `null`/absent = enabled. */ blocked?: string | null }
 
-/** The segmented control: a well with one raised choice; a blocked choice is dimmed and explains itself in a tooltip. */
-export function Seg<T extends string>({ items, value, onChange, label }: { items: SegItem<T>[]; value: T | null; onChange: (v: T) => void; label: string }) {
+/**
+ * The segmented control: a well with one raised choice; a blocked choice is dimmed and explains itself in a tooltip.
+ * It never widens the page: past its container it scrolls sideways, and `fade` softens the right edge on phones.
+ */
+export function Seg<T extends string>({ items, value, onChange, label, fade = false }: { items: SegItem<T>[]; value: T | null; onChange: (v: T) => void; label: string; fade?: boolean }) {
   return (
-    <div role="radiogroup" aria-label={label} className="inline-flex max-w-full gap-0.5 overflow-x-auto rounded-lg bg-layer-2 p-0.5 [scrollbar-width:none]">
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className={cn('inline-flex max-w-full gap-0.5 overflow-x-auto rounded-lg bg-layer-2 p-0.5 [scrollbar-width:none]', fade && 'max-md:pr-6 max-md:[mask-image:linear-gradient(to_right,black_calc(100%-28px),transparent)]')}
+    >
       {items.map((it) => {
         const on = it.value === value
         const b = (
@@ -83,4 +90,18 @@ export function OwnerGlyph({ kind }: { kind: string }) {
   if (kind === 'agent') return <span aria-hidden className="inline-block size-[7px] shrink-0 rounded-full border border-fg-secondary" />
   if (kind === 'routine') return <span aria-hidden className="inline-block size-1.5 shrink-0 bg-fg-secondary" />
   return null
+}
+
+/**
+ * `v`, taken `stage` frames after it changes (stage 0: at once), in a transition — splits one view change into several
+ * frame-sized commits instead of one long one (§6.5).
+ */
+export function useStaged<T>(v: T, stage: number): T {
+  const [held, setHeld] = useState(v)
+  useEffect(() => {
+    if (stage === 0 || held === v) return
+    const t = setTimeout(() => startTransition(() => setHeld(v)), stage * 16)
+    return () => clearTimeout(t)
+  }, [v, held, stage])
+  return stage === 0 ? v : held
 }

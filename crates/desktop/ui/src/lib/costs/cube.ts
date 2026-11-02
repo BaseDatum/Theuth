@@ -10,8 +10,8 @@ import type { SpendOwnerKind } from '@/rpc/bindings/SpendOwnerKind'
 
 export const HOUR_MS = 3_600_000
 export const DAY_MS = 86_400_000
-/** §6.6: no chart draws more buckets than this. */
-export const MAX_BUCKETS = 400
+/** §6.6, tightened in 160 R1: no chart draws more buckets than this (one frame for the main chart). */
+export const MAX_BUCKETS = 120
 
 export const BASES: readonly CostBasis[] = ['known', 'reported', 'estimated', 'unpriced']
 export const BASIS_LABEL: Record<CostBasis, string> = { known: 'Known', reported: 'Reported', estimated: 'Estimated', unpriced: 'Unpriced' }
@@ -411,7 +411,7 @@ const RANK = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart
 export const OTHER_COLOR = 'var(--chart-6)'
 
 /**
- * Stacked series over the range: one row per bucket with `s0…` per group (top `topN` by range total + `other`),
+ * Stacked series over the range: one row per bucket with `s0…` per group (top `topN`, default 6, by range total + `other`),
  * `total`, and `prev` = the same metric over the equal number of buckets just before (the previous-period line).
  */
 export function series(ix: Index, q: SeriesQuery): SeriesOut {
@@ -437,7 +437,7 @@ export function series(ix: Index, q: SeriesQuery): SeriesOut {
     } else if (k < 0 && k >= -B) prev[k + B]! += v
   }
   const order = [...byGroup.keys()].filter((v) => byGroup[v]! > 0).sort((a, b) => byGroup[b]! - byGroup[a]!)
-  const topN = q.topN ?? 7
+  const topN = q.topN ?? 6
   const top = order.slice(0, topN)
   const rest = order.length > top.length
   const d = ix.dict[q.groupBy]

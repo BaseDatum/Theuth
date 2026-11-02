@@ -22,9 +22,25 @@ function CellSize({ onSize }: { onSize: (w: number, h: number) => void }) {
   return null
 }
 
-type Props = { ix: Index; r: Range; gran: Gran; filters: Filters; rangeLabel: string }
+/** The empty grid (all 168 cells) as one path from the plot area; only cells with spend are Scatter points. */
+function EmptyCells() {
+  const p = usePlotArea()
+  if (!p) return null
+  const cw = p.width / 24
+  const ch = p.height / 7
+  const w = Math.max(2, cw - 3)
+  const h = Math.max(2, ch - 3)
+  let d = ''
+  for (let row = 0; row < 7; row++)
+    for (let col = 0; col < 24; col++) d += `M${(p.x + col * cw + (cw - w) / 2).toFixed(1)},${(p.y + row * ch + (ch - h) / 2).toFixed(1)}h${w.toFixed(1)}v${h.toFixed(1)}h${(-w).toFixed(1)}Z`
+  return <path d={d} fill="var(--bg-layer-2)" fillOpacity={0.6} />
+}
 
-export const When = memo(function When({ ix, r, filters, rangeLabel }: Props) {
+type Props = { ix: Index; r: Range; gran: Gran; filters: Filters; rangeLabel: string }
+const SPEND_CFG = { usd: { label: 'spend', color: 'var(--chart-1)' } }
+
+/** The heat grid ignores the granularity, so it takes no `gran` and skips a granularity change. */
+export const When = memo(function When({ ix, r, filters, rangeLabel }: Omit<Props, 'gran'>) {
   const { cells, hours } = useMemo(() => {
     const g = heat(ix, r, filters)
     const max = Math.max(0, ...g.map((c) => c.usd))
@@ -33,7 +49,7 @@ export const When = memo(function When({ ix, r, filters, rangeLabel }: Props) {
       hours[c.h]!.usd += c.usd
       hours[c.h]!.calls += c.calls
     }
-    return { cells: g.map((c): HeatDatum => ({ ...c, a: max > 0 ? Math.sqrt(c.usd / max) : 0 })), hours }
+    return { cells: g.filter((c) => c.usd > 0 || c.calls > 0).map((c): HeatDatum => ({ ...c, a: max > 0 ? Math.sqrt(c.usd / max) : 0 })), hours }
   }, [ix, r, filters])
   const [size, setSize] = useState<[number, number]>([0, 0])
   const onSize = useCallback((w: number, h: number) => setSize((s) => (s[0] === w && s[1] === h ? s : [w, h])), [])
@@ -50,8 +66,8 @@ export const When = memo(function When({ ix, r, filters, rangeLabel }: Props) {
   )
   return (
     <Panel title="When · hour × weekday" note={`local time · ${rangeLabel}`}>
-      <ChartContainer config={{ usd: { label: 'spend', color: 'var(--chart-1)' } }} className="aspect-auto h-[190px] w-full" initialDimension={{ width: 420, height: 190 }}>
-        <ScatterChart margin={{ top: 6, right: 16, bottom: 0, left: 0 }}>
+      <ChartContainer config={SPEND_CFG} className="aspect-auto h-[190px] w-full" initialDimension={{ width: 420, height: 190 }}>
+        <ScatterChart margin={{ top: 6, right: 16, bottom: 0, left: 0 }} accessibilityLayer={false}>
           <XAxis type="number" dataKey="h" domain={[-0.5, 23.5]} ticks={[0, 3, 6, 9, 12, 15, 18, 21]} tickFormatter={(h: number) => pad2(h)} tick={TICK} tickLine={false} axisLine={false} />
           <YAxis type="number" dataKey="wd" domain={[-0.5, 6.5]} ticks={[0, 1, 2, 3, 4, 5, 6]} interval={0} reversed tickFormatter={(i: number) => DOW[i] ?? ''} tick={TICK} tickLine={false} axisLine={false} width={34} />
           <ChartTooltip
@@ -75,11 +91,12 @@ export const When = memo(function When({ ix, r, filters, rangeLabel }: Props) {
               />
             }
           />
+          <EmptyCells />
           <Scatter data={cells} shape={square} isAnimationActive={false} />
           <CellSize onSize={onSize} />
         </ScatterChart>
       </ChartContainer>
-      <ChartContainer config={{ usd: { label: 'spend', color: 'var(--chart-1)' } }} className="mt-2 aspect-auto h-[64px] w-full" initialDimension={{ width: 420, height: 64 }}>
+      <ChartContainer config={SPEND_CFG} className="mt-2 aspect-auto h-[64px] w-full" initialDimension={{ width: 420, height: 64 }}>
         <BarChart data={hours} margin={{ top: 2, right: 16, bottom: 0, left: 34 }} barCategoryGap={2}>
           <XAxis dataKey="label" hide />
           <ChartTooltip cursor={{ fill: 'var(--bg-layer-2)' }} isAnimationActive={false} content={<ChartTooltipContent hideIndicator formatter={(v, _, item) => <span className="font-mono">{usd(Number(v))} · {int(item.payload.calls)} calls</span>} />} />
