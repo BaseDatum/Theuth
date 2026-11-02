@@ -1089,7 +1089,7 @@ pub fn preview(text: &str) -> String {
 /// file is not rewritten. The one attachment-store naming rule, shared by RPC
 /// `put_attachment`, the ACP prompt path and history preview materialization.
 pub fn save_blob(bytes: &[u8], ext: &str, data_dir: &Path) -> std::io::Result<PathBuf> {
-    let hex = format!("{:x}", Sha256::digest(bytes));
+    let hex = hex::encode(Sha256::digest(bytes));
     let dir = data_dir.join("attachments");
     let path = dir.join(format!("{}.{ext}", &hex[..16]));
     if !path.exists() {
@@ -1653,7 +1653,7 @@ mod tests {
         let scratch = crate::TestDir::new("blob");
         let dir = scratch.0.clone();
         let p = save_blob(b"hello", "png", &dir).unwrap();
-        let hex = format!("{:x}", Sha256::digest(b"hello"));
+        let hex = hex::encode(Sha256::digest(b"hello"));
         assert_eq!(
             p,
             dir.join("attachments").join(format!("{}.png", &hex[..16]))

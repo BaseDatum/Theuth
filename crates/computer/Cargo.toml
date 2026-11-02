@@ -21,6 +21,7 @@ xcap = { workspace = true }
 enigo = { workspace = true }
 image = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

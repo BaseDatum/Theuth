@@ -782,16 +782,17 @@ impl AcpChild {
                 };
                 (
                     m.message_id.0.to_string(),
-                    m.sender_session_id.map(|s| s.0.to_string()),
-                    m.recipient_session_id.map(|s| s.0.to_string()),
+                    m.sender_session_id.take().map(|s| s.0.to_string()),
+                    m.recipient_session_id.take().map(|s| s.0.to_string()),
                     text,
                     true,
                 )
             }
+            // Chunks carry content only; participants come from the upsert.
             SessionUpdate::SessionMessageChunk(m) => (
                 m.message_id.0.to_string(),
-                m.sender_session_id.map(|s| s.0.to_string()),
-                m.recipient_session_id.map(|s| s.0.to_string()),
+                None,
+                None,
                 acp::render::content_block_text(&m.content),
                 false,
             ),

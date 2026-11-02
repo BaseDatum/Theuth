@@ -8,9 +8,9 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-# Knowledge bundle (design doc 10): OKF v0.1 format, and local-only git history via gitoxide
+# Knowledge bundle (design doc 10): OKF v0.2 format (okf-core only: no validator/studio), and local-only git history via gitoxide
 # (no default features: no network, no interrupt/parking_lot; `parallel` = Arc-based sharing so the handle is Send; skills clone/pull stay on the user's git, 04 §2.2).
-okf = "=0.1.0-alpha.1"
+okf = { version = "0.2.7", default-features = false }
 gix = { version = "0.87", default-features = false, features = ["revision", "blob-diff", "sha1", "parallel"] }
 platform = { path = "crates/platform" }  # OS primitives: process trees, private files, open, service units, PTY program, ORT name, target matrix (design doc 58)
 runtime = { path = "crates/runtime" }
@@ -52,7 +52,7 @@ roster = { path = "crates/roster" }  # agents as files, desks, episodes, budgets
 # base32 pairing strings (already in the graph under iroh).
 iroh = { version = "1.2", default-features = false, features = ["tls-aws-lc-rs"] }  # 67
 iroh-gossip = { version = "0.101", default-features = false, features = ["net"] }  # 67
-iroh-mdns-address-lookup = "0.5"  # 67
+iroh-mdns-address-lookup = "0.6"  # 67
 data-encoding = "2"  # 67
 sandbox = { path = "crates/sandbox" }  # make an engine: ssh installer / docker container → mesh peer (67 §13, 64 §4)
 artifact = { path = "crates/artifact" }
@@ -128,6 +128,7 @@ candle-transformers = { version = "0.11", default-features = false }  # `models:
 symphonia = { version = "0.6", default-features = false, features = ["aac", "isomp4", "mp3", "ogg", "wav", "pcm", "mkv"] }  # demux/decode inbound voice notes (45 §0.5); Opus packets go to `opus`
 rubato = "5"  # resample inbound audio to the model's 16 kHz (45 §0.5)
 mp3lame-encoder = "0.2"  # outbound clips: MP3 24 kHz mono 48 kbit/s, the one container every client plays (45 §0.4)
+# Held at 0.12 (dep-land-w23): parking_lot_core 0.10 needs libc ^0.2.191, flexaudio-os-macos 0.8.x pins libc =0.2.186.
 parking_lot = "0.12"  # the STT model slot: locked only inside `spawn_blocking`, no poisoning to unwrap
 # Dictation (design doc 54): the daemon owns the mic and gates a streaming Nemotron session with TEN-VAD.
 flexaudio = "0.8"  # 54 §0.2: native default-input capture, 48 kHz mono f32 on a dedicated thread (`voice::mic`)
@@ -136,10 +137,10 @@ cpal = "0.16"  # 76 §0.3: the daemon's speaker (`voice::out::Player`), default 
 # Update (design doc 39): semver compare, the updater plugin's own minisign verifier, tar for the
 # single-file CLI payload. The desktop side is tauri-plugin-updater below.
 semver = "1"
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 tar = "0.4"
 # Make an engine (67 §13 / 64 §4): built-in SSH client with a vault-held key, Docker Engine API.
-russh = "0.63"
+russh = "0.65"
 bollard = "0.21"
 # Artifacts (design doc 35): in-process Typst for markdown/Typst → PDF, page render for the model's
 # preview; `csv` parses table artifacts; `resvg` (already transitive via typst) rasterises SVG artifacts.
@@ -178,13 +179,14 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", rev = "d207bb5b9db990a611b1552242c1be48ef0cf76a", features = ["hyper"] }
 # Telegram Bot API client (98 §0.1). ZeroVer: exact pin, bumped by hand against its CHANGELOG.
 tgbot = { version = "=0.48.1", default-features = false }
-sha2 = "0.10"
-hmac = "0.12"
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"  # digest 0.11 outputs (hybrid-array) have no `LowerHex`
 # Documents (design doc 59): `yrs` = the Yjs-compatible CRDT the harness holds as authority; `sync` = y-protocols
 # awareness. Pinned exactly: the desktop and helper pin `yjs` 13.6.32, and the two must agree on the wire.
 yrs = { version = "=0.28.0", features = ["sync"] }
 nucleo = "0.5"  # fzf/helix fuzzy scoring for session search (design doc 26)
-base64 = "0.22"
+base64 = "0.23"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 schemars = { version = "1", features = ["uuid1", "chrono04"] }
@@ -223,7 +225,7 @@ gray_matter = "0.3"
 # a real shape drift is caught by tsc and the METHODS-parity test over the generated bindings.
 ts-rs = { version = "12", features = ["serde-compat", "uuid-impl", "chrono-impl", "serde-json-impl", "no-serde-warnings"] }
 clap = { version = "4", features = ["derive", "env"] }
-dirs = "6"
+dirs = "7"
 glob = "0.3"
 tower = { version = "0.5", features = ["util"] }
 # Sandbox VMs (design doc 79 decision 2, Sky's ruling 2026-09-30: embed): the microsandbox Rust SDK,
@@ -276,10 +278,10 @@ qrcode = { version = "0.14", default-features = false }
 # Snap compaction frames (design doc 13 §0.4): 8-bit grayscale encode only; not `image`.
 png = "0.17"
 # Agent Client Protocol (design doc 06): external harnesses as subagents, `t --acp`.
-# Pinned exactly, only the v1 schema module is used (06 §7). 3.1.0 (141 §4.1):
+# Pinned exactly, only the v1 schema module is used (06 §7). 3.6.0 (141 §4.1):
 # `process`/`stdio` gate the native transports, `unstable_end_turn_token_usage`
 # = `PromptResponse.usage` (75 §7), `unstable_subagents` = RFD `subagent_update`.
-agent-client-protocol = { version = "=3.1.0", features = ["process", "stdio", "unstable_end_turn_token_usage", "unstable_subagents"] }
+agent-client-protocol = { version = "=3.6.0", features = ["process", "stdio", "unstable_end_turn_token_usage", "unstable_subagents"] }
 # Image input (design doc 17): OS clipboard image read — bracketed paste is text-only.
 # `image-data` pulls `image` with minimal features; we encode with `png` ourselves.
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }
@@ -299,6 +301,7 @@ obscura-js = { git = "https://github.com/skymoore/obscura", branch = "main", fea
 # obscura-net's minus `socks`: streamed bodies, the decompressors Chrome's `Accept-Encoding` invites, the
 # default roots/runtime (`default-features = false` so the list is explicit), wreq-util's emulation profiles.
 # No `cookies` (122 §5). `prefix-symbols` stays obscura's Linux-only concern (features union).
+# Held at rc.29/rc.12 (dep-w2b): obscura-net (skymoore/obscura main d5aed2b) pins `=6.0.0-rc.29`; bump both together.
 wreq = { version = "=6.0.0-rc.29", default-features = false, features = ["webpki-roots", "tokio-rt", "stream", "gzip", "brotli", "deflate", "zstd"] }
 wreq-util = { version = "=3.0.0-rc.12", default-features = false, features = ["emulation", "emulation-compression"] }
 iana-time-zone = "0.1"
@@ -352,7 +355,7 @@ snow = "0.10"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
-tower-http = { version = "0.6", features = ["fs", "set-header"] }
+tower-http = { version = "0.7", features = ["fs", "set-header"] }
 dashmap = "6"
 # Agent communication (design doc 50 §3.1): the official A2A Rust SDK, exact pre-1.0 pins the user
 # accepted with an explicit maturity waiver; the conformance/interop gates of 50 §12 still apply.
@@ -362,15 +365,17 @@ dashmap = "6"
 a2a-types = { package = "a2a-lf", version = "=0.4.2" }
 a2a-client = { package = "a2a-client-lf", version = "=0.2.9" }
 a2a-server = { package = "a2a-server-lf", version = "=0.5.3" }
-rand = "0.9"
+rand = "0.10"
 # Schedule (design doc 34): croner = cron parsing + next occurrence in a chrono TimeZone
 # (local time, DST-correct) + `describe()`; humantime = `every:` durations.
 croner = { version = "4", features = ["chrono"] }
 humantime = "2"
 # secrets vault (37): XChaCha20-Poly1305 file, key in the OS keychain (or a 0600 file),
 # values zeroized in memory, one aho-corasick pass scrubs tool output, rpassword for `--secret-set`.
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }  # secrets vault (37)
-chacha20poly1305 = "0.10"  # secrets vault (37)
+# keyring 4 default `v1` = the 3.x API over apple-native (login keychain, same generic-password
+# service/account lookup as 3's `apple-native`), windows-native and zbus secret-service stores.
+keyring = "4"  # secrets vault (37)
+chacha20poly1305 = "0.11"  # secrets vault (37)
 zeroize = "1"  # secrets vault (37)
 aho-corasick = "1"  # secrets vault (37)
 rpassword = "7"  # secrets vault (37)

@@ -145,7 +145,7 @@ pub fn valid_slug(slug: &str) -> bool {
 }
 
 fn sha256(text: &str) -> String {
-    format!("{:x}", sha2::Sha256::digest(text.as_bytes()))
+    hex::encode(sha2::Sha256::digest(text.as_bytes()))
 }
 
 /// Write the built-ins into `dir`: a missing file is created; a file equal to the version we

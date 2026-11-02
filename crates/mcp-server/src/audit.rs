@@ -74,7 +74,7 @@ impl Audit {
 /// the same whatever order the client sent its keys in.
 pub fn args_sha256(args: &Value) -> String {
     let canonical = serde_json::to_vec(&sorted(args)).unwrap_or_default();
-    format!("{:x}", Sha256::digest(canonical))
+    hex::encode(Sha256::digest(canonical))
 }
 
 fn sorted(v: &Value) -> Value {

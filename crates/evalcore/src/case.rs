@@ -110,7 +110,7 @@ pub fn split(seed: &str, id: &str, shares: Shares, synthetic: bool) -> Split {
 
 /// sha256 hex of an artefact's text: the key replay rows are stored under.
 pub fn candidate_hash(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
+    hex::encode(Sha256::digest(text.as_bytes()))
 }
 
 #[cfg(test)]

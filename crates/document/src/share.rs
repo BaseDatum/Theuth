@@ -11,10 +11,10 @@
 use std::fmt;
 
 use base64::Engine as _;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit as _, Mac};
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
-use rand::RngCore;
+use rand::Rng as _;
 use sha2::Sha256;
 
 use crate::actor::DocumentActor;

@@ -78,7 +78,7 @@ pub fn vnc_row(name: &str) -> String {
 
 /// 8 alphanumeric characters (VNC auth truncates at 8).
 pub fn vnc_password() -> Zeroizing<String> {
-    use rand::Rng;
+    use rand::RngExt as _;
     const ALNUM: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let mut r = rand::rng();
     Zeroizing::new(

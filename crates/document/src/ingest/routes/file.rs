@@ -6,7 +6,6 @@
 use std::path::Path;
 
 use anyhow::Context as _;
-use sha2::Digest as _;
 use tools::doc::Format;
 
 use super::{AUDIO_EXTS, TEXT_EXTS, VIDEO_EXTS, too_large, unsupported};
@@ -65,10 +64,7 @@ pub async fn preflight(ctx: &Ctx, path: &Path) -> anyhow::Result<(SourceOrigin, 
 }
 
 fn sha256_file(path: &Path) -> anyhow::Result<String> {
-    let mut f = std::fs::File::open(path)?;
-    let mut h = sha2::Sha256::new();
-    std::io::copy(&mut f, &mut h)?;
-    Ok(format!("{:x}", h.finalize()))
+    Ok(platform::sha256::file(path)?)
 }
 
 /// Read the original (`blob`, else the path it was added from), copy it into the attachment store

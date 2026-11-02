@@ -1610,7 +1610,7 @@ fn identity(tool: &DynTool, spec: &ToolSpec) -> String {
         "origin": tool.origin(),
     });
     canon.sort_all_objects();
-    format!("{:x}", Sha256::digest(canon.to_string()))
+    hex::encode(Sha256::digest(canon.to_string()))
 }
 
 /// One pre-registration invocation's slot in `ToolRegistry::untracked`;

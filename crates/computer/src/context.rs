@@ -418,7 +418,7 @@ fn encode(img: &RgbaImage, max_edge: u32) -> Result<Vec<u8>, String> {
 
 /// `<data_dir>/attachments/<sha256(bytes)[..16]>.png`, `put_attachment`'s naming.
 fn save_png(bytes: &[u8], data_dir: &Path) -> Result<PathBuf, String> {
-    let hex = format!("{:x}", Sha256::digest(bytes));
+    let hex = hex::encode(Sha256::digest(bytes));
     let dir = data_dir.join("attachments");
     let path = dir.join(format!("{}.png", &hex[..16]));
     if !path.exists() {

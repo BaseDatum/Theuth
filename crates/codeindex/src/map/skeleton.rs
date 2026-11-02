@@ -719,7 +719,7 @@ pub fn facts_hash(files: &[(String, i64, i64)], edges: &[(String, String, String
         h.update(b"\0");
         h.update(n.to_le_bytes());
     }
-    format!("{:x}", h.finalize())
+    hex::encode(h.finalize())
 }
 
 /// The `(from, to, kind, count)` rows of `edges` for [`facts_hash`].

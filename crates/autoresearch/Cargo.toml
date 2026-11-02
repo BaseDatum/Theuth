@@ -29,6 +29,7 @@ schemars = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }  # 140 §5.3 custody hashes, §7.3 patch hashes
+hex = { workspace = true }
 sqlx = { workspace = true }  # 140 §12.6 `autoresearch.sqlite` (the workspace's sqlite crate)
 platform = { workspace = true }  # 140 §5.1/§5.5 `ProcessTree` (killpg), `pid_alive`, `load1` (W1 `runner.rs`, `slot.rs`)
 globset = { workspace = true }  # 140 §5.3 `scope` / `off_limits` globs (W1 `custody::scope_diff`)

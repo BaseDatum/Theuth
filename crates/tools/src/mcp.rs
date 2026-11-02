@@ -143,7 +143,7 @@ impl ServerSpec {
                 "server": server, "url": url, "headers": headers,
             }),
         };
-        format!("mcp:{:x}", Sha256::digest(raw.to_string()))
+        format!("mcp:{}", hex::encode(Sha256::digest(raw.to_string())))
     }
 }
 

@@ -7372,13 +7372,13 @@ impl Turn {
             // 136 §0.14: title ≤ 120 chars (the rest → a Summary paragraph),
             // `evidence: [this session]`, `status: fresh`.
             let (title, body) = knowledge::harvest::split_title(
-                &fm.title().unwrap_or_else(|| id.clone()),
+                &fm.title().map_or_else(|| id.clone(), |t| t.into_owned()),
                 &doc.body,
             );
             let put = Put {
-                type_: fm.type_().unwrap_or_default(),
+                type_: fm.type_().unwrap_or_default().into_owned(),
                 title,
-                description: fm.description(),
+                description: fm.description().map(|d| d.into_owned()),
                 tags: fm.tags(),
                 scope: fm
                     .get("scope")

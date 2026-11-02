@@ -511,7 +511,7 @@ pub fn fingerprint(kind: ProbeKind, spec: &StudySpec, base_sha: &str) -> String 
     });
     let mut h = Sha256::new();
     h.update(v.to_string().as_bytes());
-    format!("{:x}", h.finalize())
+    hex::encode(h.finalize())
 }
 
 fn kind_of_row(row: &str) -> Option<ProbeKind> {
@@ -1797,7 +1797,7 @@ mod tests {
         h.update(pre_c.to_string().as_bytes());
         assert_eq!(
             fingerprint(ProbeKind::Bench, &s, "abc"),
-            format!("{:x}", h.finalize())
+            hex::encode(h.finalize())
         );
         let mut with_159 = s.clone();
         with_159.axes.search = crate::types::Search::Front;

@@ -11,6 +11,7 @@
 //! simply a new key. A cold key starts one build off the mailbox and answers
 //! `indexing`; matching runs on a blocking thread under a one-permit bound.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -593,7 +594,7 @@ impl Blob {
     fn parse(text: &str) -> Option<Self> {
         let doc = Document::parse(text).ok()?;
         let fm = &doc.frontmatter;
-        let title = fm.title().filter(|t| !t.is_empty());
+        let title = fm.title().filter(|t| !t.is_empty()).map(Cow::into_owned);
         let meta = format!(
             "{}\n{}\n{}\n{}",
             title.as_deref().unwrap_or_default(),

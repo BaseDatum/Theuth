@@ -338,7 +338,7 @@ async fn download(
     }
     file.flush().await?;
     drop(file);
-    let sha = format!("{:x}", hasher.finalize());
+    let sha = hex::encode(hasher.finalize());
     if n != e.size || sha != e.sha256 {
         let _ = tokio::fs::remove_file(&part).await;
         anyhow::bail!(
@@ -456,7 +456,7 @@ mod tests {
         Entry {
             path: "m/f.bin".into(),
             size,
-            sha256: format!("{:x}", Sha256::digest(body)),
+            sha256: hex::encode(Sha256::digest(body)),
             platform: None,
             key: None,
         }

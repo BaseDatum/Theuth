@@ -3,7 +3,7 @@
 //! HMAC-SHA256 is the two-pass RFC 2104 construction over `sha2` — the
 //! workspace has no `hmac` crate and one function is not worth a dependency.
 
-use rand::RngCore;
+use rand::Rng as _;
 use sha2::{Digest, Sha256};
 
 /// Cookie name.

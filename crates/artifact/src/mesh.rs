@@ -323,7 +323,7 @@ async fn receive_file(
         }
         Reply::End => {
             if let (Some(h), Some(want)) = (hasher.take(), expect_sha) {
-                let got = format!("{:x}", h.finalize());
+                let got = hex::encode(h.finalize());
                 anyhow::ensure!(
                     got.starts_with(want),
                     "sha256 {got} does not match the name {want}"
@@ -568,7 +568,7 @@ mod tests {
     }
 
     fn sha_name(bytes: &[u8], ext: &str) -> String {
-        format!("{}.{ext}", &format!("{:x}", Sha256::digest(bytes))[..16])
+        format!("{}.{ext}", &hex::encode(Sha256::digest(bytes))[..16])
     }
 
     #[tokio::test]

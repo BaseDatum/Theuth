@@ -26,7 +26,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
- "tower-http 0.6.11",
+ "tower-http 0.7.1",
  "tracing",
  "ts-rs",
  "url",
@@ -147,6 +147,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "hex",
  "platform",
  "replica",
  "reqwest 0.13.5",
@@ -154,7 +155,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tokio",
  "tools",
  "tracing",
@@ -282,13 +283,14 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-types",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "cursor",
  "figment",
  "futures",
  "genai",
  "gray_matter",
+ "hex",
  "kameo",
  "knowledge",
  "libsqlite3-sys",
@@ -312,7 +314,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx 0.9.0",
  "surface",
  "tokio",
@@ -329,9 +331,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol"
-version = "3.1.0"
+version = "3.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e582d0a6aed50feeea4d4ed3c57919db2f614a5cec42cd7acd1717231fa4f2f"
+checksum = "89b41f18aeb4a6d1a463b994cb880cc562cdea7d616ea3e22f9c6f2a438fc4f6"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -362,9 +364,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "1.10.2"
+version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c3ffd489b0e2f96a134d7966c2f43d874d91299e951b66093b91b54b00b7f8f"
+checksum = "c7c7cee33b16d162a617d5ea7292471c542ab31b416a2c089228aa8a6d4d18fe"
 dependencies = [
  "anyhow",
  "derive_more 2.1.1",
@@ -611,6 +613,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e5ecd43c9a8443c6ea515108326330313d6390a0383152e6c2db7b776123974"
 dependencies = [
  "doom-fish-utils",
+]
+
+[[package]]
+name = "apple-native-keyring-store"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b350bfd03649e07aa05c0a81b3e15934374e585c98204a57e20b9d49f49bb9a"
+dependencies = [
+ "keyring-core",
+ "log",
+ "security-framework",
 ]
 
 [[package]]
@@ -897,17 +910,18 @@ dependencies = [
  "agent",
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "bzip2 0.4.4",
  "chrono",
  "csv",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "document",
  "figment",
  "flate2",
  "futures",
  "gray_matter",
+ "hex",
  "kameo",
  "markdown",
  "mime_guess",
@@ -921,7 +935,7 @@ dependencies = [
  "search",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx 0.9.0",
  "surface",
  "tar",
@@ -1277,7 +1291,7 @@ dependencies = [
  "bitflags 2.13.2",
  "blake2 0.10.6",
  "boring",
- "chacha20poly1305",
+ "chacha20poly1305 0.10.1",
  "chrono",
  "const-str",
  "displaydoc",
@@ -1455,6 +1469,7 @@ dependencies = [
  "evalcore",
  "figment",
  "globset",
+ "hex",
  "humantime",
  "kameo",
  "knowledge",
@@ -1467,7 +1482,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx 0.9.0",
  "tempfile",
  "thiserror 2.0.21",
@@ -2504,7 +2519,7 @@ dependencies = [
  "agent",
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "decision",
  "figment",
  "futures",
@@ -3177,6 +3192,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "chacha20poly1305"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789bac751cb"
+dependencies = [
+ "aead 0.6.1",
+ "chacha20 0.10.2",
+ "cipher 0.5.2",
+ "poly1305 0.9.1",
+]
+
+[[package]]
 name = "char_str"
 version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3433,6 +3460,7 @@ dependencies = [
  "figment",
  "gix",
  "globset",
+ "hex",
  "ignore",
  "kameo",
  "oxc_resolver",
@@ -3441,7 +3469,7 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx 0.9.0",
  "surface",
  "tokio",
@@ -3625,6 +3653,7 @@ dependencies = [
  "async-trait",
  "enigo",
  "figment",
+ "hex",
  "image",
  "kameo",
  "objc2-app-kit",
@@ -3638,7 +3667,7 @@ dependencies = [
  "screencapturekit",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tokio",
  "tools",
  "tracing",
@@ -4317,7 +4346,7 @@ dependencies = [
  "protox",
  "reqwest 0.13.5",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tokio",
  "tracing",
  "uuid",
@@ -4536,16 +4565,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dbus-secret-service"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "708b509edf7889e53d7efb0ffadd994cc6c2345ccb62f55cfd6b0682165e4fa6"
-dependencies = [
- "dbus",
- "zeroize",
-]
-
-[[package]]
 name = "deadpool"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4583,6 +4602,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "chrono",
+ "hex",
  "humantime",
  "kameo",
  "libc",
@@ -4596,7 +4616,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "tokenizers",
  "tokio",
@@ -4903,7 +4923,8 @@ version = "2.16.2"
 dependencies = [
  "anyhow",
  "block2",
- "dirs 6.0.0",
+ "dirs 7.0.0",
+ "hex",
  "libc",
  "objc2",
  "objc2-app-kit",
@@ -4911,13 +4932,13 @@ dependencies = [
  "objc2-ui-kit",
  "platform",
  "portable-pty",
- "rand 0.9.5",
+ "rand 0.10.3",
  "raw-window-handle",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tauri",
  "tauri-build",
  "tauri-nspanel",
@@ -5101,14 +5122,14 @@ version = "2.16.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "codeindex",
  "decision",
  "figment",
  "futures",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "html-to-markdown-rs",
  "kameo",
  "libsqlite3-sys",
@@ -5117,7 +5138,7 @@ dependencies = [
  "parking_lot",
  "platform",
  "postcard",
- "rand 0.9.5",
+ "rand 0.10.3",
  "replica",
  "runtime",
  "schemars 1.2.3",
@@ -5125,7 +5146,7 @@ dependencies = [
  "secrets",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlite-vec",
  "sqlx 0.9.0",
  "surface",
@@ -5207,7 +5228,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx 0.9.0",
  "talk",
  "tempfile",
@@ -5265,7 +5286,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx 0.9.0",
  "tempfile",
  "tokio",
@@ -5824,10 +5845,11 @@ name = "evalcore"
 version = "2.16.2"
 dependencies = [
  "async-trait",
+ "hex",
  "regex",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
 ]
@@ -6055,7 +6077,7 @@ dependencies = [
  "roxmltree 0.20.0",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "texting_robots",
  "thiserror 2.0.21",
  "url",
@@ -9679,9 +9701,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-mdns-address-lookup"
-version = "0.5.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cad3dfcaddd5c3681bf0a42606498fc6e8891de793408dfbc46a9fbe76f370b3"
+checksum = "c7e00b132891c9cfad726fb437b62315e722949d409717b6c7dcb535e9f24112"
 dependencies = [
  "data-encoding",
  "derive_more 2.1.1",
@@ -10396,17 +10418,23 @@ dependencies = [
 
 [[package]]
 name = "keyring"
-version = "3.6.3"
+version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
+checksum = "2270074a3d26bcac93c1dc5d2845eb4c089e8d761ccf6e0ea266a16004640627"
 dependencies = [
- "byteorder",
- "dbus-secret-service",
+ "apple-native-keyring-store",
+ "keyring-core",
+ "windows-native-keyring-store",
+ "zbus-secret-service-keyring-store",
+]
+
+[[package]]
+name = "keyring-core"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29fbf4b551298c67925f38cf341a1ada797a75f1837bdf8ae1fc8e2ebc6efb59"
+dependencies = [
  "log",
- "security-framework 2.11.1",
- "security-framework 3.7.0",
- "windows-sys 0.60.2",
- "zeroize",
 ]
 
 [[package]]
@@ -11253,7 +11281,7 @@ version = "2.16.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "futures",
  "jsonrpsee",
@@ -11261,7 +11289,7 @@ dependencies = [
  "mesh",
  "platform",
  "qrcode",
- "rand 0.9.5",
+ "rand 0.10.3",
  "replica",
  "runtime",
  "schemars 1.2.3",
@@ -11751,6 +11779,7 @@ dependencies = [
  "bytes",
  "chrono",
  "document",
+ "hex",
  "http",
  "http-body-util",
  "hyper",
@@ -11765,7 +11794,7 @@ dependencies = [
  "secrets",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tasks",
  "tempfile",
  "tokio",
@@ -11814,7 +11843,7 @@ dependencies = [
  "agent",
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "calcard",
  "chrono",
  "decision",
@@ -11822,6 +11851,7 @@ dependencies = [
  "figment",
  "flexaudio",
  "gray_matter",
+ "hex",
  "hound",
  "kameo",
  "knf-rs",
@@ -11846,7 +11876,7 @@ dependencies = [
  "secrets",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx 0.9.0",
  "talk",
  "tempfile",
@@ -11952,7 +11982,7 @@ dependencies = [
  "kameo",
  "oauth",
  "platform",
- "rand 0.9.5",
+ "rand 0.10.3",
  "replica",
  "runtime",
  "schemars 1.2.3",
@@ -11960,7 +11990,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx 0.9.0",
  "tempfile",
  "tokio",
@@ -12346,12 +12376,6 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
-name = "minisign-verify"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
 
 [[package]]
 name = "minisign-verify"
@@ -12964,7 +12988,7 @@ dependencies = [
  "openssl-probe",
  "openssl-sys",
  "schannel",
- "security-framework 3.7.0",
+ "security-framework",
  "security-framework-sys",
  "tempfile",
 ]
@@ -13271,7 +13295,7 @@ dependencies = [
  "kameo",
  "link",
  "platform",
- "rand 0.9.5",
+ "rand 0.10.3",
  "runtime",
  "schemars 1.2.3",
  "serde",
@@ -13628,13 +13652,13 @@ name = "oauth"
 version = "2.16.2"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "parking_lot",
  "platform",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tokio",
  "tracing",
  "uuid",
@@ -14330,9 +14354,18 @@ dependencies = [
 
 [[package]]
 name = "okf"
-version = "0.1.0-alpha.1"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c9efaa455d841f45758ffe8f58b05bf864364ad819dde7433633a0f3f1f6f0f"
+checksum = "06b7a400e522dc6023ba3c043a5f1d5d9d38d4b5a27565d413b375d449e42dda"
+dependencies = [
+ "okf-core",
+]
+
+[[package]]
+name = "okf-core"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fa8243d1e3b2bd983b972afbe328fea56155ccfb38264b44c19045e54f24be0"
 
 [[package]]
 name = "olpc-cjson"
@@ -15658,12 +15691,13 @@ name = "platform"
 version = "2.16.2"
 dependencies = [
  "anyhow",
- "dirs 6.0.0",
+ "dirs 7.0.0",
+ "hex",
  "libc",
  "objc2-core-graphics",
  "objc2-foundation",
  "self-replace",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
@@ -17066,21 +17100,21 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-server",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "clap",
  "dashmap",
  "futures",
  "platform",
- "rand 0.9.5",
+ "rand 0.10.3",
  "rustls",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "snow",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
  "tower",
- "tower-http 0.6.11",
+ "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
 ]
@@ -17458,18 +17492,19 @@ dependencies = [
  "artifact",
  "async-trait",
  "autoresearch",
- "base64 0.22.1",
+ "base64 0.23.1",
  "browser",
  "chrono",
  "codeindex",
  "computer",
  "decision",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "document",
  "double",
  "dreaming",
  "figment",
  "futures",
+ "hex",
  "jsonrpsee",
  "kameo",
  "knowledge",
@@ -17493,7 +17528,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sessionsync",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "signal",
  "slack",
  "surface",
@@ -17964,9 +17999,9 @@ dependencies = [
 
 [[package]]
 name = "russh"
-version = "0.63.3"
+version = "0.65.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "036204edbd199552a5b3832f63c60dcdf395dc44c7f06b4af1c0e8139cc11bce"
+checksum = "3bb77a4b259312b2abbc541bca1c13cb4e9b61c560a7fd894068c3b92e0c9dc3"
 dependencies = [
  "aes 0.9.4",
  "aws-lc-rs",
@@ -18180,7 +18215,7 @@ dependencies = [
  "openssl-probe",
  "rustls-pki-types",
  "schannel",
- "security-framework 3.7.0",
+ "security-framework",
 ]
 
 [[package]]
@@ -18208,7 +18243,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-platform-verifier-android 0.1.1",
  "rustls-webpki",
- "security-framework 3.7.0",
+ "security-framework",
  "security-framework-sys",
  "webpki-root-certs 0.26.11",
  "windows-sys 0.59.0",
@@ -18229,7 +18264,7 @@ dependencies = [
  "rustls-native-certs",
  "rustls-platform-verifier-android 0.2.0",
  "rustls-webpki",
- "security-framework 3.7.0",
+ "security-framework",
  "security-framework-sys",
  "webpki-root-certs 1.0.11",
  "windows-sys 0.61.2",
@@ -18415,20 +18450,20 @@ dependencies = [
  "agent",
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bollard",
  "bytes",
  "data-encoding",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "figment",
  "flate2",
  "futures",
  "kameo",
  "mesh",
  "microsandbox",
- "minisign-verify 0.2.5",
+ "minisign-verify",
  "parking_lot",
- "rand 0.9.5",
+ "rand 0.10.3",
  "reqwest 0.13.5",
  "runtime",
  "russh",
@@ -18437,7 +18472,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tar",
  "tokio",
  "tools",
@@ -18475,7 +18510,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "croner",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "figment",
  "genai",
  "gray_matter",
@@ -18854,21 +18889,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "secret-service"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5107b24b91445dd2aa449a258a1807b63240942157292354dc5bfdbeb8bc6db8"
+dependencies = [
+ "aes 0.9.4",
+ "cbc 0.2.1",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hkdf 0.13.0",
+ "hybrid-array",
+ "num",
+ "once_cell",
+ "serde",
+ "sha2 0.11.1",
+ "zbus",
+]
+
+[[package]]
 name = "secrets"
 version = "2.16.2"
 dependencies = [
  "aho-corasick",
  "anyhow",
  "async-trait",
- "base64 0.22.1",
- "chacha20poly1305",
+ "base64 0.23.1",
+ "chacha20poly1305 0.11.0",
  "chrono",
  "figment",
  "kameo",
  "keyring",
  "oauth",
  "platform",
- "rand 0.9.5",
+ "rand 0.10.3",
  "regex",
  "replica",
  "runtime",
@@ -18885,19 +18939,6 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "zeroize",
-]
-
-[[package]]
-name = "security-framework"
-version = "2.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
-dependencies = [
- "bitflags 2.13.2",
- "core-foundation 0.9.4",
- "core-foundation-sys",
- "libc",
- "security-framework-sys",
 ]
 
 [[package]]
@@ -19904,7 +19945,7 @@ checksum = "599b506ccc4aff8cf7844bc42cf783009a434c1e26c964432560fb6d6ad02d82"
 dependencies = [
  "aes-gcm 0.10.3",
  "blake2 0.10.6",
- "chacha20poly1305",
+ "chacha20poly1305 0.10.1",
  "curve25519-dalek 4.1.3",
  "getrandom 0.3.4",
  "ring",
@@ -21688,7 +21729,7 @@ dependencies = [
  "infer 0.22.0",
  "libc",
  "log",
- "minisign-verify 0.3.0",
+ "minisign-verify",
  "osakit",
  "percent-encoding",
  "reqwest 0.13.5",
@@ -22005,7 +22046,7 @@ dependencies = [
  "codeindex",
  "computer",
  "decision",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "document",
  "double",
  "dreaming",
@@ -22599,7 +22640,7 @@ dependencies = [
  "anydoc",
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "brush-builtins",
  "brush-core",
  "chrono",
@@ -22608,6 +22649,7 @@ dependencies = [
  "globset",
  "grep-regex",
  "grep-searcher",
+ "hex",
  "ignore",
  "image",
  "jsonschema",
@@ -22626,7 +22668,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "similar 3.2.1",
  "tokio",
  "tokio-util",
@@ -22669,11 +22711,6 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
- "http-range-header",
- "httpdate",
- "mime",
- "mime_guess",
- "percent-encoding",
  "pin-project-lite",
  "tokio",
  "tokio-util",
@@ -22691,9 +22728,19 @@ checksum = "08a05a66a4fdd61cbbe0a1d755ffe0ca6aba159dd4820936a0ff8a8278245b9c"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
+ "futures-core",
+ "futures-util",
  "http",
+ "http-body",
+ "http-body-util",
+ "http-range-header",
+ "httpdate",
+ "mime",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
+ "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
 ]
@@ -23000,7 +23047,7 @@ dependencies = [
  "search",
  "secrets",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "surface",
  "talk",
  "tasks",
@@ -23998,12 +24045,12 @@ dependencies = [
  "agent",
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "flate2",
  "kameo",
- "minisign-verify 0.2.5",
+ "minisign-verify",
  "platform",
- "rand 0.9.5",
+ "rand 0.10.3",
  "reqwest 0.13.5",
  "runtime",
  "schemars 1.2.3",
@@ -24419,13 +24466,14 @@ version = "2.16.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "coreaudio-rs 0.14.2",
  "cpal",
  "figment",
  "flate2",
  "flexaudio",
  "fst",
+ "hex",
  "kameo",
  "markdown",
  "models",
@@ -24441,7 +24489,7 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sqlx 0.9.0",
  "strsim",
  "symphonia",
@@ -24820,7 +24868,7 @@ dependencies = [
  "futures",
  "html-to-markdown-rs",
  "kameo",
- "rand 0.9.5",
+ "rand 0.10.3",
  "reqwest 0.13.5",
  "runtime",
  "schemars 1.2.3",
@@ -25319,6 +25367,19 @@ name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-native-keyring-store"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "063426e76fdec7438d56bb777f67e318a84a25c707b07e575cb8b78e10c028f8"
+dependencies = [
+ "byteorder",
+ "keyring-core",
+ "regex",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
 
 [[package]]
 name = "windows-numerics"
@@ -26404,6 +26465,17 @@ dependencies = [
  "zbus_macros",
  "zbus_names",
  "zvariant",
+]
+
+[[package]]
+name = "zbus-secret-service-keyring-store"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74801d001b9e7729adb4f1825b67b398185fed424749aa3d8bacf70417137d9a"
+dependencies = [
+ "keyring-core",
+ "secret-service",
+ "zbus",
 ]
 
 [[package]]

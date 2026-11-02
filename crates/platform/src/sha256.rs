@@ -5,7 +5,7 @@
 //! never disagree about the same file. Accepted cost: a file rewritten in place with the same
 //! size and mtime second keeps its old sidecar.
 
-use std::io;
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -52,15 +52,26 @@ pub fn remember(path: &Path, hex: &str) {
     }
 }
 
+/// sha256 hex of `path`, streamed (digest 0.11 hashers are not `io::Write`).
+pub fn file(path: &Path) -> io::Result<String> {
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0; 1 << 16];
+    loop {
+        match f.read(&mut buf)? {
+            0 => return Ok(hex::encode(hasher.finalize())),
+            n => hasher.update(&buf[..n]),
+        }
+    }
+}
+
 /// sha256 hex of `path`: the sidecar when it is current, else hash and remember.
 pub fn cached(path: &Path) -> io::Result<String> {
     if let Some(hex) = sidecar(path)? {
         return Ok(hex);
     }
     let t = Instant::now();
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut std::fs::File::open(path)?, &mut hasher)?;
-    let hex = format!("{:x}", hasher.finalize());
+    let hex = file(path)?;
     tracing::debug!(
         "{} sha256 {}… in {:?}",
         path.display(),

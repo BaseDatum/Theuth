@@ -46,6 +46,7 @@ platform = { workspace = true }
 # Speech model files from the release bucket at start (crates/desktop/src/models.rs).
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 # 130 D10 / 134 D10: `theuth://` on the desktop (registered on macOS and Windows, `lib.rs`); same crate the mobile table pins.
 tauri-plugin-deep-link = "2"
 

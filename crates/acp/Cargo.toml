@@ -20,6 +20,7 @@ uuid = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 tracing = { workspace = true }
 schemars = { workspace = true }
 ts-rs = { workspace = true, optional = true }
