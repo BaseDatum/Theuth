@@ -124,7 +124,7 @@ fn zip_listing(bytes: &[u8]) -> anyhow::Result<ArchiveListing> {
                 .map(|t| t.and_utc().timestamp())
         });
         out.push(ArchiveEntry {
-            path: f.name().to_owned(),
+            path: f.name()?.into_owned(),
             size: f.size(),
             compressed: Some(f.compressed_size()),
             mtime,

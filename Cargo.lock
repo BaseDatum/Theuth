@@ -887,7 +887,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
- "bzip2 0.4.4",
+ "bzip2 0.6.1",
  "chrono",
  "csv",
  "dirs 6.0.0",
@@ -925,7 +925,7 @@ dependencies = [
  "typst-pdf",
  "typst-render",
  "uuid",
- "zip 8.6.0",
+ "zip 9.2.2",
 ]
 
 [[package]]
@@ -2718,6 +2718,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49ecfb22d906f800d4fe833b6282cf4dc1c298f5057ca0b5445e5c209735ca47"
 dependencies = [
  "bzip2-sys",
+]
+
+[[package]]
+name = "bzip2"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3a53fac24f34a81bc9954b5d6cfce0c21e18ec6959f44f56e8e90e4bb7c346c"
+dependencies = [
+ "libbz2-rs-sys",
 ]
 
 [[package]]
@@ -10684,6 +10693,12 @@ dependencies = [
  "libloading 0.7.4",
  "once_cell",
 ]
+
+[[package]]
+name = "libbz2-rs-sys"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32f454fd6831a29c0e827ed075bca2a15be201bd57f4168f0fd1041124eab17e"
 
 [[package]]
 name = "libc"
