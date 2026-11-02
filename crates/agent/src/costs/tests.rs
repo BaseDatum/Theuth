@@ -383,6 +383,106 @@ async fn root_delete_keeps_the_books_under_its_owner() {
     assert!(root.root.created_at_ms > 0);
 }
 
+/// Review 160-ENG #1: a meter with no turn model falls back to its owner's
+/// `harness_model`; deleting the root keeps that model, not `unknown` (H1:
+/// the books stay, breakdowns included). #3: an unchanged total adds no H2 row.
+#[tokio::test]
+async fn root_delete_keeps_a_meters_fallback_model() {
+    let r = rig().await;
+    let s = &r.store;
+    let (root, child) = (SessionId::new(), SessionId::new());
+    s.create_session(root, "m", None, None, None).await.unwrap();
+    s.create_session(child, "m", Some(root), Some("omp"), None)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE sessions SET harness_model = 'anthropic/claude-fable-5-1' WHERE id = ?")
+        .bind(child.to_string())
+        .execute(s.pool())
+        .await
+        .unwrap();
+    meter(s, child, "e9", 0.0).await;
+    meter(s, child, "e9", 0.40).await;
+    let reports = sql_i64(s, "SELECT COUNT(*) FROM remote_meter_reports").await;
+    meter(s, child, "e9", 0.40).await;
+    let svc = CostService::new(s.clone(), r.catalog.clone(), "e".into());
+    svc.step().await.unwrap();
+    let before = full_flat(&svc.cube(None));
+    assert!(
+        before
+            .keys()
+            .any(|k| k.2 == "anthropic/claude-fable-5-1" && k.6 == 1),
+        "{before:?}"
+    );
+    s.delete_session(root).await.unwrap();
+    svc.step().await.unwrap();
+    assert_eq!(
+        full_flat(&svc.cube(None)),
+        before,
+        "the model survives the delete"
+    );
+    assert_eq!(
+        sql_i64(s, "SELECT COUNT(*) FROM remote_meter_reports").await,
+        reports,
+        "an unchanged total is not kept again"
+    );
+}
+
+/// Review 160-ENG #4 / #5: a call reserved long before it settles, and a call
+/// settling after its root was deleted, both reach the cube incrementally.
+#[tokio::test]
+async fn late_settles_reach_the_cube() {
+    let r = rig().await;
+    let s = &r.store;
+    let (old, gone) = (SessionId::new(), SessionId::new());
+    s.create_session(old, "m", None, None, None).await.unwrap();
+    s.create_session(gone, "m", None, None, None).await.unwrap();
+    let reserve = |owner| {
+        s.reserve_call(
+            owner,
+            "r",
+            0,
+            None,
+            CallKind::Round,
+            Some("anthropic"),
+            Some(HAIKU),
+        )
+    };
+    let slow = reserve(old).await.unwrap();
+    s.mark_dispatched(&slow).await.unwrap();
+    let three_hours_ago = (chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
+    sqlx::query("UPDATE model_calls SET created_at = ? WHERE call_id = ?")
+        .bind(three_hours_ago)
+        .bind(&slow.0)
+        .execute(s.pool())
+        .await
+        .unwrap();
+    let orphan = reserve(gone).await.unwrap();
+    s.mark_dispatched(&orphan).await.unwrap();
+    let svc = CostService::new(s.clone(), r.catalog.clone(), "e".into());
+    svc.step().await.unwrap();
+    s.delete_session(gone).await.unwrap();
+    svc.step().await.unwrap();
+    let est = |v| CostObservation {
+        estimated: Some(usd(v)),
+        ..tokens(10, 1, 0, 0)
+    };
+    s.settle_call(&slow, CallStatus::Settled, est(0.25))
+        .await
+        .unwrap();
+    s.settle_call(&orphan, CallStatus::Settled, est(0.5))
+        .await
+        .unwrap();
+    svc.step().await.unwrap();
+    let flat = full_flat(&svc.cube(None));
+    assert_eq!(total(&flat, Some(2)), 750_000_000, "{flat:?}");
+    let unpriced: u64 = flat
+        .iter()
+        .filter(|(k, _)| k.6 == 3)
+        .map(|(_, v)| v[1])
+        .sum();
+    assert_eq!(unpriced, 0, "no in-flight cell left: {flat:?}");
+}
+
 /// §3.3: after a scripted mix of events the incrementally refreshed cube
 /// equals a full rebuild, and a client fed only deltas holds the same cells.
 #[tokio::test]
