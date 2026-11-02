@@ -302,7 +302,8 @@ obscura-js = { git = "https://github.com/skymoore/obscura", branch = "theuth/syn
 # obscura-net's minus `socks`: streamed bodies, the decompressors Chrome's `Accept-Encoding` invites, the
 # default roots/runtime (`default-features = false` so the list is explicit), wreq-util's emulation profiles.
 # No `cookies` (122 §5). `prefix-symbols` stays obscura's Linux-only concern (features union).
-# Held at rc.29/rc.12 (dep-w2b): obscura-net (skymoore/obscura main d5aed2b) pins `=6.0.0-rc.29`; bump both together.
+# Held at rc.29/rc.12: obscura-net (skymoore/obscura theuth/sync-2026-11-02) still pins `wreq = "=6.0.0-rc.29"` and
+# its vendored wreq-util (patched in below) is `=3.0.0-rc.12`; bump both together once obscura moves.
 wreq = { version = "=6.0.0-rc.29", default-features = false, features = ["webpki-roots", "tokio-rt", "stream", "gzip", "brotli", "deflate", "zstd"] }
 wreq-util = { version = "=3.0.0-rc.12", default-features = false, features = ["emulation", "emulation-compression"] }
 iana-time-zone = "0.1"
