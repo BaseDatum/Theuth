@@ -111,7 +111,7 @@ hound = "3.5"  # 53
 # main on 2026-09-16, still 0.2.3 + xn 0.2.4 from crates.io. Drop the git ref when 0.2.4 ships.
 ptts = { git = "https://github.com/gradium-ai/xn-ptts", rev = "5d50b5209ff9bbd7d3bac5a26f3c3bc1934fca89", features = ["sp"] }
 xn = "0.2.4"  # ptts's tensor library; only `set_num_threads` is called directly
-opus = "0.3"
+opus = "0.4"
 # Voice notes (design doc 45): `parakeet-rs` = Parakeet TDT speech-to-text on ONNX Runtime. `load-dynamic`, not
 # pyke's static build: that archive carries protobuf 3.21 with default visibility, `sentencepiece` (ptts) carries
 # protobuf-lite 3.14, and one process cannot hold both — the TTS load aborts. The dylib lives beside the checkpoint.
