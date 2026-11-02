@@ -1139,12 +1139,13 @@ impl Turn {
     }
 
     /// `TurnFinished`: final flush and close. A turn that opened nothing
-    /// makes no call.
-    pub async fn finish(&mut self, footer: Footer) {
+    /// makes no call. `true` when a `chat.stopStream` with
+    /// `session_status: active` went through, so no separate status call is due.
+    pub async fn finish(&mut self, footer: Footer) -> bool {
         self.end_reasoning().await;
         self.close_batch();
         let Some(b) = self.bubble.as_mut() else {
-            return;
+            return false;
         };
         b.text.finish();
         if let Some(cut) = self.rotation_cut() {
@@ -1153,12 +1154,12 @@ impl Turn {
         if matches!(self.bubble.as_ref().map(|b| &b.mode), Some(Mode::Unsent)) {
             if !self.has_work() {
                 self.bubble = None;
-                return;
+                return false;
             }
             self.open().await;
         }
         let Some(mut b) = self.bubble.take() else {
-            return;
+            return false;
         };
         let mut footer = footer.to_string();
         if let Some(epoch) = self.compacted {
@@ -1168,6 +1169,7 @@ impl Turn {
         match &b.mode {
             Mode::Unsent => {
                 tracing::warn!("turn finished before its bubble could be opened; text dropped");
+                false
             }
             Mode::Stream(ts) => {
                 // Cards first: they completed before the text that follows them.
@@ -1191,7 +1193,9 @@ impl Turn {
                     self.publish_fallback(e.to_string()).await;
                     let raw = b.out(0..len);
                     self.repair(ts, &format!("{raw}\n\n_{footer}_")).await;
+                    return false;
                 }
+                true
             }
             Mode::Update(ts) => {
                 self.flush_cards(true).await;
@@ -1205,6 +1209,7 @@ impl Turn {
                     Ok(()) => post_fence_blocks(&*self.api, &self.target, &mut b, posts).await,
                     Err(e) => tracing::warn!(error = %e, ts, "final update failed"),
                 }
+                false
             }
         }
     }
@@ -1275,9 +1280,11 @@ impl Turn {
                     }
                 }
                 if !dead {
+                    // stopStream defaults the session to `active`; the turn is
+                    // still running, so keep "Working…" and its Stop button.
                     match self
                         .api
-                        .stop_stream(&t.channel, ts, Vec::new(), None, None)
+                        .stop_stream(&t.channel, ts, Vec::new(), None, Some("processing"))
                         .await
                     {
                         Ok(()) => {}
@@ -2151,7 +2158,8 @@ mod tests {
             _channel: &str,
             _thread_ts: &str,
             _status: &str,
-        ) -> Result<(), ApiError> {
+            _initiator: Option<&str>,
+        ) -> Result<Vec<String>, ApiError> {
             unimplemented!()
         }
         async fn rename_session(

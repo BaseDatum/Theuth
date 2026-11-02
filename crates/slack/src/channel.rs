@@ -373,6 +373,8 @@ enum Out {
     Note(String),
     /// 110 §6: a peer's result for this thread's session, as a collapsed container.
     Peer(Box<PeerDelivered>),
+    /// The Slack Stop button was clicked here; `streaming_message_ts` from the event.
+    Stopped(Vec<String>),
 }
 
 /// `auth.test` identity plus the owner DM (21 §11).
@@ -434,6 +436,8 @@ struct State {
     dropped: u64,
     /// 110 §6: `MessageDelivered` events not rendered.
     hidden: u64,
+    /// `SlackStatus.session_status`.
+    session_status: Option<String>,
     /// Pending approval cards by id (thread and owner-DM alike).
     cards: HashMap<ApprovalId, Card>,
     /// Pending `ask_user` questions by id.
@@ -703,6 +707,7 @@ impl Channel {
                 last_event: None,
                 dropped: 0,
                 hidden: 0,
+                session_status: None,
                 cards: HashMap::new(),
                 asks: HashMap::new(),
                 parent_of: HashMap::new(),
@@ -776,6 +781,7 @@ impl Channel {
             calls: self.live.as_ref().map(|a| a.stats()).unwrap_or_default(),
             dropped_envelopes: s.dropped,
             hidden_deliveries: s.hidden,
+            session_status: s.session_status.clone(),
         }
     }
 
@@ -1211,6 +1217,89 @@ impl Channel {
         }
     }
 
+    /// `agents.sessions.setStatus`; a warning or error becomes
+    /// `SlackStatus.session_status` (the façade logs each code once), a clean
+    /// `processing` answer clears it.
+    async fn set_session_status(
+        &self,
+        channel: &str,
+        thread_ts: &str,
+        status: &str,
+        initiator: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let r = self
+            .api
+            .set_session_status(channel, thread_ts, status, initiator)
+            .await;
+        let note = match &r {
+            Ok(warnings) if warnings.is_empty() => {
+                if status == "processing" {
+                    self.lock().session_status = None;
+                }
+                return Ok(());
+            }
+            Ok(warnings) => warnings
+                .iter()
+                .map(|c| format!("warning {c}: {}", crate::api::session_fix(c)))
+                .collect::<Vec<_>>()
+                .join("; "),
+            Err(ApiError::Slack(c)) => format!("error {c}: {}", crate::api::session_fix(c)),
+            Err(e) => {
+                tracing::debug!(error = %e, status, "agents.sessions.setStatus failed");
+                return r.map(drop);
+            }
+        };
+        self.lock().session_status = Some(note);
+        r.map(drop)
+    }
+
+    /// `agent_session_stopped`: the Stop button. Slack leaves the session in
+    /// `processing`, so a bound thread's worker closes the turn's streams, sets
+    /// `active` and says so while the session is cancelled; an unbound thread
+    /// still gets its streams closed and `active`.
+    async fn stopped(self: &Arc<Self>, e: SlackAgentSessionStoppedEvent) {
+        let channel = e.channel.0;
+        let streams: Vec<String> = e
+            .streaming_message_ts
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| t.0)
+            .collect();
+        let Some(thread_ts) = e.thread_ts.map(|t| t.0) else {
+            tracing::info!(%channel, "slack stop button without a thread ignored");
+            return;
+        };
+        let key = thread_key(&channel, &thread_ts);
+        let bound = self.lock().threads.get(&key).cloned();
+        tracing::info!(
+            %channel,
+            %thread_ts,
+            session = ?bound.as_ref().map(|t| t.session),
+            streams = streams.len(),
+            "slack stop button → cancel"
+        );
+        let Some(thread) = bound else {
+            for ts in &streams {
+                if let Err(e) = self
+                    .api
+                    .stop_stream(&channel, ts, Vec::new(), None, Some("active"))
+                    .await
+                {
+                    tracing::debug!(error = %e, ts, "stopStream after stop");
+                }
+            }
+            let user = e.user.map(|u| u.0);
+            let _ = self
+                .set_session_status(&channel, &thread_ts, "active", user.as_deref())
+                .await;
+            return;
+        };
+        let _ = self.worker(&key, &thread).send(Out::Stopped(streams));
+        if let Err(e) = self.port.cancel(thread.session).await {
+            tracing::warn!(error = %e, "cancel failed");
+        }
+    }
+
     async fn handle_push(self: &Arc<Self>, ev: SlackPushEventCallback) {
         let team = ev.team_id.0;
         match ev.event {
@@ -1269,16 +1358,7 @@ impl Channel {
                 })
                 .await;
             }
-            SlackEventCallbackBody::AgentSessionStopped(e) => {
-                let Some(thread_ts) = e.thread_ts else { return };
-                let key = thread_key(&e.channel.0, &thread_ts.0);
-                let session = self.lock().threads.get(&key).map(|t| t.session);
-                let Some(session) = session else { return };
-                tracing::info!(%session, "slack stop button → cancel");
-                if let Err(e) = self.port.cancel(session).await {
-                    tracing::warn!(error = %e, "cancel failed");
-                }
-            }
+            SlackEventCallbackBody::AgentSessionStopped(e) => self.stopped(e).await,
             SlackEventCallbackBody::AgentSessionTitleChanged(e) => {
                 let Some(thread_ts) = e.thread_ts else { return };
                 let key = thread_key(&e.channel.0, &thread_ts.0);
@@ -2142,11 +2222,13 @@ struct Worker {
     board_creates: HashMap<String, String>,
 }
 
-/// `agents.sessions.setStatus` codes meaning "not an agent app" (21 §8.6).
+/// `agents.sessions.setStatus` codes that will not change for this thread:
+/// not an agent app, or agents off in the workspace (21 §8.6). Anything else
+/// (transient, or arguments theuth got wrong) keeps trying; the façade logs it.
 const STATUS_UNSUPPORTED: [&str; 3] = [
     "missing_scope",
     "not_allowed_token_type",
-    "invalid_arguments",
+    "feature_disabled",
 ];
 
 impl Worker {
@@ -2161,7 +2243,13 @@ impl Worker {
                     Some(Out::Mark(ts, voice)) => {
                         self.marks.push(ts);
                         self.voice = voice;
+                        // A steer into the running turn: re-assert `processing`
+                        // (also restarts Slack's one-hour processing timeout).
+                        if self.turn.is_some() {
+                            self.set_status("processing").await;
+                        }
                     }
+                    Some(Out::Stopped(streams)) => self.stopped(streams).await,
                     Some(Out::Agent(ev)) => self.apply(ev).await,
                     Some(Out::Approval(req)) => self.approval(*req).await,
                     Some(Out::Resolved(res, by)) => self.resolved(res, by.as_deref()).await,
@@ -2639,7 +2727,6 @@ impl Worker {
             } => {
                 self.speak();
                 if let Some(mut t) = self.turn.take() {
-                    let streamed = t.open_stream().is_some();
                     let footer = Footer {
                         model: self.model.clone(),
                         usage,
@@ -2647,10 +2734,10 @@ impl Worker {
                         tools: t.tool_count(),
                         context: self.context_size.map(|size| (context, size)),
                     };
-                    t.finish(footer).await;
+                    let closed = t.finish(footer).await;
                     self.sync_stream();
-                    if !streamed {
-                        // Nothing streamed, so no stopStream carried `session_status`.
+                    if !closed {
+                        // No stopStream carried `session_status: active`.
                         self.set_status("active").await;
                     }
                 }
@@ -2800,27 +2887,47 @@ impl Worker {
         }));
     }
 
-    /// `agents.sessions.setStatus`, latching off on "not an agent app" (21 §8.6).
+    /// `agents.sessions.setStatus` on this thread, latching off on
+    /// [`STATUS_UNSUPPORTED`]; the thread's user is the initiator should the
+    /// call create the session.
     async fn set_status(&mut self, status: &str) {
         if !self.status_supported {
             return;
         }
-        match self
+        let initiator = (!self.user.is_empty()).then_some(self.user.as_str());
+        if let Err(ApiError::Slack(code)) = self
             .chan
-            .api
-            .set_session_status(&self.channel, &self.thread_ts, status)
+            .set_session_status(&self.channel, &self.thread_ts, status, initiator)
             .await
+            && STATUS_UNSUPPORTED.contains(&code.as_str())
         {
-            Ok(()) => {}
-            Err(ApiError::Slack(code)) if STATUS_UNSUPPORTED.contains(&code.as_str()) => {
-                self.status_supported = false;
-                tracing::warn!(
-                    code,
-                    "agents.sessions.setStatus refused; create the Slack app from the manifest with agent_view to get Working… and the stop button"
-                );
-            }
-            Err(e) => tracing::debug!(error = %e, status, "agents.sessions.setStatus failed"),
+            self.status_supported = false;
         }
+    }
+
+    /// The Stop button (`Out::Stopped`): drop the turn so nothing more streams
+    /// and its `TurnFinished` only reacts, close every stream Slack named plus
+    /// our own, set `active` and leave a `Stopped.` line.
+    async fn stopped(&mut self, mut streams: Vec<String>) {
+        if let Some(ts) = self.turn.take().as_ref().and_then(|t| t.open_stream())
+            && !streams.iter().any(|s| s == ts)
+        {
+            streams.push(ts.to_owned());
+        }
+        self.sync_stream();
+        for ts in &streams {
+            // Slack has usually stopped these already.
+            if let Err(e) = self
+                .chan
+                .api
+                .stop_stream(&self.channel, ts, Vec::new(), None, Some("active"))
+                .await
+            {
+                tracing::debug!(error = %e, ts, "stopStream after stop");
+            }
+        }
+        self.set_status("active").await;
+        self.post_markdown_in_thread("_Stopped._").await;
     }
 
     /// Renames the thread to the session's title once per title unless the
@@ -3009,6 +3116,8 @@ pub(crate) mod tests {
         calls: Mutex<Vec<String>>,
         /// Every `post_blocks` / `update_blocks` payload, in call order.
         blocks: Mutex<Vec<serde_json::Value>>,
+        /// What every `set_session_status` answers `Ok` with.
+        status_warnings: Mutex<Vec<String>>,
     }
 
     impl FakeApi {
@@ -3044,6 +3153,14 @@ pub(crate) mod tests {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(blocks);
+        }
+        /// What later `set_session_status` calls answer `Ok` with.
+        fn status_warns(&self, codes: &[&str]) {
+            *self
+                .status_warnings
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) =
+                codes.iter().map(|c| (*c).to_owned()).collect();
         }
     }
 
@@ -3143,9 +3260,14 @@ pub(crate) mod tests {
             channel: &str,
             thread_ts: &str,
             status: &str,
-        ) -> Result<(), ApiError> {
+            _: Option<&str>,
+        ) -> Result<Vec<String>, ApiError> {
             self.record(format!("set_session_status {channel} {thread_ts} {status}"));
-            Ok(())
+            Ok(self
+                .status_warnings
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone())
         }
         async fn rename_session(
             &self,
@@ -4841,6 +4963,148 @@ pub(crate) mod tests {
         let active = format!("set_session_status {DM} 100.1 active");
         f.until(|calls| calls.contains(&active)).await;
         assert!(f.api.blocks().is_empty(), "{:?}", f.api.calls());
+    }
+
+    fn stop_event(thread_ts: &str, streams: &[&str]) -> SlackPushEventCallback {
+        push(json!({
+            "type": "agent_session_stopped", "channel": DM, "thread_ts": thread_ts,
+            "user": OWNER, "streaming_message_ts": streams, "event_ts": "101.0",
+        }))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_button_cancels_closes_the_stream_sets_active_and_says_stopped() {
+        let f = fixture();
+        f.bind(OWNER);
+        let session = f.stub.session;
+        f.chan
+            .route(Event::Agent(turn_started(session, "go")))
+            .await;
+        f.chan
+            .route(Event::Agent(text_delta(session, "working on it")))
+            .await;
+        let start = format!("start_stream {DM} 100.1 ");
+        f.until(|calls| calls.iter().any(|c| c.starts_with(&start)))
+            .await;
+        f.chan
+            .handle_inbound(Inbound::Push(Box::new(stop_event("100.1", &["9.9"]))))
+            .await;
+        assert_eq!(f.stub.calls(), vec![Call::Cancel(session)]);
+        let stopped = format!("post_markdown {DM} 100.1 _Stopped._");
+        f.until(|calls| calls.contains(&stopped)).await;
+        // The cancelled turn's tail: dropped, no second stopStream.
+        f.chan
+            .route(Event::Agent(text_delta(session, "still going")))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_finished(session, "cancelled")))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_started(session, "next")))
+            .await;
+        let processing = format!("set_session_status {DM} 100.1 processing");
+        f.until(|calls| calls.iter().filter(|c| **c == processing).count() == 2)
+            .await;
+        let calls = f.api.calls();
+        let at = |line: &str| calls.iter().position(|c| c == line).unwrap();
+        let stops: Vec<usize> = (0..calls.len())
+            .filter(|&i| calls[i].starts_with(&format!("stop_stream {DM} 9.9 ")))
+            .collect();
+        assert_eq!(stops.len(), 1, "{calls:?}");
+        let active = format!("set_session_status {DM} 100.1 active");
+        assert!(
+            stops[0] < at(&active) && at(&active) < at(&stopped),
+            "{calls:?}"
+        );
+        assert!(
+            !calls[at(&stopped)..]
+                .iter()
+                .any(|c| c.contains("still going")),
+            "{calls:?}"
+        );
+        assert_eq!(f.chan.lock().threads.open_streams(), 0);
+    }
+
+    #[tokio::test]
+    async fn stop_on_an_unbound_thread_still_sets_active() {
+        let f = fixture();
+        f.chan
+            .handle_inbound(Inbound::Push(Box::new(stop_event("555.1", &["556.1"]))))
+            .await;
+        assert_eq!(
+            f.api.calls(),
+            vec![
+                format!("stop_stream {DM} 556.1  | "),
+                format!("set_session_status {DM} 555.1 active"),
+            ]
+        );
+        assert!(f.stub.calls().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn set_status_warning_shows_in_status_until_a_clean_processing() {
+        let f = fixture();
+        f.api
+            .status_warns(&["missing_agent_session_stopped_event_subscription"]);
+        f.bind(OWNER);
+        let session = f.stub.session;
+        f.chan
+            .route(Event::Agent(turn_started(session, "go")))
+            .await;
+        let processing = format!("set_session_status {DM} 100.1 processing");
+        f.until(|calls| calls.contains(&processing)).await;
+        let note = f.chan.status().session_status.expect("warning recorded");
+        assert!(
+            note.starts_with("warning missing_agent_session_stopped_event_subscription: ")
+                && note.contains("Event Subscriptions"),
+            "{note}"
+        );
+        assert!(
+            crate::render_status(&f.chan.status()).contains(&format!("session status: {note}"))
+        );
+
+        f.api.status_warns(&[]);
+        f.chan
+            .route(Event::Agent(turn_finished(session, "end_turn")))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_started(session, "again")))
+            .await;
+        f.until(|calls| calls.iter().filter(|c| **c == processing).count() == 2)
+            .await;
+        assert_eq!(f.chan.status().session_status, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dm_top_level_message_sets_processing_before_the_first_stream() {
+        let f = fixture();
+        f.chan
+            .handle_inbound(Inbound::Push(Box::new(dm(OWNER, "100.1", None, "go"))))
+            .await;
+        let session = f.stub.session;
+        f.chan
+            .route(Event::Agent(turn_started(session, "go")))
+            .await;
+        f.chan
+            .route(Event::Agent(text_delta(session, "hello")))
+            .await;
+        f.chan
+            .route(Event::Agent(turn_finished(session, "end_turn")))
+            .await;
+        let stop = format!("stop_stream {DM} 9.9 ");
+        f.until(|calls| calls.iter().any(|c| c.starts_with(&stop)))
+            .await;
+        let calls = f.api.calls();
+        let processing = calls
+            .iter()
+            .position(|c| *c == format!("set_session_status {DM} 100.1 processing"));
+        let start = calls
+            .iter()
+            .position(|c| c.starts_with(&format!("start_stream {DM} 100.1 ")));
+        assert!(
+            matches!((processing, start), (Some(p), Some(s)) if p < s),
+            "{calls:?}"
+        );
     }
 
     #[tokio::test]

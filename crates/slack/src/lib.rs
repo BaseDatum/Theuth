@@ -199,6 +199,11 @@ pub struct SlackStatus {
     /// `MessageDelivered` events not rendered (110 §6).
     #[serde(default)]
     pub hidden_deliveries: u64,
+    /// The latest `agents.sessions.setStatus` warning or error with what to
+    /// fix (e.g. no Stop button: `missing_agent_session_stopped_event_subscription`);
+    /// a clean `processing` answer clears it.
+    #[serde(default)]
+    pub session_status: Option<String>,
 }
 
 /// `ask` → [`SlackStatus`].
@@ -295,6 +300,7 @@ impl Slack {
             calls: BTreeMap::new(),
             dropped_envelopes: 0,
             hidden_deliveries: 0,
+            session_status: None,
         }
     }
 }
@@ -534,6 +540,9 @@ pub fn render_status(s: &SlackStatus) -> String {
         s.dropped_envelopes,
         s.hidden_deliveries,
     );
+    if let Some(note) = &s.session_status {
+        out.push_str(&format!("session status: {note}\n"));
+    }
     if s.threads.is_empty() {
         out.push_str("threads: -\n");
     } else {
