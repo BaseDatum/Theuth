@@ -310,19 +310,19 @@ mod tests {
         let store = crate::store::Store::open(&path, None).await.unwrap();
         std::fs::create_dir_all(dir.0.join("agents")).unwrap();
         std::fs::write(
-            dir.0.join("agents/ivan.md"),
+            dir.0.join("agents/atlas.md"),
             "---\nbudget: 40 USD/month\n---\nQA.",
         )
         .unwrap();
-        std::fs::write(dir.0.join("agents/stas.md"), "---\ntitle: S\n---\nQA.").unwrap();
+        std::fs::write(dir.0.join("agents/birch.md"), "---\ntitle: S\n---\nQA.").unwrap();
 
-        // Ivan's desk root and a child: both count toward his month.
+        // Atlas's desk root and a child: both count toward its month.
         let desk = SessionId::new();
         store
             .create_session(desk, "m", None, None, None)
             .await
             .unwrap();
-        store.set_desk(desk, Some("ivan")).await.unwrap();
+        store.set_desk(desk, Some("atlas")).await.unwrap();
         store.ensure_owner(desk, None).await.unwrap();
         let child = SessionId::new();
         store
@@ -375,10 +375,10 @@ mod tests {
         assert_eq!(
             rows,
             [
-                ("agent:ivan", "month", 40.0, 2.0),
+                ("agent:atlas", "month", 40.0, 2.0),
                 ("routine:dreaming", "night", 25.0, 2.5),
             ],
-            "stas has no cap; the earlier night's $3 is before its stamp"
+            "birch has no cap; the earlier night's $3 is before its stamp"
         );
         assert_eq!(got[0].resets_at_ms, Some(month_bounds(now).1));
         assert!(
@@ -405,7 +405,7 @@ mod tests {
         let reported = [piece(now, 2), piece(first - 1, 4)];
         store.delete_session(desk).await.unwrap();
         let got = read(&db, &dir.0, now, &reported).await.unwrap();
-        assert_eq!(got[0].id, "agent:ivan");
+        assert_eq!(got[0].id, "agent:atlas");
         assert_eq!((got[0].spent_usd * 100.0).round() / 100.0, 2.5, "{got:?}");
     }
 }
