@@ -239,6 +239,11 @@ import type { Key } from '@/rpc/bindings/Key'
 import type { SessionCost } from '@/rpc/bindings/SessionCost'
 import type { SessionOpen } from '@/rpc/bindings/SessionOpen'
 import type { SpendReport } from '@/rpc/bindings/SpendReport'
+import type { CostCallsPage } from '@/rpc/bindings/CostCallsPage'
+import type { CostCallsQuery } from '@/rpc/bindings/CostCallsQuery'
+import type { CostCube } from '@/rpc/bindings/CostCube'
+import type { CostCubeCursor } from '@/rpc/bindings/CostCubeCursor'
+import type { UsageLimits } from '@/rpc/bindings/UsageLimits'
 import type { TerminalSummary } from '@/rpc/bindings/TerminalSummary'
 import type { AgentFile } from '@/rpc/bindings/AgentFile'
 import type { AgentSummary } from '@/rpc/bindings/AgentSummary'
@@ -389,6 +394,10 @@ export interface Api {
   screen_context(req: ScreenContextReq): Promise<ScreenContextReply>
   /** Active-context inventory with its revision and `remove_with` companions (48 §3.2); `editable: false` carries the refusal `reason`. */
   context_items(session: SessionId): Promise<ContextSnapshot>
+  /** 160 §3.2: the hourly cost cube — a full snapshot when `since` is null, from another epoch or too old; else the changes since it. From memory. */
+  cost_cube(since: CostCubeCursor | null): Promise<CostCube>
+  /** 160 §4: one newest-first, keyset-paged page of individual calls (reported money as placed pieces) for the filters. */
+  cost_calls(query: CostCallsQuery): Promise<CostCallsPage>
   /** Replace the turn opened at `turn` with `text` (29 §3); refused mid-turn. */
   edit_turn(session: SessionId, turn: number, text: string, files: string[]): Promise<null>
   /** Load the dictation model if not loaded (54 §4.3); never opens the mic. Answers the current state; `-32001` when voice is disabled. */
@@ -1148,6 +1157,10 @@ export interface Api {
   /** The self-updater's latest state (39 §4.3). */
   update_status(): Promise<UpdateReady | null>
   use_skill(session: SessionId | null, name: string, args: string): Promise<SessionId>
+  /** 160 §5.2: the engine's cached usage-limits snapshot (never a provider call). */
+  usage_limits(): Promise<UsageLimits>
+  /** 160 §5.2: ask the limit pollers to refresh soon (`null` = every source); returns at once. */
+  usage_limits_refresh(provider: string | null): Promise<null>
   /** The vision fallback model (52 §3.1), `null` when off; may name a model that is no longer available. */
   vision_model(): Promise<ModelInfo | null>
   /** Model state, voices, the utterance in flight (43 §6) and `input_devices` (153 §8.1); `-32001` when the voice plugin is disabled. */
@@ -1303,6 +1316,8 @@ export const METHODS = [
   'compact_style',
   'computer_permissions',
   'context_items',
+  'cost_calls',
+  'cost_cube',
   'create_session',
   'decision_loaded',
   'decision_mode',
@@ -1691,6 +1706,8 @@ export const METHODS = [
   'transcribe',
   'undo',
   'update_status',
+  'usage_limits',
+  'usage_limits_refresh',
   'use_skill',
   'vision_model',
   'voice_settings',

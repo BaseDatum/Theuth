@@ -3,10 +3,12 @@
 // Mac (local daemon), otherwise `get_attachment` → blob URL, 50 cached.
 
 import { convertFileSrc } from '@tauri-apps/api/core'
+import { revealItemInDir } from '@tauri-apps/plugin-opener'
+import { toast } from 'sonner'
 import { LOCAL } from '@/link/engines'
 import type { Api } from '@/rpc/api'
 import { type RpcClient, isTransportError } from '@/rpc/client'
-import { isDesktop } from './platform'
+import { container, isDesktop } from './platform'
 
 const MIME: Record<string, string> = {
   png: 'image/png',
@@ -141,3 +143,23 @@ export async function readTextOnline(api: Api, client: Pick<RpcClient, 'onState'
     return readText(api, path)
   }
 }
+
+/**
+ * Put `blob` somewhere the user can reach. Browser: a download named `name`. Desktop shell on the local daemon:
+ * the daemon's attachment store, revealed in the file manager (the only byte sink the shell has; no fs plugin).
+ * ponytail: content-addressed name and fixed folder; `@tauri-apps/plugin-fs` + the `save()` dialog if Sky wants to pick.
+ */
+export async function saveBlob(api: Api, blob: Blob, name: string, ext: string) {
+  if (container() === 'web') {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `${name}.${ext}`
+    a.click()
+    URL.revokeObjectURL(a.href)
+    return
+  }
+  const path = await putAttachment(api, blob, ext)
+  await revealItemInDir(path)
+  toast.success(`Saved ${path}`)
+}
+
