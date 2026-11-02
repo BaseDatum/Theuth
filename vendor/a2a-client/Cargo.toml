@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.85"
 name = "a2a-client-lf"
-version = "0.2.5"
+version = "0.2.9"
 build = false
 autolib = false
 autobins = false
@@ -43,12 +43,16 @@ rustls-tls = [
 name = "a2a_client"
 path = "src/lib.rs"
 
+[[test]]
+name = "wire_logging"
+path = "tests/wire_logging.rs"
+
 [dependencies.a2a]
-version = "0.3.1"
+version = "0.4.2"
 package = "a2a-lf"
 
 [dependencies.a2a-pb]
-version = "0.2.1"
+version = "0.3.2"
 package = "a2a-pb"
 
 [dependencies.async-trait]
@@ -106,6 +110,9 @@ version = "0.1"
 version = "1"
 features = ["v7"]
 
+[dev-dependencies.futures]
+version = "0.3"
+
 [dev-dependencies.rcgen]
 version = "0.14"
 features = [
@@ -114,3 +121,19 @@ features = [
     "ring",
 ]
 default-features = false
+
+[dev-dependencies.reqwest]
+version = "0.13"
+features = [
+    "json",
+    "stream",
+    "charset",
+    "http2",
+    "system-proxy",
+    "query",
+]
+default-features = false
+
+[dev-dependencies.tracing-subscriber]
+version = "0.3"
+features = ["env-filter"]

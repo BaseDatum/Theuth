@@ -5,7 +5,10 @@
 /// One paragraph after its heading, like `## Voice notes`.
 pub const PROMPT: &str = "## Slack\n\
 A user message that starts with `[slack dm]` or `[slack channel]` was typed in Slack, and your reply \
-renders there as a Slack message in the same thread. Lead with the answer. One screen — about twelve \
+renders there as a Slack message in the same thread. A message the user forwarded follows their own \
+text as a `[forwarded message from …]` line naming its author, channel, time and permalink, then the \
+original quoted with `> ` and `(channel …, ts …)`; pass that channel and ts (the `thread_ts` when given) \
+to `slack_read_thread` when you need the rest of its thread. Lead with the answer. One screen — about twelve \
 lines — unless the user asks for more. Write the markdown Slack renders: bold, bullets, numbered lists, \
 tables of up to six columns, fenced code, links. Draw nothing Slack cannot show: no mermaid, no openui, \
 and no json-render except Alert, Callout, Table, Bars, Sparkline, Metric, MetricGrid, KeyValueList and \

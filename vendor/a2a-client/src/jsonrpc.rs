@@ -1,4 +1,5 @@
 // Copyright AGNTCY Contributors (https://github.com/agntcy)
+// Copyright A2A Contributors (https://github.com/a2aproject)
 // SPDX-License-Identifier: Apache-2.0
 use a2a::*;
 use a2a_pb::protojson_conv::{self, ProtoJsonPayload};
@@ -15,6 +16,7 @@ use crate::push_config_compat::{
     serialize_create_task_push_notification_config_request,
 };
 use crate::transport::{ServiceParams, Transport, TransportFactory};
+use crate::wire;
 
 fn parse_jsonrpc_error(err: JsonRpcError) -> A2AError {
     let details: Vec<TypedDetail> = err
@@ -64,13 +66,13 @@ impl JsonRpcTransport {
             }
         }
 
-        let response = builder
-            .json(&rpc_request)
-            .send()
-            .await
-            .map_err(|e| A2AError::internal(format!("HTTP request failed: {e}")))?;
+        let response = wire::send(&self.client, builder.json(&rpc_request)).await?;
 
-        let rpc_response: JsonRpcResponse = read_bounded_json(response, "JSON-RPC response").await?;
+        // Read the body as text first so the raw bytes can be logged before
+        // they become a typed value.
+        let body = wire::response_text(response).await?;
+        let rpc_response: JsonRpcResponse = serde_json::from_str(&body)
+            .map_err(|e| A2AError::internal(format!("failed to parse JSON-RPC response: {e}")))?;
 
         if let Some(err) = rpc_response.error {
             return Err(parse_jsonrpc_error(err));
@@ -138,11 +140,7 @@ impl JsonRpcTransport {
             }
         }
 
-        let response = builder
-            .json(&rpc_request)
-            .send()
-            .await
-            .map_err(|e| A2AError::internal(format!("HTTP request failed: {e}")))?;
+        let response = wire::send(&self.client, builder.json(&rpc_request)).await?;
 
         // A JSON-RPC error answering a streaming call arrives as a normal
         // (non-SSE) JSON body with HTTP 200, since JSON-RPC reports failures
@@ -162,8 +160,10 @@ impl JsonRpcTransport {
             let stream = response.bytes_stream();
             Ok(parse_sse_stream(stream))
         } else {
-            let rpc_response: JsonRpcResponse =
-                read_bounded_json(response, "JSON-RPC response").await?;
+            let body = wire::response_text(response).await?;
+            let rpc_response: JsonRpcResponse = serde_json::from_str(&body).map_err(|e| {
+                A2AError::internal(format!("failed to parse JSON-RPC response: {e}"))
+            })?;
 
             match rpc_response.error {
                 Some(err) => Err(parse_jsonrpc_error(err)),
@@ -369,6 +369,11 @@ where
                                         continue;
                                     }
                                 };
+
+                                // Logged here rather than in each binding: this
+                                // parser is shared, so one call covers JSON-RPC
+                                // and REST streaming alike.
+                                crate::wire::log_stream_event(event_text);
 
                                 if let Some(result) = parse_event(event_text) {
                                     pending.push_back(result);
@@ -595,13 +600,11 @@ impl Transport for JsonRpcTransport {
             }
         }
 
-        let response = builder
-            .json(&rpc_request)
-            .send()
-            .await
-            .map_err(|e| A2AError::internal(format!("HTTP request failed: {e}")))?;
+        let response = wire::send(&self.client, builder.json(&rpc_request)).await?;
 
-        let rpc_response: JsonRpcResponse = read_bounded_json(response, "JSON-RPC response").await?;
+        let body = wire::response_text(response).await?;
+        let rpc_response: JsonRpcResponse = serde_json::from_str(&body)
+            .map_err(|e| A2AError::internal(format!("failed to parse JSON-RPC response: {e}")))?;
 
         if let Some(err) = rpc_response.error {
             return Err(parse_jsonrpc_error(err));

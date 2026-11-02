@@ -172,9 +172,9 @@ jsonrepair-rs = "0.2"
 jsonschema = { version = "0.33", default-features = false }
 # OAuth login (design doc 05). reqwest major must match rmcp's.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form", "query", "http2", "stream"] }
-# Fork `feat/block-kit-2026-blocks` = upstream 2.29.0 (1945e53c) + `SlackBlock::Unknown` catch-all,
-# typed container/plan/data_table/data_visualization, blocks.validate, canvases.* (design 110 W6).
-slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", rev = "35f7aa3de9e0ef6cfebc23bdcb64d34a814dc12b", features = ["hyper"] }
+# Fork `feat/shared-message-attachments` = upstream 2.31.1 (ab4d193a) + forwarded/unfurled
+# message fields on `SlackMessageAttachment`.
+slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", rev = "d207bb5b9db990a611b1552242c1be48ef0cf76a", features = ["hyper"] }
 # Telegram Bot API client (98 §0.1). ZeroVer: exact pin, bumped by hand against its CHANGELOG.
 tgbot = { version = "=0.48.1", default-features = false }
 sha2 = "0.10"
@@ -197,7 +197,7 @@ serde_yaml = "0.9"
 notify = "8"
 kameo = "0.22"
 kameo_actors = "0.8"
-genai = { version = "0.7.0-beta.24-WIP", features = ["bedrock-sigv4"] }
+genai = { version = "0.7.3", features = ["bedrock-sigv4"] }
 aws-config = "1"
 aws-types = "1"
 brush-core = "0.5"
@@ -252,13 +252,13 @@ encoding_rs = "0.8"  # 122 D3: charset decoding of legacy-encoded pages (already
 # Documents as Markdown (design doc 20): PDF/Office/ODF/RTF/EPUB, pure Rust, no external binaries.
 anydoc = "0.2"
 # Python runtime (design doc 08): pool of `monty` worker subprocesses.
-monty-pool = "=1.0.0"
-monty-types = "=1.0.0"
-monty-fs = "=1.0.0"
+monty-pool = "=1.4.0"
+monty-types = "=1.4.0"
+monty-fs = "=1.4.0"
 # The worker lives inside `theuth` (`t subprocess`, design doc 08 §9): the protocol state
 # machine + interpreter, and the limiting allocator it requires as the global allocator.
-monty-proto = { version = "=1.0.0", features = ["worker"] }
-monty-alloc = { version = "=1.0.0", features = ["exit-code"] }
+monty-proto = { version = "=1.4.0", features = ["worker"] }
+monty-alloc = { version = "=1.4.0", features = ["exit-code"] }
 regex = "1"
 # PTY jobs (design doc 22): wezterm's pty layer and a vt100 screen for the model.
 portable-pty = "0.9"
@@ -358,9 +358,9 @@ dashmap = "6"
 # Published names carry `-lf`; the future local plugin crate is `a2a`, so the core SDK is aliased
 # `a2a-types` (imports are `a2a_types::…`). Default `rustls-tls` = aws-lc-rs, the provider
 # `theuth::main` installs. Both pull `a2a-pb` (prost/pbjson): the HTTP wire is ProtoJSON.
-a2a-types = { package = "a2a-lf", version = "=0.3.1" }
-a2a-client = { package = "a2a-client-lf", version = "=0.2.5" }
-a2a-server = { package = "a2a-server-lf", version = "=0.4.4" }
+a2a-types = { package = "a2a-lf", version = "=0.4.2" }
+a2a-client = { package = "a2a-client-lf", version = "=0.2.9" }
+a2a-server = { package = "a2a-server-lf", version = "=0.5.3" }
 rand = "0.9"
 # Schedule (design doc 34): croner = cron parsing + next occurrence in a chrono TimeZone
 # (local time, DST-correct) + `describe()`; humantime = `every:` durations.
@@ -397,10 +397,11 @@ brush-core = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0.5
 brush-parser = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0.5" }
 # iocraft: `TextInput.newline_modifiers` so a multiline input inserts a newline
 # only on Shift+Enter and leaves plain Enter to the parent (submit),
-# `TerminalEvent::Paste` forwarding crossterm's bracketed-paste events, and
-# `TextInput.mask` for password fields (37 §5). Branch `mask-0.9` =
-# tag iocraft-v0.9.1 + three commits (also derives `Default` for `KeyModifiers`).
-iocraft = { git = "https://github.com/skymoore/iocraft", branch = "mask-0.9" }
+# `TextInput.ignore_paste` so the owner, not the input, handles upstream's
+# `TerminalEvent::BracketedPaste`, and `TextInput.mask` for password fields (37 §5).
+# Branch `mask-0.9.3` = tag iocraft-v0.9.3 + three commits (also derives `Default`
+# for `KeyModifiers`).
+iocraft = { git = "https://github.com/skymoore/iocraft", branch = "mask-0.9.3" }
 # curve25519-dalek: libsignal (under presage) must build against Signal's fork;
 # only presage's tree resolves this crate, so nothing else is affected.
 curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }
@@ -435,9 +436,10 @@ pbjson-types = { path = "vendor/pbjson-types" }
 # a2a-client-lf (the A2A SDK client): its shared SSE parser appended every body chunk to an
 # unbounded reassembly buffer before looking for an event terminator, so a peer that never
 # sends the blank line (or sends one huge frame) could grow memory without limit ahead of
-# theuth's post-decode caps (50 §8). `vendor/a2a-client` = crates.io 0.2.5 (a2aproject/a2a-rs
-# 365d056) + `MAX_SSE_EVENT_BYTES` (64 KiB) enforced in `parse_sse_bytes` before the
-# append; an oversized event yields one `A2AError` and ends the stream (50 §3.4). Drop when
+# theuth's post-decode caps (50 §8). `vendor/a2a-client` = crates.io 0.2.9 (a2aproject/a2a-rs
+# 9a8d77e) + `MAX_SSE_EVENT_BYTES` (64 KiB) enforced in `parse_sse_bytes` before the
+# append; an oversized event yields one `A2AError` and ends the stream (50 §3.4). Unary bodies
+# (incl. `wire::response_text`) are read under `MAX_RESPONSE_BYTES` (2 MiB). Drop when
 # an a2a-client-lf release bounds the frame.
 a2a-client-lf = { path = "vendor/a2a-client" }
 # libsqlite3-sys (under presage-store-sqlite, the Signal channel's encrypted store, via sqlx and
