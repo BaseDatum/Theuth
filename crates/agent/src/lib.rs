@@ -43,6 +43,7 @@ pub mod durability;
 pub mod endless;
 pub mod endless_ext;
 pub mod frame;
+pub mod limits;
 pub mod loop_;
 pub mod notebook_context;
 pub mod notebooks;
@@ -149,7 +150,6 @@ fn scratch_is_removed_on_drop() {
 pub mod cost;
 pub mod costs;
 pub mod lifecycle;
-pub mod limits;
 pub mod private;
 
 pub use activity::{

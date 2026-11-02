@@ -9475,6 +9475,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         openrouter: Arc::new(cfg.openrouter.clone()),
     };
     auth.oauth.migrate_files().await;
+    crate::limits::LimitsHub::global().start(rt, auth.clone()); // 160:LIM pollers
     // A harness-wide ceiling on Python workers (08 §9), decoupled from the
     // per-tree child caps (01 §2.6); lazy, so idle trees cost nothing.
     // The worker is this binary (08 §9).

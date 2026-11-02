@@ -414,8 +414,10 @@ pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", tag = "v1.
 taffy = { git = "https://github.com/skymoore/obscura", branch = "main" }
 cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "main" }
 # genai: preserve ToolResponse.images (23 §5), plus upstream Bedrock profile selection,
-# credential refresh, region and explicit-profile isolation fixes (02 §2.2).
-genai = { git = "https://github.com/skymoore/rust-genai", branch = "main" }
+# credential refresh, region and explicit-profile isolation fixes (02 §2.2). Branch
+# `theuth-160-response-headers` = main@617cafe + `ChatFrameSink::on_response` (160 §5.4);
+# back to `main` once the fork merges it.
+genai = { git = "https://github.com/skymoore/rust-genai", branch = "theuth-160-response-headers" }
 # btls-sys (wreq's BoringSSL, under obscura's stealth): `links = "btls"` instead of "boringssl" so
 # it can coexist with libsignal's boring-sys, and `prefix-symbols` (every export renamed
 # `btls_sys_*`) works on macOS/iOS via llvm-objcopy and, on ELF, now also covers Itanium-mangled

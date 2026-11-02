@@ -204,38 +204,56 @@ impl Backend {
                 chat_stream(&t.access_token, slug(resolved), req, &session.to_string()).await
             }
             Backend::Genai { client, auth } => {
-                let (spec, label): (ModelSpec, String) = match target_for(resolved, auth) {
-                    Some(t) => (
-                        ServiceTarget {
-                            endpoint: t.endpoint,
-                            auth: t.auth,
-                            model: ModelIden::new(t.kind, slug(resolved).to_owned()),
+                // 160 §5.4: `limit_auth` names the provider row the response headers feed.
+                let (spec, label, limit_auth): (ModelSpec, String, &'static str) =
+                    match target_for(resolved, auth) {
+                        Some(t) => {
+                            let label = connection_label(resolved, t.kind);
+                            let limit_auth = if label == "opencode" {
+                                "api_key"
+                            } else {
+                                "gateway"
+                            };
+                            (
+                                ServiceTarget {
+                                    endpoint: t.endpoint,
+                                    auth: t.auth,
+                                    model: ModelIden::new(t.kind, slug(resolved).to_owned()),
+                                }
+                                .into(),
+                                label,
+                                limit_auth,
+                            )
                         }
-                        .into(),
-                        connection_label(resolved, t.kind),
-                    ),
-                    None => {
-                        let kind = client
-                            .resolve_service_target(resolved.genai.as_str())
-                            .await
-                            .map_err(provider_error)?
-                            .model
-                            .adapter_kind;
-                        (
-                            resolved.genai.as_str().into(),
-                            connection_label(resolved, kind),
-                        )
-                    }
-                };
-                let opts = thought_connection(reply_cap(opts.clone(), resolved), &label);
+                        None => {
+                            let target = client
+                                .resolve_service_target(resolved.genai.as_str())
+                                .await
+                                .map_err(provider_error)?;
+                            let kind = target.model.adapter_kind;
+                            (
+                                resolved.genai.as_str().into(),
+                                connection_label(resolved, kind),
+                                crate::limits::auth_mode(kind, &target.auth, auth.login("xai")),
+                            )
+                        }
+                    };
+                let tap = crate::limits::HeaderTap::new(&label, limit_auth, slug(resolved));
+                let opts = thought_connection(reply_cap(opts.clone(), resolved), &label)
+                    .with_raw_frame_sink_arc(tap.clone());
                 let opts = openrouter_options(resolved, &auth.openrouter, opts);
-                client
-                    .exec_chat_stream(spec, req, Some(&opts))
-                    .await
-                    .map(|r| -> EventStream {
-                        Box::pin(r.stream.map(|ev| ev.map_err(provider_error)))
-                    })
-                    .map_err(provider_error)
+                match client.exec_chat_stream(spec, req, Some(&opts)).await {
+                    Ok(r) => Ok(Box::pin(r.stream.map(move |ev| {
+                        ev.map_err(|e| {
+                            tap.error(&e);
+                            provider_error(e)
+                        })
+                    }))),
+                    Err(e) => {
+                        tap.error(&e);
+                        Err(provider_error(e))
+                    }
+                }
             }
         }
     }
