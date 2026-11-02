@@ -192,8 +192,10 @@ function BudgetsCard({ budgets, now }: { budgets: BudgetLimit[]; now: number }) 
 /** A provider with nothing to meter (no usage API, not configured) takes one line, not a card. */
 const bare = (p: ProviderLimits): boolean => (p.status === 'unavailable' || p.status === 'not_configured') && p.windows.length === 0 && p.rates.length === 0 && !p.balance
 
-export const LimitsPanel = memo(function LimitsPanel({ now }: { now: number }) {
+export const LimitsPanel = memo(function LimitsPanel({ now: pageNow }: { now: number }) {
   const { data } = useUsageLimits()
+  // The page clock ticks per minute, the snapshot every 15 s: never read a snapshot as being from the future.
+  const now = Math.max(pageNow, data?.generated_at_ms ?? 0)
   const [cards, lines] = useMemo(() => {
     const ps = data?.providers ?? []
     return [ps.filter((p) => !bare(p)), ps.filter(bare)]
