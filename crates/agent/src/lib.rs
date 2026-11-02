@@ -43,6 +43,7 @@ pub mod durability;
 pub mod endless;
 pub mod endless_ext;
 pub mod frame;
+pub mod limits;
 pub mod loop_;
 pub mod notebook_context;
 pub mod notebooks;
@@ -147,6 +148,7 @@ fn scratch_is_removed_on_drop() {
     assert!(!path.exists(), "{path:?}");
 }
 pub mod cost;
+pub mod costs;
 pub mod lifecycle;
 pub mod private;
 
@@ -170,6 +172,11 @@ pub use cost::{
     CallId, CallKind, CallStatus, ChildCost, CostBucket, CostObservation, CostScope, Coverage,
     MeterUpdate, Money, Provenance, SessionCost, SpendDay, SpendOwner, SpendOwnerKind, SpendReport,
     TokenTotals,
+};
+pub use costs::{
+    CostBasis, CostCall, CostCallsCursor, CostCallsPage, CostCallsQuery, CostCells, CostCube,
+    CostCubeChanged, CostCubeCursor, CostCubeMeta, CostModel, CostReason, CostRoot, CostRootEntry,
+    CostService,
 };
 pub use dreaming_ledger::{
     Ledger, LedgerCount, LedgerHintUse, LedgerQuestion, LedgerRewind, LedgerSession, LedgerSince,

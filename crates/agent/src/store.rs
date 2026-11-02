@@ -2866,8 +2866,8 @@ impl Store {
 
     /// Delete `root` and every descendant with their messages, epochs, plans
     /// and communication accounting (exchanges, A2A contexts/tasks). Spend
-    /// stays (51 §6.4): a true root takes its whole ledger tree with it, a
-    /// subtree only tombstones its owners.
+    /// stays (51 §6.4, 160 H1): a true root tombstones its whole ledger tree
+    /// and keeps its attribution, a subtree tombstones its owners.
     /// Returns the removed ids, children before parents.
     pub async fn delete_session(&self, root: SessionId) -> anyhow::Result<Vec<SessionId>> {
         let mut ids: Vec<SessionId> = self
@@ -2885,7 +2885,7 @@ impl Store {
             .await?
             .unwrap_or(false);
         if is_root {
-            accounting::delete_root_ledger_in(&mut tx, root).await?;
+            accounting::tombstone_root_in(&mut tx, root).await?;
         } else {
             for id in &ids {
                 accounting::tombstone_owner_in(&mut tx, *id).await?;

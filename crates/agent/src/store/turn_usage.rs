@@ -153,7 +153,7 @@ mod tests {
     /// 75 §7: rows sum into the child's and the parent's `TokenTotals`, the
     /// breakdown groups by model across a mid-session switch, the cache
     /// split survives, a group with one last-request row is a lower bound,
-    /// and a root delete takes the rows with it.
+    /// and a root delete keeps the rows (160 H1).
     #[tokio::test]
     async fn remote_turns_sum_per_model_and_cascade() {
         let (store, _dir) = fresh().await;
@@ -225,11 +225,11 @@ mod tests {
         let cc = store.session_cost(child).await.unwrap().unwrap();
         assert_eq!(cc.direct.tokens, t(301, 31, 60, 5));
 
-        store.delete_root_ledger(root).await.unwrap();
+        store.tombstone_root(root).await.unwrap();
         let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM remote_turns")
             .fetch_one(&store.read)
             .await
             .unwrap();
-        assert_eq!(left, 0, "FK cascade removed the rows");
+        assert_eq!(left, 3, "the books stay");
     }
 }

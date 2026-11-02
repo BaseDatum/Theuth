@@ -1,4 +1,3 @@
-import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { Copy, FileDown, ImageDown, type LucideIcon, Maximize2, RotateCcw, X } from 'lucide-react'
 import { type PointerEvent as ReactPointerEvent, type ReactNode, useContext, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -6,12 +5,11 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { rasterize, standalone } from '@/lib/diagram-export'
-import { isLocal, putAttachment } from '@/lib/files'
+import { isLocal, saveBlob } from '@/lib/files'
 import { container } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
-import type { Api } from '@/rpc/api'
 import { Reserve } from './Reserve'
 import { FenceContext } from './surface/JsonRenderFence'
 
@@ -150,25 +148,6 @@ function Tool({ icon: Icon, label, onClick, size = 'icon-sm' }: { icon: LucideIc
 }
 
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
-
-/**
- * Put `blob` somewhere the user can reach. Browser: a download named `name`. Desktop shell on the local daemon:
- * the daemon's attachment store, revealed in the file manager (the only byte sink the shell has; no fs plugin).
- * ponytail: content-addressed name and fixed folder; `@tauri-apps/plugin-fs` + the `save()` dialog if Sky wants to pick.
- */
-async function saveBlob(api: Api, blob: Blob, name: string, ext: string) {
-  if (container() === 'web') {
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `${name}.${ext}`
-    a.click()
-    URL.revokeObjectURL(a.href)
-    return
-  }
-  const path = await putAttachment(api, blob, ext)
-  await revealItemInDir(path)
-  toast.success(`Saved ${path}`)
-}
 
 /** Copy PNG · Save PNG… · Save SVG… (the latter two only where `saveBlob` has a sink), then `extra`. */
 function Tools({ markup, name, size, extra }: { markup: () => string; name: string; size?: 'icon-sm' | 'icon'; extra?: ReactNode }) {

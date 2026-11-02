@@ -9,6 +9,8 @@ use std::time::Duration;
 use enigo::{Axis, Coordinate, Direction, Key, Keyboard, Mouse};
 use tokio::sync::oneshot;
 
+use crate::worker::DEADLINE;
+
 /// Mouse button, as the model names it.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -116,8 +118,6 @@ type Request = (Action, oneshot::Sender<Result<Reply, InputError>>);
 #[derive(Clone)]
 pub struct Handle(mpsc::Sender<Request>);
 
-const TIMEOUT: Duration = Duration::from_secs(30);
-
 impl Handle {
     /// Run one action; 30 s deadline.
     pub async fn run(&self, a: Action) -> Result<Reply, InputError> {
@@ -125,7 +125,7 @@ impl Handle {
         if self.0.send((a, tx)).is_err() {
             return Err(InputError::Recovered("input thread gone".into()));
         }
-        match tokio::time::timeout(TIMEOUT, rx).await {
+        match tokio::time::timeout(DEADLINE, rx).await {
             Ok(Ok(r)) => r,
             Ok(Err(_)) => Err(InputError::Recovered("input thread gone".into())),
             Err(_) => Err(InputError::Timeout),
@@ -174,7 +174,8 @@ fn run_loop(rx: mpsc::Receiver<Request>) {
     }
 }
 
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+/// The text of a caught panic payload (also the 161 workers', `crate::worker`).
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
     } else if let Some(s) = payload.downcast_ref::<String>() {

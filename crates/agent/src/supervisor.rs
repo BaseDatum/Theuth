@@ -46,6 +46,7 @@ use crate::communication::{
     mesh as peer_mesh, network,
 };
 
+use crate::CostService;
 use crate::acp_child::{AcpChild, CancelObserved};
 use crate::context::{
     ContextBreakdown, ContextEntry, ContextHistory, ContextOwner, ContextRemoval, ContextSnapshot,
@@ -180,6 +181,8 @@ pub struct Agents {
     /// `configured(genai_namespace)`: whether genai can authenticate it.
     configured: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     pub(crate) store: Store,
+    /// 160: the in-memory cost cube over the durable store.
+    costs: CostService,
     client: Client,
     auth: Auth,
     sessions: HashMap<SessionId, Live>,
@@ -2492,6 +2495,7 @@ impl Message<AgentEvent> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, ev: AgentEvent, ctx: &mut Context<Self, Self::Reply>) {
+        self.costs.observe(&ev); // 160: ledger / root dimension may have moved
         self.acp_journal_event(&ev).await; // 146 D9
         if self.boot.is_some() {
             self.boot_child_event(&ev).await; // 146 D2
@@ -8626,6 +8630,7 @@ impl Message<AddProvider> for Agents {
                 },
             );
         self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
+        self.costs.set_catalog(self.catalog.clone());
         Ok(ProviderInfo {
             name: m.name,
             base_url,
@@ -8652,6 +8657,7 @@ impl Message<RemoveProvider> for Agents {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&m.name);
         self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
+        self.costs.set_catalog(self.catalog.clone());
         Ok(())
     }
 }
@@ -9469,6 +9475,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         openrouter: Arc::new(cfg.openrouter.clone()),
     };
     auth.oauth.migrate_files().await;
+    crate::limits::LimitsHub::global().start(rt, auth.clone()); // 160:LIM pollers
     // A harness-wide ceiling on Python workers (08 §9), decoupled from the
     // per-tree child caps (01 §2.6); lazy, so idle trees cost nothing.
     // The worker is this binary (08 §9).
@@ -9601,6 +9608,21 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         // R1-D3: the compactor chain's middle link (`agent.endless.model` → title model → session).
         cfg.title_model.clone(),
     );
+    // 160: the cost cube builds in the background; RPCs answer from memory
+    // through `CostService::engine()`, never through this mailbox.
+    let costs = CostService::new(
+        store.clone(),
+        catalog.clone(),
+        platform::process::hostname().to_owned(),
+    );
+    {
+        let rt2 = rt.clone();
+        costs.spawn(rt.shutdown.clone(), move |ev| {
+            let rt = rt2.clone();
+            async move { rt.publish(ev).await }
+        });
+        costs.install();
+    }
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
@@ -9620,6 +9642,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             pool,
             configured,
             store,
+            costs,
             client,
             auth,
             endless: endless.clone(),
@@ -10615,7 +10638,8 @@ impl Message<SpendReportQuery> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         // The durable store only: private trees (51 §4.5) never reach the HUD's ledger.
-        self.store
+        // 160 H5: plus the cube's placed reported money.
+        self.costs
             .spend_report(Utc::now().timestamp_millis().max(0) as u64, m.0)
             .await
             .map_err(|e| format!("{e:#}"))
@@ -10673,9 +10697,10 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         vision_model: Arc::default(),
         escalate_model: Arc::default(),
         vision_error: None,
-        catalog,
+        catalog: catalog.clone(),
         pool: None,
         configured: Arc::new(|_: &str| false),
+        costs: CostService::new(store.clone(), catalog.clone(), "test".to_owned()),
         store,
         client,
         auth,

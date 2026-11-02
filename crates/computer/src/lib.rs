@@ -1,8 +1,10 @@
 //! Computer plugin (design doc 27): the model sees and drives the user's
-//! desktop through eight `computer_*` tools — one composite screenshot of
+//! desktop through the `computer_*` tools — one composite screenshot of
 //! every display as an image part ([`screen`], [`frame`]), enigo pointer and
 //! keyboard input on one thread ([`input`]), `Risk` as the only gate
-//! ([`tools`]) — and the platform's native-app tools ([`native`], 153 §11).
+//! ([`tools`]), the accessibility tree with headless element actions over
+//! agent-desktop ([`a11y`], 161) and the clipboard ([`clipboard`], 161) —
+//! and the platform's native-app tools ([`native`], 153 §11).
 //! The [`Computer`] actor exists so RPC has a lookup target.
 //!
 //! Public surface consumed by other plugins:
@@ -10,14 +12,18 @@
 //!   [`ScreenContext`] (96 §6)
 //! - [`NATIVE_APPS_SKILL`]: the binary-owned `skills/native-apps.md`
 
+pub mod a11y;
 pub mod ax;
+pub mod clipboard;
 pub mod context;
 pub mod frame;
 pub mod input;
 pub mod native;
+mod png;
 pub mod pointer;
 pub mod screen;
 pub mod tools;
+mod worker;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -249,8 +255,9 @@ impl Message<ScreenContext> for Computer {
 impl Message<CloseTree> for Computer {
     type Reply = CloseAck;
 
-    /// A closing tree (51 §4.5): forget its last-screenshot frames. Its PNGs
-    /// sit under the tree's resources root, which the lifecycle removes.
+    /// A closing tree (51 §4.5): forget its last-screenshot frames and retire
+    /// its a11y workers (161 §3.1). Its PNGs sit under the tree's resources
+    /// root, which the lifecycle removes.
     async fn handle(&mut self, m: CloseTree, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.ctx.forget(&m.subtree);
         CloseAck::ok("computer")
@@ -277,10 +284,22 @@ impl runtime::Plugin for ComputerPlugin {
             tracing::info!("computer disabled by config");
             return Ok(());
         }
+        #[cfg(target_os = "windows")]
+        per_monitor_v2_dpi();
+        // 161 §3.2: reclaim the namespaces the previous run of this engine left
+        // behind, before any worker can exist.
+        let a11y = a11y::A11y::new(&rt.data_dir);
+        let a11y = tokio::task::spawn_blocking(move || {
+            a11y.sweep();
+            a11y
+        })
+        .await?;
         let ctx = Arc::new(tools::Ctx {
             cfg,
             input: input::spawn(),
             frames: Mutex::new(HashMap::new()),
+            a11y,
+            clipboard: clipboard::Clipboard::default(),
         });
         let actor = Computer::spawn(Computer {
             ctx: ctx.clone(),
@@ -310,5 +329,28 @@ impl runtime::Plugin for ComputerPlugin {
             }
         });
         Ok(())
+    }
+}
+
+/// Make the engine per-monitor-v2 DPI-aware on Windows (161 §2), before the
+/// input thread, any xcap call, the UIA reader and agent-desktop's bootstrap.
+/// 149 WE1 already treats the Windows pointer space as physical pixels (xcap's
+/// DEVMODE geometry, `ax.rs`'s `WINDOWS_CAPTURE_RATIO = 1.0`, the companion's
+/// PerMonitorV2 manifest); this makes enigo, xcap, `ax.rs` and agent-desktop
+/// agree on them, and agent-desktop's own bootstrap then finds awareness set
+/// and flips nothing mid-session. At 100 % scaling it changes nothing.
+#[cfg(target_os = "windows")]
+fn per_monitor_v2_dpi() {
+    use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
+    // SAFETY: passes a predefined awareness context and touches no memory of ours.
+    match unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } {
+        Ok(()) => tracing::debug!("computer: process DPI awareness set to per-monitor-v2"),
+        Err(e) if e.code() == ERROR_ACCESS_DENIED.to_hresult() => {
+            tracing::debug!(error = %e, "computer: process DPI awareness was already set");
+        }
+        Err(e) => tracing::warn!(error = %e, "computer: per-monitor-v2 DPI awareness not set"),
     }
 }
