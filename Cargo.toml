@@ -86,14 +86,14 @@ similar = "3"  # 12 §10 edit/write_file unified diffs
 oxc_resolver = "11"  # 60
 toml = "1"  # 60
 # Meetings (design doc 53): `rtrb` = lock-free rings between the capture threads and the encoder;
-# `ogg` = RFC 7845 Opus-in-Ogg pages; `coreaudio-rs` = the VoiceProcessingIO mic unit (0.13 is
-# what `cpal` already pins — 0.12 would duplicate `objc2-audio-toolbox`); `objc2-core-audio` =
+# `ogg` = RFC 7845 Opus-in-Ogg pages; `coreaudio-rs` = the VoiceProcessingIO mic unit (0.14 sits
+# beside cpal 0.16's 0.13; both share `objc2-audio-toolbox` 0.3); `objc2-core-audio` =
 # the process list (`kAudioHardwarePropertyProcessObjectList`; flexaudio has no enumeration);
 # `objc2-core-foundation` = its bundle-id CFStrings; `objc2-av-foundation` = the non-prompting mic
 # TCC probe; `libc` = `proc_name` and `statvfs`.
 rtrb = "0.3"  # 53
 ogg = "0.9"  # 53
-coreaudio-rs = "0.13"  # 53; the unit itself lives in `voice::mic` since 76 §0.5
+coreaudio-rs = "0.14"  # 53; the unit itself lives in `voice::mic` since 76 §0.5
 objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2-core-audio-types"] }  # 53
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString"] }  # 53
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat"] }  # 53
@@ -111,11 +111,12 @@ hound = "3.5"  # 53
 # main on 2026-09-16, still 0.2.3 + xn 0.2.4 from crates.io. Drop the git ref when 0.2.4 ships.
 ptts = { git = "https://github.com/gradium-ai/xn-ptts", rev = "5d50b5209ff9bbd7d3bac5a26f3c3bc1934fca89", features = ["sp"] }
 xn = "0.2.4"  # ptts's tensor library; only `set_num_threads` is called directly
-opus = "0.3"
+opus = "0.4"
 # Voice notes (design doc 45): `parakeet-rs` = Parakeet TDT speech-to-text on ONNX Runtime. `load-dynamic`, not
 # pyke's static build: that archive carries protobuf 3.21 with default visibility, `sentencepiece` (ptts) carries
 # protobuf-lite 3.14, and one process cannot hold both — the TTS load aborts. The dylib lives beside the checkpoint.
 parakeet-rs = { version = "0.3", default-features = false, features = ["cpu", "load-dynamic"] }
+# ort held at rc.13: rc.14+ needs an explicit `Environment` per `Session::builder`, and wavekat-vad 0.1.17 (latest) still calls `Session::builder()`; ort-sys `links = "onnxruntime"` allows one ort per graph.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "half", "coreml", "api-22"] }  # parakeet-rs's pin; `half` = typed `f16` tensors for laya's fp16 outputs (57 §2); `coreml` = the CoreML EP option builder (registered on macOS only, 57 §12.6); `api-22` = plugin EP registration (`Environment::register_ep_library`, `SessionBuilder::with_devices`, 58 step 13) — the runtime must be ONNX Runtime ≥ 1.22 (we ship 1.27)
 half = "2"  # ort's f16 type (57 §2)
 # Decision (57 §12.8): laya's ModernBERT + decision head natively in candle — no ONNX, no dylib. The model code is
@@ -124,14 +125,14 @@ half = "2"  # ort's f16 type (57 §2)
 candle-core = "0.11"
 candle-nn = "0.11"
 candle-transformers = { version = "0.11", default-features = false }  # `models::debertav2` for GLiNER2.5-Decide's DeBERTa-v3-large encoder (57 §GLiNER2.5-Decide checkpoint); same pin as candle-core
-symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4", "mp3", "ogg", "wav", "pcm", "mkv"] }  # demux/decode inbound voice notes (45 §0.5); Opus packets go to `opus`
-rubato = "0.16"  # resample inbound audio to the model's 16 kHz (45 §0.5)
+symphonia = { version = "0.6", default-features = false, features = ["aac", "isomp4", "mp3", "ogg", "wav", "pcm", "mkv"] }  # demux/decode inbound voice notes (45 §0.5); Opus packets go to `opus`
+rubato = "5"  # resample inbound audio to the model's 16 kHz (45 §0.5)
 mp3lame-encoder = "0.2"  # outbound clips: MP3 24 kHz mono 48 kbit/s, the one container every client plays (45 §0.4)
 parking_lot = "0.12"  # the STT model slot: locked only inside `spawn_blocking`, no poisoning to unwrap
 # Dictation (design doc 54): the daemon owns the mic and gates a streaming Nemotron session with TEN-VAD.
-flexaudio = "0.2"  # 54 §0.2: native default-input capture, 48 kHz mono f32 on a dedicated thread (`voice::mic`); 0.2.0 is the only published release
+flexaudio = "0.8"  # 54 §0.2: native default-input capture, 48 kHz mono f32 on a dedicated thread (`voice::mic`)
 wavekat-vad = { version = "0.1", default-features = false, features = ["ten-vad"] }  # 54 §0.4: TEN-VAD on the same `ort` dylib, 256-sample frames (`voice::vad`); model fetched at build unless `TEN_VAD_MODEL_PATH`
-cpal = "0.16"  # 76 §0.3: the daemon's speaker (`voice::out::Player`), default output, f32; same major flexaudio already pins
+cpal = "0.16"  # 76 §0.3: the daemon's speaker (`voice::out::Player`), default output, f32; same major flexaudio already pins (held: flexaudio-mic 0.8.1 needs cpal ^0.16, and 0.18's alsa-sys 0.4 clashes with its alsa-sys 0.3 on `links = "alsa"`)
 # Update (design doc 39): semver compare, the updater plugin's own minisign verifier, tar for the
 # single-file CLI payload. The desktop side is tauri-plugin-updater below.
 semver = "1"
@@ -234,7 +235,7 @@ tower = { version = "0.5", features = ["util"] }
 # to a downloaded archive (or `MSB_EMBED_ARTIFACTS_DIR` to an extracted pair). Side effect of
 # `download-binaries`: the build also installs that pair into `MSB_HOME`/`~/.microsandbox` when the
 # pair there is absent or a different version — set `MSB_HOME` for the build to keep your own msb.
-microsandbox = { version = "=0.7.4", default-features = false, features = ["local", "net", "embed-binaries", "download-binaries"] }
+microsandbox = { version = "=0.7.13", default-features = false, features = ["local", "net", "embed-binaries", "download-binaries"] }
 # Cursor agent backend (crates/cursor): Connect-RPC protobuf, pure-Rust protoc.
 prost = "0.14"
 prost-types = "0.14"

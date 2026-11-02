@@ -14,7 +14,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use rtrb::Consumer;
-use rubato::Resampler as _;
 use tokio::sync::watch;
 
 use super::{RATE, Sample};
@@ -171,7 +170,15 @@ pub fn spawn(
         Track::open(dir, Stem::System, title)?,
         Track::open(dir, Stem::Mix, title)?,
     ];
-    let mk = || rubato::FftFixedInOut::<f32>::new(RATE as usize, ogg::RATE as usize, IN_FRAME, 1);
+    let mk = || {
+        rubato::Fft::<f32>::new(
+            RATE as usize,
+            ogg::RATE as usize,
+            IN_FRAME,
+            1,
+            rubato::FixedSync::Both,
+        )
+    };
     let resamplers = [mk().context("resampler")?, mk().context("resampler")?];
     let thread = std::thread::Builder::new()
         .name("meeting-encode".into())
@@ -195,7 +202,7 @@ pub fn spawn(
 
 struct Encoder {
     sources: [Source; 2],
-    resamplers: [rubato::FftFixedInOut<f32>; 2],
+    resamplers: [rubato::Fft<f32>; 2],
     tracks: Option<[Track; 3]>,
     /// Starts at the first chunk received from either source.
     clock: Option<RecordingClock>,
@@ -262,20 +269,15 @@ impl Encoder {
             self.sources[0].take(&mut m);
             self.sources[1].take(&mut s);
             let tracks = self.tracks.as_mut().expect("tracks live until finish");
-            let m24 = self.resamplers[0]
-                .process(&[&m], None)
-                .context("resample mic")?;
-            let s24 = self.resamplers[1]
-                .process(&[&s], None)
-                .context("resample system")?;
-            tracks[0].pending.extend_from_slice(&m24[0]);
-            tracks[1].pending.extend_from_slice(&s24[0]);
-            tracks[2]
-                .pending
-                .extend(m24[0].iter().zip(&s24[0]).map(|(a, b)| {
-                    let x = a + b;
-                    x / (1.0 + x.abs())
-                }));
+            let m24 = voice::resample_block(&mut self.resamplers[0], &m).context("resample mic")?;
+            let s24 =
+                voice::resample_block(&mut self.resamplers[1], &s).context("resample system")?;
+            tracks[0].pending.extend_from_slice(&m24);
+            tracks[1].pending.extend_from_slice(&s24);
+            tracks[2].pending.extend(m24.iter().zip(&s24).map(|(a, b)| {
+                let x = a + b;
+                x / (1.0 + x.abs())
+            }));
             for t in tracks.iter_mut() {
                 t.encode(&mut self.packet)?;
             }

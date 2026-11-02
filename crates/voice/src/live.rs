@@ -39,7 +39,7 @@ pub struct Utterer {
     /// Source rate; `resampler` is `None` at [`MODEL_RATE`].
     rate: u32,
     /// FIR state must survive chunk boundaries; needs whole `rate / 50` blocks.
-    resampler: Option<rubato::FftFixedIn<f32>>,
+    resampler: Option<rubato::Fft<f32>>,
     /// Source samples waiting for a full block.
     inbox: Vec<f32>,
     /// 16 kHz samples from absolute sample `base` on.
@@ -90,12 +90,12 @@ impl Utterer {
         self.resampler = if rate == MODEL_RATE {
             None
         } else {
-            Some(rubato::FftFixedIn::<f32>::new(
+            Some(rubato::Fft::<f32>::new(
                 rate as usize,
                 MODEL_RATE as usize,
                 rate as usize / 50,
-                2,
                 1,
+                rubato::FixedSync::Input,
             )?)
         };
         self.rate = rate;
@@ -129,13 +129,12 @@ impl Utterer {
         self.inbox.extend_from_slice(pcm);
         let mut at = 0;
         while self.inbox.len() - at >= block {
-            let resampled = self
-                .resampler
-                .as_mut()
-                .expect("checked")
-                .process(&[&self.inbox[at..at + block]], None)?;
+            let resampled = crate::stt::resample_block(
+                self.resampler.as_mut().expect("checked"),
+                &self.inbox[at..at + block],
+            )?;
             at += block;
-            self.pcm16(&resampled[0], &mut out)?;
+            self.pcm16(&resampled, &mut out)?;
         }
         self.inbox.drain(..at);
         Ok(out)

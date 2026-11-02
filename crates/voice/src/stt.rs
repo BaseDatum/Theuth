@@ -15,12 +15,13 @@ use kameo::message::{Context, Message};
 use models::onnx::{Guarded, gpu_serial};
 use parakeet_rs::{ExecutionConfig, Nemotron, ParakeetTDT, TimestampMode, Transcriber as _};
 use parking_lot::Mutex;
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CODEC_TYPE_NULL, CODEC_TYPE_OPUS, DecoderOptions};
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use symphonia::core::codecs::audio::well_known::CODEC_ID_OPUS;
+use symphonia::core::codecs::audio::{AudioDecoderOptions, CODEC_ID_NULL_AUDIO};
 use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 use crate::{Transcribe, Transcript};
 
@@ -42,26 +43,26 @@ pub fn decode(bytes: Vec<u8>, ext: &str) -> anyhow::Result<(Vec<f32>, u32)> {
     let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
     let mut hint = Hint::new();
     hint.with_extension(ext);
-    let probed = symphonia::default::get_probe().format(
+    let mut format = symphonia::default::get_probe().probe(
         &hint,
         mss,
-        &FormatOptions::default(),
-        &MetadataOptions::default(),
+        FormatOptions::default(),
+        MetadataOptions::default(),
     )?;
-    let mut format = probed.format;
-    let track = format
+    let (id, params) = format
         .tracks()
         .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .find_map(|t| {
+            let p = t.codec_params.as_ref()?.audio()?;
+            (p.codec != CODEC_ID_NULL_AUDIO).then(|| (t.id, p.clone()))
+        })
         .ok_or_else(|| anyhow::anyhow!("no audio track"))?;
-    let id = track.id;
-    let params = track.codec_params.clone();
     let mut out = Vec::new();
-    if params.codec == CODEC_TYPE_OPUS {
+    if params.codec == CODEC_ID_OPUS {
         let mut dec = opus::Decoder::new(48_000, opus::Channels::Mono)?;
         let mut buf = vec![0f32; 5760];
-        while let Ok(p) = format.next_packet() {
-            if p.track_id() != id {
+        while let Ok(Some(p)) = format.next_packet() {
+            if p.track_id != id {
                 continue;
             }
             let n = dec.decode_float(&p.data, &mut buf, false)?;
@@ -69,11 +70,12 @@ pub fn decode(bytes: Vec<u8>, ext: &str) -> anyhow::Result<(Vec<f32>, u32)> {
         }
         return Ok((out, 48_000));
     }
-    let mut dec = symphonia::default::get_codecs().make(&params, &DecoderOptions::default())?;
+    let mut dec = symphonia::default::get_codecs()
+        .make_audio_decoder(&params, &AudioDecoderOptions::default())?;
     let mut rate = 0;
-    let mut sbuf: Option<SampleBuffer<f32>> = None;
-    while let Ok(p) = format.next_packet() {
-        if p.track_id() != id {
+    let mut frames: Vec<f32> = Vec::new();
+    while let Ok(Some(p)) = format.next_packet() {
+        if p.track_id != id {
             continue;
         }
         let a = match dec.decode(&p) {
@@ -82,16 +84,10 @@ pub fn decode(bytes: Vec<u8>, ext: &str) -> anyhow::Result<(Vec<f32>, u32)> {
             Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
             Err(e) => return Err(e.into()),
         };
-        let spec = *a.spec();
-        rate = spec.rate;
-        let ch = spec.channels.count();
-        // `copy_interleaved_ref` asserts the buffer fits: size it to this frame's capacity and spec, not the first's.
-        let sb = match sbuf.as_mut() {
-            Some(sb) if sb.capacity() >= a.capacity() * ch => sb,
-            _ => sbuf.insert(SampleBuffer::new(a.capacity() as u64, spec)),
-        };
-        sb.copy_interleaved_ref(a);
-        for frame in sb.samples().chunks(ch) {
+        rate = a.spec().rate();
+        let ch = a.spec().channels().count();
+        a.copy_to_vec_interleaved(&mut frames);
+        for frame in frames.chunks(ch) {
             out.push(frame.iter().sum::<f32>() / ch as f32);
         }
     }
@@ -107,20 +103,22 @@ pub fn resample(pcm: Vec<f32>, from: u32, to: u32) -> anyhow::Result<Vec<f32>> {
     if from == to {
         return Ok(pcm);
     }
-    const CHUNK: usize = 1024;
-    let mut r = rubato::FftFixedIn::<f32>::new(from as usize, to as usize, CHUNK, 2, 1)?;
-    let mut out = Vec::with_capacity(pcm.len() * to as usize / from as usize + CHUNK);
-    let mut i = 0;
-    while i + CHUNK <= pcm.len() {
-        let o = r.process(&[&pcm[i..i + CHUNK]], None)?;
-        out.extend_from_slice(&o[0]);
-        i += CHUNK;
-    }
-    if i < pcm.len() {
-        let o = r.process_partial(Some(&[&pcm[i..]]), None)?;
-        out.extend_from_slice(&o[0]);
-    }
-    Ok(out)
+    let mut r = rubato::Fft::<f32>::new(
+        from as usize,
+        to as usize,
+        1024,
+        1,
+        rubato::FixedSync::Input,
+    )?;
+    let input = InterleavedSlice::new(&pcm[..], 1, pcm.len())?;
+    Ok(r.process_all(&input, pcm.len(), None)?.take_data())
+}
+
+/// One mono block of exactly `r.input_frames_next()` samples through a streaming resampler.
+pub fn resample_block(r: &mut rubato::Fft<f32>, block: &[f32]) -> anyhow::Result<Vec<f32>> {
+    use rubato::Resampler as _;
+    let input = InterleavedSlice::new(block, 1, block.len())?;
+    Ok(r.process(&input, None)?.take_data())
 }
 
 /// `text` spoken by the Pocket TTS checkpoint at `tts_dir` (`<data_dir>/models/pocket-tts`) with
