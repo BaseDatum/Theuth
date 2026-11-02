@@ -597,4 +597,36 @@ mod tests {
     fn empty_headers_parse_to_nothing() {
         assert!(parse("m", 200, &h(&[("date", "x"), ("server", "cf")]), NOW).is_empty());
     }
+
+    /// Review 160-LIM #1: absurd server numbers saturate instead of
+    /// overflowing (a debug panic inside genai's `poll_next` kills the call).
+    #[test]
+    fn absurd_numbers_saturate_without_panicking() {
+        let far = |p: Parsed| p.limited_until_ms.unwrap();
+        for (name, value) in [
+            ("retry-after-ms", "inf"),
+            ("retry-after-ms", "1e300"),
+            ("retry-after", "1e30"),
+        ] {
+            let p = parse("m", 429, &h(&[(name, value)]), NOW);
+            assert_eq!(far(p), u64::MAX, "{name}: {value}");
+        }
+        let p = parse(
+            "m",
+            200,
+            &h(&[
+                ("x-ratelimit-limit-requests", "10"),
+                ("x-ratelimit-remaining-requests", "1"),
+                ("x-ratelimit-reset-requests", "99999999999999999999h"),
+                ("x-ratelimit-limit-tokens", "10"),
+                ("x-ratelimit-remaining-tokens", "1"),
+                ("x-ratelimit-reset-tokens", "999999999"),
+                ("x-codex-primary-used-percent", "10"),
+                ("x-codex-primary-window-minutes", "18446744073709551615"),
+            ]),
+            u64::MAX - 1,
+        );
+        assert!(p.rates.iter().all(|r| r.resets_at_ms == Some(u64::MAX)), "{p:?}");
+        assert_eq!(p.windows[0].window_secs, Some(u64::MAX));
+    }
 }

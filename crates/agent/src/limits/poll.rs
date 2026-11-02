@@ -896,4 +896,54 @@ mod tests {
         assert_eq!(truncate_account("0123456789abcdef"), "0123456789ab…");
         assert_eq!(truncate_account("short"), "short");
     }
+
+    /// Review 160-LIM #2: OPENAI / ANTHROPIC are `Flow::Code`; a network blip
+    /// or a 5xx/429 at the token endpoint is transient, a 4xx is a dead login.
+    #[test]
+    fn code_flow_token_errors_split_transient_from_hard() {
+        for e in [
+            "openai: token endpoint: error sending request for url (https://auth.openai.com/oauth/token); run /login openai",
+            "openai: token endpoint returned 503 Service Unavailable; run /login openai",
+            "openai: token endpoint returned 502 Bad Gateway; run /login openai",
+            "openai: token endpoint returned 429 Too Many Requests; run /login openai",
+        ] {
+            assert!(
+                matches!(token_error("openai", e), PollError::Transient(_)),
+                "{e}"
+            );
+        }
+        for e in [
+            "anthropic: token endpoint returned 400 Bad Request; run /login anthropic",
+            "anthropic: token endpoint returned 401 Unauthorized; run /login anthropic",
+            "anthropic: token endpoint returned 403 Forbidden; run /login anthropic",
+            "anthropic: not logged in; run /login anthropic",
+        ] {
+            assert_eq!(
+                token_error("anthropic", e),
+                PollError::Hard("login expired — run /login anthropic".into()),
+                "{e}"
+            );
+        }
+    }
+
+    /// Review 160-LIM #1: a usage payload's absurd seconds saturate.
+    #[test]
+    fn codex_window_absurd_seconds_saturate() {
+        let w = codex_window(
+            &json!({"used_percent": 1, "reset_at": 1e300}),
+            "primary".into(),
+            None,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(w.resets_at_ms, Some(u64::MAX));
+        let w = codex_window(
+            &json!({"used_percent": 1, "reset_after_seconds": 1e300}),
+            "primary".into(),
+            None,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(w.resets_at_ms, Some(u64::MAX));
+    }
 }
