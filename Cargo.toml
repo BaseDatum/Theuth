@@ -52,7 +52,7 @@ roster = { path = "crates/roster" }  # agents as files, desks, episodes, budgets
 # base32 pairing strings (already in the graph under iroh).
 iroh = { version = "1.2", default-features = false, features = ["tls-aws-lc-rs"] }  # 67
 iroh-gossip = { version = "0.101", default-features = false, features = ["net"] }  # 67
-iroh-mdns-address-lookup = "0.5"  # 67
+iroh-mdns-address-lookup = "0.6"  # 67
 data-encoding = "2"  # 67
 sandbox = { path = "crates/sandbox" }  # make an engine: ssh installer / docker container → mesh peer (67 §13, 64 §4)
 artifact = { path = "crates/artifact" }
