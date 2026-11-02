@@ -125,7 +125,7 @@ half = "2"  # ort's f16 type (57 §2)
 candle-core = "0.11"
 candle-nn = "0.11"
 candle-transformers = { version = "0.11", default-features = false }  # `models::debertav2` for GLiNER2.5-Decide's DeBERTa-v3-large encoder (57 §GLiNER2.5-Decide checkpoint); same pin as candle-core
-symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4", "mp3", "ogg", "wav", "pcm", "mkv"] }  # demux/decode inbound voice notes (45 §0.5); Opus packets go to `opus`
+symphonia = { version = "0.6", default-features = false, features = ["aac", "isomp4", "mp3", "ogg", "wav", "pcm", "mkv"] }  # demux/decode inbound voice notes (45 §0.5); Opus packets go to `opus`
 rubato = "5"  # resample inbound audio to the model's 16 kHz (45 §0.5)
 mp3lame-encoder = "0.2"  # outbound clips: MP3 24 kHz mono 48 kbit/s, the one container every client plays (45 §0.4)
 parking_lot = "0.12"  # the STT model slot: locked only inside `spawn_blocking`, no poisoning to unwrap
