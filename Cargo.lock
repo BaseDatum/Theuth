@@ -272,6 +272,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aes-kw"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69fa2b352dcefb5f7f3a5fb840e02665d311d878955380515e4fd50095dd3d8c"
+dependencies = [
+ "aes 0.8.4",
+]
+
+[[package]]
 name = "agent"
 version = "2.16.2"
 dependencies = [
@@ -2090,20 +2099,20 @@ dependencies = [
 
 [[package]]
 name = "bindgen"
-version = "0.71.1"
+version = "0.70.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+checksum = "f49d8fed880d473ea71efb9bf597651e77201bdd4893efe54c9e5d65ae04ce6f"
 dependencies = [
  "bitflags 2.13.2",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "log",
  "prettyplease 0.2.37",
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash 2.1.3",
+ "rustc-hash 1.1.0",
  "shlex 1.3.0",
  "syn 2.0.119",
 ]
@@ -2118,7 +2127,9 @@ dependencies = [
  "bitflags 2.13.2",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
+ "log",
+ "prettyplease 0.2.37",
  "proc-macro2",
  "quote",
  "regex",
@@ -2422,14 +2433,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36f64beae40a84da1b4b26ff2761a5b895c12adc41dc25aaee1c4f2bbfe97a6e"
 
 [[package]]
-name = "brotli"
-version = "8.0.4"
+name = "boxed_error"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cc91aac060a7a1e25823bdccbfb6af1875b88f17c6daac97894eed8207166b3"
+checksum = "17d4f95e880cfd28c4ca5a006cf7f6af52b4bcb7b5866f573b2faa126fb7affb"
 dependencies = [
- "alloc-no-stdlib 2.0.4",
- "alloc-stdlib 0.2.4",
- "brotli-decompressor 5.0.3",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2804,6 +2814,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "calendrical_calculations"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5abbd6eeda6885048d357edc66748eea6e0268e3dd11f326fff5bd248d779c26"
+dependencies = [
+ "core_maths",
+ "displaydoc",
+]
+
+[[package]]
 name = "camino"
 version = "1.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2937,26 +2957,6 @@ dependencies = [
  "io-extras",
  "io-lifetimes 3.0.1",
  "rustix 1.1.6",
-]
-
-[[package]]
-name = "capacity_builder"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f2d24a6dcf0cd402a21b65d35340f3a49ff3475dc5fdac91d22d2733e6641c6"
-dependencies = [
- "capacity_builder_macros",
- "itoa 1.0.18",
-]
-
-[[package]]
-name = "capacity_builder_macros"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b4a6cae9efc04cc6cbb8faf338d2c497c165c83e74509cf4dbedea948bbf6e5"
-dependencies = [
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -3569,7 +3569,7 @@ version = "0.4.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84f840cff84d10085260e460023934d0af699e71212b09b2a41452e8bd9cda43"
 dependencies = [
- "brotli 9.1.1",
+ "brotli",
  "compression-core",
  "flate2",
  "memchr",
@@ -3857,7 +3857,7 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.14.2"
-source = "git+https://github.com/skymoore/obscura?branch=main#d5aed2b449f0c4b8dff60ff77bd09b04bf518d34"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
 dependencies = [
  "bitflags 2.13.2",
  "fontdb 0.16.2",
@@ -4612,26 +4612,27 @@ dependencies = [
 
 [[package]]
 name = "deno_core"
-version = "0.350.0"
+version = "0.412.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e273b731fce500130790e777cb2631dc451db412975304d23816c1e444a10c5b"
+checksum = "580cb2e0d797d75ff3dfc4a8f2b14aa7470f0fa31654a09a83d4cbb42b5eb9b4"
 dependencies = [
  "anyhow",
- "az",
- "bincode 1.3.3",
+ "base64 0.22.1",
  "bit-set 0.8.0",
  "bit-vec 0.8.0",
+ "boxed_error",
  "bytes",
- "capacity_builder",
  "cooked-waker",
- "deno_core_icudata",
  "deno_error",
  "deno_ops",
  "deno_path_util",
  "deno_unsync",
+ "deno_v8",
  "futures",
  "indexmap 2.14.2",
+ "inventory",
  "libc",
+ "num-bigint 0.4.8",
  "parking_lot",
  "percent-encoding",
  "pin-project",
@@ -4641,24 +4642,20 @@ dependencies = [
  "smallvec",
  "sourcemap",
  "static_assertions",
+ "sys_traits",
  "thiserror 2.0.21",
  "tokio",
  "url",
- "v8",
+ "uuid",
  "wasm_dep_analyzer",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
-name = "deno_core_icudata"
-version = "0.74.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe4dccb6147bb3f3ba0c7a48e993bfeb999d2c2e47a81badee80e2b370c8d695"
-
-[[package]]
 name = "deno_error"
-version = "0.6.1"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "612ec3fc481fea759141b0c57810889b0a4fb6fee8f10748677bfe492fd30486"
+checksum = "bfafd2219b29886a71aecbb3449e462deed1b2c474dc5b12f855f0e58c478931"
 dependencies = [
  "deno_error_macro",
  "libc",
@@ -4670,9 +4667,9 @@ dependencies = [
 
 [[package]]
 name = "deno_error_macro"
-version = "0.6.1"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8380a4224d5d2c3f84da4d764c4326cac62e9a1e3d4960442d29136fc07be863"
+checksum = "1c28ede88783f14cd8aae46ca89f230c226b40e4a81ab06fa52ed72af84beb2f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4681,26 +4678,26 @@ dependencies = [
 
 [[package]]
 name = "deno_ops"
-version = "0.226.0"
+version = "0.288.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c28b12489187c71fa123731cc783d48beb17ae5df04da991909cc2ae5a3d0ef9"
+checksum = "977748624aad80164dbe385c8c907bc0041c2e6849f92528e362e03132c64c52"
 dependencies = [
  "indexmap 2.14.2",
- "proc-macro-rules",
  "proc-macro2",
  "quote",
  "stringcase",
  "strum 0.27.2",
  "strum_macros 0.27.2",
  "syn 2.0.119",
+ "syn-match",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "deno_path_util"
-version = "0.4.0"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "516f813389095889776b81cc9108ff6f336fd9409b4b12fc0138aea23d2708e1"
+checksum = "78c7e98943f0d068928906db0c7bde89de684fa32c6a8018caacc4cee2cdd72b"
 dependencies = [
  "deno_error",
  "percent-encoding",
@@ -4718,6 +4715,16 @@ dependencies = [
  "futures-util",
  "parking_lot",
  "tokio",
+]
+
+[[package]]
+name = "deno_v8"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85cdff08dedf79da6a40f97554f47d59d419ba3df8061b8b31789cd2cbe00433"
+dependencies = [
+ "v8",
+ "v8x",
 ]
 
 [[package]]
@@ -4922,6 +4929,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "diplomat"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8b37a6cea72eb6df5143d3e091d4c34cb0cf4046dd1ddcc082988886fe1f809"
+dependencies = [
+ "diplomat_core",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "diplomat-runtime"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9d981121ba76150987fda68185b37853c0b928a55dfdc28897348cd068440be"
+
+[[package]]
+name = "diplomat_core"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73b18e806f9ecb92df828d080efe47984ae1193958295d4a84fb8b32c9a1aa1b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "smallvec",
+ "strck",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "dirs"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5001,7 +5040,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.7.4",
 ]
 
 [[package]]
@@ -8927,6 +8966,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "icu_calendar"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a68ffb801cc7acb8dcae62da7c692c47934698d2dd4f479ddee1eb442763dea1"
+dependencies = [
+ "calendrical_calculations",
+ "displaydoc",
+ "icu_calendar_data",
+ "icu_locale_core",
+ "icu_locale_fallback",
+ "icu_provider",
+ "tinystr",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_calendar_data"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "514da54e79efa36b5976232d5b3d1d8ee1b47b19ab658f1b1ebe39221696c2d8"
+
+[[package]]
 name = "icu_collator"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9788,15 +9849,6 @@ dependencies = [
 
 [[package]]
 name = "itertools"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
@@ -9824,6 +9876,12 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "ixdtf"
+version = "0.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4754a1731458af0443709c9667302793d3f63cc90ec4ba4c8259f2b9515478e5"
 
 [[package]]
 name = "javascriptcore-rs"
@@ -13377,7 +13435,6 @@ checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
  "num-integer",
  "num-traits",
- "rand 0.8.8",
  "serde",
 ]
 
@@ -13537,7 +13594,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.21.7",
  "chrono",
  "getrandom 0.2.17",
  "http",
@@ -14045,7 +14102,7 @@ dependencies = [
 [[package]]
 name = "obscura-browser"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=main#d5aed2b449f0c4b8dff60ff77bd09b04bf518d34"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -14054,6 +14111,7 @@ dependencies = [
  "obscura-dom",
  "obscura-js",
  "obscura-net",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
@@ -14064,7 +14122,7 @@ dependencies = [
 [[package]]
 name = "obscura-dom"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=main#d5aed2b449f0c4b8dff60ff77bd09b04bf518d34"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
 dependencies = [
  "cssparser 0.34.0",
  "html5ever 0.39.0",
@@ -14079,10 +14137,11 @@ dependencies = [
 [[package]]
 name = "obscura-js"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=main#d5aed2b449f0c4b8dff60ff77bd09b04bf518d34"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
+ "aes-kw",
  "anyhow",
  "base64 0.22.1",
  "cbc 0.1.2",
@@ -14112,7 +14171,7 @@ dependencies = [
 [[package]]
 name = "obscura-mcp"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=main#d5aed2b449f0c4b8dff60ff77bd09b04bf518d34"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -14129,11 +14188,14 @@ dependencies = [
 [[package]]
 name = "obscura-net"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=main#d5aed2b449f0c4b8dff60ff77bd09b04bf518d34"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
 dependencies = [
  "async-trait",
+ "compression-codecs",
  "encoding_rs",
  "futures-util",
+ "obscura-ssrf",
+ "psl",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -14149,7 +14211,7 @@ dependencies = [
 [[package]]
 name = "obscura-render"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=main#d5aed2b449f0c4b8dff60ff77bd09b04bf518d34"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
@@ -14157,6 +14219,7 @@ dependencies = [
  "cssparser 0.34.0",
  "image",
  "obscura-dom",
+ "obscura-ssrf",
  "resvg",
  "swash",
  "taffy 0.12.1",
@@ -14166,6 +14229,11 @@ dependencies = [
  "usvg",
  "wuff",
 ]
+
+[[package]]
+name = "obscura-ssrf"
+version = "0.1.0"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
 
 [[package]]
 name = "oci-client"
@@ -15954,29 +16022,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc375e1527247fe1a97d8b7156678dfe7c1af2fc075c9a4db3690ecd2a148068"
 
 [[package]]
-name = "proc-macro-rules"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07c277e4e643ef00c1233393c673f655e3672cf7eb3ba08a00bdd0ea59139b5f"
-dependencies = [
- "proc-macro-rules-macros",
- "proc-macro2",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "proc-macro-rules-macros"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "207fffb0fe655d1d47f6af98cc2793405e85929bdbc420d685554ff07be27ac7"
-dependencies = [
- "once_cell",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "proc-macro-utils"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16072,7 +16117,7 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -17098,6 +17143,16 @@ dependencies = [
  "tracing",
  "tungstenite 0.24.0",
  "web-sys",
+]
+
+[[package]]
+name = "resb"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22d392791f3c6802a1905a509e9d1a6039cbbcb5e9e00e5a6d3661f7c874f390"
+dependencies = [
+ "potential_utf",
+ "serde_core",
 ]
 
 [[package]]
@@ -19075,16 +19130,16 @@ dependencies = [
 
 [[package]]
 name = "serde_v8"
-version = "0.259.0"
+version = "0.321.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7e4c5f439cffc03021c8bfd380cd1ef6acb4788a72b7e54bf4a83c73f91f8a0"
+checksum = "fd3b6f6140192f569b88997e2ea7afeef6aa38b64374e84784ea1d1ea35679d3"
 dependencies = [
  "deno_error",
+ "deno_v8",
  "num-bigint 0.4.8",
  "serde",
  "smallvec",
  "thiserror 2.0.21",
- "v8",
 ]
 
 [[package]]
@@ -20455,6 +20510,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
 
 [[package]]
+name = "strck"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42316e70da376f3d113a68d138a60d8a9883c604fe97942721ec2068dab13a9f"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
 name = "streaming-iterator"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20876,6 +20940,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "syn-match"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54b8f0a9004d6aafa6a588602a1119e6cdaacec9921aa1605383e6e7d6258fd6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -21033,7 +21108,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.12.1"
-source = "git+https://github.com/skymoore/obscura?branch=main#d5aed2b449f0c4b8dff60ff77bd09b04bf518d34"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
 dependencies = [
  "arrayvec",
  "grid 1.0.1",
@@ -21255,7 +21330,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb37631cf71dab5e8ab55e1bdd701e18a52653d90b78e71d0e5598b1e0a61316"
 dependencies = [
  "base64 0.23.1",
- "brotli 9.1.1",
+ "brotli",
  "ico",
  "json-patch",
  "plist",
@@ -21621,7 +21696,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "362ab21cd4cc713f2a02b1a9b5688198b1541cfb6907c4281e9190e0f0ef4aa3"
 dependencies = [
  "anyhow",
- "brotli 9.1.1",
+ "brotli",
  "cargo_metadata",
  "ctor",
  "dom_query",
@@ -21725,6 +21800,40 @@ dependencies = [
  "once_cell",
  "rustix 1.1.6",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "temporal_capi"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f48eb9ca4ca22caaa48d1e7a534ad3fd598a23d1a71945e8ad5ac0be501fa5f2"
+dependencies = [
+ "diplomat",
+ "diplomat-runtime",
+ "icu_calendar",
+ "icu_locale_core",
+ "num-traits",
+ "temporal_rs",
+ "timezone_provider",
+ "writeable",
+ "zoneinfo64",
+]
+
+[[package]]
+name = "temporal_rs"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a978fef907a27736827d336c0bfaab14fb8a7509dd6dc2b43c44e51d59aca5b"
+dependencies = [
+ "calendrical_calculations",
+ "core_maths",
+ "icu_calendar",
+ "icu_locale_core",
+ "ixdtf",
+ "num-traits",
+ "timezone_provider",
+ "tinystr",
+ "writeable",
 ]
 
 [[package]]
@@ -22001,6 +22110,18 @@ checksum = "7e689342a48d2ea927c87ea50cabf8594854bf940e9310208848d680d668ed85"
 dependencies = [
  "num-conv",
  "time-core",
+]
+
+[[package]]
+name = "timezone_provider"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89ec4f4eebb4817fde02a411aedc7ac5f66c89c68c49e5d4b17a8139f077af52"
+dependencies = [
+ "tinystr",
+ "zerotrie",
+ "zerovec",
+ "zoneinfo64",
 ]
 
 [[package]]
@@ -24107,18 +24228,34 @@ dependencies = [
 
 [[package]]
 name = "v8"
-version = "137.3.0"
+version = "150.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33995a1fee055ff743281cde33a41f0d618ee0bdbe8bdf6859e11864499c2595"
+checksum = "42a978ff11f15b24e5c05a7123cf2b68f41e763546699781a924ef4e2cf43a49"
 dependencies = [
- "bindgen 0.71.1",
+ "bindgen 0.72.1",
  "bitflags 2.13.2",
  "fslock",
  "gzip-header",
  "home",
  "miniz_oxide 0.8.9",
  "paste",
+ "temporal_capi",
  "which 6.0.3",
+]
+
+[[package]]
+name = "v8x"
+version = "149.4.0-rc.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3701ffb3692a24808503d17f758b0a3f688d2c451779247982566b5941033e63"
+dependencies = [
+ "bindgen 0.70.1",
+ "bitflags 2.13.2",
+ "cc",
+ "paste",
+ "temporal_capi",
+ "temporal_rs",
+ "timezone_provider",
 ]
 
 [[package]]
@@ -24491,9 +24628,9 @@ dependencies = [
 
 [[package]]
 name = "wasm_dep_analyzer"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e51cf5f08b357e64cd7642ab4bbeb11aecab9e15520692129624fb9908b8df2c"
+checksum = "a10e6b67c951a84de7029487e0e0a496860dae49f6699edd279d5ff35b8fbf54"
 dependencies = [
  "deno_error",
  "thiserror 2.0.21",
@@ -25744,14 +25881,13 @@ dependencies = [
 [[package]]
 name = "wreq-util"
 version = "3.0.0-rc.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baa5d2ab72139256916ca352a3d05c53d74e1dd360052eb5ba7691033c417c65"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
 dependencies = [
- "brotli 8.0.4",
+ "brotli",
  "flate2",
  "typed-builder",
  "wreq",
- "zstd 0.13.4",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -26502,6 +26638,19 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zoneinfo64"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed6eb2607e906160c457fd573e9297e65029669906b9ac8fb1b5cd5e055f0705"
+dependencies = [
+ "calendrical_calculations",
+ "icu_locale_core",
+ "potential_utf",
+ "resb",
+ "serde",
+]
 
 [[package]]
 name = "zopfli"
