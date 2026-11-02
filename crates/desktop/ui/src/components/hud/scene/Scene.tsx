@@ -118,9 +118,9 @@ function useField(ref: RefObject<HTMLCanvasElement | null>, lines: readonly Hair
 
 // ---------------------------------------------------------------------------------------------------------------- links
 
-/** The typed TanStack `Link` for a `Target` — an SVG `<a>` inside the picture, an HTML one in the band and the compact stack. */
-export function linkFor(target: Target, children: ReactNode, className?: string, style?: CSSProperties): ReactNode {
-  const p = { className, style, children }
+/** The typed TanStack `Link` for a `Target` — an SVG `<a>` inside the picture, an HTML one in the band and the compact stack; `label` names an icon-only link. */
+export function linkFor(target: Target, children: ReactNode, className?: string, style?: CSSProperties, label?: string): ReactNode {
+  const p = { className, style, children, 'aria-label': label }
   switch (target.route) {
     case 'attention':
       return <Link to="/attention/$id" params={{ id: target.id }} {...p} />
@@ -136,6 +136,8 @@ export function linkFor(target: Target, children: ReactNode, className?: string,
       return <Link to="/c/$session" params={{ session: target.id }} {...p} />
     case 'agents':
       return <Link to="/agents" {...p} />
+    case 'costs':
+      return <Link to="/costs" preload="intent" {...p} />
     case 'tasks':
       // The Board-pulse chips' search; a `null` state is the bare board (the route recalls this device's last filters).
       return <Link to="/tasks" search={target.state === null ? {} : { state: target.state, project: '' }} {...p} />
@@ -149,12 +151,12 @@ export function linkFor(target: Target, children: ReactNode, className?: string,
   }
 }
 
-/** A `<g>` with a tooltip whose content links to `target`. */
-export function To({ target, title, children, ...g }: { target: Target | null; title: string; children: ReactNode } & Omit<SVGProps<SVGGElement>, 'target' | 'title'>) {
+/** A `<g>` with a tooltip whose content links to `target`; `label` is the link's `aria-label` (icon-only content). */
+export function To({ target, title, label, children, ...g }: { target: Target | null; title: string; label?: string; children: ReactNode } & Omit<SVGProps<SVGGElement>, 'target' | 'title'>) {
   return (
     <g {...g}>
       <title>{title}</title>
-      {target === null ? children : linkFor(target, children)}
+      {target === null ? children : linkFor(target, children, undefined, undefined, label)}
     </g>
   )
 }
@@ -170,8 +172,10 @@ export function PanelSvg({ children }: { children: ReactNode }) {
   )
 }
 
-/** The panel chrome in local 352×248 coordinates: square, title, meta, rule, big dim number bottom-right (linked when `bigLink`). */
-export function Panel({ title, meta, big, bigLink, children }: { title: string; meta: string; big: string; bigLink?: Target; children: ReactNode }) {
+/** The panel chrome in local 352×248 coordinates: square, title (+ `action`: a chart-icon link after it, 160 D1), meta, rule, big dim number bottom-right (linked when `bigLink`). */
+export function Panel({ title, action, meta, big, bigLink, children }: { title: string; action?: { target: Target; title: string }; meta: string; big: string; bigLink?: Target; children: ReactNode }) {
+  // The action icon sits after the title: mono at fontSize 9 with letterSpacing 1.5 is ≈ 6.9 units a glyph.
+  const ax = 24 + Math.round(title.length * 6.9) + 5
   const number = (
     <text x={340} y={236} fontSize={18} fill={C.borderStrong} textAnchor="end">
       {big}
@@ -184,6 +188,13 @@ export function Panel({ title, meta, big, bigLink, children }: { title: string; 
       <text x={24} y={19} fontSize={9} fill={C.primary} style={LS}>
         {title}
       </text>
+      {action && (
+        <To target={action.target} title={action.title} label={action.title}>
+          <rect x={ax} y={9} width={14} height={14} rx={3} fill={C.elevated} stroke={C.borderStrong} />
+          {/* lucide `chart-line`, 24-box scaled to 9 units inside the square */}
+          <path transform={`translate(${ax + 1} 10) scale(0.5)`} d="M3 3v18h18M19 9l-5 5-4-4-3 3" fill="none" stroke={C.secondary} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+        </To>
+      )}
       <text x={340} y={19} fontSize={8} fill={C.tertiary} textAnchor="end" style={{ letterSpacing: 1 }}>
         {meta}
       </text>
@@ -325,7 +336,7 @@ export function SpendPanel({ p }: { p: SpendPanelModel }) {
   const capsY0 = OWNER_Y0 + OWNER_DY * p.owners.length + 8
   const caps = p.caps.map((r, i) => ({ r, y: capsY0 + 18 * i })).filter(({ y }) => y + 9 <= 212)
   return (
-    <Panel title="SPEND" meta={`TODAY ${fmtUsd(p.today)}`} big={fmtUsd(p.month)} bigLink={{ route: 'agents' }}>
+    <Panel title="SPEND" action={{ target: { route: 'costs' }, title: 'Open costs' }} meta={`TODAY ${fmtUsd(p.today)}`} big={fmtUsd(p.month)} bigLink={{ route: 'costs' }}>
       {p.days.map((d, i) => {
         const x = 14 + BAR_SLOT * i + (BAR_SLOT - BAR_W) / 2
         const h = max > 0 ? Math.max(1, (BAR_H * d.usd) / max) : 1
@@ -448,7 +459,7 @@ export function footerSegments(m: SceneModel): { text: string; color: Color; tar
     { text: `${f.sessionsLive} SESSIONS LIVE`, color: C.tertiary, target: { route: 'new' } },
     { text: `${f.agentsWorking} AGENTS WORKING`, color: C.tertiary, target: { route: 'agents' } },
     { text: `${f.needYou === null ? '—' : pad2(f.needYou)} NEED YOU`, color: f.needYou !== null && f.needYou > 0 ? C.accent : C.tertiary, target: { route: 'attention-list' } },
-    { text: `${fmtUsd(f.month)} THIS MONTH`, color: C.tertiary, target: { route: 'agents' } },
+    { text: `${fmtUsd(f.month)} THIS MONTH`, color: C.tertiary, target: { route: 'costs' } },
     { text: `${f.outcomes} OUTCOMES TODAY`, color: C.tertiary, target: { route: 'tasks', state: 'done' } },
     { text: `${f.inFlight} IN FLIGHT`, color: C.tertiary, target: { route: 'tasks', state: 'doing' } },
   ]
