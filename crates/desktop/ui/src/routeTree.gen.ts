@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ArtifactsRouteImport } from './routes/artifacts'
 import { Route as AttentionRouteImport } from './routes/attention'
 import { Route as AutoresearchRouteImport } from './routes/autoresearch'
+import { Route as CostsRouteImport } from './routes/costs'
 import { Route as IslandRouteImport } from './routes/island'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as LibraryRouteImport } from './routes/library'
@@ -74,6 +75,11 @@ const AttentionRoute = AttentionRouteImport.update({
 const AutoresearchRoute = AutoresearchRouteImport.update({
   id: '/autoresearch',
   path: '/autoresearch',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CostsRoute = CostsRouteImport.update({
+  id: '/costs',
+  path: '/costs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IslandRoute = IslandRouteImport.update({
@@ -292,6 +298,7 @@ export interface FileRoutesByFullPath {
   '/artifacts': typeof ArtifactsRouteWithChildren
   '/attention': typeof AttentionRouteWithChildren
   '/autoresearch': typeof AutoresearchRouteWithChildren
+  '/costs': typeof CostsRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/library': typeof LibraryRoute
@@ -339,6 +346,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/artifacts': typeof ArtifactsRouteWithChildren
   '/autoresearch': typeof AutoresearchRouteWithChildren
+  '/costs': typeof CostsRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/library': typeof LibraryRoute
@@ -388,6 +396,7 @@ export interface FileRoutesById {
   '/artifacts': typeof ArtifactsRouteWithChildren
   '/attention': typeof AttentionRouteWithChildren
   '/autoresearch': typeof AutoresearchRouteWithChildren
+  '/costs': typeof CostsRoute
   '/island': typeof IslandRoute
   '/knowledge': typeof KnowledgeRouteWithChildren
   '/library': typeof LibraryRoute
@@ -438,6 +447,7 @@ export interface FileRouteTypes {
     | '/artifacts'
     | '/attention'
     | '/autoresearch'
+    | '/costs'
     | '/island'
     | '/knowledge'
     | '/library'
@@ -485,6 +495,7 @@ export interface FileRouteTypes {
     | '/'
     | '/artifacts'
     | '/autoresearch'
+    | '/costs'
     | '/island'
     | '/knowledge'
     | '/library'
@@ -533,6 +544,7 @@ export interface FileRouteTypes {
     | '/artifacts'
     | '/attention'
     | '/autoresearch'
+    | '/costs'
     | '/island'
     | '/knowledge'
     | '/library'
@@ -582,6 +594,7 @@ export interface RootRouteChildren {
   ArtifactsRoute: typeof ArtifactsRouteWithChildren
   AttentionRoute: typeof AttentionRouteWithChildren
   AutoresearchRoute: typeof AutoresearchRouteWithChildren
+  CostsRoute: typeof CostsRoute
   IslandRoute: typeof IslandRoute
   KnowledgeRoute: typeof KnowledgeRouteWithChildren
   LibraryRoute: typeof LibraryRoute
@@ -648,6 +661,13 @@ declare module '@tanstack/react-router' {
       path: '/autoresearch'
       fullPath: '/autoresearch'
       preLoaderRoute: typeof AutoresearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/costs': {
+      id: '/costs'
+      path: '/costs'
+      fullPath: '/costs'
+      preLoaderRoute: typeof CostsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/island': {
@@ -1004,6 +1024,7 @@ const rootRouteChildren: RootRouteChildren = {
   ArtifactsRoute: ArtifactsRouteWithChildren,
   AttentionRoute: AttentionRouteWithChildren,
   AutoresearchRoute: AutoresearchRouteWithChildren,
+  CostsRoute: CostsRoute,
   IslandRoute: IslandRoute,
   KnowledgeRoute: KnowledgeRouteWithChildren,
   LibraryRoute: LibraryRoute,

@@ -10,6 +10,7 @@ import { AppSidebar } from '@/components/sidebar/AppSidebar'
 import { SearchDialog } from '@/components/sidebar/SearchDialog'
 import { SidebarInset, SidebarProvider, useSidebar } from '@/components/ui/sidebar'
 import { useHotkeys } from '@/lib/hotkeys'
+import { CostsPrefetch } from '@/lib/costs/queries'
 import type { SearchRequest } from '@/lib/search'
 import { isPopout } from '@/lib/popout'
 import { isIsland, isOverlay } from '@/lib/tauri'
@@ -58,6 +59,7 @@ function Root() {
       <AppSidebar session={session} />
       <SearchHost />
       <RoutineDraftBridge />
+      <CostsPrefetch />
       <StudyDraftBridge />
       <DragOverlay />
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">

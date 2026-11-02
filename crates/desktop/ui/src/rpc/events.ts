@@ -69,6 +69,9 @@ export type AgentEvent =
 /** The server dropped `count` events for this subscriber; the gap is unrecoverable. */
 export type Lagged = { type: 'Lagged'; count: number }
 
+/** 160 §3.2: the engine's cost cube moved to `rev` (debounced ≤ 1/s); the costs bridge fetches the delta. Typed here until the bindings carry it. */
+export type CostCubeChanged = { type: 'CostCubeChanged'; epoch: string; rev: number }
+
 /** Every item `subscribe_events` can deliver, discriminated by `type`. */
 export type WireEvent =
   | AgentEvent
@@ -138,3 +141,5 @@ export type WireEvent =
   | StudyEvent
   /** 137 §11.2: the compactor's build/settle progress for an endless session; the header badge and Memory panel refetch. */
   | EndlessProgress
+  /** 160 §3.2: the cost cube changed; `cost_cube(since)` answers the delta. */
+  | CostCubeChanged
