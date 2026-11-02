@@ -32,13 +32,15 @@ fn parse_id(s: &str) -> anyhow::Result<SessionId> {
 }
 
 /// Bump `owner` and every live ancestor; returns `(owner, new revision)` for
-/// each row touched (tombstoned rows are skipped, so a settlement landing on
-/// a deleted child still invalidates its surviving ancestors).
+/// each live row touched. A tombstoned `owner` is bumped too (a settlement
+/// landing after a delete must still reach the cost cube, review 160-ENG #5)
+/// but not returned; tombstoned ancestors are skipped, so a settlement on a
+/// deleted child still invalidates its surviving ancestors.
 pub(super) async fn bump_in(
     conn: &mut SqliteConnection,
     owner: &str,
 ) -> anyhow::Result<Vec<(SessionId, u64)>> {
-    let rows: Vec<(String, i64)> = sqlx::query_as(
+    let rows: Vec<(String, i64, bool)> = sqlx::query_as(
         "WITH RECURSIVE up(id, parent_id, deleted_at, depth) AS (
              SELECT id, parent_id, deleted_at, 0 FROM cost_owners WHERE id = ?
              UNION ALL
@@ -46,15 +48,16 @@ pub(super) async fn bump_in(
              FROM cost_owners c JOIN up ON c.id = up.parent_id WHERE up.depth < ?
          )
          UPDATE cost_owners SET revision = revision + 1
-         WHERE id IN (SELECT id FROM up WHERE deleted_at IS NULL)
-         RETURNING id, revision",
+         WHERE id IN (SELECT id FROM up WHERE deleted_at IS NULL OR depth = 0)
+         RETURNING id, revision, deleted_at IS NOT NULL",
     )
     .bind(owner)
     .bind(LINEAGE_MAX)
     .fetch_all(conn)
     .await?;
     rows.into_iter()
-        .map(|(id, rev)| Ok((parse_id(&id)?, u64::try_from(rev).unwrap_or(0))))
+        .filter(|(_, _, deleted)| !deleted)
+        .map(|(id, rev, _)| Ok((parse_id(&id)?, u64::try_from(rev).unwrap_or(0))))
         .collect()
 }
 
@@ -104,13 +107,16 @@ pub(crate) async fn tombstone_owner_in(
     id: SessionId,
 ) -> anyhow::Result<()> {
     let sid = id.to_string();
-    let changed =
-        sqlx::query("UPDATE cost_owners SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
-            .bind(now())
-            .bind(&sid)
-            .execute(&mut *conn)
-            .await?
-            .rows_affected();
+    let changed = sqlx::query(
+        "UPDATE cost_owners SET deleted_at = ?, \
+         harness_model = (SELECT harness_model FROM sessions WHERE sessions.id = cost_owners.id) \
+         WHERE id = ? AND deleted_at IS NULL",
+    )
+    .bind(now())
+    .bind(&sid)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
     if changed > 0 {
         bump_in(conn, &sid).await?;
     }
@@ -187,11 +193,15 @@ pub(crate) async fn tombstone_root_in(
         .execute(&mut *conn)
         .await?;
     }
-    sqlx::query("UPDATE cost_owners SET deleted_at = ? WHERE root_id = ? AND deleted_at IS NULL")
-        .bind(&at)
-        .bind(&rid)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query(
+        "UPDATE cost_owners SET deleted_at = ?, \
+         harness_model = (SELECT harness_model FROM sessions WHERE sessions.id = cost_owners.id) \
+         WHERE root_id = ? AND deleted_at IS NULL",
+    )
+    .bind(&at)
+    .bind(&rid)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -409,8 +419,13 @@ async fn record_report_in(
     currency: &str,
     at: &str,
 ) -> anyhow::Result<()> {
+    // Review 160-ENG #3: an unchanged total (every `usage_update` repeats it)
+    // is not kept again; lower totals are (placement needs them).
     sqlx::query(
-        "INSERT INTO remote_meter_reports (meter_id, amount_nanos, currency, at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO remote_meter_reports (meter_id, amount_nanos, currency, at) \
+         SELECT ?1, ?2, ?3, ?4 WHERE NOT EXISTS (SELECT 1 FROM ( \
+             SELECT amount_nanos, currency FROM remote_meter_reports WHERE meter_id = ?1 \
+             ORDER BY at DESC, rowid DESC LIMIT 1) WHERE amount_nanos = ?2 AND currency = ?3)",
     )
     .bind(meter)
     .bind(nanos)
@@ -1259,7 +1274,7 @@ impl Store {
              SUM(COALESCE(m.input_tokens, 0)) AS input, SUM(COALESCE(m.output_tokens, 0)) AS output, \
              SUM(COALESCE(m.cache_read_tokens, 0)) AS cache_read, \
              SUM(COALESCE(m.cache_write_tokens, 0)) AS cache_write \
-             FROM cost_owners c JOIN model_calls m ON m.owner_id = c.id AND (?2 IS NULL OR m.created_at >= ?2) \
+             FROM cost_owners c JOIN model_calls m ON m.owner_id = c.id AND m.created_at >= COALESCE(?2, '') \
              WHERE (?1 IS NULL OR c.root_id IN (SELECT value FROM json_each(?1))) \
              AND m.status <> 'not_dispatched' \
              GROUP BY 1, 2, 3, 4, 5, 6, 7, 8",
@@ -1271,12 +1286,12 @@ impl Store {
     }
 
     /// 160 cube, reported leg: every remote meter with its owner's root and
-    /// harness model.
+    /// harness model (the live session's, else the one its tombstone kept).
     pub(crate) async fn cost_meters(&self) -> anyhow::Result<Vec<MeterInput>> {
         Ok(sqlx::query_as(
             "SELECT r.id, r.owner_id, c.root_id, r.origin, r.currency, \
              COALESCE(r.baseline_nanos, 0) AS baseline_nanos, COALESCE(r.attributed_nanos, 0) AS attributed_nanos, \
-             r.updated_at, r.source_metadata, s.harness_model \
+             r.updated_at, r.source_metadata, COALESCE(s.harness_model, c.harness_model) AS harness_model \
              FROM remote_meters r JOIN cost_owners c ON c.id = r.owner_id \
              LEFT JOIN sessions s ON s.id = r.owner_id",
         )
@@ -1309,6 +1324,9 @@ impl Store {
     /// 160 §4: native ledger rows newest first with `created_at < upper`
     /// (and `>= lower`), filtered in SQL; `priced` = model ids the catalog
     /// prices, so a row without money but with tokens counts as estimated.
+    /// A root filter drives the join from the roots (`cost_owners_root` →
+    /// `model_calls_created`) instead of walking the whole time index
+    /// (review 160-ENG #2: one small root 2.3 s → ms on Sky's ledger).
     pub(crate) async fn cost_call_rows(
         &self,
         f: &CallFilter<'_>,
@@ -1316,40 +1334,54 @@ impl Store {
         lower: Option<&str>,
         limit: u32,
     ) -> anyhow::Result<Vec<CallRowOut>> {
+        macro_rules! rows {
+            ($from:literal) => {
+                concat!(
+                    "SELECT m.call_id, m.created_at, c.root_id, m.owner_id, m.provider, \
+                     m.requested_model, m.kind, m.status, m.returned_nanos, m.returned_currency, \
+                     m.estimated_nanos, m.estimated_currency, m.input_tokens, m.output_tokens, \
+                     m.cache_read_tokens, m.cache_write_tokens, m.unknown_reason, \
+                     CASE WHEN m.returned_nanos IS NOT NULL THEN 0 WHEN m.estimated_nanos IS NOT NULL THEN 2 \
+                          WHEN (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL) \
+                               AND m.requested_model IN (SELECT value FROM json_each(?8)) THEN 2 ELSE 3 END AS basis ",
+                    $from,
+                    " WHERE m.created_at < ?1 AND m.created_at >= COALESCE(?2, '') \
+                     AND m.status <> 'not_dispatched' \
+                     AND (?3 IS NULL OR c.root_id IN (SELECT value FROM json_each(?3))) \
+                     AND (?4 IS NULL OR m.provider IN (SELECT value FROM json_each(?4))) \
+                     AND (?5 IS NULL OR m.requested_model IN (SELECT value FROM json_each(?5))) \
+                     AND (?6 IS NULL OR m.kind IN (SELECT value FROM json_each(?6))) \
+                     AND (?9 IS NULL OR basis IN (SELECT value FROM json_each(?9))) \
+                     ORDER BY m.created_at DESC LIMIT ?7"
+                )
+            };
+        }
         let json = |v: Option<&[String]>| v.map(|v| serde_json::to_string(v).unwrap_or_default());
         let bases = f
             .bases
             .map(|b| b.iter().map(|b| i64::from(b.code())).collect::<Vec<_>>())
             .map(|b| serde_json::to_string(&b).unwrap_or_default());
-        Ok(sqlx::query_as(
-            "SELECT m.call_id, m.created_at, c.root_id, m.owner_id, m.provider, \
-             m.requested_model, m.kind, m.status, m.returned_nanos, m.returned_currency, \
-             m.estimated_nanos, m.estimated_currency, m.input_tokens, m.output_tokens, \
-             m.cache_read_tokens, m.cache_write_tokens, m.unknown_reason, \
-             CASE WHEN m.returned_nanos IS NOT NULL THEN 0 WHEN m.estimated_nanos IS NOT NULL THEN 2 \
-                  WHEN (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL) \
-                       AND m.requested_model IN (SELECT value FROM json_each(?8)) THEN 2 ELSE 3 END AS basis \
-             FROM model_calls m JOIN cost_owners c ON c.id = m.owner_id \
-             WHERE m.created_at < ?1 AND (?2 IS NULL OR m.created_at >= ?2) \
-             AND m.status <> 'not_dispatched' \
-             AND (?3 IS NULL OR c.root_id IN (SELECT value FROM json_each(?3))) \
-             AND (?4 IS NULL OR m.provider IN (SELECT value FROM json_each(?4))) \
-             AND (?5 IS NULL OR m.requested_model IN (SELECT value FROM json_each(?5))) \
-             AND (?6 IS NULL OR m.kind IN (SELECT value FROM json_each(?6))) \
-             AND (?9 IS NULL OR basis IN (SELECT value FROM json_each(?9))) \
-             ORDER BY m.created_at DESC LIMIT ?7",
-        )
-        .bind(upper)
-        .bind(lower)
-        .bind(json(f.roots))
-        .bind(json(f.providers))
-        .bind(json(f.models))
-        .bind(json(f.kinds))
-        .bind(i64::from(limit))
-        .bind(f.priced)
-        .bind(bases)
-        .fetch_all(&self.read)
-        .await?)
+        let sql = if f.roots.is_some() {
+            rows!(
+                "FROM (SELECT DISTINCT value FROM json_each(?3)) r \
+                 CROSS JOIN cost_owners c ON c.root_id = r.value \
+                 CROSS JOIN model_calls m ON m.owner_id = c.id"
+            )
+        } else {
+            rows!("FROM model_calls m JOIN cost_owners c ON c.id = m.owner_id")
+        };
+        Ok(sqlx::query_as(sql)
+            .bind(upper)
+            .bind(lower)
+            .bind(json(f.roots))
+            .bind(json(f.providers))
+            .bind(json(f.models))
+            .bind(json(f.kinds))
+            .bind(i64::from(limit))
+            .bind(f.priced)
+            .bind(bases)
+            .fetch_all(&self.read)
+            .await?)
     }
 }
 

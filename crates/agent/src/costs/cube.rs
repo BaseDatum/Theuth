@@ -202,7 +202,21 @@ impl Cube {
         if dirty.len() + whole.len() > MAX_DIRTY_ROOTS {
             return Ok(None);
         }
-        let from_hour = hour_of(self.last_refresh_ms.saturating_sub(SETTLE_WINDOW_MS));
+        // Review 160-ENG #4: also re-read from the oldest call still in flight
+        // at the last refresh, so a call settling after the window lands.
+        let in_flight: Vec<u32> = ["pending", "dispatched"]
+            .iter()
+            .filter_map(|r| self.reasons.index.get(*r).map(|i| i + 1))
+            .collect();
+        let oldest_in_flight = self
+            .native
+            .values()
+            .flat_map(|m| m.keys())
+            .filter(|k| in_flight.contains(&k.5))
+            .map(|k| k.0)
+            .min();
+        let from_hour = hour_of(self.last_refresh_ms.saturating_sub(SETTLE_WINDOW_MS))
+            .min(oldest_in_flight.unwrap_or(u32::MAX));
         let from_text = super::ms_text(u64::from(from_hour) * 3_600_000);
         let from_text = &from_text[..13];
         let dirty: Vec<String> = dirty.into_iter().collect();

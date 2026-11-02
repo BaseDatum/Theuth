@@ -110,7 +110,12 @@ impl CostService {
             Some(c) if c.price_table == prices.hash => {
                 let mut c = (*c).clone();
                 match c.refresh(&self.inner.store, &catalog, &prices).await? {
-                    Some(false) => None,
+                    // Review 160-ENG #7: nothing for clients, but keep the
+                    // advanced revisions / window so the next tick starts there.
+                    Some(false) => {
+                        *self.inner.cube.write() = Some(Arc::new(c));
+                        None
+                    }
                     Some(true) => Some(c),
                     None => Some(
                         Cube::build(&self.inner.store, &catalog, &prices, &self.inner.engine)
