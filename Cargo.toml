@@ -322,6 +322,12 @@ screencapturekit = { version = "11", default-features = false, features = ["maco
 # 96: the accessibility reader behind `screen_context` (AXUIElement hit-test + attributes);
 # objc2's ApplicationServices bindings, same family and versions as the entries above.
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement", "AXError", "libc"] }  # 96
+# 161: accessibility-tree snapshots and headless element actions, linked in-process (no CLI,
+# FFI or helpers). Tag v1.0.2; every crate is `publish = false`, so git pins by rev.
+agent-desktop-core = { git = "https://github.com/vercel-labs/agent-desktop", rev = "a47ed664e0db00d1d4df364eb3fe8a5599882f3c" }  # 161
+agent-desktop-macos = { git = "https://github.com/vercel-labs/agent-desktop", rev = "a47ed664e0db00d1d4df364eb3fe8a5599882f3c" }  # 161
+agent-desktop-windows = { git = "https://github.com/vercel-labs/agent-desktop", rev = "a47ed664e0db00d1d4df364eb3fe8a5599882f3c" }  # 161
+agent-desktop-linux = { git = "https://github.com/vercel-labs/agent-desktop", rev = "a47ed664e0db00d1d4df364eb3fe8a5599882f3c" }  # 161
 # Desktop menubar app (design doc 25): Tauri 2 shell around the RPC client; the daemon is the
 # bundled `theuth` sidecar started on a pty (design doc 18). Plugins replace hand-written
 # NSStatusItem / LaunchServices / NSUserNotification glue.
