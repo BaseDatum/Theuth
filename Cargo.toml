@@ -235,7 +235,7 @@ tower = { version = "0.5", features = ["util"] }
 # to a downloaded archive (or `MSB_EMBED_ARTIFACTS_DIR` to an extracted pair). Side effect of
 # `download-binaries`: the build also installs that pair into `MSB_HOME`/`~/.microsandbox` when the
 # pair there is absent or a different version — set `MSB_HOME` for the build to keep your own msb.
-microsandbox = { version = "=0.7.4", default-features = false, features = ["local", "net", "embed-binaries", "download-binaries"] }
+microsandbox = { version = "=0.7.13", default-features = false, features = ["local", "net", "embed-binaries", "download-binaries"] }
 # Cursor agent backend (crates/cursor): Connect-RPC protobuf, pure-Rust protoc.
 prost = "0.14"
 prost-types = "0.14"
