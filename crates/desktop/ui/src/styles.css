@@ -48,6 +48,15 @@
   --project-slate: #566472;
   --project-sand: #8a6f42;
   --project-plum: #7d3f5c;
+  /* 160 D2: chart series (shadcn `--chart-N`), the project minerals in this order; never ochre or carnelian (warning / danger). */
+  --chart-1: #3d6b66; /* faience */
+  --chart-2: #8a6f42; /* sand */
+  --chart-3: #3c5a86; /* lapis */
+  --chart-4: #2f5d4a; /* malachite */
+  --chart-5: #7d3f5c; /* plum */
+  --chart-6: #566472; /* slate */
+  --chart-7: #6b7a24; /* nile */
+  --chart-8: #7a4a2a; /* umber */
   /* 82: the electric waveform (components/ui/electric-waveform) — no white-hot core in the light theme. */
   --electric-heat: 0%;
 }
@@ -93,6 +102,14 @@
   --project-slate: #8a9aaa;
   --project-sand: #b89a63;
   --project-plum: #b0708f;
+  --chart-1: #5b8f8a; /* faience */
+  --chart-2: #b89a63; /* sand */
+  --chart-3: #6f8fc0; /* lapis */
+  --chart-4: #4a8a6e; /* malachite */
+  --chart-5: #b0708f; /* plum */
+  --chart-6: #8a9aaa; /* slate */
+  --chart-7: #98a145; /* nile */
+  --chart-8: #b07a55; /* umber */
 }
 
 /* shadcn variables, aliased onto the tokens; no component hard-codes a colour. */
