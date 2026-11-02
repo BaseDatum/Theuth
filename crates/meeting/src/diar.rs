@@ -14,7 +14,6 @@ use std::time::{Duration, Instant};
 
 use kameo::actor::ActorRef;
 use rtrb::Consumer;
-use rubato::Resampler as _;
 
 use crate::capture::{RATE, Sample};
 use crate::post::align::Span;
@@ -226,8 +225,13 @@ pub fn run(
 ) -> anyhow::Result<Labels> {
     let g: Geometry = streamer.geometry();
     let block = RATE as usize / 50;
-    let mut resampler =
-        rubato::FftFixedIn::<f32>::new(RATE as usize, MODEL_RATE as usize, block, 2, 1)?;
+    let mut resampler = rubato::Fft::<f32>::new(
+        RATE as usize,
+        MODEL_RATE as usize,
+        block,
+        1,
+        rubato::FixedSync::Input,
+    )?;
     let mut inbox: Vec<f32> = Vec::new();
     // 16 kHz samples from absolute sample `base` (a multiple of HOP) on.
     let mut buf: Vec<f32> = Vec::new();
@@ -278,9 +282,9 @@ pub fn run(
         inbox.extend_from_slice(&pcm);
         let mut used = 0;
         while inbox.len() - used >= block {
-            let out = resampler.process(&[&inbox[used..used + block]], None)?;
-            buf.extend_from_slice(&out[0]);
-            position += out[0].len();
+            let out = voice::resample_block(&mut resampler, &inbox[used..used + block])?;
+            buf.extend_from_slice(&out);
+            position += out.len();
             used += block;
         }
         inbox.drain(..used);

@@ -52,7 +52,7 @@ pub use shape::{
 use speak::{Out, Progress, Report, Synthesizer};
 pub use stt::{
     Engine, PIECE, Piece, Stream, TranscribeWords, Transcriber, WINDOW, Word, WordTranscript,
-    decode, resample, speech_sample,
+    decode, resample, resample_block, speech_sample,
 };
 
 /// Actor name the RPC layer looks up for live dictation (54 §4.3).

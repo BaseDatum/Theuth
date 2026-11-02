@@ -20,7 +20,6 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
-use rubato::Resampler as _;
 use serde::{Deserialize, Serialize};
 
 use crate::SpeechId;
@@ -287,7 +286,7 @@ impl Ring {
 
 /// 24 kHz → device rate, producer side, when the device refused 24 kHz.
 struct Resample {
-    inner: rubato::FftFixedIn<f32>,
+    inner: rubato::Fft<f32>,
     /// Input samples short of a block, waiting for the next `write`.
     pending: Vec<f32>,
 }
@@ -332,7 +331,13 @@ impl Player {
             None
         } else {
             Some(Resample {
-                inner: rubato::FftFixedIn::new(RATE as usize, rate as usize, BLOCK, 2, 1)?,
+                inner: rubato::Fft::new(
+                    RATE as usize,
+                    rate as usize,
+                    BLOCK,
+                    1,
+                    rubato::FixedSync::Input,
+                )?,
                 pending: Vec::with_capacity(BLOCK),
             })
         };
@@ -379,8 +384,8 @@ impl Player {
                     Vec::with_capacity(r.pending.len() * self.rate as usize / RATE as usize + 8);
                 let mut at = 0;
                 while r.pending.len() - at >= BLOCK {
-                    match r.inner.process(&[&r.pending[at..at + BLOCK]], None) {
-                        Ok(b) => out.extend_from_slice(&b[0]),
+                    match crate::stt::resample_block(&mut r.inner, &r.pending[at..at + BLOCK]) {
+                        Ok(b) => out.extend_from_slice(&b),
                         Err(e) => {
                             tracing::warn!("speaker resampler: {e}");
                             return false;

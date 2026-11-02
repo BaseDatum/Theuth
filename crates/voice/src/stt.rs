@@ -15,6 +15,7 @@ use kameo::message::{Context, Message};
 use models::onnx::{Guarded, gpu_serial};
 use parakeet_rs::{ExecutionConfig, Nemotron, ParakeetTDT, TimestampMode, Transcriber as _};
 use parking_lot::Mutex;
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{CODEC_TYPE_NULL, CODEC_TYPE_OPUS, DecoderOptions};
 use symphonia::core::formats::FormatOptions;
@@ -107,20 +108,22 @@ pub fn resample(pcm: Vec<f32>, from: u32, to: u32) -> anyhow::Result<Vec<f32>> {
     if from == to {
         return Ok(pcm);
     }
-    const CHUNK: usize = 1024;
-    let mut r = rubato::FftFixedIn::<f32>::new(from as usize, to as usize, CHUNK, 2, 1)?;
-    let mut out = Vec::with_capacity(pcm.len() * to as usize / from as usize + CHUNK);
-    let mut i = 0;
-    while i + CHUNK <= pcm.len() {
-        let o = r.process(&[&pcm[i..i + CHUNK]], None)?;
-        out.extend_from_slice(&o[0]);
-        i += CHUNK;
-    }
-    if i < pcm.len() {
-        let o = r.process_partial(Some(&[&pcm[i..]]), None)?;
-        out.extend_from_slice(&o[0]);
-    }
-    Ok(out)
+    let mut r = rubato::Fft::<f32>::new(
+        from as usize,
+        to as usize,
+        1024,
+        1,
+        rubato::FixedSync::Input,
+    )?;
+    let input = InterleavedSlice::new(&pcm[..], 1, pcm.len())?;
+    Ok(r.process_all(&input, pcm.len(), None)?.take_data())
+}
+
+/// One mono block of exactly `r.input_frames_next()` samples through a streaming resampler.
+pub fn resample_block(r: &mut rubato::Fft<f32>, block: &[f32]) -> anyhow::Result<Vec<f32>> {
+    use rubato::Resampler as _;
+    let input = InterleavedSlice::new(block, 1, block.len())?;
+    Ok(r.process(&input, None)?.take_data())
 }
 
 /// `text` spoken by the Pocket TTS checkpoint at `tts_dir` (`<data_dir>/models/pocket-tts`) with
