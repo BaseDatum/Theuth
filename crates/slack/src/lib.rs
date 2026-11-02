@@ -28,6 +28,7 @@ pub mod board;
 pub mod bubble;
 pub mod channel;
 pub mod commands;
+mod forward;
 pub mod plan;
 mod prompt;
 pub mod setup;

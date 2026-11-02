@@ -1242,6 +1242,7 @@ impl Channel {
                     team,
                     text: content.text.unwrap_or_default(),
                     files: content.files.unwrap_or_default(),
+                    attachments: content.attachments.unwrap_or_default(),
                     dm: true,
                 })
                 .await;
@@ -1263,6 +1264,7 @@ impl Channel {
                     team,
                     text: a.content.text.unwrap_or_default(),
                     files: a.content.files.unwrap_or_default(),
+                    attachments: a.content.attachments.unwrap_or_default(),
                     dm: false,
                 })
                 .await;
@@ -1310,15 +1312,25 @@ impl Channel {
             Some(r) => (r.rest.to_owned(), Some(r.agent)),
             None => (text, bound.as_ref().and_then(|t| t.agent.clone())),
         };
-        if !text.is_empty() {
+        let shared = crate::forward::render(&m.attachments);
+        if !text.is_empty() || !shared.is_empty() {
             // 110 §7.1: one marker line so the model writes for Slack. File and
             // voice-note lines carry their own markers and none of this one.
+            // Forwarded messages follow the user's own text.
             let marker = if m.dm {
                 "[slack dm]"
             } else {
                 "[slack channel]"
             };
-            lines.push(format!("{marker}\n{text}"));
+            let mut block = marker.to_owned();
+            for part in std::iter::once(text)
+                .filter(|t| !t.is_empty())
+                .chain(shared)
+            {
+                block.push('\n');
+                block.push_str(&part);
+            }
+            lines.push(block);
         }
         let (file_lines, files, voice) = self.save_files(&m.ts, &m.files).await;
         lines.extend(file_lines);
@@ -2072,6 +2084,8 @@ struct Msg {
     team: String,
     text: String,
     files: Vec<SlackFile>,
+    /// Forwarded/linked messages and other attachments, rendered after `text`.
+    attachments: Vec<SlackMessageAttachment>,
     /// A direct message (`channel_type == "im"`), not a channel mention (110 §7.1).
     dm: bool,
 }
@@ -3485,6 +3499,136 @@ pub(crate) mod tests {
             vec![Call::Steer(f.stub.session, "[slack dm]\nalso this".into())]
         );
         assert_eq!(f.api.calls(), vec![format!("react {DM} 100.2 {EYES}")]);
+    }
+
+    const PERMALINK: &str = "https://acme.slack.com/archives/C0SRE/p1793368920123456?thread_ts=1793368000.000100&cid=C0SRE";
+
+    /// A DM as Slack delivers a forward: the user's text (maybe empty) and the
+    /// original as an `is_share` attachment.
+    fn forwarded(text: &str, attachments: serde_json::Value) -> SlackPushEventCallback {
+        push(json!({
+            "type": "message", "channel": DM, "channel_type": "im", "user": OWNER,
+            "text": text, "ts": "100.1", "team": "T1", "attachments": attachments,
+        }))
+    }
+
+    fn share(text: Option<&str>, blocks: serde_json::Value) -> serde_json::Value {
+        let mut a = json!({
+            "ts": "1793368920.123456", "channel_id": "C0SRE", "channel_team": "T1",
+            "is_msg_unfurl": false, "is_share": true, "id": 1,
+            "message_blocks": [{ "team": "T1", "channel": "C0SRE", "ts": "1793368920.123456",
+                                 "message": { "blocks": blocks } }],
+            "author_id": "U0JANE", "author_name": "Jane Doe", "author_subname": "Jane Doe",
+            "author_link": "https://acme.slack.com/team/U0JANE",
+            "author_icon": "https://avatars.slack-edge.com/2026-01-01/1_48.png",
+            "channel_name": "general", "mrkdwn_in": ["text"],
+            "footer": "Thread in #general", "from_url": PERMALINK,
+            "fallback": "[October 30th, 2026 2:02 PM] jane.doe: deploy is rolling back",
+        });
+        if let Some(t) = text {
+            a["text"] = json!(t);
+        }
+        a
+    }
+
+    fn rich_text(elements: serde_json::Value) -> serde_json::Value {
+        json!([{ "type": "rich_text", "block_id": "a1B2c", "elements": elements }])
+    }
+
+    fn header() -> String {
+        format!(
+            "[forwarded message from Jane Doe · #general · 2026-10-30 14:02 UTC · {PERMALINK}]"
+        )
+    }
+
+    const SOURCE: &str = "(channel C0SRE, ts 1793368920.123456, thread_ts 1793368000.000100)";
+
+    async fn input_of(f: &Fixture, ev: SlackPushEventCallback) -> String {
+        f.chan.handle_inbound(Inbound::Push(Box::new(ev))).await;
+        match f.stub.calls().pop() {
+            Some(Call::SendInput(_, text)) => text,
+            other => panic!("no input sent: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_with_a_comment_carries_the_original_after_the_comment() {
+        let f = fixture();
+        let original = rich_text(json!([{ "type": "rich_text_section",
+            "elements": [{ "type": "text", "text": "deploy is rolling back" }] }]));
+        let input = input_of(
+            &f,
+            forwarded(
+                "can you check this?",
+                json!([share(
+                    Some("deploy is rolling back\nsee <#C0OPS>"),
+                    original
+                )]),
+            ),
+        )
+        .await;
+        assert_eq!(
+            input,
+            format!(
+                "[slack dm]\ncan you check this?\n{}\n> deploy is rolling back\n> see <#C0OPS>\n{SOURCE}",
+                header()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_without_a_comment_still_reaches_the_agent() {
+        let f = fixture();
+        let bot = json!({ "id": 2, "ts": 1793368000, "fallback": "Build #42 passed",
+                          "text": "Build #42 passed", "title_link": "", "service_name": "ci-bot" });
+        let input = input_of(
+            &f,
+            forwarded(
+                "",
+                json!([share(Some("deploy is rolling back"), json!([])), bot]),
+            ),
+        )
+        .await;
+        assert_eq!(
+            input,
+            format!(
+                "[slack dm]\n{}\n> deploy is rolling back\n{SOURCE}\n[attachment from ci-bot] Build #42 passed",
+                header()
+            )
+        );
+        assert_eq!(f.api.calls(), vec![format!("react {DM} 100.1 {EYES}")]);
+    }
+
+    #[tokio::test]
+    async fn forward_whose_text_is_only_rich_text_renders_its_blocks() {
+        let f = fixture();
+        let original = rich_text(json!([
+            { "type": "rich_text_section", "elements": [
+                { "type": "user", "user_id": "U0SKY" },
+                { "type": "text", "text": " roll back with " },
+                { "type": "text", "text": "kubectl", "style": { "code": true } },
+                { "type": "text", "text": ":\n" } ] },
+            { "type": "rich_text_preformatted", "border": 0, "elements": [
+                { "type": "text", "text": "kubectl rollout undo deploy/api\nkubectl rollout status deploy/api" } ] },
+            { "type": "rich_text_list", "style": "bullet", "indent": 0, "elements": [
+                { "type": "rich_text_section", "elements": [{ "type": "text", "text": "watch " },
+                    { "type": "link", "url": "https://grafana.example/d/api", "text": "the dashboard" }] } ] },
+        ]));
+        let input = input_of(&f, forwarded("", json!([share(None, original)]))).await;
+        assert_eq!(
+            input,
+            format!(
+                "[slack dm]\n{}\n\
+                 > <@U0SKY> roll back with `kubectl`:\n\
+                 > ```\n\
+                 > kubectl rollout undo deploy/api\n\
+                 > kubectl rollout status deploy/api\n\
+                 > ```\n\
+                 > - watch [the dashboard](https://grafana.example/d/api)\n\
+                 {SOURCE}",
+                header()
+            )
+        );
     }
 
     #[tokio::test]
