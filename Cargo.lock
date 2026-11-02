@@ -305,6 +305,7 @@ dependencies = [
  "png 0.17.16",
  "regex",
  "replica",
+ "reqwest 0.13.5",
  "runtime",
  "schemars 1.2.2",
  "search",
@@ -7020,7 +7021,7 @@ dependencies = [
 [[package]]
 name = "genai"
 version = "0.7.0-beta.24-WIP"
-source = "git+https://github.com/skymoore/rust-genai?branch=main#617cafeed2910b0c50a91ccacdc3cf1248030a69"
+source = "git+https://github.com/skymoore/rust-genai?branch=theuth-160-response-headers#ee51f82252bb79549846f4d0c8a871e947b76066"
 dependencies = [
  "aws-config",
  "aws-credential-types",

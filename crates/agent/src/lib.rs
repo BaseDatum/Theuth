@@ -43,6 +43,7 @@ pub mod durability;
 pub mod endless;
 pub mod endless_ext;
 pub mod frame;
+pub mod limits;
 pub mod loop_;
 pub mod notebook_context;
 pub mod notebooks;
