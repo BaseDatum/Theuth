@@ -135,7 +135,7 @@ cpal = "0.16"  # 76 §0.3: the daemon's speaker (`voice::out::Player`), default 
 # Update (design doc 39): semver compare, the updater plugin's own minisign verifier, tar for the
 # single-file CLI payload. The desktop side is tauri-plugin-updater below.
 semver = "1"
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 tar = "0.4"
 # Make an engine (67 §13 / 64 §4): built-in SSH client with a vault-held key, Docker Engine API.
 russh = "0.65"
