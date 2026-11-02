@@ -109,6 +109,7 @@ hound = "3.5"  # 53
 # the file the checkpoint ships; needs cmake); `opus` = libopus for 80 ms packets on the wire.
 # crates.io 0.2.3 predates `ptts::synth::Synth` (the streaming API 43 §2.1 relies on); the rev is
 # main on 2026-09-16, still 0.2.3 + xn 0.2.4 from crates.io. Drop the git ref when 0.2.4 ships.
+# Held (2026-11-02): v0.6.0 drops SentencePiece/`sp` and `TTSConfig::v202601`; needs config.json + tokenizer.json in the checkpoint.
 ptts = { git = "https://github.com/gradium-ai/xn-ptts", rev = "5d50b5209ff9bbd7d3bac5a26f3c3bc1934fca89", features = ["sp"] }
 xn = "0.2.4"  # ptts's tensor library; only `set_num_threads` is called directly
 opus = "0.4"
@@ -288,14 +289,14 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 # Attachment mime check (17 §3.1); already in the tree via genai.
 mime_guess = "2"
 # Embedded headless browser (design doc 23 §3.3, §9): obscura's agent tool layer, in-process.
-# Fork `main` = tag v0.2.2 + `tools()`/`call_tool()` (23 §3.3) + the
+# Fork branch `theuth/sync-2026-11-02` = tag v0.2.6 + `tools()`/`call_tool()` (23 §3.3) + the
 # `browser_network_capture` tool (44 §3.1: on_response exchanges with request headers and
-# bodies, documents and fetch/XHR only) + iframe realms carrying deno_core's context-state
-# slots (an unhandled promise rejection inside a frame was a process-killing SIGSEGV).
+# bodies, documents and fetch/XHR only) + wreq `prefix-symbols` on every platform. The iframe
+# realm-slot SIGSEGV fix our old `main` carried is upstream since v0.2.6 (#850).
 # `stealth` = wreq/BoringSSL TLS fingerprint (needs cmake + clang to build); `render` =
 # layout/paint for `browser_screenshot`. obscura-js only for the main-thread warmup.
-obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
-obscura-js = { git = "https://github.com/skymoore/obscura", branch = "main", features = ["stealth", "render"] }
+obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-02", features = ["stealth", "render"] }
+obscura-js = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-02", features = ["stealth", "render"] }
 # Stealth page fetches (design doc 122 revision 1, `crates/web/src/fetch/client.rs`): the exact wreq/wreq-util
 # pins obscura's `stealth` feature uses, so the graph holds ONE wreq (and one BoringSSL build). Features mirror
 # obscura-net's minus `socks`: streamed bodies, the decompressors Chrome's `Accept-Encoding` invites, the
@@ -408,15 +409,18 @@ brush-parser = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0
 # Branch `mask-0.9.3` = tag iocraft-v0.9.3 + three commits (also derives `Default`
 # for `KeyModifiers`).
 iocraft = { git = "https://github.com/skymoore/iocraft", branch = "mask-0.9.3" }
-# anydoc / pdf-inspector: identical to crates.io 0.2.4 / 1.15.0; the tags are
+# anydoc / pdf-inspector: identical to crates.io 0.2.4 / 1.25.2; the tags are
 # used because some networks' proxies refuse static.crates.io downloads of these
-# crates (and of lopdf 0.44's `aes 0.9`, hence 1.15.0 → lopdf 0.42). Drop when that clears.
+# crates. Drop when that clears. (lopdf 0.45's `aes 0.9` is already in the graph.)
 anydoc = { git = "https://github.com/firecrawl/anydoc", tag = "v0.2.4" }
-pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", tag = "v1.15.0" }
+pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", tag = "v1.25.2" }
 # obscura vendors corrected taffy/cosmic-text under `vendor/` and patches them in its own
 # workspace; a git dependency's patches do not propagate, so we point at the same copies (23 §2).
-taffy = { git = "https://github.com/skymoore/obscura", branch = "main" }
-cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "main" }
+# Since v0.2.6 obscura-net takes wreq-util from `vendor/` too; patching it keeps crates/web on
+# the same copy (one wreq-util).
+taffy = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-02" }
+cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-02" }
+wreq-util = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-02" }
 # genai: preserve ToolResponse.images (23 §5), plus upstream Bedrock profile selection,
 # credential refresh, region and explicit-profile isolation fixes (02 §2.2).
 genai = { git = "https://github.com/skymoore/rust-genai", branch = "main" }
