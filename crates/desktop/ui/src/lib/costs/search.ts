@@ -1,7 +1,7 @@
 // 160 D9: the /costs view lives in validated search params — range, granularity, group-by, metric, compare, filters —
 // so back/forward and reload restore it. `resolveRange` turns a preset into instants in one IANA zone.
 
-import { type Dim, DIMS, type Filters, GRANS, type Gran, MAX_BUCKETS, type Metric, type Range, type Zone, bucketCount, DAY_MS, HOUR_MS, zone } from './cube'
+import { type Dim, DIMS, type Filters, GRANS, type Gran, MAX_BUCKETS, MAX_HOUR_DAYS, type Metric, type Range, type Zone, bucketCount, DAY_MS, HOUR_MS, zone } from './cube'
 
 export const PRESETS = ['today', '24h', '7d', '30d', 'mtd', '90d', 'all'] as const
 export type Preset = (typeof PRESETS)[number] | 'custom'
@@ -92,7 +92,7 @@ export function resolveRange(s: CostsSearch, now: number, tz: string, firstMs: n
   }
 }
 
-/** Auto-pick within the 120-bucket cap: ≤ 5 days → hour, ≤ 120 days → day, ≤ 120 weeks → week, else month. */
+/** Auto-pick: ≤ 5 days → hour, ≤ 120 days → day, ≤ 120 weeks → week, else month (Hour is still offered up to 7 days). */
 export function autoGran(r: Range): Gran {
   const days = (r.to - r.from) / DAY_MS
   return days <= 5 ? 'hour' : days <= 120 ? 'day' : days <= 840 ? 'week' : 'month'
@@ -100,7 +100,10 @@ export function autoGran(r: Range): Gran {
 
 /** Why a granularity is disabled for a range, or `null` when it is allowed. */
 export function granBlock(tz: string, r: Range, g: Gran): string | null {
-  const n = bucketCount(zone(tz), r, g)
+  const z = zone(tz)
+  // Hour: up to 7 local days (≤ 168 buckets; 169 across an autumn DST change).
+  if (g === 'hour' && bucketCount(z, r, 'day') > MAX_HOUR_DAYS) return `${bucketCount(z, r, 'hour')} hours — Hour goes up to 7 days`
+  const n = bucketCount(z, r, g)
   if (n > MAX_BUCKETS) return `${n} buckets — more than ${MAX_BUCKETS}; pick a shorter range`
   if (n < 2 && g !== 'hour') return `one bucket — pick a longer range`
   return null

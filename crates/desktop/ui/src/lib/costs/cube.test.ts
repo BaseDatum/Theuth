@@ -6,7 +6,7 @@ import type { CostRootEntry } from '@/rpc/bindings/CostRootEntry'
 import { costsFixture } from '@/dev/costs-fixture'
 import { breakdown, emptyCube, heat, HOUR_MS, index, merge, options, previousPeriod, series, sessions, toCsv, tokenSeries, totals } from './cube'
 import { resetIn } from './format'
-import { granBlock, resolveRange, validateCostsSearch } from './search'
+import { effectiveGran, granBlock, resolveRange, validateCostsSearch } from './search'
 
 type Cell = { hour: number; root?: number; model?: number; provider?: number; kind?: number; via?: number; basis?: number; usd?: number; calls?: number; failed?: number; input?: number; output?: number; read?: number; write?: number }
 
@@ -204,8 +204,11 @@ test('URL search: validate drops junk and defaults, survives the router round tr
   expect(resolveRange({ range: 'today' }, now, 'America/New_York', null)).toEqual({ from: Date.parse('2026-11-02T05:00:00Z'), to: now })
   expect(resolveRange({ range: 'mtd' }, now, 'Europe/London', null).from).toBe(Date.parse('2026-11-01T00:00:00Z'))
   expect(resolveRange({}, now, 'Europe/London', null).from).toBe(Date.parse('2026-10-04T00:00:00+01:00'))
-  expect(granBlock('UTC', resolveRange({ range: '30d' }, now, 'UTC', null), 'hour')).toMatch(/more than 120/)
-  expect(granBlock('UTC', resolveRange({ range: '7d' }, now, 'UTC', null), 'hour')).toMatch(/more than 120/) // 6 days + today > 120 hours
+  expect(granBlock('UTC', resolveRange({ range: '30d' }, now, 'UTC', null), 'hour')).toMatch(/Hour goes up to 7 days/)
+  expect(granBlock('UTC', resolveRange({ range: '7d' }, now, 'UTC', null), 'hour')).toBeNull() // 6 days + today ≤ 168 hours
+  expect(effectiveGran({ range: '7d' }, 'UTC', resolveRange({ range: '7d' }, now, 'UTC', null))).toBe('day')
+  expect(effectiveGran({ range: '7d', gran: 'hour' }, 'UTC', resolveRange({ range: '7d' }, now, 'UTC', null))).toBe('hour')
+  expect(granBlock('UTC', { from: now - 8 * 86_400_000, to: now }, 'hour')).toMatch(/Hour goes up to 7 days/)
   expect(granBlock('UTC', resolveRange({ range: 'today' }, now, 'UTC', null), 'day')).toMatch(/one bucket/)
   expect(granBlock('UTC', resolveRange({ range: '90d' }, now, 'UTC', null), 'day')).toBeNull()
 })

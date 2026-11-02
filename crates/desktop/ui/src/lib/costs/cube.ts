@@ -10,8 +10,10 @@ import type { SpendOwnerKind } from '@/rpc/bindings/SpendOwnerKind'
 
 export const HOUR_MS = 3_600_000
 export const DAY_MS = 86_400_000
-/** §6.6, tightened in 160 R1: no chart draws more buckets than this (one frame for the main chart). */
-export const MAX_BUCKETS = 120
+/** §6.6 hard cap: no chart draws more buckets than this. */
+export const MAX_BUCKETS = 400
+/** 160 R2: Hour is offered for ranges up to 7 local days (≤ 168 buckets). */
+export const MAX_HOUR_DAYS = 7
 
 export const BASES: readonly CostBasis[] = ['known', 'reported', 'estimated', 'unpriced']
 export const BASIS_LABEL: Record<CostBasis, string> = { known: 'Known', reported: 'Reported', estimated: 'Estimated', unpriced: 'Unpriced' }
@@ -155,8 +157,11 @@ export type Index = {
   cacheWrite: Float64Array
   cacheSaved: Float64Array
   approx: Float64Array
-  /** Local civil day number, month number (`year * 12 + month`) and local hour of each cell. */
+  /** `input + output` per cell (the Tokens metric). */
+  tokens: Float64Array
+  /** Local civil day number, its ISO week's Monday (a day number), month number (`year * 12 + month`) and local hour of each cell. */
   day: Int32Array
+  week: Int32Array
   month: Int32Array
   lhour: Uint8Array
   dict: Record<Dim, Dict>
@@ -222,7 +227,9 @@ export function index(cube: CostCube, tz: string = defaultTz()): Index {
   const owner = new Uint32Array(n)
   const project = new Uint32Array(n)
   const day = new Int32Array(n)
+  const week = new Int32Array(n)
   const month = new Int32Array(n)
+  const tokens = new Float64Array(n)
   const lhour = new Uint8Array(n)
   const months = new Map<number, number>()
   let minHour = Infinity
@@ -235,6 +242,8 @@ export function index(cube: CostCube, tz: string = defaultTz()): Index {
     const l = z.local(h)
     const dd = Math.floor(l / 24)
     day[i] = dd
+    week[i] = monday(dd)
+    tokens[i] = c.input[i]! + c.output[i]!
     let m = months.get(dd)
     if (m === undefined) months.set(dd, (m = monthOf(dd)))
     month[i] = m
@@ -260,7 +269,9 @@ export function index(cube: CostCube, tz: string = defaultTz()): Index {
     cacheWrite: f64(c.cache_write),
     cacheSaved: f64(c.cache_saved_nanos),
     approx: f64(c.approx_nanos),
+    tokens,
     day,
+    week,
     month,
     lhour,
     dict: d,
@@ -327,8 +338,6 @@ const shortDate = (ms: number): string => {
 export type Range = { from: number; to: number }
 const hours = (r: Range): [number, number] => [Math.floor(r.from / HOUR_MS), Math.ceil(r.to / HOUR_MS)]
 
-const value = (ix: Index, metric: Metric, i: number): number => (metric === 'usd' ? ix.nanos[i]! / 1e9 : metric === 'calls' ? ix.calls[i]! : ix.input[i]! + ix.output[i]!)
-
 // -------------------------------------------------------------------------------------------------------------- buckets
 
 export type Bucket = { key: number; start: number; end: number; label: string; tip: string }
@@ -381,7 +390,7 @@ function axis(ix: Index, r: Range, gran: Gran): Axis {
         : gran === 'day'
           ? (i) => ix.day[i]! - d0
           : gran === 'week'
-            ? (i) => Math.floor((monday(ix.day[i]!) - w0) / 7)
+            ? (i) => (ix.week[i]! - w0) / 7
             : (i) => ix.month[i]! - m0,
     hourAt: (k) => Math.floor(label(k).start / HOUR_MS),
   }
@@ -425,11 +434,14 @@ export function series(ix: Index, q: SeriesQuery): SeriesOut {
   const acc = new Float64Array(B * K)
   const byGroup = new Float64Array(K)
   const prev = new Float64Array(B)
+  // The metric's column and divisor, chosen once (not per cell).
+  const col = q.metric === 'usd' ? ix.nanos : q.metric === 'calls' ? ix.calls : ix.tokens
+  const div = q.metric === 'usd' ? 1e9 : 1
   for (let i = 0; i < ix.n; i++) {
     const h = ix.hour[i]!
     if (h < p0 || h >= h1 || !passes(checks, i)) continue
     const k = ax.at(i)
-    const v = value(ix, q.metric, i)
+    const v = col[i]! / div
     if (h >= h0) {
       if (k < 0 || k >= B) continue
       acc[k * K + g[i]!]! += v
@@ -674,7 +686,10 @@ export function sessions(ix: Index, r: Range, filters: Filters): SessionRow[] {
   const tokens = new Float64Array(R)
   const last = new Float64Array(R)
   const by = new Float64Array(R * 4)
-  const models: (Set<number> | undefined)[] = []
+  // Per root × model: spend and calls (a flat matrix, not a Set per root), so the row lists its models by spend.
+  const M = ix.dict.model.ids.length
+  const mUsd = new Float64Array(R * M)
+  const mCalls = new Float64Array(R * M)
   for (let i = 0; i < ix.n; i++) {
     const h = ix.hour[i]!
     if (h < h0 || h >= h1 || !passes(checks, i)) continue
@@ -682,10 +697,11 @@ export function sessions(ix: Index, r: Range, filters: Filters): SessionRow[] {
     const u = ix.nanos[i]! / 1e9
     usd[r0]! += u
     calls[r0]! += ix.calls[i]!
-    tokens[r0]! += ix.input[i]! + ix.output[i]!
+    tokens[r0]! += ix.tokens[i]!
     by[r0 * 4 + ix.col.basis[i]!]! += u
     if (h > last[r0]!) last[r0] = h
-    ;(models[r0] ??= new Set()).add(ix.col.model[i]!)
+    mUsd[r0 * M + ix.col.model[i]!]! += u
+    mCalls[r0 * M + ix.col.model[i]!]! += ix.calls[i]!
   }
   const rows: SessionRow[] = []
   for (let r0 = 0; r0 < R; r0++) {
@@ -702,7 +718,10 @@ export function sessions(ix: Index, r: Range, filters: Filters): SessionRow[] {
       ownerId: ix.dict.owner.ids[o]!,
       ownerKind: ix.ownerKind[o]!,
       project: root?.project ?? null,
-      models: [...(models[r0] ?? [])].map((m) => ix.dict.model.labels[m]!),
+      models: Array.from({ length: M }, (_, m) => m)
+        .filter((m) => mCalls[r0 * M + m]! > 0 || mUsd[r0 * M + m]! > 0)
+        .sort((a, b) => mUsd[r0 * M + b]! - mUsd[r0 * M + a]! || mCalls[r0 * M + b]! - mCalls[r0 * M + a]!)
+        .map((m) => ix.dict.model.labels[m]!),
       calls: calls[r0]!,
       tokens: tokens[r0]!,
       usd: usd[r0]!,

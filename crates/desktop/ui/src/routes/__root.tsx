@@ -11,6 +11,7 @@ import { SearchDialog } from '@/components/sidebar/SearchDialog'
 import { SidebarInset, SidebarProvider, useSidebar } from '@/components/ui/sidebar'
 import { useHotkeys } from '@/lib/hotkeys'
 import { CostsPrefetch } from '@/lib/costs/queries'
+import { CostsResident, ResidentCtx } from '@/components/costs/Resident'
 import type { SearchRequest } from '@/lib/search'
 import { isPopout } from '@/lib/popout'
 import { isIsland, isOverlay } from '@/lib/tauri'
@@ -63,7 +64,13 @@ function Root() {
       <StudyDraftBridge />
       <DragOverlay />
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
-        <Outlet />
+        {/* 160 R2: the routed page and the resident costs page share one column; the costs page lies over it. */}
+        <ResidentCtx value>
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            <Outlet />
+            <CostsResident />
+          </div>
+        </ResidentCtx>
         <MeetingBar />
       </SidebarInset>
     </SidebarProvider>

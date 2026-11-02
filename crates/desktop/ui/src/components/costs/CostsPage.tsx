@@ -2,14 +2,14 @@
 // the URL (D9). The secondary panels read a deferred copy of the view so the controls and the main chart stay at frame
 // rate while they catch up (§6.5).
 
-import { getRouteApi } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { Download, PanelLeft } from 'lucide-react'
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
-import { type Dim, defaultTz, type Filters, HOUR_MS, type Metric, options, series, sessions, toCsv } from '@/lib/costs/cube'
+import { type Dim, defaultTz, type Filters, HOUR_MS, type Index, type Metric, options, type Range, series, sessions, toCsv } from '@/lib/costs/cube'
 import { int } from '@/lib/costs/format'
 import { useCostIndex } from '@/lib/costs/queries'
 import { type CostsSearch, effectiveGran, filtersOf, PRESET_LABEL, resolveRange, validateCostsSearch } from '@/lib/costs/search'
@@ -26,47 +26,70 @@ import { RangeBar } from './RangeBar'
 import { SessionsTable } from './SessionsTable'
 import { type ChartView, SpendChart } from './SpendChart'
 import { Tokens, When } from './When'
-import { useStaged } from './ui'
+import { Later, useStaged } from './ui'
 
-const route = getRouteApi('/costs')
-
-/** `Date.now()` once a minute on the minute (ranges end now; the hour buckets move). */
-function useNow(): number {
+/** `Date.now()` once a minute on the minute (ranges end now; the hour buckets move); paused while the page is hidden. */
+function useNow(running: boolean): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
+    if (!running) return
     let t: ReturnType<typeof setTimeout>
     const tick = () => {
       setNow(Date.now())
       t = setTimeout(tick, 60_000 - (Date.now() % 60_000))
     }
+    // Coming back after a minute or more: catch up at once.
+    if (Math.floor(Date.now() / 60_000) !== Math.floor(now / 60_000)) setNow(Date.now())
     t = setTimeout(tick, 60_000 - (Date.now() % 60_000))
     return () => clearTimeout(t)
-  }, [])
+  }, [running])
   return now
+}
+
+/** `v` while `live`, else the value it had when `live` went false (the resident page stays still while hidden). */
+function useHeld<T>(v: T, live: boolean): T {
+  const [held, setHeld] = useState(v)
+  if (live && held !== v) setHeld(v)
+  return live ? v : held
 }
 
 const fmtDate = (ms: number) => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 
-export function CostsPage() {
-  // §6.5: the controls follow `search` at once; everything computed or drawn from the cube follows `view`, a deferred
-  // copy, so a click commits the control first and the panels catch up in an interruptible render.
-  const search = route.useSearch()
+/** The sessions table's rows are computed only once the section mounts. */
+const Sessions = memo(function Sessions({ v, now, onFilter }: { v: { ix: Index; r: Range; filters: Filters; rangeLabel: string }; now: number; onFilter: (dim: Dim, id: string) => void }) {
+  const rows = useMemo(() => sessions(v.ix, v.r, v.filters), [v])
+  return <SessionsTable rows={rows} title={`Sessions · ${v.rangeLabel}`} now={now} onFilter={onFilter} />
+})
+
+/**
+ * The costs page. Mounted once by `CostsResident` (and kept, hidden, when you leave); `search` is the /costs URL state,
+ * `visible` whether it is on screen. While hidden nothing ticks or re-renders: the clock and the cube index are held.
+ */
+export function CostsPage({ search, visible }: { search: CostsSearch; visible: boolean }) {
+  // §6.5 (R2): a click changes `pending` — the controls' own state — and nothing else; the URL write waits for the next
+  // frame and runs in a transition. Everything computed or drawn from the cube follows `view`, a deferred copy of the
+  // URL, so the panels catch up in interruptible renders after the control has painted.
+  const [pending, setPending] = useState<{ id: number; s: CostsSearch } | null>(null)
+  const live = pending?.s ?? search
   const view = useDeferredValue(search)
-  const navigate = route.useNavigate()
+  const navigate = useNavigate()
   const api = useApi()
   const sidebar = useSidebar()
   const mac = isMacDesktop()
   const tz = useMemo(defaultTz, [])
-  const now = useNow()
-  const ix = useCostIndex(tz)
+  // Deferred like the index: a minute tick (or catching up after being hidden) re-renders the panels after the paint.
+  const now = useDeferredValue(useNow(visible))
+  // The index changes with every cube delta; held while hidden and deferred, so showing the page or a live update
+  // never re-renders the charts ahead of the paint.
+  const ix = useDeferredValue(useHeld(useCostIndex(tz), visible))
   const meta = ix.cube.meta
   const firstMs = meta.first_call_ms ?? (ix.n ? ix.minHour * HOUR_MS : null)
   // Urgent (controls).
-  const rNow = useMemo(() => resolveRange({ range: search.range, from: search.from, to: search.to }, now, tz, firstMs), [search.range, search.from, search.to, now, tz, firstMs])
-  const granNow = effectiveGran(search, tz, rNow)
-  const fkeyNow = JSON.stringify(filtersOf(search))
+  const rNow = useMemo(() => resolveRange({ range: live.range, from: live.from, to: live.to }, now, tz, firstMs), [live.range, live.from, live.to, now, tz, firstMs])
+  const granNow = effectiveGran(live, tz, rNow)
+  const fkeyNow = JSON.stringify(filtersOf(live))
   const filtersNow = useMemo((): Filters => JSON.parse(fkeyNow), [fkeyNow])
-  const ctl = useMemo<ChartView>(() => ({ groupBy: search.by ?? 'model', metric: search.metric ?? 'usd', compare: search.compare !== false }), [search.by, search.metric, search.compare])
+  const ctl = useMemo<ChartView>(() => ({ groupBy: live.by ?? 'model', metric: live.metric ?? 'usd', compare: live.compare !== false }), [live.by, live.metric, live.compare])
   // Deferred (panels).
   const r = useMemo(() => resolveRange({ range: view.range, from: view.from, to: view.to }, now, tz, firstMs), [view.range, view.from, view.to, now, tz, firstMs])
   const gran = effectiveGran(view, tz, r)
@@ -76,10 +99,31 @@ export function CostsPage() {
   const { groupBy: by, metric, compare } = chartView
   const rangeLabel = view.range === 'custom' ? 'range' : PRESET_LABEL[view.range ?? '30d']
 
-  const set = useCallback((patch: Partial<CostsSearch>) => void navigate({ search: (prev) => validateCostsSearch({ ...prev, ...patch }) }), [navigate])
-  const addFilter = useCallback(
-    (dim: Dim, id: string) => navigate({ search: (prev) => validateCostsSearch({ ...prev, [dim]: prev[dim]?.includes(id) ? prev[dim] : [...(prev[dim] ?? []), id] }) }),
+  const latest = useRef(live)
+  latest.current = live
+  const seq = useRef(0)
+  const commit = useCallback(
+    (next: CostsSearch) => {
+      const id = ++seq.current
+      latest.current = next
+      setPending({ id, s: next })
+      requestAnimationFrame(() =>
+        setTimeout(() =>
+          startTransition(() =>
+            void navigate({ to: '/costs', search: next }).finally(() => setPending((p) => (p?.id === id ? null : p))),
+          ),
+        ),
+      )
+    },
     [navigate],
+  )
+  const set = useCallback((patch: Partial<CostsSearch>) => commit(validateCostsSearch({ ...latest.current, ...patch })), [commit])
+  const addFilter = useCallback(
+    (dim: Dim, id: string) => {
+      const prev = latest.current
+      commit(validateCostsSearch({ ...prev, [dim]: prev[dim]?.includes(id) ? prev[dim] : [...(prev[dim] ?? []), id] }))
+    },
+    [commit],
   )
   const onGroupBy = useCallback((v: Dim) => set({ by: v }), [set])
   const onMetric = useCallback((v: Metric) => set({ metric: v }), [set])
@@ -94,7 +138,6 @@ export function CostsPage() {
   const pWhen = useStaged(panels, 7)
   const pTok = useStaged(panels, 8)
   const p3 = useStaged(panels, 9)
-  const rows = useMemo(() => sessions(p3.ix, p3.r, p3.filters), [p3])
 
   const exportCsv = () => {
     const name = `theuth-costs-${new Date(r.from).toISOString().slice(0, 10)}-${new Date(r.to).toISOString().slice(0, 10)}-${gran}-${by}`
@@ -124,9 +167,9 @@ export function CostsPage() {
           CSV
         </Button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div data-costs-scroll className="min-h-0 flex-1 overflow-y-auto">
         <div className="@container mx-auto flex max-w-[1600px] flex-col gap-3.5 px-3 pt-3.5 pb-5 md:px-4">
-          <RangeBar search={search} r={rNow} gran={granNow} tz={tz} now={now} set={set} />
+          <RangeBar search={live} r={rNow} gran={granNow} tz={tz} now={now} set={set} />
           <FilterChips options={opts} filters={filtersNow} set={set} />
           {ix.n === 0 ? (
             <p className="rounded-xl border border-border bg-card px-4 py-10 text-center text-sm text-fg-tertiary">No model calls recorded yet.</p>
@@ -136,16 +179,29 @@ export function CostsPage() {
               <SpendChart out={out} view={chartView} ctl={ctl} rangeLabel={rangeLabel} onGroupBy={onGroupBy} onMetric={onMetric} onCompare={onCompare} onFilter={addFilter} onRange={onRange} />
             </>
           )}
-          <LimitsPanel now={now} />
+          <Later order={1} height={300}>
+            <LimitsPanel now={now} visible={visible} />
+          </Later>
           {ix.n > 0 && (
             <>
-              <Breakdowns ix={p1.ix} r={p1.r} filters={p1.filters} rangeLabel={p1.rangeLabel} onFilter={addFilter} />
+              {/* R2: below the fold, each section mounts in its own idle slice (or as a scroll nears it), its height held. */}
+              <Later order={1} height={940}>
+                <Breakdowns ix={p1.ix} r={p1.r} filters={p1.filters} rangeLabel={p1.rangeLabel} onFilter={addFilter} />
+              </Later>
               <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr))]">
-                <When ix={pWhen.ix} r={pWhen.r} filters={pWhen.filters} rangeLabel={pWhen.rangeLabel} />
-                <Tokens ix={pTok.ix} r={pTok.r} gran={pTok.gran} filters={pTok.filters} rangeLabel={pTok.rangeLabel} />
+                <Later order={2} height={330}>
+                  <When ix={pWhen.ix} r={pWhen.r} filters={pWhen.filters} rangeLabel={pWhen.rangeLabel} />
+                </Later>
+                <Later order={3} height={330}>
+                  <Tokens ix={pTok.ix} r={pTok.r} gran={pTok.gran} filters={pTok.filters} rangeLabel={pTok.rangeLabel} />
+                </Later>
               </div>
-              <SessionsTable rows={rows} title={`Sessions · ${p3.rangeLabel}`} now={now} onFilter={addFilter} />
-              <LedgerTable ix={p3.ix} range={p3.r} filters={p3.filters} now={now} />
+              <Later order={4} height={640}>
+                <Sessions v={p3} now={now} onFilter={addFilter} />
+              </Later>
+              <Later order={5} height={520}>
+                <LedgerTable ix={p3.ix} range={p3.r} filters={p3.filters} now={now} />
+              </Later>
             </>
           )}
           {(meta.pre_ledger_sessions > 0 || ix.n > 0) && (
