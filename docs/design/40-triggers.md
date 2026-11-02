@@ -45,7 +45,7 @@ and no model turn while the PR sits still.
 2. **The sensor is Python, not shell.** `when: <name>.py [key=value …]`
    names a file in `<data_dir>/sensors/` (built-ins shipped on first run;
    the user may add their own). It runs in the harness's Monty sandbox
-   (monty-pool 1.0.0; `crates/agent/src/repl.rs`: `ResourceLimits {
+   (monty-pool 1.4.0; `crates/agent/src/repl.rs`: `ResourceLimits {
    max_memory, max_suspensions, max_total_sleep }`, `request_timeout`,
    worker killed on breach) under a tighter *sensor profile* (§4.2). One
    file runs unchanged on Windows, Linux and macOS because it uses the
