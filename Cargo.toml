@@ -129,7 +129,8 @@ candle-transformers = { version = "0.11", default-features = false }  # `models:
 symphonia = { version = "0.6", default-features = false, features = ["aac", "isomp4", "mp3", "ogg", "wav", "pcm", "mkv"] }  # demux/decode inbound voice notes (45 §0.5); Opus packets go to `opus`
 rubato = "5"  # resample inbound audio to the model's 16 kHz (45 §0.5)
 mp3lame-encoder = "0.2"  # outbound clips: MP3 24 kHz mono 48 kbit/s, the one container every client plays (45 §0.4)
-# Held at 0.12 (dep-land-w23): parking_lot_core 0.10 needs libc ^0.2.191, flexaudio-os-macos 0.8.x pins libc =0.2.186.
+# Held at 0.12 (dep-land-w23): parking_lot_core 0.10 needs libc ^0.2.191. The flexaudio-os-macos libc =0.2.186
+# block is lifted by `vendor/flexaudio-os-macos` (see [patch.crates-io]); bumping parking_lot is the dependency owner's call.
 parking_lot = "0.12"  # the STT model slot: locked only inside `spawn_blocking`, no poisoning to unwrap
 # Dictation (design doc 54): the daemon owns the mic and gates a streaming Nemotron session with TEN-VAD.
 flexaudio = "0.8"  # 54 §0.2: native default-input capture, 48 kHz mono f32 on a dedicated thread (`voice::mic`)
@@ -456,6 +457,13 @@ pbjson-types = { path = "vendor/pbjson-types" }
 # (incl. `wire::response_text`) are read under `MAX_RESPONSE_BYTES` (2 MiB). Drop when
 # an a2a-client-lf release bounds the frame.
 a2a-client-lf = { path = "vendor/a2a-client" }
+# flexaudio-os-macos (under flexaudio, the daemon mic): every upstream release >= 0.3.0 pins
+# `libc = "=0.2.186"`, which held the whole graph at 0.2.186; agent-desktop-macos (161) needs
+# libc >= 0.2.189 for `proc_bsdshortinfo` / `PROC_PIDT_SHORTBSDINFO`. flexaudio only uses
+# `libc::kill` and errno values. `vendor/flexaudio-os-macos` = crates.io 0.8.1
+# (Studio-Sadola/flexaudio b9569e1) with the pin relaxed to `0.2.186`. Drop when an upstream
+# release relaxes the pin.
+flexaudio-os-macos = { path = "vendor/flexaudio-os-macos" }
 # libsqlite3-sys (under presage-store-sqlite, the Signal channel's encrypted store, via sqlx and
 # rusqlite): crates.io 0.36.0 compiles SQLCipher against OpenSSL 3 on Linux/Windows and
 # CommonCrypto on Apple. With libsignal's BoringSSL also emitting `-lcrypto`, the Linux link of

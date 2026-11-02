@@ -6250,8 +6250,6 @@ dependencies = [
 [[package]]
 name = "flexaudio-os-macos"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87a1517213e62e1f2da77f7b414ada755328d68e421ee1f6fa52e9de6319c56c"
 dependencies = [
  "block2",
  "flexaudio-core",
@@ -10908,9 +10906,9 @@ checksum = "32f454fd6831a29c0e827ed075bca2a15be201bd57f4168f0fd1041124eab17e"
 
 [[package]]
 name = "libc"
-version = "0.2.186"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libcrux-hacl-rs"
