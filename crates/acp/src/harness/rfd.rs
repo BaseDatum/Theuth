@@ -1,4 +1,4 @@
-//! ACP RFD subagents (`unstable_subagents`, schema 1.10.2; 141 §6.1): the
+//! ACP RFD subagents (`unstable_subagents`, schema 1.13.0; 141 §6.1): the
 //! `subagent_update` an agent sends on the **parent** session becomes a
 //! [`ChildAnnounce`]; the child's own traffic then arrives as plain
 //! `session/update`s whose outer `sessionId` is the child (routed by
@@ -9,7 +9,7 @@
 //! `state`.
 
 use agent_client_protocol::schema::MaybeUndefined;
-use agent_client_protocol::schema::v1::{SessionId, StateUpdate, StopReason, SubagentUpdate};
+use agent_client_protocol::schema::v1::{IdleStopReason, SessionId, StateUpdate, SubagentUpdate};
 
 use super::{ChildAnnounce, ChildSource, ChildState, CostRule};
 
@@ -68,16 +68,26 @@ fn state(s: StateUpdate) -> ChildState {
     match s {
         StateUpdate::Running(_) => ChildState::Running,
         StateUpdate::RequiresAction(_) => ChildState::RequiresAction,
-        StateUpdate::Idle(i) if i.stop_reason == Some(StopReason::Cancelled) => {
+        StateUpdate::Idle(i) if i.stop_reason == Some(IdleStopReason::Cancelled) => {
             ChildState::Cancelled
         }
         StateUpdate::Idle(i) => ChildState::Idle {
-            stop_reason: i.stop_reason.map(super::stop_reason),
-            usage: i.usage,
+            stop_reason: i.stop_reason.and_then(idle_stop_reason),
+            usage: i.usage.map(|u| *u),
         },
         // `Unknown`, and any custom/future state the SDK could not name.
         _ => ChildState::Unknown,
     }
+}
+
+/// The wire `stopReason` tag (`end_turn`, `error`, a custom name); the error
+/// payload of `error` is not kept.
+fn idle_stop_reason(r: IdleStopReason) -> Option<String> {
+    serde_json::to_value(r)
+        .ok()?
+        .get("stopReason")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -182,13 +192,8 @@ mod tests {
         let SessionUpdate::SessionMessageChunk(m) = n.update else {
             panic!("session_message_chunk expected");
         };
-        assert_eq!(
-            m.sender_session_id.as_ref().map(|s| &*s.0),
-            Some("sess_child_1")
-        );
-        assert_eq!(
-            m.recipient_session_id.as_ref().map(|s| &*s.0),
-            Some("sess_parent")
-        );
+        // Schema 1.13: a chunk carries content only; the fixture's
+        // sender/recipient ids are ignored (they ride `session_message`).
+        assert_eq!(&*m.message_id.0, "msg_1");
     }
 }
