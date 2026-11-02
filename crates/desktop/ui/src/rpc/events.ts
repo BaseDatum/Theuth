@@ -8,6 +8,7 @@ import type { BrowserEvent } from '@/rpc/bindings/BrowserEvent'
 import type { BriefEvent } from '@/rpc/bindings/BriefEvent'
 import type { CalendarEvent } from '@/rpc/bindings/CalendarEvent'
 import type { CommunicationChanged } from '@/rpc/bindings/CommunicationChanged'
+import type { CostCubeChanged } from '@/rpc/bindings/CostCubeChanged'
 import type { JobEvent } from '@/rpc/bindings/JobEvent'
 import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
 import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
@@ -138,3 +139,5 @@ export type WireEvent =
   | StudyEvent
   /** 137 §11.2: the compactor's build/settle progress for an endless session; the header badge and Memory panel refetch. */
   | EndlessProgress
+  /** 160 §3.2: the cost cube changed; `cost_cube(since)` answers the delta. */
+  | CostCubeChanged

@@ -8,8 +8,8 @@ use std::sync::Arc;
 use a2a::A2aChanged;
 use agent::ask::NotebookAsk;
 use agent::{
-    AgentEvent, CommunicationChanged, EndlessProgress, LoginFinished, PeerDelivered,
-    PeerMessageChanged,
+    AgentEvent, CommunicationChanged, CostCubeChanged, EndlessProgress, LoginFinished,
+    PeerDelivered, PeerMessageChanged,
 };
 use app::AppCallChanged;
 use artifact::ArtifactShown;
@@ -154,7 +154,8 @@ forward!(
     DreamNightFinished,
     DreamUndone,
     StudyEvent,
-    EndlessProgress
+    EndlessProgress,
+    CostCubeChanged
 );
 
 /// The process-wide event feed. The first caller spawns the bridge,
@@ -224,5 +225,6 @@ pub async fn start(rt: &Runtime) -> broadcast::Sender<Event> {
     rt.subscribe::<Bridge, StudyEvent>(&actor).await;
     rt.subscribe::<Bridge, ReminderEvent>(&actor).await;
     rt.subscribe::<Bridge, EndlessProgress>(&actor).await;
+    rt.subscribe::<Bridge, CostCubeChanged>(&actor).await;
     tx
 }

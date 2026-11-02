@@ -11,9 +11,9 @@ import { SceneCompact, SceneSwitch } from './SceneCompact'
 // A `Link` needs a router; a plain anchor with the params substituted and the search appended does not, and lets the hrefs be asserted.
 vi.mock('@tanstack/react-router', async (original) => ({
   ...(await original<typeof Router>()),
-  Link: ({ to, params, search, children, className, style }: { to: string; params?: Record<string, string>; search?: Record<string, string>; children: ReactNode; className?: string; style?: object }) => {
+  Link: ({ to, params, search, children, className, style, 'aria-label': label }: { to: string; params?: Record<string, string>; search?: Record<string, string>; children: ReactNode; className?: string; style?: object; 'aria-label'?: string }) => {
     const q = search && Object.keys(search).length > 0 ? `?${new URLSearchParams(search).toString()}` : ''
-    return createElement('a', { href: to.replace(/\$(\w+)/g, (_, k: string) => params?.[k] ?? '') + q, className, style }, children)
+    return createElement('a', { href: to.replace(/\$(\w+)/g, (_, k: string) => params?.[k] ?? '') + q, className, style, 'aria-label': label }, children)
   },
 }))
 
@@ -102,7 +102,8 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toMatch(/href="\/tasks\?state=doing&amp;project="><tspan>6 IN FLIGHT<\/tspan>/) // 3 doing tasks + the running routine + 2 running roots
   for (const s of ['done', 'doing', 'review', 'blocked', 'cancelled', 'backlog', 'todo']) expect(html).toContain(`href="/tasks?state=${s}&amp;project="`)
   expect(html).toMatch(/<a href="\/tasks"><text x="340" y="236"/) // the BOARD big number → the board
-  expect(count(html, /<a href="\/agents"><text x="340" y="236"/g)).toBe(2) // AGENTS and SPEND big numbers
+  expect(count(html, /<a href="\/agents"><text x="340" y="236"/g)).toBe(1) // the AGENTS big number
+  expect(count(html, /<a href="\/costs"><text x="340" y="236"/g)).toBe(1) // 160 D1: the SPEND big number → /costs
   expect(html).toContain('href="/agents/ops-desk"')
   // STREAM: an HTML box holding every feed row, each linked to its subject by kind.
   expect(html).toMatch(/<section aria-label="Stream"/)
@@ -118,7 +119,7 @@ test('Scene draws the fixture: rings, needs, flows, panels, links, tokens only',
   expect(html).toContain('06 NEED YOU')
   expect(html).toContain('>9 OUTCOMES TODAY<')
   expect(html).toContain('>6 IN FLIGHT<')
-  expect(html).toContain('$4,102.00 THIS MONTH') // Revision 3: the ledger's month, not the roster's budget sum
+  expect(html).toMatch(/<a href="\/costs"><text[^>]*>\$4,102\.00 THIS MONTH</) // Revision 3: the ledger's month, not the roster's budget sum; 160 D1: → /costs
   for (const t of ['AGENTS', 'ARRIVALS', 'BOARD', 'SPEND', 'STREAM']) expect(html).toContain(`>${t}<`)
   expect(html).toContain('>19:49<')
   // Accessibility: the field is one image with a title and a summary; the band is HTML (four SVG panels + the stream box).
@@ -194,11 +195,17 @@ test('Revision 6 — BOARD: every task in every project — a 60-cell waffle in 
   expect(text3.length).toBeLessThanOrEqual(70)
 })
 
-test('Revision 3 — SPEND: month big number, TODAY meta, seven bars (today faience, $0 day a hairline), owner rows with glyphs and links, cap rows only for budgeted agents, no gold/carnelian', () => {
+test('Revision 3 — SPEND: month big number → /costs with a chart-icon action after the title, TODAY meta, seven bars (today faience, $0 day a hairline), owner rows with glyphs and links, cap rows only for budgeted agents, no gold/carnelian', () => {
   const html = renderToStaticMarkup(createElement(Scene, { data: F, now: NOW }))
   const panel = /<text x="24" y="19"[^>]*>SPEND<\/text>(.*?)<\/g><\/svg>/.exec(html)![1]!
   expect(panel).toContain('>TODAY $1,302.38<')
-  expect(panel).toMatch(/<text x="340" y="236"[^>]*>\$4,102\.00<\/text>/)
+  expect(panel).toMatch(/<a href="\/costs"><text x="340" y="236"[^>]*>\$4,102\.00<\/text>/)
+  // 160 D1: the title action — a focusable, labelled `<a>` to /costs with a tooltip, a 14-unit square hit area after the 5-glyph title, the lucide chart-line icon; tokens only.
+  const action = /<g><title>Open costs<\/title><a href="\/costs" aria-label="Open costs">(.*?)<\/a><\/g>/.exec(panel)![1]!
+  expect(action).toMatch(/^<rect x="64" y="9" width="14" height="14" rx="3" fill="var\(--bg-elevated\)" stroke="var\(--border-strong\)"><\/rect>/)
+  expect(action).toMatch(/<path transform="translate\(65 10\) scale\(0.5\)" d="M3 3v18h18M19 9l-5 5-4-4-3 3" fill="none" stroke="var\(--fg-secondary\)"/)
+  expect(panel).not.toMatch(/(fill|stroke)="#/)
+  expect(count(panel, /href="\/costs"/g)).toBe(2) // the action and the big number, nothing else
   // Seven bars 28 wide; six secondary, today faience; the $0 Saturday is a 1-unit hairline, the max day fills 52.
   const bars = [...panel.matchAll(/<rect x="[\d.]+" y="([\d.]+)" width="28" height="([\d.]+)" fill="([^"]+)">/g)].map((m) => [Number(m[1]), Number(m[2]), m[3]] as const)
   expect(bars).toHaveLength(7)

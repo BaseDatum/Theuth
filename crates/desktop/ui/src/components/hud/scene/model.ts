@@ -76,6 +76,8 @@ export type Target =
   | { route: 'routines' }
   | { route: 'session'; id: string }
   | { route: 'agents' }
+  /** 160 D1: the costs dashboard — SPEND's big number, its title action and the footer's THIS MONTH. */
+  | { route: 'costs' }
   | { route: 'tasks'; state: TaskState | null }
   /** Revision 6: the board filtered to one project; `null` (unfiled) is the bare board — the board has no "no project" filter. */
   | { route: 'tasks-project'; project: string | null }

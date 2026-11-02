@@ -32,6 +32,8 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 kameo = { workspace = true }
 genai = { workspace = true }
+# 160 §5.3: the usage-limit pollers' GETs; the header sink sees genai's `reqwest` types.
+reqwest = { workspace = true }
 aws-config = { workspace = true }
 parking_lot = { workspace = true }
 sqlx = { workspace = true }

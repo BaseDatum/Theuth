@@ -314,6 +314,7 @@ dependencies = [
  "png 0.17.16",
  "regex",
  "replica",
+ "reqwest 0.13.5",
  "runtime",
  "schemars 1.2.3",
  "search",
