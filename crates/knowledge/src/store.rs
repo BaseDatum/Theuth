@@ -4,6 +4,7 @@
 //! can be deleted at any time. Every write goes through [`Knowledge::write_concept`]
 //! under one mutex: file, rows, `index.md`, `log.md`, commit, event.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -165,12 +166,12 @@ impl Indexed {
         let id = cid.to_string();
         let fm = &doc.frontmatter;
         let meta = Meta {
-            type_: fm.type_().unwrap_or_default(),
+            type_: fm.type_().unwrap_or_default().into_owned(),
             title: fm
                 .title()
                 .filter(|t| !t.is_empty())
-                .unwrap_or_else(|| id.clone()),
-            description: fm.description().unwrap_or_default(),
+                .map_or_else(|| id.clone(), Cow::into_owned),
+            description: fm.description().unwrap_or_default().into_owned(),
             tags: fm.tags(),
             scope: fm
                 .get("scope")
@@ -180,7 +181,7 @@ impl Indexed {
                 .get("source")
                 .and_then(Value::as_display_string)
                 .and_then(|s| Source::parse(&s)),
-            timestamp: fm.timestamp(),
+            timestamp: fm.timestamp().map(Cow::into_owned),
             // 67 §9 defaults for files nobody stamped: the user's, shared.
             owner: fm
                 .get("owner")
@@ -279,6 +280,14 @@ pub(crate) fn concept_id(raw: &str) -> anyhow::Result<ConceptId> {
     let id = id.trim_start_matches('/');
     let id = id.strip_suffix(".md").unwrap_or(id);
     let cid = ConceptId::parse(id).map_err(|e| anyhow!("invalid id {raw:?}: {e}"))?;
+    // OKF 0.2 accepts any separator-free segment; ids stay `[a-z0-9_][a-z0-9_.-]*`.
+    if let Some(seg) = cid
+        .segments()
+        .iter()
+        .find(|s| !okf::concept_id::is_portable_segment(s))
+    {
+        bail!("invalid id {raw:?}: {seg:?} is not [a-z0-9_][a-z0-9_.-]*");
+    }
     if cid.segments().len() > 3 {
         bail!("invalid id {raw:?}: more than 3 segments");
     }
@@ -458,10 +467,14 @@ fn regenerate_indexes(root: &Path) -> std::io::Result<Vec<PathBuf>> {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 entries.push(IndexEntry {
-                    type_: doc.frontmatter.type_().unwrap_or_default(),
-                    title: doc.frontmatter.title().unwrap_or(stem),
+                    type_: doc.frontmatter.type_().unwrap_or_default().into_owned(),
+                    title: doc.frontmatter.title().map_or(stem, Cow::into_owned),
                     link: name,
-                    description: doc.frontmatter.description().unwrap_or_default(),
+                    description: doc
+                        .frontmatter
+                        .description()
+                        .unwrap_or_default()
+                        .into_owned(),
                 });
             }
         }
@@ -506,7 +519,7 @@ fn finish_files(root: &Path, entry: &str) -> anyhow::Result<Vec<PathBuf>> {
         Ok(text) => okf::Log::parse(&text),
         Err(_) => okf::Log {
             title: Some("Directory Update Log".into()),
-            days: Vec::new(),
+            ..Default::default()
         },
     };
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
@@ -1401,8 +1414,7 @@ impl Knowledge {
         let mut docs = Vec::with_capacity(files.len());
         for (cid, text) in files {
             let doc = Document::parse(&text)?;
-            doc.validate_conformance()
-                .map_err(|e| anyhow!("{}: {e}", cid))?;
+            doc.validate().map_err(|e| anyhow!("{}: {e}", cid))?;
             docs.push((cid, text, doc));
         }
         let root = self.root.clone();
@@ -2047,7 +2059,7 @@ impl Knowledge {
         );
         let _g = self.write.lock().await;
         let mut doc = self.load(&cid)?;
-        let old = doc.frontmatter.title().unwrap_or_default();
+        let old = doc.frontmatter.title().unwrap_or_default().into_owned();
         let summary = match summary.trim() {
             "" => old.as_str(),
             s => s,

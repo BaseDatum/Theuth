@@ -8,9 +8,9 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-# Knowledge bundle (design doc 10): OKF v0.1 format, and local-only git history via gitoxide
+# Knowledge bundle (design doc 10): OKF v0.2 format (okf-core only: no validator/studio), and local-only git history via gitoxide
 # (no default features: no network, no interrupt/parking_lot; `parallel` = Arc-based sharing so the handle is Send; skills clone/pull stay on the user's git, 04 §2.2).
-okf = "=0.1.0-alpha.1"
+okf = { version = "0.2.7", default-features = false }
 gix = { version = "0.87", default-features = false, features = ["revision", "blob-diff", "sha1", "parallel"] }
 platform = { path = "crates/platform" }  # OS primitives: process trees, private files, open, service units, PTY program, ORT name, target matrix (design doc 58)
 runtime = { path = "crates/runtime" }

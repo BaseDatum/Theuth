@@ -169,6 +169,13 @@ pub fn parse_harvest(text: &str) -> Vec<(String, okf::Document)> {
 
 fn document(id: &str, body: &str) -> Result<okf::Document, String> {
     let cid = okf::ConceptId::parse(id).map_err(|e| e.to_string())?;
+    if !cid
+        .segments()
+        .iter()
+        .all(|s| okf::concept_id::is_portable_segment(s))
+    {
+        return Err("segment outside [a-z0-9_][a-z0-9_.-]*".into());
+    }
     if cid.segments().len() > 3 {
         return Err("more than three segments".into());
     }
@@ -176,7 +183,7 @@ fn document(id: &str, body: &str) -> Result<okf::Document, String> {
         return Err("reserved file name".into());
     }
     let mut doc = okf::Document::parse(body).map_err(|e| e.to_string())?;
-    doc.validate_conformance().map_err(|e| e.to_string())?;
+    doc.validate().map_err(|e| e.to_string())?;
     let fm = doc.frontmatter.as_mapping_mut();
     fm.remove("timestamp");
     fm.remove("source");

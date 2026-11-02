@@ -14226,9 +14226,18 @@ dependencies = [
 
 [[package]]
 name = "okf"
-version = "0.1.0-alpha.1"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c9efaa455d841f45758ffe8f58b05bf864364ad819dde7433633a0f3f1f6f0f"
+checksum = "06b7a400e522dc6023ba3c043a5f1d5d9d38d4b5a27565d413b375d449e42dda"
+dependencies = [
+ "okf-core",
+]
+
+[[package]]
+name = "okf-core"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fa8243d1e3b2bd983b972afbe328fea56155ccfb38264b44c19045e54f24be0"
 
 [[package]]
 name = "olpc-cjson"
