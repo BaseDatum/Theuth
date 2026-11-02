@@ -177,7 +177,8 @@ impl CostService {
     pub async fn calls(&self, q: &CostCallsQuery) -> anyhow::Result<CostCallsPage> {
         let pieces = self.pieces().await?;
         let prices = self.inner.catalog.read().1.clone();
-        super::calls::page(&self.inner.store, &prices, &pieces, q).await
+        let cube = self.inner.cube.read().clone();
+        super::calls::page(&self.inner.store, &prices, &pieces, q, cube.as_deref()).await
     }
 
     /// `spend_report` with the reported leg (160 H5).

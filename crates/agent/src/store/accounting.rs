@@ -1322,11 +1322,16 @@ impl Store {
     }
 
     /// 160 §4: native ledger rows newest first with `created_at < upper`
-    /// (and `>= lower`), filtered in SQL; `priced` = model ids the catalog
-    /// prices, so a row without money but with tokens counts as estimated.
-    /// A root filter drives the join from the roots (`cost_owners_root` →
-    /// `model_calls_created`) instead of walking the whole time index
-    /// (review 160-ENG #2: one small root 2.3 s → ms on Sky's ledger).
+    /// (and `>= lower`); `priced` = model ids the catalog prices, so a row
+    /// without money but with tokens counts as estimated.
+    ///
+    /// 160 R2: the WHERE holds only the filters present (one `=` / `IN` term
+    /// each), and the scan is driven by `f.driver`, an index forced with
+    /// `INDEXED BY` that the caller picks from the cube's counts. The planner
+    /// has no table statistics, so it guesses which filter is selective; the
+    /// cube knows. A driving list of several values (a model's aliases, two
+    /// providers) becomes one ordered, `LIMIT`ed branch per value, merged by
+    /// `UNION ALL`, so no branch sorts its whole match set.
     pub(crate) async fn cost_call_rows(
         &self,
         f: &CallFilter<'_>,
@@ -1334,55 +1339,138 @@ impl Store {
         lower: Option<&str>,
         limit: u32,
     ) -> anyhow::Result<Vec<CallRowOut>> {
-        macro_rules! rows {
-            ($from:literal) => {
-                concat!(
-                    "SELECT m.call_id, m.created_at, c.root_id, m.owner_id, m.provider, \
-                     m.requested_model, m.kind, m.status, m.returned_nanos, m.returned_currency, \
-                     m.estimated_nanos, m.estimated_currency, m.input_tokens, m.output_tokens, \
-                     m.cache_read_tokens, m.cache_write_tokens, m.unknown_reason, \
-                     CASE WHEN m.returned_nanos IS NOT NULL THEN 0 WHEN m.estimated_nanos IS NOT NULL THEN 2 \
-                          WHEN (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL) \
-                               AND m.requested_model IN (SELECT value FROM json_each(?8)) THEN 2 ELSE 3 END AS basis ",
-                    $from,
-                    " WHERE m.created_at < ?1 AND m.created_at >= COALESCE(?2, '') \
-                     AND m.status <> 'not_dispatched' \
-                     AND (?3 IS NULL OR c.root_id IN (SELECT value FROM json_each(?3))) \
-                     AND (?4 IS NULL OR m.provider IN (SELECT value FROM json_each(?4))) \
-                     AND (?5 IS NULL OR m.requested_model IN (SELECT value FROM json_each(?5))) \
-                     AND (?6 IS NULL OR m.kind IN (SELECT value FROM json_each(?6))) \
-                     AND (?9 IS NULL OR basis IN (SELECT value FROM json_each(?9))) \
-                     ORDER BY m.created_at DESC LIMIT ?7"
-                )
-            };
-        }
-        let json = |v: Option<&[String]>| v.map(|v| serde_json::to_string(v).unwrap_or_default());
-        let bases = f
-            .bases
-            .map(|b| b.iter().map(|b| i64::from(b.code())).collect::<Vec<_>>())
-            .map(|b| serde_json::to_string(&b).unwrap_or_default());
-        let sql = if f.roots.is_some() {
-            rows!(
-                "FROM (SELECT DISTINCT value FROM json_each(?3)) r \
-                 CROSS JOIN cost_owners c ON c.root_id = r.value \
-                 CROSS JOIN model_calls m ON m.owner_id = c.id"
-            )
-        } else {
-            rows!("FROM model_calls m JOIN cost_owners c ON c.id = m.owner_id")
+        use sqlx::{QueryBuilder, Sqlite};
+        let (index, driving): (&str, Option<(&str, &[String])>) = match f.driver {
+            CallDriver::Time | CallDriver::Roots => ("model_calls_created_at", None),
+            CallDriver::Provider => (
+                "model_calls_provider_created",
+                f.providers.map(|v| ("m.provider", v)),
+            ),
+            CallDriver::Model => (
+                "model_calls_model_created",
+                f.models.map(|v| ("m.requested_model", v)),
+            ),
+            CallDriver::Kind => ("model_calls_kind_created", f.kinds.map(|v| ("m.kind", v))),
+            CallDriver::Unpriced => ("model_calls_unpriced_created", None),
+            CallDriver::Known => ("model_calls_known_created", None),
         };
-        Ok(sqlx::query_as(sql)
-            .bind(upper)
-            .bind(lower)
-            .bind(json(f.roots))
-            .bind(json(f.providers))
-            .bind(json(f.models))
-            .bind(json(f.kinds))
-            .bind(i64::from(limit))
-            .bind(f.priced)
-            .bind(bases)
-            .fetch_all(&self.read)
-            .await?)
+        // One branch per value of the driving list; `None` = a single branch.
+        let branches: Vec<Option<&str>> = match driving {
+            Some((_, values)) => values.iter().map(|v| Some(v.as_str())).collect(),
+            None => vec![None],
+        };
+        if branches.is_empty() {
+            return Ok(Vec::new());
+        }
+        let roots_json = f
+            .roots
+            .map(|r| serde_json::to_string(r).unwrap_or_default());
+        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("");
+        for (i, value) in branches.iter().enumerate() {
+            if i > 0 {
+                qb.push(" UNION ALL ");
+            }
+            qb.push(
+                "SELECT * FROM (SELECT m.call_id, m.created_at, c.root_id, m.owner_id, m.provider, \
+                 m.requested_model, m.kind, m.status, m.returned_nanos, m.returned_currency, \
+                 m.estimated_nanos, m.estimated_currency, m.input_tokens, m.output_tokens, \
+                 m.cache_read_tokens, m.cache_write_tokens, m.unknown_reason, \
+                 CASE WHEN m.returned_nanos IS NOT NULL THEN 0 WHEN m.estimated_nanos IS NOT NULL THEN 2 \
+                      WHEN (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL) \
+                           AND m.requested_model IN (SELECT value FROM json_each(",
+            );
+            qb.push_bind(f.priced);
+            qb.push(")) THEN 2 ELSE 3 END AS basis FROM ");
+            match (&f.driver, &roots_json) {
+                (CallDriver::Roots, Some(roots)) => {
+                    qb.push("(SELECT DISTINCT value FROM json_each(");
+                    qb.push_bind(roots.as_str());
+                    qb.push(
+                        ")) r CROSS JOIN cost_owners c ON c.root_id = r.value \
+                         CROSS JOIN model_calls m ON m.owner_id = c.id",
+                    );
+                }
+                _ => {
+                    qb.push(format_args!(
+                        "model_calls m INDEXED BY {index} JOIN cost_owners c ON c.id = m.owner_id"
+                    ));
+                }
+            }
+            qb.push(" WHERE m.created_at < ");
+            qb.push_bind(upper);
+            qb.push(" AND m.created_at >= ");
+            qb.push_bind(lower.unwrap_or(""));
+            qb.push(" AND m.status <> 'not_dispatched'");
+            if let (Some((col, _)), Some(v)) = (driving, value) {
+                qb.push(format_args!(" AND {col} = "));
+                qb.push_bind(*v);
+            }
+            let lists: [(&str, Option<&[String]>, bool); 4] = [
+                ("c.root_id", f.roots, f.driver == CallDriver::Roots),
+                ("m.provider", f.providers, f.driver == CallDriver::Provider),
+                ("m.requested_model", f.models, f.driver == CallDriver::Model),
+                ("m.kind", f.kinds, f.driver == CallDriver::Kind),
+            ];
+            for (col, values, driven) in lists {
+                let Some(values) = values.filter(|_| !driven) else {
+                    continue;
+                };
+                qb.push(format_args!(" AND {col} IN ("));
+                let mut sep = qb.separated(", ");
+                for v in values {
+                    sep.push_bind(v.as_str());
+                }
+                qb.push(")");
+            }
+            if let Some(bases) = f.bases {
+                qb.push(" AND basis IN (");
+                let mut sep = qb.separated(", ");
+                for b in bases {
+                    sep.push_bind(i64::from(b.code()));
+                }
+                qb.push(")");
+            }
+            // The partial indexes' own predicates (`INDEXED BY` needs them in the WHERE).
+            match f.driver {
+                CallDriver::Unpriced => {
+                    qb.push(" AND m.returned_nanos IS NULL AND m.estimated_nanos IS NULL");
+                }
+                CallDriver::Known => {
+                    qb.push(" AND m.returned_nanos IS NOT NULL");
+                }
+                _ => {}
+            }
+            qb.push(" ORDER BY m.created_at DESC LIMIT ");
+            qb.push_bind(i64::from(limit));
+            qb.push(")");
+        }
+        if branches.len() > 1 {
+            qb.push(" ORDER BY created_at DESC LIMIT ");
+            qb.push_bind(i64::from(limit));
+        }
+        Ok(qb.build_query_as().fetch_all(&self.read).await?)
     }
+}
+
+/// The index a [`Store::cost_call_rows`] scan runs on (160 R2), chosen by
+/// the caller from the cost cube's counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CallDriver {
+    /// `model_calls_created_at`, newest first, every filter checked per row.
+    Time,
+    /// From the root list through `cost_owners_root` → `model_calls_created`
+    /// (reads every row of those roots, then sorts: for small root sets).
+    Roots,
+    /// `model_calls_provider_created`, one branch per provider.
+    Provider,
+    /// `model_calls_model_created`, one branch per model id.
+    Model,
+    /// `model_calls_kind_created`, one branch per kind.
+    Kind,
+    /// `model_calls_unpriced_created` (only when `bases` is `[unpriced]`).
+    Unpriced,
+    /// `model_calls_known_created` (only when `bases` is `[known]`).
+    Known,
 }
 
 /// One group of [`Store::cost_native`].
@@ -1437,6 +1525,7 @@ pub(crate) struct TurnInput {
 }
 
 /// SQL-side filter of [`Store::cost_call_rows`].
+#[derive(Clone, Copy)]
 pub(crate) struct CallFilter<'a> {
     pub(crate) roots: Option<&'a [String]>,
     pub(crate) providers: Option<&'a [String]>,
@@ -1445,6 +1534,8 @@ pub(crate) struct CallFilter<'a> {
     pub(crate) bases: Option<&'a [crate::costs::CostBasis]>,
     /// JSON array of catalog-priced model ids.
     pub(crate) priced: &'a str,
+    /// The index the scan runs on.
+    pub(crate) driver: CallDriver,
 }
 
 /// One row of [`Store::cost_call_rows`].

@@ -3,11 +3,11 @@
 //! cube's placed pieces, interleaved by time. Money per row is exactly what
 //! the cube sums, so Σ over all pages = the cube's total for the filter.
 
-use super::cube::{HARNESS, THEUTH};
+use super::cube::{Cube, HARNESS, THEUTH};
 use super::{CostBasis, CostCall, CostCallsCursor, CostCallsPage, CostCallsQuery, Piece, Prices};
 use super::{ms, ms_text};
 use crate::store::Store;
-use crate::store::accounting::{CallFilter, CallRowOut};
+use crate::store::accounting::{CallDriver, CallFilter, CallRowOut};
 
 /// Default and maximum page sizes.
 const DEFAULT_LIMIT: u32 = 200;
@@ -116,12 +116,14 @@ fn reported(p: &Piece) -> CostCall {
     }
 }
 
-/// One page for `q`; `pieces` are the reported leg sorted by `(at_ms, id)`.
+/// One page for `q`; `pieces` are the reported leg sorted by `(at_ms, id)`;
+/// `cube` (when built) picks the index each native query runs on (160 R2).
 pub(crate) async fn page(
     store: &Store,
     prices: &Prices,
     pieces: &[Piece],
     q: &CostCallsQuery,
+    cube: Option<&Cube>,
 ) -> anyhow::Result<CostCallsPage> {
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
     let cursor = q.before.as_ref();
@@ -132,13 +134,14 @@ pub(crate) async fn page(
     let mut rows: Vec<CostCall> = Vec::new();
     let native_bases = [CostBasis::Known, CostBasis::Estimated, CostBasis::Unpriced];
     if wants(&q.vias, THEUTH) && native_bases.into_iter().any(base) {
-        let filter = CallFilter {
+        let mut filter = CallFilter {
             roots: q.roots.as_deref(),
             providers: q.providers.as_deref(),
             models: q.models.as_deref(),
             kinds: q.kinds.as_deref(),
             bases: q.bases.as_deref(),
             priced: &prices.priced_json,
+            driver: CallDriver::Time,
         };
         let lower = q.from_ms.map(ms_text);
         let mut upper_ms = match (cursor.map(|c| c.at_ms.saturating_add(1)), q.to_ms) {
@@ -148,6 +151,7 @@ pub(crate) async fn page(
         loop {
             let upper = upper_ms.map_or_else(|| "9999".to_owned(), ms_text);
             let want = (limit + 1 - rows.len()) as u32;
+            filter.driver = cube.map_or(CallDriver::Time, |c| c.call_driver(q, upper_ms, want));
             let got = store
                 .cost_call_rows(&filter, &upper, lower.as_deref(), want)
                 .await?;
@@ -158,9 +162,19 @@ pub(crate) async fn page(
                 break;
             };
             if more {
-                // Every row of the oldest millisecond, so it is never split.
+                // Every row of the oldest millisecond, so it is never split
+                // (a one-millisecond window: the time index is always right).
+                let edge_filter = CallFilter {
+                    driver: CallDriver::Time,
+                    ..filter
+                };
                 let edge = store
-                    .cost_call_rows(&filter, &ms_text(last + 1), Some(&ms_text(last)), SAME_MS)
+                    .cost_call_rows(
+                        &edge_filter,
+                        &ms_text(last + 1),
+                        Some(&ms_text(last)),
+                        SAME_MS,
+                    )
                     .await?;
                 batch.retain(|c| c.at_ms != last);
                 batch.extend(

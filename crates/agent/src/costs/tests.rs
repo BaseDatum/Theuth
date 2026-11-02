@@ -890,6 +890,241 @@ async fn cost_calls_pages_cover_the_cube() {
     assert!(page.calls[0].reason.is_some());
 }
 
+/// 160 R2: every index a `cost_calls` scan can be driven by returns exactly
+/// the rows of an unindexed reference query, for single filters, value lists
+/// (one UNION ALL branch per value), pairs, bases and time windows; and the
+/// cube picks the selective index (a rare provider) over the time index.
+#[tokio::test]
+async fn call_drivers_return_the_reference_rows() {
+    use crate::store::accounting::{CallDriver, CallFilter};
+    let r = rig().await;
+    let s = &r.store;
+    let roots: Vec<SessionId> = (0..3).map(|_| SessionId::new()).collect();
+    let mut owners = Vec::new();
+    for (i, root) in roots.iter().enumerate() {
+        s.create_session(*root, "m", None, None, None)
+            .await
+            .unwrap();
+        let child = SessionId::new();
+        s.create_session(child, "m", Some(*root), Some(&format!("c{i}")), None)
+            .await
+            .unwrap();
+        owners.extend([*root, child]);
+    }
+    let models = [
+        HAIKU,
+        "anthropic/claude-haiku-4-5-20251001",
+        "openai/gpt-5.1",
+        "amazon-bedrock/anthropic.claude-opus-5-5",
+        "nowhere/none-1",
+    ];
+    let kinds = [
+        CallKind::Round,
+        CallKind::Title,
+        CallKind::CodeMap,
+        CallKind::Endless,
+    ];
+    for i in 0..120usize {
+        let obs = match i % 4 {
+            0 => CostObservation {
+                estimated: Some(usd(0.01)),
+                ..tokens(10, 1, 0, 0)
+            },
+            1 => tokens(10, 1, 0, 0),
+            2 => CostObservation::default(),
+            _ => CostObservation {
+                returned: Some(usd(0.02)),
+                ..tokens(10, 1, 0, 0)
+            },
+        };
+        let status = if i % 11 == 0 {
+            CallStatus::Failed
+        } else {
+            CallStatus::Settled
+        };
+        call(
+            s,
+            owners[i % owners.len()],
+            kinds[i % 7 % 4],
+            models[i % 5],
+            status,
+            obs,
+        )
+        .await;
+    }
+    // Distinct, ordered stamps so a page edge is never ambiguous.
+    sqlx::query(
+        "UPDATE model_calls SET created_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', '2026-10-01', \
+         '+' || (SELECT COUNT(*) FROM model_calls o WHERE o.call_id < model_calls.call_id) || ' minutes')",
+    )
+    .execute(s.pool())
+    .await
+    .unwrap();
+    type Row = (
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        i64,
+    );
+    let reference: Vec<Row> = sqlx::query_as(
+        "SELECT m.call_id, m.created_at, c.root_id, m.provider, m.requested_model, m.kind, \
+         CASE WHEN m.returned_nanos IS NOT NULL THEN 0 WHEN m.estimated_nanos IS NOT NULL THEN 2 \
+              WHEN (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL) \
+                   AND m.requested_model IN (SELECT value FROM json_each(?)) THEN 2 ELSE 3 END \
+         FROM model_calls m NOT INDEXED JOIN cost_owners c ON c.id = m.owner_id \
+         WHERE m.status <> 'not_dispatched' ORDER BY m.created_at DESC",
+    )
+    .bind(&r.prices.priced_json)
+    .fetch_all(s.pool())
+    .await
+    .unwrap();
+    let v = |xs: &[&str]| Some(xs.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>());
+    let root0 = roots[0].to_string();
+    let root1 = roots[1].to_string();
+    let filters: Vec<CostCallsQuery> = vec![
+        CostCallsQuery::default(),
+        CostCallsQuery {
+            providers: v(&["openai"]),
+            ..Default::default()
+        },
+        CostCallsQuery {
+            providers: v(&["anthropic", "amazon-bedrock"]),
+            ..Default::default()
+        },
+        CostCallsQuery {
+            models: v(&[HAIKU, "anthropic/claude-haiku-4-5-20251001"]),
+            ..Default::default()
+        },
+        CostCallsQuery {
+            kinds: v(&["title"]),
+            ..Default::default()
+        },
+        CostCallsQuery {
+            kinds: v(&["codemap", "round"]),
+            providers: v(&["anthropic"]),
+            ..Default::default()
+        },
+        CostCallsQuery {
+            roots: v(&[&root0]),
+            ..Default::default()
+        },
+        CostCallsQuery {
+            roots: v(&[&root0, &root1]),
+            models: v(&["openai/gpt-5.1"]),
+            ..Default::default()
+        },
+        CostCallsQuery {
+            bases: Some(vec![CostBasis::Unpriced]),
+            ..Default::default()
+        },
+        CostCallsQuery {
+            bases: Some(vec![CostBasis::Known]),
+            ..Default::default()
+        },
+        CostCallsQuery {
+            bases: Some(vec![CostBasis::Estimated, CostBasis::Known]),
+            kinds: v(&["round"]),
+            ..Default::default()
+        },
+        CostCallsQuery {
+            providers: v(&[]),
+            ..Default::default()
+        },
+    ];
+    let windows = [
+        ("9999".to_owned(), None),
+        ("2026-10-01T01".to_owned(), Some("2026-10-01T00:30")),
+    ];
+    for q in &filters {
+        let codes: Option<Vec<i64>> = q
+            .bases
+            .as_ref()
+            .map(|b| b.iter().map(|b| i64::from(b.code())).collect());
+        let ok = |l: &Option<Vec<String>>, x: Option<&str>| {
+            l.as_ref()
+                .is_none_or(|l| x.is_some_and(|x| l.iter().any(|v| v == x)))
+        };
+        let mut drivers = vec![CallDriver::Time];
+        for (present, d) in [
+            (q.roots.is_some(), CallDriver::Roots),
+            (q.providers.is_some(), CallDriver::Provider),
+            (q.models.is_some(), CallDriver::Model),
+            (q.kinds.is_some(), CallDriver::Kind),
+            (
+                q.bases.as_deref() == Some(&[CostBasis::Unpriced][..]),
+                CallDriver::Unpriced,
+            ),
+            (
+                q.bases.as_deref() == Some(&[CostBasis::Known][..]),
+                CallDriver::Known,
+            ),
+        ] {
+            if present {
+                drivers.push(d);
+            }
+        }
+        for (upper, lower) in &windows {
+            let want: Vec<&str> = reference
+                .iter()
+                .filter(|row| {
+                    row.1.as_str() < upper.as_str()
+                        && lower.is_none_or(|l| row.1.as_str() >= l)
+                        && ok(&q.roots, Some(&row.2))
+                        && ok(&q.providers, row.3.as_deref())
+                        && ok(&q.models, row.4.as_deref())
+                        && ok(&q.kinds, Some(&row.5))
+                        && codes.as_ref().is_none_or(|c| c.contains(&row.6))
+                })
+                .map(|row| row.0.as_str())
+                .collect();
+            for &driver in &drivers {
+                for limit in [1u32, 7, 1000] {
+                    let f = CallFilter {
+                        roots: q.roots.as_deref(),
+                        providers: q.providers.as_deref(),
+                        models: q.models.as_deref(),
+                        kinds: q.kinds.as_deref(),
+                        bases: q.bases.as_deref(),
+                        priced: &r.prices.priced_json,
+                        driver,
+                    };
+                    let got: Vec<String> = s
+                        .cost_call_rows(&f, upper, *lower, limit)
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .map(|row| row.call_id)
+                        .collect();
+                    let expect: Vec<&str> = want.iter().copied().take(limit as usize).collect();
+                    assert_eq!(got, expect, "{q:?} {driver:?} limit {limit} window {upper}");
+                }
+            }
+        }
+    }
+    let cube = Cube::build(s, &r.catalog, &r.prices, "e").await.unwrap();
+    let rare = CostCallsQuery {
+        providers: v(&["openai"]),
+        ..Default::default()
+    };
+    assert_eq!(cube.call_driver(&rare, None, 201), CallDriver::Provider);
+    assert_eq!(
+        cube.call_driver(&CostCallsQuery::default(), None, 201),
+        CallDriver::Time
+    );
+    let known = CostCallsQuery {
+        bases: Some(vec![CostBasis::Known]),
+        ..Default::default()
+    };
+    assert_eq!(
+        cube.call_driver(&known, None, 201),
+        CallDriver::Known,
+        "30 known of 120 calls"
+    );
+}
+
 /// 160 H5: spend_report adds the reported leg to today, the month and the
 /// owner, without adding calls.
 #[tokio::test]

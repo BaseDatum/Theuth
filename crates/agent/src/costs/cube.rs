@@ -7,12 +7,12 @@ use std::sync::Arc;
 
 use super::place::{Piece, place};
 use super::{
-    CostCells, CostCube, CostCubeCursor, CostCubeMeta, CostModel, CostReason, CostRoot,
-    CostRootEntry, Prices, hour_of, hour_text, model_id, model_name, ms,
+    CostBasis, CostCallsQuery, CostCells, CostCube, CostCubeCursor, CostCubeMeta, CostModel,
+    CostReason, CostRoot, CostRootEntry, Prices, hour_of, hour_text, model_id, model_name, ms,
 };
 use crate::cost::SpendOwnerKind;
 use crate::store::Store;
-use crate::store::accounting::NativeGroup;
+use crate::store::accounting::{CallDriver, NativeGroup};
 
 /// Revisions whose touched hours are kept for deltas.
 pub(crate) const LOG_REVS: usize = 1024;
@@ -544,6 +544,85 @@ impl Cube {
             unpriced,
             price_table: self.price_table.clone(),
         }
+    }
+
+    /// 160 R2: the index a `cost_calls` scan for `q` (rows older than
+    /// `upper_ms`) should run on, from this cube's native call counts — one
+    /// pass over the cells, microseconds. Estimated rows read to fill `want`:
+    /// an ordered index reads its matches × `want` / the filter's matches (it
+    /// stops at the page); `Roots` reads every row of the roots and sorts.
+    pub(crate) fn call_driver(
+        &self,
+        q: &CostCallsQuery,
+        upper_ms: Option<u64>,
+        want: u32,
+    ) -> CallDriver {
+        fn set<'a>(
+            v: &Option<Vec<String>>,
+            ix: impl Fn(&str) -> Option<&'a u32>,
+        ) -> Option<HashSet<u32>> {
+            v.as_ref()
+                .map(|v| v.iter().filter_map(|s| ix(s).copied()).collect())
+        }
+        let roots = set(&q.roots, |s| self.root_ix.get(s));
+        let providers = set(&q.providers, |s| self.providers.index.get(s));
+        let models = set(&q.models, |s| self.model_ix.get(s));
+        let kinds = set(&q.kinds, |s| self.kinds.index.get(s));
+        let bases: Option<Vec<u8>> = q
+            .bases
+            .as_ref()
+            .map(|b| b.iter().map(|b| b.code()).collect());
+        let hit = |s: &Option<HashSet<u32>>, v: u32| s.as_ref().is_none_or(|s| s.contains(&v));
+        let (from, to) = (
+            q.from_ms.map_or(0, hour_of),
+            upper_ms.map_or(u32::MAX, hour_of),
+        );
+        // total, roots, providers, models, kinds, basis, all of them
+        let mut n = [0u64; 7];
+        for (&root, cells) in &self.native {
+            for (&(hour, model, provider, kind, basis, _), m) in
+                cells.range((from, 0, 0, 0, 0, 0)..)
+            {
+                if hour > to {
+                    continue;
+                }
+                let c = u64::from(m.calls);
+                let each = [
+                    hit(&roots, root),
+                    hit(&providers, provider),
+                    hit(&models, model),
+                    hit(&kinds, kind),
+                    bases.as_ref().is_none_or(|b| b.contains(&basis)),
+                ];
+                n[0] += c;
+                for (i, h) in each.iter().enumerate() {
+                    if *h {
+                        n[i + 1] += c;
+                    }
+                }
+                if each.iter().all(|h| *h) {
+                    n[6] += c;
+                }
+            }
+        }
+        let scale = (f64::from(want) / n[6].max(1) as f64).min(1.0);
+        let read = |count: u64| count as f64 * scale;
+        let only = |b: CostBasis| q.bases.as_deref() == Some(&[b][..]);
+        let mut best = (read(n[0]), CallDriver::Time);
+        let candidates = [
+            (q.roots.is_some(), n[1] as f64, CallDriver::Roots),
+            (q.providers.is_some(), read(n[2]), CallDriver::Provider),
+            (q.models.is_some(), read(n[3]), CallDriver::Model),
+            (q.kinds.is_some(), read(n[4]), CallDriver::Kind),
+            (only(CostBasis::Unpriced), read(n[5]), CallDriver::Unpriced),
+            (only(CostBasis::Known), read(n[5]), CallDriver::Known),
+        ];
+        for (present, cost, driver) in candidates {
+            if present && cost < best.0 {
+                best = (cost, driver);
+            }
+        }
+        best.1
     }
 
     /// `cost_cube(since)` (§3.2): full when `since` is absent, of another
