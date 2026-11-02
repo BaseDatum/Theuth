@@ -169,7 +169,7 @@ unicode-width = "0.2"
 # json-render fences (design doc 30 §4): repair model-authored JSON before serde; same algorithm as the desktop's `jsonrepair`.
 jsonrepair-rs = "0.2"
 # App argument re-check before invocation (design doc 46 §4); no `$ref` retrieval over http/file.
-jsonschema = { version = "0.33", default-features = false }
+jsonschema = { version = "0.60", default-features = false }
 # OAuth login (design doc 05). reqwest major must match rmcp's.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form", "query", "http2", "stream"] }
 # Fork `feat/shared-message-attachments` = upstream 2.31.1 (ab4d193a) + forwarded/unfurled

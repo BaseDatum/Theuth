@@ -29,7 +29,7 @@ pub fn check(compiled: &Compiled, value: &Value) -> Result<(), String> {
     let validator = compiled.as_ref().map_err(Clone::clone)?;
     validator
         .validate(value)
-        .map_err(|e| format!("{}: {e}", e.instance_path))
+        .map_err(|e| format!("{}: {e}", e.instance_path()))
 }
 
 #[cfg(test)]
