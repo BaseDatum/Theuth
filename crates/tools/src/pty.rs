@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::num::NonZeroU16;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
@@ -68,6 +69,18 @@ const CARRY: usize = 16;
 const READ_BUF: usize = 64 * 1024;
 /// Normal-screen scrollback rows retained per PTY (51 §7.1).
 const HISTORY: usize = 512;
+
+/// vt100 sizes are `NonZeroU16`; every size passed here is a non-zero constant or validated.
+fn nz(n: u16) -> NonZeroU16 {
+    NonZeroU16::new(n).expect("terminal size is non-zero")
+}
+
+/// `screen.size()` as plain `(rows, cols)`.
+fn dims(screen: &vt100::Screen) -> (u16, u16) {
+    let (rows, cols) = screen.size();
+    (rows.get(), cols.get())
+}
+
 /// Longest `History` page (51 §7.3).
 const PAGE_MAX: u16 = 80;
 /// A serialized [`PtyPage`] is cut (top rows first) past this.
@@ -607,7 +620,7 @@ impl PtyHandle {
 
     /// Current `(rows, cols)`.
     pub(crate) fn size(&self) -> (u16, u16) {
-        lock(&self.parser).screen().size()
+        dims(lock(&self.parser).screen())
     }
 
     /// Resize the grid and tell the program (SIGWINCH). The parser learns
@@ -624,10 +637,10 @@ impl PtyHandle {
         };
         {
             let mut p = lock(&self.parser);
-            if p.screen().size() == (rows, cols) {
+            if dims(p.screen()) == (rows, cols) {
                 return Ok(());
             }
-            p.screen_mut().set_size(rows, cols);
+            p.screen_mut().set_size(nz(rows), nz(cols));
             self.revision.fetch_add(1, SeqCst);
         }
         master
@@ -654,7 +667,7 @@ impl PtyHandle {
             let p = lock(&self.parser);
             (p.screen().clone(), self.stream.subscribe())
         };
-        let size = screen.size();
+        let size = dims(&screen);
         (replay(screen), size, rx, self.exit())
     }
 
@@ -704,7 +717,7 @@ impl PtyHandle {
 /// scrollback row on its own line, pushed off the top so the viewer's own
 /// scrollback holds it, then the live screen with its cursor and input modes.
 fn replay(mut screen: vt100::Screen) -> Vec<u8> {
-    let (rows, cols) = screen.size();
+    let (rows, cols) = dims(&screen);
     let mut out = Vec::new();
     if !screen.alternate_screen() {
         screen.set_scrollback(usize::MAX);
@@ -712,7 +725,7 @@ fn replay(mut screen: vt100::Screen) -> Vec<u8> {
         for off in (1..=retained).rev() {
             screen.set_scrollback(off);
             if let Some(row) = screen.rows_formatted(0, cols).next() {
-                out.extend_from_slice(&row);
+                out.extend_from_slice(row.as_bytes());
             }
             out.extend_from_slice(b"\x1b[m\r\n");
         }
@@ -721,7 +734,7 @@ fn replay(mut screen: vt100::Screen) -> Vec<u8> {
             out.extend_from_slice(b"\r\n");
         }
     }
-    out.extend_from_slice(&screen.state_formatted());
+    out.extend_from_slice(screen.state_formatted().as_bytes());
     out
 }
 
@@ -837,7 +850,7 @@ fn render(
     } = cap;
     screen.set_scrollback(usize::MAX);
     let retained = screen.scrollback();
-    let (rows, cols) = screen.size();
+    let (rows, cols) = dims(&screen);
     let live = usize::from(rows);
     let (start, end, viewport) = match viewport {
         PtyViewport::Live => (retained, retained + live, viewport),
@@ -1420,7 +1433,7 @@ impl Message<Launch<StartPty>> for Jobs {
         self.pty_bytes += RESERVE;
         let pty = Arc::new(PtyHandle {
             writer: Mutex::new(Some(s.writer)),
-            parser: Mutex::new(vt100::Parser::new(ROWS, COLS, HISTORY)),
+            parser: Mutex::new(vt100::Parser::new(nz(ROWS), nz(COLS), HISTORY)),
             revision: AtomicU64::new(0),
             output: Notify::new(),
             stream: broadcast::channel(STREAM_CHUNKS).0,
@@ -3020,7 +3033,7 @@ mod tests {
     }
 
     fn capture(bytes: &[u8]) -> Capture {
-        let mut p = vt100::Parser::new(ROWS, COLS, HISTORY);
+        let mut p = vt100::Parser::new(nz(ROWS), nz(COLS), HISTORY);
         p.process(bytes);
         Capture {
             screen: p.screen().clone(),
@@ -3070,7 +3083,7 @@ mod tests {
     #[test]
     fn encode_follows_screen_modes() {
         let enc = |feed: &[u8], keys: &[Key]| {
-            let mut p = vt100::Parser::new(ROWS, COLS, HISTORY);
+            let mut p = vt100::Parser::new(nz(ROWS), nz(COLS), HISTORY);
             p.process(feed);
             let mut out = Vec::new();
             for k in keys {
@@ -3384,7 +3397,7 @@ mod tests {
             .unwrap();
         assert_eq!((attached.rows, attached.cols), (24, 80));
         assert!(attached.exit.is_none());
-        let mut viewer = vt100::Parser::new(24, 80, 1000);
+        let mut viewer = vt100::Parser::new(nz(24), nz(80), 1000);
         viewer.process(&attached.replay);
         assert!(
             viewer.screen().contents().contains("before"),
@@ -3560,7 +3573,7 @@ mod tests {
         let pid = std::process::id();
         PtyHandle {
             writer: Mutex::new(None),
-            parser: Mutex::new(vt100::Parser::new(ROWS, COLS, HISTORY)),
+            parser: Mutex::new(vt100::Parser::new(nz(ROWS), nz(COLS), HISTORY)),
             revision: AtomicU64::new(0),
             output: Notify::new(),
             stream: broadcast::channel(1).0,
