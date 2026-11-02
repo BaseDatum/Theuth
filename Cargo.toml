@@ -351,7 +351,7 @@ snow = "0.10"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
-tower-http = { version = "0.6", features = ["fs", "set-header"] }
+tower-http = { version = "0.7", features = ["fs", "set-header"] }
 dashmap = "6"
 # Agent communication (design doc 50 §3.1): the official A2A Rust SDK, exact pre-1.0 pins the user
 # accepted with an explicit maturity waiver; the conformance/interop gates of 50 §12 still apply.
