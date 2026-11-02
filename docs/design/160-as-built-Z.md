@@ -43,6 +43,83 @@ Branch `integrate/160` (worktree `~/Develop/theuth-160`), from `9026c641`. This 
 
 Scratch engine and preview stopped; `/tmp/160-z/data`, `/dist` and `/chrome2` removed; `/tmp/160-z/bin/t` (now the folded build) kept.
 
+## R2: ledger pages for every filter, UI R2 merge
+
+### 1. `cost_calls` for rare filters (`e47e50c8`)
+
+- **Migration `0048_cost_calls_filters.sql`** adds `model_calls(provider, created_at)`, `(requested_model, created_at)` and `(kind, created_at)`, plus two partial indexes on `(created_at)`: `WHERE returned_nanos IS NULL AND estimated_nanos IS NULL` (unpriced, plus the repriced rows) and `WHERE returned_nanos IS NOT NULL` (known). I left `call_id` out of the keys: the page orders on `created_at` alone and completes the oldest millisecond separately. Building the same five indexes on a copy of Sky's ledger in the prototype (python `sqlite3`) took 3.3 + 0.5 + 0.4 + 0.04 + 0.03 s; the engine pays that once, at the first start after the upgrade. The cost afterwards is five more indexes to maintain on `model_calls` inserts and settles.
+- **`Store::cost_call_rows`** is now built with `sqlx::QueryBuilder`. Every value is bound; only static fragments and index names are pushed. The WHERE holds only the filters present: each list becomes one `IN (…)` of bound values, and `basis IN (…)` appears only when `bases` is set.
+- **Which index drives the scan.** SQLite has no statistics on this table (no `ANALYZE`), so its guesses went wrong. Examples from the prototype on the copy, before `INDEXED BY`: amazon-bedrock + round chose the kind index (91 k rows) and took 60 ms; a two-id model list sorted every opus row and took 90 ms. So the scan now runs on a `CallDriver` (`Time · Roots · Provider · Model · Kind · Unpriced · Known`) forced with `INDEXED BY`. `Cube::call_driver` picks it from the cube's own native counts in a single pass over the cells, which takes microseconds. It estimates the rows each candidate reads to fill the page and takes the cheapest: an ordered index reads (its matches × want / the filter's matches); `Roots` reads every row of its roots and sorts them. A driving list of several values becomes one ordered, `LIMIT`ed branch per value merged by `UNION ALL`, so no branch sorts its whole match set. The one-millisecond edge query always runs on `Time`. Before the first cube build every page uses `Time`.
+- **Regression test** `costs::tests::call_drivers_return_the_reference_rows`. It builds 120 calls over 6 owners, 5 models (including an alias pair), 4 kinds and all three native bases, with distinct stamps. It runs 12 filter shapes: none, each single filter, value lists, pairs, `roots` plus a model, `bases` unpriced / known / estimated+known with a kind, and an empty list. Each runs × every applicable driver × limits 1 / 7 / 1000 × two time windows. Every result must equal an unindexed `NOT INDEXED` reference query filtered in Rust. The test also checks that the cube picks `Provider` for a rare provider, `Known` for `[known]` and `Time` for no filter. The paging, gap and Σ-money test (`cost_calls_pages_cover_the_cube`) now runs through the cube's drivers too.
+- **Timings.** RPC round trips on the debug `t` with a fresh `.backup` copy (20:22 UTC, 0048 applied at boot, the cube built). Each figure is the median of 3, page size 200, first page and then the next page from its cursor:
+
+| filter | rows | first page | next page |
+|---|---|---|---|
+| none | 200 | 15.9 ms | 21.4 ms |
+| providers=[openai] | 200 | **16.5 ms** (was 1,575 ms) | 19.2 ms |
+| providers=[amazon-bedrock] | 81 | 11.9 ms | — |
+| providers=[anthropic] | 200 | 16.2 ms | 18.0 ms |
+| providers=[anthropic, openai] | 200 | 19.5 ms | 25.8 ms |
+| models=[rare: bedrock fable-5-1] | 3 | 4.5 ms | — |
+| models=opus (2 alias ids) | 200 | 18.6 ms | 23.2 ms |
+| kinds=[title] | 200 | 18.9 ms | 38.7 ms |
+| kinds=[codemap] | 58 | 6.3 ms | — |
+| kinds=[round] | 200 | 14.7 ms | 20.7 ms |
+| vias=[omp] (reported pieces only) | 200 | 6.3 ms | 6.8 ms |
+| bases=[unpriced] | 200 | 12.4 ms | 14.0 ms |
+| bases=[known] (empty) | 0 | 2.2 ms | — |
+| bases=[estimated] | 200 | 12.0 ms | 13.8 ms |
+| roots=[one small root] | 1 | 2.8 ms (was 2,298 ms before R1) | — |
+| roots=owner you (176 roots) | 200 | 15.0 ms | 19.0 ms |
+| from/to 1 h | 200 | 13.9 ms | 13.2 ms |
+| from/to 1 d | 200 | 12.0 ms | 13.6 ms |
+| openai + title | 0 | 11.8 ms | — |
+| anthropic + codemap | 58 | 7.2 ms | — |
+| amazon-bedrock + round | 78 | 8.1 ms | — |
+| anthropic + round | 200 | 14.4 ms | 17.7 ms |
+| openai + 1 d window | 0 | 1.3 ms | — |
+
+About 10–15 ms of each row is fixed cost per call: the WebSocket round trip, serialising 200 rows to JSON on a debug build, and merging in the reported leg. `EXPLAIN QUERY PLAN` and run time of the SQL the builder emits for each driver: I reconstructed it in python `sqlite3` on the same migrated copy, and it took 0.1–7.9 ms. The driver shown for each shape is what `call_driver`'s cost rule gives for that filter on this ledger; the rule's picks were asserted only in the unit test, not logged on the live engine.
+
+```
+providers=[openai]  → SEARCH m USING INDEX model_calls_provider_created (provider=? AND created_at>? AND created_at<?)
+models=opus ×2      → MERGE (UNION ALL): LEFT/RIGHT each SEARCH m USING INDEX model_calls_model_created (requested_model=? AND created_at>? AND created_at<?), LIMIT 201 per branch
+bases=[unpriced]    → SEARCH m USING INDEX model_calls_unpriced_created (created_at>? AND created_at<?)
+bedrock + round     → SEARCH m USING INDEX model_calls_provider_created (provider=? …)   (was: kind index, 60 ms)
+roots=[small]       → SEARCH c USING INDEX cost_owners_root (root_id=?) → SEARCH m USING INDEX model_calls_created (owner_id=? AND created_at>? AND created_at<?)
+none / owner=you    → SEARCH m USING INDEX model_calls_created_at (created_at>? AND created_at<?)
+every shape         → SEARCH c USING INDEX sqlite_autoindex_cost_owners_1 (id=?)
+```
+
+### 2. UI R2 merge (`ae6ac440`, `feat/160-ui` @ `40a905ab` from `UI-R2-DONE`)
+
+The merge was clean; the UI branch had already merged `integrate/160` @ `5fdbfd8d`. It brings the resident `/costs` page (pre-rendered at idle, kept mounted), stock Recharts `<Bar>`s instead of the custom path bars, Hour allowed up to 7 days, and the cap back at 400.
+
+**Gates after the merge**
+
+- `bun install`; `bun run check`: 0 error TS.
+- `BUILD_SLOTS=1 … CI=1 bun run test`: 1706 passed, 1 failed. The failure is `src/link/pairing.test.ts` ("large records split/reassemble"), a timing flake under load in the link layer, outside 160. It passes alone: `bunx vitest run src/link/pairing.test.ts` gave 7 passed.
+- `vite build`: ✓ built in 22.38 s.
+- Rust: `cargo fmt --check` clean. `build-lock mbx clippy -p agent -p rpc --all-targets -- -A clippy::chunks_exact_to_as_chunks`: exit 0, 0 warnings in 160 files.
+- `build-lock mbx test -p agent -p rpc --no-run`, then `THEUTH_WORKER=/tmp/160-z/bin/t mbx test -p agent -p rpc --no-fail-fast`: agent lib 657 passed, 0 failed; notebooks 2 + 7; rpc 59; alerts 1; prompts 1.
+- `build-lock mbx build -p theuth`: ok.
+
+**Re-measured** on a production build (`vite build` with the scratch engine's URL, served by `vite preview`) against `/tmp/160-z/bin/t` on the fresh copy, headless Chrome 1280×900, real mouse events through CDP:
+
+| measure | p50 | p95 | notes |
+|---|---|---|---|
+| `/costs` navigation → first full paint | **22.7 ms** | **30.6 ms** | 10 warm runs: real click on the HUD SPEND button, `history.back()` between. Timed from `pointerdown` to the first animation frame in which the Costs band is outside any `inert` subtree, ≥ 5 KPIs are live and the main chart has Recharts bar rectangles. The first navigation after a reload took 33.5 ms. |
+| pointerdown → next frame (round 1) | **8.9 ms** | **17.4 ms** | 20 clicks: 7D, 30D, 90D, MTD, All, 30D, Provider, Owner, Kind, Basis, Model, Calls, Tokens, $, vs previous ×2, Week, Day, 24H, 30D. Timed from `pointerdown` to the first rAF after the `click` handler ran. With 20 samples the p95 is the slowest click (MTD). |
+| pointerdown → next frame (round 2) | **12.1 ms** | **17.0 ms** | same 20 clicks, load average 154 → 155 (other sessions' builds) |
+
+Screenshots in `smoke/` (12 PNGs):
+- `r2-costs-top-{desk,phone}-{soot,bone}`
+- `r2-7d-hourly-{desk,phone}-{soot,bone}` (7D by Hour, Hour checked, 25 stock bar rectangles)
+- `r2-chart-filtered-{desk,phone}-{soot,bone}` (`provider=["anthropic"]`, grouped by kind)
+- `r2-01-costs-after-click-desk-soot`
+
+Scratch engine, preview and Chrome stopped; `/tmp/160-z/data`, `/dist` and `/chrome3` removed; `/tmp/160-z/bin/t` kept (it includes 0048).
+
 ## Reviews
 
 ### review-160-lim.md (2 BUG, 5 RISK, 9 NIT)
@@ -164,10 +241,10 @@ Vite dev at `:5862` against the scratch engine; production numbers come from `vi
 
 ## Open items
 
-1. **Rare-filter ledger pages** (ENG review #2 remainder). `cost_calls` with a provider or model that has few rows walks `model_calls_created_at` from the newest row: `providers:["openai"]` takes 1.57 s for the first page, and the engine log shows `slow statement` at 1.4–2.1 s while chips were being exercised. Fix: indexes `(provider, created_at)` and `(requested_model, created_at)` plus a driven variant like the roots one.
-2. **§6.5 < 16 ms at p95** is not met on this machine: click → next frame p50 20 ms, p95 43 ms (production build). The first `/costs` mount blocks the main thread for about 313 ms on the production build. There is no spinner, but it is a hitch. Cheapest levers are in UI as-built open item 4.
-3. **Sky's ruling needed on "do not hand roll the charts".** UI R1 draws the main chart's stacked bars as one SVG path per series (`StackBars`) inside the Recharts `ComposedChart`. Recharts still supplies the axes, scales, stack geometry (through invisible stacked `Area`s), tooltip, brush, legend and `ReferenceArea`; only the bar shapes are custom, a performance trade (≈ 7 nodes instead of ≈ 240). The `When` grid draws its empty background as one path the same way.
-4. **Granularity cap 120** (UI R1) instead of the design's 400. On 7D, Hour is disabled (168 buckets).
+1. ~~Rare-filter ledger pages~~ **resolved in R2** (`e47e50c8`): every case in the R2 table is < 40 ms.
+2. **§6.5 < 16 ms at p95**: R2 brings click → next frame to p50 8.9 / 12.1 ms and p95 17.4 / 17.0 ms over two rounds of 20 clicks, at a load average of 150. The first `/costs` paint after a navigation is 22.7 / 30.6 ms (p50 / p95). p95 is about 1 ms over the target on a fully loaded machine; re-measure when idle.
+3. **"Do not hand roll the charts"**: the UI's R2 reverted the main chart to stock Recharts `<Bar>`s, and 7D by Hour draws 25 `.recharts-bar-rectangle` nodes. One small custom `<path>` is left: the empty-cell background of the `When` heat grid (`When.tsx:36`), drawn inside the Recharts `ScatterChart`. The cells themselves are Recharts Scatter points.
+4. ~~Granularity cap 120~~ **resolved in UI R2**: Hour is allowed up to 7 days (7D by Hour is on), and every other choice is capped at 400 buckets.
 5. **Engine-down cold start.** The app shell's connect gate hides every route, `/costs` included, when the engine is unreachable at boot. IDB painting works whenever the shell is up and the cube RPC is slow or blocked.
 6. **Pre-existing, outside 160:** the monty worker tests need `THEUTH_WORKER` pointing at a binary built after main's monty 1.4.0 bump (the PATH `t` is older); `repl::tests::capping_binds_out_name` fails with a current worker; the supervisor talk tests flake on 60 s timing under load.
 7. Deferred review NITs as listed; the bench leg as noted (ENG #6).
