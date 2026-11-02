@@ -882,6 +882,9 @@ async fn pump_incoming(mut manager: RegisteredManager, sink: mpsc::Sender<Signal
     while let Some(received) = messages.next().await {
         match received {
             Received::QueueEmpty | Received::Contacts => {}
+            Received::DecryptionError(sender) => {
+                tracing::warn!(sender = %sender.service_id_string(), "failed to decrypt signal message; skipped");
+            }
             Received::Content(content) => {
                 if let Some(envelope) = content_to_envelope(&manager, *content).await
                     && sink.send(envelope).await.is_err()
@@ -915,7 +918,7 @@ async fn content_to_envelope(
     if let Some(reaction) = data.reaction.as_ref().filter(|r| r.emoji.is_some()) {
         let number = sender_number(manager, &sender_id).await;
         let timestamp = data.timestamp.unwrap_or_else(|| {
-            u64::try_from(content.metadata.timestamp.timestamp_millis()).unwrap_or_default()
+            u64::try_from(content.metadata.client_timestamp.timestamp_millis()).unwrap_or_default()
         });
         return Some(SignalEnvelope {
             sender: Recipient {
@@ -951,7 +954,7 @@ async fn content_to_envelope(
 
     let number = sender_number(manager, &sender_id).await;
     let timestamp = data.timestamp.unwrap_or_else(|| {
-        u64::try_from(content.metadata.timestamp.timestamp_millis()).unwrap_or_default()
+        u64::try_from(content.metadata.client_timestamp.timestamp_millis()).unwrap_or_default()
     });
     // Swipe-to-reply: quote carries the parent message text (and optional
     // attachment metadata we ignore). Empty / whitespace-only is dropped.
