@@ -11310,15 +11310,6 @@ dependencies = [
 
 [[package]]
 name = "logos"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff472f899b4ec2d99161c51f60ff7075eeb3097069a36050d8037a6325eb8154"
-dependencies = [
- "logos-derive 0.15.1",
-]
-
-[[package]]
-name = "logos"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eb2c55a318a87600ea870ff8c2012148b44bf18b74fad48d0f835c38c7d07c5f"
@@ -11343,22 +11334,6 @@ dependencies = [
 
 [[package]]
 name = "logos-codegen"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "192a3a2b90b0c05b27a0b2c43eecdb7c415e29243acc3f89cc8247a5b693045c"
-dependencies = [
- "beef",
- "fnv",
- "lazy_static",
- "proc-macro2",
- "quote",
- "regex-syntax 0.8.11",
- "rustc_version",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "logos-codegen"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58b3ffaa284e1350d017a57d04ada118c4583cf260c8fb01e0fe28a2e9cf8970"
@@ -11378,15 +11353,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24fb722b06a9dc12adb0963ed585f19fc61dc5413e6a9be9422ef92c091e731d"
 dependencies = [
  "logos-codegen 0.14.4",
-]
-
-[[package]]
-name = "logos-derive"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "605d9697bcd5ef3a42d38efc51541aa3d6a4a25f7ab6d1ed0da5ac632a26b470"
-dependencies = [
- "logos-codegen 0.15.1",
 ]
 
 [[package]]
@@ -16286,9 +16252,9 @@ checksum = "263a3f48f01e7309e857138bd47f785585b4a005e8e56c6d2824ce91195999c3"
 
 [[package]]
 name = "protox"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f25a07a73c6717f0b9bbbd685918f5df9815f7efba450b83d9c9dea41f0e3a1"
+checksum = "f43240d7f22cf77d1625885e547acf874dd63cd2790f29f4a38e86256f41996f"
 dependencies = [
  "bytes",
  "miette",
@@ -16301,11 +16267,11 @@ dependencies = [
 
 [[package]]
 name = "protox-parse"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "072eee358134396a4643dff81cfff1c255c9fbd3fb296be14bdb6a26f9156366"
+checksum = "34efee6fad0cf6d71642d20a66bfe0c281919c9577e7c66d20360dfcb7549272"
 dependencies = [
- "logos 0.15.1",
+ "logos 0.16.1",
  "miette",
  "prost-types",
  "thiserror 2.0.21",

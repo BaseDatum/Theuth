@@ -239,7 +239,7 @@ microsandbox = { version = "=0.7.4", default-features = false, features = ["loca
 prost = "0.14"
 prost-types = "0.14"
 prost-build = "0.14"
-protox = "0.9"
+protox = "0.10"
 bytes = "1"
 h2 = "0.4"
 # Web search/fetch (design doc 16): one HTML parser for markdown and text; wiremock for provider contract tests.
