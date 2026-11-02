@@ -11,9 +11,37 @@ Branch `integrate/160` (worktree `~/Develop/theuth-160`), from `9026c641`. This 
 | `9c595754` | `--no-ff origin/main` @ `5e135d81` (`f6ba0cc8` Slack Stop/forward + monty 1.4.0), clean. `3f4a1754` is not in the history (`git merge-base --is-ancestor` → 1). `Cargo.lock` has main's slack-morphism `d207bb5` plus LIM's genai line and the `reqwest` line in `agent`. |
 | `3f1ad7b4` | `--no-ff feat/160-ui` @ `ae5d0a00` (the sha in `UI-DONE`), clean |
 
-**genai pin.** `origin/main` still pins `skymoore/rust-genai` `branch = "main"` @ `617cafe`. The fork's `main` has neither the sync nor `ee51f82` (`git merge-base --is-ancestor ee51f82 origin/main` → 1). So the override stays as LIM left it: `[patch.crates-io] genai` → `branch = "theuth-160-response-headers"` @ `ee51f822`. I made no new fork branch and no push.
+**genai pin.** Before R1, `origin/main` still pinned `skymoore/rust-genai` `branch = "main"` @ `617cafe`, and the fork's `main` had neither the sync nor `ee51f82`. So the override stayed as LIM left it (`theuth-160-response-headers` @ `ee51f822`). That override is now dropped; see "Fold of 33daa811".
 
 **Bindings.** I seeded `bindings/` from the ENG tree, then regenerated on the merged tree with `BUILD_SLOTS=1 build-lock mbx test -p rpc --features ts --lib --quiet export_bindings` (8 passed) and ran `cp -R bindings/. crates/desktop/ui/src/rpc/bindings/`. `methods.json` lists `cost_calls`, `cost_cube`, `usage_limits` and `usage_limits_refresh`. With doc comments stripped, all 20 of the UI's hand-written stubs match the generated types exactly: the 13 cost types in design §3.1 and §4, plus the 7 limits types in §5.2. Neither side broke the contract. The UI's inline `CostCubeChanged` now comes from its binding (`bc0a4284`, UI deviation 1). `api.test.ts` is green.
+
+## Fold of 33daa811 (R1)
+
+- `5fdbfd8d`: `git merge --no-ff origin/main` @ `33daa811`. This brings in the lock refresh (`dedf2089`), the genai fork synced to upstream `0a32194` plus `on_response` (`af110827`), iocraft 0.9.3, unjar 0.1.1 and vendored a2a-client 0.2.9. `3f4a1754` is not in HEAD.
+- The only conflict was `Cargo.lock`. I took main's `Cargo.toml` and `Cargo.lock` whole, which drops our `theuth-160-response-headers` `[patch]` override; genai is now `branch = "main"` @ `d2fd71e`. `cargo metadata` re-resolved the lock. Against `origin/main` the lock diff is exactly one line, `+ "reqwest 0.13.5"` in `agent`'s dependencies. LIM's `reqwest` line in `crates/agent/Cargo.toml` stays.
+- Synced genai vs `ee51f82`: `d2fd71e` is the cherry-pick. It has the same `ChatFrameSink::on_response` signature, the `FrameTap` forwarder, and `WebStream.response_tap` fed by `EventSourceStream::with_frame_tap` (LIM deviation 4). `with_raw_frame_sink_arc`, `exec_chat_stream` and `resolve_service_target` are unchanged. `Backend::stream` and `crates/agent/src/limits` compiled with no edits. The upstream adapter changes (temperature/top_p, stop/seed, omitted None fields, Bedrock cache tokens, stream timeouts) touch nothing 160 reads.
+- Gates, all re-run on `5fdbfd8d`:
+  - `cargo fmt -p agent -p rpc --check`: clean.
+  - `build-lock mbx clippy -p agent -p rpc --all-targets -- -A clippy::chunks_exact_to_as_chunks`: exit 0, with 0 warnings in 160 files. The new warnings are 5 `rmcp::model::ServerInfo` deprecations in `crates/mcp-server/src/catalog.rs`, from main's lock refresh.
+  - `build-lock mbx test -p agent -p rpc --no-run`: exit 0.
+  - `mbx test -p agent -p rpc`: agent lib 652 passed, with the same 4 monty failures (the old `t` on PATH) and the run stopping there.
+  - `THEUTH_WORKER=/tmp/160-z/bin/t mbx test -p agent -p rpc --no-fail-fast`: exit 0. Agent lib 656 passed, 0 failed, 4 ignored; notebooks_binding 2; notebooks_block 7; rpc lib 59; alerts 1; prompts 1. (The earlier gate block only reports agent lib because the default fail-fast run stopped after it.)
+  - `BUILD_SLOTS=1 build-lock mbx check --workspace`: Finished in 12m 03s, exit 0.
+  - Bindings regenerated with `export_bindings` (8 passed) and recopied into the UI tree.
+  - UI: `bun run check` gave 0 error TS; `BUILD_SLOTS=1 … CI=1 bun run test` gave Test Files 271 passed (271), Tests 1707 passed (1707); `vite build` built in 21.77 s, costs chunk 528.20 kB (148.07 kB gzip).
+  - `build-lock mbx build -p theuth` succeeded, and the result was copied to `/tmp/160-z/bin/t`.
+- Live re-proof on a fresh `.backup` copy (19:12 UTC), production bundle via `vite preview`, headless Chrome 1280×900. Screenshots are the `r1-*.png` files in `smoke/`.
+
+| step | result |
+|---|---|
+| RPC | All equal to truth. Native: $18,366.284251 + $111.197519 repriced = cube estimated $18,477.481770. Reported: $6,131.466234 over 534 meters. Calls: 144,831. Endless: $370.353626 over 67,085 rows. H5: `spend_report(7)` month $360.542485 = cube MTD. `cost_cube(null)`: 3,928 cells, 320,430 B, 23–26 ms. Empty delta: 1.28 ms. `cost_calls`: 3 pages at 9.2 / 9.1 / 9.2 ms, 600 unique rows, order ok. |
+| 1 | **PASS.** The first `/costs` DOM sample, 337 ms after the click, already had all 5 KPIs. 20 samples at 50 ms: 0 spinners or skeletons, no "Loading". (`r1-01a`, `r1-01b`) |
+| 2 | **PASS.** All: $24,608.95 = $18,477.48 + $6,131.47; 147,335 calls. 30D: $19,464.35. (`r1-02`) |
+| 7 | **PASS.** `delete_session` on root `01a111d4…`: the total is $24,608.948004 before and after; the tombstone was written and its 4 calls kept. Sorting by Calls reorders the rows. The row reads "Deleted session · 6 Oct · you · $0.49". A row opens `/c/01a10df6…`. (`r1-07a`–`c`) |
+| 9 | **PASS.** One `send_input` on Haiku 4.5 made 2 calls: $0.029681 + $0.000436. Calls ticked at 1.6 s and money at 3.1 s ($360.54 → $360.57) with no reload; the HUD shows "TODAY $360.57" and "$360.57 THIS MONTH". **Header capture through the synced genai works:** `anthropic:api_key` went from `stale` ("no calls observed yet") to `ok` with 4 buckets scoped `claude-haiku` (20k requests, 12M tokens, 10M input, 2M output). (`r1-09a`–`c`) |
+| 11 | **PARTIAL.** 24 samples. Click handler plus commit: p50 0.5 ms, p95 0.6 ms. Click → next frame: p50 27.8 ms, p95 73.9 ms, with one 249 ms outlier on `All`. Load average was 27–32 during the run (parallel builds on this machine). The < 16 ms target is still not met; see open item 2. |
+
+Scratch engine and preview stopped; `/tmp/160-z/data`, `/dist` and `/chrome2` removed; `/tmp/160-z/bin/t` (now the folded build) kept.
 
 ## Reviews
 
