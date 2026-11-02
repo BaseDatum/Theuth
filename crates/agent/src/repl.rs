@@ -81,7 +81,8 @@ directory (read-only); write files with `write_file()`.";
 const RUNTIME_BLOCK: &str = "## Runtime
 `python` runs a sandboxed Python 3.14 subset (Monty): no third-party packages, no
 generators, no class inheritance; stdlib: json re math datetime time random copy collections
-itertools functools dataclasses pathlib base64 asyncio(gather, sleep). State persists, except
+itertools functools dataclasses pathlib base64 hashlib decimal bisect csv tomllib os.path
+asyncio(gather, sleep). State persists, except
 names starting with `_`, which do not carry across cells. Imports and variables persist
 across cells; a cell is type-checked before it runs and, if it fails, nothing ran and
 nothing is lost. `asyncio.gather` takes positional awaitables only - no `return_exceptions=`
