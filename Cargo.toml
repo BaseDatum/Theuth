@@ -252,13 +252,13 @@ encoding_rs = "0.8"  # 122 D3: charset decoding of legacy-encoded pages (already
 # Documents as Markdown (design doc 20): PDF/Office/ODF/RTF/EPUB, pure Rust, no external binaries.
 anydoc = "0.2"
 # Python runtime (design doc 08): pool of `monty` worker subprocesses.
-monty-pool = "=1.0.0"
-monty-types = "=1.0.0"
-monty-fs = "=1.0.0"
+monty-pool = "=1.4.0"
+monty-types = "=1.4.0"
+monty-fs = "=1.4.0"
 # The worker lives inside `theuth` (`t subprocess`, design doc 08 §9): the protocol state
 # machine + interpreter, and the limiting allocator it requires as the global allocator.
-monty-proto = { version = "=1.0.0", features = ["worker"] }
-monty-alloc = { version = "=1.0.0", features = ["exit-code"] }
+monty-proto = { version = "=1.4.0", features = ["worker"] }
+monty-alloc = { version = "=1.4.0", features = ["exit-code"] }
 regex = "1"
 # PTY jobs (design doc 22): wezterm's pty layer and a vt100 screen for the model.
 portable-pty = "0.9"

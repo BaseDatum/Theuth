@@ -1128,3 +1128,23 @@ mount, `set_hard_limit(memory_limit_with_headroom(…))` in the worker.
 `dump format version 12 is older than 13, the oldest this build reads`; the
 §5 path renames it `.stale`, warns once, and the first cell reports the lost
 heap from `.names.json`, as for 0.0.23 → beta.2.
+
+## 17. As-built 2026-11-02: monty 1.4.0
+
+Pins `=1.4.0` for the same five crates; all nine `monty*` lock entries move
+1.0.0 → 1.4.0 (new transitive: `phf_macros`/`phf_generator` 0.12.1). Wire
+protocol 5 → 6 (parent and worker are the same binary). Dump format 13 → 14
+with `MIN_SUPPORTED_DUMP_VERSION` 13: 1.0.0 dumps load (verified on a real
+`~/.theuth/runtime/*.monty`); no `.stale` on upgrade.
+
+**API delta that touched theuth**: none; `repl.rs`, `sensor/bridge.rs` and
+`worker.rs` compile unchanged. The import host call (#942) reaches the bridge
+as an `OsCall`; `os_answer` returns `NotHandled` → `ModuleNotFoundError`, and
+the checker already rejects unknown modules (`unresolved-import`).
+
+**Behaviour delta**: the worker's memory baseline is ~7 MiB (was < 6 MiB), so
+`dump_failure_keeps_heap_and_inventory_in_step` runs at 32 MiB / 20 MiB.
+New stdlib modules importable with no theuth change: `hashlib`, `decimal`,
+`bisect`, `csv`, `tomllib`, `os.path`/`posixpath`; `match` and `complex` run.
+Still absent: class inheritance, generators, `statistics`. The §3.2 prompt
+block's stdlib list is unchanged.
