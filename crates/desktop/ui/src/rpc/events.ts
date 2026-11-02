@@ -8,6 +8,7 @@ import type { BrowserEvent } from '@/rpc/bindings/BrowserEvent'
 import type { BriefEvent } from '@/rpc/bindings/BriefEvent'
 import type { CalendarEvent } from '@/rpc/bindings/CalendarEvent'
 import type { CommunicationChanged } from '@/rpc/bindings/CommunicationChanged'
+import type { CostCubeChanged } from '@/rpc/bindings/CostCubeChanged'
 import type { JobEvent } from '@/rpc/bindings/JobEvent'
 import type { DocumentChanged } from '@/rpc/bindings/DocumentChanged'
 import type { KnowledgeChanged } from '@/rpc/bindings/KnowledgeChanged'
@@ -68,9 +69,6 @@ export type AgentEvent =
 
 /** The server dropped `count` events for this subscriber; the gap is unrecoverable. */
 export type Lagged = { type: 'Lagged'; count: number }
-
-/** 160 §3.2: the engine's cost cube moved to `rev` (debounced ≤ 1/s); the costs bridge fetches the delta. Typed here until the bindings carry it. */
-export type CostCubeChanged = { type: 'CostCubeChanged'; epoch: string; rev: number }
 
 /** Every item `subscribe_events` can deliver, discriminated by `type`. */
 export type WireEvent =
