@@ -23,7 +23,7 @@ import re
 MAX_FEEDS = 7
 # ponytail: ids are stored verbatim, so 300 ids / 12 KB is the ceiling under the
 # 16 KiB state cap; feeds whose tail falls out of the FIFO re-fire it. Hash the
-# ids (no hashlib in Monty — an FNV loop) if a 300+ entry feed ever matters.
+# ids (`hashlib`, in Monty since 1.4) if a 300+ entry feed ever matters.
 SEEN_MAX = 300
 SEEN_BYTES = 12000
 PAYLOAD_BYTES = 4096

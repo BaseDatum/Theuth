@@ -81,7 +81,8 @@ directory (read-only); write files with `write_file()`.";
 const RUNTIME_BLOCK: &str = "## Runtime
 `python` runs a sandboxed Python 3.14 subset (Monty): no third-party packages, no
 generators, no class inheritance; stdlib: json re math datetime time random copy collections
-itertools functools dataclasses pathlib base64 asyncio(gather, sleep). State persists, except
+itertools functools dataclasses pathlib base64 hashlib decimal bisect csv tomllib os.path
+asyncio(gather, sleep). State persists, except
 names starting with `_`, which do not carry across cells. Imports and variables persist
 across cells; a cell is type-checked before it runs and, if it fails, nothing ran and
 nothing is lost. `asyncio.gather` takes positional awaitables only - no `return_exceptions=`
@@ -2859,13 +2860,14 @@ mod tests {
             let dump_path = runtime.join(format!("{session}.monty"));
             let names_path = runtime.join(format!("{session}.names.json"));
             let mut repl =
-                Repl::open_with(&pool, session, &dir, cx.clone(), 24 << 20, DUMP_SOFT_BYTES).await;
+                Repl::open_with(&pool, session, &dir, cx.clone(), 32 << 20, DUMP_SOFT_BYTES).await;
             let out = repl.run("c1", "a = 1").await;
             assert!(!out.is_error, "{}", out.content);
             let good_dump = std::fs::read(&dump_path).unwrap();
             let good_names = std::fs::read(&names_path).unwrap();
-            // fits the heap, but the dump's copy crosses the 24 MiB limit
-            let out = repl.run("c2", "b = bytes(18 << 20)").await;
+            // fits the heap (worker baseline ~7 MiB under monty 1.4), but the
+            // dump's copy crosses the 32 MiB limit
+            let out = repl.run("c2", "b = bytes(20 << 20)").await;
             assert!(!out.is_error, "{}", out.content);
             assert!(repl.checkout.is_none(), "dead checkout kept");
             let cause = repl.dead_cause.clone().expect("dead cause");
@@ -2903,7 +2905,7 @@ mod tests {
 
             // the last cell of the turn loses its dump: no cell is left to carry
             // the line, so `close` writes it to the sidecar for the next open
-            let out = repl.run("c6", "c = bytes(18 << 20)").await;
+            let out = repl.run("c6", "c = bytes(20 << 20)").await;
             assert!(!out.is_error, "{}", out.content);
             assert!(repl.checkout.is_none() && repl.lost.is_some());
             let lost_path = runtime.join(format!("{session}.lost"));

@@ -4240,17 +4240,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ctrlc"
-version = "3.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0b1fab2ae45819af2d0731d60f2afe17227ebb1a1538a236da84c93e9a60162"
-dependencies = [
- "dispatch2",
- "nix 0.31.3",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "ctutils"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12538,9 +12527,9 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "1.0.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2146a40e2752039fd9e0582d141b832b4de4a9cb113a830cd46afbd79798ea89"
+checksum = "b7d354901f6d6655e6bc3826f31c035417025253d7c3f7b3ef1519f681dd3469"
 dependencies = [
  "ahash",
  "chrono",
@@ -12568,7 +12557,8 @@ dependencies = [
  "ruff_text_size",
  "serde",
  "serde_bytes",
- "sha2 0.10.9",
+ "sha1 0.11.0",
+ "sha2 0.11.0",
  "smallvec",
  "speedate",
  "strum 0.27.2",
@@ -12579,18 +12569,18 @@ dependencies = [
 
 [[package]]
 name = "monty-alloc"
-version = "1.0.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ec3304f593d027c1157791e11e102d65a4ef0231d93d5f56a48f1cbb99df9b7"
+checksum = "8ff806373965fb569766ac1ca771b416bd0ce09b3c52074d15459573fd845443"
 dependencies = [
  "monty-types",
 ]
 
 [[package]]
 name = "monty-fs"
-version = "1.0.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b832703ccfaedaae9930ec8984eb37db2998b0fd1ab97bd556551dd4479e5b4"
+checksum = "7a1d749b13e001281bda7501de21cdf54511a6bd0d2cf0dccaccfaf1cfca8059"
 dependencies = [
  "ahash",
  "cap-std",
@@ -12600,9 +12590,9 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "1.0.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18acfe594cfe965254e684f128ec6e0a2e63774bf4ec8eb7eb5b13fd4a182a22"
+checksum = "eb48631728d292ef4fd0eb58a7bbe65047fc70beef3c3659d0d3288a71a28f3c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -12611,9 +12601,9 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "1.0.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0132326a4dc93d42ced6738e638d38a96cf977963316aaf1df5fafefa8d69136"
+checksum = "8f445588f2d5cdb161fb7af20bf4fcce7a2331197a140dd6bb0f3d6bcdff2ca5"
 dependencies = [
  "futures-util",
  "monty-fs",
@@ -12626,9 +12616,9 @@ dependencies = [
 
 [[package]]
 name = "monty-proto"
-version = "1.0.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ecd13d16939361f670687b545ff20d726f0bcdb4c35f1a5a04fa4cb3ed3e5ae"
+checksum = "c6020d1f2c05d8ff41de8c5b0c5e97c610f2a1a9d9e1cdb737f1cd54b45fb8f4"
 dependencies = [
  "monty",
  "monty-type-checking",
@@ -12639,14 +12629,16 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "1.0.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8853a103b69f8fc47b435033b32b80eeec17ee5dd03c5e28067a023e3dccac08"
+checksum = "afc1311bb9d8e861c3844c65776e41773499190535fb418029f739c627934f08"
 dependencies = [
  "monty-types",
  "monty-typeshed",
  "ruff_db",
  "ruff_python_ast",
+ "ruff_python_parser",
+ "ruff_python_stdlib",
  "ruff_text_size",
  "salsa",
  "ty_module_resolver",
@@ -12656,15 +12648,16 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "1.0.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb42ab8791581458d83352f53028cf84a9225ab22e9c6093e12fd06877ce7ac4"
+checksum = "560e0f529ceb10575efb25dabc95d41e9de0f5036fbb46f02c2ac03d83dc89e3"
 dependencies = [
  "chrono",
  "jiff",
  "monty-macros",
  "num-bigint 0.4.8",
  "num-traits",
+ "ruff_python_stdlib",
  "serde",
  "serde_bytes",
  "strum 0.27.2",
@@ -12674,9 +12667,9 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "1.0.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea247929a0eb5bb8b13f9d86ce335c68232f15a211b622ffbdbcb6029d74c8c9"
+checksum = "526e8922caf9d7f907be952cadb32a95ec7f67da8f634b2e7f353a16a0b50448"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -15274,7 +15267,9 @@ version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
 dependencies = [
+ "phf_macros 0.12.1",
  "phf_shared 0.12.1",
+ "serde",
 ]
 
 [[package]]
@@ -15371,6 +15366,16 @@ dependencies = [
 
 [[package]]
 name = "phf_generator"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cbb1126afed61dd6368748dae63b1ee7dc480191c6262a3b4ff1e29d86a6c5b"
+dependencies = [
+ "fastrand",
+ "phf_shared 0.12.1",
+]
+
+[[package]]
+name = "phf_generator"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "135ace3a761e564ec88c03a77317a7c6b80bb7f7135ef2544dbe054243b89737"
@@ -15411,6 +15416,19 @@ checksum = "f84ac04429c13a7ff43785d75ad27569f2951ce0ffd30a3321230db2fc727216"
 dependencies = [
  "phf_generator 0.11.3",
  "phf_shared 0.11.3",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "phf_macros"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d713258393a82f091ead52047ca779d37e5766226d009de21696c4e667044368"
+dependencies = [
+ "phf_generator 0.12.1",
+ "phf_shared 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -19808,14 +19826,13 @@ dependencies = [
 
 [[package]]
 name = "slack-morphism"
-version = "2.29.0"
-source = "git+https://github.com/skymoore/slack-morphism-rust?rev=35f7aa3de9e0ef6cfebc23bdcb64d34a814dc12b#35f7aa3de9e0ef6cfebc23bdcb64d34a814dc12b"
+version = "2.31.1"
+source = "git+https://github.com/skymoore/slack-morphism-rust?rev=d207bb5b9db990a611b1552242c1be48ef0cf76a#d207bb5b9db990a611b1552242c1be48ef0cf76a"
 dependencies = [
  "async-recursion",
  "async-trait",
  "base64 0.23.1",
  "bytes",
- "ctrlc",
  "futures-executor",
  "futures-locks",
  "futures-util",
@@ -20706,6 +20723,7 @@ version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
 dependencies = [
+ "phf 0.12.1",
  "strum_macros 0.27.2",
 ]
 

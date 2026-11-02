@@ -192,6 +192,12 @@ fn status_blocks(s: &SlackStatus, session_line: Option<&str>) -> Vec<Value> {
     if !calls.is_empty() {
         blocks.push(context(&calls.join("  ")));
     }
+    if let Some(note) = &s.session_status {
+        blocks.push(context(&format!(
+            "⚠️ `agents.sessions.setStatus` {}",
+            esc(note)
+        )));
+    }
     blocks
 }
 
@@ -829,6 +835,7 @@ mod tests {
             .collect(),
             dropped_envelopes: 0,
             hidden_deliveries: 4,
+            session_status: None,
         }
     }
 
