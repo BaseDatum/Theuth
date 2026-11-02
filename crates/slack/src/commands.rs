@@ -1353,6 +1353,7 @@ mod tests {
             calls: Default::default(),
             dropped_envelopes: 0,
             hidden_deliveries: 0,
+            session_status: None,
         }
     }
 

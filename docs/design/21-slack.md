@@ -286,14 +286,19 @@ Inbound (already acked and deduped)
   Push app_mention | message.im (skip bot_id, subtype other than file_share, message_changed) →
     user allowed? no → drop (DM) / ephemeral (channel)
     thread_key = channel:(thread_ts ?? ts)
-    text = strip_mentions(text) + one `[attachment: …]` line per file (§7.1); an
-      `audio/*` file is transcribed instead → `[voice note, N s] …` (45 §4.5); empty → drop
+    text = strip_mentions(text) + one block per message attachment (a forward:
+      `[forwarded message from A · #chan · time · permalink]`, the quoted original,
+      `(channel, ts, thread_ts)`; anything else one line) + one `[attachment: …]`
+      line per file (§7.1); an `audio/*` file is transcribed instead →
+      `[voice note, N s] …` (45 §4.5); empty → drop
     reactions.add 👀 on (channel, ts)                            "seen, working"
     session = threads[thread_key] (create per §6)
     turn in flight? Steer : SendInput (files → `files` param for images/PDFs)
     remember (session → user ts) for the terminal reaction (§8.6)
     ask failed → reply `⚠️ <error>` in thread, react ❌
-  Push agent_session_stopped { channel, thread_ts } → Cancel(session)   (the native stop button)
+  Push agent_session_stopped { channel, thread_ts, streaming_message_ts } → Cancel(session);
+    the worker drops the turn, stopStreams those ts and its own, sets `active`, posts
+    `_Stopped._`; an unbound thread still gets stopStream + `active` (the native stop button)
   Push agent_session_title_changed { title } → threads[key].title = title  (a user renamed it; we stop overwriting, §8.6)
   Push Unknown → counted in Status.dropped, debug!
   Action block_actions → approvals::route (§10.1)
@@ -499,14 +504,22 @@ accept, ✅ on normal `TurnFinished`, 🛑 on `"cancelled"`, ❌ on `"error"` /
 `Error`. Slack does not replace reactions, so the terminal one is added
 beside 👀.
 
-`agents.sessions.setStatus { channel_id, thread_ts, status: "processing" }`
-on `TurnStarted`, `"active"` via `stopStream.session_status` or an explicit
-call when nothing was streamed. Slack shows "Working…" and, because we
-subscribe to `agent_session_stopped`, the native **stop button** that
-reaches `Cancel` (§7). `processing` expires after 1 h; a turn that long
-re-sends it from the tick. On `missing_scope`/`not_allowed_token_type` the
-worker sets `status_supported = false` and logs once: the app was not
-created as an agent (§10.3).
+`agents.sessions.setStatus { channel_id, thread_ts, status: "processing",
+initiator_user_id }` on `TurnStarted` and on a steer into the running turn;
+`"active"` via `stopStream.session_status` or an explicit call when no
+stopStream carried it; a mid-turn bubble rotation stops its stream with
+`session_status: "processing"` (the default would be `active`). Slack shows
+"Working…" and, only while the *installed* app subscribes to
+`agent_session_stopped`, the native **stop button** (§7); otherwise Slack
+says "Stop isn't available for this agent" and setStatus answers `ok` with
+warning `missing_agent_session_stopped_event_subscription`. The façade
+reads `warning`/`response_metadata.warnings` of setStatus and stopStream
+and logs each warning code, and each setStatus error code, once per process
+at WARN with the fix; the latest lands in `SlackStatus.session_status`
+(`/theuth status`) until a clean `processing`. On
+`missing_scope`/`not_allowed_token_type`/`feature_disabled` the worker sets
+`status_supported = false`: the app was not created as an agent (§10.3) or
+the workspace has agents off; other codes keep trying.
 
 **Title.** After `TurnFinished`, `ListSessions` → this session's
 `SessionSummary.title` (07 §15: model-written after the first turn); if it

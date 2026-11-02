@@ -2,7 +2,7 @@
 //! uses, exact error codes, per-method call counters and the cross-thread
 //! pacer (design doc 21 §4).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -230,13 +230,17 @@ pub trait SlackApi: Send + Sync {
     async fn ephemeral(&self, channel: &str, user: &str, text: &str) -> Result<(), ApiError>;
     /// `reactions.add`; `name` without colons (`eyes`).
     async fn react(&self, channel: &str, ts: &str, name: &str) -> Result<(), ApiError>;
-    /// `agents.sessions.setStatus`; status `processing` | `active`.
+    /// `agents.sessions.setStatus`; status `processing` | `active`;
+    /// `initiator` (a user id) only counts when the call creates the session.
+    /// `Ok` carries Slack's warning codes, e.g.
+    /// `missing_agent_session_stopped_event_subscription`.
     async fn set_session_status(
         &self,
         channel: &str,
         thread_ts: &str,
         status: &str,
-    ) -> Result<(), ApiError>;
+        initiator: Option<&str>,
+    ) -> Result<Vec<String>, ApiError>;
     /// `agents.sessions.rename`.
     async fn rename_session(
         &self,
@@ -318,6 +322,70 @@ fn map_err(e: SlackClientError) -> ApiError {
     }
 }
 
+/// What the operator changes for an `agents.sessions.setStatus` /
+/// `chat.stopStream` warning or error `code`.
+pub(crate) fn session_fix(code: &str) -> &'static str {
+    match code {
+        "missing_agent_session_stopped_event_subscription" => {
+            "the installed Slack app is not subscribed to the agent_session_stopped bot event, so Slack shows \"Stop isn't available\" instead of a Stop button: api.slack.com/apps → theuth → Event Subscriptions → Subscribe to bot events → add agent_session_stopped → Save Changes (or paste crates/slack/manifest.yaml under App Manifest), then reinstall if Slack asks"
+        }
+        "missing_scope" | "not_allowed_token_type" => {
+            "the slack_bot secret must be the bot token (xoxb-…) of an app declared as an agent (features.agent_view and chat:write in crates/slack/manifest.yaml); update the app from the manifest and reinstall it"
+        }
+        "feature_disabled" => {
+            "agent sessions are not enabled for this workspace; a workspace admin must allow agent apps"
+        }
+        "channel_not_found" | "not_in_channel" | "not_authorized" | "no_permission" => {
+            "invite the theuth bot to that channel"
+        }
+        "invalid_arguments"
+        | "thread_ts_required"
+        | "thread_ts_not_allowed"
+        | "invalid_status"
+        | "user_not_found" => {
+            "Slack rejected theuth's arguments; this is a theuth bug, report it with this line"
+        }
+        _ => "see https://docs.slack.dev/reference/methods/agents.sessions.setStatus#errors",
+    }
+}
+
+/// The parts of an `ok: true` answer that flag a misconfiguration; morphism's
+/// typed responses drop them.
+#[derive(serde::Deserialize)]
+struct Warned {
+    /// Comma-separated codes.
+    warning: Option<String>,
+    response_metadata: Option<WarnedMetadata>,
+}
+
+#[derive(serde::Deserialize)]
+struct WarnedMetadata {
+    warnings: Option<Vec<String>>,
+}
+
+impl Warned {
+    fn codes(self) -> Vec<String> {
+        let mut codes: Vec<String> = self
+            .warning
+            .iter()
+            .flat_map(|w| w.split(','))
+            .map(|c| c.trim().to_owned())
+            .filter(|c| !c.is_empty())
+            .collect();
+        for c in self
+            .response_metadata
+            .and_then(|m| m.warnings)
+            .into_iter()
+            .flatten()
+        {
+            if !codes.contains(&c) {
+                codes.push(c);
+            }
+        }
+        codes
+    }
+}
+
 /// The live façade (21 §4.1).
 pub struct Api {
     client: SlackClient<SlackClientHyperHttpsConnector>,
@@ -326,6 +394,8 @@ pub struct Api {
     // ponytail: one std mutex each; never held across an await.
     pacer: Mutex<HashMap<&'static str, Instant>>,
     calls: Mutex<BTreeMap<&'static str, CallStats>>,
+    /// `method:code` already logged by [`Api::warn_once`].
+    warned: Mutex<HashSet<String>>,
 }
 
 impl Api {
@@ -346,6 +416,7 @@ impl Api {
             http: reqwest::Client::new(),
             pacer: Mutex::new(HashMap::new()),
             calls: Mutex::new(BTreeMap::new()),
+            warned: Mutex::new(HashSet::new()),
         })
     }
 
@@ -391,6 +462,42 @@ impl Api {
             at
         };
         tokio::time::sleep_until(at).await;
+    }
+
+    /// One WARN per `method` and `code` per process, with what to fix.
+    fn warn_once(&self, method: &'static str, kind: &str, code: &str) {
+        if lock(&self.warned).insert(format!("{method}:{code}")) {
+            tracing::warn!(
+                method,
+                code,
+                "slack {method} {kind} {code}: {}",
+                session_fix(code)
+            );
+        }
+    }
+
+    /// POSTs `req` to `method` keeping only the warnings of the answer, each
+    /// logged once; errors as [`Api::run`].
+    async fn post_warned(
+        &self,
+        method: &'static str,
+        req: &(impl serde::Serialize + Send + Sync),
+        tier: &'static SlackApiMethodRateControlConfig,
+    ) -> Result<Vec<String>, ApiError> {
+        let r = self
+            .run(method, async {
+                self.client
+                    .open_session(&self.bot)
+                    .http_session_api
+                    .http_post::<_, Warned>(method, req, Some(tier))
+                    .await
+            })
+            .await
+            .map(Warned::codes);
+        for code in r.iter().flatten() {
+            self.warn_once(method, "warning", code);
+        }
+        r
     }
 
     /// Runs one call under a `slack.api` span, maps the error, bumps the counters.
@@ -542,14 +649,9 @@ impl SlackApi for Api {
         let req = SlackApiChatStopStreamRequest::new(channel.into(), ts.into(), content)
             .opt_chunks(chunks(c)?)
             .opt_session_status(session_status.map(self::session_status).transpose()?);
-        self.run("chat.stopStream", async {
-            self.client
-                .open_session(&self.bot)
-                .chat_stop_stream(&req)
-                .await
-        })
-        .await
-        .map(|_| ())
+        self.post_warned("chat.stopStream", &req, &SLACK_TIER2_METHOD_CONFIG)
+            .await
+            .map(drop)
     }
 
     async fn post_markdown(
@@ -638,18 +740,20 @@ impl SlackApi for Api {
         channel: &str,
         thread_ts: &str,
         status: &str,
-    ) -> Result<(), ApiError> {
+        initiator: Option<&str>,
+    ) -> Result<Vec<String>, ApiError> {
+        const METHOD: &str = "agents.sessions.setStatus";
         let req = SlackApiAgentsSessionsSetStatusRequest::new(session_status(status)?)
             .with_channel_id(channel.into())
-            .with_thread_ts(thread_ts.into());
-        self.run("agents.sessions.setStatus", async {
-            self.client
-                .open_session(&self.bot)
-                .agents_sessions_set_status(&req)
-                .await
-        })
-        .await
-        .map(|_| ())
+            .with_thread_ts(thread_ts.into())
+            .opt_initiator_user_id(initiator.map(Into::into));
+        let r = self
+            .post_warned(METHOD, &req, &SLACK_TIER3_METHOD_CONFIG)
+            .await;
+        if let Err(ApiError::Slack(code)) = &r {
+            self.warn_once(METHOD, "error", code);
+        }
+        r
     }
 
     async fn rename_session(
@@ -824,6 +928,25 @@ mod tests {
         // Other methods are not paced.
         api.pace("chat.postMessage", Duration::ZERO).await;
         assert_eq!(t0.elapsed(), APPEND_GAP * 2);
+    }
+
+    #[test]
+    fn warned_answer_yields_each_code_once() {
+        let w: Warned = serde_json::from_str(
+            r#"{"ok":true,"status":"processing","agent_status":"processing",
+                "warning":"missing_agent_session_stopped_event_subscription,superfluous_charset",
+                "response_metadata":{"warnings":["missing_agent_session_stopped_event_subscription"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            w.codes(),
+            [
+                "missing_agent_session_stopped_event_subscription",
+                "superfluous_charset"
+            ]
+        );
+        let clean: Warned = serde_json::from_str(r#"{"ok":true,"status":"active"}"#).unwrap();
+        assert!(clean.codes().is_empty());
     }
 
     #[test]
