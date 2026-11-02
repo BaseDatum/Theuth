@@ -4,6 +4,8 @@
 //! maps tool arguments to agent-desktop commands, `session` holds a theuth
 //! session's adapter and namespace on its own thread, [`tools`] defines the
 //! six tools, and [`A11y`] is the per-session registry they share (161 §3).
+//! `AppError` is agent-desktop's error contract; its Results stay on the worker thread, and boxing would churn every upstream call.
+#![allow(clippy::result_large_err)]
 
 pub mod args;
 mod command;
