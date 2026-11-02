@@ -183,7 +183,7 @@ hmac = "0.12"
 # awareness. Pinned exactly: the desktop and helper pin `yjs` 13.6.32, and the two must agree on the wire.
 yrs = { version = "=0.28.0", features = ["sync"] }
 nucleo = "0.5"  # fzf/helix fuzzy scoring for session search (design doc 26)
-base64 = "0.22"
+base64 = "0.23"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 schemars = { version = "1", features = ["uuid1", "chrono04"] }
