@@ -9,10 +9,8 @@ import { CUBE_KEY, LIMITS_KEY } from '@/lib/costs/queries'
 import type { CostsSearch } from '@/lib/costs/search'
 import { CostsPage } from './CostsPage'
 
-const search = vi.hoisted(() => ({ value: {} as CostsSearch }))
 vi.mock('@tanstack/react-router', async (original) => ({
   ...(await original<typeof Router>()),
-  getRouteApi: () => ({ useSearch: () => search.value, useNavigate: () => () => undefined }),
   useNavigate: () => () => undefined,
 }))
 vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
@@ -23,13 +21,12 @@ vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 const NOW = Date.parse('2026-11-02T14:25:00Z')
 
 function render(s: CostsSearch, seed = true): string {
-  search.value = s
   const qc = new QueryClient()
   if (seed) {
     qc.setQueryData(CUBE_KEY, costsFixture(NOW))
     qc.setQueryData(LIMITS_KEY, limitsFixture(NOW))
   }
-  const tree: ReactNode = createElement(QueryClientProvider, { client: qc }, createElement(TooltipProvider, null, createElement(CostsPage)))
+  const tree: ReactNode = createElement(QueryClientProvider, { client: qc }, createElement(TooltipProvider, null, createElement(CostsPage, { search: s, visible: true })))
   return renderToStaticMarkup(tree)
 }
 

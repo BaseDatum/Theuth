@@ -12,7 +12,7 @@ import type { CostCallsPage } from '@/rpc/bindings/CostCallsPage'
 import type { CostCube } from '@/rpc/bindings/CostCube'
 import { useScope } from '@/store/engine-scope'
 import { on } from '@/store/sessions'
-import { type Index, emptyCube, index, merge } from './cube'
+import { defaultTz, type Index, emptyCube, index, merge } from './cube'
 import { loadCube, saveCube } from './persist'
 
 export const CUBE_KEY = ['costs', 'cube'] as const
@@ -36,17 +36,22 @@ export function useCostCube(): CostCube {
   return q.data ?? EMPTY
 }
 const EMPTY = emptyCube()
+const CUBE_HASH = JSON.stringify(CUBE_KEY)
 
 const indexes = new WeakMap<CostCube, Map<string, Index>>()
 
-/** The typed index of the held cube for `tz`, built once per cube. */
-export function useCostIndex(tz: string): Index {
-  const cube = useCostCube()
+/** The typed index of `cube` for `tz`, built once per cube. */
+function indexFor(cube: CostCube, tz: string): Index {
   let byTz = indexes.get(cube)
   if (!byTz) indexes.set(cube, (byTz = new Map()))
   let ix = byTz.get(tz)
   if (!ix) byTz.set(tz, (ix = index(cube, tz)))
   return ix
+}
+
+/** The typed index of the held cube for `tz` (the bridge has usually built it already, at idle). */
+export function useCostIndex(tz: string): Index {
+  return indexFor(useCostCube(), tz)
 }
 
 const idle = (fn: () => void): void => void (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 5_000 }) : setTimeout(fn, 0))
@@ -57,13 +62,24 @@ const engineKey = (scope: string): string => (scope === 'local' ? (import.meta.e
 /**
  * The shell's costs bridge (like `RoutineDraftBridge`): renders nothing. Hydrates from IndexedDB, then `cost_cube(since)`;
  * on `CostCubeChanged` one delta request at a time (a newer rev seen mid-flight fetches again once); persists 2 s after
- * the last change, at idle. Preloads `/costs` and the limits snapshot at idle after start.
+ * the last change, at idle. Preloads `/costs` and the limits snapshot at idle after start, and (R2) indexes every cube the
+ * cache takes, at idle, so no page render builds one.
  */
 export function CostsPrefetch() {
   const api = useApi()
   const qc = useQueryClient()
   const router = useRouter()
   const engine = engineKey(useScope().id)
+  useEffect(
+    () =>
+      qc.getQueryCache().subscribe((e) => {
+        if (e.type !== 'updated' || e.query.queryHash !== CUBE_HASH) return
+        // The cube query's data is a `CostCube` (only this module writes it).
+        const cube = e.query.state.data as CostCube | undefined
+        if (cube?.cells.hour.length) idle(() => void indexFor(cube, defaultTz()))
+      }),
+    [qc],
+  )
   useEffect(() => {
     let live = true
     const sim = costsSim()
@@ -133,23 +149,24 @@ export function CostsPrefetch() {
 }
 
 /**
- * `usage_limits()` every 15 s while the page is visible (a memory read on the engine), and `usage_limits_refresh(null)`
- * on mount and every 60 s visible to kick the pollers. `undefined` data = the engine cannot answer.
+ * `usage_limits()` every 15 s while the page is on screen (a memory read on the engine), and `usage_limits_refresh(null)`
+ * when it comes on screen and every 60 s on screen to kick the pollers; nothing while the resident page is hidden.
+ * `undefined` data = the engine cannot answer.
  */
-export function useUsageLimits() {
+export function useUsageLimits(onScreen = true) {
   const api = useApi()
   const sim = costsSim()
   useEffect(() => {
-    if (sim === 'costs') return
+    if (sim === 'costs' || !onScreen) return
     const kick = () => void (document.visibilityState === 'visible' && api.usage_limits_refresh(null).catch(() => undefined))
     kick()
     const t = setInterval(kick, 60_000)
     return () => clearInterval(t)
-  }, [api, sim])
+  }, [api, sim, onScreen])
   return useQuery({
     queryKey: LIMITS_KEY,
     queryFn: () => (sim === 'costs' ? limitsFixture(Date.now()) : api.usage_limits()),
-    refetchInterval: 15_000,
+    refetchInterval: onScreen ? 15_000 : false,
     staleTime: 10_000,
     retry: false,
   })

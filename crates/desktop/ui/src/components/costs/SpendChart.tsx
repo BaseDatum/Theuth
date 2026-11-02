@@ -4,8 +4,8 @@
 // context by small components); the memoised chart body re-renders only for its own (deferred) data.
 
 import { Filter } from 'lucide-react'
-import { createContext, memo, useCallback, useContext, useDeferredValue, useMemo, useRef, useState } from 'react'
-import { Area, Brush, CartesianGrid, ComposedChart, Line, ReferenceArea, XAxis, YAxis, usePlotArea, useXAxisDomain, useYAxisScale } from 'recharts'
+import { createContext, memo, useCallback, useContext, useDeferredValue, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Bar, Brush, CartesianGrid, ComposedChart, Line, ReferenceArea, XAxis, YAxis } from 'recharts'
 import { type ChartConfig, ChartContainer, ChartLegend, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
 import type { Dim, Metric, Series, SeriesOut, SeriesRow } from '@/lib/costs/cube'
 import { compact, int, usd, usdShort } from '@/lib/costs/format'
@@ -33,6 +33,7 @@ const X_TICK = { fill: 'var(--fg-tertiary)', fontSize: 11 }
 const Y_TICK = { fill: 'var(--fg-tertiary)', fontSize: 11, fontFamily: 'var(--font-mono)' }
 const X_LINE = { stroke: 'var(--border-strong)' }
 const CURSOR = { fill: 'var(--bg-layer-2)', opacity: 0.6 }
+const TOP_RADIUS: [number, number, number, number] = [3, 3, 0, 0]
 
 export const fmtMetric = (m: Metric, v: number): string => (m === 'usd' ? usd(v) : m === 'calls' ? int(v) : compact(v))
 
@@ -147,6 +148,21 @@ const EMPTY: ReadonlySet<string> = new Set()
 
 type Mouse = { down: (e: { activeTooltipIndex?: unknown } | null) => void; move: (e: { activeTooltipIndex?: unknown } | null) => void; up: () => void; leave: () => void }
 
+const CHART_H = 244
+/** The main chart's last measured width (module-level: the next mount starts at it). */
+let lastWidth = 0
+/**
+ * The main chart's width before it has been measured: the last mount's, else the sidebar inset's content box minus the
+ * page and card padding (max 1600 px, px-3/md:px-4, card px-3.5 + 1 px border).
+ */
+function mainChartWidth(): number {
+  if (lastWidth) return lastWidth
+  const inset = typeof document === 'undefined' ? null : document.querySelector<HTMLElement>('[data-slot="sidebar-inset"]')
+  if (!inset) return 900
+  const w = Math.min(inset.clientWidth, 1600)
+  return Math.max(200, w - 2 * (window.innerWidth >= 768 ? 16 : 12) - 2 * 15)
+}
+
 /** The chart itself: re-renders only when its data, view or (deferred) hidden set change. */
 const Body = memo(function Body({ out, view, hidden, rangeLabel, mouse, onFilter, dragging }: { out: SeriesOut; view: ChartView; hidden: ReadonlySet<string>; rangeLabel: string; mouse: Mouse; onFilter: (dim: Dim, id: string) => void; dragging: { current: Drag } }) {
   const { groupBy, metric, compare } = view
@@ -160,6 +176,8 @@ const Body = memo(function Body({ out, view, hidden, rangeLabel, mouse, onFilter
   const xFmt = useCallback((v: number) => labels.get(v) ?? '', [labels])
   const yFmt = useCallback((v: number) => (metric === 'usd' ? usdShort(v) : compact(v)), [metric])
   const visible = out.series.filter((s) => !hidden.has(s.key))
+  // Square tops past 60 buckets: no per-bar radius path when the bars are thin.
+  const top = rows.length > THIN ? null : visible.at(-1)?.key
   const tooltip = useMemo(
     () => (
       <ChartTooltipContent
@@ -195,78 +213,46 @@ const Body = memo(function Body({ out, view, hidden, rangeLabel, mouse, onFilter
     [out.series, visible.length, compare, metric],
   )
   const legend = useMemo(() => <LegendItems series={out.series} groupBy={groupBy} compare={compare} rangeLabel={rangeLabel} onFilter={onFilter} />, [out.series, groupBy, compare, rangeLabel, onFilter])
+  // R2: the legend renders through ChartLegend into a node below the chart (Legend `portal`), so Recharts never measures
+  // it and re-lays the plot out; and the chart starts at its real width, so the container's first measure changes nothing.
+  const [legendEl] = useState(() => (typeof document === 'undefined' ? null : document.createElement('div')))
+  const [initial] = useState(() => ({ width: mainChartWidth(), height: CHART_H }))
+  const wrap = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (wrap.current) lastWidth = wrap.current.clientWidth
+  })
   return (
-    <ChartContainer config={config} className="aspect-auto h-[280px] w-full select-none" initialDimension={{ width: 900, height: 280 }}>
-      <ComposedChart data={rows} margin={MARGIN} onMouseDown={mouse.down} onMouseMove={mouse.move} onMouseUp={mouse.up} onMouseLeave={mouse.leave}>
+    <div ref={wrap}>
+    <ChartContainer config={config} className="aspect-auto h-[244px] w-full select-none" initialDimension={initial}>
+      <ComposedChart data={rows} margin={MARGIN} barCategoryGap={rows.length > THIN ? '8%' : '18%'} onMouseDown={mouse.down} onMouseMove={mouse.move} onMouseUp={mouse.up} onMouseLeave={mouse.leave}>
         <CartesianGrid vertical={false} stroke="var(--border-default)" />
-        <XAxis dataKey="start" scale="band" tickFormatter={xFmt} tick={X_TICK} tickLine={false} axisLine={X_LINE} minTickGap={18} />
+        <XAxis dataKey="start" tickFormatter={xFmt} tick={X_TICK} tickLine={false} axisLine={X_LINE} minTickGap={18} />
         <YAxis tick={Y_TICK} tickLine={false} axisLine={false} width={56} tickFormatter={yFmt} />
         <ChartTooltip cursor={CURSOR} isAnimationActive={false} content={tooltip} />
-        {/* The stack's geometry (domain, tooltip payload) comes from invisible stacked Areas; the bars are one path per series. */}
         {out.series.map((s) => (
-          <Area key={s.key} dataKey={s.key} name={s.key} stackId="s" type="linear" stroke="none" fill="none" dot={false} activeDot={false} hide={hidden.has(s.key)} isAnimationActive={false} />
+          <Bar
+            key={s.key}
+            dataKey={s.key}
+            name={s.key}
+            stackId="s"
+            fill={s.color}
+            hide={hidden.has(s.key)}
+            radius={s.key === top ? TOP_RADIUS : 0}
+            isAnimationActive={false}
+            className={s.id === null ? undefined : 'cursor-pointer'}
+            onClick={() => s.id !== null && !dragging.current && onFilter(groupBy, s.id)}
+          />
         ))}
-        <StackBars rows={rows} series={out.series} hidden={hidden} thin={rows.length > THIN} onPick={(id) => !dragging.current && onFilter(groupBy, id)} />
         {compare && <Line dataKey="prev" name="prev" stroke="var(--fg-tertiary)" strokeDasharray="4 4" dot={false} activeDot={false} strokeWidth={1.5} type="linear" isAnimationActive={false} />}
         <DragArea rows={rows} />
         {rows.length > 40 && <Brush dataKey="start" height={18} stroke="var(--border-strong)" fill="var(--bg-elevated)" travellerWidth={7} tickFormatter={() => ''} />}
-        <ChartLegend content={legend} />
+        <ChartLegend content={legend} portal={legendEl} />
       </ComposedChart>
     </ChartContainer>
+    <div ref={(n) => void (n && legendEl && legendEl.parentNode !== n && n.appendChild(legendEl))} />
+    </div>
   )
 })
-
-const f = (n: number) => n.toFixed(1)
-
-/**
- * The stacked bars as one `<path>` per visible series (≈ 7 nodes instead of buckets × series rects), placed with the
- * chart's own plot area, categorical x domain (so the Brush window applies) and y scale. Rounded tops on the highest
- * segment of each bucket unless the bars are thin.
- */
-function StackBars({ rows, series, hidden, thin, onPick }: { rows: SeriesRow[]; series: Series[]; hidden: ReadonlySet<string>; thin: boolean; onPick: (id: string) => void }) {
-  const plot = usePlotArea()
-  const y = useYAxisScale()
-  const domain = useXAxisDomain()
-  if (!plot || !y || !domain?.length) return null
-  const pos = new Map<unknown, number>(domain.map((v, i) => [v, i]))
-  const band = plot.width / domain.length
-  const gap = band * (thin ? 0.08 : 0.18)
-  const w = Math.max(1, band - gap)
-  const vis = series.filter((s) => !hidden.has(s.key))
-  const d = vis.map(() => [] as string[])
-  const r = Math.min(3, w / 3)
-  for (const row of rows) {
-    const i = pos.get(row.start)
-    if (i === undefined) continue
-    const x = plot.x + i * band + gap / 2
-    let topK = -1
-    for (let k = vis.length - 1; k >= 0; k--)
-      if ((row[vis[k]!.key] as number) > 0) {
-        topK = k
-        break
-      }
-    let cum = 0
-    vis.forEach((s, k) => {
-      const v = row[s.key] as number
-      if (!(v > 0)) return
-      const y0 = y(cum)!
-      const y1 = y(cum + v)!
-      cum += v
-      d[k]!.push(
-        k === topK && !thin && y0 - y1 > r
-          ? `M${f(x)},${f(y0)}V${f(y1 + r)}Q${f(x)},${f(y1)} ${f(x + r)},${f(y1)}H${f(x + w - r)}Q${f(x + w)},${f(y1)} ${f(x + w)},${f(y1 + r)}V${f(y0)}Z`
-          : `M${f(x)},${f(y0)}V${f(y1)}H${f(x + w)}V${f(y0)}Z`,
-      )
-    })
-  }
-  return (
-    <g className="recharts-stack-bars">
-      {vis.map((s, k) => (
-        <path key={s.key} d={d[k]!.join('')} fill={s.color} className={s.id === null ? undefined : 'cursor-pointer'} onClick={s.id === null ? undefined : () => onPick(s.id!)} />
-      ))}
-    </g>
-  )
-}
 
 /** The drag highlight: a `ReferenceArea` that follows the urgent drag state without re-rendering the bars. */
 function DragArea({ rows }: { rows: SeriesRow[] }) {

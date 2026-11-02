@@ -1,7 +1,7 @@
 // 160 §7: the costs page's small shared pieces — the card with its mono title, the segmented control, tags, swatches.
 // Theme tokens only.
 
-import { type ReactNode, startTransition, useEffect, useState } from 'react'
+import { type ReactNode, startTransition, useEffect, useRef, useState } from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
@@ -104,4 +104,42 @@ export function useStaged<T>(v: T, stage: number): T {
     return () => clearTimeout(t)
   }, [v, held, stage])
   return stage === 0 ? v : held
+}
+
+const idle = (fn: () => void): number => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 400 }) : window.setTimeout(fn, 16))
+const unidle = (id: number) => (typeof cancelIdleCallback === 'function' ? cancelIdleCallback(id) : clearTimeout(id))
+
+/**
+ * Below-the-fold mounting (160 R2): a blank block of `height` until its turn — the `order`-th idle slice after the page
+ * mounts, or earlier when a scroll brings it within half a viewport — then its children, in a transition. The block
+ * holds the section's usual height so nothing above it moves. A server render (tests) mounts at once.
+ */
+export function Later({ order, height, children }: { order: number; height: number; children: ReactNode }) {
+  const [on, setOn] = useState(typeof window === 'undefined')
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (on || !el) return
+    let live = true
+    const go = () => live && startTransition(() => setOn(true))
+    // The first callback reports the starting layout; only a later one (the user scrolled) mounts early.
+    let first = true
+    const io = new IntersectionObserver(
+      (es) => {
+        if (!first && es.some((e) => e.isIntersecting)) go()
+        first = false
+      },
+      { root: el.closest('[data-costs-scroll]'), rootMargin: '50% 0px' },
+    )
+    io.observe(el)
+    let n = order
+    const tick = () => (--n <= 0 ? go() : (id = idle(tick)))
+    let id = idle(tick)
+    return () => {
+      live = false
+      io.disconnect()
+      unidle(id)
+    }
+  }, [on, order])
+  return on ? children : <div ref={ref} aria-hidden style={{ height }} />
 }
