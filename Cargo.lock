@@ -3867,6 +3867,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "coreaudio-rs"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d5d7dca3ebcf65a035582c9ad4385371a9d9ee6537474d2a278f4e1e475bb58"
+dependencies = [
+ "bitflags 2.13.2",
+ "libc",
+ "objc2-audio-toolbox",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "cosmic-text"
 version = "0.14.2"
 source = "git+https://github.com/skymoore/obscura?branch=main#d5aed2b449f0c4b8dff60ff77bd09b04bf518d34"
@@ -3895,7 +3909,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cbd307f43cc2a697e2d1f8bc7a1d824b5269e052209e28883e5bc04d095aaa3f"
 dependencies = [
  "alsa",
- "coreaudio-rs",
+ "coreaudio-rs 0.13.0",
  "dasp_sample",
  "jni 0.21.1",
  "js-sys",
@@ -24358,7 +24372,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
- "coreaudio-rs",
+ "coreaudio-rs 0.14.2",
  "cpal",
  "figment",
  "flate2",

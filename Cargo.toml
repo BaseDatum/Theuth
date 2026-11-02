@@ -86,14 +86,14 @@ similar = "3"  # 12 §10 edit/write_file unified diffs
 oxc_resolver = "11"  # 60
 toml = "1"  # 60
 # Meetings (design doc 53): `rtrb` = lock-free rings between the capture threads and the encoder;
-# `ogg` = RFC 7845 Opus-in-Ogg pages; `coreaudio-rs` = the VoiceProcessingIO mic unit (0.13 is
-# what `cpal` already pins — 0.12 would duplicate `objc2-audio-toolbox`); `objc2-core-audio` =
+# `ogg` = RFC 7845 Opus-in-Ogg pages; `coreaudio-rs` = the VoiceProcessingIO mic unit (0.14 sits
+# beside cpal 0.16's 0.13; both share `objc2-audio-toolbox` 0.3); `objc2-core-audio` =
 # the process list (`kAudioHardwarePropertyProcessObjectList`; flexaudio has no enumeration);
 # `objc2-core-foundation` = its bundle-id CFStrings; `objc2-av-foundation` = the non-prompting mic
 # TCC probe; `libc` = `proc_name` and `statvfs`.
 rtrb = "0.3"  # 53
 ogg = "0.9"  # 53
-coreaudio-rs = "0.13"  # 53; the unit itself lives in `voice::mic` since 76 §0.5
+coreaudio-rs = "0.14"  # 53; the unit itself lives in `voice::mic` since 76 §0.5
 objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2-core-audio-types"] }  # 53
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString"] }  # 53
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat"] }  # 53
