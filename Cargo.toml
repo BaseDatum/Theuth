@@ -268,9 +268,9 @@ ignore = "0.4.33"
 grep-regex = "0.1.14"
 grep-searcher = "0.1.17"
 # Signal channel (design doc 09). crates.io `presage` is an unrelated crate; the
-# rev is the one jarvis reviewed and ran. `cdsi` = E.164→ACI fallback (09 §5.2).
-presage = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8", features = ["cdsi"] }
-presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "c363731038acf176ab6b5ee0600d7de85f8a2da8" }
+# rev = presage main aeaedf99 (#469). `cdsi` = E.164→ACI fallback (09 §5.2).
+presage = { git = "https://github.com/whisperfish/presage", rev = "aeaedf99babebae2dbc6b86bca797807d4cd9fda", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "aeaedf99babebae2dbc6b86bca797807d4cd9fda" }
 qrcode = { version = "0.14", default-features = false }
 # Snap compaction frames (design doc 13 §0.4): 8-bit grayscale encode only; not `image`.
 png = "0.17"
@@ -402,9 +402,6 @@ brush-parser = { git = "https://github.com/skymoore/brush", branch = "on-spawn-0
 # Branch `mask-0.9.3` = tag iocraft-v0.9.3 + three commits (also derives `Default`
 # for `KeyModifiers`).
 iocraft = { git = "https://github.com/skymoore/iocraft", branch = "mask-0.9.3" }
-# curve25519-dalek: libsignal (under presage) must build against Signal's fork;
-# only presage's tree resolves this crate, so nothing else is affected.
-curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }
 # anydoc / pdf-inspector: identical to crates.io 0.2.4 / 1.15.0; the tags are
 # used because some networks' proxies refuse static.crates.io downloads of these
 # crates (and of lopdf 0.44's `aes 0.9`, hence 1.15.0 → lopdf 0.42). Drop when that clears.
