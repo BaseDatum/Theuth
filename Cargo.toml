@@ -172,9 +172,9 @@ jsonrepair-rs = "0.2"
 jsonschema = { version = "0.33", default-features = false }
 # OAuth login (design doc 05). reqwest major must match rmcp's.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form", "query", "http2", "stream"] }
-# Fork `feat/block-kit-2026-blocks` = upstream 2.29.0 (1945e53c) + `SlackBlock::Unknown` catch-all,
-# typed container/plan/data_table/data_visualization, blocks.validate, canvases.* (design 110 W6).
-slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", rev = "35f7aa3de9e0ef6cfebc23bdcb64d34a814dc12b", features = ["hyper"] }
+# Fork `feat/shared-message-attachments` = upstream 2.31.1 (ab4d193a) + forwarded/unfurled
+# message fields on `SlackMessageAttachment`.
+slack-morphism = { git = "https://github.com/skymoore/slack-morphism-rust", rev = "d207bb5b9db990a611b1552242c1be48ef0cf76a", features = ["hyper"] }
 # Telegram Bot API client (98 §0.1). ZeroVer: exact pin, bumped by hand against its CHANGELOG.
 tgbot = { version = "=0.48.1", default-features = false }
 sha2 = "0.10"

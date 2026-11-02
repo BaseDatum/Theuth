@@ -4239,17 +4239,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ctrlc"
-version = "3.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0b1fab2ae45819af2d0731d60f2afe17227ebb1a1538a236da84c93e9a60162"
-dependencies = [
- "dispatch2",
- "nix 0.31.3",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "ctutils"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19807,14 +19796,13 @@ dependencies = [
 
 [[package]]
 name = "slack-morphism"
-version = "2.29.0"
-source = "git+https://github.com/skymoore/slack-morphism-rust?rev=35f7aa3de9e0ef6cfebc23bdcb64d34a814dc12b#35f7aa3de9e0ef6cfebc23bdcb64d34a814dc12b"
+version = "2.31.1"
+source = "git+https://github.com/skymoore/slack-morphism-rust?rev=d207bb5b9db990a611b1552242c1be48ef0cf76a#d207bb5b9db990a611b1552242c1be48ef0cf76a"
 dependencies = [
  "async-recursion",
  "async-trait",
  "base64 0.23.1",
  "bytes",
- "ctrlc",
  "futures-executor",
  "futures-locks",
  "futures-util",
