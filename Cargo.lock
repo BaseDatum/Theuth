@@ -7008,8 +7008,8 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.7.0-beta.24-WIP"
-source = "git+https://github.com/skymoore/rust-genai?branch=main#617cafeed2910b0c50a91ccacdc3cf1248030a69"
+version = "0.7.3"
+source = "git+https://github.com/skymoore/rust-genai?branch=main#d2fd71e63fa97fe416df03fe367a55865a158b0b"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -7020,7 +7020,7 @@ dependencies = [
  "futures",
  "macro_rules_attribute",
  "mime_guess",
- "paste",
+ "pastey 0.2.3",
  "regex",
  "reqwest 0.13.5",
  "serde",
