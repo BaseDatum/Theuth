@@ -19,7 +19,11 @@ use tokio::time::Instant;
 use crate::api::{ApiError, Chunk, MARKDOWN_TEXT_MAX, SlackApi, Source, TaskStatus, UploadFile};
 use crate::{SlackEvent, ToolCards};
 
-/// Chars of text per bubble before rotating at a block boundary.
+/// Chars a stream message carries before it rotates at a block boundary:
+/// text plus card `output` / `details`. Slack caps a stream at 12 000 chars
+/// in total, not per call; card output counts too — a reply with 3 000 chars
+/// of text died `msg_too_long` once its re-sent cards had grown (164,
+/// 2026-11-03). A card's output never takes more than this on its own.
 pub const BUBBLE_SOFT_MAX: usize = 11_000;
 /// Slack closes streams around 5 minutes wall; rotate before that.
 pub const BUBBLE_MAX_AGE: Duration = Duration::from_secs(270);
@@ -45,8 +49,9 @@ const SOURCES_MAX: usize = 3;
 /// Consecutive `startStream` failures (other than the known fallback codes)
 /// before the bubble gives up on streaming.
 const OPEN_ATTEMPTS: u8 = 3;
-/// Block Kit blocks one message may carry (110 §8); past it every further
-/// fence of the bubble is a picture, since Slack drops blocks over 50.
+/// Block Kit blocks one message may carry (110 §8; Slack drops blocks over
+/// 50): a fence past it that fits a fresh message starts the next one, a
+/// fence over it on its own is a picture.
 const BLOCKS_MAX: usize = 50;
 /// Picture fences settled per flush before the next tick takes over.
 const SETTLE_MAX: usize = 32;
@@ -61,12 +66,19 @@ const FALLBACK_CODES: [&str; 6] = [
     "missing_scope",
     "not_allowed_token_type",
 ];
-/// `appendStream`/`stopStream` errors that mean "this message is no longer
-/// a stream": repair it with `chat.update` and continue in a new one (21 §8.4).
+/// `appendStream` errors that mean "this stream takes nothing more": stop
+/// it as it stands and continue in a new one (21 §8.4).
 const DEAD_CODES: [&str; 4] = [
     "message_not_in_streaming_state",
     "streaming_mode_mismatch",
     "msg_too_long",
+    "stopped_by_user",
+];
+/// `stopStream` errors after which the message is final already (timed
+/// out, gone, stopped by the user): nothing more goes into it.
+const ENDED_CODES: [&str; 3] = [
+    "message_not_in_streaming_state",
+    "message_not_found",
     "stopped_by_user",
 ];
 
@@ -135,6 +147,9 @@ struct Bubble {
     /// Bytes of `text.raw()` Slack has shown: everything appended (Stream)
     /// or `committed()` at the last update (Update).
     sent: usize,
+    /// Stream mode: chars appended so far against Slack's per-stream cap
+    /// ([`weight`]).
+    used: usize,
     /// Stream mode: Block Kit blocks appended so far, against [`BLOCKS_MAX`].
     blocks_sent: usize,
     /// Update mode: rendered fences already posted as their own message.
@@ -187,6 +202,7 @@ impl Bubble {
             mode: Mode::Unsent,
             text: markdown::Text::new(),
             sent: 0,
+            used: 0,
             blocks_sent: 0,
             blocks_posted: 0,
             blocks,
@@ -194,11 +210,6 @@ impl Bubble {
             opened: now,
             last_append: now,
         }
-    }
-
-    /// Chars of committed text (Slack counts chars, so the caps do too).
-    fn committed_chars(&self) -> usize {
-        self.text.raw()[..self.text.committed()].chars().count()
     }
 
     /// `raw[range]` in order: text runs, Block Kit fences and — ending the
@@ -374,6 +385,19 @@ impl Bubble {
     /// first picture fence not yet settled (164 D8).
     fn streamable(&self) -> usize {
         self.hold().unwrap_or(self.text.raw().len())
+    }
+
+    /// Stream mode: where an append may end now — [`Self::streamable`],
+    /// held at the last block boundary once the message would pass
+    /// [`BUBBLE_SOFT_MAX`], so a rotation cuts there and never has to take
+    /// back text Slack shows (21 §8.4).
+    fn stream_end(&self) -> usize {
+        let end = self.streamable();
+        let raw = self.text.raw();
+        if self.sent >= end || self.used + raw[self.sent..end].chars().count() < BUBBLE_SOFT_MAX {
+            return end;
+        }
+        end.min(self.text.committed().max(self.sent))
     }
 }
 
@@ -730,6 +754,111 @@ enum Item {
     Thought(Thought),
 }
 
+impl Item {
+    /// Its itemised line, capped (110 §4.3).
+    fn line(&self) -> String {
+        truncate_chars(
+            &match self {
+                Item::Call(c) => c.line(),
+                Item::Thought(t) => t.line(),
+            },
+            LINE_MAX,
+        )
+    }
+
+    /// Its line will not change again: the call finished, the thought ended.
+    fn settled(&self) -> bool {
+        match self {
+            Item::Call(c) => !c.open(),
+            Item::Thought(t) => !t.live,
+        }
+    }
+}
+
+/// A card's `output` as Slack holds it. Slack appends each `task_update`'s
+/// `output` to the card's — re-sending the whole list nested every earlier
+/// line inside the next (164, 2026-11-03) — so a card's output only ever
+/// grows: a send carries what is new, and the card a rotation re-creates in
+/// the next message goes on after what earlier messages showed.
+#[derive(Default)]
+struct Shown {
+    /// The output on the wire so far, across messages.
+    text: String,
+    /// Some of it is in the current message.
+    here: bool,
+}
+
+impl Shown {
+    /// What of `full` goes out now: `None` when nothing is new, or when
+    /// `full` no longer extends what is shown (Slack cannot take text back).
+    fn next<'a>(&self, full: &'a str) -> Option<&'a str> {
+        let Some(rest) = full.strip_prefix(self.text.as_str()) else {
+            tracing::debug!("card output no longer extends what Slack shows; held");
+            return None;
+        };
+        let rest = if self.here {
+            rest
+        } else {
+            rest.trim_start_matches('\n')
+        };
+        (!rest.is_empty()).then_some(rest)
+    }
+
+    /// The new part of `full` ([`Self::next`]) went out.
+    fn sent(&mut self, full: &str) {
+        if self.next(full).is_some() {
+            self.here = true;
+            full.clone_into(&mut self.text);
+        }
+    }
+}
+
+/// `s` within [`BUBBLE_SOFT_MAX`] chars (a card never fills a message on
+/// its own; Slack drops an `output` over 12 000) such that a growing output
+/// stays a prefix of every later one: whole while shorter, else its first
+/// `BUBBLE_SOFT_MAX - 1` chars and `…`.
+fn cap_output(s: &str) -> std::borrow::Cow<'_, str> {
+    match s.char_indices().nth(BUBBLE_SOFT_MAX - 1) {
+        None => s.into(),
+        Some((i, _)) => format!("{}…", &s[..i]).into(),
+    }
+}
+
+/// Chars `chunks` add to a stream message against Slack's per-stream cap:
+/// text and card `output` / `details` together ([`BUBBLE_SOFT_MAX`]).
+fn weight(chunks: &[Chunk]) -> usize {
+    chunks
+        .iter()
+        .map(|c| match c {
+            Chunk::Text(s) => s.chars().count(),
+            Chunk::Task {
+                details, output, ..
+            } => [details, output]
+                .into_iter()
+                .flatten()
+                .map(|s| s.chars().count())
+                .sum(),
+            Chunk::Blocks(_) => 0,
+        })
+        .sum()
+}
+
+/// How a card goes into a message that closes (21 §8.4): nothing spins on
+/// in a message nobody updates again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Close {
+    /// The turn goes on in the next message: a live card ends here as
+    /// done so far, `continued below`, and goes on there.
+    Rotate,
+    /// The turn is over: a call that never finished is an error.
+    Finish,
+}
+
+/// A live card's title in a message that a rotation closes.
+fn continued(title: &str) -> String {
+    truncate_chars(&format!("{title} · continued below"), TITLE_MAX)
+}
+
 /// One activity card: design 70's run (110 §4.1–4.3). One call with no
 /// reasoning renders as a plain card; a deliverable is a closed batch of one.
 struct Batch {
@@ -746,6 +875,8 @@ struct Batch {
     card_ts: Option<String>,
     /// ≤ 3 `http(s)` URLs across the batch's outputs.
     sources: Vec<Source>,
+    /// Stream mode: its `output` on the wire.
+    shown: Shown,
 }
 
 impl Batch {
@@ -766,6 +897,7 @@ impl Batch {
             last_sent: None,
             card_ts: None,
             sources: Vec::new(),
+            shown: Shown::default(),
         }
     }
 
@@ -814,11 +946,16 @@ impl Batch {
         if let Some((i, c)) = calls.iter().enumerate().find(|(_, c)| c.open()) {
             return format!("running `{}` · {} of {}", c.name, i + 1, calls.len());
         }
-        let mut parts = vec![format!(
+        let count = format!(
             "{} tool{}",
             calls.len(),
             if calls.len() == 1 { "" } else { "s" }
-        )];
+        );
+        // A live thought is no line yet (see `settled_output`): the title says so.
+        if self.open() {
+            return format!("thinking · {count}");
+        }
+        let mut parts = vec![count];
         if let (Some(Some(start)), Some(Some(end))) = (
             calls.first().map(|c| c.started),
             calls.last().map(|c| c.finished),
@@ -862,36 +999,62 @@ impl Batch {
 
     /// The itemised list (110 §4.3): ≤ 60 lines, then `… n more`.
     fn lines(&self) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .items
-            .iter()
-            .take(ITEMS_MAX)
-            .map(|i| {
-                truncate_chars(
-                    &match i {
-                        Item::Call(c) => c.line(),
-                        Item::Thought(t) => t.line(),
-                    },
-                    LINE_MAX,
-                )
-            })
-            .collect();
+        let mut out: Vec<String> = self.items.iter().take(ITEMS_MAX).map(Item::line).collect();
         if self.items.len() > ITEMS_MAX {
             out.push(format!("… {} more", self.items.len() - ITEMS_MAX));
         }
         out
     }
 
-    /// The stream-mode card (110 §4.2).
-    fn chunk(&self) -> Chunk {
-        Chunk::Task {
-            id: self.id.clone(),
-            title: self.title(),
-            status: self.status(),
-            details: self.details(),
-            output: self.plain().is_none().then(|| self.lines().join("\n")),
-            sources: self.sources.clone(),
+    /// The stream card's `output` ([`Shown`]): the lines of the items
+    /// settled so far, up to the first one still live, and `… n more` once
+    /// the batch is over — it only ever grows; the live item is the title.
+    fn settled_output(&self) -> String {
+        let n = self.items.iter().take_while(|i| i.settled()).count();
+        let mut lines: Vec<String> = self.items[..n]
+            .iter()
+            .take(ITEMS_MAX)
+            .map(Item::line)
+            .collect();
+        if self.closed && n == self.items.len() && n > ITEMS_MAX {
+            lines.push(format!("… {} more", n - ITEMS_MAX));
         }
+        lines.join("\n")
+    }
+
+    /// The stream-mode card (110 §4.2) with only the output Slack lacks,
+    /// frozen by `close` in a message that closes, and its whole output for
+    /// [`Shown::sent`].
+    fn chunk(&self, close: Option<Close>) -> (Chunk, String) {
+        let full = if self.plain().is_some() {
+            String::new()
+        } else {
+            cap_output(&self.settled_output()).into_owned()
+        };
+        let (mut title, mut status) = (self.title(), self.status());
+        if self.open() {
+            match close {
+                Some(Close::Rotate) => {
+                    title = continued(&title);
+                    status = if self.failed() {
+                        TaskStatus::Error
+                    } else {
+                        TaskStatus::Complete
+                    };
+                }
+                Some(Close::Finish) => status = TaskStatus::Error,
+                None => {}
+            }
+        }
+        let chunk = Chunk::Task {
+            id: self.id.clone(),
+            title,
+            status,
+            details: self.details(),
+            output: self.shown.next(&full).map(str::to_owned),
+            sources: self.sources.clone(),
+        };
+        (chunk, full)
     }
 
     /// The update-mode message (110 §4.6): header bold, list in a fence.
@@ -954,10 +1117,22 @@ fn emits(mode: ToolCards, b: &Batch) -> bool {
 
 /// Something waiting for the next flush, in event order.
 enum Queued {
-    /// A batch card by id, rendered when its floor allows (110 §4.4).
+    /// A live card by id — a batch, rendered when its floor allows
+    /// (110 §4.4), or the open reasoning run.
     Card(String),
-    /// A reasoning card; `card` is its update-mode text.
+    /// A finished reasoning card; `card` is its update-mode text.
     Chunk { chunk: Chunk, card: String },
+}
+
+/// A card that went out: its id and whole output after the send ([`Shown::sent`]).
+type Sent = (String, String);
+
+/// The card id a queue entry is about.
+fn queued_id(q: &Queued) -> Option<&str> {
+    match q {
+        Queued::Card(id) => Some(id),
+        Queued::Chunk { chunk, .. } => chunk_id(chunk),
+    }
 }
 
 /// Stream-mode trailing reasoning run: the `reasoning-<n>` card (21 §8.5,
@@ -965,26 +1140,36 @@ enum Queued {
 struct ReasoningRun {
     id: String,
     text: markdown::Text,
-    /// Bytes of `text.raw()` sent as the card's `output`.
+    /// Bytes of `text.raw()` when the card was last queued.
     sent: usize,
     started: Instant,
     /// `ReasoningDone.ms`.
     ms: Option<u64>,
+    /// Its `output` on the wire.
+    shown: Shown,
+    /// The card is in the current message.
+    on_wire: bool,
 }
 
 impl ReasoningRun {
-    fn chunk(&self) -> Chunk {
-        Chunk::Task {
+    /// The live card with only the output Slack lacks ([`reasoning_settled`],
+    /// so nothing is taken back), frozen in a message a rotation closes, and
+    /// its whole output for [`Shown::sent`].
+    fn chunk(&self, close: Option<Close>) -> (Chunk, String) {
+        let full = cap_output(&reasoning_settled(self.text.raw())).into_owned();
+        let (title, status) = match close {
+            None => ("thinking".to_owned(), TaskStatus::InProgress),
+            Some(_) => (continued("thinking"), TaskStatus::Complete),
+        };
+        let chunk = Chunk::Task {
             id: self.id.clone(),
-            title: "thinking".to_owned(),
-            status: TaskStatus::InProgress,
+            title,
+            status,
             details: None,
-            output: Some(truncate_chars(
-                &reasoning_settled(self.text.raw()),
-                MARKDOWN_TEXT_MAX,
-            )),
+            output: self.shown.next(&full).map(str::to_owned),
             sources: Vec::new(),
-        }
+        };
+        (chunk, full)
     }
 }
 
@@ -1101,15 +1286,17 @@ impl Turn {
         }
         if self.reasoning_run.is_none() {
             self.reasoning_runs += 1;
-            let run = ReasoningRun {
-                id: format!("reasoning-{}", self.reasoning_runs),
+            let id = format!("reasoning-{}", self.reasoning_runs);
+            self.reasoning_run = Some(ReasoningRun {
+                id: id.clone(),
                 text: markdown::Text::new(),
                 sent: 0,
                 started: Instant::now(),
                 ms: None,
-            };
-            self.queue_chunk(run.chunk(), "_thinking…_".to_owned());
-            self.reasoning_run = Some(run);
+                shown: Shown::default(),
+                on_wire: false,
+            });
+            self.queue_card(id);
         }
         if let Some(run) = &mut self.reasoning_run {
             run.text.push(delta);
@@ -1178,17 +1365,17 @@ impl Turn {
     fn touch(&mut self, i: usize) {
         let b = &mut self.batches[i];
         b.dirty = true;
-        if !emits(self.tools_mode, b) {
-            return;
+        if emits(self.tools_mode, b) {
+            let id = b.id.clone();
+            self.queue_card(id);
         }
-        let id = b.id.clone();
+    }
+
+    /// Card `id` goes out at the next flush that may send it.
+    fn queue_card(&mut self, id: String) {
         let blocks = self.fences.blocks;
         self.bubble.get_or_insert_with(|| Bubble::new(blocks));
-        if !self
-            .queue
-            .iter()
-            .any(|q| matches!(q, Queued::Card(x) if *x == id))
-        {
+        if !self.queue.iter().any(|q| queued_id(q) == Some(&id)) {
             self.queue.push(Queued::Card(id));
         }
     }
@@ -1202,13 +1389,14 @@ impl Turn {
         if let Some(run) = self.reasoning_run.take() {
             let raw = reasoning_text(run.text.raw(), false);
             let ms = run.ms.unwrap_or_else(|| ms_of(run.started.elapsed()));
+            // No `details`: the first line again would repeat the body.
             self.queue_chunk(
                 Chunk::Task {
                     id: run.id.clone(),
                     title: thought_title(ms),
                     status: TaskStatus::Complete,
-                    details: reasoning_line(run.text.raw(), false),
-                    output: Some(truncate_chars(&raw, MARKDOWN_TEXT_MAX)),
+                    details: None,
+                    output: run.shown.next(&cap_output(&raw)).map(str::to_owned),
                     sources: Vec::new(),
                 },
                 Segment::quote(&raw),
@@ -1232,9 +1420,13 @@ impl Turn {
     }
 
     fn close_batch_at(&mut self, i: usize) {
-        self.batches[i].closed = true;
-        if let Some(Item::Thought(_)) = self.batches[i].items.last() {
-            let Some(Item::Thought(t)) = self.batches[i].items.pop() else {
+        let b = &mut self.batches[i];
+        b.closed = true;
+        // A thought whose line Slack shows already stays: output only grows.
+        if let Some(last @ Item::Thought(_)) = b.items.last()
+            && !b.shown.text.ends_with(&last.line())
+        {
+            let Some(Item::Thought(t)) = b.items.pop() else {
                 unreachable!()
             };
             self.touch(i);
@@ -1254,8 +1446,8 @@ impl Turn {
                 id: format!("reasoning-{}", self.reasoning_runs),
                 title: thought_title(ms),
                 status: TaskStatus::Complete,
-                details: reasoning_line(&t.text, false),
-                output: Some(truncate_chars(&text, MARKDOWN_TEXT_MAX)),
+                details: None,
+                output: Some(cap_output(&text).into_owned()),
                 sources: Vec::new(),
             },
             Segment::quote(&text),
@@ -1268,9 +1460,7 @@ impl Turn {
         let Some(run) = self.reasoning_run.take() else {
             return;
         };
-        self.queue.retain(
-            |q| !matches!(q, Queued::Chunk { chunk, .. } if chunk_id(chunk) == Some(&run.id)),
-        );
+        self.queue.retain(|q| queued_id(q) != Some(&run.id));
         self.segment().text = run.text;
         self.segment().tick().await;
     }
@@ -1284,8 +1474,8 @@ impl Turn {
             return;
         }
         run.sent = run.text.raw().len();
-        let chunk = run.chunk();
-        self.queue_chunk(chunk, String::new());
+        let id = run.id.clone();
+        self.queue_card(id);
     }
 
     /// `ToolCallPending`. A deliverable by name alone (`show`, …) starts its
@@ -1408,24 +1598,20 @@ impl Turn {
         self.tools
     }
 
-    /// Queue a reasoning card; one already queued for the same id is
-    /// replaced in place, so one flush carries one card per id.
+    /// Queue a finished reasoning card; one already queued for the same id
+    /// is replaced in place, so one flush carries one card per id.
     fn queue_chunk(&mut self, chunk: Chunk, card: String) {
         let blocks = self.fences.blocks;
         self.bubble.get_or_insert_with(|| Bubble::new(blocks));
         let id = chunk_id(&chunk).map(str::to_owned);
-        let slot = self.queue.iter_mut().find_map(|q| match q {
-            Queued::Chunk { chunk: c, card: k } if chunk_id(c).map(str::to_owned) == id => {
-                Some((c, k))
-            }
-            _ => None,
-        });
-        match slot {
-            Some((c, k)) => {
-                *c = chunk;
-                *k = card;
-            }
-            None => self.queue.push(Queued::Chunk { chunk, card }),
+        let q = Queued::Chunk { chunk, card };
+        match self
+            .queue
+            .iter_mut()
+            .find(|x| queued_id(x) == id.as_deref())
+        {
+            Some(slot) => *slot = q,
+            None => self.queue.push(q),
         }
     }
 
@@ -1433,51 +1619,126 @@ impl Turn {
         self.batches.iter().find(|b| b.id == id)
     }
 
+    /// The open reasoning run when its id is `id`.
+    fn run(&self, id: &str) -> Option<&ReasoningRun> {
+        self.reasoning_run.as_ref().filter(|r| r.id == id)
+    }
+
     /// Queued chunks that may go now, in queue order: reasoning cards, and
     /// batch cards that are due (`last` ignores the floor). The second
-    /// value names the batches rendered, for [`Self::mark_sent`] once the
+    /// value names the cards rendered, for [`Self::mark_sent`] once the
     /// call succeeds.
-    fn collect(&self, last: bool) -> (Vec<Chunk>, Vec<String>) {
+    fn collect(&self, last: bool) -> (Vec<Chunk>, Vec<Sent>) {
         let mut chunks = Vec::new();
         let mut sent = Vec::new();
         for q in &self.queue {
-            match q {
-                Queued::Chunk { chunk, .. } => chunks.push(chunk.clone()),
-                Queued::Card(id) => {
-                    if let Some(b) = self.batch(id)
-                        && emits(self.tools_mode, b)
-                        && b.due(last)
-                    {
-                        chunks.push(b.chunk());
-                        sent.push(id.clone());
-                    }
-                }
-            }
+            let (chunk, full) = match q {
+                Queued::Chunk { chunk, .. } => (chunk.clone(), String::new()),
+                Queued::Card(id) => match (self.batch(id), self.run(id)) {
+                    (Some(b), _) if emits(self.tools_mode, b) && b.due(last) => b.chunk(None),
+                    (None, Some(r)) => r.chunk(None),
+                    _ => continue,
+                },
+            };
+            sent.push((queued_id(q).unwrap_or_default().to_owned(), full));
+            chunks.push(chunk);
         }
         (chunks, sent)
     }
 
-    /// The batches in `sent` went on the wire; cards not yet due stay queued.
-    fn mark_sent(&mut self, sent: &[String]) {
+    /// The cards in `sent` went on the wire; cards not yet due stay queued.
+    fn mark_sent(&mut self, sent: &[Sent]) {
         let now = Instant::now();
-        for b in &mut self.batches {
-            if sent.contains(&b.id) {
+        for (id, full) in sent {
+            if let Some(b) = self.batches.iter_mut().find(|b| b.id == *id) {
                 b.dirty = false;
                 b.last_sent = Some(now);
+                b.shown.sent(full);
+            } else if let Some(r) = self.reasoning_run.as_mut().filter(|r| r.id == *id) {
+                r.on_wire = true;
+                r.shown.sent(full);
             }
         }
         self.queue
-            .retain(|q| matches!(q, Queued::Card(id) if !sent.contains(id)));
+            .retain(|q| !sent.iter().any(|(id, _)| queued_id(q) == Some(id)));
     }
 
-    /// The keepalive / rotation payload: the live batch card, else the live
-    /// reasoning card (110 §4.4, §4.6).
-    fn live_chunk(&self) -> Option<(Chunk, Option<String>)> {
-        self.batches
+    /// The keepalive payload: the live batch card, else the live reasoning
+    /// card (110 §4.4).
+    fn live_chunk(&self) -> Option<(Chunk, Sent)> {
+        let (id, (chunk, full)) = self
+            .batches
             .iter()
             .find(|b| b.open() && emits(self.tools_mode, b))
-            .map(|b| (b.chunk(), Some(b.id.clone())))
-            .or_else(|| self.reasoning_run.as_ref().map(|r| (r.chunk(), None)))
+            .map(|b| (&b.id, b.chunk(None)))
+            .or_else(|| self.reasoning_run.as_ref().map(|r| (&r.id, r.chunk(None))))?;
+        Some((chunk, (id.clone(), full)))
+    }
+
+    /// The cards' last word in a stream message that closes: everything
+    /// queued and every live card already in it, frozen by `close` (none
+    /// spins on in a message nobody updates again). On a rotation a live
+    /// card the message never showed waits for the next one.
+    fn finals(&self, close: Close) -> Vec<(Chunk, Sent)> {
+        let mut out = Vec::new();
+        for q in &self.queue {
+            let id = queued_id(q).unwrap_or_default();
+            let (chunk, full) = match q {
+                Queued::Chunk { chunk, .. } => (chunk.clone(), String::new()),
+                Queued::Card(_) => match (self.batch(id), self.run(id)) {
+                    (Some(b), _)
+                        if emits(self.tools_mode, b)
+                            && (b.last_sent.is_some() || !b.open() || close == Close::Finish) =>
+                    {
+                        b.chunk(Some(close))
+                    }
+                    (None, Some(r)) if r.on_wire => r.chunk(Some(close)),
+                    _ => continue,
+                },
+            };
+            out.push((chunk, (id.to_owned(), full)));
+        }
+        let queued = |id: &str| self.queue.iter().any(|q| queued_id(q) == Some(id));
+        for b in &self.batches {
+            if b.last_sent.is_some() && b.open() && emits(self.tools_mode, b) && !queued(&b.id) {
+                let (chunk, full) = b.chunk(Some(close));
+                out.push((chunk, (b.id.clone(), full)));
+            }
+        }
+        if let Some(r) = &self.reasoning_run
+            && r.on_wire
+            && !queued(&r.id)
+        {
+            let (chunk, full) = r.chunk(Some(close));
+            out.push((chunk, (r.id.clone(), full)));
+        }
+        out
+    }
+
+    /// The bubble closed (21 §8.4, 110 §4.6): the next message re-creates
+    /// the live cards and those whose last change did not get in, each
+    /// going on after the output Slack already shows.
+    fn carry_cards(&mut self) {
+        let mut carry = Vec::new();
+        for b in &mut self.batches {
+            b.last_sent = None;
+            b.shown.here = false;
+            if emits(self.tools_mode, b)
+                && (b.open() || b.dirty)
+                && !self.queue.iter().any(|q| queued_id(q) == Some(&b.id))
+            {
+                b.dirty = true;
+                carry.push(Queued::Card(b.id.clone()));
+            }
+        }
+        if let Some(r) = &mut self.reasoning_run {
+            r.on_wire = false;
+            r.shown.here = false;
+            if !self.queue.iter().any(|q| queued_id(q) == Some(&r.id)) {
+                carry.push(Queued::Card(r.id.clone()));
+            }
+        }
+        self.queue.splice(0..0, carry);
     }
 
     /// Called every [`TICK`] by the worker: reasoning, rotation, flush,
@@ -1507,7 +1768,9 @@ impl Turn {
         };
         b.text.finish();
         self.settle_pictures().await;
-        if let Some(cut) = self.rotation_cut() {
+        // A cut at the very end moves nothing on: the final stop carries it all.
+        let len = self.bubble.as_ref().map_or(0, |b| b.text.raw().len());
+        if let Some(cut) = self.rotation_cut().filter(|&cut| cut < len) {
             self.rotate(cut, cut, false).await;
         }
         let mut footer = footer.to_string();
@@ -1542,30 +1805,32 @@ impl Turn {
                 false
             }
             Mode::Stream(ts) => {
-                // Cards first: they completed before the text that follows them.
-                let (mut chunks, _) = self.collect(true);
-                self.queue.clear();
-                if b.sent < len {
-                    chunks.extend(b.segments(b.sent..len, BLOCKS_MAX - b.blocks_sent));
-                }
-                let stopped = self
-                    .api
-                    .stop_stream(
-                        &self.target.channel,
-                        ts,
-                        chunks,
+                let ts = ts.clone();
+                let closed = self
+                    .close_stream(
+                        &ts,
+                        &b,
+                        Some(len),
                         Some(footer.clone()),
-                        Some("active"),
+                        "active",
+                        Close::Finish,
                     )
                     .await;
-                if let Err(e) = stopped {
-                    tracing::warn!(error = %e, ts, "stopStream failed; repairing");
-                    self.publish_fallback(e.to_string()).await;
-                    let raw = b.out(0..len);
-                    self.repair(ts, &format!("{raw}\n\n_{footer}_")).await;
-                    return false;
+                self.queue.clear();
+                if !closed.whole {
+                    // What the stop could not take, and the footer, as a message of their own.
+                    self.publish_fallback("stopStream failed".to_owned()).await;
+                    let md = format!("{}\n\n_{footer}_", b.out(closed.shown..len));
+                    let t = &self.target;
+                    if let Err(e) = self
+                        .api
+                        .post_markdown(&t.channel, Some(&t.thread_ts), md.trim_start())
+                        .await
+                    {
+                        tracing::warn!(error = %e, "reply tail after a failed stopStream failed");
+                    }
                 }
-                true
+                closed.stopped
             }
             Mode::Update(ts) => {
                 self.flush_cards(true).await;
@@ -1601,129 +1866,188 @@ impl Turn {
         let Some(b) = &self.bubble else { return false };
         match b.mode {
             Mode::Unsent => !b.text.raw()[..b.streamable()].trim().is_empty(),
-            Mode::Stream(_) => b.sent < b.streamable(),
+            Mode::Stream(_) => b.sent < b.stream_end(),
             Mode::Update(_) => b.sent < b.text.committed(),
         }
     }
 
     /// Where to cut the open bubble if a rotation trigger fired (21 §8.4:
     /// size at a block boundary; age for streams). Never past the held
-    /// picture fence, never inside one.
+    /// picture fence, never inside one, and in a stream never before what
+    /// Slack shows (a stream takes nothing back).
     fn rotation_cut(&self) -> Option<usize> {
         let b = self.bubble.as_ref()?;
-        let aged = matches!(b.mode, Mode::Stream(_)) && b.opened.elapsed() >= BUBBLE_MAX_AGE;
-        if matches!(b.mode, Mode::Unsent) || !(aged || b.committed_chars() >= BUBBLE_SOFT_MAX) {
+        let stream = matches!(b.mode, Mode::Stream(_));
+        if matches!(b.mode, Mode::Unsent) {
             return None;
         }
         let raw = b.text.raw();
-        let committed = b.text.committed();
-        let cut = if raw[..committed].chars().count() <= MARKDOWN_TEXT_MAX {
-            committed
-        } else {
-            // ponytail: one block over the per-call cap (a giant fence): cut at
-            // its last newline under the cap; the rest renders raw next message.
-            let cap = raw
-                .char_indices()
-                .nth(MARKDOWN_TEXT_MAX)
-                .map_or(committed, |(i, _)| i);
-            raw[..cap].rfind('\n').map_or(cap, |i| i + 1)
+        // A stream goes on from `sent` with `used` spent; an update rewrites all.
+        let (from, used) = if stream { (b.sent, b.used) } else { (0, 0) };
+        let end = b.text.committed().max(from);
+        let aged = stream && b.opened.elapsed() >= BUBBLE_MAX_AGE;
+        if !aged && used + raw[from..end].chars().count() < BUBBLE_SOFT_MAX {
+            return None;
+        }
+        let cut = match raw[from..end]
+            .char_indices()
+            .nth(MARKDOWN_TEXT_MAX - used.min(MARKDOWN_TEXT_MAX))
+        {
+            None => end,
+            // The message holds something: the block goes on whole next.
+            Some(_) if used > 0 => from,
+            // ponytail: one block over the cap (a giant fence): cut at its
+            // last newline under the cap; the rest renders raw next message.
+            Some((i, _)) => raw[from..from + i]
+                .rfind('\n')
+                .map_or(from + i, |j| from + j + 1),
         };
         let cut = b.outside_fence(cut.min(b.streamable()));
-        // Nothing before the held fence: a size rotation would spin.
-        (aged || cut > 0).then_some(cut)
+        // ponytail: a block already streaming in past the boundary is split
+        // there; `stream_end` holds text back so only age or cards do that.
+        let cut = cut.max(from);
+        // Nothing before the held fence in an empty message: a rotation would spin.
+        (aged || cut > 0 || used > 0).then_some(cut)
     }
 
-    /// Close the open bubble at `cut` (a block boundary, or `raw.len()` when
-    /// the stream is dead) and start a fresh one seeded with `raw[resume..]`
-    /// (`cut`, or the end of a picture fence just uploaded), the live batch
-    /// cards and the live reasoning card (21 §8.4, 110 §4.6).
-    async fn rotate(&mut self, cut: usize, resume: usize, mut dead: bool) {
+    /// Close the open bubble at `cut` (a block boundary; a dead stream ends
+    /// where Slack stopped taking text) and start a fresh one seeded with
+    /// `raw[resume..]` (`cut`, or the end of a picture fence just uploaded),
+    /// the live cards going on in it (21 §8.4, 110 §4.6).
+    async fn rotate(&mut self, cut: usize, resume: usize, dead: bool) {
         let Some(mut b) = self.bubble.take() else {
             return;
         };
-        let t = &self.target;
+        // Text before `cut` the closed message could not take.
+        let mut tail = None;
         match &b.mode {
             Mode::Unsent => {}
             Mode::Stream(ts) => {
-                if !dead && b.sent < cut {
-                    let chunks = b.segments(b.sent..cut, BLOCKS_MAX - b.blocks_sent);
-                    match self.api.append_stream(&t.channel, ts, chunks).await {
-                        Ok(()) => {}
-                        Err(e) if is_dead(&e) => dead = true,
-                        Err(e) => {
-                            tracing::warn!(error = %e, ts, "final append before rotation failed")
-                        }
-                    }
-                }
-                if !dead {
-                    // stopStream defaults the session to `active`; the turn is
-                    // still running, so keep "Working…" and its Stop button.
-                    match self
-                        .api
-                        .stop_stream(&t.channel, ts, Vec::new(), None, Some("processing"))
-                        .await
-                    {
-                        Ok(()) => {}
-                        Err(e) if is_dead(&e) => dead = true,
-                        Err(e) => tracing::warn!(error = %e, ts, "stopStream on rotation failed"),
-                    }
-                }
+                let ts = ts.clone();
                 if dead {
                     self.publish_fallback("stream died".to_owned()).await;
                 }
-                // Streaming shows raw deltas past the block boundary; trim them
-                // so the text does not appear in two messages.
-                if dead || b.sent > cut {
-                    self.repair(ts, &b.out(0..cut)).await;
-                }
+                // stopStream defaults the session to `active`; the turn is
+                // still running, so keep "Working…" and its Stop button.
+                let closed = self
+                    .close_stream(
+                        &ts,
+                        &b,
+                        (!dead).then_some(cut),
+                        None,
+                        "processing",
+                        Close::Rotate,
+                    )
+                    .await;
+                tail = (closed.shown < cut).then_some(closed.shown);
             }
             Mode::Update(ts) => {
                 let (md, posts) = b.split(0..cut);
                 if b.sent != cut {
                     self.repair(ts, &md).await;
                 }
-                post_fence_blocks(&*self.api, t, &mut b, posts).await;
+                post_fence_blocks(&*self.api, &self.target, &mut b, posts).await;
             }
         }
+        self.carry_cards();
+        let raw = b.text.raw();
         let mut next = Bubble::new(self.fences.blocks);
-        let rest = &b.text.raw()[resume..];
+        if let Some(from) = tail {
+            next.text.push(&raw[from..cut]);
+        }
         next.text.push(if resume > cut {
-            rest.trim_start_matches(['\n', '\r'])
+            raw[resume..].trim_start_matches(['\n', '\r'])
         } else {
-            rest
+            &raw[resume..]
         });
         if b.text.is_done() {
             next.text.finish();
         }
-        let mut reemit = Vec::new();
-        for b in &mut self.batches {
-            if b.open() && emits(self.tools_mode, b) {
-                b.last_sent = None;
-                b.dirty = true;
-                if !self
-                    .queue
-                    .iter()
-                    .any(|q| matches!(q, Queued::Card(id) if *id == b.id))
-                {
-                    reemit.push(Queued::Card(b.id.clone()));
-                }
-            }
-        }
-        if let Some(run) = &self.reasoning_run
-            && !self.queue.iter().any(
-                |q| matches!(q, Queued::Chunk { chunk, .. } if chunk_id(chunk) == Some(&run.id)),
-            )
-        {
-            reemit.push(Queued::Chunk {
-                chunk: run.chunk(),
-                card: String::new(),
-            });
-        }
-        self.queue.splice(0..0, reemit);
         self.bubble = Some(next);
     }
 
-    /// `chat.update` a stopped or dead stream with its full text; one retry.
+    /// End stream `ts` of `b` (21 §8.4) with one `stopStream`: the cards'
+    /// [`Self::finals`], `raw[sent..cut]` (`None` for a stream that died),
+    /// `footer` and session `status`. A stream Slack still holds open
+    /// refuses `chat.update` (`streaming_state_conflict`), so a stop that
+    /// fails, or would not fit, is retried with the cards' states only — no
+    /// card spins on — then bare; their output and the text go on next.
+    async fn close_stream(
+        &mut self,
+        ts: &str,
+        b: &Bubble,
+        cut: Option<usize>,
+        footer: Option<String>,
+        status: &str,
+        close: Close,
+    ) -> Closed {
+        let finals = self.finals(close);
+        let end = cut.filter(|&c| c > b.sent);
+        let mut chunks: Vec<Chunk> = finals.iter().map(|(c, _)| c.clone()).collect();
+        if let Some(end) = end {
+            chunks.extend(b.segments(b.sent..end, BLOCKS_MAX - b.blocks_sent));
+        }
+        let api = Arc::clone(&self.api);
+        let channel = self.target.channel.clone();
+        let mut over = Closed {
+            shown: b.sent,
+            whole: false,
+            stopped: false,
+        };
+        if b.used + weight(&chunks) <= MARKDOWN_TEXT_MAX {
+            match api
+                .stop_stream(&channel, ts, chunks, footer, Some(status))
+                .await
+            {
+                Ok(()) => {
+                    let sent: Vec<Sent> = finals.into_iter().map(|(_, s)| s).collect();
+                    self.mark_sent(&sent);
+                    return Closed {
+                        shown: end.unwrap_or(b.sent),
+                        whole: true,
+                        stopped: true,
+                    };
+                }
+                Err(e) if ended(&e) => {
+                    tracing::warn!(error = %e, ts, "stream ended before its stop");
+                    return over;
+                }
+                Err(e) => tracing::warn!(error = %e, ts, "stopStream failed; stopping bare"),
+            }
+        }
+        let (states, mut kept): (Vec<Chunk>, Vec<Option<Sent>>) = finals
+            .into_iter()
+            .map(|(c, s)| match c {
+                Chunk::Task {
+                    output: Some(_), ..
+                } => (without_output(c), None),
+                c => (c, Some(s)),
+            })
+            .unzip();
+        for chunks in [states, Vec::new()] {
+            let bare = chunks.is_empty();
+            match api
+                .stop_stream(&channel, ts, chunks, None, Some(status))
+                .await
+            {
+                Ok(()) => {
+                    // A card whose output had nothing new said its last word.
+                    if !bare {
+                        let sent: Vec<Sent> =
+                            std::mem::take(&mut kept).into_iter().flatten().collect();
+                        self.mark_sent(&sent);
+                    }
+                    over.stopped = true;
+                    return over;
+                }
+                Err(e) if ended(&e) => return over,
+                Err(e) => tracing::warn!(error = %e, ts, bare, "stopStream failed"),
+            }
+        }
+        over
+    }
+
+    /// `chat.update` an update-mode bubble with its text; one retry.
     async fn repair(&self, ts: &str, md: &str) {
         let md = if md.trim().is_empty() { "…" } else { md };
         for attempt in 0..2 {
@@ -1774,9 +2098,9 @@ impl Turn {
     }
 
     /// The first picture fence ready to be drawn, its text before it already
-    /// out: uploaded and the bubble rotated past it, or settled as text;
-    /// then the text flushed again. `false` when there is none, or its
-    /// bubble could not be opened.
+    /// out: drawn, the bubble closed before it, uploaded and the next bubble
+    /// started past it — or settled as text in place; then the text flushed
+    /// again. `false` when there is none, or its bubble could not be opened.
     async fn settle_next(&mut self) -> bool {
         let Some(b) = self.bubble.as_ref() else {
             return false;
@@ -1784,10 +2108,32 @@ impl Turn {
         let Some(p) = b.next_picture() else {
             return false;
         };
-        if matches!(b.mode, Mode::Unsent) && p.range.start > 0 {
+        let fresh = matches!(b.mode, Mode::Unsent);
+        if fresh && p.range.start > 0 {
             return false;
         }
+        // Over this message's block budget but within a fresh one's: the
+        // next message takes it as Block Kit.
+        if !fresh && block_form(&p.fence(), self.fences.blocks, BLOCKS_MAX).is_some() {
+            self.rotate(p.range.start, p.range.start, false).await;
+            self.flush_text().await;
+            return true;
+        }
         let file = picture_file(&self.rt, self.fences.pictures, &p.fence()).await;
+        let mut p = p;
+        if file.is_some() && !fresh {
+            // Close the message first: the picture then follows every word
+            // before it, even ones a failed stop moves into the next bubble.
+            self.rotate(p.range.start, p.range.start, false).await;
+            match self.bubble.as_ref().and_then(Bubble::next_picture) {
+                Some(q) if q.range.start == 0 => p = q,
+                // That text goes first; the next round draws it again.
+                _ => {
+                    self.flush_text().await;
+                    return true;
+                }
+            }
+        }
         let uploaded = match file {
             Some(file) => {
                 let t = &self.target;
@@ -1879,7 +2225,7 @@ impl Turn {
         let Some(b) = self.bubble.as_ref() else {
             return Err(None);
         };
-        let end = b.streamable();
+        let end = b.stream_end();
         let (mut chunks, sent) = self.collect(false);
         if end > 0 {
             // A bubble after a picture starts at the prose, not the fence's blank line.
@@ -1894,6 +2240,7 @@ impl Turn {
             );
         }
         let blocks_sent = blocks_in(&chunks);
+        let used = weight(&chunks);
         let t = &self.target;
         match self
             .api
@@ -1904,6 +2251,7 @@ impl Turn {
                 let b = self.bubble.as_mut().expect("bubble present");
                 b.mode = Mode::Stream(ts);
                 b.sent = end;
+                b.used = used;
                 b.blocks_sent = blocks_sent;
                 b.opened = Instant::now();
                 b.last_append = b.opened;
@@ -1933,7 +2281,7 @@ impl Turn {
             return;
         };
         let Mode::Stream(ts) = &b.mode else { return };
-        let end = b.streamable();
+        let end = b.stream_end();
         let (mut chunks, mut sent) = self.collect(false);
         if b.sent < end {
             chunks.extend(b.segments(b.sent..end, BLOCKS_MAX - b.blocks_sent));
@@ -1947,7 +2295,14 @@ impl Turn {
                 return;
             };
             chunks.push(live);
-            sent.extend(id);
+            sent.push(id);
+        }
+        let used = weight(&chunks);
+        if b.used + used > MARKDOWN_TEXT_MAX {
+            // Slack would refuse it (`msg_too_long`): this goes on in the next message.
+            let cut = b.sent;
+            self.rotate(cut, cut, false).await;
+            return;
         }
         match self
             .api
@@ -1957,14 +2312,15 @@ impl Turn {
             Ok(()) => {
                 let b = self.bubble.as_mut().expect("bubble present");
                 b.sent = end;
+                b.used += used;
                 b.blocks_sent += blocks_sent;
                 b.last_append = Instant::now();
                 self.mark_sent(&sent);
             }
             Err(e) if is_dead(&e) => {
-                tracing::warn!(error = %e, ts, "stream died; repairing");
-                // Up to the held fence: the fence itself moves on whole.
-                let cut = b.streamable();
+                tracing::warn!(error = %e, ts, "stream died; stopping it and going on in a new one");
+                // Slack shows what it took up to `sent`; the rest moves on.
+                let cut = b.sent;
                 self.rotate(cut, cut, true).await;
             }
             Err(e) => tracing::warn!(error = %e, ts, "appendStream failed; will retry"),
@@ -2088,6 +2444,43 @@ fn is_dead(e: &ApiError) -> bool {
         ApiError::Slack(code) => DEAD_CODES.contains(&code.as_str()),
         ApiError::Transport(_) => false,
     }
+}
+
+/// The stop is moot: Slack ended the message already ([`ENDED_CODES`]).
+fn ended(e: &ApiError) -> bool {
+    matches!(e, ApiError::Slack(code) if ENDED_CODES.contains(&code.as_str()))
+}
+
+/// A card update with its state only, for a stop that must get through.
+fn without_output(c: Chunk) -> Chunk {
+    match c {
+        Chunk::Task {
+            id,
+            title,
+            status,
+            details,
+            sources,
+            ..
+        } => Chunk::Task {
+            id,
+            title,
+            status,
+            details,
+            output: None,
+            sources,
+        },
+        c => c,
+    }
+}
+
+/// How [`Turn::close_stream`] left the message.
+struct Closed {
+    /// The end of the bubble's text Slack shows.
+    shown: usize,
+    /// The first stop went through: text, cards and footer all in.
+    whole: bool,
+    /// Some stop went through with the session status.
+    stopped: bool,
 }
 
 /// Update-mode text segment used for reasoning (21 §8.5): one message posted
@@ -2410,7 +2803,7 @@ fn thought_title(ms: u64) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
     use std::sync::{Mutex, PoisonError};
 
     use artifact::preview::Client;
@@ -2454,11 +2847,35 @@ pub(crate) mod tests {
         },
     }
 
+    /// One thread message as Slack holds it.
+    #[derive(Clone, Debug, Default)]
+    struct Msg {
+        ts: String,
+        text: String,
+        cards: Vec<Card>,
+        /// Still streaming.
+        open: bool,
+        /// Chars counted against the stream cap.
+        used: usize,
+        /// An uploaded picture's title, instead of text.
+        picture: Option<String>,
+    }
+
+    /// A fake Slack that keeps the thread the way Slack does: a stream
+    /// takes text and card output up to `cap` chars in total (then
+    /// `msg_too_long`, nothing applied), a card's `output` is appended,
+    /// its title, status and details replaced, and `chat.update` on a
+    /// message still streaming is `streaming_state_conflict`.
     #[derive(Default)]
     struct FakeApi {
         calls: Mutex<Vec<Call>>,
         fail_next: Mutex<HashMap<&'static str, ApiError>>,
         seq: AtomicU32,
+        thread: Mutex<Vec<Msg>>,
+        /// Stream cap; 0 is Slack's 12 000.
+        cap: AtomicUsize,
+        /// `msg_too_long` and `streaming_state_conflict` answers.
+        refused: AtomicU32,
     }
 
     impl FakeApi {
@@ -2525,6 +2942,111 @@ pub(crate) mod tests {
                 .filter(|c| matches!(c, Chunk::Task { .. }))
                 .collect()
         }
+
+        fn thread(&self) -> Vec<Msg> {
+            self.thread
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+
+        fn refuse(&self, code: &str) -> ApiError {
+            self.refused.fetch_add(1, Ordering::Relaxed);
+            ApiError::Slack(code.to_owned())
+        }
+
+        /// Slack's view of `chunks` on stream `ts`: refused, or applied
+        /// (and the stream closed by a stop).
+        fn stream(&self, ts: &str, chunks: &[Chunk], stop: bool) -> Result<(), ApiError> {
+            let cap = match self.cap.load(Ordering::Relaxed) {
+                0 => MARKDOWN_TEXT_MAX,
+                n => n,
+            };
+            let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(m) = thread.iter_mut().find(|m| m.ts == ts) else {
+                return Err(ApiError::Slack("message_not_found".into()));
+            };
+            if !m.open {
+                return Err(ApiError::Slack("message_not_in_streaming_state".into()));
+            }
+            let weight: usize = chunks
+                .iter()
+                .map(|c| match c {
+                    Chunk::Text(s) => s.chars().count(),
+                    Chunk::Task { output, .. } => output.as_ref().map_or(0, |o| o.chars().count()),
+                    Chunk::Blocks(_) => 0,
+                })
+                .sum();
+            if m.used + weight > cap {
+                drop(thread);
+                return Err(self.refuse("msg_too_long"));
+            }
+            m.used += weight;
+            for c in chunks {
+                match c.clone() {
+                    Chunk::Text(s) => m.text.push_str(&s),
+                    Chunk::Blocks(_) => {}
+                    Chunk::Task {
+                        id,
+                        title,
+                        status,
+                        details,
+                        output,
+                        sources,
+                    } => {
+                        let i = match m.cards.iter().position(|k| k.id == id) {
+                            Some(i) => i,
+                            None => {
+                                m.cards.push(Card {
+                                    id,
+                                    title: String::new(),
+                                    status: TaskStatus::Pending,
+                                    details: None,
+                                    output: None,
+                                    sources: Vec::new(),
+                                });
+                                m.cards.len() - 1
+                            }
+                        };
+                        let k = &mut m.cards[i];
+                        k.title = title;
+                        k.status = status;
+                        if details.is_some() {
+                            k.details = details;
+                        }
+                        if let Some(o) = output {
+                            k.output.get_or_insert_default().push_str(&o);
+                        }
+                        if !sources.is_empty() {
+                            k.sources = sources;
+                        }
+                    }
+                }
+            }
+            m.open &= !stop;
+            Ok(())
+        }
+
+        /// An injected `code` for `ts` that means Slack ended it.
+        fn injected(&self, method: &'static str, ts: &str) -> Result<(), ApiError> {
+            let r = self.check(method);
+            if let Err(ApiError::Slack(code)) = &r
+                && code == "message_not_in_streaming_state"
+            {
+                let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(m) = thread.iter_mut().find(|m| m.ts == ts) {
+                    m.open = false;
+                }
+            }
+            r
+        }
+
+        fn push(&self, m: Msg) {
+            self.thread
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(m);
+        }
     }
 
     #[async_trait]
@@ -2539,6 +3061,18 @@ pub(crate) mod tests {
         ) -> Result<String, ApiError> {
             self.check("start")?;
             let ts = self.next_ts();
+            self.push(Msg {
+                ts: ts.clone(),
+                open: true,
+                ..Msg::default()
+            });
+            if let Err(e) = self.stream(&ts, &chunks, false) {
+                self.thread
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .retain(|m| m.ts != ts);
+                return Err(e);
+            }
             self.record(Call::Start {
                 ts: ts.clone(),
                 chunks,
@@ -2551,7 +3085,8 @@ pub(crate) mod tests {
             ts: &str,
             chunks: Vec<Chunk>,
         ) -> Result<(), ApiError> {
-            self.check("append")?;
+            self.injected("append", ts)?;
+            self.stream(ts, &chunks, false)?;
             self.record(Call::Append {
                 ts: ts.to_owned(),
                 chunks,
@@ -2566,7 +3101,8 @@ pub(crate) mod tests {
             footer: Option<String>,
             session_status: Option<&str>,
         ) -> Result<(), ApiError> {
-            self.check("stop")?;
+            self.injected("stop", ts)?;
+            self.stream(ts, &chunks, true)?;
             self.record(Call::Stop {
                 ts: ts.to_owned(),
                 chunks,
@@ -2585,7 +3121,13 @@ pub(crate) mod tests {
             self.record(Call::Post {
                 md: markdown.to_owned(),
             });
-            Ok(self.next_ts())
+            let ts = self.next_ts();
+            self.push(Msg {
+                ts: ts.clone(),
+                text: markdown.to_owned(),
+                ..Msg::default()
+            });
+            Ok(ts)
         }
         async fn update_markdown(
             &self,
@@ -2594,6 +3136,18 @@ pub(crate) mod tests {
             markdown: &str,
         ) -> Result<(), ApiError> {
             self.check("update")?;
+            {
+                let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(m) = thread.iter_mut().find(|m| m.ts == ts) {
+                    if m.open {
+                        drop(thread);
+                        return Err(self.refuse("streaming_state_conflict"));
+                    }
+                    // `markdown_text` replaces the message, cards and all.
+                    markdown.clone_into(&mut m.text);
+                    m.cards.clear();
+                }
+            }
             self.record(Call::Update {
                 ts: ts.to_owned(),
                 md: markdown.to_owned(),
@@ -2608,7 +3162,12 @@ pub(crate) mod tests {
         ) -> Result<String, ApiError> {
             self.check("post_blocks")?;
             self.record(Call::PostBlocks { blocks });
-            Ok(self.next_ts())
+            let ts = self.next_ts();
+            self.push(Msg {
+                ts: ts.clone(),
+                ..Msg::default()
+            });
+            Ok(ts)
         }
         async fn update_blocks(
             &self,
@@ -2655,6 +3214,10 @@ pub(crate) mod tests {
         ) -> Result<String, ApiError> {
             self.check("upload_file")?;
             assert_eq!(thread_ts, Some("1.0"), "pictures go into the thread");
+            self.push(Msg {
+                picture: Some(files[0].title.clone().unwrap_or_default()),
+                ..Msg::default()
+            });
             self.record(Call::UploadFile {
                 files: files.to_vec(),
                 comment: comment.map(str::to_owned),
@@ -2864,8 +3427,8 @@ pub(crate) mod tests {
         );
         let [
             Call::Start { .. },
-            Call::UploadFile { files, .. },
             Call::Stop { .. },
+            Call::UploadFile { files, .. },
             Call::Start { chunks, .. },
             Call::Stop { .. },
         ] = &calls[..]
@@ -2977,10 +3540,11 @@ pub(crate) mod tests {
         assert!(!md.contains("Rollout"), "{md}");
     }
 
-    /// 110 §8, 164 D9: once a bubble carries 50 blocks, a further fence over
-    /// the cap is a picture, not blocks.
+    /// 110 §8, 164 D9: once a bubble carries 50 blocks, a further fence that
+    /// fits a fresh message closes this one and is Block Kit in the next —
+    /// nothing drawn.
     #[tokio::test(start_paused = true)]
-    async fn fence_over_the_fifty_block_cap_is_a_picture() {
+    async fn fence_over_the_fifty_block_cap_opens_the_next_message() {
         // A Stack of 30 Separators: 30 `divider` blocks.
         let ids: Vec<String> = (0..30).map(|i| format!("\"d{i}\"")).collect();
         let elements: Vec<String> = (0..30)
@@ -3003,7 +3567,6 @@ pub(crate) mod tests {
         let [
             Call::Start { chunks: first, .. },
             Call::Append { chunks: second, .. },
-            Call::UploadFile { files, .. },
             Call::Stop { status, .. },
             Call::Start { chunks: third, .. },
         ] = &calls[..]
@@ -3014,11 +3577,13 @@ pub(crate) mod tests {
             matches!(&first[..], [Chunk::Text(_), Chunk::Blocks(b), Chunk::Text(_)] if b.as_array().unwrap().len() == 30),
             "{first:?}"
         );
-        // 30 + 30 > 50: the second fence is a picture between B and C.
+        // 30 + 30 > 50: the message closes after B; the fence opens the next.
         assert_eq!(second, &vec![Chunk::Text("B\n\n".into())]);
-        assert_eq!(files[0].bytes, png(2, 2));
         assert_eq!(status.as_deref(), Some("processing"));
-        assert_eq!(third, &vec![Chunk::Text("C\n\n".into())]);
+        assert!(
+            matches!(&third[..], [Chunk::Blocks(b), Chunk::Text(c)] if b.as_array().unwrap().len() == 30 && c.trim() == "C"),
+            "{third:?}"
+        );
         assert!(!all_text(&api).contains("Separator"), "{calls:?}");
     }
 
@@ -3043,13 +3608,13 @@ pub(crate) mod tests {
                 chunks: before,
                 ..
             },
-            Call::UploadFile { files, comment },
             Call::Stop {
                 ts: stopped,
                 chunks: none,
                 status,
                 ..
             },
+            Call::UploadFile { files, comment },
             Call::Start { chunks: after, .. },
             Call::Stop { footer: foot, .. },
         ] = &calls[..]
@@ -3095,11 +3660,11 @@ pub(crate) mod tests {
         let calls = api.calls();
         let [
             Call::Post { md: live },
-            Call::UploadFile { files, .. },
             Call::Update {
                 ts: first,
                 md: closed,
             },
+            Call::UploadFile { files, .. },
             Call::Post { .. },
             Call::Update {
                 ts: second,
@@ -3232,8 +3797,8 @@ pub(crate) mod tests {
         let calls = api.calls();
         let [
             Call::Start { chunks: first, .. },
-            Call::UploadFile { files, .. },
             Call::Stop { .. },
+            Call::UploadFile { files, .. },
             Call::Start { chunks: second, .. },
             Call::Stop { .. },
         ] = &calls[..]
@@ -3287,8 +3852,8 @@ pub(crate) mod tests {
         let calls = api.calls();
         let [
             Call::Start { .. },
-            Call::UploadFile { files, .. },
             Call::Stop { status, .. },
+            Call::UploadFile { files, .. },
             Call::Post { md },
         ] = &calls[..]
         else {
@@ -3383,33 +3948,208 @@ pub(crate) mod tests {
         assert!(quiet.calls().is_empty());
     }
 
+    /// 21 §8.4: a stream that takes no more is stopped as it stands —
+    /// never `chat.update`d, which Slack refuses while it streams — and the
+    /// rest goes on in a new one with the live card.
     #[tokio::test(start_paused = true)]
-    async fn dead_stream_is_repaired_and_reopened() {
-        let api = FakeApi::new();
-        let mut t = turn(&api, ToolCards::All);
-        t.text("para one\n\n").await;
+    async fn dead_stream_is_stopped_and_goes_on_in_a_new_one() {
+        for code in ["message_not_in_streaming_state", "msg_too_long"] {
+            let api = FakeApi::new();
+            let mut t = turn(&api, ToolCards::All);
+            t.text("para one\n\n").await;
+            t.tick().await;
+            t.tool_started("c1", "shell", &serde_json::json!({"command": "ls"}))
+                .await;
+            t.text("more").await;
+            api.fail("append", code);
+            t.tick().await;
+            assert_eq!(t.open_stream(), None, "{code}");
+            t.tick().await;
+            let calls = api.calls();
+            assert!(
+                !calls.iter().any(|c| matches!(c, Call::Update { .. })),
+                "{code}: {calls:?}"
+            );
+            let thread = api.thread();
+            let [old, new] = &thread[..] else {
+                panic!("{code}: {thread:?}")
+            };
+            assert_eq!(
+                (old.text.as_str(), old.open),
+                ("para one\n\n", false),
+                "{code}"
+            );
+            assert_eq!(new.text, "more", "{code}");
+            assert_eq!(new.cards[0].id, "c1");
+            assert_eq!(new.cards[0].status, TaskStatus::InProgress);
+            assert_eq!(t.open_stream(), Some(new.ts.as_str()));
+            assert_eq!(api.refused.load(Ordering::Relaxed), 0, "{code}");
+        }
+    }
+
+    /// `s` fed as deltas of ≤ 120 bytes (ASCII), a tick after each.
+    async fn feed(t: &mut Turn, s: &str, reasoning: bool) {
+        for piece in s.as_bytes().chunks(120) {
+            let piece = std::str::from_utf8(piece).unwrap();
+            if reasoning {
+                t.reasoning(piece).await;
+            } else {
+                t.text(piece).await;
+            }
+            t.tick().await;
+            tokio::time::advance(EDIT_FLOOR / 2).await;
+        }
+    }
+
+    /// `n` chars of fixed-width lines `tag-NNN …`: no line is another's
+    /// prefix, so a line split across two messages never fakes a repeat.
+    fn lines_of(tag: &str, n: usize) -> String {
+        (0..)
+            .map(|i| format!("{tag}-{i:03} lorem ipsum dolor sit amet\n"))
+            .scan(0, |len, l| {
+                *len += l.len();
+                (*len <= n.max(l.len())).then_some(l)
+            })
+            .collect()
+    }
+
+    /// A whole `shell` call over two ticks, the card floor passing.
+    async fn slow_call(t: &mut Turn, id: &str) {
+        t.tool_started(id, "shell", &sh(id)).await;
         t.tick().await;
-        t.tool_started("c1", "shell", &serde_json::json!({"command": "ls"}))
-            .await;
-        t.text("more").await;
-        api.fail("append", "message_not_in_streaming_state");
+        tokio::time::advance(EDIT_FLOOR).await;
+        t.tool_finished(id, &format!("{id} ok"), false).await;
         t.tick().await;
-        let calls = api.calls();
-        let Call::Update { ts, md } = calls.last().unwrap() else {
-            panic!("{calls:?}")
-        };
-        assert_eq!(ts, "ts0");
-        assert_eq!(md, "para one\n\nmore");
-        assert_eq!(t.open_stream(), None);
-        t.tick().await;
-        let starts = api.starts();
-        assert_eq!(starts.len(), 2);
+    }
+
+    /// The reply Sky's thread of 2026-11-03 died on, `scale` chars of text
+    /// and reasoning in all: leading reasoning, a batch with a long thought
+    /// between two calls, a Graph fence, two calls, a mermaid fence,
+    /// trailing reasoning, text; then the turn ends. Returns the text Slack
+    /// should show, `[pic]` where a picture goes.
+    async fn long_reply(t: &mut Turn, scale: usize) -> String {
+        let mut want = String::new();
+        let part = scale / 6;
+        feed(t, &lines_of("lead", part), true).await;
+        let intro = lines_of("intro", part) + "\n";
+        feed(t, &intro, false).await;
+        want.push_str(&intro);
+        slow_call(t, "c1").await;
+        feed(t, &lines_of("mid", part), true).await;
+        t.reasoning_done(9_000);
+        slow_call(t, "c2").await;
+        let graph = format!("## 1 Graph\n\n```json-render\n{GRAPH_SPEC}\n```\n\n");
+        feed(t, &graph, false).await;
+        want.push_str("## 1 Graph\n\n[pic]");
+        let after = lines_of("after", part) + "\n";
+        feed(t, &after, false).await;
+        want.push_str(&after);
+        slow_call(t, "c3").await;
+        slow_call(t, "c4").await;
+        feed(
+            t,
+            "## 2 Mermaid\n\n```mermaid\nsequenceDiagram\n  A->>B: hi\n```\n\n",
+            false,
+        )
+        .await;
+        want.push_str("## 2 Mermaid\n\n[pic]");
+        feed(t, &lines_of("tail", part), true).await;
+        let end = lines_of("end", part);
+        feed(t, &end, false).await;
+        want.push_str(&end);
+        t.finish(footer()).await;
+        want
+    }
+
+    /// The thread as Slack shows it is the reply: every message stopped,
+    /// no card left spinning, no card line twice anywhere, a `Thought`
+    /// card without a `details` copy of its body, both pictures once and
+    /// in place, the text complete.
+    fn assert_thread_is(api: &FakeApi, want: &str) {
+        let mut got = String::new();
+        let mut lines = std::collections::HashSet::new();
+        for m in api.thread() {
+            assert!(!m.open, "left streaming: {m:?}");
+            if m.picture.is_some() {
+                got.push_str("[pic]");
+                continue;
+            }
+            got.push_str(&m.text);
+            for c in &m.cards {
+                assert!(
+                    matches!(c.status, TaskStatus::Complete | TaskStatus::Error),
+                    "spinning: {c:?}"
+                );
+                if c.id.starts_with("reasoning-") {
+                    assert_eq!(c.details, None, "{c:?}");
+                }
+                for l in c.output.iter().flat_map(|o| o.lines()) {
+                    assert!(
+                        l.is_empty() || lines.insert(l.to_owned()),
+                        "shown twice: {l}"
+                    );
+                }
+            }
+        }
         assert!(
-            starts[1].iter().any(|c| matches!(c, Chunk::Task { id, status: TaskStatus::InProgress, .. } if id == "c1")),
-            "{:?}",
-            starts[1]
+            lines
+                .iter()
+                .any(|l| l.starts_with("💭 thought 9 s — mid-000")),
+            "{lines:?}"
         );
-        assert_eq!(t.open_stream(), Some("ts1"));
+        assert!(
+            lines.contains("tail-000 lorem ipsum dolor sit amet"),
+            "{lines:?}"
+        );
+        let squash = |s: &str| -> String {
+            s.replace(&format!("_{}_", footer()), "")
+                .split_whitespace()
+                .collect()
+        };
+        assert_eq!(squash(&got), squash(want));
+    }
+
+    /// 164: a reply past Slack's 12 000 chars per stream — text and card
+    /// output together — rolls over before Slack refuses anything.
+    #[tokio::test(start_paused = true)]
+    async fn long_reply_rolls_over_before_slack_refuses() {
+        let api = FakeApi::new();
+        let rt = runtime_with_renderer(png(8, 8)).await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, true, true);
+        let want = long_reply(&mut t, 48_000).await;
+        assert_eq!(api.refused.load(Ordering::Relaxed), 0, "{:?}", api.calls());
+        // Two pictures make three streams; the size makes more.
+        let sizes: Vec<(usize, usize, usize)> = api
+            .thread()
+            .iter()
+            .map(|m| (m.text.len(), m.used, m.cards.len()))
+            .collect();
+        assert!(
+            api.starts().len() >= 5,
+            "{} streams: {sizes:?}",
+            api.starts().len()
+        );
+        assert_thread_is(&api, &want);
+    }
+
+    /// 164: when Slack's cap is far below what the bubble budgets for,
+    /// streams die `msg_too_long` again and again and the reply survives:
+    /// each dead stream is stopped (Slack refuses `chat.update` while it
+    /// streams), the next goes on where it ended, pictures stay in place.
+    #[tokio::test(start_paused = true)]
+    async fn streams_dying_msg_too_long_lose_and_repeat_nothing() {
+        let api = FakeApi::new();
+        api.cap.store(1_000, Ordering::Relaxed);
+        let rt = runtime_with_renderer(png(8, 8)).await;
+        let mut t = turn_in(rt, &api, ToolCards::All, true, true, true);
+        let want = long_reply(&mut t, 6_000).await;
+        assert!(api.refused.load(Ordering::Relaxed) > 0, "the cap never bit");
+        assert!(
+            !api.calls().iter().any(|c| matches!(c, Call::Update { .. })),
+            "{:?}",
+            api.calls()
+        );
+        assert_thread_is(&api, &want);
     }
 
     #[tokio::test(start_paused = true)]
@@ -3559,33 +4299,38 @@ pub(crate) mod tests {
         t.tick().await;
     }
 
-    /// Stream mode: every output of the `reasoning-1` card extends the one before (append-safe,
-    /// nothing retracted), none shows a fence line or the body, the last ends with the D7 text.
+    /// Stream mode: the `reasoning-1` card's output, as Slack appends it, never shows a fence
+    /// line or the body at any point, and ends as the D7 text exactly once — no send repeats
+    /// what an earlier one showed; the `Thought` card has no `details` to repeat it either.
     #[tokio::test(start_paused = true)]
     async fn stream_reasoning_never_shows_a_picture_fence_body() {
         let api = FakeApi::new();
         let mut t = turn(&api, ToolCards::All);
         stream_fenced_thinking(&mut t).await;
-        let outs: Vec<(TaskStatus, String)> = task_of(&api.task_chunks(), "reasoning-1")
+        let outs: Vec<String> = task_of(&api.task_chunks(), "reasoning-1")
             .into_iter()
-            .map(|(s, _, o)| (s, o.unwrap_or_default()))
+            .filter_map(|(_, _, o)| o)
             .collect();
         assert!(outs.len() > 2, "{outs:?}");
-        for w in outs.windows(2) {
-            assert!(w[1].1.starts_with(&w[0].1), "retracted: {w:?}");
-        }
-        for (_, o) in &outs {
-            assert!(!leaks_fence(o), "{o}");
+        let mut shown = String::new();
+        let mut seen = Vec::new();
+        for o in &outs {
+            shown.push_str(o);
+            assert!(!leaks_fence(&shown), "{shown}");
+            seen.push(shown.clone());
         }
         assert!(
-            outs.iter().any(|(_, o)| o == "Let me reproduce it:\n\n"),
-            "{outs:?}"
+            seen.iter().any(|s| s == "Let me reproduce it:\n\n"),
+            "{seen:?}"
         );
-        let (status, last) = outs.last().unwrap();
-        assert_eq!(*status, TaskStatus::Complete);
+        let card = last_card(&api, "reasoning-1");
+        assert_eq!(card.status, TaskStatus::Complete);
+        assert_eq!(card.details, None);
+        let body = card.output.unwrap();
+        assert_eq!(body, reasoning_text(FENCED_THINKING, false));
         assert!(
-            last.contains("Alpha") && last.ends_with("```\n\nDone."),
-            "{last}"
+            body.contains("Alpha") && body.ends_with("```\n\nDone."),
+            "{body}"
         );
         // A thought line inside a batch card: the same rule.
         let mut th = Thought::new(&FENCED_THINKING["Let me reproduce it:\n\n".len()..]);
@@ -3689,7 +4434,7 @@ pub(crate) mod tests {
         assert!(matches!(api.calls().last().unwrap(), Call::Post { md } if md == "_thinking…_"));
     }
 
-    #[derive(Debug)]
+    #[derive(Clone, Debug)]
     struct Card {
         id: String,
         title: String,
@@ -3723,11 +4468,12 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// The last card sent for `id`.
+    /// Card `id` as Slack shows it in the last message holding it.
     fn last_card(api: &FakeApi, id: &str) -> Card {
-        cards(&api.task_chunks())
+        api.thread()
             .into_iter()
-            .rfind(|c| c.id == id)
+            .rev()
+            .find_map(|m| m.cards.into_iter().find(|c| c.id == id))
             .unwrap_or_else(|| panic!("no card {id}: {:?}", api.calls()))
     }
 
@@ -3833,10 +4579,7 @@ pub(crate) mod tests {
         t.tick().await;
         let early = last_card(&api, "a");
         assert_eq!(early.title, "running `shell` · 1 of 3");
-        assert_eq!(
-            early.output.as_deref(),
-            Some("⏳ shell\n⏳ doc_create\n⏳ shell")
-        );
+        assert_eq!(early.output, None, "nothing settled yet");
         t.tool_started("a", "shell", &sh("a")).await;
         t.tool_started(
             "d",
@@ -3863,6 +4606,8 @@ pub(crate) mod tests {
         t.tool_started("a", "shell", &sh("a")).await;
         t.tool_started("n", "doc_create", &serde_json::json!({"kind": "note"}))
             .await;
+        t.tool_finished("a", "ok", false).await;
+        t.tool_finished("n", "ok", false).await;
         t.finish(footer()).await;
         assert_eq!(ids(&api), ["a"]);
         assert_eq!(last_card(&api, "a").output.unwrap().lines().count(), 2);
@@ -3921,12 +4666,12 @@ pub(crate) mod tests {
         t.tick().await;
         let live = last_card(&api, "c1");
         assert_eq!(live.status, TaskStatus::InProgress);
-        assert!(
-            live.output
-                .as_deref()
-                .unwrap()
-                .ends_with("\n💭 thinking — Let me check"),
-            "{live:?}"
+        assert_eq!(live.title, "thinking · 2 tools");
+        let settled = "✓ shell · a · 0.0 s · 1\n✓ shell · b · 0.0 s · 2";
+        assert_eq!(
+            live.output.as_deref(),
+            Some(settled),
+            "a live thought is no line yet"
         );
         t.reasoning_done(12_000);
         t.text("answer").await;
@@ -3944,14 +4689,12 @@ pub(crate) mod tests {
         };
         assert_eq!(batch.id, "c1");
         assert_eq!(batch.status, TaskStatus::Complete);
-        assert!(
-            !batch.output.as_deref().unwrap().contains("💭"),
-            "{batch:?}"
-        );
+        assert_eq!(batch.output, None, "nothing new for the card");
+        assert_eq!(last_card(&api, "c1").output.as_deref(), Some(settled));
         assert_eq!(thought.id, "reasoning-1");
         assert_eq!(thought.title, "Thought 12 s");
         assert_eq!(thought.status, TaskStatus::Complete);
-        assert_eq!(thought.details.as_deref(), Some("Let me check"));
+        assert_eq!(thought.details, None, "the body once, not again as details");
         assert_eq!(thought.output.as_deref(), Some("Let me check"));
     }
 
@@ -3976,9 +4719,8 @@ pub(crate) mod tests {
         assert_eq!(c.details.as_deref(), Some("a"));
         assert_eq!(
             c.output.as_deref(),
-            Some(
-                "✓ shell · ls · 0.0 s · a\n⠹ python · read_file · running\n⠹ read_file · path: y · running"
-            )
+            Some("✓ shell · ls · 0.0 s · a"),
+            "running calls are the title, not lines yet"
         );
     }
 
@@ -4339,6 +5081,8 @@ pub(crate) mod tests {
         let Call::Append { chunks, .. } = calls.last().unwrap() else {
             panic!("{calls:?}")
         };
+        // Slack appends `output`: the growth went out on the last tick, the
+        // retitle carries nothing new.
         assert_eq!(
             chunks,
             &vec![
@@ -4346,12 +5090,16 @@ pub(crate) mod tests {
                     id: "reasoning-1".into(),
                     title: "Thought 3 s".into(),
                     status: TaskStatus::Complete,
-                    details: Some("first idea".into()),
-                    output: Some("first idea\nsecond thought".into()),
+                    details: None,
+                    output: None,
                     sources: Vec::new(),
                 },
                 Chunk::Text("answer".into()),
             ]
+        );
+        assert_eq!(
+            last_card(&api, "reasoning-1").output.as_deref(),
+            Some("first idea\nsecond thought")
         );
         // Reasoning that a call ends is a card too; its time is measured
         // here when no `ReasoningDone` arrives.

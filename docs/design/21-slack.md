@@ -474,6 +474,8 @@ continues. Triggers:
 No roll counter, no tail reconciliation, no `uncounted_raw`: `raw()` is
 complete and the repair is a full rewrite of one message.
 
+*Amended by 164 (2026-11-03): Slack's 12 000 chars cap a whole stream (start + appends + stop), not a call, and card `output` counts too: a 3 000-char reply died `msg_too_long` once its re-sent cards had grown. `chat.update` on a stream Slack still holds open is `streaming_state_conflict`, so the repair above never worked for `msg_too_long`. As built: a bubble rotates when text plus card output would pass `BUBBLE_SOFT_MAX` (11 000), at the last block boundary that fits, else where Slack's text ends (`stream_end` holds streaming at a block boundary near the cap). Every close is one `stopStream` carrying the cards' final updates — a live card frozen `complete` with `· continued below`, an unfinished call at turn end `error`, none left spinning — and the text up to the cut; when it fails or would not fit it is retried with card states only, then bare. A dead stream is stopped the same way, never `chat.update`d (`markdown_text` would replace its cards too); the next message goes on where Slack's text ended. A picture closes the message before it is uploaded.*
+
 ### 8.5 Reasoning
 
 In stream mode reasoning is a **timeline task card**, so it sits exactly
@@ -496,6 +498,8 @@ Not an edit race; a consequence of one bubble per turn, fixed by putting
 reasoning inside it.
 
 *Amended by 110 §4 (2026-10-06): a reasoning run between two tool calls is a `💭` line inside the batch card, not its own card; only a trailing run keeps a card, titled `Thought N s` once finished.*
+
+*Amended by 164 (2026-11-03): an identical `id` re-sent does **not** replace a card's `output` — Slack appends it (each re-send of the whole list nested the earlier lines inside the next). A card's `output` therefore only grows: each send carries only what Slack lacks (`Shown`), a batch card lists settled items only (the live call or thought is the title: `running \`x\` · i of n`, `thinking · n tools`), the reasoning card sends its new settled text, and a card re-created in the next message continues after what earlier ones showed. Title and status replace as before. A `Thought N s` card has no `details`, which repeated its body.*
 
 ### 8.6 Status: reactions, session status, title
 
