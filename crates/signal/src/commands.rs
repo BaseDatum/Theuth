@@ -91,8 +91,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("/logout", "<name>", "log out"),
     (
         "/provider",
-        "[add <name> <url> <key>|rm <name>]",
-        "OpenAI-compatible providers",
+        "[add [name [url [key]]] | refresh <name> | rm <name>]",
+        "built-in and custom providers",
     ),
     (
         "/approvals",
@@ -706,11 +706,14 @@ async fn provider_cmd(arg: &str) -> anyhow::Result<Reply> {
     match (sub, rest) {
         ("", _) => {
             let rows = agent()?.ask(agent::ListProviders).await.map_err(err)?;
-            if rows.is_empty() {
-                return text("no custom providers; /provider add <name> <url> <key>".into());
-            }
             text(table(rows.into_iter().map(|p| {
-                vec![p.name, p.base_url, format!("{} models", p.models)]
+                let kind = if p.builtin { "built-in" } else { "custom" };
+                vec![
+                    p.name,
+                    kind.to_owned(),
+                    p.base_url,
+                    format!("{} models", p.models),
+                ]
             })))
         }
         ("add", rest) => {
@@ -734,6 +737,15 @@ async fn provider_cmd(arg: &str) -> anyhow::Result<Reply> {
                 p.name, p.base_url, p.models, p.name
             ))
         }
+        ("refresh", name) if !name.is_empty() => {
+            let r = agent()?
+                .ask(agent::RefreshProviderModels {
+                    name: name.to_owned(),
+                })
+                .await
+                .map_err(err)?;
+            text(r.line())
+        }
         ("rm", name) if !name.is_empty() => {
             agent()?
                 .ask(agent::RemoveProvider {
@@ -743,7 +755,7 @@ async fn provider_cmd(arg: &str) -> anyhow::Result<Reply> {
                 .map_err(err)?;
             text(format!("removed provider {name}"))
         }
-        _ => text("usage: /provider [add <name> <url> <key> | rm <name>]".into()),
+        _ => text("usage: /provider [add [name [url [key]]] | refresh <name> | rm <name>]".into()),
     }
 }
 
@@ -1513,5 +1525,16 @@ mod tests {
         ]);
         assert_eq!(t, "```\na    one\nbbb  two\n```");
         assert_eq!(table(Vec::<Vec<String>>::new()), "(none)");
+    }
+
+    /// 162 D8: `refresh` without a name is a usage error, never an engine call.
+    #[tokio::test]
+    async fn provider_refresh_needs_a_name() {
+        let usage = Reply::Text(
+            "usage: /provider [add [name [url [key]]] | refresh <name> | rm <name>]".into(),
+        );
+        for arg in ["refresh", "zzz", "rm"] {
+            assert_eq!(provider_cmd(arg).await.unwrap(), usage, "{arg}");
+        }
     }
 }
