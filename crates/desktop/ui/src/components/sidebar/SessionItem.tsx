@@ -27,6 +27,7 @@ import { HarvestIndicator, PtyIcon, ThinkingIndicator } from '@/components/chat/
 import { useSessionDrag } from '@/components/chat/Panes'
 import { ChatPicker } from '@/components/notes/ChatPicker'
 import { type AttachRef, chatName, toRef } from '@/lib/attach'
+import { previewText } from '@/lib/channel-origin'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { parseSpoken } from '@/lib/injected'
 import { parseNote } from '@/lib/voice-note'
@@ -181,8 +182,9 @@ export const SessionItem = memo(function SessionItem({
   const live = useSessionField(id, 'title')
   const liveTags = useSessionField(id, 'tags') ?? tags
   const raw = live || chatName({ title, created_at: created })
-  // A session opened by a voice note or a talk is titled from its input; the `[voice note, N s]` / `[spoken, N s]` marker is not a title (45 §7.4).
-  const shown = parseNote(raw)?.body || parseSpoken(raw)?.text || raw
+  // A session opened by a voice note or a talk is titled from its input; the `[voice note, N s]` / `[spoken, N s]` marker is not a title (45 §7.4),
+  // nor is a Slack marker line (172).
+  const shown = parseNote(raw)?.body || parseSpoken(raw)?.text || previewText(raw)
   const tip = liveTags.length ? `${shown} · ${liveTags.join(', ')}` : shown
   const drag = useSessionDrag(id, shown)
   // Inline editor: the title, or the name of a new project.

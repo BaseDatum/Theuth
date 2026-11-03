@@ -315,6 +315,41 @@ test('InputInjected moves the steer into the transcript and suppresses its echo'
   expect(s.lastInjected).toBeUndefined()
 })
 
+// 172 D3: the delivering channel rides on the `you` row from history, the live echo and an injected steer; desktop rows have none.
+test('a user row keeps its channel origin from history, TurnStarted and a queued steer that is injected', () => {
+  const slack = { via: 'slack', chat: 'group', title: 'ops', from: 'Jane' } as const
+  const telegram = { via: 'telegram', chat: 'dm' } as const
+  expect(fromHistory({ role: 'user', text: '[slack channel]\nhi', turn: 3, channel: slack })[0]).toMatchObject({ kind: 'user', text: '[slack channel]\nhi', channel: slack })
+  expect(fromHistory({ role: 'user', text: 'typed', turn: 4 })[0]).not.toHaveProperty('channel')
+  const live = run([{ type: 'TurnStarted', session: S, turn: T, text: 'hey', model: 'm', turn_seq: 1, channel: telegram }])
+  expect(live.entries[0]).toMatchObject({ kind: 'user', text: 'hey', turn: 1, channel: telegram })
+  const steer = run([
+    { type: 'InputQueued', session: S, id: 'i1', text: 'also', defer: false, channel: { via: 'signal', chat: 'dm' } },
+    { type: 'InputInjected', session: S, id: 'i1', turn: 'T2' },
+    { type: 'TurnStarted', session: S, turn: 'T2', text: 'also', model: 'm', turn_seq: 5, channel: { via: 'signal', chat: 'dm' } },
+  ])
+  expect(steer.entries).toHaveLength(1)
+  expect(steer.entries[0]).toMatchObject({ kind: 'user', text: 'also', injected: true, turn: 5, channel: { via: 'signal', chat: 'dm' } })
+  const desk = run([
+    { type: 'InputQueued', session: S, id: 'i2', text: 'mine', defer: false },
+    { type: 'InputInjected', session: S, id: 'i2', turn: 'T3' },
+  ])
+  expect(desk.entries[0]).not.toHaveProperty('channel')
+})
+
+// 172: `QueuedInput.channel` rides the reload's `queued`, so a channel steer queued before it still lands with its origin.
+test('store: a queued channel steer rebuilt from a reload keeps its channel through InputInjected', () => {
+  const id = 'q172'
+  const signal = { via: 'signal', chat: 'dm', from: 'Ana' } as const
+  const st = useSessions.getState()
+  st.loadHistory(id, { ...loaded(), running: true, settled: false, queued: [{ id: 'i9', text: 'Ana: also bread', channel: signal }, { id: 'i10', text: 'mine' }], history: [], first_seq: null, more: false }, 'replace')
+  expect(useSessions.getState().sessions[id]?.queued).toEqual([{ id: 'i9', text: 'Ana: also bread', channel: signal }, { id: 'i10', text: 'mine' }])
+  st.applyEvents([{ type: 'InputInjected', session: id, id: 'i9', turn: 'T9' }])
+  const s = useSessions.getState().sessions[id]
+  expect(s?.entries.at(-1)).toMatchObject({ kind: 'user', text: 'Ana: also bread', injected: true, channel: signal })
+  expect(s?.queued).toEqual([{ id: 'i10', text: 'mine' }])
+})
+
 test('TurnStarted echo: skipped for our own send (once) and engine wrappers, skill shows a chip', () => {
   const c = ctx()
   c.sent.add('mine')
