@@ -28,6 +28,8 @@ const INDEX: &str = "index.sqlite";
 const META: &str = "meta.json";
 const SNAPSHOT: &str = "snapshot.yjs";
 const LOG: &str = "updates.log";
+/// 171 §9.6: block id → session of the agent that last wrote it; local to this engine, not mirrored.
+const AGENTS: &str = "agents.json";
 const SNAPSHOTS: &str = "snapshots";
 const TRASH: &str = ".trash";
 /// The flat replicated projection (69, [`crate::mirror`]).
@@ -59,10 +61,25 @@ const CREATE_SOURCES: &str = "CREATE TABLE IF NOT EXISTS sources (\
     fetched_ms INTEGER, content_sha TEXT, changed_since INTEGER, \
     bytes INTEGER, words INTEGER, duration_ms INTEGER, pages INTEGER, meta TEXT, \
     insights INTEGER NOT NULL DEFAULT 0, hlc TEXT)";
+/// 171 §13.2 (W-g): the latest run of each note cell, capped text, replicated to members and guests.
+const CREATE_CELL_LATEST: &str = "CREATE TABLE IF NOT EXISTS cell_latest (\
+    id TEXT PRIMARY KEY, \
+    doc TEXT NOT NULL, cell TEXT NOT NULL, \
+    run TEXT NOT NULL, state TEXT NOT NULL, exit INTEGER, secs REAL, \
+    expect TEXT, summary TEXT, code_sha TEXT NOT NULL, ended_ms INTEGER NOT NULL, \
+    text TEXT NOT NULL, hlc TEXT)";
+const CREATE_CELL_LATEST_DOC: &str =
+    "CREATE INDEX IF NOT EXISTS cell_latest_doc ON cell_latest(doc)";
 
 /// The replicated tables (69 §5, 144 §3.3): attached to the record replica by the plugin; per-column
 /// LWW under the replica's HLC (the engine stamps `hlc`, the store never writes it).
-pub const TABLES: &[&str] = &["docs", "notebooks", "notebook_items", "sources"];
+pub const TABLES: &[&str] = &[
+    "docs",
+    "notebooks",
+    "notebook_items",
+    "sources",
+    "cell_latest",
+];
 
 /// Unix milliseconds now.
 pub fn now_ms() -> i64 {
@@ -183,6 +200,8 @@ impl Store {
             CREATE_NBI_NOTEBOOK,
             CREATE_NBI_ITEM,
             CREATE_SOURCES,
+            CREATE_CELL_LATEST,
+            CREATE_CELL_LATEST_DOC,
         ] {
             sqlx::query(sql).execute(&db).await?;
         }
@@ -369,6 +388,26 @@ impl Store {
 
     fn dir(&self, id: &DocId) -> PathBuf {
         self.root.join(id.as_str())
+    }
+
+    /// `agents.json` (171 §9.6): which agent session last wrote each block; empty when absent.
+    pub(crate) fn read_agents(&self, id: &DocId) -> std::collections::BTreeMap<String, uuid::Uuid> {
+        fs::read(self.dir(id).join(AGENTS))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    /// Rewrite `agents.json`.
+    pub(crate) fn write_agents(
+        &self,
+        id: &DocId,
+        agents: &std::collections::BTreeMap<String, uuid::Uuid>,
+    ) -> anyhow::Result<()> {
+        Ok(write_atomic(
+            &self.dir(id).join(AGENTS),
+            serde_json::to_vec(agents)?.as_slice(),
+        )?)
     }
 
     /// Directory, meta, empty log, index row. Fails if the binding is already bound. A row under
@@ -882,6 +921,11 @@ impl Store {
         }
         sqlx::query("UPDATE docs SET deleted_ms = ? WHERE id = ?")
             .bind(now_ms())
+            .bind(id.as_str())
+            .execute(&self.db)
+            .await?;
+        // 171 §13.2: a deleted note's latest outputs go with it (the delete replicates as a tombstone).
+        sqlx::query("DELETE FROM cell_latest WHERE doc = ?")
             .bind(id.as_str())
             .execute(&self.db)
             .await?;

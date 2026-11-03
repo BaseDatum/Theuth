@@ -1,4 +1,4 @@
-//! 144 §3.3/§3.5 (D14): the four document tables ride `replica::attach` — a notebook, its items and a
+//! 144 §3.3/§3.5 (D14), 171 §13.2: the document tables ride `replica::attach` — a notebook, its items and a
 //! source row written on engine A show up on engine B's store within the capture→feed hop; a soft
 //! removal on A and a revival on B merge as column writes (no row ever deleted). Two in-process
 //! engines over a `tokio::io::duplex` transport, the harness `replica/tests/sync_loopback.rs` uses.
@@ -249,4 +249,59 @@ async fn notebook_tables_replicate_between_two_engines() {
     })
     .await;
     assert_eq!(a.store.items(&nb.id).await.unwrap(), vec![item]);
+}
+
+/// 171 §13.2: a note cell's latest row upserted on the hub reaches the other engine, a newer run
+/// replaces it there, and deleting the note removes it on both.
+#[tokio::test]
+async fn cell_latest_replicates_between_two_engines() {
+    let switch = Arc::new(Switch::default());
+    let a = node("A", &switch).await;
+    let b = node("B", &switch).await;
+    let _ = a
+        .transport
+        .events
+        .send(PeerEvent::Connected(b.transport.me.clone()));
+    let _ = b
+        .transport
+        .events
+        .send(PeerEvent::Connected(a.transport.me.clone()));
+
+    let note = meta(Binding::Note, "Runbook");
+    a.store.create(&note).await.unwrap();
+    let mut row = document::CellLatest {
+        id: format!("{}:preview", note.id),
+        doc: note.id.clone(),
+        cell: "preview".into(),
+        run: "r_1".into(),
+        state: "finished".into(),
+        exit: Some(0),
+        secs: Some(33.0),
+        expect: Some("✓".into()),
+        summary: None,
+        code_sha: "abc".into(),
+        ended_ms: 5,
+        text: "3 to update".into(),
+    };
+    a.store.put_cell_latest(&row).await.unwrap();
+    until("row on B", async || {
+        b.store.cell_latest(&note.id).await.unwrap() == vec![row.clone()]
+    })
+    .await;
+
+    row.run = "r_2".into();
+    row.exit = Some(1);
+    row.text = "error".into();
+    a.store.put_cell_latest(&row).await.unwrap();
+    until("newer run on B", async || {
+        b.store.cell_latest(&note.id).await.unwrap() == vec![row.clone()]
+    })
+    .await;
+
+    a.store.delete(&note.id).await.unwrap();
+    assert!(a.store.cell_latest(&note.id).await.unwrap().is_empty());
+    until("delete on B", async || {
+        b.store.cell_latest(&note.id).await.unwrap().is_empty()
+    })
+    .await;
 }

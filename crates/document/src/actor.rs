@@ -60,7 +60,7 @@ const IMPORT_GRACE: Duration = Duration::from_secs(10);
 
 /// One loaded document.
 pub(crate) struct Open {
-    doc: yrs::Doc,
+    pub(crate) doc: yrs::Doc,
     pub(crate) meta: DocMeta,
     awareness: Awareness,
     log_count: usize,
@@ -82,7 +82,9 @@ pub(crate) struct Open {
     awareness_rate: HashMap<Option<u64>, RateSlot>,
     /// Block ids the last transaction wrote, filled by the deep observer on the fragment (§11 authorship).
     touched: Arc<Mutex<Vec<String>>>,
-    /// `meta.authors` changed since `meta.json` was last written.
+    /// 171 §9.6: block id → the agent session that last wrote it (`agents.json`; any other writer clears it).
+    pub(crate) agents: std::collections::BTreeMap<String, uuid::Uuid>,
+    /// `meta.authors` or `agents` changed since they were last written.
     authors_dirty: bool,
 }
 
@@ -290,6 +292,7 @@ impl DocumentActor {
                         touched_blocks(txn, e, &mut sink);
                     }
                 });
+            let agents = self.store.read_agents(id);
             self.open.insert(
                 id.clone(),
                 Open {
@@ -308,6 +311,7 @@ impl DocumentActor {
                     agent_gen: 0,
                     awareness_rate: HashMap::new(),
                     touched,
+                    agents,
                     authors_dirty: false,
                 },
             );
@@ -365,14 +369,28 @@ impl DocumentActor {
             .transact_mut()
             .apply_update(u)
             .map_err(|e| format!("apply update: {e}"))?;
-        // §11: a member's blocks carry their author until someone else writes them.
-        let written = std::mem::take(&mut *o.touched.lock().unwrap_or_else(|p| p.into_inner()));
+        // §11: a member's blocks carry their author until someone else writes them; 171 §9.6: so do the agent's,
+        // whose helper transaction also names what it wrote (a first import's blocks arrive inside one new
+        // `blockGroup`, which the observer cannot see into).
+        let mut written = std::mem::take(&mut *o.touched.lock().unwrap_or_else(|p| p.into_inner()));
+        if matches!(by, Principal::Agent { .. }) {
+            for id in &touched {
+                if !written.contains(id) {
+                    written.push(id.clone());
+                }
+            }
+        }
         for id in written {
             let changed = match &by {
                 Principal::Member { pub_, .. } => {
-                    o.meta.authors.insert(id, pub_.clone()).as_deref() != Some(pub_)
+                    o.agents.remove(&id).is_some()
+                        | (o.meta.authors.insert(id, pub_.clone()).as_deref() != Some(pub_))
                 }
-                _ => o.meta.authors.remove(&id).is_some(),
+                Principal::Agent { session } => {
+                    o.meta.authors.remove(&id).is_some()
+                        | (o.agents.insert(id, *session) != Some(*session))
+                }
+                _ => o.meta.authors.remove(&id).is_some() | o.agents.remove(&id).is_some(),
             };
             o.authors_dirty |= changed;
         }
@@ -733,6 +751,9 @@ impl DocumentActor {
             if o.authors_dirty {
                 let store = self.store.clone();
                 tokio::spawn(async move {
+                    if let Err(e) = store.write_agents(&o.meta.id, &o.agents) {
+                        tracing::warn!(doc = %o.meta.id, error = %e, "agents.json: not saved at unload");
+                    }
                     if let Err(e) = store.write_meta(&o.meta).await {
                         tracing::warn!(doc = %o.meta.id, error = %e, "meta.json: authors not saved at unload");
                     }
@@ -2466,13 +2487,18 @@ impl Message<Tick> for DocumentActor {
         for id in unloads {
             self.unload(&id, "unloaded");
         }
-        // §11 authorship coalesced to one `meta.json` write per tick.
-        let dirty: Vec<DocMeta> = self
+        // §11 authorship coalesced to one `meta.json` (+ `agents.json`) write per tick.
+        let dirty: Vec<_> = self
             .open
             .values_mut()
-            .filter_map(|o| std::mem::take(&mut o.authors_dirty).then(|| o.meta.clone()))
+            .filter_map(|o| {
+                std::mem::take(&mut o.authors_dirty).then(|| (o.meta.clone(), o.agents.clone()))
+            })
             .collect();
-        for meta in dirty {
+        for (meta, agents) in dirty {
+            if let Err(e) = self.store.write_agents(&meta.id, &agents) {
+                tracing::warn!(doc = %meta.id, error = %e, "agents.json: not saved");
+            }
             if let Err(e) = self.store.write_meta(&meta).await {
                 tracing::warn!(doc = %meta.id, error = %e, "meta.json: authors not saved");
             }

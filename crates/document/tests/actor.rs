@@ -2564,3 +2564,127 @@ async fn hub_gate_follows_the_lease() {
     ));
     stop(actor).await;
 }
+
+/// 171 §9.6 / §4.4 against the real helper: an agent-created note's cell is read back with the
+/// agent as its author; with the cells hook installed `doc_read`'s outline row of a cell carries its
+/// run and the markdown form appends the `output` fence and the run line, everything else
+/// byte-identical; a `doc_insert` of an invalid `#|` fence is refused in the tool result. (The hook
+/// is process-global and stays installed for later tests of this binary: none of them holds a cell.)
+#[tokio::test]
+async fn doc_read_annotates_note_cells_through_the_hook() {
+    struct Hook;
+    impl document::RunAnnotations for Hook {
+        fn note_cell(
+            &self,
+            _: &document::DocId,
+            _: &str,
+            language: &str,
+            text: &str,
+        ) -> Option<document::CellAnnotation> {
+            let c = surface::cell::parse(language, text)?;
+            (c.options.name.as_deref() == Some("preview")).then(|| document::CellAnnotation {
+                outline: "[cell:bash preview · ran 14:38 · exit 0]".into(),
+                output: Some("3 to update".into()),
+                run_line: "ran 14:38 · exit 0".into(),
+            })
+        }
+    }
+    let _serial = SERIAL.lock().await;
+    let bin = helper_or_skip!();
+    let dir = tempfile::tempdir().unwrap();
+    let actor = start(dir.path(), &bin).await;
+    let session = uuid::Uuid::now_v7();
+    let docs = Docs::new(actor.clone(), dir.path().to_path_buf());
+    let md = "```cells\n#| cwd: /tmp\n```\n\n```bash\n#| name: preview\npulumi preview -s ir-prod1\n```\n\n```bash\nls\n```\n";
+    let created = CreateTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({ "title": "Runbook", "markdown": md }))
+                .unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(!created.is_error, "{}", created.content);
+    let doc = created.structured.unwrap()["doc"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read = async |format: &str| {
+        let r = ReadTool(docs.clone())
+            .call(
+                serde_json::from_value(serde_json::json!({ "doc": doc, "format": format }))
+                    .unwrap(),
+                cx(session),
+            )
+            .await
+            .unwrap();
+        assert!(!r.is_error, "{}", r.content);
+        r.content
+    };
+    let id = document::DocId(doc.clone());
+    // The import's update may land just after its reply: poll the live doc briefly.
+    let since = Instant::now();
+    let src = loop {
+        match actor
+            .ask(document::CodeBlockText {
+                doc: id.clone(),
+                key: document::NoteKey::Name("preview".into()),
+            })
+            .await
+        {
+            Ok(s) => break s,
+            Err(_) if since.elapsed() < Duration::from_secs(3) => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert_eq!(
+        (src.language.as_str(), src.text.as_str()),
+        ("bash", "#| name: preview\npulumi preview -s ir-prod1")
+    );
+    assert_eq!(src.last_author, Principal::Agent { session });
+
+    let outline = read("outline").await;
+    let markdown = read("markdown").await;
+    assert!(
+        outline.contains(" [code:bash] #| name: preview … (2 lines)\n"),
+        "{outline}"
+    );
+    document::set_run_annotations(std::sync::Arc::new(Hook));
+    assert_eq!(
+        read("outline").await,
+        outline.replace(
+            "[code:bash] #| name: preview … (2 lines)",
+            "[cell:bash preview · ran 14:38 · exit 0] pulumi preview -s ir-prod1 … (1 line)"
+        )
+    );
+    let fence = "pulumi preview -s ir-prod1\n```\n";
+    assert_eq!(markdown.matches(fence).count(), 1, "{markdown}");
+    assert_eq!(
+        read("markdown").await,
+        markdown.replace(
+            fence,
+            "pulumi preview -s ir-prod1\n```\n```output\n3 to update\n```\nran 14:38 · exit 0\n"
+        )
+    );
+
+    let refused = InsertTool(docs.clone())
+        .call(
+            serde_json::from_value(serde_json::json!({
+                "doc": doc,
+                "markdown": "```bash\n#| name: apply\n#| after: nope\nx\n```\n",
+            }))
+            .unwrap(),
+            cx(session),
+        )
+        .await
+        .unwrap();
+    assert!(refused.is_error);
+    assert_eq!(
+        refused.content,
+        "nothing changed: a cell does not validate — fix it and retry\n\
+         cell 1: after_unknown — `after: nope` names no cell in scope; cells here: preview, apply\n"
+    );
+    stop(actor).await;
+}
