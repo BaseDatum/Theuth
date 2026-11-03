@@ -1,4 +1,5 @@
 // Owner: U1
+import { emit } from '@tauri-apps/api/event'
 import { useEffect, useState } from 'react'
 import { create } from 'zustand'
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
@@ -7,6 +8,7 @@ import type { Api } from '@/rpc/api'
 import type { CellRun } from '@/rpc/bindings/CellRun'
 import { KILL_AFTER_MS } from './Cell'
 import { duration, labelFor } from './store'
+import type { CellRunWire } from './wire'
 
 export type QuitSheetProps = {
   /** `cell_live()`: the runs quitting would end. */
@@ -65,7 +67,7 @@ export function QuitSheet({ live: initial, onQuit, onCancel, api }: QuitSheetPro
     }
   }, [mode, api, onQuit])
   const first = live[0] ?? initial[0]
-  const label = first ? labelFor(first.cell) : 'the cell'
+  const label = first ? labelFor(first.cell, (first as CellRunWire).name) : 'the cell'
   const what = live.length > 1 ? `${live.length} cells` : label
   return (
     <AlertDialog open onOpenChange={(o) => !o && onCancel()}>
@@ -76,7 +78,7 @@ export function QuitSheet({ live: initial, onQuit, onCancel, api }: QuitSheetPro
             <ul className="flex flex-col gap-1 text-sm">
               {live.map((r) => (
                 <li key={r.id} className="tabular-nums">
-                  {labelFor(r.cell)} is running ({duration(Math.max(0, (now - (r.started_ms ?? r.queued_ms)) / 1000))}) · {tail(r.cwd)}
+                  {labelFor(r.cell, (r as CellRunWire).name)} is running ({duration(Math.max(0, (now - (r.started_ms ?? r.queued_ms)) / 1000))}) · {tail(r.cwd)}
                 </li>
               ))}
               {mode === 'waiting' && <li className="text-fg-tertiary">theuth quits by itself when the last run ends.</li>}
@@ -109,21 +111,34 @@ export function QuitSheet({ live: initial, onQuit, onCancel, api }: QuitSheetPro
 /** The sheet's place in the quit: `confirmQuit` opens it, the mounted `PreQuit` answers. */
 export const usePreQuit = create<{ live: CellRun[] | null; api: QuitSheetProps['api'] | null; answer: ((go: boolean) => void) | null }>(() => ({ live: null, api: null, answer: null }))
 
+/** What the desktop shell's quit handshake hears while the sheet is up (`crates/desktop/src/quit.rs`). */
+export type ShellQuit = { hold(): void; cancel(): void }
+
+/** The Tauri shell: `quit-hold` stops its 3 s ack timer, `quit-cancel` drops the request; proceeding is the usual `quit_ack`. */
+export const tauriShellQuit: ShellQuit = {
+  hold: () => void emit('quit-hold').catch(() => undefined),
+  cancel: () => void emit('quit-cancel').catch(() => undefined),
+}
+
 /**
  * 171 §5.3 (F6 a, L7): before 163's `requested`, ask `cell_live()`; no live run (or no engine, or an engine without
- * cells) → `true` at once, today's quit. Otherwise the sheet decides: `true` once the runs ended or were stopped,
- * `false` on Cancel. A second quit while the sheet is up answers `false` (the first one is still deciding).
+ * cells) → `true` at once, today's quit, and the shell hears nothing new. Otherwise `shell.hold()` first (so the
+ * shell's ack timer does not quit under the sheet), then the sheet decides: `true` once the runs ended or were
+ * stopped (the caller's `quit_ack` proceeds), `false` on Cancel (`shell.cancel()`). A second quit while the sheet
+ * is up answers `false` (the first one is still deciding).
  */
-export async function confirmQuit(api: QuitSheetProps['api'] | null): Promise<boolean> {
+export async function confirmQuit(api: QuitSheetProps['api'] | null, shell?: ShellQuit): Promise<boolean> {
   if (!api || usePreQuit.getState().answer) return !usePreQuit.getState().answer
   const live = await api.cell_live().catch(() => [])
   if (live.length === 0) return true
+  shell?.hold()
   const { promise, resolve } = Promise.withResolvers<boolean>()
   usePreQuit.setState({
     live,
     api,
     answer: (go) => {
       usePreQuit.setState({ live: null, api: null, answer: null })
+      if (!go) shell?.cancel()
       resolve(go)
     },
   })

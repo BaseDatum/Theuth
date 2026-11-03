@@ -176,11 +176,11 @@ export function register(api: Api, scope: CellScope, cell: { ref: CellRef; spec:
 /** The registered cells of a scope, for `after:` labels and the runbook bar. */
 export const registeredCells = (scope: CellScope) => [...(registry.get(scopeKey(scope))?.cells.values() ?? [])]
 
-/** A run's cell as the user knows it: its mounted title, else `cell <ordinal>` / the note key. */
-export function labelFor(ref: CellRef): string {
+/** A run's cell as the user knows it: its mounted title, else the run's `name` (L11), else `cell <ordinal>` / the note key. */
+export function labelFor(ref: CellRef, name?: string | null): string {
   const hit = registry.get(scopeKey(scopeOf(ref)))?.cells.get(refKey(ref))
   if (hit) return hit.label
-  return ref.type === 'chat' ? `cell ${ref.ordinal}` : ref.key.value
+  return name ?? (ref.type === 'chat' ? `cell ${ref.ordinal}` : ref.key.value)
 }
 
 /** An action's refusal shown on its cell until the next press (`null` clears). */

@@ -26,19 +26,39 @@ function engine(reads: CellRun[][]) {
   }
 }
 
-test('no live run: the quit goes ahead at once, no sheet (today unchanged)', async () => {
-  expect(await confirmQuit(engine([[]]).api)).toBe(true)
-  expect(await confirmQuit(null)).toBe(true)
+/** The shell's side of the handshake, recorded. */
+function shell() {
+  const said: string[] = []
+  return { said, hooks: { hold: () => said.push('hold'), cancel: () => said.push('cancel') } }
+}
+
+test('no live run: the quit goes ahead at once, no sheet, the shell hears nothing (163 unchanged)', async () => {
+  const s = shell()
+  expect(await confirmQuit(engine([[]]).api, s.hooks)).toBe(true)
+  expect(await confirmQuit(null, s.hooks)).toBe(true)
   expect(usePreQuit.getState().live).toBeNull()
+  expect(s.said).toEqual([])
 })
 
-test('a live run opens the sheet; Cancel keeps the app; a second quit while it is up is refused', async () => {
-  const pending = confirmQuit(engine([[live]]).api)
+test('a live run holds the shell, opens the sheet; Cancel keeps the app and cancels the shell quit', async () => {
+  const s = shell()
+  const pending = confirmQuit(engine([[live]]).api, s.hooks)
   await vi.advanceTimersByTimeAsync(0)
+  expect(s.said).toEqual(['hold'])
   expect(usePreQuit.getState().live).toEqual([live])
   expect(await confirmQuit(engine([[live]]).api)).toBe(false)
   usePreQuit.getState().answer?.(false)
   expect(await pending).toBe(false)
+  expect(s.said).toEqual(['hold', 'cancel'])
+})
+
+test('proceeding (Wait finished / Stop it and quit) answers true and leaves the shell to the ordinary ack', async () => {
+  const s = shell()
+  const pending = confirmQuit(engine([[live]]).api, s.hooks)
+  await vi.advanceTimersByTimeAsync(0)
+  usePreQuit.getState().answer?.(true)
+  expect(await pending).toBe(true)
+  expect(s.said).toEqual(['hold'])
 })
 
 test('Wait polls cell_live and proceeds by itself when the last run ends', async () => {

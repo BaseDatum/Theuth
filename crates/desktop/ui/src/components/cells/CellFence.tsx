@@ -15,6 +15,7 @@ import { openAsNote } from './open-as-note'
 import { RunbookBar } from './RunbookBar'
 import { errorText, mintId, press, refresh, register, registeredCells, scopeOf, setNotice, useCellRecord, useScope, useStates } from './store'
 import { labelOf, titleOf, viewOf } from './view'
+import type { CellStateWire } from './wire'
 
 /** 171 §4.1: the fence languages `CellFence` registers for. */
 export const CELL_LANGUAGES = ['bash', 'zsh', 'sh', 'pwsh', 'powershell', 'python', 'py']
@@ -107,6 +108,7 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
   const replyStates = useStates(replyRefs)
   if (!spec) return null
   const latest = state?.latest ?? null
+  const host = (state as CellStateWire | null)?.host ?? null
   const view = viewOf(state, spec, edited !== null)
   const runnable = !!cellRef && !pending
 
@@ -208,7 +210,7 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
           view={view}
           state={state}
           latest={latest}
-          host={null}
+          host={host ? { engine: host, label: host } : null}
           callbacks={callbacks}
           readOnly={!session}
           editor={

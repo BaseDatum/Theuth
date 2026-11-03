@@ -30,18 +30,19 @@ Decisions taken where the design, the brief or the skeleton was silent or contra
 - Chat editor: CodeMirror read-only until Enter / double-click; Esc leaves while unedited; ▶ gutter on the hovered line and the selection pill are absent on danger cells and their keys explain ("press <label> to run this"). `#|` toggle shows the raw header.
 - Fold: a `done` cell folds unless it is the reply's last cell with a run; `failed` stays open.
 - Queue position "queued · 2nd" = rank among the scope's queued runs on the same kernel by `queued_ms`.
-- Static output: shell runs (all-stream outputs) show the last 200 lines (`cells.ui_tail_lines` default) with "show all N lines" paging `cell_output(ansi=true)`; copy pages `cell_output(ansi=false)`. Rich outputs go through the vendored `OutputArea`/media router; HTML/SVG/markdown only through `HtmlPage` (VendorNteract notes: markdown via the hoisted transitive `marked`).
+- Static output: shell runs (all-stream outputs) show the last 200 lines (`cells.ui_tail_lines` default) with "show all N lines" paging `cell_output(ansi=true)`; copy pages `cell_output(ansi=false)`. Rich outputs go through the vendored `OutputArea`/media router; HTML/SVG/markdown only through `HtmlPage` (markdown via `marked@16.4.2`, a direct dependency since R1).
 - "Open log" / "Open log folder" open `<info.data_dir>/cells/runs/<run>` / `<data_dir>/cells/kernels` (L10), desktop only.
 - Notifications: `store.ts` posts `notifyIfHidden("<title> · exit 0 · 2:14", cwd)` once per run when a re-read shows a run this client saw live end after > 30 s.
 - Open as note: markdown = the reply with an ```` ```output ```` block (8 KiB head 6 KiB + tail 2 KiB) and the `ran 14:38 · exit 0 · 33 s · expect ✓` line after each finished cell; `doc_create(label of cell 1 | "Runbook", md)`; a toast with **Open** stands in for the chat link card.
 - Deep link: `deep_link_route` keeps `cell=` only when it is `[a-z0-9-]{1,48}` (a slug or an ordinal); the route's `validateSearch` accepts the same (string or number); `scrollToCell` focuses the newest matching `[data-cell-name]` / `[data-cell-ordinal]` once mounted (≤ 10 s).
-- Quit: `App.tsx` `quit()` awaits `confirmQuit(api)` before 163's `requested`; no live run / no engine → unchanged.
+- Quit: `App.tsx` `quit()` awaits `confirmQuit(api, shell)` before 163's `requested`; no live run / no engine → unchanged, the shell hears nothing new.
+- **Quit hold (R1)**: with live runs the webview emits `quit-hold` before opening the sheet; `crates/desktop/src/quit.rs` (listeners subscribed once at the first request) marks the request held, so the 3 s `ACK_TIMEOUT` timer stands down (it checks the request's `round` and `held`), and shows/focuses the main window. **Wait** finished / **Stop it and quit** proceed with the ordinary `quit_ack`; **Cancel** emits `quit-cancel`, which drops the request (`requested` back to false) so the next ⌘Q asks again. In-app quits (`/exit`, `theuth:quit`) never reached the shell's request, so a hold/cancel there is a no-op on the shell. No new Tauri command: the two events ride `core:event:default`.
+- **L11 wire fields** are typed as optional extensions in `wire.ts` (`CellRunWire.masked/input/private/name`, `CellStateWire.host`, `KernelStateWire.env_warning`); absent → nothing renders. `input`: an `InputLine` under a running python run's output, the answer sent through `cell_input` as typed (base64 of the text, no newline), `type="password"` when `password`, cleared on send.
 
 ## Known gaps
 
-- **Shell-initiated quits (⌘Q, tray, `theuth://quit`) are not held by the sheet**: `crates/desktop/src/quit.rs` `request` starts the quit worker after `ACK_TIMEOUT` (3 s) whether or not the webview acks. The sheet fully works for in-app quits (`/exit`, `theuth:quit`, the startup screen); for shell quits it needs a shell-side hold (e.g. a `quit_hold` command that cancels the timer) — outside U1's region of `lib.rs`.
-- Host chip: always `null` in chat (no client-visible "session owner is another engine" field found).
-- No wire field for "N masked for theuth", the env-capture warning (the strip shows it only when *Refresh environment* fails), python `input()` requests, or execution counts (python `ExecutionCount` shows `[•]`).
+- A shell quit from a **hidden** window switches the tray to "Shutting down…" (163 D6) before the webview can hold; after **Cancel** the tray keeps that menu until the next quit or app restart (restoring it needs the menu built in `lib.rs` setup, outside U1's regions).
+- No wire field for execution counts (python `ExecutionCount` shows `[•]`).
 - Notification click focuses the app (Tauri default); it does not scroll to the cell.
 - Visual check: `src/dev/cells-fixture.{html,tsx}` (vite dev only, `/src/dev/cells-fixture.html`), screenshots in `/tmp/171-u1-shots/`.
 

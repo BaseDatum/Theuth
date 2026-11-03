@@ -26,7 +26,6 @@ const RUN_FILE = /^img-\d+\.png$/
 /** The frame's document for one framed MIME: HTML as is, SVG in a bare page, markdown through `marked`. */
 export function frameDocument(mimeType: string, content: string): string {
   if (mimeType === 'image/svg+xml') return `<!doctype html><html><body style="margin:0">${content}</body></html>`
-  // ponytail: `marked` is hoisted from mermaid's dependency tree, not a direct dep; add it to package.json if a bun update unhoists it.
   if (mimeType === 'text/markdown') return marked.parse(content, { async: false })
   return content
 }

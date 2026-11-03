@@ -4,7 +4,8 @@ import { expect, test } from 'vitest'
 import { FenceContext } from '@/components/chat/surface/JsonRenderFence'
 import { classify } from '@/lib/injected'
 import { CELL_LANGUAGES, CellFence, CellOrdinals, cellOrdinals } from './CellFence'
-import { REPLY, SESSION, render } from './test-fixtures'
+import { cells, refKey, scopeKey } from './store'
+import { REPLY, SESSION, chatRef, render, state } from './test-fixtures'
 
 const withCells = { renderers: [{ language: CELL_LANGUAGES, component: CellFence }] }
 const md = (text: string, plugins?: typeof withCells) => h(Streamdown, { mode: 'static', plugins }, text)
@@ -79,4 +80,12 @@ test('ordinals follow document order; identical cells get distinct ordinals', ()
   expect(o.claim('b', body)).toBe(2)
   expect(o.claim('a', body)).toBe(1)
   expect(o.claim('c', body)).toBeNull()
+})
+
+test('the host chip (§14.2, L11 `CellState.host`) shows only when the record names another engine', () => {
+  expect(render(assistant(md(REPLY, withCells)))).not.toContain('on Sky’s Mac mini')
+  const ref = chatRef(2)
+  cells.setState({ scopes: { [scopeKey({ type: 'session', id: SESSION })]: { states: { [refKey(ref)]: { ...state(ref), host: 'Sky’s Mac mini' } as never }, kernels: [], error: null, notices: {} } } })
+  expect(render(assistant(md(REPLY, withCells)))).toContain('on Sky’s Mac mini')
+  cells.setState({ scopes: {} })
 })

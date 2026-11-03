@@ -37,3 +37,10 @@ test('two or more kernels collapse to "N kernels ▾"', () => {
   expect(html).toContain('aria-expanded="false"')
   expect(html).not.toContain('>Restart<')
 })
+
+test('the engine’s env_warning (L11) shows the §5.4 chip; without it none', () => {
+  expect(strip([kernel('bash', 'ready')])).not.toContain('could not be read')
+  const html = strip([{ ...kernel('bash', 'ready'), env_warning: 'login shell timed out after 10 s' } as KernelState])
+  expect(html).toContain('environment could not be read — Refresh')
+  expect(html).toContain('title="login shell timed out after 10 s"')
+})

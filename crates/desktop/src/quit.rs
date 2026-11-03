@@ -5,14 +5,16 @@
 //! starts the quit worker, which stops the companion and then the engine on its own thread, reports each
 //! step as `quit-progress` and calls [`update::exit`]. The main thread never waits: a window whose run loop
 //! stops turning gets the beach ball. [`on_exit`] is `RunEvent::Exit`; after the worker it finds nothing left.
+//! 171 §5.3: while the webview's pre-quit sheet lists live cell runs it sends [`HOLD`] instead of the ack; the
+//! timer stands down until `quit_ack` (proceed) or [`CANCEL`].
 
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Listener, Manager};
 
 use crate::launch::{self, Daemon, Launch};
 use crate::{companion, update};
@@ -31,6 +33,11 @@ const CAP: Duration = DRAIN
 const REQUESTED: &str = "quit-requested";
 /// Event to every webview: [`Progress`], one per worker step.
 const PROGRESS: &str = "quit-progress";
+/// 171 §5.3 (F6 a): from the main webview, instead of the ack, while its pre-quit sheet lists live cell runs —
+/// the ack timer stands down; the sheet ends with `quit_ack` (Wait finished / Stop it and quit) or [`CANCEL`].
+const HOLD: &str = "quit-hold";
+/// From the main webview: the sheet's Cancel — the quit is off and the next entry asks again.
+const CANCEL: &str = "quit-cancel";
 
 /// Payload of [`REQUESTED`].
 #[derive(Clone, Copy, Serialize)]
@@ -66,11 +73,14 @@ impl Progress {
     }
 }
 
-/// Managed: the two latches of a quit — the handshake asked once, the worker run once.
+/// Managed: the latches of a quit — the handshake asked once, the worker run once — and 171's hold: which
+/// request the ack timer belongs to (`round`) and whether the webview's pre-quit sheet holds it.
 #[derive(Default)]
 pub struct Quit {
     requested: AtomicBool,
     started: AtomicBool,
+    round: AtomicU64,
+    held: AtomicBool,
 }
 
 impl Quit {
@@ -81,6 +91,39 @@ impl Quit {
         }
         run(plan());
         true
+    }
+
+    /// A new quit request: its round, or `None` while one is under way.
+    fn begin(&self) -> Option<u64> {
+        if self.requested.swap(true, SeqCst) {
+            return None;
+        }
+        self.held.store(false, SeqCst);
+        Some(self.round.fetch_add(1, SeqCst) + 1)
+    }
+
+    /// The pre-quit sheet holds the request: `false` when no request waits for its ack.
+    fn hold(&self) -> bool {
+        if !self.requested.load(SeqCst) || self.started.load(SeqCst) {
+            return false;
+        }
+        self.held.store(true, SeqCst);
+        true
+    }
+
+    /// The sheet's Cancel: the request is dropped (the next entry asks again); `false` once the worker runs.
+    fn cancel(&self) -> bool {
+        if self.started.load(SeqCst) || !self.requested.load(SeqCst) {
+            return false;
+        }
+        self.held.store(false, SeqCst);
+        self.requested.store(false, SeqCst);
+        true
+    }
+
+    /// The ack timer of `round` ran out: the worker starts unless the sheet holds it or a later request owns the timer.
+    fn timer_due(&self, round: u64) -> bool {
+        self.round.load(SeqCst) == round && self.requested.load(SeqCst) && !self.held.load(SeqCst)
     }
 }
 
@@ -104,9 +147,10 @@ struct Plan {
 /// owns the daemon, then `quit_ack`); start the worker anyway after [`ACK_TIMEOUT`]. D6: a hidden main
 /// window stays hidden, the tray says what is happening instead.
 pub fn request(app: &AppHandle) {
-    if app.state::<Quit>().requested.swap(true, SeqCst) {
+    let Some(round) = app.state::<Quit>().begin() else {
         return;
-    }
+    };
+    listen_hold(app);
     let shown = app
         .get_webview_window("main")
         .is_some_and(|w| w.is_visible().unwrap_or(false));
@@ -122,7 +166,32 @@ pub fn request(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(ACK_TIMEOUT);
-        start(&app);
+        if app.state::<Quit>().timer_due(round) {
+            start(&app);
+        }
+    });
+}
+
+/// 171 §5.3: the webview's [`HOLD`] / [`CANCEL`], subscribed once. A hold shows the main window, so a quit from
+/// the tray or the companion with the window hidden still puts the sheet in front of the user.
+fn listen_hold(app: &AppHandle) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let handle = app.clone();
+        app.listen(HOLD, move |_| {
+            if handle.state::<Quit>().hold()
+                && let Some(w) = handle.get_webview_window("main")
+            {
+                log_err(w.show(), "show main window for the pre-quit sheet");
+                log_err(w.set_focus(), "focus main window for the pre-quit sheet");
+            }
+        });
+        let handle = app.clone();
+        app.listen(CANCEL, move |_| {
+            if handle.state::<Quit>().cancel() {
+                tracing::info!("quit cancelled from the pre-quit sheet");
+            }
+        });
     });
 }
 
@@ -387,5 +456,56 @@ mod tests {
             serde_json::to_value(Requested { restart: true }).unwrap(),
             serde_json::json!({ "restart": true })
         );
+    }
+
+    /// 171 §5.3: without a hold the ack timer starts the worker — 163's path unchanged.
+    #[test]
+    fn no_hold_the_timer_starts_the_quit() {
+        let quit = Quit::default();
+        let round = quit.begin().expect("first request");
+        assert_eq!(quit.begin(), None, "a repeat request is a no-op");
+        assert!(quit.timer_due(round));
+    }
+
+    /// The sheet holds: the timer stands down; its "proceed" is the ordinary ack, which still starts the worker.
+    #[test]
+    fn a_hold_stops_the_timer_and_the_ack_proceeds() {
+        let quit = Quit::default();
+        let round = quit.begin().unwrap();
+        assert!(quit.hold());
+        assert!(!quit.timer_due(round));
+        let (p, progress, exits) = plan(None, None, LONG, LONG);
+        assert!(quit.start(|| p), "quit_ack after the hold runs the worker");
+        exits.recv_timeout(WAIT).expect("exit");
+        assert_eq!(steps(&progress), [ENGINE, CLOSING]);
+        assert!(!quit.hold(), "no hold once the worker runs");
+        assert!(!quit.cancel(), "no cancel once the worker runs");
+    }
+
+    /// Cancel drops the request: its timer never fires, the next entry asks again with a fresh timer.
+    #[test]
+    fn cancel_drops_the_request_and_its_timer() {
+        let quit = Quit::default();
+        let first = quit.begin().unwrap();
+        assert!(quit.hold());
+        assert!(quit.cancel());
+        assert!(!quit.timer_due(first));
+        let second = quit.begin().expect("asks again after a cancel");
+        assert_ne!(first, second);
+        assert!(
+            !quit.timer_due(first),
+            "the first request's timer stays dead"
+        );
+        assert!(quit.timer_due(second), "the new request is not held");
+    }
+
+    /// A hold or cancel with no request pending (an in-app quit, a late event) changes nothing.
+    #[test]
+    fn hold_and_cancel_need_a_pending_request() {
+        let quit = Quit::default();
+        assert!(!quit.hold());
+        assert!(!quit.cancel());
+        let round = quit.begin().unwrap();
+        assert!(quit.timer_due(round));
     }
 }

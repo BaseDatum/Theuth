@@ -16,6 +16,7 @@ import { useConnection } from '@/store/connection'
 import { AnsiText, CellContainer, CellOutputs, ExecutionCount } from './Outputs'
 import { clock, duration, ended, errorText, exitText, refKey, scopeOf } from './store'
 import type { CellProps, CellViewState } from './types'
+import type { CellRunWire } from './wire'
 import { labelOf, titleOf } from './view'
 // xterm loads with the first live run.
 const Terminal = lazy(() => import('@/components/chat/TerminalViewer').then((m) => ({ default: m.Terminal })))
@@ -157,6 +158,40 @@ function RunOutput({ run }: { run: CellRun }) {
   return <CellOutputs run={run.id} outputs={outputs} />
 }
 
+/**
+ * §7.4: a python run waiting on `input()` / `getpass()`: one line under the output. The answer goes out through
+ * `cell_input` as typed, no newline added; a password field is masked; nothing keeps the value once sent.
+ */
+export function InputLine({ request, onSend }: { request: { prompt: string; password: boolean }; onSend(text: string): void }) {
+  const [text, setText] = useState('')
+  return (
+    <form
+      className="flex items-center gap-2 font-mono text-xs"
+      onSubmit={(e) => {
+        e.preventDefault()
+        onSend(text)
+        setText('')
+      }}
+    >
+      <label className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="shrink-0 text-fg-secondary">{request.prompt || 'input'}</span>
+        <input
+          type={request.password ? 'password' : 'text'}
+          autoComplete="off"
+          spellCheck={false}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 pointer-coarse:h-12"
+          aria-label={request.prompt || 'Input for the running cell'}
+        />
+      </label>
+      <Button type="submit" size="sm" variant="outline" className="h-7 pointer-coarse:h-12">
+        Send
+      </Button>
+    </form>
+  )
+}
+
 /** The live shell run: the kernel PTY from mark C (`cell_attach`), typed through `cell_input` (§7.4). */
 function LiveTerminal({ run, code, label }: { run: CellRun; code: string; label: string }) {
   const first = code.split('\n').find((l) => l.trim()) ?? ''
@@ -237,7 +272,9 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
   const title = titleOf(cell, cellRef.type === 'chat' ? cellRef.ordinal : undefined)
   const o = cell.options
   const [picked, setPicked] = useState<CellRun | null>(null)
-  const run = picked ?? latest
+  // L11 fields (`wire.ts`): optional until the bindings carry them.
+  const run: CellRunWire | null = picked ?? latest
+  const waiting = (latest as CellRunWire | null)?.input
   const live = latest?.state === 'running' || latest?.state === 'queued'
   const [showOutput, setShowOutput] = useState<boolean | null>(null)
   const [folded, setFolded] = useState<boolean | null>(null)
@@ -415,7 +452,8 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       {run.expect.length > 0 && <Chip tone={run.expect.every((e) => e.met) ? 'success' : 'danger'}>{expectText(run)}</Chip>}
       {run.edited && <i>edited</i>}
       {picked && <span>run of {clock(picked.queued_ms)}</span>}
-      {o.private && <span>theuth got exit and expect only</span>}
+      {(run.masked ?? 0) > 0 && <span>{run.masked} masked for theuth</span>}
+      {(run.private ?? o.private) && <span>theuth got exit and expect only</span>}
       <span className="ml-auto flex items-center gap-0.5">
         {!readOnly && view !== 'guest' && (
           <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs pointer-coarse:h-12" onClick={callbacks.onAsk}>
@@ -443,7 +481,10 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
     latest.state === 'running' && latest.kernel.spec.type === 'shell' ? (
       <LiveTerminal run={latest} code={cell.code} label={label} />
     ) : (
-      <p className="text-xs text-fg-tertiary">{latest.state === 'queued' ? 'waiting for the kernel…' : 'running…'}</p>
+      <div className="flex flex-col gap-1">
+        <p className="text-xs text-fg-tertiary">{latest.state === 'queued' ? 'waiting for the kernel…' : 'running…'}</p>
+        {waiting && <InputLine request={waiting} onSend={callbacks.onInput} />}
+      </div>
     )
   ) : run && ended(run) && outputOpen ? (
     <RunOutput run={run} />
