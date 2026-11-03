@@ -96,7 +96,8 @@ const degradationText = (d: Degradation): string =>
         : 'SttDown' in d
           ? `STT down (${d.SttDown})`
           : 'SystemAudioFallback' in d
-            ? `app audio tap ${FAULT[d.SystemAudioFallback]}: recording all system audio instead`
+            ? (({ reason, at_ms, until_ms }) =>
+                `app audio tap ${FAULT[reason]}: all system audio recorded from ${hhmmss(Number(at_ms))}${until_ms === null ? '' : ` to ${hhmmss(Number(until_ms))}`}`)(d.SystemAudioFallback)
             : d.PermissionDenied === 'Microphone'
               ? 'Microphone permission denied'
               : 'System Audio Recording permission denied'

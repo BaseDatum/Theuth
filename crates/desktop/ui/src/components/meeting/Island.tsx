@@ -44,7 +44,8 @@ function badge(d: Degradation): string | null {
   if (d === 'NearMaxLength') return '10 min left'
   if (d === 'NoNote') return 'no note'
   if (typeof d === 'object' && 'SttDown' in d) return 'transcription down'
-  if (typeof d === 'object' && 'SystemAudioFallback' in d) return 'system audio fallback'
+  // 173 R2-3: only while it lasts; a return probe sets `until_ms`.
+  if (typeof d === 'object' && 'SystemAudioFallback' in d) return d.SystemAudioFallback.until_ms === null ? 'system audio fallback' : null
   if (typeof d === 'object' && 'PermissionDenied' in d) return d.PermissionDenied === 'Microphone' ? 'no mic permission' : 'no system audio permission'
   if (d === 'DiarizationDown') return 'speaker labels down'
   return null
