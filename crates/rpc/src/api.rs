@@ -1463,6 +1463,11 @@ pub trait Api {
     /// Drop the Signal registration (`presage.db`) and return to linking; threads are kept.
     #[method(name = "signal_unlink")]
     async fn signal_unlink(&self) -> RpcResult<()>;
+    /// The Slack app manifest this engine's Slack code expects (`slack::MANIFEST`,
+    /// `crates/slack/manifest.yaml`) verbatim, for Settings › Channels › Slack ›
+    /// App manifest; answers whether or not Slack is configured or enabled.
+    #[method(name = "slack_manifest")]
+    async fn slack_manifest(&self) -> RpcResult<String>;
     /// Slack connection state, trust lists, channels and bound threads.
     #[method(name = "slack_status")]
     async fn slack_status(&self) -> RpcResult<SlackStatus>;
@@ -6507,6 +6512,10 @@ impl ApiServer for Server {
         ask::<Signal, _>(SIGNAL_ACTOR, Unlink).await
     }
 
+    async fn slack_manifest(&self) -> RpcResult<String> {
+        Ok(slack::MANIFEST.to_owned())
+    }
+
     async fn slack_status(&self) -> RpcResult<SlackStatus> {
         ask::<Slack, _>(SLACK_ACTOR, slack::Status).await
     }
@@ -9253,6 +9262,20 @@ mod tests {
         for m in autoresearch::rpc_impl::METHODS {
             assert!(names.contains(&m), "{m} missing from {names:?}");
         }
+    }
+
+    /// 170 D1: `slack_manifest` answers `slack::MANIFEST` verbatim with no Slack
+    /// actor running (unconfigured), and the text is the manifest the setup uses.
+    #[tokio::test]
+    async fn slack_manifest_answers_the_compiled_manifest_without_slack() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let methods: jsonrpsee::Methods = Server::new(rt).into_rpc().into();
+        let req = r#"{"jsonrpc":"2.0","method":"slack_manifest","params":[],"id":1}"#;
+        let (resp, _) = methods.raw_json_request(req, 1).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(resp.get()).unwrap();
+        assert_eq!(v["result"].as_str(), Some(slack::MANIFEST), "{v}");
+        let m: serde_yaml::Value = serde_yaml::from_str(slack::MANIFEST).unwrap();
+        assert_eq!(m["features"]["slash_commands"][0]["command"], "/theuth");
     }
 
     /// 139 §9.2 (D18): the owner side of a routed `resume_turn` / `answer_ask` /
