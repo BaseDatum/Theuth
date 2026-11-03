@@ -47,6 +47,10 @@ public struct MeetingSlice: Equatable, Sendable {
     public var keptReleasedForS: UInt32?
     /// "Dismiss" answered for this event id: the engine's one-minute `Upcoming` re-sends of it stay muted.
     public var dismissedUpcoming: String?
+    /// 173: both capture tracks' health (`Capture` events / `meeting_status.capture`); all `.ok` outside a recording.
+    public var capture: CaptureStatus = .ok
+    /// The tapped app's name (`Started.process`); `nil` after a reconnect — `meeting_status` has none.
+    public var app: String?
 
     public enum Prompt: Equatable, Sendable {
         case detected(Detection)
@@ -81,9 +85,9 @@ public enum MeetingReducer {
     public static func reduce(_ s: MeetingSlice, _ e: MeetingEvent, now: Date) -> MeetingSlice {
         var n = s
         switch e {
-        case .started(let meeting, let session, _, _):
+        case .started(let meeting, let session, let process, _):
             n = .empty
-            n.meeting = meeting; n.session = session; n.state = .recording; n.clockAt = now
+            n.meeting = meeting; n.session = session; n.app = process.name; n.state = .recording; n.clockAt = now
         case .state(let meeting, let state, let degraded):
             if s.meeting != nil, s.meeting != meeting { return s }
             n.meeting = meeting; n.state = state; n.degraded = degraded
@@ -91,7 +95,7 @@ public enum MeetingReducer {
             // The cues end with the recording.
             n.listening = state.isLive && s.listening
             n.approvalWaiting = state.isLive && s.approvalWaiting
-            if !state.isLive { n.activity = nil; if case .stop? = s.prompt { n.prompt = nil } } // the meeting ended: a "Stop recording?" has nothing to stop
+            if !state.isLive { n.activity = nil; n.capture = .ok; if case .stop? = s.prompt { n.prompt = nil } } // the meeting ended: a "Stop recording?" has nothing to stop
             if case .post = state {} else { n.progress = nil }
         case .level(let l):
             n.level = l
@@ -135,6 +139,9 @@ public enum MeetingReducer {
             return s
         case .deleted(let meeting):
             return s.meeting == meeting ? .empty : s
+        case .capture(let meeting, let capture):
+            if s.meeting != meeting { return s }
+            n.capture = capture
         case .oracleDeciding(let meeting, let batchId):
             if s.meeting != meeting { return s }
             n.deciding = batchId
@@ -172,6 +179,7 @@ public enum MeetingReducer {
         var n = MeetingSlice.empty
         n.meeting = status.meeting; n.session = status.session; n.state = status.state; n.degraded = status.degraded
         n.elapsedMs = status.elapsedMs; n.clockAt = now; n.topics = status.topics; n.approvalWaiting = status.approvalWaiting
+        n.capture = status.capture
         n.prompt = status.detection.map { .detected($0) }
         return n
     }
@@ -276,5 +284,92 @@ public enum MeetingReducer {
     public static func mmss(_ ms: UInt64) -> String {
         let s = ms / 1000
         return String(format: "%02d:%02d", Int(s / 60), Int(s % 60))
+    }
+
+    /// Local `HH:MM` of an RFC 3339 stamp (`meeting.ts` `hhmm`); the stamp itself when it does not parse.
+    public static func hhmm(_ rfc3339: String) -> String {
+        guard let d = date(rfc3339) else { return rfc3339 }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "HH:mm"
+        return f.string(from: d)
+    }
+
+    /// One track's line of `captureWarning`; `nil` while it is heard.
+    private static func trackWarning(_ h: CaptureHealth, source: String, device: String, permission: String) -> String? {
+        switch h {
+        case .ok: return nil
+        case .recovering(_, let since): return "Not hearing \(source) since \(hhmm(since)) — reconnecting…"
+        case .lost(.permissionDenied, let since):
+            return "Not hearing \(source) since \(hhmm(since)) — \(permission) permission is off (System Settings → Privacy & Security). Retrying…"
+        case .lost(_, let since):
+            return "Not hearing \(source) since \(hhmm(since)). Still silent — check the \(device) device or \(permission) permission. Retrying…"
+        case .degraded: return "\(source)'s audio tap failed; recording all system audio instead"
+        }
+    }
+
+    /// 173 (`meeting.ts` `captureWarning`): what the user should read about the capture — the system track first, then the
+    /// mic; `nil` when both are heard. `app`: the tapped app's name, `nil` when unknown.
+    public static func captureWarning(_ capture: CaptureStatus, app: String?) -> String? {
+        let parts = [
+            trackWarning(capture.system, source: app ?? "the meeting app", device: "output", permission: "System Audio Recording"),
+            trackWarning(capture.mic, source: "your microphone", device: "input", permission: "Microphone"),
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// 173 (`Island.tsx` `captureBadge`): the strip's word for the capture health, the system track first; `nil` when both are heard.
+    public static func captureBadge(_ c: CaptureStatus) -> String? {
+        switch c.system {
+        case .lost(.permissionDenied, _): return "no system audio permission"
+        case .lost: return "system audio lost"
+        case .recovering: return "reconnecting audio"
+        case .degraded: return "system audio fallback"
+        case .ok: break
+        }
+        switch c.mic {
+        case .lost(.permissionDenied, _): return "no mic permission"
+        case .lost: return "mic lost"
+        case .recovering: return "reconnecting mic"
+        case .degraded, .ok: return nil
+        }
+    }
+
+    /// 173 — the collapsed pill's word while a track is not heard, the system track first; `nil` when both are heard.
+    public static func capturePill(_ c: CaptureStatus, app: String?) -> String? {
+        switch c.system {
+        case .recovering, .lost: return "Not hearing \(app ?? "the meeting app")"
+        case .degraded: return "Recording all system audio"
+        case .ok: break
+        }
+        switch c.mic {
+        case .recovering, .lost, .degraded: return "Not hearing your microphone"
+        case .ok: return nil
+        }
+    }
+
+    /// `Island.tsx` `badge`: a degradation's strip word. A denied permission is `nil` — the capture badge carries the live
+    /// permission state and clears itself; the degradation list keeps it until the next `State`. A `SystemAudioFallback`
+    /// that ended is history, not a badge.
+    public static func badge(_ d: Degradation) -> String? {
+        switch d {
+        case .micNoAec: return "headphones recommended"
+        case .modelDown: return "model down"
+        case .diskLow: return "disk low"
+        case .nearMaxLength: return "10 min left"
+        case .sttDown: return "transcription down"
+        case .permissionDenied: return nil
+        case .systemAudioFallback(_, let ended): return ended ? nil : "system audio fallback"
+        case .other("NoNote"): return "no note"
+        case .other("DiarizationDown"): return "speaker labels down"
+        case .other: return nil
+        }
+    }
+
+    /// The live strip's badges: the degradations (minus one that says what the capture word says), the capture word, then
+    /// the cues.
+    public static func stripBadges(_ s: MeetingSlice) -> [String] {
+        let alert = captureBadge(s.capture)
+        return s.degraded.compactMap(badge).filter { $0 != alert } + (alert.map { [$0] } ?? [])
+            + (s.approvalWaiting ? ["approval waiting"] : []) + (s.listening ? ["listening…"] : [])
     }
 }

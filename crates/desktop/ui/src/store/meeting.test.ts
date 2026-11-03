@@ -3,7 +3,22 @@ import type { Brief } from '@/rpc/bindings/Brief'
 import type { BriefSource } from '@/rpc/bindings/BriefSource'
 import type { MeetingEvent } from '@/rpc/bindings/MeetingEvent'
 import type { OracleDecision } from '@/rpc/bindings/OracleDecision'
-import { type MeetingSlice, LINES_KEEP, ORACLE_KEEP, current, oracleCounters, oracleSummary, reduce, useMeeting, who } from './meeting'
+import type { MeetingStatus } from '@/rpc/bindings/MeetingStatus'
+import {
+  type MeetingSlice,
+  LINES_KEEP,
+  ORACLE_KEEP,
+  captureBadge,
+  captureWarning,
+  current,
+  hhmm,
+  liveBadges,
+  oracleCounters,
+  oracleSummary,
+  reduce,
+  useMeeting,
+  who,
+} from './meeting'
 
 const M = 'm1'
 const brief = (id: string, source: BriefSource, topic: string | null = null): Brief => ({
@@ -178,4 +193,88 @@ test('07 §3: a labelled final for a committed row relabels it in place; who() r
   // A label for a row that is no longer kept is a new row, not a duplicate of the last one.
   s = reduce(s, said('System', 'later', 9000, true, M, 's1'))
   expect(s.lines.length).toBe(3)
+})
+
+// A local wall time, so `hhmm` reads the same in every zone.
+const SINCE = new Date(2026, 9, 10, 14, 3).toISOString()
+const OK = { state: 'Ok' } as const
+
+test('173: Capture follows the current meeting only, a State off the recording clears it', () => {
+  let s = fresh()
+  expect(captureWarning(s.capture, s.app)).toBeNull()
+  s = reduce(s, { type: 'Capture', meeting: 'other', capture: { mic: OK, system: { state: 'Lost', reason: 'Failed', since: SINCE } } })
+  expect(s.capture.system.state).toBe('Ok')
+  s = reduce(s, { type: 'Capture', meeting: M, capture: { mic: OK, system: { state: 'Recovering', reason: 'Silent', since: SINCE } } })
+  expect([s.capture.system.state, s.app]).toEqual(['Recovering', 'zoom'])
+  s = reduce(s, { type: 'State', meeting: M, state: 'Done', degraded: [] })
+  expect(s.capture).toEqual({ mic: OK, system: OK })
+})
+
+test('173: captureWarning names the app and the time, says what to check, and clears with Ok', () => {
+  const at = '14:03'
+  expect(hhmm(SINCE)).toBe(at)
+  expect(captureWarning({ mic: OK, system: OK }, 'zoom')).toBeNull()
+  expect(captureWarning({ mic: OK, system: { state: 'Recovering', reason: 'Silent', since: SINCE } }, 'zoom')).toBe(`Not hearing zoom since ${at} — reconnecting…`)
+  expect(captureWarning({ mic: OK, system: { state: 'Lost', reason: 'PermissionDenied', since: SINCE } }, null)).toBe(
+    `Not hearing the meeting app since ${at} — System Audio Recording permission is off (System Settings → Privacy & Security). Retrying…`,
+  )
+  expect(captureWarning({ mic: OK, system: { state: 'Lost', reason: 'Failed', since: SINCE } }, 'zoom')).toBe(
+    `Not hearing zoom since ${at}. Still silent — check the output device or System Audio Recording permission. Retrying…`,
+  )
+  expect(captureWarning({ mic: OK, system: { state: 'Degraded', reason: 'Silent' } }, 'zoom')).toBe("zoom's audio tap failed; recording all system audio instead")
+  // Both tracks bad: system first.
+  expect(captureWarning({ mic: { state: 'Recovering', reason: 'Stalled', since: SINCE }, system: { state: 'Degraded', reason: 'Silent' } }, 'zoom')).toBe(
+    `zoom's audio tap failed; recording all system audio instead · Not hearing your microphone since ${at} — reconnecting…`,
+  )
+  expect(captureWarning({ mic: { state: 'Lost', reason: 'Failed', since: SINCE }, system: OK }, 'zoom')).toBe(
+    `Not hearing your microphone since ${at}. Still silent — check the input device or Microphone permission. Retrying…`,
+  )
+  expect(captureWarning({ mic: OK, system: OK }, 'zoom')).toBeNull()
+})
+
+test('173 R3-7: hydrate from an engine without `capture` leaves both tracks Ok; no warning', () => {
+  const status = {
+    state: 'Recording',
+    meeting: M,
+    session: 's1',
+    elapsed_ms: 0n,
+    degraded: [],
+    cursor: null,
+    topics: [],
+    approval_waiting: false,
+    supported: 'Yes',
+    accelerator: '',
+    detection: null,
+  } as unknown as MeetingStatus
+  useMeeting.getState().hydrate(status, [], [])
+  const s = useMeeting.getState()
+  expect(s.capture).toEqual({ mic: OK, system: OK })
+  expect(captureWarning(s.capture, s.app)).toBeNull()
+})
+
+test('173: captureBadge is the strip word per state, system track first', () => {
+  expect(captureBadge({ mic: OK, system: OK })).toBeNull()
+  expect(captureBadge({ mic: OK, system: { state: 'Recovering', reason: 'Silent', since: SINCE } })).toBe('reconnecting audio')
+  expect(captureBadge({ mic: OK, system: { state: 'Lost', reason: 'Failed', since: SINCE } })).toBe('system audio lost')
+  expect(captureBadge({ mic: OK, system: { state: 'Lost', reason: 'PermissionDenied', since: SINCE } })).toBe('no system audio permission')
+  expect(captureBadge({ mic: OK, system: { state: 'Degraded', reason: 'Silent' } })).toBe('system audio fallback')
+  expect(captureBadge({ mic: { state: 'Lost', reason: 'PermissionDenied', since: SINCE }, system: OK })).toBe('no mic permission')
+  expect(captureBadge({ mic: { state: 'Recovering', reason: 'Stalled', since: SINCE }, system: { state: 'Degraded', reason: 'Silent' } })).toBe('system audio fallback')
+})
+
+test('173 R3-6: a PermissionDenied degradation is never a strip badge; the capture badge carries it and clears', () => {
+  const degraded = [{ PermissionDenied: 'AudioCapture' } as const]
+  expect(captureBadge({ mic: OK, system: { state: 'Lost', reason: 'PermissionDenied', since: SINCE } })).toBe('no system audio permission')
+  expect(liveBadges(degraded)).toEqual([])
+  expect(captureBadge({ mic: OK, system: OK })).toBeNull()
+  expect(liveBadges([...degraded, 'MicNoAec', { SttDown: 'Mic' }, { PermissionDenied: 'Microphone' }])).toEqual(['headphones recommended', 'transcription down'])
+})
+
+test('173: a live fallback is one badge; an ended one none', () => {
+  const open = { SystemAudioFallback: { reason: 'Silent', at_ms: 1n, until_ms: null } } as const
+  const ended = { SystemAudioFallback: { reason: 'Silent', at_ms: 1n, until_ms: 2n } } as const
+  expect(liveBadges([open])).toEqual(['system audio fallback'])
+  const alert = captureBadge({ mic: OK, system: { state: 'Degraded', reason: 'Silent' } })
+  expect(liveBadges([open], alert)).toEqual([])
+  expect(liveBadges([ended])).toEqual([])
 })

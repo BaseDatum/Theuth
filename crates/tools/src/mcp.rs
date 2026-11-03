@@ -18,8 +18,11 @@ use futures::future::BoxFuture;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use notify::Watcher;
-use rmcp::model::{CallToolRequestParams, ContentBlock};
-use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceExt};
+use rmcp::model::{CallToolRequestParams, ContentBlock, ProtocolVersion};
+use rmcp::service::{
+    ClientInitializeError, ClientLifecycleMode, ClientServiceExt, RoleClient, RunningService,
+    ServiceExt,
+};
 use rmcp::transport::auth::{
     AuthClient, AuthorizationManager, AuthorizationRequest, AuthorizationSession,
 };
@@ -38,9 +41,10 @@ use crate::{
 mod oauth;
 mod tools;
 
-/// A server that has not answered `initialize` + `tools/list` by then is dropped
-/// and recorded as a connect error; the next reconcile retries it.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// A server that has not finished its lifecycle (`server/discover`, or the
+/// legacy `initialize` after rmcp's 10 s discover probe) + `tools/list` by then
+/// is dropped and recorded as a connect error; the next reconcile retries it.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How to reach a server; the normalised form of one file entry.
 #[derive(Clone, Debug, PartialEq)]
@@ -1333,6 +1337,22 @@ async fn expand_map(m: &BTreeMap<String, String>) -> anyhow::Result<BTreeMap<Str
     Ok(out)
 }
 
+/// HTTP servers run the newest protocol both sides speak (175): `server/discover`
+/// offering every version rmcp knows, newest first, and for a server that
+/// reports itself legacy the `initialize` handshake at the newest version that
+/// still has one (never [`ProtocolVersion::LATEST`], which a legacy server
+/// downgrades and then rejects the session for).
+fn http_lifecycle() -> ClientLifecycleMode {
+    ClientLifecycleMode::Auto {
+        preferred_versions: ProtocolVersion::KNOWN_VERSIONS
+            .iter()
+            .rev()
+            .cloned()
+            .collect(),
+        legacy_version: Some(ProtocolVersion::LATEST_WITH_INITIALIZE),
+    }
+}
+
 /// `auth_dir` holds the server's OAuth tokens, `<auth_dir>/<name>.json`.
 /// Strings from the file go through [`expand`] here, at connect, so a
 /// `$(gh auth token)` runs once per connection and not on every reconcile.
@@ -1384,8 +1404,11 @@ async fn connect(name: &str, spec: &ServerSpec, auth_dir: &Path) -> anyhow::Resu
                 .any(|k| k.eq_ignore_ascii_case("authorization"))
             {
                 // The user does auth by hand; leave them alone.
-                ().serve(StreamableHttpClientTransport::from_config(cfg))
-                    .await?
+                ().serve_with_lifecycle(
+                    StreamableHttpClientTransport::from_config(cfg),
+                    http_lifecycle(),
+                )
+                .await?
             } else {
                 let http = reqwest::Client::new();
                 let mut manager = AuthorizationManager::new(url.as_str()).await?;
@@ -1396,10 +1419,10 @@ async fn connect(name: &str, spec: &ServerSpec, auth_dir: &Path) -> anyhow::Resu
                 // Discovery only when tokens exist; without them the request
                 // goes out plain and a 401 lands in `settle` as `login required`.
                 manager.initialize_from_store().await?;
-                ().serve(StreamableHttpClientTransport::with_client(
-                    AuthClient::new(http, manager),
-                    cfg,
-                ))
+                ().serve_with_lifecycle(
+                    StreamableHttpClientTransport::with_client(AuthClient::new(http, manager), cfg),
+                    http_lifecycle(),
+                )
                 .await?
             }
         }
@@ -1491,7 +1514,13 @@ async fn attempt(name: &str, spec: &ServerSpec, auth_dir: &Path) -> Attempt {
 fn settle(state: &mut State, name: String, spec: ServerSpec, result: Attempt) {
     match result {
         Ok((service, remote)) => {
-            tracing::info!(server = %name, count = remote.len(), "mcp server connected");
+            // rmcp keeps which lifecycle won private, so the version alone is
+            // logged; one past `NO_INITIALIZE` can only come from discover.
+            let protocol = service
+                .peer_info()
+                .map(|i| i.protocol_version.as_str().to_owned())
+                .unwrap_or_default();
+            tracing::info!(server = %name, count = remote.len(), %protocol, "mcp server connected");
             state.errors.remove(&name);
             state.login.remove(&name);
             state.running.insert(
@@ -2320,5 +2349,277 @@ mod tests {
         g.set("f", None, None);
         assert!(g.servers.is_empty(), "emptied entries dropped: {g:?}");
         assert_eq!(serde_yaml::to_string(&g).unwrap(), "servers: {}\n");
+    }
+
+    #[test]
+    fn http_lifecycle_prefers_newest_and_falls_back_to_newest_initialize() {
+        let ClientLifecycleMode::Auto {
+            preferred_versions: v,
+            legacy_version,
+        } = http_lifecycle()
+        else {
+            panic!("HTTP lifecycle is not Auto");
+        };
+        assert_eq!(v[0], ProtocolVersion::LATEST);
+        assert!(v.windows(2).all(|w| w[0].as_str() > w[1].as_str()), "{v:?}");
+        assert_eq!(v.len(), ProtocolVersion::KNOWN_VERSIONS.len());
+        assert!(
+            ProtocolVersion::KNOWN_VERSIONS
+                .iter()
+                .all(|k| v.contains(k))
+        );
+        assert_eq!(
+            legacy_version,
+            Some(ProtocolVersion::LATEST_WITH_INITIALIZE)
+        );
+    }
+
+    /// One `echo` tool. `legacy` = a pre-2026-07-28 server: no 2026 version,
+    /// and `server/discover` is an unknown method (-32601). `asked` = the
+    /// version of the first `initialize` it saw.
+    #[derive(Clone, Default)]
+    struct TestServer {
+        legacy: bool,
+        asked: Arc<std::sync::OnceLock<ProtocolVersion>>,
+    }
+
+    impl rmcp::ServerHandler for TestServer {
+        fn get_info(&self) -> rmcp::model::ServerConfig {
+            rmcp::model::ServerConfig::new(
+                rmcp::model::ServerCapabilities::builder()
+                    .enable_tools()
+                    .build(),
+            )
+        }
+
+        fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+            std::borrow::Cow::Borrowed(if self.legacy {
+                ProtocolVersion::known_up_to(&ProtocolVersion::V_2025_11_25)
+            } else {
+                ProtocolVersion::KNOWN_VERSIONS
+            })
+        }
+
+        async fn initialize(
+            &self,
+            request: rmcp::model::InitializeRequestParams,
+            context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        ) -> Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
+            let _ = self.asked.set(request.protocol_version.clone());
+            context.peer.set_peer_info(request.clone());
+            self.negotiate_initialize(&request)
+        }
+
+        async fn discover(
+            &self,
+            _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        ) -> Result<rmcp::model::DiscoverResult, rmcp::ErrorData> {
+            if self.legacy {
+                return Err(rmcp::ErrorData::method_not_found::<
+                    rmcp::model::DiscoverRequestMethod,
+                >());
+            }
+            Ok(rmcp::model::DiscoverResult::from_server_info(
+                self.supported_protocol_versions().into_owned(),
+                self.get_info(),
+            ))
+        }
+
+        async fn list_tools(
+            &self,
+            _request: Option<rmcp::model::PaginatedRequestParams>,
+            _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+            let schema = serde_json::json!({"type": "object"});
+            Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+                rmcp::model::Tool::new("echo", "echo", schema.as_object().unwrap().clone()),
+            ]))
+        }
+
+        async fn call_tool(
+            &self,
+            req: CallToolRequestParams,
+            _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+            Ok(
+                rmcp::model::CallToolResult::success(vec![ContentBlock::text(format!(
+                    "echo:{}",
+                    req.name
+                ))])
+                .into(),
+            )
+        }
+    }
+
+    /// `app` on `http://127.0.0.1:<port>/mcp` for the rest of the test.
+    async fn serve_http(app: axum::Router) -> ServerSpec {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        ServerSpec {
+            transport: Transport::Http {
+                url,
+                headers: BTreeMap::new(),
+                oauth: None,
+            },
+        }
+    }
+
+    async fn serve_mcp(server: TestServer) -> ServerSpec {
+        use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+        use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
+        let svc = StreamableHttpService::new(
+            move || Ok(server.clone()),
+            Arc::new(LocalSessionManager::default()),
+            StreamableHttpServerConfig::default(),
+        );
+        serve_http(axum::Router::new().route_service("/mcp", svc)).await
+    }
+
+    /// Connect, list and call `echo`; the negotiated version.
+    async fn connect_list_call(spec: &ServerSpec, auth_dir: &Path) -> ProtocolVersion {
+        let service = connect("t", spec, auth_dir).await.unwrap();
+        let tools = service.list_all_tools().await.unwrap();
+        assert_eq!(tools.len(), 1);
+        let result = service
+            .call_tool(CallToolRequestParams::new("echo"))
+            .await
+            .unwrap();
+        assert_eq!(output(result, auth_dir).content, "echo:echo");
+        service.peer_info().unwrap().protocol_version.clone()
+    }
+
+    #[tokio::test]
+    async fn http_connect_runs_discover_at_the_latest_version() {
+        let dir = crate::TestDir::new("mcp-modern");
+        let server = TestServer::default();
+        let mut spec = serve_mcp(server.clone()).await;
+        // The hand-auth path; the OAuth path is the legacy case below.
+        let Transport::Http { headers, .. } = &mut spec.transport else {
+            unreachable!()
+        };
+        headers.insert("Authorization".into(), "Bearer t".into());
+        assert_eq!(
+            connect_list_call(&spec, &dir.0).await,
+            ProtocolVersion::V_2026_07_28
+        );
+        assert_eq!(server.asked.get(), None, "sent initialize");
+    }
+
+    #[tokio::test]
+    async fn http_connect_falls_back_to_initialize_for_a_legacy_server() {
+        let dir = crate::TestDir::new("mcp-legacy");
+        let server = TestServer {
+            legacy: true,
+            ..TestServer::default()
+        };
+        let spec = serve_mcp(server.clone()).await;
+        let started = std::time::Instant::now();
+        assert_eq!(
+            connect_list_call(&spec, &dir.0).await,
+            ProtocolVersion::V_2025_11_25
+        );
+        // D3: the fallback asks for the newest version with a handshake, not LATEST.
+        assert_eq!(server.asked.get(), Some(&ProtocolVersion::V_2025_11_25));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "fallback waited on the discover timeout: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn http_401_on_the_discover_probe_is_login_required() {
+        let dir = crate::TestDir::new("mcp-401");
+        let app = axum::Router::new().route(
+            "/mcp",
+            axum::routing::any(|| async {
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    [("WWW-Authenticate", r#"Bearer realm="t""#)],
+                )
+            }),
+        );
+        let spec = serve_http(app).await;
+        let mut state = State::default();
+        let result = attempt("s", &spec, &dir.0).await;
+        settle(&mut state, "s".into(), spec, result);
+        assert_eq!(state.errors["s"], "s: login required (/login s)");
+        assert_eq!(state.login["s"], r#"Bearer realm="t""#);
+    }
+
+    /// T3 (175), live: `mbx test -p tools github_mcp_live -- --ignored --nocapture`.
+    /// Needs `gh auth login`; prints the protocol, the tool count and the login only.
+    #[tokio::test]
+    #[ignore = "live: api.githubcopilot.com with `gh auth token`"]
+    async fn github_mcp_live_negotiates_the_latest_version() {
+        let dir = crate::TestDir::new("mcp-live");
+        let spec = ServerSpec {
+            transport: Transport::Http {
+                url: "https://api.githubcopilot.com/mcp/".into(),
+                headers: BTreeMap::from([(
+                    "Authorization".into(),
+                    "Bearer $(gh auth token)".into(),
+                )]),
+                oauth: None,
+            },
+        };
+        // `{e:#}`, never `{e:?}`: no chance of a header in the panic.
+        let service = connect("github", &spec, &dir.0)
+            .await
+            .unwrap_or_else(|e| panic!("connect: {e:#}"));
+        let protocol = service.peer_info().unwrap().protocol_version.clone();
+        let tools = service
+            .list_all_tools()
+            .await
+            .unwrap_or_else(|e| panic!("tools/list: {e:#}"));
+        let me = service
+            .call_tool(CallToolRequestParams::new("get_me"))
+            .await
+            .unwrap_or_else(|e| panic!("get_me: {e:#}"));
+        let me = output(me, &dir.0);
+        assert!(!me.is_error, "get_me failed");
+        let login = serde_json::from_str::<Value>(&me.content)
+            .ok()
+            .and_then(|v| v["login"].as_str().map(str::to_owned))
+            .expect("get_me has a login");
+        println!(
+            "protocol={} tools={} login={login}",
+            protocol.as_str(),
+            tools.len()
+        );
+        assert_eq!(protocol, ProtocolVersion::V_2026_07_28);
+        assert!(!tools.is_empty());
+    }
+
+    /// T4 (175), live: a public no-auth legacy server (gitmcp.io answers
+    /// `server/discover` with 400 `Mcp-Session-Id header is required`).
+    /// `mbx test -p tools legacy_mcp_live -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "live: gitmcp.io"]
+    async fn legacy_mcp_live_falls_back_fast() {
+        let dir = crate::TestDir::new("mcp-live-legacy");
+        let spec = ServerSpec {
+            transport: Transport::Http {
+                url: "https://gitmcp.io/docs".into(),
+                headers: BTreeMap::new(),
+                oauth: None,
+            },
+        };
+        let started = std::time::Instant::now();
+        let service = connect("gitmcp", &spec, &dir.0)
+            .await
+            .unwrap_or_else(|e| panic!("connect: {e:#}"));
+        let connected = started.elapsed();
+        let protocol = service.peer_info().unwrap().protocol_version.clone();
+        let tools = service.list_all_tools().await.unwrap();
+        println!(
+            "protocol={} tools={} connect={connected:?}",
+            protocol.as_str(),
+            tools.len()
+        );
+        assert!(protocol.has_initialize(), "{protocol:?}");
+        assert!(!tools.is_empty());
+        assert!(connected < Duration::from_secs(5), "{connected:?}");
     }
 }

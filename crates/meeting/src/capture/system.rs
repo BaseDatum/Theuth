@@ -8,52 +8,107 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
-use super::Feed;
-use crate::ProcessInfo;
+use super::{Feed, Report, Reports, watchdog};
+use crate::{CaptureFault, Degradation, Permission, ProcessInfo, Track};
+
+/// What the system thread taps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    /// `ProcessLoopback` on this pid.
+    Process(u32),
+    /// `SystemLoopback` minus our own process ([`crate::SYSTEM_AUDIO`], or the fallback).
+    System,
+}
+
+impl Mode {
+    fn pid(self) -> u32 {
+        match self {
+            Mode::Process(pid) => pid,
+            Mode::System => crate::SYSTEM_AUDIO,
+        }
+    }
+
+    /// The stream config: 48 kHz mono for every mode (the rings, probe and encoder assume it).
+    fn config(self) -> flexaudio::StreamConfig {
+        use flexaudio::{OutputFormat, SourceKind, StreamConfig};
+        let output = OutputFormat {
+            sample_rate: super::RATE,
+            channels: 1,
+        };
+        match self {
+            Mode::System => StreamConfig {
+                kind: SourceKind::SystemLoopback,
+                exclude_self: true,
+                output,
+                ..Default::default()
+            },
+            Mode::Process(pid) => StreamConfig {
+                kind: SourceKind::ProcessLoopback,
+                target_pid: Some(pid),
+                output,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn open(self) -> flexaudio::Result<flexaudio::Stream> {
+        flexaudio::open(self.config()).and_then(|mut s| s.start().map(|()| s))
+    }
+}
+
+/// What a flexaudio event means to the watchdog (`None`: logged / counted only).
+fn signal_of(ev: &flexaudio::Event) -> Option<watchdog::Signal> {
+    use flexaudio::Event;
+    use watchdog::Signal;
+    match ev {
+        Event::StreamStalled | Event::RecoverableError { .. } => Some(Signal::Stalled),
+        Event::StreamRecovered => Some(Signal::Recovered),
+        Event::SilenceWhileSourceActive { .. } => Some(Signal::SilentWhileActive),
+        Event::DeviceLost | Event::Error(_) => Some(Signal::Lost),
+        Event::PermissionDenied { .. } => Some(Signal::PermissionDenied),
+        Event::TerminalError { .. } => Some(Signal::Terminal),
+        _ => None,
+    }
+}
 
 /// Start the tap on `pid` — or, for [`crate::SYSTEM_AUDIO`] (pid 0), a global
 /// tap on the default output device minus our own process; returns once the
 /// stream runs (the TCC prompt fires here on first use) or with the open
-/// error. The thread pumps chunks into the rings until stopped. If the
-/// process goes away the thread logs and exits; the encoder keeps writing
-/// silence for the track (01 §4.1).
+/// error. The thread pumps chunks into the rings until stopped, under the 173
+/// watchdog ([`watchdog`]): every flexaudio event is logged; a stall, or exact
+/// zeros while a concurrent global-tap probe hears sound, reopen the tap
+/// (retargeted within the app's family, [`watchdog::in_family`]); three failed
+/// reopens fall back to the global tap, and a return probe every minute goes
+/// back to the app's tap once it is live. Every episode goes to `reports`. It
+/// never exits before `stop`.
 // ponytail: the global tap follows the *default* output device; an app routed to a non-default
 // headset is silent to it. Per-app pick remains the escape hatch; `device_id` would be the upgrade.
-pub fn spawn(pid: u32, mut feed: Feed, stop: Arc<AtomicBool>) -> anyhow::Result<JoinHandle<()>> {
-    use std::sync::atomic::Ordering;
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    use flexaudio::{Event, OutputFormat, SourceKind, StreamConfig};
-
+pub fn spawn(
+    pid: u32,
+    bundle: Option<String>,
+    mut feed: Feed,
+    stop: Arc<AtomicBool>,
+    reports: Reports,
+    span: tracing::Span,
+) -> anyhow::Result<JoinHandle<()>> {
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
     let thread = std::thread::Builder::new()
         .name("meeting-system".into())
         .spawn(move || {
-            let cfg = if pid == crate::SYSTEM_AUDIO {
-                StreamConfig {
-                    kind: SourceKind::SystemLoopback,
-                    exclude_self: true,
-                    output: OutputFormat {
-                        sample_rate: super::RATE,
-                        channels: 1,
-                    },
-                    ..Default::default()
-                }
+            let _span = span.entered();
+            let (mode, target) = if pid == crate::SYSTEM_AUDIO {
+                (Mode::System, None)
             } else {
-                StreamConfig {
-                    kind: SourceKind::ProcessLoopback,
-                    target_pid: Some(pid),
-                    output: OutputFormat {
-                        sample_rate: super::RATE,
-                        channels: 1,
-                    },
-                    ..Default::default()
-                }
+                (
+                    Mode::Process(pid),
+                    Some(watchdog::Target::new(pid, bundle, exe_path(pid))),
+                )
             };
-            let mut stream = match flexaudio::open(cfg).and_then(|mut s| s.start().map(|()| s)) {
+            let stream = match mode.open() {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e.to_string()));
@@ -61,37 +116,8 @@ pub fn spawn(pid: u32, mut feed: Feed, stop: Arc<AtomicBool>) -> anyhow::Result<
                 }
             };
             let _ = ready_tx.send(Ok(()));
-            while !stop.load(Ordering::SeqCst) {
-                while let Some(ev) = stream.poll_event() {
-                    match ev {
-                        Event::PermissionDenied { .. }
-                        | Event::DeviceLost
-                        | Event::Error(_)
-                        | Event::TerminalError { .. } => {
-                            tracing::warn!(pid, "process tap stopped: {ev:?}");
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-                let Some(chunk) = stream.poll_chunk() else {
-                    std::thread::sleep(Duration::from_millis(5));
-                    continue;
-                };
-                // Mono was asked for; downmix defensively if a frame is wider.
-                let ch = (chunk.data.len() / chunk.frames.max(1)).max(1);
-                let pcm = if ch == 1 {
-                    chunk.data
-                } else {
-                    chunk
-                        .data
-                        .chunks_exact(ch)
-                        .map(|f| f.iter().sum::<f32>() / ch as f32)
-                        .collect()
-                };
-                feed.push(pcm);
-            }
-            // `stream` drops here: flexaudio joins its threads and closes the tap.
+            run(stream, mode, target, &mut feed, &stop, &reports);
+            // `stream` drops in `run`: flexaudio joins its threads and closes the tap.
         })?;
     match ready_rx.recv() {
         Ok(Ok(())) => Ok(thread),
@@ -103,6 +129,380 @@ pub fn spawn(pid: u32, mut feed: Feed, stop: Arc<AtomicBool>) -> anyhow::Result<
             let _ = thread.join();
             anyhow::bail!("process tap on pid {pid}: capture thread exited before starting")
         }
+    }
+}
+
+/// Mono samples of a chunk (mono was asked for; downmix defensively if a frame is wider).
+fn mono(chunk: flexaudio::AudioChunk) -> Vec<f32> {
+    let ch = (chunk.data.len() / chunk.frames.max(1)).max(1);
+    if ch == 1 {
+        chunk.data
+    } else {
+        chunk
+            .data
+            .chunks_exact(ch)
+            .map(|f| f.iter().sum::<f32>() / ch as f32)
+            .collect()
+    }
+}
+
+/// The probe floor: [`watchdog::AUDIBLE_DBFS`], or `THEUTH_MEETING_PROBE_DBFS` — a calibration
+/// knob (an app whose idle output sits above −70 dBFS; `examples/tap_repro`'s −80 dBFS tone),
+/// read once per meeting, clamped to −140…0; a non-finite or unparsable value is logged and ignored.
+fn probe_floor() -> f32 {
+    let raw = std::env::var("THEUTH_MEETING_PROBE_DBFS").ok();
+    let (floor, complaint) = watchdog::probe_floor(raw.as_deref());
+    if let Some(c) = complaint {
+        tracing::warn!("meeting capture: {c}");
+    }
+    floor
+}
+
+/// Listen on `mode` for [`watchdog::PROBE_WINDOW`] on a thread of its own (its flexaudio
+/// objects stay there); the answer arrives on the receiver (disconnected = the thread died).
+fn probe(mode: Mode, floor: f32) -> mpsc::Receiver<Result<watchdog::ProbeMeter, String>> {
+    let (tx, rx) = mpsc::channel();
+    let span = tracing::Span::current();
+    let _ = std::thread::Builder::new()
+        .name("meeting-probe".into())
+        .spawn(move || {
+            let _span = span.entered();
+            let r = mode.open().map_err(|e| e.to_string()).map(|mut s| {
+                let mut m = watchdog::ProbeMeter::new(floor);
+                let end = Instant::now() + watchdog::PROBE_WINDOW;
+                while Instant::now() < end {
+                    while let Some(ev) = s.poll_event() {
+                        tracing::debug!(?mode, "meeting capture: probe event: {ev:?}");
+                    }
+                    match s.poll_chunk() {
+                        Some(c) => m.add(&mono(c)),
+                        None => std::thread::sleep(Duration::from_millis(5)),
+                    }
+                }
+                m
+            });
+            let _ = tx.send(r);
+        });
+    rx
+}
+
+/// The activity the watchdog's activity-gated rules see: the app's family on a per-app tap,
+/// any process on the global tap (pid 0 and the fallback).
+fn activity_of(mode: Mode, target: Option<&watchdog::Target>) -> watchdog::Activity {
+    match processes() {
+        Err(_) => watchdog::Activity::Unknown,
+        Ok(ps) => watchdog::activity(
+            target.filter(|_| mode != Mode::System),
+            &ps,
+            &exe_path,
+            std::process::id(),
+        ),
+    }
+}
+
+/// The capture loop: events → log + watchdog, chunks → rings + watchdog, probe answers →
+/// watchdog, a watchdog tick every 250 ms, the health line every minute.
+fn run(
+    stream: flexaudio::Stream,
+    mut mode: Mode,
+    target: Option<watchdog::Target>,
+    feed: &mut Feed,
+    stop: &AtomicBool,
+    reports: &Reports,
+) {
+    use std::sync::atomic::Ordering;
+
+    use flexaudio::Event;
+    use watchdog::{Action, Activity, Signal};
+
+    const TICK: Duration = Duration::from_millis(250);
+    const LINE: Duration = Duration::from_secs(60);
+    /// The process list is re-read at most this often…
+    const ACTIVITY_TTL: Duration = Duration::from_secs(1);
+    /// …or this often while nothing plays (R3 #20: a PipeWire registry walk on Linux).
+    const IDLE_ACTIVITY_TTL: Duration = Duration::from_secs(5);
+    /// A probe that has not answered by then failed (R3 #4: a hung open or drop).
+    const PROBE_DEADLINE: Duration = Duration::from_secs(14);
+
+    let me = std::process::id();
+    let floor = probe_floor();
+    if floor != watchdog::AUDIBLE_DBFS {
+        tracing::warn!(
+            floor,
+            "meeting capture: probe floor overridden (THEUTH_MEETING_PROBE_DBFS)"
+        );
+    }
+    let mut stream = Some(stream);
+    let start = Instant::now();
+    let per_app = target.is_some();
+    let mut wd = watchdog::Watchdog::new(
+        start,
+        watchdog::Rules {
+            zeros: true,
+            fallback: per_app,
+            probe: per_app,
+        },
+    );
+    let mut meter = watchdog::Meter::default();
+    let (mut last_tick, mut last_line) = (start, start);
+    let mut cached: Option<(Instant, Activity)> = None;
+    // A running probe: what for, the pid a return probe taps, when it started, its answer.
+    type Answer = mpsc::Receiver<Result<watchdog::ProbeMeter, String>>;
+    let mut probing: Option<(Action, u32, Instant, Answer)> = None;
+    let mut probe_failure_logged = false;
+    while !stop.load(Ordering::SeqCst) {
+        let now = Instant::now();
+        let mut gone = false;
+        while let Some(ev) = stream.as_mut().and_then(|s| s.poll_event()) {
+            let pid = mode.pid();
+            match &ev {
+                Event::ChunkDropped { count } => meter.chunk_dropped(*count),
+                Event::Clipped => meter.clipped += 1,
+                _ => tracing::warn!(pid, ?mode, "meeting capture: system audio event: {ev:?}"),
+            }
+            if let Some(s) = signal_of(&ev) {
+                gone |= matches!(
+                    s,
+                    Signal::Lost | Signal::PermissionDenied | Signal::Terminal
+                );
+                if s == Signal::PermissionDenied {
+                    let _ = reports.send(Report::Degraded(Degradation::PermissionDenied(
+                        Permission::AudioCapture,
+                    )));
+                }
+                wd.signal(now, s);
+            }
+        }
+        if gone {
+            drop(stream.take());
+            meter.new_stream();
+        }
+        match stream.as_mut().and_then(|s| s.poll_chunk()) {
+            Some(chunk) => super::deliver(now, mono(chunk), &mut meter, &mut wd, feed),
+            None => std::thread::sleep(Duration::from_millis(5)),
+        }
+        let answer = probing
+            .as_ref()
+            .and_then(|(_, _, asked, rx)| match rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(mpsc::TryRecvError::Empty) if now.duration_since(*asked) < PROBE_DEADLINE => {
+                    None
+                }
+                Err(mpsc::TryRecvError::Empty) => Some(Err("no answer within 14 s".into())),
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err("probe thread gone".into())),
+            });
+        if let Some(answer) = answer
+            && let Some((kind, pid, _, _)) = probing.take()
+        {
+            let now = Instant::now();
+            match (kind, answer) {
+                (Action::Return, Ok(m)) if m.nonzero() >= watchdog::RETURN_FOR => {
+                    match Mode::Process(pid).open() {
+                        Ok(s) => {
+                            tracing::warn!(
+                                pid,
+                                nonzero_ms = m.nonzero().as_millis() as u64,
+                                "meeting capture: the app's tap is live again; back from the fallback"
+                            );
+                            // R3 #14: what the global tap already buffered is recorded, not dropped.
+                            while let Some(c) = stream.as_mut().and_then(|s| s.poll_chunk()) {
+                                super::deliver(now, mono(c), &mut meter, &mut wd, feed);
+                            }
+                            drop(stream.replace(s));
+                            meter.new_stream();
+                            mode = Mode::Process(pid);
+                            wd.returned(now, true);
+                            let _ = reports.send(Report::Returned { end: now, pid });
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                pid,
+                                "meeting capture: return to the app's tap failed: {e}"
+                            );
+                            wd.returned(now, false);
+                        }
+                    }
+                }
+                (Action::Return, r) => {
+                    tracing::info!(
+                        pid,
+                        nonzero_ms = r.as_ref().map_or(0, |m| m.nonzero().as_millis() as u64),
+                        error = r.as_ref().err().map(String::as_str),
+                        "meeting capture: return probe: the app's tap is still quiet"
+                    );
+                    wd.returned(now, false);
+                }
+                (_, r) => {
+                    let verdict = r.as_ref().map_or(watchdog::Probe::Failed, |m| m.verdict());
+                    match &r {
+                        Ok(m) => tracing::info!(
+                            loud_ms = m.loud().as_millis() as u64,
+                            nonzero_ms = m.nonzero().as_millis() as u64,
+                            floor,
+                            ?verdict,
+                            "meeting capture: the app's tap is exact zeros; probe of all system audio"
+                        ),
+                        Err(e) if !probe_failure_logged => {
+                            probe_failure_logged = true;
+                            tracing::warn!(
+                                "meeting capture: probe of all system audio failed ({e}); \
+                                 zeros are judged by IsRunningOutput instead"
+                            );
+                        }
+                        Err(_) => {}
+                    }
+                    wd.probed(now, verdict);
+                }
+            }
+        }
+        if now.duration_since(last_tick) < TICK {
+            continue;
+        }
+        last_tick = now;
+        let mut activity = || {
+            if let Some((at, a)) = cached {
+                let ttl = if a == Activity::Inactive {
+                    IDLE_ACTIVITY_TTL
+                } else {
+                    ACTIVITY_TTL
+                };
+                if now.duration_since(at) < ttl {
+                    return a;
+                }
+            }
+            let a = activity_of(mode, target.as_ref());
+            cached = Some((now, a));
+            a
+        };
+        match wd.tick(now, &mut activity) {
+            None => {}
+            Some(Action::Probe) => {
+                probing = Some((Action::Probe, 0, now, probe(Mode::System, floor)));
+            }
+            Some(Action::Return) => {
+                // R3 #8: a family member running output beats a merely-alive original.
+                let pid = target.as_ref().and_then(|t| {
+                    let ps = processes().ok()?;
+                    let pid = watchdog::retarget(t, t.pid, &ps, &exe_path, me);
+                    ps.iter().any(|p| p.pid == pid).then_some(pid)
+                });
+                match pid {
+                    Some(pid) => {
+                        probing =
+                            Some((Action::Return, pid, now, probe(Mode::Process(pid), floor)));
+                    }
+                    None => wd.returned(now, false),
+                }
+            }
+            Some(action) => {
+                drop(stream.take());
+                meter.new_stream();
+                let mut retarget = None;
+                match (action, mode, target.as_ref()) {
+                    (Action::Fallback, Mode::Process(pid), _) => {
+                        let reason = wd.fell_back().unwrap_or(CaptureFault::Silent);
+                        tracing::warn!(
+                            pid,
+                            ?reason,
+                            "meeting capture: the app tap stayed quiet through {} reopens while sound \
+                             played; falling back to all system audio",
+                            watchdog::FALLBACK_AFTER
+                        );
+                        mode = Mode::System;
+                        let _ = reports.send(Report::Fallback { start: now, reason });
+                    }
+                    (_, Mode::Process(pid), Some(t)) => {
+                        let to = processes()
+                            .map(|ps| watchdog::retarget(t, pid, &ps, &exe_path, me))
+                            .unwrap_or(pid);
+                        if to != pid {
+                            tracing::warn!(
+                                pid,
+                                to,
+                                bundle = ?t.bundle,
+                                app = ?t.app,
+                                "meeting capture: the app plays from another process; retargeting the tap"
+                            );
+                            mode = Mode::Process(to);
+                            retarget = Some(to);
+                        }
+                    }
+                    _ => {}
+                }
+                cached = None;
+                match mode.open() {
+                    Ok(s) => {
+                        tracing::warn!(
+                            pid = mode.pid(),
+                            ?mode,
+                            reopens = wd.reopens,
+                            "meeting capture: system audio reopened"
+                        );
+                        stream = Some(s);
+                        wd.reopened(Instant::now(), true, retarget);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            pid = mode.pid(),
+                            ?mode,
+                            "meeting capture: system audio reopen failed: {e}"
+                        );
+                        wd.reopened(Instant::now(), false, retarget);
+                    }
+                }
+            }
+        }
+        super::forward(Track::System, &mut wd, reports);
+        if now.duration_since(last_line) >= LINE {
+            last_line = now;
+            let active = format!("{:?}", activity_of(mode, target.as_ref()));
+            health_line(
+                "system",
+                &mode_label(mode),
+                &active,
+                &meter,
+                wd.reopens,
+                wd.troubled(),
+            );
+            meter.next_minute();
+        }
+    }
+    drop(stream);
+    wd.finish(Instant::now());
+    super::forward(Track::System, &mut wd, reports);
+}
+
+fn mode_label(mode: Mode) -> String {
+    match mode {
+        Mode::Process(pid) => format!("process {pid}"),
+        Mode::System => "system".into(),
+    }
+}
+
+/// 173 §4: one line per capture track per minute, for forensics (`active`: the target family's
+/// `IsRunningOutput`); a warn line too when flexaudio dropped or clipped chunks in that minute
+/// (its per-event noise aggregated).
+pub(super) fn health_line(
+    track: &str,
+    target: &str,
+    active: &str,
+    m: &watchdog::Meter,
+    reopens: u32,
+    troubled: bool,
+) {
+    tracing::info!(
+        "meeting capture health: {track} chunks={} frames={} zero={:.1}% peak={:.1}dBFS target={target} active={active} reopens={reopens} episode={troubled}",
+        m.chunks,
+        m.frames,
+        m.zero_pct(),
+        m.peak_dbfs(),
+    );
+    if m.dropped > 0 || m.clipped > 0 {
+        tracing::warn!(
+            "meeting capture: {track} lost {} chunks (ChunkDropped) and clipped {} in the last minute",
+            m.dropped,
+            m.clipped,
+        );
     }
 }
 
@@ -481,4 +881,66 @@ fn proc_name(pid: u32) -> Option<String> {
         .trim_end_matches('\0')
         .to_owned();
     (!s.is_empty()).then_some(s)
+}
+
+/// 173 R2-2: the executable's path (`libc::proc_pidpath`), for [`watchdog::in_family`].
+#[cfg(target_os = "macos")]
+fn exe_path(pid: u32) -> Option<String> {
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: `buf` is a valid writable buffer of the stated size.
+    let n = unsafe { libc::proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    String::from_utf8(buf).ok()
+}
+
+/// Not macOS: no `.app` bundles; the family is the bundle-id rule alone.
+#[cfg(not(target_os = "macos"))]
+fn exe_path(_pid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 173 R3: every mode asks flexaudio for what the rings assume: 48 kHz mono.
+    #[test]
+    fn every_mode_opens_48k_mono() {
+        for mode in [Mode::System, Mode::Process(4242)] {
+            let c = mode.config();
+            assert_eq!(
+                (c.output.sample_rate, c.output.channels),
+                (super::super::RATE, 1)
+            );
+        }
+        let sys = Mode::System.config();
+        assert_eq!(sys.kind, flexaudio::SourceKind::SystemLoopback);
+        assert!(sys.exclude_self, "never records theuth itself");
+        let app = Mode::Process(4242).config();
+        assert_eq!(app.kind, flexaudio::SourceKind::ProcessLoopback);
+        assert_eq!(app.target_pid, Some(4242));
+    }
+
+    /// 173 R3: what each flexaudio event tells the watchdog.
+    #[test]
+    fn events_map_to_signals() {
+        use flexaudio::Event;
+        use watchdog::Signal;
+        assert_eq!(signal_of(&Event::StreamStalled), Some(Signal::Stalled));
+        assert_eq!(signal_of(&Event::StreamRecovered), Some(Signal::Recovered));
+        assert_eq!(signal_of(&Event::DeviceLost), Some(Signal::Lost));
+        assert_eq!(signal_of(&Event::Error("x".into())), Some(Signal::Lost));
+        assert_eq!(
+            signal_of(&Event::SilenceWhileSourceActive {
+                detail: String::new()
+            }),
+            Some(Signal::SilentWhileActive)
+        );
+        assert_eq!(signal_of(&Event::ChunkDropped { count: 3 }), None);
+        assert_eq!(signal_of(&Event::Clipped), None);
+        assert_eq!(signal_of(&Event::SilenceProbeStarted), None);
+    }
 }
