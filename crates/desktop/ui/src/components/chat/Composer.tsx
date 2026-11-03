@@ -37,6 +37,7 @@ import { usePanes } from '@/lib/panes'
 import { type AttachRef, type AttachRequest, DRAG_TYPE, atTrigger, compose, toRef } from '@/lib/attach'
 import { loadRecents, pushRecents, saveRecents, stripAt } from '@/lib/attach-picker'
 import { attach, attachRef, drop, expand, type Pastes, reconcileShelved, type Shelf, tokenize, untoken } from '@/lib/pastes'
+import { pasteText } from '@/lib/paste-markdown'
 import { applyText } from '@/lib/text-edit'
 import { isDesktop, touch } from '@/lib/platform'
 import { engineLabel, type OwnerUnreachable, ownerUnreachable, sessionDraining } from '@/lib/owner'
@@ -702,12 +703,13 @@ export function Composer({
       await addBlobs([image])
       return
     }
-    const plain = e.clipboardData.getData('text/plain')
-    if (!plain) return
+    // 165: a rich paste with links becomes markdown; anything else is the plain text, as before.
+    const pasted = pasteText({ html: e.clipboardData.getData('text/html'), plain: e.clipboardData.getData('text/plain') })
+    if (!pasted) return
     e.preventDefault()
     // The block is held before the edit: the edit's `onChange` reconciles against the store, which must already have it.
     const { selectionStart: a, selectionEnd: b } = e.currentTarget
-    const held = tokenize(plain, pastes, floor())
+    const held = tokenize(pasted, pastes, floor())
     if (held.pastes !== pastes) setPastes(held.pastes)
     edit(text.slice(0, a) + held.text + text.slice(b), a + held.text.length)
   }

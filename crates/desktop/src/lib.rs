@@ -433,6 +433,13 @@ mod desktop {
                         &PredefinedMenuItem::cut(app, None)?,
                         &PredefinedMenuItem::copy(app, None)?,
                         &PredefinedMenuItem::paste(app, None)?,
+                        &MenuItem::with_id(
+                            app,
+                            PASTE_PLAIN,
+                            "Paste as Plain Text",
+                            true,
+                            Some(PASTE_PLAIN_ACCEL),
+                        )?,
                         &PredefinedMenuItem::select_all(app, None)?,
                     ],
                 )?,
@@ -457,6 +464,40 @@ mod desktop {
         )
     }
 
+    /// 165 D5: the Edit-menu item that pastes without the clipboard's HTML (rich paste keeps links).
+    #[cfg(target_os = "macos")]
+    const PASTE_PLAIN: &str = "paste_plain";
+    /// ⇧⌘V: no UI keymap, menu or global shortcut binds it. Tauri drops an accelerator it cannot parse
+    /// silently, hence the test.
+    #[cfg(target_os = "macos")]
+    const PASTE_PLAIN_ACCEL: &str = "Shift+CmdOrCtrl+V";
+
+    /// `-[WKWebView pasteAsPlainText:]` on the focused window: WebKit fires a `paste` whose `clipboardData`
+    /// holds only `text/plain`, which the composer pastes as typed text (`ui/src/lib/paste-markdown.ts`).
+    #[cfg(target_os = "macos")]
+    fn paste_plain(app: &AppHandle) {
+        let Some(win) = app
+            .webview_windows()
+            .into_values()
+            .find(|w| w.is_focused().unwrap_or(false))
+        else {
+            return;
+        };
+        let sent = win.with_webview(|wv| {
+            use objc2::runtime::AnyObject;
+            let view = wv.inner().cast::<AnyObject>();
+            // SAFETY: `inner()` is the window's live WKWebView and `with_webview` runs on the main thread;
+            // `pasteAsPlainText:` takes an `id` sender (nil) and returns void. The responds check keeps a
+            // WebKit without the selector from raising.
+            unsafe {
+                if (*view).class().responds_to(objc2::sel!(pasteAsPlainText:)) {
+                    let () = objc2::msg_send![view, pasteAsPlainText: std::ptr::null_mut::<AnyObject>()];
+                }
+            }
+        });
+        log_err(sent, "paste as plain text");
+    }
+
     /// Shared by the tray menu and the app menu (same ids).
     fn on_menu(app: &AppHandle, id: &str) {
         match id {
@@ -466,6 +507,8 @@ mod desktop {
             "meeting" => navigate(app, "/meetings/new"),
             "settings" => navigate(app, "/settings/general"),
             "quit" => quit::request(app),
+            #[cfg(target_os = "macos")]
+            PASTE_PLAIN => paste_plain(app),
             _ => {}
         }
     }
@@ -573,6 +616,17 @@ mod desktop {
     #[cfg(test)]
     mod tests {
         use super::{deep_link_route, is_quit_link};
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn paste_plain_accelerator_parses() {
+            // Same grammar as muda's menu accelerators; an unparsable one would vanish without an error.
+            assert!(
+                super::PASTE_PLAIN_ACCEL
+                    .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                    .is_ok()
+            );
+        }
 
         #[test]
         fn deep_link_routes() {
