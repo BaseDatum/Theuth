@@ -18,6 +18,7 @@ use crate::actor::{
 };
 use crate::helper::{Edit as BlockEdit, EditError};
 use crate::meta::{Binding, DocId, Principal};
+use crate::note_cells::{CheckCells, CodeBlocks};
 
 /// §5.4: what block ids are, how to edit; the marker convention lives in the `attachments`
 /// block (66 §5.2). Static.
@@ -185,7 +186,14 @@ impl Docs {
             session: cx.session.0,
         };
         for e in &mut edits {
+            let replacing = match &*e {
+                BlockEdit::Replace { blocks, .. } => blocks.clone(),
+                _ => Vec::new(),
+            };
             if let BlockEdit::Insert { markdown, .. } | BlockEdit::Replace { markdown, .. } = e {
+                if let Some(refused) = self.check_cells(Some(&id), markdown, &replacing).await {
+                    return Ok(refused);
+                }
                 if let Some(refused) = self.check_excerpts(&id, markdown).await {
                     return Ok(refused);
                 }
@@ -203,6 +211,33 @@ impl Docs {
             Err(kameo::error::SendError::HandlerError(e)) => ToolOutput::err(model_error(&e)),
             Err(e) => ToolOutput::err(e.to_string()),
         })
+    }
+
+    /// 171 §9.6: a `#|` fence that does not validate (§3.6, the note's cells after the edit in scope)
+    /// refuses the edit with `cell <n>: <code> — <why>` lines — in the tool result, never as
+    /// `<cell_error>`. Valid cells insert as the code blocks they are.
+    async fn check_cells(
+        &self,
+        doc: Option<&DocId>,
+        markdown: &str,
+        replacing: &[String],
+    ) -> Option<ToolOutput> {
+        if !markdown.contains("#|") && !markdown.contains("//|") {
+            return None;
+        }
+        match self
+            .actor
+            .ask(CheckCells {
+                doc: doc.cloned(),
+                markdown: markdown.to_owned(),
+                replacing: replacing.to_vec(),
+            })
+            .await
+        {
+            Ok(()) => None,
+            Err(kameo::error::SendError::HandlerError(e)) => Some(ToolOutput::err(e)),
+            Err(e) => Some(ToolOutput::err(e.to_string())),
+        }
     }
 
     /// 71 §2.5 / step 7b: an `Excerpt` on a board must quote the working tree verbatim. Every `Excerpt`
@@ -529,7 +564,7 @@ impl Tool for ReadTool {
 
     async fn call(&self, a: ReadArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let id = self.0.resolve(&a.doc).await?;
-        let outline = self
+        let mut outline = self
             .0
             .actor
             .ask(Outline {
@@ -538,18 +573,21 @@ impl Tool for ReadTool {
             })
             .await
             .map_err(anyhow::Error::msg)?;
-        let text = match a.format.as_deref() {
-            None | Some("outline") => outline.outline,
-            Some("markdown") => self
+        // 171 §9.6: with the cells plugin's hook, cell rows carry their latest run.
+        if let Some(hook) = crate::cells::run_annotations() {
+            let cells = self
                 .0
                 .actor
-                .ask(Markdown {
-                    doc: id,
-                    blocks: a.blocks,
-                    annotate: true,
-                })
+                .ask(CodeBlocks(id.clone()))
                 .await
-                .map_err(anyhow::Error::msg)?,
+                .map_err(anyhow::Error::msg)?;
+            crate::note_cells::annotate_outline(&mut outline, &id, &cells, hook.as_ref());
+        }
+        let text = match a.format.as_deref() {
+            None | Some("outline") => outline.outline,
+            Some("markdown") => {
+                crate::note_cells::reader_markdown(&self.0.actor, id, a.blocks, true).await?
+            }
             Some(other) => {
                 anyhow::bail!("format must be \"outline\" or \"markdown\", not {other:?}")
             }
@@ -824,6 +862,9 @@ impl Tool for CreateTool {
         if let Some(refused) =
             crate::cite_check::check(&self.0.actor, &mut markdown, by.clone()).await
         {
+            return Ok(refused);
+        }
+        if let Some(refused) = self.0.check_cells(None, &markdown, &[]).await {
             return Ok(refused);
         }
         let (kind, summary) = match a.kind.as_deref().unwrap_or("note") {

@@ -52,10 +52,11 @@ impl Message<CodeBlockText> for DocumentActor {
 
     async fn handle(
         &mut self,
-        _: CodeBlockText,
+        m: CodeBlockText,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        Err("not built (171:D2)".into()) // 171:D2
+        let blocks = self.code_blocks(&m.doc)?; // 171:D2
+        crate::note_cells::find(blocks, &m.key, &m.doc)
     }
 }
 
@@ -131,14 +132,130 @@ pub struct CellLatest {
     pub text: String,
 }
 
+/// `cell_latest` row as sqlx reads it.
+type LatestRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<f64>,
+    Option<String>,
+    Option<String>,
+    String,
+    i64,
+    String,
+);
+
 impl Store {
-    /// Latest-output rows of a document (171 §13.2).
-    pub async fn cell_latest(&self, _doc: &DocId) -> anyhow::Result<Vec<CellLatest>> {
-        Ok(vec![]) // 171:D2
+    /// Latest-output rows of a document (171 §13.2), by id.
+    pub async fn cell_latest(&self, doc: &DocId) -> anyhow::Result<Vec<CellLatest>> {
+        let rows: Vec<LatestRow> = sqlx::query_as(
+            "SELECT id, doc, cell, run, state, exit, secs, expect, summary, code_sha, ended_ms, text \
+             FROM cell_latest WHERE doc = ? ORDER BY id",
+        )
+        .bind(doc.as_str())
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    doc,
+                    cell,
+                    run,
+                    state,
+                    exit,
+                    secs,
+                    expect,
+                    summary,
+                    code_sha,
+                    ended_ms,
+                    text,
+                )| {
+                    CellLatest {
+                        id,
+                        doc: DocId(doc),
+                        cell,
+                        run,
+                        state,
+                        exit: exit.and_then(|e| i32::try_from(e).ok()),
+                        secs,
+                        expect,
+                        summary,
+                        code_sha,
+                        ended_ms,
+                        text,
+                    }
+                },
+            )
+            .collect())
     }
 
-    /// Upsert one latest-output row (171 §13.2).
-    pub async fn put_cell_latest(&self, _row: &CellLatest) -> anyhow::Result<()> {
+    /// Upsert one latest-output row (171 §13.2); the hub's duty (the caller gates).
+    pub async fn put_cell_latest(&self, row: &CellLatest) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO cell_latest (id, doc, cell, run, state, exit, secs, expect, summary, code_sha, ended_ms, text) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET doc = excluded.doc, cell = excluded.cell, run = excluded.run, \
+             state = excluded.state, exit = excluded.exit, secs = excluded.secs, expect = excluded.expect, \
+             summary = excluded.summary, code_sha = excluded.code_sha, ended_ms = excluded.ended_ms, text = excluded.text",
+        )
+        .bind(&row.id)
+        .bind(row.doc.as_str())
+        .bind(&row.cell)
+        .bind(&row.run)
+        .bind(&row.state)
+        .bind(row.exit.map(i64::from))
+        .bind(row.secs)
+        .bind(&row.expect)
+        .bind(&row.summary)
+        .bind(&row.code_sha)
+        .bind(row.ended_ms)
+        .bind(&row.text)
+        .execute(self.pool())
+        .await?;
         Ok(()) // 171:D2
+    }
+}
+
+// 171:E2-ADD — `Store` is actor-private, so the cells plugin reaches the `cell_latest` rows
+// through these two messages (171 §13.2; the bodies call D2's `Store` accessors).
+
+/// `ask` → `Result<Vec<CellLatest>, String>`: the replicated latest-output rows of a document.
+/// Any engine (replica); membership is the caller's check.
+#[derive(Clone, Debug)]
+pub struct CellLatestOf(pub DocId);
+
+impl Message<CellLatestOf> for DocumentActor {
+    type Reply = Result<Vec<CellLatest>, String>;
+
+    async fn handle(&mut self, m: CellLatestOf, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.store
+            .cell_latest(&m.0)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// `ask` → `Result<(), String>`: upsert one latest-output row; refused (`NotHub:<id>`) off the hub.
+#[derive(Clone, Debug)]
+pub struct PutCellLatest(pub CellLatest);
+
+impl Message<PutCellLatest> for DocumentActor {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: PutCellLatest,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.hub.gate_str()?;
+        self.store
+            .put_cell_latest(&m.0)
+            .await
+            .map_err(|e| e.to_string())
     }
 }

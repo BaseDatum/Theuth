@@ -30,6 +30,7 @@ pub mod ingest;
 pub mod meta;
 pub mod mirror;
 pub mod nb_tools;
+pub mod note_cells;
 pub mod notebook;
 pub mod relay;
 pub mod search;
@@ -55,6 +56,7 @@ pub use helper::{
 };
 pub use hub::{DocError, HUB_MOVED};
 pub use meta::*;
+pub use note_cells::{CheckCells, CodeBlocks, reader_markdown};
 pub use notebook::*;
 pub use share::{
     Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName, proof,
