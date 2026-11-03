@@ -252,7 +252,7 @@ function SlackManifest() {
   return (
     <>
       <Row
-        stack
+        wide
         label="App manifest"
         description={
           <>
