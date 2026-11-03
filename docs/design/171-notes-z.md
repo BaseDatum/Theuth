@@ -25,3 +25,19 @@
 - `cells::InputPrompt` added to the `171:C` export block. U1's `cells/wire.ts` DELETED (not aliased): its five importers and U2's two local `…X` types use the generated `CellRun`/`CellState`/`KernelState`; fixtures carry the L11 fields.
 - `note::DOCS_TEST` (test-only mutex): the two tests that install a fake document side hold it (the fake is process-global).
 - UI: the gutter glyph `▶` (an emoji per `src/lib/no-emoji.test.ts`) → `►` in `CellEditor.tsx` (+ comments).
+- Note results: `note::with_in` now REPLACES the builder's bare `in="note <doc>"` with the titled `in="note <doc> \"<title>\""` (before, E1's bare attribute made it a no-op). Dead stub paths removed: `CellsError::NotBuilt` (no constructor left; no TS consumer of `not_built`), note's `"not built"` → `NotBuilt("D2")` mapping, the empty-`cell_result` branch.
+
+## Phase I gates (integrate/171)
+| gate | result |
+|---|---|
+| `cargo metadata --locked` | resolves |
+| `mbx check -p cells … -p signal --tests` (13 crates) | ok (one unused import, fixed) |
+| `mbx check --workspace --tests --exclude desktop` | ok (codeindex unused-import warning: not 171) |
+| `mbx check -p desktop --tests` | ok |
+| `mbx clippy --no-deps` 13 crates + desktop `-D warnings` | 0 warnings |
+| `mbx test -p cells -p surface -p tools -p platform -p link -p document -p rpc` | 636 passed, 0 failed (`THEUTH_DOCUMENTS_HELPER=/opt/homebrew/bin/theuth-documents-59.5`) |
+| `mbx test -p agent --no-fail-fast` | 670 passed, 4 failed = the known protocol-v6 set (`sensor::tests::{fs_exists_through_monty, monty_budgets_and_allowlist, pr_watch_type_checks}`, `loop_::runtime_bridge_tests::guessed_direct_calls_are_bridged_or_refused`) — identical to A1's |
+| `mbx test -p desktop --lib deep_link` / `quit` | 2 / 11 passed |
+| `bunx tsc -b --noEmit` | 0 errors |
+| vitest (cells, lib, chat, editor, notes, notebooks, share, api.test) | 187 files, 1292 tests passed |
+| §17.5 diff registry.rs / approval.rs / crates/double vs origin/main | empty |
