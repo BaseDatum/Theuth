@@ -216,6 +216,16 @@ pub fn ort_lib(data_dir: &Path) -> Result<PathBuf, String> {
         Ok(builder) => {
             builder.commit();
             tracing::debug!("onnxruntime: loaded {}", lib.display());
+            // `ort`'s tracing logger creates the environment at VERBOSE, so ORT formats every
+            // INFO line ("Reserving memory in BFCArena", ~840k a day) before the filter drops
+            // it (176 R4). Set before any session exists; `ORT_LOG=<level>` keeps VERBOSE
+            // for debugging, with `RUST_LOG=ort=…` choosing what reaches the log.
+            if std::env::var_os("ORT_LOG").is_none() {
+                match ort::environment::Environment::current() {
+                    Ok(env) => env.set_log_level(ort::logging::LogLevel::Warning),
+                    Err(e) => tracing::debug!("onnxruntime: environment: {e}"),
+                }
+            }
             let plugin = webgpu_plugin_path(data_dir);
             *WEBGPU_PLUGIN
                 .lock()

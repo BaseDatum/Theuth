@@ -33,6 +33,9 @@ pub mod landing;
 pub mod pathac;
 pub mod search;
 
+mod diag;
+mod wslog;
+
 #[cfg(test)]
 mod export;
 
@@ -213,13 +216,14 @@ async fn accept(
     let services = ServerBuilder::new().set_config(config).to_service_builder();
     tokio::pin!(shutdown);
     loop {
-        let sock = tokio::select! {
+        let (sock, addr) = tokio::select! {
             r = listener.accept() => match r {
-                Ok((sock, _)) => sock,
+                Ok(accepted) => accepted,
                 Err(e) => { tracing::debug!("rpc accept: {e}"); continue }
             },
             _ = &mut shutdown => break,
         };
+        let conn = Arc::new(wslog::Conn::new(addr));
         let mut svc = services.clone().build(methods.clone(), stop_handle.clone());
         let session_closed = svc.on_session_closed();
         let (peer, guard) = link::RpcPeer::open();
@@ -227,7 +231,9 @@ async fn accept(
             inner: svc,
             token: token.clone(),
             peer,
+            conn: conn.clone(),
         };
+        let sock = wslog::Watched::new(sock, conn.clone());
         let stopped = stop_handle.clone().shutdown();
         let stop = stop_handle.clone().shutdown();
         tokio::spawn(async move {
@@ -239,18 +245,27 @@ async fn accept(
             };
             tokio::pin!(closed, stop);
             match future::select(closed, stop).await {
-                Either::Left(_) => drop(guard),
+                Either::Left(_) => {
+                    drop(guard);
+                    conn.log_closed(false);
+                }
                 // Server stop: jsonrpsee drains in-flight calls before it
                 // closes the session, so close the peer now, then let it drain.
                 Either::Right((_, closed)) => {
                     drop(guard);
                     closed.await;
+                    conn.log_closed(true);
                 }
             }
         });
     }
     let _ = server.stop();
 }
+
+/// The local connection's `conn=` id in every admitted request's extensions, so
+/// `client_log` lines name the socket the `rpc: ws open` line announced (176 C2).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ConnId(pub(crate) u64);
 
 /// Read the token, or create it (64 hex chars, owner-only).
 fn load_token(path: &Path) -> anyhow::Result<Arc<str>> {
@@ -271,12 +286,14 @@ fn load_token(path: &Path) -> anyhow::Result<Arc<str>> {
 
 /// Per-connection HTTP middleware: 401 unless `Authorization: Bearer <token>`
 /// or `?token=<token>`; an admitted request carries the connection's
-/// [`link::RpcPeer`] in its extensions.
+/// [`link::RpcPeer`] and [`ConnId`] in its extensions, and an admitted upgrade
+/// logs the connection's `rpc: ws open` line.
 #[derive(Clone)]
 struct Auth<S> {
     inner: S,
     token: Arc<str>,
     peer: link::RpcPeer,
+    conn: Arc<wslog::Conn>,
 }
 
 impl<S> Auth<S> {
@@ -316,8 +333,12 @@ where
                     .get(Client::HEADER)
                     .and_then(|v| v.to_str().ok()),
             );
+            if jsonrpsee::server::ws::is_upgrade_request(&req) {
+                self.conn.log_open(req.uri().query());
+            }
             req.extensions_mut().insert(self.peer.clone());
             req.extensions_mut().insert(client);
+            req.extensions_mut().insert(ConnId(self.conn.id));
             Either::Right(self.inner.call(req))
         } else {
             let resp = HttpResponse::builder()
