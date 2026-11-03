@@ -16,6 +16,15 @@ import { plugins } from './MessageAssistant'
 
 /** Side padding of an HTML picture (the svg path is the diagram alone). */
 const PAD_X = 16
+/** Longest wait for `document.fonts.ready`: a font load that never finishes must not hold both render slots. */
+const FONTS_MS = 1000
+
+/** `document.fonts.ready`, or `FONTS_MS` later, whichever comes first. */
+function fontsReady(): Promise<unknown> {
+  const { promise, resolve } = Promise.withResolvers<unknown>()
+  setTimeout(resolve, FONTS_MS)
+  return Promise.race([document.fonts.ready, promise])
+}
 
 /** Every rule of the document's stylesheets, unconditional layers included (cross-origin sheets are skipped). */
 function* rules(list: Iterable<CSSRule> = [...document.styleSheets].flatMap((s) => { try { return [...s.cssRules] } catch { return [] } })): Generator<CSSRule> {
@@ -25,12 +34,15 @@ function* rules(list: Iterable<CSSRule> = [...document.styleSheets].flatMap((s) 
   }
 }
 
-/** `appearance`'s theme variables as the stylesheet declares them: every `:root` custom property, `.dark`'s on top. */
+/**
+ * `appearance`'s theme variables as the stylesheet declares them: every custom property of a rule whose selector list
+ * names `:root` (Tailwind's `:root, :host` theme layer too — `--color-*` aliases resolve there), `.dark`'s on top.
+ */
 export function themeVariables(appearance: Appearance): Record<string, string> {
   const out: Record<string, string> = {}
   for (const pass of appearance === 'dark' ? [':root', '.dark'] : [':root']) {
     for (const r of rules()) {
-      if (!(r instanceof CSSStyleRule) || r.selectorText !== pass) continue
+      if (!(r instanceof CSSStyleRule) || !r.selectorText.split(',').some((s) => s.trim() === pass)) continue
       for (const name of r.style) if (name.startsWith('--') || name === 'color-scheme') out[name] = r.style.getPropertyValue(name)
     }
   }
@@ -125,13 +137,14 @@ function inlined(src: HTMLElement, background: string): { node: HTMLElement; css
 }
 
 /** `blob` as a `data:` URL. */
-const dataUrl = (blob: Blob) =>
-  new Promise<string>((resolve, reject) => {
-    const r = new FileReader()
-    r.onload = () => resolve(String(r.result))
-    r.onerror = () => reject(r.error)
-    r.readAsDataURL(blob)
-  })
+function dataUrl(blob: Blob): Promise<string> {
+  const { promise, resolve, reject } = Promise.withResolvers<string>()
+  const r = new FileReader()
+  r.onload = () => resolve(String(r.result))
+  r.onerror = () => reject(r.error)
+  r.readAsDataURL(blob)
+  return promise
+}
 
 /** The `@font-face` rules of `families` with every `url()` embedded: an svg image loads nothing external. */
 async function fontFaces(families: Set<string>): Promise<string> {
@@ -143,7 +156,7 @@ async function fontFaces(families: Set<string>): Promise<string> {
     let rule = r.cssText
     for (const m of rule.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/g)) {
       if (m[1]!.startsWith('data:')) continue
-      const res = await fetch(new URL(m[1]!, r.parentStyleSheet?.href ?? document.baseURI))
+      const res = await fetch(new URL(m[1]!, r.parentStyleSheet?.href ?? document.baseURI), { signal: AbortSignal.timeout(3000) })
       if (res.ok) rule = rule.replace(m[0], `url("${await dataUrl(await res.blob())}")`)
     }
     out.push(rule)
@@ -193,6 +206,9 @@ export function snapshotFence(e: FenceSnapshotRequested, finish: (o: Outcome) =>
   const frame = document.createElement('div')
   frame.setAttribute('aria-hidden', 'true')
   frame.setAttribute('data-fence-snapshot', e.id)
+  // `dark:` utilities follow the frame, not `<html>` (styles.css's `dark` variant skips `[data-snapshot-light]` subtrees).
+  if (e.appearance === 'dark') frame.classList.add('dark')
+  else frame.setAttribute('data-snapshot-light', '')
   const vars = Object.entries(themeVariables(e.appearance))
     .map(([k, v]) => `${k}:${v};`)
     .join('')
@@ -238,13 +254,13 @@ export function snapshotFence(e: FenceSnapshotRequested, finish: (o: Outcome) =>
     // A change since the timer was set moved the deadline; `schedule` already re-armed.
     if (Date.now() < settleAt(mounted, lastChange, true)) return
     observer.disconnect()
-    document.fonts.ready
+    fontsReady()
       .then(() => capture(content, e.width, getComputedStyle(frame).getPropertyValue('--background').trim() || '#fff', e.scale))
       .then(end, (err: unknown) => end({ reason: err instanceof Error ? err.message : String(err) }))
   }
   observer.observe(content, { subtree: true, childList: true, attributes: true, characterData: true })
   const Fence = renderer.component
-  void document.fonts.ready.then(() => {
+  void fontsReady().then(() => {
     if (over) return
     root.render(
       <SnapshotContext value={mode}>
