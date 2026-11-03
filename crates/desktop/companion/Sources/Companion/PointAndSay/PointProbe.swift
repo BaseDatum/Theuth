@@ -103,8 +103,9 @@ enum PointProbe {
             .filter { ($0[kCGWindowOwnerPID as String] as? Int32) == getpid() }.count
         PointLog.write("overlays ordered out before the capture: revealed=\(c.overlays.revealed) own on-screen windows=\(mine)")
         c.endDictation()
+        let stopSamples = reqSamples
         async let text = c.finalText()
-        async let ctx = c.screenContext(samples: reqSamples, durationMs: 2000, color: control)
+        async let ctx = c.screenContext(samples: stopSamples, durationMs: 2000, color: control)
         let (t2, reply) = await (text, ctx)
         let after = count(reply: reply, spirals: spirals, displays: displays)
         let pass = !before.isEmpty && before.contains { $0.hit * 5 >= $0.total } && after.allSatisfy { $0.hit * 50 <= $0.total }

@@ -134,10 +134,11 @@ final class PanelController {
         panel.makeFirstResponder(nil) // 149 W1: the reply field is always there; R/space/a click focuses it, not the key window
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] e in // 149 W1: key-up releases V
-                MainActor.assumeIsolated {
-                    guard let self, self.panel.isKeyWindow else { return e }
-                    return self.handle(e) ? nil : e
+                let consumed = MainActor.assumeIsolated {
+                    guard let self, self.panel.isKeyWindow else { return false }
+                    return self.handle(e)
                 }
+                return consumed ? nil : e
             }
         }
     }
