@@ -582,6 +582,7 @@ async fn private_turn(cx: &Ctx, project: &str, prompt: String) -> Result<String,
                 files: Vec::new(),
                 delivery: agent::Delivery::default(),
                 id: None,
+                channel: None,
             })
             .await
             .map_err(|e| e.to_string())?;

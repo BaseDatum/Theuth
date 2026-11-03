@@ -492,7 +492,7 @@ async fn open_model_call_drops_the_partial_and_reissues(
     let tid = TurnId::new();
     let model = h.catalog.resolve("openai/textonly", &|_| true).unwrap();
     h.store
-        .append_input(h.id, tid, &ChatMessage::user(TALK), None, "user")
+        .append_input(h.id, tid, &ChatMessage::user(TALK), None, "user", None)
         .await
         .unwrap();
     let call = h
@@ -597,7 +597,7 @@ async fn python_rule_both_ways(registry: &ActorRef<ToolRegistry>) {
         thought_signatures: None,
     };
     h.store
-        .append_input(h.id, tid, &ChatMessage::user("go"), None, "user")
+        .append_input(h.id, tid, &ChatMessage::user("go"), None, "user", None)
         .await
         .unwrap();
     let msg = ChatMessage::from(vec![cell("py1"), cell("py2")]);
@@ -696,7 +696,7 @@ async fn stale_batch_closes_from_the_journal_and_pre_0033_repairs(
         thought_signatures: None,
     };
     h.store
-        .append_input(h.id, old, &ChatMessage::user("go"), None, "user")
+        .append_input(h.id, old, &ChatMessage::user("go"), None, "user", None)
         .await
         .unwrap();
     h.store
@@ -1574,6 +1574,7 @@ async fn start_turn(h: &Harness, text: &str) -> ActorRef<Session> {
     let actor = h.actor("openai/textonly").await;
     actor
         .tell(UserInput {
+            channel: None,
             id: None,
             text: text.into(),
             files: Vec::new(),

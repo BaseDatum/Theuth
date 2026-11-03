@@ -339,7 +339,16 @@ impl Message<AdvisorInput> for Agents {
     async fn handle(&mut self, m: AdvisorInput, _: &mut Context<Self, Self::Reply>) {
         let ticket = self.ledger.admit(m.advisor, InputOrigin::Automatic, None);
         if let Err(e) = self
-            .route(m.advisor, None, m.text, Vec::new(), ticket, None, false)
+            .route(
+                m.advisor,
+                None,
+                m.text,
+                Vec::new(),
+                None,
+                ticket,
+                None,
+                false,
+            )
             .await
         {
             tracing::warn!(session = %m.advisor, "advisor update: {e}");

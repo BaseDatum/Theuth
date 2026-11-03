@@ -36,14 +36,14 @@ use tools::{
 use uuid::Uuid;
 
 use crate::communication::{
-    AnswerPeerRequest, CommunicationChanged, CommunicationState, DISCOVER_DEFAULT_LIMIT,
-    DISCOVER_MAX_LIMIT, Generation, GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers,
-    PEER_TEXT_MAX, PeerActivity, PeerAddress, PeerConsumed, PeerDeliver, PeerDelivered,
-    PeerEnvelope, PeerInfo, PeerIntakeFailed, PeerKind, PeerLiveState, PeerMessageChanged,
-    PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt, PeerRecord,
-    PeerRelationship, PeerScope, PeerState, PeerTurnFinished, PeerUplink, Policy, PolicyError,
-    SetCommunication, SetPeerScope, SharedPolicy, WAITS_PER_HARNESS, WAITS_PER_SESSION,
-    mesh as peer_mesh, network,
+    AnswerPeerRequest, ChannelOrigin, CommunicationChanged, CommunicationState,
+    DISCOVER_DEFAULT_LIMIT, DISCOVER_MAX_LIMIT, Generation, GetCommunication, GetPeerMessage,
+    ListPeerMessages, ListPeers, PEER_TEXT_MAX, PeerActivity, PeerAddress, PeerConsumed,
+    PeerDeliver, PeerDelivered, PeerEnvelope, PeerInfo, PeerIntakeFailed, PeerKind, PeerLiveState,
+    PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
+    PeerRecord, PeerRelationship, PeerScope, PeerState, PeerTurnFinished, PeerUplink, Policy,
+    PolicyError, SetCommunication, SetPeerScope, SharedPolicy, WAITS_PER_HARNESS,
+    WAITS_PER_SESSION, mesh as peer_mesh, network,
 };
 
 use crate::CostService;
@@ -508,6 +508,7 @@ enum Held {
         id: Option<InputId>,
         text: String,
         files: Vec<PathBuf>,
+        channel: Option<ChannelOrigin>,
         ticket: InputTicket,
         scope: Option<Uuid>,
         defer: bool,
@@ -1298,13 +1299,15 @@ impl Agents {
     /// attachment drops the whole input (17 §3.1). The input's ticket is
     /// admitted here, before the actor `tell`, so a yield decision handled
     /// after this sees it (47 §4.3). `delivery` says how it lands on a busy
-    /// session (62 §0.3).
+    /// session (62 §0.3). `channel` is the 172 origin of a channel's input.
+    #[allow(clippy::too_many_arguments)]
     async fn input(
         &mut self,
         sid: SessionId,
         id: Option<InputId>,
         text: String,
         files: Vec<PathBuf>,
+        channel: Option<ChannelOrigin>,
         origin: InputOrigin,
         delivery: Delivery,
     ) -> Result<(), String> {
@@ -1319,7 +1322,9 @@ impl Agents {
         // A human reaches a queued child (01 §2.6): its brief runs now,
         // permit-free, then this text, then whatever was held for it.
         let held = self.promote(sid).await;
-        let r = self.route(sid, id, text, files, ticket, None, defer).await;
+        let r = self
+            .route(sid, id, text, files, channel, ticket, None, defer)
+            .await;
         self.replay(sid, held).await;
         if origin == InputOrigin::External {
             self.release_parked(sid).await;
@@ -1341,6 +1346,7 @@ impl Agents {
         id: Option<InputId>,
         text: String,
         files: Vec<PathBuf>,
+        channel: Option<ChannelOrigin>,
         ticket: InputTicket,
         scope: Option<Uuid>,
         defer: bool,
@@ -1352,6 +1358,7 @@ impl Agents {
                 id,
                 text,
                 files,
+                channel,
                 ticket,
                 scope,
                 defer,
@@ -1384,6 +1391,7 @@ impl Agents {
                         id,
                         text,
                         files,
+                        channel,
                         ticket: Some(ticket),
                         scope,
                         defer,
@@ -1421,6 +1429,7 @@ impl Agents {
         id: Option<InputId>,
         text: String,
         files: Vec<PathBuf>,
+        channel: Option<ChannelOrigin>,
         delivery: Delivery,
     ) -> Result<SessionId, String> {
         let sid = session.unwrap_or_default();
@@ -1432,8 +1441,16 @@ impl Agents {
         }
         // A failure was published as `AgentEvent::Error` on `sid` already; it
         // is not remembered, so the retry routes.
-        self.input(sid, id, text, files, InputOrigin::External, delivery)
-            .await?;
+        self.input(
+            sid,
+            id,
+            text,
+            files,
+            channel,
+            InputOrigin::External,
+            delivery,
+        )
+        .await?;
         if let Some(id) = id {
             self.seen.insert(id, (sid, Instant::now()));
         }
@@ -1553,7 +1570,7 @@ impl Agents {
         } else {
             // A failure is already an `AgentEvent::Error` on `to`.
             let _ = self
-                .route(to, None, wrapped, Vec::new(), ticket, scope, false)
+                .route(to, None, wrapped, Vec::new(), None, ticket, scope, false)
                 .await;
         }
         self.rt
@@ -1646,7 +1663,7 @@ impl Agents {
             }
             // A failure is already an `AgentEvent::Error` on `sid`.
             let _ = self
-                .route(sid, None, text, files, first.ticket, scope, false)
+                .route(sid, None, text, files, None, first.ticket, scope, false)
                 .await;
         }
     }
@@ -3225,7 +3242,7 @@ impl Message<SendInput> for Agents {
     type Reply = Result<SessionId, String>;
 
     async fn handle(&mut self, m: SendInput, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.human_input(m.session, m.id, m.text, m.files, m.delivery)
+        self.human_input(m.session, m.id, m.text, m.files, m.channel, m.delivery)
             .await
     }
 }
@@ -3259,6 +3276,7 @@ impl Message<crate::LateAnswer> for Agents {
             None,
             text,
             Vec::new(),
+            None,
             Delivery::default(),
         )
         .await
@@ -3283,6 +3301,7 @@ impl Message<UseSkill> for Agents {
                 Some(InputId::new()),
                 text,
                 Vec::new(),
+                None,
                 InputOrigin::External,
                 Delivery::Steer,
             )
@@ -3295,9 +3314,16 @@ impl Message<Steer> for Agents {
     type Reply = Result<(), String>;
 
     async fn handle(&mut self, m: Steer, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.human_input(Some(m.session), Some(m.id), m.text, m.files, m.delivery)
-            .await
-            .map(|_| ())
+        self.human_input(
+            Some(m.session),
+            Some(m.id),
+            m.text,
+            m.files,
+            m.channel,
+            m.delivery,
+        )
+        .await
+        .map(|_| ())
     }
 }
 
@@ -4752,7 +4778,7 @@ impl Agents {
             }
         }
         let _ = self
-            .route(child, None, text, Vec::new(), ticket, scope, false)
+            .route(child, None, text, Vec::new(), None, ticket, scope, false)
             .await;
         let me = me.or_else(|| ActorRef::<Agents>::lookup(AGENT_ACTOR).ok().flatten());
         let timer = me.map(|me| self.runtime_timer(child, me));
@@ -4801,12 +4827,13 @@ impl Agents {
                     id,
                     text,
                     files,
+                    channel,
                     ticket,
                     scope,
                     defer,
                 } => {
                     let _ = self
-                        .route(child, id, text, files, ticket, scope, defer)
+                        .route(child, id, text, files, channel, ticket, scope, defer)
                         .await;
                 }
                 Held::Peer(input) => match self.actor(child).await {
@@ -6633,6 +6660,7 @@ impl Agents {
                     Some(input_id),
                     text.clone(),
                     req.files.clone(),
+                    None,
                     InputOrigin::External,
                     req.delivery,
                 )
@@ -6993,6 +7021,10 @@ impl Message<ReadSession> for Agents {
                 }
             }
         }
+        // 172: channel provenance, as `load_session` marks it.
+        if let Ok(channels) = store.channels(m.session).await {
+            mark_channels(&mut out, &channels);
+        }
         Ok(SessionRead {
             summary,
             history: out.into_iter().map(|(_, e)| e).collect(),
@@ -7084,6 +7116,11 @@ impl Message<LoadSession> for Agents {
                     out.push((seq, entry));
                 }
                 out.extend(dividers.map(|e| (e.at_seq, compacted(e, heads.get(&e.n).cloned()))));
+                // 172: the channel that delivered each user row (`messages.channel`).
+                match store.channels(m.session).await {
+                    Ok(channels) => mark_channels(&mut out, &channels),
+                    Err(e) => tracing::error!(session = %m.session, "channels: {e:#}"),
+                }
                 // Durable failures sit behind their anchor's whole seq group
                 // (tool siblings, a divider), so paging keeps them with it.
                 match store.errors(m.session).await {
@@ -8940,6 +8977,21 @@ impl From<&Resolved> for ModelInfo {
     }
 }
 
+/// 172: put each user row's stored channel origin (`Store::channels`) on its
+/// [`HistoryEntry::User`] entry.
+pub(crate) fn mark_channels(
+    out: &mut [(i64, HistoryEntry)],
+    channels: &BTreeMap<i64, ChannelOrigin>,
+) {
+    for (seq, entry) in out {
+        if let HistoryEntry::User { channel, .. } = entry
+            && let Some(c) = channels.get(seq)
+        {
+            *channel = Some(c.clone());
+        }
+    }
+}
+
 /// Collapse stored messages into UI entries tagged with the seq of the
 /// message that completed them; a tool call and its response become one
 /// `Tool` entry (tagged with the response's seq). Calls without a response
@@ -8992,6 +9044,8 @@ pub(crate) fn render_with(
                     peer: None,
                     // 52 §6: the consultation card renders from the typed metadata.
                     vision: context.and_then(|c| c.vision.clone()),
+                    // 172: set from `Store::channels` by `mark_channels`.
+                    channel: None,
                 },
             )),
             ChatRole::Assistant => {
@@ -11191,6 +11245,7 @@ pub(crate) mod tests {
         };
         let mut history = vec![
             HistoryEntry::User {
+                channel: None,
                 text: String::new(),
                 turn: Some(0),
                 context: entry(
@@ -11255,6 +11310,7 @@ pub(crate) mod tests {
     #[test]
     fn page_walks_back_by_seq() {
         let user = |s: &str| HistoryEntry::User {
+            channel: None,
             text: s.into(),
             turn: None,
             context: None,
@@ -11309,6 +11365,7 @@ pub(crate) mod tests {
     #[test]
     fn attach_inner_glues_children_to_their_python_card() {
         let user = |s: &str| HistoryEntry::User {
+            channel: None,
             text: s.into(),
             turn: None,
             context: None,
@@ -11401,6 +11458,7 @@ pub(crate) mod tests {
     #[test]
     fn page_never_splits_a_seq_group() {
         let user = |s: &str| HistoryEntry::User {
+            channel: None,
             text: s.into(),
             turn: None,
             context: None,
@@ -13247,6 +13305,7 @@ pub(crate) mod tests {
                 None,
                 "x".into(),
                 vec![PathBuf::from("/nonexistent/theuth.png")],
+                None,
                 InputOrigin::External,
                 Delivery::Steer,
             )
@@ -13263,17 +13322,17 @@ pub(crate) mod tests {
         let (p, _) = in_turn(&mut a).await;
         let id = InputId::new();
         let sid = a
-            .human_input(Some(p), Some(id), "x".into(), vec![], Delivery::Steer)
+            .human_input(Some(p), Some(id), "x".into(), vec![], None, Delivery::Steer)
             .await;
         assert_eq!(sid.unwrap(), p);
         a.last_input.clear();
         let sid = a
-            .human_input(Some(p), Some(id), "x".into(), vec![], Delivery::Steer)
+            .human_input(Some(p), Some(id), "x".into(), vec![], None, Delivery::Steer)
             .await;
         assert_eq!(sid.unwrap(), p);
         assert!(a.last_input.is_empty(), "the retry routed nothing");
         let fresh = Some(InputId::new());
-        a.human_input(Some(p), fresh, "x".into(), vec![], Delivery::Steer)
+        a.human_input(Some(p), fresh, "x".into(), vec![], None, Delivery::Steer)
             .await
             .unwrap();
         assert!(a.last_input.contains_key(&p), "a fresh id routes");
@@ -13968,6 +14027,7 @@ pub(crate) mod tests {
         let e = refused(
             agents
                 .ask(SendInput {
+                    channel: None,
                     session: Some(root),
                     text: "hello".into(),
                     files: Vec::new(),
@@ -14967,6 +15027,7 @@ pub(crate) mod tests {
         assert!(queued.is_some());
         agents
             .ask(SendInput {
+                channel: None,
                 session: Some(y),
                 text: "hurry".into(),
                 files: Vec::new(),
@@ -15157,6 +15218,7 @@ pub(crate) mod tests {
         job_done(&agents, p, "j1", "one").await;
         agents
             .ask(SendInput {
+                channel: None,
                 session: Some(p),
                 text: "hurry".into(),
                 files: Vec::new(),
@@ -15506,6 +15568,7 @@ pub(crate) mod tests {
         .await;
         agents
             .ask(SendInput {
+                channel: None,
                 session: Some(e1),
                 text: "more".into(),
                 files: Vec::new(),

@@ -165,6 +165,7 @@ pub async fn deliver(session: SessionId, text: String, turn_running: bool) -> Re
                 text,
                 files: Vec::new(),
                 delivery: agent::Delivery::default(),
+                channel: None,
             })
             .await
             .map_err(|e| e.to_string())
@@ -176,6 +177,7 @@ pub async fn deliver(session: SessionId, text: String, turn_running: bool) -> Re
                 files: Vec::new(),
                 delivery: agent::Delivery::default(),
                 id: None,
+                channel: None,
             })
             .await
             .map(|_| ())
@@ -198,6 +200,7 @@ pub async fn queue_turn(session: SessionId, id: InputId, text: String) -> Result
             text,
             files: Vec::new(),
             delivery: agent::Delivery::NextTurn,
+            channel: None,
         })
         .await
         .map_err(|e| e.to_string())

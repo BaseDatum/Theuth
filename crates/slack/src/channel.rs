@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use agent::{
-    AGENT_ACTOR, AgentEvent, AgentInfo, Agents, Cancel, ListAgents, ListSessions, NewRootSession,
-    ObservedMeta, SendInput, SessionSummary, Steer,
+    AGENT_ACTOR, AgentEvent, AgentInfo, Agents, Cancel, ChannelChat, ChannelOrigin, ChannelVia,
+    ListAgents, ListSessions, NewRootSession, ObservedMeta, SendInput, SessionSummary, Steer,
     communication::{PeerDelivered, PeerScope},
 };
 use artifact::{Artifact, ArtifactShown};
@@ -93,11 +93,13 @@ impl RecentKeys {
 /// inbound/outbound paths are testable without live actors.
 #[async_trait]
 trait Port: Send + Sync {
+    /// `channel` (172) rides beside the text: the row's typed origin.
     async fn send_input(
         &self,
         session: Option<SessionId>,
         text: String,
         files: Vec<PathBuf>,
+        channel: ChannelOrigin,
     ) -> Result<SessionId, String>;
     /// `agent::NewRootSession`: an empty root with an explicit scope. Only
     /// called after the channel authenticated the owner (50 §2.3).
@@ -108,6 +110,7 @@ trait Port: Send + Sync {
         id: InputId,
         text: String,
         files: Vec<PathBuf>,
+        channel: ChannelOrigin,
     ) -> Result<(), String>;
     async fn cancel(&self, session: SessionId) -> Result<(), String>;
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String>;
@@ -144,6 +147,7 @@ impl Port for Actors {
         session: Option<SessionId>,
         text: String,
         files: Vec<PathBuf>,
+        channel: ChannelOrigin,
     ) -> Result<SessionId, String> {
         agents()?
             .ask(SendInput {
@@ -152,6 +156,7 @@ impl Port for Actors {
                 files,
                 delivery: agent::Delivery::default(),
                 id: None,
+                channel: Some(channel),
             })
             .await
             .map_err(|e| e.to_string())
@@ -170,6 +175,7 @@ impl Port for Actors {
         id: InputId,
         text: String,
         files: Vec<PathBuf>,
+        channel: ChannelOrigin,
     ) -> Result<(), String> {
         agents()?
             .ask(Steer {
@@ -178,6 +184,7 @@ impl Port for Actors {
                 text,
                 files,
                 delivery: agent::Delivery::default(),
+                channel: Some(channel),
             })
             .await
             .map_err(|e| e.to_string())
@@ -1452,21 +1459,35 @@ impl Channel {
             let session = s.threads.get(&key).map(|t| t.session);
             (session, session.is_some_and(|id| s.running.contains(&id)))
         };
+        // 172: the row's typed origin; the marker line above stays for the model.
+        let origin = ChannelOrigin {
+            via: ChannelVia::Slack,
+            chat: if m.dm {
+                ChannelChat::Dm
+            } else {
+                ChannelChat::Group
+            },
+            // Slack names an allowed user only by id (no profile lookup here).
+            from: (m.user != self.owner).then(|| m.user.clone()),
+            // ponytail: the event carries the channel id only; the name needs
+            // `conversations.info`, so no title until something caches it.
+            title: None,
+        };
         let result = match session {
             Some(id) if running => self
                 .port
-                .steer(id, InputId::new(), input, files)
+                .steer(id, InputId::new(), input, files, origin)
                 .await
                 .map(|()| id),
-            Some(id) => self.port.send_input(Some(id), input, files).await,
+            Some(id) => self.port.send_input(Some(id), input, files, origin).await,
             // A new root: the authenticated owner's is `owner` scope, anyone
             // else's stays `isolated` (50 §2.3). An existing thread's session
             // is never promoted here; `/theuth peers scope` does that explicitly.
             None if m.user == self.owner => match self.port.new_root(PeerScope::Owner).await {
-                Ok(id) => self.port.send_input(Some(id), input, files).await,
+                Ok(id) => self.port.send_input(Some(id), input, files, origin).await,
                 Err(e) => Err(e),
             },
-            None => self.port.send_input(None, input, files).await,
+            None => self.port.send_input(None, input, files, origin).await,
         };
         match result {
             Ok(id) => {
@@ -3065,11 +3086,16 @@ pub(crate) mod tests {
     pub(crate) struct Stub {
         pub(crate) session: SessionId,
         calls: Mutex<Vec<Call>>,
+        /// 172: the origin of every `SendInput`/`Steer`, in call order.
+        origins: Mutex<Vec<ChannelOrigin>>,
     }
 
     impl Stub {
         fn calls(&self) -> Vec<Call> {
             std::mem::take(&mut *self.calls.lock().unwrap())
+        }
+        fn origins(&self) -> Vec<ChannelOrigin> {
+            std::mem::take(&mut *self.origins.lock().unwrap())
         }
     }
 
@@ -3080,7 +3106,9 @@ pub(crate) mod tests {
             session: Option<SessionId>,
             text: String,
             _: Vec<PathBuf>,
+            channel: ChannelOrigin,
         ) -> Result<SessionId, String> {
+            self.origins.lock().unwrap().push(channel);
             self.calls
                 .lock()
                 .unwrap()
@@ -3097,7 +3125,9 @@ pub(crate) mod tests {
             _: InputId,
             text: String,
             _: Vec<PathBuf>,
+            channel: ChannelOrigin,
         ) -> Result<(), String> {
+            self.origins.lock().unwrap().push(channel);
             self.calls.lock().unwrap().push(Call::Steer(session, text));
             Ok(())
         }
@@ -3404,6 +3434,7 @@ pub(crate) mod tests {
         let stub = Arc::new(Stub {
             session: SessionId::new(),
             calls: Mutex::new(Vec::new()),
+            origins: Mutex::new(Vec::new()),
         });
         let cfg = SlackConfig {
             owner: OWNER.into(),
@@ -3550,6 +3581,7 @@ pub(crate) mod tests {
             text: text.into(),
             model: "m".into(),
             turn_seq: 0,
+            channel: None,
         }
     }
 
@@ -3618,6 +3650,7 @@ pub(crate) mod tests {
                 Call::SendInput(Some(f.stub.session), "[slack dm]\nhi there".into())
             ]
         );
+        assert_eq!(f.stub.origins(), vec![slack(ChannelChat::Dm, None)]);
         let key = thread_key(DM, "100.1");
         let s = f.chan.lock();
         let t = s.threads.get(&key).expect("thread bound");
@@ -3651,6 +3684,7 @@ pub(crate) mod tests {
             f.stub.calls(),
             vec![Call::Steer(f.stub.session, "[slack dm]\nalso this".into())]
         );
+        assert_eq!(f.stub.origins(), vec![slack(ChannelChat::Dm, None)]);
         assert_eq!(f.api.calls(), vec![format!("react {DM} 100.2 {EYES}")]);
     }
 
@@ -3694,8 +3728,20 @@ pub(crate) mod tests {
 
     const SOURCE: &str = "(channel C0SRE, ts 1793368920.123456, thread_ts 1793368000.000100)";
 
+    /// 172: the origin the channel sets (Slack has no channel title to give).
+    fn slack(chat: ChannelChat, from: Option<&str>) -> ChannelOrigin {
+        ChannelOrigin {
+            via: ChannelVia::Slack,
+            chat,
+            from: from.map(str::to_owned),
+            title: None,
+        }
+    }
+
     async fn input_of(f: &Fixture, ev: SlackPushEventCallback) -> String {
         f.chan.handle_inbound(Inbound::Push(Box::new(ev))).await;
+        // 172: a forwarded or linked message rides the same input, same origin.
+        assert_eq!(f.stub.origins().pop(), Some(slack(ChannelChat::Dm, None)));
         match f.stub.calls().pop() {
             Some(Call::SendInput(_, text)) => text,
             other => panic!("no input sent: {other:?}"),
@@ -5151,6 +5197,11 @@ pub(crate) mod tests {
             f.stub.calls(),
             vec![Call::SendInput(None, "[slack channel]\nhi".into())]
         );
+        // 172: a listed channel is `group`; an allowed user is named by id.
+        assert_eq!(
+            f.stub.origins(),
+            vec![slack(ChannelChat::Group, Some(FRIEND))]
+        );
     }
 
     #[tokio::test]
@@ -5177,6 +5228,8 @@ pub(crate) mod tests {
         };
         assert!(text.starts_with("[attachment: "), "{text}");
         assert!(!text.contains("[slack"), "{text}");
+        // 172: the voice-note/file path carries the same typed origin.
+        assert_eq!(f.stub.origins(), vec![slack(ChannelChat::Dm, None)]);
     }
 
     #[tokio::test]

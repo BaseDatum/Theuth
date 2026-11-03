@@ -22,6 +22,7 @@ const HUMAN: &str = "And then do this.";
 
 fn user_input(id: Option<InputId>, text: &str) -> UserInput {
     UserInput {
+        channel: None,
         id,
         text: text.into(),
         files: Vec::new(),

@@ -43,6 +43,7 @@ async fn scenario() {
         "trigger {limit} is not under the floor"
     );
     let input = |text: String| UserInput {
+        channel: None,
         id: None,
         text,
         files: Vec::new(),

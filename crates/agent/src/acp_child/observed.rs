@@ -557,6 +557,7 @@ impl AcpChild {
     async fn open_child_turn(&self, c: &mut ObservedChild, text: Option<String>) {
         let turn = TurnId::new();
         self.publish(AgentEvent::TurnStarted {
+            channel: None,
             session: c.id,
             turn,
             text: text.unwrap_or_else(|| WATCHED_NOTE.to_owned()),

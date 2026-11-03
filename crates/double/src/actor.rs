@@ -2051,6 +2051,7 @@ mod tests {
             text: "push it".into(),
             model: "m".into(),
             turn_seq: 1,
+            channel: None,
         })
         .await;
         let id = h

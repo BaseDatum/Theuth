@@ -9,8 +9,9 @@ use std::pin::pin;
 use std::time::Duration;
 
 use agent::{
-    AGENT_ACTOR, AgentInfo, Agents, Ancestors, Cancel, ListAgents, ListSessions, LoadSession,
-    Loaded, NewRootSession, SendInput, SessionSummary, Steer, communication::PeerScope,
+    AGENT_ACTOR, AgentInfo, Agents, Ancestors, Cancel, ChannelOrigin, ListAgents, ListSessions,
+    LoadSession, Loaded, NewRootSession, SendInput, SessionSummary, Steer,
+    communication::PeerScope,
 };
 use async_trait::async_trait;
 use kameo::actor::ActorRef;
@@ -64,13 +65,15 @@ pub async fn timed<T, E: Display>(
 pub trait Port: Send + Sync {
     /// `agent::SendInput`; `session: None` creates a root with `scope` first
     /// (`NewRootSession`, 50 §2.3) so the thread's root carries the owner's
-    /// scope from birth. Returns the session the input went to.
+    /// scope from birth. Returns the session the input went to. `channel`
+    /// (172) rides beside the text: the row's typed origin.
     async fn send_input(
         &self,
         session: Option<SessionId>,
         text: String,
         files: Vec<PathBuf>,
         scope: PeerScope,
+        channel: ChannelOrigin,
     ) -> Result<SessionId, String>;
     /// `agent::NewRootSession`: an empty root with an explicit scope.
     async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String>;
@@ -80,6 +83,7 @@ pub trait Port: Send + Sync {
         session: SessionId,
         text: String,
         files: Vec<PathBuf>,
+        channel: ChannelOrigin,
     ) -> Result<(), String>;
     /// `agent::Cancel`.
     async fn cancel(&self, session: SessionId) -> Result<(), String>;
@@ -117,6 +121,7 @@ impl Port for LivePort {
         text: String,
         files: Vec<PathBuf>,
         scope: PeerScope,
+        channel: ChannelOrigin,
     ) -> Result<SessionId, String> {
         let session = match session {
             Some(s) => s,
@@ -130,6 +135,7 @@ impl Port for LivePort {
                 files,
                 delivery: agent::Delivery::default(),
                 id: None,
+                channel: Some(channel),
             }),
         )
         .await
@@ -148,6 +154,7 @@ impl Port for LivePort {
         session: SessionId,
         text: String,
         files: Vec<PathBuf>,
+        channel: ChannelOrigin,
     ) -> Result<(), String> {
         timed(
             "Steer",
@@ -157,6 +164,7 @@ impl Port for LivePort {
                 text,
                 files,
                 delivery: agent::Delivery::default(),
+                channel: Some(channel),
             }),
         )
         .await

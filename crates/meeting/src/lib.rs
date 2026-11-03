@@ -4576,6 +4576,7 @@ mod tests {
                 text: summary::SUMMARY_FORM.into(),
                 model: "m".into(),
                 turn_seq: 0,
+                channel: None,
             })
             .await
             .unwrap();

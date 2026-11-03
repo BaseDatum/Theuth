@@ -321,6 +321,7 @@ mod tests {
             text: "go".into(),
             model: "m".into(),
             turn_seq: 0,
+            channel: None,
         }
     }
 

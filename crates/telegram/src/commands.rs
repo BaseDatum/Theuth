@@ -1415,13 +1415,20 @@ pub(crate) mod testing {
             _: String,
             _: Vec<PathBuf>,
             _: PeerScope,
+            _: agent::ChannelOrigin,
         ) -> Result<SessionId, String> {
             Err("fake".into())
         }
         async fn new_root(&self, _: PeerScope) -> Result<SessionId, String> {
             Err("fake".into())
         }
-        async fn steer(&self, _: SessionId, _: String, _: Vec<PathBuf>) -> Result<(), String> {
+        async fn steer(
+            &self,
+            _: SessionId,
+            _: String,
+            _: Vec<PathBuf>,
+            _: agent::ChannelOrigin,
+        ) -> Result<(), String> {
             Ok(())
         }
         async fn cancel(&self, session: SessionId) -> Result<(), String> {

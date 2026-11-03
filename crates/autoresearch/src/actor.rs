@@ -1681,6 +1681,7 @@ fn deliver(origin: Option<SessionId>, slug: &str, event: &'static str, text: Str
                 files: vec![],
                 delivery: agent::Delivery::default(),
                 id: None,
+                channel: None,
             })
             .await;
         if let Err(e) = r {

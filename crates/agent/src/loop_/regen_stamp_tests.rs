@@ -49,6 +49,7 @@ async fn scenario() {
     let actor = h.actor("openai/textonly").await;
     actor
         .tell(UserInput {
+            channel: None,
             id: None,
             text: HUMAN.into(),
             files: Vec::new(),

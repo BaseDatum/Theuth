@@ -18,7 +18,7 @@ use tools::{
     QuestionState, Risk, ToolOutput, WaitKind, WaitRow,
 };
 
-use super::{InnerCall, Store, insert_in, put_todos};
+use super::{InnerCall, Store, channel_in, insert_in, put_todos};
 use crate::cost::{CallId, CallKind};
 use crate::durability::{
     CallState, JournaledCall, LastStep, PartialContent, ResumeCause, ResumeKind, ResumePlan,
@@ -852,8 +852,8 @@ impl Store {
 
     // ---- W1: the loop's piggy-backed writes (§3.3) ----------------------------
 
-    /// §3.3 step 1: the user row plus `turn_steps(input_accepted)` in one
-    /// transaction; returns the row's seq.
+    /// §3.3 step 1: the user row (with its 172 `channel` origin, if any) plus
+    /// `turn_steps(input_accepted)` in one transaction; returns the row's seq.
     pub async fn append_input(
         &self,
         session: SessionId,
@@ -861,9 +861,12 @@ impl Store {
         message: &ChatMessage,
         input_id: Option<&str>,
         source: &str,
+        channel: Option<&crate::ChannelOrigin>,
     ) -> anyhow::Result<i64> {
         let mut tx = self.begin_write().await?;
-        let seq = insert_in(&mut tx, &session.to_string(), message, None, None).await?;
+        let sid = session.to_string();
+        let seq = insert_in(&mut tx, &sid, message, None, None).await?;
+        channel_in(&mut tx, &sid, seq, channel).await?;
         step_in(
             &mut tx,
             session,

@@ -1690,6 +1690,44 @@ impl Store {
         Ok(seq)
     }
 
+    /// [`Store::append`] for a user row a channel delivered (172): the row
+    /// and its `messages.channel` origin in one transaction.
+    pub async fn append_user(
+        &self,
+        id: SessionId,
+        message: &ChatMessage,
+        channel: Option<&crate::ChannelOrigin>,
+    ) -> anyhow::Result<i64> {
+        let mut tx = self.begin_write().await?;
+        let sid = id.to_string();
+        let seq = append_in(&mut tx, &sid, message).await?;
+        channel_in(&mut tx, &sid, seq, channel).await?;
+        tx.commit().await?;
+        Ok(seq)
+    }
+
+    /// 172: the channel origin of every user row of `id` that has one, by
+    /// seq. A row stored before 172 has none; malformed JSON is an error.
+    pub async fn channels(
+        &self,
+        id: SessionId,
+    ) -> anyhow::Result<BTreeMap<i64, crate::ChannelOrigin>> {
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT seq, channel FROM messages WHERE session_id = ? AND channel IS NOT NULL \
+             ORDER BY seq",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.read)
+        .await?;
+        rows.into_iter()
+            .map(|(seq, raw)| {
+                serde_json::from_str(&raw)
+                    .with_context(|| format!("bad channel metadata on message {seq} of {id}"))
+                    .map(|c| (seq, c))
+            })
+            .collect()
+    }
+
     /// 141 R3 T7: a tool result that arrives after its call's turn was
     /// stored — the call's response row still reads `stale` (the turn
     /// closed it unfinished) → that row is rewritten; the call has no
@@ -2386,8 +2424,8 @@ impl Store {
         }
         accounting::ensure_owner_in(&mut tx, id, None).await?;
         sqlx::query(
-            "INSERT INTO messages (session_id, seq, body, excluded, vision, at, advisory) \
-             SELECT ?1, seq, body, excluded, vision, at, advisory FROM messages WHERE session_id = ?2 AND seq < ?3 \
+            "INSERT INTO messages (session_id, seq, body, excluded, vision, at, advisory, channel) \
+             SELECT ?1, seq, body, excluded, vision, at, advisory, channel FROM messages WHERE session_id = ?2 AND seq < ?3 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?2), 9223372036854775807)",
         )
         .bind(&new)
@@ -3503,6 +3541,26 @@ async fn insert_in(
     Ok(seq)
 }
 
+/// 172: set row `seq`'s `messages.channel`; nothing for `None`. The caller's
+/// transaction, right after the row's insert.
+async fn channel_in(
+    conn: &mut SqliteConnection,
+    sid: &str,
+    seq: i64,
+    channel: Option<&crate::ChannelOrigin>,
+) -> anyhow::Result<()> {
+    let Some(channel) = channel else {
+        return Ok(());
+    };
+    sqlx::query("UPDATE messages SET channel = ? WHERE session_id = ? AND seq = ?")
+        .bind(serde_json::to_string(channel)?)
+        .bind(sid)
+        .bind(seq)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 /// One `epochs` row plus the revision bump; the caller's transaction.
 async fn compact_in(
     conn: &mut SqliteConnection,
@@ -3692,6 +3750,101 @@ mod tests {
             .await
             .unwrap();
         (store, id, scratch)
+    }
+
+    /// 172: a channel input's origin is stored with its row and replayed on
+    /// the history entry; a row stored before 172 (no `channel`) reads `None`,
+    /// and a fork keeps the origin. The wire shape is the bindings contract:
+    /// lowercase enums, `from`/`title`/`channel` absent when unset, and old
+    /// JSON without the field still parses.
+    #[tokio::test]
+    async fn channel_origin_round_trips_and_old_rows_read_none() {
+        use crate::{ChannelChat, ChannelOrigin, ChannelVia, HistoryEntry};
+        let (store, id, _dir) = fresh().await;
+        // A pre-172 row, written the way the old schema did.
+        sqlx::query("INSERT INTO messages (session_id, seq, body) VALUES (?, 0, ?)")
+            .bind(id.to_string())
+            .bind(serde_json::to_string(&ChatMessage::user("old")).unwrap())
+            .execute(&store.write)
+            .await
+            .unwrap();
+        let origin = ChannelOrigin {
+            via: ChannelVia::Slack,
+            chat: ChannelChat::Dm,
+            from: None,
+            title: None,
+        };
+        let turn = runtime::TurnId::new();
+        let msg = ChatMessage::user("[slack dm]\nhi");
+        let seq = store
+            .append_input(id, turn, &msg, None, "user", Some(&origin))
+            .await
+            .unwrap();
+        assert_eq!(seq, 1);
+        assert_eq!(
+            store.channels(id).await.unwrap(),
+            BTreeMap::from([(1, origin.clone())])
+        );
+
+        let history = |store: Store, id: SessionId| async move {
+            let h = store.context_history(id).await.unwrap();
+            let mut out = crate::supervisor::render_with(
+                &h.messages,
+                &h.entries,
+                &h.thinking,
+                &BTreeMap::new(),
+            );
+            crate::supervisor::mark_channels(&mut out, &store.channels(id).await.unwrap());
+            out.into_iter()
+                .filter_map(|(_, e)| match e {
+                    HistoryEntry::User { text, channel, .. } => Some((text, channel)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let want = vec![
+            ("old".to_owned(), None),
+            ("[slack dm]\nhi".to_owned(), Some(origin.clone())),
+        ];
+        assert_eq!(history(store.clone(), id).await, want);
+        let fork = store.fork(id, None, None).await.unwrap();
+        assert_eq!(history(store.clone(), fork).await, want);
+
+        // Wire: what the TS bindings promise the UI.
+        let entry = |channel| HistoryEntry::User {
+            text: "hi".into(),
+            turn: None,
+            context: None,
+            peer: None,
+            vision: None,
+            channel,
+        };
+        assert_eq!(
+            serde_json::to_value(entry(Some(origin.clone()))).unwrap()["channel"],
+            serde_json::json!({ "via": "slack", "chat": "dm" })
+        );
+        let full = ChannelOrigin {
+            via: ChannelVia::Telegram,
+            chat: ChannelChat::Group,
+            from: Some("@ops".into()),
+            title: Some("Ops".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&full).unwrap(),
+            serde_json::json!({ "via": "telegram", "chat": "group", "from": "@ops", "title": "Ops" })
+        );
+        assert!(
+            serde_json::to_value(entry(None))
+                .unwrap()
+                .get("channel")
+                .is_none()
+        );
+        let old: HistoryEntry =
+            serde_json::from_value(serde_json::json!({ "role": "user", "text": "hi" })).unwrap();
+        assert!(matches!(old, HistoryEntry::User { channel: None, .. }));
+        let old: crate::SendInput =
+            serde_json::from_value(serde_json::json!({ "session": null, "text": "hi" })).unwrap();
+        assert_eq!(old.channel, None);
     }
 
     /// The writer commits with `synchronous=NORMAL` (1): WAL mode keeps a

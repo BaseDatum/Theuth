@@ -78,6 +78,7 @@ async fn actor(h: &Harness, endless: bool) -> ActorRef<Session> {
 async fn send(h: &mut Harness, actor: &ActorRef<Session>, text: &str) {
     actor
         .tell(UserInput {
+            channel: None,
             id: None,
             text: text.into(),
             files: Vec::new(),
@@ -207,6 +208,7 @@ async fn scenario_overflow() {
     let actor = actor(&h, true).await;
     actor
         .tell(UserInput {
+            channel: None,
             id: None,
             text: "Plan it.".into(),
             files: Vec::new(),

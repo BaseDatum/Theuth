@@ -10,7 +10,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use agent::communication::PeerScope;
-use agent::{AgentEvent, ObservedMeta, ObservedSource, ObservedState};
+use agent::{
+    AgentEvent, ChannelChat, ChannelOrigin, ChannelVia, ObservedMeta, ObservedSource, ObservedState,
+};
 use artifact::ArtifactShown;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
@@ -1465,13 +1467,29 @@ impl Channel {
             thread: m.thread,
         };
         self.react(mark, EYES).await;
+        // 172: the row's typed origin; the text is unchanged.
+        let origin = ChannelOrigin {
+            via: ChannelVia::Telegram,
+            chat: if in_group {
+                ChannelChat::Group
+            } else {
+                ChannelChat::Dm
+            },
+            // An allowed user by the name the channel already uses (`remember_chat`).
+            from: (owner != Some(from.id)).then(|| {
+                from.username
+                    .as_ref()
+                    .map_or_else(|| from.name.clone(), |u| format!("@{u}"))
+            }),
+            title: m.chat.title.clone().filter(|_| in_group),
+        };
         if let Some(child) = marker {
             let running = self.lock().running.contains(&child);
             let r = if running {
-                self.port.steer(child, input, files).await
+                self.port.steer(child, input, files, origin).await
             } else {
                 self.port
-                    .send_input(Some(child), input, files, PeerScope::Isolated)
+                    .send_input(Some(child), input, files, PeerScope::Isolated, origin)
                     .await
                     .map(|_| ())
             };
@@ -1498,15 +1516,19 @@ impl Channel {
             PeerScope::Isolated
         };
         let result = match session {
-            Some(id) if running => self.port.steer(id, input.clone(), files).await.map(|()| id),
+            Some(id) if running => self
+                .port
+                .steer(id, input.clone(), files, origin)
+                .await
+                .map(|()| id),
             Some(id) => {
                 self.port
-                    .send_input(Some(id), input.clone(), files, scope)
+                    .send_input(Some(id), input.clone(), files, scope, origin)
                     .await
             }
             None => {
                 self.port
-                    .send_input(None, input.clone(), files, scope)
+                    .send_input(None, input.clone(), files, scope, origin)
                     .await
             }
         };
@@ -2947,6 +2969,8 @@ pub(crate) mod tests {
     pub(crate) struct Stub {
         pub(crate) session: SessionId,
         calls: Mutex<Vec<PortCall>>,
+        /// 172: the origin of every `SendInput`/`Steer`, in call order.
+        origins: Mutex<Vec<ChannelOrigin>>,
         parents: Mutex<HashMap<SessionId, SessionId>>,
         /// `list_sessions` sleeps this long first; `Duration::MAX` = never answers.
         list_delay: Mutex<Option<Duration>>,
@@ -2958,6 +2982,9 @@ pub(crate) mod tests {
         pub(crate) fn calls(&self) -> Vec<PortCall> {
             std::mem::take(&mut *self.calls.lock())
         }
+        fn origins(&self) -> Vec<ChannelOrigin> {
+            std::mem::take(&mut *self.origins.lock())
+        }
     }
 
     #[async_trait]
@@ -2968,7 +2995,9 @@ pub(crate) mod tests {
             text: String,
             files: Vec<PathBuf>,
             _: PeerScope,
+            channel: ChannelOrigin,
         ) -> Result<SessionId, String> {
+            self.origins.lock().push(channel);
             self.calls
                 .lock()
                 .push(PortCall::SendInput(session, text, files.len()));
@@ -2982,7 +3011,9 @@ pub(crate) mod tests {
             session: SessionId,
             text: String,
             _: Vec<PathBuf>,
+            channel: ChannelOrigin,
         ) -> Result<(), String> {
+            self.origins.lock().push(channel);
             self.calls.lock().push(PortCall::Steer(session, text));
             Ok(())
         }
@@ -3053,6 +3084,7 @@ pub(crate) mod tests {
         let stub = Arc::new(Stub {
             session: SessionId::new(),
             calls: Mutex::new(Vec::new()),
+            origins: Mutex::new(Vec::new()),
             parents: Mutex::new(HashMap::new()),
             list_delay: Mutex::new(None),
             list_done: AtomicUsize::new(0),
@@ -3201,6 +3233,45 @@ pub(crate) mod tests {
         }
     }
 
+    /// 172: the origin Telegram sets.
+    fn telegram(chat: ChannelChat, from: Option<&str>, title: Option<&str>) -> ChannelOrigin {
+        ChannelOrigin {
+            via: ChannelVia::Telegram,
+            chat,
+            from: from.map(str::to_owned),
+            title: title.map(str::to_owned),
+        }
+    }
+
+    /// 172: a voice note (untranscribed here: no voice plugin in tests) rides
+    /// the same input as text, so it carries the same typed origin.
+    #[tokio::test]
+    async fn voice_note_carries_the_telegram_origin() {
+        let f = fixture(false);
+        f.api
+            .set_download("v1", b"OggS".to_vec(), Some("voice/file_1.oga"));
+        let mut m = msg(private(OWNER), OWNER, None, "");
+        m.media = vec![Media {
+            kind: MediaKind::Voice,
+            file_id: "v1".into(),
+            file_name: None,
+            mime: Some("audio/ogg".into()),
+            size: Some(4),
+            duration_ms: Some(2000),
+            emoji: None,
+        }];
+        f.inbound(m).await;
+        let calls = f.stub.calls();
+        let [PortCall::SendInput(None, text, _)] = &calls[..] else {
+            panic!("{calls:?}");
+        };
+        assert!(text.contains("voice note"), "{text}");
+        assert_eq!(
+            f.stub.origins(),
+            vec![telegram(ChannelChat::Dm, None, None)]
+        );
+    }
+
     fn photo(file_id: &str) -> Media {
         Media {
             kind: MediaKind::Photo,
@@ -3255,6 +3326,7 @@ pub(crate) mod tests {
             text: text.into(),
             model: "m".into(),
             turn_seq: 0,
+            channel: None,
         }
     }
 
@@ -3306,6 +3378,10 @@ pub(crate) mod tests {
                 0
             )]
         );
+        assert_eq!(
+            f.stub.origins(),
+            vec![telegram(ChannelChat::Dm, None, None)]
+        );
         let calls = f.api.calls();
         assert!(calls.contains(&Call::React {
             at: MsgRef {
@@ -3342,6 +3418,11 @@ pub(crate) mod tests {
             f.stub.calls(),
             vec![PortCall::Steer(session, "more".into())]
         );
+        // 172: a steer carries the same typed origin.
+        assert_eq!(
+            f.stub.origins(),
+            vec![telegram(ChannelChat::Dm, None, None)]
+        );
         assert!(
             !f.api
                 .calls()
@@ -3364,6 +3445,11 @@ pub(crate) mod tests {
         assert_eq!(
             f.stub.calls(),
             vec![PortCall::SendInput(None, "hi".into(), 0)]
+        );
+        let friend = format!("@u{FRIEND}");
+        assert_eq!(
+            f.stub.origins(),
+            vec![telegram(ChannelChat::Dm, Some(&friend), None)]
         );
         assert!(
             !f.api
@@ -3393,6 +3479,12 @@ pub(crate) mod tests {
         assert_eq!(
             f.stub.calls(),
             vec![PortCall::SendInput(None, "do it".into(), 0)]
+        );
+        // 172: a supergroup is `group`, titled; an allowed member is named.
+        let friend = format!("@u{FRIEND}");
+        assert_eq!(
+            f.stub.origins(),
+            vec![telegram(ChannelChat::Group, Some(&friend), Some("ops"))]
         );
         assert!(
             f.chan

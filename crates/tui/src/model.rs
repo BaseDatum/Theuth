@@ -11150,6 +11150,7 @@ fn from_history(h: HistoryEntry, opts: &markdown::Options) -> Vec<Entry> {
             context,
             peer,
             vision: None,
+            ..
         } => {
             if removed(&context) {
                 return vec![removed_card("you", &text)];
@@ -13865,6 +13866,7 @@ mod tests {
                 context: entry(true, vec![shot(false)]),
                 peer: None,
                 vision: None,
+                channel: None,
             },
             &opts,
         );
@@ -13880,6 +13882,7 @@ mod tests {
                 context: entry(false, vec![shot(true)]),
                 peer: None,
                 vision: None,
+                channel: None,
             },
             &opts,
         );
@@ -17056,6 +17059,7 @@ mod tests {
             turn_seq: 1,
             text: "go".into(),
             model: "omp".into(),
+            channel: None,
         });
         assert!(
             m.header(&catalog)
@@ -17420,6 +17424,7 @@ mod tests {
             turn_seq: 0,
             text: text.clone(),
             model: "m".into(),
+            channel: None,
         });
         assert_eq!(
             m.entries.len(),
@@ -17432,6 +17437,7 @@ mod tests {
             turn_seq: 2,
             text: "from another frontend".into(),
             model: "m".into(),
+            channel: None,
         });
         assert_eq!(m.entries.len(), 2, "foreign input is still echoed");
     }
@@ -17700,6 +17706,7 @@ mod tests {
                 id,
                 text: "x".into(),
                 defer: false,
+                channel: None,
             });
         }
         assert_eq!(m.queued.len(), 2);
@@ -17725,6 +17732,7 @@ mod tests {
             turn_seq: 7,
             text: "also do X".into(),
             model: "m".into(),
+            channel: None,
         });
         assert_eq!(
             m.entries.len(),
@@ -17840,6 +17848,7 @@ mod tests {
             turn_seq: 1,
             text,
             model: "m".into(),
+            channel: None,
         });
         let n = m.entries.len();
         assert!(
@@ -18035,6 +18044,7 @@ mod tests {
             turn_seq: 5,
             text: "hello".into(),
             model: "m".into(),
+            channel: None,
         });
         assert_eq!(m.entries.len(), 1, "own send is not echoed twice");
         assert!(matches!(&m.entries[0], Entry::User { text, turn: Some(5) } if text == "hello"));
@@ -18058,6 +18068,7 @@ mod tests {
             turn_seq: 1,
             text: "hello".into(),
             model: "m".into(),
+            channel: None,
         });
         assert!(m.streaming);
         let message = "provider: SSO session expired; run `aws sso login`";
@@ -18092,6 +18103,7 @@ mod tests {
                         context: None,
                         peer: None,
                         vision: None,
+                        channel: None,
                     },
                     HistoryEntry::Error {
                         text: message.into(),
@@ -18426,6 +18438,7 @@ mod tests {
             }),
             peer: None,
             vision: Some(note),
+            channel: None,
         };
         let out = from_history(
             row(note(&[VisionStatus::Answered, VisionStatus::Failed]), false),
@@ -18603,6 +18616,7 @@ mod tests {
                     context: None,
                     peer: None,
                     vision: None,
+                    channel: None,
                 }],
                 ..Loaded::default()
             },
@@ -20698,6 +20712,7 @@ mod tests {
             turn_seq: 7,
             text: "<advisory severity=\"blocker\" guidance=\"weigh\">stop</advisory>".into(),
             model: "m".into(),
+            channel: None,
         });
         m.apply_agent(AgentEvent::TurnStarted {
             session: s,
@@ -20706,6 +20721,7 @@ mod tests {
             text: "<advisory severity=\"concern\" guidance=\"weigh\">not carded yet</advisory>"
                 .into(),
             model: "m".into(),
+            channel: None,
         });
         assert!(!m.entries.iter().any(|e| matches!(e, Entry::User { .. })));
     }

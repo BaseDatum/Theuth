@@ -475,6 +475,7 @@ mod tests {
             text: String::new(),
             model: "m".into(),
             turn_seq: 1,
+            channel: None,
         };
         let finished = |session| agent::AgentEvent::TurnFinished {
             session,

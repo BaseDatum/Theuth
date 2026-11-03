@@ -853,6 +853,7 @@ impl Roster {
                 files: vec![],
                 delivery: agent::Delivery::default(),
                 id: None,
+                channel: None,
             })
             .await
         {
@@ -1147,6 +1148,7 @@ impl Roster {
                     files: vec![],
                     delivery: agent::Delivery::default(),
                     id: None,
+                    channel: None,
                 })
                 .await
                 .is_ok()
@@ -1658,6 +1660,7 @@ impl Message<DeliverWake> for Roster {
                 files: vec![],
                 delivery: agent::Delivery::default(),
                 id: None,
+                channel: None,
             })
             .await
             .map_err(|e| e.to_string())?;
