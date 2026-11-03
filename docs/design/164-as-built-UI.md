@@ -15,7 +15,7 @@ runner does, every decision taken while building it, and what is left.
 | `lib/diagram-theme.ts`, `lib/graph-layout.ts`, `lib/diagram/chart/frame.tsx`, 8 diagram Views | Token reads routed through `useThemeTokens()` (below). |
 | `rpc/api.ts`, `rpc/events.ts`, `App.tsx` | `answer_fence_snapshot` (type + METHODS), the two events in the union, the install line. |
 
-Never committed (gitignored): the four new binding stubs in `src/rpc/bindings/` and `answer_fence_snapshot` in the
+Never committed (gitignored): the five binding stubs in `src/rpc/bindings/` and `answer_fence_snapshot` in the
 repo-root `bindings/methods.json`.
 
 ## Runner (D3)
@@ -129,12 +129,15 @@ Artifacts: `/tmp/163-164/ui-proof/png/` (96 PNGs: `<engine>-<mode>-<case>-<width
 - Svg-path pictures are the diagram alone (no card label/border), scaled to fit `width`; HTML pictures are the full
   `width` with 16 px side padding.
 
-## Contract problems
+## Contract deviation: `FenceSnapshotId`
 
-- `SnapshotId` collides with an existing ts-rs export: `crates/sandbox/src/vm/mod.rs:250` `pub struct SnapshotId(pub
-  String)` already writes `bindings/SnapshotId.ts`. The stub was therefore not written (the existing file is the same
-  `string`); `api.ts` imports `@/rpc/bindings/SnapshotId`. If 164-ENG renames the artifact type's TS name, `api.ts`'s
-  import follows in one line. Reported to the parent session.
+- The contract's `SnapshotId` collided with an existing ts-rs export (`crates/sandbox/src/vm/mod.rs:250`
+  `pub struct SnapshotId(pub String)` → `bindings/SnapshotId.ts`). Orchestrator amendment (2026-11-03, binding): the
+  artifact type is `FenceSnapshotId(pub uuid::Uuid)` in Rust, exported as `bindings/FenceSnapshotId.ts` =
+  `export type FenceSnapshotId = string;`; `FenceSnapshotRequested.id` / `FenceSnapshotResolved.id` are
+  `FenceSnapshotId`; the RPC is `answer_fence_snapshot(id: FenceSnapshotId, answer: FenceSnapshotAnswer)`. The UI stubs
+  (`FenceSnapshotId.ts`, `FenceSnapshotRequested.ts`, `FenceSnapshotResolved.ts`) and `api.ts` follow it; the sandbox's
+  `SnapshotId.ts` is untouched. `docs/design/164-channel-pictures.md` is amended at integration.
 
 ## Residual risks
 
