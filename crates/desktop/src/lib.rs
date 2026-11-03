@@ -491,7 +491,8 @@ mod desktop {
             // WebKit without the selector from raising.
             unsafe {
                 if (*view).class().responds_to(objc2::sel!(pasteAsPlainText:)) {
-                    let () = objc2::msg_send![view, pasteAsPlainText: std::ptr::null_mut::<AnyObject>()];
+                    let () =
+                        objc2::msg_send![view, pasteAsPlainText: std::ptr::null_mut::<AnyObject>()];
                 }
             }
         });
