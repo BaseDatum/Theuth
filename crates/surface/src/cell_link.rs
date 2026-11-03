@@ -41,7 +41,7 @@ pub fn run_links<'a>(before: &str, delta: &'a str, session: &str) -> Cow<'a, str
             .options
             .name
             .unwrap_or_else(|| (ordinal + 1).to_string());
-        out.push_str(&format!("\nRun in theuth: theuth://c/{session}?cell={id}"));
+        out.push_str(&format!("\n{LINK}{session}?cell={id}"));
     }
     if at == 0 {
         return Cow::Borrowed(delta);
@@ -54,6 +54,19 @@ pub fn run_links<'a>(before: &str, delta: &'a str, session: &str) -> Cow<'a, str
 /// after each cell fence (§14.3).
 pub fn append_run_links(markdown: &str, session: &str) -> String {
     run_links("", markdown, session).into_owned()
+}
+
+/// The start of the line [`run_links`] adds.
+const LINK: &str = "Run in theuth: theuth://c/";
+
+/// `text` without the `Run in theuth:` lines [`run_links`] added: what a voice clip reads
+/// (a link is for the eye, never spoken).
+pub fn strip_run_links(text: &str) -> Cow<'_, str> {
+    if !text.contains(LINK) {
+        return Cow::Borrowed(text);
+    }
+    let kept: Vec<&str> = text.split('\n').filter(|l| !l.starts_with(LINK)).collect();
+    Cow::Owned(kept.join("\n"))
 }
 
 #[cfg(test)]
@@ -75,6 +88,16 @@ Run in theuth: theuth://c/{S}?cell=preview-ir-prod1\n\n```bash\necho snippet\n``
 ```python\n#| cwd: /tmp\nprint(1)\n```\nRun in theuth: theuth://c/{S}?cell=2"
             )
         );
+    }
+
+    /// A voice clip never reads the link: stripping undoes exactly what was appended.
+    #[test]
+    fn spoken_text_drops_the_run_links_only() {
+        let md = "Run these.\n\n```bash\n#| name: one\n#| cwd: /tmp\nls\n```\n\n```sh\n#| cwd: /x\npwd\n```";
+        let shown = append_run_links(md, S);
+        assert_eq!(shown.matches("Run in theuth:").count(), 2);
+        assert_eq!(strip_run_links(&shown), md);
+        assert!(matches!(strip_run_links(md), Cow::Borrowed(_)));
     }
 
     #[test]

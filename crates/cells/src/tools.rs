@@ -76,7 +76,7 @@ impl Tool for CellRunsTool {
 
     fn description(&self) -> String {
         "Runs of user cells, newest first: scope \"this\" (this chat's cells, default) or a note's doc id. \
-         Returns [{run, name, cell, state, exit, secs, at, expect, summary, edited, pressed}]. Reads only: \
+         Returns [{run, name, cell, state, exit, secs, at, expect, summary, edited, private, pressed}]. Reads only: \
          the user runs cells, you never do."
             .into()
     }
@@ -106,6 +106,7 @@ impl Tool for CellRunsTool {
 }
 
 /// A note cell's `name` (chat runs carry no name in the record).
+// Z (L11): `r.name` once E1's `CellRun.name` lands.
 fn note_name(r: &CellRun) -> Option<&str> {
     match &r.cell {
         CellRef::Note {
@@ -148,6 +149,8 @@ fn run_row(r: &CellRun) -> Value {
         "expect": expect,
         "summary": r.summary,
         "edited": r.edited,
+        // Z (L11): `r.private` once E1's `CellRun.private` lands.
+        "private": false,
         "pressed": r.pressed_by,
     })
 }
@@ -274,5 +277,58 @@ mod tests {
         }
         let props = |i: usize| specs[i].schema["properties"].as_object().unwrap().len();
         assert_eq!((props(0), props(1), props(2)), (3, 3, 1));
+    }
+
+    /// §9.5: every key of a `cell_runs` row is present; `name` comes from a note key,
+    /// `private` is false until E1's `CellRun.private` (L11) is wired in by Z.
+    #[test]
+    fn cell_runs_rows_carry_every_key() {
+        let doc = DocId("d1".into());
+        let run = CellRun {
+            id: RunId("r_1".into()),
+            cell: CellRef::Note {
+                doc: doc.clone(),
+                key: NoteKey::Name("check-lag".into()),
+            },
+            mode: crate::RunMode::Cell,
+            pass: None,
+            kernel: crate::KernelId {
+                scope: Scope::Doc(doc),
+                spec: crate::KernelSpec::Monty,
+            },
+            interpreter: "Monty".into(),
+            cwd: "/tmp".into(),
+            env_names: Vec::new(),
+            presented_sha: String::new(),
+            code_sha: String::new(),
+            edited: false,
+            pressed_by: "desktop".into(),
+            state: crate::RunState::Done,
+            exit: Some(ExitStatus::Code(0)),
+            secs: Some(1.5),
+            expect: Vec::new(),
+            summary: None,
+            output_bytes: None,
+            queued_ms: 0,
+            started_ms: None,
+            ended_ms: None,
+        };
+        let row = run_row(&run);
+        let keys: Vec<&str> = row
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for k in [
+            "run", "name", "cell", "state", "exit", "secs", "at", "expect", "summary", "edited",
+            "private", "pressed",
+        ] {
+            assert!(keys.contains(&k), "{k}");
+        }
+        assert_eq!(
+            (&row["name"], &row["private"], &row["exit"]),
+            (&json!("check-lag"), &json!(false), &json!(0))
+        );
     }
 }

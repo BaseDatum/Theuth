@@ -1930,9 +1930,10 @@ impl Channel {
 }
 
 /// What a voice turn's clip reads (164 D9): the block without its picture
-/// fences; `None` when nothing is left to say.
+/// fences and without 171's "Run in theuth" links; `None` when nothing is left to say.
 fn clip_text(md: &str) -> Option<String> {
     let spoken = surface::strip_pictures(md);
+    let spoken = surface::cell_link::strip_run_links(&spoken); // 171:A1
     (!spoken.trim().is_empty()).then(|| spoken.into_owned())
 }
 
@@ -3083,6 +3084,18 @@ mod tests {
         );
         assert_eq!(clip_text("```mermaid\ngraph LR\n  A --> B\n```\n"), None);
         assert_eq!(clip_text("plain").as_deref(), Some("plain"));
+    }
+
+    /// 171 R1b: a voice clip never reads the "Run in theuth" line the text carries.
+    #[test]
+    fn clip_text_skips_run_links() {
+        let md = "Run it:\n```bash\n#| cwd: /tmp\nls\n```\nDone.";
+        let shown = surface::cell_link::run_links("", md, "s1");
+        assert!(
+            shown.contains("Run in theuth: theuth://c/s1?cell=1"),
+            "{shown}"
+        );
+        assert_eq!(clip_text(&shown).as_deref(), Some(md));
     }
 
     /// Every send driven by a bus event carries the ACI the inbound envelope

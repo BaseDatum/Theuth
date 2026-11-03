@@ -2888,6 +2888,7 @@ impl Worker {
     fn speak(&mut self) {
         // 164 D9: the clip never reads a fence body; the picture is in the thread.
         let text = surface::strip_pictures(&std::mem::take(&mut self.unspoken)).into_owned();
+        let text = surface::cell_link::strip_run_links(&text).into_owned(); // 171:A1
         if !self.voice || text.trim().is_empty() {
             return;
         }
