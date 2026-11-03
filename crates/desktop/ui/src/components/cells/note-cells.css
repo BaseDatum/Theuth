@@ -1,0 +1,29 @@
+/* 171 §11.5: a note cell sits on the paper — the code block's own well (styles.css `codeBlock`) gives way to the
+   cell card, whose code area keeps the code block's metrics. The `cells` defaults line is a muted line, no well. */
+html .bn-block-content[data-content-type="codeBlock"]:has(> [data-note-cell]) {
+  color: inherit;
+  background: transparent;
+}
+html [data-note-cell] [data-cell] {
+  background: var(--card);
+}
+html [data-note-cell] pre {
+  margin: 0;
+  padding: 0.5rem 0.75rem 0.5rem 2rem;
+  white-space: pre;
+  overflow-x: auto;
+  tab-size: 2;
+  font-size: 13px;
+  line-height: 20px;
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+}
+html [data-note-cell][data-defaults] pre {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+}
+@media (pointer: coarse) {
+  html [data-note-cell] pre {
+    font-size: 16px;
+    line-height: 24px;
+  }
+}

@@ -1,4 +1,5 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Editor as BlockEditor } from '@/components/editor/Editor'
 import { NotebookGuest } from '@/components/notebooks/NotebookGuest'
@@ -186,6 +187,10 @@ function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
 function GuestDocument({ provider, user, owner, client, engine }: { provider: EngineProvider; user: GuestUser; owner: string; client: RpcClient; engine: string }) {
   const [status, setStatus] = useState<DocStatus>(provider.status)
   const [title, setTitle] = useState(provider.meta?.title ?? '')
+  // 171 §13: note cells read their replicated latest run (`cell_latest`) through this connection; the guest page has
+  // no engine scope, so it brings the query client the cell chrome uses.
+  const api = useMemo(() => makeApi(client), [client])
+  const [qc] = useState(() => new QueryClient())
   useEffect(() => {
     setStatus(provider.status)
     setTitle(provider.meta?.title ?? '')
@@ -216,7 +221,9 @@ function GuestDocument({ provider, user, owner, client, engine }: { provider: En
       ) : !provider.meta && status.kind === 'connecting' ? (
         <div className="flex-1" />
       ) : (
-        <BlockEditor provider={provider} status={status} />
+        <QueryClientProvider client={qc}>
+          <BlockEditor provider={provider} status={status} guest={api} />
+        </QueryClientProvider>
       )}
       <footer className="flex h-8 shrink-0 items-center justify-between gap-3 border-t border-border-subtle px-4 text-xs text-fg-tertiary">
         <span data-testid="guest-you">

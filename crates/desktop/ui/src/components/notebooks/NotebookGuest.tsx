@@ -10,7 +10,7 @@ import { EngineProvider, type GuestUser } from '@/lib/doc/provider'
 import { notebookKeys, notebooksApi } from '@/lib/notebooks-rpc'
 import type { NotebookItem } from '@/rpc/bindings/NotebookItem'
 import { cn } from '@/lib/utils'
-import { makeApi } from '@/rpc/api'
+import { type Api, makeApi } from '@/rpc/api'
 import type { Role } from '@/rpc/bindings/Role'
 import type { RpcClient } from '@/rpc/client'
 
@@ -115,7 +115,7 @@ function Guest({ provider, client, engine, user, role }: Props) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         {header}
-        {openProvider ? <Opened provider={openProvider} /> : <div className="flex-1" />}
+        {openProvider ? <Opened provider={openProvider} api={api} /> : <div className="flex-1" />}
       </div>
     )
   }
@@ -192,9 +192,10 @@ function Col({ head, children }: { head: string; children: ReactNode }) {
   )
 }
 
-function Opened({ provider }: { provider: EngineProvider }) {
+/** An opened note or source; note cells show the replicated latest run through the guest's `api` (171 §13). */
+function Opened({ provider, api }: { provider: EngineProvider; api: Api }) {
   const status = useSyncExternalStore((cb) => provider.onStatus(cb), () => provider.status)
-  return <BlockEditor provider={provider} status={status} />
+  return <BlockEditor provider={provider} status={status} guest={api} />
 }
 
 /** One note as the guest sees it: the live title, `live · you may edit` / `live · view only`; `onlyPromoted` = the centre list's rows. */
