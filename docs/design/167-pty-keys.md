@@ -113,40 +113,47 @@ Label/description squeezed to ~30 px, one word per line; the chip list and the "
 
 `src/components/settings/shared.tsx` `Row`: `stack` switched to a column only below the `md` viewport breakpoint (`max-md:flex-col …`). The desktop window is wider than `md` but the settings content column is 594 px (dialog `max-w-[880px]` − nav 220 − padding 64), so the row stayed a flex row; the label side is `min-w-0` and collapsed, the control side `shrink-0`, so `Chips` (`max-w-xl`, 576 px) took the row. Measured before (Chromium and WebKit, 1280×800 and 900×660 identical, the dialog is 880 wide in both): Ignored apps label **0 px** wide × 666 px tall, Live tools label 0 px, Echo label 90 px.
 
-### As built
+### As built (R1, after the orchestrator's review)
 
-- `Row` with `stack` is always a column: `flex flex-col gap-3`, label and description on top, control wrapper `flex w-full items-center gap-2` (no `shrink-0`), so `Chips` wraps inside it. Non-stack rows keep `flex items-center justify-between gap-6` and the `shrink-0` wrapper.
-- Children's own `max-md:w-full max-md:max-w-none` (model comboboxes) are left alone: above `md` they sit at `max-w-64` under the label, below `md` full width as before.
+- **`stack` is exactly as on main**: right of the label on desktop, under it below `md`; desktop classes byte-identical. The 148 R3 test `src/components/settings/shared.test.ts` is back unchanged.
+- **New `Row` prop `wide`** for a control that grows (chips, lists, switch or button groups, long text): always a column at any width — `flex flex-col gap-3 …` with label and description on top and the control wrapper `flex w-full items-center gap-2` (no `shrink-0`) below, so `Chips` wraps inside it. Plain rows unchanged. Both props doc-commented. New vitest beside 148 R3 pins `wide`'s classes and checks that `stack` and plain rows keep main's classes.
 
-Audit (`rg -n '<Row stack' src` plus every settings `Row` whose control can grow wide):
+**Why `wide` instead of changing `stack`.** R0 made every `stack` row a column. That also moved the model pickers (Chat › New sessions / Subagents / theuth agent, Memory › Compactor, Meetings › Meeting/Summary model, Loop, Voice, …) under their labels on desktop, although 148 R3 had right-aligned them on purpose and Sky only asked about Meetings. The two cases differ: a picker is narrow on desktop and needs stacking only on a phone; a chip list or switch group is wide at every width. One prop per case keeps 148 R3's layout and fixes the growing controls.
 
-| row | verdict | change |
+Audit (`rg -n '<Chips|flex-wrap|<Row stack' src/components/settings`, plus every settings `Row` whose control can grow):
+
+| row | before (594 px column) | change |
 |---|---|---|
-| Meetings › Ignored apps, Live tools (`Chips`) | the reported defect | fixed by `Row` |
-| Meetings › Echo in your microphone (`echoSummary` sentence in a `shrink-0` span) | same defect: label 90 px, sentence unwrapped | `stack` added |
-| Double › Capture (five labelled switches, `flex-wrap justify-end` in a `shrink-0` wrapper, ~470 px; label ~100 px) | same defect, milder | `stack` added, `justify-end` dropped so the switches start under the label |
-| Chat (New sessions, Subagents, theuth agent), Loop (Title, Vision fallback, Escalation), Memory (Compactor), Voice (Polish), Meetings (Meeting/Summary model), Dreaming (Window, tiers, Weekly digest), Autoresearch (roles, Bench lock), Calendar (Add subscription) | already `stack`; were fine before (e.g. Chat label 360 px) | now a column at every width (the design call) |
-| Double › Window and venue (2 × `w-32` inputs + Save, ~330 px), Link › Relay, Communication › Who may discover, VoiceKey › Draw the trail (`w-72`), General › Data directory (`max-w-96 truncate`) | label keeps ≥ 200 px at 594 px | unchanged |
+| Meetings › Ignored apps (`Chips`) | label 0 px — the reported defect | `stack` → `wide` |
+| Meetings › Allowed while a meeting runs (Live tools, `Chips`) | label 0 px | `stack` → `wide` |
+| Meetings › Echo in your microphone (`echoSummary` sentence in a `shrink-0` span) | label 90 px, sentence on one line | `wide` |
+| Double › Train now (Tier A, Tier B local, `w-36` node select, Tier B on node, Rebuild ≈ 580 px in a `shrink-0` wrapper) | label 0 px | `wide`; `justify-end` dropped so the buttons start under the label |
+| Double › Capture (five labelled switches, ≈ 450 px) | label 124 px, description 7 lines | `wide`; `justify-end` dropped |
+| Model pickers with `stack` (Chat ×3, Loop ×3, Memory, Voice, Meetings ×2), Dreaming (Window, tiers, Weekly digest), Autoresearch (roles, Bench lock), Calendar › Add subscription (its form lives in the description) | fine on desktop (e.g. Chat label 360 px) | unchanged, keep `stack` |
+| Double › Roll back, Window and venue (≈ 330 px), Link › Relay, Communication › Who may discover, VoiceKey › Draw the trail (`w-72`), General › Data directory (`max-w-96 truncate`) | label ≥ 200 px | unchanged |
 
-The 148 R3 test `src/components/settings/shared.test.ts` pinned the old below-`md` class strings; the contract changed, so it is deleted rather than re-pinned (implementation-string test). Layout is proven by the screenshots below.
+Other `flex-wrap` hits (Dreaming night/proposal lists, Search, SandboxVms/Sheets, Mesh, Link, Communication label spans) are not `Row` controls.
 
 ### Proof
 
-Worktree UI (vite on 1467) against a scratch engine: installed `/Applications/theuth.app/Contents/MacOS/t --data-dir /tmp/167/eng --headless` (block-style config, `rpc.listen 127.0.0.1:17467`, every plugin off except `meeting`; `schedule` off), detached with `setsid`. "Before" ran with main's `shared.tsx`/`Meetings.tsx`/`Double.tsx` checked out in the working tree, "after" with this branch. Headless Chromium and WebKit, 1280×800 and 900×660. Driver `/tmp/167/proof/settings.mjs`, geometry `/tmp/167/proof/settings-results.json`, PNGs `/tmp/167/proof/settings-{before,after}-{chromium,webkit}-{1280x800,900x660}-{meetings-detection,meetings-livetools,meetings-echo,chat-top,loop-title}.png`.
+Worktree UI (vite on 1467) against a scratch engine: installed `/Applications/theuth.app/Contents/MacOS/t --data-dir /tmp/167/eng --headless` (block-style config, `rpc.listen 127.0.0.1:17467`, every plugin off except `meeting` and `double`; `schedule` off), detached with `setsid`. The Double page loaded with no credentials (empty classes, KPIs zero). "Before" ran with main's `shared.tsx`/`Meetings.tsx`/`Double.tsx` checked out in the working tree, "after" with `89fd8cc2`. Headless Chromium and WebKit, 1280×800 and 900×660. Driver `/tmp/167/proof/settings.mjs`, geometry `/tmp/167/proof/settings-results.json`, PNGs `/tmp/167/proof/settings-{before,after}-{chromium,webkit}-{1280x800,900x660}-{meetings-detection,meetings-livetools,meetings-echo,chat-top,double-train,double-capture}.png` (48). R0's shots (every `stack` a column) are kept in `/tmp/167/proof/r0/`.
 
 | row (all four browser × size runs identical) | before label | after label | after control |
 |---|---|---|---|
 | Meetings › Ignored apps | 0 × 666 | 594 × 70 | 594 × 258 |
 | Meetings › Allowed while a meeting runs | 0 × 582 | 594 × 70 | 594 × 118 |
 | Meetings › Echo in your microphone | 90 × 474 | 594 × 94 | 594 × 24 |
-| Chat › New sessions | 360 × 70 | 594 × 46 | 594 × 36 |
-| Loop › Title model | 255 × 46 | 594 × 46 | 594 × 36 |
+| Double › Train now | 0 × 666 | 594 × 70 | 594 × 36 |
+| Double › Capture | 124 × 166 | 594 × 70 | 594 × 18 |
+| Chat › New sessions | 360 × 70 | 360 × 70 | 210 × 36 |
+
+Chat top is pixel-identical before/after: `/tmp/167/proof/pixdiff.mjs` decodes both PNGs on a canvas in headless Chromium and compares every RGBA pixel — 0 differing pixels in all four browser × size pairs; the PNG SHA-1s are equal too.
 
 Engine and vite stopped (`/bin/kill` on the engine pid matched by `/tmp/167/eng`), `/tmp/167/eng` removed.
 
 ### Open items
 
-- Double › Capture has no screenshot: the scratch engine's `double` plugin was off (its page needs it). Geometry above is from the class widths. [INFERENCE]
+- None for 169. The Loop/Memory/Voice pickers were not reshot; they share `stack`'s byte-identical classes with Chat.
 
 ## Sky's live checks
 
