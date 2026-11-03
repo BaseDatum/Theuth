@@ -93,6 +93,9 @@ impl RecordingClock {
         Some(Gap {
             at_ms,
             dur_ms: dur.as_millis() as u64,
+            track: None,
+            reason: None,
+            retarget: None,
         })
     }
 
@@ -204,6 +207,8 @@ pub struct Live {
     pub last_head: Option<String>,
     /// 137 R1-D6: the endless view last rendered into the head; `None` in epochs mode.
     pub earlier: Option<crate::head::Earlier>,
+    /// 173: the capture tracks' health as the watchdogs last reported it.
+    pub capture: crate::CaptureStatus,
     /// `live.jsonl`, append-only.
     live_log: Option<File>,
     /// `briefs.jsonl`, append-only.
@@ -322,6 +327,7 @@ impl Recording {
                 speakers: Vec::new(),
                 last_head: None,
                 earlier: None,
+                capture: crate::CaptureStatus::default(),
                 live_log: Live::open_log(dir, crate::LIVE_LOG),
                 briefs_log: Live::open_log(dir, crate::BRIEFS_LOG),
             },
@@ -355,6 +361,7 @@ mod tests {
             speakers: Vec::new(),
             last_head: None,
             earlier: None,
+            capture: crate::CaptureStatus::default(),
             live_log: None,
             briefs_log: None,
         }

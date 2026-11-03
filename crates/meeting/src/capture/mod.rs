@@ -12,13 +12,66 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use rtrb::{Consumer, Producer, RingBuffer};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
-use crate::Degradation;
+use crate::{CaptureFault, Degradation, ProcessInfo, Track};
 
 pub mod encode;
 pub mod mic;
 pub mod system;
+pub mod watchdog;
+
+/// 173: what a capture thread's watchdog tells the actor (drained on its 1 s tick and at stop).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Report {
+    /// `track` was silence-padded over `start..end` (a manifest capture gap).
+    Gap {
+        /// Which track.
+        track: Track,
+        /// First silent moment.
+        start: Instant,
+        /// Audio back, or the meeting ended.
+        end: Instant,
+        /// Why.
+        reason: CaptureFault,
+        /// The pid the system tap moved to.
+        retarget: Option<u32>,
+    },
+    /// `track`'s user-facing health changed.
+    Health {
+        /// Which track.
+        track: Track,
+        /// The new health.
+        health: watchdog::Health,
+    },
+    /// Something degraded for the rest of the meeting.
+    Degraded(Degradation),
+}
+
+/// The capture threads' end of the report channel.
+pub type Reports = mpsc::UnboundedSender<Report>;
+
+/// The watchdog's notes for `track` → reports.
+fn forward(track: Track, wd: &mut watchdog::Watchdog, reports: &Reports) {
+    for n in wd.take_notes() {
+        let r = match n {
+            watchdog::Note::Gap {
+                start,
+                end,
+                reason,
+                retarget,
+            } => Report::Gap {
+                track,
+                start,
+                end,
+                reason,
+                retarget,
+            },
+            watchdog::Note::Health(health) => Report::Health { track, health },
+        };
+        let _ = reports.send(r);
+    }
+}
 
 /// One ring entry: receipt time and 48 kHz mono samples.
 pub type Sample = (Instant, Vec<f32>);
@@ -88,13 +141,22 @@ struct Devices {
     stt: Option<(Consumer<Sample>, Consumer<Sample>)>,
     /// 07: the live diariser's system consumer; taken once.
     diar: Option<Consumer<Sample>>,
+    /// 173: the capture threads' watchdog reports.
+    reports: mpsc::UnboundedReceiver<Report>,
 }
 
 impl Capture {
-    /// Open the files, the tap on `pid` and the mic; blocking (TCC prompts
+    /// Open the files, the tap on `process` and the mic; blocking (TCC prompts
     /// included). Returns what degraded on the way (`MicNoAec`). On `Err` the
-    /// files that were opened are finalized and left in `dir`.
-    pub fn start(pid: u32, dir: &Path, title: &str) -> anyhow::Result<(Capture, Vec<Degradation>)> {
+    /// files that were opened are finalized and left in `dir`. The capture
+    /// threads log under a `meeting` span.
+    pub fn start(
+        process: &ProcessInfo,
+        meeting: crate::MeetingId,
+        dir: &Path,
+        title: &str,
+    ) -> anyhow::Result<(Capture, Vec<Degradation>)> {
+        let span = tracing::info_span!("capture", %meeting);
         let stop = Arc::new(AtomicBool::new(false));
         // Paused until every device is open: the file timeline then starts
         // with the actor's recording clock, not with the first device up.
@@ -113,6 +175,7 @@ impl Capture {
             paused.clone(),
             level_tx,
         )?;
+        let (reports_tx, reports) = mpsc::unbounded_channel();
         let mut cap = Capture {
             stop,
             paused,
@@ -121,10 +184,18 @@ impl Capture {
                 threads: vec![encoder],
                 stt: Some((mic_stt, sys_stt)),
                 diar: Some(sys_diar),
+                reports,
             }),
             level,
         };
-        let system = match system::spawn(pid, sys_feed, cap.stop.clone()) {
+        let system = match system::spawn(
+            process.pid,
+            process.bundle_id.clone(),
+            sys_feed,
+            cap.stop.clone(),
+            reports_tx.clone(),
+            span.clone(),
+        ) {
             Ok(t) => t,
             Err(e) => {
                 cap.stop();
@@ -136,7 +207,7 @@ impl Capture {
             .expect("unshared")
             .threads
             .insert(0, system);
-        let (mic, degraded) = match mic::open(mic_feed, cap.stop.clone()) {
+        let (mic, degraded) = match mic::open(mic_feed, cap.stop.clone(), reports_tx, span) {
             Ok(m) => m,
             Err(e) => {
                 cap.stop();
@@ -156,6 +227,16 @@ impl Capture {
     /// Resume pushing and draining.
     pub fn resume(&self) {
         self.paused.store(false, Ordering::SeqCst);
+    }
+
+    /// 173: the next pending watchdog report, if any.
+    pub fn try_report(&self) -> Option<Report> {
+        self.devices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reports
+            .try_recv()
+            .ok()
     }
 
     /// The two STT ring consumers `(mic, system)`, once; `None` after.
@@ -187,12 +268,14 @@ impl Capture {
     }
 
     /// Close the devices and join the threads; the encoder writes the EOS pages.
-    pub fn stop(self) {
+    /// The reports not yet drained (the episodes the stop closed among them).
+    pub fn stop(self) -> Vec<Report> {
         self.stop.store(true, Ordering::SeqCst);
         let mut d = self.devices.into_inner().unwrap_or_else(|e| e.into_inner());
         drop(d.mic.take());
         for t in d.threads.drain(..) {
             let _ = t.join();
         }
+        std::iter::from_fn(|| d.reports.try_recv().ok()).collect()
     }
 }

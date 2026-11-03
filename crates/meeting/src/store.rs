@@ -26,7 +26,9 @@ pub const MANIFEST: &str = "manifest.json";
 /// Sample rate of the three tracks.
 pub const TRACK_RATE: u32 = 24_000;
 
-/// A pause: `dur_ms` of wall time missing from the recording clock at `at_ms`.
+/// A pause: `dur_ms` of wall time missing from the recording clock at `at_ms`. 173: with
+/// `track` set, a capture gap instead — the clock ran but `track` was silence-padded from
+/// `at_ms` for `dur_ms` (the watchdog's episode, `reason`; `retarget`: the pid the tap moved to).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Gap {
@@ -34,6 +36,18 @@ pub struct Gap {
     pub at_ms: u64,
     /// How long it lasted.
     pub dur_ms: u64,
+    /// 173: the silence-padded track of a capture gap; `None` for a pause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub track: Option<Stem>,
+    /// 173: why the capture gap happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub reason: Option<crate::CaptureFault>,
+    /// 173: the same-bundle pid the system tap moved to during the gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub retarget: Option<u32>,
 }
 
 /// Which file a [`TrackFile`] is.
@@ -590,6 +604,9 @@ mod tests {
         m.gaps.push(Gap {
             at_ms: 20_000,
             dur_ms: 5_000,
+            track: None,
+            reason: None,
+            retarget: None,
         });
         m.degraded.push(Degradation::MicNoAec);
         m.state = MeetingState::Done;

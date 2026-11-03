@@ -8,9 +8,17 @@
 //! baseline → recreate (same device) → stop output → start → `device <name>` →
 //! back to default. Never changes a device, rate or volume.
 //! `cargo run -p meeting --example tap_repro -- [virtual output name, e.g. ZoomAudioDevice]`.
+//!
+//! `tap_repro watchdog [secs]`: the 173 watchdog end to end — the real
+//! `capture::system::spawn` loop on a child that keeps its output running but
+//! renders exact zeros (`IsRunningOutput` true: the incident's signature), so
+//! it reopens, warns, falls back to the global tap; at `secs` − 15 s the child
+//! unmutes (−80 dBFS) and the episode closes. Prints every watchdog report.
 
 use std::io::{BufRead, Write};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -18,13 +26,16 @@ use flexaudio::{OutputFormat, SourceKind, StreamConfig};
 
 /// −80 dBFS: below any speaker or headset noise floor.
 const AMPLITUDE: f32 = 1e-4;
+/// The child renders exact zeros while set (stdin `mute` / `unmute`).
+static MUTED: AtomicBool = AtomicBool::new(false);
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("child") {
-        return child();
+    match args.first().map(String::as_str) {
+        Some("child") => child(),
+        Some("watchdog") => watchdog(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100)),
+        _ => parent(args.first().cloned()),
     }
-    parent(args.first().cloned());
 }
 
 /// Play the tone on the default output; stdin lines `recreate`, `stop`,
@@ -52,7 +63,13 @@ fn child() {
                 &cfg.config(),
                 move |data: &mut [f32], _| {
                     for frame in data.chunks_mut(ch) {
-                        frame.fill(AMPLITUDE * phase.sin());
+                        // Exact 0.0 (not `0.0 * sin`, which is −0.0 half the time).
+                        let s = if MUTED.load(Ordering::Relaxed) {
+                            0.0
+                        } else {
+                            AMPLITUDE * phase.sin()
+                        };
+                        frame.fill(s);
                         phase = (phase + step) % std::f32::consts::TAU;
                     }
                 },
@@ -85,9 +102,75 @@ fn child() {
                 device = arg.to_owned();
                 stream = open(&device).map_err(|e| eprintln!("child: {e}")).ok();
             }
+            "mute" => MUTED.store(true, Ordering::Relaxed),
+            "unmute" => MUTED.store(false, Ordering::Relaxed),
             _ => return,
         }
     }
+}
+
+/// See the module doc: the real system capture loop against a muted-but-running child.
+fn watchdog(secs: u64) {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("meeting=info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+    let exe = std::env::current_exe().expect("current_exe");
+    let mut child = Command::new(exe)
+        .arg("child")
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn child");
+    let pid = child.id();
+    let mut to_child = child.stdin.take().expect("child stdin");
+    let _ = writeln!(to_child, "mute");
+    std::thread::sleep(Duration::from_millis(1500));
+    let stop = Arc::new(AtomicBool::new(false));
+    let paused = Arc::new(AtomicBool::new(false));
+    let (feed, mut enc, _stt) = meeting::capture::rings(&paused);
+    let (reports, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let thread = match meeting::capture::system::spawn(
+        pid,
+        None,
+        feed,
+        stop.clone(),
+        reports,
+        tracing::Span::none(),
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("tap on child pid {pid}: {e:#}");
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+    };
+    println!("watchdog on muted child pid {pid} for {secs}s");
+    let t0 = Instant::now();
+    let unmute = Duration::from_secs(secs.saturating_sub(15));
+    let mut unmuted = false;
+    while t0.elapsed() < Duration::from_secs(secs) {
+        while enc.pop().is_ok() {}
+        while let Ok(r) = rx.try_recv() {
+            println!("{:6.2}s report {r:?}", t0.elapsed().as_secs_f32());
+        }
+        if !unmuted && t0.elapsed() >= unmute {
+            unmuted = true;
+            println!("{:6.2}s >>> child: unmute", t0.elapsed().as_secs_f32());
+            let _ = writeln!(to_child, "unmute");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    stop.store(true, Ordering::SeqCst);
+    let _ = thread.join();
+    while let Ok(r) = rx.try_recv() {
+        println!("{:6.2}s report {r:?}", t0.elapsed().as_secs_f32());
+    }
+    let _ = writeln!(to_child, "quit");
+    let _ = child.wait();
 }
 
 fn parent(virtual_out: Option<String>) {
@@ -114,6 +197,7 @@ fn parent(virtual_out: Option<String>) {
         Err(e) => {
             println!("tap on child pid {pid}: open failed: {e}");
             let _ = child.kill();
+            let _ = child.wait();
             return;
         }
     };

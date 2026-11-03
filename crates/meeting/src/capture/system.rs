@@ -10,50 +10,81 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread::JoinHandle;
 
-use super::Feed;
-use crate::ProcessInfo;
+use super::{Feed, Report, Reports, watchdog};
+use crate::{CaptureFault, Degradation, Permission, ProcessInfo, Track};
+
+/// What the system thread taps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    /// `ProcessLoopback` on this pid.
+    Process(u32),
+    /// `SystemLoopback` minus our own process ([`crate::SYSTEM_AUDIO`], or the fallback).
+    System,
+}
+
+impl Mode {
+    fn pid(self) -> u32 {
+        match self {
+            Mode::Process(pid) => pid,
+            Mode::System => crate::SYSTEM_AUDIO,
+        }
+    }
+
+    fn open(self) -> flexaudio::Result<flexaudio::Stream> {
+        use flexaudio::{OutputFormat, SourceKind, StreamConfig};
+        let output = OutputFormat {
+            sample_rate: super::RATE,
+            channels: 1,
+        };
+        let cfg = match self {
+            Mode::System => StreamConfig {
+                kind: SourceKind::SystemLoopback,
+                exclude_self: true,
+                output,
+                ..Default::default()
+            },
+            Mode::Process(pid) => StreamConfig {
+                kind: SourceKind::ProcessLoopback,
+                target_pid: Some(pid),
+                output,
+                ..Default::default()
+            },
+        };
+        flexaudio::open(cfg).and_then(|mut s| s.start().map(|()| s))
+    }
+}
 
 /// Start the tap on `pid` — or, for [`crate::SYSTEM_AUDIO`] (pid 0), a global
 /// tap on the default output device minus our own process; returns once the
 /// stream runs (the TCC prompt fires here on first use) or with the open
-/// error. The thread pumps chunks into the rings until stopped. If the
-/// process goes away the thread logs and exits; the encoder keeps writing
-/// silence for the track (01 §4.1).
+/// error. The thread pumps chunks into the rings until stopped, under the 173
+/// watchdog ([`watchdog`]): every flexaudio event is logged, a stall or exact
+/// zeros from a playing source reopen the tap (retargeted to a playing pid of
+/// `bundle`), three failed reopens fall back to the global tap, and every
+/// episode goes to `reports`. It never exits before `stop`.
 // ponytail: the global tap follows the *default* output device; an app routed to a non-default
 // headset is silent to it. Per-app pick remains the escape hatch; `device_id` would be the upgrade.
-pub fn spawn(pid: u32, mut feed: Feed, stop: Arc<AtomicBool>) -> anyhow::Result<JoinHandle<()>> {
-    use std::sync::atomic::Ordering;
+pub fn spawn(
+    pid: u32,
+    bundle: Option<String>,
+    mut feed: Feed,
+    stop: Arc<AtomicBool>,
+    reports: Reports,
+    span: tracing::Span,
+) -> anyhow::Result<JoinHandle<()>> {
     use std::sync::mpsc;
-    use std::time::Duration;
-
-    use flexaudio::{Event, OutputFormat, SourceKind, StreamConfig};
 
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
     let thread = std::thread::Builder::new()
         .name("meeting-system".into())
         .spawn(move || {
-            let cfg = if pid == crate::SYSTEM_AUDIO {
-                StreamConfig {
-                    kind: SourceKind::SystemLoopback,
-                    exclude_self: true,
-                    output: OutputFormat {
-                        sample_rate: super::RATE,
-                        channels: 1,
-                    },
-                    ..Default::default()
-                }
+            let _span = span.entered();
+            let mode = if pid == crate::SYSTEM_AUDIO {
+                Mode::System
             } else {
-                StreamConfig {
-                    kind: SourceKind::ProcessLoopback,
-                    target_pid: Some(pid),
-                    output: OutputFormat {
-                        sample_rate: super::RATE,
-                        channels: 1,
-                    },
-                    ..Default::default()
-                }
+                Mode::Process(pid)
             };
-            let mut stream = match flexaudio::open(cfg).and_then(|mut s| s.start().map(|()| s)) {
+            let stream = match mode.open() {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e.to_string()));
@@ -61,37 +92,8 @@ pub fn spawn(pid: u32, mut feed: Feed, stop: Arc<AtomicBool>) -> anyhow::Result<
                 }
             };
             let _ = ready_tx.send(Ok(()));
-            while !stop.load(Ordering::SeqCst) {
-                while let Some(ev) = stream.poll_event() {
-                    match ev {
-                        Event::PermissionDenied { .. }
-                        | Event::DeviceLost
-                        | Event::Error(_)
-                        | Event::TerminalError { .. } => {
-                            tracing::warn!(pid, "process tap stopped: {ev:?}");
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-                let Some(chunk) = stream.poll_chunk() else {
-                    std::thread::sleep(Duration::from_millis(5));
-                    continue;
-                };
-                // Mono was asked for; downmix defensively if a frame is wider.
-                let ch = (chunk.data.len() / chunk.frames.max(1)).max(1);
-                let pcm = if ch == 1 {
-                    chunk.data
-                } else {
-                    chunk
-                        .data
-                        .chunks_exact(ch)
-                        .map(|f| f.iter().sum::<f32>() / ch as f32)
-                        .collect()
-                };
-                feed.push(pcm);
-            }
-            // `stream` drops here: flexaudio joins its threads and closes the tap.
+            run(stream, mode, bundle, &mut feed, &stop, &reports);
+            // `stream` drops in `run`: flexaudio joins its threads and closes the tap.
         })?;
     match ready_rx.recv() {
         Ok(Ok(())) => Ok(thread),
@@ -103,6 +105,226 @@ pub fn spawn(pid: u32, mut feed: Feed, stop: Arc<AtomicBool>) -> anyhow::Result<
             let _ = thread.join();
             anyhow::bail!("process tap on pid {pid}: capture thread exited before starting")
         }
+    }
+}
+
+/// The capture loop: events → log + watchdog, chunks → rings + watchdog, a watchdog tick
+/// every 250 ms, the health line every minute.
+fn run(
+    stream: flexaudio::Stream,
+    mut mode: Mode,
+    bundle: Option<String>,
+    feed: &mut Feed,
+    stop: &AtomicBool,
+    reports: &Reports,
+) {
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    use flexaudio::Event;
+    use watchdog::{Activity, Signal};
+
+    const TICK: Duration = Duration::from_millis(250);
+    const LINE: Duration = Duration::from_secs(60);
+    /// The process list is re-read at most this often.
+    const ACTIVITY_TTL: Duration = Duration::from_secs(1);
+
+    let mut stream = Some(stream);
+    let start = Instant::now();
+    let mut wd = watchdog::Watchdog::new(
+        start,
+        watchdog::Rules {
+            zeros: true,
+            fallback: mode != Mode::System,
+        },
+    );
+    let mut meter = watchdog::Meter::default();
+    let (mut last_tick, mut last_line) = (start, start);
+    let mut cached: Option<(Instant, Activity)> = None;
+    while !stop.load(Ordering::SeqCst) {
+        let now = Instant::now();
+        let mut gone = false;
+        while let Some(ev) = stream.as_mut().and_then(|s| s.poll_event()) {
+            let pid = mode.pid();
+            let signal = match &ev {
+                Event::ChunkDropped { count } => {
+                    meter.dropped += count;
+                    None
+                }
+                Event::Clipped => {
+                    meter.clipped += 1;
+                    None
+                }
+                Event::StreamStalled | Event::RecoverableError { .. } => Some(Signal::Stalled),
+                Event::StreamRecovered => Some(Signal::Recovered),
+                Event::SilenceWhileSourceActive { .. } => Some(Signal::SilentWhileActive),
+                Event::DeviceLost | Event::Error(_) => Some(Signal::Lost),
+                Event::PermissionDenied { .. } => Some(Signal::PermissionDenied),
+                Event::TerminalError { .. } => Some(Signal::Terminal),
+                _ => None,
+            };
+            if !matches!(ev, Event::ChunkDropped { .. } | Event::Clipped) {
+                tracing::warn!(pid, ?mode, "meeting capture: system audio event: {ev:?}");
+            }
+            if let Some(s) = signal {
+                gone |= matches!(
+                    s,
+                    Signal::Lost | Signal::PermissionDenied | Signal::Terminal
+                );
+                if s == Signal::PermissionDenied {
+                    let _ = reports.send(Report::Degraded(Degradation::PermissionDenied(
+                        Permission::AudioCapture,
+                    )));
+                }
+                wd.signal(now, s);
+            }
+        }
+        if gone {
+            drop(stream.take());
+        }
+        match stream.as_mut().and_then(|s| s.poll_chunk()) {
+            Some(chunk) => {
+                // Mono was asked for; downmix defensively if a frame is wider.
+                let ch = (chunk.data.len() / chunk.frames.max(1)).max(1);
+                let pcm = if ch == 1 {
+                    chunk.data
+                } else {
+                    chunk
+                        .data
+                        .chunks_exact(ch)
+                        .map(|f| f.iter().sum::<f32>() / ch as f32)
+                        .collect()
+                };
+                let silent = meter.add(&pcm);
+                wd.chunk(now, silent);
+                feed.push(pcm);
+            }
+            None => std::thread::sleep(Duration::from_millis(5)),
+        }
+        if now.duration_since(last_tick) < TICK {
+            continue;
+        }
+        last_tick = now;
+        let mut activity = || {
+            if let Some((at, a)) = cached
+                && now.duration_since(at) < ACTIVITY_TTL
+            {
+                return a;
+            }
+            let a = match (mode, processes()) {
+                (_, Err(_)) => Activity::Unknown,
+                (Mode::System, Ok(ps)) => watchdog::activity(None, None, &ps),
+                (Mode::Process(pid), Ok(ps)) => {
+                    watchdog::activity(Some(pid), bundle.as_deref(), &ps)
+                }
+            };
+            cached = Some((now, a));
+            a
+        };
+        let action = wd.tick(now, &mut activity);
+        if let Some(action) = action {
+            drop(stream.take());
+            let mut retarget = None;
+            match (action, mode) {
+                (watchdog::Action::Fallback, Mode::Process(pid)) => {
+                    let reason = wd.fell_back().unwrap_or(CaptureFault::Silent);
+                    tracing::warn!(
+                        pid,
+                        ?reason,
+                        "meeting capture: the app tap stayed quiet through {} reopens while the app \
+                         played; falling back to all system audio",
+                        watchdog::FALLBACK_AFTER
+                    );
+                    mode = Mode::System;
+                    let _ =
+                        reports.send(Report::Degraded(Degradation::SystemAudioFallback(reason)));
+                }
+                (_, Mode::Process(pid)) => {
+                    let to = processes()
+                        .map(|ps| watchdog::retarget(pid, bundle.as_deref(), &ps))
+                        .unwrap_or(pid);
+                    if to != pid {
+                        tracing::warn!(
+                            pid,
+                            to,
+                            ?bundle,
+                            "meeting capture: the app plays from another process; retargeting the tap"
+                        );
+                        mode = Mode::Process(to);
+                        retarget = Some(to);
+                    }
+                }
+                (_, Mode::System) => {}
+            }
+            cached = None;
+            match mode.open() {
+                Ok(s) => {
+                    tracing::warn!(
+                        pid = mode.pid(),
+                        ?mode,
+                        reopens = wd.reopens,
+                        "meeting capture: system audio reopened"
+                    );
+                    stream = Some(s);
+                    wd.reopened(Instant::now(), true, retarget);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        pid = mode.pid(),
+                        ?mode,
+                        "meeting capture: system audio reopen failed: {e}"
+                    );
+                    wd.reopened(Instant::now(), false, retarget);
+                }
+            }
+        }
+        super::forward(Track::System, &mut wd, reports);
+        if now.duration_since(last_line) >= LINE {
+            last_line = now;
+            health_line(
+                "system",
+                &mode_label(mode),
+                &meter,
+                wd.reopens,
+                wd.troubled(),
+            );
+            meter = watchdog::Meter::default();
+        }
+    }
+    drop(stream);
+    wd.finish(Instant::now());
+    super::forward(Track::System, &mut wd, reports);
+}
+
+fn mode_label(mode: Mode) -> String {
+    match mode {
+        Mode::Process(pid) => format!("process {pid}"),
+        Mode::System => "system".into(),
+    }
+}
+
+/// 173 §4: one line per capture track per minute, for forensics; a warn line too when
+/// flexaudio dropped or clipped chunks in that minute (its per-event noise aggregated).
+pub(super) fn health_line(
+    track: &str,
+    target: &str,
+    m: &watchdog::Meter,
+    reopens: u32,
+    troubled: bool,
+) {
+    tracing::info!(
+        "meeting capture health: {track} chunks={} frames={} zero={:.1}% peak={:.1}dBFS target={target} reopens={reopens} episode={troubled}",
+        m.chunks,
+        m.frames,
+        m.zero_pct(),
+        m.peak_dbfs(),
+    );
+    if m.dropped > 0 || m.clipped > 0 {
+        tracing::warn!(
+            "meeting capture: {track} lost {} chunks (ChunkDropped) and clipped {} in the last minute",
+            m.dropped,
+            m.clipped,
+        );
     }
 }
 
