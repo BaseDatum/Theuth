@@ -1126,6 +1126,8 @@ export interface Api {
   signal_unlink(): Promise<null>
   slack_allow(user: string): Promise<null>
   slack_allow_channel(channel: string): Promise<null>
+  /** `slack::MANIFEST` verbatim: the Slack app manifest this engine expects; answers whether or not Slack is configured (170 D1). */
+  slack_manifest(): Promise<string>
   slack_remove_allowed(user: string): Promise<null>
   slack_remove_channel(channel: string): Promise<null>
   slack_status(): Promise<SlackStatus>
@@ -1675,6 +1677,7 @@ export const METHODS = [
   'signal_unlink',
   'slack_allow',
   'slack_allow_channel',
+  'slack_manifest',
   'slack_remove_allowed',
   'slack_remove_channel',
   'slack_status',
