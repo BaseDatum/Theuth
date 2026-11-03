@@ -700,7 +700,7 @@ pub enum Command {
     Logout(String),
     /// `add_provider`.
     AddProvider {
-        /// Gateway name.
+        /// Custom provider name.
         name: String,
         /// OpenAI-compatible base URL.
         base_url: String,
@@ -709,6 +709,8 @@ pub enum Command {
     },
     /// `remove_provider`.
     RemoveProvider(String),
+    /// `refresh_provider_models` (162 D8).
+    RefreshProvider(String),
     /// `list_providers`.
     ListProviders,
     /// `link_status`.
@@ -1838,8 +1840,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/quit", "", "exit"),
     (
         "/provider",
-        "[add|rm <name>]",
-        "providers: built-in opencode (Zen) / openrouter keyed via /secrets add; add prompts for an OpenAI-compatible gateway's name, url, key",
+        "[add [name [url [key]]] | refresh <name> | rm <name>]",
+        "providers: built-in opencode (Zen) / openrouter keyed via /secrets add; add prompts for a custom provider's name, url, key; refresh lists a provider's models again",
     ),
     (
         "/secrets",
@@ -5525,7 +5527,7 @@ impl Model {
                 }
             }
             UiEvent::Providers(list) => {
-                // 85 §0.9: the built-ins come first; a gateway list may be empty.
+                // 85 §0.9: the built-ins come first; there may be no custom provider.
                 for p in &list {
                     self.entries.push(Entry::Info(if p.builtin {
                         format!(
@@ -8506,7 +8508,7 @@ impl Model {
         }
     }
 
-    /// `/provider` list | `add` [name [url [key]]] | `rm <name>`.
+    /// `/provider` list | `add` [name [url [key]]] | `refresh <name>` | `rm <name>`.
     fn provider_cmd(&mut self, arg: &str, tx: &UnboundedSender<Command>) {
         let (sub, rest) = arg
             .split_once(' ')
@@ -8554,9 +8556,12 @@ impl Model {
                     },
                 );
             }
+            ("refresh", name) if !name.is_empty() => {
+                send(tx, Command::RefreshProvider(name.to_owned()))
+            }
             ("rm", name) if !name.is_empty() => send(tx, Command::RemoveProvider(name.to_owned())),
             _ => self.entries.push(Entry::Error(
-                "usage: /provider [add [name [url [key]]] | rm <name>]".into(),
+                "usage: /provider [add [name [url [key]]] | refresh <name> | rm <name>]".into(),
             )),
         }
     }
@@ -15014,6 +15019,14 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(Command::ListProviders)));
         m.submit("/provider rm rwx", &tx);
         assert!(matches!(rx.try_recv(), Ok(Command::RemoveProvider(n)) if n == "rwx"));
+        m.submit("/provider refresh rwx", &tx);
+        assert!(matches!(rx.try_recv(), Ok(Command::RefreshProvider(n)) if n == "rwx"));
+        m.submit("/provider refresh", &tx);
+        assert!(rx.try_recv().is_err(), "refresh needs a name");
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Error(e)) if e == "usage: /provider [add [name [url [key]]] | refresh <name> | rm <name>]"
+        ));
         m.submit("/provider add", &tx);
         m.cancel_prompt();
         assert!(m.prompt.is_none());

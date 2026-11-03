@@ -93,15 +93,15 @@ use crate::{
     GetVisionModel, Harvest, HistoryEntry, ListAcp, ListAgents, ListLogins, ListModels,
     ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills, LoadSession, LoadSkill,
     Loaded, Login, LoginFinished, LoginInfo, Logout, MarkDesk, ModelInfo, NewRootSession,
-    NewSession, PinSession, PinTitle, ProviderInfo, QueuedInput, ReadSession, Redo, Regenerate,
-    RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession,
-    ResetRuntime, ResolveModel, SearchRefresh, SearchSessionPage, SendInput, SessionActivity,
-    SessionContextBreakdown, SessionModel, SessionRead, SessionSummary, SetCompactStyle,
-    SetCompaction, SetDeskModel, SetEffort, SetEscalateModel, SetMaxSalvages, SetMaxToolRounds,
-    SetModel, SetStreamIdle, SetSubagentModel, SetSubagentTimeout, SetTalk, SetTitleModel,
-    SetToolset, SetVisionModel, ShowPrompt, SideCall, SideCallable, SideReply, SkillBody,
-    SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS, TALK_PARK_CAP_MS, TalkLive, TrimAssistant,
-    Undo, UseSkill, Withdraw, effort_of,
+    NewSession, PinSession, PinTitle, ProviderInfo, QueuedInput, ReadSession, Redo,
+    RefreshProviderModels, RefreshedModels, Regenerate, RemoveAcp, RemoveContext, RemoveProvider,
+    RemoveSkill, RemoveSkillRepo, RenameSession, ResetRuntime, ResolveModel, SearchRefresh,
+    SearchSessionPage, SendInput, SessionActivity, SessionContextBreakdown, SessionModel,
+    SessionRead, SessionSummary, SetCompactStyle, SetCompaction, SetDeskModel, SetEffort,
+    SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel,
+    SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt, SideCall,
+    SideCallable, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS,
+    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
 };
 use crate::{
     AdvisorConfig, DurableStore, GetPolishModel, ModelRole, ObservedState, Polish, PolishReply,
@@ -4373,7 +4373,7 @@ impl Agents {
                 let provider = r.provider.as_deref().unwrap_or_default();
                 if !(self.configured)(Catalog::adapter(provider)) {
                     return Err(format!(
-                        "provider `{provider}` is not configured; add a key, log in, or add a gateway first"
+                        "provider `{provider}` is not configured; add a key, log in, or add a custom provider first"
                     ));
                 }
                 Some(r)
@@ -8529,6 +8529,97 @@ impl Message<Logout> for Agents {
     }
 }
 
+/// genai's OpenRouter base URL, shown on its Connections row and listed by Refresh.
+const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/";
+
+impl Agents {
+    /// The Connections row of built-in or custom provider `name` (85 §0.9, 162 D6);
+    /// `None` for a name that is neither.
+    fn provider_info(&self, name: &str) -> Option<ProviderInfo> {
+        let models = self
+            .catalog
+            .providers()
+            .find(|p| p.id == name)
+            .map_or(0, |p| p.models.len() as u32);
+        let (base_url, builtin, configured) = match name {
+            "opencode" => (
+                crate::backend::ZEN_ENDPOINT.to_owned(),
+                true,
+                self.auth.opencode_key().is_some(),
+            ),
+            "openrouter" => (
+                OPENROUTER_ENDPOINT.to_owned(),
+                true,
+                self.auth.openrouter_key().is_some(),
+            ),
+            _ => (self.auth.gateway(name)?.base_url, false, true),
+        };
+        Some(ProviderInfo {
+            name: name.to_owned(),
+            base_url,
+            models,
+            builtin,
+            configured,
+            refreshable: configured,
+        })
+    }
+
+    /// 162 D3: ask `name`'s model-list endpoint again, merge the ids into
+    /// `models.json` (D4), and reload the catalog and costs' price table.
+    async fn refresh_provider_models(&mut self, name: &str) -> Result<RefreshedModels, String> {
+        let (kind, endpoint, key, builtin) = match name {
+            "opencode" => (
+                AdapterKind::OpenAI,
+                crate::backend::ZEN_ENDPOINT.to_owned(),
+                self.auth.opencode_key(),
+                true,
+            ),
+            "openrouter" => (
+                AdapterKind::OpenRouter,
+                OPENROUTER_ENDPOINT.to_owned(),
+                self.auth.openrouter_key(),
+                true,
+            ),
+            _ => match self.auth.gateway(name) {
+                Some(g) => (AdapterKind::OpenAI, g.base_url, Some(g.key), false),
+                None if self.catalog.providers().any(|p| p.id == name)
+                    || oauth::provider(name).is_some()
+                    || AdapterKind::from_lower_str(name).is_some() =>
+                {
+                    return Err(format!("{name}'s models come from the built-in catalog"));
+                }
+                None => return Err(format!("no provider {name}")),
+            },
+        };
+        let key = key
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| format!("{name} has no key; set it first"))?;
+        let ids = self
+            .client
+            .all_model_names(kind, (Endpoint::from_owned(endpoint), AuthData::Key(key)))
+            .await
+            .map_err(|e| format!("listing {name}'s models: {e}"))?;
+        let catalog = self.catalog.clone();
+        let listing = if builtin {
+            crate::providers::Listing::Builtin(&catalog)
+        } else {
+            crate::providers::Listing::Custom
+        };
+        let (added, removed) =
+            crate::providers::write_models(&self.rt.data_dir, name, &ids, listing)?;
+        self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
+        self.costs.set_catalog(self.catalog.clone());
+        let provider = self
+            .provider_info(name)
+            .ok_or_else(|| format!("no provider {name}"))?;
+        Ok(RefreshedModels {
+            provider,
+            added,
+            removed,
+        })
+    }
+}
+
 impl Message<ListProviders> for Agents {
     type Reply = Vec<ProviderInfo>;
 
@@ -8537,43 +8628,21 @@ impl Message<ListProviders> for Agents {
         _: ListProviders,
         _: &mut Context<Self, Self::Reply>,
     ) -> Vec<ProviderInfo> {
-        let count = |name: &str| {
-            self.catalog
-                .providers()
-                .find(|p| p.id == name)
-                .map_or(0, |p| p.models.len() as u32)
-        };
-        // 85 §0.9: the built-ins first, keyed by a secret rather than a gateway entry.
-        let mut out = vec![
-            ProviderInfo {
-                name: "opencode".into(),
-                base_url: crate::backend::ZEN_ENDPOINT.into(),
-                models: count("opencode"),
-                builtin: true,
-                configured: self.auth.opencode_key().is_some(),
-            },
-            ProviderInfo {
-                name: "openrouter".into(),
-                base_url: "https://openrouter.ai/api/v1/".into(),
-                models: count("openrouter"),
-                builtin: true,
-                configured: self.auth.openrouter_key().is_some(),
-            },
-        ];
-        let gws = self.auth.gateways.read().unwrap_or_else(|e| e.into_inner());
-        let mut gateways: Vec<ProviderInfo> = gws
-            .iter()
-            .map(|(name, g)| ProviderInfo {
-                models: count(name),
-                name: name.clone(),
-                base_url: g.base_url.clone(),
-                builtin: false,
-                configured: true,
-            })
+        let mut custom: Vec<String> = self
+            .auth
+            .gateways
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
             .collect();
-        gateways.sort_by(|a, b| a.name.cmp(&b.name));
-        out.extend(gateways);
-        out
+        custom.sort();
+        // 85 §0.9: the built-ins first, keyed by a secret rather than a providers.yaml row.
+        ["opencode".to_owned(), "openrouter".to_owned()]
+            .into_iter()
+            .chain(custom)
+            .filter_map(|name| self.provider_info(&name))
+            .collect()
     }
 }
 
@@ -8591,7 +8660,7 @@ impl Message<AddProvider> for Agents {
         if key.is_empty() {
             return Err("api key is empty".into());
         }
-        let models = match self
+        let listing = self
             .client
             .all_model_names(
                 AdapterKind::OpenAI,
@@ -8600,24 +8669,9 @@ impl Message<AddProvider> for Agents {
                     AuthData::Key(key.to_owned()),
                 ),
             )
-            .await
-        {
-            Ok(ids) => ids,
-            Err(e) => {
-                tracing::warn!(provider = %m.name, "listing models: {e}");
-                Vec::new()
-            }
-        };
+            .await;
         let secrets = crate::providers::secrets_actor()?;
-        crate::providers::save(
-            &self.rt.data_dir,
-            &secrets,
-            &m.name,
-            &base_url,
-            key,
-            &models,
-        )
-        .await?;
+        crate::providers::save(&self.rt.data_dir, &secrets, &m.name, &base_url, key).await?;
         self.auth
             .gateways
             .write()
@@ -8625,19 +8679,37 @@ impl Message<AddProvider> for Agents {
             .insert(
                 m.name.clone(),
                 crate::providers::Gateway {
-                    base_url: base_url.clone(),
+                    base_url,
                     key: key.to_owned(),
                 },
             );
+        // 162 D4: the same writer as Refresh; a failed listing keeps the existing list.
+        if let Err(e) = listing.map_err(|e| e.to_string()).and_then(|ids| {
+            crate::providers::write_models(
+                &self.rt.data_dir,
+                &m.name,
+                &ids,
+                crate::providers::Listing::Custom,
+            )
+        }) {
+            tracing::warn!(provider = %m.name, "listing models: {e}; keeping the existing list");
+        }
         self.catalog = Arc::new(Catalog::load(&self.rt.data_dir));
         self.costs.set_catalog(self.catalog.clone());
-        Ok(ProviderInfo {
-            name: m.name,
-            base_url,
-            models: models.len() as u32,
-            builtin: false,
-            configured: true,
-        })
+        self.provider_info(&m.name)
+            .ok_or_else(|| format!("no provider {}", m.name))
+    }
+}
+
+impl Message<RefreshProviderModels> for Agents {
+    type Reply = Result<RefreshedModels, String>;
+
+    async fn handle(
+        &mut self,
+        m: RefreshProviderModels,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<RefreshedModels, String> {
+        self.refresh_provider_models(&m.name).await
     }
 }
 
@@ -9110,9 +9182,15 @@ impl Auth {
         self.key(ns).is_none() && oauth::provider(ns).is_some() && self.oauth.load(ns).is_some()
     }
 
-    /// OpenAI-compatible gateway for user-facing provider id `ns`.
+    /// The custom provider (OpenAI-compatible gateway) for user-facing provider id `ns`.
+    /// Its key is read from the vault on every call (162 D5); the copy taken at start
+    /// or add is used only when the vault has none.
     pub(crate) fn gateway(&self, ns: &str) -> Option<crate::providers::Gateway> {
-        self.gateways.read().ok()?.get(ns).cloned()
+        let mut g = self.gateways.read().ok()?.get(ns).cloned()?;
+        if let Some(key) = self.key(ns).filter(|k| !k.is_empty()) {
+            g.key = key;
+        }
+        Some(g)
     }
 }
 
@@ -15631,5 +15709,114 @@ pub(crate) mod tests {
             a.ledger.activity(p).is_some(),
             "the result is pending input on the parent now"
         );
+    }
+
+    /// 162 D3/D5/D6: Refresh lists a custom provider with the key now in the
+    /// vault (rotated after start, so not the cached copy), merges the ids, and
+    /// reloads the catalog; a failed listing and the name errors change nothing.
+    #[tokio::test]
+    async fn refresh_provider_models_lists_with_the_live_key() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        let vault = Arc::new(
+            secrets::Vault::open(&dir, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        vault.set("rwx", "sk-new", None, "test").await.unwrap();
+        a.auth.vault = Some(vault.clone());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .and(header("authorization", "Bearer sk-new"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "object": "list",
+                "data": [{ "id": "m2", "object": "model" }, { "id": "m1", "object": "model" }]
+            })))
+            .mount(&server)
+            .await;
+        let base_url = format!("{}/v1/", server.uri());
+        a.auth.gateways.write().unwrap().insert(
+            "rwx".into(),
+            crate::providers::Gateway {
+                base_url: base_url.clone(),
+                key: "sk-old".into(),
+            },
+        );
+
+        let r = a.refresh_provider_models("rwx").await.unwrap();
+        assert_eq!(r.added, ["m1", "m2"]);
+        assert!(r.removed.is_empty());
+        let p = &r.provider;
+        assert_eq!(
+            (p.name.as_str(), p.base_url.as_str(), p.models),
+            ("rwx", base_url.as_str(), 2)
+        );
+        assert!(!p.builtin && p.configured && p.refreshable);
+        assert!(a.catalog.get("rwx/m1").is_some(), "catalog reloaded");
+
+        let r = a.refresh_provider_models("rwx").await.unwrap();
+        assert!(r.added.is_empty() && r.removed.is_empty());
+        assert_eq!(r.provider.models, 2);
+
+        // The server refuses this key: an error, and models.json stays as it was.
+        vault.set("rwx", "sk-bad", None, "test").await.unwrap();
+        let before = std::fs::read(dir.join("models.json")).unwrap();
+        let e = a.refresh_provider_models("rwx").await.unwrap_err();
+        assert!(e.starts_with("listing rwx's models: "), "{e}");
+        assert_eq!(std::fs::read(dir.join("models.json")).unwrap(), before);
+        assert_eq!(
+            a.catalog.get("rwx/m2").map(|(_, m)| m.id.as_str()),
+            Some("m2")
+        );
+
+        assert_eq!(
+            a.refresh_provider_models("anthropic").await.unwrap_err(),
+            "anthropic's models come from the built-in catalog"
+        );
+        assert_eq!(
+            a.refresh_provider_models("nope").await.unwrap_err(),
+            "no provider nope"
+        );
+        a.auth.gateways.write().unwrap().insert(
+            "bare".into(),
+            crate::providers::Gateway {
+                base_url,
+                key: String::new(),
+            },
+        );
+        assert_eq!(
+            a.refresh_provider_models("bare").await.unwrap_err(),
+            "bare has no key; set it first"
+        );
+        vault
+            .set("openrouter", "sk-or", None, "test")
+            .await
+            .unwrap();
+        let or = a.provider_info("openrouter").unwrap();
+        assert!(or.builtin && or.configured && or.refreshable);
+    }
+
+    /// 162 D7: the one line every frontend prints after a refresh.
+    #[test]
+    fn refreshed_models_line() {
+        let mut r = RefreshedModels {
+            provider: ProviderInfo {
+                name: "rwx".into(),
+                base_url: "https://x/v1/".into(),
+                models: 14,
+                builtin: false,
+                configured: true,
+                refreshable: true,
+            },
+            added: vec!["a".into(), "b".into()],
+            removed: vec!["c".into()],
+        };
+        assert_eq!(r.line(), "rwx: 14 models (+2, -1)");
+        r.added.clear();
+        r.removed.clear();
+        assert_eq!(r.line(), "rwx: 14 models, no change");
     }
 }
