@@ -51,6 +51,7 @@ pub async fn steer(rt: &Runtime, name: &str, engine: &str, on: bool) -> u32 {
                     text: text.to_owned(),
                     files: Vec::new(),
                     delivery: agent::Delivery::Steer,
+                    channel: None,
                 })
                 .await;
             match r {

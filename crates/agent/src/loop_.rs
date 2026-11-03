@@ -138,6 +138,8 @@ pub struct UserInput {
     pub text: String,
     /// Image files to attach (17 §2); one `Binary` part each.
     pub files: Vec<PathBuf>,
+    /// 172: the channel that delivered this input (`SendInput::channel`).
+    pub channel: Option<crate::ChannelOrigin>,
     /// The supervisor's admission (47 §4.3); acknowledged with
     /// [`InputConsumed`] once persisted. `None` only for inputs that bypass
     /// `Agents` routing, which can never open a continuation.
@@ -155,6 +157,9 @@ pub struct UserInput {
 pub struct Input {
     /// User text.
     pub text: String,
+    /// 172: stored as the row's `messages.channel`; echoed on
+    /// `TurnStarted`/`InputQueued`. `None` for everything but a channel input.
+    pub channel: Option<crate::ChannelOrigin>,
     /// 137 R1-D1: text blocks persisted as their own parts before `text`
     /// (a native child's opener carries its endless parent's view); not part
     /// of `TurnStarted.text` or the title.
@@ -1231,12 +1236,15 @@ impl Session {
         let mut ids = Vec::new();
         let mut texts = Vec::new();
         let mut opened = false;
+        let mut channel = None;
         for (id, input) in inputs.by_ref() {
             let text = input.text.clone();
+            let origin = input.channel.clone();
             let peer = bounded(self.shared.depth, &input);
             ids.extend(id);
             if task.take_input(input).await {
                 texts.push(text);
+                channel = origin;
                 if peer {
                     // 50 §8: peer-triggered execution shares the child-work cap
                     // and the child wall deadline, waits included.
@@ -1328,6 +1336,7 @@ impl Session {
                 text,
                 model,
                 turn_seq,
+                channel,
             })
             .await;
         let me = me.clone();
@@ -1383,6 +1392,7 @@ impl Message<UserInput> for Session {
             id,
             text,
             files,
+            channel,
             ticket,
             scope,
             defer,
@@ -1391,6 +1401,7 @@ impl Message<UserInput> for Session {
     ) {
         let input = Input {
             text,
+            channel,
             files,
             context: std::mem::take(&mut self.opener_context),
             replay: None,
@@ -1411,6 +1422,7 @@ impl Message<UserInput> for Session {
             id,
             text: input.text.clone(),
             defer,
+            channel: input.channel.clone(),
         });
         self.shared
             .steer
@@ -1489,6 +1501,7 @@ impl Message<PeerInput> for Session {
             ));
         }
         let input = Input {
+            channel: None,
             text: peer_wrapper(&m.record, m.reply_expected, chrono::Local::now()),
             files: Vec::new(),
             context: Vec::new(),
@@ -1859,6 +1872,7 @@ impl Message<QueuedInputs> for Session {
                 Some(QueuedInput {
                     id: (*id)?,
                     text: input.text.clone(),
+                    channel: input.channel.clone(),
                 })
             })
             .collect()
@@ -1929,6 +1943,7 @@ impl Message<RestartTurn> for Session {
         // as on the send path.
         let input = match m.input {
             Some((text, files)) => Input {
+                channel: None,
                 text,
                 files,
                 context: Vec::new(),
@@ -1947,8 +1962,15 @@ impl Message<RestartTurn> for Session {
                     .map_err(|e| e.to_string())?
                     .filter(|o| !text_of(&o.content).trim().is_empty())
                     .ok_or("opener was removed from context; edit it instead")?;
+                // 172: a regenerated opener keeps the channel it came from.
+                let channel = store
+                    .channels(id)
+                    .await
+                    .ok()
+                    .and_then(|mut c| c.remove(&m.turn));
                 Input {
                     text: clock::strip_owned(text_of(&opener.content)),
+                    channel,
                     files: vec![],
                     context: Vec::new(),
                     replay: Some(opener),
@@ -2095,6 +2117,7 @@ fn advisory_input(
 ) -> Input {
     Input {
         text,
+        channel: None,
         files: Vec::new(),
         context: Vec::new(),
         replay: None,
@@ -4779,6 +4802,7 @@ impl Turn {
         let peer = input.peer.take();
         let replayed = input.replay.is_some();
         let advisory = input.advisory.take();
+        let channel = input.channel.take();
         let msg = match input.replay.take() {
             Some(m) => m,
             // 125 §5.4: an advisory row is the card text verbatim — no clock stamp.
@@ -4839,7 +4863,7 @@ impl Turn {
                 let r = self
                     .shared
                     .store
-                    .append_input(self.shared.id, turn, &msg, None, source)
+                    .append_input(self.shared.id, turn, &msg, None, source, channel.as_ref())
                     .await;
                 let stored = self.record(msg, r).await;
                 crash_point(crash::INPUT_AFTER_PERSIST);
@@ -8069,6 +8093,10 @@ mod harvest_compact_tests;
 #[cfg(test)]
 mod compact_queue_tests;
 
+/// 172 CHANNEL-ORIGIN: a channel input's origin is stored with its row, echoed live, kept on regenerate.
+#[cfg(test)]
+mod channel_tests;
+
 /// 81 COMPACT-FLOOR: a trigger under `MIN_HEADROOM` turns auto-compaction off once, with the note.
 #[cfg(test)]
 mod compact_floor_tests;
@@ -8776,6 +8804,7 @@ mod tests {
 
     fn peer_input(id: Uuid, generation: &Generation, scope: Option<Uuid>, isolated: bool) -> Input {
         Input {
+            channel: None,
             text: "<message>hello</message>".into(),
             files: Vec::new(),
             context: Vec::new(),
@@ -8795,6 +8824,7 @@ mod tests {
 
     fn harness_input(scope: Option<Uuid>) -> Input {
         Input {
+            channel: None,
             text: "hi".into(),
             files: Vec::new(),
             context: Vec::new(),

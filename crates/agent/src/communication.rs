@@ -646,6 +646,48 @@ pub struct PeerOrigin {
     pub scope: Option<Uuid>,
 }
 
+/// 172: which channel delivered a user row (UIs show it as a chip; the model input is unchanged).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ChannelOrigin {
+    /// slack | signal | telegram
+    pub via: ChannelVia,
+    /// dm | group — a Slack channel and a Telegram group, supergroup or forum topic are `group`; Signal is DM-only today.
+    pub chat: ChannelChat,
+    /// The sender's label when it is not the owner (an allowed user), as the channel already names them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub from: Option<String>,
+    /// The channel or group title when the channel knows it (Slack channel name without `#`, Telegram group title).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub title: Option<String>,
+}
+
+/// 172: the channel kind of a [`ChannelOrigin`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelVia {
+    /// Slack (DM or channel).
+    Slack,
+    /// Signal (DM only today).
+    Signal,
+    /// Telegram (private chat, group, supergroup or forum topic).
+    Telegram,
+}
+
+/// 172: a direct conversation or a shared one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelChat {
+    /// A direct message / private chat.
+    Dm,
+    /// A Slack channel; a Telegram group, supergroup or forum topic.
+    Group,
+}
+
 /// Event: a peer exchange became part of `session`'s transcript (§10):
 /// emitted after the consumption transaction linked it to row `seq` in
 /// `turn`, never for a merely accepted or suppressed input. Structured

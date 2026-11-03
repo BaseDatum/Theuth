@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent::{
-    AGENT_ACTOR, AgentEvent, Agents, Ancestors, NewRootSession, PeerScope, SendInput, Steer,
+    AGENT_ACTOR, AgentEvent, Agents, Ancestors, ChannelChat, ChannelOrigin, ChannelVia,
+    NewRootSession, PeerScope, SendInput, Steer,
 };
 use artifact::{ArtifactShown, snapshot};
 use async_trait::async_trait;
@@ -287,11 +288,13 @@ trait Port: Send + Sync {
     /// An empty root with an explicit scope (50 §2.3); only for an
     /// authenticated owner, whose thread roots are `owner` from birth.
     async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String>;
+    /// `channel` (172) rides beside the text: the row's typed origin.
     async fn send_input(
         &self,
         session: Option<SessionId>,
         text: String,
         files: Vec<PathBuf>,
+        channel: ChannelOrigin,
     ) -> Result<SessionId, String>;
     async fn steer(
         &self,
@@ -299,6 +302,7 @@ trait Port: Send + Sync {
         id: InputId,
         text: String,
         files: Vec<PathBuf>,
+        channel: ChannelOrigin,
     ) -> Result<(), String>;
     async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String>;
     async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String>;
@@ -330,6 +334,7 @@ impl Port for Actors {
         session: Option<SessionId>,
         text: String,
         files: Vec<PathBuf>,
+        channel: ChannelOrigin,
     ) -> Result<SessionId, String> {
         agents()?
             .ask(SendInput {
@@ -338,6 +343,7 @@ impl Port for Actors {
                 files,
                 delivery: agent::Delivery::default(),
                 id: None,
+                channel: Some(channel),
             })
             .await
             .map_err(|e| e.to_string())
@@ -349,6 +355,7 @@ impl Port for Actors {
         id: InputId,
         text: String,
         files: Vec<PathBuf>,
+        channel: ChannelOrigin,
     ) -> Result<(), String> {
         agents()?
             .ask(Steer {
@@ -357,6 +364,7 @@ impl Port for Actors {
                 text,
                 files,
                 delivery: agent::Delivery::default(),
+                channel: Some(channel),
             })
             .await
             .map_err(|e| e.to_string())
@@ -1263,11 +1271,18 @@ impl Channel {
         // `queued` now and the ✅ when the turn that took it finishes.
         // A new thread root is `owner` only when the owner opened it; every
         // other allowed contact gets the isolated default (50 §2.3).
+        // 172: the row's typed origin (Signal is DM-only); the text is unchanged.
+        let origin = ChannelOrigin {
+            via: ChannelVia::Signal,
+            chat: ChannelChat::Dm,
+            from: (!self.is_owner(&sender.number)).then(|| sender.number.clone()),
+            title: None,
+        };
         let result = match session {
             Some(id) if in_flight => {
                 let queued = self
                     .port
-                    .steer(id, InputId::new(), input, files)
+                    .steer(id, InputId::new(), input, files, origin)
                     .await
                     .map(|()| id);
                 if queued.is_ok() {
@@ -1277,11 +1292,11 @@ impl Channel {
             }
             None if self.is_owner(&sender.number) => {
                 match self.port.new_root(PeerScope::Owner).await {
-                    Ok(root) => self.port.send_input(Some(root), input, files).await,
+                    Ok(root) => self.port.send_input(Some(root), input, files, origin).await,
                     Err(e) => Err(e),
                 }
             }
-            _ => self.port.send_input(session, input, files).await,
+            _ => self.port.send_input(session, input, files, origin).await,
         };
         match result {
             Ok(id) => {
@@ -2053,6 +2068,8 @@ mod tests {
     struct Stub {
         session: SessionId,
         calls: Mutex<Vec<Call>>,
+        /// 172: the origin of every `SendInput`/`Steer`, in call order.
+        origins: Mutex<Vec<ChannelOrigin>>,
         /// child → parent, for `ancestors`.
         parents: Mutex<HashMap<SessionId, SessionId>>,
     }
@@ -2060,6 +2077,19 @@ mod tests {
     impl Stub {
         fn calls(&self) -> Vec<Call> {
             std::mem::take(&mut *self.calls.lock().unwrap())
+        }
+        fn origins(&self) -> Vec<ChannelOrigin> {
+            std::mem::take(&mut *self.origins.lock().unwrap())
+        }
+    }
+
+    /// 172: the origin Signal sets; `from` names an allowed contact.
+    fn signal(from: Option<&str>) -> ChannelOrigin {
+        ChannelOrigin {
+            via: ChannelVia::Signal,
+            chat: ChannelChat::Dm,
+            from: from.map(str::to_owned),
+            title: None,
         }
     }
 
@@ -2074,7 +2104,9 @@ mod tests {
             session: Option<SessionId>,
             text: String,
             files: Vec<PathBuf>,
+            channel: ChannelOrigin,
         ) -> Result<SessionId, String> {
+            self.origins.lock().unwrap().push(channel);
             self.calls
                 .lock()
                 .unwrap()
@@ -2087,7 +2119,9 @@ mod tests {
             _: InputId,
             text: String,
             files: Vec<PathBuf>,
+            channel: ChannelOrigin,
         ) -> Result<(), String> {
+            self.origins.lock().unwrap().push(channel);
             self.calls
                 .lock()
                 .unwrap()
@@ -2218,6 +2252,7 @@ mod tests {
         let stub = Arc::new(Stub {
             session: SessionId::new(),
             calls: Mutex::new(Vec::new()),
+            origins: Mutex::new(Vec::new()),
             parents: Mutex::new(HashMap::new()),
         });
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -2348,6 +2383,7 @@ mod tests {
             text: String::new(),
             model: String::new(),
             turn_seq: 0,
+            channel: None,
         }
     }
 
@@ -2582,6 +2618,7 @@ mod tests {
                 Call::SendInput(Some(f.stub.session), "hi".into(), vec![])
             ]
         );
+        assert_eq!(f.stub.origins(), [signal(None)]);
     }
 
     #[tokio::test]
@@ -2722,6 +2759,28 @@ mod tests {
         );
     }
 
+    /// 172: a voice note (here untranscribed: no voice plugin in tests) rides
+    /// the same input as text, so it carries the same typed origin.
+    #[tokio::test]
+    async fn voice_note_carries_the_signal_origin() {
+        let f = fixture().await;
+        let mut e = env(FRIEND, 8, "");
+        e.attachments.push(IncomingAttachment {
+            bytes: b"OggS".to_vec(),
+            mime: "audio/ogg".into(),
+            file_name: None,
+            voice_note: true,
+            duration_ms: Some(2000),
+        });
+        f.chan.handle_envelope(e).await;
+        let calls = f.stub.calls();
+        let [Call::SendInput(None, text, _)] = &calls[..] else {
+            panic!("{calls:?}");
+        };
+        assert!(text.contains("voice note"), "{text}");
+        assert_eq!(f.stub.origins(), [signal(Some(FRIEND))]);
+    }
+
     // -- reactions + typing (09 §15.5) -----------------------------------
 
     #[tokio::test]
@@ -2739,6 +2798,8 @@ mod tests {
                 Call::Steer(session, "also".into(), vec![])
             ]
         );
+        // 172: the steer keeps the channel origin.
+        assert_eq!(f.stub.origins(), [signal(None), signal(None)]);
         for piece in ["**hel", "lo**"] {
             f.chan
                 .handle_event(Event::Agent(AgentEvent::TextDelta {
@@ -3039,6 +3100,7 @@ mod tests {
         f.chan.handle_envelope(e).await;
         // An allowed contact is not the owner: its root keeps the isolated default.
         assert_eq!(f.stub.calls(), [Call::SendInput(None, "hi".into(), vec![])]);
+        assert_eq!(f.stub.origins(), [signal(Some(FRIEND))]);
         // Restart: the ACI must come back from disk, not process memory.
         f.chan.lock().threads = Threads::load(&f.chan.rt.data_dir);
         f.chan.handle_event(Event::Agent(started(session))).await;

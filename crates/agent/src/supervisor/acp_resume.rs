@@ -887,6 +887,7 @@ mod tests {
 
         // D2: the mid-prompt child's harness accepts the prompt.
         b.boot_child_event(&AgentEvent::TurnStarted {
+            channel: None,
             session: mid,
             turn: TurnId::new(),
             text: "<resume_handoff>…".into(),
@@ -898,6 +899,7 @@ mod tests {
         assert_eq!((boot.pass.respawned, boot.pass.waiting), (1, 2));
         // The journaled child comes back on a fresh harness session (D11).
         b.boot_child_event(&AgentEvent::TurnStarted {
+            channel: None,
             session: journaled,
             turn: TurnId::new(),
             text: "<resume_handoff>\nThe theuth engine restarted at 1 and your previous harness session s could not be loaded.".into(),
@@ -912,6 +914,7 @@ mod tests {
         );
         // The other child's `fail` turn: lost, and the pass settles.
         b.boot_child_event(&AgentEvent::TurnStarted {
+            channel: None,
             session: acp_child,
             turn: TurnId::new(),
             text: RESPAWN_FAILED_INPUT.into(),

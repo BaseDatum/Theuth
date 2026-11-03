@@ -986,6 +986,7 @@ fn notify(origin: SessionId, slug: &str, text: String) {
                 files: vec![],
                 delivery: agent::Delivery::default(),
                 id: None,
+                channel: None,
             })
             .await
         {

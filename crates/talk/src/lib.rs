@@ -632,6 +632,7 @@ impl Talk {
                                 files: Vec::new(),
                                 delivery: agent::Delivery::NextTurn,
                                 id: None,
+                                channel: None,
                             })
                             .await
                             .map(|_| ())
@@ -770,6 +771,7 @@ impl Talk {
                                 text,
                                 files: Vec::new(),
                                 delivery: agent::Delivery::Steer,
+                                channel: None,
                             })
                             .await
                             .map_err(|e| e.to_string()),

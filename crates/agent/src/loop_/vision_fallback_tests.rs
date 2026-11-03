@@ -549,6 +549,7 @@ impl Harness {
 
     fn input_files(&self, text: &str, files: Vec<PathBuf>) -> Input {
         Input {
+            channel: None,
             text: text.into(),
             files,
             context: Vec::new(),

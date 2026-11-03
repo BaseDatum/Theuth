@@ -1007,6 +1007,7 @@ impl Rig {
     async fn send(&self, session: SessionId, text: &str) {
         self.agents
             .ask(crate::SendInput {
+                channel: None,
                 session: Some(session),
                 text: text.into(),
                 files: Vec::new(),

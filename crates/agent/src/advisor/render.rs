@@ -360,6 +360,7 @@ mod tests {
 
     fn user(t: &str) -> HistoryEntry {
         HistoryEntry::User {
+            channel: None,
             text: t.into(),
             turn: None,
             context: None,
@@ -526,6 +527,7 @@ mod tests {
     fn fingerprint_ignores_context_fields() {
         let a = user("hi");
         let b = HistoryEntry::User {
+            channel: None,
             text: "hi".into(),
             turn: Some(3),
             context: None,

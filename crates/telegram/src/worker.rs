@@ -746,13 +746,20 @@ mod tests {
             _: String,
             _: Vec<PathBuf>,
             _: PeerScope,
+            _: agent::ChannelOrigin,
         ) -> Result<SessionId, String> {
             Err("no".into())
         }
         async fn new_root(&self, _: PeerScope) -> Result<SessionId, String> {
             Err("no".into())
         }
-        async fn steer(&self, _: SessionId, _: String, _: Vec<PathBuf>) -> Result<(), String> {
+        async fn steer(
+            &self,
+            _: SessionId,
+            _: String,
+            _: Vec<PathBuf>,
+            _: agent::ChannelOrigin,
+        ) -> Result<(), String> {
             Err("no".into())
         }
         async fn cancel(&self, _: SessionId) -> Result<(), String> {
@@ -840,6 +847,7 @@ mod tests {
                 text: "hi".into(),
                 model: "m1".into(),
                 turn_seq: 1,
+                channel: None,
             })
             .await;
         }

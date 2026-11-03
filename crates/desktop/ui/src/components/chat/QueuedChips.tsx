@@ -1,15 +1,29 @@
 import { AppWindow, Sparkles, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { parseAppInput } from '@/components/apps/lifecycle'
+import { ChannelIcon } from '@/components/icons/channels'
+import { originLabel, shownText } from '@/lib/channel-origin'
 import { label as chordLabel } from '@/lib/chord'
 import { useApi } from '@/lib/rpc'
 import { classify } from '@/lib/injected'
 import { touch } from '@/lib/platform'
 import { useShortcuts } from '@/lib/shortcuts'
+import type { QueuedInput } from '@/rpc/bindings/QueuedInput'
 import { useSessionField } from '@/store/sessions'
 
-/** A queued input's chip: a skill injection shows the skills icon, its name and the words; an app input its app and message; anything else `◇ text`. */
-function label(text: string) {
+/** A queued input's chip: a skill injection shows the skills icon, its name and the words; an app input its app and message;
+ * a channel steer (172) its channel icon (label on hover) and the shown text; anything else `◇ text`. */
+function label(q: QueuedInput) {
+  const { text, channel } = q
+  if (channel)
+    return (
+      <>
+        <span title={originLabel(channel)}>
+          <ChannelIcon via={channel.via} className="mr-1 inline size-3.5 align-[-2px]" />
+        </span>
+        {shownText(q)}
+      </>
+    )
   const app = parseAppInput(text)
   if (app) {
     return (
@@ -59,7 +73,7 @@ export function QueuedChips({ session, onEdit }: { session: string; onEdit(text:
               if (text !== null) onEdit(text)
             }}
           >
-            {label(q.text)}
+            {label(q)}
             {q.defer && <span className="ml-1 text-xs text-fg-tertiary">next turn</span>}
             {q === queued[queued.length - 1] && (
               <span className="ml-1 text-xs text-fg-tertiary">queued · {touch() ? 'hold Steer' : chordLabel(interject)} to interrupt</span>

@@ -4,7 +4,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { type FormEvent, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { type Action, Dot, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
-import { openExternal } from '@/components/attention/Pointers'
+import { openExternal } from '@/lib/platform'
 import {
   AlertDialog,
   AlertDialogAction,

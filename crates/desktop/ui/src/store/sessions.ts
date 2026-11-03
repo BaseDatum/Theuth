@@ -5,6 +5,7 @@ import { codeFromHistory } from '@/lib/codemap/slice';
 import type { CodemapSlice } from '@/lib/codemap/types';
 import type { AdvisoryNote } from "@/rpc/bindings/AdvisoryNote";
 import type { CompactStyle } from "@/rpc/bindings/CompactStyle";
+import type { ChannelOrigin } from "@/rpc/bindings/ChannelOrigin";
 import type { ContextEntry } from "@/rpc/bindings/ContextEntry";
 import type { HarnessCommand } from "@/rpc/bindings/HarnessCommand";
 import type { JobExit } from "@/rpc/bindings/JobExit";
@@ -90,6 +91,8 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       files?: string[];
       /** Seq of this row when it opens a turn (29 §5.1); steers and engine notes have none. */
       turn?: number;
+      /** 172 D3: the channel that delivered it (Slack, Signal, Telegram); absent for desktop input and rows stored before 172. */
+      channel?: ChannelOrigin;
     }
   | {
       kind: "assistant";
@@ -236,7 +239,8 @@ export type SessionSlice = {
   historyGeneration: number;
   /** Bumped by turn/edit activity (deltas, tool calls, interjections, context changes); a settled snapshot requested under an older value is discarded. */
   live: number;
-  /** `defer` (62 §3.1): lands at the next turn, not after this tool batch; unknown after a reload (`list_queued` lacks it). */
+  /** `defer` (62 §3.1): lands at the next turn, not after this tool batch; unknown after a reload (`list_queued` lacks it).
+   * `QueuedInput.channel` (172 D3) survives a reload and moves to the transcript card on `InputInjected`. */
   queued: (QueuedInput & { defer?: boolean })[];
   skills: string[];
   name?: string | null;

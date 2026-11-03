@@ -157,11 +157,11 @@ pub use activity::{
 };
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
-    AnswerPeerRequest, CommunicationChanged, CommunicationState, GetCommunication, GetPeerMessage,
-    ListPeerMessages, ListPeers, PeerConsumed, PeerDeliver, PeerDelivered, PeerEnvelope, PeerInfo,
-    PeerIntakeFailed, PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage,
-    PeerReceipt, PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication,
-    SetPeerScope,
+    AnswerPeerRequest, ChannelChat, ChannelOrigin, ChannelVia, CommunicationChanged,
+    CommunicationState, GetCommunication, GetPeerMessage, ListPeerMessages, ListPeers,
+    PeerConsumed, PeerDeliver, PeerDelivered, PeerEnvelope, PeerInfo, PeerIntakeFailed,
+    PeerMessageChanged, PeerMessagePage, PeerMessageState, PeerOrigin, PeerPage, PeerReceipt,
+    PeerRecord, PeerScope, PeerTurnFinished, PeerUplink, SetCommunication, SetPeerScope,
 };
 pub use compact::CompactStyle;
 pub use context::{
@@ -269,6 +269,10 @@ pub struct SendInput {
     /// and returns the same session (send never loses, never doubles).
     #[serde(default)]
     pub id: Option<InputId>,
+    /// 172: the channel (Slack, Signal, Telegram) that delivered this input;
+    /// stored with the user row. `None` for every other sender.
+    #[serde(default)]
+    pub channel: Option<ChannelOrigin>,
 }
 
 /// `ask` → `()`. Injected as a user message after the current tool batch
@@ -290,6 +294,9 @@ pub struct Steer {
     /// How it lands on a busy session (62 §0.3).
     #[serde(default)]
     pub delivery: Delivery,
+    /// 172: the channel that delivered this steer; see [`SendInput::channel`].
+    #[serde(default)]
+    pub channel: Option<ChannelOrigin>,
 }
 
 /// `ask` → `Result<String, String>`: pull a queued steer back before it enters
@@ -318,6 +325,10 @@ pub struct QueuedInput {
     pub id: InputId,
     /// User text.
     pub text: String,
+    /// 172: the channel that delivered this steer, if any (as on `InputQueued`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub channel: Option<ChannelOrigin>,
 }
 
 /// `ask` → `Result<String, String>`: hide the last turn (a user message and
@@ -2582,6 +2593,11 @@ pub enum HistoryEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         vision: Option<VisionNote>,
+        /// 172: the channel that delivered this row (`messages.channel`);
+        /// `None` for every other row, and for rows stored before 172.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        channel: Option<ChannelOrigin>,
     },
     /// Assistant text.
     Assistant {
@@ -2754,6 +2770,10 @@ pub enum AgentEvent {
         /// Seq of the stored user row that opened the turn (design doc 29 §4.2).
         #[cfg_attr(feature = "ts", ts(type = "number"))]
         turn_seq: i64,
+        /// 172: the channel that delivered the opening user text, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        channel: Option<ChannelOrigin>,
     },
     /// Streamed assistant text.
     TextDelta {
@@ -2874,6 +2894,10 @@ pub enum AgentEvent {
         /// `true`: lands at the next turn, not after this tool batch.
         #[serde(default)]
         defer: bool,
+        /// 172: the channel that delivered this steer, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        channel: Option<ChannelOrigin>,
     },
     /// A queued input entered the context as a user message; published before
     /// `TurnStarted` when queued inputs start a turn.

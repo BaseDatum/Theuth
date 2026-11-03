@@ -307,6 +307,7 @@ mod tests {
             context: None,
             peer: None,
             vision: None,
+            channel: None,
         };
         let reply = |text: &str| agent::HistoryEntry::Assistant {
             text: text.into(),

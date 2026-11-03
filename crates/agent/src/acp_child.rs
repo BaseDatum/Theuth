@@ -172,6 +172,8 @@ struct Queued {
     /// Owning A2A request scope, if any (50 §6.3).
     scope: Option<Uuid>,
     peer: Option<PeerMeta>,
+    /// 172: the channel that delivered the input (`UserInput::channel`).
+    channel: Option<crate::ChannelOrigin>,
     /// When this actor accepted the input: the busy-retry deadline counts from here.
     admitted: Instant,
 }
@@ -794,7 +796,7 @@ impl AcpChild {
         let Some(p) = &q.peer else {
             let seq = self
                 .store
-                .append(self.id, &msg)
+                .append_user(self.id, &msg, q.channel.as_ref())
                 .await
                 .map_err(|e| Some(format!("{e:#}")))?;
             if let Some(t) = q.ticket {
@@ -915,6 +917,7 @@ impl AcpChild {
             text: q.text.clone(),
             model: self.name.clone(),
             turn_seq: *persisted.as_ref().unwrap_or(&0),
+            channel: q.channel.clone(),
         })
         .await;
         let mut t = Turn::new(self.id, turn, q.scope);
@@ -1045,6 +1048,7 @@ impl AcpChild {
             text: CONTINUED_NOTE.into(),
             model: self.name.clone(),
             turn_seq: 0,
+            channel: None,
         })
         .await;
         let mut t = Turn::new(self.id, turn, None);
@@ -1232,6 +1236,7 @@ impl AcpChild {
             text: text.to_owned(),
             scope: None,
             peer: None,
+            channel: None,
             admitted: Instant::now(),
         }
     }
@@ -1761,6 +1766,7 @@ impl Message<UserInput> for AcpChild {
             id,
             text,
             files: _,
+            channel,
             // No mid-turn injection on the ACP prompt path: every queued
             // input waits for the turn already, so `defer` changes nothing (62 §3.1).
             defer: _,
@@ -1775,6 +1781,7 @@ impl Message<UserInput> for AcpChild {
             text,
             scope,
             peer: None,
+            channel,
             admitted: Instant::now(),
         };
         if let Some(why) = self.dead.clone() {
@@ -1790,6 +1797,7 @@ impl Message<UserInput> for AcpChild {
                     id,
                     text: q.text.clone(),
                     defer: false,
+                    channel: q.channel.clone(),
                 })
                 .await;
             }
@@ -1831,6 +1839,7 @@ impl Message<PeerInput> for AcpChild {
                 generation: m.generation,
                 isolated: false,
             }),
+            channel: None,
             admitted: Instant::now(),
         };
         if let Some(why) = self.dead.clone() {
@@ -3053,6 +3062,7 @@ pub(crate) mod tests {
         async fn input(&self, text: &str) {
             self.actor
                 .tell(UserInput {
+                    channel: None,
                     id: None,
                     text: text.into(),
                     files: Vec::new(),
@@ -3192,6 +3202,7 @@ pub(crate) mod tests {
 
         actor
             .tell(UserInput {
+                channel: None,
                 id: None,
                 text: "again".into(),
                 files: Vec::new(),
@@ -3223,6 +3234,7 @@ pub(crate) mod tests {
         // The note is spent: the following prompt is bare.
         actor
             .tell(UserInput {
+                channel: None,
                 id: None,
                 text: "more".into(),
                 files: Vec::new(),

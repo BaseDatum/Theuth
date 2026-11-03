@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { type AttachRef, attachTo, chatName, toRef } from '@/lib/attach'
+import { previewText, stripSnippet } from '@/lib/channel-origin'
 import * as dictation from '@/lib/dictation'
 import { queryKeys, useApi } from '@/lib/rpc'
 import * as speech from '@/lib/speech'
@@ -46,6 +47,7 @@ import type { NoteSearchHit } from '@/rpc/bindings/NoteSearchHit'
 import type { BlockHit } from '@/rpc/bindings/BlockHit'
 import type { SearchCategory } from '@/rpc/bindings/SearchCategory'
 import type { SearchGroup } from '@/rpc/bindings/SearchGroup'
+import type { MatchRange } from '@/rpc/bindings/MatchRange'
 import type { SearchHit } from '@/rpc/bindings/SearchHit'
 import type { SessionSummary } from '@/rpc/bindings/SessionSummary'
 import type { SearchResponse } from '@/rpc/bindings/SearchResponse'
@@ -879,8 +881,14 @@ function Lines({ title, snippet, meta }: { title: ReactNode; snippet: ReactNode;
   )
 }
 
+/** A session hit's highlighted text without a leading Slack marker (172); a marker-only text as its label. */
+function SessionSnippet({ text, ranges }: { text: string; ranges: MatchRange[] }) {
+  const s = stripSnippet(text, ranges)
+  return s.text.trim() ? <Snippet text={s.text} ranges={s.ranges} /> : previewText(text)
+}
+
 function SessionRow({ hit }: { hit: SearchHit }) {
-  const title = hit.kind === 'title' ? <Snippet text={hit.snippet} ranges={hit.ranges} /> : hit.title
+  const title = hit.kind === 'title' ? <SessionSnippet text={hit.snippet} ranges={hit.ranges} /> : previewText(hit.title)
   return (
     <Lines
       title={
@@ -889,7 +897,7 @@ function SessionRow({ hit }: { hit: SearchHit }) {
           {hit.archived && <Archived />}
         </>
       }
-      snippet={hit.kind === 'message' ? <Snippet text={hit.snippet} ranges={hit.ranges} /> : null}
+      snippet={hit.kind === 'message' ? <SessionSnippet text={hit.snippet} ranges={hit.ranges} /> : null}
       meta={[
         hit.kind === 'title' ? 'title' : hit.role,
         hit.matches > 1 ? `${hit.matches} matching messages` : '',

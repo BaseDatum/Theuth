@@ -142,6 +142,7 @@ fn card(advisor: SessionId, severity: AdvisorSeverity, note: &str) -> (Advisory,
 
 fn user_input(text: &str) -> UserInput {
     UserInput {
+        channel: None,
         id: None,
         text: text.into(),
         files: Vec::new(),

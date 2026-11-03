@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
 import { chatName } from '@/lib/attach'
+import { previewText } from '@/lib/channel-origin'
 import { type HeaderId, type Mode, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { canPopout, isPopout, openPopout, type PopoutTarget } from '@/lib/popout'
@@ -213,7 +214,7 @@ export function Header({
   const compact = tier > 0
 
   const raw = session ? liveTitle || (row ? chatName(row) : 'Untitled chat') : 'New chat'
-  const title = parseNote(raw)?.body || parseSpoken(raw)?.text || raw
+  const title = parseNote(raw)?.body || parseSpoken(raw)?.text || previewText(raw)
   // A popped window has no sidebar to open and is already its own window: no toggle, no search, no popout button.
   const popped = isPopout()
   const nav = first && (!open || isMobile) && !popped

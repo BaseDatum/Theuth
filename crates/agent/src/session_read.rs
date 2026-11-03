@@ -383,6 +383,7 @@ mod tests {
 
     fn user(text: &str, seq: i64) -> HistoryEntry {
         HistoryEntry::User {
+            channel: None,
             text: text.into(),
             turn: Some(seq),
             context: None,
@@ -497,6 +498,7 @@ mod tests {
     fn peer_rows_are_fenced_and_attachments_shown() {
         let mut read = chat(1);
         read.history[0] = HistoryEntry::User {
+            channel: None,
             text: "[attached note abc \"Groceries\" · 1 KB]\nfrom the other agent".into(),
             turn: Some(1),
             context: None,
@@ -539,6 +541,7 @@ mod tests {
         let mut read = chat(1);
         read.summary = summary("");
         read.history[0] = HistoryEntry::User {
+            channel: None,
             text: "[attached note abc \"Groceries\" · 1 KB]\nwhat's missing?".into(),
             turn: Some(1),
             context: None,

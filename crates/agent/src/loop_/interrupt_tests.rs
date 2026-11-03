@@ -215,6 +215,7 @@ impl Harness {
     async fn tell(&self, text: &str) {
         self.actor
             .tell(UserInput {
+                channel: None,
                 id: None,
                 text: text.into(),
                 files: Vec::new(),

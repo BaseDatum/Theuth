@@ -229,20 +229,23 @@ fn quoted(s: &str) -> Option<(String, &str)> {
 /// The line a session is named by until it has a title (66 §8): the first
 /// non-empty body line of its first user input, leading markers stripped;
 /// when the input is markers only, the first attachment's title. Never a
-/// marker's syntax. `None` when there is nothing to name by.
+/// marker's syntax, nor Slack's leading `[slack dm]` / `[slack channel]`
+/// line for the model (110 §7.1, 172). `None` when there is nothing to name by.
 pub fn first_line(text: &str) -> Option<String> {
     let p = parse(text);
-    p.body
+    let mut lines = p
+        .body
         .lines()
         .map(str::trim)
-        .find(|l| !l.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            p.refs
-                .into_iter()
-                .map(|r| r.title)
-                .find(|t| !t.trim().is_empty())
-        })
+        .filter(|l| !l.is_empty())
+        .peekable();
+    lines.next_if(|l| matches!(*l, "[slack dm]" | "[slack channel]"));
+    lines.next().map(str::to_owned).or_else(|| {
+        p.refs
+            .into_iter()
+            .map(|r| r.title)
+            .find(|t| !t.trim().is_empty())
+    })
 }
 
 /// The placeholder a first input seeds as the stored title (07 §15): `line`
@@ -381,6 +384,19 @@ mod tests {
             first_line("[attached note]\nhi").as_deref(),
             Some("[attached note]")
         );
+
+        // 172: Slack's leading marker line is the model's, never the name;
+        // only a leading one is skipped.
+        assert_eq!(
+            first_line("[slack dm]\nhi there").as_deref(),
+            Some("hi there")
+        );
+        assert_eq!(
+            first_line("[slack channel]\n\n  deploy status?\nmore").as_deref(),
+            Some("deploy status?")
+        );
+        assert_eq!(first_line("hi\n[slack dm]").as_deref(), Some("hi"));
+        assert_eq!(first_line("[slack dm]"), None);
 
         let long = "x".repeat(70);
         assert_eq!(seed_title(&long), format!("{}…", "x".repeat(60)));

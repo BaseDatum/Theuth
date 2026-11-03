@@ -358,6 +358,7 @@ fn endless_session_does_not_reinject_when_it_folds() {
         async fn send(h: &mut Harness, actor: &ActorRef<Session>, text: &str) {
             actor
                 .tell(UserInput {
+                    channel: None,
                     id: None,
                     text: text.into(),
                     files: Vec::new(),

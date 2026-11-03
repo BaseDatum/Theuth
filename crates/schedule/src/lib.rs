@@ -1434,6 +1434,7 @@ impl Schedule {
                 files: vec![],
                 delivery: agent::Delivery::default(),
                 id: None,
+                channel: None,
             })
             .await
             .map_err(|e| format!("agent: {e}"))?;
@@ -4169,6 +4170,7 @@ mod watch_tests {
                 text: String::new(),
                 model: String::new(),
                 turn_seq: 34,
+                channel: None,
             })
             .await
             .unwrap();

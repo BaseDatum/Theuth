@@ -3610,6 +3610,7 @@ impl ApiServer for Server {
                 files,
                 delivery: delivery.unwrap_or_default(),
                 id,
+                channel: None,
             },
         )
         .await
@@ -3646,6 +3647,7 @@ impl ApiServer for Server {
                 text,
                 files,
                 delivery: delivery.unwrap_or_default(),
+                channel: None,
             },
         )
         .await

@@ -1,3 +1,5 @@
+import { openUrl } from '@tauri-apps/plugin-opener'
+
 /** Where the UI runs (31 §7.7): a desktop shell (macOS, Linux, Windows), the iOS shell, or a browser served by the relay. */
 export type Container = 'macos' | 'linux' | 'windows' | 'ios' | 'web'
 
@@ -23,6 +25,9 @@ export const isDesktop = (): boolean => {
 
 /** Coarse pointer: fingers, not a mouse. */
 export const touch = (): boolean => typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+
+/** Opens a link the way chat links open: the OS browser under Tauri, a new tab where `openUrl` is unavailable (BoardReader's fallback). */
+export const openExternal = (href: string) => void openUrl(href).catch(() => window.open(href, '_blank', 'noopener'))
 
 /** Default device name for pairing: model on iOS, "Mac"/"Linux"/"Windows" (the webview cannot see the hostname), else the browser. */
 export function deviceName(): string {

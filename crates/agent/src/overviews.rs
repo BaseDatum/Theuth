@@ -428,6 +428,7 @@ async fn run_turn(
     let marker: String = text.chars().take(60).collect();
     agents
         .ask(SendInput {
+            channel: None,
             session: Some(session),
             text,
             files: Vec::new(),
@@ -1000,6 +1001,7 @@ mod tests {
             files: vec![],
         };
         let start = |text: &str| AgentEvent::TurnStarted {
+            channel: None,
             session: s,
             turn,
             text: text.into(),
