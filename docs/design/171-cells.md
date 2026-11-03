@@ -769,3 +769,80 @@ Scope rule: a session reads its own chat runs and the runs of notes it may `doc_
 ### 9.7 What the agent can never do
 
 Start, stop, restart or close a kernel; type into one; press Run, Run all or Ask theuth; tick a run sheet (cells replace ticking; the prompt forbids editing checkboxes to report progress). Concretely: no tool, runtime function or MCP method maps to `cell_run`, `cell_run_all`, `cell_stop`, `cell_input`, `cell_kernel_*`; `send` and `cancel_job` on a kernel job answer "this terminal belongs to a user cell — ask the user to press Run"; `jobs()` does not list kernel jobs (§12, invariants 2–4).
+
+## 10. Prompting
+
+### 10.1 The `## User cells` block, verbatim (writer's call W-l)
+
+`crates/cells/src/prompt.rs` `PROMPT`, a constant (prompt blocks must never change per session, the frame-cache rule of `crates/agent/src/frame.rs`). The heading says **user** cell because the runtime block already calls the agent's own `python` invocation "a cell" (fact: `crates/agent/src/repl.rs:35`, `:81`).
+
+```text
+## User cells
+A user cell is a fenced block the user runs with one press in theuth: ```bash, ```zsh, ```sh, ```pwsh or ```python whose first lines are `#| key: value` options. A fence without `#|` lines stays a snippet to read.
+Present cells instead of running anything when the user asks you to prepare but not run ("prep it, don't apply", "give me the commands", "I'll run it", "step by step, I'll review each output", "make me a run sheet"), when a step changes production or shared state you were not told to change, needs their login, SSO or MFA, is interactive, or they want to watch it.
+That mode is sticky for the work until the user lifts it: read-only checks stay yours (unless they said hands off entirely); every changing step becomes a cell.
+Every cell gets `#| cwd:` (absolute). One action per cell, checks before changes, explicit --profile, --context or -s on every command.
+Every changing step gets `#| label:` naming its consequence ("Apply to ir-prod1") and `#| danger`; an apply gets `#| after:` naming its preview's `#| name:`; take `#| expect:` from the run sheet's "You should see"; add `#| review` when you promised to read the output.
+Secrets go in `#| env: KEY={{secret:NAME}}` and the code uses $KEY. Never add --yes or -auto-approve to a danger cell unless asked.
+Python: `#| python: monty` for pure computation on the standard library (no packages, no network, no subprocess, no files outside the cwd); otherwise the project's interpreter (auto, .venv, uv or a path) — interpreters(cwd) lists them.
+Up to five one-off steps go in chat. Longer or repeatable procedures go in a note (doc_insert the same fences) with one line in chat linking it.
+When a run ends you receive <cell_result>: check each expect, report the counts that matter in one or two lines, and propose the next cell or a corrected one under the same name.
+You never run a user cell, never run its command yourself, never type into its terminal, never tick a run sheet's boxes. Load the cells skill before writing a runbook.
+```
+
+Eleven lines; the cap is 18.
+
+### 10.2 The `cells` skill (outline)
+
+Binary-owned: `crates/cells/cells.md` (`include_str!`), one tuple `("cells.md", cells::SKILL.to_owned())` added to `first_run`'s list (`crates/theuth/src/main.rs:1324-1336`); front matter `name: cells`, `description: Write user cells and runbooks the user runs with one press — load before presenting commands to run, a run sheet, or a note with cells.`
+
+1. **What a user cell is** — the grammar (§3.1), the options table (§3.2), note defaults (§3.3).
+2. **When to present** — the triggers and the not-triggers (§10.3), the sticky mode, what "hands off entirely" means.
+3. **Writing rules** — cwd, one action, checks first, explicit context flags, label/danger/after/expect/review/private/env/timeout, names that read like steps (`preview-ir-prod1`), no `cd` lines in place of `cwd`, no `bash -c` wrappers.
+4. **Interpreters** — Monty when sufficient, else the project's; how to read `interpreters(cwd)`; one python interpreter per note.
+5. **Chat or note** — the placement rule (§4.6); run sheets as notes: a heading per step, a cell per action, "You should see" becomes `expect`, stop lines become `after` and Run all's boundaries.
+6. **After a result** — check expect; one or two lines of what matters; propose the next cell; supersede by `name` only when the cell changes; `exit="lost"` means check the real state (a stack lock, a half-applied change) before proposing anything; never ask "shall I run it?".
+7. **Anti-patterns** (§10.5).
+8. **Three worked examples**:
+   - *IaC preview → apply in chat* — the three-cell reply of §3.8, with the one-line report the agent gives after the preview result ("Preview matches: 3 updates (secret tags, policy replica ARN, role managed policy), nothing replaced or deleted. Apply when ready.").
+   - *A DR step-by-step run sheet in a note* — headings "1. Check replica lag", "2. Promote replica", "3. Verify writer endpoint", each with one cell; step 2 `danger` + `after: check-lag`; `expect` lines copied from the old "You should see"; a ```` ```cells ```` defaults block with the stack folder; the chat line "Run sheet: DR ir-prod1 failover (note)".
+   - *Data exploration* — a Monty cell for a sanity sum over five numbers, a `.venv` cell for `pandas.read_csv(...)` with a DataFrame result, and what Monty's "can't run this: no module named pandas" means.
+
+### 10.3 Trigger phrases
+
+| present cells | do not |
+|---|---|
+| "prep it, don't apply", "don't run it", "production danger, just present me with the commands" (Sky's words) | work the user asked the agent to do ("fix the build", "run the tests") — tools as today, under policy |
+| "give me the commands", "I'll run it", "present the commands", "show me what you'd run" | read-only investigation the agent may run itself (`kubectl get`, `pulumi stack ls`) unless "hands off entirely" |
+| "step by step, I'll review each output", "go one step at a time" | a snippet in an explanation ("the flag looks like this") |
+| "make me a run sheet", "write the runbook" | commands for another machine the user will paste elsewhere — plain code block |
+| a step changes production/shared state the user has not told the agent to change; needs SSO/MFA; is interactive; the user wants to watch | unattended runs (the block is absent, §10.6) |
+
+### 10.4 Amendments to existing prompt text
+
+Both copies of the one sentence change together (fact 37); `visualize.md` is rewritten from `surface::visualize_skill()` at every start, so the source file is what changes.
+
+| where | today (verbatim) | becomes |
+|---|---|---|
+| `crates/surface/src/prompt.rs:289` | `\| a snippet the reader will read, not run \| json-render Code (copy button) — commands to run stay a plain code block \|` | `\| a snippet the reader will read, not run \| json-render Code (copy button) — commands the user runs in their own terminal stay a plain code block; commands the user asked to run here are user cells \|` |
+| `crates/surface/visualize.md:42` | `` \| a snippet to read, not run \| `Code` (copy button); commands to run stay a plain code block \| inline backticks for six lines \| `` | `` \| a snippet to read, not run \| `Code` (copy button); commands the user runs in their own terminal stay a plain code block; commands the user asked to run here are user cells (`cells` skill) \| inline backticks for six lines \| `` |
+
+The runtime block's "a cell is type-checked before it runs" stays: it is about the agent's own `python`, and the new text never says "cell" without "user".
+
+### 10.5 Anti-patterns (in the skill)
+
+- Presenting cells for work the user asked the agent to do itself, or asking "shall I run it?".
+- Running the presented command through `shell`/`start` "to check", or typing into a cell's terminal.
+- A cell per line of a script, or one 60-line cell doing five actions.
+- `cd` lines instead of `#| cwd:`; relative paths in chat.
+- A changing step without `label` and `danger`; `--yes`/`-auto-approve` on a danger cell.
+- Regex soup in `expect`; expecting text the tool does not print.
+- Re-presenting unchanged cells every turn (supersede only on change).
+- Editing a note's checkboxes to report progress; a run is the record.
+- Secrets in code; `bash -c "$(…)"` wrappers that hide the real script.
+
+### 10.6 Where the block registers (writer's call W-o)
+
+- The cells plugin asks `RegisterPrompt{plugin: "cells", text: PROMPT}` at start (`crates/tools/src/registry.rs:386`; the `app` plugin is the precedent, `crates/app/src/lib.rs:376`).
+- `prompt_blocks` drops it exactly where it drops `app`: the unattended arm becomes `"app" | "cells" => None` (`crates/agent/src/loop_.rs:3218`). Unattended = a subagent or a scheduler-opened root (`crates/agent/src/loop_.rs:4240-4241`) — nobody there can press Run.
+- It stays in attended **channel** sessions (Slack/Telegram/Signal are attended, 171-recon-ours.md §11.1): Sky can say "prep it" from his phone's Slack; the channel shows the code and a "Run in theuth" link (§14.3) and he presses on the phone app. Toolsets whose `prompts` list omits `cells` drop it through the existing filter (`crates/agent/src/loop_.rs:3215`).
