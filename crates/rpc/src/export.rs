@@ -42,6 +42,7 @@ async fn export_bindings() {
         agent::LoginInfo,
         agent::LoginFinished,
         agent::ProviderInfo,
+        agent::RefreshedModels,
         agent::AgentInfo,
         agent::AgentState,
         agent::SessionActivity,

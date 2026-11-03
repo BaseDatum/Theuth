@@ -26,12 +26,12 @@ use agent::{
     ListPeerMessages, ListPeers, ListProviders, ListQueued, ListRegistry, ListSessions, ListSkills,
     LoadSession, LoadSkill, Loaded, Login, LoginInfo, Logout, ModelInfo, NewRootSession,
     PeerMessagePage, PeerPage, PeerReceipt, PeerRecord, PeerScope, PinSession, ProviderInfo,
-    QueuedInput, Redo, Regenerate, RemoveAcp, RemoveContext, RemoveProvider, RemoveSkill,
-    RemoveSkillRepo, RenameSession, SendInput, SessionContextBreakdown, SessionSummary,
-    SetCommunication, SetCompactStyle, SetEffort, SetEscalateModel, SetMaxSalvages,
-    SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle, SetSubagentModel, SetSubagentTimeout,
-    SetTitleModel, SetVisionModel, ShowPrompt, SkillBody, SkillMeta, Steer, SyncSkills, Undo,
-    UseSkill, Withdraw,
+    QueuedInput, Redo, RefreshProviderModels, RefreshedModels, Regenerate, RemoveAcp,
+    RemoveContext, RemoveProvider, RemoveSkill, RemoveSkillRepo, RenameSession, SendInput,
+    SessionContextBreakdown, SessionSummary, SetCommunication, SetCompactStyle, SetEffort,
+    SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetPeerScope, SetStreamIdle,
+    SetSubagentModel, SetSubagentTimeout, SetTitleModel, SetVisionModel, ShowPrompt, SkillBody,
+    SkillMeta, Steer, SyncSkills, Undo, UseSkill, Withdraw,
 };
 use agent::{
     AdvisorDefaults, AdvisorStatus, AdvisorStatusOf, SetAdvisor, SetAdvisorDefaults, SyncBacklog,
@@ -1415,10 +1415,10 @@ pub trait Api {
     /// Forget a provider login.
     #[method(name = "logout")]
     async fn logout(&self, provider: String) -> RpcResult<()>;
-    /// Named OpenAI-compatible gateways (`/provider`).
+    /// The Connections providers: built-ins (`opencode`, `openrouter`) first, then custom providers (`/provider`).
     #[method(name = "list_providers")]
     async fn list_providers(&self) -> RpcResult<Vec<ProviderInfo>>;
-    /// Persist a named OpenAI-compatible gateway (url + key); fetches `/models`.
+    /// Persist a custom provider (url + key); fetches `/models`.
     #[method(name = "add_provider")]
     async fn add_provider(
         &self,
@@ -1426,9 +1426,12 @@ pub trait Api {
         base_url: String,
         key: String,
     ) -> RpcResult<ProviderInfo>;
-    /// Forget a named OpenAI-compatible gateway.
+    /// Forget a custom provider.
     #[method(name = "remove_provider")]
     async fn remove_provider(&self, name: String) -> RpcResult<()>;
+    /// List a provider's models again (custom: `GET {base}models`; opencode/openrouter: their list) and reload the catalog (162).
+    #[method(name = "refresh_provider_models")]
+    async fn refresh_provider_models(&self, name: String) -> RpcResult<RefreshedModels>;
     /// Start an MCP server login; returns the URL to open. The server reconnects on success (`McpProgress`).
     #[method(name = "mcp_login")]
     async fn mcp_login(&self, server: String) -> RpcResult<String>;
@@ -6453,6 +6456,10 @@ impl ApiServer for Server {
 
     async fn remove_provider(&self, name: String) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, RemoveProvider { name }).await
+    }
+
+    async fn refresh_provider_models(&self, name: String) -> RpcResult<RefreshedModels> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, RefreshProviderModels { name }).await
     }
 
     async fn mcp_login(&self, server: String) -> RpcResult<String> {
