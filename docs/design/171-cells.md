@@ -464,7 +464,126 @@ Kill (5 s after Stop) kills the process group; the kernel is `dead` and the next
 
 - **FIFO per kernel**, one run at a time. A press while the kernel is busy queues the run: the cell shows "queued · 2nd" and its Stop removes it (`cancelled`, never ran). Runs on different kernels of the same scope run concurrently.
 - **Second press on the same cell** while it is queued or running is not a new run: the RPC returns the existing run id and the client attaches to it. Run ids are minted by the client (`r_` + ULID, nteract's client-minted `execution_id`, 171-recon-theirs.md §14) so a retried RPC is idempotent; a reused id with a different cell or digest is refused.
-- **Two clients.** Both see the same run: the engine is the only writer, each client attaches. Either can press Stop. Only one can type at a time in practice, and every keystroke is recorded with its device (§8.4).
+- **Two clients.** Both see the same run: the engine is the only writer, each client attaches. Either can press Stop. Typing is accepted from any attached owner client; the record keeps which devices typed and how many keystrokes, never what (passwords go through here, §8.4).
 - **Run all is an engine pass**, not a client loop (nteract's `RunAllCells`, 171-recon-theirs.md §14): `cell_run_all` enqueues the cells in order, stops at the boundaries of §7.2, and survives the window closing or the phone locking.
 - **PTY size.** Kernel PTYs are fixed at `cells.pty_cols` × `cells.pty_rows` (100 × 30); inline viewers never send a resize (two viewers fight over size today, fact 28); a wider program scrolls horizontally in the cell.
 - **Budget.** At most `cells.max_kernels` (16) live kernels engine-wide; each shell kernel also counts against the 512 MiB PTY budget (fact 22). Over the cap the oldest idle kernel is closed with a note on its strip; with none idle the run is refused "16 kernels are busy — close one".
+
+## 6. Interpreters
+
+### 6.1 `auto` for python cells (D7)
+
+`auto` resolves **per scope** (the reply in chat, the note in notes), so the python cells written together share one kernel:
+
+1. **Monty**, when every `auto` python cell in the scope is Monty-sufficient (§6.2). Sky's words: "use the built in monty if it's sufficient for the use case".
+2. Otherwise the first hit walking up from the cell's cwd (to `$HOME`, or `/` when the cwd is outside it):
+   1. `.venv/bin/python` or `venv/bin/python` (`Scripts\python.exe` on Windows) — chip `.venv`;
+   2. the nearest `pyproject.toml` with a `uv.lock` beside it → `uv python find` run there on the login PATH — chip `uv:<project dir name>`;
+   3. `.python-version` up the tree or `PYENV_VERSION` in the login env → `pyenv which python` — chip `pyenv:<version>`; else `CONDA_PREFIX` in the login env → `$CONDA_PREFIX/bin/python` — chip `conda:<env>`;
+   4. `python3` on the login PATH (`py -3` on Windows) — chip `system`.
+3. None → the cell is invalid: "No Python for this folder" with the one-press fix "Use Monty" when Monty is sufficient, else a link to the interpreter menu.
+
+No discovery runs anything but `uv python find`/`pyenv which` and each candidate's `--version` (cached per path and mtime). Today only `find_cpython` on the engine PATH exists (fact 41); the new code is `crates/cells/src/interp.rs`.
+
+### 6.2 Monty sufficiency (checked at presentation)
+
+A cell is Monty-sufficient when (a) a static scan finds only imports from Monty's stdlib list (the list the runtime block teaches, `crates/agent/src/repl.rs:82-84`) and no `open(`, `subprocess`, `socket`, `urllib`, `requests`, `os.system`, `os.popen`, `exec(`, `eval(`; and (b) Monty's type check passes (§5.9). The check runs in the engine when the cell is first seen (a finished reply, an opened note), cached by digest, and its result rides `cell_state` (§15.3). A failing check on an explicit `python: monty` shows "Monty can't run this: no module named pandas — use Python 3.12 (.venv)" with one press that rewrites the header to `#| python: .venv` (a chat edit, F4, or a note text edit).
+
+### 6.3 The chip and its menu
+
+- Python chip text: `Python 3.12 · .venv (~/Develop/costs)`, `Python 3.13 · uv:costs`, `Python 3.11 · conda:base`, `Python 3.12.4 · pyenv:3.12.4`, `Python 3.9 · system`, `Monty · sandboxed` — nteract's env-source vocabulary (`nteract:crates/notebook-protocol/src/connection.rs:995-1041` per 171-recon-theirs.md §3.5). `auto` shows as `auto → .venv`.
+- Shell chip text: `bash 5.2 (Homebrew)`, `bash 3.2 (macOS)`, `zsh 5.9`, `sh (dash)`, `pwsh 7.4`.
+- The chip is a menu of `interpreters(cwd)` with each entry's `why`; choosing one writes the `#| python:` header (python) or the note default `shell:` (shells). The agent reads the same list (§9.4).
+
+### 6.4 `interpreters(cwd)` shape
+
+```rust
+pub struct Interpreter {
+    pub kind: InterpreterKind,        // Python | Monty | Bash | Zsh | Sh | Pwsh | Node | Deno | Bun
+    pub source: String,               // ".venv" | "uv:costs" | "pyenv:3.12.4" | "conda:base" | "system" | "Monty" | "homebrew" | "macOS"
+    pub path: Option<PathBuf>,        // None for Monty
+    pub version: Option<String>,      // "3.12.4", "5.2.37"
+    pub why: String,                  // "nearest .venv: ~/Develop/costs/.venv"
+    pub auto: bool,                   // what `auto` (python) or the default (shells) picks for this cwd
+}
+```
+
+Served by RPC `cell_interpreters(cwd)` and the runtime function `interpreters(cwd)`; cached 60 s per (cwd, login-env generation).
+
+### 6.5 Windows and the three bashes
+
+- **Windows**: `pwsh` is native; `bash` is Git Bash, else WSL (§5.7); python `auto` uses `Scripts\python.exe` and `py -3`.
+- **Three bashes on a Mac** (171-recon-ours.md §13.1): the agent's embedded brush (never used for cells, fact 29), `/bin/bash` 3.2, and a bash 5 on the login PATH (Homebrew). A `bash` cell runs, in order: the note default `shell:`, else the first `bash` on the login PATH (Homebrew's when its bin precedes `/bin`, the usual setup), else `/bin/bash`. The chip always names version and source; on 3.2 a hint chip says "bash 3.2 — no associative arrays, no `${x,,}`", the PIPESTATUS/`mapfile` class of run-sheet surprises.
+- **zsh** is only used for `zsh` cells. Sky's login shell being zsh no longer matters: a `bash` cell runs bash (D5).
+
+## 7. A run, end to end
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant R as RPC front door
+  participant X as Cells actor
+  participant K as Kernel
+  participant S as Run store
+  participant A as Agent session
+  C->>R: cell_run with ref, seen digest, mode, run id
+  R->>R: peer check, authorize, forward route
+  R->>X: Run
+  X->>X: read source from own record, compare digest
+  X->>S: insert run row, queued
+  X-->>C: run id, queued
+  X->>K: write run file, type run line
+  K-->>X: mark C with log offset
+  X->>S: running
+  K-->>C: live bytes over cell_attach
+  C->>K: keystrokes over cell_input
+  K-->>X: mark D with exit code
+  X->>X: render byte range with vt100, check expects, redact
+  X->>S: finish row, write output files
+  X-->>C: CellEvent finished, a hint
+  X->>A: HarnessDeliver cell_result, wake per rule
+  C->>C: read the record, fold the cell
+```
+
+### 7.1 Modes
+
+| mode | how | what runs | CWD rule |
+|---|---|---|---|
+| cell | the Run button (label text); Shift+Enter in the editor (then focus moves to the next cell) | the whole code | prologue always |
+| line | hover ▶ in the line gutter; Mod+Enter with no selection | the caret's line | prologue only if the previous run came from another cell (§5.6) |
+| selection | the "Run selection ⌘↵" pill on a selection; Mod+Enter with a selection | exactly the selected text | as line |
+| Run all | the runbook bar (chat) or the note header | every cell in order, as `cell` runs | always |
+
+- **Edited cells (F4).** A chat cell is editable (CodeMirror) until a run starts; an edit shows the "edited" badge and the press sends `edited: <code>`; line and selection runs use the edited text. The engine still checks `seen` against the presented text (the guard is against stale presentation, not against the user's own edit), runs the edited code, and records both digests with `edited = true`, operator = the pressing device.
+- **Danger cells** run only from their button: no Shift+Enter, no line, no selection, never in Run all. The keyboard shortcut on a danger cell shows "press Apply to ir-prod1 to run this".
+
+### 7.2 Run all and its stop rules
+
+The engine pass (`cell_run_all{scope, from, through}`, §5.10) runs the scope's cells in order and **stops before** a `danger` cell, a cell with a blocking lint chip (§3.7), an invalid cell, a cell whose cwd is missing, or an unarmed `after` cell; it **stops at** a non-zero exit, a missed expect, Stop, a timeout or a lost kernel. Superseded cells are skipped. The bar's label names the first boundary it can see in advance: "Run all · stops before Apply to ir-prod1"; afterwards it reads "Run all · stopped at a failed step (2/3)" with the reason one click away. A pass that contains a `review: true` cell wakes the agent once, when the pass ends (F1).
+
+### 7.3 Stop and Kill (writer's call W-p)
+
+- **Stop**: Ctrl-C into the shell PTY; SIGINT to the python group (`interrupt` frame on Windows); cancel the Monty checkout. A queued run is removed.
+- **Kill** is enabled 5 s after Stop (mock panel B): for a shell, SIGKILL to the PTY's foreground process group (`tcgetpgrp` on the master, the call 155 §6.2 already uses), so the kernel shell survives; on Windows, and for python, the kernel is killed (`dead`).
+- Stop and Kill travel on their own lane: `cell_stop` is handled by the cells actor ahead of output work and the output reader never holds a lock Stop needs — nteract's interrupt took 2–5 s under a chatty progress bar until lifecycle got its own channel (`nteract:docs/adr/execution-pipeline.md:60-98`, 171-recon-theirs.md App. C).
+
+### 7.4 stdin and live terminals
+
+- **Shell runs** show the kernel PTY live in an xterm inside the cell (§11.1). The user can type and use arrows (pulumi's "Do you want to perform this update?"), with 167's key mapping and the engine as the one query responder (fact 27). The xterm streams from the run's C mark, so the cell shows this run only; it freezes into the static view when the run ends (§8.3).
+- **Python** `input()` shows an inline input line under the output (`input_request` → `input_reply`); `getpass` masks it and the value is never stored.
+- **Monty** has no stdin.
+- Typing is the user's, never the agent's: `cell_input` is owner-only like `cell_run`, and the agent's `send` refuses cell kernels (§12).
+
+### 7.5 `expect` and the run's summary
+
+- Expectations are checked on the cleaned text (§8.3): a plain item is a substring test; `/regex/` is a Rust regex (multi-line, no look-around). Each item is met or missed. A run **succeeded** when exit is 0 and every expect is met.
+- The run's **summary** (used by folding and by `after`): a plan summary when the output has one — counts from lines like `3 to update`, `Plan: 1 to add, 2 to change, 0 to destroy` rendered as `~3 update · 0 replace · 0 delete` — else the lines that met an expect, else the last non-empty line; capped at 80 characters.
+
+### 7.6 `after` gates
+
+The engine computes `armed` and pushes it with the cell's state: the named cell's latest run succeeded, ran the cell's current code (§3.5), in the same scope (chat: the newest version of the name), and is younger than `cells.after_max_age_mins` (60). Disarmed, the button reads "after: Preview" and is disabled; armed, a green line above the code reads "armed by preview ✓ 14:31 · ~3 update · 0 replace · 0 delete". An older preview disarms: "the preview is more than 1 h old — run it again".
+
+### 7.7 Timeouts and notifications
+
+- `timeout:` sends Stop when it elapses and Kill 5 s later; the run ends `timeout`.
+- A run longer than `cells.notify_after_secs` (30) that ends while the window is not focused posts a system notification "Apply to ir-prod1 · exit 0 · 2:14" through the existing `notifyIfHidden` (`crates/desktop/ui/src/lib/notify.ts:6-12`); clicking opens the cell. The phone and the companions get it through the same client rule (155 §7.6).
