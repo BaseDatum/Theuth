@@ -51,7 +51,7 @@ const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(transparent)]
-pub struct SnapshotId(pub uuid::Uuid);
+pub struct FenceSnapshotId(pub uuid::Uuid);
 
 /// The fence languages a client draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -82,7 +82,7 @@ impl From<PictureLang> for FenceLang {
 #[serde(tag = "type")]
 pub struct FenceSnapshotRequested {
     /// Use in `answer_fence_snapshot`.
-    pub id: SnapshotId,
+    pub id: FenceSnapshotId,
     /// The fence language.
     pub lang: FenceLang,
     /// The fence body verbatim (between the fence lines).
@@ -101,7 +101,7 @@ pub struct FenceSnapshotRequested {
 #[serde(tag = "type")]
 pub struct FenceSnapshotResolved {
     /// The request.
-    pub id: SnapshotId,
+    pub id: FenceSnapshotId,
 }
 
 /// A client's answer (`crate::preview::Client`).
@@ -218,10 +218,10 @@ struct Png {
 struct Engine {
     cache: VecDeque<([u8; 32], Png)>,
     backoff_until: Option<Instant>,
-    recent: VecDeque<SnapshotId>,
+    recent: VecDeque<FenceSnapshotId>,
 }
 
-static PENDING: LazyLock<Mutex<HashMap<SnapshotId, Waiting>>> =
+static PENDING: LazyLock<Mutex<HashMap<FenceSnapshotId, Waiting>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static ENGINES: LazyLock<Mutex<HashMap<ActorId, Engine>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -233,7 +233,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// A client's answer. `true` while the request was pending: the first `Done`/`Failed`
 /// resolves it, a `Started` extends the wait. Any answer — late ones too — ends the
 /// requesting engine's no-renderer back-off. Every frontend answers through here.
-pub fn answer(id: SnapshotId, answer: FenceSnapshotAnswer) -> bool {
+pub fn answer(id: FenceSnapshotId, answer: FenceSnapshotAnswer) -> bool {
     let terminal = !matches!(answer, FenceSnapshotAnswer::Started { .. });
     let (engine, delivered) = {
         let mut map = lock(&PENDING);
@@ -313,7 +313,7 @@ async fn render_gated(
             return SnapshotOutcome::NoRenderer;
         }
     }
-    let id = SnapshotId(uuid::Uuid::now_v7());
+    let id = FenceSnapshotId(uuid::Uuid::now_v7());
     let (tx, mut rx) = mpsc::unbounded_channel();
     lock(&PENDING).insert(id, Waiting { tx, engine });
     let waiting = Unpend(id);
@@ -377,7 +377,7 @@ async fn render_gated(
 }
 
 /// Removes a request from [`PENDING`] when the round trip ends or is dropped mid-wait.
-struct Unpend(SnapshotId);
+struct Unpend(FenceSnapshotId);
 
 impl Drop for Unpend {
     fn drop(&mut self) {
@@ -560,7 +560,7 @@ mod tests {
     struct Fake {
         mode: Arc<Mutex<Mode>>,
         seen: Arc<Mutex<Vec<FenceSnapshotRequested>>>,
-        resolved: Arc<Mutex<Vec<SnapshotId>>>,
+        resolved: Arc<Mutex<Vec<FenceSnapshotId>>>,
     }
 
     impl Message<FenceSnapshotRequested> for Fake {
@@ -586,7 +586,7 @@ mod tests {
         rt: Runtime,
         mode: Arc<Mutex<Mode>>,
         seen: Arc<Mutex<Vec<FenceSnapshotRequested>>>,
-        resolved: Arc<Mutex<Vec<SnapshotId>>>,
+        resolved: Arc<Mutex<Vec<FenceSnapshotId>>>,
     }
 
     /// `got` is `want` give or take the scheduler's 100 ms.
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn wire_shapes_match_the_contract() {
-        let id = SnapshotId(uuid::Uuid::nil());
+        let id = FenceSnapshotId(uuid::Uuid::nil());
         let req = FenceSnapshotRequested {
             id,
             lang: FenceLang::JsonRender,

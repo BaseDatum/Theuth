@@ -683,7 +683,7 @@ pub trait Api {
     #[method(name = "answer_fence_snapshot")]
     async fn answer_fence_snapshot(
         &self,
-        id: artifact::snapshot::SnapshotId,
+        id: artifact::snapshot::FenceSnapshotId,
         answer: artifact::snapshot::FenceSnapshotAnswer,
     ) -> RpcResult<bool>;
     /// Every catalog model whose provider is configured.
@@ -4712,7 +4712,7 @@ impl ApiServer for Server {
 
     async fn answer_fence_snapshot(
         &self,
-        id: artifact::snapshot::SnapshotId,
+        id: artifact::snapshot::FenceSnapshotId,
         answer: artifact::snapshot::FenceSnapshotAnswer,
     ) -> RpcResult<bool> {
         Ok(artifact::snapshot::answer(id, answer))
@@ -10243,8 +10243,8 @@ mod tests {
         use super::*;
 
         use artifact::snapshot::{
-            Appearance, Client, FenceLang, FenceSnapshotAnswer, FenceSnapshotRequested,
-            FenceSnapshotResolved, SnapshotId, SnapshotOutcome,
+            Appearance, Client, FenceLang, FenceSnapshotAnswer, FenceSnapshotId,
+            FenceSnapshotRequested, FenceSnapshotResolved, SnapshotOutcome,
         };
         use kameo::actor::Spawn;
         use kameo::message::Context;
@@ -10252,7 +10252,7 @@ mod tests {
 
         /// Bus subscriber: `(resolved, id)` of every request and resolution, in order.
         #[derive(kameo::Actor)]
-        struct Capture(mpsc::UnboundedSender<(bool, SnapshotId)>);
+        struct Capture(mpsc::UnboundedSender<(bool, FenceSnapshotId)>);
 
         impl Message<FenceSnapshotRequested> for Capture {
             type Reply = ();
@@ -10270,7 +10270,7 @@ mod tests {
 
         /// A runtime with a capture on its bus and a live event feed (no subscriber at all
         /// short-circuits to "no renderer").
-        async fn harness() -> (Runtime, mpsc::UnboundedReceiver<(bool, SnapshotId)>) {
+        async fn harness() -> (Runtime, mpsc::UnboundedReceiver<(bool, FenceSnapshotId)>) {
             let (tx, rx) = broadcast::channel::<crate::bridge::Event>(4);
             artifact::preview::watch_feed(tx);
             std::mem::forget(rx);
@@ -10325,7 +10325,7 @@ mod tests {
         /// The raw `answer_fence_snapshot` result.
         async fn answer(
             methods: &jsonrpsee::Methods,
-            id: SnapshotId,
+            id: FenceSnapshotId,
             answer: &FenceSnapshotAnswer,
         ) -> bool {
             let req = format!(

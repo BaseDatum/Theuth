@@ -590,7 +590,7 @@ async fn export_bindings() {
         artifact::preview::PagePreviewRequested,
         artifact::preview::PagePreviewResolved,
         artifact::preview::PagePreviewAnswer,
-        artifact::snapshot::SnapshotId,
+        artifact::snapshot::FenceSnapshotId,
         artifact::snapshot::FenceLang,
         artifact::snapshot::FenceSnapshotRequested,
         artifact::snapshot::FenceSnapshotResolved,
