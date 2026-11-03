@@ -367,4 +367,35 @@ struct MeetingReducerTests {
         let frac = EventRef(id: "e", uid: "u", title: "S", start: "2026-10-10T10:00:00.000Z", end: "2026-10-10T10:30:00.000Z")
         #expect(MeetingReducer.eventLine(frac) == MeetingReducer.eventLine(EventRef(id: "e", uid: "u", title: "S", start: "2026-10-10T10:00:00Z", end: "2026-10-10T10:30:00Z")))
     }
+
+    // MARK: 173 — capture health
+
+    @Test func captureAppliesToTheCurrentMeetingAndClearsWhenNotLive() {
+        let bad = CaptureStatus(mic: .ok, system: .recovering(reason: .stalled, since: "2026-11-03T10:00:00Z"))
+        let s = MeetingReducer.reduce(live(), .capture(meeting: "m1", capture: bad), now: t0)
+        #expect(s.capture == bad)
+        #expect(MeetingReducer.reduce(live(), .capture(meeting: "other", capture: bad), now: t0).capture == .ok)
+        #expect(MeetingReducer.reduce(s, .state(meeting: "m1", state: .paused, degraded: []), now: t0).capture == bad)
+        #expect(MeetingReducer.reduce(s, .state(meeting: "m1", state: .done, degraded: []), now: t0).capture == .ok)
+        // Started carries the app name; the status seed carries the capture.
+        #expect(MeetingReducer.reduce(.empty, .started(meeting: "m2", session: "s2", process: proc, at: "now"), now: t0).app == "Zoom")
+        #expect(MeetingReducer.seed(MeetingStatus(state: .recording, meeting: "m1", capture: bad), now: t0).capture == bad)
+    }
+
+    @Test func captureWarningFollowsTheWebWording() {
+        let since = Date(timeIntervalSince1970: 1_793_700_000)
+        let iso = ISO8601DateFormatter().string(from: since)
+        let c = Calendar.current.dateComponents([.hour, .minute], from: since)
+        let hm = String(format: "%02d:%02d", c.hour!, c.minute!)
+        #expect(MeetingReducer.captureWarning(.ok, app: "Zoom") == nil)
+        #expect(MeetingReducer.captureWarning(CaptureStatus(mic: .ok, system: .recovering(reason: .stalled, since: iso)), app: "Zoom")
+                == "Not hearing Zoom since \(hm) — reconnecting…")
+        #expect(MeetingReducer.captureWarning(CaptureStatus(mic: .lost(reason: .permissionDenied, since: iso), system: .ok), app: nil)
+                == "Not hearing your microphone since \(hm) — Microphone permission is off (System Settings → Privacy & Security). Retrying…")
+        #expect(MeetingReducer.captureWarning(CaptureStatus(mic: .lost(reason: .silent, since: iso), system: .degraded(reason: .failed)), app: nil)
+                == "the meeting app's audio tap failed; recording all system audio instead · Not hearing your microphone since \(hm). Still silent — check the input device or Microphone permission. Retrying…")
+        #expect(MeetingReducer.captureBadge(CaptureStatus(mic: .lost(reason: .silent, since: iso), system: .recovering(reason: .stalled, since: iso))) == "reconnecting audio")
+        #expect(MeetingReducer.captureBadge(CaptureStatus(mic: .lost(reason: .permissionDenied, since: iso), system: .ok)) == "no mic permission")
+        #expect(MeetingReducer.captureBadge(.ok) == nil)
+    }
 }

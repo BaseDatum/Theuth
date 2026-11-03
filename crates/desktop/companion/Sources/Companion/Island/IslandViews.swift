@@ -155,6 +155,10 @@ struct OpenIsland: View {
             } else {
                 Strip(ui: ui, store: store, slice: s)
                     .background(DragGrip(ui: ui))
+                if let w = MeetingReducer.captureWarning(s.capture, app: s.app) {
+                    Divider()
+                    CaptureWarningRow(ui: ui, text: w)
+                }
                 if case .stop(let app, let secs)? = s.prompt {
                     Divider()
                     StopRow(ui: ui, store: store, app: app, releasedForS: secs)
@@ -325,6 +329,25 @@ struct StopRow: View {
     }
 }
 
+/// 173 — under the live strip while a capture track is not heard: `captureWarning`'s one line (the web island's tooltip
+/// wording), gone the moment both tracks are `Ok`.
+struct CaptureWarningRow: View {
+    @ObservedObject var ui: IslandUI
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.caption).foregroundColor(.paused).accessibilityHidden(true)
+            Text(text).font(.callout).foregroundColor(.secondary).lineLimit(1).truncationMode(.tail)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(text)
+        .accessibilityElement(children: .combine).accessibilityLabel(text)
+        .islandRect("capture-warning", ui)
+    }
+}
+
 /// The prompt's answers: the primary is an accent capsule (a non-key panel draws `.borderedProminent` grey), the rest the
 /// strip's capsule. The title is the accessibility label.
 struct PromptButton: View {
@@ -396,10 +419,13 @@ struct Strip: View {
     }
 
     private var badges: [String] {
-        slice.degraded.compactMap(badge) + (slice.approvalWaiting ? ["approval waiting"] : []) + (slice.listening ? ["listening…"] : [])
+        // The capture badge is the live word; a degradation that says the same (the fallback, a denied permission) is not repeated.
+        let alert = MeetingReducer.captureBadge(slice.capture)
+        return slice.degraded.compactMap(badge).filter { $0 != alert } + (alert.map { [$0] } ?? [])
+            + (slice.approvalWaiting ? ["approval waiting"] : []) + (slice.listening ? ["listening…"] : [])
     }
 
-    /// `Island.tsx:37-47`; `PermissionDenied` is a `Failed` start, never shown on a live strip.
+    /// `Island.tsx` `badge`; a `SystemAudioFallback` that ended is history, not a badge.
     private func badge(_ d: Degradation) -> String? {
         switch d {
         case .micNoAec: return "headphones recommended"
@@ -407,9 +433,11 @@ struct Strip: View {
         case .diskLow: return "disk low"
         case .nearMaxLength: return "10 min left"
         case .sttDown: return "transcription down"
+        case .systemAudioFallback(_, let ended): return ended ? nil : "system audio fallback"
+        case .permissionDenied(let p): return p == "Microphone" ? "no mic permission" : "no system audio permission"
         case .other("NoNote"): return "no note"
         case .other("DiarizationDown"): return "speaker labels down"
-        case .permissionDenied, .other: return nil
+        case .other: return nil
         }
     }
 
