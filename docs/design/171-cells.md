@@ -1,6 +1,6 @@
 # 171 — CELLS: code the user runs with one press, in chat, notes and notebooks
 
-Status: design v0 · 2026-11-03 · proposed — Sky asked for the design and ruled R1 (no licence gate; least code, highest quality); the forks F1–F6 in §0/§18 are open with their recommended defaults applied · extends 59, 109, 120, 126, 143, 144/157, 155, 163, 164, 167 (§19 lists the amendments) · recon: 171-recon-ours.md, 171-recon-theirs.md, 171-recon-field.md · mock: docs/design/assets/171-cells.html
+Status: design v0 · 2026-11-03 · proposed — Sky asked for the design and ruled R1 (no licence gate; least code, highest quality); the forks F1–F7 in §0/§18 are open with their recommended defaults applied · extends 59, 109, 120, 126, 143, 144/157, 155, 163, 164, 167 (§19 lists the amendments) · recon: 171-recon-ours.md, 171-recon-theirs.md, 171-recon-field.md · mock: docs/design/assets/171-cells.html
 
 Every `path:line` below was re-opened in `~/Develop/theuth-171` (branch `docs/171-cells`, base origin/main 6eba65b1) on 2026-11-03. nteract cites are `~/Develop/spike-171/nteract-nteract/<path>:<line>` (short form `nteract:` below) or the elements clone `nteract-elements:`. The calls this design implements are `docs/design/171-calls.md` D1–D20; the ask and the evidence are `docs/design/171-axes.md`.
 
@@ -12,7 +12,7 @@ Every `path:line` below was re-opened in `~/Develop/theuth-171` (branch `docs/17
 4. **Engine-owned kernels, one per (scope, spec) (D4).** Scope = chat session or document. Shell kernels are PTY jobs marked `cell` (invisible to `jobs()`, refused by `send`/`cancel_job`); `python` is a local interpreter running theuth's stdlib-only shim; `monty` is an isolated tool-less checkout; JavaScript and a Jupyter backend are wave 3. Idle shutdown after 12 h. Rejects Jupyter-for-everything and a process per run. `crates/tools/src/pty.rs:987`.
 5. **The user's real environment (D5).** Kernels start from the login-shell environment captured once per engine start (refreshable); the cell's language picks the program (a `bash` cell runs bash even when the login shell is zsh); theuth rc snippets emit OSC 133 marks and OSC 7 cwd so completion and exit codes are exact. Rejects the engine's launchd env and prompt-pattern waits. `crates/platform/src/env.rs:2` (only `PATH` is probed today).
 6. **Code enters by sourcing a run file (D6).** Every run writes the exact code to a file and `source`s it; a missing cwd blocks the run (never a fallback); a whole-cell run `cd`s and exports first, a line/selection run does so only when the previous run came from another cell. Rejects typing into the PTY. §5.6.
-7. **Interpreters resolve deterministically (D7).** `auto`: nearest `.venv`/`venv` → uv project → pyenv/conda → `python3` on the login PATH → none; Monty when it is sufficient, checked by its type checker at presentation. The chip shows what will run and is a menu of `interpreters(cwd)`. Rejects a kernel picker separate from the project toolchain (Zed's trap, `https://zed.dev/docs/repl`). §6.
+7. **Interpreters resolve deterministically (D7).** The agent picks: `#| python: monty` when the cell is pure computation (sufficiency checked by Monty's type checker at presentation), otherwise the project's interpreter. `auto`: nearest `.venv`/`venv` → uv project → pyenv/conda → `python3` on the login PATH → Monty only when none exists and the cell is sufficient (F7). The chip shows what will run and is a menu of `interpreters(cwd)`. Rejects a kernel picker separate from the project toolchain (Zed's trap, `https://zed.dev/docs/repl`). §6.
 8. **Jupyter's output model; the engine cleans terminals (D8).** nbformat v4 outputs plus `exit` and `expect`. Shell runs stream live into an xterm the user can type into; when the run ends the engine renders its byte range through `vt100` into plain text for the record and the agent. Record first, broadcasts are hints; Stop never waits behind output. Rejects client-side regex cleaning. `Cargo.toml:270` (`vt100 = "0.18"`).
 9. **nteract's components, theuth's tokens (D9, R1).** Adopt nteract/nteract `src/components` (production) and the elements registry where production lacks a piece; @uiw/react-codemirror (already a dependency) for the editor; xterm for live shells; HTML only inside 120's frame. New UI code is only what nothing provides: run-line, run-selection, gutter run, bash language wiring, the chat fence, the note branch. Rejects writing our own output renderers. §16.
 10. **Chat placement (D10).** Cells render inline as the agent writes them; ≥ 2 cells get a runbook bar whose Run all names its boundary; a kernel strip shows whenever a kernel lives; finished cells fold; a re-presented `name` supersedes the older cell. Rejects a side panel. Mock panel A.
@@ -34,6 +34,7 @@ Every `path:line` below was re-opened in `~/Develop/theuth-171` (branch `docs/17
 - F4 Editing agent cells in chat — **(a)** allowed, "edited" badge, the agent sees what ran.
 - F5 JavaScript — **(a)** wave 3, node/deno/bun through the same shim protocol.
 - F6 Engine restart — **(a)** 109 R1 unchanged; quit and `t update` offer "Wait for <label>" or "Stop it and quit".
+- F7 What `auto` means for Python — **(a)** the local interpreter first (nearest .venv → uv → pyenv/conda → python3), Monty only when none exists; the agent writes `python: monty` on purpose for pure computation.
 
 **Writer's calls**
 - W-a Placement: plugin crate `crates/cells` (actor `CELLS_ACTOR`), grammar and lint in `crates/surface/src/cell.rs` because agent, document, tui and the three channel crates already depend on `surface` (§15.1).
@@ -475,13 +476,14 @@ Kill (5 s after Stop) kills the process group; the kernel is `dead` and the next
 
 `auto` resolves **per scope** (the reply in chat, the note in notes), so the python cells written together share one kernel:
 
-1. **Monty**, when every `auto` python cell in the scope is Monty-sufficient (§6.2). Sky's words: "use the built in monty if it's sufficient for the use case".
-2. Otherwise the first hit walking up from the cell's cwd (to `$HOME`, or `/` when the cwd is outside it):
+1. The first hit walking up from the cell's cwd (to `$HOME`, or `/` when the cwd is outside it) — the user's real environment wins, so adding an import never flips a scope's kernel (and its variables) to a different interpreter:
    1. `.venv/bin/python` or `venv/bin/python` (`Scripts\python.exe` on Windows) — chip `.venv`;
    2. the nearest `pyproject.toml` with a `uv.lock` beside it → `uv python find` run there on the login PATH — chip `uv:<project dir name>`;
    3. `.python-version` up the tree or `PYENV_VERSION` in the login env → `pyenv which python` — chip `pyenv:<version>`; else `CONDA_PREFIX` in the login env → `$CONDA_PREFIX/bin/python` — chip `conda:<env>`;
    4. `python3` on the login PATH (`py -3` on Windows) — chip `system`.
-3. None → the cell is invalid: "No Python for this folder" with the one-press fix "Use Monty" when Monty is sufficient, else a link to the interpreter menu.
+2. None → **Monty** when every `auto` python cell in the scope is Monty-sufficient (§6.2), chip `auto → Monty`; else the cell is invalid: "No Python for this folder" with a link to the interpreter menu.
+
+Monty is otherwise chosen on purpose: the agent writes `#| python: monty` when the cell is pure computation on the standard library (the §10.1 rule) — Sky's words, "the ability for the agent to select a local python interpreter if one exists or use the built in monty if it's sufficient for the use case". Fork F7 (§18) asks whether `auto` itself should prefer Monty.
 
 No discovery runs anything but `uv python find`/`pyenv which` and each candidate's `--version` (cached per path and mtime). Today only `find_cpython` on the engine PATH exists (fact 41); the new code is `crates/cells/src/interp.rs`.
 
@@ -1238,11 +1240,13 @@ Tools, MCP, `tools.policy` and approvals untouched (diff shows no change in `reg
 | F4 editing in chat | may Sky edit an agent cell before running it? | "ran exactly what the agent wrote" vs fixing a flag in place | (a) yes, "edited" badge, the agent sees what ran; (b) read-only in chat | **(a)** |
 | F5 JavaScript | when do JS cells come? | Sky said "maybe even javascript"; same shim protocol | (a) wave 3; (b) wave 2; (c) never | **(a)** |
 | F6 engine restart | a cell killed mid-`pulumi up` leaves a locked stack; 109 R1 says jobs die with the engine (`docs/design/109-durability.md:42`, keeper not chosen `:28`) | the quit/update case is the common one and is avoidable | (a) keep R1; quit and `t update` offer "Wait for <label>" / "Stop it and quit"; crash = lost; (b) the `t jobd` keeper for cell kernels; (c) only "lost" | **(a)** — least code, ruling intact |
+| F7 `auto` for Python | when the agent writes no `#\| python:` (or writes `auto`), what runs? | Sky: "select a local python interpreter if one exists or use the built in monty if it's sufficient"; a Monty-first `auto` silently moves a scope to another kernel (losing its variables) the moment one cell imports pandas | (a) local interpreter first, Monty only when none exists, the agent picks Monty explicitly when sufficient; (b) Monty first whenever every `auto` cell in the scope is sufficient | **(a)** — predictable, the user's environment wins |
 
 Genuinely open, found while writing:
-1. **`auto` per scope** (§6.1) can flip a note's python kernel when one cell gains a pandas import; the chip shows it, but Sky may prefer `auto` to mean "the local interpreter, Monty only when there is none".
+1. **`auto` per scope** (§6.1) resolves once per scope so the python cells written together share one kernel; a scope whose cells disagree (one names `.venv`, another `monty`) runs two kernels, and the chips show both.
 2. **Plan-summary extraction** (§7.5) recognises pulumi and terraform shapes only; other tools fall back to expect lines.
-3. **SSO logins that open a browser** (`aws sso login`) open it on the engine's machine, not the phone; a phone press of such a cell needs the engine's desktop. No mitigation in v1 beyond the cell's own output.
+3. **Note-kernel session ids (W-b)** — verified only in part: `sessions.sqlite` does not turn foreign keys on (only `crates/codeindex/src/store.rs:142` and `crates/double/src/store.rs:185` call `.foreign_keys(true)`), so a `jobs` row whose `session_id` is a kernel id inserts even though `0033_durability.sql:78` declares `REFERENCES sessions(id)`; W2's contract worker confirms that nothing else resolves `jobs.session_id` to a live session — the boot reaper, 139's replication of `pty_screens` (`crates/agent/src/store/capture.rs:19`) to peers that never had the session — before the kernel id is frozen.
+4. **SSO logins that open a browser** (`aws sso login`) open it on the engine's machine, not the phone; a phone press of such a cell needs the engine's desktop. No mitigation in v1 beyond the cell's own output.
 
 ## 19. Amendments to other docs
 
