@@ -587,3 +587,90 @@ The engine computes `armed` and pushes it with the cell's state: the named cell'
 
 - `timeout:` sends Stop when it elapses and Kill 5 s later; the run ends `timeout`.
 - A run longer than `cells.notify_after_secs` (30) that ends while the window is not focused posts a system notification "Apply to ir-prod1 · exit 0 · 2:14" through the existing `notifyIfHidden` (`crates/desktop/ui/src/lib/notify.ts:6-12`); clicking opens the cell. The phone and the companions get it through the same client rule (155 §7.6).
+
+## 8. Outputs
+
+### 8.1 The model (D8)
+
+A run's outputs are a list of nbformat v4 outputs plus two theuth fields — the shape nteract's `OutputArea` consumes (`nteract-elements:registry/cell/OutputArea.tsx:33-50` per 171-recon-theirs.md §1.5):
+
+| output | produced by | contents |
+|---|---|---|
+| `stream` | shells (one, the static render), python, Monty | `name: stdout\|stderr`, `text` (ANSI kept for the user's view) |
+| `display_data` | python `display()`, matplotlib figures | `data: {mime: payload}`, `metadata` |
+| `execute_result` | python / Monty last expression | `data`, `metadata`, `execution_count` |
+| `error` | python / Monty exceptions | `ename`, `evalue`, `traceback[]` |
+| run `exit` | every run | `code` \| `signal` \| `timeout` \| `killed` \| `lost` \| `cancelled`, `secs` |
+| run `expect` | runs with `expect` | `[{item, met}]` |
+
+Live shell bytes are not outputs: they stream to the xterm (§7.4); `JobOutput` events stay what they are, coalesced and lossy (fact 24), and nothing here reads them.
+
+### 8.2 MIME handling
+
+Priority: `text/html`, `image/svg+xml`, `image/png`, `image/jpeg`, `text/markdown`, `application/json`, `text/plain` (nteract's `mime-priority.ts`, `nteract:src/components/outputs/mime-priority.ts`). Where each renders:
+
+| MIME | renders in | why |
+|---|---|---|
+| `text/plain`, ANSI streams | main DOM (`ansi-output`) | text only |
+| `image/png`, `image/jpeg` | main DOM `<img>` from the run's files | no script |
+| `application/json` | main DOM JSON tree | no script |
+| `text/html`, `image/svg+xml`, `text/markdown` | **120's sandboxed frame only** (`HtmlPage`, `crates/desktop/ui/src/components/chat/HtmlPage.tsx:81`) — `theuth-page:` scheme, `sandbox="allow-scripts allow-forms"`, never `allow-same-origin` (`docs/design/120-inline-pages.md:267-270`) | program output can carry script; agent-authored HTML must not reach the network or the app (nteract's own frame keeps `connect-src *`, 171-recon-theirs.md §6.1 Avoid) |
+| plotly, vega, widgets | not in v1: the `text/plain` fallback | wave 3 if asked |
+
+### 8.3 Terminal bytes → static view and agent text
+
+At the D mark the cells actor copies the log range `[C, D)` to `runs/<run>/term.log` and feeds it to a fresh render-only `vt100::Parser` sized like the kernel PTY with **10 000 scrollback rows** (nteract's figure, fact 44; the live parser keeps 512, fact 25). Paging the scrollback with `set_scrollback`, as the PTY layer's history pages do, it writes:
+
+- `out.ansi` — rows with SGR attributes (`rows_formatted`) for the static view (`ansi-output`, colours as theuth tokens, §11.7);
+- `out.txt` — plain text (`contents`), trailing blanks trimmed: carriage returns resolved, spinner frames collapsed to their last state, every escape gone. This is the record's text, the input to `expect`, the agent's copy (after §9.4) and the replicated text (F2).
+
+Output past 10 000 rows keeps its last 10 000 in the render and says "first N lines are in the log". The agent never strips escapes again (§1).
+
+### 8.4 The run store (writer's call W-f)
+
+`~/.theuth/cells/cells.sqlite`, engine-local (runs are processes on this engine; replication of the latest note output is §13.2):
+
+```sql
+CREATE TABLE IF NOT EXISTS cell_runs (
+  id TEXT PRIMARY KEY,              -- r_<ulid>, minted by the pressing client
+  scope TEXT NOT NULL,              -- session:<uuid> | doc:<id>
+  cell TEXT NOT NULL,               -- CellRef JSON
+  lineage TEXT,                     -- (scope, name) key when named
+  mode TEXT NOT NULL,               -- cell | line | selection
+  pass TEXT,                        -- run-all pass id
+  kernel TEXT NOT NULL,             -- KernelId JSON
+  interpreter TEXT NOT NULL,        -- "bash 5.2 (Homebrew) /opt/homebrew/bin/bash"
+  cwd TEXT NOT NULL,
+  env_names TEXT NOT NULL,          -- JSON array of names, never values
+  presented_sha TEXT NOT NULL,      -- digest the user saw
+  code_sha TEXT NOT NULL,           -- digest of what ran
+  edited INTEGER NOT NULL,
+  pressed_by TEXT NOT NULL,         -- device id + desktop|web|phone
+  typed TEXT,                       -- JSON {device: keystroke count}, never contents
+  state TEXT NOT NULL,              -- queued|running|done|failed|stopped|timeout|killed|lost|cancelled
+  exit INTEGER, signal TEXT, secs REAL,
+  expect TEXT,                      -- JSON [{item, met}]
+  summary TEXT,
+  output_sha TEXT, output_bytes INTEGER,
+  log TEXT, log_from INTEGER, log_to INTEGER,   -- job log path and byte range (shells)
+  queued_ms INTEGER NOT NULL, started_ms INTEGER, ended_ms INTEGER,
+  delivery TEXT,                    -- joined | parked | woke | none
+  consumed_ms INTEGER               -- the parked result joined a turn
+);
+CREATE INDEX IF NOT EXISTS cell_runs_scope ON cell_runs(scope, queued_ms);
+CREATE INDEX IF NOT EXISTS cell_runs_lineage ON cell_runs(lineage, ended_ms);
+```
+
+Files under `~/.theuth/cells/runs/<run>/`: `code` (the code that ran, placeholders unexpanded), `term.log` (shells), `out.ansi`, `out.txt`, `outputs.json` (python/Monty nbformat list), `img-<n>.png`. Kernel scratch (`kernels/<kernel>/run.sh`) is deleted per run. **Retention**: runs older than `cells.retention_days` (30) are deleted except the latest run of every cell (by lineage or `CellRef`), plus a `cells.store_max_mb` (2048) cap that evicts the oldest non-latest runs first. The audit fields of D17 are all columns above.
+
+### 8.5 Rich outputs
+
+Images render inline from the run's files (fetched by `cell_output_file`); HTML, SVG and markdown outputs (a DataFrame's `_repr_html_`, a matplotlib SVG) go through `page_put` into the 120 frame, themed by 120's bridge; the agent gets the `text/plain` of each bundle only. Guests get text only in v1 (F2 a); images for guests are wave 3.
+
+### 8.6 Long output
+
+While running: the xterm scrolls (its own scrollback). Finished: the static view shows the last `cells.ui_tail_lines` (200) lines with "show all 4 812 lines" (paged through `cell_output`), a copy button (clean text) and "Open log". The fold summary (§11.1) never grows with output.
+
+### 8.7 Ordering contract
+
+The record is written before anything is announced: (1) output files and the finished row are committed, (2) then `CellEvent::Finished` is published, (3) then the `<cell_result>` is delivered. Clients treat events as hints and read the record (`cell_run_get`); a reconnecting client calls `cell_state(scope)` and never replays events. This is nteract's rule — status written after the last output, broadcasts advisory — learnt from an agent reading three of five outputs (`nteract:docs/adr/execution-pipeline.md:30-54`).
