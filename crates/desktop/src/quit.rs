@@ -1,5 +1,6 @@
 //! 163: the graceful quit. Every quit entry (tray and app menu Quit, `theuth://quit`, Settings › Install and
-//! restart) lands in [`request`]: the main webview shows its shutdown overlay on `quit-requested`, runs RPC
+//! restart; 166: Dock › Quit and any other user `terminate:`, `dock.rs`) lands in [`request`]: the main
+//! webview shows its shutdown overlay on `quit-requested`, runs RPC
 //! `shutdown` when it owns the engine and acks with `quit_ack`. The ack — or [`ACK_TIMEOUT`] without one —
 //! starts the quit worker, which stops the companion and then the engine on its own thread, reports each
 //! step as `quit-progress` and calls [`update::exit`]. The main thread never waits: a window whose run loop
@@ -128,6 +129,11 @@ pub fn request(app: &AppHandle) {
 /// `quit_ack`, the ack timeout or a webview that cannot be told: the worker, once.
 pub fn start(app: &AppHandle) {
     app.state::<Quit>().start(|| app_plan(app));
+}
+
+/// A quit is under way: 166's Dock click and ⌘Tab leave a hidden main window hidden then (D6).
+pub fn requested(app: &AppHandle) -> bool {
+    app.state::<Quit>().requested.load(SeqCst)
 }
 
 /// `RunEvent::Exit`. D3: every window goes first, so an exit that bypassed the handshake (logout, a system
