@@ -31,7 +31,21 @@ export const KILL_AFTER_MS = 5000
  * latest cell of a reply stays open, §11.1), the `after:` cell's label, the queue position, a refusal or read error
  * to show, a keyboard hint, and `pending` — the reply is still being written ("ready when the reply ends", §4.1).
  */
-export type CellExtras = { open?: boolean; afterLabel?: string; queuePos?: number; notice?: string | null; hint?: string | null; pending?: boolean }
+export type CellExtras = {
+  open?: boolean
+  afterLabel?: string
+  queuePos?: number
+  notice?: string | null
+  hint?: string | null
+  pending?: boolean
+  // 171:U2-ADD — note hosts: the button's text ("Run Alice's edit"), notice rows of their own (member diff, the code
+  // that ran), the interpreter chip as a menu, content under the editor (guest output), a footer item ("ran 14:02").
+  runText?: string
+  rows?: ReactNode
+  chip?: ReactNode
+  below?: ReactNode
+  footer?: ReactNode
+}
 export const CellExtras = createContext<CellExtras>({})
 
 /** DOM id of a cell (the "Replaced by a newer version ↓" link, `?cell=` scroll). */
@@ -83,7 +97,8 @@ function StateDot({ view }: { view: CellViewState }) {
   }
 }
 
-function Chip({ children, tone, mono, title }: { children: ReactNode; tone?: 'danger' | 'warning' | 'success' | 'info'; mono?: boolean; title?: string }) {
+// 171:U2-ADD exported (Chip, Notice): note cells draw their own rows with the same look.
+export function Chip({ children, tone, mono, title }: { children: ReactNode; tone?: 'danger' | 'warning' | 'success' | 'info'; mono?: boolean; title?: string }) {
   return (
     <Badge
       variant="outline"
@@ -102,7 +117,7 @@ function Chip({ children, tone, mono, title }: { children: ReactNode; tone?: 'da
   )
 }
 
-function Notice({ tone, children }: { tone: 'danger' | 'warning' | 'success' | 'info' | 'muted'; children: ReactNode }) {
+export function Notice({ tone, children }: { tone: 'danger' | 'warning' | 'success' | 'info' | 'muted'; children: ReactNode }) {
   return (
     <div
       className={cn(
@@ -342,7 +357,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
           )}
         </div>
       )
-    const text = view === 'disarmed' ? `after: ${extras.afterLabel ?? o.after}` : view === 'lost' ? 'Run again' : label
+    const text = view === 'disarmed' ? `after: ${extras.afterLabel ?? o.after}` : view === 'lost' ? 'Run again' : (extras.runText ?? label) /* 171:U2-ADD */
     const reason = view === 'disarmed' ? `arms when ${extras.afterLabel ?? o.after} has succeeded on its current code` : extras.pending ? 'ready when the reply ends' : undefined
     const disabled = view === 'disarmed' || !!extras.pending || !!cwdMissing
     return (
@@ -366,7 +381,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       <StateDot view={view} />
       <span className={cn('mr-1 text-sm font-medium', view === 'superseded' && 'text-fg-tertiary')}>{title}</span>
       {o.danger && <Chip tone="danger">danger</Chip>}
-      <Chip>{state?.interpreter ? [state.interpreter.kind, state.interpreter.version, `(${state.interpreter.source})`].filter(Boolean).join(' ') : cell.lang}</Chip>
+      {extras.chip ?? /* 171:U2-ADD */ <Chip>{state?.interpreter ? [state.interpreter.kind, state.interpreter.version, `(${state.interpreter.source})`].filter(Boolean).join(' ') : cell.lang}</Chip>}
       {o.cwd && (
         <Chip mono title={o.cwd} tone={cwdMissing ? 'warning' : undefined}>
           {middleEllipsis(o.cwd)}
@@ -440,6 +455,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       {extras.pending && <Notice tone="muted">ready when the reply ends</Notice>}
       {extras.notice && <Notice tone="danger">{extras.notice}</Notice>}
       {extras.hint && <Notice tone="info">{extras.hint}</Notice>}
+      {extras.rows /* 171:U2-ADD */}
     </>
   )
 
@@ -453,6 +469,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       {run.edited && <i>edited</i>}
       {picked && <span>run of {clock(picked.queued_ms)}</span>}
       {(run.masked ?? 0) > 0 && <span>{run.masked} masked for theuth</span>}
+      {extras.footer /* 171:U2-ADD */}
       {(run.private ?? o.private) && <span>theuth got exit and expect only</span>}
       <span className="ml-auto flex items-center gap-0.5">
         {!readOnly && view !== 'guest' && (
@@ -542,26 +559,33 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
         // Chat cells have no state lane: the notebook column insets collapse to the card's padding.
         className="[--cell-content-column-inset:0px] sm:[--cell-content-column-inset:0px] [--cell-output-row-inset:0.75rem] sm:[--cell-output-row-inset:0.75rem]"
         isPreviousCellFromFocused
+        // 171:U2-ADD — the chrome is `contentEditable={false}` (a no-op in chat): inside a note the cell is a BlockNote
+        // node view and only the editor slot (BlockNote's own code content) may take the caret.
         codeContent={
           <>
-            {header}
-            {notices}
-            {raw && (
-              <pre className="border-y border-border-subtle px-3 py-1 font-mono text-xs text-fg-tertiary">
-                {cell.header.map((h) => `#| ${h.key}${h.value === null ? '' : `: ${h.value}`}`).join('\n')}
-              </pre>
-            )}
+            <div contentEditable={false}>
+              {header}
+              {notices}
+              {raw && (
+                <pre className="border-y border-border-subtle px-3 py-1 font-mono text-xs text-fg-tertiary">
+                  {cell.header.map((h) => `#| ${h.key}${h.value === null ? '' : `: ${h.value}`}`).join('\n')}
+                </pre>
+              )}
+            </div>
             <div className={cn('border-t border-border-subtle bg-layer-2/40', view === 'superseded' && 'pointer-events-none')}>{editor}</div>
-            {phoneDanger && primary && <div className="p-2">{primary}</div>}
-            {footer}
-            {folded === false && run && view === 'done' && (
-              <Button variant="ghost" size="sm" className="mx-2 mb-1 h-7 px-2 text-xs" onClick={() => setFolded(true)}>
-                fold
-              </Button>
-            )}
+            <div contentEditable={false}>
+              {extras.below}
+              {phoneDanger && primary && <div className="p-2">{primary}</div>}
+              {footer}
+              {folded === false && run && view === 'done' && (
+                <Button variant="ghost" size="sm" className="mx-2 mb-1 h-7 px-2 text-xs" onClick={() => setFolded(true)}>
+                  fold
+                </Button>
+              )}
+            </div>
           </>
         }
-        outputContent={output ?? undefined}
+        outputContent={output ? <div contentEditable={false}>{output}</div> : undefined}
       />
       <p aria-live="polite" className="sr-only">
         {announce}

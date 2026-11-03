@@ -4,6 +4,7 @@ import { AppWindow, BookOpen, History as HistoryIcon, MessageSquare, MessageSqua
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { BoardReader } from '@/components/board/BoardReader'
+import { NoteKernelPill } from '@/components/cells/NoteKernelPill'
 import { prefillDraft } from '@/components/chat/Composer'
 import { Action, DocumentPage, ownedByMeeting, useNotebookBack } from '@/components/editor/DocumentPage'
 import { type LiveDocument, useDocument } from '@/components/editor/useDocument'
@@ -186,6 +187,7 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
           />
           {!deleted && <DictationButton field={titleInput} />}
           {wayBack.chip}
+          {!deleted && <NoteKernelPill doc={id} />}
         </span>
       }
       actions={

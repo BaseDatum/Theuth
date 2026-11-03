@@ -3,12 +3,17 @@ import { withCollaboration } from '@blocknote/core/yjs'
 import { SideMenuExtension, filterSuggestionItems, insertOrUpdateBlockForSlashMenu } from '@blocknote/core/extensions'
 import {
   AddBlockButton,
+  BlockColorsItem,
   DragHandleMenu,
+  RemoveBlockItem,
   SideMenu,
   SideMenuController,
   type SideMenuProps,
   SuggestionMenuController,
+  TableColumnHeaderItem,
+  TableRowHeaderItem,
   getDefaultReactSlashMenuItems,
+  useBlockNoteEditor,
   useComponentsContext,
   useCreateBlockNote,
   useDictionary,
@@ -18,8 +23,11 @@ import {
 import { BlockNoteView } from '@blocknote/shadcn'
 import '@blocknote/shadcn/style.css'
 import { FRAGMENT, createDocumentSchema, links } from '@theuth/documents/schema'
-import { GripVertical, Sparkles, Workflow } from 'lucide-react'
+import { GripVertical, Sparkles, SquareTerminal, Workflow } from 'lucide-react'
 import { type SyntheticEvent, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { cellOf } from '@/components/cells/grammar'
+import { NoteHost } from '@/components/cells/note-context'
+import { CELL_STARTER, makeCell, makePlain, runnableLang } from '@/components/cells/note-edit'
 import { useOpenCite, usePulseBlock } from '@/components/chat/Citations'
 import { codeBlock } from '@/components/editor/CodeBlock'
 import { frontmatterBlock } from '@/components/editor/FrontmatterBlock'
@@ -28,6 +36,7 @@ import { revealExtension } from '@/components/editor/reveal'
 import { DictationButton } from '@/components/ui/dictation'
 import { parseTheuthHref } from '@/lib/citations'
 import type { AgentPresence, DocStatus, EngineProvider } from '@/lib/doc/provider'
+import type { Api } from '@/rpc/api'
 import { usePointerCoarse } from '@/lib/mobile'
 import { deviceName } from '@/lib/platform'
 import { subscribeDark } from '@/lib/theme'
@@ -91,18 +100,48 @@ function DragHandle() {
           {...({ onPointerDown: preventBaseUI, onMouseDown: preventBaseUI } as object)}
         />
       </Components.Generic.Menu.Trigger>
-      <DragHandleMenu />
+      <DragHandleMenu>
+        <RemoveBlockItem>{dict.drag_handle.delete_menuitem}</RemoveBlockItem>
+        <BlockColorsItem>{dict.drag_handle.colors_menuitem}</BlockColorsItem>
+        <TableRowHeaderItem>{dict.drag_handle.header_row_menuitem}</TableRowHeaderItem>
+        <TableColumnHeaderItem>{dict.drag_handle.header_column_menuitem}</TableColumnHeaderItem>
+        <CellItems />
+      </DragHandleMenu>
     </Components.Generic.Menu.Root>
   )
 }
 
-/** The default side menu, except on the frontmatter block: no drag handle, no block menu, no "+" (59 §4.5). */
+/**
+ * 171 §4.2: the block menu's cell toggle on a code block — **Make it a cell** on a runnable language (shells, python)
+ * without a header, **Make it plain code** on a cell. Each is one `updateBlock`: one transaction, one undo step.
+ */
+function CellItems() {
+  const Components = useComponentsContext()!
+  const editor = useBlockNoteEditor()
+  const block = useExtensionState(SideMenuExtension, { selector: (s) => s?.block })
+  if (!block || block.type !== 'codeBlock' || !editor.isEditable) return null
+  const code = { id: block.id, props: { language: String(block.props.language ?? '') }, content: block.content }
+  const text = Array.isArray(block.content) ? block.content.map((c) => ('text' in c ? c.text : '')).join('') : ''
+  if (cellOf(code.props.language, text))
+    return (
+      <Components.Generic.Menu.Item className="bn-menu-item" onClick={() => makePlain(editor, code)}>
+        Make it plain code
+      </Components.Generic.Menu.Item>
+    )
+  if (!runnableLang(code.props.language)) return null
+  return (
+    <Components.Generic.Menu.Item className="bn-menu-item" onClick={() => makeCell(editor, code)}>
+      Make it a cell
+    </Components.Generic.Menu.Item>
+  )
+}
+
+/** The default side menu, except on the frontmatter block: no drag handle, no block menu, no "+" (59 §4.5). The block menu adds the cell toggle (171 §4.2). */
 function DocSideMenu(props: SideMenuProps) {
   const type = useExtensionState(SideMenuExtension, { selector: (s) => s?.block?.type })
   return type === 'frontmatter' ? null : (
     <SideMenu {...props}>
       <AddBlockButton />
-      {/* 171:U2 "Make it a cell" / "Make it plain code" on runnable-language code blocks (171 §4.2) */}
       <DragHandle />
     </SideMenu>
   )
@@ -126,12 +165,15 @@ export function Editor({
   className,
   onAsk,
   dense,
+  guest,
 }: {
   provider: EngineProvider
   status: DocStatus
   className?: string
   onAsk?: (block: string) => void
   dense?: boolean
+  /** 171 §13: a share-link member's api — note cells show the replicated latest run and never run. */
+  guest?: Api
 }) {
   const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'))
   // 59 §10: fingers get the fixed toolbar instead of BlockNote's floating menus; labels on remote cursors need no hover.
@@ -183,7 +225,15 @@ export function Editor({
         icon: <Workflow className="size-4" />,
         onItemClick: () => insertOrUpdateBlockForSlashMenu(editor, { type: 'codeBlock', props: { language: 'mermaid' }, content: DIAGRAM_STARTER }),
       },
-      // 171:U2 slash item "Cell": { type: 'codeBlock', props: { language: 'bash' }, content: '#| name: step-1' } (171 §4.2)
+      {
+        key: 'cell',
+        title: 'Cell',
+        subtext: 'Code you run with one press',
+        group: editor.dictionary.slash_menu.code_block.group,
+        aliases: ['cell', 'run', 'runnable', 'script', 'shell'],
+        icon: <SquareTerminal className="size-4" />,
+        onItemClick: () => insertOrUpdateBlockForSlashMenu(editor, CELL_STARTER),
+      },
       ...(onAsk
         ? [
             {
@@ -200,7 +250,9 @@ export function Editor({
     ],
     [onAsk, editor],
   )
+  const host = useMemo(() => ({ provider, guest: guest ?? null }), [provider, guest])
   return (
+    <NoteHost value={host}>
     <div
       className={cn('flex min-h-0 flex-1 flex-col', className)}
       data-toolbar={toolbar || undefined}
@@ -268,6 +320,7 @@ export function Editor({
         )}
       </footer>
     </div>
+    </NoteHost>
   )
 }
 
