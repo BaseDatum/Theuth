@@ -66,10 +66,10 @@ use crate::lifecycle::{
 use crate::loop_::{
     CancelPeerScope, CancelTurn, CompactNow, CompactionOverride, ContextBreakdownNow,
     ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning, PEER_INTAKE, PeerInput,
-    QueuedInputs, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn, ResumedTurn, Session,
-    SessionState, SetBudgetNow, SetCompactionOverride, SetMemoryNow, SetPendingEffort, SetTitlePin,
-    SetToolsetOverride, SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput,
-    WithdrawInput, prompt_blocks, text_of,
+    QueuedInputs, QuietInput, RedoTurn, RemoveContextNow, ResetRuntimeNow, RestartTurn,
+    ResumedTurn, Session, SessionState, SetBudgetNow, SetCompactionOverride, SetMemoryNow,
+    SetPendingEffort, SetTitlePin, SetToolsetOverride, SuppressPeerInputs, SwitchModel, TrimTurn,
+    UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -262,6 +262,8 @@ pub struct Agents {
     seen: HashMap<InputId, (SessionId, Instant)>,
     /// 145 §0.3: sessions with a live talk — its spoken window and what it parked.
     talk: HashMap<SessionId, Talk>,
+    /// L1 (171 inv. 3): user-cell kernel jobs, fed by [`CellJobWatch`].
+    cell_jobs: Arc<CellJobs>,
     /// Unanswered approvals per session: `(id, tool)` (design doc 19 §2.1).
     approvals: HashMap<SessionId, (ApprovalId, String, u64)>,
     /// Session search index (design doc 26), rebuilt after the rows change.
@@ -1526,6 +1528,23 @@ impl Agents {
         wrapped: String,
         scope: Option<Uuid>,
     ) {
+        self.inject_as(to, from, text, wrapped, scope, true).await;
+    }
+
+    /// [`Self::inject`] with 171 §9.3's wake rule: `wake: false` parks the result in the
+    /// session actor until its next turn opens for any reason ([`QuietInput`]), holding no
+    /// ledger ticket meanwhile; a session owned elsewhere gets the [`QUIET_KIND`] marker on
+    /// its `harness_outbox` row so the owner parks it too. An ACP runner has no quiet
+    /// input: the result wakes it as before.
+    async fn inject_as(
+        &mut self,
+        to: SessionId,
+        from: &str,
+        text: String,
+        mut wrapped: String,
+        scope: Option<Uuid>,
+        wake: bool,
+    ) {
         if let Some(owner) = self.remote_owner(to).await {
             let me = self.store.engine();
             let note = format!("(produced on {me} after the session moved to {owner})");
@@ -1535,7 +1554,11 @@ impl Agents {
             let row = store::harness::HarnessRow {
                 id: Uuid::new_v4().to_string(),
                 session: to.to_string(),
-                kind: from.to_owned(),
+                kind: if wake {
+                    from.to_owned()
+                } else {
+                    format!("{QUIET_KIND}{from}")
+                },
                 origin: me.to_owned(),
                 text: format!("{text}\n{note}"),
                 wrapped,
@@ -1553,6 +1576,21 @@ impl Agents {
                 }
             }
             return;
+        }
+        if !wake && scope.is_none() {
+            match self.quiet(to, wrapped).await {
+                Ok(()) => {
+                    self.rt
+                        .publish(AgentEvent::MessageDelivered {
+                            session: to,
+                            from: from.to_string(),
+                            text,
+                        })
+                        .await;
+                    return;
+                }
+                Err(w) => wrapped = w,
+            }
         }
         let ticket = self.ledger.admit(to, InputOrigin::Automatic, None);
         if let Some(scope) = scope
@@ -1580,6 +1618,24 @@ impl Agents {
                 text,
             })
             .await;
+    }
+
+    /// Hand `wrapped` to `sid`'s native session actor as a [`QuietInput`]; `Err` gives it
+    /// back when no native actor can take it (a queued child, a draining session, an ACP
+    /// runner, a closed mailbox) and the caller routes it as a waking input instead.
+    async fn quiet(&mut self, sid: SessionId, wrapped: String) -> Result<(), String> {
+        if self.queued.contains_key(&sid) || self.draining_sessions.contains_key(&sid) {
+            return Err(wrapped);
+        }
+        let Ok((_, LiveActor::Native(actor))) =
+            self.session(Some(sid), None, None, (None, None)).await
+        else {
+            return Err(wrapped);
+        };
+        actor
+            .tell(QuietInput(wrapped))
+            .await
+            .map_err(|e| e.msg().map_or_else(String::new, |QuietInput(w)| w))
     }
 
     /// 145 §0.3: an `Automatic` input for `sid` waits for the spoken window —
@@ -2750,8 +2806,9 @@ pub struct HarnessDeliver {
     pub text: String,
     /// The body as the model reads it.
     pub wrapped: String,
-    /// 171 §9.3: false = park until the session's next turn; A1 implements
-    /// parking; ignored for now.
+    /// 171 §9.3 (W-m): `false` = quiet — parked until the session's next turn opens
+    /// for any reason, which it joins in arrival order; it never starts one itself.
+    /// A running turn takes it at its next round either way.
     #[serde(default = "wake_default")]
     pub wake: bool,
 }
@@ -2760,11 +2817,19 @@ fn wake_default() -> bool {
     true
 }
 
+/// 171 §9.3: the `kind` prefix that carries `wake: false` through `harness_outbox` and
+/// `Msg::Harness` (139), whose rows and frames have no wake field.
+pub const QUIET_KIND: &str = "quiet ";
+
 impl Message<HarnessDeliver> for Agents {
     type Reply = ();
 
     async fn handle(&mut self, m: HarnessDeliver, _: &mut Context<Self, Self::Reply>) {
-        self.inject(m.session, &m.kind, m.text, m.wrapped, None)
+        let (kind, wake) = match m.kind.strip_prefix(QUIET_KIND) {
+            Some(kind) => (kind, false),
+            None => (m.kind.as_str(), m.wake),
+        };
+        self.inject_as(m.session, kind, m.text, m.wrapped, None, wake)
             .await;
     }
 }
@@ -2856,6 +2921,69 @@ impl Message<Admit> for Agents {
     }
 }
 
+/// L1 (171 §12.1 inv. 3): the reserved `start` name prefix of a user-cell kernel job.
+pub const CELL_JOB_PREFIX: &str = "cell:";
+
+/// Per session, the job ids whose `JobEvent::Started` carried a [`CELL_JOB_PREFIX`] name:
+/// user-cell kernels, whose end or silence is never model input (`<job_result>`,
+/// `<job_idle>`) — the cells actor delivers `<cell_result>` instead.
+#[derive(Default)]
+pub(crate) struct CellJobs(parking_lot::Mutex<HashMap<SessionId, HashSet<JobId>>>);
+
+impl CellJobs {
+    /// Remember a cell job announced by `ev`.
+    pub(crate) fn observe(&self, ev: &JobEvent) {
+        if let JobEvent::Started {
+            session,
+            id,
+            name: Some(name),
+            ..
+        } = ev
+            && name.starts_with(CELL_JOB_PREFIX)
+        {
+            self.0
+                .lock()
+                .entry(*session)
+                .or_default()
+                .insert(id.clone());
+        }
+    }
+
+    /// Whether `id` of `session` is a cell job (still running).
+    fn is_cell(&self, session: SessionId, id: &JobId) -> bool {
+        self.0
+            .lock()
+            .get(&session)
+            .is_some_and(|ids| ids.contains(id))
+    }
+
+    /// [`Self::is_cell`] for a job that ended; forgets it.
+    fn finished(&self, session: SessionId, id: &JobId) -> bool {
+        let mut map = self.0.lock();
+        let Some(ids) = map.get_mut(&session) else {
+            return false;
+        };
+        let hit = ids.remove(id);
+        if ids.is_empty() {
+            map.remove(&session);
+        }
+        hit
+    }
+}
+
+/// The bus subscriber that feeds [`CellJobs`], so the supervisor itself stays off the
+/// busy `JobEvent` stream (finished jobs reach it through `Settle`).
+#[derive(kameo::Actor)]
+struct CellJobWatch(Arc<CellJobs>);
+
+impl Message<JobEvent> for CellJobWatch {
+    type Reply = ();
+
+    async fn handle(&mut self, ev: JobEvent, _: &mut Context<Self, Self::Reply>) {
+        self.0.observe(&ev);
+    }
+}
+
 impl Agents {
     /// Settlement (47 §4.1). A finished job's result (14 §3) becomes a
     /// `<job_result>` harness input here — the *only* model-delivery path; the
@@ -2869,17 +2997,22 @@ impl Agents {
         match m {
             Settle::Finished { op } => self.ledger.retire_op(op),
             Settle::FinishedWithResult { op, result } => {
-                if let JobEvent::Finished {
-                    session,
-                    id,
-                    command,
-                    exit,
-                    secs,
-                    output,
-                    inline: false,
-                    kind,
-                    ..
-                } = result
+                // L1 (171 inv. 3): a user-cell kernel ending is the cells actor's
+                // `<cell_result>`, never a `<job_result>`.
+                let cell = matches!(&result, JobEvent::Finished { session, id, .. }
+                    if self.cell_jobs.finished(*session, id));
+                if !cell
+                    && let JobEvent::Finished {
+                        session,
+                        id,
+                        command,
+                        exit,
+                        secs,
+                        output,
+                        inline: false,
+                        kind,
+                        ..
+                    } = result
                 {
                     // Same cap and dir as tool results in the loop (07 §6).
                     let text = spill::cap(
@@ -2995,6 +3128,14 @@ impl Agents {
         };
         if self.ledger.op_owner(op).is_none() {
             tracing::info!(%op, "idle notice for a settled job dropped");
+            return;
+        }
+        // L1 (171 inv. 3): a user-cell kernel waiting on its user is no `<job_idle>`.
+        if name
+            .as_deref()
+            .is_some_and(|n| n.starts_with(CELL_JOB_PREFIX))
+            || self.cell_jobs.is_cell(session, &id)
+        {
             return;
         }
         let text = spill::cap(
@@ -9778,6 +9919,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
         });
         costs.install();
     }
+    let cell_jobs = Arc::new(CellJobs::default());
     let agents = Agents::spawn_with_mailbox(
         Agents {
             rt: rt.clone(),
@@ -9826,6 +9968,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             last_input: HashMap::new(),
             seen: HashMap::new(),
             talk: HashMap::new(),
+            cell_jobs: cell_jobs.clone(),
             approvals: HashMap::new(),
             search: Arc::default(),
             nodes: nodes.clone(),
@@ -9861,6 +10004,9 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     .await?;
     UserChannels::spawn(UserChannels::default()).register(USER_ACTOR)?;
     rt.subscribe::<Agents, AgentEvent>(&agents).await;
+    let watch =
+        CellJobWatch::spawn_with_mailbox(CellJobWatch(cell_jobs), runtime::subscriber_mailbox());
+    rt.subscribe::<CellJobWatch, JobEvent>(&watch).await;
     // Finished jobs reach the model through `Settle::FinishedWithResult`
     // (47 §4.1), never a second time through the public `JobEvent`.
     rt.subscribe::<Agents, ApprovalRequested>(&agents).await;
@@ -10886,6 +11032,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         last_input: HashMap::new(),
         seen: HashMap::new(),
         talk: HashMap::new(),
+        cell_jobs: Arc::default(),
         approvals: HashMap::new(),
         search: Arc::default(),
         nodes: Nodes::default(),
@@ -15282,6 +15429,150 @@ pub(crate) mod tests {
         // Without a talk the next result routes at once, as before.
         job_done(&agents, p, "j2", "two").await;
         assert!(next_turn(&mut rx, p).await.contains("id=\"j2\""));
+    }
+
+    /// A `<cell_result>` for `p` as the cells actor delivers it (171 L3); `kind` may carry
+    /// [`QUIET_KIND`] the way a 139 `harness_outbox` row does.
+    async fn cell_done(agents: &ActorRef<Agents>, p: SessionId, kind: &str, run: &str, wake: bool) {
+        agents
+            .ask(HarnessDeliver {
+                session: p,
+                kind: format!("{kind}{run}"),
+                text: run.into(),
+                wrapped: format!("<cell_result run=\"{run}\" exit=\"0\">\nok\n</cell_result>"),
+                wake,
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn human(agents: &ActorRef<Agents>, p: SessionId, text: &str) {
+        agents
+            .ask(SendInput {
+                channel: None,
+                session: Some(p),
+                text: text.into(),
+                files: Vec::new(),
+                delivery: Delivery::Steer,
+                id: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    /// 171 §9.3: a quiet result starts no turn; the next turn — the human's — carries it,
+    /// ahead of the human's text. Parked items live in memory only (the cells actor
+    /// re-parks undelivered runs at engine start).
+    #[tokio::test]
+    async fn parked_cell_result_joins_the_next_turn_and_starts_none() {
+        let (_scratch, a) = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        cell_done(&agents, p, "cell ", "r_1", false).await;
+        assert!(no_turn_within(&mut rx, p, 300).await, "parked, no turn");
+        human(&agents, p, "what now?").await;
+        let text = next_turn(&mut rx, p).await;
+        let (cell, asked) = (
+            text.find("run=\"r_1\"").unwrap(),
+            text.find("what now?").unwrap(),
+        );
+        assert!(cell < asked, "{text}");
+        assert!(no_turn_within(&mut rx, p, 300).await, "one turn only");
+    }
+
+    /// 171 §9.3: a waking result on an idle session starts exactly one turn.
+    #[tokio::test]
+    async fn waking_cell_result_starts_one_turn() {
+        let (_scratch, a) = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        cell_done(&agents, p, "cell ", "r_1", true).await;
+        assert!(next_turn(&mut rx, p).await.contains("run=\"r_1\""));
+        assert!(no_turn_within(&mut rx, p, 300).await, "one turn only");
+    }
+
+    /// 171 §9.3: two parked results (one through the 139 outbox marker) and a waking one
+    /// share the turn the waking one opens, in arrival order.
+    #[tokio::test]
+    async fn parked_and_waking_results_keep_arrival_order() {
+        let (_scratch, a) = agents().await;
+        let mut rx = tap(&a.rt).await;
+        let (agents, p) = rooted(a).await;
+        cell_done(&agents, p, "cell ", "r_1", false).await;
+        cell_done(&agents, p, &format!("{QUIET_KIND}cell "), "r_2", true).await;
+        assert!(no_turn_within(&mut rx, p, 300).await, "both parked");
+        cell_done(&agents, p, "cell ", "r_3", true).await;
+        let text = next_turn(&mut rx, p).await;
+        let at = |run: &str| text.find(&format!("run=\"{run}\"")).unwrap();
+        assert!(at("r_1") < at("r_2") && at("r_2") < at("r_3"), "{text}");
+        assert!(no_turn_within(&mut rx, p, 300).await, "one turn only");
+    }
+
+    /// L1 (171 inv. 3): a job announced with a `cell:` name, or idling under one, becomes
+    /// neither `<job_result>` nor `<job_idle>`; an agent job beside it still does.
+    #[tokio::test]
+    async fn cell_jobs_are_never_job_result_or_job_idle() {
+        let (_scratch, mut a) = agents_with(true).await;
+        let (p, _t) = in_turn(&mut a).await;
+        let op = |id: &str| tools::Operation {
+            id: tools::Activity::untracked(p, tools::Kind::Pty(JobId(id.into()))).id(),
+            owner: p,
+            kind: tools::Kind::Pty(JobId(id.into())),
+        };
+        let idle = |op: &tools::Operation, id: &str, name: Option<&str>| Notice::JobIdle {
+            op: op.id,
+            event: JobEvent::Idle {
+                session: p,
+                id: JobId(id.into()),
+                command: "bash".into(),
+                name: name.map(str::to_owned),
+                quiet_secs: 61,
+                secs: 90,
+                nudge: 1,
+                user_typed_secs: None,
+                output: "$ ".into(),
+                why: String::new(),
+            },
+        };
+        let finished = |op: &tools::Operation, id: &str| Settle::FinishedWithResult {
+            op: op.id,
+            result: JobEvent::Finished {
+                session: p,
+                id: JobId(id.into()),
+                command: "bash".into(),
+                exit: JobExit::Exited(0),
+                secs: 1,
+                output: "bye".into(),
+                inline: false,
+                pty: true,
+                kind: JobKind::Pty,
+            },
+        };
+        a.cell_jobs.observe(&JobEvent::Started {
+            session: p,
+            id: JobId("k1".into()),
+            command: "bash".into(),
+            call_id: String::new(),
+            log: PathBuf::new(),
+            name: Some("cell:bash 5.2 (Homebrew)".into()),
+            pty: true,
+            kind: JobKind::Pty,
+        });
+        let (k1, k2, j1) = (op("k1"), op("k2"), op("j1"));
+        for o in [&k1, &k2, &j1] {
+            a.ledger.admit_op(o);
+        }
+        a.notice(idle(&k1, "k1", None)).await;
+        a.notice(idle(&k2, "k2", Some("cell:zsh"))).await;
+        a.settle(finished(&k1, "k1")).await;
+        assert_eq!(a.ledger.pending_count(p), 0, "no input for cell jobs");
+        assert!(
+            !a.cell_jobs.is_cell(p, &JobId("k1".into())),
+            "forgotten once finished"
+        );
+        a.notice(idle(&j1, "j1", None)).await;
+        a.settle(finished(&j1, "j1")).await;
+        assert_eq!(a.ledger.pending_count(p), 2, "an agent job still reports");
     }
 
     /// A fake node `box` on `a`: the harness side of its one connection.

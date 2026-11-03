@@ -111,6 +111,10 @@ struct Cli {
     /// (or `brew upgrade theuth` for a Homebrew install), print one line, exit (39 §3.2).
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list"])]
     update: bool,
+    /// With `--update`: stop the user cells running on this data dir's engine instead of
+    /// refusing when no terminal can ask `wait / stop / cancel` (171 §5.3 F6).
+    #[arg(long, requires = "update")]
+    stop_cells: bool, // 171:A1
     /// Print the app library compatibility hash this binary was built with and
     /// exit (46 §2.1): the updater checks a staged `theuth-app-parser-<hash>` helper
     /// against it. Before config, logging or any plugin.
@@ -1312,7 +1316,7 @@ const HARNESS_SKILL: &str = include_str!("../harness.md");
 /// Creates the data-dir skeleton on first run. Existing files are never
 /// overwritten, except `skills/harness.md`, `skills/visualize.md`,
 /// `skills/pdf.md`, `skills/loops.md`, `skills/routines.md`, `skills/apps.md`,
-/// `skills/board.md`, `skills/decide.md`, `skills/double.md` and `skills/native-apps.md`, which the binary owns and rewrites so
+/// `skills/board.md`, `skills/decide.md`, `skills/double.md`, `skills/native-apps.md` and `skills/cells.md`, which the binary owns and rewrites so
 /// they always describe the running version. 136: `skills/dreaming.md`,
 /// `sensors/dreaming.py` (binary-owned) and `schedules/dreaming.md` (once)
 /// are written by `dreaming::DreamingPlugin::start`, which reads
@@ -1333,7 +1337,7 @@ fn first_run(data_dir: &Path, config_path: &Path) -> std::io::Result<()> {
         ("decide.md", decision::tool::DECIDE_SKILL.to_owned()),
         ("double.md", double::tool::DOUBLE_SKILL.to_owned()),
         ("native-apps.md", computer::NATIVE_APPS_SKILL.to_owned()),
-        // 171:A1 ("cells.md", cells::prompt::SKILL) — only once SKILL is non-empty (installed text unchanged until then).
+        ("cells.md", cells::prompt::SKILL.to_owned()), // 171:A1
     ] {
         let path = skills.join(name);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
@@ -1594,7 +1598,7 @@ async fn run() -> anyhow::Result<()> {
     }
     if cli.update {
         let cfg: update::UpdateConfig = config.extract_inner("update").unwrap_or_default();
-        return update_cli(&cfg, &data_dir).await;
+        return update_cli(&cfg, &data_dir, cli.stop_cells).await;
     }
     if let Some(prefix) = cli.decision_export {
         let format: decision::training::Format = cli.format.parse().map_err(anyhow::Error::msg)?;
@@ -2043,11 +2047,26 @@ async fn start_plugins(rt: &Runtime, plugins: Vec<Box<dyn Plugin>>) -> anyhow::R
 
 /// `t --update` (39 §3.2): one foreground check, one line on stdout.
 /// Logs go to stderr so `RUST_LOG=debug t --update` shows the debug lines.
-async fn update_cli(cfg: &update::UpdateConfig, data_dir: &Path) -> anyhow::Result<()> {
+async fn update_cli(
+    cfg: &update::UpdateConfig,
+    data_dir: &Path,
+    stop_cells: bool,
+) -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .try_init();
+    match cells_before_update(data_dir, stop_cells).await {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("update cancelled");
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("update: {e:#}");
+            std::process::exit(1);
+        }
+    }
     match update::run_once(cfg, data_dir).await {
         Ok(update::Outcome::UpToDate) => println!("up to date ({})", env!("CARGO_PKG_VERSION")),
         Ok(update::Outcome::Applied { from, to }) => println!("theuth {from} → {to}"),
@@ -2061,4 +2080,89 @@ async fn update_cli(cfg: &update::UpdateConfig, data_dir: &Path) -> anyhow::Resu
         }
     }
     Ok(())
+}
+
+/// 171 §5.3 (F6 a, L7): the engine's jobs die with it (109 R1), so user cells running on
+/// this data dir's engine are the user's call before an update: listed, then `wait` (until
+/// none runs), `stop` (Stop, Kill 5 s later) or `cancel` on a TTY; without one the update
+/// refuses unless `--stop-cells`. `Ok(false)` = cancelled. No engine, an unreachable one
+/// or one without cells asks nothing.
+async fn cells_before_update(data_dir: &Path, stop_cells: bool) -> anyhow::Result<bool> {
+    use rpc::api::ApiClient;
+    use std::io::IsTerminal;
+    let Some(running) = rpc::engine::discover(data_dir) else {
+        return Ok(true);
+    };
+    let Ok(ws) = rpc::client::connect(&running).await else {
+        return Ok(true);
+    };
+    let live = match ws.cell_live().await {
+        Ok(live) if !live.is_empty() => live,
+        Ok(_) => return Ok(true),
+        Err(e) => {
+            tracing::debug!("cell_live: {e}");
+            return Ok(true);
+        }
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    eprintln!("{} user cell run(s) in progress on the engine:", live.len());
+    for r in &live {
+        let secs = (now - r.started_ms.unwrap_or(r.queued_ms)).max(0) / 1000;
+        let (m, s) = (secs / 60, secs % 60);
+        eprintln!("  {} ({m}:{s:02}) · {} · {}", r.id.0, r.interpreter, r.cwd);
+    }
+    let tty = std::io::stdin().is_terminal();
+    let mut stoppable = true;
+    loop {
+        let choice = if stop_cells && stoppable {
+            "stop".to_owned()
+        } else if !tty {
+            anyhow::bail!(
+                "user cells are running; wait for them, or rerun with --stop-cells to stop them"
+            );
+        } else {
+            eprint!(
+                "{} ",
+                if stoppable {
+                    "wait / stop / cancel?"
+                } else {
+                    "wait / cancel?"
+                }
+            );
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            line.trim().to_ascii_lowercase()
+        };
+        match choice.as_str() {
+            "wait" | "w" => {
+                eprintln!("waiting for the runs to end…");
+                while !ws.cell_live().await?.is_empty() {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+                return Ok(true);
+            }
+            "stop" | "s" if stoppable => {
+                let mut refused = None;
+                for r in &live {
+                    if let Err(e) = ws.cell_stop(r.id.clone(), false).await {
+                        refused = Some(e);
+                        break;
+                    }
+                }
+                if let Some(e) = refused {
+                    // The press guard may refuse this CLI's peer: only waiting is left.
+                    eprintln!("could not stop the runs here: {e}");
+                    stoppable = false;
+                    continue;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                for r in ws.cell_live().await? {
+                    let _ = ws.cell_stop(r.id, true).await;
+                }
+                return Ok(true);
+            }
+            "cancel" | "c" | "" => return Ok(false),
+            _ => {}
+        }
+    }
 }

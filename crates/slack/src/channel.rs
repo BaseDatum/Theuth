@@ -2700,6 +2700,7 @@ impl Worker {
                 self.set_status("processing").await;
             }
             AgentEvent::TextDelta { text, .. } => {
+                let text = surface::cell_link::run_links(&self.unspoken, &text, &self.session.to_string()); // 171:A1
                 if let Some(t) = &mut self.turn {
                     t.text(&text).await;
                 }

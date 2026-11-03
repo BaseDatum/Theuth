@@ -405,6 +405,8 @@ impl Worker {
                 t.close_card(ctx, None).await;
                 // Fresh = no prose shown yet: the first draft goes out at once.
                 let mut fresh = t.bubble.as_ref().is_none_or(|b| b.text.raw().is_empty());
+                let text =
+                    surface::cell_link::run_links(&t.unspoken, &text, &ctx.session.to_string()); // 171:A1
                 let b = t.bubble(ctx);
                 b.push(&text);
                 t.unspoken.push_str(&text);

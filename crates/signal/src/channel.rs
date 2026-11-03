@@ -1738,7 +1738,9 @@ impl Channel {
             AgentEvent::TextDelta { session, text, .. } => {
                 let mut s = self.lock();
                 if s.threads.is_bound(session) {
-                    s.turns.entry(session).or_default().text.push_str(&text);
+                    let t = &mut s.turns.entry(session).or_default().text;
+                    let text = surface::cell_link::run_links(t, &text, &session.to_string()); // 171:A1
+                    t.push_str(&text);
                 }
             }
             // 45 §0.3: the prose before a tool batch is a block of its own, for

@@ -544,6 +544,8 @@ pub struct SessionState {
     /// `<surface_error>` rounds this turn (30 §5 as-built): `correct_rounds + 1` once
     /// the final move-on note went out, after which the reply is not checked again.
     pub surface_rounds: u8,
+    /// 171 §9.2: `<cell_error>` rounds this turn, counted apart from `surface_rounds`.
+    pub cell_rounds: u8,
     /// A fence checker was unavailable once this session: logged, not repeated.
     pub fence_warned: bool,
     /// Paths passed to `write_file` this epoch, for the compaction head (36 §6.3); cleared by compaction.
@@ -613,6 +615,7 @@ impl SessionState {
             title_chars: 0,
             title_epoch: epoch,
             surface_rounds: 0,
+            cell_rounds: 0,
             fence_warned: false,
             files_written: BTreeSet::new(),
             window_hint: 0,
@@ -683,6 +686,9 @@ pub struct Session {
     gated: bool,
     /// 137 R1-D1: blocks the next opener carries before its text ([`OpenerContext`]).
     opener_context: Vec<String>,
+    /// 171 §9.3 (W-m): quiet harness results ([`QuietInput`]) waiting for the next turn,
+    /// in arrival order. In memory only.
+    quiet: Vec<Queued>,
 }
 
 impl Actor for Session {
@@ -936,6 +942,7 @@ impl Session {
             scope: TurnScope::default(),
             gated: false,
             opener_context: Vec::new(),
+            quiet: Vec::new(),
         }
     }
 
@@ -1214,6 +1221,7 @@ impl Session {
             // Only reachable if a turn is already running; the caller checked `inflight`.
             return true;
         };
+        let inputs = self.join_quiet(inputs);
         let Some((_, opener)) = inputs.first() else {
             self.state = Some(state);
             return false;
@@ -1276,6 +1284,10 @@ impl Session {
             return false;
         }
         let rest: Vec<Queued> = inputs.collect();
+        // 171 §9.3: quiet results opened ahead of a channel input; the turn is still its.
+        if channel.is_none() {
+            channel = rest.iter().find_map(|(_, i)| i.channel.clone());
+        }
         if !self.titled {
             self.titled = true;
             // A skill injection titles by the user's words (or the skill's name), never the `<skill>` body;
@@ -1345,6 +1357,22 @@ impl Session {
             let _ = me.tell(TurnDone(state)).await;
         });
         true
+    }
+
+    /// 171 §9.3: the quiet results parked here join the turn `inputs` opens, ahead of them
+    /// (arrival order) — when its opener is a private input: a human's, or a harness input
+    /// without a request scope. A peer exchange or a scoped opener keeps them parked for
+    /// the next private turn (50 §6.3).
+    fn join_quiet(&mut self, inputs: Vec<Queued>) -> Vec<Queued> {
+        let private = inputs
+            .first()
+            .is_some_and(|(_, i)| i.scope.is_none() && i.peer.is_none());
+        if !private || self.quiet.is_empty() {
+            return inputs;
+        }
+        let mut joined = std::mem::take(&mut self.quiet);
+        joined.extend(inputs);
+        joined
     }
 }
 
@@ -1431,6 +1459,42 @@ impl Message<UserInput> for Session {
             .push((id, input));
         if let Some(event) = event {
             self.shared.rt.publish(event).await;
+        }
+    }
+}
+
+/// `tell` (171 §9.3, W-m): a harness result delivered quietly (`HarnessDeliver { wake:
+/// false }`). Idle: parked until the next turn opens for any reason, which it joins ahead
+/// of the opener ([`Session::join_quiet`]). Running: it lands at the turn's next batch
+/// boundary like a steer, but never opens a turn on its own (left over, it parks again).
+/// Carries no ledger ticket: nothing is owed until a turn takes it.
+pub struct QuietInput(pub String);
+
+impl Message<QuietInput> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, QuietInput(text): QuietInput, _: &mut Context<Self, Self::Reply>) {
+        let input = Input {
+            text,
+            channel: None,
+            files: Vec::new(),
+            context: Vec::new(),
+            replay: None,
+            ticket: None,
+            scope: None,
+            peer: None,
+            defer: false,
+            advisory: None,
+            passive: self.inflight.is_some(),
+        };
+        if input.passive {
+            self.shared
+                .steer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((None, input));
+        } else {
+            self.quiet.push((None, input));
         }
     }
 }
@@ -2416,10 +2480,14 @@ impl Message<TurnDone> for Session {
             };
             // 125 §4.10: passive-only leftovers (asides, preserved steers)
             // are appended without a turn; anything else starts the batch.
+            // 171 §9.3: a quiet result the turn did not take waits for the next one.
             if batch.iter().all(|(_, i)| i.passive) {
-                for (_, input) in batch {
-                    if let Some(advisory) = input.advisory {
-                        self.append_advisory_idle(advisory, input.text, true).await;
+                for (id, input) in batch {
+                    match input.advisory {
+                        Some(advisory) => {
+                            self.append_advisory_idle(advisory, input.text, true).await;
+                        }
+                        None => self.quiet.push((id, input)),
                     }
                 }
                 continue;
@@ -2628,6 +2696,10 @@ struct Turn {
     /// 125 R1.3 (D-R1.1): consults this user turn at `depth == 0`; a
     /// subagent counts on [`Shared::consults`] instead.
     consults: u32,
+    /// 171 §9.2/§10.6: this frame carries the `## User cells` block (an attended session whose
+    /// toolset keeps it, the cells plugin registered): replies get the `<cell_error>` pass.
+    /// Set in [`Turn::rebase`].
+    cells_on: bool,
 }
 
 /// What an endless turn carries from `Turn::endless_start` (137 §7.3, §8.1).
@@ -3169,6 +3241,136 @@ fn correction_message(
     })
 }
 
+/// The `cells:` keys the agent reads (design 171 §15.4); the cells plugin owns the section.
+#[derive(serde::Deserialize)]
+#[serde(default)]
+struct CellsKeys {
+    correct_rounds: u8,
+}
+
+impl Default for CellsKeys {
+    fn default() -> Self {
+        Self { correct_rounds: 1 }
+    }
+}
+
+/// One invalid user cell of a reply: its 1-based ordinal, its `name`, its errors.
+type InvalidCell = (usize, Option<String>, Vec<surface::cell::Problem>);
+
+/// 171 §9.2: the user cells of a reply that the user cannot run — `validate`'s errors only,
+/// never warnings. `after` resolves against this reply's names and the names of `earlier`
+/// assistant cells of the session (a re-presented name supersedes, so it is no duplicate);
+/// `name_duplicate` is within the reply. `secrets` are vault names (never values); `monty`
+/// holds, per cell, the sufficiency verdict of a `python: monty` cell (`None` = unchecked).
+fn invalid_cells(
+    cells: &[surface::cell::Cell],
+    earlier: &[surface::cell::Cell],
+    secrets: Option<&[String]>,
+    monty: &[Option<bool>],
+) -> Vec<InvalidCell> {
+    // This reply's names once per occurrence; an earlier name once, unless re-presented here.
+    let mut names: Vec<String> = cells
+        .iter()
+        .filter_map(|c| c.options.name.clone())
+        .collect();
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut edges: Vec<(String, String)> = Vec::new();
+    // Newest version of each name first: its `after` is the edge.
+    for c in cells.iter().chain(earlier.iter().rev()) {
+        let Some(name) = c.options.name.as_deref() else {
+            continue;
+        };
+        if !seen.insert(name) {
+            continue;
+        }
+        if let Some(after) = &c.options.after {
+            edges.push((name.to_owned(), after.clone()));
+        }
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_owned());
+        }
+    }
+    cells
+        .iter()
+        .enumerate()
+        .filter_map(|(i, cell)| {
+            let ctx = surface::cell::ValidateCtx {
+                chat: true,
+                names: names.clone(),
+                after_edges: edges
+                    .iter()
+                    .filter(|(n, _)| cell.options.name.as_ref() != Some(n))
+                    .cloned()
+                    .collect(),
+                secrets: secrets.map(<[String]>::to_vec),
+                monty_ok: monty.get(i).copied().flatten(),
+                ..surface::cell::ValidateCtx::default()
+            };
+            let errors: Vec<_> = surface::cell::validate(cell, &ctx)
+                .into_iter()
+                .filter(|p| p.severity == surface::cell::Severity::Error)
+                .collect();
+            (!errors.is_empty()).then(|| (i + 1, cell.options.name.clone(), errors))
+        })
+        .collect()
+}
+
+impl Turn {
+    /// 171 §9.2 (W-i): the `<cell_error>` for this finished reply, at most
+    /// `cells.correct_rounds` per turn and only where the `## User cells` block is taught
+    /// ([`Turn::cells_on`]); `None` when every user cell is runnable or the reply has none.
+    async fn check_cells(&mut self, reply: &str) -> Option<String> {
+        if !self.cells_on {
+            return None;
+        }
+        let cells: Vec<surface::cell::Cell> = surface::cell_link::cells(reply)
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect();
+        if cells.is_empty() {
+            return None;
+        }
+        let keys: CellsKeys = self.shared.rt.section("cells").unwrap_or_default();
+        if self.state.cell_rounds >= keys.correct_rounds {
+            return None;
+        }
+        let earlier: Vec<surface::cell::Cell> = self
+            .state
+            .history
+            .iter()
+            .filter(|(_, m)| m.role == ChatRole::Assistant)
+            .flat_map(|(_, m)| surface::cell_link::cells(&text_of(&m.content)))
+            .map(|(_, c)| c)
+            .collect();
+        let secrets: Option<Vec<String>> = self
+            .shared
+            .auth
+            .vault
+            .as_deref()
+            .map(|v| v.list().into_iter().map(|s| s.name).collect());
+        let mut monty = Vec::with_capacity(cells.len());
+        for c in &cells {
+            monty.push(
+                if c.options.python == Some(surface::cell::PythonChoice::Monty) {
+                    Some(
+                        repl::monty_sufficient(self.shared.pool.as_deref(), &c.code)
+                            .await
+                            .is_ok(),
+                    )
+                } else {
+                    None
+                },
+            );
+        }
+        let invalid = invalid_cells(&cells, &earlier, secrets.as_deref(), &monty);
+        if invalid.is_empty() {
+            return None;
+        }
+        self.state.cell_rounds = self.state.cell_rounds.saturating_add(1);
+        Some(surface::cell_error(&invalid))
+    }
+}
+
 /// The direct `app` tool (46 §5): its arguments carry UI source the frontend
 /// renders progressively, so it opts into Anthropic fine-grained tool
 /// streaming (46 §8.1). Other adapters ignore the field.
@@ -3290,6 +3492,7 @@ impl Turn {
             view: None,
             consult: None,
             consults: 0,
+            cells_on: false,
         }
     }
 
@@ -4274,12 +4477,16 @@ impl Turn {
             self.shared.store.effective_notebook(self.shared.id).await,
             Ok(Some(_))
         );
+        let prompts = registry.ask(ListPrompts).await.unwrap_or_default();
+        // 171 §9.2: the `<cell_error>` pass runs where the `## User cells` block is taught.
+        self.cells_on = attended
+            && self.shared.kind != SessionKind::Advisor
+            && prompts.iter().any(|(plugin, _)| *plugin == "cells")
+            && toolset
+                .as_ref()
+                .is_none_or(|t| t.prompts.iter().any(|p| p == "cells"));
         let blocks = crate::notebooks::prompt_blocks(
-            prompt_blocks(
-                registry.ask(ListPrompts).await.unwrap_or_default(),
-                toolset.as_ref(),
-                attended,
-            ),
+            prompt_blocks(prompts, toolset.as_ref(), attended),
             bound,
         );
         let genai = self.model().model.genai;
@@ -5131,6 +5338,7 @@ impl Turn {
                 self.state.todo_touched_round = 0;
                 self.state.knowledge_hinted_round = 0;
                 self.state.surface_rounds = 0;
+                self.state.cell_rounds = 0;
                 let mut rounds = 0u32;
                 self.landing = false;
                 loop {
@@ -5925,22 +6133,20 @@ impl Turn {
                 // Design doc 30 §5 as-built: up to `correct_rounds` `<surface_error>`
                 // rounds per turn while a fence would not render, then one final
                 // move-on note; the frontends already saw the text.
+                let reply = text_of(&content);
                 let failing = if correction_wanted(&self.shared.cfg.surface, &self.state) {
-                    // 171:A1 check_fences cell pass (surface::cell::validate) goes here
-                    check_fences(
-                        Some(registry),
-                        &text_of(&content),
-                        &mut self.state.fence_warned,
-                    )
-                    .await
+                    check_fences(Some(registry), &reply, &mut self.state.fence_warned).await
                 } else {
                     Vec::new()
                 };
+                // 171 §9.2 (W-i): the user-cell pass, its own rounds.
+                let cell_error = self.check_cells(&reply).await;
                 // An unrecorded reply cannot be continued from: the store, not
                 // this process's memory, is what a continuation resumes.
                 // 109 §3.3 step 4: when this reply ends the turn, the
                 // `turn_finished` step rides its transaction (§4.5 with it).
                 let continues = !failing.is_empty()
+                    || cell_error.is_some()
                     || ((stop == "max_tokens" || stop == "length")
                         && self.salvaged < self.shared.cfg.max_salvages);
                 crash_point(crash::STREAM_BEFORE_END_PERSIST);
@@ -5959,11 +6165,13 @@ impl Turn {
                     crash_point(crash::TURN_AFTER_FINISHED);
                     stored
                 };
-                if let Some(msg) = correction_message(
+                let surface = correction_message(
                     &self.shared.cfg.surface,
                     &mut self.state.surface_rounds,
                     &failing,
-                ) {
+                );
+                let corrects = surface.is_some() || cell_error.is_some();
+                if let Some(msg) = surface {
                     tracing::info!(
                         target: "surface",
                         session = %self.shared.id,
@@ -5972,6 +6180,12 @@ impl Turn {
                         "correction round"
                     );
                     self.persist(ChatMessage::user(msg)).await;
+                }
+                if let Some(msg) = cell_error {
+                    tracing::info!(target: "surface", session = %self.shared.id, "cell correction round");
+                    self.persist(ChatMessage::user(msg)).await;
+                }
+                if corrects {
                     return Round::Tools;
                 }
             }
@@ -8281,6 +8495,102 @@ mod tests {
             prompt_blocks(blocks(), None, false),
             format!("A\n\nM\n\n{}\n\nW", frame::UNATTENDED_LINE)
         );
+    }
+
+    /// 171 §10.6: the `## User cells` block is in an attended frame exactly once, gone for
+    /// an unattended one (a subagent, a scheduler-opened root) and for a toolset that does
+    /// not list it; a constant block leaves the frame byte-identical across turns.
+    #[test]
+    fn user_cells_block_only_where_someone_can_press_run() {
+        const CELLS: &str = "## User cells\nA user cell is a fenced block the user runs.";
+        let blocks = || vec![("agent", "A".to_owned()), ("cells", CELLS.to_owned())];
+        let attended = prompt_blocks(blocks(), None, true);
+        assert_eq!(attended.matches("## User cells").count(), 1);
+        assert_eq!(
+            attended,
+            prompt_blocks(blocks(), None, true),
+            "same bytes every turn"
+        );
+        assert!(!prompt_blocks(blocks(), None, false).contains("## User cells"));
+        let live = Toolset {
+            tools: vec![],
+            prompts: vec!["agent".into()],
+            runtime: false,
+            hint_limit: None,
+        };
+        assert_eq!(prompt_blocks(blocks(), Some(&live), true), "A");
+    }
+
+    fn cells_of(reply: &str) -> Vec<surface::cell::Cell> {
+        surface::cell_link::cells(reply)
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect()
+    }
+
+    /// 171 §9.2: errors only, one line each; `after` resolves against earlier replies too, a
+    /// re-presented name is no duplicate, and a fence without a header is never checked.
+    #[test]
+    fn cell_errors_name_the_unrunnable_cells_only() {
+        let runbook = "```bash\n#| name: export-ir-prod1\n#| cwd: ~/s\npulumi stack export\n```\n\
+```bash\n#| name: preview-ir-prod1\n#| cwd: ~/s\n#| unknownkey: x\npulumi preview\n```\n\
+```bash\n#| name: apply-ir-prod1\n#| danger\n#| after: preview-ir-prod1\n#| cwd: ~/s\npulumi up\n```\n\
+```bash\necho a snippet, never checked\n```\n";
+        assert!(invalid_cells(&cells_of(runbook), &[], None, &[]).is_empty());
+
+        let broken =
+            "```bash\n#| name: apply-ir-prod1\n#| after: preview\n#| cwd: ~/s\npulumi up\n```\n";
+        let invalid = invalid_cells(&cells_of(broken), &cells_of(runbook), None, &[]);
+        let msg = surface::cell_error(&invalid);
+        assert!(
+            msg.starts_with("<cell_error>\nYour reply presents 1 user cell the user cannot run."),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("- cell 1 \"apply-ir-prod1\": after_unknown — "),
+            "{msg}"
+        );
+        assert!(msg.ends_with("</cell_error>"), "{msg}");
+
+        // A later reply's `after` names an earlier reply's cell.
+        let later = "```bash\n#| name: verify\n#| after: apply-ir-prod1\n#| cwd: /tmp\ntrue\n```\n";
+        assert!(invalid_cells(&cells_of(later), &cells_of(runbook), None, &[]).is_empty());
+        // Two cells with one name in one reply are a duplicate.
+        let twice =
+            "```sh\n#| name: x\n#| cwd: /tmp\nls\n```\n```sh\n#| name: x\n#| cwd: /tmp\npwd\n```\n";
+        let dup = invalid_cells(&cells_of(twice), &[], None, &[]);
+        assert_eq!(dup.len(), 2);
+        assert!(
+            dup.iter()
+                .all(|(_, _, p)| p.iter().any(|p| p.code == "name_duplicate"))
+        );
+        // Vault names are checked, a failed Monty check is an error.
+        let secret =
+            "```python\n#| cwd: /tmp\n#| python: monty\n#| env: T={{secret:NOPE}}\nprint(1)\n```\n";
+        let got = invalid_cells(
+            &cells_of(secret),
+            &[],
+            Some(&["TOKEN".to_owned()]),
+            &[Some(false)],
+        );
+        let codes: Vec<&str> = got[0].2.iter().map(|p| p.code.as_str()).collect();
+        assert_eq!(codes, ["secret_unknown", "monty_insufficient"]);
+    }
+
+    /// 171 §9.2: one `<cell_error>` round per turn (`cells.correct_rounds` 1) — the second
+    /// bad reply of the turn gets none — and only where the block is taught.
+    #[tokio::test]
+    async fn cell_error_once_per_turn() {
+        use super::vision_fallback_tests::{Fake, Harness};
+        let h = Harness::new(Fake::harvest_held(Duration::ZERO)).await;
+        let (mut turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
+        let bad = "```bash\n#| name: apply\n#| after: preview\n#| cwd: /tmp\npulumi up\n```\n";
+        assert!(turn.check_cells(bad).await.is_none(), "no block, no check");
+        turn.cells_on = true;
+        assert!(turn.check_cells("```bash\nls\n```\n").await.is_none());
+        let first = turn.check_cells(bad).await.expect("one round");
+        assert!(first.contains("after_unknown"), "{first}");
+        assert!(turn.check_cells(bad).await.is_none(), "the round is spent");
     }
 
     /// 48 §4.3: a context edit swaps the frame but not the run-local state,
