@@ -386,12 +386,9 @@ async fn http_rejections_and_round_trip() {
         "foreign host"
     );
     assert!(
-        raw(
-            port,
-            &format!("Host: 127.0.0.1:1\r\nAuthorization: Bearer tok\r\n")
-        )
-        .await
-        .contains("403"),
+        raw(port, "Host: 127.0.0.1:1\r\nAuthorization: Bearer tok\r\n")
+            .await
+            .contains("403"),
         "wrong port"
     );
     assert!(
@@ -519,11 +516,8 @@ async fn stdio_bridge_forwards_to_the_engine() {
     assert!(!text(&s).contains("hunter2-secret-value"), "{}", text(&s));
     assert!(text(&s).starts_with("# Summary\nthe api key is "));
     // The same call through the engine-side catalogue directly: identical bytes.
-    let direct: McpCallResult = fake
-        .catalog
-        .lock()
-        .clone()
-        .unwrap()
+    let catalog = fake.catalog.lock().clone().unwrap();
+    let direct: McpCallResult = catalog
         .call(
             "meeting_summary",
             json!({"id": "m1"}).as_object().unwrap().clone(),
